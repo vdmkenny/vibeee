@@ -16,12 +16,28 @@ pub const Address = struct {
     func: u3,
 };
 
+/// What goes in the configuration address port, laid out as the bus reads it.
+///
+/// A packed struct rather than four shifts: the field widths are the
+/// declaration, and a slot number too large to fit is a compile error rather
+/// than a quiet overlap into the bus field.
+const ConfigAddress = packed struct(u32) {
+    /// Dword aligned: the bus ignores the low two bits and so does this.
+    offset: u8,
+    func: u3,
+    slot: u5,
+    bus: u8,
+    _reserved: u7 = 0,
+    enable: bool = true,
+};
+
 fn configAddress(addr: Address, offset: u8) u32 {
-    return 0x8000_0000 |
-        (@as(u32, addr.bus) << 16) |
-        (@as(u32, addr.slot) << 11) |
-        (@as(u32, addr.func) << 8) |
-        (@as(u32, offset) & 0xFC);
+    return @bitCast(ConfigAddress{
+        .bus = addr.bus,
+        .slot = addr.slot,
+        .func = addr.func,
+        .offset = offset & 0xFC,
+    });
 }
 
 pub fn configRead32(addr: Address, offset: u8) u32 {

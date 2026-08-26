@@ -35,24 +35,68 @@ pub const LINEAR_MAP_BYTES: usize = MMIO_BASE - KERNEL_VMA;
 /// dropped as soon as the kernel is running from its virtual addresses.
 const IDENTITY_MIB = 64;
 
-pub const Flags = struct {
-    pub const present: u32 = 1 << 0;
-    pub const write: u32 = 1 << 1;
-    pub const user: u32 = 1 << 2;
-    pub const write_through: u32 = 1 << 3;
-    pub const cache_disable: u32 = 1 << 4;
-    pub const accessed: u32 = 1 << 5;
-    pub const dirty: u32 = 1 << 6;
-    pub const large: u32 = 1 << 7;
-    pub const global: u32 = 1 << 8;
+/// A directory or table entry, as the CPU reads it.
+///
+/// A packed struct rather than a word and a column of shift constants: the
+/// field positions are the declaration, the compiler checks the entry is
+/// exactly thirty-two bits, and a mapping reads as what it permits instead of
+/// as an expression to decode. Getting a bit wrong here is the difference
+/// between a working address space and one that faults on its first access,
+/// which is worth having the compiler check.
+pub const Entry = packed struct(u32) {
+    present: bool = false,
+    write: bool = false,
+    user: bool = false,
+    write_through: bool = false,
+    cache_disable: bool = false,
+    accessed: bool = false,
+    dirty: bool = false,
+    /// Four megabytes rather than four kilobytes. Only meaningful in a
+    /// directory entry.
+    large: bool = false,
+    /// Survives a CR3 reload, for the mappings every address space shares.
+    global: bool = false,
 
     /// Bits 9 to 11 are ignored by the CPU and free for software. This one
     /// marks a page whose frame belongs to something else, a shared-memory
     /// segment, so tearing an address space down must unmap it without
     /// freeing it. Without the mark, the first process to exit would hand
     /// frames back to the allocator that another process is still reading.
-    pub const shared: u32 = 1 << 9;
+    shared: bool = false,
+    _software: u2 = 0,
+
+    /// The frame this entry points at, counted in pages. A large entry uses
+    /// only the top ten bits of it and leaves the rest clear.
+    frame: u20 = 0,
+
+    /// The physical address the frame field names.
+    pub fn address(self: Entry) usize {
+        return @as(usize, self.frame) << PAGE_SHIFT;
+    }
+
+    /// An entry pointing at `phys`, with nothing else set.
+    pub fn at(phys: usize) Entry {
+        return .{ .frame = @intCast(phys >> PAGE_SHIFT) };
+    }
 };
+
+/// A directory or a table: the CPU makes no distinction between their shapes.
+pub const Table = [1024]Entry;
+
+/// A four-megabyte directory entry covering `phys`.
+///
+/// Separate from `Entry.at` because the frame field counts four-kilobyte
+/// pages either way: a large entry names its region with the top ten bits and
+/// must leave the rest clear, which is easy to get wrong by hand and cannot be
+/// got wrong here.
+fn large(phys: usize, rest: Entry) Entry {
+    var entry = rest;
+    entry.large = true;
+    entry.frame = @intCast(phys >> PAGE_SHIFT);
+    return entry;
+}
+
+const PAGE_SHIFT = 12;
 
 /// How a user page is mapped.
 pub const MapOptions = struct {
@@ -64,21 +108,19 @@ pub const MapOptions = struct {
 /// The boot page directory. Lives in `.bootdata` so it sits at a physical
 /// address the pre-paging code can reach: everything else in the kernel is
 /// linked high and is unreachable until CR0.PG is set.
-export var boot_page_directory: [1024]u32 align(PAGE_SIZE) linksection(".bootdata") =
-    [_]u32{0} ** 1024;
+export var boot_page_directory: Table align(PAGE_SIZE) linksection(".bootdata") = @splat(.{});
 
 /// Build the initial mapping and turn paging on.
 ///
 /// Runs before the kernel is reachable at its link addresses, so it must not
 /// call anything outside `.text.boot` or touch anything outside `.bootdata`.
 pub fn setupBootPaging() linksection(".text.boot") callconv(.c) void {
-    const dir: [*]u32 = @ptrFromInt(@intFromPtr(&boot_page_directory));
+    const dir: [*]Entry = @ptrFromInt(@intFromPtr(&boot_page_directory));
 
     // Identity map, so the instruction after `mov cr0` is still fetchable.
     var i: usize = 0;
     while (i < IDENTITY_MIB / 4) : (i += 1) {
-        dir[i] = @as(u32, @intCast(i * LARGE_PAGE_SIZE)) |
-            Flags.present | Flags.write | Flags.large;
+        dir[i] = large(i * LARGE_PAGE_SIZE, .{ .present = true, .write = true });
     }
 
     // The kernel window: 0xC0000000..0xFFFFFFFF linearly onto physical 0.
@@ -89,8 +131,11 @@ pub fn setupBootPaging() linksection(".text.boot") callconv(.c) void {
     const kernel_pde_end = MMIO_BASE / LARGE_PAGE_SIZE;
     i = 0;
     while (kernel_pde_start + i < kernel_pde_end) : (i += 1) {
-        dir[kernel_pde_start + i] = @as(u32, @intCast(i * LARGE_PAGE_SIZE)) |
-            Flags.present | Flags.write | Flags.large | Flags.global;
+        dir[kernel_pde_start + i] = large(i * LARGE_PAGE_SIZE, .{
+            .present = true,
+            .write = true,
+            .global = true,
+        });
     }
 
     asm volatile (
@@ -115,7 +160,7 @@ pub fn setupBootPaging() linksection(".text.boot") callconv(.c) void {
 /// therefore *physical*, correct for `setupBootPaging`, which runs before
 /// paging, and wrong for everything after, once the identity mapping is gone.
 /// Every post-paging access goes through here.
-fn pageDirectory() *[1024]u32 {
+fn pageDirectory() *Table {
     return @ptrFromInt(physToVirt(@intFromPtr(&boot_page_directory)));
 }
 
@@ -124,7 +169,7 @@ fn pageDirectory() *[1024]u32 {
 pub fn dropIdentityMapping() void {
     const dir = pageDirectory();
     var i: usize = 0;
-    while (i < IDENTITY_MIB / 4) : (i += 1) dir[i] = 0;
+    while (i < IDENTITY_MIB / 4) : (i += 1) dir[i] = .{};
     flushAll();
 }
 
@@ -177,8 +222,8 @@ pub const AddressSpace = struct {
         const pmm = @import("../../kernel/pmm.zig");
         const phys = pmm.allocFrame() catch return error.OutOfMemory;
 
-        const dir: *[1024]u32 = @ptrFromInt(physToVirt(phys));
-        @memset(dir, 0);
+        const dir: *Table = @ptrFromInt(physToVirt(phys));
+        @memset(dir, .{});
 
         // Share the kernel half. These entries carry the global flag, so they
         // survive the TLB flush that a CR3 reload would otherwise cause.
@@ -195,19 +240,19 @@ pub const AddressSpace = struct {
     /// stops at KERNEL_PDE_START.
     pub fn destroy(self: *AddressSpace) void {
         const pmm = @import("../../kernel/pmm.zig");
-        const dir: *[1024]u32 = @ptrFromInt(physToVirt(self.pd_phys));
+        const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
 
         for (dir[0..KERNEL_PDE_START]) |pde| {
-            if (pde & Flags.present == 0) continue;
-            const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
+            if (!pde.present) continue;
+            const table: *Table = @ptrFromInt(physToVirt(pde.address()));
             for (table) |pte| {
-                if (pte & Flags.present == 0) continue;
+                if (!pte.present) continue;
                 // A shared frame is somebody else's; the segment that owns it
                 // frees it when its last reference goes.
-                if (pte & Flags.shared != 0) continue;
-                pmm.freeFrame(pte & 0xFFFF_F000);
+                if (pte.shared) continue;
+                pmm.freeFrame(pte.address());
             }
-            pmm.freeFrame(pde & 0xFFFF_F000);
+            pmm.freeFrame(pde.address());
         }
 
         pmm.freeFrame(self.pd_phys);
@@ -223,24 +268,30 @@ pub const AddressSpace = struct {
         if (virt >= KERNEL_VMA) return error.OutOfMemory;
 
         const pmm = @import("../../kernel/pmm.zig");
-        const dir: *[1024]u32 = @ptrFromInt(physToVirt(self.pd_phys));
+        const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
 
         const pd_index = virt >> 22;
         const pt_index = (virt >> 12) & 0x3FF;
 
         var pde = dir[pd_index];
-        if (pde & Flags.present == 0) {
+        if (!pde.present) {
             const table_phys = pmm.allocFrame() catch return error.OutOfMemory;
-            const table: *[1024]u32 = @ptrFromInt(physToVirt(table_phys));
-            @memset(table, 0);
-            pde = @as(u32, @intCast(table_phys)) | Flags.present | Flags.write | Flags.user;
+            const table: *Table = @ptrFromInt(physToVirt(table_phys));
+            @memset(table, .{});
+            pde = Entry.at(table_phys);
+            pde.present = true;
+            pde.write = true;
+            pde.user = true;
             dir[pd_index] = pde;
         }
 
-        const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
-        table[pt_index] = @as(u32, @intCast(phys)) | Flags.present | Flags.user |
-            (if (options.writable) Flags.write else 0) |
-            (if (options.shared) Flags.shared else 0);
+        const table: *Table = @ptrFromInt(physToVirt(pde.address()));
+        var entry = Entry.at(phys);
+        entry.present = true;
+        entry.user = true;
+        entry.write = options.writable;
+        entry.shared = options.shared;
+        table[pt_index] = entry;
 
         if (isActive(self.*)) invalidatePage(virt);
     }
@@ -305,9 +356,15 @@ pub fn mapMmio(phys: usize, len: usize, caching: Caching) MmioError!usize {
     var offset: usize = 0;
     while (offset < span) : (offset += LARGE_PAGE_SIZE) {
         const pde_index = (virt_base + offset) / LARGE_PAGE_SIZE;
-        dir[pde_index] = @as(u32, @intCast(start + offset)) |
-            Flags.present | Flags.write | Flags.large | Flags.global |
-            @as(u32, if (caching == .uncached) Flags.cache_disable | Flags.write_through else 0);
+        dir[pde_index] = large(start + offset, .{
+            .present = true,
+            .write = true,
+            .global = true,
+            // Registers are not memory: a write to one that sat in the cache
+            // would never reach the device.
+            .cache_disable = caching == .uncached,
+            .write_through = caching == .uncached,
+        });
     }
 
     mmio_next += span;

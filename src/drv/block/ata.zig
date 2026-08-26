@@ -32,16 +32,43 @@ const REG_DRIVE = 6;
 const REG_STATUS = 7;
 const REG_COMMAND = 7;
 
-const ST_ERR: u8 = 1 << 0;
-const ST_DRQ: u8 = 1 << 3;
-const ST_DF: u8 = 1 << 5;
-const ST_DRDY: u8 = 1 << 6;
-const ST_BSY: u8 = 1 << 7;
+fn readStatus(ch: Channel) Status {
+    return @bitCast(port.inb(ch.io + REG_STATUS));
+}
 
-const CMD_READ_SECTORS = 0x20;
-const CMD_WRITE_SECTORS = 0x30;
-const CMD_FLUSH_CACHE = 0xE7;
-const CMD_IDENTIFY = 0xEC;
+fn issue(ch: Channel, cmd: Command) void {
+    port.outb(ch.io + REG_COMMAND, @intFromEnum(cmd));
+}
+
+/// The status register.
+///
+/// A packed struct rather than a mask per bit: `status.busy` says what it
+/// tests, and a condition over three of them reads as a sentence instead of as
+/// an expression that has to be decoded before it can be checked.
+const Status = packed struct(u8) {
+    err: bool = false,
+    index: bool = false,
+    corrected: bool = false,
+    /// The drive has data to move.
+    request: bool = false,
+    seek_complete: bool = false,
+    fault: bool = false,
+    ready: bool = false,
+    /// Nothing else in the register means anything while this is set.
+    busy: bool = false,
+
+    /// Whether the drive is reporting a problem rather than a state.
+    fn failed(self: Status) bool {
+        return self.err or self.fault;
+    }
+};
+
+const Command = enum(u8) {
+    read_sectors = 0x20,
+    write_sectors = 0x30,
+    flush_cache = 0xE7,
+    identify = 0xEC,
+};
 
 /// Generous: a spun-down or confused drive can take seconds, and failing early
 /// on a slow device is worse than waiting.
@@ -91,11 +118,11 @@ fn selectDelay(ch: Channel) void {
     for (0..4) |_| _ = port.inb(ch.control);
 }
 
-fn waitWhileBusy(ch: Channel) block.Error!u8 {
+fn waitWhileBusy(ch: Channel) block.Error!Status {
     const deadline = hal.monotonicMicros() + TIMEOUT_US;
     while (true) {
-        const status = port.inb(ch.io + REG_STATUS);
-        if (status & ST_BSY == 0) return status;
+        const status = readStatus(ch);
+        if (!status.busy) return status;
         if (hal.monotonicMicros() > deadline) return error.Timeout;
     }
 }
@@ -106,10 +133,10 @@ fn waitWhileBusy(ch: Channel) block.Error!u8 {
 fn waitForData(ch: Channel) block.Error!void {
     const deadline = hal.monotonicMicros() + TIMEOUT_US;
     while (true) {
-        const status = port.inb(ch.io + REG_STATUS);
-        if (status & ST_BSY == 0) {
-            if (status & (ST_ERR | ST_DF) != 0) return error.IoError;
-            if (status & ST_DRQ != 0) return;
+        const status = readStatus(ch);
+        if (!status.busy) {
+            if (status.failed()) return error.IoError;
+            if (status.request) return;
         }
         if (hal.monotonicMicros() > deadline) return error.Timeout;
     }
@@ -149,15 +176,15 @@ fn identify(ch: Channel, slave: bool) ?Drive {
     port.outb(ch.io + REG_LBA_MID, 0);
     port.outb(ch.io + REG_LBA_HIGH, 0);
 
-    port.outb(ch.io + REG_COMMAND, CMD_IDENTIFY);
+    issue(ch, .identify);
     selectDelay(ch);
 
     // Status 0 means nothing is attached; the bus floats high or low with no
     // drive to drive it.
-    if (port.inb(ch.io + REG_STATUS) == 0) return null;
+    if (@as(u8, @bitCast(readStatus(ch))) == 0) return null;
 
     const status = waitWhileBusy(ch) catch return null;
-    if (status & ST_ERR != 0) return null;
+    if (status.err) return null;
 
     // ATAPI and SATA devices answer IDENTIFY with a signature in the LBA mid
     // and high registers instead of data.
@@ -218,7 +245,7 @@ fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
     while (remaining > 0) {
         const batch: u8 = @intCast(@min(remaining, 255));
         try setupTransfer(drive, current, batch);
-        port.outb(ch.io + REG_COMMAND, CMD_READ_SECTORS);
+        issue(ch, .read_sectors);
 
         for (0..batch) |_| {
             try waitForData(ch);
@@ -246,7 +273,7 @@ fn writeSectors(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
     while (remaining > 0) {
         const batch: u8 = @intCast(@min(remaining, 255));
         try setupTransfer(drive, current, batch);
-        port.outb(ch.io + REG_COMMAND, CMD_WRITE_SECTORS);
+        issue(ch, .write_sectors);
 
         for (0..batch) |_| {
             try waitForData(ch);
@@ -272,9 +299,9 @@ fn flushCache(ctx: *anyopaque) block.Error!void {
     const ch = drive.channel;
     _ = try waitWhileBusy(ch);
     selectDrive(ch, drive.slave, 0);
-    port.outb(ch.io + REG_COMMAND, CMD_FLUSH_CACHE);
+    issue(ch, .flush_cache);
     const status = try waitWhileBusy(ch);
-    if (status & (ST_ERR | ST_DF) != 0) return error.IoError;
+    if (status.failed()) return error.IoError;
 }
 
 const ops = block.Ops{

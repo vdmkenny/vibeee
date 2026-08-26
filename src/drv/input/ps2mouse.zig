@@ -32,8 +32,6 @@ const WRITE_TO_AUX = 0xD4;
 
 /// Configuration byte bits. The clock bit is inverted: setting it *disables*
 /// the port, which is the kind of detail worth stating where it is used.
-const CFG_AUX_INTERRUPT: u8 = 1 << 1;
-const CFG_AUX_CLOCK_DISABLED: u8 = 1 << 5;
 
 /// Device commands.
 const SET_DEFAULTS = 0xF6;
@@ -171,8 +169,8 @@ pub fn init() Kind {
     kbc.command(ENABLE_AUX);
 
     var cfg = kbc.config();
-    cfg |= CFG_AUX_INTERRUPT;
-    cfg &= ~CFG_AUX_CLOCK_DISABLED;
+    cfg.mouse_interrupt = true;
+    cfg.mouse_clock_off = false;
     kbc.setConfig(cfg);
 
     if (!send(SET_DEFAULTS)) {

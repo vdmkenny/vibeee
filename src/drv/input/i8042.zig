@@ -52,15 +52,32 @@ pub fn writeData(byte: u8) void {
     port.outb(DATA, byte);
 }
 
-/// Read the controller configuration byte.
-pub fn config() u8 {
+/// The controller's configuration byte.
+///
+/// Named fields rather than a comment beside a mask: which bit does what here
+/// is not guessable from the number, and the one line that changes it should
+/// say what it is turning on.
+pub const Config = packed struct(u8) {
+    keyboard_interrupt: bool = false,
+    mouse_interrupt: bool = false,
+    /// Set by the firmware once it has finished its own self-test.
+    system_flag: bool = false,
+    _zero: u1 = 0,
+    keyboard_clock_off: bool = false,
+    mouse_clock_off: bool = false,
+    /// Scan code set 1 translation, which the firmware has usually enabled.
+    translate: bool = false,
+    _reserved: u1 = 0,
+};
+
+pub fn config() Config {
     command(0x20);
-    return readData() orelse 0;
+    return @bitCast(readData() orelse 0);
 }
 
-pub fn setConfig(value: u8) void {
+pub fn setConfig(value: Config) void {
     command(0x60);
-    writeData(value);
+    writeData(@bitCast(value));
 }
 
 const KeyCode = input.KeyCode;
@@ -208,7 +225,9 @@ pub fn init() void {
     // this machine's translation and clock settings, and second-guessing that
     // on hardware with no serial port risks a keyboard that cannot report why
     // it is dead.
-    setConfig(config() | 0x01); // bit 0: keyboard interrupt enable
+    var cfg = config();
+    cfg.keyboard_interrupt = true;
+    setConfig(cfg);
 
     idt.setHandler(idt.IRQ_BASE + 1, onIrq);
     idt.setIrqMask(1, false);
