@@ -145,11 +145,16 @@ pub fn report() void {
         return;
     }
 
-    var bound: usize = 0;
+    // Two numbers because they answer different questions. A table entry that
+    // names a device is not a driver running on it: the bridges and the USB
+    // controllers match an entry that only describes them.
+    var matched: usize = 0;
+    var driven: usize = 0;
     for (bindings[0..binding_count]) |b| {
-        if (b.driver != null) bound += 1;
+        if (b.driver != null) matched += 1;
+        if (b.attached) driven += 1;
     }
-    console.debug("pci", "{d} devices, {d} bound", .{ binding_count, bound });
+    console.debug("pci", "{d} devices, {d} matched, {d} driven", .{ binding_count, matched, driven });
 
     // The per-device table is a porting and bug-report aid, not something a
     // user needs at every boot.
