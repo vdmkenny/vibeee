@@ -18,6 +18,7 @@
 
 pub const draw = @import("draw.zig");
 pub const table = @import("table.zig");
+pub const text = @import("text.zig");
 pub const theme = @import("theme.zig");
 pub const widget = @import("widget.zig");
 

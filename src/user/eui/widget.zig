@@ -90,6 +90,11 @@ pub const Context = struct {
     /// whichever control the pointer is over, since that is what a wheel means.
     pending_wheel: i8 = 0,
 
+    /// A character this pass, separate from the key that produced it: a text
+    /// control wants what the layout made, and everything else wants to know
+    /// which key was pressed. Zero for a key that produces no character.
+    pending_text: u32 = 0,
+
     /// The control with keyboard focus, as an index into `entries`. Kept
     /// across passes: focus is state, and losing it every frame would make Tab
     /// useless.
@@ -153,6 +158,11 @@ pub const Context = struct {
     /// Offer wheel movement to this pass.
     pub fn postScroll(self: *Context, dy: i8) void {
         self.pending_wheel +|= dy;
+    }
+
+    /// Offer a typed character to this pass.
+    pub fn postText(self: *Context, codepoint: u32) void {
+        self.pending_text = codepoint;
     }
 
     /// Record that `area` needs sending to the screen.
@@ -244,6 +254,14 @@ pub const Context = struct {
         return value;
     }
 
+    /// Take the character for this pass, if `entry` has focus.
+    pub fn takeTextFor(self: *Context, entry: *const Entry) ?u32 {
+        if (self.focus != self.indexOf(entry) or self.pending_text == 0) return null;
+        const cp = self.pending_text;
+        self.pending_text = 0;
+        return cp;
+    }
+
     fn takeKey(self: *Context, index: usize) ?u8 {
         if (self.focus != index or self.pending_key == 0) return null;
         const code = self.pending_key;
@@ -259,6 +277,7 @@ pub const Context = struct {
         self.damaged = false;
         self.pending_key = 0;
         self.pending_wheel = 0;
+        self.pending_text = 0;
 
         if (!self.buttons.left) self.pressed = null;
     }
@@ -300,7 +319,7 @@ pub const Context = struct {
         return slot;
     }
 
-    fn indexOf(self: *const Context, entry: *const Entry) usize {
+    pub fn indexOf(self: *const Context, entry: *const Entry) usize {
         return (@intFromPtr(entry) - @intFromPtr(&self.entries)) / @sizeOf(Entry);
     }
 
@@ -331,8 +350,12 @@ pub const Context = struct {
         /// Held down on itself, so it should look pressed.
         holding: bool,
         focused: bool,
-        /// Released on itself, or activated from the keyboard.
-        activated: bool,
+        /// Released on itself.
+        ///
+        /// The keyboard's equivalent is `activatedByKey`, kept separate
+        /// because taking the key here would take it from a control that
+        /// wanted to read it: a text area needs Enter to mean a new line.
+        clicked: bool,
     };
 
     pub fn interact(self: *Context, entry: *Entry, area: Rect) Interaction {
@@ -352,21 +375,29 @@ pub const Context = struct {
             }
         }
 
-        var activated = over and self.pressed == index and self.releasedThisPass();
-
-        // Enter or Space activates the focused control, which is the whole
-        // point of focus existing.
-        if (self.takeKey(index)) |code| {
-            if (code == @intFromEnum(KeyCode.enter) or code == @intFromEnum(KeyCode.space)) activated = true;
-        }
-
         return .{
             .index = index,
             .over = over,
             .holding = self.pressed == index and self.buttons.left,
             .focused = self.focus == index,
-            .activated = activated,
+            .clicked = over and self.pressed == index and self.releasedThisPass(),
         };
+    }
+
+    /// Whether the focused control was activated from the keyboard, which is
+    /// the whole point of focus existing.
+    ///
+    /// Takes the key only when it is one of the two that mean "press this", so
+    /// a control that reads the rest itself still gets them.
+    pub fn activatedByKey(self: *Context, entry: *const Entry) bool {
+        if (self.focus != self.indexOf(entry) or self.pending_key == 0) return false;
+
+        const code = self.pending_key;
+        if (code != @intFromEnum(KeyCode.enter) and code != @intFromEnum(KeyCode.space)) {
+            return false;
+        }
+        self.pending_key = 0;
+        return true;
     }
 
     /// Whether a control has to be drawn this pass.
@@ -387,6 +418,8 @@ pub const Context = struct {
         const entry = self.slotFor(area) orelse return false;
         const it = self.interact(entry, area);
 
+        const activated = it.clicked or self.activatedByKey(entry);
+
         const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
         if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
@@ -394,7 +427,7 @@ pub const Context = struct {
             self.addDamage(area);
         }
 
-        return it.activated;
+        return activated;
     }
 
     /// One option out of a set where exactly one is chosen, drawn as a button
@@ -407,6 +440,8 @@ pub const Context = struct {
     pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
         const entry = self.slotFor(area) orelse return false;
         const it = self.interact(entry, area);
+
+        const activated = it.clicked or self.activatedByKey(entry);
 
         const visual: Visual = if (selected)
             hotOr(it.over, .checked_hot, .checked)
@@ -421,7 +456,7 @@ pub const Context = struct {
             self.addDamage(area);
         }
 
-        return it.activated;
+        return activated;
     }
 
     /// A checkbox. `checked` is the caller's state; the returned value is what
@@ -430,7 +465,7 @@ pub const Context = struct {
         const entry = self.slotFor(area) orelse return checked;
         const it = self.interact(entry, area);
 
-        const value = if (it.activated) !checked else checked;
+        const value = if (it.clicked or self.activatedByKey(entry)) !checked else checked;
         const visual: Visual = if (value)
             hotOr(it.over, .checked_hot, .checked)
         else
@@ -462,9 +497,11 @@ pub const Context = struct {
         const entry = self.slotFor(area) orelse return;
         entry.seen = true;
 
-        // A label has no state of its own, so it repaints only when something
-        // else has drawn over it.
-        if (self.damaged) {
+        // Repainted when it has been drawn over, and when what it says has
+        // changed: a label showing a count is still a label.
+        const signature = fingerprint(text);
+        if (self.damaged or entry.detail != signature) {
+            entry.detail = signature;
             const t = theme.current();
             self.surface.fill(area, t.surface);
             self.surface.text(area.x, area.y, text, t.text);
@@ -577,6 +614,13 @@ fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, 
 // dropdown and an application launcher, which is the threshold at which it
 // stops being drawing and starts being a control.
 // ---------------------------------------------------------------------------
+
+/// A cheap hash, for deciding whether what a control would draw has changed.
+pub fn fingerprint(text: []const u8) i32 {
+    var h: u32 = 2166136261;
+    for (text) |c| h = (h ^ c) *% 16777619;
+    return @bitCast(h);
+}
 
 pub const ROW_HEIGHT: i32 = 19;
 

@@ -93,10 +93,10 @@ pub const Item = struct {
 };
 
 pub const items = [_]Item{
-    .{ .label = "Settings", .action = .{ .run = .{ .path = "/SETTINGS", .name = "settings" } } },
     .{ .label = "eTerm", .action = .{ .run = .{ .path = "/ETERM", .name = "eterm" } } },
+    .{ .label = "Pad", .action = .{ .run = .{ .path = "/PAD", .name = "pad" } } },
     .{ .label = "Monitor", .action = .{ .run = .{ .path = "/MONITOR", .name = "monitor" } } },
-    .{ .label = "Hello", .action = .{ .run = .{ .path = "/EHELLO", .name = "ehello" } } },
+    .{ .label = "Settings", .action = .{ .run = .{ .path = "/SETTINGS", .name = "settings" } } },
     .{ .label = "", .action = .separator },
     .{ .label = "Exit to shell", .action = .quit },
     .{ .label = "Restart", .action = .reboot },

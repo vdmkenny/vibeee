@@ -129,6 +129,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "settings", .root = "src/user/apps/settings.zig" },
         .{ .name = "monitor", .root = "src/user/apps/monitor.zig" },
         .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
+        .{ .name = "pad", .root = "src/user/apps/pad.zig" },
     };
 
     var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
