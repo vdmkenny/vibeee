@@ -190,10 +190,51 @@ pub fn adopt(new_phys: usize, new_pitch: usize, width: usize, height: usize) boo
     pixel_width = width;
     pixel_height = height;
 
+    const was_columns = columns;
+    const was_rows = rows;
     fitConsole();
-    setAll(Cell.of(' ', 0, 0));
+
+    // The screen is this machine's diagnostic, so a mode change carries what
+    // was on it across rather than starting blank: the grid already holds every
+    // cell, it only has to be laid out for the new width and drawn again.
     clearAll(PALETTE[0]);
+    reflow(was_columns, was_rows);
     return true;
+}
+
+/// Re-lay the grid for a new geometry and draw all of it.
+///
+/// The rows move because the stride changed, and source and destination are the
+/// same array, so the order matters: a wider console pushes every row further
+/// along and has to be walked from the end, a narrower one pulls them back and
+/// has to be walked from the start. Each row goes through a line buffer, which
+/// makes the overlap within a row a non-question.
+fn reflow(was_columns: usize, was_rows: usize) void {
+    const kept_rows = @min(was_rows, rows);
+    const kept_columns = @min(was_columns, columns);
+    const blank = Cell.of(' ', 0, 0);
+
+    var line: [MAX_COLUMNS]Cell = undefined;
+    var moved: usize = 0;
+    while (moved < kept_rows) : (moved += 1) {
+        const y = if (columns > was_columns) kept_rows - 1 - moved else moved;
+        @memcpy(line[0..kept_columns], cells[y * was_columns ..][0..kept_columns]);
+        @memset(cells[y * columns ..][0..columns], blank);
+        @memcpy(cells[y * columns ..][0..kept_columns], line[0..kept_columns]);
+    }
+
+    // Rows the new geometry added start blank.
+    var below = kept_rows;
+    while (below < rows) : (below += 1) {
+        @memset(cells[below * columns ..][0..columns], blank);
+    }
+
+    trust_grid = true;
+    var row: usize = 0;
+    while (row < rows) : (row += 1) {
+        var col: usize = 0;
+        while (col < columns) : (col += 1) drawCell(col, row, cells[row * columns + col]);
+    }
 }
 
 pub fn dimensions() Grid {

@@ -273,11 +273,19 @@ fn attachDisplay(dev: Device) anyerror!void {
         return;
     }
 
-    // Asking on demand rather than at boot. Whatever firmware left is already
-    // on the screen and readable, and it is the surface every diagnostic on
-    // this machine arrives through, so it is not worth replacing until a
-    // caller asks for something better.
     display.setMode = &requestMode;
+
+    // A backend that can read the panel is asked for it here. Firmware sets a
+    // mode without knowing what will run, and on these machines that means a
+    // smaller plane stretched to fit; the panel's own size is always the better
+    // answer and is the one thing the adapter can be sure of.
+    const panel = panelMode() orelse return;
+    requestMode(panel.width, panel.height, 32) catch |err| {
+        console.warn("video: {s} kept the firmware's mode, {d}x{d} refused: {s}", .{
+            backend.name, panel.width, panel.height, @errorName(err),
+        });
+        return;
+    };
 }
 
 /// Ask the bound adapter for a mode, and bring the console with it.
@@ -303,5 +311,5 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
         .stride_px = @intCast(fb.pitch / 4),
         .bytes = fb.pitch * fb.height,
     });
-    console.debug("video", "{d}x{d} from the adapter", .{ fb.width, fb.height });
+    console.debug("video", "{d}x{d} native, panel fitter off", .{ fb.width, fb.height });
 }

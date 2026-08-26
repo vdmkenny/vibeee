@@ -84,7 +84,9 @@ pub fn adoptFramebuffer(phys: usize, pitch: usize, px_width: usize, px_height: u
     const dims = fbcon.dimensions();
     columns = dims.columns;
     rows = dims.rows;
-    moveTo(0, 0);
+    // Where the cursor was, clamped into whatever the new geometry allows: the
+    // text it follows is still on the screen.
+    moveTo(col, row);
     return true;
 }
 
