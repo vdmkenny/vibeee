@@ -31,7 +31,18 @@ pub const Platform = struct {
     bios_version: ?[]const u8 = null,
     /// Raw SMBIOS structure table, for a userspace decoder.
     smbios_table: ?[]const u8 = null,
-    video: ?[]const u8 = null,
+
+    /// What the firmware says is physically fitted, which is not the same as
+    /// what the allocator ended up with.
+    ram_total_mb: u32 = 0,
+    ram_devices: u8 = 0,
+    ram_speed_mhz: u16 = 0,
+    ram_type: []const u8 = "",
+
+    /// Display mode, when a framebuffer is running.
+    fb_width: u16 = 0,
+    fb_height: u16 = 0,
+    fb_bpp: u8 = 0,
 };
 
 var platform: Platform = .{};
@@ -61,10 +72,15 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         });
     } else if (eq(key, "mem")) {
         const m = pmm.stats();
-        try w.print("{d}/{d} MiB used", .{
-            (m.totalBytes() - m.freeBytes()) / (1024 * 1024),
-            m.totalBytes() / (1024 * 1024),
-        });
+        const total = m.totalBytes() / (1024 * 1024);
+        const used = (m.totalBytes() - m.freeBytes()) / (1024 * 1024);
+        try w.print("{d} MiB used / {d} MiB", .{ used, total });
+
+        // The firmware's figure is worth showing when it differs: the gap is
+        // memory the map reserved, and seeing it beats wondering where it went.
+        if (platform.ram_total_mb != 0 and platform.ram_total_mb != total) {
+            try w.print(" ({d} MiB fitted)", .{platform.ram_total_mb});
+        }
     } else if (eq(key, "mem.total")) {
         try w.print("{d}", .{pmm.stats().totalBytes()});
     } else if (eq(key, "mem.free")) {
@@ -76,10 +92,25 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         try w.print("{d}", .{hal.monotonicMicros() / 1_000_000});
     } else if (eq(key, "threads")) {
         try w.print("{d}", .{sched.stats().threads});
-    } else if (eq(key, "video")) {
-        try w.print("{s}", .{platform.video orelse "unknown"});
+    } else if (eq(key, "mem.hardware")) {
+        if (platform.ram_devices == 0) return error.UnknownKey;
+        try w.print("{d} MiB", .{platform.ram_total_mb});
+        if (platform.ram_type.len > 0) try w.print(" {s}", .{platform.ram_type});
+        if (platform.ram_speed_mhz != 0) try w.print("-{d}", .{platform.ram_speed_mhz});
+        try w.print(", {d} module{s}", .{
+            platform.ram_devices,
+            if (platform.ram_devices == 1) "" else "s",
+        });
+    } else if (eq(key, "display")) {
+        if (platform.fb_width != 0) {
+            try w.print("{d}x{d} {d}bpp", .{ platform.fb_width, platform.fb_height, platform.fb_bpp });
+        } else {
+            try w.print("text mode", .{});
+        }
     } else if (eq(key, "console")) {
-        try w.print("{d}x{d}, {s}", .{ console.width(), console.height(), console.fontName() });
+        try w.print("{d}x{d} cells", .{ console.width(), console.height() });
+    } else if (eq(key, "font")) {
+        try w.print("{s}", .{console.fontName()});
     } else if (eq(key, "keymap")) {
         try w.print("{s}", .{keymap.current().name});
     } else if (eq(key, "board")) {

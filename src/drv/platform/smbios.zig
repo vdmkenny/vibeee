@@ -160,6 +160,67 @@ pub fn biosVersion() ?[]const u8 {
     return stringOf(0, fieldAt(0, 0x05) orelse return null);
 }
 
+/// Total installed memory and how it is fitted, from the Memory Device
+/// structures (type 17).
+///
+/// Reported separately from what the allocator sees: the firmware knows what is
+/// physically present, while the allocator knows what survived the memory map.
+/// A discrepancy between them is worth being able to see.
+pub const MemoryHardware = struct {
+    total_mb: u32 = 0,
+    devices: u8 = 0,
+    speed_mhz: u16 = 0,
+    /// SMBIOS memory type code; 0 when unknown.
+    kind: u8 = 0,
+
+    pub fn typeName(self: MemoryHardware) []const u8 {
+        return switch (self.kind) {
+            0x12 => "DDR",
+            0x13 => "DDR2",
+            0x14 => "DDR2 FB-DIMM",
+            0x18 => "DDR3",
+            0x1A => "DDR4",
+            0x0F => "SDRAM",
+            0x07 => "RAM",
+            else => "",
+        };
+    }
+};
+
+pub fn memoryHardware() ?MemoryHardware {
+    const i = info orelse return null;
+    var result = MemoryHardware{};
+
+    var offset: usize = 0;
+    while (offset + @sizeOf(Header) <= i.table.len) {
+        const hdr: *align(1) const Header = @ptrCast(&i.table[offset]);
+        if (hdr.length < @sizeOf(Header) or hdr.type == 127) break;
+
+        if (hdr.type == 17 and hdr.length > 0x0D) {
+            const raw = @as(u16, i.table[offset + 0x0C]) | (@as(u16, i.table[offset + 0x0D]) << 8);
+            // 0 means the slot is empty, 0xFFFF that the size is unknown.
+            if (raw != 0 and raw != 0xFFFF) {
+                // Bit 15 set means the value is kilobytes rather than megabytes.
+                result.total_mb += if (raw & 0x8000 != 0)
+                    @as(u32, raw & 0x7FFF) / 1024
+                else
+                    raw;
+                result.devices += 1;
+
+                if (hdr.length > 0x12 and result.kind == 0) result.kind = i.table[offset + 0x12];
+                if (hdr.length > 0x16 and result.speed_mhz == 0) {
+                    result.speed_mhz = @as(u16, i.table[offset + 0x15]) |
+                        (@as(u16, i.table[offset + 0x16]) << 8);
+                }
+            }
+        }
+
+        offset = endOfStrings(i.table, offset + hdr.length) orelse break;
+    }
+
+    return if (result.devices > 0) result else null;
+}
+
 /// Read one byte from a structure's formatted area.
 fn fieldAt(structure_type: u8, field_offset: usize) ?u8 {
     const i = info orelse return null;

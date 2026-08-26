@@ -52,13 +52,24 @@ pub fn earlyConsole() void {
 ///
 /// Done here because it is the one place allowed to know about both the
 /// firmware tables and the kernel at once.
-fn publishPlatform() void {
+fn publishPlatform(bi: *const bootinfo.BootInfo) void {
+    const ram = smbios.memoryHardware();
+
     sysinfo.setPlatform(.{
         .system_manufacturer = smbios.systemManufacturer(),
         .system_product = smbios.systemProduct(),
         .bios_vendor = smbios.biosVendor(),
         .bios_version = smbios.biosVersion(),
         .smbios_table = if (smbios.get()) |i| i.table else null,
+
+        .ram_total_mb = if (ram) |r| r.total_mb else 0,
+        .ram_devices = if (ram) |r| r.devices else 0,
+        .ram_speed_mhz = if (ram) |r| r.speed_mhz else 0,
+        .ram_type = if (ram) |r| r.typeName() else "",
+
+        .fb_width = bi.fb_width,
+        .fb_height = bi.fb_height,
+        .fb_bpp = bi.fb_bpp,
     });
 
     if (smbios.systemProduct()) |product| {
@@ -80,7 +91,7 @@ pub fn reportVideo() void {
 
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     smbios.init();
-    publishPlatform();
+    publishPlatform(bi);
 
     acpi.init(bi.rsdp);
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
