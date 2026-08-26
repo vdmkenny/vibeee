@@ -57,12 +57,8 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
 
         if (used + entry.name.len > names.len) return error.NoRoom;
 
-        // Written the way it should be read: a short FAT name is stored
-        // upper-cased because the format has nowhere to record case, and
-        // shouting every filename at a reader is not a decision anyone made.
         const stored = names[used..][0..entry.name.len];
         @memcpy(stored, entry.name);
-        str.lowerName(stored);
 
         out.entries.append(.{
             .name = stored,

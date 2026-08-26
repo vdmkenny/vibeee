@@ -10,6 +10,7 @@
 //! on no run queue, so anything searching the queues cannot see one, which is
 //! why threads are found through here and not through them.
 
+const str = @import("lib").str;
 const abi = @import("lib").syscalls;
 const ports_mod = @import("../ports.zig");
 const hal = @import("../hal.zig");
@@ -146,9 +147,13 @@ pub const Thread = struct {
         return self.name_buf[0..self.name_len];
     }
 
+    /// Lower-cased on the way in, for the same reason a filename is: this is
+    /// the program's name and it is shown beside filenames, so it should not
+    /// be the one thing on the screen that shouts.
     pub fn setName(self: *Thread, text: []const u8) void {
         const n = @min(text.len, self.name_buf.len);
         @memcpy(self.name_buf[0..n], text[0..n]);
+        str.lowerName(self.name_buf[0..n]);
         self.name_len = n;
     }
 

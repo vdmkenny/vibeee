@@ -78,15 +78,6 @@ pub fn byte(c: u8) void {
     if (c == '\n') flush();
 }
 
-/// Write a filename or path as it should be read, per `str.displayName`.
-pub fn name(text_bytes: []const u8) void {
-    if (!str.caseless(text_bytes)) {
-        text(text_bytes);
-        return;
-    }
-    for (text_bytes) |c| byte(if (c >= 'A' and c <= 'Z') c + 32 else c);
-}
-
 /// Write `s` padded to `width`, for aligned columns.
 pub fn pad(s: []const u8, width: usize) void {
     text(s);

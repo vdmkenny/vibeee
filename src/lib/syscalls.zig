@@ -503,6 +503,10 @@ pub const OpenFlags = packed struct(u32) {
 pub const Dirent = struct {
     pub const HEADER = 10; // u32 size, i32 mtime, u8 flags, u8 name_len
 
+    /// Longest name a record can carry, which is what `name_len` being one
+    /// byte allows.
+    pub const NAME_MAX = 255;
+
     pub const Flags = packed struct(u8) {
         directory: bool = false,
         _reserved: u7 = 0,
@@ -517,7 +521,7 @@ pub const Dirent = struct {
     /// Write into `out`, returning the bytes used, or null if it will not fit.
     pub fn encode(self: Dirent, out: []u8) ?usize {
         const total = HEADER + self.name.len;
-        if (out.len < total or self.name.len > 255) return null;
+        if (out.len < total or self.name.len > NAME_MAX) return null;
 
         std.mem.writeInt(u32, out[0..4], self.size, .little);
         // Signed and 32-bit: FAT cannot express a date outside 1980-2107, so

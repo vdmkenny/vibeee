@@ -217,17 +217,12 @@ pub fn caseless(text: []const u8) bool {
     return true;
 }
 
-/// A filename or path written the way it should be read. The result points into
-/// `buf` when the case had to be changed, and into `text` when it did not.
-pub fn displayName(buf: []u8, text: []const u8) []const u8 {
-    if (!caseless(text) or text.len > buf.len) return text;
-    @memcpy(buf[0..text.len], text);
-    lowerName(buf[0..text.len]);
-    return buf[0..text.len];
-}
-
-/// The same rule applied where the name already is, for a caller that owns a
-/// copy of it.
+/// A name written the way it should be read, in place.
+///
+/// FAT stores a short name upper-cased because the format has nowhere to
+/// record case. That is a fact about the medium, not about the file, so the
+/// kernel undoes it wherever a name leaves it and nothing downstream has to
+/// know the medium was ever involved.
 pub fn lowerName(name: []u8) void {
     if (!caseless(name)) return;
     for (name) |*c| {

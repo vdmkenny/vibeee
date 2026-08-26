@@ -59,6 +59,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     }
 
     console.setVerbose(std.mem.indexOf(u8, bi.cmdlineSlice(), "verbose") != null);
+    console.setColorEnabled(std.mem.indexOf(u8, bi.cmdlineSlice(), "nocolor") == null);
     platform.earlyConsole();
 
     // The backend is chosen before anything is drawn: in graphics mode the text

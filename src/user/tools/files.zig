@@ -58,7 +58,7 @@ pub fn ls(args: []const []const u8) void {
 
         time.writeListed(entry.mtime, now);
         out.byte(' ');
-        out.name(name);
+        out.text(name);
         if (is_dir) out.text("/");
         out.text("\n");
         files += 1;
@@ -166,7 +166,7 @@ pub fn rm(args: []const []const u8) void {
     for (args) |path| {
         if (sys.unlink(path) < 0) {
             out.text("rm: ");
-            out.name(path);
+            out.text(path);
             out.text(": cannot remove\n");
         }
     }
@@ -185,7 +185,7 @@ pub fn mkdir(args: []const []const u8) void {
         const result = sys.mkdir(path);
         if (result < 0) {
             out.text("mkdir: ");
-            out.name(path);
+            out.text(path);
             out.text(switch (result) {
                 -17 => ": already exists\n",
                 -2 => ": no such parent directory\n",

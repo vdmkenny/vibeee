@@ -156,12 +156,29 @@ var col: usize = 0;
 var fg: Color = .light_grey;
 var bg: Color = .black;
 
+/// Whether colour reaches the screen at all.
+///
+/// Turned off by `nocolor` on the kernel command line. Every caller keeps
+/// asking for the colours it wants and the console declines to use them, which
+/// is the only arrangement where one flag covers the boot log, the panic
+/// screen and every program at once.
+var colour_enabled = true;
+
+pub fn setColorEnabled(on: bool) void {
+    colour_enabled = on;
+    if (!on) {
+        fg = .light_grey;
+        bg = .black;
+    }
+}
+
 pub fn init() void {
     setColor(.light_grey, .black);
     clear();
 }
 
 pub fn setColor(f: Color, b: Color) void {
+    if (!colour_enabled) return;
     fg = f;
     bg = b;
 }
@@ -198,8 +215,76 @@ fn newline() void {
     }
 }
 
+/// Where a select-graphic-rendition sequence has got to.
+///
+/// The console understands one escape sequence, `ESC [ ... m`, because it is
+/// the one a program needs to say anything about colour. A program writes to
+/// its output stream and does not care whether a terminal emulator or this
+/// console is on the other end, which is the whole point of using the sequence
+/// every terminal already speaks rather than inventing a syscall for it.
+const Escape = struct {
+    /// Digits of the parameter being read, and the state all at once: null
+    /// means no sequence is in progress.
+    var pending: ?u8 = null;
+    var seen_bracket = false;
+    var value: u8 = 0;
+
+    /// Feed a byte to the sequence reader. True when it was consumed.
+    fn take(c: u8) bool {
+        if (pending == null) {
+            if (c != 0x1B) return false;
+            pending = 0;
+            seen_bracket = false;
+            value = 0;
+            return true;
+        }
+
+        if (!seen_bracket) {
+            // Anything but a bracket is a sequence this does not know; drop
+            // it rather than printing its remains.
+            seen_bracket = c == '[';
+            if (!seen_bracket) pending = null;
+            return true;
+        }
+
+        switch (c) {
+            '0'...'9' => value = value *| 10 +| (c - '0'),
+            ';' => {
+                apply(value);
+                value = 0;
+            },
+            'm' => {
+                apply(value);
+                pending = null;
+            },
+            else => pending = null,
+        }
+        return true;
+    }
+
+    /// One rendition parameter, in the numbering every terminal shares.
+    fn apply(param: u8) void {
+        switch (param) {
+            0 => setColor(.light_grey, .black),
+            1 => setColor(bright(fg), bg),
+            7 => setColor(bg, fg),
+            30...37 => setColor(@enumFromInt(param - 30), bg),
+            40...47 => setColor(fg, @enumFromInt(param - 40)),
+            90...97 => setColor(bright(@enumFromInt(param - 90)), bg),
+            else => {},
+        }
+    }
+
+    /// The bright half of the palette is the dim half with one bit set, which
+    /// is what makes bold and the 90-series the same operation.
+    fn bright(c: Color) Color {
+        return @enumFromInt(@intFromEnum(c) | 0x8);
+    }
+};
+
 pub fn putChar(c: u8) void {
     if (mirror) |sink| sink(&[_]u8{c});
+    if (Escape.take(c)) return;
     switch (c) {
         '\n' => newline(),
         '\r' => col = 0,

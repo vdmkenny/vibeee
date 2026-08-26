@@ -63,7 +63,7 @@ export fn shellMain() callconv(.c) noreturn {
 
     while (true) {
         const dir_len = sys.getcwd(&cwd);
-        if (dir_len > 0) out.name(cwd[0..@intCast(dir_len)]);
+        if (dir_len > 0) out.text(cwd[0..@intCast(dir_len)]);
         out.text(" $ ");
         out.flush();
 
@@ -247,7 +247,7 @@ fn cmdPwd(_: []const []const u8) void {
     var buf: [256]u8 = [_]u8{0} ** 256;
     const n = sys.getcwd(&buf);
     if (n > 0) {
-        out.name(buf[0..@intCast(n)]);
+        out.text(buf[0..@intCast(n)]);
         out.byte('\n');
     }
 }

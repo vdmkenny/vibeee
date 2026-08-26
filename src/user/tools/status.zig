@@ -128,7 +128,7 @@ fn writeTree(buf: []u8) void {
         out.padNumber(p.ticks, 8);
 
         for (0..p.depth) |_| out.text("  ");
-        out.name(p.name);
+        out.text(p.name);
         if (p.current) out.text(" *");
         out.byte('\n');
     }

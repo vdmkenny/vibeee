@@ -126,7 +126,7 @@ fn sample() void {
         ticks.number(p.ticks);
 
         rows[row_count] = .{
-            .cells = .{ pid.done(), p.state, cpu.done(), ticks.done(), str.displayName(&c.name, p.name), "" },
+            .cells = .{ pid.done(), p.state, cpu.done(), ticks.done(), p.name, "" },
             .depth = p.depth,
             .marked = p.current,
         };

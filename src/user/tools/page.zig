@@ -12,6 +12,7 @@
 
 const sys = @import("sys");
 const info = @import("ulib").info;
+const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
@@ -118,17 +119,36 @@ fn draw(top: usize, window: usize, path: []const u8) void {
         out.byte('\n');
     }
 
-    out.text(path);
-    out.text("  ");
-    out.decimal(if (lines == 0) 0 else top + 1);
-    out.text("-");
-    out.decimal(@min(top + window, lines));
-    out.text(" of ");
-    out.decimal(lines);
-    if (truncated) out.text(" (truncated)");
-    if (top + window >= lines) out.text("  end") else out.text("  more");
-    out.text("   q to quit");
+    // The status line sits on the last row whether or not the text reached it,
+    // so it is always in the same place to look at.
+    while (n < window) : (n += 1) out.byte('\n');
+
+    status(top, window, path);
     out.flush();
+}
+
+/// Where in the file the reader is, set apart by reversing the colours rather
+/// than by picking one, which reads the same on any palette.
+fn status(top: usize, window: usize, path: []const u8) void {
+    var buf: [Size.MAX_COLUMNS]u8 = undefined;
+    var bar = str.Builder{ .buf = &buf };
+
+    bar.text(path);
+    bar.text("  ");
+    bar.number(if (lines == 0) 0 else top + 1);
+    bar.byte('-');
+    bar.number(@min(top + window, lines));
+    bar.text(" of ");
+    bar.number(lines);
+    if (truncated) bar.text(" (truncated)");
+    bar.text(if (top + window >= lines) "  end" else "  more");
+    bar.text("   q to quit");
+
+    // Padded to one short of the width: filling the last cell would wrap the
+    // console onto another row and the bar would be two cells tall.
+    ink.reverse();
+    out.pad(bar.done(), consoleSize().columns - 1);
+    ink.plain();
 }
 
 const Command = enum { quit, up, down, page_up, page_down, top, bottom, none };
@@ -162,7 +182,14 @@ fn back(top: usize, by: usize) usize {
     return if (top > by) top - by else 0;
 }
 
-const Size = struct { columns: usize, rows: usize };
+const Size = struct {
+    columns: usize,
+    rows: usize,
+
+    /// Widest console the status bar has to fill. The grid the kernel keeps is
+    /// bounded too, and this is that bound.
+    const MAX_COLUMNS = 128;
+};
 
 /// The console's shape, which decides how much fits on a screen.
 fn consoleSize() Size {
