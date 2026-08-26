@@ -5,7 +5,6 @@
 //! config space; that path lands with ACPI table parsing in M1, behind the same
 //! interface.
 
-const std = @import("std");
 const port = @import("../../arch/x86/port.zig");
 
 const CONFIG_ADDRESS: u16 = 0xCF8;

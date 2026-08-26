@@ -4,7 +4,9 @@ const std = @import("std");
 const cpu = @import("cpu.zig");
 const fpu = @import("fpu.zig");
 const gdt = @import("gdt.zig");
+const console = @import("../../kernel/console.zig");
 const idt = @import("idt.zig");
+const irq = @import("../../kernel/irq.zig");
 const port = @import("port.zig");
 const paging = @import("paging.zig");
 const context = @import("context.zig");
@@ -55,13 +57,31 @@ pub fn initCpu(kernel_stack_top: usize) void {
 pub const initSyscalls = @import("syscall_arch.zig").init;
 pub const invokeSyscall = @import("syscall_arch.zig").invoke;
 
-pub fn initInterruptController() void {
-    // Remap the PICs out of the exception range, then mask them. The 701 has a
-    // usable IOAPIC (declared in the MADT) and that is what we route through;
-    // the PICs are remapped purely so a spurious legacy line cannot arrive
-    // looking like a CPU fault. IOAPIC bring-up lands with ACPI parsing in M1.
+/// Bring up whatever will deliver interrupts.
+///
+/// The PICs are remapped first either way: with the IOAPIC they are masked
+/// straight afterwards so a stray legacy line cannot arrive looking like a CPU
+/// fault, and without it they are what delivers everything.
+///
+/// `routing` is what firmware said about the machine, which the architecture
+/// has no way to discover for itself. Null, or a description with no
+/// controller in it, leaves the 8259s in charge: a machine that describes none
+/// still boots. Falling back rather than failing matters here, because there
+/// is no serial port to find out on.
+pub fn initInterruptController(routing: ?irq.Routing) void {
     idt.remapPic();
     idt.maskAllPic();
+
+    const described = routing orelse return;
+    if (idt.useIoApic(described)) {
+        console.debug("apic", "local at {x:0>8}, {d} controller(s), {d} described line(s)", .{
+            described.local_address,
+            described.controller_count,
+            described.line_count,
+        });
+        return;
+    }
+    console.warn("apic: described but unusable; using the 8259s", .{});
 }
 
 pub const FpuState = fpu.State;

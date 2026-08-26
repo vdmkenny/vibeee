@@ -33,6 +33,7 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | Shared memory | [`shm.zig`](../src/kernel/shm.zig), [`lib/ring.zig`](../src/lib/ring.zig) | Segments, refcounted, mapped into a per-process window. Ring layout tested on the host. Frames survive one mapper exiting. |
 | Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel/shm. Up to four travel with a channel message. |
 | ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, sync and detached spawn. |
+| Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. How the machine is wired is described in `kernel/irq.zig` and filled in by the composition root, so the architecture never reaches for a firmware parser. |
 | Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 35 calls, bound to the table at comptime in both directions. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
 | Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. |
@@ -116,9 +117,10 @@ build.
 
 ## Testing
 
-- `make test`: 36 host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
-  queues, calendar, ring buffer) plus a differential check of the QR encoder against
-  `libqrencode` across all eight masks.
+- `make test`: 89 host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
+  queues, calendar, ring buffer, the terminal emulator and its key encoding, text wrapping
+  and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
+  across all eight masks.
 - `zig build check`, the layering rules.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
@@ -129,7 +131,6 @@ build.
 - Creating a file uses an 8.3 short name; long names are read but not written.
 - No `mkdir`: directories cannot be created, only read.
 - The dispatcher is `int 0x80`; SYSENTER is designed but not wired.
-- Interrupt handling uses the 8259 PICs and the PIT, not the IOAPIC/LAPIC the design calls for.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
 - No USB, audio or networking.

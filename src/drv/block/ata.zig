@@ -15,7 +15,6 @@
 //! Constraints of the real device, from docs/research: ATA-4, **28-bit LBA
 //! only** (no LBA48) and **no READ/WRITE MULTIPLE**. Nothing here uses either.
 
-const std = @import("std");
 const bcache = @import("../../kernel/bcache.zig");
 const block = @import("../../kernel/block.zig");
 const console = @import("../../kernel/console.zig");

@@ -1,7 +1,7 @@
 //! ACPI table discovery.
 //!
-//! Only what shutdown needs: find the FADT, and find the sleep values inside
-//! the DSDT.
+//! Finding a table by signature, and reading the two that the kernel itself
+//! needs: the FADT for shutdown, and the MADT for the interrupt controller.
 //!
 //! **This is not an ACPI implementation and must not be mistaken for one.** It
 //! reads two tables and pattern-matches a single constant package. Everything
@@ -12,10 +12,9 @@
 //! does not have to wait for an interpreter.
 
 const std = @import("std");
-const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
 
-const Header = extern struct {
+pub const Header = extern struct {
     signature: [4]u8,
     length: u32 align(1),
     revision: u8,
@@ -71,6 +70,7 @@ pub const Info = struct {
 
 var info: Info = .{};
 var have_info = false;
+var rsdt_phys: u32 = 0;
 
 pub fn get() ?Info {
     return if (have_info) info else null;
@@ -80,6 +80,30 @@ fn checksumOk(bytes: []const u8) bool {
     var sum: u8 = 0;
     for (bytes) |b| sum +%= b;
     return sum == 0;
+}
+
+/// The table with this signature, or null.
+///
+/// Public because the interrupt controller wants the MADT and shutdown wants
+/// the FADT, and a second walk of the RSDT for each would be a second place to
+/// get the checksum and the entry count wrong.
+pub fn find(signature: []const u8) ?*align(1) const Header {
+    const rsdt = mapTable(rsdt_phys) orelse return null;
+
+    const entries = (rsdt.length -| @sizeOf(Header)) / 4;
+    const list: [*]align(1) const u32 = @ptrFromInt(@intFromPtr(rsdt) + @sizeOf(Header));
+
+    for (0..entries) |i| {
+        const table = mapTable(list[i]) orelse continue;
+        if (std.mem.eql(u8, &table.signature, signature)) return table;
+    }
+    return null;
+}
+
+/// The bytes of a table after its header.
+pub fn body(table: *align(1) const Header) []const u8 {
+    const bytes: [*]const u8 = @ptrFromInt(@intFromPtr(table) + @sizeOf(Header));
+    return bytes[0 .. table.length -| @sizeOf(Header)];
 }
 
 fn mapTable(phys: u32) ?*align(1) const Header {
@@ -98,25 +122,19 @@ pub fn init(rsdp_phys: u32) void {
 
     const rsdt = mapTable(rsdp.rsdt_address) orelse return;
     if (!std.mem.eql(u8, &rsdt.signature, "RSDT")) return;
+    rsdt_phys = rsdp.rsdt_address;
 
-    const entries = (rsdt.length -| @sizeOf(Header)) / 4;
-    const list: [*]align(1) const u32 = @ptrFromInt(@intFromPtr(rsdt) + @sizeOf(Header));
+    const facp = find("FACP") orelse return;
+    const fadt: *align(1) const Fadt = @ptrCast(facp);
 
-    for (0..entries) |i| {
-        const table = mapTable(list[i]) orelse continue;
-        if (!std.mem.eql(u8, &table.signature, "FACP")) continue;
+    info.pm1a_control = @truncate(fadt.pm1a_cnt_blk);
+    info.pm1b_control = @truncate(fadt.pm1b_cnt_blk);
+    info.pm_timer = @truncate(fadt.pm_tmr_blk);
+    info.smi_command = @truncate(fadt.smi_cmd);
+    info.acpi_enable = fadt.acpi_enable;
+    have_info = true;
 
-        const fadt: *align(1) const Fadt = @ptrCast(table);
-        info.pm1a_control = @truncate(fadt.pm1a_cnt_blk);
-        info.pm1b_control = @truncate(fadt.pm1b_cnt_blk);
-        info.pm_timer = @truncate(fadt.pm_tmr_blk);
-        info.smi_command = @truncate(fadt.smi_cmd);
-        info.acpi_enable = fadt.acpi_enable;
-        have_info = true;
-
-        findS5(fadt.dsdt);
-        return;
-    }
+    findS5(fadt.dsdt);
 }
 
 /// Extract the S5 sleep type values from the DSDT.
@@ -133,24 +151,23 @@ fn findS5(dsdt_phys: u32) void {
     const dsdt = mapTable(dsdt_phys) orelse return;
     if (!std.mem.eql(u8, &dsdt.signature, "DSDT")) return;
 
-    const body: [*]const u8 = @ptrFromInt(@intFromPtr(dsdt) + @sizeOf(Header));
-    const len = dsdt.length -| @sizeOf(Header);
-    if (len < 8) return;
+    const aml = body(dsdt);
+    if (aml.len < 8) return;
 
-    const idx = std.mem.indexOf(u8, body[0..len], "_S5_") orelse return;
+    const idx = std.mem.indexOf(u8, aml, "_S5_") orelse return;
 
     var p = idx + 4;
-    if (p >= len) return;
+    if (p >= aml.len) return;
 
     // NameOp may precede; PackageOp (0x12) introduces the values.
-    if (body[p] == 0x12) {
+    if (aml[p] == 0x12) {
         p += 1;
         // Skip the package length, whose top two bits give its own byte count.
-        if (p >= len) return;
-        const lead = body[p];
+        if (p >= aml.len) return;
+        const lead = aml[p];
         p += 1 + (lead >> 6);
         // Element count.
-        if (p >= len) return;
+        if (p >= aml.len) return;
         p += 1;
     } else return;
 
@@ -175,7 +192,7 @@ fn findS5(dsdt_phys: u32) void {
         }
     };
 
-    info.slp_typ_a = value.read(body, len, &p) orelse return;
-    info.slp_typ_b = value.read(body, len, &p) orelse info.slp_typ_a;
+    info.slp_typ_a = value.read(aml.ptr, aml.len, &p) orelse return;
+    info.slp_typ_b = value.read(aml.ptr, aml.len, &p) orelse info.slp_typ_a;
     info.s5_found = true;
 }

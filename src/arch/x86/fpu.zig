@@ -12,7 +12,6 @@
 //! than the fault handling would be on a single-core machine that switches a
 //! few hundred times a second. It is also much harder to get wrong.
 
-const std = @import("std");
 const cpu = @import("cpu.zig");
 
 /// FXSAVE writes 512 bytes and requires 16-byte alignment.

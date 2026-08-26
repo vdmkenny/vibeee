@@ -16,7 +16,9 @@ const bootinfo = @import("kernel/bootinfo.zig");
 const drivers = @import("drivers.zig");
 const ramdisk = @import("drv/block/ramdisk.zig");
 const acpi = @import("drv/acpi/tables.zig");
+const madt = @import("drv/acpi/madt.zig");
 const acpi_power = @import("drv/acpi/power.zig");
+const irq = @import("kernel/irq.zig");
 const clock = @import("kernel/clock.zig");
 const cmos = @import("drv/rtc/cmos.zig");
 const shutdown = @import("kernel/shutdown.zig");
@@ -25,13 +27,11 @@ const sysinfo = @import("kernel/sysinfo.zig");
 const kbd = @import("drv/input/i8042.zig");
 const mouse = @import("drv/input/ps2mouse.zig");
 const uart = @import("drv/serial/uart16550.zig");
-const bcache = @import("kernel/bcache.zig");
 const block = @import("kernel/block.zig");
 const pci = @import("drv/bus/pci.zig");
 const sched = @import("kernel/sched.zig");
 const usermode = @import("arch/x86/usermode.zig");
 const elf = @import("kernel/elf.zig");
-const fat = @import("kernel/fat.zig");
 const heap = @import("kernel/heap.zig");
 const vfs = @import("kernel/vfs.zig");
 const hal = @import("kernel/hal.zig");
@@ -93,11 +93,29 @@ pub fn reportVideo() void {
     }
 }
 
+/// Read the firmware's description of the machine.
+///
+/// Separate from `earlyDevices` and called well before it: the interrupt
+/// controller is chosen from the MADT, and that happens before there is a heap
+/// or a driver of any kind. Reading tables needs neither.
+pub fn readFirmwareTables(bi: *const bootinfo.BootInfo) void {
+    acpi.init(bi.rsdp);
+}
+
+/// How this machine wires its interrupts, as the firmware describes it.
+///
+/// Here rather than inside the architecture because knowing about ACPI and
+/// knowing about the IOAPIC at the same time is the composition root's job:
+/// another board would answer this from a device tree without a line of the
+/// interrupt code changing.
+pub fn interruptRouting() ?irq.Routing {
+    return madt.parse();
+}
+
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     smbios.init();
     publishPlatform(bi);
 
-    acpi.init(bi.rsdp);
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
 
     if (acpi.get()) |a| {

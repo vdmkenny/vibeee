@@ -11,7 +11,6 @@
 //!   EBX = physical address of a BootInfo
 //!   protected mode, flat 32-bit segments, paging off, interrupts off
 
-const std = @import("std");
 const bootinfo = @import("../../kernel/bootinfo.zig");
 const boot = @import("boot.zig");
 

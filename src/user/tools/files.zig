@@ -5,7 +5,6 @@
 
 const sys = @import("sys");
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 const time = @import("ulib").time;
 
 pub fn ls(args: []const []const u8) void {

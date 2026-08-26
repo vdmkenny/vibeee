@@ -16,7 +16,6 @@
 //! because everything that draws here, the boot log, the panic screen, was
 //! written against those sixteen and gains nothing from more.
 
-const std = @import("std");
 const bootinfo = @import("../../kernel/bootinfo.zig");
 const fontlib = @import("lib").font;
 const hal = @import("../../kernel/hal.zig");
@@ -69,7 +68,7 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
     const fb_virt = if (hal.isLinearPhys(bi.fb_addr))
         hal.physToVirt(bi.fb_addr)
     else
-        hal.mapMmio(bi.fb_addr, @as(usize, bi.fb_pitch) * bi.fb_height) catch return false;
+        hal.mapMmio(bi.fb_addr, @as(usize, bi.fb_pitch) * bi.fb_height, .cached) catch return false;
 
     fb = @ptrFromInt(fb_virt);
     rom_font = if (bi.font_addr != 0)

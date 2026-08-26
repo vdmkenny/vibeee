@@ -11,7 +11,6 @@
 //! Probed rather than assumed: a port that is not there reads back 0xFF, and
 //! the loopback self-test below distinguishes a real UART from a floating bus.
 
-const std = @import("std");
 const port = @import("../../arch/x86/port.zig");
 
 /// Standard PC port assignments. COM1 first because that is where everything

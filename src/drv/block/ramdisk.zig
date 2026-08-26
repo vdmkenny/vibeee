@@ -9,7 +9,6 @@
 //! It is also simply useful: a filesystem in RAM needs no driver working to be
 //! mountable, which makes it the right place for a recovery environment.
 
-const std = @import("std");
 const block = @import("../../kernel/block.zig");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");

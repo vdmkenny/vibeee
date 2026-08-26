@@ -9,7 +9,6 @@
 //! left it in, and getting that wrong on a machine with no serial port means a
 //! dead keyboard and no way to see why.
 
-const std = @import("std");
 const console = @import("../../kernel/console.zig");
 const input = @import("../../kernel/input.zig");
 const keymap = @import("../../kernel/keymap.zig");
@@ -212,7 +211,7 @@ pub fn init() void {
     setConfig(config() | 0x01); // bit 0: keyboard interrupt enable
 
     idt.setHandler(idt.IRQ_BASE + 1, onIrq);
-    idt.setPicMask(1, false);
+    idt.setIrqMask(1, false);
 
     console.debug("kbd", "i8042 ready, layout {s}", .{keymap.current().name});
 }

@@ -65,7 +65,7 @@ pub fn init() void {
     port.outb(PIT_CHANNEL0, @truncate(divisor >> 8));
 
     idt.setHandler(idt.IRQ_BASE + 0, onTick);
-    idt.setPicMask(0, false);
+    idt.setIrqMask(0, false);
 }
 
 fn onTick(_: *idt.Frame) void {

@@ -1,7 +1,5 @@
 //! Power control: soft-off and reset.
 
-const std = @import("std");
-const console = @import("../../kernel/console.zig");
 const port = @import("../../arch/x86/port.zig");
 const tables = @import("tables.zig");
 

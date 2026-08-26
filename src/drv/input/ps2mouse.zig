@@ -18,7 +18,6 @@
 //! only synchronisation the protocol offers: a controller that drops a byte
 //! leaves the stream permanently offset otherwise.
 
-const std = @import("std");
 const console = @import("../../kernel/console.zig");
 const input = @import("../../kernel/input.zig");
 // Named `kbc` rather than after the file: `i8042` is a valid Zig integer type.
@@ -202,7 +201,7 @@ pub fn init() Kind {
     _ = send(ENABLE_REPORTING);
 
     idt.setHandler(idt.IRQ_BASE + 12, onIrq);
-    idt.setPicMask(12, false);
+    idt.setIrqMask(12, false);
 
     console.debug("mouse", "{s} on irq12, {d}-byte packets", .{ kind.name(), packet_len });
     return kind;

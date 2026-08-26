@@ -10,6 +10,9 @@
 //! and only the syscall vector is DPL 3.
 
 const std = @import("std");
+const ioapic = @import("ioapic.zig");
+const lapic = @import("lapic.zig");
+const irq_mod = @import("../../kernel/irq.zig");
 const port = @import("port.zig");
 const gdt = @import("gdt.zig");
 
@@ -122,12 +125,20 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
     } else if (vec < 32) {
         @import("fault.zig").onException(frame);
     }
-    // Acknowledge the PIC for hardware lines. Once the IOAPIC takes over
-    // (design §6.6) this becomes a LAPIC EOI instead.
+    // Acknowledged at the controller that delivered it. Writing to the wrong
+    // one leaves the line asserted and nothing else ever arrives.
     if (vec >= IRQ_BASE and vec < IRQ_BASE + 16) {
-        const irq = vec - IRQ_BASE;
-        if (irq >= 8) port.outb(0xA0, 0x20);
-        port.outb(0x20, 0x20);
+        if (lapic.active()) {
+            lapic.eoi();
+        } else {
+            const irq = vec - IRQ_BASE;
+            if (irq >= 8) port.outb(0xA0, 0x20);
+            port.outb(0x20, 0x20);
+        }
+    } else if (lapic.active() and vec == lapic.SPURIOUS_VECTOR) {
+        // A spurious interrupt needs no acknowledgement, and the vector is
+        // outside the legacy range, so it is caught here rather than falling
+        // through to the exception handler.
     }
 
     // Preemption happens here rather than inside the handler: the interrupt
@@ -180,9 +191,11 @@ pub fn unsetHandler(vec: u8) void {
 }
 
 /// Remap the 8259 PICs away from vectors 0-15, which collide with the CPU
-/// exception range. We mask everything afterwards: this machine has an IOAPIC
-/// (verified in the MADT) and that is what we actually use, the PICs are
-/// remapped only so a stray legacy interrupt cannot masquerade as a fault.
+/// exception range.
+///
+/// Done whether or not the IOAPIC is used. With it, the PICs are masked
+/// afterwards and this only ensures a stray legacy interrupt cannot
+/// masquerade as a fault; without it, they are what delivers everything.
 pub fn remapPic() void {
     const PIC1_CMD = 0x20;
     const PIC1_DATA = 0x21;
@@ -212,7 +225,63 @@ pub fn maskAllPic() void {
     port.outb(0xA1, 0xFF);
 }
 
-pub fn setPicMask(irq: u8, masked: bool) void {
+/// Let an ISA interrupt through, or stop it.
+///
+/// Named for the line a driver knows about rather than for the controller
+/// carrying it: which one that is depends on what the firmware described, and
+/// a driver asking for its own line should not have to find out.
+pub fn setIrqMask(irq: u8, masked: bool) void {
+    if (ioapic.active()) {
+        ioapic.setMask(routing.resolve(irq).gsi, masked);
+        return;
+    }
+    setPicMask(irq, masked);
+}
+
+fn vectorFor(irq: usize) u8 {
+    return IRQ_BASE + @as(u8, @intCast(irq));
+}
+
+/// What the firmware said about the legacy lines. Empty until the MADT has
+/// been read, which is fine: nothing asks before then.
+var routing: irq_mod.Routing = .{};
+
+/// Bring up the IOAPIC and route the ISA lines to the vectors the handlers are
+/// already installed at. False when there is no MADT or no controller in it,
+/// in which case the 8259s stay in charge.
+pub fn useIoApic(info: irq_mod.Routing) bool {
+    routing = info;
+    if (!lapic.init(info.local_address)) return false;
+    if (!ioapic.init(&routing)) return false;
+
+    // The same sixteen vectors the PICs were remapped to, so every driver and
+    // every handler keeps the number it already had.
+    //
+    // Overridden lines are routed first and the global lines they take are
+    // then off limits. Without that, IRQ 2 claims the line the timer was moved
+    // onto and overwrites it: on the PICs IRQ 2 is the cascade and never a
+    // device, and with an IOAPIC there is no cascade at all, so its number is
+    // free for the firmware to reuse and here it does.
+    const destination = lapic.id();
+    var taken: [64]bool = @splat(false);
+
+    for (0..16) |irq| {
+        const line = routing.describedLine(@intCast(irq)) orelse continue;
+        ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination);
+        if (line.gsi < taken.len) taken[line.gsi] = true;
+    }
+
+    for (0..16) |irq| {
+        if (routing.describedLine(@intCast(irq)) != null) continue;
+        if (taken[irq]) continue;
+        ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination);
+    }
+
+    maskAllPic();
+    return true;
+}
+
+fn setPicMask(irq: u8, masked: bool) void {
     const p: u16 = if (irq < 8) 0x21 else 0xA1;
     const bit: u3 = @truncate(irq & 7);
     var mask = port.inb(p);

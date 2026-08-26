@@ -20,7 +20,6 @@ const theme = @import("eui").theme;
 
 const ui = @import("eui").widget;
 
-const glyphs = @import("lib").font.glyphs;
 const settings = @import("config.zig");
 
 const Rect = draw.Rect;

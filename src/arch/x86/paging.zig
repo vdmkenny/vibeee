@@ -285,7 +285,14 @@ pub const MmioError = error{NoAddressSpace};
 /// registers that must not be cached will need a PAT- or MTRR-based
 /// alternative, and the framebuffer itself wants write-combining eventually
 /// (design/00-vibeee.md §8).
-pub fn mapMmio(phys: usize, len: usize) MmioError!usize {
+/// How the CPU may cache an aperture.
+///
+/// A framebuffer is memory-like: caching it is what makes drawing affordable.
+/// A register block is not, and a write to one that sat in the cache would
+/// never reach the device at all.
+pub const Caching = enum { cached, uncached };
+
+pub fn mapMmio(phys: usize, len: usize, caching: Caching) MmioError!usize {
     const start = std.mem.alignBackward(usize, phys, LARGE_PAGE_SIZE);
     const end = std.mem.alignForward(usize, phys + len, LARGE_PAGE_SIZE);
     const span = end - start;
@@ -299,7 +306,8 @@ pub fn mapMmio(phys: usize, len: usize) MmioError!usize {
     while (offset < span) : (offset += LARGE_PAGE_SIZE) {
         const pde_index = (virt_base + offset) / LARGE_PAGE_SIZE;
         dir[pde_index] = @as(u32, @intCast(start + offset)) |
-            Flags.present | Flags.write | Flags.large | Flags.global;
+            Flags.present | Flags.write | Flags.large | Flags.global |
+            @as(u32, if (caching == .uncached) Flags.cache_disable | Flags.write_through else 0);
     }
 
     mmio_next += span;

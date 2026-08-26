@@ -56,6 +56,16 @@ const RULES = [_]Rule{
         .forbid = "arch/arm",
         .why = "architectures must not depend on each other",
     },
+    // The architecture programs the hardware; what the hardware is wired to is
+    // firmware's answer, and which firmware answers it is the composition
+    // root's business. Without this rule the interrupt code ended up importing
+    // an ACPI table parser, which would have to be replaced wholesale on a
+    // board described by a device tree instead.
+    .{
+        .from = "src/arch",
+        .forbid = "drv/",
+        .why = "architecture code must be told about the machine, not go looking for a driver",
+    },
     // `lib/` is compiled into the kernel and into every user program. Anything
     // it reached for would be pulled into both, so it stays pure computation:
     // no state, no hardware, no syscalls.

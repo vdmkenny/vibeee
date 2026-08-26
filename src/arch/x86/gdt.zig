@@ -13,7 +13,6 @@
 //! every context switch so an interrupt taken in Ring 3 lands on the incoming
 //! thread's kernel stack.
 
-const std = @import("std");
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;

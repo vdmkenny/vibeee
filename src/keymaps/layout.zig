@@ -13,7 +13,6 @@
 //! compile time for duplicate keys, so a typo is a build error rather than a key
 //! that mysteriously does nothing.
 
-const std = @import("std");
 const input = @import("../kernel/input.zig");
 
 pub const KeyCode = input.KeyCode;

@@ -75,7 +75,10 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     }
 
     hal.initCpu(@intFromPtr(&kernel_stack) + kernel_stack.len);
-    hal.initInterruptController();
+    // Before the interrupt controller, which has to be told where the
+    // controllers are and how the legacy lines reach them.
+    platform.readFirmwareTables(bi);
+    hal.initInterruptController(platform.interruptRouting());
     hal.initSyscalls();
     hal.initTimer();
     // Everything the tick handler touches is initialised, so interrupts can be

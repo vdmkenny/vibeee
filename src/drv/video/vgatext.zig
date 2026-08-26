@@ -8,7 +8,6 @@
 //! panic path depends on it: it keeps working when everything else is broken,
 //! and on a machine with no serial port it is the only early output there is.
 
-const std = @import("std");
 const hal = @import("../../kernel/hal.zig");
 const port = @import("../../arch/x86/port.zig");
 
