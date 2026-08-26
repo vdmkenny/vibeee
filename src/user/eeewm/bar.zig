@@ -22,6 +22,7 @@ const theme = @import("eui").theme;
 
 const ui = @import("eui").widget;
 
+const glyphs = @import("lib").font.glyphs;
 const settings = @import("config.zig");
 
 const Rect = draw.Rect;
@@ -72,12 +73,31 @@ const ADD_WIDTH: i32 = 18;
 /// knowing a command name.
 pub const LAUNCH_WIDTH: i32 = 26;
 
-/// What the launcher offers. A fixed list until something enumerates
-/// `/apps`, which is the right eventual source and not one that exists.
-pub const App = struct { label: []const u8, path: []const u8, argv0: []const u8 };
+/// What the V menu offers: applications first, then what to do with the
+/// session. A start menu that could only start things would leave no way to
+/// stop, and on a machine with one screen there is nowhere else to go.
+pub const Item = struct {
+    label: []const u8,
+    action: Kind,
 
-pub const apps = [_]App{
-    .{ .label = "Hello", .path = "/EHELLO", .argv0 = "ehello" },
+    pub const Kind = union(enum) {
+        /// Spawn a program: path, then argv[0].
+        run: struct { path: []const u8, name: []const u8 },
+        /// A drawn rule, not selectable.
+        separator,
+        /// Give the display back and return to the shell that started us.
+        quit,
+        reboot,
+        power_off,
+    };
+};
+
+pub const items = [_]Item{
+    .{ .label = "Hello", .action = .{ .run = .{ .path = "/EHELLO", .name = "ehello" } } },
+    .{ .label = "", .action = .separator },
+    .{ .label = "Exit to shell", .action = .quit },
+    .{ .label = "Restart", .action = .reboot },
+    .{ .label = "Shut down", .action = .power_off },
 };
 
 var launcher: ui.Menu = .{};
@@ -101,14 +121,20 @@ pub fn menuOpen() bool {
 
 /// Open the applications menu, from the V button or a key.
 pub fn openLauncher() void {
-    launcher.show();
+    var rows: [items.len]ui.MenuItem = undefined;
+    launcher.showAt(menuItems(&rows));
     menu_tab = null;
     keyboard_focus = true;
 }
 
-fn appLabels(out: [][]const u8) [][]const u8 {
-    for (apps, 0..) |app, i| out[i] = app.label;
-    return out[0..apps.len];
+fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
+    for (items, 0..) |item, i| {
+        out[i] = .{
+            .label = item.label,
+            .kind = if (item.action == .separator) .separator else .item,
+        };
+    }
+    return out[0..items.len];
 }
 
 /// Take keyboard control of the bar, starting on the current desktop's tab.
@@ -214,15 +240,15 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
         var buf: [layout.MAX_WINDOWS]usize = undefined;
         const list = desktop.windowsOn(tab, &buf);
 
-        var labels: [layout.MAX_WINDOWS][]const u8 = undefined;
-        for (list, 0..) |index, k| labels[k] = desktop.windows[index].name();
+        var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+        for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
 
-        window_menu.paint(surface, menuRect(width, height, desktop, tab), labels[0..list.len]);
+        window_menu.paint(surface, menuRect(width, height, desktop, tab), rows[0..list.len]);
     }
 
     if (launcher.open) {
-        var labels: [apps.len][]const u8 = undefined;
-        launcher.paint(surface, launchMenuRect(height), appLabels(&labels));
+        var rows: [items.len]ui.MenuItem = undefined;
+        launcher.paint(surface, launchMenuRect(height), menuItems(&rows));
     }
 }
 
@@ -254,7 +280,7 @@ fn launchMenuRect(height: i32) Rect {
     return dropFrom(
         .{ .x = 0, .y = 0, .w = LAUNCH_WIDTH, .h = 0 },
         height,
-        ui.Menu.sizeFor(apps.len, TAB_MAX_WIDTH),
+        ui.Menu.sizeFor(items.len, TAB_MAX_WIDTH),
     );
 }
 
@@ -296,16 +322,16 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
     surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
 
-/// Three stacked lines: this tab holds more than one window and will open a
-/// menu of them.
+/// A downward triangle: this tab holds more than one window and will open a
+/// menu of them. The glyph rather than three drawn lines, now that the font
+/// carries one that reads correctly at this size.
 fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
-    const x = area.right() - MARKER_WIDTH;
-    const y = area.y + @divTrunc(area.h, 2) - 3;
-
-    var row: i32 = 0;
-    while (row < 3) : (row += 1) {
-        surface.fill(.{ .x = x, .y = y + row * 3, .w = 7, .h = 1 }, color);
-    }
+    surface.glyph(
+        area.right() - MARKER_WIDTH,
+        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+        glyphs.triangle_down,
+        color,
+    );
 }
 
 fn paintLayoutGlyph(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
@@ -361,6 +387,10 @@ pub const Action = union(enum) {
     close_window: usize,
     /// Close this desktop and everything on it.
     close_desktop: u8,
+    /// End the session and hand the display back.
+    quit,
+    reboot,
+    power_off,
 };
 
 pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *layout.Desktop) Action {
@@ -368,9 +398,11 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     // A menu is modal while open: a click outside dismisses it rather than
     // doing two things at once.
     if (launcher.open) {
-        if (ui.Menu.rowAt(launchMenuRect(height), apps.len, x, y)) |row| launch(row);
+        var rows: [items.len]ui.MenuItem = undefined;
+        const chosen = ui.Menu.rowAt(launchMenuRect(height), menuItems(&rows), x, y);
         launcher.hide();
         keyboard_focus = false;
+        if (chosen) |row| return activate(row);
         return .consumed;
     }
 
@@ -379,7 +411,10 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         const list = desktop.windowsOn(tab, &buf);
         const area = menuRect(width, height, desktop, tab);
 
-        if (ui.Menu.rowAt(area, list.len, x, y)) |row| {
+        var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+        for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+
+        if (ui.Menu.rowAt(area, rows[0..list.len], x, y)) |row| {
             menu_tab = null;
             // Right-click closes the window the row names; left-click goes to
             // it. Two verbs, one list, no second menu.
@@ -435,12 +470,34 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     return .consumed;
 }
 
-fn launch(index: usize) void {
-    if (index >= apps.len) return;
-    _ = sys.spawnDetached(apps[index].path, &.{apps[index].argv0});
+/// Carry out a menu choice. Spawning happens here; anything that ends the
+/// session is returned so the manager can put the display back first.
+fn activate(index: usize) Action {
+    if (index >= items.len) return .consumed;
+
+    return switch (items[index].action) {
+        .separator => .consumed,
+        .run => |program| blk: {
+            _ = sys.spawnDetached(program.path, &.{program.name});
+            break :blk .consumed;
+        },
+        .quit => .quit,
+        .reboot => .reboot,
+        .power_off => .power_off,
+    };
 }
 
 pub const KeyResult = enum { ignored, handled, released };
+
+/// What a keyboard choice asked for, since `key` returns only whether it was
+/// consumed. Collected by the manager after the call.
+var pending: Action = .none;
+
+pub fn takePending() Action {
+    const action = pending;
+    pending = .none;
+    return action;
+}
 
 /// Drive the bar from the keyboard. Everything the mouse can do here, the
 /// keyboard can: a taskbar reachable only by pointer is a taskbar that stops
@@ -449,11 +506,13 @@ pub fn key(code: sys.KeyCode, desktop: *layout.Desktop) KeyResult {
     if (!keyboard_focus) return .ignored;
 
     if (launcher.open) {
-        switch (launcher.key(code, apps.len)) {
+        var rows: [items.len]ui.MenuItem = undefined;
+        switch (launcher.key(code, menuItems(&rows))) {
             .chosen => {
-                launch(launcher.selected);
+                const chosen = launcher.selected;
                 launcher.hide();
                 keyboard_focus = false;
+                pending = activate(chosen);
                 return .released;
             },
             .cancelled => {
@@ -502,7 +561,10 @@ fn menuKey(code: sys.KeyCode, desktop: *layout.Desktop, tab: u8) KeyResult {
     var buf: [layout.MAX_WINDOWS]usize = undefined;
     const list = desktop.windowsOn(tab, &buf);
 
-    switch (window_menu.key(code, list.len)) {
+    var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+    for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+
+    switch (window_menu.key(code, rows[0..list.len])) {
         .chosen => {
             desktop.viewWindow(list[window_menu.selected]);
             unfocus();

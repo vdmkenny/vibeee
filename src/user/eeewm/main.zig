@@ -315,6 +315,7 @@ fn handleKey(event: sys.KeyEvent) void {
     if (bar.hasFocus()) {
         switch (bar.key(code, &desktop)) {
             .handled, .released => {
+                apply(bar.takePending());
                 dirty = true;
                 return;
             },
@@ -414,13 +415,18 @@ fn handlePointer(event: sys.PointerEvent) void {
     if (pressed_left or pressed_right) {
         // The bar gets first refusal: a menu it has open is modal, and it
         // reaches below its own strip.
-        switch (bar.click(event.x, event.y, info.width, info.height, pressed_right, &desktop)) {
-            .none => if (pressed_left) desktop.focusAt(event.x, event.y),
-            .consumed => {},
-            .close_window => |index| requestClose(index),
-            .close_desktop => |tag| closeDesktop(tag),
-        }
+        const action = bar.click(event.x, event.y, info.width, info.height, pressed_right, &desktop);
+        if (action == .none and pressed_left) desktop.focusAt(event.x, event.y);
+        apply(action);
         dirty = true;
+    }
+
+    // Whatever the bar did not take goes to the window under the pointer. A
+    // click that focused a window is passed through as well, so a control
+    // under it responds to the same press that gave it focus rather than
+    // needing a second one.
+    if (!bar.contains(event.y, info.height) and !bar.menuOpen()) {
+        postPointer(event, buttons.left);
     }
 }
 
@@ -607,6 +613,34 @@ fn broadcastTheme() void {
     }
 }
 
+/// Carry out whatever the bar decided.
+///
+/// Session actions come back here rather than being done in the bar, because
+/// ending a session means handing the display back and letting the console
+/// have it again, which is the manager's business and not the menu's.
+fn apply(action: bar.Action) void {
+    switch (action) {
+        .none, .consumed => {},
+        .close_window => |index| requestClose(index),
+        .close_desktop => |tag| closeDesktop(tag),
+        .quit => quit(),
+        .reboot => sys.shutdown(sys.REBOOT),
+        .power_off => sys.shutdown(sys.POWER_OFF),
+    }
+}
+
+/// End the session: ask every client to go, give the display back, and exit.
+///
+/// The console gets the framebuffer again when the display handle closes, so
+/// whatever started the manager finds a working terminal rather than a screen
+/// still showing a desktop nobody is driving.
+fn quit() noreturn {
+    for (0..layout.MAX_WINDOWS) |i| {
+        if (desktop.windows[i].used) requestClose(i);
+    }
+    sys.exit(0);
+}
+
 /// Ask a window to close, or close it if nothing owns it.
 ///
 /// A client is asked rather than dropped: it may have something to save, and
@@ -687,6 +721,69 @@ fn contentRect(index: usize) Rect {
     const w = &desktop.windows[index];
     const width = if (desktop.focused == index) t.border_width_focused else t.border_width;
     return w.area.inset(width);
+}
+
+/// Send pointer input to whichever window is under the pointer.
+///
+/// Coordinates are made window-local before they go: a client knows how large
+/// it is and nothing about where it sits, which is what lets the manager move
+/// a tile without telling anyone.
+fn postPointer(event: sys.PointerEvent, pressed: bool) void {
+    const index = windowAt(event.x, event.y) orelse return;
+    const w = &desktop.windows[index];
+    if (w.client_pid == 0) return;
+
+    const client = table.find(w.client_pid) orelse return;
+    const inner = contentRect(index);
+
+    const local_x: i16 = @intCast(event.x - inner.x);
+    const local_y: i16 = @intCast(event.y - inner.y);
+    const now: u32 = @truncate(sys.clockMicros());
+
+    if (event.buttons_changed != 0) {
+        client.post(.{
+            .tag = .ptr_button,
+            .win = w.client_win,
+            .t_us = now,
+            .body = .{ .button = .{
+                .btn = 0,
+                .down = @intFromBool(pressed),
+                .x = local_x,
+                .y = local_y,
+            } },
+        });
+        return;
+    }
+
+    if (event.wheel != 0) {
+        client.post(.{
+            .tag = .scroll,
+            .win = w.client_win,
+            .t_us = now,
+            .body = .{ .scroll = .{ .dy = event.wheel, .dx = 0 } },
+        });
+        return;
+    }
+
+    client.post(.{
+        .tag = .ptr_motion,
+        .win = w.client_win,
+        .t_us = now,
+        .body = .{ .motion = .{ .x = local_x, .y = local_y } },
+    });
+}
+
+/// The topmost window containing a point, floating windows first.
+fn windowAt(x: i32, y: i32) ?usize {
+    var buf: [layout.MAX_WINDOWS]usize = undefined;
+    const list = desktop.visible(&buf);
+
+    var k = list.len;
+    while (k > 0) {
+        k -= 1;
+        if (desktop.windows[list[k]].area.contains(x, y)) return list[k];
+    }
+    return null;
 }
 
 /// Send input to whichever client owns the focused window.

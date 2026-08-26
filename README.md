@@ -63,11 +63,18 @@ but not yet written.
 **Console**: VGA text or a 32bpp linear framebuffer with the Spleen bitmap font, chosen at
 boot from what the firmware provided.
 
-**GUI**: `eeewm` is a tiling window manager with four tags, tall, wide and monocle layouts,
-floating windows above the tiles, hairline borders and a status bar. `libeui` is the shared
-control library: buttons, checkboxes, labels and progress bars, drawn flat from a swappable
-theme, with keyboard focus and Tab order. Painting is damage-driven, so an idle desktop
-writes no pixels. Text uses a proportional bitmap face rather than the terminal font.
+**GUI**: `eeewm` is a display server and tiling window manager. Windows belong to other
+processes: a client connects over a channel, is told its geometry, draws into its own
+shared-memory surface and has it composited. Desktops are created as needed and shown as a
+taskbar of named tabs, with a dropdown for a desktop holding several windows and a `V` menu
+for launching and for ending the session. Layouts are tall, wide and monocle, per desktop,
+with floating windows above the tiles. Everything is driveable by both pointer and keyboard.
+Settings come from `/etc/eeewm.cfg`: theme, bar at top or bottom, layout, master fraction.
+
+`libeui` is the shared control library: buttons, checkboxes, labels, progress bars and menus,
+drawn flat from a swappable theme, with keyboard focus and Tab order by screen position.
+Painting is damage-driven, so an idle desktop writes no pixels. Interface text is a
+proportional bitmap face, rendered from UTF-8, with box drawing, arrows and shapes.
 
 **Input**, i8042 keyboard, scancode set 1, with keymaps compiled from one file per layout:
 US-International and Belgian AZERTY, dead-key composition, `Super+Space` to switch.
@@ -104,7 +111,8 @@ src/arch/     ISA- and firmware-specific code, x86 only for now
 src/kernel/   portable core: memory, scheduling, IPC, VFS, syscalls, panic
 src/drv/      drivers, bound by runtime probe confidence
 src/lib/      pure code compiled into BOTH kernel and userspace
-src/user/     init, the shell, the system tools, the window manager and libeui
+src/user/     init, the shell, the system tools, the window manager, libeui and apps
+src/user/proto/   the window protocol, wire types plus the client half
 src/keymaps/  keyboard layouts, one file each
 src/platform.zig  the only file that wires kernel, arch and drivers together
 design/       the design documents

@@ -73,9 +73,10 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Component | File | State |
 |---|---|---|
 | Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership, scanout buffer handed over as a shared segment. One buffer, no page flip or vblank, which is what a VESA framebuffer offers. |
-| Window manager | [`user/eeewm/`](../src/user/eeewm/) | Tiling: 4 tags, tall/wide/monocle, per-tag layout and master fraction, floating windows, focus-follows-click, status bar. Bindings by keycode. |
-| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives, swappable theme, buttons, checkboxes, labels, progress bars, keyboard focus with Tab order, per-widget damage. |
-| Fonts | [`lib/font.zig`](../src/lib/font.zig) | Shared by kernel and userspace. Spleen 8x16 and 12x24 monospaced for the console, Ark Pixel 12 proportional for interface text. |
+| Window manager | [`user/eeewm/`](../src/user/eeewm/) | Display server and tiling manager. Dynamic desktops, taskbar of named tabs with per-tab window menus, `V` launcher with session actions, tall/wide/monocle per desktop, floating windows, focus-follows-click, config file. Bindings by keycode; every action reachable by pointer and keyboard. |
+| Window protocol | [`user/proto/`](../src/user/proto/) | Channel for control, shm ring for events, shm surface per window. Wire types and the client half; the server half is policy and lives with the manager. |
+| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives, swappable theme, buttons, checkboxes, labels, progress bars, menus, keyboard focus with Tab order, per-widget damage. |
+| Fonts | [`lib/font.zig`](../src/lib/font.zig) | Shared by kernel and userspace. Spleen 8x16 and 12x24 monospaced for the console, Ark Pixel 12 proportional for interface text. Subset covers Latin-1, punctuation, arrows, box drawing, blocks and shapes; the range table is shared with the generator so slots cannot disagree. |
 
 Windows are the manager's own placeholders: there is no client protocol yet, so nothing
 else can open one. The arrangement, focus, input and drawing paths do not know that.
@@ -120,5 +121,4 @@ build.
 - Interrupt handling uses the 8259 PICs and the PIT, not the IOAPIC/LAPIC the design calls for.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
-- No client protocol: the window manager tiles placeholders, not other processes.
 - No USB, audio or networking.

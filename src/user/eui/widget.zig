@@ -23,6 +23,7 @@ const std = @import("std");
 const draw = @import("draw.zig");
 
 const theme = @import("theme.zig");
+const glyphs = @import("lib").font.glyphs;
 
 const Rect = draw.Rect;
 const Surface = draw.Surface;
@@ -444,10 +445,9 @@ fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, 
     surface.fill(box, if (checked) t.accent else if (hot) t.surface_hot else t.surface_pressed);
     surface.frame(box, if (focused) t.accent else t.line);
 
-    if (checked) {
-        surface.fill(box.inset(3), t.accent_text);
-        surface.fill(box.inset(4), t.accent);
-    }
+    // A filled square rather than a tick: this face carries no check mark, and
+    // a glyph the font lacks draws as a notdef box, which reads as an error.
+    if (checked) surface.fill(box.inset(3), t.accent_text);
 
     surface.text(
         box.right() + t.padding,
@@ -467,7 +467,21 @@ fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, 
 // stops being drawing and starts being a control.
 // ---------------------------------------------------------------------------
 
-pub const ROW_HEIGHT: i32 = 18;
+pub const ROW_HEIGHT: i32 = 19;
+
+/// One row. A separator is a row that cannot be chosen rather than a special
+/// case in the caller: the keyboard has to skip it, the pointer has to ignore
+/// it, and both of those are the control's business.
+pub const MenuItem = struct {
+    label: []const u8 = "",
+    kind: Kind = .item,
+
+    pub const Kind = enum { item, separator, disabled };
+
+    pub fn selectable(self: MenuItem) bool {
+        return self.kind == .item;
+    }
+};
 
 pub const Menu = struct {
     /// Which row is highlighted. Survives between passes: a menu that forgot
@@ -495,56 +509,104 @@ pub const Menu = struct {
         };
     }
 
-    pub fn paint(self: *const Menu, surface: Surface, area: Rect, items: []const []const u8) void {
+    pub fn paint(self: *const Menu, surface: Surface, area: Rect, items: []const MenuItem) void {
         const t = theme.current();
 
         surface.fill(area, t.surface);
         surface.frame(area, t.line);
 
-        for (items, 0..) |text, row| {
+        for (items, 0..) |item, row| {
             const line = rowRect(area, row);
-            const highlighted = row == self.selected;
+
+            if (item.kind == .separator) {
+                // A hairline centred in the row, rather than a row of drawn
+                // characters: it is a rule, not text, and it should not look
+                // like something that could be chosen.
+                surface.fill(.{
+                    .x = line.x + t.padding,
+                    .y = line.y + @divTrunc(line.h, 2),
+                    .w = line.w - t.padding * 2,
+                    .h = 1,
+                }, t.line);
+                continue;
+            }
+
+            const highlighted = row == self.selected and item.selectable();
             if (highlighted) surface.fill(line, t.accent);
 
             const clipped = surface.clipped(line);
             clipped.text(
                 line.x + t.padding,
                 line.y + @divTrunc(line.h - Surface.textHeight(), 2),
-                text,
-                if (highlighted) t.accent_text else t.text,
+                item.label,
+                if (highlighted) t.accent_text else if (item.kind == .disabled) t.text_dim else t.text,
             );
         }
     }
 
-    /// Which row a point falls on, or null if it misses the menu entirely.
-    pub fn rowAt(area: Rect, count: usize, x: i32, y: i32) ?usize {
+    /// Which row a point falls on, or null if it misses the menu or lands on
+    /// something that cannot be chosen.
+    pub fn rowAt(area: Rect, items: []const MenuItem, x: i32, y: i32) ?usize {
         if (!area.contains(x, y)) return null;
         const row: usize = @intCast(@max(@divTrunc(y - area.y - 1, ROW_HEIGHT), 0));
-        return if (row < count) row else null;
+        if (row >= items.len or !items[row].selectable()) return null;
+        return row;
     }
 
     pub const KeyAction = enum { ignored, moved, chosen, cancelled };
 
     /// Drive the selection. The caller acts on `chosen`, because only it knows
     /// what the rows mean.
-    pub fn key(self: *Menu, code: KeyCode, count: usize) KeyAction {
-        if (count == 0) return .cancelled;
+    pub fn key(self: *Menu, code: KeyCode, items: []const MenuItem) KeyAction {
+        if (items.len == 0) return .cancelled;
 
         switch (code) {
             .up => {
-                self.selected = if (self.selected == 0) count - 1 else self.selected - 1;
+                self.step(items, -1);
                 return .moved;
             },
             .down => {
-                self.selected = (self.selected + 1) % count;
+                self.step(items, 1);
                 return .moved;
             },
-            .enter, .space => return .chosen,
+            .enter, .space => {
+                return if (items[@min(self.selected, items.len - 1)].selectable()) .chosen else .ignored;
+            },
             .escape => {
                 self.hide();
                 return .cancelled;
             },
             else => return .ignored,
+        }
+    }
+
+    /// Move the selection, skipping anything that cannot be chosen.
+    ///
+    /// Bounded by the item count so a menu of nothing but separators cannot
+    /// spin here forever.
+    fn step(self: *Menu, items: []const MenuItem, direction: i32) void {
+        const count: i32 = @intCast(items.len);
+        var at: i32 = @intCast(@min(self.selected, items.len - 1));
+
+        var tries: i32 = 0;
+        while (tries < count) : (tries += 1) {
+            at = @mod(at + direction + count, count);
+            if (items[@intCast(at)].selectable()) {
+                self.selected = @intCast(at);
+                return;
+            }
+        }
+    }
+
+    /// Start on the first row that can actually be chosen.
+    pub fn showAt(self: *Menu, items: []const MenuItem) void {
+        self.open = true;
+        self.selected = 0;
+        for (items, 0..) |item, i| {
+            if (item.selectable()) {
+                self.selected = i;
+                return;
+            }
         }
     }
 

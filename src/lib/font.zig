@@ -10,12 +10,74 @@
 
 const std = @import("std");
 
-/// Code points beyond Latin-1 that a text console genuinely needs: the block
-/// elements, used by the panic screen to draw a QR code two module-rows to a
-/// character cell.
-pub const BLOCK_FIRST: u21 = 0x2580;
-pub const BLOCK_LAST: u21 = 0x259F;
-const LATIN_SLOTS: usize = 0x100;
+/// The code points a font is subset to, and the order their slots run in.
+///
+/// Shared with `mkfont`, which builds the tables, so the generator and the
+/// renderer cannot disagree about which slot holds which character. A dense
+/// array indexed by slot makes lookup one index rather than a search; ranges
+/// rather than all of Unicode keeps a font at ten kilobytes instead of
+/// megabytes.
+pub const Range = struct {
+    first: u21,
+    last: u21,
+
+    pub fn count(self: Range) usize {
+        return self.last - self.first + 1;
+    }
+};
+
+pub const ranges = [_]Range{
+    // Latin-1: everything a Western text console needs.
+    .{ .first = 0x0000, .last = 0x00FF },
+    // General punctuation: the ellipsis, bullets and real dashes, which are
+    // the difference between typeset text and a terminal transcript.
+    .{ .first = 0x2010, .last = 0x203A },
+    // Arrows, for menus, scrollbars and anything that points.
+    .{ .first = 0x2190, .last = 0x21BB },
+    // Box drawing, which the terminal's DEC graphics mode maps onto and which
+    // draws a frame more cheaply than four fills.
+    .{ .first = 0x2500, .last = 0x257F },
+    // Block elements, used by the panic screen's QR renderer.
+    .{ .first = 0x2580, .last = 0x259F },
+    // Geometric shapes: the triangles, squares and circles that make a
+    // dropdown marker or a radio button without a bitmap.
+    .{ .first = 0x25A0, .last = 0x25CF },
+};
+
+/// Total slots, so both sides size the same table.
+pub const SLOTS = blk: {
+    var total: usize = 0;
+    for (ranges) |r| total += r.count();
+    break :blk total;
+};
+
+/// Where a code point's glyph lives, or null if it is outside the subset.
+pub fn slotFor(code: u21) ?usize {
+    var base: usize = 0;
+    for (ranges) |r| {
+        if (code >= r.first and code <= r.last) return base + (code - r.first);
+        base += r.count();
+    }
+    return null;
+}
+
+/// Characters the interface draws by name rather than by number, so a call
+/// site reads as what it means and a font without one can be substituted in
+/// one place.
+pub const glyphs = struct {
+    pub const ellipsis: u21 = 0x2026;
+    pub const bullet: u21 = 0x2022;
+    pub const arrow_left: u21 = 0x2190;
+    pub const arrow_right: u21 = 0x2192;
+    pub const triangle_down: u21 = 0x25BC;
+    pub const triangle_right: u21 = 0x25B6;
+    pub const square: u21 = 0x25A0;
+    pub const square_hollow: u21 = 0x25A1;
+    pub const circle: u21 = 0x25CF;
+    /// Box drawing, for rules and frames.
+    pub const rule_h: u21 = 0x2500;
+    pub const rule_v: u21 = 0x2502;
+};
 
 pub const Font = struct {
     name: []const u8,
@@ -38,26 +100,22 @@ pub const Font = struct {
 
     /// Bitmap rows for a code point, or null if the font does not carry it.
     pub fn glyph(self: *const Font, code: u21) ?[]const u8 {
-        const slot = self.slotFor(code) orelse return null;
+        const slot = self.slotOf(code) orelse return null;
         const size = self.height * self.row_bytes;
         const start = slot * size;
         if (start + size > self.bitmap.len) return null;
         return self.bitmap[start..][0..size];
     }
 
-    fn slotFor(self: *const Font, code: u21) ?usize {
+    fn slotOf(self: *const Font, code: u21) ?usize {
         _ = self;
-        if (code < LATIN_SLOTS) return @intCast(code);
-        if (code >= BLOCK_FIRST and code <= BLOCK_LAST) {
-            return LATIN_SLOTS + @as(usize, code - BLOCK_FIRST);
-        }
-        return null;
+        return slotFor(code);
     }
 
     /// How far the pen moves after drawing `code`.
     pub fn advance(self: *const Font, code: u21) usize {
         const table = self.advances orelse return self.width;
-        const slot = self.slotFor(code) orelse return self.width;
+        const slot = self.slotOf(code) orelse return self.width;
         if (slot >= table.len) return self.width;
         return table[slot];
     }

@@ -14,15 +14,10 @@
 
 const std = @import("std");
 
-/// Glyphs are stored as a dense array indexed by code point, so lookup is one
-/// index rather than a search. 0x2580-0x259F carries the block elements;
-/// they are remapped down to follow Latin-1 rather than reserving nine
-/// thousand empty slots in between.
-const MAX_LATIN = 0x100;
-const BLOCK_FIRST = 0x2580;
-const BLOCK_LAST = 0x259F;
-const BLOCK_SLOTS = BLOCK_LAST - BLOCK_FIRST + 1;
-const TOTAL_SLOTS = MAX_LATIN + BLOCK_SLOTS;
+/// The subset and its slot order come from the renderer, so the generator
+/// cannot disagree with it about which slot holds which character.
+const font = @import("lib/font.zig");
+const TOTAL_SLOTS = font.SLOTS;
 
 /// One glyph as the file describes it, before it is placed in a cell.
 const Glyph = struct {
@@ -239,12 +234,8 @@ fn place(g: *const Glyph, cell: []u8, metrics: Metrics, row_bytes: usize) void {
 
 /// Map a code point to its slot, or null if it is outside the subset.
 fn slotFor(code: i32) ?usize {
-    if (code < 0) return null;
-    if (code < MAX_LATIN) return @intCast(code);
-    if (code >= BLOCK_FIRST and code <= BLOCK_LAST) {
-        return MAX_LATIN + @as(usize, @intCast(code - BLOCK_FIRST));
-    }
-    return null;
+    if (code < 0 or code > 0x10FFFF) return null;
+    return font.slotFor(@intCast(code));
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +283,7 @@ fn emit(
         \\    .advances = {s},
         \\}};
         \\
-        \\/// {d} glyphs: Latin-1 plus the block elements at U+2580-U+259F,
-        \\/// remapped to follow it so the table stays dense.
+        \\/// {d} glyphs, in the slot order `lib/font.zig` defines.
         \\pub const bitmap = [_]u8{{
         \\
     , .{

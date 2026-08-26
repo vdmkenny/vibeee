@@ -20,6 +20,46 @@ pub const Color = theme.Color;
 /// terminal needs and what a button label should not look like.
 pub const ui_font: *const fontlib.Font = &fontlib.ark_ui_12;
 
+/// Walk a string as characters rather than bytes.
+///
+/// Strings here are UTF-8, and the font carries box drawing, arrows and shapes
+/// well above Latin-1. Iterating bytes drew a three-byte character as three
+/// wrong ones, which is what a box-drawing rule looked like before this.
+///
+/// Malformed input yields U+FFFD and advances one byte, so a bad string
+/// renders as visible nonsense rather than desynchronising everything after
+/// it.
+pub const Codepoints = struct {
+    bytes: []const u8,
+    pos: usize = 0,
+
+    pub fn next(self: *Codepoints) ?u21 {
+        if (self.pos >= self.bytes.len) return null;
+
+        const first = self.bytes[self.pos];
+        const length = std.unicode.utf8ByteSequenceLength(first) catch {
+            self.pos += 1;
+            return 0xFFFD;
+        };
+
+        if (self.pos + length > self.bytes.len) {
+            self.pos = self.bytes.len;
+            return 0xFFFD;
+        }
+
+        const cp = std.unicode.utf8Decode(self.bytes[self.pos..][0..length]) catch {
+            self.pos += 1;
+            return 0xFFFD;
+        };
+        self.pos += length;
+        return cp;
+    }
+};
+
+pub fn codepoints(bytes: []const u8) Codepoints {
+    return .{ .bytes = bytes };
+}
+
 pub const Rect = struct {
     x: i32 = 0,
     y: i32 = 0,
@@ -154,18 +194,22 @@ pub const Surface = struct {
 
     pub fn text(self: Surface, x: i32, y: i32, message: []const u8, color: Color) void {
         var pen = x;
-        for (message) |c| {
-            self.glyph(pen, y, c, color);
+        var it = codepoints(message);
+        while (it.next()) |cp| {
+            self.glyph(pen, y, cp, color);
             // Per glyph, not per cell: the face is proportional, and advancing
             // by the cell width would space it like a terminal.
-            pen += @intCast(ui_font.advance(c));
+            pen += @intCast(ui_font.advance(cp));
         }
     }
 
     /// Width of `message` in pixels, for centring and for sizing a control to
     /// its label.
     pub fn textWidth(message: []const u8) i32 {
-        return @intCast(ui_font.measure(message));
+        var total: i32 = 0;
+        var it = codepoints(message);
+        while (it.next()) |cp| total += @intCast(ui_font.advance(cp));
+        return total;
     }
 
     pub fn textHeight() i32 {
