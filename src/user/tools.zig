@@ -29,6 +29,7 @@ const Command = struct {
 const commands = [_]Command{
     .{ .name = "ls", .summary = "list a directory", .run = &files.ls },
     .{ .name = "cat", .summary = "print a file", .run = &files.cat },
+    .{ .name = "rm", .summary = "remove a file", .run = &files.rm },
     .{ .name = "hexdump", .summary = "dump a file in hex", .run = &files.hexdump },
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },

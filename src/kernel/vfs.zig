@@ -178,8 +178,11 @@ pub fn readFile(path: []const u8, buf: []u8) Error!usize {
     return fat.readFile(&r.mount.volume, entry, buf);
 }
 
+/// What a handle needs to keep about an open file.
+pub const Opened = struct { mount: *Mount, entry: fat.Entry };
+
 /// Open a file, returning the mount and entry a handle needs to keep.
-pub fn open(path: []const u8) Error!struct { mount: *Mount, entry: fat.Entry } {
+pub fn open(path: []const u8) Error!Opened {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
     const entry = try fat.lookupPath(&r.mount.volume, r.rest);
@@ -193,6 +196,92 @@ pub fn readAt(m: *Mount, entry: fat.Entry, offset: u64, buf: []u8) Error!usize {
 }
 
 /// Iterate the directory at `path`.
+// ---------------------------------------------------------------------------
+// Writing
+//
+// Everything below goes through `resolve` for the same reason the read paths
+// do: only the mount table knows which volume a path belongs to, and only it
+// knows whether that volume will accept a write at all. A syscall reaching
+// into `fat` directly would bypass both.
+// ---------------------------------------------------------------------------
+
+/// Refuse a write before it starts.
+///
+/// Two separate reasons a volume may be unwritable: mounted read-only, or
+/// backed by a device that cannot write. Checking here means every write path
+/// gets the check rather than each remembering to.
+fn requireWritable(m: *Mount) Error!void {
+    if (m.device.read_only) return error.ReadOnly;
+}
+
+/// Split a path into the directory holding it and the final component.
+fn splitParent(path: []const u8) struct { dir: []const u8, name: []const u8 } {
+    var cut: usize = 0;
+    for (path, 0..) |c, i| {
+        if (c == '/') cut = i;
+    }
+    return .{
+        .dir = if (cut == 0) "/" else path[0..cut],
+        .name = path[cut + 1 ..],
+    };
+}
+
+/// Create an empty file, failing if something is already there.
+pub fn create(path: []const u8, mtime: i64) Error!Opened {
+    const r = try resolve(path);
+    if (r.rest.len == 0) return error.BadPath;
+    try requireWritable(r.mount);
+
+    if (fat.lookupPath(&r.mount.volume, r.rest)) |_| {
+        return error.Exists;
+    } else |err| switch (err) {
+        error.NotFound => {},
+        else => return err,
+    }
+
+    const split = splitParent(path);
+    const dir = try openDir(split.dir);
+
+    const entry = try fat.createFile(&r.mount.volume, dir, split.name, mtime);
+    r.mount.open_files += 1;
+    return .{ .mount = r.mount, .entry = entry };
+}
+
+/// Write to an already-opened file. The entry is updated in place; the caller
+/// commits it when it closes the file.
+pub fn writeAt(m: *Mount, entry: *fat.Entry, offset: u64, data: []const u8) Error!usize {
+    try requireWritable(m);
+    return fat.writeAt(&m.volume, entry, offset, data);
+}
+
+/// Persist an entry's size, first cluster and modification time.
+pub fn commit(m: *Mount, entry: fat.Entry, mtime: i64) Error!void {
+    try requireWritable(m);
+    return fat.commit(&m.volume, entry, mtime);
+}
+
+pub fn truncate(m: *Mount, entry: *fat.Entry) Error!void {
+    try requireWritable(m);
+    return fat.truncate(&m.volume, entry);
+}
+
+/// Remove a file.
+pub fn unlink(path: []const u8) Error!void {
+    const r = try resolve(path);
+    if (r.rest.len == 0) return error.BadPath;
+    try requireWritable(r.mount);
+
+    const entry = try fat.lookupPath(&r.mount.volume, r.rest);
+    return fat.unlink(&r.mount.volume, entry);
+}
+
+/// Free bytes on the volume holding `path`.
+pub fn freeBytes(path: []const u8) Error!u64 {
+    const r = try resolve(path);
+    const clusters = try fat.freeClusters(&r.mount.volume);
+    return @as(u64, clusters) * r.mount.volume.clusterSize();
+}
+
 pub fn openDir(path: []const u8) Error!fat.Iterator {
     const r = try resolve(path);
     if (r.rest.len == 0) return fat.rootIterator(&r.mount.volume);

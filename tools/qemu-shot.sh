@@ -31,8 +31,16 @@ done
 SOCK=$(mktemp -u /tmp/vibeee-mon.XXXXXX)
 PPM=$(mktemp -u /tmp/vibeee-shot.XXXXXX).ppm
 
+# The console is mirrored to the serial port (platform.zig), so the whole boot
+# log and every command's output land here as text. The target machine has no
+# serial port, which is why the QR panic screen exists, but QEMU does: reading
+# a transcript beats reading a screenshot for everything except what the screen
+# itself looks like.
+LOG="${OUT%.png}.log"
+
 qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
-    -display none -vga std -monitor "unix:$SOCK,server,nowait" "$@" &
+    -display none -vga std -serial "file:$LOG" \
+    -monitor "unix:$SOCK,server,nowait" "$@" &
 QPID=$!
 trap 'kill $QPID 2>/dev/null || true; rm -f "$SOCK"' EXIT
 
@@ -53,6 +61,32 @@ keyname() {
         ',') echo comma ;;
         '=') echo equal ;;
         ';') echo semicolon ;;
+        "'") echo apostrophe ;;
+        '[') echo bracket_left ;;
+        ']') echo bracket_right ;;
+        '\\') echo backslash ;;
+        # Shifted punctuation. The monitor speaks scancodes, so anything that
+        # needs shift on a US layout has to say so: without this, `>` in a test
+        # line is silently dropped and the command under test runs unredirected,
+        # which looks like a shell bug and is not one.
+        '>') echo shift-dot ;;
+        '<') echo shift-comma ;;
+        '|') echo shift-backslash ;;
+        '_') echo shift-minus ;;
+        '+') echo shift-equal ;;
+        ':') echo shift-semicolon ;;
+        '"') echo shift-apostrophe ;;
+        '?') echo shift-slash ;;
+        '!') echo shift-1 ;;
+        '@') echo shift-2 ;;
+        '#') echo shift-3 ;;
+        '$') echo shift-4 ;;
+        '%') echo shift-5 ;;
+        '^') echo shift-6 ;;
+        '&') echo shift-7 ;;
+        '*') echo shift-8 ;;
+        '(') echo shift-9 ;;
+        ')') echo shift-0 ;;
         [a-z0-9]) echo "$1" ;;
         [A-Z]) echo "shift-$(printf '%s' "$1" | tr 'A-Z' 'a-z')" ;;
         *) echo "" ;;
@@ -84,3 +118,4 @@ sleep 1
 sips -s format png "$PPM" --out "$OUT" >/dev/null
 rm -f "$PPM"
 echo "$OUT"
+[ -s "$LOG" ] && echo "$LOG"

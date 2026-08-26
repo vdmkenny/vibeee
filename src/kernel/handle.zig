@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const channel_mod = @import("channel.zig");
+const clock = @import("clock.zig");
 const event_mod = @import("event.zig");
 const fat = @import("fat.zig");
 const shm_mod = @import("shm.zig");
@@ -40,6 +41,13 @@ pub const File = struct {
     mount: *vfs.Mount,
     entry: fat.Entry,
     offset: u64 = 0,
+    /// Every write goes to the end of the file, whatever the offset says.
+    append: bool = false,
+    /// Something has been written that the directory entry does not know
+    /// about yet. The entry is written back once, when the handle closes,
+    /// rather than on every write: rewriting a directory sector per call would
+    /// cost more than the data write and wear the SSD for nothing.
+    dirty: bool = false,
 };
 
 pub const Directory = struct {
@@ -95,7 +103,18 @@ pub fn retain(h: Handle) Handle {
 /// are shared rather than owned, so they release nothing.
 pub fn release(h: Handle) void {
     switch (h.kind) {
-        .file => releaseMount(h.data.file.mount),
+        .file => {
+            // The size and timestamp a write left in the entry only reach the
+            // disk here. Deferring it to close is what keeps a sequential
+            // write from rewriting a directory sector on every call; the cost
+            // is that a process killed mid-write leaves a short file, which is
+            // the same bargain every filesystem without a journal makes.
+            const file = h.data.file;
+            if (file.dirty) {
+                vfs.commit(file.mount, file.entry, clock.realtimeSeconds()) catch {};
+            }
+            releaseMount(file.mount);
+        },
         .directory => releaseMount(h.data.directory.mount),
         .event => event_mod.release(h.data.event),
         .channel => {

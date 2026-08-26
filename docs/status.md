@@ -6,7 +6,7 @@ is *for*, this says what has actually been written.
 **Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
 accurate about what exists; it is not a claim that any of it has been audited.
 
-Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 30 syscalls,
+Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 31 syscalls,
 36 host-side tests.
 
 ## Boot
@@ -44,8 +44,8 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 30 sys
 |---|---|---|
 | Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry, MBR partition parsing. |
 | Block cache | [`bcache.zig`](../src/kernel/bcache.zig) | Read cache with hit reporting. |
-| FAT | [`fat.zig`](../src/kernel/fat.zig) | FAT12/16/32, VFAT long names, timestamps. **Read-only.** |
-| Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting. |
+| FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Read and write: cluster allocation across all FAT copies, chain extension, create, append, truncate, unlink. Creating uses 8.3 names only. |
+| Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement. Every write goes through here. |
 | ATA | [`drv/block/ata.zig`](../src/drv/block/ata.zig) | PIO. No DMA. |
 | Ramdisk | [`drv/block/ramdisk.zig`](../src/drv/block/ramdisk.zig) | Backs the boot-to-RAM rootfs. |
 
@@ -72,8 +72,8 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Program | File | State |
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
-| `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch. No pipes or redirection. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat hexdump grep free top disk svc date eeefetch dmidecode ringtest` |
+| `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top disk svc date eeefetch dmidecode ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo. |
 
@@ -97,11 +97,12 @@ build.
 - `zig build check`, the layering rules.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
-- `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot.
+- `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it.
 
 ## Known gaps
 
-- FAT is read-only; nothing can create or modify a file.
+- Creating a file uses an 8.3 short name; long names are read but not written.
+- No `mkdir`: directories cannot be created, only read.
 - The dispatcher is `int 0x80`; SYSENTER is designed but not wired.
 - Interrupt handling uses the 8259 PICs and the PIT, not the IOAPIC/LAPIC the design calls for.
 - No touchpad, USB, audio, networking or GUI.

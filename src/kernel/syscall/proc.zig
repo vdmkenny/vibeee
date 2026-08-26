@@ -64,12 +64,17 @@ pub fn sys_chdir(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
 
-    // Must exist and be a directory. "/" is always valid and has no entry to
-    // look up, so it is accepted without one.
-    if (path.len > 1) {
-        const entry = vfs.stat(path) catch return Errno.noent.value();
-        if (!entry.is_dir) return Errno.inval.value();
-    }
+    // Must exist and be a directory. Checked by opening it rather than by
+    // looking up an entry: a mount point has no entry in its parent volume,
+    // and `stat` on one fails, which would make it impossible to enter a
+    // mounted disk at all.
+    var dir = vfs.openDir(path) catch |err| {
+        return switch (err) {
+            error.NotDirectory => Errno.inval.value(),
+            else => Errno.noent.value(),
+        };
+    };
+    _ = &dir;
 
     return if (sched.setCwd(path)) 0 else Errno.inval.value();
 }

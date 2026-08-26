@@ -54,9 +54,11 @@ and shared-memory segments can be mapped into several processes at once. `ringte
 the whole chain between two processes: register, connect, hand over a segment, map it,
 and move bytes through an SPSC ring.
 
-**Storage**: ATA PIO, MBR partition parsing, a block cache, and FAT12/16/32 with VFAT
-long names, behind a mount table that resolves paths by longest matching prefix. Read-only
-for now.
+**Storage**: ATA PIO, MBR partition parsing, a write-through block cache, and FAT12/16/32
+with VFAT long names, behind a mount table that resolves paths by longest matching prefix.
+Reading and writing both work: files can be created, appended to, truncated and removed,
+and the shell has `>` and `>>`. Creating a file uses a short 8.3 name; long names are read
+but not yet written.
 
 **Console**: VGA text or a 32bpp linear framebuffer with the Spleen bitmap font, chosen at
 boot from what the firmware provided.
@@ -80,7 +82,7 @@ encoder is differentially tested against `libqrencode` across all eight masks.
 
 **Userspace**, `init` (PID 1) supervises services declared in `/etc/services` with
 dependency ordering and restart policy. `vsh` is the shell. A multicall binary provides
-`ls cat hexdump grep free top disk svc date eeefetch dmidecode ringtest`.
+`ls cat rm hexdump grep free top disk svc date eeefetch dmidecode ringtest`.
 
 ## Not yet
 
@@ -123,6 +125,10 @@ down:
 The 701 has no serial port, which shapes everything: QEMU-first development, a stage2 log
 ring replayed into the boot log, self-tests at boot that report `fail` rather than hanging,
 and the QR panic screen, photograph the stop screen and the crash comes back as text.
+
+Under emulation there *is* a serial port, and the console mirrors to it, so
+`make shot OUT=x.png TYPE="..."` leaves a full text transcript beside the screenshot.
+That is how a `fail` line scrolled off a 30-row display gets noticed.
 
 ```
 VBE1|06|00000000|00000000|00103CFC|00162A78|00162F14|00101126,00107952

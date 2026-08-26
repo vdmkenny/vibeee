@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const abi = @import("lib").syscalls;
+const clock = @import("../clock.zig");
 const ctx = @import("context.zig");
 const fat = @import("../fat.zig");
 const handles = @import("../handle.zig");
@@ -49,13 +50,58 @@ pub fn sys_open(a: Args) Result {
         return @intCast(slot);
     }
 
-    const opened = vfs.open(path) catch return Errno.noent.value();
+    const flags = openFlags(a.a2);
+
+    var opened = vfs.open(path) catch |err| blk: {
+        // Only a missing file is worth creating; anything else is a real
+        // failure and creating a file on top of it would hide it.
+        if (err != error.NotFound or !flags.create) return errnoFor(err);
+        break :blk vfs.create(path, clock.realtimeSeconds()) catch |create_err| {
+            return errnoFor(create_err);
+        };
+    };
+
+    if (flags.truncate and flags.write) {
+        vfs.truncate(opened.mount, &opened.entry) catch |err| return errnoFor(err);
+        vfs.commit(opened.mount, opened.entry, clock.realtimeSeconds()) catch {};
+    }
+
     h.* = .{
         .kind = .file,
-        .rights = .{ .read = true, .seek = true },
-        .data = .{ .file = .{ .mount = opened.mount, .entry = opened.entry } },
+        .rights = .{ .read = true, .write = flags.write, .seek = true },
+        .data = .{ .file = .{
+            .mount = opened.mount,
+            .entry = opened.entry,
+            .offset = if (flags.append) opened.entry.size else 0,
+            .append = flags.append,
+            .dirty = false,
+        } },
     };
     return @intCast(slot);
+}
+
+/// Map a filesystem error onto the number userspace sees.
+///
+/// One place, because the same handful of errors come back from open, create,
+/// write and unlink, and each mapping them separately is how a caller ends up
+/// being told ENOENT for a full disk.
+fn errnoFor(err: anyerror) Result {
+    return switch (err) {
+        error.NotFound => Errno.noent.value(),
+        error.Exists => Errno.exists.value(),
+        error.ReadOnly => Errno.perm.value(),
+        error.NoSpace => Errno.nospace.value(),
+        error.IsDirectory, error.NotDirectory, error.BadPath, error.NameTooLong => Errno.inval.value(),
+        else => Errno.io.value(),
+    };
+}
+
+pub fn sys_unlink(a: Args) Result {
+    var path_buf: [path_mod.MAX]u8 = undefined;
+    const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
+
+    vfs.unlink(path) catch |err| return errnoFor(err);
+    return 0;
 }
 
 pub fn sys_close(a: Args) Result {

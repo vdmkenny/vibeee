@@ -131,6 +131,10 @@ pub fn open(path: []const u8, flags: OpenFlags) isize {
     );
 }
 
+pub fn unlink(path: []const u8) isize {
+    return syscall2(abi.number("unlink"), @intFromPtr(path.ptr), path.len);
+}
+
 pub fn close(handle: usize) isize {
     return syscall1(abi.number("close"), handle);
 }

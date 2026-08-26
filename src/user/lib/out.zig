@@ -9,10 +9,25 @@ const sys = @import("../syscall.zig");
 var buffer: [1024]u8 = [_]u8{0} ** 1024;
 var used: usize = 0;
 
+/// Where flushed bytes go. Standard output unless something has redirected it,
+/// which is how the shell sends a command's output to a file without the
+/// command knowing: a builtin writes through this the same way either way.
+var sink: u32 = sys.STDOUT;
+
 pub fn flush() void {
     if (used == 0) return;
-    _ = sys.write(sys.STDOUT, buffer[0..used]);
+    _ = sys.write(sink, buffer[0..used]);
     used = 0;
+}
+
+/// Send everything after this point to `handle`.
+///
+/// Flushes first: bytes buffered for the previous destination belong to it,
+/// and letting them follow the switch would put the tail of one command's
+/// output into another's file.
+pub fn redirectTo(handle: u32) void {
+    flush();
+    sink = handle;
 }
 
 /// Append bytes, flushing when the buffer fills or a line completes.
@@ -21,6 +36,10 @@ pub fn flush() void {
 /// or line with no newline in it, and a per-byte loop makes every string cost
 /// its length in branches.
 pub fn text(s: []const u8) void {
+    text_(s);
+}
+
+fn text_(s: []const u8) void {
     var rest = s;
     while (rest.len > 0) {
         const space = buffer.len - used;
@@ -59,6 +78,27 @@ pub fn byte(c: u8) void {
 }
 
 /// Write `s` padded to `width`, for aligned columns.
+/// Write a filename or path as it should be read.
+///
+/// A short FAT name is stored upper-cased because the format has nowhere to
+/// record case, so printing it verbatim shouts. A name with any lowercase in
+/// it came from a long-name record, which does preserve case, and is printed
+/// as stored. That is the same rule Windows and macOS apply, and it means
+/// `README.TXT` on disk reads as `readme.txt` while `MyNotes.md` keeps its
+/// shape.
+pub fn name(text_bytes: []const u8) void {
+    var has_lower = false;
+    for (text_bytes) |c| {
+        if (c >= 'a' and c <= 'z') has_lower = true;
+    }
+
+    if (has_lower) {
+        text(text_bytes);
+        return;
+    }
+    for (text_bytes) |c| byte(if (c >= 'A' and c <= 'Z') c + 32 else c);
+}
+
 pub fn pad(s: []const u8, width: usize) void {
     text(s);
     var n = s.len;

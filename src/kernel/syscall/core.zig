@@ -30,14 +30,53 @@ pub fn sys_exit(a: Args) Result {
 }
 
 pub fn sys_write(a: Args) Result {
-    const h: u32 = @truncate(a.a0);
-    if (h != abi.STDOUT and h != abi.STDERR) return Errno.badf.value();
-
+    const number: u32 = @truncate(a.a0);
     const buf = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
-    if (h == abi.STDERR) console.setColor(.light_red, .black);
+
+    // Before the scheduler starts there is no process and so no handle table,
+    // but the boot self-test and early init still write to the console. Their
+    // handle numbers mean what they always mean.
+    const table = currentHandles() orelse {
+        if (number == abi.STDOUT or number == abi.STDERR) return writeConsole(number, buf);
+        return Errno.badf.value();
+    };
+
+    const h = table.get(number) orelse return Errno.badf.value();
+    if (!h.rights.write) return Errno.perm.value();
+
+    return switch (h.kind) {
+        .console => writeConsole(number, buf),
+        .file => writeFile(&h.data.file, buf),
+        else => Errno.badf.value(),
+    };
+}
+
+fn writeConsole(number: u32, buf: []const u8) Result {
+    // Standard error is coloured so a failure stands out in a log that is
+    // otherwise the only output this machine has.
+    const is_err = number == abi.STDERR;
+    if (is_err) console.setColor(.light_red, .black);
     console.writeString(buf);
-    if (h == abi.STDERR) console.setColor(.light_grey, .black);
+    if (is_err) console.setColor(.light_grey, .black);
     return @intCast(buf.len);
+}
+
+fn writeFile(file: *handles.File, buf: []const u8) Result {
+    const at = if (file.append) file.entry.size else file.offset;
+
+    const written = vfs.writeAt(file.mount, &file.entry, at, buf) catch |err| {
+        return switch (err) {
+            error.ReadOnly => Errno.perm.value(),
+            error.NoSpace => Errno.nospace.value(),
+            error.IsDirectory => Errno.inval.value(),
+            else => Errno.io.value(),
+        };
+    };
+
+    file.offset = at + written;
+    // The directory entry is written back when the handle closes, not here.
+    file.dirty = true;
+    return @intCast(written);
 }
 
 pub fn sys_read(a: Args) Result {

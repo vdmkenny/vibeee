@@ -4,9 +4,11 @@
 //! everything here is parsing and dispatch: split a line into words, run a
 //! builtin or spawn a program, report what happened.
 //!
-//! No job control, no pipes, no redirection yet. Those need a pipe object and
-//! handle reassignment at spawn, neither of which exists; a shell that
-//! pretended otherwise would fail in ways that looked like shell bugs.
+//! Output redirection works; pipes do not. A pipe needs a kernel object that
+//! does not exist yet and handle reassignment at spawn to go with it, and a
+//! shell that pretended otherwise would fail in ways that looked like shell
+//! bugs. Redirection needs neither: the shell opens the file itself and copies
+//! what the command produced.
 //!
 //! The shell is a supervised service, not the root of userspace: `init` starts
 //! it and restarts it when it exits. That is what makes `exit` meaningful on a
@@ -61,7 +63,7 @@ export fn shellMain() callconv(.c) noreturn {
 
     while (true) {
         const dir_len = sys.getcwd(&cwd);
-        if (dir_len > 0) out.text(cwd[0..@intCast(dir_len)]);
+        if (dir_len > 0) out.name(cwd[0..@intCast(dir_len)]);
         out.text(" $ ");
         out.flush();
 
@@ -75,8 +77,71 @@ export fn shellMain() callconv(.c) noreturn {
         const count = str.splitWords(text, &words);
         if (count == 0) continue;
 
-        run(words[0..count]);
+        runLine(words[0..count]);
     }
+}
+
+/// Where a command's output goes.
+const Redirect = struct {
+    path: []const u8 = "",
+    append: bool = false,
+
+    fn active(self: Redirect) bool {
+        return self.path.len > 0;
+    }
+};
+
+/// Pull a trailing `> file` or `>> file` off the word list.
+///
+/// Parsed here rather than in the tokenizer because `>` is shell syntax, not
+/// an argument: a command must never see it, and the file it names is the
+/// shell's business to open.
+fn takeRedirect(words: []const []const u8, into: *Redirect) []const []const u8 {
+    if (words.len < 2) return words;
+
+    const marker = words[words.len - 2];
+    const append = str.eql(marker, ">>");
+    if (!append and !str.eql(marker, ">")) return words;
+
+    into.* = .{ .path = words[words.len - 1], .append = append };
+    return words[0 .. words.len - 2];
+}
+
+fn runLine(words: []const []const u8) void {
+    var redirect: Redirect = .{};
+    const command = takeRedirect(words, &redirect);
+    if (command.len == 0) {
+        out.text("vsh: nothing to redirect\n");
+        out.flush();
+        return;
+    }
+
+    if (!redirect.active()) {
+        run(command);
+        return;
+    }
+
+    // Truncate unless appending, so `>` replaces a file rather than leaving
+    // the tail of whatever was longer.
+    const handle = sys.open(redirect.path, .{
+        .write = true,
+        .create = true,
+        .truncate = !redirect.append,
+        .append = redirect.append,
+    });
+    if (handle < 0) {
+        out.text("vsh: ");
+        out.text(redirect.path);
+        out.text(": cannot open for writing\n");
+        out.flush();
+        return;
+    }
+
+    out.redirectTo(@intCast(handle));
+    run(command);
+    out.redirectTo(sys.STDOUT);
+
+    _ = sys.close(@intCast(handle));
 }
 
 fn run(words: []const []const u8) void {
@@ -175,7 +240,7 @@ fn cmdPwd(_: []const []const u8) void {
     var buf: [256]u8 = [_]u8{0} ** 256;
     const n = sys.getcwd(&buf);
     if (n > 0) {
-        out.text(buf[0..@intCast(n)]);
+        out.name(buf[0..@intCast(n)]);
         out.byte('\n');
     }
 }

@@ -57,7 +57,7 @@ pub fn ls(args: []const []const u8) void {
 
         time.writeListed(entry.mtime, now);
         out.byte(' ');
-        out.text(name);
+        out.name(name);
         if (is_dir) out.text("/");
         out.text("\n");
         files += 1;
@@ -150,4 +150,24 @@ pub fn hexdump(args: []const []const u8) void {
     out.flush();
 }
 
+/// rm: remove files.
+///
+/// No recursion and no directories: removing a directory means checking it is
+/// empty and freeing its chain, and `mkdir` does not exist yet to create one.
+/// Refusing is better than half-doing it.
+pub fn rm(args: []const []const u8) void {
+    if (args.len == 0) {
+        out.text("usage: rm <file>...\n");
+        out.flush();
+        return;
+    }
 
+    for (args) |path| {
+        if (sys.unlink(path) < 0) {
+            out.text("rm: ");
+            out.name(path);
+            out.text(": cannot remove\n");
+        }
+    }
+    out.flush();
+}

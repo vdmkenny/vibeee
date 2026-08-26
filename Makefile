@@ -167,6 +167,11 @@ qemu: dev-image
 # the shell first, one key at a time through the QEMU monitor, which is the only
 # way to drive a machine whose only input is a PS/2 keyboard.
 #
+# The console is mirrored to the serial port, so a run also leaves a text
+# transcript beside the PNG. Reading that beats reading a screenshot for
+# everything except what the screen itself looks like: a `fail` line scrolled
+# off the top of a 30-row display is invisible in an image and obvious here.
+#
 #   make shot OUT=/tmp/x.png TYPE="date"
 .PHONY: shot
 shot: dev-image

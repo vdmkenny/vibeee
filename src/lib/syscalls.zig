@@ -85,6 +85,7 @@ pub const Errno = enum(i32) {
     inval = 22,
     exists = 17,
     child = 10,
+    nospace = 28,
     pipe = 32,
     nosys = 38,
     timedout = 110,
@@ -104,6 +105,7 @@ const E = struct {
     const exists = Err{ .name = "EEXIST", .when = "the name is already registered" };
     const child = Err{ .name = "ECHILD", .when = "the caller has no such child to wait for" };
     const pipe = Err{ .name = "EPIPE", .when = "the far end of the channel has closed" };
+    const nospace = Err{ .name = "ENOSPC", .when = "the volume is full" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
 };
 
@@ -263,7 +265,15 @@ pub const STDERR: u32 = 2;
 pub const OpenFlags = packed struct(u32) {
     /// Open a directory for reading entries rather than a file.
     directory: bool = false,
-    _reserved: u31 = 0,
+    /// Allow writing. Without it the handle is read-only whatever the volume.
+    write: bool = false,
+    /// Create the file if it does not exist.
+    create: bool = false,
+    /// Discard any existing contents.
+    truncate: bool = false,
+    /// Start every write at the end of the file.
+    append: bool = false,
+    _reserved: u27 = 0,
 };
 
 /// The directory entry `readdir` and `stat` produce.
@@ -430,7 +440,7 @@ pub const table = [_]Syscall{
         .args = &.{
             .{ .name = "path", .kind = .cptr, .desc = "Absolute path." },
             .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
-            .{ .name = "flags", .kind = .flags, .desc = "Bit 0 set opens a directory for reading entries." },
+            .{ .name = "flags", .kind = .flags, .desc = "OpenFlags: bit 0 directory, 1 write, 2 create, 3 truncate, 4 append." },
         },
         .returns = "a handle",
         .errors = &.{ E.fault, E.inval, E.noent, E.nomem },
@@ -685,6 +695,18 @@ pub const table = [_]Syscall{
         .notes = "Mapping the same segment twice returns two addresses onto the same memory. " ++
             "Addresses are not reused, so a process that maps repeatedly will eventually run " ++
             "out of window rather than silently aliasing.",
+    },
+    .{
+        .number = 30,
+        .name = "unlink",
+        .summary = "Remove a file.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "Path to the file." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+        },
+        .errors = &.{ E.fault, E.noent, E.inval, E.io },
+        .notes = "Directories are not removed by this call. Clusters are freed immediately, so a " ++
+            "handle still open on the file will read whatever claims them next.",
     },
 };
 

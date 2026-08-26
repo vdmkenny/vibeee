@@ -168,7 +168,7 @@ Open a file or directory.
 |---|---|---|
 | `path` | const ptr | Absolute path. |
 | `path_len` | len | Length of the path. |
-| `flags` | flags | Bit 0 set opens a directory for reading entries. |
+| `flags` | flags | OpenFlags: bit 0 directory, 1 write, 2 create, 3 truncate, 4 append. |
 
 **Returns:** a handle
 
@@ -528,6 +528,26 @@ Map a segment into the calling process.
 
 Mapping the same segment twice returns two addresses onto the same memory. Addresses are not reused, so a process that maps repeatedly will eventually run out of window rather than silently aliasing.
 
+## `unlink`  <sub>#30</sub>
+
+Remove a file.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | Path to the file. |
+| `path_len` | len | Length of the path. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EINVAL`, an argument is out of range
+- `EIO`, the underlying device failed
+
+Directories are not removed by this call. Clusters are freed immediately, so a handle still open on the file will read whatever claims them next.
+
 ---
 
-30 calls defined.
+31 calls defined.

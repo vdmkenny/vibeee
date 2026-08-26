@@ -16,6 +16,7 @@
 const std = @import("std");
 const block = @import("block.zig");
 const civil = @import("lib").civil;
+const table = @import("fat/alloc.zig");
 
 pub const Error = error{
     NotFat,
@@ -23,12 +24,12 @@ pub const Error = error{
     NotFound,
     IsDirectory,
     NotDirectory,
-    CorruptChain,
-    Io,
-    NoSpace,
-};
+    Exists,
+    NotEmpty,
+    NameTooLong,
+} || table.Error;
 
-pub const Kind = enum { fat12, fat16, fat32 };
+pub const Kind = table.Kind;
 
 /// BIOS Parameter Block. Field order is fixed by the on-disk format.
 const Bpb = extern struct {
@@ -143,6 +144,14 @@ pub const Entry = struct {
     /// resolution.
     mtime: i64 = 0,
 
+    /// Where this entry's 32-byte record lives on disk: the sector, and which
+    /// record within it. Recorded at lookup so that changing a file's size or
+    /// timestamp is one sector read and write, rather than a second walk of
+    /// the directory to find the record again. Zero for the synthetic entry
+    /// that stands for a volume's root.
+    dir_sector: u32 = 0,
+    dir_index: u32 = 0,
+
     pub fn nameSlice(self: *const Entry) []const u8 {
         return self.name[0..self.name_len];
     }
@@ -164,12 +173,9 @@ pub const Volume = struct {
     first_data_sector: u32,
     cluster_count: u32,
 
-    /// One sector of scratch for FAT lookups, and one cluster's worth for
-    /// directory scans. Static per volume: the kernel heap exists, but a
-    /// filesystem that allocates on every lookup is a filesystem that fails in
-    /// low memory, which is exactly when you need to read something.
-    fat_cache: [block.SECTOR_SIZE]u8 = undefined,
-    fat_cache_sector: u32 = 0xFFFF_FFFF,
+    /// The FAT table itself, and everything that knows how the three widths
+    /// differ. See `fat/alloc.zig`.
+    fat: table.Table = undefined,
 
     pub fn clusterSize(self: *const Volume) u32 {
         return self.bytes_per_sector * self.sectors_per_cluster;
@@ -181,47 +187,7 @@ pub const Volume = struct {
 
     /// Follow the allocation chain one link.
     fn nextCluster(self: *Volume, cluster: u32) Error!?u32 {
-        const offset: u32 = switch (self.kind) {
-            .fat12 => cluster + (cluster / 2),
-            .fat16 => cluster * 2,
-            .fat32 => cluster * 4,
-        };
-        const sector = self.first_fat_sector + offset / self.bytes_per_sector;
-        const within = offset % self.bytes_per_sector;
-
-        try self.loadFatSector(sector);
-
-        const value: u32 = switch (self.kind) {
-            .fat16 => std.mem.readInt(u16, self.fat_cache[within..][0..2], .little),
-            .fat32 => std.mem.readInt(u32, self.fat_cache[within..][0..4], .little) & 0x0FFF_FFFF,
-            .fat12 => blk: {
-                // A FAT12 entry is 12 bits and can straddle a sector boundary,
-                // so the two bytes are fetched separately rather than as a u16.
-                const lo = self.fat_cache[within];
-                try self.loadFatSector(self.first_fat_sector + (offset + 1) / self.bytes_per_sector);
-                const hi = self.fat_cache[(offset + 1) % self.bytes_per_sector];
-                const raw = @as(u16, lo) | (@as(u16, hi) << 8);
-                break :blk if (cluster & 1 != 0) raw >> 4 else raw & 0x0FFF;
-            },
-        };
-
-        const end_of_chain: u32 = switch (self.kind) {
-            .fat12 => 0x0FF8,
-            .fat16 => 0xFFF8,
-            .fat32 => 0x0FFF_FFF8,
-        };
-        if (value >= end_of_chain) return null;
-
-        // A chain pointing outside the volume is corruption; following it would
-        // read arbitrary sectors and loop forever.
-        if (value < 2 or value >= self.cluster_count + 2) return error.CorruptChain;
-        return value;
-    }
-
-    fn loadFatSector(self: *Volume, sector: u32) Error!void {
-        if (self.fat_cache_sector == sector) return;
-        self.dev.read(sector, &self.fat_cache) catch return error.Io;
-        self.fat_cache_sector = sector;
+        return table.next(&self.fat, cluster);
     }
 };
 
@@ -288,6 +254,15 @@ pub fn mount(dev: *const block.Device) Error!Volume {
         .root_cluster = if (kind == .fat32) bpb.root_cluster else 0,
         .first_data_sector = first_data_sector,
         .cluster_count = cluster_count,
+        .fat = .{
+            .dev = dev,
+            .kind = kind,
+            .bytes_per_sector = bpb.bytes_per_sector,
+            .first_fat_sector = bpb.reserved_sectors,
+            .sectors_per_fat = sectors_per_fat,
+            .fat_count = bpb.fat_count,
+            .cluster_count = cluster_count,
+        },
     };
 }
 
@@ -500,6 +475,10 @@ pub const Iterator = struct {
                 var entry = Entry{
                     .name = undefined,
                     .name_len = 0,
+                    .dir_sector = self.sector,
+                    // Already advanced past this record, so the index is one
+                    // behind the cursor.
+                    .dir_index = self.index_in_sector - 1,
                     .is_dir = raw.attr & ATTR_DIRECTORY != 0,
                     .size = raw.size,
                     .cluster = raw.firstCluster(),
@@ -722,4 +701,286 @@ pub fn readFile(vol: *Volume, entry: Entry, buf: []u8) Error!usize {
     }
 
     return written;
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+//
+// Read support came first deliberately: every operation here depends on the
+// chain walking and directory decoding above being correct, and a write path
+// built on a shaky reader corrupts the volume rather than merely failing.
+// ---------------------------------------------------------------------------
+
+/// Write `data` at `offset`, growing the file if needed.
+///
+/// Returns the new size, which the caller must store back into the directory
+/// entry with `commit`. Split that way because a handle writing sequentially
+/// should update its entry once when it closes, not once per write: a
+/// directory sector rewritten on every call would dominate the cost of writing
+/// a file and wear the SSD for nothing.
+pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error!usize {
+    if (entry.is_dir) return error.IsDirectory;
+    if (data.len == 0) return 0;
+
+    const cluster_size = vol.clusterSize();
+
+    // A file with no clusters yet gets its first one here, which is also what
+    // makes an empty file cost nothing until something is written to it.
+    if (entry.cluster < 2) {
+        entry.cluster = try table.alloc(&vol.fat);
+    }
+
+    var cluster = entry.cluster;
+
+    // Walk to the cluster holding `offset`, extending the chain if the file is
+    // being written past its end.
+    var skip = offset / cluster_size;
+    while (skip > 0) : (skip -= 1) {
+        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+    }
+
+    var within: u32 = @intCast(offset % cluster_size);
+    var remaining = data.len;
+    var done: usize = 0;
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+
+    while (remaining > 0) {
+        const first = vol.firstSectorOfCluster(cluster);
+
+        var s: u32 = within / block.SECTOR_SIZE;
+        var in_sector: u32 = within % block.SECTOR_SIZE;
+
+        while (s < vol.sectors_per_cluster and remaining > 0) : (s += 1) {
+            const available = block.SECTOR_SIZE - in_sector;
+            const take = @min(remaining, available);
+
+            // A partial sector must be read before it is written, or the bytes
+            // either side of the update are replaced with whatever the buffer
+            // happened to hold.
+            if (take != block.SECTOR_SIZE) {
+                vol.dev.read(first + s, &sector_buf) catch return error.Io;
+            }
+
+            @memcpy(sector_buf[in_sector..][0..take], data[done..][0..take]);
+            vol.dev.write(first + s, &sector_buf) catch return error.Io;
+
+            done += take;
+            remaining -= take;
+            in_sector = 0;
+        }
+
+        if (remaining == 0) break;
+        within = 0;
+        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+    }
+
+    const end = offset + done;
+    if (end > entry.size) entry.size = @intCast(end);
+    return done;
+}
+
+/// Write an entry's size, first cluster and modification time back to disk.
+pub fn commit(vol: *Volume, entry: Entry, mtime: i64) Error!void {
+    if (entry.dir_sector == 0) return error.NotFound;
+
+    var sector: [block.SECTOR_SIZE]u8 = undefined;
+    vol.dev.read(entry.dir_sector, &sector) catch return error.Io;
+
+    const off = entry.dir_index * @sizeOf(DirEntry);
+    const raw: *align(1) DirEntry = @ptrCast(&sector[off]);
+
+    raw.size = entry.size;
+    raw.cluster_low = @truncate(entry.cluster);
+    raw.cluster_high = @truncate(entry.cluster >> 16);
+
+    const stamp = fatFromEpoch(mtime);
+    raw.write_date = stamp.date;
+    raw.write_time = stamp.time;
+    raw.access_date = stamp.date;
+
+    vol.dev.write(entry.dir_sector, &sector) catch return error.Io;
+}
+
+/// Drop everything a file holds, leaving it empty but still present.
+pub fn truncate(vol: *Volume, entry: *Entry) Error!void {
+    if (entry.is_dir) return error.IsDirectory;
+
+    if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
+    entry.cluster = 0;
+    entry.size = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Creating entries
+// ---------------------------------------------------------------------------
+
+/// Where a new directory record will go.
+const Slot = struct { sector: u32, index: u32 };
+
+/// Pack a name into the 8.3 form, upper-cased.
+///
+/// Short names only. Creating a long name means generating VFAT records and a
+/// unique `~1` short alias to go with them, and getting that wrong produces a
+/// volume other systems disagree with about what the file is called. Reading
+/// long names is supported; writing them is not, and a name that will not fit
+/// is refused rather than silently truncated into a different file.
+fn encodeShortName(name: []const u8, out: *[11]u8) Error!void {
+    @memset(out, ' ');
+
+    var stem_len: usize = 0;
+    var ext_len: usize = 0;
+    var in_ext = false;
+
+    for (name) |c| {
+        if (c == '.') {
+            // Only the last dot separates the extension, and a leading dot is
+            // not a name we can represent at all.
+            if (in_ext or stem_len == 0) return error.NameTooLong;
+            in_ext = true;
+            continue;
+        }
+        if (!isShortNameChar(c)) return error.NameTooLong;
+
+        const upper = if (c >= 'a' and c <= 'z') c - 32 else c;
+        if (in_ext) {
+            if (ext_len >= 3) return error.NameTooLong;
+            out[8 + ext_len] = upper;
+            ext_len += 1;
+        } else {
+            if (stem_len >= 8) return error.NameTooLong;
+            out[stem_len] = upper;
+            stem_len += 1;
+        }
+    }
+
+    if (stem_len == 0) return error.NameTooLong;
+    // 0xE5 marks a deleted record, so a name genuinely starting with that byte
+    // is stored as 0x05 by convention.
+    if (out[0] == 0xE5) out[0] = 0x05;
+}
+
+fn isShortNameChar(c: u8) bool {
+    return switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9' => true,
+        '$', '%', '\'', '-', '_', '@', '~', '`', '!', '(', ')', '{', '}', '^', '#', '&' => true,
+        else => false,
+    };
+}
+
+/// Find a free record in `dir`, extending the directory if it is full.
+///
+/// Free means never used (0x00) or deleted (0xE5). A FAT12/16 root directory
+/// is a fixed run of sectors and cannot grow, which is the one case where a
+/// volume with free space still cannot take another file.
+fn findFreeSlot(vol: *Volume, dir: Iterator) Error!Slot {
+    var walk = dir;
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    const per_sector = block.SECTOR_SIZE / @sizeOf(DirEntry);
+
+    while (!walk.done) {
+        vol.dev.read(walk.sector, &sector_buf) catch return error.Io;
+
+        var i: u32 = 0;
+        while (i < per_sector) : (i += 1) {
+            const first = sector_buf[i * @sizeOf(DirEntry)];
+            if (first == 0x00 or first == 0xE5) {
+                return .{ .sector = walk.sector, .index = i };
+            }
+        }
+
+        const last_cluster = walk.cluster;
+        walk.advanceSector() catch return error.Io;
+
+        if (walk.done and last_cluster != 0) {
+            // A cluster-chained directory can grow. The fresh cluster is
+            // zeroed first: uninitialised records would be read as entries.
+            const fresh = try table.append(&vol.fat, last_cluster);
+            try zeroCluster(vol, fresh);
+            return .{ .sector = vol.firstSectorOfCluster(fresh), .index = 0 };
+        }
+    }
+    return error.NoSpace;
+}
+
+fn zeroCluster(vol: *Volume, cluster: u32) Error!void {
+    var blank: [block.SECTOR_SIZE]u8 = @splat(0);
+    const first = vol.firstSectorOfCluster(cluster);
+
+    var s: u32 = 0;
+    while (s < vol.sectors_per_cluster) : (s += 1) {
+        vol.dev.write(first + s, &blank) catch return error.Io;
+    }
+}
+
+/// Create an empty file called `name` in `dir`.
+///
+/// The entry starts with no clusters at all: an empty file should cost a
+/// directory record and nothing else, and `writeAt` allocates the first
+/// cluster when there is finally something to put in it.
+pub fn createFile(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    var short: [11]u8 = undefined;
+    try encodeShortName(name, &short);
+
+    const slot = try findFreeSlot(vol, dir);
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    vol.dev.read(slot.sector, &sector_buf) catch return error.Io;
+
+    const off = slot.index * @sizeOf(DirEntry);
+    const raw: *align(1) DirEntry = @ptrCast(&sector_buf[off]);
+
+    const stamp = fatFromEpoch(mtime);
+    raw.* = .{
+        .name = short,
+        .attr = 0,
+        .nt_reserved = 0,
+        .create_tenths = 0,
+        .create_time = stamp.time,
+        .create_date = stamp.date,
+        .access_date = stamp.date,
+        .cluster_high = 0,
+        .write_time = stamp.time,
+        .write_date = stamp.date,
+        .cluster_low = 0,
+        .size = 0,
+    };
+
+    vol.dev.write(slot.sector, &sector_buf) catch return error.Io;
+
+    var entry = Entry{
+        .name = undefined,
+        .name_len = 0,
+        .is_dir = false,
+        .size = 0,
+        .cluster = 0,
+        .mtime = mtime,
+        .dir_sector = slot.sector,
+        .dir_index = slot.index,
+    };
+    entry.name_len = decodeName(&short, &entry.name);
+    return entry;
+}
+
+/// Remove a file: free its clusters and mark its record deleted.
+pub fn unlink(vol: *Volume, entry: Entry) Error!void {
+    if (entry.is_dir) return error.IsDirectory;
+    if (entry.dir_sector == 0) return error.NotFound;
+
+    if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    vol.dev.read(entry.dir_sector, &sector_buf) catch return error.Io;
+
+    // 0xE5 in the first byte is what marks a record free. Any long-name records
+    // in front of it are left behind: a reader checks their checksum against
+    // the short entry that follows, so orphans are ignored rather than
+    // attached to whatever record lands there next.
+    sector_buf[entry.dir_index * @sizeOf(DirEntry)] = 0xE5;
+    vol.dev.write(entry.dir_sector, &sector_buf) catch return error.Io;
+}
+
+/// Free clusters on the volume, for `df`.
+pub fn freeClusters(vol: *Volume) Error!u32 {
+    return table.freeCount(&vol.fat);
 }
