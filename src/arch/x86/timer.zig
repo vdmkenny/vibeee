@@ -15,6 +15,7 @@
 //!
 //! See design/00-vibeee.md §6.5.
 
+const cpu = @import("cpu.zig");
 const idt = @import("idt.zig");
 const port = @import("port.zig");
 const sched = @import("../../kernel/sched.zig");
@@ -43,6 +44,18 @@ var ticks: u32 = 0;
 /// Registered once the FADT has been parsed. Until then, zero.
 var pm_timer_port: u16 = 0;
 
+/// The PM timer is a free-running counter that wraps, so it is sampled and
+/// accumulated rather than read directly. Everything above depends on the
+/// monotonic clock never stepping backwards: sleep deadlines are compared
+/// against it, and `kernel/clock.zig` derives wall time from it, so a counter
+/// that restarts every few seconds would make sleeps end early or never and
+/// make the wall clock jump backwards.
+var pm_micros: u64 = 0;
+var pm_last: u32 = 0;
+/// Sub-microsecond part of the conversion, carried across samples so 100
+/// samples a second do not lose a microsecond each.
+var pm_remainder: u64 = 0;
+
 pub fn init() void {
     const divisor: u16 = @intCast(PIT_HZ / TICK_HZ);
 
@@ -57,6 +70,13 @@ pub fn init() void {
 
 fn onTick(_: *idt.Frame) void {
     _ = @atomicRmw(u32, &ticks, .Add, 1, .monotonic);
+
+    // Sample here rather than relying on something above happening to ask the
+    // time: the PM timer's 24-bit counter wraps every 4.69 seconds, and a wrap
+    // that passes unsampled is time silently lost from the monotonic clock.
+    // Interrupts are already off inside the handler.
+    if (pm_timer_port != 0) _ = samplePmTimer();
+
     sched.onTick();
 }
 
@@ -64,20 +84,59 @@ pub fn tickCount() u64 {
     return @atomicLoad(u32, &ticks, .monotonic);
 }
 
+/// Adopt the ACPI PM timer as the monotonic source.
+///
+/// The accumulator continues from wherever the PIT had reached, so the clock
+/// does not jump when the source changes underneath it.
 pub fn setPmTimerPort(p: u16) void {
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+
+    pm_micros = @as(u64, @atomicLoad(u32, &ticks, .monotonic)) * TICK_US;
+    pm_remainder = 0;
+    pm_last = readPmTimer(p);
     pm_timer_port = p;
+}
+
+const PM_MASK: u32 = 0x00FF_FFFF;
+
+fn readPmTimer(p: u16) u32 {
+    // 24 bits on this chipset. The upper byte is not guaranteed to be zero on
+    // every implementation, so it is masked rather than assumed.
+    return @as(u32, @truncate(port.inl(p))) & PM_MASK;
+}
+
+/// Fold everything the counter has advanced since the last sample into the
+/// accumulator.
+///
+/// Must be called more often than the counter wraps — every 4.69 seconds at
+/// 3.579545 MHz — or the time in between is lost. The timer interrupt samples
+/// it at 100 Hz, which is a margin of four hundred.
+fn samplePmTimer() u64 {
+    const now = readPmTimer(pm_timer_port);
+    // Unsigned wrapping subtraction, masked back to the counter width: this is
+    // the whole wrap handling, and it works for any number of wraps up to one.
+    const delta: u64 = (now -% pm_last) & PM_MASK;
+    pm_last = now;
+
+    const scaled = delta * 1_000_000 + pm_remainder;
+    pm_micros += scaled / PM_TIMER_HZ;
+    pm_remainder = scaled % PM_TIMER_HZ;
+    return pm_micros;
 }
 
 const PM_TIMER_HZ: u64 = 3_579_545;
 
 pub fn monotonicMicros() u64 {
-    if (pm_timer_port != 0) {
-        // 24-bit counter on this chipset. Wrap accounting belongs in the
-        // timekeeping layer, which accumulates deltas; this is the raw read.
-        const t: u64 = port.inl(pm_timer_port) & 0x00FF_FFFF;
-        return (t * 1_000_000) / PM_TIMER_HZ;
+    if (pm_timer_port == 0) {
+        return @as(u64, @atomicLoad(u32, &ticks, .monotonic)) * TICK_US;
     }
-    return @as(u64, @atomicLoad(u32, &ticks, .monotonic)) * TICK_US;
+
+    // Sampling mutates the accumulator, so it cannot race the timer interrupt
+    // doing the same thing.
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+    return samplePmTimer();
 }
 
 /// Name of the clock currently in use, for the boot log. Saying which source

@@ -171,3 +171,32 @@ fn writeDiskRow(row: []const u8) void {
     out.text(note);
     out.byte('\n');
 }
+
+/// Services registered with the kernel, from `/svc`.
+///
+/// The registry is the map of what is running and answerable, so this is the
+/// first thing to look at when something that should respond does not.
+pub fn services(_: []const []const u8) void {
+    var buf: [512]u8 = [_]u8{0} ** 512;
+    const n = sys.sysinfo("svc", &buf);
+
+    if (n <= 0) {
+        out.text("no services registered\n");
+        out.flush();
+        return;
+    }
+
+    var count: usize = 0;
+    var it = str.lines(buf[0..@intCast(n)]);
+    while (it.next()) |name| {
+        if (name.len == 0) continue;
+        out.text("  ");
+        out.text(name);
+        out.byte('\n');
+        count += 1;
+    }
+
+    out.decimal(count);
+    out.text(if (count == 1) " service\n" else " services\n");
+    out.flush();
+}

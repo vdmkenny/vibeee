@@ -30,7 +30,7 @@ cpu     GenuineIntel family 6 model 5 step 2
         sysenter, fixed clock
 mem     511M usable, 510M free, 131040 frames
 heap    slab ok, 0 frame(s) held
-sys     19 calls, abi ok
+sys     27 calls, abi ok
 time    pit, advancing (20000 us)
 smbios  2.8, 9 structures, 413 bytes
 board   QEMU Standard PC (i440FX + PIIX, 1996)
@@ -45,7 +45,8 @@ pci     6 devices, 3 bound
   00:03.0 8086:100e e1000       exact  *  ethernet controller
 ramdisk rd0: 2048 KiB at 01000000
 mount   / on rd0 (fat32, 1 MiB)
-sched   2 threads, 11 switches, workers 8/8/8
+sched   2 threads, 12 switches, workers 8/8/8
+ipc     channels, events and /svc ok
 user    entry 400005f8, 12572 bytes from disk
 ```
 
@@ -79,6 +80,9 @@ Working:
   with dead-key composition and `Super+Space` to switch.
 - **Time** — a monotonic clock from the timer and a wall clock seeded once from the CMOS RTC, so
   file timestamps and `date` are real rather than 1980.
+- **IPC** — synchronous channels, counting events with `wait_many` as the only blocking primitive,
+  and a `/svc` name registry so a client can find a server it did not start. Blocking is real
+  blocking: a waiting thread is off the run queues, not polling.
 - **Devices** — PCI enumeration, SMBIOS/DMI decoding, and confidence-ranked driver probing.
 - **Shutdown** — handles flushed, volumes unmounted, then ACPI power off via the FADT and the
   `_S5_` object.
@@ -88,10 +92,10 @@ Each of these verifies itself at boot: the heap, the syscall ABI and the clock a
 report, so a regression shows up as a `fail` line rather than a mystery hang.
 
 Userspace is a shell (`vsh`) plus a multicall binary carrying `ls`, `cat`, `hexdump`, `grep`,
-`free`, `top`, `disk`, `date`, `eeefetch` and `dmidecode`.
+`free`, `top`, `disk`, `svc`, `date`, `eeefetch` and `dmidecode`.
 
-Not yet: pipes and redirection, filesystem writes, a text editor, USB, and the GUI. See the
-milestone table in the design doc.
+Not yet: shared-memory rings across address spaces, pipes and redirection, filesystem writes,
+a text editor, USB, and the GUI. See the milestone table in the design doc.
 
 ## Build
 
@@ -118,6 +122,7 @@ src/kernel/ portable core: memory, scheduling, VFS, syscalls, probing, console, 
 src/platform.zig  composition root: the only file that wires kernel, arch and drivers together
 src/drv/    drivers, selected by runtime probe confidence
 src/lib/    pure computation shared by kernel and userspace, compiled into both
+              (calendar arithmetic, the shared-memory ring layout)
 src/user/   the shell and the system tools, built as ordinary ELF programs
 src/keymaps/  keyboard layouts, one file each, compiled to tables at build time
 tools/      host-side build and verification tools

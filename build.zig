@@ -238,4 +238,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // `lib` is its own module, and `zig test` only collects tests from the
+    // root module of the binary it builds — so tests inside it need their own
+    // runner or they are silently skipped, which is worse than having none.
+    const lib_tests = b.addTest(.{ .root_module = host_lib });
+    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
 }

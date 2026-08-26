@@ -32,6 +32,7 @@ const commands = [_]Command{
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
+    .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
     .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },
     .{ .name = "eeefetch", .summary = "show system information", .run = &eeefetch.run },

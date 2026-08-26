@@ -325,6 +325,157 @@ Read the wall clock.
 
 UTC, never local time. EINVAL until the clock has been set from a source; a machine whose battery-backed clock has failed reports that it does not know the time rather than claiming 1970. Use clock_us for measuring intervals: this one can step when a better source corrects it.
 
+## `event_create`  <sub>#19</sub>
+
+Create an event.
+
+**Returns:** handle to the new event
+
+**Errors:**
+
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+Events count rather than latch, so a signal delivered before anyone waits is kept and consumed by the next waiter instead of being lost.
+
+## `event_signal`  <sub>#20</sub>
+
+Signal an event, releasing one waiter.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | The event to signal. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+
+## `wait_many`  <sub>#21</sub>
+
+Block until one of several events is signalled.
+
+| arg | type | meaning |
+|---|---|---|
+| `handles` | const ptr | Array of u32 event handles. |
+| `count` | len | How many, at most 8. |
+| `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
+
+**Returns:** index of the event that fired
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+- `ETIMEDOUT` — the timeout elapsed before anything happened
+
+The only blocking primitive: a server with a channel, a ring and a timer waits in one call rather than one thread each. When several are already signalled the lowest index wins, so priority is argument order.
+
+## `svc_register`  <sub>#22</sub>
+
+Create a channel and publish it under a name.
+
+| arg | type | meaning |
+|---|---|---|
+| `name` | const ptr | Service name: lowercase, digits, dot and dash. |
+| `name_len` | len | Length of the name. |
+
+**Returns:** handle to the serving end of the channel
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EEXIST` — the name is already registered
+
+Closing the returned handle withdraws the name and fails every call still waiting on a reply, which is what lets a client tell a crashed server from a slow one.
+
+## `svc_connect`  <sub>#23</sub>
+
+Open a channel to a registered service.
+
+| arg | type | meaning |
+|---|---|---|
+| `name` | const ptr | Service name. |
+| `name_len` | len | Length of the name. |
+
+**Returns:** handle to the calling end of the channel
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ENOENT` — no such file or directory
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+Clients hold a name rather than a handle to one instance, so reconnecting to a restarted server is a lookup rather than a redesign.
+
+## `call`  <sub>#24</sub>
+
+Send a request and block until the server replies.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | A channel from svc_connect. |
+| `request` | const ptr | Request bytes, at most 64. |
+| `request_len` | len | Length of the request. |
+| `reply` | ptr | Receives the reply. |
+| `reply_len` | len | Capacity of the reply buffer. |
+
+**Returns:** bytes of reply written
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+- `EPIPE` — the far end of the channel has closed
+
+Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a shared ring, with the channel carrying the message that says which ring and how much. EPIPE means the serving end closed.
+
+## `recv`  <sub>#25</sub>
+
+Block until a request arrives on a served channel.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | A channel from svc_register. |
+| `buf` | ptr | Receives the request bytes. |
+| `buf_len` | len | Capacity of the buffer. |
+| `token` | ptr | Receives a u32 naming this call, to pass to reply(). |
+| `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
+
+**Returns:** bytes of request written
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+- `ETIMEDOUT` — the timeout elapsed before anything happened
+
+## `reply`  <sub>#26</sub>
+
+Answer a call taken by recv().
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | The channel the call arrived on. |
+| `token` | uint | The token recv() produced. |
+| `buf` | const ptr | Reply bytes, at most 64. |
+| `buf_len` | len | Length of the reply. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+
+The token carries a generation, so a reply to a call that has already been abandoned is rejected rather than landing on whichever call inherited the slot.
+
 ---
 
-19 calls defined.
+27 calls defined.

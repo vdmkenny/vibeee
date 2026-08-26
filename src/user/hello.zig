@@ -57,9 +57,38 @@ fn bssIsClean() bool {
     return true;
 }
 
+/// Exercise the blocking primitive from user mode.
+///
+/// The kernel self-tests IPC from Ring 0, which proves the objects work but
+/// not that the syscall gate carries them: a wrong argument register or a
+/// mishandled user pointer only shows up from this side. Signalling before
+/// waiting is deliberate — an event that counts must release a waiter that
+/// arrives late, and getting that wrong is a hang, not a wrong answer.
+fn ipcAbiWorks() bool {
+    const handle = sys.eventCreate();
+    if (handle < 0) return false;
+    const event: u32 = @intCast(handle);
+    defer _ = sys.close(event);
+
+    if (sys.eventSignal(event) < 0) return false;
+    if (sys.eventWait(event, sys.FOREVER) != 0) return false;
+
+    // Nothing left to consume, so a poll must report a timeout rather than
+    // returning a signal that was never sent.
+    if (sys.eventWait(event, sys.POLL) >= 0) return false;
+
+    // A name nobody registered must fail cleanly rather than returning a
+    // handle to nothing.
+    if (sys.svcConnect("no.such.service") >= 0) return false;
+
+    return true;
+}
+
 export fn main() callconv(.c) noreturn {
     const bss_clean = bssIsClean();
+    const ipc_ok = ipcAbiWorks();
 
+    if (!ipc_ok) _ = sys.write(sys.STDERR, "hello: the IPC syscalls do not work from ring 3\n");
     _ = sys.write(sys.STDOUT, "hello from ");
     var n: usize = 0;
     while (greeting[n] != 0) n += 1;

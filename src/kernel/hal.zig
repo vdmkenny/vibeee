@@ -116,6 +116,7 @@ pub const initThreadStack = impl.initThreadStack;
 /// ladder in design §6.5 — on the 701 that is HPET if we managed to force-enable
 /// it, otherwise the ACPI PM timer. Never the TSC, which halts in idle.
 pub const monotonicMicros = impl.monotonicMicros;
+pub const tickCount = impl.tickCount;
 /// Start the periodic tick. Must follow the interrupt controller.
 pub const initTimer = impl.initTimer;
 /// Which clock source won the selection ladder, for the boot log.

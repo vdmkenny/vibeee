@@ -77,7 +77,10 @@ pub const Errno = enum(i32) {
     nomem = 12,
     fault = 14,
     inval = 22,
+    exists = 17,
+    pipe = 32,
     nosys = 38,
+    timedout = 110,
 
     pub fn value(self: Errno) i32 {
         return -@as(i32, @intFromEnum(self));
@@ -91,6 +94,9 @@ const E = struct {
     const io = Err{ .name = "EIO", .when = "the underlying device failed" };
     const fault = Err{ .name = "EFAULT", .when = "a pointer argument is outside the caller's address space" };
     const inval = Err{ .name = "EINVAL", .when = "an argument is out of range" };
+    const exists = Err{ .name = "EEXIST", .when = "the name is already registered" };
+    const pipe = Err{ .name = "EPIPE", .when = "the far end of the channel has closed" };
+    const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
 };
 
 /// Well-known handles, open in every process at start.
@@ -310,6 +316,119 @@ pub const table = [_]Syscall{
             "a machine whose battery-backed clock has failed reports that it does not know the " ++
             "time rather than claiming 1970. Use clock_us for measuring intervals: this one can " ++
             "step when a better source corrects it.",
+    },
+
+    // -- IPC (design/00-vibeee.md §6.8) -----------------------------------
+    //
+    // Four objects and one blocking primitive. Channels carry the small
+    // synchronous request and reply; rings carry bulk data; events are what a
+    // thread blocks on; the registry is how a client finds a server it did not
+    // start. Nothing here blocks except through wait_many and the calls
+    // documented as blocking, so a thread's whole set of reasons to stop
+    // running is enumerable.
+    .{
+        .number = 19,
+        .name = "event_create",
+        .summary = "Create an event.",
+        .returns = "handle to the new event",
+        .errors = &.{E.nomem},
+        .notes = "Events count rather than latch, so a signal delivered before anyone waits is " ++
+            "kept and consumed by the next waiter instead of being lost.",
+    },
+    .{
+        .number = 20,
+        .name = "event_signal",
+        .summary = "Signal an event, releasing one waiter.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "The event to signal." },
+        },
+        .errors = &.{E.badf},
+    },
+    .{
+        .number = 21,
+        .name = "wait_many",
+        .summary = "Block until one of several events is signalled.",
+        .args = &.{
+            .{ .name = "handles", .kind = .cptr, .desc = "Array of u32 event handles." },
+            .{ .name = "count", .kind = .len, .desc = "How many, at most 8." },
+            .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
+        },
+        .returns = "index of the event that fired",
+        .errors = &.{ E.badf, E.fault, E.inval, E.timedout },
+        .notes = "The only blocking primitive: a server with a channel, a ring and a timer waits " ++
+            "in one call rather than one thread each. When several are already signalled the " ++
+            "lowest index wins, so priority is argument order.",
+    },
+    .{
+        .number = 22,
+        .name = "svc_register",
+        .summary = "Create a channel and publish it under a name.",
+        .args = &.{
+            .{ .name = "name", .kind = .cptr, .desc = "Service name: lowercase, digits, dot and dash." },
+            .{ .name = "name_len", .kind = .len, .desc = "Length of the name." },
+        },
+        .returns = "handle to the serving end of the channel",
+        .errors = &.{ E.fault, E.inval, E.nomem, E.exists },
+        .notes = "Closing the returned handle withdraws the name and fails every call still " ++
+            "waiting on a reply, which is what lets a client tell a crashed server from a slow one.",
+    },
+    .{
+        .number = 23,
+        .name = "svc_connect",
+        .summary = "Open a channel to a registered service.",
+        .args = &.{
+            .{ .name = "name", .kind = .cptr, .desc = "Service name." },
+            .{ .name = "name_len", .kind = .len, .desc = "Length of the name." },
+        },
+        .returns = "handle to the calling end of the channel",
+        .errors = &.{ E.fault, E.noent, E.nomem },
+        .notes = "Clients hold a name rather than a handle to one instance, so reconnecting to a " ++
+            "restarted server is a lookup rather than a redesign.",
+    },
+    .{
+        .number = 24,
+        .name = "call",
+        .summary = "Send a request and block until the server replies.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "A channel from svc_connect." },
+            .{ .name = "request", .kind = .cptr, .desc = "Request bytes, at most 64." },
+            .{ .name = "request_len", .kind = .len, .desc = "Length of the request." },
+            .{ .name = "reply", .kind = .ptr, .desc = "Receives the reply." },
+            .{ .name = "reply_len", .kind = .len, .desc = "Capacity of the reply buffer." },
+        },
+        .returns = "bytes of reply written",
+        .errors = &.{ E.badf, E.fault, E.inval, E.pipe },
+        .notes = "Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a " ++
+            "shared ring, with the channel carrying the message that says which ring and how much. " ++
+            "EPIPE means the serving end closed.",
+    },
+    .{
+        .number = 25,
+        .name = "recv",
+        .summary = "Block until a request arrives on a served channel.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "A channel from svc_register." },
+            .{ .name = "buf", .kind = .ptr, .desc = "Receives the request bytes." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity of the buffer." },
+            .{ .name = "token", .kind = .ptr, .desc = "Receives a u32 naming this call, to pass to reply()." },
+            .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
+        },
+        .returns = "bytes of request written",
+        .errors = &.{ E.badf, E.fault, E.inval, E.timedout },
+    },
+    .{
+        .number = 26,
+        .name = "reply",
+        .summary = "Answer a call taken by recv().",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "The channel the call arrived on." },
+            .{ .name = "token", .kind = .uint, .desc = "The token recv() produced." },
+            .{ .name = "buf", .kind = .cptr, .desc = "Reply bytes, at most 64." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Length of the reply." },
+        },
+        .errors = &.{ E.badf, E.fault, E.inval },
+        .notes = "The token carries a generation, so a reply to a call that has already been " ++
+            "abandoned is rejected rather than landing on whichever call inherited the slot.",
     },
 };
 

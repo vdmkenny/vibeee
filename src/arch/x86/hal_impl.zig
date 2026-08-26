@@ -83,6 +83,7 @@ pub const initThreadStack = context.initStack;
 
 pub const initTimer = timer.init;
 pub const monotonicMicros = timer.monotonicMicros;
+pub const tickCount = timer.tickCount;
 pub const timerSourceName = timer.sourceName;
 pub const setPmTimerPort = timer.setPmTimerPort;
 

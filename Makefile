@@ -142,10 +142,25 @@ populate: kernel
 # address correctly.
 # The development loop boots verbose, so the self-test results are visible.
 # A plain `make image` is quiet: a working system should boot without narrating.
-qemu: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
-	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-dev.img $(IMAGE_MB) verbose $(ROOTFS_IMG)
-	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-dev.img
-	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-dev.img
+DEV_IMAGE := $(BUILD)/vibeee-dev.img
+
+.PHONY: dev-image
+dev-image: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) verbose $(ROOTFS_IMG)
+	@$(MAKE) --no-print-directory populate IMG=$(DEV_IMAGE)
+
+qemu: dev-image
+	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(DEV_IMAGE)
+
+# Boot the verbose image headless and photograph the screen. `TYPE` is typed at
+# the shell first, one key at a time through the QEMU monitor, which is the only
+# way to drive a machine whose only input is a PS/2 keyboard.
+#
+#   make shot OUT=/tmp/x.png TYPE="date"
+.PHONY: shot
+shot: dev-image
+	@QEMU_CPU="$(QEMU_CPU)" tools/qemu-shot.sh $(OUT) $(if $(TYPE),-t "$(TYPE)") -w $(or $(WAIT),5) \
+		-- -drive if=ide,format=raw,file=$(DEV_IMAGE)
 
 run: qemu
 

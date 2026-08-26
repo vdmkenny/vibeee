@@ -19,6 +19,7 @@ const heap = @import("heap.zig");
 const keymap = @import("keymap.zig");
 const pmm = @import("pmm.zig");
 const sched = @import("sched.zig");
+const svc = @import("svc.zig");
 const vfs = @import("vfs.zig");
 
 pub const VERSION = "0.1.0-M0";
@@ -91,6 +92,8 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         try w.print("{d} bytes live, {d} frames", .{ h.live_bytes, h.frames });
     } else if (eq(key, "uptime")) {
         try w.print("{d}", .{clock.monotonicMicros() / 1_000_000});
+    } else if (eq(key, "svc")) {
+        try writeServices(&w);
     } else if (eq(key, "clock")) {
         if (!clock.valid()) return error.UnknownKey;
         try w.print("{s}", .{clock.sourceName()});
@@ -145,6 +148,19 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
     }
 
     return w.len;
+}
+
+/// One line per registered service. The registry is the map of what is running
+/// and answerable, which is exactly what someone debugging a wedged system
+/// wants to see first.
+fn writeServices(w: *Writer) Error!void {
+    var first = true;
+    for (svc.list()) |name| {
+        if (!first) try w.print("\n", .{});
+        try w.print("{s}", .{name});
+        first = false;
+    }
+    if (first) return error.UnknownKey;
 }
 
 /// One line per thread: id, state, ticks, name.

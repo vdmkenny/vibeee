@@ -11,6 +11,8 @@
 //! means auditing every call site.
 
 const std = @import("std");
+const channel_mod = @import("channel.zig");
+const event_mod = @import("event.zig");
 const fat = @import("fat.zig");
 const vfs = @import("vfs.zig");
 
@@ -29,7 +31,7 @@ pub const Rights = packed struct(u8) {
     _pad: u5 = 0,
 };
 
-pub const Kind = enum { none, console, file, directory };
+pub const Kind = enum { none, console, file, directory, event, channel };
 
 pub const File = struct {
     /// Resolved at open and kept, so a later unmount cannot leave the handle
@@ -46,6 +48,14 @@ pub const Directory = struct {
     exhausted: bool = false,
 };
 
+pub const ChannelRef = struct {
+    channel: *channel_mod.Channel,
+    /// True for the handle that answers calls. Exactly one end serves, and
+    /// closing it is what tells waiting clients the server is gone — so which
+    /// end a handle is has to be recorded, not inferred.
+    serving: bool,
+};
+
 pub const Handle = struct {
     kind: Kind = .none,
     rights: Rights = .{},
@@ -53,6 +63,8 @@ pub const Handle = struct {
         none: void,
         file: File,
         directory: Directory,
+        event: *event_mod.Event,
+        channel: ChannelRef,
     } = .{ .none = {} },
 };
 
@@ -91,20 +103,31 @@ pub const Table = struct {
     pub fn close(self: *Table, handle: u32) bool {
         const h = self.get(handle) orelse return false;
 
-        // Releasing the mount's reference is the point: leaving it counted
-        // would make the volume permanently un-unmountable. The console
-        // handles are shared rather than owned, so they release nothing.
-        const mount: ?*vfs.Mount = switch (h.kind) {
-            .file => h.data.file.mount,
-            .directory => h.data.directory.mount,
-            else => null,
-        };
-        if (mount) |m| {
-            if (m.open_files > 0) m.open_files -= 1;
+        // Every kind that owns a reference gives it back here. Leaving a mount
+        // counted would make the volume permanently un-unmountable; leaking a
+        // channel reference would keep a dead server's clients blocked. The
+        // console handles are shared rather than owned, so they release
+        // nothing.
+        switch (h.kind) {
+            .file => releaseMount(h.data.file.mount),
+            .directory => releaseMount(h.data.directory.mount),
+            .event => event_mod.release(h.data.event),
+            .channel => {
+                const ref = h.data.channel;
+                // Order matters: the clients have to be failed while the
+                // channel is still alive to fail them through.
+                if (ref.serving) channel_mod.stopServing(ref.channel);
+                channel_mod.release(ref.channel);
+            },
+            .none, .console => {},
         }
 
         h.* = .{};
         return true;
+    }
+
+    fn releaseMount(m: *vfs.Mount) void {
+        if (m.open_files > 0) m.open_files -= 1;
     }
 
     /// Release everything a dying process still holds.

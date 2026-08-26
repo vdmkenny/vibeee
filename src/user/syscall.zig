@@ -24,6 +24,22 @@ pub const SYS_SPAWN = 15;
 pub const SYS_CHDIR = 16;
 pub const SYS_GETCWD = 17;
 pub const SYS_REALTIME_US = 18;
+pub const SYS_EVENT_CREATE = 19;
+pub const SYS_EVENT_SIGNAL = 20;
+pub const SYS_WAIT_MANY = 21;
+pub const SYS_SVC_REGISTER = 22;
+pub const SYS_SVC_CONNECT = 23;
+pub const SYS_CALL = 24;
+pub const SYS_RECV = 25;
+pub const SYS_REPLY = 26;
+
+/// Timeout sentinels for the blocking calls.
+pub const POLL: usize = 0;
+pub const FOREVER: usize = 0xFFFF_FFFF;
+
+/// Largest inline channel payload, matching kernel/channel.zig. Anything
+/// bigger is bulk data and belongs in a shared ring.
+pub const MAX_PAYLOAD = 64;
 
 pub const OPEN_DIRECTORY: usize = 1 << 0;
 
@@ -102,6 +118,15 @@ pub fn realtimeMicros() ?i64 {
     return out;
 }
 
+fn syscall2(nr: u32, a0: usize, a1: usize) isize {
+    return asm volatile ("int $0x80"
+        : [ret] "={eax}" (-> isize),
+        : [nr] "{eax}" (nr),
+          [a0] "{ebx}" (a0),
+          [a1] "{ecx}" (a1),
+        : .{ .memory = true });
+}
+
 fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
     return asm volatile ("int $0x80"
         : [ret] "={eax}" (-> isize),
@@ -110,6 +135,18 @@ fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
           [a1] "{ecx}" (a1),
           [a2] "{edx}" (a2),
           [a3] "{esi}" (a3),
+        : .{ .memory = true });
+}
+
+fn syscall5(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
+    return asm volatile ("int $0x80"
+        : [ret] "={eax}" (-> isize),
+        : [nr] "{eax}" (nr),
+          [a0] "{ebx}" (a0),
+          [a1] "{ecx}" (a1),
+          [a2] "{edx}" (a2),
+          [a3] "{esi}" (a3),
+          [a4] "{edi}" (a4),
         : .{ .memory = true });
 }
 
@@ -179,4 +216,69 @@ pub fn shutdown(action: usize) noreturn {
 pub fn exit(status: usize) noreturn {
     _ = syscall1(SYS_EXIT, status);
     unreachable;
+}
+
+// ---------------------------------------------------------------------------
+// IPC
+// ---------------------------------------------------------------------------
+
+pub fn eventCreate() isize {
+    return syscall0(SYS_EVENT_CREATE);
+}
+
+pub fn eventSignal(handle: usize) isize {
+    return syscall1(SYS_EVENT_SIGNAL, handle);
+}
+
+/// Block until one of `handles` is signalled; returns which. This is the only
+/// way a program stops running without spinning.
+pub fn waitMany(handles: []const u32, timeout_us: usize) isize {
+    return syscall3(SYS_WAIT_MANY, @intFromPtr(handles.ptr), handles.len, timeout_us);
+}
+
+pub fn eventWait(handle: u32, timeout_us: usize) isize {
+    const one = [_]u32{handle};
+    return waitMany(&one, timeout_us);
+}
+
+/// Publish a service under `name`, returning the serving end of its channel.
+pub fn svcRegister(name: []const u8) isize {
+    return syscall2(SYS_SVC_REGISTER, @intFromPtr(name.ptr), name.len);
+}
+
+pub fn svcConnect(name: []const u8) isize {
+    return syscall2(SYS_SVC_CONNECT, @intFromPtr(name.ptr), name.len);
+}
+
+/// Send a request and block until the reply arrives.
+pub fn call(handle: usize, request: []const u8, reply_buf: []u8) isize {
+    return syscall5(
+        SYS_CALL,
+        handle,
+        @intFromPtr(request.ptr),
+        request.len,
+        @intFromPtr(reply_buf.ptr),
+        reply_buf.len,
+    );
+}
+
+pub const Request = struct { len: usize, token: u32 };
+
+/// Block until a request arrives on a served channel.
+pub fn recv(handle: usize, buf: []u8, timeout_us: usize) ?Request {
+    var token: u32 = 0;
+    const n = syscall5(
+        SYS_RECV,
+        handle,
+        @intFromPtr(buf.ptr),
+        buf.len,
+        @intFromPtr(&token),
+        timeout_us,
+    );
+    if (n < 0) return null;
+    return .{ .len = @intCast(n), .token = token };
+}
+
+pub fn reply(handle: usize, token: u32, payload: []const u8) isize {
+    return syscall4(SYS_REPLY, handle, token, @intFromPtr(payload.ptr), payload.len);
 }

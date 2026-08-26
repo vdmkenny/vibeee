@@ -17,10 +17,10 @@
 //! See design/00-vibeee.md §6.4.
 
 const std = @import("std");
-const console = @import("console.zig");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");
 const heap = @import("heap.zig");
+const wait = @import("wait.zig");
 
 pub const PRIORITY_LEVELS = 32;
 
@@ -74,6 +74,8 @@ pub const Thread = struct {
     stack: []u8,
     /// Intrusive link for whichever queue this thread is on.
     next: ?*Thread = null,
+    /// On a run queue right now. See `Queue.push`.
+    queued: bool = false,
 
     /// Open handles. Lives on the thread because a process is currently one
     /// thread; it moves to a Process struct when that stops being true.
@@ -107,13 +109,25 @@ pub const Thread = struct {
     /// thread is not freed on exit — it stays as a corpse until collected, or
     /// its status would be gone before anyone could read it.
     awaited: bool = false,
+    /// Threads blocked in `waitFor` on this one.
+    exit_queue: wait.Queue = .{},
 };
 
 const Queue = struct {
     head: ?*Thread = null,
     tail: ?*Thread = null,
 
+    /// Enqueue, unless the thread is already on a queue.
+    ///
+    /// The guard is not decoration. These are intrusive lists: a node pushed
+    /// twice ends up pointing at itself, and the resulting cycle makes the
+    /// scheduler hand out one thread forever. That failure is silent, arrives
+    /// far from its cause, and on a machine with no serial port is close to
+    /// undiagnosable — so it is made impossible here rather than relied upon
+    /// not to happen.
     fn push(self: *Queue, t: *Thread) void {
+        if (t.queued) return;
+        t.queued = true;
         t.next = null;
         if (self.tail) |tail| {
             tail.next = t;
@@ -128,6 +142,7 @@ const Queue = struct {
         self.head = t.next;
         if (self.head == null) self.tail = null;
         t.next = null;
+        t.queued = false;
         return t;
     }
 };
@@ -259,29 +274,30 @@ pub fn exitWith(status: i32) noreturn {
         t.exit_status = status;
         t.state = .dead;
         thread_count -= 1;
+        // Before scheduling away: this thread never runs again, so anything
+        // waiting on it must be released now or it never will be.
+        _ = t.exit_queue.wakeAll();
     }
     schedule();
     unreachable; // a dead thread is never rescheduled
 }
 
 /// Block until `child` exits, then return its status and free it.
-///
-/// Polling rather than a wait queue: with one waiter per child and a system
-/// this size, a queue would be machinery without a customer. It becomes one
-/// when something needs to wait on several children at once.
 pub fn waitFor(child: *Thread) i32 {
-    while (true) {
-        const flags = hal.saveAndDisableInterrupts();
-        if (child.state == .dead) {
-            const status = child.exit_status;
-            child.awaited = false;
-            reap(child);
-            hal.restoreInterrupts(flags);
-            return status;
-        }
-        hal.restoreInterrupts(flags);
-        sleepMicros(2_000);
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
+    // Checked before blocking, under the same interrupts-off window that the
+    // block happens in: a child that exited between the caller deciding to
+    // wait and getting here has already emptied its queue.
+    while (child.state != .dead) {
+        wait.block(&child.exit_queue);
     }
+
+    const status = child.exit_status;
+    child.awaited = false;
+    reap(child);
+    return status;
 }
 
 /// Create a thread whose status will be collected by its parent.
@@ -327,11 +343,78 @@ pub fn sleepMicros(us: u64) void {
     sleepUntil(hal.monotonicMicros() + us);
 }
 
+/// A deadline `us` from now, in the form the blocking calls take.
+pub fn deadlineIn(us: u64) u64 {
+    return hal.monotonicMicros() + us;
+}
+
+// ---------------------------------------------------------------------------
+// Blocking
+//
+// The primitives `wait.zig` builds on. They live here rather than there because
+// only the scheduler may touch thread state and the run queues; `wait.zig` owns
+// the queue discipline and calls in.
+// ---------------------------------------------------------------------------
+
+/// Take the calling thread off the run queues until something unblocks it.
+///
+/// With a deadline it also goes on the sleeper list, so a wait that nobody
+/// satisfies still ends. Interrupts must already be disabled by the caller —
+/// see the lost-wakeup rule in `wait.zig`.
+pub fn blockCurrent(deadline_us: ?u64) void {
+    const t = current orelse return;
+
+    if (deadline_us) |deadline| {
+        t.state = .sleeping;
+        t.wake_at = deadline;
+        t.next = sleepers;
+        sleepers = t;
+    } else {
+        t.state = .blocked;
+    }
+
+    schedule();
+}
+
+/// Make a blocked or sleeping thread runnable again.
+///
+/// Idempotent: waking a thread that is already runnable is a no-op rather than
+/// an error, because two queues can fire for the same waiter in the same
+/// interrupts-off window and neither knows about the other.
+pub fn unblock(t: *Thread) void {
+    switch (t.state) {
+        .blocked => {},
+        // A thread blocked with a deadline is on the sleeper list, and leaving
+        // it there would let `wakeSleepers` push it onto the run queues a
+        // second time.
+        .sleeping => removeSleeper(t),
+        else => return,
+    }
+
+    t.state = .ready;
+    t.next = null;
+    active.push(t);
+}
+
+fn removeSleeper(t: *Thread) void {
+    var link = &sleepers;
+    while (link.*) |s| {
+        if (s == t) {
+            link.* = s.next;
+            return;
+        }
+        link = &s.next;
+    }
+}
+
 /// Move any sleeper whose deadline has passed back to the run queues.
 fn wakeSleepers(now: u64) void {
     var link = &sleepers;
     while (link.*) |t| {
         if (t.wake_at <= now) {
+            // Off the sleeper list before going on a run queue: both are
+            // threaded through the same `next` field, so a thread on two lists
+            // at once corrupts whichever is walked second.
             link.* = t.next;
             t.state = .ready;
             t.next = null;
@@ -344,14 +427,18 @@ fn wakeSleepers(now: u64) void {
 
 /// Pick the next thread and switch to it. Must be called with interrupts off.
 fn schedule() void {
-    wakeSleepers(hal.monotonicMicros());
     need_resched = false;
 
     const prev = current;
 
-    // A thread that is still runnable goes back on a queue before we look for
-    // the next one, so it is a candidate to be picked again when it is the only
-    // one left.
+    // The outgoing thread is dealt with *before* sleepers are woken, and the
+    // order is load-bearing. `wakeSleepers` enqueues whatever is due, and the
+    // calling thread is frequently the thread whose own sleep has just
+    // elapsed: waking first would leave it `.ready` and already queued, and
+    // the branch below would then queue it a second time. A node pushed onto
+    // an intrusive list twice links to itself, and a run queue with a cycle in
+    // it hands out the same thread forever — which looks like sleeps returning
+    // instantly, and then like a hang.
     if (prev) |t| {
         switch (t.state) {
             .running, .ready => {
@@ -368,6 +455,8 @@ fn schedule() void {
             .sleeping, .blocked, .dead => {},
         }
     }
+
+    wakeSleepers(hal.monotonicMicros());
 
     var next = active.pop();
     if (next == null) {

@@ -2,9 +2,9 @@
 
 > **Status: partially implemented.**
 >
-> Built and working: physical memory ([`pmm.zig`](../src/kernel/pmm.zig)), the slab heap ([`heap.zig`](../src/kernel/heap.zig)), the O(1) scheduler with per-thread FPU state ([`sched.zig`](../src/kernel/sched.zig)), per-process address spaces, the ELF loader ([`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig)), the handle table ([`handle.zig`](../src/kernel/handle.zig)), table-driven syscalls ([`syscall_table.zig`](../src/kernel/syscall_table.zig)), timekeeping ([`clock.zig`](../src/kernel/clock.zig)), and clean shutdown ([`shutdown.zig`](../src/kernel/shutdown.zig)).
+> Built and working: physical memory ([`pmm.zig`](../src/kernel/pmm.zig)), the slab heap ([`heap.zig`](../src/kernel/heap.zig)), the O(1) scheduler with per-thread FPU state ([`sched.zig`](../src/kernel/sched.zig)), per-process address spaces, the ELF loader ([`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig)), the handle table ([`handle.zig`](../src/kernel/handle.zig)), table-driven syscalls ([`syscall_table.zig`](../src/kernel/syscall_table.zig)), timekeeping ([`clock.zig`](../src/kernel/clock.zig)), blocking and IPC ([`wait.zig`](../src/kernel/wait.zig), [`event.zig`](../src/kernel/event.zig), [`channel.zig`](../src/kernel/channel.zig), [`svc.zig`](../src/kernel/svc.zig)), and clean shutdown ([`shutdown.zig`](../src/kernel/shutdown.zig)).
 >
-> Not yet: IPC channels and shared-memory rings, the userspace-driver API, the ublk bridge, SYSENTER (the dispatcher is still `int 0x80`), and devfs.
+> Not yet: mapping shared memory between address spaces (the ring layout exists in [`lib/ring.zig`](../src/lib/ring.zig); giving two processes the same pages does not), passing handles over channels, the userspace-driver API, the ublk bridge, SYSENTER (the dispatcher is still `int 0x80`), and devfs.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
 > wins: it carries later decisions this document predates.

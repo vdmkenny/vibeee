@@ -10,7 +10,9 @@
 //! on both sides of a syscall.
 
 pub const civil = @import("civil.zig");
+pub const ring = @import("ring.zig");
 
 test {
     _ = civil;
+    _ = ring;
 }

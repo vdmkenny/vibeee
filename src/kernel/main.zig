@@ -8,13 +8,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const bootinfo = @import("bootinfo.zig");
+const channel = @import("channel.zig");
 const console = @import("console.zig");
+const event = @import("event.zig");
 const hal = @import("hal.zig");
 const panic_mod = @import("panic.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
 const bcache = @import("bcache.zig");
 const sched = @import("sched.zig");
+const svc = @import("svc.zig");
 const syscall_abi = @import("syscall_table.zig");
 const platform = @import("../platform.zig");
 
@@ -247,6 +250,8 @@ fn supervisor(_: usize) callconv(.c) void {
         });
     }
 
+    selfTestIpc();
+
     // Kernel bring-up is over; the screen belongs to userspace from here.
     //
     // Not cleared in verbose mode: on a machine with no serial port the boot
@@ -268,6 +273,90 @@ fn supervisor(_: usize) callconv(.c) void {
         console.writeString("ready\n");
         console.setColor(.light_grey, .black);
     }
+}
+
+// ---------------------------------------------------------------------------
+// IPC self-test
+//
+// Exercised at boot for the same reason the heap and the clock are: a broken
+// blocking primitive does not announce itself, it just makes something later
+// hang, and on a machine with no serial port a hang is the least diagnosable
+// failure there is. This proves a thread can block and be woken, that a
+// registered service can be found by name, and that a call reaches a server
+// and its reply comes back.
+// ---------------------------------------------------------------------------
+
+const IPC_SERVICE = "echo.test";
+
+var ipc_server_ready: event.Event = .{};
+
+fn ipcServer(_: usize) callconv(.c) void {
+    const ch = channel.create() catch return;
+    svc.register(IPC_SERVICE, ch) catch {
+        channel.release(ch);
+        return;
+    };
+    // Published before anyone is told to look: a client that connects between
+    // create and register would get ENOENT and fail a working system.
+    ipc_server_ready.signal();
+
+    // One request is all the test needs; a real server loops here forever.
+    const got = channel.recv(ch, null) catch {
+        svc.unregister(IPC_SERVICE);
+        channel.release(ch);
+        return;
+    };
+
+    var answer: [channel.MAX_PAYLOAD]u8 = undefined;
+    const n = got.message.len;
+    // Reversed, so a reply that merely echoes the request buffer back by
+    // accident is not mistaken for one that made the round trip.
+    for (0..n) |i| answer[i] = got.message.data[n - 1 - i];
+    channel.reply(ch, got.token, answer[0..n]) catch {};
+
+    svc.unregister(IPC_SERVICE);
+    channel.release(ch);
+}
+
+fn selfTestIpc() void {
+    // Events first: everything below blocks, and if blocking is broken this is
+    // the last line that will ever print.
+    var e: event.Event = .{};
+    e.signal();
+    e.waitOne(null) catch {
+        console.fail("ipc: a signalled event did not release its waiter", .{});
+        return;
+    };
+
+    _ = sched.spawn("echo.test", .normal, ipcServer, 0, 8192) catch {
+        console.fail("ipc: cannot spawn the test server", .{});
+        return;
+    };
+
+    // Blocking, not polling: this is the primitive under test.
+    ipc_server_ready.waitOne(sched.deadlineIn(1_000_000)) catch {
+        console.fail("ipc: the test server never registered", .{});
+        return;
+    };
+
+    const ch = svc.lookup(IPC_SERVICE) catch {
+        console.fail("ipc: {s} is registered but cannot be found", .{IPC_SERVICE});
+        return;
+    };
+    defer channel.release(ch);
+
+    var reply: channel.Message = .{};
+    channel.call(ch, "vibeee", &reply, sched.deadlineIn(1_000_000)) catch |err| {
+        console.fail("ipc: call failed: {s}", .{@errorName(err)});
+        return;
+    };
+
+    if (!std.mem.eql(u8, reply.slice(), "eeebiv")) {
+        console.fail("ipc: reply was '{s}', expected 'eeebiv'", .{reply.slice()});
+        return;
+    }
+
+    console.debug("ipc", "channels, events and /svc ok", .{});
 }
 
 fn startThreads() void {

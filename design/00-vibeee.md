@@ -2,11 +2,11 @@
 
 A from-scratch minimal graphical OS in Zig. Flagship target: **ASUS Eee PC 701 4G**. Written to be portable to similar constrained machines (other netbooks, ARM CE-era devices) by containing machine-specific code behind explicit boundaries.
 
-**Implementation status.** This document is the design. What exists today is the M0–M1 set —
-boot chain, memory, interrupts, the O(1) scheduler, syscalls, Ring 3 with per-process address
-spaces and an ELF loader, ATA and FAT behind a mount table, the framebuffer console, the i8042
-keyboard with switchable layouts, timekeeping, ACPI shutdown, and a shell with a set of system
-tools — listed precisely in [`../README.md`](../README.md). Everything else here is unbuilt.
+**Implementation status.** This document is the design. What exists today is the M0 set plus part
+of M1 — boot chain, memory, interrupts, the O(1) scheduler, syscalls, Ring 3 with per-process
+address spaces and an ELF loader, IPC (channels, events, `/svc`), ATA and FAT behind a mount
+table, the framebuffer console, the i8042 keyboard with switchable layouts, timekeeping, ACPI
+shutdown, and a shell with a set of system tools — listed precisely in [`../README.md`](../README.md). Everything else here is unbuilt.
 Subsystem documents `01`–`11` carry their own status headers.
 
 Companion docs: [`01-boot.md`](01-boot.md) … [`11-userspace.md`](11-userspace.md) hold the
@@ -231,10 +231,10 @@ Userspace driver IRQs: `irq_attach(gsi) → event handle`. The kernel's stub han
 
 ### 6.8 IPC
 
-- **Channels**: synchronous call/reply, ≤64 B inline payload + ≤4 handles. Sync-by-default kills a whole class of buffering bugs and matches the request/response shape of every server we have.
-- **Shm rings**: SPSC ring buffers in shared memory for bulk data (block requests, audio frames, network payloads, GUI surfaces), with an event handle for wakeups. One ring layout, defined once in `lib/ring.zig`, reused by all four subsystems — this is the single most important internal contract in the system.
-- **Events + `wait_many`**: the only blocking primitive. No signals.
-- **`/svc` registry**: name → channel. Service discovery and the reconnect path after a server restart.
+- **Channels** ([`kernel/channel.zig`](../src/kernel/channel.zig)): synchronous call/reply, ≤64 B inline payload. Sync-by-default kills a whole class of buffering bugs and matches the request/response shape of every server we have. The in-flight call record lives on the calling thread's kernel stack, so a call cannot fail for want of memory; a reply names its call by a token carrying a generation, so a server that has been restarted cannot write a stale reply into a frame that has since gone. Handle passing (≤4 per message) lands with shm, which is the first thing worth passing.
+- **Shm rings**: SPSC ring buffers in shared memory for bulk data (block requests, audio frames, network payloads, GUI surfaces), with an event handle for wakeups. One ring layout, defined once in [`lib/ring.zig`](../src/lib/ring.zig), reused by all four subsystems — this is the single most important internal contract in the system. The layout and its arithmetic exist and are tested; mapping a ring into a second address space is still to come. Byte totals rather than offsets, so full and empty are distinguishable; a power-of-two capacity so the offset is a mask, not a divide; and every index clamped on read, because the header lives in memory the untrusted side can write.
+- **Events + `wait_many`** ([`kernel/event.zig`](../src/kernel/event.zig)): the only blocking primitive. No signals. Events count rather than latch, so a signal that arrives before anyone waits is kept instead of lost. All blocking in the kernel funnels through [`kernel/wait.zig`](../src/kernel/wait.zig), whose waiter nodes live on the blocking thread's stack — waiting allocates nothing, and a blocked thread is off the run queues entirely rather than polling.
+- **`/svc` registry** ([`kernel/svc.zig`](../src/kernel/svc.zig)): name → channel. Service discovery and the reconnect path after a server restart. Clients hold a name, not a handle to one instance, which is what makes a restartable server possible. Closing the serving handle withdraws the name and fails every call still waiting, so a crashed server is distinguishable from a slow one. Visible from userspace as `svc`.
 
 ### 6.9 Debugging without a serial port
 
