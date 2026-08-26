@@ -143,6 +143,32 @@ pub fn build(b: *std.Build) void {
         .dependOn(&syscall_docs.step);
 
     // ---------------------------------------------------------------------
+    // Console fonts, converted from BDF at build time so the .bdf stays the
+    // source of truth and the generated tables are never hand-edited.
+    // ---------------------------------------------------------------------
+    const mkfont = b.addExecutable(.{
+        .name = "mkfont",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mkfont.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+
+    const fonts_step = b.step("fonts", "Regenerate src/fonts/ from third_party BDF files");
+    for ([_][3][]const u8{
+        .{ "third_party/spleen/spleen-8x16.bdf", "src/fonts/spleen_8x16.zig", "Spleen 8x16" },
+        .{ "third_party/spleen/spleen-12x24.bdf", "src/fonts/spleen_12x24.zig", "Spleen 12x24" },
+    }) |spec| {
+        const run = b.addRunArtifact(mkfont);
+        run.addFileArg(b.path(spec[0]));
+        run.addArg(spec[1]);
+        run.addArg(spec[2]);
+        run.has_side_effects = true;
+        fonts_step.dependOn(&run.step);
+    }
+
+    // ---------------------------------------------------------------------
     // `zig build run` — quick QEMU boot without building an SD image.
     // ---------------------------------------------------------------------
     const run = b.addSystemCommand(&.{

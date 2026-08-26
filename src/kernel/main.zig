@@ -46,6 +46,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     // Before anything is drawn: in graphics mode the text buffer is no longer
     // displayed, so output written first would vanish.
     _ = console.useFramebuffer(bi);
+    platform.reportVideo();
 
     // stage2 has no serial port to log to, so it logs to a RAM ring. Replay it
     // only when it has something to say.

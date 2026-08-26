@@ -3,8 +3,14 @@
 //! Presents the same cell interface as the VGA text backend, so the console
 //! layer above is unchanged — only the destination of a character differs.
 //!
-//! Glyphs come from the video ROM, copied out by stage2 before the mode change.
-//! Embedding a font would cost four kilobytes and look less like the machine.
+//! Glyphs come from a bitmap font compiled into the kernel (Spleen by default),
+//! with the video ROM's own font as a fallback when none is built in. A
+//! purpose-designed console font is markedly more legible than the VGA ROM's,
+//! which matters on a 7-inch panel at 133 DPI where every glyph is about three
+//! millimetres tall.
+//!
+//! Bitmaps rather than a scalable face: at sixteen pixels a hand-tuned bitmap
+//! beats anything a rasteriser produces, and there is no hinting to get wrong.
 //!
 //! Colour is the sixteen-entry VGA palette rather than anything richer,
 //! because everything that draws here — the boot log, the panic screen — was
@@ -12,10 +18,14 @@
 
 const std = @import("std");
 const bootinfo = @import("../../kernel/bootinfo.zig");
+const fontlib = @import("font.zig");
 const hal = @import("../../kernel/hal.zig");
 
-pub const GLYPH_WIDTH = 8;
-pub const GLYPH_HEIGHT = 16;
+/// Available fonts, largest last. Selected at boot from the screen size.
+const FONTS = [_]fontlib.Font{
+    @import("../../fonts/spleen_8x16.zig").desc,
+    @import("../../fonts/spleen_12x24.zig").desc,
+};
 
 /// The standard VGA palette, as XRGB8888.
 const PALETTE = [16]u32{
@@ -26,7 +36,9 @@ const PALETTE = [16]u32{
 };
 
 var fb: [*]volatile u8 = undefined;
-var font: [*]const u8 = undefined;
+var font: *const fontlib.Font = &FONTS[0];
+/// The video ROM's font, used only if no font was compiled in.
+var rom_font: ?[*]const u8 = null;
 var pitch: usize = 0;
 var pixel_width: usize = 0;
 var pixel_height: usize = 0;
@@ -52,14 +64,28 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
         hal.mapMmio(bi.fb_addr, @as(usize, bi.fb_pitch) * bi.fb_height) catch return false;
 
     fb = @ptrFromInt(fb_virt);
-    font = @ptrFromInt(hal.physToVirt(bi.font_addr));
+    rom_font = if (bi.font_addr != 0)
+        @as([*]const u8, @ptrFromInt(hal.physToVirt(bi.font_addr)))
+    else
+        null;
+
     pitch = bi.fb_pitch;
     pixel_width = bi.fb_width;
     pixel_height = bi.fb_height;
     bytes_per_pixel = 4;
 
-    columns = pixel_width / GLYPH_WIDTH;
-    rows = pixel_height / GLYPH_HEIGHT;
+    // Pick the largest font that still leaves a usable console. Below roughly
+    // 60 columns, wrapping makes the boot log and the panic screen unreadable,
+    // so legibility gives way to fitting the text.
+    font = &FONTS[0];
+    for (&FONTS) |*candidate| {
+        if (pixel_width / candidate.width >= 60 and pixel_height / candidate.height >= 20) {
+            font = candidate;
+        }
+    }
+
+    columns = pixel_width / font.width;
+    rows = pixel_height / font.height;
     ready = true;
 
     clearAll(PALETTE[0]);
@@ -70,7 +96,9 @@ pub fn active() bool {
     return ready;
 }
 
-pub fn dimensions() struct { columns: usize, rows: usize } {
+pub const Grid = struct { columns: usize, rows: usize };
+
+pub fn dimensions() Grid {
     return .{ .columns = columns, .rows = rows };
 }
 
@@ -95,29 +123,66 @@ fn clearAll(colour: u32) void {
 }
 
 /// Draw one character cell.
-pub fn putAt(col: usize, row: usize, ch: u8, fg: u4, bg: u4) void {
+pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
     if (!ready or col >= columns or row >= rows) return;
 
-    const glyph = font + @as(usize, ch) * GLYPH_HEIGHT;
+    const bits = font.glyph(cp) orelse font.fallback();
     const fg_colour = PALETTE[fg];
     const bg_colour = PALETTE[bg];
 
-    const x0 = col * GLYPH_WIDTH;
-    const y0 = row * GLYPH_HEIGHT;
+    const x0 = col * font.width;
+    const y0 = row * font.height;
 
     var gy: usize = 0;
-    while (gy < GLYPH_HEIGHT) : (gy += 1) {
-        const bits = glyph[gy];
+    while (gy < font.height) : (gy += 1) {
+        const row_start = gy * font.row_bytes;
         var gx: usize = 0;
-        while (gx < GLYPH_WIDTH) : (gx += 1) {
-            // Bit 7 is the leftmost pixel.
-            const lit = (bits >> @intCast(7 - gx)) & 1 != 0;
+        while (gx < font.width) : (gx += 1) {
+            // Rows are big-endian across bytes: bit 7 of the first byte is the
+            // leftmost pixel, so a 12-pixel glyph continues into the next byte.
+            const byte = bits[row_start + gx / 8];
+            const lit = (byte >> @intCast(7 - (gx % 8))) & 1 != 0;
             putPixel(x0 + gx, y0 + gy, if (lit) fg_colour else bg_colour);
         }
     }
 }
 
-pub fn fill(ch: u8, fg: u4, bg: u4) void {
+/// Fill a rectangle in pixels, ignoring the character grid.
+///
+/// Exists so the panic screen can draw a QR code without depending on a glyph.
+/// Rendering modules as half-block characters works only while the font happens
+/// to carry them: a font without them substitutes a notdef box and produces a
+/// symbol that looks plausible and does not scan — the worst possible failure
+/// for a diagnostic whose only job is to be read off a photograph.
+pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
+    if (!ready) return;
+    const colour = PALETTE[colour_index];
+
+    const x_end = @min(x + w, pixel_width);
+    const y_end = @min(y + h, pixel_height);
+
+    var py = y;
+    while (py < y_end) : (py += 1) {
+        var px = x;
+        while (px < x_end) : (px += 1) putPixel(px, py, colour);
+    }
+}
+
+pub const Size = struct { width: usize, height: usize };
+
+pub fn pixelSize() Size {
+    return .{ .width = pixel_width, .height = pixel_height };
+}
+
+pub fn cellSize() Size {
+    return .{ .width = font.width, .height = font.height };
+}
+
+pub fn fontName() []const u8 {
+    return font.name;
+}
+
+pub fn fill(ch: u21, fg: u4, bg: u4) void {
     if (!ready) return;
     // A blank cell is a solid rectangle, so the common case avoids the glyph
     // walk entirely — this runs on every clear and every panic.
@@ -140,15 +205,15 @@ pub fn fill(ch: u8, fg: u4, bg: u4) void {
 pub fn scroll(bg: u4) void {
     if (!ready) return;
 
-    const row_bytes = pitch * GLYPH_HEIGHT;
+    const row_bytes = pitch * font.height;
     const moved = (rows - 1) * row_bytes;
 
     var i: usize = 0;
     while (i < moved) : (i += 1) fb[i] = fb[i + row_bytes];
 
     const colour = PALETTE[bg];
-    var y = (rows - 1) * GLYPH_HEIGHT;
-    while (y < rows * GLYPH_HEIGHT) : (y += 1) {
+    var y = (rows - 1) * font.height;
+    while (y < rows * font.height) : (y += 1) {
         var x: usize = 0;
         while (x < pixel_width) : (x += 1) putPixel(x, y, colour);
     }

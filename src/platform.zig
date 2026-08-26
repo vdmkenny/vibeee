@@ -46,6 +46,18 @@ pub fn earlyConsole() void {
     }
 }
 
+/// Report the console's geometry once the framebuffer, if any, is running.
+pub fn reportVideo() void {
+    const px = console.pixelSize();
+    if (px.width != 0) {
+        console.debug("video", "{d}x{d} pixels, {d}x{d} text, font {s}", .{
+            px.width, px.height, console.width(), console.height(), console.fontName(),
+        });
+    } else {
+        console.debug("video", "{d}x{d} text mode", .{ console.width(), console.height() });
+    }
+}
+
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     acpi.init(bi.rsdp);
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });

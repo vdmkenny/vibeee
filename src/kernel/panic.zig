@@ -210,6 +210,7 @@ fn render(r: *const Report) noreturn {
     drawText(r, text_width);
     if (have_qr) drawQr(&code, console.width() - qr_cols, 1, quiet);
 
+
     hal.halt();
 }
 
@@ -271,15 +272,31 @@ fn drawText(r: *const Report, width: usize) void {
     console.setColor(FG, BG);
 }
 
-/// Render the QR using the upper-half-block glyph, which packs two module rows
-/// into one character cell — a 37x37 symbol then fits in 21 text rows instead
-/// of 37, leaving room for readable text beside it.
-fn drawQr(code: *const qr.Code, origin_col: usize, origin_row: usize, quiet: usize) void {
-    const UPPER_HALF: u8 = 0xDF;
-    const DARK: console.Color = .black;
-    const LIGHT: console.Color = .light_grey;
+const DARK: console.Color = .black;
+const LIGHT: console.Color = .light_grey;
 
+/// Render the QR.
+///
+/// Two paths, because the right answer differs by output device.
+///
+/// With a framebuffer, modules are drawn as plain rectangles. That depends on
+/// no glyph at all, which matters: a font that lacks the block characters
+/// substitutes a notdef box, producing a symbol that looks like a QR code and
+/// does not scan — the worst possible failure for a diagnostic whose only job
+/// is to be read off a photograph. Drawing pixels also gives exactly square
+/// modules at whatever scale fits.
+///
+/// In text mode there are no pixels, so the upper-half-block character is used
+/// to pack two module rows into one cell. That is safe there specifically:
+/// the VGA ROM font is CP437, which always carries it.
+fn drawQr(code: *const qr.Code, origin_col: usize, origin_row: usize, quiet: usize) void {
     const span = @as(usize, code.size) + 2 * quiet;
+
+    if (console.hasPixels()) {
+        drawQrPixels(code, origin_col, origin_row, quiet, span);
+        return;
+    }
+
     var cell_row: usize = 0;
     while (cell_row * 2 < span) : (cell_row += 1) {
         var x: usize = 0;
@@ -289,10 +306,36 @@ fn drawQr(code: *const qr.Code, origin_col: usize, origin_row: usize, quiet: usi
             console.putAt(
                 origin_col + x,
                 origin_row + cell_row,
-                UPPER_HALF,
+                console.BLOCK_UPPER_HALF,
                 if (top) DARK else LIGHT,
                 if (bottom) DARK else LIGHT,
             );
+        }
+    }
+}
+
+fn drawQrPixels(code: *const qr.Code, origin_col: usize, origin_row: usize, quiet: usize, span: usize) void {
+    const screen = console.pixelSize();
+    const cell = console.cellSize();
+
+    const x0 = origin_col * cell.width;
+    const y0 = origin_row * cell.height;
+
+    // Largest whole number of pixels per module that still fits. Whole pixels
+    // matter: a fractional scale makes some modules a pixel wider than others,
+    // which is exactly the distortion a decoder is least tolerant of.
+    const across = (screen.width -| x0) / span;
+    const down = (screen.height -| y0) / span;
+    const scale = @max(@as(usize, 2), @min(across, down));
+
+    console.fillPixelRect(x0, y0, span * scale, span * scale, LIGHT);
+
+    var my: usize = 0;
+    while (my < span) : (my += 1) {
+        var mx: usize = 0;
+        while (mx < span) : (mx += 1) {
+            if (!moduleAt(code, mx, my, quiet)) continue;
+            console.fillPixelRect(x0 + mx * scale, y0 + my * scale, scale, scale, DARK);
         }
     }
 }

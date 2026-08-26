@@ -11,6 +11,24 @@ const vgatext = @import("../drv/video/vgatext.zig");
 
 pub const Color = vgatext.Color;
 
+/// Code points the console draws that are not plain ASCII.
+pub const BLOCK_UPPER_HALF: u21 = 0x2580;
+
+/// Map a code point to the VGA text mode's CP437 byte.
+///
+/// Only the handful the kernel actually draws. Everything else falls back to
+/// '?': a visible marker beats a blank, which reads as a bug in whatever
+/// produced the text.
+fn toCp437(cp: u21) u8 {
+    return switch (cp) {
+        0x00...0x7F => @intCast(cp),
+        BLOCK_UPPER_HALF => 0xDF,
+        0x2584 => 0xDC, // lower half block
+        0x2588 => 0xDB, // full block
+        else => '?',
+    };
+}
+
 /// Console geometry. Fixed at 80x25 in text mode, and whatever the framebuffer
 /// affords otherwise, so it cannot be a compile-time constant.
 var columns: usize = vgatext.WIDTH;
@@ -33,6 +51,31 @@ pub const ROWS = vgatext.HEIGHT;
 /// Called early, before anything has been drawn: in graphics mode the text
 /// buffer at 0xB8000 is not displayed, so output written before the switch
 /// would simply vanish.
+/// True when the console can address individual pixels.
+pub fn hasPixels() bool {
+    return fbcon.active();
+}
+
+pub const Size = fbcon.Size;
+
+pub fn pixelSize() Size {
+    return if (fbcon.active()) fbcon.pixelSize() else .{ .width = 0, .height = 0 };
+}
+
+pub fn cellSize() Size {
+    return if (fbcon.active()) fbcon.cellSize() else .{ .width = 8, .height = 16 };
+}
+
+/// Fill a pixel rectangle. Does nothing in text mode.
+pub fn fillPixelRect(x: usize, y: usize, w: usize, h: usize, colour: Color) void {
+    if (fbcon.active()) fbcon.fillRect(x, y, w, h, @intFromEnum(colour));
+}
+
+/// Name of the active font, for the boot log.
+pub fn fontName() []const u8 {
+    return if (fbcon.active()) fbcon.fontName() else "VGA ROM 8x16";
+}
+
 pub fn useFramebuffer(bi: *const bootinfo.BootInfo) bool {
     if (!fbcon.init(bi)) return false;
     const dims = fbcon.dimensions();
@@ -43,19 +86,19 @@ pub fn useFramebuffer(bi: *const bootinfo.BootInfo) bool {
 }
 
 const backend = struct {
-    fn putAt(x: usize, y: usize, ch: u8, front: Color, back: Color) void {
+    fn putAt(x: usize, y: usize, cp: u21, front: Color, back: Color) void {
         if (fbcon.active()) {
-            fbcon.putAt(x, y, ch, @intFromEnum(front), @intFromEnum(back));
+            fbcon.putAt(x, y, cp, @intFromEnum(front), @intFromEnum(back));
         } else {
-            vgatext.putAt(x, y, ch, front, back);
+            vgatext.putAt(x, y, toCp437(cp), front, back);
         }
     }
 
-    fn fill(ch: u8, front: Color, back: Color) void {
+    fn fill(cp: u21, front: Color, back: Color) void {
         if (fbcon.active()) {
-            fbcon.fill(ch, @intFromEnum(front), @intFromEnum(back));
+            fbcon.fill(cp, @intFromEnum(front), @intFromEnum(back));
         } else {
-            vgatext.fill(ch, front, back);
+            vgatext.fill(toCp437(cp), front, back);
         }
     }
 
@@ -110,8 +153,8 @@ pub fn moveTo(x: usize, y: usize) void {
 
 /// Write one cell at an absolute position, bypassing the cursor. Used by the
 /// panic screen, which paints a fixed layout rather than a scrolling log.
-pub fn putAt(x: usize, y: usize, ch: u8, f: Color, b: Color) void {
-    backend.putAt(x, y, ch, f, b);
+pub fn putAt(x: usize, y: usize, cp: u21, f: Color, b: Color) void {
+    backend.putAt(x, y, cp, f, b);
 }
 
 fn newline() void {
