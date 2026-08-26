@@ -38,6 +38,42 @@ var fb: [*]volatile u8 = undefined;
 var font: *const fontlib.Font = &FONTS[0];
 /// The video ROM's font, used only if no font was compiled in.
 var rom_font: ?[*]const u8 = null;
+/// One character cell as it currently appears on screen.
+///
+/// Kept so scrolling never reads the framebuffer back. The graphics aperture is
+/// uncached on real hardware, where a read is a full bus round trip and a write
+/// can be posted, so moving text by copying pixels costs far more than
+/// redrawing the characters that changed.
+const Cell = packed struct(u32) {
+    cp: u21,
+    fg: u4,
+    bg: u4,
+    _reserved: u3 = 0,
+
+    /// A space draws the same whatever its foreground, so the colour is
+    /// normalised away and blank-over-blank compares equal and repaints
+    /// nothing. Most of a text console is blank.
+    fn of(cp: u21, fg: u4, bg: u4) Cell {
+        return .{ .cp = cp, .fg = if (cp == ' ') 0 else fg, .bg = bg };
+    }
+
+    fn same(self: Cell, other: Cell) bool {
+        return @as(u32, @bitCast(self)) == @as(u32, @bitCast(other));
+    }
+};
+
+/// Bounds the grid. A panel larger than this still displays; the console uses
+/// as much of it as fits.
+const MAX_COLUMNS = 128;
+const MAX_ROWS = 48;
+
+var cells: [MAX_COLUMNS * MAX_ROWS]Cell = @splat(Cell{ .cp = ' ', .fg = 0, .bg = 0 });
+
+/// Whether the grid still describes the screen. `fillRect` paints pixels the
+/// grid cannot represent, so after it the next scroll repaints every cell
+/// rather than trusting a comparison.
+var trust_grid = true;
+
 var phys: usize = 0;
 var pitch: usize = 0;
 var pixel_width: usize = 0;
@@ -91,9 +127,11 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
         }
     }
 
-    columns = pixel_width / font.width;
-    rows = pixel_height / font.height;
+    columns = @min(pixel_width / font.width, MAX_COLUMNS);
+    rows = @min(pixel_height / font.height, MAX_ROWS);
     ready = true;
+
+    setAll(Cell.of(' ', 0, 0));
 
     clearAll(PALETTE[0]);
     return true;
@@ -149,9 +187,16 @@ fn clearAll(colour: u32) void {
 pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
     if (!ready or suspended or col >= columns or row >= rows) return;
 
-    const bits = font.glyph(cp) orelse font.fallback();
-    const fg_colour = PALETTE[fg];
-    const bg_colour = PALETTE[bg];
+    const cell = Cell.of(cp, fg, bg);
+    cells[row * columns + col] = cell;
+    drawCell(col, row, cell);
+}
+
+/// Paint a cell, without touching the grid. The caller has already recorded it.
+fn drawCell(col: usize, row: usize, cell: Cell) void {
+    const bits = font.glyph(cell.cp) orelse font.fallback();
+    const fg_colour = PALETTE[cell.fg];
+    const bg_colour = PALETTE[cell.bg];
 
     const x0 = col * font.width;
     const y0 = row * font.height;
@@ -179,6 +224,9 @@ pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
 /// for a diagnostic whose only job is to be read off a photograph.
 pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
     if (!ready or suspended) return;
+    // Pixels the grid has no way to describe, so it no longer speaks for the
+    // screen and the next scroll repaints unconditionally.
+    trust_grid = false;
     const colour = PALETTE[colour_index];
 
     const x_end = @min(x + w, pixel_width);
@@ -207,6 +255,10 @@ pub fn fontName() []const u8 {
 
 pub fn fill(ch: u21, fg: u4, bg: u4) void {
     if (!ready or suspended) return;
+
+    const cell = Cell.of(ch, fg, bg);
+    setAll(cell);
+
     // A blank cell is a solid rectangle, so the common case avoids the glyph
     // walk entirely, this runs on every clear and every panic.
     if (ch == ' ') {
@@ -216,32 +268,48 @@ pub fn fill(ch: u21, fg: u4, bg: u4) void {
     var row: usize = 0;
     while (row < rows) : (row += 1) {
         var col: usize = 0;
-        while (col < columns) : (col += 1) putAt(col, row, ch, fg, bg);
+        while (col < columns) : (col += 1) drawCell(col, row, cell);
     }
+}
+
+/// Record `cell` in every position, and trust the grid again.
+fn setAll(cell: Cell) void {
+    @memset(cells[0 .. columns * rows], cell);
+    trust_grid = true;
 }
 
 /// Scroll up one text row.
 ///
-/// A raw copy of the pixels above, rather than redrawing glyphs: a full
-/// redraw would mean rasterising two thousand characters, and this runs
-/// every time the log reaches the bottom of the screen.
+/// Rasterising the characters that moved, rather than copying the pixels above
+/// them. Copying costs a framebuffer read per pixel, and on hardware where the
+/// aperture is uncached those reads dominate everything else the console does.
 pub fn scroll(bg: u4) void {
     if (!ready or suspended) return;
 
-    const row_words = pitch * font.height / 4;
-    const moved = (rows - 1) * row_words;
-    const words: [*]volatile u32 = @ptrCast(@alignCast(fb));
-
-    var i: usize = 0;
-    while (i < moved) : (i += 1) words[i] = words[i + row_words];
-
-    const colour = PALETTE[bg];
-    var y = (rows - 1) * font.height;
-    while (y < rows * font.height) : (y += 1) {
-        const line = lineAt(y);
-        var x: usize = 0;
-        while (x < pixel_width) : (x += 1) line[x] = colour;
+    // The text moves in RAM and only the cells whose contents actually changed
+    // are repainted, so the framebuffer is written and never read. A boot log
+    // leaves most of each line blank, and blank over blank repaints nothing.
+    var row: usize = 0;
+    while (row + 1 < rows) : (row += 1) {
+        var col: usize = 0;
+        while (col < columns) : (col += 1) {
+            const incoming = cells[(row + 1) * columns + col];
+            const at = &cells[row * columns + col];
+            if (trust_grid and incoming.same(at.*)) continue;
+            at.* = incoming;
+            drawCell(col, row, incoming);
+        }
     }
+
+    const blank = Cell.of(' ', 0, bg);
+    var col: usize = 0;
+    while (col < columns) : (col += 1) {
+        const at = &cells[(rows - 1) * columns + col];
+        if (trust_grid and blank.same(at.*)) continue;
+        at.* = blank;
+        drawCell(col, rows - 1, blank);
+    }
+    trust_grid = true;
 }
 
 /// No hardware cursor exists in a linear framebuffer. Drawing one would mean
