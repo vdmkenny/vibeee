@@ -90,12 +90,20 @@ fn unmountAll() void {
     }
 }
 
-/// Flush every block device directly.
+/// Flush every drive that was written to.
 ///
 /// Unmounting already flushed the mounted ones; this catches devices with no
 /// filesystem on them, and anything a failed unmount left behind.
+///
+/// Whole drives only, and only those that have been written. A partition
+/// forwards its flush to the drive underneath, so flushing the partitions as
+/// well asks the same drive the same question once per partition. A drive
+/// nothing has written to has nothing to commit, and asking anyway means a
+/// machine that only ever read from its disk reports failures at every
+/// shutdown for a command it never needed.
 fn flushDevices() void {
     for (block.list()) |*dev| {
+        if (dev.offset != 0 or !dev.written) continue;
         dev.flush() catch |err| {
             console.warn("shutdown: {s} did not flush: {s}", .{ dev.name, @errorName(err) });
         };

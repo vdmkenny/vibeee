@@ -33,6 +33,21 @@ pub const Device = struct {
     /// Set for a partition; zero for a whole device.
     offset: u64 = 0,
     read_only: bool = false,
+    /// Whether anything has been written since the device was registered.
+    /// Nothing to commit means nothing to flush, and a drive asked to flush a
+    /// cache it never filled can only answer with an error it does not owe.
+    written: bool = false,
+
+    /// Writing goes through a partition to the drive underneath, so the drive
+    /// is what has to remember it, not the window onto it.
+    fn markWritten(self: *const Device) void {
+        const mutable: *Device = @constCast(self);
+        mutable.written = true;
+        if (self.offset == 0) return;
+        for (devices[0..device_count]) |*d| {
+            if (d.offset == 0 and d.ctx == self.ctx) d.written = true;
+        }
+    }
 
     pub fn read(self: *const Device, lba: u64, buf: []u8) Error!void {
         if (buf.len % SECTOR_SIZE != 0) return error.NotSupported;
@@ -47,7 +62,8 @@ pub const Device = struct {
         const count = buf.len / SECTOR_SIZE;
         if (lba + count > self.sectors) return error.OutOfRange;
         const w = self.ops.write orelse return error.NotSupported;
-        return w(self.ctx, self.offset + lba, buf);
+        try w(self.ctx, self.offset + lba, buf);
+        self.markWritten();
     }
 
     pub fn flush(self: *const Device) Error!void {
@@ -96,10 +112,14 @@ const PARTITION_TABLE_OFFSET = 0x1BE;
 pub const PartitionType = enum(u8) {
     empty = 0x00,
     fat16 = 0x06,
+    /// NTFS, and also HPFS and exFAT, which all share the byte.
+    ntfs = 0x07,
     fat32_chs = 0x0B,
     fat32_lba = 0x0C,
     fat16_lba = 0x0E,
     linux = 0x83,
+    /// On this machine's firmware, the partition the BIOS writes its POST
+    /// cache into. Left alone by decision, not by inability.
     efi_system = 0xEF,
     _,
 
@@ -107,6 +127,19 @@ pub const PartitionType = enum(u8) {
         return switch (self) {
             .fat16, .fat32_chs, .fat32_lba, .fat16_lba => true,
             else => false,
+        };
+    }
+
+    /// Why a partition of this type holds nothing this can mount. Null when it
+    /// is one that can be.
+    pub fn whyUnreadable(self: PartitionType) ?[]const u8 {
+        return switch (self) {
+            .fat16, .fat32_chs, .fat32_lba, .fat16_lba => null,
+            .empty => "empty",
+            .ntfs => "ntfs, no driver",
+            .linux => "linux, no driver",
+            .efi_system => "firmware's, left alone",
+            _ => "not a filesystem this reads",
         };
     }
 };
@@ -206,13 +239,20 @@ pub fn scanPartitions(disk: *const Device) usize {
             .read_only = disk.read_only,
         });
 
-        console.debug("block", "{s}p{d} type {x:0>2} lba {d} +{d} ({d} MiB)", .{
+        // Named rather than numbered where the type is one we know, and said
+        // outright when it holds something this cannot read: a partition that
+        // simply never appears leaves a reader wondering whether the disk was
+        // seen at all.
+        const kind: PartitionType = @enumFromInt(raw.type);
+        console.debug("block", "{s}p{d} type {x:0>2} lba {d} +{d} ({d} MiB){s}{s}", .{
             disk.name,
             i + 1,
             raw.type,
             raw.lba_first,
             raw.sectors,
             @as(u64, raw.sectors) * SECTOR_SIZE / (1024 * 1024),
+            if (kind.whyUnreadable() == null) "" else ", ",
+            kind.whyUnreadable() orelse "",
         });
     }
 
