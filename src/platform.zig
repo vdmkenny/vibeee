@@ -56,7 +56,7 @@ pub fn earlyConsole() void {
 ///
 /// Done here because it is the one place allowed to know about both the
 /// firmware tables and the kernel at once.
-fn publishPlatform(bi: *const bootinfo.BootInfo) void {
+fn publishPlatform() void {
     const ram = smbios.memoryHardware();
 
     sysinfo.setPlatform(.{
@@ -71,9 +71,6 @@ fn publishPlatform(bi: *const bootinfo.BootInfo) void {
         .ram_speed_mhz = if (ram) |r| r.speed_mhz else 0,
         .ram_type = if (ram) |r| r.typeName() else "",
 
-        .fb_width = bi.fb_width,
-        .fb_height = bi.fb_height,
-        .fb_bpp = bi.fb_bpp,
     });
 
     if (smbios.systemProduct()) |product| {
@@ -116,7 +113,7 @@ pub fn interruptRouting() ?irq.Routing {
 
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     smbios.init();
-    publishPlatform(bi);
+    publishPlatform();
 
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
 

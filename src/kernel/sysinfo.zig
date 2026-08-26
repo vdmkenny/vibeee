@@ -44,11 +44,6 @@ pub const Platform = struct {
     ram_devices: u8 = 0,
     ram_speed_mhz: u16 = 0,
     ram_type: []const u8 = "",
-
-    /// Display mode, when a framebuffer is running.
-    fb_width: u16 = 0,
-    fb_height: u16 = 0,
-    fb_bpp: u8 = 0,
 };
 
 var platform: Platform = .{};
@@ -118,8 +113,11 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             if (platform.ram_devices == 1) "" else "s",
         });
     } else if (eq(key, "display")) {
-        if (platform.fb_width != 0) {
-            try w.print("{d}x{d} {d}bpp", .{ platform.fb_width, platform.fb_height, platform.fb_bpp });
+        // Asked of the console rather than remembered from boot: a modeset
+        // changes this underneath, and a stale answer is worse than none.
+        const px = console.pixelSize();
+        if (px.width != 0) {
+            try w.print("{d}x{d} 32bpp", .{ px.width, px.height });
         } else {
             try w.print("text mode", .{});
         }

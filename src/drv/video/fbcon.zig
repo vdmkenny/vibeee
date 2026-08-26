@@ -154,15 +154,22 @@ pub fn layout() Layout {
     return .{ .addr = phys, .pitch = pitch };
 }
 
+/// The shape the boot log and the panic screen are written for. A font that
+/// leaves less than this wraps them, which costs more legibility than the
+/// larger glyphs gain.
+const MIN_COLUMNS = 80;
+const MIN_ROWS = 24;
+
 /// Choose a font for the current geometry and derive the character grid.
 ///
-/// Pick the largest font that still leaves a usable console. Below roughly 60
-/// columns, wrapping makes the boot log and the panic screen unreadable, so
-/// legibility gives way to fitting the text.
+/// The largest font that still leaves a console of that shape, falling back to
+/// the smallest when a panel cannot manage even that.
 fn fitConsole() void {
     font = &FONTS[0];
     for (&FONTS) |*candidate| {
-        if (pixel_width / candidate.width >= 60 and pixel_height / candidate.height >= 20) {
+        if (pixel_width / candidate.width >= MIN_COLUMNS and
+            pixel_height / candidate.height >= MIN_ROWS)
+        {
             font = candidate;
         }
     }
