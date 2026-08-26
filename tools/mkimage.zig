@@ -19,7 +19,16 @@ const STAGE2_LBA = 1;
 const STAGE2_MAX_SECTORS = 63;
 const KERNEL_LBA = 64;
 const KERNEL_MAX_SECTORS = 8192 - KERNEL_LBA;
-const PART1_LBA = 8192; // 4 MiB
+
+/// The root filesystem, as a plain FAT image loaded into RAM at boot.
+///
+/// It has to be reachable without a filesystem driver — stage2 reads it as a
+/// flat run of sectors — so it lives outside any partition, between the kernel
+/// and partition 1.
+const ROOTFS_LBA = 8192; // 4 MiB
+const ROOTFS_MAX_SECTORS = 32768 - ROOTFS_LBA; // up to 12 MiB
+
+const PART1_LBA = 32768; // 16 MiB
 const DEFAULT_IMAGE_MB = 48;
 
 const STAGE2_SIGNATURE = "VIBEEE2!";
@@ -38,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (args.len < 5) {
         std.debug.print(
-            \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img> [size_mb] [cmdline]
+            \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img> [size_mb] [cmdline] [rootfs.img]
             \\
         , .{});
         return error.Usage;
@@ -55,6 +64,22 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(stage2);
     const kernel = try readFile(cwd, io, gpa, args[3]);
     defer gpa.free(kernel);
+
+    // Optional: an image built elsewhere (mtools) and packed in whole.
+    const rootfs: []u8 = if (args.len >= 8 and args[7].len > 0)
+        try readFile(cwd, io, gpa, args[7])
+    else
+        &.{};
+    defer if (rootfs.len > 0) gpa.free(rootfs);
+
+    const rootfs_sectors = divCeil(rootfs.len, SECTOR);
+    if (rootfs_sectors > ROOTFS_MAX_SECTORS) {
+        std.debug.print(
+            "rootfs is {d} KiB; the reserved region holds {d} KiB. Raise PART1_LBA.\n",
+            .{ rootfs.len / 1024, ROOTFS_MAX_SECTORS * SECTOR / 1024 },
+        );
+        return error.RootfsTooLarge;
+    }
 
     // --- size checks, with actionable messages ---------------------------
     if (stage1.len > 440) {
@@ -92,9 +117,16 @@ pub fn main(init: std.process.Init) !void {
     const s2_off = STAGE2_LBA * SECTOR;
     @memcpy(image[s2_off..][0..stage2.len], stage2);
     const cmdline: []const u8 = if (args.len >= 7) args[6] else "";
-    try patchStage2(image[s2_off..][0..stage2.len], kernel_sectors, kernel.len, cmdline);
+    try patchStage2(image[s2_off..][0..stage2.len], .{
+        .kernel_sectors = kernel_sectors,
+        .kernel_bytes = kernel.len,
+        .cmdline = cmdline,
+        .rootfs_sectors = rootfs_sectors,
+        .rootfs_bytes = rootfs.len,
+    });
 
     @memcpy(image[KERNEL_LBA * SECTOR ..][0..kernel.len], kernel);
+    if (rootfs.len > 0) @memcpy(image[ROOTFS_LBA * SECTOR ..][0..rootfs.len], rootfs);
 
     try cwd.writeFile(io, .{ .sub_path = args[4], .data = image });
 
@@ -105,6 +137,7 @@ pub fn main(init: std.process.Init) !void {
         \\  kernel  {d:>7} B  ({d} sectors at LBA {d})
         \\  part 1  FAT32 at LBA {d}, {d} MiB
         \\  total   {d} MiB
+        \\  rootfs  {d:>7} B  ({d} sectors at LBA {d})
         \\  cmdline "{s}"
         \\
     , .{
@@ -119,6 +152,9 @@ pub fn main(init: std.process.Init) !void {
         PART1_LBA,
         (total_sectors - PART1_LBA) * SECTOR / (1024 * 1024),
         size_mb,
+        rootfs.len,
+        rootfs_sectors,
+        ROOTFS_LBA,
         cmdline,
     });
 }
@@ -128,26 +164,44 @@ pub fn main(init: std.process.Init) !void {
 /// without the tool needing to know.
 const CMDLINE_MAX = 63;
 
-fn patchStage2(buf: []u8, kernel_sectors: usize, kernel_bytes: usize, cmdline: []const u8) !void {
+const Stage2Fields = struct {
+    kernel_sectors: usize,
+    kernel_bytes: usize,
+    cmdline: []const u8,
+    rootfs_sectors: usize,
+    rootfs_bytes: usize,
+};
+
+fn patchStage2(buf: []u8, fields: Stage2Fields) !void {
     const idx = std.mem.indexOf(u8, buf, STAGE2_SIGNATURE) orelse {
         std.debug.print("stage2 header signature not found — is boot/stage2.asm current?\n", .{});
         return error.MissingStage2Header;
     };
-    // Fields follow the 8-byte signature: kernel_lba, kernel_sectors, kernel_bytes.
+    // Field order matches the header in boot/stage2.asm.
     var p = idx + STAGE2_SIGNATURE.len;
-    std.mem.writeInt(u32, buf[p..][0..4], KERNEL_LBA, .little);
-    p += 4;
-    std.mem.writeInt(u32, buf[p..][0..4], @intCast(kernel_sectors), .little);
-    p += 4;
-    std.mem.writeInt(u32, buf[p..][0..4], @intCast(kernel_bytes), .little);
-    p += 4;
 
-    if (cmdline.len > CMDLINE_MAX) {
-        std.debug.print("cmdline is {d} bytes; the header holds {d}\n", .{ cmdline.len, CMDLINE_MAX });
+    const put = struct {
+        fn u32At(b: []u8, pos: *usize, value: usize) void {
+            std.mem.writeInt(u32, b[pos.*..][0..4], @intCast(value), .little);
+            pos.* += 4;
+        }
+    };
+
+    put.u32At(buf, &p, KERNEL_LBA);
+    put.u32At(buf, &p, fields.kernel_sectors);
+    put.u32At(buf, &p, fields.kernel_bytes);
+
+    if (fields.cmdline.len > CMDLINE_MAX) {
+        std.debug.print("cmdline is {d} bytes; the header holds {d}\n", .{ fields.cmdline.len, CMDLINE_MAX });
         return error.CmdlineTooLong;
     }
-    @memcpy(buf[p..][0..cmdline.len], cmdline);
-    buf[p + cmdline.len] = 0;
+    @memcpy(buf[p..][0..fields.cmdline.len], fields.cmdline);
+    buf[p + fields.cmdline.len] = 0;
+    p += CMDLINE_MAX + 1;
+
+    put.u32At(buf, &p, if (fields.rootfs_sectors == 0) 0 else ROOTFS_LBA);
+    put.u32At(buf, &p, fields.rootfs_sectors);
+    put.u32At(buf, &p, fields.rootfs_bytes);
 }
 
 fn writeMbr(mbr: []u8, total_sectors: usize) void {

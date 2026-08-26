@@ -40,6 +40,7 @@ Every device gets an owner or an explicit exclusion. Facts from the research rep
 | Celeron M 353 Dothan | CPUID 0x06D8 | `arch/x86` | 630 MHz (9×70), **no EIST/P-states**, SSE2, no SSE3, SYSENTER, LAPIC. `[HIGH]` |
 | 910GML host bridge | 8086:2590 | kernel PCI | — |
 | GMA 900 IGD | 8086:2592 | `drv/video/gma900` (in-kernel) | Native LVDS modeset; **VBE has no 800×480** `[HIGH]` |
+| Any VGA-class device | class 03:00 | `drv/video/vesafb` (fallback) | VBE linear framebuffer, mode set by stage2 in real mode. Works on this machine at 640×480, on QEMU, and on unknown hardware |
 | IGD 2nd function | 8086:2792 | none | Not a head; ignore |
 | HDA controller | 8086:2668 | `sndd` (userspace) | Codec ALC662, SSID 1043:82a1 `[HIGH]` |
 | PCIe root ports | 8086:2660/2662/2664 | kernel PCI + `platd` | WiFi hot-unplug lives here |
@@ -287,6 +288,37 @@ steady-state write volume is low to begin with.
 
 If a stronger filesystem is ever wanted, the answer is to port an existing one
 (littlefs is the natural fit for flash), not to write one.
+
+**The root filesystem is a FAT image loaded into RAM.** Not an optimisation — a
+necessity. On the target the SD card sits behind a USB card reader, so the BIOS
+can read it in real mode but the kernel cannot reach it at all until `usbd`
+exists. stage2 therefore copies the root filesystem into RAM before leaving real
+mode, and everything needed to reach a shell has to be in that copy.
+
+It is a plain FAT image rather than a bespoke container, so the existing driver
+mounts it with no new code and it can be inspected or edited from any other
+machine. It is writable, which removes the need for an overlay for `/tmp`.
+
+*On compression, and squashfs.* The rootfs is currently uncompressed. That is
+right while it holds kilobytes; once it holds a shell, utilities, fonts and
+applications, the BIOS-USB read path (roughly 2–8 MB/s) makes compression worth
+several seconds of boot time. The cheap step then is to compress the FAT image
+as a blob and decompress it into RAM — one decompressor, no second filesystem.
+squashfs is the standard answer to this problem and would additionally
+decompress on demand, so a large root would occupy only the pages actually
+touched. It is deferred rather than rejected: it costs a reader of a thousand
+or so lines plus a decompressor, and adds a second filesystem implementation
+immediately after the decision to have only one. Revisit it when RAM pressure or
+boot time actually justifies it.
+
+**Detecting FAT32.** The width is *not* decided by cluster count alone. The
+specification says the count decides, and that describes what a correct
+formatter produces — but real formatters will happily create a small FAT32
+volume whose cluster count falls in the FAT16 range, and reading its 32-bit FAT
+entries as 16-bit ones produces a chain that ends early and looks like
+corruption. FAT32 is identified structurally instead: `sectors_per_fat_16` and
+`root_entries` are zero on FAT32 and never zero otherwise. Only once FAT32 is
+ruled out does the count distinguish 12 from 16.
 
 **Long filenames.** VFAT is not an alternative to FAT32 — it is the long-name
 extension, and it applies to all three FAT widths. Directory scanning assembles

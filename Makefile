@@ -27,7 +27,12 @@ QEMU_FLAGS := -machine pc -cpu pentium2 -m 512M -no-reboot
 # Partition 1 layout, mirrored from tools/mkimage.zig. mtools addresses an
 # image at a byte offset with the @@ syntax, which is how the filesystem gets
 # created inside the partition without loopback mounts or root.
-PART1_LBA     := 8192
+ROOTFS_IMG    := $(BUILD)/rootfs.img
+# Small on purpose: it is read over the BIOS's slow USB path at boot, so every
+# kilobyte is time on the target machine.
+ROOTFS_MB     ?= 2
+
+PART1_LBA     := 32768
 PART1_OFFSET  := $(shell expr $(PART1_LBA) \* 512)
 PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
 
@@ -84,8 +89,18 @@ $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 
 image: $(IMAGE)
 
-$(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
-	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)"
+# The root filesystem: a plain FAT image, loaded into RAM by stage2.
+#
+# FAT rather than a bespoke container because the driver already exists, and
+# because it can then be inspected and edited from any other machine.
+$(ROOTFS_IMG): kernel | $(BUILD)
+	@rm -f $@
+	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
+	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
+	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
+
+$(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$@
 
 # Create the filesystem in partition 1 and fill it. Separate from mkimage
@@ -112,8 +127,8 @@ populate: kernel
 # address correctly.
 # The development loop boots verbose, so the self-test results are visible.
 # A plain `make image` is quiet: a working system should boot without narrating.
-qemu: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
-	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-dev.img $(IMAGE_MB) verbose
+qemu: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-dev.img $(IMAGE_MB) verbose $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-dev.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-dev.img
 
@@ -147,8 +162,8 @@ qr-verify: $(BUILD)/qrdump
 # Boot straight into the panic screen, to check its layout and that the QR
 # still scans after a change.
 .PHONY: qemu-panic
-qemu-panic: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
-	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-panic.img $(IMAGE_MB) panictest
+qemu-panic: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-panic.img $(IMAGE_MB) panictest $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-panic.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-panic.img
 

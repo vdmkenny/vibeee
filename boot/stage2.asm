@@ -19,6 +19,7 @@ BITS 16
 ORG 0x8000
 
 KERNEL_PHYS     equ 0x100000        ; where the kernel lands
+ROOTFS_PHYS     equ 0x1000000       ; 16 MiB: clear of the kernel and its heap
 LOAD_BUF_SEG    equ 0x2000          ; 0x20000: staging buffer for disk reads
 CHUNK_SECTORS   equ 64              ; 32 KiB per INT 13h call
 BOOTINFO_ADDR   equ 0x6000
@@ -32,6 +33,8 @@ BI_VERSION      equ 4
 BI_SOURCE       equ 6
 BI_KERNEL_PHYS  equ 8
 BI_KERNEL_LEN   equ 12
+BI_ROOTFS_PHYS  equ 16
+BI_ROOTFS_LEN   equ 20
 BI_RSDP         equ 24
 BI_DISK_SIG     equ 28
 BI_BOOT_PART    equ 32
@@ -59,6 +62,9 @@ kernel_lba:      dd 0               ; PATCHED: first LBA of the kernel image
 kernel_sectors:  dd 0               ; PATCHED: kernel size in 512-byte sectors
 kernel_bytes:    dd 0               ; PATCHED: exact kernel byte length
 cmdline:         times 64 db 0      ; PATCHED: boot parameters, NUL-terminated
+rootfs_lba:      dd 0               ; PATCHED: first LBA of the root filesystem
+rootfs_sectors:  dd 0               ; PATCHED: root filesystem size in sectors
+rootfs_bytes:    dd 0               ; PATCHED: exact root filesystem byte length
 
 main:
     cli
@@ -82,6 +88,7 @@ main:
     call collect_e820
     call find_rsdp
     call load_kernel
+    call load_rootfs
     call finish_bootinfo
 
     mov si, msg_entering
@@ -204,6 +211,13 @@ finish_bootinfo:
     mov dword [BOOTINFO_ADDR + BI_KERNEL_PHYS], KERNEL_PHYS
     mov eax, [kernel_bytes]
     mov [BOOTINFO_ADDR + BI_KERNEL_LEN], eax
+
+    mov eax, [rootfs_bytes]
+    test eax, eax
+    jz .no_rootfs
+    mov dword [BOOTINFO_ADDR + BI_ROOTFS_PHYS], ROOTFS_PHYS
+    mov [BOOTINFO_ADDR + BI_ROOTFS_LEN], eax
+.no_rootfs:
     xor eax, eax
     mov al, [boot_drive]
     mov [BOOTINFO_ADDR + BI_DISK_SIG], eax          ; refined once we read the MBR
@@ -361,9 +375,37 @@ rsdp_sig: db "RSD PTR "
 ; ---------------------------------------------------------------------------
 load_kernel:
     mov eax, [kernel_lba]
-    mov [dap_lba], eax
     mov ecx, [kernel_sectors]
     mov edi, KERNEL_PHYS
+    jmp load_blob
+
+; ---------------------------------------------------------------------------
+; The root filesystem, loaded into RAM.
+;
+; This is not an optimisation. On the target machine the SD card sits behind a
+; USB card reader, and the BIOS can only reach it in real mode: the moment the
+; kernel enters protected mode, the medium it booted from becomes unreadable
+; until a USB stack exists. Everything needed to reach a shell therefore has to
+; be in RAM before that transition.
+; ---------------------------------------------------------------------------
+load_rootfs:
+    mov ecx, [rootfs_sectors]
+    test ecx, ecx
+    jz .none                        ; no rootfs packed into this image
+    mov eax, [rootfs_lba]
+    mov edi, ROOTFS_PHYS
+    jmp load_blob
+.none:
+    ret
+
+; ---------------------------------------------------------------------------
+; Read ECX sectors starting at LBA EAX to physical address EDI.
+;
+; Reads land in a low staging buffer first because INT 13h cannot write above
+; 1 MiB, then are copied up through a flat ES.
+; ---------------------------------------------------------------------------
+load_blob:
+    mov [dap_lba], eax
 
 .chunk:
     test ecx, ecx

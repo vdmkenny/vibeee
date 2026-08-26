@@ -99,7 +99,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     selfTestSyscalls();
 
     platform.earlyDevices();
-    platform.probeHardware();
+    platform.probeHardware(bi);
 
     startThreads();
 
@@ -241,6 +241,13 @@ fn supervisor(_: usize) callconv(.c) void {
             st.switches, c[0], c[1], c[2],
         });
     }
+
+    // Kernel bring-up is over; the screen belongs to userspace from here.
+    //
+    // Not cleared in verbose mode: on a machine with no serial port the boot
+    // log is only on screen, and wiping it would destroy the diagnostics
+    // verbose mode exists to show.
+    if (!console.isVerbose()) console.clear();
 
     _ = sched.spawn("user", .normal, userThread, 0, 16384) catch {
         console.fail("sched: cannot spawn user thread", .{});

@@ -10,7 +10,9 @@
 const std = @import("std");
 const console = @import("kernel/console.zig");
 const probe = @import("kernel/probe.zig");
+const bootinfo = @import("kernel/bootinfo.zig");
 const drivers = @import("drivers.zig");
+const ramdisk = @import("drv/block/ramdisk.zig");
 const cmos = @import("drv/rtc/cmos.zig");
 const kbd = @import("drv/input/i8042.zig");
 const uart = @import("drv/serial/uart16550.zig");
@@ -55,7 +57,7 @@ pub fn earlyDevices() void {
 }
 
 /// Enumerate every bus this machine has and bind drivers to what turns up.
-pub fn probeHardware() void {
+pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
     probe.begin(&drivers.table);
     enumeratePci();
     // Attach before reporting, so the table shows what actually came up rather
@@ -64,7 +66,7 @@ pub fn probeHardware() void {
     probe.report();
 
     reportStorage();
-    mountFilesystems();
+    mountFilesystems(bi);
 }
 
 /// Names for auto-mounted media, e.g. "/media/hd1p1". Static storage because a
@@ -80,8 +82,30 @@ var media_used: usize = 0;
 /// Volumes are recognised by content rather than by the MBR type byte: the type
 /// byte is a hint that is frequently wrong, and mounting has to validate the
 /// boot sector anyway.
-fn mountFilesystems() void {
+/// Register the root filesystem stage2 loaded into RAM, if there is one.
+///
+/// Returns the device so the mount pass can prefer it: the RAM copy is the one
+/// medium guaranteed to be readable, whatever the machine's storage turns out
+/// to be doing.
+fn registerRootfs(bi: *const bootinfo.BootInfo) ?*const block.Device {
+    if (bi.rootfs_phys == 0 or bi.rootfs_len == 0) return null;
+    return ramdisk.register(bi.rootfs_phys, bi.rootfs_len, false);
+}
+
+fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
     var mounted_root = false;
+
+    // The RAM root wins over anything on disk. On the target this is not a
+    // preference but a necessity: the medium the machine booted from is behind
+    // a USB reader and unreachable until usbd exists.
+    if (registerRootfs(bi)) |rd| {
+        if (vfs.mount("/", rd, false)) |_| {
+            mounted_root = true;
+            reportMount("/", rd);
+        } else |err| {
+            console.warn("vfs: RAM root will not mount: {s}", .{@errorName(err)});
+        }
+    }
 
     for (block.list(), 0..) |*dev, i| {
         if (!block.isMountCandidate(i)) continue;

@@ -207,15 +207,22 @@ pub fn mount(dev: *const block.Device) Error!Volume {
 
     const cluster_count = (total_sectors - first_data_sector) / bpb.sectors_per_cluster;
 
-    // The cluster count is what defines the FAT width — not the partition type
-    // byte, not the OEM string. This is the specification's own rule and the
-    // only reliable one.
-    const kind: Kind = if (cluster_count < 4085)
+    // FAT32 is identified structurally, not by cluster count.
+    //
+    // The specification says the count decides the width, and that describes
+    // what a correct formatter produces — but formatters will happily create a
+    // small FAT32 volume whose count falls in the FAT16 range, and reading its
+    // 32-bit FAT entries as 16-bit ones yields a chain that ends early. The
+    // reliable signal is that `sectors_per_fat_16` and `root_entries` are zero
+    // on FAT32 and never zero otherwise, because FAT32 relocated both fields.
+    //
+    // Only once FAT32 is ruled out does the count distinguish 12 from 16.
+    const kind: Kind = if (bpb.sectors_per_fat_16 == 0 and bpb.root_entries == 0)
+        .fat32
+    else if (cluster_count < 4085)
         .fat12
-    else if (cluster_count < 65525)
-        .fat16
     else
-        .fat32;
+        .fat16;
 
     return .{
         .dev = dev,
