@@ -125,38 +125,110 @@ pub inline fn virtToPhys(virt: usize) usize {
     return virt - KERNEL_VMA;
 }
 
-/// Map one 4 KiB page into the low (user) half of the current address space,
-/// allocating a page table if that region does not have one yet.
+/// Index of the first page-directory entry belonging to the kernel.
+const KERNEL_PDE_START = KERNEL_VMA / LARGE_PAGE_SIZE;
+
+/// A process address space.
 ///
-/// Kernel mappings use 4 MiB pages and never come through here; user mappings
-/// need 4 KiB granularity because a process's code, data and stack are not
-/// megabyte-aligned and must not share protection with each other.
-pub fn mapUserPage(virt: usize, phys: usize, writable: bool) error{OutOfMemory}!void {
-    const pmm = @import("../../kernel/pmm.zig");
+/// The kernel half is shared by every address space — the same 4 MiB entries,
+/// copied at creation and never changed afterwards — so a syscall needs no CR3
+/// switch and the kernel is addressable no matter which process is running.
+/// Only the low 3 GiB differs between processes.
+pub const AddressSpace = struct {
+    /// Physical address of the page directory.
+    pd_phys: usize,
 
-    const pd_index = virt >> 22;
-    const pt_index = (virt >> 12) & 0x3FF;
+    pub const Error = error{OutOfMemory};
 
-    const dir = pageDirectory();
-    var pde = dir[pd_index];
-    if (pde & Flags.present == 0) {
-        const table_phys = pmm.allocFrame() catch return error.OutOfMemory;
-        const table: *[1024]u32 = @ptrFromInt(physToVirt(table_phys));
-        @memset(table, 0);
-        pde = @as(u32, @intCast(table_phys)) | Flags.present | Flags.write | Flags.user;
-        dir[pd_index] = pde;
-    } else if (pde & Flags.large != 0) {
-        // Refuse rather than silently shattering a large mapping: the only
-        // large pages are the kernel linear map, and a user request landing
-        // there is a bug worth failing loudly.
-        return error.OutOfMemory;
+    pub fn create() Error!AddressSpace {
+        const pmm = @import("../../kernel/pmm.zig");
+        const phys = pmm.allocFrame() catch return error.OutOfMemory;
+
+        const dir: *[1024]u32 = @ptrFromInt(physToVirt(phys));
+        @memset(dir, 0);
+
+        // Share the kernel half. These entries carry the global flag, so they
+        // survive the TLB flush that a CR3 reload would otherwise cause.
+        const boot = pageDirectory();
+        var i = KERNEL_PDE_START;
+        while (i < 1024) : (i += 1) dir[i] = boot[i];
+
+        return .{ .pd_phys = phys };
     }
 
-    const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
-    table[pt_index] = @as(u32, @intCast(phys)) | Flags.present | Flags.user |
-        (if (writable) Flags.write else 0);
+    /// Release every user page and page table this space owns.
+    ///
+    /// Kernel entries are shared and must not be touched, which is why the loop
+    /// stops at KERNEL_PDE_START.
+    pub fn destroy(self: *AddressSpace) void {
+        const pmm = @import("../../kernel/pmm.zig");
+        const dir: *[1024]u32 = @ptrFromInt(physToVirt(self.pd_phys));
 
-    invalidatePage(virt);
+        for (dir[0..KERNEL_PDE_START]) |pde| {
+            if (pde & Flags.present == 0) continue;
+            const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
+            for (table) |pte| {
+                if (pte & Flags.present != 0) pmm.freeFrame(pte & 0xFFFF_F000);
+            }
+            pmm.freeFrame(pde & 0xFFFF_F000);
+        }
+
+        pmm.freeFrame(self.pd_phys);
+        self.pd_phys = 0;
+    }
+
+    /// Map one 4 KiB page into the user half.
+    ///
+    /// Kernel mappings use 4 MiB pages and never come through here; user
+    /// mappings need 4 KiB granularity because a process's code, data and stack
+    /// are not megabyte-aligned and must not share protection with each other.
+    pub fn map(self: *AddressSpace, virt: usize, phys: usize, writable: bool) Error!void {
+        if (virt >= KERNEL_VMA) return error.OutOfMemory;
+
+        const pmm = @import("../../kernel/pmm.zig");
+        const dir: *[1024]u32 = @ptrFromInt(physToVirt(self.pd_phys));
+
+        const pd_index = virt >> 22;
+        const pt_index = (virt >> 12) & 0x3FF;
+
+        var pde = dir[pd_index];
+        if (pde & Flags.present == 0) {
+            const table_phys = pmm.allocFrame() catch return error.OutOfMemory;
+            const table: *[1024]u32 = @ptrFromInt(physToVirt(table_phys));
+            @memset(table, 0);
+            pde = @as(u32, @intCast(table_phys)) | Flags.present | Flags.write | Flags.user;
+            dir[pd_index] = pde;
+        }
+
+        const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
+        table[pt_index] = @as(u32, @intCast(phys)) | Flags.present | Flags.user |
+            (if (writable) Flags.write else 0);
+
+        if (isActive(self.*)) invalidatePage(virt);
+    }
+
+    /// Make this the current address space.
+    pub fn activate(self: AddressSpace) void {
+        asm volatile ("movl %[pd], %%cr3"
+            :
+            : [pd] "r" (self.pd_phys),
+            : .{ .memory = true });
+    }
+};
+
+fn isActive(space: AddressSpace) bool {
+    return readCr3() == space.pd_phys;
+}
+
+pub fn readCr3() usize {
+    return asm volatile ("movl %%cr3, %[out]"
+        : [out] "=r" (-> usize),
+    );
+}
+
+/// The address space the kernel booted with, used by kernel-only threads.
+pub fn kernelAddressSpace() AddressSpace {
+    return .{ .pd_phys = @intFromPtr(&boot_page_directory) };
 }
 
 /// Typed view of a physical address in the linear map.

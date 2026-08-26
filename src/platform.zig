@@ -12,7 +12,8 @@ const probe = @import("kernel/probe.zig");
 const pci = @import("drv/bus/pci.zig");
 const sched = @import("kernel/sched.zig");
 const usermode = @import("arch/x86/usermode.zig");
-const user_blob = @import("user_blob.zig");
+const elf = @import("kernel/elf.zig");
+const hal = @import("kernel/hal.zig");
 
 /// Enumerate every bus this machine has and bind drivers to what turns up.
 pub fn probeHardware() void {
@@ -43,16 +44,27 @@ fn enumeratePci() void {
 }
 
 
-/// Load the built-in user program and drop to Ring 3.
+/// Load the built-in user program into a fresh address space and drop to
+/// Ring 3.
 ///
 /// Never returns: the calling thread becomes the user process, and the only way
-/// back into the kernel is a trap. Runs from a thread so its kernel stack is
-/// the one the CPU will switch to on that trap.
+/// back into the kernel is a trap. Runs from a thread so its kernel stack is the
+/// one the CPU switches to on that trap.
 pub fn enterUserMode() noreturn {
-    const image = user_blob.image();
+    const image = @embedFile("user_hello");
 
-    usermode.loadImage(image) catch {
-        console.fail("user: cannot map image ({d} bytes)", .{image.len});
+    var space = hal.AddressSpace.create() catch {
+        console.fail("user: cannot create address space", .{});
+        sched.exit();
+    };
+
+    const loaded = elf.load(&space, image) catch |err| {
+        console.fail("user: {s} loading {d}-byte image", .{ @errorName(err), image.len });
+        sched.exit();
+    };
+
+    const stack_top = usermode.setupStack(&space) catch {
+        console.fail("user: cannot map stack", .{});
         sched.exit();
     };
 
@@ -61,11 +73,16 @@ pub fn enterUserMode() noreturn {
         sched.exit();
     };
 
-    console.debug("user", "ring 3 at {x:0>8}, {d} byte image", .{ usermode.USER_CODE_BASE, image.len });
+    console.debug("user", "entry {x:0>8}, brk {x:0>8}, {d} byte image", .{
+        loaded.entry, loaded.brk, image.len,
+    });
+
+    // From here the low half of the address space belongs to the process.
+    space.activate();
 
     usermode.enter(
-        usermode.USER_CODE_BASE,
-        usermode.USER_STACK_TOP,
+        loaded.entry,
+        stack_top,
         @intFromPtr(t.stack.ptr) + t.stack.len,
     );
 }

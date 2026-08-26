@@ -72,6 +72,11 @@ pub const invalidatePage = impl.invalidatePage;
 /// Release the boot-time identity mapping, once the kernel is running from its
 /// virtual addresses and no longer needs low addresses to resolve.
 pub const dropBootIdentityMapping = impl.dropBootIdentityMapping;
+/// A process address space. The kernel half is shared by all of them, so a
+/// syscall needs no address-space switch.
+pub const AddressSpace = impl.AddressSpace;
+/// The address space the kernel booted with, used by kernel-only threads.
+pub const kernelAddressSpace = impl.kernelAddressSpace;
 
 // ---------------------------------------------------------------------------
 // Threads

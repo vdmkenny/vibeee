@@ -37,6 +37,39 @@ pub fn build(b: *std.Build) void {
         .cpu_features_sub = std.Target.x86.featureSet(&.{ .x87, .mmx, .sse, .sse2 }),
     });
 
+    // ---------------------------------------------------------------------
+    // Userspace programs.
+    //
+    // Built as ordinary freestanding executables and embedded in the kernel
+    // image, so the ELF loader is exercised by a real linker's output rather
+    // than by something hand-assembled to be easy to load.
+    //
+    // A separate target from the kernel's: user code may use SSE2, since the
+    // kernel saves FPU state on its behalf.
+    // ---------------------------------------------------------------------
+    const user_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
+    });
+
+    const hello = b.addExecutable(.{
+        .name = "hello",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/user/hello.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .single_threaded = true,
+            .strip = true,
+            .stack_check = false,
+            .stack_protector = false,
+        }),
+    });
+    hello.setLinkerScript(b.path("src/user/linker.ld"));
+    hello.entry = .{ .symbol_name = "_start" };
+    b.installArtifact(hello);
+
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("src/start.zig"),
         .target = target,
@@ -58,6 +91,13 @@ pub fn build(b: *std.Build) void {
         .name = "vibeee.elf",
         .root_module = kernel_mod,
     });
+    // Embed the user programs so the kernel can load one without a filesystem.
+    // This is temporary scaffolding: once eeefs and the boot rootfs exist, init
+    // reads them from disk like anything else.
+    kernel_mod.addAnonymousImport("user_hello", .{
+        .root_source_file = hello.getEmittedBin(),
+    });
+
     kernel.setLinkerScript(b.path("src/arch/x86/linker.ld"));
     // Sections must not be reordered or GC'd: the linker script places the
     // Multiboot2 header first by name.

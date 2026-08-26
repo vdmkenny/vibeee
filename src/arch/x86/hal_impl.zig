@@ -35,6 +35,8 @@ pub const physToVirt = paging.physToVirt;
 pub const virtToPhys = paging.virtToPhys;
 pub const invalidatePage = paging.invalidatePage;
 pub const dropBootIdentityMapping = paging.dropIdentityMapping;
+pub const AddressSpace = paging.AddressSpace;
+pub const kernelAddressSpace = paging.kernelAddressSpace;
 
 pub fn initCpu(kernel_stack_top: usize) void {
     cpu.cli();
