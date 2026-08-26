@@ -80,8 +80,13 @@ const DirEntry = extern struct {
     }
 };
 
+/// Long names are capped rather than allowed the full 255 UTF-16 characters
+/// the format permits: an Entry is passed by value, and 255 characters of
+/// UTF-8 would make every directory step copy half a kilobyte.
+pub const MAX_NAME = 128;
+
 pub const Entry = struct {
-    name: [12]u8,
+    name: [MAX_NAME]u8,
     name_len: usize,
     is_dir: bool,
     size: u32,
@@ -228,8 +233,130 @@ pub fn mount(dev: *const block.Device) Error!Volume {
     };
 }
 
+/// A VFAT long-name entry. Occupies the same 32 bytes as a directory entry,
+/// distinguished by its attribute byte.
+const LfnEntry = extern struct {
+    sequence: u8,
+    name_1: [10]u8,
+    attr: u8,
+    type: u8,
+    /// Checksum of the 8.3 name this belongs to. Without checking it, orphaned
+    /// long-name entries left by another operating system would be attached to
+    /// whatever short entry happened to follow.
+    checksum: u8,
+    name_2: [12]u8,
+    cluster_low: u16 align(1),
+    name_3: [4]u8,
+};
+
+const LFN_LAST = 0x40;
+const LFN_SEQ_MASK = 0x1F;
+/// Each long-name entry carries 13 UTF-16 code units.
+const LFN_CHARS = 13;
+const LFN_MAX_ENTRIES = 20;
+
+/// The checksum the 8.3 name must produce for a long name to belong to it.
+fn shortNameChecksum(name: *const [11]u8) u8 {
+    var sum: u8 = 0;
+    for (name) |c| {
+        sum = (sum >> 1) +% (sum << 7) +% c;
+    }
+    return sum;
+}
+
+/// Pull the 13 UTF-16 code units out of one long-name entry, in order.
+fn lfnChars(e: *align(1) const LfnEntry, out: *[LFN_CHARS]u16) void {
+    var n: usize = 0;
+    for (0..5) |i| {
+        out[n] = std.mem.readInt(u16, e.name_1[i * 2 ..][0..2], .little);
+        n += 1;
+    }
+    for (0..6) |i| {
+        out[n] = std.mem.readInt(u16, e.name_2[i * 2 ..][0..2], .little);
+        n += 1;
+    }
+    for (0..2) |i| {
+        out[n] = std.mem.readInt(u16, e.name_3[i * 2 ..][0..2], .little);
+        n += 1;
+    }
+}
+
+/// Accumulates long-name fragments while scanning a directory.
+///
+/// Entries appear in reverse order and immediately before their 8.3 entry, so
+/// fragments are written into their final position by sequence number rather
+/// than appended.
+const LfnBuilder = struct {
+    units: [LFN_MAX_ENTRIES * LFN_CHARS]u16 = undefined,
+    count: usize = 0,
+    checksum: u8 = 0,
+    valid: bool = false,
+
+    fn reset(self: *LfnBuilder) void {
+        self.count = 0;
+        self.valid = false;
+    }
+
+    fn add(self: *LfnBuilder, e: *align(1) const LfnEntry) void {
+        const seq = e.sequence & LFN_SEQ_MASK;
+        if (seq == 0 or seq > LFN_MAX_ENTRIES) {
+            self.reset();
+            return;
+        }
+
+        if (e.sequence & LFN_LAST != 0) {
+            // First entry encountered is the *last* fragment, and it tells us
+            // how many there are in total.
+            self.count = @as(usize, seq) * LFN_CHARS;
+            self.checksum = e.checksum;
+            self.valid = true;
+        } else if (!self.valid or e.checksum != self.checksum) {
+            // A fragment from a different name, or one with no terminator seen:
+            // the sequence is broken, so discard it rather than assemble a name
+            // out of unrelated pieces.
+            self.reset();
+            return;
+        }
+
+        var chars: [LFN_CHARS]u16 = undefined;
+        lfnChars(e, &chars);
+        const base = (@as(usize, seq) - 1) * LFN_CHARS;
+        if (base + LFN_CHARS > self.units.len) {
+            self.reset();
+            return;
+        }
+        @memcpy(self.units[base..][0..LFN_CHARS], &chars);
+    }
+
+    /// Write the assembled name as UTF-8. Returns null if it does not belong to
+    /// this short entry, or does not fit.
+    fn finish(self: *LfnBuilder, short: *const [11]u8, out: *[MAX_NAME]u8) ?usize {
+        if (!self.valid or self.count == 0) return null;
+        if (self.checksum != shortNameChecksum(short)) return null;
+
+        var n: usize = 0;
+        for (self.units[0..self.count]) |unit| {
+            // 0x0000 terminates, 0xFFFF is padding.
+            if (unit == 0 or unit == 0xFFFF) break;
+
+            // Surrogate pairs are not reassembled: they encode characters
+            // outside the Basic Multilingual Plane, which no filename this
+            // system creates will contain, and mis-decoding one would produce
+            // an invalid UTF-8 name rather than a wrong one.
+            if (unit >= 0xD800 and unit <= 0xDFFF) return null;
+
+            var buf: [3]u8 = undefined;
+            const len = std.unicode.utf8Encode(unit, &buf) catch return null;
+            if (n + len >= out.len) return null;
+            @memcpy(out[n..][0..len], buf[0..len]);
+            n += len;
+        }
+        return if (n > 0) n else null;
+    }
+};
+
 /// Decode the 8.3 name in a directory entry into "NAME.EXT".
-fn decodeName(raw: *const [11]u8, out: *[12]u8) usize {
+fn decodeName(raw: *const [11]u8, out: *[MAX_NAME]u8) usize {
     var n: usize = 0;
     for (raw[0..8]) |c| {
         if (c == ' ') break;
@@ -273,6 +400,7 @@ pub const Iterator = struct {
     buffer: [block.SECTOR_SIZE]u8 = undefined,
     loaded: bool = false,
     done: bool = false,
+    lfn: LfnBuilder = .{},
 
     pub fn next(self: *Iterator) Error!?Entry {
         while (!self.done) {
@@ -293,12 +421,23 @@ pub const Iterator = struct {
                     self.done = true;
                     return null;
                 }
-                // 0xE5 marks a deleted entry.
-                if (raw.name[0] == 0xE5) continue;
-                // Long-filename entries are skipped: the short name beside them
-                // is enough for now, and LFN reassembly is a separate concern.
-                if (raw.attr & ATTR_LONG_NAME == ATTR_LONG_NAME) continue;
-                if (raw.attr & ATTR_VOLUME_ID != 0) continue;
+                // 0xE5 marks a deleted entry. Any long name accumulated so far
+                // belonged to it.
+                if (raw.name[0] == 0xE5) {
+                    self.lfn.reset();
+                    continue;
+                }
+
+                // Long-name fragments precede the entry they describe.
+                if (raw.attr & ATTR_LONG_NAME == ATTR_LONG_NAME) {
+                    self.lfn.add(@ptrCast(raw));
+                    continue;
+                }
+
+                if (raw.attr & ATTR_VOLUME_ID != 0) {
+                    self.lfn.reset();
+                    continue;
+                }
 
                 var entry = Entry{
                     .name = undefined,
@@ -307,7 +446,13 @@ pub const Iterator = struct {
                     .size = raw.size,
                     .cluster = raw.firstCluster(),
                 };
-                entry.name_len = decodeName(&raw.name, &entry.name);
+
+                // Prefer the long name; fall back to 8.3 when there is none, or
+                // when the fragments do not check out against this entry.
+                entry.name_len = self.lfn.finish(&raw.name, &entry.name) orelse
+                    decodeName(&raw.name, &entry.name);
+                self.lfn.reset();
+
                 return entry;
             }
 

@@ -16,6 +16,7 @@
 //! only** (no LBA48) and **no READ/WRITE MULTIPLE**. Nothing here uses either.
 
 const std = @import("std");
+const bcache = @import("../../kernel/bcache.zig");
 const block = @import("../../kernel/block.zig");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
@@ -315,14 +316,23 @@ pub fn init() void {
                 d.sectors * block.SECTOR_SIZE / (1024 * 1024),
             });
 
-            const dev = block.Device{
+            const raw = block.Device{
                 .name = d.nameSlice(),
                 .ctx = d,
                 .ops = &ops,
                 .sectors = d.sectors,
             };
+
+            // Everything above this point sees the cached device. Partitions
+            // inherit its context, so they share one cache per disk — which is
+            // what lets a lookup on one partition warm the FAT for another.
+            const dev = bcache.wrap(raw) orelse raw;
             block.register(dev);
-            block.scanPartitions(&dev);
+
+            // A disk with no partition table is a filesystem in its own right,
+            // which is how most SD cards and USB sticks arrive.
+            const parts = block.scanPartitions(&dev);
+            if (parts == 0) block.markWholeDiskUsable(&dev);
         }
     }
 }

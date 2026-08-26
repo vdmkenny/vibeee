@@ -13,6 +13,7 @@ const hal = @import("hal.zig");
 const panic_mod = @import("panic.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
+const bcache = @import("bcache.zig");
 const sched = @import("sched.zig");
 const syscall_abi = @import("syscall_table.zig");
 const platform = @import("../platform.zig");
@@ -244,6 +245,9 @@ fn supervisor(_: usize) callconv(.c) void {
         return;
     };
     sched.sleepMicros(200_000);
+
+    if (console.isVerbose()) platform.listMounts();
+    bcache.report();
 
     if (console.isVerbose()) {
         console.putChar('\n');

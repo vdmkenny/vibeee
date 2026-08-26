@@ -288,6 +288,55 @@ steady-state write volume is low to begin with.
 If a stronger filesystem is ever wanted, the answer is to port an existing one
 (littlefs is the natural fit for flash), not to write one.
 
+**Long filenames.** VFAT is not an alternative to FAT32 — it is the long-name
+extension, and it applies to all three FAT widths. Directory scanning assembles
+the UTF-16 fragments and verifies each against the 8.3 checksum, so orphaned
+long-name entries left behind by another operating system cannot attach
+themselves to an unrelated file. The FAT width itself is decided by cluster
+count, as the specification requires, and never from the MBR partition type
+byte, which is frequently wrong.
+
+**Unpartitioned media.** Most SD cards and USB sticks ship "superfloppy"
+formatted — a filesystem starting at sector 0 with no partition table. That
+sector still carries the 0xAA55 signature, so it is told apart from a partition
+table by content: a boot sector begins with a jump instruction and declares a
+plausible sector size and media descriptor.
+
+**Mount table.** Paths resolve by longest mounted prefix, matched at component
+boundaries so `/media` cannot capture `/mediaplayer`. The boot volume mounts at
+`/`; everything else appears under `/media/<device>`. Unmounting flushes first —
+FAT has no journal, so anything the device still holds is lost if the medium
+goes away first — and refuses while files are open, but still detaches after a
+failed flush, since a device that is already gone must not leave a permanently
+stuck mount point.
+
+**Block cache.** A four-way set-associative sector cache (128 KiB) sits under
+every block device. It matters more here than it would elsewhere: reads are PIO,
+so each sector costs the CPU 256 port reads plus polling, and filesystem access
+re-reads the same few sectors constantly — the boot sector, the FAT, the
+directory. Four ways rather than direct-mapped because the FAT and the data area
+are walked in step and would otherwise evict each other.
+
+Write-through, deliberately. The recovery strategy above depends on a completed
+write having actually reached the medium; write-back would open a window where
+the application believes data landed and it has not, which is the exact failure
+that strategy exists to prevent.
+
+**No swap.** Demand paging to disk is rejected on this hardware, not deferred.
+The SSD is the worst possible swap device: swapping is small random writes, and
+small random writes are this device's measured floor of 1–3 MB/s, so thrashing
+would present as a hang. It also writes constantly, which is the fastest way to
+wear out a 4 GB SLC part from 2007. The period community consensus was the same
+— swap disabled, or moved to an SD card.
+
+If memory pressure ever becomes real, the answer is **compressed RAM swap**:
+compress cold anonymous pages in place rather than writing them out. That spends
+CPU, which is idle, instead of flash endurance and I/O latency, which are
+scarce. At roughly 2:1 on cold pages it is worth 100–200 MB on this machine, and
+it touches no disk at all. Either way it needs demand paging and a page-
+replacement policy first, neither of which exists yet, and neither of which is
+worth building before something actually runs out of memory.
+
 `/cfg` uses double-buffered atomic blobs (write B, fsync, flip pointer in superblock) — config must never be half-written after a power cut.
 
 ---

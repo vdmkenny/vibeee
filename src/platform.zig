@@ -7,9 +7,11 @@
 //! enumeration and of driver binding; the bus drivers know how to find devices;
 //! neither imports the other, and this file introduces them.
 
+const std = @import("std");
 const console = @import("kernel/console.zig");
 const probe = @import("kernel/probe.zig");
 const ata = @import("drv/block/ata.zig");
+const bcache = @import("kernel/bcache.zig");
 const block = @import("kernel/block.zig");
 const pci = @import("drv/bus/pci.zig");
 const sched = @import("kernel/sched.zig");
@@ -17,6 +19,7 @@ const usermode = @import("arch/x86/usermode.zig");
 const elf = @import("kernel/elf.zig");
 const fat = @import("kernel/fat.zig");
 const heap = @import("kernel/heap.zig");
+const vfs = @import("kernel/vfs.zig");
 const hal = @import("kernel/hal.zig");
 
 /// Enumerate every bus this machine has and bind drivers to what turns up.
@@ -29,48 +32,104 @@ pub fn probeHardware() void {
     // found before any driver starts touching hardware.
     ata.init();
     reportStorage();
-    mountBootVolume();
+    mountFilesystems();
 }
 
-/// The mounted boot filesystem, if one was found.
-var boot_volume: ?fat.Volume = null;
+/// Names for auto-mounted media, e.g. "/media/hd1p1". Static storage because a
+/// Mount keeps the path and there is nowhere else for it to live.
+var media_names: [vfs.MAX_MOUNTS][vfs.MAX_PATH]u8 = undefined;
+var media_used: usize = 0;
 
-/// Mount the first FAT partition found. Deliberately by content rather than by
-/// the MBR type byte: the type byte is a hint that is often wrong, and `mount`
-/// already has to validate the boot sector anyway.
-fn mountBootVolume() void {
-    for (block.list()) |*dev| {
-        if (dev.offset == 0) continue; // whole disks, not partitions
-        const vol = fat.mount(dev) catch continue;
-        boot_volume = vol;
-        console.debug("fat", "{s}: {s}, {d} clusters of {d} B ({d} MiB)", .{
-            dev.name,
-            @tagName(vol.kind),
-            vol.cluster_count,
-            vol.clusterSize(),
-            @as(u64, vol.cluster_count) * vol.clusterSize() / (1024 * 1024),
-        });
-        return;
+/// Mount every filesystem found.
+///
+/// The first mountable partition becomes the root; the rest appear under
+/// /media, which is where removable media will land once usbd can enumerate it.
+///
+/// Volumes are recognised by content rather than by the MBR type byte: the type
+/// byte is a hint that is frequently wrong, and mounting has to validate the
+/// boot sector anyway.
+fn mountFilesystems() void {
+    var mounted_root = false;
+
+    for (block.list(), 0..) |*dev, i| {
+        if (!block.isMountCandidate(i)) continue;
+
+        if (!mounted_root) {
+            if (vfs.mount("/", dev, false)) |_| {
+                mounted_root = true;
+                reportMount("/", dev);
+                continue;
+            } else |_| {}
+        }
+
+        if (media_used >= media_names.len) continue;
+        const path = std.fmt.bufPrint(&media_names[media_used], "/media/{s}", .{dev.name}) catch continue;
+        media_used += 1;
+
+        // Anything that is not the boot volume is treated as removable: it is
+        // the safe assumption, and it only affects unmount expectations.
+        if (vfs.mount(path, dev, true)) |_| {
+            reportMount(path, dev);
+        } else |err| switch (err) {
+            error.NotFat, error.Unsupported => {},
+            else => console.warn("vfs: cannot mount {s}: {s}", .{ dev.name, @errorName(err) }),
+        }
     }
-    console.warn("fat: no filesystem found", .{});
+
+    if (!mounted_root) console.warn("vfs: no root filesystem", .{});
 }
 
-/// Read a file from the boot filesystem into freshly allocated memory.
-fn readBootFile(name: []const u8) ?[]u8 {
-    const vol = if (boot_volume) |*v| v else return null;
+fn reportMount(path: []const u8, dev: *const block.Device) void {
+    const r = vfs.resolve(path) catch return;
+    const vol = &r.mount.volume;
+    console.debug("mount", "{s} on {s} ({s}, {d} MiB)", .{
+        path,
+        dev.name,
+        @tagName(vol.kind),
+        @as(u64, vol.cluster_count) * vol.clusterSize() / (1024 * 1024),
+    });
+}
 
-    const entry = fat.lookup(vol, name) catch |err| {
-        console.warn("fat: {s}: {s}", .{ name, @errorName(err) });
+/// List the root of every mount, so long names and the mount table are both
+/// visible at a glance.
+pub fn listMounts() void {
+    for (vfs.list()) |*m| {
+        if (!m.in_use) continue;
+        console.debug("mount", "{s} on {s}{s}", .{
+            m.path(), m.device.name, if (m.removable) " (removable)" else "",
+        });
+
+        var it = vfs.openDir(m.path()) catch continue;
+        var shown: usize = 0;
+        while (it.next() catch null) |entry| {
+            if (shown >= 6) {
+                console.debug("", "  ...", .{});
+                break;
+            }
+            console.debug("", "  {s}{s} {d}", .{
+                entry.nameSlice(),
+                if (entry.is_dir) "/" else "",
+                entry.size,
+            });
+            shown += 1;
+        }
+    }
+}
+
+/// Read a file into freshly allocated memory.
+fn readFile(path: []const u8) ?[]u8 {
+    const entry = vfs.stat(path) catch |err| {
+        console.warn("vfs: {s}: {s}", .{ path, @errorName(err) });
         return null;
     };
 
     const buf = heap.allocator.alloc(u8, entry.size) catch {
-        console.warn("fat: no memory for {s} ({d} bytes)", .{ name, entry.size });
+        console.warn("vfs: no memory for {s} ({d} bytes)", .{ path, entry.size });
         return null;
     };
 
-    const n = fat.readFile(vol, entry, buf) catch |err| {
-        console.warn("fat: reading {s}: {s}", .{ name, @errorName(err) });
+    const n = vfs.readFile(path, buf) catch |err| {
+        console.warn("vfs: reading {s}: {s}", .{ path, @errorName(err) });
         heap.allocator.free(buf);
         return null;
     };
@@ -123,7 +182,7 @@ pub fn enterUserMode() noreturn {
     // FAT together. The embedded copy is the fallback, so a machine whose
     // storage is not yet working still reaches user mode.
     var from_disk = true;
-    const image = readBootFile("HELLO") orelse blk: {
+    const image = readFile("/HELLO") orelse blk: {
         from_disk = false;
         break :blk @embedFile("user_hello");
     };

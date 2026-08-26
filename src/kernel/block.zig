@@ -132,22 +132,56 @@ fn partitionName(disk: []const u8, index: usize) []const u8 {
     return std.fmt.bufPrint(buf, "{s}p{d}", .{ disk, index + 1 }) catch "part";
 }
 
+/// True if sector 0 looks like a filesystem boot sector rather than a
+/// partition table.
+///
+/// Removable media is very often "superfloppy" formatted — a filesystem
+/// starting at sector 0 with no partition table at all — and such a sector
+/// still carries the 0xAA55 signature. Reading its BPB bytes as a partition
+/// table produces convincing nonsense, so the two cases have to be told apart
+/// by content: a boot sector begins with a jump instruction and declares a
+/// plausible sector size and media descriptor.
+fn looksLikeBootSector(sector: *const [SECTOR_SIZE]u8) bool {
+    const jump_short = sector[0] == 0xEB and sector[2] == 0x90;
+    const jump_near = sector[0] == 0xE9;
+    if (!jump_short and !jump_near) return false;
+
+    const bytes_per_sector = std.mem.readInt(u16, sector[11..13], .little);
+    if (bytes_per_sector != 512 and bytes_per_sector != 1024 and
+        bytes_per_sector != 2048 and bytes_per_sector != 4096) return false;
+
+    const sectors_per_cluster = sector[13];
+    if (sectors_per_cluster == 0 or sectors_per_cluster & (sectors_per_cluster - 1) != 0) return false;
+
+    // 0xF0 for removable media, 0xF8 for fixed disks; other values are legacy
+    // floppy geometries.
+    return sector[21] >= 0xF0;
+}
+
 /// Read the MBR and register each non-empty partition as its own device.
+/// Returns how many partitions were registered.
 ///
 /// Only the primary table: extended partitions are not used by our own image
 /// layout, and adding them before anything needs them would be untested code.
-pub fn scanPartitions(disk: *const Device) void {
+pub fn scanPartitions(disk: *const Device) usize {
     var sector: [SECTOR_SIZE]u8 = undefined;
     disk.read(0, &sector) catch {
-        console.warn("block: cannot read MBR of {s}", .{disk.name});
-        return;
+        console.warn("block: cannot read sector 0 of {s}", .{disk.name});
+        return 0;
     };
 
     const signature = std.mem.readInt(u16, sector[510..512], .little);
     if (signature != MBR_SIGNATURE) {
-        console.debug("block", "{s}: no MBR signature, treating as unpartitioned", .{disk.name});
-        return;
+        console.debug("block", "{s}: no boot signature, treating as unpartitioned", .{disk.name});
+        return 0;
     }
+
+    if (looksLikeBootSector(&sector)) {
+        console.debug("block", "{s}: filesystem at sector 0, no partition table", .{disk.name});
+        return 0;
+    }
+
+    var found: usize = 0;
 
     for (0..4) |i| {
         const raw: *align(1) const RawEntry = @ptrCast(&sector[PARTITION_TABLE_OFFSET + i * 16]);
@@ -162,6 +196,7 @@ pub fn scanPartitions(disk: *const Device) void {
             continue;
         }
 
+        found += 1;
         register(.{
             .name = partitionName(disk.name, i),
             .ctx = disk.ctx,
@@ -180,6 +215,28 @@ pub fn scanPartitions(disk: *const Device) void {
             @as(u64, raw.sectors) * SECTOR_SIZE / (1024 * 1024),
         });
     }
+
+    return found;
+}
+
+/// Devices with no partition table that should still be considered for
+/// mounting. Tracked separately so the mount pass can tell "whole disk holding
+/// a filesystem" from "whole disk that merely contains partitions".
+var whole_disk_usable: [16]bool = @splat(false);
+
+pub fn markWholeDiskUsable(disk: *const Device) void {
+    for (devices[0..device_count], 0..) |*d, i| {
+        if (d == disk or std.mem.eql(u8, d.name, disk.name)) {
+            whole_disk_usable[i] = true;
+            return;
+        }
+    }
+}
+
+pub fn isMountCandidate(index: usize) bool {
+    if (index >= device_count) return false;
+    // Partitions always; whole disks only when they hold a filesystem directly.
+    return devices[index].offset != 0 or whole_disk_usable[index];
 }
 
 pub fn partitionTypeOf(disk: *const Device, index: usize) ?PartitionType {
