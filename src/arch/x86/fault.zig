@@ -52,10 +52,15 @@ pub fn onException(frame: *idt.Frame) noreturn {
                 r.fault_addr,
             });
         } else {
-            console.warn("{s} in {s} at {x:0>8}", .{
+            // The error code separates causes that otherwise look alike: a
+            // protection fault naming a selector is a segment problem, and one
+            // reporting zero is an alignment or privileged-instruction fault.
+            console.warn("{s} in {s} at {x:0>8}, code {x:0>4}, sp {x:0>8}", .{
                 panic.exceptionName(frame.vector),
                 sched.currentName(),
                 frame.eip,
+                frame.error_code,
+                r.sp,
             });
         }
         sched.exitWith(FAULTED);
