@@ -2,7 +2,7 @@
 
 > **Status: partially implemented.**
 >
-> Built and working: the i8042 driver ([`drv/input/i8042.zig`](../src/drv/input/i8042.zig)) with scancode set 1 decoding, the kernel input core ([`input.zig`](../src/kernel/input.zig)), and keymaps compiled from one file per layout ([`src/keymaps/`](../src/keymaps/)) — US-International and Belgian AZERTY, with dead-key composition and `Super+Space` to switch.
+> Built and working: the i8042 driver ([`drv/input/i8042.zig`](../src/drv/input/i8042.zig)) with scancode set 1 decoding, the kernel input core ([`input.zig`](../src/kernel/input.zig)), and keymaps compiled from one file per layout ([`src/keymaps/`](../src/keymaps/)): US-International and Belgian AZERTY, with dead-key composition and `Super+Space` to switch.
 >
 > Not yet: the touchpad probe ladder, `/dev/input`, and the ATKD hotkeys.
 >
@@ -24,12 +24,12 @@ Split of responsibilities (follows the locked hybrid architecture):
   core (per-reader queues, timestamping, merged `/dev/input` stream), ACPI
   hotkey→event bridge (fed by the in-kernel ACPI/EC platform code).
 - **GUI server (userspace, single `/dev/input` reader)**: the **keymap engine**
-  (`libkeymap`, a plain static library) — keycode+modifiers → symbol → dead-key
+  (`libkeymap`, a plain static library), keycode+modifiers → symbol → dead-key
   /compose state machine → UTF-8 text; layout switching (Super+Space), key
   repeat synthesis, status-bar layout/lock indicators, LED control via ioctl.
 - **usbd (userspace)**: HID report parsing; injects keycode/REL events into the
   kernel input core through a privileged injector handle. External keyboards
-  therefore pass through the *same* keymap engine — layouts apply equally.
+  therefore pass through the *same* keymap engine, layouts apply equally.
 
 Kernel delivers **keycodes, never symbols**. All layout knowledge lives in one
 place, in userspace, in data tables generated at build time from readable
@@ -42,12 +42,12 @@ place, in userspace, in data tables generated at build time from readable
 | i8042 function provided by ENE KB3310 EC on LPC; ports 0x60/0x64, IRQ1 (kbd) / IRQ12 (aux) | core-platform §8, peripherals §7 [HIGH] |
 | 80-key keyboard, "AT set 2", no bring-up quirks reported | peripherals §7, quirks §8 [HIGH] |
 | Fn navigation combos emit ordinary scancodes; media/system Fn combos arrive as ACPI Notify on ASUS010/ATKD, NOT scancodes | peripherals §7, quirks §1 [HIGH/MEDIUM-HIGH] |
-| Fn+F11 = NumLock overlay (user manual) | quirks §1 [HIGH]; overlay mechanism (EC-side remap vs not) UNVERIFIED — designed for both |
-| Touchpad: Synaptics on some 701 4G units (dmesg "SynPS/2"), Elantech ("ETPS/2", v1 fw EF013 class) on others — probe both | peripherals §6 [HIGH/LOW-MEDIUM], quirks §8 [MEDIUM-HIGH] |
+| Fn+F11 = NumLock overlay (user manual) | quirks §1 [HIGH]; overlay mechanism (EC-side remap vs not) UNVERIFIED, designed for both |
+| Touchpad: Synaptics on some 701 4G units (dmesg "SynPS/2"), Elantech ("ETPS/2", v1 fw EF013 class) on others, probe both | peripherals §6 [HIGH/LOW-MEDIUM], quirks §8 [MEDIUM-HIGH] |
 | Elantech v1: detect F5,E6,E6,E6,E9 → 3C 03 C8/00; fw<0x020030 or ==0x020600 ⇒ v1; reg_10=0x16, reg_11=0x8f; 4-byte packets, X 32–544, Y 32–352; EF013/EF019 discard first 2 reports | Linux elantech.c/h v6.6 + kernel docs (verified via WebFetch this session) |
 | ATKD hotkey codes 0x10/0x11 wifi, 0x12 prog1, 0x13/14/15 mute/vol-, vol+, 0x16 disp-off, 0x20–0x2f brightness (fw already applied), 0x30–0x32 display switch, 0x50/0x51 AC | quirks §1 [HIGH] |
 | Fn+F1 sleep arrives as ACPI SLPB, not ATKD | quirks §1 [MEDIUM] |
-| No dedicated keyboard lock LEDs on chassis (LEDs: power/battery/disk/wifi) | quirks §9 [MEDIUM] — 0xED still sent, harmless |
+| No dedicated keyboard lock LEDs on chassis (LEDs: power/battery/disk/wifi) | quirks §9 [MEDIUM]: 0xED still sent, harmless |
 | Timestamps must not use TSC (halts in C3); use kernel monotonic (PM timer/HPET) | core-platform §6 [HIGH] |
 | IOAPIC GSI 1 and 12 for i8042 | core-platform §6 [HIGH] |
 | User types QWERTY on Belgian-keycap hardware → US-Intl default, BE-AZERTY selectable | design brief (locked) |
@@ -113,7 +113,7 @@ pub const InputIoctl = enum(u32) {
     get_key_state,   // out: [96]u8 bitmap of currently-down keycodes (authoritative, for SYN_DROPPED resync)
     set_leds,        // in: u8 {bit0 scroll, bit1 num, bit2 caps} -> i8042 kbd 0xED
     get_devices,     // out: []InputDeviceDesc + ids
-    set_tp_conf,     // in: TouchpadConf (tap, edge scroll, divisors) — GUI pushes /cfg values at start
+    set_tp_conf,     // in: TouchpadConf (tap, edge scroll, divisors): GUI pushes /cfg values at start
     dump_raw,        // debug builds: tee raw i8042 byte stream (test seam, §12)
 };
 ```
@@ -122,7 +122,7 @@ pub const InputIoctl = enum(u32) {
 
 - Per-reader ring: **512 events × 16 B = 8 KB**, allocated at open. Expected
   readers: GUI server (always) + at most one debug client.
-- Timestamp: `monotonic_us()` (PM-timer/HPET-backed kernel clock — TSC is
+- Timestamp: `monotonic_us()` (PM-timer/HPET-backed kernel clock: TSC is
   unsafe in C3, core-platform §6) captured **in the ISR**, before decode, so
   queue latency doesn't skew inter-key timing used by tap detection and repeat.
 - Overflow policy: ring full ⇒ clear the ring, enqueue
@@ -141,11 +141,11 @@ pub const InputIoctl = enum(u32) {
 ### 5.1 Design points
 
 - **Translation OFF, scancode set 2.** Justification: (1) set 2 is the
-  keyboard's power-on default — zero mode-set commands, fewest failure modes on
+  keyboard's power-on default, zero mode-set commands, fewest failure modes on
   the KB3310's i8042 emulation; (2) unambiguous break protocol (`F0` prefix)
   instead of set-1 bit-7, one clean decode table; (3) the AUX port is never
   translated, so with translation on we'd maintain *two* scancode dialects and
-  trust the KBC to keep them straight while bytes from both ports interleave —
+  trust the KBC to keep them straight while bytes from both ports interleave,
   known-buggy territory on EC-based controllers; (4) translation is a lossy
   extra mapping we would immediately invert anyway.
 - **No MUX.** Active-multiplexing discovery (0xD3 version dance) is skipped
@@ -166,9 +166,9 @@ noted per step).
  2. outb(0x64,0xAD); outb(0x64,0xA7)                 disable kbd + aux ports
  3. Drain again (disabling can push a byte)
  4. outb(0x64,0x20); ccb = read60()                  read command byte
- 5. outb(0x64,0xAA); expect 0x55                     controller self-test (timeout 500 ms — EC may be slow)
+ 5. outb(0x64,0xAA); expect 0x55                     controller self-test (timeout 500 ms: EC may be slow)
     NOTE: self-test resets some controllers -> ccb is rewritten in step 8 regardless
- 6. outb(0x64,0xAB); expect 0x00                     kbd interface test (nonzero: log, continue — kbd may still work)
+ 6. outb(0x64,0xAB); expect 0x00                     kbd interface test (nonzero: log, continue, kbd may still work)
  7. outb(0x64,0xA9); expect 0x00                     aux interface test (nonzero: mark no-touchpad, skip §7)
  8. ccb = (ccb | 0x01|0x02|0x04) & ~(0x40|0x10|0x20) enable IRQ1+IRQ12+sysflag; clear XLATE, port disables
     outb(0x64,0x60); outb(0x60,ccb)
@@ -180,9 +180,9 @@ noted per step).
                        XLATE is stuck on (EC quirk) -> rewrite ccb, re-verify, else fall back
                        to a set-1 decode table (compile-time present, runtime-selected; see Risks)
       ED 00            LEDs off (harmless if none fitted)
-      F3 7F            typematic: 1 s delay, 2 cps (slowest — repeats are suppressed anyway, §6.4)
+      F3 7F            typematic: 1 s delay, 2 cps (slowest, repeats are suppressed anyway, §6.4)
       F4               enable scanning
-12. AUX (all AUX bytes via outb(0x64,0xD4) prefix): probe ladder — §7.
+12. AUX (all AUX bytes via outb(0x64,0xD4) prefix): probe ladder, §7.
 13. Unmask IOAPIC GSI1 + GSI12 (edge, active-high ISA), attach ISR; switch command engine to IRQ mode.
 ```
 
@@ -216,7 +216,7 @@ status = inb(0x64); while (status & OBF):
 - **Suspend/resume**: on S3 entry, send 0xAD/0xA7 and mask GSIs; on resume run
   the full init. Keymap/lock state lives in the GUI server and survives; kernel
   replays LED state via the stored last `set_leds` value.
-- No periodic polling in steady state — the watchdog is purely event-driven
+- No periodic polling in steady state, the watchdog is purely event-driven
   (a periodic prod would generate constant EC traffic for nothing).
 
 ## 6. Keyboard driver (set-2 decode)
@@ -238,7 +238,7 @@ States: `base`, `e0`, `f0`, `e0_f0`, `e1_seq(n)`. Rules:
 
 ### 6.2 Scancode→keycode tables (generated; authoritative content)
 
-Base table (set 2, no prefix) — full list compiled from this map:
+Base table (set 2, no prefix), full list compiled from this map:
 
 ```
 76 ESC   05 F1  06 F2  04 F3  0C F4  03 F5  0B F6  83 F7  0A F8  01 F9  09 F10  78 F11  07 F12
@@ -263,7 +263,7 @@ E0 5A KPENTER  E0 4A KPSLASH  E0 12/E0 7C PRTSC(pair -> KEY_SYSRQ)
 
 The 701's 80-key board reaches HOME/END/PGUP/PGDN/INS/DEL through Fn+arrow/
 punctuation combos, but per research these arrive as the ordinary E0 codes
-above — no special handling. The Belgian-keycap unit is an ISO board: scancode
+above, no special handling. The Belgian-keycap unit is an ISO board: scancode
 `0x61` (KEY_102ND, the `<>` key left of Z) is expected present; the table
 carries it either way.
 
@@ -285,16 +285,16 @@ Fn+F11 emits set-2 `0x77` (NumLock). Two possible EC behaviors, both handled:
 An M1 hardware test logs raw scancodes with the overlay active to pick the
 truth (see §12); the design works unmodified under both.
 
-### 6.4 Key repeat — GUI-side (decision)
+### 6.4 Key repeat: GUI-side (decision)
 
 **Repeat is synthesized in the GUI server**, post-translation. Kernel drops
 PS/2 typematic repeats (make for an already-down key, §4.3) and sets the
 slowest hardware rate as belt-and-braces. Why GUI-side: (1) USB HID keyboards
-do not auto-repeat — the host must synthesize, so *some* software repeater
+do not auto-repeat, the host must synthesize, so *some* software repeater
 must exist; having exactly one, covering PS/2+USB+all layouts identically, is
 the simplest correct design; (2) repeat policy is a UI preference
 (delay/rate from `/cfg/input.conf`, no kernel round-trip); (3) what repeats is
-the *translated* symbol — dead keys, modifiers, and lock keys must not repeat,
+the *translated* symbol, dead keys, modifiers, and lock keys must not repeat,
 which only the keymap engine knows. Defaults: 400 ms delay, 25 Hz. Repeat is
 cancelled by release, focus change, or layout switch.
 
@@ -303,7 +303,7 @@ cancelled by release, focus change, or layout switch.
 GUI server owns lock state (Caps/Num) → `ioctl(set_leds)` → kernel sends
 `ED xx`. The chassis likely has no kbd LEDs (quirks §9): the *real* indicator
 is the GUI status bar (§10.7); 0xED is still sent for external USB keyboards…
-which usbd handles via HID SetReport — the GUI issues the same abstract
+which usbd handles via HID SetReport, the GUI issues the same abstract
 "locks changed" to usbd over its control channel (OPEN item for usbd design).
 
 ## 7. Touchpad
@@ -339,7 +339,7 @@ enable  : F4
 b0: 1  0  W3 W2 0 W1 R  L        b3: 1  1  Y12 X12 0 W0 R  L
 b1: Y11..Y8 X11..X8              b4: X7..X0
 b2: Z7..Z0                       b5: Y7..Y0
-x = b3.4<<12 | (b1&0x0F)<<8 | b4     y = b3.5<<12 | (b1>>4)<<8 | b5   (Y origin BOTTOM — invert)
+x = b3.4<<12 | (b1&0x0F)<<8 | b4     y = b3.5<<12 | (b1>>4)<<8 | b5   (Y origin BOTTOM, invert)
 z = b2                                w = (b0&0x30)>>2 | (b0&0x04)>>1 | (b3&0x04)>>2
 ```
 Sync rule: `(b0 & 0xC8) == 0x80` and `(b3 & 0xC8) == 0xC0`; violation ⇒ drop
@@ -359,10 +359,10 @@ enable : F4
 ```
 4-byte packet (fw 1.x/2.x era, EF013 class):
 ```
-b0: D U p1 p2 1 p3 R L      (fw>=0x020000: p1=bit4, p2=bit5 — swapped vs older)
+b0: D U p1 p2 1 p3 R L      (fw>=0x020000: p1=bit4, p2=bit5, swapped vs older)
 b1: f 0 th tw x9 x8 y9 y8   f=finger, tw/th=2/3-finger
 b2: x7..x0                  X range 32..544
-b3: y7..y0                  Y range 32..352 (origin bottom — invert)
+b3: y7..y0                  Y range 32..352 (origin bottom, invert)
 ```
 Parity: p1..p3 = odd parity of b1..b3; mismatch ⇒ drop packet, resync.
 Quirk (EF013/EF019): after finger-down, **discard the first 2 position
@@ -378,7 +378,7 @@ QEMU.
 
 Both absolute protocols reduce to `AbsSample{x,y,z_or_f,w,buttons}` then:
 
-- **Motion**: `REL_X/REL_Y = (pos - prev) / divisor` (Synaptics 8, Elantech 2 —
+- **Motion**: `REL_X/REL_Y = (pos - prev) / divisor` (Synaptics 8, Elantech 2,
   normalizes the ~10× range difference), simple 2-tap smoothing; no delta on
   the first sample of a touch.
 - **Tap-to-click**: touch duration <150 ms ∧ total motion <20 abs units ⇒
@@ -387,7 +387,7 @@ Both absolute protocols reduce to `AbsSample{x,y,z_or_f,w,buttons}` then:
   REL_WHEEL (1 tick / 30 units of Y); bottom band ⇒ REL_HWHEEL (default off).
 - **Palm rejection**: Synaptics W≥10 (or Z≥200 with W≥8) ⇒ ignore touch until
   release. Elantech v1 has no width: substitute a jump filter (>120 units
-  between consecutive samples ⇒ drop sample) — basics only.
+  between consecutive samples ⇒ drop sample), basics only.
 - Physical buttons pass through as BTN_LEFT/BTN_RIGHT.
 - All thresholds live in `TouchpadConf`, pushed by GUI via `set_tp_conf` from
   `/cfg/input.conf` (`tap_to_click`, `edge_scroll`, `accel_div`, …).
@@ -400,12 +400,12 @@ Mapping table (ATKD code → event):
 
 | ATKD | Event posted | Notes |
 |---|---|---|
-| 0x10, 0x11 | EV_HOTKEY HK_WIFI (value 1/0) | GUI orchestrates: notify netd detach → platform WLDS — slot power-gates! |
+| 0x10, 0x11 | EV_HOTKEY HK_WIFI (value 1/0) | GUI orchestrates: notify netd detach → platform WLDS, slot power-gates! |
 | 0x12 | EV_HOTKEY HK_PROG1 | Fn+F6 "Task Manager" → GUI task switcher |
 | 0x13 / 0x14 / 0x15 | EV_HOTKEY HK_MUTE / HK_VOL_DOWN / HK_VOL_UP | GUI → sndd mixer + OSD |
 | 0x16 | EV_HOTKEY HK_DISPLAY_OFF | GUI blanks via display ioctl |
 | 0x20–0x2f | EV_HOTKEY HK_BRIGHTNESS, value = code&0x0F (0–15) | firmware already applied; OSD only |
-| 0x30–0x32 | EV_HOTKEY HK_DISPLAY_SWITCH, value = code&0x0F | Fn+F5 LCD/VGA — GUI → display driver |
+| 0x30–0x32 | EV_HOTKEY HK_DISPLAY_SWITCH, value = code&0x0F | Fn+F5 LCD/VGA: GUI → display driver |
 | 0x50 / 0x51 | not posted | AC plug/unplug → power mgmt path, not input |
 | ACPI SLPB | EV_HOTKEY HK_SLEEP | Fn+F1 |
 | ACPI LID | EV_SW SW_LID value 0/1 | |
@@ -428,12 +428,12 @@ Rules enforced by the kernel: `t_us==0` ⇒ kernel stamps (usbd normally passes
 timing); EV types whitelisted per device class; keycodes <768; rate limit 4096
 events/s per injector (excess dropped + counted). usbd translates HID boot
 protocol / report descriptors: usage page 0x07 → Linux keycode via the
-standard 256-entry table (same numeric space as §4.1 — table shared in
+standard 256-entry table (same numeric space as §4.1, table shared in
 `libinputdefs`), usage page 0x09 buttons → BTN_*, X/Y/wheel → REL_*. usbd
 maintains per-device key state and emits only transitions (so no repeat
 suppression needed kernel-side). On unpublish, the input core synthesizes
 releases for that device's held keys. Because injection is keycode-level, the
-GUI keymap engine treats external keyboards identically — **layouts apply
+GUI keymap engine treats external keyboards identically, **layouts apply
 equally**, satisfying the requirement with zero extra code.
 
 ## 10. Keymap system
@@ -448,7 +448,7 @@ symbol --(dead-key/compose state machine)--> committed text (UTF-8) + key events
 
 **The symbol and compose layers run in the GUI server** (via `libkeymap`, a
 freestanding static library also linked by tests and the emergency console).
-Why not libeui/per-app: dead-key and lock state are *global, singular* state —
+Why not libeui/per-app: dead-key and lock state are *global, singular* state,
 per-app copies desynchronize (half-composed `´` in one window, stale layout in
 another), the layout-switch hotkey and the status-bar indicator are
 compositor-level concerns, and focus changes must atomically cancel pending
@@ -470,7 +470,7 @@ pub const KeyEvent = extern struct {   // GUI-server -> app window event
 NUM=512. RightAlt (KEY_RIGHTALT) *is* AltGr in both shipped layouts (flag in
 layout header). Level = `(altgr?2:0) + (shift_eff?1:0)` → 4 levels: base,
 shift, altgr, shift+altgr. `shift_eff = shift XOR (caps && key.flags.alpha)`.
-NumLock resolves KP keycodes (digit vs nav) before layout lookup — KP handling
+NumLock resolves KP keycodes (digit vs nav) before layout lookup: KP handling
 is layout-independent engine logic.
 
 ### 10.3 KeySym encoding & compiled tables
@@ -487,7 +487,7 @@ pub const Layout = struct {
     right_alt_is_altgr: bool,
     syms: [256][4]KeySym,                    // [keycode][level]
     flags: [256]u8,                          // bit0 alpha (capslockable)
-    dead: []const DeadEntry,                 // sorted by (dead, base) — binary search
+    dead: []const DeadEntry,                 // sorted by (dead, base), binary search
 };
 pub const DeadEntry = struct { dead: DeadId, base: u21, out: u21 };
 pub const ComposeEntry = struct { seq: [4]u21, len: u8, out: u21 };  // global, shared, sorted
@@ -531,14 +531,14 @@ binding: the Menu key (`E0 2F`) and Shift+AltGr; configurable.
 `gen/keymap_<name>.zig` const tables; `zig test` validates round-trips.
 Adding a layout = drop a file in `keymaps/`, add one line to the Makefile
 list. A versioned binary format (`.kmc`) is reserved for future runtime
-loading; v1 compiles layouts in (2 layouts ≈ 10 KB — not worth a loader).
+loading; v1 compiles layouts in (2 layouts ≈ 10 KB, not worth a loader).
 
 Format: `#` comments; `key <KEYCODE> : L1 L2 L3 L4` (levels base/shift/altgr/
 shift+altgr; `--` = transparent/none); symbols are literal UTF-8 chars,
 `U+XXXX`, named specials (`space`, `nbsp`), `dead(<id>)`, or `fn(<KEY>)`;
 `alpha` flag marks capslockable keys.
 
-**US-International** (excerpt, `keymaps/us_intl.kmap`) — dead keys + AltGr,
+**US-International** (excerpt, `keymaps/us_intl.kmap`), dead keys + AltGr,
 covering é ü ñ €:
 
 ```
@@ -559,7 +559,7 @@ deadkey grave      { a à  e è  i ì  o ò  u ù  space ` }
 deadkey circumflex { a â  e ê  i î  o ô  u û  space ^ }
 ```
 
-**Belgian AZERTY** (excerpt, `keymaps/be.kmap`) — keycodes are *positional*
+**Belgian AZERTY** (excerpt, `keymaps/be.kmap`), keycodes are *positional*
 (US names); AltGr row covers @ # [ ]:
 
 ```
@@ -605,7 +605,7 @@ Shared compose table `keymaps/compose.kmap`: `compose o e : œ`,
 - **Status-bar hook**: the GUI status bar subscribes to `LayoutChanged` +
   `LocksChanged` and renders "US"/"BE" + caps/num glyphs; external clients can
   query current layout via the GUI server's `/svc/gui.input` control channel
-  (`get_layout`, `set_layout(idx)` — also how a settings app switches).
+  (`get_layout`, `set_layout(idx)`, also how a settings app switches).
 
 ## 11. RAM / disk budget (subsystem share)
 
@@ -616,23 +616,23 @@ Shared compose table `keymaps/compose.kmap`: `compose o e : œ`,
 | Kernel: input core + hotkey bridge | ~4 KB | 2 readers × 8 KB ring + 0.5 KB = ~17 KB |
 | GUI: libkeymap engine | ~8 KB (GUI ELF) | ~0.3 KB state |
 | GUI: 2 layout tables + dead + compose | ~14 KB | (tables in .rodata, counted once) |
-| usbd: HID usage tables (shared libinputdefs) | ~2 KB | — |
+| usbd: HID usage tables (shared libinputdefs) | ~2 KB |, |
 | **Total** | **~41 KB** | **~20 KB** |
 
 Well inside budgets (kernel ≤1.5 MB ELF, GUI ≤2.5 MB, idle RAM ≤48 MB).
-Event bandwidth worst case (typematic burst + touchpad 80 pps): <10 KB/s —
+Event bandwidth worst case (typematic burst + touchpad 80 pps): <10 KB/s,
 memory-bandwidth irrelevant.
 
 ## 12. Bring-up & test plan
 
-**Host unit tests (no target needed)** — the bulk of correctness:
+**Host unit tests (no target needed)**, the bulk of correctness:
 - `libkeymap` is target-independent: `zig test` corpus, table-driven
   `(keycode,mods,press)* → expected KeyEvents`. Mandatory cases:
   dead-acute+e→é, dead-diaeresis+u→ü, dead-tilde+n→ñ, AltGr+5→€ (US-Intl);
   AltGr on 2/3/LBRACE/RBRACE→@ # [ ] (BE); dead+space→spacing accent;
   dead+q(no entry)→"´q"; dead+dead same/different; dead state killed by
   focus-reset and by Super+Space; caps vs shift on alpha and non-alpha
-  (BE `é` key with caps must NOT give É — caps only affects `alpha` keys —
+  (BE `é` key with caps must NOT give É, caps only affects `alpha` keys
   and shift gives 2); NumLock overlay both hypotheses; compose oe→œ; repeat
   suppression of modifiers/dead keys; SYN_DROPPED resync reconciliation.
 - i8042 driver compiled against a comptime-injected port-I/O vtable
@@ -643,7 +643,7 @@ memory-bandwidth irrelevant.
   sync-loss injection, Elantech parity failures, EF013 first-2-report bug,
   palm/tap/edge-scroll golden traces.
 
-**QEMU** (`qemu-system-i386 -M pc`): i8042 emulation is good — validates the
+**QEMU** (`qemu-system-i386 -M pc`): i8042 emulation is good, validates the
 full init dance with translation off, set-2 decode, IRQ routing via IOAPIC,
 dual-port interleave, bare-PS/2 pointer path (QEMU mouse), /dev/input
 delivery, GUI translation end-to-end (QEMU sends set-2 codes for host keys).
@@ -658,7 +658,7 @@ timing quirks, ATKD hotkeys, Fn overlay. Those need the seams:
 **Real-hardware M1 checklist**: (1) init dance completes, log ccb before/
 after; (2) F0 00 returns 0x02 (translation truly off on KB3310); (3) Fn+F11
 scancode capture → resolve overlay hypothesis; (4) touchpad identity (0x47 vs
-3C 03 C8) — settles the Synaptics/Elantech uncertainty for this unit; (5) ATKD
+3C 03 C8), settles the Synaptics/Elantech uncertainty for this unit; (5) ATKD
 code sweep; (6) 30-min soak typing+pointer with queue-depth/invalid-byte/
 resync counters exported via a debugfs-style stats ioctl.
 
@@ -675,13 +675,13 @@ resync counters exported via a debugfs-style stats ioctl.
 4. **Elantech variants other than v1** on late units: detection reports fw
    version; v2+ falls back to bare PS/2 (still a working pointer) in v1 of the
    OS; extend later if such a unit appears.
-5. **LED path for USB keyboards** requires a GUI→usbd control op — interface
+5. **LED path for USB keyboards** requires a GUI→usbd control op, interface
    to be pinned in usbd's design (locks-changed broadcast).
 6. **Wifi hotkey ordering**: HK_WIFI → netd quiesce → WLDS power-gate needs a
    defined sequence with netd/platform (the slot hot-unplugs, quirks §3);
    input stack only delivers the event.
 7. **Per-device layouts** (internal BE keycaps + external US keyboard
-   simultaneously) not in v1 — single global layout; EV_DEVICE markers exist,
+   simultaneously) not in v1, single global layout; EV_DEVICE markers exist,
    so the engine could key off device id later without protocol changes.
 8. **Key ghosting/matrix limits** of the 18×8 EC matrix are unknown; nothing
    to design around, but the soak test logs anomalies.

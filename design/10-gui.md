@@ -1,6 +1,6 @@
-# 10 — GUI: eeewm display server/compositor + libeui toolkit
+# 10: GUI: eeewm display server/compositor + libeui toolkit
 
-> **Status: design only — not implemented.**
+> **Status: design only, not implemented.**
 > Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
@@ -51,9 +51,9 @@ covers the CPU-level hot paths (SSE2/WC discipline), which on this machine are t
 ### 3.1 Process & privilege
 - `eeewm` runs as a supervised userspace server (same supervision class as netd/sndd/usbd),
   registered in /svc as `"gui"`. It is the ONE display owner (04-graphics contract).
-- It needs no pci/mmio/ioport grants — only: display-owner handle, input stream handle, channels
+- It needs no pci/mmio/ioport grants, only: display-owner handle, input stream handle, channels
   to platformd/netd/sndd, /svc registration, timer, spawn (for the launcher's exec requests it
-  proxies nothing — apps spawn apps; eeewm spawns only `erun` and the crash-toast helper).
+  proxies nothing, apps spawn apps; eeewm spawns only `erun` and the crash-toast helper).
 
 ### 3.2 Display path (contract with 04-graphics)
 ```zig
@@ -75,11 +75,11 @@ pub const Display = struct {
 ```
 - **Double-buffered flip preferred** (nbufs=2, 2×1.47 MB in the ~7.9 MB stolen pool). eeewm keeps a
   2-frame damage history per buffer ("buffer age") and composites `union(new_damage, damage the
-  target buffer missed)` — no copy-forward blits.
+  target buffer missed)`, no copy-forward blits.
 - **Single-buffer fallback** (QEMU seam or if 04 lands minimal): composite straight into the front
   buffer immediately after the vblank event; small damage finishes inside blanking, large damage may
   tear for one frame. Accepted, documented.
-- Cursor: HW cursor plane when cap bit1 (real GMA 900 — zero damage cost). SW sprite fallback:
+- Cursor: HW cursor plane when cap bit1 (real GMA 900, zero damage cost). SW sprite fallback:
   16×16 1-bit+mask sprite, save-under of the 16×16 fb region kept in RAM, restore+redraw as two
   extra damage rects per motion frame (≤2 KB traffic). Cursor hidden after 1.5 s without pointer
   events or on any key-down; shown on motion.
@@ -87,26 +87,26 @@ pub const Display = struct {
 ### 3.3 Scene model & compositing
 - Scene = ordered list per tag: tiled windows (opaque, non-overlapping by construction), floating
   windows (dialogs, launcher), then server-drawn overlay layer: bar, toasts/OSD, lock screen, DND
-  cursor. Tiled+floating content is **opaque XRGB — no blending**. Only the overlay layer blends
+  cursor. Tiled+floating content is **opaque XRGB, no blending**. Only the overlay layer blends
   (constant-alpha or per-pixel), and blending always reads RAM sources (client shm / server scratch),
   **never the WC framebuffer** (WC reads are uncached, ~10× slow).
 - Composite pass (per frame, only if damage pending): walk damage rects → for each, blit from the
   topmost source covering it (tiling makes overlap resolution trivial: point-in-tile), overlay
   regions re-blended in a RAM scratch strip then NT-copied out. `sfence`, then `flip()`.
 - Damage rects: per-client ≤4 per commit; server coalesces into a global list, caps at 16 rects,
-  falls back to bounding box, x/width aligned to 16 px (64 B) — full WC write-combine bursts, and
+  falls back to bounding box, x/width aligned to 16 px (64 B), full WC write-combine bursts, and
   16 B-aligned `movntdq`.
 
 ### 3.4 Frame loop (single thread)
 ```
 loop: wait_many(vblank_evt, input_evt, listen_ch, client_chs[...], feed_evts[...], timer_evt)
   input   → translate (keymap engine) → hotkey table → dispatch to focused client ring / WM action
-  client  → protocol call (commit/create/...) — commit blits are deferred to next vblank slot
+  client  → protocol call (commit/create/...), commit blits are deferred to next vblank slot
   feeds   → update bar model, mark bar damage
   timer   → clock tick (60 s), toast expiry, idle-threshold checks, cursor hide
   vblank  → if damage: composite + flip (see 3.3); update per-buffer damage age
 ```
-Commits reply immediately after the server has *copied nothing* — the reply is sent after the
+Commits reply immediately after the server has *copied nothing*, the reply is sent after the
 composite that consumes the commit (max one frame, ≤16.7 ms). This throttles clients to the display
 rate for free (SPSC: client may not draw into a committed region until the reply). One in-flight
 commit per window.
@@ -115,14 +115,14 @@ commit per window.
 
 ### 4.1 Workspaces (tags): **4**
 dwm-style tags (a window holds a tag bitmask; view = one tag in v1). Four, not nine, because:
-(a) every mapped client keeps its ~1.5 MB surface + 2–6 MB heap alive regardless of visibility —
+(a) every mapped client keeps its ~1.5 MB surface + 2–6 MB heap alive regardless of visibility,
 9 tags invites ~9+ resident apps ≈ 30–60 MB, blowing the 48 MB idle budget; 4 tags × ~2 clients
 ≈ 8 clients worst case ≈ 10–12 MB surfaces, workable; (b) at 800×480 more than ~8 windows is not a
 real workflow; (c) bar real estate: 4 tag pips cost 56 px. Mod+1..4 / Mod+Shift+1..4.
 
 ### 4.2 Layouts
 - **tall** (default): master left (mfact 0.58 of width), stack right, vertical splits.
-- **wide**: master top (mfact 0.55 of height), stack bottom, horizontal splits — for terminal+doc.
+- **wide**: master top (mfact 0.55 of height), stack bottom, horizontal splits, for terminal+doc.
 - **monocle**: focused window fullscreen-under-bar; bar shows `[n/m]`.
 - **floating exception**: windows created with `dialog`/`floating` flags (file pickers, PSK entry,
   launcher) float centered (dialogs: centered over parent), always above tiled, focus-preferring.
@@ -133,7 +133,7 @@ real workflow; (c) bar real estate: 4 tag pips cost 56 px. Mod+1..4 / Mod+Shift+
 - **Gaps: none.** Borders: 1 px unfocused (#A8A498), 2 px focused (#2864A4) drawn inside the tile.
 - Bar: 22 px tall, top. Usable tiling area: 800×458.
 - Minimum tile: 200×100; layout refuses to split below it (extra windows stack into a tabbed
-  "overflow" strip in v2; v1: they still split — user's problem, documented).
+  "overflow" strip in v2; v1: they still split, user's problem, documented).
 
 ### 4.4 Status bar (server-drawn, RAM-backed 800×22 strip)
 `[1][2][3][4] |T|  win-title …            US 51% ▂▄▆ eth √ 48°C ♪72 12:34`
@@ -145,12 +145,12 @@ click layout glyph = cycle; click volume = mute toggle. Updates: see status feed
 ### 4.5 Key bindings: **by keycode** (physical position), not by symbol
 Decision: the WM grab table matches raw keycodes from 05-input (Linux-style KEY_* codes), before
 keymap translation. Rationale: (1) chords are positional muscle memory; they must not move when the
-user flips US-Intl↔AZERTY — including the layout-toggle chord itself, which must be identical in
-both layouts; (2) symbol matching would interact with dead keys (Mod+' on US-Intl is a dead key —
+user flips US-Intl↔AZERTY, including the layout-toggle chord itself, which must be identical in
+both layouts; (2) symbol matching would interact with dead keys (Mod+' on US-Intl is a dead key,
 translation must not fire for grabbed chords); (3) grabs are resolved before translation anyway, so
 keycode matching is the layering-clean choice. Config names keys by their **QWERTY legend**
 (`"mod+m"` = the physical key that is M on QWERTY), documented prominently since the keycaps are
-AZERTY. Accelerators inside apps (Alt+F for &File) are symbol-based — that is libeui's business
+AZERTY. Accelerators inside apps (Alt+F for &File) are symbol-based, that is libeui's business
 (§6.5), not the grab table's.
 
 Mod = **Super** (the 701 has a Windows key; Alt is left for apps). Defaults (dwm-flavored):
@@ -176,7 +176,7 @@ Mod = **Super** (the 701 has a Windows key; Alt is left for apps). Defaults (dwm
 | KEY_SLEEP (Fn+F1), lid | platformd owns suspend; it calls eeewm `prepare_sleep` first (§9.2) |
 
 ### 4.7 Touchpad
-Focus-follows-**click** (not hover — tiny screen, accidental hovers). Left click focuses + passes
+Focus-follows-**click** (not hover, tiny screen, accidental hovers). Left click focuses + passes
 click through. Scroll events (2-finger or edge, whichever 05-input yields) → wheel events to the
 window under the pointer. Mod+drag on the master/stack split line adjusts mfact. Mod+drag moves
 floating windows. No other gestures in v1.
@@ -251,15 +251,15 @@ Supervisor restarts eeewm; kernel display owner handle is released on process de
 succeeds [ASSUME→04]. Clients discover death via channel HUP or `gen` mismatch, then: retry /svc
 lookup with 100 ms→2 s backoff; on connect send `hello` (new gen) and **re-run 5.2 steps 2–4 for
 every window they had** (client is the source of truth: libeui keeps the widget tree and surface;
-re-attach reuses the existing shm handle — surfaces survive because the client owns them). Server
+re-attach reuses the existing shm handle, surfaces survive because the client owns them). Server
 restores tag assignment from `tag_hint` (clients cache their last tag from `configure`… tag is
-carried in `visibility`/`configure`? — no: server includes current tag in `create` reply? Kept
-simple: client caches last known tag told to it via `keymap`-style info event `taginfo` — v1:
+carried in `visibility`/`configure`?, no: server includes current tag in `create` reply? Kept
+simple: client caches last known tag told to it via `keymap`-style info event `taginfo`, v1:
 `tag_hint` on create is best-effort; after a server crash windows may regroup on tag 1. Accepted.)
 Focus/layout/mfact reset to defaults on restart. Restart target: <500 ms to first frame.
 
 ### 5.4 Notifications (server-side)
-`/svc "notify"`: `notify{slot: enum(u8){toast, osd}, urgency, timeout_ms, title[24], body[32]}` —
+`/svc "notify"`: `notify{slot: enum(u8){toast, osd}, urgency, timeout_ms, title[24], body[32]}`,
 pure inline, no client surface. Toasts: top-right, max 3, 280×48 each, per-pixel-alpha rounded
 card. OSD (volume/brightness): bottom-center 240×36 slider card, replaces previous. Rendered from
 theme + bitmap font by the server itself.
@@ -287,7 +287,7 @@ dead-code elimination means real apps pay 90–180 KB each. 6 core apps → ~0.8
 at the cost of a userspace ld.so, PLT/GOT overhead on a 512 KB-L2 CPU, and version-skew failure
 modes during the driver-drop-in story. Not worth it at this app count; revisit in M3 if the app set
 exceeds ~12 (numbers to be re-validated with 07-userspace once its libc sizes land). Font files are
-NOT linked in — mmap'd from RAM-rootfs read-only, pages shared across processes [ASSUME→02-mm:
+NOT linked in, mmap'd from RAM-rootfs read-only, pages shared across processes [ASSUME→02-mm:
 ramfs mmap shares physical pages; if not, +90 KB/app, still acceptable].
 
 ### 6.2 Core model
@@ -325,10 +325,10 @@ pub const Painter = struct { // pure software, operates on Surface{px,w,h,stride
 ```
 Containers: `Box` (h/v, per-child flex weight + fixed), `Grid` (n-col, row-major), `Scroll`
 (vertical only, owns a `Scrollbar`). Controls v1: `Label`, `Button`, `Check`, `Radio`, `TextInput`
-(single-line: horizontal scroll, selection, clipboard via eeewm CLIP service — server-held single
+(single-line: horizontal scroll, selection, clipboard via eeewm CLIP service, server-held single
 buffer ≤64 KB), `TextArea` (multi-line: line array of []u8, gap-buffer per focused line, soft-wrap
 off by default), `ListView` (virtualized: `count()`, `rowAt(i)` callbacks, only visible rows
-painted — mandatory for /files listing on 512 MB), `Scrollbar`, `Tabs`, `Progress`, `Slider`,
+painted, mandatory for /files listing on 512 MB), `Scrollbar`, `Tabs`, `Progress`, `Slider`,
 `Palette` (menu-as-command-palette), `Dialog`, `Toast` (thin client-side wrapper that calls the
 notify service).
 
@@ -336,7 +336,7 @@ notify service).
 Apps register a `CommandSet`: `{id: u16, title: []const u8, accel: ?Accel, when: enum}`.
 F1 opens the in-app `Palette` (floating child window 460×280): text input + fuzzy subsequence
 match + virtualized list, Enter executes, shows accels for learnability. The same widget powers
-erun (global launcher). This replaces menu bars entirely — saves 20+ px of chrome and fits
+erun (global launcher). This replaces menu bars entirely, saves 20+ px of chrome and fits
 keyboard-first.
 
 ### 6.4 Text input & division of labor with 05-input
@@ -354,7 +354,7 @@ entries); compose table (Menu key = Compose, ~140 common Latin sequences). Layou
 Tab/Shift+Tab = tree-order focus ring (skips disabled/invisible); arrows move within Radio/List;
 Enter = default button, Esc = cancel/close-dialog. Accelerators are **symbol-based** (Alt+letter,
 letter compared against the translated codepoint, case-folded) because they are mnemonic to the
-*label text* ("&Fichier" vs "&File" can differ per app locale) — the opposite choice from WM chords,
+*label text* ("&Fichier" vs "&File" can differ per app locale), the opposite choice from WM chords,
 deliberately.
 
 ### 6.6 Theme (one built-in, tuned for 6-bit+FRC TN)
@@ -381,9 +381,9 @@ footprint. Hand-hinted bitmaps are simply better here, and they delete the entir
 glyph-cache, and blending cost: 1bpp glyphs blit as fg/bg writes (no read-modify-write, no AA).
 Limits stated: no AA, no subpixel, no shaping, no combining marks (NFC precomposed only, from §6.4),
 LTR only, missing glyph → U+FFFD box. Faces (4 files, ~90 KB total):
-- `sans-13` + `sans-13b` (proportional, ascent 10/descent 3) — all UI text, bar.
-- `mono-8x14` (Terminus-derived) — terminal/editor default: 100×32 cells under the bar.
-- `mono-8x16` — terminal "large" option: 100×28 cells.
+- `sans-13` + `sans-13b` (proportional, ascent 10/descent 3), all UI text, bar.
+- `mono-8x14` (Terminus-derived), terminal/editor default: 100×32 cells under the bar.
+- `mono-8x16`, terminal "large" option: 100×28 cells.
 Coverage per face: ASCII, Latin-1 Supplement, Latin Extended-A, € U+20AC, U+FFFD, arrows/UI glyphs
 (U+2190–U+21FF subset), box drawing + blocks (U+2500–U+259F, mono faces only) ≈ 560 glyphs.
 Fully covers US-Intl and BE-AZERTY dead-key/compose output.
@@ -391,20 +391,20 @@ EFNT: `{magic, h, ascent, nglyph}` + sorted cp→glyph table (binary search) + `
 bearing_x/y, off}` + 1bpp rows. Rendering is **client-side in libeui** (server renders only bar/
 toasts/lock with the same code); no server round-trip per glyph, no glyph cache needed (bitmaps ARE
 the cache). Text draw hot path: per glyph row, expand 1bpp→32bpp via 4-bit LUT (16 entries × 4 px
-writes) — ~0.15 µs/glyph estimated; a full 100×32 terminal repaint ≈ 3200 glyphs ≈ 0.5 ms + memory.
+writes), ~0.15 µs/glyph estimated; a full 100×32 terminal repaint ≈ 3200 glyphs ≈ 0.5 ms + memory.
 
 ## 8. Core apps
 
 | App | Binary est. | Purpose / design |
 |---|---|---|
 | eterm | 260 KB | Terminal. Grid of `{cp: u21, attr: u11}` packed u32; per-line dirty bits; scrollback 500 lines (~0.4 MB). Font mono-8x14. Escape subset ("eeeterm", xterm-16color-compatible): C0 BEL BS HT LF CR SO/SI; ESC 7/8/c/D/E/M, ESC ( B, ESC ( 0 (DEC graphics→box glyphs); CSI: CUU/CUD/CUF/CUB (A–D), CNL/CPL (E/F), CHA (G), CUP/HVP (H/f), ED (J), EL (K), IL/DL (L/M), DCH (P), ICH (@), SU/SD (S/T), ECH (X), REP (b), DA (c→"?6c"), VPA (d), TBC (g), SM/RM (h/l: 4 insert, 20 LNM), DECSET/DECRST (?7 wrap, ?25 cursor, ?1049 altscreen, ?2004 bracketed paste; mouse ?1000/1006 = M3), SGR (m: 0/1/4/7/22/24/27, 30–37/39, 40–47/49, 90–97/100–107; 38/48;5;n accepted → nearest-16 map), DSR (n: 5, 6/CPR), DECSTBM (r); OSC 0/2 title (BEL/ST). Child I/O: spawn(shell) with pipe pair + **pty-lite line-discipline question flagged to 06/07 (§14)**. |
-| efm | 300 KB | File manager, dual-pane (2×396 px, ListView each). Tab = switch pane, Enter open (spawn by extension map in /cfg/open.map), F5 copy / F6 move / F7 mkdir / F8 delete(→trash /data/.trash) / e = eject. Subscribes `storage` feed; volumes header shows /data, /mnt/sd, /mnt/usb*; eject = usbd channel call `eject(volid)` (flush+offline) then toast. Copy runs in-process with progress dialog (files are small; no threads — chunked via timer callbacks). |
+| efm | 300 KB | File manager, dual-pane (2×396 px, ListView each). Tab = switch pane, Enter open (spawn by extension map in /cfg/open.map), F5 copy / F6 move / F7 mkdir / F8 delete(→trash /data/.trash) / e = eject. Subscribes `storage` feed; volumes header shows /data, /mnt/sd, /mnt/usb*; eject = usbd channel call `eject(volid)` (flush+offline) then toast. Copy runs in-process with progress dialog (files are small; no threads, chunked via timer callbacks). |
 | eedit | 340 KB | Editor on TextArea + line-array buffer. Syntax highlight: line-based lexers (comptime-registered per-language tables: keyword set, comment/string delimiters), per-line entry state (in_comment/in_string) cached, re-lex from edited line until state converges; spans feed TextArea attrs. v1: zig, c, sh, ini, md. Find (Ctrl+F palette-style), goto-line, LF only, UTF-8 only. |
-| eimg | 320 KB | Viewer: **BMP + PNG in v1** (PNG via Zig std flate + unfilter, ~25 KB code); **JPEG baseline-only in M3** (+~55 KB, no progressive — honest: a 3 MP JPEG decodes in ~2–4 s at 630 MHz; done in idle-chunks with progress). Decode with stride-downscale to ≤1600×960 to cap RAM (≤6 MB pixels); fit/100%/zoom ×2, pan arrows. |
+| eimg | 320 KB | Viewer: **BMP + PNG in v1** (PNG via Zig std flate + unfilter, ~25 KB code); **JPEG baseline-only in M3** (+~55 KB, no progressive, honest: a 3 MP JPEG decodes in ~2–4 s at 630 MHz; done in idle-chunks with progress). Decode with stride-downscale to ≤1600×960 to cap RAM (≤6 MB pixels); fit/100%/zoom ×2, pan arrows. |
 | esettings | 320 KB | Tabs: **WiFi** (netd: `scan()→[{ssid,rssi,sec}]`, connect(ssid,psk) with password TextInput masked, status line), **Input** (layout US↔BE radio + test field + compose on/off), **Display** (brightness Slider 0–15 → platformd `PBLS`; idle-dim timeouts), **Audio** (volume/mute + capture toggle → sndd), **Power/Thermal** (battery %, temp, fan RPM, fan mode auto/manual with the 90 °C warning from research §2), **About**. Every control writes /cfg via platformd config API [ASSUME→06]. |
 | erun | 180 KB | Launcher, spawned by eeewm on Mod+p: floating 460×280 Palette over current tag. Sources: /apps/*.manifest (name, exec, keywords), open windows (switch-to), verbs ("lock", "sleep", "layout be", "brightness 8"). Fuzzy subsequence, top 8, Enter = spawn/switch, Esc = close. Cold-start target <300 ms. |
 
-Notification daemon behavior is inside eeewm (§5.4) — no separate process.
+Notification daemon behavior is inside eeewm (§5.4), no separate process.
 
 ## 9. Screenshot, lock, idle
 
@@ -414,7 +414,7 @@ then deflate-PNG-encodes async in idle timer slices (~300 ms total) to
 `/data/shots/eee-YYYYMMDD-HHMMSS.png`, toast on completion. M1 fallback: raw BMP write (instant).
 
 ### 9.2 Screen lock
-In-server (an external locker process could crash and unlock — in-server lock state survives
+In-server (an external locker process could crash and unlock, in-server lock state survives
 everything except an eeewm crash, and on restart eeewm relocks if `/run/locked` flag exists).
 Lock = input dispatch suspended (except lock prompt), scene replaced by lock surface (clock +
 masked TextInput), full-frame 50%-dim of last scene as background (one-time ~10 ms blend).
@@ -447,11 +447,11 @@ Preconditions: dst 16 B aligned (stride ×16 px, damage x aligned to 16 px), src
 ; after ALL damage rects:  sfence   ; order NT stores before flip() ioctl
 ```
 Zig: `asm volatile` block or `@memcpy` replaced by a hand `blitRowNT(dst, src, n)`; ReleaseSmall
-must not auto-vectorize differently — kernel isolated in one .zig file with tests.
+must not auto-vectorize differently, kernel isolated in one .zig file with tests.
 Why NT: classic `movdqa` stores to WC are fine too, but NT also wins for RAM→RAM scratch composits
 (avoids polluting the 512 KB L2 with pixels). Never `rep movsb` to WC (partial-line evictions).
 
-### 10.2 Overlay blend (toasts/OSD/lock dim) — RAM only
+### 10.2 Overlay blend (toasts/OSD/lock dim): RAM only
 SRC-over, per-pixel a8: unpack `punpcklbw` to 16-bit, `pmullw` by (a, 255−a), `paddw`, `psrlw 8`,
 `packuswb`; 8 px/iter. Constant-alpha dim uses `pmulhuw` by (alpha<<8). Output rows then go through
 10.1 to the fb. Blending never reads the WC mapping.
@@ -459,7 +459,7 @@ SRC-over, per-pixel a8: unpack `punpcklbw` to 16-bit, `pmullw` by (a, 255−a), 
 ### 10.3 1bpp glyph expand
 Per glyph row byte: two 4-bit LUT lookups → each yields prebuilt 4×u32 fg/bg pattern (LUT rebuilt
 on color change, 16×16 B = 256 B, L1-resident), `movdqu` store to surface. Bg==null variant masks
-writes (read-modify only for transparent-label case — used on bar only).
+writes (read-modify only for transparent-label case, used on bar only).
 
 ### 10.4 Damage math
 All damage rects: `x0 &= ~15; w = (w + (x-x0) + 15) & ~15` (16 px = 64 B). Vertical unaligned is
@@ -467,7 +467,7 @@ free. Global coalesce: insert-merge if overlap/adjacent, cap 16 rects else bound
 
 ## 11. Frame budget arithmetic (630 MHz, budget bandwidth ~400 MB/s effective streaming)
 
-Baseline numbers (to be re-measured in M1 on real DRAM — see risk R1):
+Baseline numbers (to be re-measured in M1 on real DRAM, see risk R1):
 | Scenario | Traffic | Est. time |
 |---|---|---|
 | Full-frame composite (tag switch, monocle switch) | read 1.47 + NT write 1.47 = 2.94 MB | **~7.4 ms** ✓ ≤8 ms budget |
@@ -494,7 +494,7 @@ RAM (idle-to-GUI scenario: eeewm + eterm mapped, feeds live):
 | **GUI idle total** | **~3.5 MB** (share of 48 MB idle budget; declared cap 6 MB) |
 | Scanout: 2×1.47 MB + HW cursor | in 7.9 MB stolen pool, NOT system-RAM budget |
 | Per additional client | surface (≤1.47 MB, tile-sized usually 0.6–0.9) + ring 16 KB + app heap 1–4 MB |
-| Worst case 8 clients on 4 tags | ~10 MB surfaces + ~15 MB heaps — fits 512 MB with headroom |
+| Worst case 8 clients on 4 tags | ~10 MB surfaces + ~15 MB heaps, fits 512 MB with headroom |
 | Transients | screenshot 1.5 MB, eimg decode ≤6 MB |
 
 Disk (rootfs share): eeewm 0.40 MB + fonts 0.09 + keymaps/theme/cfg 0.02 → **server+libeui 0.51 MB
@@ -504,26 +504,26 @@ Disk (rootfs share): eeewm 0.40 MB + fonts 0.09 + keymaps/theme/cfg 0.02 → **s
 
 ## 13. Bring-up & test plan
 
-QEMU cannot emulate GMA900 — the display seam is the 04-graphics owner API itself:
+QEMU cannot emulate GMA900, the display seam is the 04-graphics owner API itself:
 1. **Host-native unit tier** (any machine, `zig test`): Painter/widgets/layout render into plain
    RAM `Surface`s → CRC + golden-PNG comparison; EFNT round-trip; keymap engine table tests
    (every US-Intl/BE dead-key+compose sequence enumerated); terminal parser vs recorded vttest/
    typescript corpora + 10⁶-case fuzz (random bytes must never crash/hang); damage coalescer
    property tests; protocol codec round-trip + malformed-message fuzz (truncated, bad tags, huge
-   rects — server must drop client, not die).
+   rects, server must drop client, not die).
 2. **QEMU integration tier**: kernel display driver has a `bochs-display` backend at 800×480
    (arbitrary-res capable) with a **synthesized 60 Hz timer vblank** (caps bit2=0) and single
-   buffer — exercises the fallback path. PS/2 kbd/mouse via QEMU; scripted input via monitor
+   buffer, exercises the fallback path. PS/2 kbd/mouse via QEMU; scripted input via monitor
    `sendkey`; `screendump` golden images per milestone scene (bar, 3-window tall, dialog, palette,
    lock). Client/server crash drills: `kill -9` loops on apps and on eeewm; assert reconnect <2 s,
    no handle leaks (kernel handle-count probe).
 3. **Real-hardware tier**: M1 ships `fbbench` (runs before eeewm): measures cached copy, NT copy,
-   WC write, WC read bandwidth + full-frame blit time; results logged to /data — **this settles the
+   WC write, WC read bandwidth + full-frame blit time; results logged to /data, **this settles the
    DDR2-140 question and recalibrates §11**. Then: tearing inspection (single vs flip), FRC shimmer
    check of theme fills (photograph panel), HW cursor path, real vblank pacing, AZERTY on the
    physical keycaps, touchpad probe outcome (Synaptics vs Elantech affects 05-input only, but
    verify scroll events), 60-minute soak with toast storm + terminal scroll while playing audio
-   (sndd underrun counter must stay 0 — validates our memory-bandwidth discipline).
+   (sndd underrun counter must stay 0, validates our memory-bandwidth discipline).
 
 ## 14. Risks & open questions
 

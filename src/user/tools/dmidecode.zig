@@ -1,4 +1,4 @@
-//! dmidecode — decode the firmware's DMI/SMBIOS tables.
+//! dmidecode, decode the firmware's DMI/SMBIOS tables.
 //!
 //! The kernel hands over the raw structure table and this does all the
 //! decoding. That split keeps several dozen structure layouts out of kernel
@@ -58,7 +58,7 @@ const string_fields = [_]StringField{
 
 /// Zero-initialised, not `undefined`: reading undefined memory is undefined
 /// behaviour, and the optimiser is entitled to do anything with a function that
-/// does it — including deleting the bounds it was relying on.
+/// does it, including deleting the bounds it was relying on.
 ///
 /// 8 KiB is generous. A real machine's table is a couple of kilobytes; the
 /// buffer is bounded so an implausible one is reported rather than trusted.
@@ -90,7 +90,7 @@ pub fn run(_: []const []const u8) void {
         out.hex(hdr.handle, 4);
         out.text(", Type ");
         out.decimal(hdr.type);
-        out.text(" — ");
+        out.text(", ");
         out.text(typeName(hdr.type));
         out.text("\n");
 

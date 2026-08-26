@@ -1,4 +1,4 @@
-; vibeee stage2 — real-mode loader.
+; vibeee stage2, real-mode loader.
 ;
 ; Runs at 0x8000, loaded by stage1. Responsibilities:
 ;   1. Enable A20
@@ -9,7 +9,7 @@
 ;
 ; The kernel is a flat binary, not ELF: its first byte is the entry stub
 ; (see src/arch/x86/flatboot.zig), which spares this file an ELF parser written
-; in 16-bit assembly — code that would be painful to debug on a machine with no
+; in 16-bit assembly, code that would be painful to debug on a machine with no
 ; serial port.
 ;
 ; Fields marked PATCHED are filled in by tools/mkimage.zig once the real sizes
@@ -62,7 +62,7 @@ VBE_INFO        equ 0x0500          ; scratch for the VBE controller block
 VBE_MODE_INFO   equ 0x0700          ; scratch for one mode block
 
 ; Preferred display size. The target panel is 800x480, which its video BIOS
-; does not offer as a VBE mode — so the search falls back by area and this is
+; does not offer as a VBE mode, so the search falls back by area and this is
 ; an aspiration rather than a requirement.
 WANT_WIDTH      equ 800
 WANT_HEIGHT     equ 480
@@ -121,7 +121,7 @@ main:
 
 ; ---------------------------------------------------------------------------
 ; A20. Try the BIOS service first, then the fast gate at port 0x92, verifying
-; after each attempt — some BIOSes report success without actually enabling it.
+; after each attempt, some BIOSes report success without actually enabling it.
 ; ---------------------------------------------------------------------------
 enable_a20:
     call test_a20
@@ -136,7 +136,7 @@ enable_a20:
     test al, 2
     jnz .skip_92                    ; already set; writing again can reset
     or  al, 2
-    and al, 0xFE                    ; never touch bit 0 — it is a fast reset
+    and al, 0xFE                    ; never touch bit 0, it is a fast reset
     out 0x92, al
 .skip_92:
     call test_a20
@@ -486,7 +486,7 @@ find_rsdp:
     jnc .found
 
     ; 0xE0000-0xFFFFF, scanned as two 64 KiB segments: DI is 16-bit, so a
-    ; single 128 KiB sweep would wrap rather than reach the top of the range —
+    ; single 128 KiB sweep would wrap rather than reach the top of the range,
     ; which is exactly where the RSDP usually lives.
 .rom:
     mov ax, 0xE000
@@ -531,7 +531,7 @@ scan_rsdp:
     pop cx
     jne .advance
 
-    ; Verify the ACPI 1.0 checksum — the signature alone appears in unrelated
+    ; Verify the ACPI 1.0 checksum, the signature alone appears in unrelated
     ; data often enough to matter.
     push cx
     push di
@@ -654,7 +654,7 @@ load_blob:
     jmp fatal
 
 ; Enter protected mode briefly so ES caches a 4 GiB limit, then drop back to
-; real mode. The descriptor cache keeps the limit — "unreal mode" — which lets
+; real mode. The descriptor cache keeps the limit, "unreal mode", which lets
 ; the copy loop above write above 1 MiB with ordinary real-mode code.
 setup_unreal:
     cli
@@ -707,7 +707,7 @@ pm_entry:
 BITS 16
 
 ; ---------------------------------------------------------------------------
-; Output helpers (BIOS teletype — the only output we have at this stage)
+; Output helpers (BIOS teletype, the only output we have at this stage)
 ; ---------------------------------------------------------------------------
 print:
     push ax

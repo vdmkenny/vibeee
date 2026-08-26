@@ -1,6 +1,6 @@
 //! THE portability contract.
 //!
-//! `kernel/` must never import anything from `arch/` directly — it imports this
+//! `kernel/` must never import anything from `arch/` directly, it imports this
 //! file, and `build.zig` binds the implementation for the target. Porting
 //! vibeee to another architecture means implementing exactly what is listed
 //! here, and this file is deliberately kept to one readable page so that
@@ -113,7 +113,7 @@ pub const initThreadStack = impl.initThreadStack;
 // ---------------------------------------------------------------------------
 
 /// Monotonic microseconds. Backed by whichever source survived the selection
-/// ladder in design §6.5 — on the 701 that is HPET if we managed to force-enable
+/// ladder in design §6.5, on the 701 that is HPET if we managed to force-enable
 /// it, otherwise the ACPI PM timer. Never the TSC, which halts in idle.
 pub const monotonicMicros = impl.monotonicMicros;
 pub const tickCount = impl.tickCount;
@@ -133,7 +133,7 @@ pub const CpuInfo = struct {
     brand: []const u8,
     /// Set when the architecture offers a fast syscall entry (SYSENTER/SVC).
     fast_syscall: bool,
-    /// Set when frequency scaling exists at all. False on the 701 — the
+    /// Set when frequency scaling exists at all. False on the 701, the
     /// Celeron M has SpeedStep fused off, so there is no governor to write.
     freq_scaling: bool,
 };

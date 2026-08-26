@@ -1,8 +1,8 @@
 //! Console font description.
 //!
 //! A font is a dense bitmap indexed by slot, plus its metrics. Everything that
-//! draws text works through this, so swapping a font — or shipping several
-//! sizes and choosing at boot — needs no change anywhere else.
+//! draws text works through this, so swapping a font, or shipping several
+//! sizes and choosing at boot, needs no change anywhere else.
 
 const std = @import("std");
 
@@ -17,7 +17,7 @@ pub const Font = struct {
     name: []const u8,
     width: usize,
     height: usize,
-    /// Bytes per glyph row. Not width/8 — a 12-pixel row occupies two bytes.
+    /// Bytes per glyph row. Not width/8, a 12-pixel row occupies two bytes.
     row_bytes: usize,
     bitmap: []const u8,
 

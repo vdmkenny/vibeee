@@ -1,10 +1,10 @@
-//! Channels — synchronous call and reply.
+//! Channels, synchronous call and reply.
 //!
 //! A client sends a small request and blocks until the server answers. Every
 //! server in the design has request/response shape, and making that the
 //! default kills a class of bugs outright: there is no queue to overflow, no
 //! reply to correlate by hand, and a client that is waiting is visibly waiting
-//! rather than silently buffering. Bulk data does not come through here — it
+//! rather than silently buffering. Bulk data does not come through here, it
 //! goes through a ring (`lib/ring.zig`), with the channel carrying the small
 //! message that says which ring and how much.
 //!
@@ -15,8 +15,8 @@
 //! that cannot fail for want of memory is worth some care to arrange.
 //!
 //! **A reply names a call by token, not by pointer.** The server is not
-//! trusted — it may be a userspace process that has been restarted, or simply
-//! buggy — and a pointer would let it write a reply into a stack frame that
+//! trusted, it may be a userspace process that has been restarted, or simply
+//! buggy, and a pointer would let it write a reply into a stack frame that
 //! has since gone. The token carries a generation, so a stale reply is
 //! rejected rather than landing on whoever inherited the slot.
 //!

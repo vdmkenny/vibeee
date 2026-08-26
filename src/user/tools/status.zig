@@ -1,4 +1,4 @@
-//! free, top and disk — what the machine is doing right now.
+//! free, top and disk, what the machine is doing right now.
 //!
 //! Written to be read rather than to match Linux. `free` explains its own
 //! numbers instead of printing a grid of unlabelled columns; `disk` describes
@@ -132,8 +132,8 @@ var rows: [MAX_THREADS]Row = @splat(.{});
 /// Print the thread list as a tree.
 ///
 /// Which process started which is most of what anyone looking at this wants to
-/// know — whether the shell is init's child, whether a tool is still attached
-/// to the shell that ran it — and a flat list makes that guesswork.
+/// know, whether the shell is init's child, whether a tool is still attached
+/// to the shell that ran it, and a flat list makes that guesswork.
 fn writeTree(text: []const u8) void {
     var count: usize = 0;
 
@@ -158,7 +158,7 @@ fn writeTree(text: []const u8) void {
         if (findRow(count, row.parent) == null) writeBranch(count, row, 0);
     }
 
-    // Anything left is in a parent cycle, which should be impossible — but
+    // Anything left is in a parent cycle, which should be impossible, but
     // dropping threads silently from the one tool that lists them would hide
     // exactly the bug that caused it.
     for (rows[0..count]) |*row| {

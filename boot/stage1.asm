@@ -1,10 +1,10 @@
-; vibeee stage1 — MBR boot sector.
+; vibeee stage1: MBR boot sector.
 ;
 ; 440 bytes of code, then the partition table. Its whole job is to pull stage2
 ; off the medium and jump to it; it deliberately knows nothing about
 ; partitions or filesystems.
 ;
-; EDD (INT 13h AH=42h) only — no CHS fallback. On this machine the boot medium
+; EDD (INT 13h AH=42h) only, no CHS fallback. On this machine the boot medium
 ; is an SD card behind the BIOS's USB-HDD emulation, where CHS geometry is a
 ; fiction the BIOS invents; LBA sidesteps the whole translation question. Every
 ; BIOS that can boot USB supports EDD, and the 701's AMI BIOS is proven to by

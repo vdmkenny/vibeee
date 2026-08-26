@@ -2,7 +2,7 @@
 //!
 //! Handles are small integers indexing a per-process table, not pointers.
 //! Userspace therefore cannot name a kernel object it was not given, and a
-//! stale handle is a lookup failure rather than a wild dereference — the same
+//! stale handle is a lookup failure rather than a wild dereference, the same
 //! reasoning as file descriptors, for the same reasons.
 //!
 //! Rights are carried per handle rather than per object, so the same file can
@@ -51,7 +51,7 @@ pub const Directory = struct {
 pub const ChannelRef = struct {
     channel: *channel_mod.Channel,
     /// True for the handle that answers calls. Exactly one end serves, and
-    /// closing it is what tells waiting clients the server is gone — so which
+    /// closing it is what tells waiting clients the server is gone, so which
     /// end a handle is has to be recorded, not inferred.
     serving: bool,
 };

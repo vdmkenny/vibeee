@@ -15,7 +15,7 @@
 //!
 //! **The counters are byte totals, not offsets, and are allowed to wrap.**
 //! Storing totals rather than positions is what distinguishes a full ring from
-//! an empty one — with offsets they are the same state — and unsigned wrapping
+//! an empty one, with offsets they are the same state, and unsigned wrapping
 //! arithmetic makes the wrap a non-event, since only the difference is ever
 //! read. Capacity is a power of two so the offset is a mask rather than a
 //! division, which matters on a core with a 40-cycle divide.

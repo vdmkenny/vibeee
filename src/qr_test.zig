@@ -1,6 +1,6 @@
 //! Pure-Zig tests for the QR encoder.
 //!
-//! The important correctness check is differential, against libqrencode — see
+//! The important correctness check is differential, against libqrencode, see
 //! `make qr-verify`, which diffs our matrix against the reference encoder for
 //! several payloads and versions. A QR that merely *looks* right is worthless:
 //! the failure mode is a panic screen nobody can scan, found only when you are

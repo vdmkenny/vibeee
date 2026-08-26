@@ -26,16 +26,16 @@ Boot-time budget share: ≤ 4.0 s from stage1 entry to kernel entry (the other ~
 ## 2. Hardware facts used (confidence per research reports)
 
 - Legacy AMI BIOS only, no UEFI/GPT; MBR + INT 13h boot [HIGH, core-platform §5].
-- USB-HDD boot from the internal ENE UB6225 SD reader (USB MSC 0951:1606 on EHCI) is supported and routine; syslinux/GRUB-style MBR boots work → INT 13h EDD present [MEDIUM-HIGH; EDD *version* not verbatim-confirmed — treat as risk R1].
-- Internal SSD: PATA secondary master, `SILICONMOTION SM223AC`, 7,815,024 × 512 B sectors, 28-bit LBA — entire disk < 2^28 sectors, so BIOS EDD covers it fully [HIGH]. Small random writes 1–3 MB/s → keep boot-path writes to one 512 B journal sector [MEDIUM].
+- USB-HDD boot from the internal ENE UB6225 SD reader (USB MSC 0951:1606 on EHCI) is supported and routine; syslinux/GRUB-style MBR boots work → INT 13h EDD present [MEDIUM-HIGH; EDD *version* not verbatim-confirmed, treat as risk R1].
+- Internal SSD: PATA secondary master, `SILICONMOTION SM223AC`, 7,815,024 × 512 B sectors, 28-bit LBA, entire disk < 2^28 sectors, so BIOS EDD covers it fully [HIGH]. Small random writes 1–3 MB/s → keep boot-path writes to one 512 B journal sector [MEDIUM].
 - E820 map verbatim (usable 0–0x9FC00, 0x100000–top; ACPI data/NVS near top) [HIGH]; with stock 512 MB, usable top ≈ 0x1F78_0000 (~503 MB, inferred layout) [MEDIUM].
-- RSDP observed at 0xFBE60, sig `ACPIAM` [HIGH] — we still scan EBDA + 0xE0000–0xFFFFF per spec.
+- RSDP observed at 0xFBE60, sig `ACPIAM` [HIGH], we still scan EBDA + 0xE0000–0xFFFFF per spec.
 - VBE mode table has NO 800×480 (only 640×480 VESA modes); text mode `VGA+ 80x25` works at POST via panel fitter [HIGH] → boot stays in text mode; kernel does native GMA900 modeset.
 - No serial port [HIGH] → all diagnostics on the VGA text screen + a persisted journal sector.
 - Xandros/BIOS "Boot Booster" uses an MBR partition of type 0xEF on the SSD; BIOS writes POST cache into it [HIGH] → tolerate, never use (see §8).
 - CPU 630 MHz Dothan, SSE2, ~1 GB/s theoretical memory bandwidth [HIGH] → informs compression choice (§6).
 - i8042 keyboard live in real mode via INT 16h (EC KB3310 provides KBC function) [HIGH].
-- BIOS "OS Installation: [Start/Finished]" advanced option can affect USB device handling during boot [MEDIUM] — bring-up note §11.
+- BIOS "OS Installation: [Start/Finished]" advanced option can affect USB device handling during boot [MEDIUM], bring-up note §11.
 
 ## 3. Architecture
 
@@ -52,7 +52,7 @@ BIOS POST → INT 19h → MBR sector @0x7C00 (stage1, DL=boot drive)
 kernel: consumes BootInfo, decompresses rootfs → ramfs, later acks journal
 ```
 
-Stage2 execution model: enter protected mode once, early; all logic is 32-bit Zig (`ReleaseSmall`, `i386-freestanding`); every BIOS service (INT 13h/15h/16h/10h) goes through a NASM PM→RM→PM trampoline. No unreal-mode tricks in the main path (unreal mode is only a fallback idea if trampoline latency ever matters — it does not: one round trip costs ~µs, and we do ~400 of them per boot).
+Stage2 execution model: enter protected mode once, early; all logic is 32-bit Zig (`ReleaseSmall`, `i386-freestanding`); every BIOS service (INT 13h/15h/16h/10h) goes through a NASM PM→RM→PM trampoline. No unreal-mode tricks in the main path (unreal mode is only a fallback idea if trampoline latency ever matters, it does not: one round trip costs ~µs, and we do ~400 of them per boot).
 
 ### Memory map during stage2 (all linear/physical)
 
@@ -62,7 +62,7 @@ Stage2 execution model: enter protected mode once, early; all logic is 32-bit Zi
 | 0x0000_1000–0x0000_5FFF | stage2 stack (RM and PM share; SS:SP=0:0x5FF0 in RM) |
 | 0x0000_6000–0x0000_6FFF | `BootInfo` (handoff, ≤4 KB incl. VBE copy) |
 | 0x0000_7000–0x0000_8FFF | stage2 text log ring (8 KB, handed to kernel) |
-| 0x0000_7C00–0x0000_7DFF | stage1 (dead after jump; overlap w/ log is fine — log starts after jump) |
+| 0x0000_7C00–0x0000_7DFF | stage1 (dead after jump; overlap w/ log is fine, log starts after jump) |
 | 0x0001_0000–0x0004_FFFF | stage2 code+data+bss (cap 256 KB) |
 | 0x0005_0000–0x0005_FFFF | FAT + cluster-run scratch (64 KB) |
 | 0x0006_0000–0x0006_7FFF | INT 13h bounce buffer (32 KB, segment 0x6000) |
@@ -77,9 +77,9 @@ Log ring note: stage2 mirrors every screen line into the ring; kernel copies it 
 Responsibilities: nothing but "get stage2 into RAM and jump", defensively.
 
 Sequence (register-level):
-1. `cli; xor ax,ax; mov ds,ax; mov es,ax; mov ss,ax; mov sp,0x7C00; sti; cld`. Save `DL` (BIOS boot drive) to a fixed slot in the relocated stage1. Relocate self 0x7C00→0x0600 (`rep movsw`, 256 words) and far-jump into the copy — frees 0x7C00 for scratch and is VBR-chainload-safe by convention.
-2. EDD presence: `mov ah,0x41; mov bx,0x55AA; int 0x13` → require CF=0, BX=0xAA55, CX bit0 (DAP). Failure → error `E1` (this BIOS is known to support EDD; no CHS fallback is carried — 440 B is better spent on retries, and EDD absence means an unsupported machine).
-3. Read stage2 header sector: DAP `{size=0x10, cnt=1, dst=0x0000:0x7C00, lba=STAGE2_LBA_A}` (=1), `ah=0x42; int 0x13`. On CF or bad magic: retry once; then same for backup run `STAGE2_LBA_B` (=1024); then, as a DL quirk fallback, retry the whole sequence once with `DL=0x80` (some BIOSes mis-pass DL for USB-HDD; observed rarely on AMI — cheap insurance). All failed → `E2`.
+1. `cli; xor ax,ax; mov ds,ax; mov es,ax; mov ss,ax; mov sp,0x7C00; sti; cld`. Save `DL` (BIOS boot drive) to a fixed slot in the relocated stage1. Relocate self 0x7C00→0x0600 (`rep movsw`, 256 words) and far-jump into the copy, frees 0x7C00 for scratch and is VBR-chainload-safe by convention.
+2. EDD presence: `mov ah,0x41; mov bx,0x55AA; int 0x13` → require CF=0, BX=0xAA55, CX bit0 (DAP). Failure → error `E1` (this BIOS is known to support EDD; no CHS fallback is carried: 440 B is better spent on retries, and EDD absence means an unsupported machine).
+3. Read stage2 header sector: DAP `{size=0x10, cnt=1, dst=0x0000:0x7C00, lba=STAGE2_LBA_A}` (=1), `ah=0x42; int 0x13`. On CF or bad magic: retry once; then same for backup run `STAGE2_LBA_B` (=1024); then, as a DL quirk fallback, retry the whole sequence once with `DL=0x80` (some BIOSes mis-pass DL for USB-HDD; observed rarely on AMI, cheap insurance). All failed → `E2`.
 4. Header (sector 0 of stage2 image): `{magic "EOS2", u16 sectors, u16 flags, u32 crc32_body, u32 entry_off}`. Loop-load `sectors` (≤511) in ≤64-sector DAP calls to 0x1000:0000 upward (INT 13h forbids crossing a 64 KB segment boundary in one transfer on some BIOSes → we advance the DAP *segment* by 0x800 per 64-sector chunk, offset always 0).
 5. Jump `0x1000:entry_off` with `DL`=saved drive, `SI`=LBA base actually used (A or B), so stage2 knows which copy it is and where the journal lives relative to it.
 
@@ -106,14 +106,14 @@ rm_to_pm: cli → lgdt → set PE → jmp 0x08:pm32 → reload segs, ESP
 Zig-visible API: `bios_int(int_no: u8, regs: *RmRegs) void` where `RmRegs = extern struct { eax, ebx, ecx, edx, esi, edi, es, ds, eflags: u32 }`. All INT 13h data lands in the bounce buffer (segment 0x6000); Zig memcpys to the ≥1 MB destination while already in PM (no unreal mode needed).
 
 ### 5.3 Zig main logic
-- Parse the MBR (re-read LBA 0 via `diskRead`) → find P1: first partition entry with type 0x0E (FAT16 LBA) — boot flag preferred but not required. Record partition index + start LBA + disk signature.
+- Parse the MBR (re-read LBA 0 via `diskRead`) → find P1: first partition entry with type 0x0E (FAT16 LBA), boot flag preferred but not required. Record partition index + start LBA + disk signature.
 - FAT16 read-only driver (~300 lines): BPB parse, root-dir 8.3 lookup, FAT chain walk with **contiguous-run coalescing** (mtools/mkfs write files contiguously; a 9 MB rootfs then costs ~290 64-sector reads with zero seek-chatter).
-- `BOOT.CFG` (root dir, ≤2 KB, `key=value` lines): `kernel=`, `rootfs=`, `cmdline=`, `kernel_bak=`, `rootfs_bak=`, `menu_timeout=0`, plus per-entry `crc32.kernel=`/`crc32.rootfs=` written by the image builder (defense against FAT-level corruption; the files also carry internal CRCs — both are checked).
+- `BOOT.CFG` (root dir, ≤2 KB, `key=value` lines): `kernel=`, `rootfs=`, `cmdline=`, `kernel_bak=`, `rootfs_bak=`, `menu_timeout=0`, plus per-entry `crc32.kernel=`/`crc32.rootfs=` written by the image builder (defense against FAT-level corruption; the files also carry internal CRCs, both are checked).
 - Menu: poll INT 16h AH=0x01 for ~300 ms at entry; SPACE (or `r`) held → menu on VGA text: `1 Normal  2 Verbose  3 Recovery  4 Backup slot`. Verbose appends `verbose=1`, recovery appends `recovery=1` (init in rootfs runs the recovery TUI, §9), backup selects `*_bak` files. No key → boot default instantly (`menu_timeout=0`).
 - Kernel load: open kernel file, read ELF32 header + phdrs, for each PT_LOAD copy filesz bytes to `p_paddr` (chunked through bounce buffer), zero to `p_memsz`. Require `p_paddr ∈ [0x100000, 0x400000)`, 4 KB aligned. Entry = `e_entry` translated via phdrs to physical. CRC32 checked over the file image while streaming.
 - Rootfs load: stream file to 0x0100_0000, CRC32 of the compressed container checked against both BOOT.CFG and the container header (§6). Verify blob end < min(top-of-usable-E820, kernel-reserved regions).
 - On any load/CRC failure of primary files → automatic retry with `*_bak`; both bad → error screen `E5` + journal write + halt (screen shows which file/CRC failed).
-- Boot journal (LBA 2040, one 512 B sector, written via EDD AH=0x43 write): `{magic "EEBJ", u32 seq, u8 state(1=attempting), u8 slot, u8 attempts, u8 last_err, u32 crc32}`. Stage2: if `state==attempting && attempts>=3` → force backup slot this boot and show a warning banner. Then `attempts++`, write. Kernel acks (state=0) once core services are up, via its own disk path (PATA if booted from SSD; via usbd when booted from SD — the ack is best-effort and only gates the *auto*-fallback heuristic).
+- Boot journal (LBA 2040, one 512 B sector, written via EDD AH=0x43 write): `{magic "EEBJ", u32 seq, u8 state(1=attempting), u8 slot, u8 attempts, u8 last_err, u32 crc32}`. Stage2: if `state==attempting && attempts>=3` → force backup slot this boot and show a warning banner. Then `attempts++`, write. Kernel acks (state=0) once core services are up, via its own disk path (PATA if booted from SSD; via usbd when booted from SD, the ack is best-effort and only gates the *auto*-fallback heuristic).
 - Handoff: fill BootInfo, `out 0x21,0xFF; out 0xA1,0xFF` (mask PICs), `cli`, jump.
 
 Public Zig signatures (stage2-internal, but stable for testing):
@@ -141,7 +141,7 @@ The dominant cost is **bytes read through the BIOS→EHCI→SD path**, whose thr
 | DEFLATE | ~2.4× → 10 MB | 10 MB | ~35 MB/s | 0.7 s | moderate |
 | zstd -19 (≤8 MB window) | ~2.7× → 9 MB | 9 MB | ~60 MB/s | 0.4 s | large, but **Zig std ships a freestanding-usable zstd decoder** |
 
-At 3 MB/s BIOS reads, zstd saves ~1.0 s of I/O vs LZ4 and pays ~0.3 s of CPU: net win, and the win grows as the rootfs grows. Decompression happens **in the kernel** (it owns ramfs anyway), so stage2 stays dumb and small; Zig `std.compress.zstd` removes the implementation-complexity argument against zstd. Window capped at 8 MB (transient kernel buffer, freed after unpack). Kernel ELF ships **uncompressed** (≤1.5 MB ≈ 0.4 s read worst-case; compressing it would drag an ELF+decoder step into stage2 for ~0.2 s — revisit in M3 only if hardware measurements demand; an LZ4-block option is reserved via header `flags`).
+At 3 MB/s BIOS reads, zstd saves ~1.0 s of I/O vs LZ4 and pays ~0.3 s of CPU: net win, and the win grows as the rootfs grows. Decompression happens **in the kernel** (it owns ramfs anyway), so stage2 stays dumb and small; Zig `std.compress.zstd` removes the implementation-complexity argument against zstd. Window capped at 8 MB (transient kernel buffer, freed after unpack). Kernel ELF ships **uncompressed** (≤1.5 MB ≈ 0.4 s read worst-case; compressing it would drag an ELF+decoder step into stage2 for ~0.2 s, revisit in M3 only if hardware measurements demand; an LZ4-block option is reserved via header `flags`).
 
 Rootfs container (outer wrapper around the zstd frame, built by `tools/mkear.zig`):
 ```
@@ -167,7 +167,7 @@ pub const BootInfo = extern struct {
     boot_drive: u8,          // BIOS DL actually used
     boot_part_index: u8,     // MBR slot of P1 (0-based)
     edd_flags: u8, vbe_present: u8,
-    disk_sig: u32,           // MBR bytes 0x1B8 of boot disk — kernel/usbd re-identify boot medium by this
+    disk_sig: u32,           // MBR bytes 0x1B8 of boot disk, kernel/usbd re-identify boot medium by this
     e820_count: u32,
     e820: [32]E820Entry,
     rsdp_phys: u32,
@@ -179,7 +179,7 @@ pub const BootInfo = extern struct {
     vbe_info: [512]u8,       // raw VbeInfoBlock copy if vbe_present (diagnostic only)
 };
 ```
-Framebuffer state is always "VGA text 80×25 @0xB8000" in v1 (no fb fields; the kernel display driver owns modeset per contract). MBR has no GUIDs — the `disk_sig` u32 + partition index is the boot-medium identity; eeefs superblocks carry their own UUIDs for /data /cfg mounting.
+Framebuffer state is always "VGA text 80×25 @0xB8000" in v1 (no fb fields; the kernel display driver owns modeset per contract). MBR has no GUIDs, the `disk_sig` u32 + partition index is the boot-medium identity; eeefs superblocks carry their own UUIDs for /data /cfg mounting.
 
 ## 8. SD image & partition layout (and SSD variant)
 
@@ -198,9 +198,9 @@ All partitions 4 MB-aligned (8192 sectors) for cheap-SD erase blocks. Shipping i
 
 P1 contents: `BOOT.CFG`, `KERNEL.ELF`, `ROOTFS.EZI`, `KERNEL.BAK`, `ROOTFS.BAK` (backups = last-known-good, rewritten by the updater after a successful boot of a new version). Budget: 2×1.5 + 2×10 + slack ≈ 23–28 MB → 32 MB fits. Total system image = 44 MB + 4 MB stub ≤ 48 MB budget. First boot (or installer) grows P3 to the whole card and mkfs's it (`/data expand` in recovery TUI; MBR entry rewrite + eeefs mkfs, no data to preserve in the stub).
 
-**P1 = FAT16, decided.** Raw-LBA would shave ~300 lines from stage2, but FAT16 wins on every operational axis: kernel/rootfs updates from any OS (mtools, macOS/Windows/Linux mounts) and from vibeee itself via its in-kernel FAT driver (contract: VFS has FAT); the BIOS EZ-Flash tool reads FAT16 sticks, so the same card can carry `701.ROM` for BIOS recovery; file-level A/B fallback is trivial with files, painful with raw runs. Stage1 never parses FAT — the fixed-LBA stage2 run in the MBR gap keeps stage1 tiny; stage2 (rarely updated, dd-written by the updater with A/B copies) is the only raw-LBA object.
+**P1 = FAT16, decided.** Raw-LBA would shave ~300 lines from stage2, but FAT16 wins on every operational axis: kernel/rootfs updates from any OS (mtools, macOS/Windows/Linux mounts) and from vibeee itself via its in-kernel FAT driver (contract: VFS has FAT); the BIOS EZ-Flash tool reads FAT16 sticks, so the same card can carry `701.ROM` for BIOS recovery; file-level A/B fallback is trivial with files, painful with raw runs. Stage1 never parses FAT, the fixed-LBA stage2 run in the MBR gap keeps stage1 tiny; stage2 (rarely updated, dd-written by the updater with A/B copies) is the only raw-LBA object.
 
-**SSD install (same loader, no rebuild):** identical layout dd'd to the SSD start; P3 sized to the remaining ~3.9 GB (7,815,024 sectors total, all < 2^28 — BIOS EDD and later the kernel PATA driver both cover it). Differences handled at run time, not build time: stage1/2 use the BIOS-provided DL (SSD boots as 0x80; SD-as-USB-HDD also usually 0x80 with SSD shifted to 0x81 — never hardcoded); kernel tells media apart by `disk_sig`. Installer = recovery-TUI action running under full vibeee booted from SD: raw-writes MBR(+table recomputed)+stage2+P1+P2 via the kernel PATA driver, creates P3, then sets `booted_from_ssd` expectations. **Boot Booster 0xEF coexistence: tolerate, don't use.** If the installer finds an existing type-0xEF partition (Xandros P4, 8 MB at disk end), it keeps that MBR slot and LBA range untouched and packs our P1/P2/P3 into the remaining three slots and the space before it; we never read/write inside it (BIOS autonomously writes POST cache there). If absent, we do not create one. Our own partitions never use type 0xEF.
+**SSD install (same loader, no rebuild):** identical layout dd'd to the SSD start; P3 sized to the remaining ~3.9 GB (7,815,024 sectors total, all < 2^28: BIOS EDD and later the kernel PATA driver both cover it). Differences handled at run time, not build time: stage1/2 use the BIOS-provided DL (SSD boots as 0x80; SD-as-USB-HDD also usually 0x80 with SSD shifted to 0x81, never hardcoded); kernel tells media apart by `disk_sig`. Installer = recovery-TUI action running under full vibeee booted from SD: raw-writes MBR(+table recomputed)+stage2+P1+P2 via the kernel PATA driver, creates P3, then sets `booted_from_ssd` expectations. **Boot Booster 0xEF coexistence: tolerate, don't use.** If the installer finds an existing type-0xEF partition (Xandros P4, 8 MB at disk end), it keeps that MBR slot and LBA range untouched and packs our P1/P2/P3 into the remaining three slots and the space before it; we never read/write inside it (BIOS autonomously writes POST cache there). If absent, we do not create one. Our own partitions never use type 0xEF.
 
 ## 9. Recovery story
 
@@ -216,10 +216,10 @@ Errors with no serial: every stage2 failure prints code + plain-English line + t
 
 ## 10. Build & Makefile integration (no root, mtools + dd)
 
-Pinned tools: one Zig stable (e.g. 0.14.x — pin exact in `versions.mk`), NASM, mtools, zstd CLI, GNU Make. Image assembly is pure file operations.
+Pinned tools: one Zig stable (e.g. 0.14.x, pin exact in `versions.mk`), NASM, mtools, zstd CLI, GNU Make. Image assembly is pure file operations.
 
 ```make
-# tools (host, zig run — no cross setup needed)
+# tools (host, zig run, no cross setup needed)
 mkpart:  tools/mkpart.zig    # writes MBR table+sig+CHS-capped entries into image
 mkear:   tools/mkear.zig     # rootfs dir -> EAR1 -> zstd -19 --no-check -> EZI1 wrap (+crc32s)
 patchhdr: tools/patchhdr.zig # stamps stage2 header: sectors, crc32, entry
@@ -248,29 +248,29 @@ flash:    ; @echo "sudo dd if=vibeee.img of=/dev/rdiskN bs=4M conv=fsync  (user 
 
 ## 11. Bring-up & test plan
 
-QEMU emulates everything this subsystem touches (INT 13h EDD incl. AH=0x43 writes, E820, A20, VBE, USB-MSC boot via SeaBIOS) — full parity for boot; the QEMU gaps (GMA900, AR2425) begin *after* handoff and are other subsystems' seams (kernel display falls back per its design when 8086:2592 absent; BootInfo is identical either way).
+QEMU emulates everything this subsystem touches (INT 13h EDD incl. AH=0x43 writes, E820, A20, VBE, USB-MSC boot via SeaBIOS), full parity for boot; the QEMU gaps (GMA900, AR2425) begin *after* handoff and are other subsystems' seams (kernel display falls back per its design when 8086:2592 absent; BootInfo is identical either way).
 
 1. **Unit (host):** FAT16 driver, ELF loader, CRC32, BOOT.CFG parser, EAR/EZI round-trip run as native Zig tests with a RAM-backed `diskRead` mock (the `Sink`/`diskRead` seams exist for exactly this).
 2. **QEMU M1 gates:** `make run` boots to a stub kernel that dumps BootInfo and compares against expectations (magic, e820 count, RSDP found, CRCs); `make run-usb` same via USB path; corruption tests: flip bytes in stage2-A / KERNEL.ELF / ROOTFS.EZI on the image → assert fallback chain (B copy, .BAK files, error codes); journal test: kill QEMU before ack 3× → assert auto-backup boot.
-3. **Real hardware smoke (early, cheap):** verbose boot prints EDD version, measured read throughput (stage2 times a 4 MB read — this settles R2 and the compression math), E820 map, RSDP addr. Photograph screen (no serial). Test matrix: boot from SD reader (Esc boot menu → USB-HDD entry), boot from SSD after install, BIOS "OS Installation" Start vs Finished, BIOS 0801 vs 1302 if available, with and without an existing Boot Booster 0xEF partition on the SSD.
+3. **Real hardware smoke (early, cheap):** verbose boot prints EDD version, measured read throughput (stage2 times a 4 MB read, this settles R2 and the compression math), E820 map, RSDP addr. Photograph screen (no serial). Test matrix: boot from SD reader (Esc boot menu → USB-HDD entry), boot from SSD after install, BIOS "OS Installation" Start vs Finished, BIOS 0801 vs 1302 if available, with and without an existing Boot Booster 0xEF partition on the SSD.
 4. **Regression:** every release image must boot in QEMU (plain+USB) in CI (`timeout 30 make run-headless` with exit-port stub kernel).
 
 ## 12. RAM / disk / time budget (this subsystem)
 
 - Disk: stage1 440 B; stage2 2×256 KB; P1 32 MB (files ~23–28 MB incl. backups); gap+journal 4 MB region → system image ≤ 44 MB of the 48 MB cap (4 MB spare in P3 stub).
-- RAM at handoff: BootInfo ≤4 KB + log 8 KB + kernel ≤1.5 MB(+bss) + rootfs blob ≤16 MB — blob and stage2 areas are reclaimed by the kernel after unpack (transient zstd window ≤8 MB also freed) → boot path contributes ~0 to the 48 MB idle budget except the unpacked ramfs (≤24 MB, counted against the rootfs budget, not boot's).
-- Time (estimates, to be replaced by M1 measurements at est. 3 MB/s BIOS reads): stage1+stub 50 ms; kernel read 0.5 s; rootfs read ~3 s; CRC ~0.1 s; menu poll 0.3 s; total ≈ 3.9 s ≤ 4.0 s share. If measured reads are ≥5 MB/s, drop to ≈2.5 s; if ≤1.5 MB/s, escalate (options: smaller rootfs, zstd -22, kernel-side streaming decompress overlap — see R2).
+- RAM at handoff: BootInfo ≤4 KB + log 8 KB + kernel ≤1.5 MB(+bss) + rootfs blob ≤16 MB, blob and stage2 areas are reclaimed by the kernel after unpack (transient zstd window ≤8 MB also freed) → boot path contributes ~0 to the 48 MB idle budget except the unpacked ramfs (≤24 MB, counted against the rootfs budget, not boot's).
+- Time (estimates, to be replaced by M1 measurements at est. 3 MB/s BIOS reads): stage1+stub 50 ms; kernel read 0.5 s; rootfs read ~3 s; CRC ~0.1 s; menu poll 0.3 s; total ≈ 3.9 s ≤ 4.0 s share. If measured reads are ≥5 MB/s, drop to ≈2.5 s; if ≤1.5 MB/s, escalate (options: smaller rootfs, zstd -22, kernel-side streaming decompress overlap, see R2).
 
 ## 13. Risks & open questions
 
-- **R1 EDD on the internal reader:** EDD read is proven by prior art (GRUB/syslinux); EDD *write* (AH=0x43, journal) is assumed — if this AMI BIOS refuses writes to USB-HDD, auto-fallback degrades to manual menu only (journaling disabled via `journal_lba=0`). Verify in hardware smoke.
+- **R1 EDD on the internal reader:** EDD read is proven by prior art (GRUB/syslinux); EDD *write* (AH=0x43, journal) is assumed, if this AMI BIOS refuses writes to USB-HDD, auto-fallback degrades to manual menu only (journaling disabled via `journal_lba=0`). Verify in hardware smoke.
 - **R2 BIOS USB read throughput unknown** (2–8 MB/s spread makes 1–4 s difference). Measured in M1 verbose boot; compression level and rootfs size budget re-tuned then.
 - **R3 DL value under USB-HDD emulation:** assumed 0x80; stage1 carries a one-shot 0x80 retry. Verify both boot orders (SD present+SSD, SSD only).
-- **R4 Boot Booster interaction:** BIOS behavior when 0xEF partition absent is "full POST" per prior art; confirm no MBR rewriting by BIOS on the 701 (some AMI Boot Booster implementations touch the 0xEF partition only — expected safe).
+- **R4 Boot Booster interaction:** BIOS behavior when 0xEF partition absent is "full POST" per prior art; confirm no MBR rewriting by BIOS on the 701 (some AMI Boot Booster implementations touch the 0xEF partition only, expected safe).
 - **R5 Zig std zstd decoder freestanding fitness** (allocator + window mgmt) at pinned version: validate in kernel M1; fallback = vendored tiny LZ4 (flags bit in EZI1 header reserves the codec switch without format break).
-- **R6 SD reader quirk:** one archived report of a specific SDHC card causing USB resets [MEDIUM, peripherals §9] — recommend named-brand SDHC ≤32 GB; stage1 retries mask transients.
+- **R6 SD reader quirk:** one archived report of a specific SDHC card causing USB resets [MEDIUM, peripherals §9], recommend named-brand SDHC ≤32 GB; stage1 retries mask transients.
 - **Open O1:** does the BIOS boot the internal reader with *no* card-change re-enumeration issues after warm reboot? (test).
-- **Open O2:** exact BIOS POST time SD vs SSD (affects whether the 8 s budget forces future Boot Booster *use* — currently out of scope by decision).
+- **Open O2:** exact BIOS POST time SD vs SSD (affects whether the 8 s budget forces future Boot Booster *use*, currently out of scope by decision).
 - **Open O3 (integration):** kernel team to confirm 0x6000 BootInfo address + reclaim rules, and usbd team to confirm journal-ack write path via `disk_sig` match.
 
 ## 14. Phasing

@@ -1,6 +1,6 @@
-# vibeee Design 06 — SNDD: Userspace Audio Server (ICH6 HDA + ALC662)
+# vibeee Design 06: SNDD: Userspace Audio Server (ICH6 HDA + ALC662)
 
-> **Status: design only — not implemented.**
+> **Status: design only, not implemented.**
 > Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
@@ -22,7 +22,7 @@ sndd is a supervised userspace driver server owning the Intel HDA controller at 
 - Cold re-init on crash/restart and on resume from S3.
 
 Design center: this machine plays one thing at a time plus UI feedback sounds. The
-mixer is deliberately minimal — fixed 48 kHz S16LE pipeline, linear resampling for
+mixer is deliberately minimal, fixed 48 kHz S16LE pipeline, linear resampling for
 44.1 k-family rates, no effects, no per-stream formats beyond mono/stereo S16LE.
 Everything else is rejected at open_stream() and the client library converts.
 
@@ -33,7 +33,7 @@ Everything else is rejected at open_stream() and the client library converts.
 | Controller | ICH6 HDA, PCI 00:1b.0, 8086:2668, rev 04 | HIGH (lspci, both reports) |
 | Controller streams | 4 ISS + 4 OSS, 0 BSS (ICH6 GCAP) | HIGH (ICH6 datasheet class) |
 | Codec | Realtek ALC662 rev1, HDA VID/DID 0x10EC0662, SSID 1043:82a1 | HIGH (kernel quirk 291702f0) |
-| Codec link address | assumed 0, single codec | LOW — enumerate STATESTS, do not hardcode |
+| Codec link address | assumed 0, single codec | LOW, enumerate STATESTS, do not hardcode |
 | Speakers | pin NID 0x14, amp mute | HIGH |
 | HP jack | pin NID 0x1b, presence detect wired, unsol capable | HIGH |
 | e-mic jack | pin NID 0x18, presence detect wired | HIGH |
@@ -44,7 +44,7 @@ Everything else is rejected at open_stream() and the client library converts.
 | No S/PDIF wired | analog only | HIGH |
 | Shipped-OS gotcha | ALSA "Capture Switch" defaulted OFF on Xandros | HIGH |
 | Hotkeys | ACPI ASUS010 notify 0x13 mute / 0x14 vol- / 0x15 vol+ (Fn+F7/8/9); NOT i8042 scancodes | HIGH |
-| HDA interrupt GSI | NOT verbatim-confirmed for 701 4G (research uncertainty; ICH6 INTA→PIRQ, expect 16–23, likely shared with UHCI) | LOW — obtain from ACPI _PRT via devmgr, verify at runtime |
+| HDA interrupt GSI | NOT verbatim-confirmed for 701 4G (research uncertainty; ICH6 INTA→PIRQ, expect 16–23, likely shared with UHCI) | LOW, obtain from ACPI _PRT via devmgr, verify at runtime |
 | MMIO BAR0 | BIOS-assigned; 16 KB region | HIGH (HDA spec class) |
 | S3 | works; full device re-init required after resume | HIGH |
 | CPU | 630 MHz, SSE2, no SSE3; ~1 GB/s theoretical mem BW | HIGH |
@@ -72,7 +72,7 @@ Everything else is rejected at open_stream() and the client library converts.
 
 Threads (2): control thread (IPC server, non-RT) and mix thread (RT, woken by the
 stream irqevent). Unsolicited responses are handled on the control thread (RIRB
-interrupt forwards via an internal event) — jack policy has no RT deadline.
+interrupt forwards via an internal event), jack policy has no RT deadline.
 
 Startup: devmgr matches PCI 8086:2668 against /drivers/sndd.manifest, spawns sndd
 with grants {pci_cfg(00:1b.0), map_mmio(BAR0), ioport: none, dma_alloc, irq_attach
@@ -87,7 +87,7 @@ Not on the boot critical path; ready ≈150 ms after spawn.
   the HDA base rate, integer-divides to 16k/8k voice rates, and modern content is 48k.
 - Client playback rates accepted: 8000, 11025, 16000, 22050, 24000, 32000, 44100,
   48000; mono or stereo S16LE only. Non-48k resampled by linear interpolation
-  (arithmetic in §6: ≤0.2% CPU per stream — cheap enough to accept, rejecting 44.1k
+  (arithmetic in §6: ≤0.2% CPU per stream, cheap enough to accept, rejecting 44.1k
   would just push a worse resampler into every client).
 - Capture: 48 kHz native; 16 kHz decimated (x3 averaging) offered for voice (M2).
 - End-to-end latency (playback): client ring ≤2 periods queued + 1 period mix-ahead
@@ -224,7 +224,7 @@ LVI 0x0C, FIFOS 0x10, FMT 0x12, BDLPL 0x18, BDLPU 0x1C.
 ### 5.1 PCI + controller bring-up
 
 1. pci_cfg: COMMAND |= MEM_EN|BUS_MASTER (bits 1,2). Read BAR0, map_mmio(bar0, 16K).
-2. TCSEL (pci cfg 0x44) &= ~0x07 — force traffic class 0 (standard Intel HDA errata
+2. TCSEL (pci cfg 0x44) &= ~0x07, force traffic class 0 (standard Intel HDA errata
    step; wrong TC breaks snooping/interrupt delivery).
 3. Link reset: GCTL.CRST(bit0)=0; poll ≤10 ms until reads 0. GCTL=1 (CRST deassert,
    also UNSOL accept bit8 set later); poll ≤10 ms until reads 1. Wait 1 ms
@@ -242,7 +242,7 @@ LVI 0x0C, FIFOS 0x10, FMT 0x12, BDLPL 0x18, BDLPU 0x1C.
 3. CORBLBASE=pa(corb), CORBUBASE=0. CORBWP=0. CORBRP: write bit15 (RST), poll bit15==1,
    write 0, poll bit15==0 (spec dance).
 4. RIRBLBASE=pa(rirb), RIRBUBASE=0. RIRBWP: write bit15 (self-clearing reset).
-   rirb_rp=0. RINTCNT=1 (interrupt per response — cheap at our verb rates, needed
+   rirb_rp=0. RINTCNT=1 (interrupt per response, cheap at our verb rates, needed
    for prompt unsolicited delivery).
 5. RIRBCTL = RINTCTL(bit0) | RIRBDMAEN(bit1). CORBCTL = CORBRUN(bit1).
 6. INTCTL = GIE(bit31) | CIE(bit30); stream bits added at stream start.
@@ -267,8 +267,8 @@ cmd(nid, verb, payload):
 ```
 
 The 10 ms deadline uses the irqevent when the GSI works; if no RIRB interrupt is ever
-seen during init (unverified GSI — LOW confidence), sndd logs it and permanently
-falls back to 1 ms-tick polling of RIRBSTS/SDSTS (timer event). Audio still works —
+seen during init (unverified GSI: LOW confidence), sndd logs it and permanently
+falls back to 1 ms-tick polling of RIRBSTS/SDSTS (timer event). Audio still works,
 period pacing then derives from the posbuf/LPIB poll. This is the GSI-uncertainty
 seam: correctness never depends on the interrupt line being right.
 
@@ -296,13 +296,13 @@ seam: correctness never depends on the interrupt line being right.
 0x02 0x706 0x10      # stream tag 1, channel 0
 0x02 0x3   0xB000|vol_steps   # out amp L+R, unmute, gain = master map (§7)
 0x0c 0x3   0x7000    # mixer 0x0c: unmute input idx0 (DAC 0x02 path), gain 0
-0x0c 0x3   0x7180    # mixer 0x0c: MUTE input idx1 (0x0b loopback — no analog mic bleed)
+0x0c 0x3   0x7180    # mixer 0x0c: MUTE input idx1 (0x0b loopback, no analog mic bleed)
 # speakers:
 0x14 0xF02 …         # read conn list; find index of 0x0c -> ci14 (do not assume 0)
 0x14 0x701 ci14      # connection select -> mixer 0x0c
 0x14 0x707 0x40      # pin ctl: OUT enable
 0x14 0xF00p0x0C      # pin caps; if EAPD capable (bit16):
-0x14 0x70C 0x02      #   EAPD on (speaker amp enable — Eee speakers typically need it)
+0x14 0x70C 0x02      #   EAPD on (speaker amp enable: Eee speakers typically need it)
 0x14 0x3   0xB000    # pin out amp: unmute L+R
 # headphone:
 0x1b 0xF02/0x701 ci1b
@@ -314,7 +314,7 @@ seam: correctness never depends on the interrupt line being right.
 0x1b 0xF09 0x00      # pin sense; bit31 presence -> if present: 0x14 0x3 0xB080 (mute spk)
 ```
 
-### 5.6 ALC662 capture path init (default: present but OFF — see §7 policy)
+### 5.6 ALC662 capture path init (default: present but OFF, see §7 policy)
 
 ```
 0x18 0x707 0x24      # e-mic pin: IN enable | VREF 80% (electret bias)
@@ -331,7 +331,7 @@ seam: correctness never depends on the interrupt line being right.
 ```
 
 This encodes the shipped-OS lesson deliberately: the *global* default is capture
-silent (privacy + power), but opening a capture stream auto-enables the full path —
+silent (privacy + power), but opening a capture stream auto-enables the full path,
 no hidden "Capture Switch OFF" trap for applications.
 
 ### 5.7 Stream start (playback engine; capture symmetric)
@@ -348,7 +348,7 @@ no hidden "Capture Switch OFF" trap for applications.
 8. INTCTL |= 1<<int_bit; SD_CTL |= RUN|IOCE|FEIE|DEIE.
 9. On each IOC irq: ack SDSTS (write BCIS|FIFOE|DESE = 0x1C), mix-fill the period
    just freed, wr_pos++. Position check: posbuf[stream] (validate: nonzero and
-   advancing within the first 2 periods, else use_posbuf=false and read LPIB —
+   advancing within the first 2 periods, else use_posbuf=false and read LPIB,
    ICH6's posbuf is expected to work; LPIB is the runtime-verified fallback,
    period-granular accuracy is all we need).
 Stop: SD_CTL.RUN=0; poll SDSTS FIFO idle ≤ 1 period; INTCTL &= ~(1<<int_bit); SRST dance.
@@ -393,10 +393,10 @@ then `0x1b/0x18 0xF09 0x00` re-read sense (bit31 = present):
   (clients keep producing into rings; rings simply fill), save mixer/jack shadow
   state, codec AFG→D3, GCTL.CRST=0 (link reset held through S3).
 - pm.resume (platform svc calls after kernel restored PCI config): full §5.1–5.7
-  re-init (identical to cold path — one code path, idempotent), restore shadow
+  re-init (identical to cold path, one code path, idempotent), restore shadow
   state, restart streams that were running, re-poll jack sense. Glitch ≤1 period.
 - Teardown/exit: streams stop, codec D3, CRST=0, unmap. Supervisor restart then
-  always finds the device in a known (reset) state — but never RELIES on that (§8).
+  always finds the device in a known (reset) state, but never RELIES on that (§8).
 
 ## 6. Mixing engine
 
@@ -415,7 +415,7 @@ store to the just-freed HW period.
 - Capture fan-out: memcpy per client + optional 3:1 decimate (16k voice): <0.05%.
 - Overhead: 50 wakeups/s × ~15 k cycles (syscall + cache) ≈ 0.12%.
 - Totals: typical (1×48k + 1×44.1k stream) ≈ 0.4%; ceiling budget 3% CPU with 8
-  streams; memory traffic ≈ 1.5 MB/s worst case — noise vs ~1 GB/s.
+  streams; memory traffic ≈ 1.5 MB/s worst case, noise vs ~1 GB/s.
 
 Client underrun: ring empty at mix time → contribute silence, hdr.xruns++, set
 xrun flag, signal client event; stats via get_stats. Never stall the HW stream for
@@ -432,16 +432,16 @@ mix-ahead=1, trading latency for safety.
 - Volume model: UI 0–100. 0 = mute; 1..100 maps linear-in-dB over [-49.5 dB, 0 dB]
   (0.5 dB/point), quantized to DAC 0x02 amp steps using runtime amp caps
   (step_size from caps; steps_down = round(att_db / step_db)). Master vol/mute live
-  in codec hardware (DAC amp + pin mutes) — zero CPU, survives in shadow state for
+  in codec hardware (DAC amp + pin mutes), zero CPU, survives in shadow state for
   replay. Per-client softvol is the same curve in Q15.
 - Who calls sndd for hotkeys: ACPI notify 0x13/0x14/0x15 → platform svc → kernel
   input core → single GUI event stream (per contract). The GUI volume applet calls
   set_master/set_master_mute (steps of 5) and draws the OSD. Rationale: one policy
   point, OSD needs the GUI anyway, sndd stays policy-free. If the GUI is dead,
-  volume keys are dead — acceptable (audio clients are GUI apps here).
+  volume keys are dead, acceptable (audio clients are GUI apps here).
 - Defaults at first boot: master 60, unmuted; capture path muted/D3 (auto-enabled
   by open, §5.6); mic boost +1 step. Persisted to /cfg/sndd.conf (tiny key=value,
-  written ≤ once per change with 2 s debounce — SSD-write hygiene).
+  written ≤ once per change with 2 s debounce: SSD-write hygiene).
 - Jack state: JackState via get_jack_state; subscribers (status bar) get event
   signals on change (subscribe op grants an event handle; ≤8 subscribers).
 - Capture source: auto (jack-driven) by default; set_capture_source can pin
@@ -452,7 +452,7 @@ mix-ahead=1, trading latency for safety.
 - Supervisor (devmgr) restarts sndd on crash (backoff 250 ms, max 5/min, then
   quarantine + notify GUI "audio unavailable").
 - Re-init is the cold path: §5.1 CRST handles any half-programmed controller state
-  (link reset also resets stream engines; codec loses all verbs — full replay).
+  (link reset also resets stream engines; codec loses all verbs, full replay).
   DMA pages from the dead instance are freed by handle death; in-flight DMA stops
   at CRST. No IOMMU: the window between crash and restart CRST is documented
   trusted-DMA exposure (bounded: engines only write inside their old BDL ring).
@@ -478,9 +478,9 @@ Boot-image share: sndd binary + manifest ≤ 0.7 MB of the 24 MB rootfs.
 ## 10. Bring-up & test plan
 
 QEMU (M1 dev loop): `-device intel-hda -device hda-duplex -audiodev wav,...`.
-QEMU's intel-hda advertises exactly 8086:2668 — controller code (reset, CORB/RIRB,
+QEMU's intel-hda advertises exactly 8086:2668, controller code (reset, CORB/RIRB,
 streams, BDL, posbuf, IRQ) gets full parity coverage. The codec is NOT an ALC662:
-hda-duplex is a Red Hat (0x1AF4) codec with a trivial graph — that is the designed
+hda-duplex is a Red Hat (0x1AF4) codec with a trivial graph, that is the designed
 test seam: codec-table selection by VID (§5.4) routes QEMU to the generic
 mini-parser, so mixer/ring/latency logic is testable in CI while the ALC662 table
 is validated only on hardware. QEMU tests: tone generator client → wav capture and
@@ -490,11 +490,11 @@ underrun injection (SIGSTOP the tone client); pm_quiesce/resume cycle; verb
 timeout path (QEMU `-device intel-hda` with no codec → immediate-cmd/poll fallback
 and clean failure).
 
-Real hardware (needs display or netd log console — no serial): staged bring-up
+Real hardware (needs display or netd log console, no serial): staged bring-up
 binary logs to screen/ramlog. Order: (1) PCI probe, BAR map, CRST, STATESTS shows
 codec present; (2) verb F00 VID == 0x10EC0662; (3) speaker tone via polling (no
 IRQ dependency); (4) confirm actual GSI: enable interrupts, count IOC irqs vs
-posbuf progress — record the true GSI in the platform notes for devmgr; (5) jack
+posbuf progress, record the true GSI in the platform notes for devmgr; (5) jack
 matrix: {insert, remove} × {HP, e-mic} × {idle, playing, capturing, codec-D3-idle}
 → expected mute/switch behavior + status bar event, incl. the D3 re-poll-on-wake
 path; (6) Fn+F7/8/9 end-to-end through GUI; (7) S3 suspend/resume ×20 loop with
@@ -505,25 +505,25 @@ windows; (9) restart-storm: kill sndd 10× during playback+capture.
 
 - **HDA GSI unverified** (research explicitly lists it): mitigated by _PRT-sourced
   GSI from devmgr + runtime verification + permanent polling fallback (§5.3, §5.8).
-  Needs one real-hw session to pin (likely 16–23, possibly shared with UHCI —
+  Needs one real-hw session to pin (likely 16–23, possibly shared with UHCI,
   irqevent contract must permit shared level-triggered attach; flagged to kernel-core).
-- **Codec address assumed 0** (LOW): handled — STATESTS-driven, any address works.
+- **Codec address assumed 0** (LOW): handled: STATESTS-driven, any address works.
 - **ALC662 conn-list indices** (0x0c position in pin lists, capsrc idx mapping):
   research gives e-mic=0/i-mic=1 (HIGH) but pin-side indices are read at runtime
   (F02) rather than assumed. Residual risk: capsrc 0x22 could be selector-style
-  rather than mute-matrix-style on this silicon rev — init reads widget caps
+  rather than mute-matrix-style on this silicon rev, init reads widget caps
   (mux vs mixer) and uses 0x701 conn-select instead of amp mutes if it's a mux.
 - **EAPD presence** on 0x14/0x1b uncertain: probed via pin caps; if speakers are
   silent with everything unmuted on first hw bring-up, EAPD/GPIO is suspect
-  (some ASUS boards use codec GPIO1 for the speaker amp — fallback experiment:
+  (some ASUS boards use codec GPIO1 for the speaker amp, fallback experiment:
   set GPIO data/dir/enable bits via verbs 0x715/0x716/0x717).
 - **posbuf reliability on ICH6**: dual-path with LPIB fallback, runtime-selected.
-- **RT scheduling class** doesn't exist in kernel contracts v0 — requested (§6).
+- **RT scheduling class** doesn't exist in kernel contracts v0, requested (§6).
   Fallback (larger HW ring) designed but costs latency.
 - **Power-button chirp / boot sound**: none planned (saves boot path work).
 - Open: does platform svc or GUI own the *policy* of hotkey repeat-rate for volume?
   (Assumed GUI.) Open: /cfg write arbitration (single writer per file assumed).
-- Open: capture privacy indicator — status bar should show a mic-active dot; sndd
+- Open: capture privacy indicator, status bar should show a mic-active dot; sndd
   exposes active_streams in Stats + event on capture open/close (cheap, included).
 
 ## 12. Phasing

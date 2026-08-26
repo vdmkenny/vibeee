@@ -78,7 +78,7 @@ pub fn splitWords(text: []const u8, words: [][]const u8) usize {
 /// of it was three places for the end-of-input case to differ.
 ///
 /// A trailing separator does not produce a final empty piece, so "a\n" is one
-/// line rather than two — which is what every caller here wants and what the
+/// line rather than two, which is what every caller here wants and what the
 /// alternative kept getting wrong.
 pub const Splitter = struct {
     text: []const u8,
@@ -119,7 +119,7 @@ pub fn trim(text: []const u8) []const u8 {
 
 /// Strip leading spaces, reporting whether there were any.
 ///
-/// Indentation carries meaning in the kernel's tabular output — an indented
+/// Indentation carries meaning in the kernel's tabular output, an indented
 /// row is a volume within the disk above it.
 pub fn stripIndent(text: []const u8) struct { text: []const u8, indented: bool } {
     var rest = text;

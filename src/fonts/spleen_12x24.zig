@@ -1,4 +1,4 @@
-//! Spleen 12x24 — generated from spleen-12x24.bdf by `zig build fonts`. Do not edit.
+//! Spleen 12x24, generated from spleen-12x24.bdf by `zig build fonts`. Do not edit.
 //!
 //! Spleen is Copyright (c) 2018-2026, Frederic Cambus, and is used
 //! under the BSD 2-Clause licence. See third_party/spleen/LICENSE.

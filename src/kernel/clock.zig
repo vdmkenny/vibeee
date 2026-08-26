@@ -1,8 +1,8 @@
 //! System timekeeping: one monotonic clock, one wall clock.
 //!
 //! The monotonic clock counts microseconds since boot and is the timer's
-//! business. The wall clock is derived from it — an offset established once,
-//! plus however long the machine has been up — rather than read from hardware
+//! business. The wall clock is derived from it, an offset established once,
+//! plus however long the machine has been up, rather than read from hardware
 //! on demand. Two reasons:
 //!
 //!   * Reading the CMOS RTC costs several I/O port round trips and has to be

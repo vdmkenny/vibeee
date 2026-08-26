@@ -10,7 +10,7 @@
 //!
 //! Confidence is what decides binding, not order. An exact vendor:device match
 //! beats a class-level fallback, so a generic driver can sit alongside a
-//! specific one without either needing to know about the other — which is what
+//! specific one without either needing to know about the other, which is what
 //! lets one image boot both the target machine and hardware it has never seen.
 
 const probe = @import("kernel/probe.zig");
@@ -152,7 +152,7 @@ pub const table = [_]probe.Driver{
 
 /// Both ATA entries share this. The controller is addressed through the legacy
 /// port pairs rather than its BARs, so one call covers every channel however
-/// many PCI functions the chipset exposes — hence the guard against a second
+/// many PCI functions the chipset exposes, hence the guard against a second
 /// function attaching the same hardware twice.
 var ata_attached = false;
 

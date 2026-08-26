@@ -6,7 +6,7 @@
 //! something the kernel did not exist to answer when the tool was written.
 //!
 //! This is where a `/sys` filesystem would go on a system that had one. It does
-//! not, so the same idea is expressed as a syscall — and the shape is
+//! not, so the same idea is expressed as a syscall, and the shape is
 //! deliberately close enough that turning it into files later changes the
 //! plumbing rather than the meaning.
 

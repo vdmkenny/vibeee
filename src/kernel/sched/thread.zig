@@ -7,7 +7,7 @@
 //! sched.zig from being the file every change had to touch.
 //!
 //! The registry includes dead threads that have not been collected. A corpse is
-//! on no run queue, so a search of the queues cannot see one — and a leak of
+//! on no run queue, so a search of the queues cannot see one, and a leak of
 //! exactly those went unnoticed for exactly that reason, because the tool that
 //! lists threads was walking the queues.
 
@@ -87,7 +87,7 @@ pub const Thread = struct {
     /// The address space this thread runs in.
     ///
     /// Kernel threads share the kernel's. A user process has its own, and the
-    /// scheduler switches to it — without that, a thread resumed after another
+    /// scheduler switches to it, without that, a thread resumed after another
     /// process ran would execute against whatever page directory happened to be
     /// loaded, which is at best the wrong memory and at worst freed.
     space: hal.AddressSpace = .{ .pd_phys = 0 },
@@ -109,7 +109,7 @@ pub const Thread = struct {
 
     exit_status: i32 = 0,
     /// Set when another thread intends to collect this one's status. Such a
-    /// thread is not freed on exit — it stays as a corpse until collected, or
+    /// thread is not freed on exit, it stays as a corpse until collected, or
     /// its status would be gone before anyone could read it.
     awaited: bool = false,
     /// Threads blocked in `waitFor` on this one.
@@ -140,8 +140,8 @@ pub const Thread = struct {
 // ---------------------------------------------------------------------------
 
 /// Every thread that exists, newest first, including dead ones not yet
-/// collected. Threads are found by id through this — a supervisor naming a
-/// child, a `wait` naming a process — and a corpse is invisible to a search of
+/// collected. Threads are found by id through this, a supervisor naming a
+/// child, a `wait` naming a process, and a corpse is invisible to a search of
 /// the run queues, which is exactly when it most needs to be found.
 var all: ?*Thread = null;
 

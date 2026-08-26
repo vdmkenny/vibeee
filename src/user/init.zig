@@ -1,4 +1,4 @@
-//! init — process 1, the service supervisor.
+//! init, process 1, the service supervisor.
 //!
 //! Starts what `/etc/services` declares, in dependency order, and keeps it
 //! running. Everything else in userspace is a descendant of this process.
@@ -26,7 +26,7 @@ const str = @import("lib/str.zig");
 const CONFIG_PATH = "/ETC/SERVICES";
 
 /// Enough for the whole service table. Read once and kept, so every string in
-/// a `Service` is a slice into it rather than a copy — which is what makes the
+/// a `Service` is a slice into it rather than a copy, which is what makes the
 /// parser allocation-free.
 var config_buf: [4096]u8 = @splat(0);
 

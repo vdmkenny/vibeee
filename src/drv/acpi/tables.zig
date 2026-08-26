@@ -5,8 +5,8 @@
 //!
 //! **This is not an ACPI implementation and must not be mistaken for one.** It
 //! reads two tables and pattern-matches a single constant package. Everything
-//! else this machine needs from ACPI — battery state, the ASUS010 hotkey
-//! methods, backlight via PBLS, the WLDS and CAMS power gates, thermal zones —
+//! else this machine needs from ACPI, battery state, the ASUS010 hotkey
+//! methods, backlight via PBLS, the WLDS and CAMS power gates, thermal zones,
 //! requires evaluating AML, and the plan for that remains uACPI
 //! (design/00-vibeee.md §11). What is here exists so that powering off cleanly
 //! does not have to wait for an interpreter.
@@ -128,7 +128,7 @@ pub fn init(rsdp_phys: u32) void {
 /// room for variation.
 ///
 /// If the scan fails, poweroff falls back to the emulator ports and finally to
-/// halting — never to writing a guessed value into a power register.
+/// halting, never to writing a guessed value into a power register.
 fn findS5(dsdt_phys: u32) void {
     const dsdt = mapTable(dsdt_phys) orelse return;
     if (!std.mem.eql(u8, &dsdt.signature, "DSDT")) return;

@@ -1,6 +1,6 @@
 //! Kernel console: cursor tracking, scrolling, formatting and the boot log.
 //!
-//! Device-independent. The cell-level work belongs to a backend — currently
+//! Device-independent. The cell-level work belongs to a backend, currently
 //! `drv/video/vgatext.zig`, later the framebuffer console once the display
 //! driver is up. Both present the same cell interface, so nothing here changes.
 
@@ -171,6 +171,10 @@ pub fn putChar(c: u8) void {
     switch (c) {
         '\n' => newline(),
         '\r' => col = 0,
+        // Form feed clears the screen. The traditional meaning, and it saves
+        // inventing a syscall for something a terminal has always done with a
+        // byte: `clear` in the shell is one write.
+        0x0C => clear(),
         '\t' => {
             const next = (col + 8) & ~@as(usize, 7);
             while (col < next and col < columns) : (col += 1) {
@@ -216,7 +220,7 @@ pub fn setMirror(sink: *const fn ([]const u8) void) void {
 ///
 /// The buffer is intentionally empty: every write goes straight through `drain`
 /// to the backend. Buffering would mean a panic mid-format loses the last
-/// partial line — exactly the line you need on a machine whose only diagnostic
+/// partial line, exactly the line you need on a machine whose only diagnostic
 /// is the screen.
 var console_writer: std.Io.Writer = .{
     .vtable = &.{ .drain = drain },
@@ -255,7 +259,7 @@ pub fn printf(comptime fmt: []const u8, args: anytype) void {
 // Boot log
 // ---------------------------------------------------------------------------
 
-/// One boot-log line: a coloured key column, then the value. Terse by design —
+/// One boot-log line: a coloured key column, then the value. Terse by design,
 /// this is a system log, not narration.
 fn logLine(key: []const u8, key_color: Color, comptime fmt: []const u8, args: anytype) void {
     const saved = fg;
@@ -278,7 +282,7 @@ fn logLine(key: []const u8, key_color: Color, comptime fmt: []const u8, args: an
 /// and a self-test that passed is not news to a user. Enabled with `verbose` on
 /// the kernel command line.
 ///
-/// The checks themselves always run — only their success output is suppressed,
+/// The checks themselves always run, only their success output is suppressed,
 /// so a regression still surfaces as a `warn` or `fail` line.
 var verbose = false;
 

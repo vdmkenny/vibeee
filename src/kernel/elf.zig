@@ -2,7 +2,7 @@
 //!
 //! Handles exactly what a statically linked, non-relocatable executable needs:
 //! walk the program headers and copy each PT_LOAD segment into the target
-//! address space. No dynamic linking, no relocations, no interpreter — the
+//! address space. No dynamic linking, no relocations, no interpreter, the
 //! system links everything statically (design/00-vibeee.md §10.5), so those
 //! cases cannot arise.
 //!
@@ -90,7 +90,7 @@ pub fn load(space: *hal.AddressSpace, image: []const u8) Error!Loaded {
         if (ph.type != PT_LOAD or ph.memsz == 0) continue;
 
         // A segment must not claim more file bytes than it has, nor extend into
-        // the kernel half — a crafted header is otherwise a way to have the
+        // the kernel half, a crafted header is otherwise a way to have the
         // kernel copy attacker bytes wherever it likes.
         if (ph.filesz > ph.memsz) return error.Malformed;
         if (ph.offset + ph.filesz > image.len) return error.Malformed;

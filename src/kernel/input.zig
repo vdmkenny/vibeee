@@ -6,7 +6,7 @@
 //! without the driver knowing either exists.
 //!
 //! Naming follows the US layout purely as a convention for talking about
-//! positions — `.q` is the key where Q sits on a US keyboard, which on AZERTY
+//! positions, `.q` is the key where Q sits on a US keyboard, which on AZERTY
 //! produces `a`.
 
 const std = @import("std");

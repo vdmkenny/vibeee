@@ -1,8 +1,8 @@
 //! Translate x86 exception frames into the portable panic report.
 //!
 //! This is the boundary: everything above it (kernel/panic.zig) is
-//! architecture-neutral, and everything x86 about a fault — vector numbering,
-//! CR2, the page-fault error bitfield, which registers are worth showing —
+//! architecture-neutral, and everything x86 about a fault, vector numbering,
+//! CR2, the page-fault error bitfield, which registers are worth showing,
 //! stops here.
 
 const cpu = @import("cpu.zig");

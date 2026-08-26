@@ -61,7 +61,7 @@ pub fn cpuid(leaf: u32, subleaf: u32) CpuidResult {
     return .{ .eax = a, .ebx = b, .ecx = c, .edx = d };
 }
 
-/// Feature bits we actually branch on. Deliberately not exhaustive — a flag
+/// Feature bits we actually branch on. Deliberately not exhaustive, a flag
 /// belongs here only when some code path consults it.
 pub const Features = struct {
     tsc: bool = false,
@@ -76,7 +76,7 @@ pub const Features = struct {
     sse: bool = false,
     sse2: bool = false,
     sse3: bool = false,
-    /// Enhanced SpeedStep. Absent on the 701's Celeron M — no P-states, so
+    /// Enhanced SpeedStep. Absent on the 701's Celeron M, no P-states, so
     /// there is no DVFS to drive and the governor is a no-op.
     est: bool = false,
     /// NX/XD, usable only under PAE paging. We do not enable PAE (see
@@ -112,13 +112,13 @@ pub const Features = struct {
 };
 
 /// CPU brand string from extended CPUID leaves. On the 701 this reads
-/// "Intel(R) Celeron(R) M processor          900MHz" — note it advertises
+/// "Intel(R) Celeron(R) M processor          900MHz", note it advertises
 /// 900 MHz while actually running at 630 (70 MHz FSB), which is why we never
 /// trust it for timing and always calibrate against a real timer.
 pub fn brandString(buf: *[49]u8) []const u8 {
     // Pre-Pentium 4 parts (and several emulated CPUs) have no brand string.
     // Fall back to vendor + family/model/stepping, which is still enough to
-    // identify the part — and on the real 701 the brand string is present.
+    // identify the part, and on the real 701 the brand string is present.
     if (cpuid(0x8000_0000, 0).eax < 0x8000_0004) {
         const v = cpuid(0, 0);
         var vendor: [12]u8 = undefined;

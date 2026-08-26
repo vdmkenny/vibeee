@@ -1,4 +1,4 @@
-//! date — print the wall-clock time, and say where it came from.
+//! date, print the wall-clock time, and say where it came from.
 //!
 //! The provenance line is not decoration. On a machine whose CMOS battery
 //! died nineteen years ago, "the clock says 2026 because the RTC said so" and

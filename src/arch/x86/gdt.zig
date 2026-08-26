@@ -9,7 +9,7 @@
 //!   0x20 user data     DPL 3
 //!   0x28 TSS
 //!
-//! One TSS for the machine — the 701 is single-core. Its esp0 is rewritten on
+//! One TSS for the machine, the 701 is single-core. Its esp0 is rewritten on
 //! every context switch so an interrupt taken in Ring 3 lands on the incoming
 //! thread's kernel stack.
 
@@ -61,7 +61,7 @@ const Entry = packed struct(u64) {
     }
 };
 
-/// 32-bit TSS. We use exactly one field of it — esp0 — plus the I/O permission
+/// 32-bit TSS. We use exactly one field of it, esp0, plus the I/O permission
 /// bitmap offset. Hardware task switching is not used; this exists so the CPU
 /// knows where to put the stack on a privilege transition, and which ports a
 /// driver process may touch.

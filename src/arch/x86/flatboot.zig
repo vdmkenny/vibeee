@@ -3,7 +3,7 @@
 //!
 //! The linker places this stub first in the image, so "offset 0 of the flat
 //! binary" and "this function" are the same address. That spares stage2 an ELF
-//! parser written in real mode — code that would be miserable to debug on a
+//! parser written in real mode, code that would be miserable to debug on a
 //! machine with no serial port.
 //!
 //! Contract, matching design/01-boot.md:

@@ -31,7 +31,7 @@ pub const VERSION = "0.1.0-M0";
 var kernel_stack: [32 * 1024]u8 align(16) = undefined;
 
 /// The first thing on screen. Drawn before anything can fail, so a machine that
-/// dies during bring-up has still said what it was trying to be — which on
+/// dies during bring-up has still said what it was trying to be, which on
 /// hardware with no serial port is the difference between a diagnosable failure
 /// and a blank panel.
 fn banner() void {
@@ -60,7 +60,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     platform.earlyConsole();
 
     // The backend is chosen before anything is drawn: in graphics mode the text
-    // buffer is no longer displayed, so output written first would vanish —
+    // buffer is no longer displayed, so output written first would vanish,
     // which is exactly what happened to the banner when it came first.
     _ = console.useFramebuffer(bi);
 
@@ -230,7 +230,7 @@ fn selfTestSyscalls() void {
 var worker_counts: [3]u32 = @splat(0);
 
 /// A deliberately uncooperative thread: it never yields, never sleeps and never
-/// blocks. If these interleave, preemption is genuinely working — a cooperative
+/// blocks. If these interleave, preemption is genuinely working, a cooperative
 /// scheduler would show the first one running to completion.
 fn spinWorker(index: usize) callconv(.c) void {
     var spins: u32 = 0;

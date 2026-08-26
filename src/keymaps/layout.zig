@@ -1,7 +1,7 @@
 //! The vocabulary a keyboard layout is written in.
 //!
 //! Kept separate from the translation engine so a layout file imports only
-//! this — adding a layout never means reading the compose machinery.
+//! this, adding a layout never means reading the compose machinery.
 //!
 //! ## Adding a layout
 //!
@@ -64,7 +64,7 @@ pub const KeyDef = struct { KeyCode, Entry };
 
 /// Dense lookup built from a sparse layout at comptime.
 ///
-/// Translation runs on every keypress, so it should not be a linear scan — and
+/// Translation runs on every keypress, so it should not be a linear scan, and
 /// building the table at comptime is also where duplicate keys get caught.
 pub const Compiled = struct {
     name: []const u8,

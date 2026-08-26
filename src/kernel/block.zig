@@ -2,7 +2,7 @@
 //!
 //! Kernel core defines the shape of a block device; drivers implement it and
 //! the composition root introduces them. Nothing here knows about ATA, USB or
-//! any other transport — which is what lets the same partition and filesystem
+//! any other transport, which is what lets the same partition and filesystem
 //! code serve the internal SSD, an SD card behind the USB reader, and a
 //! ramdisk.
 
@@ -135,8 +135,8 @@ fn partitionName(disk: []const u8, index: usize) []const u8 {
 /// True if sector 0 looks like a filesystem boot sector rather than a
 /// partition table.
 ///
-/// Removable media is very often "superfloppy" formatted — a filesystem
-/// starting at sector 0 with no partition table at all — and such a sector
+/// Removable media is very often "superfloppy" formatted, a filesystem
+/// starting at sector 0 with no partition table at all, and such a sector
 /// still carries the 0xAA55 signature. Reading its BPB bytes as a partition
 /// table produces convincing nonsense, so the two cases have to be told apart
 /// by content: a boot sector begins with a jump instruction and declares a

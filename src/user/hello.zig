@@ -2,7 +2,7 @@
 //! loads into its own address space.
 //!
 //! Nothing here is privileged and nothing is shared with the kernel except the
-//! syscall numbers — which is the point. If this runs, the loader, the address
+//! syscall numbers, which is the point. If this runs, the loader, the address
 //! space, the privilege drop and the syscall ABI are all correct together.
 
 const sys = @import("syscall.zig");
@@ -11,7 +11,7 @@ const out = @import("lib/out.zig");
 /// Zero-initialised, so it lands in .bss: the file records no bytes for it and
 /// the loader must supply the zeroes. Reading it proves that happened.
 ///
-/// Explicitly zeroed rather than `undefined` — reading undefined memory is
+/// Explicitly zeroed rather than `undefined`, reading undefined memory is
 /// undefined behaviour, and the optimiser is entitled to delete a function that
 /// does it. It does exactly that.
 var scratch: [64]u8 = [_]u8{0} ** 64;
@@ -32,7 +32,7 @@ export fn _start() callconv(.naked) noreturn {
 ///
 /// The reads are volatile so the compiler must actually perform them. Without
 /// that it proves the array is all zeros, folds the answer to `true`, and drops
-/// the array — leaving a test that passes without testing anything, and no
+/// the array, leaving a test that passes without testing anything, and no
 /// .bss segment for the loader to get wrong.
 fn bssIsClean() bool {
     const p: [*]volatile u8 = &scratch;
@@ -48,7 +48,7 @@ fn bssIsClean() bool {
 /// The kernel self-tests IPC from Ring 0, which proves the objects work but
 /// not that the syscall gate carries them: a wrong argument register or a
 /// mishandled user pointer only shows up from this side. Signalling before
-/// waiting is deliberate — an event that counts must release a waiter that
+/// waiting is deliberate, an event that counts must release a waiter that
 /// arrives late, and getting that wrong is a hang, not a wrong answer.
 fn ipcAbiWorks() bool {
     const handle = sys.eventCreate();

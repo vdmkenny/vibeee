@@ -5,13 +5,13 @@
 //! the physical layout of the target machine's keyboard. Both are needed at
 //! once, and switching is a hotkey rather than a rebuild.
 //!
-//! Dead keys and AltGr are not optional extras here — they are load-bearing for
+//! Dead keys and AltGr are not optional extras here, they are load-bearing for
 //! both layouts. US-International reaches accented letters by composing `'`,
 //! `"`, `` ` ``, `~` and `^` with a following letter, and Belgian AZERTY puts
 //! `@ # [ ] { } \ |` behind AltGr, which is most of what programming needs.
 //!
-//! Compose state lives here, in exactly one place. Every text surface — the
-//! terminal, a password field, an editor — therefore behaves identically,
+//! Compose state lives here, in exactly one place. Every text surface, the
+//! terminal, a password field, an editor, therefore behaves identically,
 //! which it would not if each widget implemented its own.
 
 const std = @import("std");
@@ -27,7 +27,7 @@ pub const Entry = l.Entry;
 pub const Levels = l.Levels;
 
 /// Every layout, compiled to dense lookup tables. Adding one is a file in
-/// src/keymaps/ plus a line in its registry — see keymaps/layout.zig.
+/// src/keymaps/ plus a line in its registry, see keymaps/layout.zig.
 pub const layouts = &registry.all;
 
 

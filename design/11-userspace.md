@@ -18,7 +18,7 @@ Userspace is five small, boring, restartable pieces glued by the kernel's channe
 - **init (PID 1)**: declarative service manager. Reads manifests, starts services when their dependencies appear in /svc, supervises with backoff + crash-loop breaker + watchdog, orchestrates shutdown in reverse order. Owns the recovery TUI and the console-fallback shell.
 - **devmgd**: device→driver matchmaker. Consumes the kernel's PCI table and usbd's hotplug stream, matches against drop-in manifests in /drivers, asks init to spawn (or message) the right driver server with the right privileges. Handles the Fn+F2 wifi hot-unplug without killing netd.
 - **eeelibc**: Zig-implemented, C-ABI-exported POSIX-lean libc. Linux errno numbering, no fork (posix_spawn), pthreads-lite over kernel threads + futex-lite, sockets shim over netd IPC. **Everything statically linked** (decision with numbers, §6.6).
-- **CLI**: `esh` shell + `eeebox` multicall binary (~40 applets). Lives in the GUI terminal app; a console fallback exists only when the GUI is absent (recovery / GUI crash-loop) — no VT switching.
+- **CLI**: `esh` shell + `eeebox` multicall binary (~40 applets). Lives in the GUI terminal app; a console fallback exists only when the GUI is absent (recovery / GUI crash-loop), no VT switching.
 - **Build system**: plain GNU Make, pinned Zig + NASM + mtools + zstd, no root, out-of-tree `out/`, produces `out/vibeee.img` (48 MB, dd-able), `make qemu`, guarded `make sd DEV=`, and an in-system updater that reflashes P1 files + stage2 with journal-protected fallback.
 
 Budget shares claimed here: userspace (excl. GUI subsystem, incl. rootfs skeleton) ≈ 10.5 MB of the 24 MB uncompressed rootfs, ≈ 6.5 MB of idle RAM; boot-time share from kernel-entry to GUI-start-gate ≈ 1.3 s.
@@ -27,13 +27,13 @@ Budget shares claimed here: userspace (excl. GUI subsystem, incl. rootfs skeleto
 
 - Boot medium is the internal USB SD reader (ENE UB6225, 0951:1606, USB MSC) → **/cfg and /data arrive only after usbd is up**; init must gate mounts on a ublk provider, and usbd crash must not permanently unmount them [HIGH, peripherals §9].
 - SSD variant: PATA secondary master 0x170/IRQ15, 28-bit LBA, small random writes 1–3 MB/s → config writes are rare, small, atomic (tmp+fsync+rename); no swap; /tmp is RAM [HIGH, core §4].
-- Fn+F2 **power-gates the wifi PCIe slot** — device hot-unplugs; state persists across reboots [HIGH, quirks §3]. devmgd must treat PCI as (rarely) hot-pluggable and re-attach to a *running* netd.
+- Fn+F2 **power-gates the wifi PCIe slot**, device hot-unplugs; state persists across reboots [HIGH, quirks §3]. devmgd must treat PCI as (rarely) hot-pluggable and re-attach to a *running* netd.
 - Camera eb1a:2761 is BIOS-default-disabled + ACPI CAMS-gated [HIGH, quirks §3] → devmgd/policyd expose an enable path; absence of the device is normal.
-- MCFG ECAM at 0xE0000000, buses 0–255 [HIGH, core §5] — kernel enumerates; devmgd consumes a table (decision §5.1).
-- ACPI ASUS010/ATKD hotkeys, battery-percent bug, CFVS hang (never call), acpi_osi gating [HIGH, quirks §1/§5] — all handled in-kernel (platform driver); userspace sees clean input events + a power/battery channel. policyd never touches EC/ACPI directly.
+- MCFG ECAM at 0xE0000000, buses 0–255 [HIGH, core §5], kernel enumerates; devmgd consumes a table (decision §5.1).
+- ACPI ASUS010/ATKD hotkeys, battery-percent bug, CFVS hang (never call), acpi_osi gating [HIGH, quirks §1/§5], all handled in-kernel (platform driver); userspace sees clean input events + a power/battery channel. policyd never touches EC/ACPI directly.
 - 630 MHz single core, ~1 GB/s memory bandwidth [HIGH, core §1/§3] → single-lock allocator (no per-thread caches), 1 KB stdio buffers, spawn-not-fork, multicall binary to keep icache/rootfs small.
 - No serial port [HIGH] → init verbose mode logs to kernel klog ring + VGA text console; `dmesg` applet reads it back.
-- Touchpad Synaptics OR Elantech [conflicting, core HIGH vs quirks MEDIUM] — irrelevant here except: keymap/input config must not assume pad model (kernel input core abstracts).
+- Touchpad Synaptics OR Elantech [conflicting, core HIGH vs quirks MEDIUM], irrelevant here except: keymap/input config must not assume pad model (kernel input core abstracts).
 - QEMU cannot emulate GMA900/AR2425/atl2/KB3310 → test seams in §10.
 
 ## 3. Architecture
@@ -57,14 +57,14 @@ Every service gets, at spawn: a **supervision channel** to init (watchdog pings,
 ### 4.1 Boot sequence (from kernel handoff)
 
 1. Kernel has unpacked rootfs→ramfs, mounted `/` (RO), `/tmp` `/dev` `/svc` namespaces per contract, spawned `/sbin/init` with `BootInfo`-derived environment: `boot.flags` (verbose/recovery/backup), `boot.disk_sig` (hex), `boot.from_ssd`.
-2. init parses `/etc/svc/*.svc` (rootfs, read-only defaults). `/cfg` overrides are folded in later (step 5) — services started before /cfg use rootfs manifests only (by design: driver plumbing must not depend on config).
+2. init parses `/etc/svc/*.svc` (rootfs, read-only defaults). `/cfg` overrides are folded in later (step 5), services started before /cfg use rootfs manifests only (by design: driver plumbing must not depend on config).
 3. `recovery=1` → skip to recovery TUI (§4.6). Otherwise spawn `devmgd`, `policyd` immediately (no deps).
 4. devmgd matches PCI → requests spawns of `usbd`, `netd`, `sndd` (§5). init spawns them per manifest privileges.
-5. init issues `mount(tag="boot:p2", "/cfg", eeefs, RW)` and `mount(tag="boot:p3", "/data", eeefs, RW)`. `tag` = `disk_sig` from BootInfo + partition index; VFS blocks the mount until a matching provider registers — PATA (kernel, SSD boot, immediate) or usbd's ublk ring (SD boot, ~0.6 s). Timeout 10 s → boot continues degraded (GUI shows warning; /cfg reads fall back to `/etc/defaults`).
+5. init issues `mount(tag="boot:p2", "/cfg", eeefs, RW)` and `mount(tag="boot:p3", "/data", eeefs, RW)`. `tag` = `disk_sig` from BootInfo + partition index; VFS blocks the mount until a matching provider registers: PATA (kernel, SSD boot, immediate) or usbd's ublk ring (SD boot, ~0.6 s). Timeout 10 s → boot continues degraded (GUI shows warning; /cfg reads fall back to `/etc/defaults`).
 6. When kernel display driver + input core report ready (via /svc names `display`, `input`), init spawns `gui`. GUI does not wait for /cfg: it starts with `/etc/defaults`, subscribes to a "cfg-ready" event from init, re-reads config when it lands (≤1 s later typically). Keyboard layout default us-intl comes from rootfs defaults so even degraded boots type correctly.
 7. After 60 s of stable operation (no service in backoff), init acks the boot journal via kernel (`sys_bootjournal_ack()`, kernel writes LBA 2040 through its own path per 01-boot §5.3) and runs the updater commit hook (§9.6).
 
-### 4.2 Service manifest format ("EMF" — TOML-lite, one parser in libvibeee)
+### 4.2 Service manifest format ("EMF": TOML-lite, one parser in libvibeee)
 
 Grammar: `[section]`, `key = value`, values: bare string, "quoted", integer, bool, comma-list. `#` comments. No nesting, no multiline. Parser ≈ 300 lines Zig, shared by init + devmgd + config files.
 
@@ -103,12 +103,12 @@ ram_kb = 1536             # advisory; logged+GUI-warned if exceeded, not killed 
 1. Broadcast `shutdown_intent` on /svc/init.events; GUI asks apps to close (grace 2 s).
 2. Stop in reverse topological order of `needs` (apps → gui → netd/sndd → policyd), each: `shutdown` message on supervision channel, grace 2 s, then kill.
 3. `sync()` VFS; unmount /data, /cfg; stop usbd; stop devmgd.
-4. `sys_power(.s5)` / `sys_power(.reboot)` — kernel platform driver performs ACPI S5 (SLP_TYP from \_S5 + SLP_EN) or reset via 0xCF9. Recovery-reboot sets the boot flag by writing `recovery=1` into the journal-adjacent scratch? No — recovery is a *boot-menu* choice (01-boot §9); `svcctl recovery` simply reboots after writing `/cfg/system/next-boot=recovery`, which init reads pre-GUI next boot. (Keeps stage2 dumb.)
+4. `sys_power(.s5)` / `sys_power(.reboot)`, kernel platform driver performs ACPI S5 (SLP_TYP from \_S5 + SLP_EN) or reset via 0xCF9. Recovery-reboot sets the boot flag by writing `recovery=1` into the journal-adjacent scratch? No, recovery is a *boot-menu* choice (01-boot §9); `svcctl recovery` simply reboots after writing `/cfg/system/next-boot=recovery`, which init reads pre-GUI next boot. (Keeps stage2 dumb.)
 
 ### 4.5 Zig interface (supervision protocol, public)
 
 ```zig
-// libs/libvibeee/src/init_proto.zig — messages on the supervision/control channels (≤64 B inline)
+// libs/libvibeee/src/init_proto.zig, messages on the supervision/control channels (≤64 B inline)
 pub const SvcRequest = union(enum(u8)) {
     start: SvcName, stop: SvcName, restart: SvcName, status: SvcName, list,
     watchdog_ping,                       // service -> init, on supervision channel
@@ -127,7 +127,7 @@ pub const SvcStatusRep = extern struct {
 
 ### 4.6 Recovery TUI
 
-`recovery=1` (boot menu) → init spawns no services except a static-linked `recover` binary on the kernel text console: restore .BAK files, fsck/mkfs /cfg /data, factory reset, install/repair SSD, expand /data, show logs — actions per 01-boot §9; implementation is eeebox applets driven by a 500-line menu. Works with zero working /data because rootfs is RAM.
+`recovery=1` (boot menu) → init spawns no services except a static-linked `recover` binary on the kernel text console: restore .BAK files, fsck/mkfs /cfg /data, factory reset, install/repair SSD, expand /data, show logs, actions per 01-boot §9; implementation is eeebox applets driven by a 500-line menu. Works with zero working /data because rootfs is RAM.
 
 ## 5. devmgd
 
@@ -148,9 +148,9 @@ pub extern fn sys_pci_rescan(bus: u8) i32;                        // re-walk one
 ```
 User drivers still use contract `pci_cfg_read/write(bdf)` for their own device; the table is for matching only. Rationale: no TOCTOU on claims, one enumerator, devmgd stays unprivileged for config-space writes.
 
-### 5.2 Driver manifest (drop-in) — exact format + netd example
+### 5.2 Driver manifest (drop-in), exact format + netd example
 
-`/drivers/<name>.drv` (EMF) + `/drivers/bin/<name>`. devmgd scans rootfs `/drivers` and, once mounted, `/data/drivers` (user drop-ins; same-name wins over rootfs — the modularity story).
+`/drivers/<name>.drv` (EMF) + `/drivers/bin/<name>`. devmgd scans rootfs `/drivers` and, once mounted, `/data/drivers` (user drop-ins; same-name wins over rootfs, the modularity story).
 
 ```toml
 # /drivers/netd.drv
@@ -162,7 +162,7 @@ single_instance = true       # matches beyond the first become `attach` messages
 priority = 10                # lower wins on conflicting match
 
 [match]
-pci = 168c:001c, 1969:2048   # AR2425 wifi OR Attansic L2 — either brings netd up
+pci = 168c:001c, 1969:2048   # AR2425 wifi OR Attansic L2, either brings netd up
 # also legal:  pci_class = 02/00/*        (any ethernet)
 #              usb = 0951:1606            (usb VID:PID)
 #              usb_class = 08/06/50      (MSC bulk-only)
@@ -185,7 +185,7 @@ provides = net
 3. `single_instance=true` (all v1 servers): first match → `spawn_driver` via init; further matches → `attach{tag}` message on the driver's control channel (e.g. netd gets atl2 at boot, ath5k attach later).
 4. Removal (wifi kill): kernel ACPI notify → kernel rescans bus 1, updates table, emits device-gone on /svc/devmgd.events → devmgd sends `detach{tag}` to netd (netd drops the ath5k instance, keeps running). Re-enable (Fn+F2): kernel rescan finds 168c:001c → `attach` again. netd is never killed for this.
 5. USB flow: usbd enumerates; interfaces it owns natively (MSC, UVC, HID per locked architecture) it just drives, publishing events. Unclaimed interfaces → event to devmgd → manifest match (`usb =` / `usb_class =`) → spawned driver speaks the **uif** passthrough protocol to usbd (control/bulk/interrupt transfer submission over channel+shm ring). This is the third-party USB driver story; v1 ships no uif driver but the seam exists.
-6. `devctl rescan` re-scans /drivers dirs + re-matches unclaimed tags — completes the "drop a .drv + binary into /data/drivers, plug device" story with zero reboots.
+6. `devctl rescan` re-scans /drivers dirs + re-matches unclaimed tags, completes the "drop a .drv + binary into /data/drivers, plug device" story with zero reboots.
 
 ## 6. eeelibc
 
@@ -199,19 +199,19 @@ Linux x86 numbering (porting ease), subset: EPERM 1, ENOENT 2, ESRCH 3, EINTR 4,
 
 Userspace fd table (64 entries, growable to 256): `fd → {handle, kind: file|dir|pipe_r|pipe_w|sock|chan, flags}`. Kernel file handles do the heavy lifting; pipes/sockets are libc-glued objects.
 
-Surface v1: `open close read write pread pwrite lseek stat fstat lstat(=stat, symlinks per VFS) readdir(opendir/readdir/closedir) mkdir rmdir unlink rename dup dup2 pipe fcntl(F_GETFL/F_SETFL/F_DUPFD) ftruncate fsync access getcwd chdir ioctl(whitelisted: TIOCGWINSZ, FIONREAD)`. cwd is **libc-maintained** (string; relative paths resolved client-side, kernel sees absolute) — keeps kernel path handling dumb.
+Surface v1: `open close read write pread pwrite lseek stat fstat lstat(=stat, symlinks per VFS) readdir(opendir/readdir/closedir) mkdir rmdir unlink rename dup dup2 pipe fcntl(F_GETFL/F_SETFL/F_DUPFD) ftruncate fsync access getcwd chdir ioctl(whitelisted: TIOCGWINSZ, FIONREAD)`. cwd is **libc-maintained** (string; relative paths resolved client-side, kernel sees absolute), keeps kernel path handling dumb.
 
-**pipe()**: SPSC shm ring (16 KB) + 2 events (readable/writable), bundled as two fd-wrapped handle triples. One reader + one writer only — exactly what shell pipelines need; documented limitation (dup'ing both ends across >2 processes is EINVAL-on-write territory; esh never does).
+**pipe()**: SPSC shm ring (16 KB) + 2 events (readable/writable), bundled as two fd-wrapped handle triples. One reader + one writer only, exactly what shell pipelines need; documented limitation (dup'ing both ends across >2 processes is EINVAL-on-write territory; esh never does).
 
 **poll/select**: every fd kind yields a waitable event (files: always-ready; pipes: ring events; sockets: netd-provided event per socket) → translate to `wait_many(events, timeout)`. Caps: 64 fds.
 
 ### 6.3 Process, env, time, signals-lite
 
 - `posix_spawn/posix_spawnp` (+file_actions: adddup2/addopen/addclose; attr: argv/envp only) → kernel `spawn(path, argv, env, grants)`; stdio fds become handle grants at slots 0/1/2. `waitpid` (0/WNOHANG), `_exit/exit/atexit`, `getpid getppid`.
-- **fork() = ENOSYS**, always. Rationale: no fork in kernel v1 (single address space clone cost, no overcommit story, 512 MB). Porting guide pattern: `s/fork();exec(...)/posix_spawn(...)/`, `s/fork();work()/pthread_create or spawn self with argv flag/`. vfork also ENOSYS. `system()` and `popen()` ARE provided (implemented over posix_spawn + pipe) — they cover 80 % of ported code's fork use.
-- Signals: **no asynchronous delivery**. `kill(pid, SIGTERM)` → kernel termination-request event; libc runtime thread turns it into the handler registered via `sigaction(SIGTERM|SIGINT|SIGHUP)` (called on a dedicated tiny thread — documented deviation) or default `exit(128+sig)`. SIGKILL = hard kill. Everything else (SIGSEGV etc.) is kernel-fatal with a klog dump. `sigprocmask` is a no-op returning 0.
+- **fork() = ENOSYS**, always. Rationale: no fork in kernel v1 (single address space clone cost, no overcommit story, 512 MB). Porting guide pattern: `s/fork();exec(...)/posix_spawn(...)/`, `s/fork();work()/pthread_create or spawn self with argv flag/`. vfork also ENOSYS. `system()` and `popen()` ARE provided (implemented over posix_spawn + pipe), they cover 80 % of ported code's fork use.
+- Signals: **no asynchronous delivery**. `kill(pid, SIGTERM)` → kernel termination-request event; libc runtime thread turns it into the handler registered via `sigaction(SIGTERM|SIGINT|SIGHUP)` (called on a dedicated tiny thread, documented deviation) or default `exit(128+sig)`. SIGKILL = hard kill. Everything else (SIGSEGV etc.) is kernel-fatal with a klog dump. `sigprocmask` is a no-op returning 0.
 - env: `environ getenv setenv putenv unsetenv` (copied at spawn, ≤4 KB).
-- time: `clock_gettime(CLOCK_MONOTONIC|CLOCK_REALTIME)` (kernel: HPET/PM-timer based — TSC halts in C3, research core §6; REALTIME = RTC + offset), `gettimeofday time nanosleep sleep usleep`.
+- time: `clock_gettime(CLOCK_MONOTONIC|CLOCK_REALTIME)` (kernel: HPET/PM-timer based: TSC halts in C3, research core §6; REALTIME = RTC + offset), `gettimeofday time nanosleep sleep usleep`.
 
 ### 6.4 malloc, stdio, strings
 
@@ -228,9 +228,9 @@ pub extern fn sys_thread_exit() noreturn;
 pub extern fn sys_futex_wait(uaddr: *const u32, expect: u32, timeout_us: u64) i32; // 0|-ETIMEDOUT|-EAGAIN
 pub extern fn sys_futex_wake(uaddr: *const u32, nwake: u32) i32;
 ```
-`pthread_create/join/detach/self`, mutex (Drepper 3-state: 0 free / 1 locked / 2 contended; uncontended lock = one `lock cmpxchg`, no syscall), cond (`wait/timedwait/signal/broadcast` via futex + generation counter), `pthread_once`, TLS via `pthread_key_create` (16 keys). No cancellation, no rwlock (M2). Default stack 64 KB (guard page below). Fallback if kernel rejects futex: mutex = kernel event object per mutex (heavier: syscall on every lock; ~3× slower contended paths) — futex strongly preferred.
+`pthread_create/join/detach/self`, mutex (Drepper 3-state: 0 free / 1 locked / 2 contended; uncontended lock = one `lock cmpxchg`, no syscall), cond (`wait/timedwait/signal/broadcast` via futex + generation counter), `pthread_once`, TLS via `pthread_key_create` (16 keys). No cancellation, no rwlock (M2). Default stack 64 KB (guard page below). Fallback if kernel rejects futex: mutex = kernel event object per mutex (heavier: syscall on every lock; ~3× slower contended paths), futex strongly preferred.
 
-### 6.6 Static vs dynamic linking — DECISION: fully static
+### 6.6 Static vs dynamic linking: DECISION: fully static
 
 | | static | dynamic |
 |---|---|---|
@@ -248,18 +248,18 @@ Static loses ~1.3 MB RAM and ~0.6 MB compressed image; buys zero loader complexi
 ### 6.7 Sockets shim & C porting story
 
 - `socket bind connect listen accept send recv sendto recvfrom setsockopt/getsockopt(subset: SO_REUSEADDR, SO_ERROR, TCP_NODELAY) shutdown getaddrinfo/freeaddrinfo gethostbyname(shim) inet_ntop/pton`. socket() opens a channel to /svc/net; each socket = netd-side id + TX/RX shm rings + readable/writable events. AF_INET SOCK_STREAM/DGRAM only. getaddrinfo does DNS via a netd call (netd owns the resolver).
-- **C ports**: `eeecc` wrapper = pinned `zig cc -target x86-freestanding -mcpu=pentium_m -O ReleaseSmall -nostdinc -isystem $SYSROOT/include -nostdlib $SYSROOT/lib/crt0.o -leeelibc -T $SYSROOT/lib/user.ld`. A small editor (kilo-class) needs: termios raw mode (provided: `tcgetattr/tcsetattr` with ICANON/ECHO/VMIN over the terminal channel), read/write/snprintf, TIOCGWINSZ — all present. Port checklist shipped in docs: no fork → posix_spawn; no signal handlers beyond TERM/INT/HUP; no file mmap; no locale.
+- **C ports**: `eeecc` wrapper = pinned `zig cc -target x86-freestanding -mcpu=pentium_m -O ReleaseSmall -nostdinc -isystem $SYSROOT/include -nostdlib $SYSROOT/lib/crt0.o -leeelibc -T $SYSROOT/lib/user.ld`. A small editor (kilo-class) needs: termios raw mode (provided: `tcgetattr/tcsetattr` with ICANON/ECHO/VMIN over the terminal channel), read/write/snprintf, TIOCGWINSZ, all present. Port checklist shipped in docs: no fork → posix_spawn; no signal handlers beyond TERM/INT/HUP; no file mmap; no locale.
 
 ## 7. CLI environment
 
-### 7.1 esh (shell) — honest subset
+### 7.1 esh (shell), honest subset
 
 - Line editing: emacs-lite (C-a/C-e/C-k/C-w/C-u, arrows, C-r incremental history search), history 200 entries RAM + persisted to `/data/home/.esh_history` on exit.
 - Globs `* ? [a-z]` (own ~150-line matcher over readdir); tilde expansion.
 - Pipes `a | b | c` (SPSC pipe per link), redirects `> >> < 2> 2>&1`; `&&  ||  ;`; `$VAR $? $#` expansion, single/double quotes, backslash.
-- v1 EXCLUDES (honest): no `$(...)`/backticks, no job control (`&`, fg/bg — no terminal process groups; Ctrl+C = TERM-request to foreground child via line discipline), no functions/if/for. M2 adds `$()`, if/for/while for port-ability. Init needs no shell (declarative manifests) so this costs nothing structurally.
+- v1 EXCLUDES (honest): no `$(...)`/backticks, no job control (`&`, fg/bg, no terminal process groups; Ctrl+C = TERM-request to foreground child via line discipline), no functions/if/for. M2 adds `$()`, if/for/while for port-ability. Init needs no shell (declarative manifests) so this costs nothing structurally.
 
-### 7.2 eeebox — single multicall binary (decision: yes, à la busybox)
+### 7.2 eeebox, single multicall binary (decision: yes, à la busybox)
 
 One static binary, applet dispatch on argv[0]/first arg; ≈ 450 KB total vs ≈ 2.5 MB as separate binaries. Symlinks in /bin. ~40 applets:
 
@@ -268,19 +268,19 @@ One static binary, applet dispatch on argv[0]/first arg; ≈ 450 KB total vs ≈
 - hw/config: `keymap(us-intl|be-azerty → /cfg/system/keymap + reload msg to input owner) brightness(0-15 → policyd) mixer(sndd) netcfg netstat(-lite) ping wifi(scan/join/status → netd) camera(on|off → policyd)`
 - maintenance: `update(§9.6) install-to-ssd(§9.6) factory-reset fsck.eeefs mkfs.eeefs`
 
-`ps/top/free` consume kernel `sys_proc_list/sys_proc_stat/sys_meminfo` (read-only syscalls — no /proc filesystem in v1; OPEN-K4).
+`ps/top/free` consume kernel `sys_proc_list/sys_proc_stat/sys_meminfo` (read-only syscalls, no /proc filesystem in v1; OPEN-K4).
 
-### 7.3 Where the CLI lives — decision
+### 7.3 Where the CLI lives, decision
 
-- Primary: **eterm** (GUI terminal app; the tiling WM makes fullscreen-terminal a first-class workspace — covers the "VT" use case).
+- Primary: **eterm** (GUI terminal app; the tiling WM makes fullscreen-terminal a first-class workspace, covers the "VT" use case).
 - **No Ctrl+Alt+F1 VT switching**: display contract has ONE owner; live console/GUI switching would punch a hole in it for marginal benefit.
 - **Emergency shell: KEEP, as fallback not as VT**: init runs `econ` (kernel text console + esh) when (a) `recovery=1`, (b) GUI crash-loop breaker trips, (c) `gui.enabled=false` in /cfg. Kernel fb/text console for panic already exists; econ reuses the kernel console write syscall + input core stream. You are never stranded, and the display owner invariant holds (console owner ⇔ GUI absent).
 
 ## 8. Configuration system (/cfg)
 
-- Layout: `/cfg/system/{keymap,timezone,hostname,next-boot}`, `/cfg/svc/*.svc` (manifest overrides), `/cfg/net/{wifi.conf,eth.conf}`, `/cfg/gui/*`, `/cfg/audio/mixer.state`, `/cfg/VERSION`. Small files (<4 KB), one concern per file — matches the 8 MB eeefs P2 and the SSD's weak small-write behavior (writes are rare and whole-file).
+- Layout: `/cfg/system/{keymap,timezone,hostname,next-boot}`, `/cfg/svc/*.svc` (manifest overrides), `/cfg/net/{wifi.conf,eth.conf}`, `/cfg/gui/*`, `/cfg/audio/mixer.state`, `/cfg/VERSION`. Small files (<4 KB), one concern per file, matches the 8 MB eeefs P2 and the SSD's weak small-write behavior (writes are rare and whole-file).
 - **Atomic write** (libvibeee helper, used by everything): `write /cfg/x.tmp → fsync → rename over /cfg/x → fsync dir`. Requires eeefs atomic rename (contract point with 03-storage, OPEN-S1).
-- **Schema versioning**: first line `# v=N`. Services migrate old→new on read and rewrite; file from a *newer* version → rename to `x.vN.saved`, seed defaults, log — an old rootfs never bricks on new config.
+- **Schema versioning**: first line `# v=N`. Services migrate old→new on read and rewrite; file from a *newer* version → rename to `x.vN.saved`, seed defaults, log, an old rootfs never bricks on new config.
 - **Factory reset**: recovery TUI or `factory-reset` applet = re-mkfs /cfg (and optionally /data), reboot; init seeds /cfg from `/etc/defaults/*` on first mount when empty. `next-boot=recovery` file gives the running system a path into recovery without keyboard timing.
 
 ## 9. Build system
@@ -312,7 +312,7 @@ vibeee/
 ### 9.3 Makefile architecture
 
 - Top-level `Makefile` sets `ZIG := toolchain/zig/zig`, `ZFLAGS_USER := -target x86-freestanding -mcpu=pentium_m -O ReleaseSmall -fstrip -fsingle-threaded=false`, includes every `*/build.mk`; components append to `ROOTFS_FILES`/`HOST_TOOLS`. Parallel-safe (`make -j`): all rules write only into `out/`, no shared temp names.
-- Dependency tracking: Zig compiles whole programs per invocation; per-component rules depend on `$(shell find <comp>/src libs -name '*.zig')` — conservative and always-correct; a full from-clean userspace build is < 60 s on a modern host, so over-rebuild is cheap. (If the pinned Zig's `--emit-deps`-style flag proves reliable, swap in exact dep files — noted, not load-bearing.)
+- Dependency tracking: Zig compiles whole programs per invocation; per-component rules depend on `$(shell find <comp>/src libs -name '*.zig')`, conservative and always-correct; a full from-clean userspace build is < 60 s on a modern host, so over-rebuild is cheap. (If the pinned Zig's `--emit-deps`-style flag proves reliable, swap in exact dep files, noted, not load-bearing.)
 - Canonical component fragment:
 
 ```make
@@ -324,15 +324,15 @@ out/rootfs/sbin/init: $(INIT_SRC) | out/rootfs/sbin
 ROOTFS_FILES += out/rootfs/sbin/init
 ```
 
-### 9.4 Image pipeline (exact layout — owned jointly with 01-boot)
+### 9.4 Image pipeline (exact layout, owned jointly with 01-boot)
 
 `make image` → `out/vibeee.img`, 48 MB flat file, layout per 01-boot §8 (MBR+stage1 @0; stage2 A @LBA 1, B @1024; journal @2040; P1 FAT16 32 MB @LBA 8192; P2 eeefs 8 MB @73728; P3 stub 4 MB @90112):
 
 1. Build all `ROOTFS_FILES` into `out/rootfs/` (staging tree = the future ramfs: /sbin /bin(symlinks→eeebox) /drivers /etc /usr/share/fonts …), timestamps normalized to `SOURCE_DATE_EPOCH`.
 2. `zig run tools/mkear.zig -- out/rootfs` → EAR1 (entries sorted, binaries adjacent for zstd locality) → `zstd -19 --no-check` → EZI1 wrap with CRCs → `out/ROOTFS.EZI` (target ≤ 9 MB).
 3. `mformat` P1 (FAT16, fixed volume serial), `mcopy` BOOT.CFG KERNEL.ELF ROOTFS.EZI + .BAK copies (first image: BAK = same files).
-4. `zig run tools/mkeeefs.zig` → P2 image (seeded /cfg defaults? no — empty; init seeds) and P3 stub.
-5. `truncate 48M` + `tools/mkpart.zig` (MBR, CHS-capped entries, disk_sig = first 4 bytes of sha256 of P1 image — deterministic AND version-unique) + `dd conv=notrunc` each region.
+4. `zig run tools/mkeeefs.zig` → P2 image (seeded /cfg defaults? no, empty; init seeds) and P3 stub.
+5. `truncate 48M` + `tools/mkpart.zig` (MBR, CHS-capped entries, disk_sig = first 4 bytes of sha256 of P1 image, deterministic AND version-unique) + `dd conv=notrunc` each region.
 Reproducibility: pinned zig/zstd, sorted EAR, fixed FAT serial+timestamps, derived disk_sig → byte-identical images from identical trees (`make repro-check` builds twice into different dirs and cmps).
 
 ### 9.5 make targets & QEMU profile
@@ -357,14 +357,14 @@ qemu-system-i386 -M pc -cpu n270,-sse3,-ssse3 -m 512 \
   -device virtio-net-pci,netdev=n0 -netdev user,id=n0 \
   -vga std -rtc base=utc -no-reboot -d guest_errors
 ```
-(`-M pc` i440FX: PIIX3 IDE = same legacy-BMDMA programming model class as ICH6 combined mode; PIIX3 UHCI ≈ ICH6 UHCI, spec-identical; `n270` masked to SSE2-only traps any illegal SSE3 use; no ICH6/GMA900/atl2/AR2425/KB3310 emulation exists — see §10 seams.)
+(`-M pc` i440FX: PIIX3 IDE = same legacy-BMDMA programming model class as ICH6 combined mode; PIIX3 UHCI ≈ ICH6 UHCI, spec-identical; `n270` masked to SSE2-only traps any illegal SSE3 use; no ICH6/GMA900/atl2/AR2425/KB3310 emulation exists, see §10 seams.)
 
 `make sd`: `tools/flash.sh` refuses unless: DEV explicitly given; device exists, is removable (macOS `diskutil info` "Removable Media", Linux `/sys/block/*/removable`), is not the system disk, size 64 MB–128 GB; prints current partition table; requires the user to type `YES`; then unmount, `dd bs=4m`, `sync`, eject. Never auto-detects a device.
 
 ### 9.6 Update & install (OTA-less)
 
 - Package: `vibeee-<ver>.upd` = EAR archive: `manifest.emf {version, min_version, crc32s}` + `KERNEL.ELF ROOTFS.EZI [stage2.bin]`, built by `make upd` (`tools/mkupd.zig`).
-- `update <file>` (eeebox, needs /svc/init cooperation for the P1 mount): 1. verify CRCs (spool via /tmp if ≥16 MB free, else /data); 2. mount P1 RW (kernel FAT driver over the boot medium — ublk on SD, PATA on SSD); 3. copy *running* KERNEL.ELF/ROOTFS.EZI → .BAK (running = proven good), update BOOT.CFG CRC lines (tmp+rename; FAT rename = single dir-sector rewrite, near-atomic; residual window covered by stage2's .BAK fallback + boot journal auto-slot, 01-boot §9); 4. write new files, read back, verify CRC; 5. stage2 update only if shipped: raw-write copy B (LBA 1024) via whole-disk device, read back, then copy A (LBA 1) — never both in one failure window; 6. reboot. A failed new kernel auto-falls back after 3 journal attempts; the post-boot commit hook (init, §4.1.7) records success in /cfg/VERSION history. Downgrade refused unless `--force` (schema-versioned /cfg makes downgrades risky).
+- `update <file>` (eeebox, needs /svc/init cooperation for the P1 mount): 1. verify CRCs (spool via /tmp if ≥16 MB free, else /data); 2. mount P1 RW (kernel FAT driver over the boot medium, ublk on SD, PATA on SSD); 3. copy *running* KERNEL.ELF/ROOTFS.EZI → .BAK (running = proven good), update BOOT.CFG CRC lines (tmp+rename; FAT rename = single dir-sector rewrite, near-atomic; residual window covered by stage2's .BAK fallback + boot journal auto-slot, 01-boot §9); 4. write new files, read back, verify CRC; 5. stage2 update only if shipped: raw-write copy B (LBA 1024) via whole-disk device, read back, then copy A (LBA 1), never both in one failure window; 6. reboot. A failed new kernel auto-falls back after 3 journal attempts; the post-boot commit hook (init, §4.1.7) records success in /cfg/VERSION history. Downgrade refused unless `--force` (schema-versioned /cfg makes downgrades risky).
 - `install-to-ssd`: recovery-TUI/CLI action per 01-boot §8: writes MBR+stage2+P1+P2 to the PATA SSD via kernel BlockDev, sizes P3 to remaining ~3.9 GB, preserves any existing 0xEF Boot Booster partition slot, mkfs's P2/P3, copies current /cfg.
 
 ## 10. Register-level programming sequences
@@ -376,7 +376,7 @@ Userspace is deliberately register-free; the hardware-facing sequences this desi
 
 ## 11. RAM / disk budget roll-up & boot-time budget
 
-Uncompressed rootfs (cap 24 MB) — userspace roll-up:
+Uncompressed rootfs (cap 24 MB), userspace roll-up:
 
 | item | size |
 |---|---|
@@ -417,28 +417,28 @@ Cold boot to usable GUI (cap 8 s):
 | 8 | ‖ usbd EHCI+SD enumerate+MSC ready → /cfg mount | 0.7 s (overlaps 7) |
 | | **total to interactive GUI (defaults), cfg applied +≤1 s** | **≈ 7.2–7.5 s** |
 
-If POST or BIOS reads measure worse, the recovery levers are in 01-boot (rootfs size, zstd level) — userspace's own path is ~1.3 s and has no fat left worth cutting.
+If POST or BIOS reads measure worse, the recovery levers are in 01-boot (rootfs size, zstd level), userspace's own path is ~1.3 s and has no fat left worth cutting.
 
 ## 12. Bring-up & test plan
 
 - **Host-native tests** (`make test`, plain Zig tests): EMF parser (fuzz corpus), esh tokenizer/expander, eeemalloc (torture + leak accounting), fd-table, printf, EAR/upd round-trip, manifest dependency-order property tests (random DAGs → verify start order + ripple rules in a simulated init with mock spawn/kill).
 - **init/devmgd simulation seam**: both take their syscall surface through a `Sys` vtable (Zig comptime interface); a host build links a fake kernel (in-memory /svc, scripted pci table, scripted service deaths) → crash-loop, backoff, watchdog, usbd-freeze scenarios run as unit tests, no QEMU.
-- **QEMU integration** (per §9.5): boots to GUI-less profile (`gui.enabled=false`) → econ shell on text console; scripted expect-style test via exit-port device: spawn, pipes, mounts (/cfg on USB-MSC-backed P2 — the real SD topology), `update` applied then journal-fallback tested by corrupting KERNEL.ELF, install-to-ssd onto IDE secondary disk then reboot from it. Testable in QEMU: full boot path, UHCI/EHCI+MSC (real usbd), HDA controller w/ generic codec, PATA-class IDE, virtio-net (netd's test driver seam — atl2/ath5k are real-HW-only), i8042. NOT testable: GMA900 (kernel display falls back to Bochs-VBE seam), AR2425/atl2, KB3310/ASUS010 (kernel platform driver mocked behind /svc/platform; policyd fully testable against the mock).
+- **QEMU integration** (per §9.5): boots to GUI-less profile (`gui.enabled=false`) → econ shell on text console; scripted expect-style test via exit-port device: spawn, pipes, mounts (/cfg on USB-MSC-backed P2, the real SD topology), `update` applied then journal-fallback tested by corrupting KERNEL.ELF, install-to-ssd onto IDE secondary disk then reboot from it. Testable in QEMU: full boot path, UHCI/EHCI+MSC (real usbd), HDA controller w/ generic codec, PATA-class IDE, virtio-net (netd's test driver seam, atl2/ath5k are real-HW-only), i8042. NOT testable: GMA900 (kernel display falls back to Bochs-VBE seam), AR2425/atl2, KB3310/ASUS010 (kernel platform driver mocked behind /svc/platform; policyd fully testable against the mock).
 - **Real hardware**: photograph-the-screen protocol (no serial): verbose boot prints per-phase timestamps (settles the §11 table), then: Fn+F2 detach/attach loop ×20 (netd survives), yank-SD-crash usbd via `svcctl kill usbd` (frozen-mount reattach), 24 h GUI+audio soak with `top` logging to /data.
 
 ## 13. Risks & open questions
 
-- **OPEN-K1** (kernel): `svc_watch() → event` on registry changes — init's dependency engine needs it (polling fallback: 100 ms scan, ugly but workable).
+- **OPEN-K1** (kernel): `svc_watch() → event` on registry changes, init's dependency engine needs it (polling fallback: 100 ms scan, ugly but workable).
 - **OPEN-K2** (kernel/VFS): frozen-mount semantics for dead ublk providers + reattach by tag. Without it, usbd crash = EIO storm on /data; with it, a 1 s blip. Highest-value contract addition requested by this subsystem.
 - **OPEN-K3** (kernel): futex_wait/wake + thread_create/set_tls syscalls (§6.5). Fallback exists but is slower and fatter.
 - **OPEN-K4** (kernel): read-only `sys_proc_list/proc_stat/meminfo` for ps/top/free.
 - **OPEN-S1** (storage/03): eeefs atomic rename guarantee (config writes); mount-by-tag (`disk_sig:part`) resolution living in VFS.
-- **OPEN-G1** (GUI): late-config application (start on defaults, reload on cfg-ready event) — agreed split of the ≤8 s budget depends on it.
-- **R-U1**: `-cpu n270,-sse3,-ssse3` masking must be validated against the pinned QEMU (feature-flag names drift); fallback `-cpu pentium3` catches only SSE2-and-below builds (too strict) — worst case we accept unmasked n270 and rely on `-mcpu=pentium_m` codegen discipline.
-- **R-U2**: FAT rename atomicity window during update (BOOT.CFG rewrite) — mitigated by journal auto-fallback; residual risk = power cut in a <10 ms window leaves stale CRC → stage2 falls back to .BAK (safe, just old).
+- **OPEN-G1** (GUI): late-config application (start on defaults, reload on cfg-ready event), agreed split of the ≤8 s budget depends on it.
+- **R-U1**: `-cpu n270,-sse3,-ssse3` masking must be validated against the pinned QEMU (feature-flag names drift); fallback `-cpu pentium3` catches only SSE2-and-below builds (too strict), worst case we accept unmasked n270 and rely on `-mcpu=pentium_m` codegen discipline.
+- **R-U2**: FAT rename atomicity window during update (BOOT.CFG rewrite), mitigated by journal auto-fallback; residual risk = power cut in a <10 ms window leaves stale CRC → stage2 falls back to .BAK (safe, just old).
 - **R-U3**: pipe-as-SPSC-ring breaks exotic multi-writer pipe idioms in ports; documented; M2 could add a kernel pipe object if a real port demands it.
 - **R-U4**: find-based Make deps over-rebuild whole components on any libs/ edit; acceptable (<60 s clean build) but revisit with Zig dep-file emission at the pinned version.
-- **R-U5**: /data/drivers drop-ins run with manifest-declared privileges — with no IOMMU a malicious .drv owns the machine (contract-documented: DMA is trusted). Mitigation is social, not technical: /data/drivers requires an explicit `devctl trust` first-use confirmation recorded in /cfg.
+- **R-U5**: /data/drivers drop-ins run with manifest-declared privileges, with no IOMMU a malicious .drv owns the machine (contract-documented: DMA is trusted). Mitigation is social, not technical: /data/drivers requires an explicit `devctl trust` first-use confirmation recorded in /cfg.
 
 ## 14. Phasing
 

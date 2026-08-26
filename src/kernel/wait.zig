@@ -6,8 +6,8 @@
 //! is polling with a short sleep, and on a 630 MHz core a dozen pollers waking
 //! every two milliseconds is real time spent deciding to go back to sleep.
 //!
-//! One mechanism rather than several. Everything that blocks — waiting for a
-//! child, for a channel reply, for a ring to have room — is a `Queue` plus a
+//! One mechanism rather than several. Everything that blocks, waiting for a
+//! child, for a channel reply, for a ring to have room, is a `Queue` plus a
 //! predicate, and `blockOn` is where a thread stops running. `design/00-vibeee.md`
 //! §6.8 states events are the only blocking primitive; this is that, and the
 //! event object in `event.zig` is a thin counting latch on top.
@@ -74,8 +74,8 @@ pub const Queue = struct {
     /// queues, which the timer interrupt also touches.
     pub fn wakeOne(self: *Queue) bool {
         // The tail is the oldest, the head the newest, so walking to the end
-        // makes waiting fair. Queues here are short — one or two waiters is
-        // the norm — so the walk is cheaper than a second tail pointer to
+        // makes waiting fair. Queues here are short, one or two waiters is
+        // the norm, so the walk is cheaper than a second tail pointer to
         // maintain on every insertion and removal.
         var last = self.head orelse return false;
         while (last.next) |n| last = n;
@@ -102,7 +102,7 @@ pub const Timeout = error{TimedOut};
 /// Block the caller until one of `queues` wakes it, or `deadline_us` passes.
 ///
 /// Returns the index of the queue that fired. Interrupts must already be
-/// disabled and the caller's condition re-checked — see the lost-wakeup rule
+/// disabled and the caller's condition re-checked, see the lost-wakeup rule
 /// above. They are still disabled on return.
 pub fn blockOn(queues: []const *Queue, deadline_us: ?u64) Timeout!usize {
     std.debug.assert(queues.len > 0 and queues.len <= MAX_QUEUES);

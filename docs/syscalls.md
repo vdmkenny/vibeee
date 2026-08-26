@@ -40,8 +40,8 @@ Write bytes to an open handle.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
 
 Short writes are possible; callers must loop.
 
@@ -59,8 +59,8 @@ Read bytes from an open handle.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
 
 Blocks until input is available. On STDIN, input is line-buffered: a read returns once Enter is pressed, and never mid-line.
 
@@ -96,7 +96,7 @@ Read the monotonic clock.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
+- `EFAULT`, a pointer argument is outside the caller's address space
 
 Monotonic and never steps backwards. Not wall-clock time; it is unaffected by clock adjustment.
 
@@ -119,8 +119,8 @@ Write a line to the kernel log.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
 
 Separate from write() so diagnostics survive a process losing its console handle. Rate-limited.
 
@@ -136,7 +136,7 @@ Flush all filesystems and stop the machine.
 
 **Errors:**
 
-- `EINVAL` — an argument is out of range
+- `EINVAL`, an argument is out of range
 
 Unmounts every filesystem and flushes every device before acting. FAT has no journal, so this is the only way to guarantee written data reached the medium.
 
@@ -155,8 +155,8 @@ Read a named piece of system information.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
 
 Values are text, except "smbios" which returns the raw DMI structure table for a userspace decoder. A keyed interface rather than a struct, so adding a value is not an ABI break.
 
@@ -174,10 +174,10 @@ Open a file or directory.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
-- `ENOENT` — no such file or directory
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ENOENT`, no such file or directory
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
 Read-only. Writing needs cluster allocation in the FAT driver, which is not written yet.
 
@@ -193,7 +193,7 @@ Close a handle.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
+- `EBADF`, the handle is not open in this process
 
 Closing a file releases the mount reference it held; a volume with handles still open cannot be unmounted.
 
@@ -211,8 +211,8 @@ Move a file handle's read position.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EINVAL` — an argument is out of range
+- `EBADF`, the handle is not open in this process
+- `EINVAL`, an argument is out of range
 
 ## `readdir`  <sub>#13</sub>
 
@@ -228,9 +228,9 @@ Read the next entry from an open directory.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
 ## `stat`  <sub>#14</sub>
 
@@ -247,9 +247,9 @@ Describe a path without opening it.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ENOENT` — no such file or directory
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
 ## `spawn`  <sub>#15</sub>
 
@@ -267,12 +267,12 @@ Load and run a program, and wait for it to finish.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ENOENT` — no such file or directory
-- `EINVAL` — an argument is out of range
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
-Synchronous: the caller blocks until the child exits. Deliberately not fork — see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.
+Synchronous: the caller blocks until the child exits. Deliberately not fork, see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.
 
 ## `chdir`  <sub>#16</sub>
 
@@ -287,9 +287,9 @@ Change the working directory.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ENOENT` — no such file or directory
-- `EINVAL` — an argument is out of range
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EINVAL`, an argument is out of range
 
 The directory must exist. A child started afterwards inherits it.
 
@@ -306,8 +306,8 @@ Read the working directory.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
 ## `realtime_us`  <sub>#18</sub>
 
@@ -321,8 +321,8 @@ Read the wall clock.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
 
 UTC, never local time. EINVAL until the clock has been set from a source; a machine whose battery-backed clock has failed reports that it does not know the time rather than claiming 1970. Use clock_us for measuring intervals: this one can step when a better source corrects it.
 
@@ -334,7 +334,7 @@ Create an event.
 
 **Errors:**
 
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
 Events count rather than latch, so a signal delivered before anyone waits is kept and consumed by the next waiter instead of being lost.
 
@@ -350,7 +350,7 @@ Signal an event, releasing one waiter.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
+- `EBADF`, the handle is not open in this process
 
 ## `wait_many`  <sub>#21</sub>
 
@@ -366,10 +366,10 @@ Block until one of several events is signalled.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
-- `ETIMEDOUT` — the timeout elapsed before anything happened
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ETIMEDOUT`, the timeout elapsed before anything happened
 
 The only blocking primitive: a server with a channel, a ring and a timer waits in one call rather than one thread each. When several are already signalled the lowest index wins, so priority is argument order.
 
@@ -386,10 +386,10 @@ Create a channel and publish it under a name.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
-- `ENOMEM` — no handle slots free, or the buffer is too small
-- `EEXIST` — the name is already registered
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+- `EEXIST`, the name is already registered
 
 Closing the returned handle withdraws the name and fails every call still waiting on a reply, which is what lets a client tell a crashed server from a slow one.
 
@@ -406,9 +406,9 @@ Open a channel to a registered service.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ENOENT` — no such file or directory
-- `ENOMEM` — no handle slots free, or the buffer is too small
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `ENOMEM`, no handle slots free, or the buffer is too small
 
 Clients hold a name rather than a handle to one instance, so reconnecting to a restarted server is a lookup rather than a redesign.
 
@@ -428,10 +428,10 @@ Send a request and block until the server replies.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
-- `EPIPE` — the far end of the channel has closed
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `EPIPE`, the far end of the channel has closed
 
 Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a shared ring, with the channel carrying the message that says which ring and how much. EPIPE means the serving end closed.
 
@@ -451,10 +451,10 @@ Block until a request arrives on a served channel.
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
-- `ETIMEDOUT` — the timeout elapsed before anything happened
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ETIMEDOUT`, the timeout elapsed before anything happened
 
 ## `reply`  <sub>#26</sub>
 
@@ -471,9 +471,9 @@ Answer a call taken by recv().
 
 **Errors:**
 
-- `EBADF` — the handle is not open in this process
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `EINVAL` — an argument is out of range
+- `EBADF`, the handle is not open in this process
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
 
 The token carries a generation, so a reply to a call that has already been abandoned is rejected rather than landing on whichever call inherited the slot.
 
@@ -491,9 +491,9 @@ Collect a child that has exited.
 
 **Errors:**
 
-- `EFAULT` — a pointer argument is outside the caller's address space
-- `ECHILD` — the caller has no such child to wait for
-- `ETIMEDOUT` — the timeout elapsed before anything happened
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ECHILD`, the caller has no such child to wait for
+- `ETIMEDOUT`, the timeout elapsed before anything happened
 
 A process that has exited stays as a corpse until collected, so a status is never lost before its parent can read it. Children of a process that dies are re-parented onto init, which collects them; ECHILD means there is nothing to wait for, now or ever.
 

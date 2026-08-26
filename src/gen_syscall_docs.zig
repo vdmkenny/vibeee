@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
         if (sc.errors.len > 0) {
             try w.appendSlice(gpa, "**Errors:**\n\n");
             for (sc.errors) |e| {
-                try w.print(gpa, "- `{s}` — {s}\n", .{ e.name, e.when });
+                try w.print(gpa, "- `{s}`, {s}\n", .{ e.name, e.when });
             }
             try w.appendSlice(gpa, "\n");
         }

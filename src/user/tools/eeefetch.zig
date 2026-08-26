@@ -1,4 +1,4 @@
-//! eeefetch — system information, in the neofetch tradition.
+//! eeefetch, system information, in the neofetch tradition.
 //!
 //! Everything shown comes from the kernel's `sysinfo` interface rather than
 //! from files the tool assumes exist, so it works on a system with no /proc and

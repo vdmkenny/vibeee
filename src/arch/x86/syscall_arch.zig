@@ -1,8 +1,8 @@
 //! x86 side of the syscall path: unpack the trap frame into the portable
 //! argument struct and put the result back in `eax`.
 //!
-//! `int 0x80` only, for now. SYSENTER is the intended fast path — the MSRs and
-//! the stack dance are the whole of the difference — and libc picks between
+//! `int 0x80` only, for now. SYSENTER is the intended fast path, the MSRs and
+//! the stack dance are the whole of the difference, and libc picks between
 //! them from CPUID at start-up, so the ABI here does not change when it lands.
 
 const idt = @import("idt.zig");

@@ -21,8 +21,8 @@ pub const State = [STATE_SIZE]u8;
 
 /// A valid initial image, captured once from a freshly initialised FPU.
 ///
-/// Needed because FXRSTOR of zeroes is not valid — MXCSR has reserved bits that
-/// must be zero and a mask field that must not be — so a new thread cannot
+/// Needed because FXRSTOR of zeroes is not valid: MXCSR has reserved bits that
+/// must be zero and a mask field that must not be, so a new thread cannot
 /// simply start with a blank area.
 var template: State align(16) = @splat(0);
 var available = false;

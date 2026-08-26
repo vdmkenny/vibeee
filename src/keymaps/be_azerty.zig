@@ -4,7 +4,7 @@
 //!
 //! Note how much sits behind AltGr: the bracket, brace, at, hash and backslash
 //! keys are all third-level, which is why AltGr cannot be treated as optional
-//! polish. The number row is unshifted punctuation, so digits need Shift — the
+//! polish. The number row is unshifted punctuation, so digits need Shift, the
 //! defining feature of AZERTY, and what most surprises a QWERTY typist.
 
 const l = @import("layout.zig");

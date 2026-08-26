@@ -1,7 +1,7 @@
 //! Framebuffer text console.
 //!
 //! Presents the same cell interface as the VGA text backend, so the console
-//! layer above is unchanged — only the destination of a character differs.
+//! layer above is unchanged, only the destination of a character differs.
 //!
 //! Glyphs come from a bitmap font compiled into the kernel (Spleen by default),
 //! with the video ROM's own font as a fallback when none is built in. A
@@ -13,7 +13,7 @@
 //! beats anything a rasteriser produces, and there is no hinting to get wrong.
 //!
 //! Colour is the sixteen-entry VGA palette rather than anything richer,
-//! because everything that draws here — the boot log, the panic screen — was
+//! because everything that draws here, the boot log, the panic screen, was
 //! written against those sixteen and gains nothing from more.
 
 const std = @import("std");
@@ -152,7 +152,7 @@ pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
 /// Exists so the panic screen can draw a QR code without depending on a glyph.
 /// Rendering modules as half-block characters works only while the font happens
 /// to carry them: a font without them substitutes a notdef box and produces a
-/// symbol that looks plausible and does not scan — the worst possible failure
+/// symbol that looks plausible and does not scan, the worst possible failure
 /// for a diagnostic whose only job is to be read off a photograph.
 pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
     if (!ready) return;
@@ -185,7 +185,7 @@ pub fn fontName() []const u8 {
 pub fn fill(ch: u21, fg: u4, bg: u4) void {
     if (!ready) return;
     // A blank cell is a solid rectangle, so the common case avoids the glyph
-    // walk entirely — this runs on every clear and every panic.
+    // walk entirely, this runs on every clear and every panic.
     if (ch == ' ') {
         clearAll(PALETTE[bg]);
         return;

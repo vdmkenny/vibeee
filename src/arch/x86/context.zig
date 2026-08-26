@@ -2,14 +2,14 @@
 //!
 //! Only the callee-saved registers are switched. Everything else is already on
 //! the stack by the time we get here, because a switch always happens inside a
-//! function call — either a voluntary `yield` or an interrupt handler that has
+//! function call, either a voluntary `yield` or an interrupt handler that has
 //! pushed the full frame. That is what makes the switch four pushes and four
 //! pops rather than a full register save.
 //!
 //! Both routines are written as global assembly rather than Zig functions.
 //! `switchTo` defines the exact stack layout that `initStack` has to reproduce
 //! for a thread that has never run, and a compiler-generated prologue would add
-//! a frame that `initStack` knows nothing about — the first switch into a new
+//! a frame that `initStack` knows nothing about, the first switch into a new
 //! thread would then `ret` into whatever happened to be on the stack.
 
 const std = @import("std");

@@ -1,4 +1,4 @@
-//! IPC calls — events, channels and the service registry.
+//! IPC calls, events, channels and the service registry.
 //!
 //! design/00-vibeee.md §6.8. Handlers stay thin: the objects enforce their own
 //! invariants, and all these do is translate between handles and pointers on

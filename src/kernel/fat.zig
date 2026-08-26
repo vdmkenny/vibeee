@@ -10,7 +10,7 @@
 //! before reading is known to be correct.
 //!
 //! All three widths are handled because they differ only in how a FAT entry is
-//! fetched — the directory and cluster-chain logic above that is identical, so
+//! fetched, the directory and cluster-chain logic above that is identical, so
 //! supporting FAT16 costs a branch rather than a second driver.
 
 const std = @import("std");
@@ -261,7 +261,7 @@ pub fn mount(dev: *const block.Device) Error!Volume {
     // FAT32 is identified structurally, not by cluster count.
     //
     // The specification says the count decides the width, and that describes
-    // what a correct formatter produces — but formatters will happily create a
+    // what a correct formatter produces, but formatters will happily create a
     // small FAT32 volume whose count falls in the FAT16 range, and reading its
     // 32-bit FAT entries as 16-bit ones yields a chain that ends early. The
     // reliable signal is that `sectors_per_fat_16` and `root_entries` are zero
@@ -565,7 +565,7 @@ pub fn directoryIterator(vol: *Volume, cluster: u32) Iterator {
 /// An iterator over whatever directory `entry` names.
 ///
 /// A subdirectory's ".." entry records cluster 0 when it refers to the root,
-/// because the root has no cluster number on FAT12/16 — so that case is mapped
+/// because the root has no cluster number on FAT12/16, so that case is mapped
 /// back to the root iterator rather than followed literally.
 pub fn iterate(vol: *Volume, entry: Entry) Iterator {
     if (entry.cluster < 2) return rootIterator(vol);
@@ -611,7 +611,7 @@ pub const lookup = lookupPath;
 /// Walk a slash-separated path from the root.
 ///
 /// Empty components are skipped, so a doubled or trailing slash is harmless
-/// rather than an error — the alternative is rejecting paths that every other
+/// rather than an error, the alternative is rejecting paths that every other
 /// system accepts. "." and ".." are honoured because FAT stores them as real
 /// directory entries.
 pub fn lookupPath(vol: *Volume, path: []const u8) Error!Entry {

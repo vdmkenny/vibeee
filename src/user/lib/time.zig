@@ -20,7 +20,7 @@ pub fn pair(value: u8) void {
     out.byte('0' + @as(u8, @intCast(value % 10)));
 }
 
-/// `2026-08-26 14:33:07` — unambiguous, sorts as text, and the shape a log or
+/// `2026-08-26 14:33:07`, unambiguous, sorts as text, and the shape a log or
 /// a status line wants.
 pub fn writeStamp(seconds: i64) void {
     const c = fromEpoch(seconds);
@@ -45,8 +45,8 @@ pub fn writeStamp(seconds: i64) void {
 /// carries no information anyone reading a listing wants, but the year does.
 ///
 /// "Further away" in either direction, rather than only into the past. FAT
-/// records no timezone, so a volume written by a machine in another one — or
-/// by a host tool writing local time, which is most of them — carries stamps
+/// records no timezone, so a volume written by a machine in another one, or
+/// by a host tool writing local time, which is most of them, carries stamps
 /// hours ahead of our UTC clock. Treating those as ancient and printing the
 /// year would be a worse answer than simply showing the time.
 pub fn writeListed(seconds: i64, now: i64) void {

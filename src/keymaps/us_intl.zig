@@ -2,7 +2,7 @@
 //!
 //! The default: what gets touch-typed regardless of what the keycaps say.
 //!
-//! Differs from plain US in one way that matters — apostrophe, quote, backtick,
+//! Differs from plain US in one way that matters, apostrophe, quote, backtick,
 //! tilde and circumflex are dead keys that compose with the character after
 //! them. Following one with a space produces the literal character, which is
 //! the standard escape.

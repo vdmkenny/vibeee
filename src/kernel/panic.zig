@@ -6,7 +6,7 @@
 //!
 //! The screen is split. On the left, enough plain text to recognise the fault
 //! at a glance. On the right, a QR code carrying the same information in a
-//! form a phone can decode — so the register values and backtrace addresses
+//! form a phone can decode, so the register values and backtrace addresses
 //! reach a symboliser without being transcribed by hand from a photo.
 //!
 //! design/00-vibeee.md §6.9 describes the wider ladder; the persistent panic
@@ -140,7 +140,7 @@ pub fn collectBacktrace(r: *Report, start_fp: usize) void {
 // ---------------------------------------------------------------------------
 
 /// Compact, pipe-separated, uppercase hex. Deliberately human-readable once
-/// scanned — no decoder tool required to make sense of it:
+/// scanned, no decoder tool required to make sense of it:
 ///
 ///   VBE1|<vec>|<err>|<cr2>|<eip>|<esp>|<ebp>|<bt>,<bt>,...
 fn buildPayload(r: *const Report, buf: []u8) []const u8 {
@@ -282,7 +282,7 @@ const LIGHT: console.Color = .light_grey;
 /// With a framebuffer, modules are drawn as plain rectangles. That depends on
 /// no glyph at all, which matters: a font that lacks the block characters
 /// substitutes a notdef box, producing a symbol that looks like a QR code and
-/// does not scan — the worst possible failure for a diagnostic whose only job
+/// does not scan, the worst possible failure for a diagnostic whose only job
 /// is to be read off a photograph. Drawing pixels also gives exactly square
 /// modules at whatever scale fits.
 ///

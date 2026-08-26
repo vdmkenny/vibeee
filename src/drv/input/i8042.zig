@@ -81,7 +81,7 @@ var expecting_extended = false;
 /// switch. Returning true swallows the event.
 fn handleHotkey(code: KeyCode, mods: input.Modifiers) bool {
     // Super+Space cycles layouts. Bound by *position* rather than by symbol, so
-    // it stays in the same physical place when the layout changes — which is
+    // it stays in the same physical place when the layout changes, which is
     // the whole point of a layout-switch key.
     if (code == .space and mods.super) {
         const layout = keymap.cycleLayout();

@@ -2,7 +2,7 @@
 //!
 //! The ordering is the substance of this file. FAT has no journal, so anything
 //! still held in a cache or a device's own buffer is simply lost if power drops
-//! first — and the crash-recovery strategy (design/00-vibeee.md §7) assumes a
+//! first, and the crash-recovery strategy (design/00-vibeee.md §7) assumes a
 //! completed write reached the medium. Getting the sequence right here is what
 //! makes that assumption true.
 //!

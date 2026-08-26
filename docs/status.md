@@ -3,7 +3,7 @@
 What exists, file by file. Kept plain on purpose: the design documents say what the system
 is *for*, this says what has actually been written.
 
-**Mostly vibecoded** — see the note in the [README](../README.md). The inventory below is
+**Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
 accurate about what exists; it is not a claim that any of it has been audited.
 
 Last updated 2026-08-26. Roughly 15,900 lines of Zig and 870 of assembly, 28 syscalls,
@@ -63,7 +63,7 @@ Last updated 2026-08-26. Roughly 15,900 lines of Zig and 870 of assembly, 28 sys
 | SMBIOS | [`drv/platform/smbios.zig`](../src/drv/platform/smbios.zig) | DMI decoding for `dmidecode` and `eeefetch`. |
 | UART 16550 | [`drv/serial/uart16550.zig`](../src/drv/serial/uart16550.zig) | For machines that have one; the 701 does not. |
 
-Probed but **not implemented** — the table reports them so an unfamiliar machine is
+Probed but **not implemented**, the table reports them so an unfamiliar machine is
 diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `ath5k`,
 `e1000`, `i801smb`, `lpc_ich`.
 
@@ -91,13 +91,13 @@ build.
 
 ## Testing
 
-- `make test` — 36 host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
+- `make test`: 36 host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
   queues, calendar, ring buffer) plus a differential check of the QR encoder against
   `libqrencode` across all eight masks.
-- `zig build check` — the layering rules.
-- Boot self-tests — heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
+- `zig build check`, the layering rules.
+- Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
-- `make shot OUT=x.png TYPE="..."` — boot headless, type at the shell, screenshot.
+- `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot.
 
 ## Known gaps
 

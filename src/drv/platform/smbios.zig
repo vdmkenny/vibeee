@@ -5,7 +5,7 @@
 //! where `dmidecode` can be as thorough as it likes without any of it living in
 //! kernel memory forever.
 //!
-//! On the target this is where the machine identifies itself — DMI product name
+//! On the target this is where the machine identifies itself: DMI product name
 //! "701", which is what the Linux eeepc-laptop driver keys its quirks on, and
 //! what tells this kernel it is running on the hardware it was designed for
 //! rather than something that merely resembles it.

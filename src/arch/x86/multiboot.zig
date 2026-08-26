@@ -16,7 +16,7 @@ const BOOTLOADER_MAGIC: u32 = 0x2BADB002;
 // Multiboot 1 header, written in assembly so it can name linker symbols.
 //
 // Flags: bit 0 page-aligns modules, bit 1 requests the memory map, and bit 16
-// selects the "a.out kludge" — the address fields below. The kludge is not
+// selects the "a.out kludge", the address fields below. The kludge is not
 // optional here: QEMU's ELF path loads segments at their *virtual* addresses,
 // and this kernel is linked at 0xC0100000, so without it the load lands past
 // the end of RAM and the guest triple-faults immediately.
@@ -90,7 +90,7 @@ const MMAP_VALID: u32 = 1 << 6;
 const CMDLINE_VALID: u32 = 1 << 2;
 
 /// One memory-map entry. `size` excludes itself, so advancing means
-/// `p += size + 4` — a classic off-by-four if read carelessly.
+/// `p += size + 4`, a classic off-by-four if read carelessly.
 const MmapEntry = extern struct {
     size: u32,
     base_addr: u64 align(4),

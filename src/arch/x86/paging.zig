@@ -9,7 +9,7 @@
 //! The kernel lives in the top gigabyte (0xC0000000+), with all physical memory
 //! linearly mapped there using 4 MiB pages. Large pages for the linear map cost
 //! no page tables at all and consume 256 TLB entries at most for the whole of
-//! RAM — on a core with a small TLB that is a meaningful win over 4 KiB pages.
+//! RAM, on a core with a small TLB that is a meaningful win over 4 KiB pages.
 //! User space gets ordinary 4 KiB pages across the low 3 GiB.
 
 const std = @import("std");
@@ -24,7 +24,7 @@ pub const KERNEL_VMA: usize = 0xC000_0000;
 ///
 /// The linear map covers 768 MiB of physical memory, which is more than this
 /// class of machine can hold. The rest of the kernel half is kept for mapping
-/// device apertures, which live at physical addresses far above RAM — a
+/// device apertures, which live at physical addresses far above RAM, a
 /// framebuffer at 0xFD000000, for instance, has no linear-map address at all
 /// and must be mapped explicitly.
 pub const MMIO_BASE: usize = 0xF000_0000;
@@ -98,7 +98,7 @@ pub fn setupBootPaging() linksection(".text.boot") callconv(.c) void {
 /// The page directory, reached through the linear map.
 ///
 /// `boot_page_directory` lives in `.bootdata` and its symbol address is
-/// therefore *physical* — correct for `setupBootPaging`, which runs before
+/// therefore *physical*, correct for `setupBootPaging`, which runs before
 /// paging, and wrong for everything after, once the identity mapping is gone.
 /// Every post-paging access goes through here.
 fn pageDirectory() *[1024]u32 {
@@ -134,7 +134,7 @@ pub inline fn physToVirt(phys: usize) usize {
 
 /// True when a physical address falls inside the linear map.
 ///
-/// Anything else — device apertures above RAM — needs `mapMmio`, and treating
+/// Anything else, device apertures above RAM, needs `mapMmio`, and treating
 /// it as linear would silently produce an address in user space.
 pub inline fn isLinear(phys: usize) bool {
     return phys < LINEAR_MAP_BYTES;
@@ -149,8 +149,8 @@ const KERNEL_PDE_START = KERNEL_VMA / LARGE_PAGE_SIZE;
 
 /// A process address space.
 ///
-/// The kernel half is shared by every address space — the same 4 MiB entries,
-/// copied at creation and never changed afterwards — so a syscall needs no CR3
+/// The kernel half is shared by every address space, the same 4 MiB entries,
+/// copied at creation and never changed afterwards, so a syscall needs no CR3
 /// switch and the kernel is addressable no matter which process is running.
 /// Only the low 3 GiB differs between processes.
 pub const AddressSpace = struct {
@@ -258,8 +258,8 @@ pub const MmioError = error{NoAddressSpace};
 /// Map a device aperture into the kernel half and return its virtual address.
 ///
 /// Large pages, so no page tables are needed and the mapping costs one
-/// directory entry per 4 MiB. Apertures are naturally large and long-lived —
-/// a framebuffer is mapped once at boot and never unmapped — so there is
+/// directory entry per 4 MiB. Apertures are naturally large and long-lived,
+/// a framebuffer is mapped once at boot and never unmapped, so there is
 /// nothing to gain from finer granularity and a TLB entry per 4 KiB to lose.
 ///
 /// Mapped cacheable. Correct for a framebuffer, which behaves like memory;

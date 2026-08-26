@@ -3,7 +3,7 @@
 //! The Makefile drives the image pipeline (partitioning, FAT population, dd);
 //! this file builds the binaries. Keeping the split that way means `zig build`
 //! alone gives you a kernel to run under `qemu -kernel`, and `make` gives you a
-//! bootable SD image — see design/00-vibeee.md §14.
+//! bootable SD image, see design/00-vibeee.md §14.
 
 const std = @import("std");
 
@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
-        "Optimization mode (default: ReleaseSmall — footprint is a hard requirement)",
+        "Optimization mode (default: ReleaseSmall, footprint is a hard requirement)",
     ) orelse .ReleaseSmall;
 
     // ---------------------------------------------------------------------
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
         .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
     });
 
-    // Shared, platform-neutral code — see src/lib. Handed to the kernel and to
+    // Shared, platform-neutral code, see src/lib. Handed to the kernel and to
     // every user program as the same named module rather than by relative
     // path, so both sides get one instance of it and its types compare equal
     // across the syscall boundary.
@@ -203,7 +203,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // ---------------------------------------------------------------------
-    // `zig build run` — quick QEMU boot without building an SD image.
+    // `zig build run`, quick QEMU boot without building an SD image.
     // ---------------------------------------------------------------------
     const run = b.addSystemCommand(&.{
         "qemu-system-i386",
@@ -221,7 +221,7 @@ pub fn build(b: *std.Build) void {
     // ---------------------------------------------------------------------
     // Host-side unit tests. These run natively, so anything portable
     // (allocators, keymap tables, filesystem structures, layout algebra) is
-    // testable without hardware or emulation — see design §10.6.
+    // testable without hardware or emulation, see design §10.6.
     // ---------------------------------------------------------------------
     const test_step = b.step("test", "Run host-side unit tests");
     const host_lib = b.createModule(.{
@@ -241,7 +241,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
     // `lib` is its own module, and `zig test` only collects tests from the
-    // root module of the binary it builds — so tests inside it need their own
+    // root module of the binary it builds, so tests inside it need their own
     // runner or they are silently skipped, which is worse than having none.
     const lib_tests = b.addTest(.{ .root_module = host_lib });
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);

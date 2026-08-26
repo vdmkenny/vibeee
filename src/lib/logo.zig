@@ -2,7 +2,7 @@
 //!
 //! Shared because both sides draw it: the kernel at the top of the boot log,
 //! and `eeefetch` from userspace. It is pure data with no dependencies, which
-//! is what lets one copy serve both — the alternative was the same six lines
+//! is what lets one copy serve both, the alternative was the same six lines
 //! of backslashes maintained in two places, where a one-character difference
 //! would be invisible until someone put the two screens side by side.
 //!

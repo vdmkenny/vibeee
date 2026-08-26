@@ -1,6 +1,6 @@
-# vibeee Design 08 — netd: Userspace Network Stack + NIC Drivers
+# vibeee Design 08, netd: Userspace Network Stack + NIC Drivers
 
-> **Status: design only — not implemented.**
+> **Status: design only, not implemented.**
 > Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
@@ -50,7 +50,7 @@ trusted, supervised system service; its manifest grants it exactly BDFs 03:00.0 
 - Fn+F2 = ACPI WLDS power-gates the mini-PCIe slot: true electrical hot-unplug; state
   persists across reboots; hotplug is ACPI Notify on \_SB.PCI0.P0P5/P0P6/P0P7, no native
   PCIe hotplug interrupts (HIGH, research-quirks §3). Reads from a gated device return
-  0xFFFFFFFF (HIGH — eeepc-laptop detects absence exactly this way).
+  0xFFFFFFFF (HIGH, eeepc-laptop detects absence exactly this way).
 - Early ath5k had AR2425 calibration bugs ("gain calibration timeout", resets in noisy
   environments) (MEDIUM-HIGH, research-quirks §6) → calibration failures must be
   non-fatal, retried, and rate-limited.
@@ -58,7 +58,7 @@ trusted, supervised system service; its manifest grants it exactly BDFs 03:00.0 
   netd reads Interrupt Line/Pin from PCI config and asks devmgr for the routed GSI; both
   IRQs treated as shareable level-triggered IOAPIC lines. Neither driver uses MSI (atl2
   MSI is known-flaky in Linux; ath5k legacy INTx).
-- MCFG ECAM at 0xE0000000 (HIGH) — pci_cfg_* presumably backed by it; netd doesn't care.
+- MCFG ECAM at 0xE0000000 (HIGH), pci_cfg_* presumably backed by it; netd doesn't care.
 - Memory bandwidth possibly DDR2-140 (~1.1 GB/s peak, ~350 MB/s practical memcpy)
   (MEDIUM, conflicting) → budget math below uses the pessimistic number.
 - QEMU emulates neither atl2 nor AR2425 → test seams in §10.
@@ -136,7 +136,7 @@ pub const NicCallbacks = struct {
 ```
 
 The wifi driver additionally implements `WifiOps` (channel set, scan actions, key cache,
-rate table, BSS filter) consumed only by the MLME module — the netstack sees wifi as an
+rate table, BSS filter) consumed only by the MLME module, the netstack sees wifi as an
 ethernet NicDev carrying ethertype frames after 802.11↔802.3 translation in the driver.
 
 ## 4. atl2 ethernet driver (1969:2048)
@@ -153,7 +153,7 @@ atl2 has NO scatter-gather descriptor ring. Three regions in ONE dma_alloc block
   it how far we've written via mailbox `REG_MB_TXD_WR_IDX (0x15F0)` = write ptr **>> 2**
   (dword index).
 - **TXS ring**: 160 × 4-byte `tx_pkt_status` entries (ok/underrun/collision bits +
-  `update` flag) — hardware posts one per completed packet.
+  `update` flag), hardware posts one per completed packet.
 - **RXD ring**: N × 1536-byte fixed slots, each = `{ rx_pkt_status (12 B incl. update,
   ok, crc, runt, frag, trunc, vlan, pkt_size:11) + packet[1524] }`. Hardware fills
   slots in order; we consume where `status.update == 1`, clear it, and advance mailbox
@@ -227,13 +227,13 @@ Full-duplex worst case, 1518 B frames, 8.1 kpps each way:
 - TX mirror image ≈ 11%. ACK traffic ≈ 3%.
 - Total ≈ **28–33% CPU at full duplex saturation**; ~17% for one-direction bulk.
   Leaves headroom for GUI + disk. Memory bandwidth: ~50 MB/s of the ~350 MB/s
-  practical — acceptable.
+  practical, acceptable.
 
-## 5. AR2425 WiFi driver (ath5k-class) — honest design
+## 5. AR2425 WiFi driver (ath5k-class), honest design
 
 This is the hardest component. Truth sources: ath5k (reg.h, desc.h, reset.c, phy.c,
 initvals.c, eeprom.c), OpenBSD ar5k. Exact bitfield encodings below marked (reg.h) are
-to be lifted verbatim from ath5k headers at implementation time — this design fixes the
+to be lifted verbatim from ath5k headers at implementation time, this design fixes the
 sequences and structures, not every literal.
 
 ### 5.1 Probe & identification
@@ -242,7 +242,7 @@ sequences and structures, not every literal.
 1. devmgr match 168c:001c → attach. pci_cfg: CMD.MEM|MASTER; map BAR0 (64 KB MMIO).
 2. Wake: SLEEP_CTL(0x4004) = SLE_WAKE; poll PCICFG(0x4010).SPWR_DN clear (≤200×50 µs).
 3. SREV(0x4020) → expect MAC srev 0xE2 (AR2425 "Swan"); accept 0xE6 (AR2417) too.
-4. Warm reset: RESET_CTL(0x4000) = PCU|MAC|DMA|PHY — NEVER set RESET_CTL_PCI on this
+4. Warm reset: RESET_CTL(0x4000) = PCU|MAC|DMA|PHY: NEVER set RESET_CTL_PCI on this
    card: warm-resetting the PCI core on PCIe hangs it (ath5k comment, verified).
    Wait, re-wake.
 5. PHY_CHIP_ID(0x9818) → expect 0x70; radio = RF2425, single-chip. Anything else →
@@ -327,12 +327,12 @@ any --kill-switch--> DEAD;  DEAD --replug--> IDLE (auto-rejoin last)
   additionally sends probe-req and waits 30 ms. Full scan ≈ 1.2 s. Results table:
   32 × {bssid, ssid[32], chan, rssi_ewma, caps, rsn_parsed}.
 - Auth: open-system (algorithm 0) 2-frame exchange, 100 ms timeout, 3 tries.
-- Assoc: assoc-req with rates + RSN IE (WPA2-PSK CCMP only in v1 — no WPA1/TKIP; TKIP
+- Assoc: assoc-req with rates + RSN IE (WPA2-PSK CCMP only in v1, no WPA1/TKIP; TKIP
   is a config-error message, stated limitation); parse AID.
 - Beacon tracking: on beacon RX from our BSS, stamp last_beacon. Software beacon-miss:
   no beacon for 8 × beacon-interval (checked on 100 ms tick) → count BMISS IRQ as
   corroboration → fast-rejoin then rescan. (HW BMISS used only as a hint; software
-  timer is authoritative — simpler than programming sleep/beacon timers.)
+  timer is authoritative, simpler than programming sleep/beacon timers.)
 - Power save: OFF in v1 (STA_ID1 PWR_SV clear, sleep clock untouched). Stated.
 
 ### 5.6 WPA2-PSK supplicant + CCMP
@@ -342,7 +342,7 @@ any --kill-switch--> DEAD;  DEAD --replug--> IDLE (auto-rejoin last)
   skip it.
 - 4-way handshake in netd: EAPOL-Key frames over the data path; PRF-SHA1 → PTK
   (KCK/KEK/TK); validate MIC; unwrap GTK (AES key-unwrap); msg 4; install keys.
-- Key install — hardware CCMP: AR2425 qualifies (srev 0xE2 ≥ AR5212_V4) unless EEPROM
+- Key install, hardware CCMP: AR2425 qualifies (srev 0xE2 ≥ AR5212_V4) unless EEPROM
   misc5 AES_DIS is set (checked at attach; sets `hw_ccmp` capability). Key cache at
   0x8800: 128 entries × 8 words {key[5 words interleaved 32/16/32/16/32], keytype
   (TYPE_CCM per reg.h), mac0, mac1}. PTK → entry matching peer MAC (index from MAC
@@ -351,7 +351,7 @@ any --kill-switch--> DEAD;  DEAD --replug--> IDLE (auto-rejoin last)
 - Software CCMP fallback (if AES_DIS or key-cache misbehavior on this early silicon):
   table-based AES-128 (no AES-NI on Dothan): ~60 cycles/byte for CCM's two passes →
   at real-world 20 Mbit (2.5 MB/s) ≈ 24% CPU. Usable, ugly, shipped as fallback with a
-  status-bar indicator. Decision: implement SW CCMP anyway — it is also the unit-test
+  status-bar indicator. Decision: implement SW CCMP anyway, it is also the unit-test
   oracle for the HW path (RFC 3610 / IEEE test vectors).
 
 ### 5.7 Rate control: minstrel-lite (specified)
@@ -369,9 +369,9 @@ malloc; 12×16 B table. This is ~150 lines and captures most of minstrel's benef
   rescans bus 1 (vendor-ID probe) and sends attach/detach to netd.
 - Detection without notification (belt & braces): every IRQ entry and every poll loop
   reads a known register; 0xFFFFFFFF → `dead` path. All register poll loops are bounded
-  (≤ N iterations with budgeted delays) — never wait on a gated device.
+  (≤ N iterations with budgeted delays), never wait on a gated device.
 - `dead` path: mark NicDev DEAD (all ops become no-ops), abandon in-flight descriptors
-  (device is powered off — it cannot DMA; memory is simply reclaimed), free pbufs,
+  (device is powered off, it cannot DMA; memory is simply reclaimed), free pbufs,
   fail wifi state machine → sockets bound to wifi addresses get ECONNRESET/ENETDOWN,
   status event {link: down, reason: killswitch}.
 - Replug: devmgr attach → full probe→init→reset pipeline from power-on state (nothing
@@ -391,11 +391,11 @@ malloc; 12×16 B table. This is ~150 lines and captures most of minstrel's benef
   per-NIC lease state in RAM, last-good lease hint in /cfg for fast re-acquire.
 - **DNS stub**: A queries only, 2 configured servers (DHCP opt 6 or /cfg), 32-entry
   positive cache honoring TTL (cap 1 h), 5 s timeout ×2 retries. Exposed as a `resolve`
-  op — not port 53 proxying.
+  op, not port 53 proxying.
 - **UDP**: trivial; per-socket record ring.
 - **TCP**: **NewReno + fast retransmit/recovery. Window scaling (wscale=2, 128 KB max
   advertised, default rcvbuf 32 KB) and RFC 7323 timestamps (RTT sampling + PAWS) are
-  IN. SACK is DEFERRED to M3**: justification — LAN BDP ≈ 12 KB needs nothing; WAN over
+  IN. SACK is DEFERRED to M3**: justification: LAN BDP ≈ 12 KB needs nothing; WAN over
   100 ms × 20 Mbit ≈ 250 KB BDP is beyond our per-socket buffer budget anyway, so SACK's
   benefit (loss recovery on big windows) is mostly unreachable; NewReno + timestamps is
   ~1/3 the state-machine surface. We DO parse and ignore SACK-permitted (and advertise
@@ -414,7 +414,7 @@ Per process: one **control channel** to /svc/net (call/reply ≤64 B + ≤4 hand
 Per socket: one **shm object** (default 40 KB TCP: 4 KB ctrl+slack, 16 KB tx ring,
 16 KB rx ring; 20 KB UDP) + two events: `ev_app` (netd→app: data/space/state) and
 `ev_netd` (app→netd doorbell). netd allocates all three and returns handles in the
-reply (3 handles ≤ 4 limit). **Decision: per-socket rings, not per-process** — SPSC
+reply (3 handles ≤ 4 limit). **Decision: per-socket rings, not per-process**: SPSC
 matches the kernel ring contract, isolates flow control per connection, and 40 KB ×
 tens of sockets fits RAM; a shared per-process ring would need MPSC muxing and
 head-of-line blocking handling for zero measured benefit at this scale.
@@ -451,15 +451,15 @@ resolve{name[≤48]}                            -> {n, addr[4]}  (DNS stub)
 
 Blocking recv in libc: loop { consume rx ring; empty → wait(ev_app) }. Blocking send:
 loop { produce into tx ring; full → wait(ev_app) }; after producing, signal ev_netd
-(netd batches: doorbell coalescing — it drains all ready rings per wakeup).
+(netd batches: doorbell coalescing, it drains all ready rings per wakeup).
 poll()/select(): wait_many over the ev_app handles of member sockets + timeout; after
 wake, readiness is read lock-free from each SockCtrl (state/flags/ring counters).
-**One event per socket, not a completion ring** — decision: completion rings shine with
+**One event per socket, not a completion ring**, decision: completion rings shine with
 thousands of sockets; at ≤64/process, wait_many over events reuses the kernel primitive
 with zero new protocol.
 
 Bulk TCP path cost: app→ring copy (app side), ring→pbuf copy+cksum (netd), DMA. Two
-copies + DMA total — the practical minimum without page-flipping games that this MMU
+copies + DMA total, the practical minimum without page-flipping games that this MMU
 budget doesn't want.
 
 ### 7.3 Death semantics (documented contract)
@@ -467,13 +467,13 @@ budget doesn't want.
 netd crash → kernel invalidates its channels/handles → app's wait returns
 HANDLE_DEAD → libc marks all sockets ECONNRESET (SIGPIPE-less; error on next op),
 reconnects lazily to /svc/net (supervisor restarts netd, which re-registers). No
-transparent socket resurrection — TCP state is gone; apps see what a router reboot
+transparent socket resurrection: TCP state is gone; apps see what a router reboot
 looks like. DNS cache, DHCP leases re-form automatically.
 
 ## 8. Config, UX, status
 
-- `/cfg/net/ifcfg` — text: per-NIC `dhcp` | `static addr/mask gw dns`.
-- `/cfg/net/wifi.conf` — list of known networks: `{ssid, sec: open|wpa2, pmk(hex),
+- `/cfg/net/ifcfg`, text: per-NIC `dhcp` | `static addr/mask gw dns`.
+- `/cfg/net/wifi.conf`, list of known networks: `{ssid, sec: open|wpa2, pmk(hex),
   passphrase?, priority, autojoin}`. **Decision: NOT encrypted at rest in v1.** Honest
   reasoning: single-user machine, no TPM/keystore, any key would live in the same flash
   next to the data → encryption here is theater. Mitigations that are real: store
@@ -514,7 +514,7 @@ QEMU emulates neither atl2 nor AR2425 → three seams:
 2. **QEMU integration**: `e1000` test driver (~700 lines) behind NicOps, compiled only
    with `-Dtest-nic`; boots full vibeee in QEMU, runs DHCP against QEMU's slirp,
    iperf-lite against host. Proves the event loop, IPC bridge, IRQ path, dma_alloc
-   usage — everything except the two real drivers.
+   usage, everything except the two real drivers.
 3. **Hardware checklist** (in order): atl2 probe/MAC read → link IRQ → ping →
    DHCP → 24 h iperf soak (watch DMAR_TO_RST resets) || ath5k: probe/srev/EEPROM dump
    tool first (read-only milestone), → channel set + passive scan sees beacons → open
@@ -522,7 +522,7 @@ QEMU emulates neither atl2 nor AR2425 → three seams:
    during iperf, zero crashes/leaks (pbuf census after each cycle) → cal-failure
    injection (force AGCCTL timeout path).
    Debug transport with no serial port: netlog ring is drained to on-screen console
-   overlay AND, once ethernet is up, via UDP syslog — atl2 therefore comes up first.
+   overlay AND, once ethernet is up, via UDP syslog, atl2 therefore comes up first.
 
 ## 11. Risks & open questions
 
@@ -534,9 +534,9 @@ QEMU emulates neither atl2 nor AR2425 → three seams:
 - **atl2 MAC address source**: NVM read path is thinly documented; fallback chain
   (BIOS-set register, random LAA) bounds the damage.
 - **Shared level IRQ semantics**: need kernel contract for mask/ack ordering on shared
-  GSIs (both NICs may share lines with USB) — OPEN with kernel-core.
+  GSIs (both NICs may share lines with USB): OPEN with kernel-core.
 - **wait_many fan-out**: 64+ handles per waiter must be supported or netd needs an
-  internal event-mux — OPEN with kernel-core.
+  internal event-mux: OPEN with kernel-core.
 - **DMA with no IOMMU**: netd bugs can corrupt any RAM. Accepted per architecture;
   descriptor writes are asserted-bounded in debug builds.
 - **Regdomain**: EEPROM regdomain trusted if it maps to a known set; else ETSI 1–13.

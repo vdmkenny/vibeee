@@ -1,8 +1,8 @@
 //! Line discipline: turns key events into lines of text for `read`.
 //!
 //! Sits between the input core and the read syscall. Editing happens here
-//! rather than in each program, so every prompt — the shell, a password field,
-//! anything that reads a line — behaves the same way.
+//! rather than in each program, so every prompt, the shell, a password field,
+//! anything that reads a line, behaves the same way.
 //!
 //! Canonical mode only: input is delivered a line at a time, after Enter.
 //! Raw mode arrives with the terminal emulator, which needs per-keystroke
@@ -39,7 +39,7 @@ fn emit(bytes: []const u8) void {
 ///
 /// Called from the read path rather than from the interrupt handler: the
 /// handler should do as little as possible, and echoing to the console from
-/// interrupt context would mean the console lock — once there is one — is taken
+/// interrupt context would mean the console lock, once there is one, is taken
 /// at unpredictable moments.
 fn pump() void {
     while (input.poll()) |event| {

@@ -1,7 +1,7 @@
 //! IDT and interrupt entry.
 //!
 //! The 256 entry stubs are generated at comptime rather than written out by
-//! hand or emitted from a NASM macro — this is one of the places Zig genuinely
+//! hand or emitted from a NASM macro, this is one of the places Zig genuinely
 //! beats the C+asm equivalent, since the stub table and the dispatch table are
 //! guaranteed to agree by construction.
 //!
@@ -17,7 +17,7 @@ pub const SYSCALL_VECTOR: u8 = 0x80;
 pub const IRQ_BASE: u8 = 32;
 
 /// Register state pushed by the stubs. Field order is the reverse of the push
-/// sequence — `interrupt.s`-equivalent logic lives in `stub()` below.
+/// sequence, `interrupt.s`-equivalent logic lives in `stub()` below.
 pub const Frame = extern struct {
     // pushed by us
     gs: u32,
@@ -178,7 +178,7 @@ pub fn unsetHandler(vec: u8) void {
 
 /// Remap the 8259 PICs away from vectors 0-15, which collide with the CPU
 /// exception range. We mask everything afterwards: this machine has an IOAPIC
-/// (verified in the MADT) and that is what we actually use — the PICs are
+/// (verified in the MADT) and that is what we actually use, the PICs are
 /// remapped only so a stray legacy interrupt cannot masquerade as a fault.
 pub fn remapPic() void {
     const PIC1_CMD = 0x20;

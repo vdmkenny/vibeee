@@ -1,7 +1,7 @@
 //! Block cache.
 //!
-//! Wraps a `block.Device` and presents the same interface, so every consumer —
-//! FAT, the partition scanner, the ELF loader — benefits without knowing it
+//! Wraps a `block.Device` and presents the same interface, so every consumer,
+//! FAT, the partition scanner, the ELF loader, benefits without knowing it
 //! exists.
 //!
 //! This matters more on the target than it would elsewhere. Reads are PIO, so
@@ -13,7 +13,7 @@
 //!
 //! Four-way set associative. A fully associative cache would need a scan of
 //! every entry per lookup, and a direct-mapped one thrashes badly when the FAT
-//! and the data area happen to collide — which they will, since both are walked
+//! and the data area happen to collide, which they will, since both are walked
 //! in step. Four ways costs four comparisons and removes that failure mode.
 //!
 //! Write-through, deliberately. FAT has no journal, and the recovery strategy
@@ -160,8 +160,8 @@ fn write(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
 
 fn flush(ctx: *anyopaque) block.Error!void {
     const self: *Cache = @ptrCast(@alignCast(ctx));
-    // Nothing is held dirty here — write-through means the backing device is
-    // always current — so this only has to reach the device's own cache.
+    // Nothing is held dirty here, write-through means the backing device is
+    // always current, so this only has to reach the device's own cache.
     const f = self.backing.ops.flush orelse return;
     return f(self.backing.ctx);
 }

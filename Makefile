@@ -1,8 +1,8 @@
-# vibeee — top-level build.
+# vibeee, top-level build.
 #
 # Produces build/vibeee.img: a raw, dd-able SD-card image.
 #
-# Toolchain: zig, nasm, qemu (for `make qemu`). Nothing else — no cross-GCC, no
+# Toolchain: zig, nasm, qemu (for `make qemu`). Nothing else, no cross-GCC, no
 # autotools, no root privileges, no loopback mounts. See design/00-vibeee.md §14.
 
 ZIG      ?= zig
@@ -20,13 +20,13 @@ CMDLINE  ?=
 
 # The emulated machine is as close to the Eee PC 701 as QEMU gets: 512 MB and
 # the PIIX3 chipset. It is NOT an ICH6 and has no GMA900, no AR2425, no
-# Attansic NIC and no EC — those are real-hardware-only. QEMU proves the boot
+# Attansic NIC and no EC, those are real-hardware-only. QEMU proves the boot
 # chain, memory, interrupts, storage and PCI enumeration; nothing more.
 #
 # The CPU model matters more than it looks. The target is a Celeron M 353
 # (Dothan): SSE2 yes, SSE3 no, no long mode. Emulating something *less* capable
 # means user code compiled for the real target faults in emulation on
-# instructions the hardware would have run — so the model is pinned to match
+# instructions the hardware would have run, so the model is pinned to match
 # the feature set rather than to a convenient preset.
 QEMU_CPU   := pentium3,+sse2,+pae,+nx,-sse3
 QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot
@@ -176,7 +176,7 @@ shot: dev-image
 run: qemu
 
 # Boot with a VNC server instead of a local window, so the machine can be
-# driven from anywhere — including from a phone, and including while a
+# driven from anywhere, including from a phone, and including while a
 # screenshot run is using the local display.
 #
 # macOS has a VNC client built in: `open vnc://localhost:5901`.
@@ -204,7 +204,7 @@ qemu-sd: $(IMAGE)
 		-drive if=none,id=sd,format=raw,file=$(IMAGE) \
 		-device usb-storage,drive=sd,bootindex=0
 
-# Same image on an emulated IDE disk — the internal SSD install path.
+# Same image on an emulated IDE disk, the internal SSD install path.
 .PHONY: qemu-ide
 qemu-ide: $(IMAGE)
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(IMAGE)

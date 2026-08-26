@@ -4,7 +4,7 @@
 //! arch/x86/multiboot.zig (`qemu -kernel` / GRUB, for development). The kernel
 //! proper never learns which one ran.
 //!
-//! This struct is ABI, shared with NASM/Zig stage2 code — `extern struct`,
+//! This struct is ABI, shared with NASM/Zig stage2 code, `extern struct`,
 //! explicit sizes, no Zig layout assumptions.
 
 const std = @import("std");

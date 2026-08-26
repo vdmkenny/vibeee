@@ -1,6 +1,6 @@
 //! Loading and running programs.
 //!
-//! Deliberately not fork — the design refuses it (design/00-vibeee.md §13),
+//! Deliberately not fork, the design refuses it (design/00-vibeee.md §13),
 //! because fork on a from-scratch kernel means copy-on-write page tables, and
 //! every program worth running follows it immediately with exec.
 //!

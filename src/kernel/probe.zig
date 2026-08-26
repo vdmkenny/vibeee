@@ -16,7 +16,7 @@ const hal = @import("hal.zig");
 pub const Confidence = enum(u8) {
     /// Not my device.
     no = 0,
-    /// Generic class-level match — works, but dumbly.
+    /// Generic class-level match, works, but dumbly.
     weak = 1,
     /// Recognised family; most functionality available.
     strong = 2,

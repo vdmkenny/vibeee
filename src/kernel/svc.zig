@@ -1,4 +1,4 @@
-//! `/svc` — the service registry.
+//! `/svc`, the service registry.
 //!
 //! A name maps to a channel. That is the whole thing, and it is what makes a
 //! restartable server possible: a client holds a name rather than a handle to

@@ -1,4 +1,4 @@
-//! Events — the kernel object userspace blocks on.
+//! Events, the kernel object userspace blocks on.
 //!
 //! An event is a counter with a wait queue. Signalling increments it and
 //! releases one waiter; waiting consumes a count, or blocks if there is none.
@@ -45,7 +45,7 @@ pub const Event = struct {
         self.signalLocked();
     }
 
-    /// The same, for callers that already hold interrupts off — which every
+    /// The same, for callers that already hold interrupts off, which every
     /// path that has just changed the state a waiter is watching does.
     pub fn signalLocked(self: *Event) void {
         if (self.count != std.math.maxInt(u32)) self.count += 1;

@@ -74,7 +74,7 @@ pub const initFpuState = fpu.initState;
 ///
 /// Must be updated on every context switch. The CPU reads it from the TSS when
 /// user code traps, so a stale value sends a syscall onto another thread's
-/// stack — and once that thread has exited and its stack been freed, onto
+/// stack, and once that thread has exited and its stack been freed, onto
 /// memory the allocator has handed to someone else.
 pub const setKernelStack = gdt.setKernelStack;
 

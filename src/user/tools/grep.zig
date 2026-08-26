@@ -1,4 +1,4 @@
-//! grep — print lines matching a pattern.
+//! grep, print lines matching a pattern.
 //!
 //! Literal substring matching only. Regular expressions are a real parser and a
 //! real matcher, and a half-implemented regex is worse than an honest

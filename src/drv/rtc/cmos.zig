@@ -107,7 +107,7 @@ fn readRaw() DateTime {
     return dt;
 }
 
-/// True when the clock is obviously not set — a flat coin cell reads as an
+/// True when the clock is obviously not set, a flat coin cell reads as an
 /// impossible or epoch date, and anything depending on time should know.
 pub fn looksUnset(dt: DateTime) bool {
     return dt.year < 2000 or dt.month == 0 or dt.month > 12 or dt.day == 0 or dt.day > 31;

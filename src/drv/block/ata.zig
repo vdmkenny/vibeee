@@ -7,7 +7,7 @@
 //! commands at boot and removes a per-machine assumption.
 //!
 //! PIO rather than DMA to begin with. The design calls for UDMA/66 through the
-//! bus-master interface, and that is worth doing — 30 MB/s versus roughly 3 —
+//! bus-master interface, and that is worth doing: 30 MB/s versus roughly 3
 //! but PIO needs no PRD tables, no bus-master registers and no interrupt
 //! plumbing, so it is the right thing to be correct first. DMA replaces the
 //! transfer path behind the same interface.
@@ -102,7 +102,7 @@ fn waitWhileBusy(ch: Channel) block.Error!u8 {
 }
 
 /// Wait for the drive to be ready to transfer, distinguishing "not yet" from
-/// "failed" — a drive that sets ERR and never sets DRQ would otherwise look
+/// "failed", a drive that sets ERR and never sets DRQ would otherwise look
 /// like a timeout.
 fn waitForData(ch: Channel) block.Error!void {
     const deadline = hal.monotonicMicros() + TIMEOUT_US;
@@ -324,7 +324,7 @@ pub fn init() void {
             };
 
             // Everything above this point sees the cached device. Partitions
-            // inherit its context, so they share one cache per disk — which is
+            // inherit its context, so they share one cache per disk, which is
             // what lets a lookup on one partition warm the FAT for another.
             const dev = bcache.wrap(raw) orelse raw;
             block.register(dev);

@@ -1,6 +1,6 @@
 //! Physical memory manager: a flat bitmap over 4 KiB page frames.
 //!
-//! For 512 MB the bitmap is 16 KiB — small enough to keep permanently resident
+//! For 512 MB the bitmap is 16 KiB, small enough to keep permanently resident
 //! and scan with `@ctz` over u32 words. A buddy allocator would buy contiguous
 //! multi-frame allocation, but the only consumers of that on this machine are
 //! DMA buffers (EHCI schedules, HDA rings, NIC rings), which are few, early,
@@ -191,7 +191,7 @@ pub fn allocContiguous(count: usize, below: usize) AllocError!usize {
 pub fn freeFrame(phys: usize) void {
     const frame = phys >> PAGE_SHIFT;
     if (frame >= MAX_FRAMES) return;
-    if (!testBit(frame)) return; // double free — ignore rather than corrupt
+    if (!testBit(frame)) return; // double free, ignore rather than corrupt
     clearBit(frame);
     free_frames += 1;
 }

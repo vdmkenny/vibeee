@@ -9,7 +9,7 @@
 //!
 //! Deliberately free of handler pointers and kernel imports, so host tools can
 //! import it directly. `kernel/syscall.zig` binds each entry to its
-//! implementation and fails to compile if any entry is unbound — a syscall
+//! implementation and fails to compile if any entry is unbound, a syscall
 //! cannot be documented without existing, or exist without being documented.
 //!
 //! Lives in `lib/` because it is the contract *between* the kernel and
@@ -448,7 +448,7 @@ pub const table = [_]Syscall{
         },
         .returns = "the program's exit status",
         .errors = &.{ E.fault, E.noent, E.inval, E.nomem },
-        .notes = "Synchronous: the caller blocks until the child exits. Deliberately not fork — see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.",
+        .notes = "Synchronous: the caller blocks until the child exits. Deliberately not fork, see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.",
     },
     .{
         .number = 16,

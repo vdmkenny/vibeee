@@ -1,6 +1,6 @@
 //! O(1) scheduler.
 //!
-//! Two arrays of per-priority run queues — active and expired — plus a bitmap
+//! Two arrays of per-priority run queues, active and expired, plus a bitmap
 //! of which priorities are occupied. Picking the next thread is one `@ctz` over
 //! a single word, so scheduling costs the same with three threads or three
 //! hundred. When the active array empties, the two arrays swap by pointer,
@@ -32,7 +32,7 @@ pub const PRIORITY_LEVELS = thread_mod.PRIORITY_LEVELS;
 const sliceFor = thread_mod.sliceFor;
 
 /// The run queues themselves live in `sched/queue.zig`, generic over the node
-/// type so they can be unit-tested on the host — which is where the intrusive
+/// type so they can be unit-tested on the host, which is where the intrusive
 /// double-push that once corrupted them is now covered.
 const RunQueues = queue.Levels(Thread, PRIORITY_LEVELS);
 const Queue = queue.Fifo(Thread);
@@ -46,7 +46,7 @@ var sleepers: ?*Thread = null;
 /// Threads that have exited with nobody to collect them, waiting to be freed.
 ///
 /// Freeing cannot happen in `exit`: a thread cannot free the stack it is
-/// standing on. It also cannot happen immediately after the context switch —
+/// standing on. It also cannot happen immediately after the context switch,
 /// the code there runs in the *resumed* thread's frame, where `prev` names
 /// whatever that thread last switched away from, not the corpse. So the corpse
 /// is queued here and collected at the top of a later `schedule`, by which
@@ -172,7 +172,7 @@ pub fn exitWith(status: i32) noreturn {
 }
 
 /// The first userspace process. Orphans are re-parented onto it, and it is
-/// expected to collect them — the arrangement every Unix uses, for the reason
+/// expected to collect them, the arrangement every Unix uses, for the reason
 /// every Unix has it: a corpse nobody collects keeps its stack and its status
 /// forever, and a supervisor that crashes would otherwise take the memory of
 /// everything it started with it.
@@ -189,8 +189,8 @@ pub fn initId() u32 {
 /// Re-parent this thread's children before it goes.
 ///
 /// If `init` is alive and is not the thread that is dying, the children become
-/// its problem and it will reap them. If there is no `init` — early boot, or
-/// `init` itself exiting — they are marked uncollectable instead, so the
+/// its problem and it will reap them. If there is no `init`, early boot, or
+/// `init` itself exiting, they are marked uncollectable instead, so the
 /// scheduler frees each one the moment it dies rather than leaving a zombie
 /// with no possible parent.
 fn orphanChildren(parent: *Thread) void {
@@ -201,7 +201,7 @@ fn orphanChildren(parent: *Thread) void {
     while (node) |t| {
         const next_node = t.all_next;
         // `init` itself is a child of whichever kernel thread started it, and
-        // adopting it onto itself would make it its own parent — a one-node
+        // adopting it onto itself would make it its own parent, a one-node
         // cycle that no walk of the tree can terminate on.
         if (t.parent_id == parent.id and t != parent and t.id != init_id) {
             if (adopter_alive) {
@@ -339,7 +339,7 @@ pub fn deadlineIn(us: u64) u64 {
 /// Take the calling thread off the run queues until something unblocks it.
 ///
 /// With a deadline it also goes on the sleeper list, so a wait that nobody
-/// satisfies still ends. Interrupts must already be disabled by the caller —
+/// satisfies still ends. Interrupts must already be disabled by the caller,
 /// see the lost-wakeup rule in `wait.zig`.
 pub fn blockCurrent(deadline_us: ?u64) void {
     const t = current orelse return;
@@ -418,7 +418,7 @@ fn schedule() void {
     // elapsed: waking first would leave it `.ready` and already queued, and
     // the branch below would then queue it a second time. A node pushed onto
     // an intrusive list twice links to itself, and a run queue with a cycle in
-    // it hands out the same thread forever — which looks like sleeps returning
+    // it hands out the same thread forever, which looks like sleeps returning
     // instantly, and then like a hang.
     if (prev) |t| {
         switch (t.state) {
@@ -490,7 +490,7 @@ fn schedule() void {
 ///
 /// The exclusion matters: a thread that has just exited calls `schedule` from
 /// its own stack, and that call must not free it out from under itself. It is
-/// still on the list, and the next `schedule` — made by some other thread —
+/// still on the list, and the next `schedule`, made by some other thread
 /// collects it.
 fn collectCorpses() void {
     var link = &to_reap;
@@ -545,7 +545,7 @@ fn dequeueCorpse(t: *Thread) void {
 
 pub const find = thread_mod.find;
 
-/// Called from the timer interrupt. Only accounting here — the actual switch
+/// Called from the timer interrupt. Only accounting here, the actual switch
 /// happens at interrupt exit, after the controller has been acknowledged.
 pub fn onTick() void {
     if (!started) return;
@@ -628,7 +628,7 @@ pub const Snapshot = struct {
 };
 
 /// Walk every thread, including corpses that have exited but not been
-/// collected — a supervisor's job is largely about those, so hiding them from
+/// collected, a supervisor's job is largely about those, so hiding them from
 /// the one tool that lists threads would be the wrong economy.
 pub fn forEachThread(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot) void) void {
     const flags = hal.saveAndDisableInterrupts();

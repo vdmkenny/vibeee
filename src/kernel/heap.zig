@@ -1,7 +1,7 @@
 //! Kernel heap: a slab allocator over the physical frame allocator, exposed as
 //! a `std.mem.Allocator`.
 //!
-//! Exposing the standard interface is the whole point — kernel code then reads
+//! Exposing the standard interface is the whole point, kernel code then reads
 //! like ordinary Zig (`try alloc.create(Process)`), and anything allocator-
 //! generic from the standard library works unchanged.
 //!
@@ -83,7 +83,7 @@ fn growClass(idx: usize) ?*Slab {
     slab.* = .{ .next = null, .free = null, .class = idx, .in_use = 0 };
 
     // Thread the free list through the objects, back to front, so the list
-    // comes out in ascending address order — kinder to the cache on the common
+    // comes out in ascending address order, kinder to the cache on the common
     // pattern of allocating a run of objects at once.
     var i = count;
     while (i > 0) {
@@ -139,8 +139,8 @@ fn freeClass(slab: *Slab, ptr: [*]u8) void {
         return;
     }
 
-    // An empty slab returns its frame. Kernel allocation is bursty — driver
-    // probing, then quiet — so handing the memory back matters more than
+    // An empty slab returns its frame. Kernel allocation is bursty, driver
+    // probing, then quiet, so handing the memory back matters more than
     // keeping a cache warm for a burst that may never repeat.
     if (slab.in_use == 0) {
         unlink(&classes[idx].partial, slab);

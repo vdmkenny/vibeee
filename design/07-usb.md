@@ -1,6 +1,6 @@
-# vibeee Design 07 — USBD: Userspace USB Stack
+# vibeee Design 07: USBD: Userspace USB Stack
 
-> **Status: design only — not implemented.**
+> **Status: design only, not implemented.**
 > Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
@@ -27,15 +27,15 @@ Design center: **EHCI-only covers 100% of internal devices** (card reader and we
 | Card reader 0951:1606 ENE UB6225, MSC class 08/06/50 (BOT/SCSI), high-speed on EHCI, observed port 5 | HIGH id/class; MEDIUM port number |
 | Webcam eb1a:2761 eMPIA, UVC 1.0, 640×480 YUYV/UYVY 30fps, high-speed, observed port 8 | HIGH id/class/format; MEDIUM port number |
 | Webcam BIOS-default-DISABLED; runtime power gate via ASUS010 `CAMG/CAMS` (device drops off bus entirely) | HIGH |
-| Possible shared power rail: CAMS toggle may also cut card-reader power (verified on 900, not 701) | MEDIUM caveat — design defends against it |
+| Possible shared power rail: CAMS toggle may also cut card-reader power (verified on 900, not 701) | MEDIUM caveat, design defends against it |
 | 3 external USB-A ports; 5 of 8 root ports wired; external-port→controller mapping unknown | HIGH counts; LOW mapping |
-| EHCI IRQ observed GSI 23 (shared with UHCI#1); UHCI on 16/18/19/23 | MEDIUM exact GSIs — read from ACPI/IOAPIC at runtime, never hardcode |
+| EHCI IRQ observed GSI 23 (shared with UHCI#1); UHCI on 16/18/19/23 | MEDIUM exact GSIs, read from ACPI/IOAPIC at runtime, never hardcode |
 | Legacy BIOS boots us via INT 13h from the internal (USB) SD reader → BIOS SMM legacy-USB emulation is ACTIVE at kernel entry | HIGH (boot design + BIOS report) |
 | MCFG ECAM at 0xE0000000; PCI cfg via kernel `pci_cfg_*` | HIGH |
 | No IOMMU; DMA is trusted; 32-bit phys space | HIGH |
-| Memory bandwidth is scarce (possibly DDR2-140) — copies are a first-order cost | MEDIUM (unresolved conflict) — budget assumes the low reading |
+| Memory bandwidth is scarce (possibly DDR2-140), copies are a first-order cost | MEDIUM (unresolved conflict), budget assumes the low reading |
 
-Runtime-probed, never assumed: HCSPARAMS (N_PORTS/PPC/N_CC), HCCPARAMS (EECP, 64-bit flag — expect 0), GSIs from ACPI PRT, UVC alt-setting table, MSC bMaxLun.
+Runtime-probed, never assumed: HCSPARAMS (N_PORTS/PPC/N_CC), HCCPARAMS (EECP, 64-bit flag, expect 0), GSIs from ACPI PRT, UVC alt-setting table, MSC bMaxLun.
 
 ## 3. Architecture
 
@@ -49,9 +49,9 @@ Runtime-probed, never assumed: HCSPARAMS (N_PORTS/PPC/N_CC), HCCPARAMS (EECP, 64
 ```
 
 - **Process model:** one process, one event loop. Waitables: 5 irqevents, N ublk SQ doorbell events, service channel(s), timer. No threads, no locks; per-device state machines advanced by completions.
-- **HCD seam:** both HCDs implement `HcOps` (vtable) so the USB core is host-controller-agnostic and unit-testable against a mock HC on the build host (QEMU cannot emulate our exact silicon anyway — but EHCI/UHCI are standard, so QEMU parity testing works, §8).
+- **HCD seam:** both HCDs implement `HcOps` (vtable) so the USB core is host-controller-agnostic and unit-testable against a mock HC on the build host (QEMU cannot emulate our exact silicon anyway, but EHCI/UHCI are standard, so QEMU parity testing works, §8).
 - **Controller phasing:** M1 = EHCI only, `CONFIGFLAG=1`, FS/LS ports released to (dead) companions are simply ignored. M2 = UHCI companions come alive. Justified: both internal devices are HS; external HID is the only consumer of UHCI and is not needed for a usable machine.
-- **devmgr contract:** usbd's manifest claims PCI class 0x0C03 prog-if 0x20 (EHCI) and 0x00 (UHCI) with vendor filter 8086 — class-code matching (not bare DID) so the same binary drives QEMU's ICH9 EHCI in CI.
+- **devmgr contract:** usbd's manifest claims PCI class 0x0C03 prog-if 0x20 (EHCI) and 0x00 (UHCI) with vendor filter 8086, class-code matching (not bare DID) so the same binary drives QEMU's ICH9 EHCI in CI.
 
 ### Startup sequencing vs. BIOS legacy USB (boot-to-RAM interlock)
 
@@ -60,11 +60,11 @@ The bootloader used INT 13h (BIOS SMM code driving EHCI) to load kernel+rootfs i
 1. Kernel and early userspace **never touch USB MMIO/PIO** before usbd claims the devices. Nothing else needs to: boot media is already in RAM.
 2. By the time devmgr starts usbd, INT 13h is no longer needed (running from RAM). The SD card is *not* mounted until usbd exports it via ublk.
 3. usbd start order: **quiesce all five controllers first** (EHCI handoff §5.1, UHCI legacy-disable §5.6), then init EHCI, then (M2) init UHCIs. Handoff-before-any-init prevents SMM code from racing our schedule programming.
-4. BIOS keyboard emulation for *USB* keyboards dies at handoff — irrelevant: internal keyboard is true i8042 PS/2.
+4. BIOS keyboard emulation for *USB* keyboards dies at handoff, irrelevant: internal keyboard is true i8042 PS/2.
 
 ## 4. Data structures & interfaces (public)
 
-### 4.1 ublk ring (usbd ⇄ kernel VFS) — one per exported block device
+### 4.1 ublk ring (usbd ⇄ kernel VFS), one per exported block device
 
 Shared memory allocated by usbd from `dma_alloc` (so the data area is DMA-able → EHCI writes read-data directly into it; the kernel copy into page cache is the only copy). SPSC both directions, event-signaled per contract v0.
 
@@ -103,9 +103,9 @@ pub const UblkIdent = extern struct { vid: u16, pid: u16, port_path: [8]u8, capa
 pub const UblkMediaEvent = enum(u8) { media_gone, media_changed, capacity_changed };
 ```
 
-**Semantics:** flow control = fixed 32-deep SQ; kernel blocks/queues when full. usbd may complete out of order (tags). `flush` maps to SCSI SYNCHRONIZE CACHE(10); devices that stall it complete `ok` (documented cheap-reader behavior). Per-op timeouts are usbd's (read 5 s, write 15 s, flush 15 s — SD internal GC can stall seconds); the kernel only times out on channel death. On media yank: every in-flight and queued op completes `no_medium`, then `media_gone` event; VFS must drop dirty state and mark the mount dead. On usbd death: kernel freezes the mount ≤10 s awaiting a new `UblkAttach` whose `UblkIdent` matches (port_path+vid:pid+capacity); on match it replays incomplete ops (reads/writes are LBA-idempotent); recommend VFS additionally revalidates the FAT volume serial before replay (OPEN).
+**Semantics:** flow control = fixed 32-deep SQ; kernel blocks/queues when full. usbd may complete out of order (tags). `flush` maps to SCSI SYNCHRONIZE CACHE(10); devices that stall it complete `ok` (documented cheap-reader behavior). Per-op timeouts are usbd's (read 5 s, write 15 s, flush 15 s: SD internal GC can stall seconds); the kernel only times out on channel death. On media yank: every in-flight and queued op completes `no_medium`, then `media_gone` event; VFS must drop dirty state and mark the mount dead. On usbd death: kernel freezes the mount ≤10 s awaiting a new `UblkAttach` whose `UblkIdent` matches (port_path+vid:pid+capacity); on match it replays incomplete ops (reads/writes are LBA-idempotent); recommend VFS additionally revalidates the FAT volume serial before replay (OPEN).
 
-### 4.2 Camera client API (svc "usb.cam") — phase 3
+### 4.2 Camera client API (svc "usb.cam"), phase 3
 
 ```zig
 pub const CamFourcc = enum(u32) { yuy2 = 0x32595559 }; // 'YUY2'
@@ -115,8 +115,8 @@ pub const CamFrameState = enum(u32) { free, filling, ready, held };
 pub const CamFrameHdr = extern struct { state: u32, seq: u32, t_us: u64, bytes: u32, _r: u32 };
 // ring_shm layout: CamRingHdr { nbufs:u32 (=3), buf_size:u32 (=614400), fmt: CamFormat }, then nbufs × (CamFrameHdr + buffer)
 // protocol: usbd fills a `free` buf → `ready` + signal frame_event; client CAS ready→held, renders, sets held→free.
-// If no `free` buf when a frame completes, the frame is dropped (client too slow) — never blocks the iso engine.
-// channel ops: open, start, stop, close, get_formats() → []CamFormat, get_ctrl/set_ctrl(brightness, etc. — UVC PU controls, M3+)
+// If no `free` buf when a frame completes, the frame is dropped (client too slow), never blocks the iso engine.
+// channel ops: open, start, stop, close, get_formats() → []CamFormat, get_ctrl/set_ctrl(brightness, etc. VC PU controls, M3+)
 ```
 
 ### 4.3 Hotplug events to devmgr (svc "usb.events")
@@ -166,11 +166,11 @@ pub const HcOps = struct {
 
 ### 4.6 Kernel user-driver API consumed (contract v0)
 
-`pci_cfg_read/write(bdf,off,w)`, `map_mmio(paddr,len)` (EHCI BAR0, 1 KiB), `ioport_grant(base,len)` (4× UHCI I/O BARs, 32 B each — UHCI is port-I/O), `dma_alloc(len)` → `{vaddr, paddr, contiguous, <4GB}`, `irq_attach(gsi)` → event. **Required irq semantics:** level-triggered shared lines (GSI 23 = EHCI+UHCI#1) — kernel masks the GSI on assert and signals every attached event; each driver clears its device's status (write-1-clear USBSTS) then calls `irq_ack(handle)`; kernel unmasks when all attached handles acked. (Contract point — see OPEN.)
+`pci_cfg_read/write(bdf,off,w)`, `map_mmio(paddr,len)` (EHCI BAR0, 1 KiB), `ioport_grant(base,len)` (4× UHCI I/O BARs, 32 B each: UHCI is port-I/O), `dma_alloc(len)` → `{vaddr, paddr, contiguous, <4GB}`, `irq_attach(gsi)` → event. **Required irq semantics:** level-triggered shared lines (GSI 23 = EHCI+UHCI#1), kernel masks the GSI on assert and signals every attached event; each driver clears its device's status (write-1-clear USBSTS) then calls `irq_ack(handle)`; kernel unmasks when all attached handles acked. (Contract point, see OPEN.)
 
 ## 5. Register-level programming sequences
 
-### 5.1 EHCI BIOS handoff (USBLEGSUP via EECP) — first touch of any USB register
+### 5.1 EHCI BIOS handoff (USBLEGSUP via EECP), first touch of any USB register
 
 ```
 bdf = 00:1d.7
@@ -185,7 +185,7 @@ bdf = 00:1d.7
      poll ≤1000 ms: (pci_cfg_read8(bdf, eecp+2) & 0x01)==0   // wait BIOS Owned (bit 16) clear
      on timeout: pci_cfg_write32(bdf, eecp, 0x01000100 & ~0x00010000)  // force-clear BIOS bit, keep OS bit
      pci_cfg_write32(bdf, eecp+4, 0)                         // USBLEGCTLSTS = 0: disable ALL legacy SMIs
-5. From here BIOS SMM never touches this controller again. INT 13h to USB is dead — by design we no longer need it.
+5. From here BIOS SMM never touches this controller again. INT 13h to USB is dead, by design we no longer need it.
 ```
 
 ### 5.2 EHCI controller init
@@ -221,7 +221,7 @@ note: hardware returns PO to EHCI on disconnect; next connect re-runs this routi
 overcurrent (OCC): log, clear, disable port until next connect.
 ```
 
-### 5.4 EHCI async schedule (control + bulk) — structures and hot path
+### 5.4 EHCI async schedule (control + bulk), structures and hot path
 
 ```
 QH (48 B used, 64 B slots): DW0 QH-link(Typ=01)|T · DW1: RL(31:28)=4|C|MaxPkt(26:16)|H|DTC=1|EPS|EndPt(11:8)|I|DevAddr(6:0)
@@ -230,7 +230,7 @@ qTD (32 B): DW0 next · DW1 altnext · DW2 token: DT(31)|Bytes(30:16 ≤0x5000)|
             DW3..7: 5 page pointers → ≤20 KiB/qTD, we use 16 KiB-aligned chunks
 - One QH per open endpoint, linked in the async ring after the H-bit head.
 - MSC 64 KiB READ(10): OUT-QH gets 1 qTD (CBW, 31 B); IN-QH gets 4 data qTDs (16 KiB each) + 1 CSW qTD (13 B).
-  All queued at once — EHCI NAK-polls IN until the device turns around (BOT ordering is device-enforced).
+  All queued at once: EHCI NAK-polls IN until the device turns around (BOT ordering is device-enforced).
   Every data qTD's altnext → CSW qTD (short-packet early-out lands on the CSW). IOC only on CSW → 1 irq per 64 KiB.
 - Unlink discipline: to close/cancel a QH: unlink from ring → USBCMD.IAAD(bit6)=1 → wait USBSTS.IAA irq → recycle memory.
   qTD memory is never handed back while the QH could still reference it (doorbell rule). Prevents use-after-free DMA.
@@ -241,11 +241,11 @@ qTD (32 B): DW0 next · DW1 altnext · DW2 token: DT(31)|Bytes(30:16 ≤0x5000)|
 ```
 - Interrupt skeleton: dummy QHs for periods {32,16,8,4,2,1} ms, 63 nodes, tree-linked; frame list entry i →
   leaf (i mod 32). Interrupt QH: S-mask picks 1 µframe; budget tracked per µframe (≤6000 B of 7500, 80% rule).
-- Used on EHCI only for HS hub status-change endpoints (M2) — tiny (≤2 B, 255 ms poll).
+- Used on EHCI only for HS hub status-change endpoints (M2), tiny (≤2 B, 255 ms poll).
 - iTD (UVC, M3): 64 B: DW0 next-link · DW1..8: 8 µframe slots {Status(31:28), Length(27:16), IOC(15), PG(14:12), Off(11:0)}
   · DW9..15: 7 page pointers; page0 low: EndPt|DevAddr; page1 low: Dir|MaxPkt(10:0); page2 low: Mult(1:0)
 - UVC bandwidth math: 640×480 YUYV@30 = 614400 B × 30 = 18.43 MB/s ≈ 2304 B/µframe average.
-  Alt settings on eb1a:2761 (probed at runtime): need wMaxPacketSize ≥ 0x1400-class, i.e. 2×1024=2048 (16.4 MB/s — too small)
+  Alt settings on eb1a:2761 (probed at runtime): need wMaxPacketSize ≥ 0x1400-class, i.e. 2×1024=2048 (16.4 MB/s, too small)
   → select 3×1024 (Mult=3, 3072 B/µframe = 24.58 MB/s peak). Fits the 6000 B/µframe periodic budget with headroom.
 - iTD ring: 1 iTD = 1 frame (8 µframes × ≤3072 B = 24576 B slab). Depth 8 (8 ms). Schedule ≥2 frames ahead of FRINDEX;
   on IOC (per iTD) strip 12-B UVC payload headers, copy payload into the current CamFrame buffer, watch FID toggle/EOF
@@ -254,7 +254,7 @@ qTD (32 B): DW0 next · DW1 altnext · DW2 token: DT(31)|Bytes(30:16 ≤0x5000)|
   inactive-then-link writes (single 32-bit link-pointer stores are atomic).
 ```
 
-### 5.6 UHCI companions (M2) — legacy disable, init, structures
+### 5.6 UHCI companions (M2), legacy disable, init, structures
 
 ```
 per controller (00:1d.0..3), I/O BAR at cfg 0x20 (32 ports), via ioport_grant:
@@ -281,12 +281,12 @@ Powered →(debounce 100 ms)→ Reset(§5.3/5.6) → Default:
   GET_DESCRIPTOR(device, 8 B) @addr0  // MPS0: HS always 64; FS/LS read bMaxPacketSize0
   SET_ADDRESS(alloc 1..127 bitmap); wait 2 ms → Address:
   GET_DESCRIPTOR(device, 18 B) → vid/pid/class
-  GET_DESCRIPTOR(config, 9 B) → wTotalLength (cap 4 KiB — UVC configs are >1 KiB) → full config read
+  GET_DESCRIPTOR(config, 9 B) → wTotalLength (cap 4 KiB: UVC configs are >1 KiB) → full config read
   parse interfaces/endpoints; GET string descriptors (langid table → 0x0409 preferred, else first; UTF-16LE→UTF-8)
   SET_CONFIGURATION(1) → Configured → bind class driver by (class,subclass,proto):
     08/06/50 → MSC · 0E/xx → UVC · 03/01/01|02 → HID boot · 09/00 → hub
   emit devmgr attach event. Any control transfer failing 3× → port reset once → 3× again → give up, log, mark port dead
-  until next connect. Enumeration is serialized globally (one device at a time) — simple and race-free.
+  until next connect. Enumeration is serialized globally (one device at a time), simple and race-free.
 Hubs (M2): external HS hubs on EHCI: read hub descriptor, power ports (SetPortFeature PORT_POWER), poll status-change
   interrupt endpoint, per-port: reset via SetPortFeature PORT_RESET, read speed from port status; HS children fine;
   FS/LS children behind HS hub need split transactions → M3 (interrupt-IN splits only, for HID; C-mask=S-mask<<2 rule).
@@ -317,12 +317,12 @@ Request coalescing: adjacent-LBA same-op SQEs merged up to 64 KiB per BOT comman
 128 KiB experiment behind a manifest flag). 20 MB/s ⇒ ~320 BOT cmds/s ⇒ ~320 IRQs/s (IOC-on-CSW only).
 ```
 
-### 5.9 UVC session (M3) — power + probe/commit
+### 5.9 UVC session (M3), power + probe/commit
 
 ```
 open flow:
 1. ask platformd: CAMS get; if 0 → CAMS=1; expect root-port connect within ~500 ms (BIOS "Onboard Camera" must be
-   Enabled — if no connect in 2 s, reply error.CameraDisabledInBios with UI-facing message)
+   Enabled, if no connect in 2 s, reply error.CameraDisabledInBios with UI-facing message)
 2. QUIRK DEFENSE (shared power rail, MEDIUM): any card-reader disconnect within 1 s of a CAMS transition is treated
    as a power-glitch resync, not a yank: ublk enters frozen state (as in usbd-restart) and reattaches by identity
    instead of completing ops no_medium. First real-hw bring-up test decides if the 701 has the 900's shared rail;
@@ -344,8 +344,8 @@ USB wake adds BIOS/SMM interaction risk and GPE plumbing for zero user value on 
 Resume / crash-restart (same code): claim PCI → restore PCI cmd/BARs from saved copy → §5.1 handoff (BIOS may have
 re-run POST paths) → full init → re-enumerate everything → identity-match ublk (§4.1) → unfreeze or 10 s-timeout-fail.
 DMA safety across crash: kernel must quarantine the dead usbd's dma_alloc pages until the successor completes HCRESET
-on all five controllers (successor reports via ublk.ctl "reset_done") — otherwise a still-running EHCI DMAs into
-recycled pages. (Kernel contract addition — OPEN.)
+on all five controllers (successor reports via ublk.ctl "reset_done"), otherwise a still-running EHCI DMAs into
+recycled pages. (Kernel contract addition: OPEN.)
 ```
 
 ## 6. RAM / disk / CPU budget
@@ -361,17 +361,17 @@ recycled pages. (Kernel contract addition — OPEN.)
 | **Idle total (M2, card reader exported)** | **≈ 780 KiB** |
 | UVC active (M3): 8×24 KiB iTD slabs + 16 iTD + 3×600 KiB shm frame ring | +2.0 MiB only while camera open |
 
-CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQs/s × ~15 µs (irqevent wake + USBSTS ack + completion walk) ≈ 0.5%; ring/SCSI bookkeeping ≈ 1%; DMA lands in the ublk data area so usbd copies nothing. The kernel's copy to page cache is the dominant cost: 20 MB/s copied at ~300 MB/s effective memcpy ≈ 7% CPU + 40 MB/s of memory bandwidth. Total ≈ 8–9%. If this proves too hot for GUI+audio concurrency, the ublk extension "SQE carries page-cache phys scatter list, usbd DMAs directly" (legit: no IOMMU, DMA already trusted) cuts it to ≈ 2% — proposed, not baseline (OPEN). UVC streaming (M3): 18.4 MB/s header-strip copy ≈ 6–8% CPU + iso bookkeeping ≈ 2% — acceptable for a camera-app foreground use case.
+CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQs/s × ~15 µs (irqevent wake + USBSTS ack + completion walk) ≈ 0.5%; ring/SCSI bookkeeping ≈ 1%; DMA lands in the ublk data area so usbd copies nothing. The kernel's copy to page cache is the dominant cost: 20 MB/s copied at ~300 MB/s effective memcpy ≈ 7% CPU + 40 MB/s of memory bandwidth. Total ≈ 8–9%. If this proves too hot for GUI+audio concurrency, the ublk extension "SQE carries page-cache phys scatter list, usbd DMAs directly" (legit: no IOMMU, DMA already trusted) cuts it to ≈ 2%, proposed, not baseline (OPEN). UVC streaming (M3): 18.4 MB/s header-strip copy ≈ 6–8% CPU + iso bookkeeping ≈ 2%, acceptable for a camera-app foreground use case.
 
 ## 7. Bring-up & test plan
 
 **Host unit tests (zig test, no hardware):** USB core + enumeration SM + MSC ladder + UVC parser against a scripted `MockHc` (canned descriptors incl. real dumps of 0951:1606 and eb1a:2761 from Linux `lsusb -v` captures; fault injection: stalls, phase errors, yank-mid-CBW, truncated descriptors).
 
-**QEMU (i686, `-M pc`):** no GMA900/AR2425 emulation matters here — EHCI/UHCI are standard. Configs:
-- `-device usb-ehci -device usb-storage,drive=sd0` — async schedule, BOT, ublk end-to-end (kernel mounts FAT via ublk).
-- `-device ich9-usb-ehci1,id=ehci -device ich9-usb-uhci1,masterbus=ehci.0,firstport=0 -device ich9-usb-uhci2,masterbus=ehci.0,firstport=2 -device ich9-usb-uhci3,masterbus=ehci.0,firstport=4` + `-device usb-kbd`/`usb-mouse` — port routing (FS device → PO handoff → UHCI), HID path, class-code (not DID) matching proven.
-- Hotplug: QMP `device_del/device_add` on usb-storage — yank ladder, media events, remount-by-identity.
-- usbd kill -9 during dd-to-SD — restart, DMA quarantine handshake, frozen-mount replay.
+**QEMU (i686, `-M pc`):** no GMA900/AR2425 emulation matters here: EHCI/UHCI are standard. Configs:
+- `-device usb-ehci -device usb-storage,drive=sd0`, async schedule, BOT, ublk end-to-end (kernel mounts FAT via ublk).
+- `-device ich9-usb-ehci1,id=ehci -device ich9-usb-uhci1,masterbus=ehci.0,firstport=0 -device ich9-usb-uhci2,masterbus=ehci.0,firstport=2 -device ich9-usb-uhci3,masterbus=ehci.0,firstport=4` + `-device usb-kbd`/`usb-mouse`, port routing (FS device → PO handoff → UHCI), HID path, class-code (not DID) matching proven.
+- Hotplug: QMP `device_del/device_add` on usb-storage, yank ladder, media events, remount-by-identity.
+- usbd kill -9 during dd-to-SD, restart, DMA quarantine handshake, frozen-mount replay.
 - No UVC device model in QEMU → UVC iso engine tested via MockHc timing harness + real hardware only.
 
 **Real 701 hardware:** no serial port; enumeration logger writes the 16 KiB debug ring; dumped (a) on-screen via GUI debug overlay, (b) to /tmp then /data/log/usb.log once ublk mounts, (c) on hard hang: log ring lives at a fixed phys address surviving warm reboot, dumped by the next boot (bootloader flag). Milestone gates: M1 = boot to GUI with /data mounted from SD via ublk, dd throughput ≥ 15 MB/s read / 8 MB/s write, 500× scripted mount/unmount + 50× physical yank torture. M2 = external keyboard+mouse+hub matrix (5 cheap hubs), S3 100-cycle soak with SD I/O across suspend. M3 = 30 min camera streaming, zero frame-ring stalls of GUI, CAMS/card-reader shared-rail probe test (documented result feeds §5.9 policy).
@@ -380,11 +380,11 @@ CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQ
 
 - **BIOS handoff misbehavior** (AMI 2007-era): BIOS may never clear the owned semaphore → we force-take after 1 s and kill SMIs. Residual risk: SMM wedge on force-take. Mitigated by testing on BIOS 1302 + fallback boot flag `usb=late` (delay claim 5 s).
 - **Shared CAMS power rail** (MEDIUM, from 900): defended in §5.9; needs the real-hw probe test before M3 ships defaults.
-- **GSI sharing** EHCI+UHCI#1 on 23: requires the multi-acker level-IRQ contract (§4.6); if kernel-core rejects it, fallback = usbd attaches once per GSI and demuxes internally (it owns all sharers anyway — cheap).
+- **GSI sharing** EHCI+UHCI#1 on 23: requires the multi-acker level-IRQ contract (§4.6); if kernel-core rejects it, fallback = usbd attaches once per GSI and demuxes internally (it owns all sharers anyway, cheap).
 - **UB6225 quirk surface** unknown (SDHC reset loop reported once): the L0–L4 ladder + per-device quirk flags in manifest (no-SYNC-CACHE, max-transfer-cap) is the containment strategy.
-- **kernel copy cost** may force the phys-scatter ublk extension (§6) — decide after M1 measurement with audio+GUI load.
+- **kernel copy cost** may force the phys-scatter ublk extension (§6), decide after M1 measurement with audio+GUI load.
 - **Split transactions** (FS/LS behind HS hub) are M3 and interrupt-IN only; full FS iso/bulk behind hubs: never (documented limitation).
-- **Identity ambiguity on crash-window card swap** (same-capacity card swapped while usbd restarts): mitigated only if VFS revalidates volume serial before replay — needs 03-vfs buy-in.
+- **Identity ambiguity on crash-window card swap** (same-capacity card swapped while usbd restarts): mitigated only if VFS revalidates volume serial before replay, needs 03-vfs buy-in.
 
 ## 9. Phasing
 

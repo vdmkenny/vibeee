@@ -1,4 +1,4 @@
-//! vsh — the vibeee shell.
+//! vsh, the vibeee shell.
 //!
 //! Deliberately small. Line editing lives in the kernel's line discipline, so
 //! everything here is parsing and dispatch: split a line into words, run a
@@ -37,6 +37,7 @@ const builtins = [_]Builtin{
     .{ .name = "cd", .summary = "change directory", .run = &cmdCd },
     .{ .name = "pwd", .summary = "print working directory", .run = &cmdPwd },
     .{ .name = "echo", .summary = "print arguments", .run = &cmdEcho },
+    .{ .name = "clear", .summary = "clear the screen", .run = &cmdClear },
     .{ .name = "exit", .summary = "restart the shell", .run = &cmdExit },
     .{ .name = "off", .summary = "flush everything and power down", .run = &cmdPowerOff },
     .{ .name = "reboot", .summary = "flush everything and restart", .run = &cmdReboot },
@@ -95,7 +96,7 @@ fn run(words: []const []const u8) void {
 
     // Not a program either: it may be a command inside the multicall binary.
     // FAT has no symlinks, so the usual argv[0] trick is unavailable and the
-    // shell does the dispatch instead — cheaper than shipping a copy of the
+    // shell does the dispatch instead, cheaper than shipping a copy of the
     // same 12 KiB image under every command name.
     if (status < 0) {
         var argv: [MAX_WORDS + 1][]const u8 = undefined;
@@ -187,8 +188,16 @@ fn cmdEcho(words: []const []const u8) void {
     out.text("\n");
 }
 
+/// Form feed, which the console reads as "clear". No escape sequences: the
+/// line discipline does not parse ANSI, and a single byte with a meaning that
+/// predates ANSI does the job.
+fn cmdClear(_: []const []const u8) void {
+    out.byte(0x0C);
+    out.flush();
+}
+
 fn cmdExit(_: []const []const u8) void {
-    // There is nothing to exit *to* — this is the only shell — but init
+    // There is nothing to exit *to*, this is the only shell, but init
     // supervises it with `restart = always`, so exiting gets a fresh one. That
     // is the useful meaning here: it is how you recover a wedged shell.
     out.flush();

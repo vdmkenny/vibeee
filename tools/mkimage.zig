@@ -22,8 +22,8 @@ const KERNEL_MAX_SECTORS = 8192 - KERNEL_LBA;
 
 /// The root filesystem, as a plain FAT image loaded into RAM at boot.
 ///
-/// It has to be reachable without a filesystem driver — stage2 reads it as a
-/// flat run of sectors — so it lives outside any partition, between the kernel
+/// It has to be reachable without a filesystem driver, stage2 reads it as a
+/// flat run of sectors, so it lives outside any partition, between the kernel
 /// and partition 1.
 const ROOTFS_LBA = 8192; // 4 MiB
 const ROOTFS_MAX_SECTORS = 32768 - ROOTFS_LBA; // up to 12 MiB
@@ -34,7 +34,7 @@ const DEFAULT_IMAGE_MB = 48;
 const STAGE2_SIGNATURE = "VIBEEE2!";
 
 /// Partition type 0x0C: FAT32 with LBA. Chosen so any other machine can mount
-/// the boot partition to update a kernel — the recovery path when a bad flash
+/// the boot partition to update a kernel, the recovery path when a bad flash
 /// leaves the Eee unbootable.
 const PART_TYPE_FAT32_LBA = 0x0C;
 
@@ -174,7 +174,7 @@ const Stage2Fields = struct {
 
 fn patchStage2(buf: []u8, fields: Stage2Fields) !void {
     const idx = std.mem.indexOf(u8, buf, STAGE2_SIGNATURE) orelse {
-        std.debug.print("stage2 header signature not found — is boot/stage2.asm current?\n", .{});
+        std.debug.print("stage2 header signature not found, is boot/stage2.asm current?\n", .{});
         return error.MissingStage2Header;
     };
     // Field order matches the header in boot/stage2.asm.

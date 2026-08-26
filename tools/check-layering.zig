@@ -8,7 +8,7 @@
 //!
 //! Zig's own module system cannot express this particular constraint: the
 //! console imports its backend driver, which imports the HAL, which is a module
-//! cycle. So the check is structural rather than type-level — but it runs every
+//! cycle. So the check is structural rather than type-level, but it runs every
 //! build, which is what actually matters.
 
 const std = @import("std");

@@ -1,7 +1,7 @@
 //! Userspace syscall stubs.
 //!
 //! Thin: each function packs registers and traps. Everything the two sides must
-//! agree on — call numbers, flag layouts, wire formats — comes from
+//! agree on, call numbers, flag layouts, wire formats, comes from
 //! `lib/syscalls.zig`, which the kernel compiles too, so there is nothing here
 //! to keep in sync. The numbers in particular used to be a hand-kept list, and
 //! it drifted; `abi.number` resolves them at compile time and fails the build

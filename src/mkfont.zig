@@ -3,7 +3,7 @@
 //! Run at build time so the `.bdf` stays the source of truth: the font can be
 //! swapped, or a new size added, without a generated blob being edited by hand.
 //!
-//! Only the code points the console can display are kept — Latin-1 and the box
+//! Only the code points the console can display are kept: Latin-1 and the box
 //! and block drawing characters the panic screen's QR renderer needs. A full
 //! Unicode font would be megabytes, and everything beyond Latin-1 belongs to
 //! the GUI's text stack rather than a text console.
@@ -113,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
     defer out.deinit(gpa);
 
     try out.print(gpa,
-        \\//! {s} — generated from {s} by `zig build fonts`. Do not edit.
+        \\//! {s}, generated from {s} by `zig build fonts`. Do not edit.
         \\//!
         \\//! Spleen is Copyright (c) 2018-2026, Frederic Cambus, and is used
         \\//! under the BSD 2-Clause licence. See third_party/spleen/LICENSE.

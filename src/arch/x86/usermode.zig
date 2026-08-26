@@ -65,7 +65,7 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     }
 
     // Then the pointer array and argc. Aligned to 16 rather than 4: SSE loads
-    // and stores require it, and the compiler emits them freely in user code —
+    // and stores require it, and the compiler emits them freely in user code,
     // a 4-byte-aligned stack makes the first `movaps` fault.
     offset = std.mem.alignBackward(usize, offset, 16);
     const words = count + 2; // argc, argv[0..count], null terminator

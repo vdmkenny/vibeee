@@ -2,8 +2,8 @@
 //!
 //! The PIT is the bootstrap clock: always present, needs no ACPI tables, and
 //! gives us a periodic interrupt for preemption. It is not the long-term
-//! answer — reading it costs a port round-trip, and the research shows this
-//! platform has better options — so `monotonicMicros` prefers, in order:
+//! answer, reading it costs a port round-trip, and the research shows this
+//! platform has better options, so `monotonicMicros` prefers, in order:
 //!
 //!   1. HPET, once force-enabled through the LPC bridge (the BIOS does not
 //!      declare it in ACPI, so we must do it ourselves)
@@ -32,7 +32,7 @@ pub const TICK_HZ: u32 = 100;
 pub const TICK_US: u64 = 1_000_000 / TICK_HZ;
 
 /// Written by the interrupt handler, read by everything else. Accessed
-/// atomically, not because of SMP — there is one core — but because a plain
+/// atomically, not because of SMP, there is one core, but because a plain
 /// variable lets the compiler hoist the read out of a polling loop, which
 /// silently breaks anything that waits on time passing.
 ///
@@ -109,8 +109,8 @@ fn readPmTimer(p: u16) u32 {
 /// Fold everything the counter has advanced since the last sample into the
 /// accumulator.
 ///
-/// Must be called more often than the counter wraps — every 4.69 seconds at
-/// 3.579545 MHz — or the time in between is lost. The timer interrupt samples
+/// Must be called more often than the counter wraps, every 4.69 seconds at
+/// 3.579545 MHz, or the time in between is lost. The timer interrupt samples
 /// it at 100 Hz, which is a margin of four hundred.
 fn samplePmTimer() u64 {
     const now = readPmTimer(pm_timer_port);

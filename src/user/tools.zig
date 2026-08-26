@@ -1,7 +1,7 @@
 //! vibeee system tools.
 //!
 //! A multicall binary: one image, dispatched on its first argument. That is how
-//! the rest of the utilities will ship too — thirty separate static binaries
+//! the rest of the utilities will ship too, thirty separate static binaries
 //! would repeat the same few kilobytes of support code thirty times, on a
 //! machine where the root filesystem is read into RAM at every boot.
 //!

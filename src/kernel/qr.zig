@@ -10,7 +10,7 @@
 //!   * byte mode only
 //!   * error-correction level L (we want capacity; the "damage" here is camera
 //!     blur, and L still tolerates ~7%)
-//!   * versions 1-5 only — these are exactly the versions with a SINGLE error
+//!   * versions 1-5 only, these are exactly the versions with a SINGLE error
 //!     correction block, so no interleaving logic is needed
 //!   * one fixed mask, chosen at comptime; no penalty-score evaluation
 //!
@@ -199,8 +199,8 @@ fn encodeAt(
     drawFormatInfo(v, out, mask);
 }
 
-/// Mask used for real panic screens. Any of the eight is valid — the format
-/// info tells the decoder which — so we skip the spec's penalty-score search
+/// Mask used for real panic screens. Any of the eight is valid, the format
+/// info tells the decoder which, so we skip the spec's penalty-score search
 /// and take the cheapest one. `encodeWithMask` exists so tests can sweep all
 /// eight and compare against a reference encoder.
 const DEFAULT_MASK: u3 = 0;
@@ -327,7 +327,7 @@ fn applyMask(comptime v: VersionInfo, out: *Code, reserved: []const bool, mask: 
 }
 
 /// 15-bit format info: 5 data bits (EC level + mask) with a BCH(15,5) remainder,
-/// XORed with the spec's constant. Computed rather than table-driven — the table
+/// XORed with the spec's constant. Computed rather than table-driven, the table
 /// is 32 entries that are easy to transcribe wrongly and impossible to notice.
 fn formatBits(ec: EcLevel, mask: u3) u15 {
     const data: u16 = (@as(u16, @intFromEnum(ec)) << 3) | mask;
@@ -345,7 +345,7 @@ fn drawFormatInfo(comptime v: VersionInfo, out: *Code, mask: u3) void {
     const bits = formatBits(.l, mask);
 
     // Copy 1: a vertical strip down column 8, turning the corner at row 8.
-    // Note this is (column 8, row i) — writing it transposed still produces a
+    // Note this is (column 8, row i), writing it transposed still produces a
     // plausible-looking symbol, because the finder patterns are symmetric, but
     // no decoder will read it.
     for (0..15) |i| {

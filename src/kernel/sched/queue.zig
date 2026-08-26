@@ -10,8 +10,8 @@
 //!
 //! A node must carry two fields, checked at compile time:
 //!
-//!   * `next: ?*T`   — the link
-//!   * `queued: bool` — whether it is on a queue right now
+//!   * `next: ?*T`, the link
+//!   * `queued: bool`, whether it is on a queue right now
 //!
 //! Intrusive because the scheduler cannot allocate on the path that enqueues a
 //! thread: it runs with interrupts off, inside the timer interrupt, and a
@@ -36,7 +36,7 @@ pub fn Fifo(comptime T: type) type {
 
         /// Enqueue, unless the node is already on a queue.
         ///
-        /// The guard is not decoration — see the note at the top of this file.
+        /// The guard is not decoration, see the note at the top of this file.
         /// It is a silent no-op rather than a panic because the callers that
         /// could trip it run in the timer interrupt, where a panic would
         /// replace a recoverable mistake with a dead machine.

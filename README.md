@@ -1,21 +1,23 @@
 # vibeee
 
-A from-scratch graphical operating system in Zig, targeting the **ASUS Eee PC 701 4G** —
+A from-scratch graphical operating system in Zig, targeting the **ASUS Eee PC 701 4G**,
 a 2007 netbook: 630 MHz Celeron M, 512 MB RAM, 4 GB PATA SSD, 800×480 panel, no serial port.
 
+![eeefetch running on vibeee in framebuffer mode](docs/img/eeefetch.png)
+
 Own bootloader, own kernel, own userspace. No Linux, no BSD, no libc. Builds to a raw
-`dd`-able SD-card image with `zig`, `nasm` and `make` — no cross-GCC, no root, no loopback
+`dd`-able SD-card image with `zig`, `nasm` and `make`, no cross-GCC, no root, no loopback
 mounts.
 
 > ### ⚠️ This is vibecoded
 >
 > Hence the name. Almost all of the code, and all of the design documents, were written by
-> Claude under my direction — I set the goals, made the architectural calls, reviewed the
+> Claude under my direction: I set the goals, made the architectural calls, reviewed the
 > output and drove the debugging, but I did not type most of this.
 >
 > Treat it accordingly. It boots, it self-tests, and the bugs found so far were found by
 > running it rather than by reading it. Nobody has audited it. It is a toy OS for a
-> nineteen-year-old netbook, and that is the standard it is built to — not production, not
+> nineteen-year-old netbook, and that is the standard it is built to, not production, not
 > security-reviewed, not something to trust with anything you care about.
 
 ```bash
@@ -27,53 +29,53 @@ make test       # host-side unit tests + QR differential verification
 
 ## What works today
 
-**Boot** — Two-stage bootloader: a 440-byte MBR loading a real-mode stage2 that reads the
+**Boot**: two-stage bootloader. A 440-byte MBR loading a real-mode stage2 that reads the
 kernel over INT 13h EDD through unreal mode, captures the E820 map, finds the ACPI RSDP,
 optionally sets a VBE mode, and loads the root filesystem into RAM. The kernel then goes
 higher-half at `0xC0100000` with all physical memory linearly mapped through 4 MiB pages.
 
-**Memory** — Bitmap physical allocator over the real E820 map. Slab allocator exposed as a
+**Memory**: Bitmap physical allocator over the real E820 map. Slab allocator exposed as a
 `std.mem.Allocator`, so kernel code reads like ordinary Zig. Per-process page directories.
 
-**Scheduling** — Preemptive O(1) scheduler: two run-queue arrays, a `u32` bitmap and one
+**Scheduling**: Preemptive O(1) scheduler: two run-queue arrays, a `u32` bitmap and one
 `@ctz` to pick the next thread, so scheduling costs the same at three threads or three
 hundred. Sleeping, yielding, per-thread FPU/SSE state, and a thread registry that includes
 uncollected corpses.
 
-**Processes** — Ring 3 with per-process address spaces, an ELF loader, synchronous and
+**Processes**: Ring 3 with per-process address spaces, an ELF loader, synchronous and
 detached `spawn`, `wait`, parent tracking, and orphan re-parenting onto PID 1. No `fork`
-— deliberately (see the design doc).
+, deliberately (see the design doc).
 
-**IPC** — Synchronous channels with a 64-byte inline payload, counting events with
+**IPC**: Synchronous channels with a 64-byte inline payload, counting events with
 `wait_many` as the only blocking primitive, and a `/svc` name registry. Blocking is real:
 a waiting thread is off the run queues, not polling. The SPSC shared-ring layout is
 defined and tested; mapping one across address spaces is not done yet.
 
-**Storage** — ATA PIO, MBR partition parsing, a block cache, and FAT12/16/32 with VFAT
+**Storage**: ATA PIO, MBR partition parsing, a block cache, and FAT12/16/32 with VFAT
 long names, behind a mount table that resolves paths by longest matching prefix. Read-only
 for now.
 
-**Console** — VGA text or a 32bpp linear framebuffer with the Spleen bitmap font, chosen at
+**Console**: VGA text or a 32bpp linear framebuffer with the Spleen bitmap font, chosen at
 boot from what the firmware provided.
 
-**Input** — i8042 keyboard, scancode set 1, with keymaps compiled from one file per layout:
+**Input**, i8042 keyboard, scancode set 1, with keymaps compiled from one file per layout:
 US-International and Belgian AZERTY, dead-key composition, `Super+Space` to switch.
 
-**Time** — Monotonic clock from the PIT (ACPI PM timer supported, with wrap accumulation),
+**Time**: Monotonic clock from the PIT (ACPI PM timer supported, with wrap accumulation),
 and a wall clock seeded once from the CMOS RTC. File timestamps and `date` are real.
 
-**Devices** — PCI enumeration, SMBIOS/DMI decoding, and confidence-ranked driver probing:
+**Devices**: PCI enumeration, SMBIOS/DMI decoding, and confidence-ranked driver probing:
 an exact vendor:device match beats a class-level fallback, so one image boots the target
 machine and hardware it has never seen.
 
-**Shutdown** — Handles flushed, volumes unmounted, then ACPI power off via the FADT and a
+**Shutdown**: Handles flushed, volumes unmounted, then ACPI power off via the FADT and a
 `_S5_` pattern match.
 
-**Diagnostics** — A panic screen that encodes the register dump and backtrace as a QR code,
+**Diagnostics**: A panic screen that encodes the register dump and backtrace as a QR code,
 drawn as raw pixel rectangles so it does not depend on a font having block glyphs. The
 encoder is differentially tested against `libqrencode` across all eight masks.
 
-**Userspace** — `init` (PID 1) supervises services declared in `/etc/services` with
+**Userspace**, `init` (PID 1) supervises services declared in `/etc/services` with
 dependency ordering and restart policy. `vsh` is the shell. A multicall binary provides
 `ls cat hexdump grep free top disk svc date eeefetch dmidecode`.
 
@@ -87,7 +89,7 @@ editor · USB · touchpad · GMA900 native modeset · audio · networking · the
 
 ```
 boot/         stage1 (MBR) and stage2, NASM
-src/arch/     ISA- and firmware-specific code — x86 only for now
+src/arch/     ISA- and firmware-specific code, x86 only for now
 src/kernel/   portable core: memory, scheduling, IPC, VFS, syscalls, panic
 src/drv/      drivers, bound by runtime probe confidence
 src/lib/      pure code compiled into BOTH kernel and userspace
@@ -108,16 +110,16 @@ drift from the implementation.
 Three rules are enforced by `tools/check-layering.zig` on every build, not just written
 down:
 
-1. `kernel/` never imports `arch/` — it reaches the architecture only through `kernel/hal.zig`.
-2. `kernel/` never imports `drv/` — driver selection is a composition decision.
-3. `lib/` imports nothing — it is compiled into both sides of the privilege boundary, so it
+1. `kernel/` never imports `arch/`, it reaches the architecture only through `kernel/hal.zig`.
+2. `kernel/` never imports `drv/`, driver selection is a composition decision.
+3. `lib/` imports nothing, it is compiled into both sides of the privilege boundary, so it
    holds pure computation only.
 
 ## Debugging without a serial port
 
 The 701 has no serial port, which shapes everything: QEMU-first development, a stage2 log
 ring replayed into the boot log, self-tests at boot that report `fail` rather than hanging,
-and the QR panic screen — photograph the stop screen and the crash comes back as text.
+and the QR panic screen, photograph the stop screen and the crash comes back as text.
 
 ```
 VBE1|06|00000000|00000000|00103CFC|00162A78|00162F14|00101126,00107952

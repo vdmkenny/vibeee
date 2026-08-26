@@ -1,7 +1,7 @@
 //! What every syscall handler needs, and nothing else.
 //!
 //! Split out so the handler groups can share it without importing each other,
-//! and without importing the dispatcher that imports them — which would be a
+//! and without importing the dispatcher that imports them, which would be a
 //! cycle. `syscall.zig` re-exports the parts the architecture layer needs, so
 //! nothing outside this directory has to know the split exists.
 
