@@ -6,6 +6,7 @@
 //! ht, pat, or long mode. See docs/research/research-core-platform.md.
 
 const std = @import("std");
+const str = @import("lib").str;
 
 pub inline fn cli() void {
     asm volatile ("cli" ::: .{ .memory = true });
@@ -145,8 +146,11 @@ pub fn brandString(buf: *[49]u8) []const u8 {
         }
     }
     buf[48] = 0;
-    // Intel pads the brand string with leading spaces; trim both ends.
-    return std.mem.trim(u8, buf[0..48], " \x00");
+    // The leaves are NUL-terminated, and Intel pads what is left at the ends
+    // and again in a run before the clock speed, which on an 80-column console
+    // is ten wasted columns in the middle of the name.
+    const end = std.mem.indexOfScalar(u8, buf[0..49], 0) orelse 48;
+    return str.collapseSpaces(buf[0..end]);
 }
 
 pub fn readMsr(msr: u32) u64 {

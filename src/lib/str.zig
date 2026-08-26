@@ -141,6 +141,30 @@ pub fn trim(text: []const u8) []const u8 {
     return rest;
 }
 
+/// Trim the ends and reduce every internal run of whitespace to one space,
+/// rewriting `text` in place and returning the shortened slice.
+///
+/// A byte only ever moves earlier than it was read from, so the write index
+/// stays behind the read index and the two never collide.
+pub fn collapseSpaces(text: []u8) []u8 {
+    var out: usize = 0;
+    var gap = false;
+    for (trim(text)) |c| {
+        if (isSpace(c)) {
+            gap = true;
+            continue;
+        }
+        if (gap and out > 0) {
+            text[out] = ' ';
+            out += 1;
+        }
+        gap = false;
+        text[out] = c;
+        out += 1;
+    }
+    return text[0..out];
+}
+
 /// Strip leading spaces, reporting whether there were any.
 ///
 /// Indentation carries meaning in the kernel's tabular output, an indented
@@ -252,4 +276,25 @@ test "hex reads both cases and stops at the first character that is not one" {
     try std.testing.expectEqual(@as(usize, 0x1f), fromHex("1f:extra"));
     try std.testing.expectEqual(@as(usize, 0), fromHex(""));
     try std.testing.expectEqual(@as(usize, 0), fromHex("zz"));
+}
+
+test "collapseSpaces trims the ends and reduces every internal run to one" {
+    // The 701's CPUID brand string, which pads a run before the clock speed.
+    var brand = "Intel(R) Celeron(R) M processor          900MHz".*;
+    try std.testing.expectEqualStrings(
+        "Intel(R) Celeron(R) M processor 900MHz",
+        collapseSpaces(&brand),
+    );
+
+    var padded = "   spaced   out   ".*;
+    try std.testing.expectEqualStrings("spaced out", collapseSpaces(&padded));
+
+    var tabs = "a\t\t b".*;
+    try std.testing.expectEqualStrings("a b", collapseSpaces(&tabs));
+
+    var blank = "     ".*;
+    try std.testing.expectEqualStrings("", collapseSpaces(&blank));
+
+    var single = "x".*;
+    try std.testing.expectEqualStrings("x", collapseSpaces(&single));
 }
