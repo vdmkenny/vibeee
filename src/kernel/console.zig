@@ -63,6 +63,7 @@ fn newline() void {
 }
 
 pub fn putChar(c: u8) void {
+    if (mirror) |sink| sink(&[_]u8{c});
     switch (c) {
         '\n' => newline(),
         '\r' => col = 0,
@@ -88,6 +89,18 @@ pub fn putChar(c: u8) void {
 pub fn writeString(s: []const u8) void {
     for (s) |c| putChar(c);
     backend.setCursor(col, row);
+}
+
+/// Optional second destination for everything written to the console.
+///
+/// Registered by the composition root when a serial port is found. The target
+/// machine has none, but QEMU and most other hardware do, and having the boot
+/// log arrive as text rather than pixels is the difference between reading it
+/// and photographing it.
+var mirror: ?*const fn ([]const u8) void = null;
+
+pub fn setMirror(sink: *const fn ([]const u8) void) void {
+    mirror = sink;
 }
 
 // ---------------------------------------------------------------------------

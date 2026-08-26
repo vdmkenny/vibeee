@@ -11,6 +11,7 @@ const abi = @import("syscall_table.zig");
 const console = @import("console.zig");
 const hal = @import("hal.zig");
 const sched = @import("sched.zig");
+const tty = @import("tty.zig");
 
 pub const Errno = abi.Errno;
 
@@ -59,9 +60,16 @@ fn sys_write(a: Args) Result {
 fn sys_read(a: Args) Result {
     const handle: u32 = @truncate(a.a0);
     if (handle != abi.STDIN) return Errno.badf.value();
-    // No input device is wired up yet; end-of-input is the truthful answer.
-    _ = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
-    return 0;
+
+    const buf = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
+    if (buf.len == 0) return 0;
+
+    // Block until a line is available. Sleeping rather than spinning matters:
+    // a shell waiting at a prompt must not consume the CPU that everything else
+    // needs, and on a single core it would starve them entirely.
+    while (!tty.hasLine()) sched.sleepMicros(10_000);
+
+    return @intCast(tty.read(buf));
 }
 
 fn sys_yield(_: Args) Result {

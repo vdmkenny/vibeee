@@ -10,7 +10,10 @@
 const std = @import("std");
 const console = @import("kernel/console.zig");
 const probe = @import("kernel/probe.zig");
-const ata = @import("drv/block/ata.zig");
+const drivers = @import("drivers.zig");
+const cmos = @import("drv/rtc/cmos.zig");
+const kbd = @import("drv/input/i8042.zig");
+const uart = @import("drv/serial/uart16550.zig");
 const bcache = @import("kernel/bcache.zig");
 const block = @import("kernel/block.zig");
 const pci = @import("drv/bus/pci.zig");
@@ -22,15 +25,44 @@ const heap = @import("kernel/heap.zig");
 const vfs = @import("kernel/vfs.zig");
 const hal = @import("kernel/hal.zig");
 
+/// Bring up devices that need no bus enumeration to find.
+///
+/// Serial comes first and unconditionally: if the machine has a port, every
+/// line after this one is also readable as text, which is worth more than the
+/// eighty lines the driver costs.
+/// Attach a serial port, if there is one, before anything else logs.
+///
+/// Separate from the rest of device bring-up purely so it happens first: every
+/// line after this point is then readable as text on a machine that has a port.
+pub fn earlyConsole() void {
+    if (uart.init()) |io| {
+        console.setMirror(uart.write);
+        console.debug("serial", "16550 at {x:0>3}, mirroring console", .{io});
+    }
+}
+
+pub fn earlyDevices() void {
+    const t = cmos.now();
+    if (cmos.looksUnset(t)) {
+        console.warn("rtc: clock not set; TLS will fail until time is corrected", .{});
+    } else {
+        console.debug("rtc", "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
+            t.year, t.month, t.day, t.hour, t.minute, t.second,
+        });
+    }
+
+    kbd.init();
+}
+
 /// Enumerate every bus this machine has and bind drivers to what turns up.
 pub fn probeHardware() void {
-    probe.begin();
+    probe.begin(&drivers.table);
     enumeratePci();
+    // Attach before reporting, so the table shows what actually came up rather
+    // than what merely matched.
+    probe.attachAll();
     probe.report();
 
-    // Storage comes up after the bus scan so the probe table reflects what was
-    // found before any driver starts touching hardware.
-    ata.init();
     reportStorage();
     mountFilesystems();
 }

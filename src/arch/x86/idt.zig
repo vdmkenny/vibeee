@@ -172,6 +172,10 @@ pub fn setHandler(vec: u8, handler: Handler) void {
     handlers[vec] = handler;
 }
 
+pub fn unsetHandler(vec: u8) void {
+    handlers[vec] = null;
+}
+
 /// Remap the 8259 PICs away from vectors 0-15, which collide with the CPU
 /// exception range. We mask everything afterwards: this machine has an IOAPIC
 /// (verified in the MADT) and that is what we actually use — the PICs are

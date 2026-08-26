@@ -130,6 +130,7 @@ pub const table = [_]Syscall{
         },
         .returns = "bytes read, or 0 at end of input",
         .errors = &.{ E.badf, E.fault },
+        .notes = "Blocks until input is available. On STDIN, input is line-buffered: a read returns once Enter is pressed, and never mid-line.",
     },
     .{
         .number = 3,

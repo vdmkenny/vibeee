@@ -41,6 +41,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     }
 
     console.setVerbose(std.mem.indexOf(u8, bi.cmdlineSlice(), "verbose") != null);
+    platform.earlyConsole();
 
     // stage2 has no serial port to log to, so it logs to a RAM ring. Replay it
     // only when it has something to say.
@@ -97,6 +98,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
 
     selfTestSyscalls();
 
+    platform.earlyDevices();
     platform.probeHardware();
 
     startThreads();

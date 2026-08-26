@@ -10,4 +10,5 @@ const std = @import("std");
 test {
     _ = @import("kernel/bootinfo.zig");
     _ = @import("qr_test.zig");
+    _ = @import("keymap_test.zig");
 }

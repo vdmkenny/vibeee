@@ -62,6 +62,8 @@ Read bytes from an open handle.
 - `EBADF` — the handle is not open in this process
 - `EFAULT` — a pointer argument is outside the caller's address space
 
+Blocks until input is available. On STDIN, input is line-buffered: a read returns once Enter is pressed, and never mid-line.
+
 ## `yield`  <sub>#3</sub>
 
 Give up the rest of the current time slice.

@@ -75,5 +75,34 @@ export fn main() callconv(.c) noreturn {
     const after = sys.clockMicros();
     _ = sys.write(sys.STDOUT, if (after > before) "slept, clock advanced\n" else "SLEEP FAILED\n");
 
+    // Echo what is typed, proving the whole input chain: i8042 to keycode to
+    // layout to line discipline to read().
+    _ = sys.write(sys.STDOUT, "type something (or 'quit'):\n");
+
+    var buf: [256]u8 = undefined;
+    while (true) {
+        _ = sys.write(sys.STDOUT, "> ");
+        const got = sys.read(sys.STDIN, &buf);
+        if (got <= 0) break;
+
+        const len: usize = @intCast(got);
+        var line = buf[0..len];
+        if (line.len > 0 and line[line.len - 1] == '\n') line = line[0 .. line.len - 1];
+
+        if (eql(line, "quit")) break;
+
+        _ = sys.write(sys.STDOUT, "you typed: ");
+        _ = sys.write(sys.STDOUT, line);
+        _ = sys.write(sys.STDOUT, "\n");
+    }
+
     sys.exit(0);
+}
+
+fn eql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (x != y) return false;
+    }
+    return true;
 }

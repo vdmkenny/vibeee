@@ -14,6 +14,7 @@ pub const SYS_CLOCK_US = 5;
 pub const SYS_GETPID = 6;
 pub const SYS_LOG = 7;
 
+pub const STDIN = 0;
 pub const STDOUT = 1;
 pub const STDERR = 2;
 
@@ -44,6 +45,10 @@ inline fn syscall3(nr: u32, a0: usize, a1: usize, a2: usize) isize {
 
 pub fn write(handle: u32, bytes: []const u8) isize {
     return syscall3(SYS_WRITE, handle, @intFromPtr(bytes.ptr), bytes.len);
+}
+
+pub fn read(handle: u32, buf: []u8) isize {
+    return syscall3(SYS_READ, handle, @intFromPtr(buf.ptr), buf.len);
 }
 
 pub fn log(bytes: []const u8) isize {

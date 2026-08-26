@@ -40,9 +40,9 @@ pub const Driver = struct {
     /// Returns how well this driver fits. Drivers that need to touch the device
     /// to be sure (the Synaptics/Elantech probe ladder) do it here.
     probe: *const fn (dev: Device) Confidence,
-    /// Left null while a driver is designed but not yet implemented, so the
-    /// probe table doubles as an honest status board.
-    attach: ?*const fn (dev: Device) void = null,
+    /// Bring the device up. Left null while a driver is designed but not yet
+    /// written, so the probe table doubles as an honest status board.
+    attach: ?*const fn (dev: Device) anyerror!void = null,
 };
 
 /// A device offered for binding.
@@ -61,129 +61,25 @@ pub const Device = struct {
     description: []const u8,
 };
 
-/// Generic class-level probe used by fallback drivers.
-fn classProbe(comptime class: u8, comptime subclass: u8) fn (Device) Confidence {
-    return struct {
-        fn f(dev: Device) Confidence {
-            return if (dev.class == class and dev.subclass == subclass) .weak else .no;
-        }
-    }.f;
-}
-
-/// Exact-ID probe, for drivers that know precisely one device.
-fn exactProbe(comptime vendor: u16, comptime device: u16) fn (Device) Confidence {
-    return struct {
-        fn f(dev: Device) Confidence {
-            return if (dev.vendor == vendor and dev.device == device) .exact else .no;
-        }
-    }.f;
-}
-
-/// The registry. Entries are ordered most-specific-first only as a tie-break;
-/// confidence is what actually decides. Adding a driver is one entry here plus
-/// its module — no #ifdefs, no build-time hardware assumptions.
-///
-/// IDs are from docs/research/, all HIGH confidence unless noted.
-pub const registry = [_]Driver{
-    .{
-        .name = "gma900",
-        .kind = .video,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x2592 } }},
-        .probe = &exactProbe(0x8086, 0x2592),
-    },
-    .{
-        .name = "vesafb",
-        .kind = .video,
-        .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
-        .probe = &classProbe(0x03, 0x00),
-    },
-    .{
-        .name = "ata_ich",
-        .kind = .block,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x2653 } }},
-        .probe = &exactProbe(0x8086, 0x2653),
-    },
-    .{
-        .name = "ata_generic",
-        .kind = .block,
-        .match = &.{.{ .pci_class = .{ .class = 0x01, .subclass = 0x01 } }},
-        .probe = &classProbe(0x01, 0x01),
-    },
-    .{
-        .name = "ehci",
-        .kind = .usb,
-        .match = &.{.{ .pci_class = .{ .class = 0x0C, .subclass = 0x03 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                if (dev.class != 0x0C or dev.subclass != 0x03) return .no;
-                // prog_if 0x20 = EHCI, 0x00 = UHCI, 0x10 = OHCI.
-                return switch (dev.prog_if) {
-                    0x20 => .strong,
-                    else => .no,
-                };
-            }
-        }.f,
-    },
-    .{
-        .name = "uhci",
-        .kind = .usb,
-        .match = &.{.{ .pci_class = .{ .class = 0x0C, .subclass = 0x03 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                if (dev.class != 0x0C or dev.subclass != 0x03) return .no;
-                return if (dev.prog_if == 0x00) .strong else .no;
-            }
-        }.f,
-    },
-    .{
-        .name = "hda",
-        .kind = .audio,
-        .match = &.{.{ .pci_class = .{ .class = 0x04, .subclass = 0x03 } }},
-        .probe = &struct {
-            fn f(dev: Device) Confidence {
-                if (dev.vendor == 0x8086 and dev.device == 0x2668) return .exact; // ICH6 + ALC662
-                return if (dev.class == 0x04 and dev.subclass == 0x03) .strong else .no;
-            }
-        }.f,
-    },
-    .{
-        .name = "atl2",
-        .kind = .net,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x1969, .device = 0x2048 } }},
-        .probe = &exactProbe(0x1969, 0x2048),
-    },
-    .{
-        .name = "ath5k",
-        .kind = .net,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x168C, .device = 0x001C } }},
-        .probe = &exactProbe(0x168C, 0x001C),
-    },
-    .{
-        .name = "i801smb",
-        .kind = .bus,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x266A } }},
-        .probe = &exactProbe(0x8086, 0x266A),
-    },
-    .{
-        .name = "lpc_ich",
-        .kind = .platform,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x2641 } }},
-        .probe = &exactProbe(0x8086, 0x2641),
-    },
-};
-
 const Binding = struct {
     dev: Device,
     driver: ?*const Driver,
     confidence: Confidence,
+    attached: bool = false,
+    failed: bool = false,
 };
 
 var bindings: [64]Binding = undefined;
 var binding_count: usize = 0;
 
-/// Start a probing pass. Bus drivers then call `consider` for each device they
-/// find, and `report` prints the outcome.
-pub fn begin() void {
+/// Drivers available to bind, supplied by the composition root.
+var registry: []const Driver = &.{};
+
+/// Start a probing pass with the given driver set. Bus drivers then call
+/// `consider` for each device they find, `attachAll` brings them up, and
+/// `report` prints the outcome.
+pub fn begin(drivers: []const Driver) void {
+    registry = drivers;
     binding_count = 0;
 }
 
@@ -195,7 +91,7 @@ pub fn consider(dev: Device) void {
 
     var best: ?*const Driver = null;
     var best_conf: Confidence = .no;
-    inline for (&registry) |*drv| {
+    for (registry) |*drv| {
         const c = drv.probe(dev);
         if (@intFromEnum(c) > @intFromEnum(best_conf)) {
             best_conf = c;
@@ -205,6 +101,36 @@ pub fn consider(dev: Device) void {
 
     bindings[binding_count] = .{ .dev = dev, .driver = best, .confidence = best_conf };
     binding_count += 1;
+}
+
+/// Bring up every bound device.
+///
+/// Ordered by confidence rather than by discovery: an exact match should
+/// initialise before a generic fallback that matched the same class, so the
+/// fallback sees hardware already claimed and stays out of the way.
+///
+/// A driver that fails to attach is recorded, not fatal. One dead device should
+/// not cost the machine every other device behind it in the list.
+pub fn attachAll() void {
+    var level: u8 = @intFromEnum(Confidence.exact);
+    while (true) : (level -= 1) {
+        for (bindings[0..binding_count]) |*b| {
+            if (@intFromEnum(b.confidence) != level) continue;
+            const drv = b.driver orelse continue;
+            const attach = drv.attach orelse continue;
+            if (b.attached or b.failed) continue;
+
+            attach(b.dev) catch |err| {
+                b.failed = true;
+                console.warn("{s}: attach failed on {s}: {s}", .{
+                    drv.name, b.dev.description, @errorName(err),
+                });
+                continue;
+            };
+            b.attached = true;
+        }
+        if (level == @intFromEnum(Confidence.weak)) break;
+    }
 }
 
 /// Print what bound to what. This table is the porting worksheet on unfamiliar
@@ -240,11 +166,11 @@ pub fn report() void {
             }, .black);
             console.printf("{s: <12}", .{d.name});
             console.setColor(.dark_grey, .black);
-            // Trailing '*' marks a driver that is matched but not yet
-            // implemented — better than printing a name that implies it runs.
+            // The marker states what actually happened, so a driver that
+            // exists but failed cannot be mistaken for one that is running.
             console.printf("{s: <7}{s}", .{
                 @tagName(b.confidence),
-                if (d.attach == null) "* " else "  ",
+                if (b.failed) "! " else if (b.attached) "  " else "* ",
             });
         } else {
             console.printf("{s: <12}{s: <9}", .{ "-", "" });
