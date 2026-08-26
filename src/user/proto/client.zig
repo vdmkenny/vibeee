@@ -191,6 +191,17 @@ pub const Connection = struct {
         _ = try self.request(&req, &.{});
     }
 
+    /// Take a window down and let go of its slot.
+    ///
+    /// A dialog is a window that comes and goes, so a client that could only
+    /// create them would run out after a few saves.
+    pub fn destroyWindow(self: *Connection, id: u8) Error!void {
+        var req = wm.Req{ .tag = .destroy_win, .win = id };
+        _ = try self.request(&req, &.{});
+
+        if (self.find(id)) |window| window.* = .{};
+    }
+
     /// Take the next event, or null if there are none waiting.
     pub fn poll(self: *Connection) ?wm.Ev {
         var event: wm.Ev = undefined;

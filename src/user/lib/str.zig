@@ -168,8 +168,18 @@ pub fn caseless(text: []const u8) bool {
 /// `buf` when the case had to be changed, and into `text` when it did not.
 pub fn displayName(buf: []u8, text: []const u8) []const u8 {
     if (!caseless(text) or text.len > buf.len) return text;
-    for (text, 0..) |c, i| buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    @memcpy(buf[0..text.len], text);
+    lowerName(buf[0..text.len]);
     return buf[0..text.len];
+}
+
+/// The same rule applied where the name already is, for a caller that owns a
+/// copy of it.
+pub fn lowerName(name: []u8) void {
+    if (!caseless(name)) return;
+    for (name) |*c| {
+        if (c.* >= 'A' and c.* <= 'Z') c.* += 32;
+    }
 }
 
 /// Building a short string in a fixed buffer.

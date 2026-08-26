@@ -23,6 +23,7 @@ const theme = @import("eui").theme;
 const clients = @import("clients.zig");
 const layout = @import("layout.zig");
 const bar = @import("bar.zig");
+const cursor = @import("cursor.zig");
 const config = @import("config.zig");
 const proto = @import("proto");
 const ui = @import("eui").widget;
@@ -111,8 +112,13 @@ export fn wmMain() callconv(.c) noreturn {
 // Painting
 // ---------------------------------------------------------------------------
 
+/// Repaint everything.
 fn paint() void {
     const t = theme.current();
+
+    // Whatever the cursor was covering is about to be drawn over, so the saved
+    // pixels are stale and putting them back later would paint a hole.
+    cursor.invalidate();
 
     screen.fill(.{ .x = 0, .y = 0, .w = info.width, .h = info.height }, t.desktop);
     bar.paint(screen, info.width, info.height, &desktop);
@@ -125,8 +131,38 @@ fn paint() void {
     // After the windows: a dropdown reaches over them.
     bar.paintOverlay(screen, info.width, info.height, &desktop);
 
-    drawCursor();
+    for (&window_dirty) |*flag| flag.* = false;
+    cursor.show(screen, pointer_x, pointer_y);
 }
+
+/// Repaint only the windows that committed.
+///
+/// The common case by far: a terminal printing a line changes one tile, and
+/// repainting the desktop, the bar and every other window for it is both slow
+/// and visible as a flicker on a display with one buffer.
+fn paintCommitted() void {
+    var buf: [layout.MAX_WINDOWS]usize = undefined;
+    const visible = desktop.visible(&buf);
+
+    var lifted = false;
+    for (visible) |index| {
+        if (!window_dirty[index]) continue;
+        if (!lifted and cursor.covers(desktop.windows[index].area)) {
+            cursor.hide(screen);
+            lifted = true;
+        }
+        paintWindow(index, desktop.focused == index);
+        window_dirty[index] = false;
+    }
+
+    // A menu floats over the tiles, so anything repainted underneath one has
+    // to be covered again.
+    if (bar.menuOpen()) bar.paintOverlay(screen, info.width, info.height, &desktop);
+    if (lifted) cursor.show(screen, pointer_x, pointer_y);
+}
+
+/// Which windows have committed since the last paint.
+var window_dirty: [layout.MAX_WINDOWS]bool = @splat(false);
 
 fn paintWindow(index: usize, focused: bool) void {
     const t = theme.current();
@@ -206,41 +242,6 @@ fn describe(buf: []u8, area: Rect) []const u8 {
 }
 
 // ---------------------------------------------------------------------------
-// The cursor
-// ---------------------------------------------------------------------------
-
-const CURSOR_W = 8;
-const CURSOR_H = 12;
-
-const cursor_bits = [CURSOR_H]u8{
-    0b10000000, 0b11000000, 0b11100000, 0b11110000,
-    0b11111000, 0b11111100, 0b11111110, 0b11111000,
-    0b11011000, 0b10001100, 0b00001100, 0b00000110,
-};
-
-/// Drawn rather than composited: this display advertises no cursor plane.
-/// Outlined by drawing it black one pixel down and right first, so it stays
-/// visible over any colour beneath it.
-fn drawCursor() void {
-    for ([_]struct { dx: i32, dy: i32, color: eui.Color }{
-        .{ .dx = 1, .dy = 1, .color = 0x000000 },
-        .{ .dx = 0, .dy = 0, .color = 0xFFFFFF },
-    }) |pass| {
-        for (cursor_bits, 0..) |row, iy| {
-            var ix: i32 = 0;
-            while (ix < CURSOR_W) : (ix += 1) {
-                if (row >> @intCast(7 - @as(u3, @intCast(ix))) & 1 == 0) continue;
-                screen.set(
-                    pointer_x + ix + pass.dx,
-                    pointer_y + @as(i32, @intCast(iy)) + pass.dy,
-                    pass.color,
-                );
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
 
@@ -284,21 +285,32 @@ fn run() noreturn {
             acted = true;
         }
 
-        const moves = sys.pointerRead(&pointer_events, if (acted) sys.POLL else 200_000);
+        const moves = sys.pointerRead(&pointer_events, if (acted or dirty) sys.POLL else 200_000);
+        var moved = false;
         for (moves) |event| {
             handlePointer(event);
-            acted = true;
+            moved = true;
         }
 
-        if (!acted) continue;
-
-        // A layout change moves every tile, so each client is told its new
-        // size before anything is drawn from its surface.
-        for (0..layout.MAX_WINDOWS) |i| {
-            if (desktop.windows[i].used) tellSize(i);
+        if (dirty) {
+            // A layout change moves every tile, so each client is told its new
+            // size before anything is drawn from its surface.
+            for (0..layout.MAX_WINDOWS) |i| {
+                if (desktop.windows[i].used) tellSize(i);
+            }
+            paint();
+            dirty = false;
+            continue;
         }
 
-        paint();
+        if (acted) paintCommitted();
+
+        // Moving the pointer redraws the pointer, and nothing else. Everything
+        // it could have changed set `dirty` above.
+        if (moved) {
+            cursor.hide(screen);
+            cursor.show(screen, pointer_x, pointer_y);
+        }
     }
 }
 
@@ -512,7 +524,11 @@ fn onHello(pid: u32, req: *const wire.Req) Answer {
 fn onCreate(pid: u32, req: *const wire.Req) Answer {
     if (table.find(pid) == null) return refuse(.bad_request);
 
-    const index = desktop.open("", req.body.create.flags.floating) orelse
+    // A dialog floats too. It is a separate flag because it also centres and
+    // belongs to whatever raised it, but a dialog that got tiled would split
+    // the window it was asked from in half.
+    const flags = req.body.create.flags;
+    const index = desktop.open("", flags.floating or flags.dialog) orelse
         return refuse(.no_room);
 
     const w = &desktop.windows[index];
@@ -555,14 +571,13 @@ fn onAttach(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
 
 fn onCommit(pid: u32, req: *const wire.Req) Answer {
     const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
-    _ = index;
     _ = req.body.commit;
 
-    // Every commit repaints the window in full for now. Honouring the damage
-    // rectangles is the optimisation this protocol exists to allow, and it
-    // needs a per-window damage list the paint pass consults rather than the
-    // whole-screen flag below.
-    dirty = true;
+    // The window, not the screen. Honouring the damage rectangles the commit
+    // carries is the next step and would narrow this further; marking the one
+    // window already takes the desktop, the bar and every other tile out of
+    // the common case.
+    window_dirty[index] = true;
     return .{ .rep = .{ .gen = table.generation } };
 }
 

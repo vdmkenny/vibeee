@@ -6,6 +6,7 @@
 //! instead.
 
 pub const config = @import("config.zig");
+pub const dir = @import("dir.zig");
 pub const info = @import("info.zig");
 pub const out = @import("out.zig");
 pub const procs = @import("procs.zig");

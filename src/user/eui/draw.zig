@@ -152,6 +152,14 @@ pub const Surface = struct {
         self.pixels[@intCast(y * self.stride + x)] = color;
     }
 
+    /// The colour at a point, or black outside the surface. For anything that
+    /// has to put back what it drew over, which without a hardware cursor
+    /// plane is how a pointer moves without the screen being redrawn.
+    pub fn get(self: Surface, x: i32, y: i32) Color {
+        if (x < 0 or y < 0 or x >= self.width or y >= self.height) return 0;
+        return self.pixels[@intCast(y * self.stride + x)];
+    }
+
     pub fn fill(self: Surface, area: Rect, color: Color) void {
         const r = self.clip.intersect(area);
         if (r.isEmpty()) return;

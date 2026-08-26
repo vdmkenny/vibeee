@@ -17,6 +17,7 @@
 //! eventually a test harness with no screen at all.
 
 pub const draw = @import("draw.zig");
+pub const chooser = @import("chooser.zig");
 pub const table = @import("table.zig");
 pub const text = @import("text.zig");
 pub const theme = @import("theme.zig");

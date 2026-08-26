@@ -32,9 +32,14 @@ var storage: [CAPACITY]u8 = undefined;
 var document: text.Buffer = undefined;
 var editor: text.Editor = .{};
 
-var name_storage: [64]u8 = undefined;
-var name: text.Buffer = undefined;
-var name_editor: text.Editor = .{};
+/// Where the document came from and where Save writes it back.
+var file_path: [128]u8 = @splat(0);
+var file_len: usize = 0;
+
+/// The open and save dialog, which is a floating window of its own.
+var dialog: proto.FileDialog = .{};
+/// What the dialog is being asked for, since one window serves both.
+var asking: proto.dialog.Purpose = .open;
 
 var modified = false;
 var status: []const u8 = "";
@@ -53,7 +58,6 @@ export fn _start() callconv(.naked) noreturn {
 
 export fn padMain() callconv(.c) noreturn {
     document = .{ .bytes = &storage };
-    name = .{ .bytes = &name_storage };
 
     connection = proto.client.Connection.open("pad") catch {
         out.text("pad: no window manager is running\n");
@@ -71,27 +75,44 @@ export fn padMain() callconv(.c) noreturn {
 // Files
 // ---------------------------------------------------------------------------
 
-var path_buffer: [80]u8 = @splat(0);
-
-/// The name as a path. Relative names are taken as they are, so the shell's
-/// working directory decides where a document lands.
 fn path() []const u8 {
-    const typed = name.slice();
-    if (typed.len == 0 or typed.len > path_buffer.len) return "";
-    @memcpy(path_buffer[0..typed.len], typed);
-    return path_buffer[0..typed.len];
+    return file_path[0..file_len];
+}
+
+fn setPath(value: []const u8) void {
+    const n = @min(value.len, file_path.len);
+    @memcpy(file_path[0..n], value[0..n]);
+    file_len = n;
+}
+
+/// The last component, which is what a person calls the document.
+fn baseName() []const u8 {
+    const full = path();
+    var i = full.len;
+    while (i > 0) : (i -= 1) {
+        if (full[i - 1] == '/') return full[i..];
+    }
+    return full;
+}
+
+fn ask(purpose: proto.dialog.Purpose) void {
+    asking = purpose;
+    dialog.show(&connection, purpose, baseName()) catch {
+        status = "Cannot open the dialog.";
+    };
 }
 
 fn open() void {
     const where = path();
     if (where.len == 0) {
-        status = "Type a name first.";
+        ask(.open);
         return;
     }
 
     const handle = sys.open(where, .{});
     if (handle < 0) {
         status = "No such file.";
+        ctx.damage();
         return;
     }
     defer _ = sys.close(@intCast(handle));
@@ -105,10 +126,9 @@ fn open() void {
             status = "Only part of it fits.";
             break;
         }
-        if (status.len == 0) status = "Opened.";
     }
 
-    if (document.len == 0) status = "Opened, and it is empty.";
+    if (status.len == 0) status = if (document.len == 0) "Opened, and it is empty." else "Opened.";
     editor = .{};
     modified = false;
     setTitle();
@@ -118,13 +138,14 @@ fn open() void {
 fn save() void {
     const where = path();
     if (where.len == 0) {
-        status = "Type a name first.";
+        ask(.save);
         return;
     }
 
     const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true });
     if (handle < 0) {
         status = "Cannot write there.";
+        ctx.damage();
         return;
     }
     defer _ = sys.close(@intCast(handle));
@@ -132,6 +153,7 @@ fn save() void {
     const written = sys.write(@intCast(handle), document.slice());
     if (written < 0 or @as(usize, @intCast(written)) != document.len) {
         status = "Only part of it was written.";
+        ctx.damage();
         return;
     }
 
@@ -145,10 +167,31 @@ fn save() void {
 fn newDocument() void {
     document.clear();
     editor = .{};
+    file_len = 0;
     modified = false;
     status = "New.";
     setTitle();
     ctx.damage();
+}
+
+/// Act on what the dialog came back with.
+fn finishDialog() void {
+    switch (dialog.result) {
+        .pending => return,
+        .cancelled => status = "",
+        .chosen => {
+            setPath(dialog.chosen());
+            status = "";
+            switch (asking) {
+                .open => open(),
+                .save => save(),
+            }
+        },
+    }
+
+    dialog.hide(&connection);
+    ctx.damage();
+    redraw();
 }
 
 var title_buffer: [72]u8 = @splat(0);
@@ -157,10 +200,10 @@ fn setTitle() void {
     var line = str.Builder{ .buf = &title_buffer };
     line.text("Pad");
 
-    const typed = name.slice();
-    if (typed.len > 0) {
+    const shown = baseName();
+    if (shown.len > 0) {
         line.text(": ");
-        line.text(typed);
+        line.text(shown);
     }
     if (modified) line.text(" *");
 
@@ -174,6 +217,12 @@ fn setTitle() void {
 fn run() noreturn {
     while (true) {
         const event = connection.next(1_000_000) orelse continue;
+
+        // The dialog is a window of its own, so what belongs to it goes to it.
+        if (dialog.owns(event)) {
+            if (dialog.handle(&connection, event)) finishDialog();
+            continue;
+        }
 
         switch (event.tag) {
             .configure => resize(event.body.configure.w, event.body.configure.h),
@@ -250,22 +299,17 @@ fn draw() void {
     const pad = t.padding;
     const row = t.control_height;
 
-    // The name and what to do with it, on one line. A dialog would be a second
-    // window to arrange and dismiss for something that fits here.
-    const buttons_w: i32 = 62 * 3 + 8;
-    if (text.field(
-        &ctx,
-        .{ .x = pad, .y = pad, .w = area.w - pad * 2 - buttons_w - 4, .h = row },
-        &name_editor,
-        &name,
-    )) open();
-
-    var x = area.w - pad - buttons_w;
-    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "Open")) open();
+    // A row of what can be done, and the name in the title rather than in a
+    // field: the dialog is where a name is chosen, and a field beside it would
+    // be a second place to type one.
+    var x = pad;
+    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "New")) newDocument();
+    x += 66;
+    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "Open")) ask(.open);
     x += 66;
     if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "Save")) save();
     x += 66;
-    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "New")) newDocument();
+    if (ctx.button(.{ .x = x, .y = pad, .w = 76, .h = row }, "Save as")) ask(.save);
 
     const status_y = area.h - 18 - pad;
     text.edit(&ctx, .{
@@ -291,6 +335,10 @@ var status_buffer: [96]u8 = @splat(0);
 
 fn statusLine() []const u8 {
     var line = str.Builder{ .buf = &status_buffer };
+    if (file_len > 0) {
+        line.text(path());
+        line.text(",  ");
+    }
     line.quantity(document.len, if (document.len == 1) "byte" else "bytes");
 
     if (modified) line.text(",  unsaved");

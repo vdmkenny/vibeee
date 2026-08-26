@@ -7,6 +7,8 @@
 //! The server side is not here. It is policy, not protocol: which window goes
 //! where, who has focus, what a tag means. That belongs to the window manager.
 
+pub const dialog = @import("dialog.zig");
+pub const FileDialog = dialog.FileDialog;
 pub const wm = @import("wm.zig");
 pub const client = @import("client.zig");
 
