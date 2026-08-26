@@ -1,5 +1,6 @@
 //! Power control: soft-off and reset.
 
+const console = @import("../../kernel/console.zig");
 const port = @import("../../arch/x86/port.zig");
 const tables = @import("tables.zig");
 
@@ -49,9 +50,23 @@ const EMULATOR_PORTS = [_]struct { port: u16, value: u16 }{
 pub fn off() void {
     if (tables.get()) |info| {
         if (info.s5_found and info.pm1a_control != 0) {
-            _ = enterAcpiMode(info);
+            // Each step says what it is about to do. A machine that stops
+            // here stops with the screen still on and nothing else to go on,
+            // so the last line printed is the only way to tell which write it
+            // was that never came back.
+            console.debug("shutdown", "pm1a {x:0>4} = {x:0>4}, s5 type {d}, smi {x:0>4}/{x:0>2}", .{
+                info.pm1a_control,  port.inw(info.pm1a_control),
+                info.slp_typ_a,     info.smi_command,
+                info.acpi_enable,
+            });
+
+            const in_acpi = enterAcpiMode(info);
+            console.debug("shutdown", "acpi mode {}, pm1a now {x:0>4}", .{
+                in_acpi, port.inw(info.pm1a_control),
+            });
 
             const a: u16 = (@as(u16, info.slp_typ_a) << 10) | SLP_EN;
+            console.debug("shutdown", "sleeping with {x:0>4}", .{a});
             port.outw(info.pm1a_control, a);
 
             // The second register exists on chipsets that split the power
@@ -68,6 +83,7 @@ pub fn off() void {
         }
     }
 
+    console.debug("shutdown", "acpi would not sleep; trying the emulator ports", .{});
     for (EMULATOR_PORTS) |p| port.outw(p.port, p.value);
 }
 
