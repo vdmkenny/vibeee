@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const clock = @import("../../../kernel/clock.zig");
+const console = @import("../../../kernel/console.zig");
 const hal = @import("../../../kernel/hal.zig");
 const pci = @import("../../bus/pci.zig");
 const probe = @import("../../../kernel/probe.zig");
@@ -59,6 +60,7 @@ const Pipe = struct {
     vsync: u32,
     src: u32,
     conf: u32,
+    stat: u32,
     cntr: u32,
     base: u32,
     stride: u32,
@@ -77,6 +79,7 @@ fn pipeAt(timing: u32, plane: u32) Pipe {
         .vsync = timing + 0x14,
         .src = timing + 0x1C,
         .conf = plane + 0x008,
+        .stat = plane + 0x024,
         .cntr = plane + 0x180,
         .base = plane + 0x184,
         .stride = plane + 0x188,
@@ -108,6 +111,10 @@ const INSTPM = 0x20C0;
 
 /// A register whose top bit enables the block it controls. A pipe, a plane and
 /// the panel fitter all put it there.
+/// In a pipe's status register, the sticky record that its FIFO ran dry.
+/// Cleared by writing it back set.
+const FIFO_UNDERRUN: u32 = 1 << 31;
+
 const Enable = packed struct(u32) {
     _rest: u31,
     on: bool,
@@ -190,7 +197,7 @@ const Register = struct { name: []const u8, offset: u32 };
 
 /// What a pipe contributes to the dump, named for the pipe it belongs to so
 /// one listing covers both.
-fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [13]Register {
+fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [14]Register {
     return .{
         .{ .name = "htotal" ++ suffix, .offset = p.htotal },
         .{ .name = "hblank" ++ suffix, .offset = p.hblank },
@@ -200,6 +207,7 @@ fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [13]Register {
         .{ .name = "vsync" ++ suffix, .offset = p.vsync },
         .{ .name = "src" ++ suffix, .offset = p.src },
         .{ .name = "conf" ++ suffix, .offset = p.conf },
+        .{ .name = "stat" ++ suffix, .offset = p.stat },
         .{ .name = "cntr" ++ suffix, .offset = p.cntr },
         .{ .name = "base" ++ suffix, .offset = p.base },
         .{ .name = "stride" ++ suffix, .offset = p.stride },
@@ -366,27 +374,36 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     const cntr = read(Enable, w, pipe.cntr);
     if (!cntr.on) return error.Hardware;
 
-    // The plane's geometry registers are not double buffered on this
-    // generation: they take effect the moment they are written, and writing
-    // them while the plane is fetching leaves its counters mid-frame in a
-    // shape they never agree on, which shows as moving garbage until the
-    // plane restarts. Every driver that runs on this hardware avoids exactly
-    // that: the modesetting X driver only writes them between disabling the
-    // plane and re-enabling it, and the kernel driver confines them to the
-    // vertical blank. Off, program, on is the sequence, with a frame's wait
-    // where a frame has to finish.
+    // Everything about to change, saved raw, so a change the hardware rejects
+    // can be undone without a reboot. The pipe's own underrun bit is the
+    // judge: it is the one witness that can say whether a failure is the FIFO
+    // running dry or something else entirely, and it survives in the log
+    // where a garbled screen cannot be read.
+    const saved = Saved{
+        .pfit = read(u32, w, PFIT_CONTROL),
+        .size = read(u32, w, pipe.size),
+        .pos = read(u32, w, pipe.pos),
+        .src = read(u32, w, pipe.src),
+        .stride = read(u32, w, pipe.stride),
+        .fw_blc = read(u32, w, FW_BLC),
+        .fw_blc2 = read(u32, w, FW_BLC2),
+        .self_refresh = readSelfRefresh(w, dev.device),
+    };
 
+    clearUnderrun(w, pipe);
+
+    // The plane's geometry registers are not double buffered on this
+    // generation, so they change only between disabling the plane and
+    // re-enabling it, the way the reference drivers do it.
     var off = cntr;
     off.on = false;
     write(Enable, w, pipe.cntr, off);
     write(u32, w, pipe.base, read(u32, w, pipe.base));
     waitFrame();
 
-    // The FIFO machinery comes before the geometry that raises its demand.
-    // Both reference drivers retune it on every mode change; the firmware's
-    // settings are sized for the firmware's own smaller plane, and a fetch
-    // that outruns them starves mid line, every line, however correctly the
-    // geometry itself was programmed.
+    // The FIFO machinery before the geometry that raises its demand. Both
+    // reference drivers retune it on every mode change; the firmware's
+    // settings are sized for the firmware's own smaller plane.
     disableSelfRefresh(w, dev.device);
 
     const total_khz: u32 = @as(u32, read(Timing, w, pipe.htotal).total()) *
@@ -416,7 +433,28 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
 
     write(Enable, w, pipe.cntr, cntr);
     write(u32, w, pipe.base, read(u32, w, pipe.base));
-    waitFrame();
+
+    // Half a second in the new mode before judging it: an underrun that only
+    // strikes under real fetch load takes frames to show, not microseconds.
+    var settled: u32 = 0;
+    while (settled < 25) : (settled += 1) waitFrame();
+
+    const stat = read(u32, w, pipe.stat);
+    console.debug("video", "native: stat {x:0>8}, fwblc {x:0>8} dsparb {x:0>8} self {x:0>8}", .{
+        stat, read(u32, w, FW_BLC), @as(u32, @bitCast(dsparb)), readSelfRefresh(w, dev.device),
+    });
+    console.debug("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
+        read(u32, w, pipe.size), read(u32, w, pipe.src),
+        read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
+    });
+
+    if (stat & FIFO_UNDERRUN != 0) {
+        console.warn("video: fifo ran dry at {d}x{d}; putting the mode back", .{
+            want.width, want.height,
+        });
+        revert(w, pipe, dev.device, cntr, saved);
+        return error.Hardware;
+    }
 
     return .{
         .phys = w.aperture,
@@ -425,6 +463,71 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         .height = want.height,
         .bpp = 32,
     };
+}
+
+/// What `set` changes, as the hardware held it beforehand.
+const Saved = struct {
+    pfit: u32,
+    size: u32,
+    pos: u32,
+    src: u32,
+    stride: u32,
+    fw_blc: u32,
+    fw_blc2: u32,
+    self_refresh: u32,
+};
+
+/// Put back everything `set` changed, around the same plane restart.
+fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void {
+    var off = cntr;
+    off.on = false;
+    write(Enable, w, pipe.cntr, off);
+    write(u32, w, pipe.base, read(u32, w, pipe.base));
+    waitFrame();
+
+    write(u32, w, PFIT_CONTROL, saved.pfit);
+    write(u32, w, pipe.size, saved.size);
+    write(u32, w, pipe.pos, saved.pos);
+    write(u32, w, pipe.src, saved.src);
+    write(u32, w, pipe.stride, saved.stride);
+    write(u32, w, FW_BLC, saved.fw_blc);
+    write(u32, w, FW_BLC2, saved.fw_blc2);
+    restoreSelfRefresh(w, device, saved.self_refresh);
+
+    write(Enable, w, pipe.cntr, cntr);
+    write(u32, w, pipe.base, read(u32, w, pipe.base));
+    waitFrame();
+    clearUnderrun(w, pipe);
+}
+
+/// Clear the sticky underrun record so the next reading is about now.
+fn clearUnderrun(w: Windows, pipe: Pipe) void {
+    write(u32, w, pipe.stat, read(u32, w, pipe.stat) | FIFO_UNDERRUN);
+}
+
+/// The register holding this part's self-refresh switch, read raw.
+fn readSelfRefresh(w: Windows, device: u16) u32 {
+    return switch (device) {
+        0x2592, 0x2792 => read(u32, w, INSTPM),
+        0x27A2, 0x27AE => read(u32, w, FW_BLC_SELF),
+        0xA011, 0xA012 => read(u32, w, DSPFW3),
+        else => 0,
+    };
+}
+
+/// Put the self-refresh switch back the way firmware had it. The enable
+/// registers on the older parts are masked, the high half naming which low
+/// bits a write may touch.
+fn restoreSelfRefresh(w: Windows, device: u16, old: u32) void {
+    switch (device) {
+        0x2592, 0x2792 => write(u32, w, INSTPM, (@as(u32, 1 << 12) << 16) | (old & (1 << 12))),
+        0x27A2, 0x27AE => write(u32, w, FW_BLC_SELF, (@as(u32, 1) << 31) | (old & (1 << 15))),
+        0xA011, 0xA012 => {
+            const now = read(u32, w, DSPFW3) & ~(@as(u32, 1) << 30);
+            write(u32, w, DSPFW3, now | (old & (@as(u32, 1) << 30)));
+        },
+        else => {},
+    }
 }
 
 /// Stop the memory controller's display self refresh.
