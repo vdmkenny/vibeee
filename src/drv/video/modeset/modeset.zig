@@ -10,6 +10,7 @@
 //! The table below names them by the machines they shipped in rather than only
 //! by their part numbers, because that is how anyone will look one up.
 
+const gen3_backend = @import("gen3.zig");
 const probe = @import("../../../kernel/probe.zig");
 
 pub const Error = error{
@@ -47,6 +48,11 @@ pub const Backend = struct {
     /// written, which is what makes this table an honest status board rather
     /// than a claim.
     set: ?*const fn (dev: probe.Device, want: Mode) Error!Framebuffer = null,
+    /// Report the adapter's registers. Reading is safe where writing is not,
+    /// so a backend can carry this long before it can carry `set`, and on
+    /// hardware without public documentation it is what `set` gets written
+    /// from.
+    inspect: ?*const fn (dev: probe.Device, w: *std.Io.Writer) void = null,
 };
 
 /// Match any of a list of PCI device ids from one vendor.
@@ -61,20 +67,6 @@ fn anyOf(comptime vendor: u16, comptime devices: []const u16) fn (probe.Device) 
         }
     }.f;
 }
-
-/// Intel gen3: the 915, 945 and Pineview families.
-///
-/// One family for modeset purposes. They differ in clock limits and in where a
-/// few registers moved, not in the shape of programming a pipe, a PLL and a
-/// plane, which is why the driver they all share upstream is one driver.
-const gen3 = [_]u16{
-    0x2592, // 915GM, Eee PC 701 and 900
-    0x2792, // 915GMS
-    0x27A2, // 945GM
-    0x27AE, // 945GSE, Eee PC 901/1000, Aspire One AOA110/150, HP Mini 110
-    0xA011, // Pineview M, Eee PC 1001PX/1015, Aspire One D255, HP Mini 210
-    0xA012, // Pineview M, second id
-};
 
 /// Intel gen4: 965 and GM45. Found in the larger ultraportables of the same
 /// years rather than in netbooks proper, and close enough to gen3 to be worth
@@ -104,7 +96,8 @@ pub const backends = [_]Backend{
     .{
         .name = "intel-gen3",
         .describes = "GMA 900/950/3150",
-        .fits = &anyOf(0x8086, &gen3),
+        .fits = &gen3_backend.fits,
+        .inspect = &gen3_backend.inspect,
     },
     .{
         .name = "intel-gen4",

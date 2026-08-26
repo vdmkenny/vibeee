@@ -21,6 +21,14 @@ pub const impl = switch (builtin.cpu.arch) {
     ),
 };
 
+/// Whether this build has an architecture backend at all.
+///
+/// False only in the host test build, which compiles the portable parts
+/// natively so their tables and algorithms can be checked without an emulator.
+/// A module worth testing there guards its hardware access on this, and the
+/// guarded code is then never analysed for a target that could not run it.
+pub const available: bool = builtin.cpu.arch == .x86;
+
 /// Compile-time capability flags. Code that needs port I/O (x86-only) guards
 /// on this rather than on the architecture name, so an architecture that grows
 /// the capability later does not need every call site edited.

@@ -17,6 +17,7 @@
 //!
 //! `design/10-gui.md` §3.2.
 
+const std = @import("std");
 const console = @import("console.zig");
 const shm = @import("shm.zig");
 
@@ -82,6 +83,21 @@ pub fn setAdapter(a: Adapter) void {
 
 pub fn describeAdapter() Adapter {
     return adapter;
+}
+
+/// How to report the adapter's registers, or null when nothing can.
+///
+/// A function pointer rather than a call into the driver, because the kernel
+/// may not reach one: the composition root binds the adapter and supplies
+/// this, the same way it supplies the description above.
+var reporter: ?*const fn (*std.Io.Writer) void = null;
+
+pub fn setReporter(f: *const fn (*std.Io.Writer) void) void {
+    reporter = f;
+}
+
+pub fn registerReporter() ?*const fn (*std.Io.Writer) void {
+    return reporter;
 }
 var phys_base: usize = 0;
 var owned = false;

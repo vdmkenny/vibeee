@@ -217,6 +217,16 @@ fn attachAta(dev: Device) anyerror!void {
 }
 
 var display_attached = false;
+/// The adapter that answered, kept so its registers can be reported later.
+var display_dev: Device = undefined;
+var display_backend: ?*const modeset.Backend = null;
+
+/// Report the display adapter's registers, for `display regs`.
+fn reportDisplayRegisters(w: *std.Io.Writer) void {
+    const backend = display_backend orelse return;
+    const f = backend.inspect orelse return;
+    f(display_dev, w);
+}
 
 /// Bring up the display.
 ///
@@ -235,6 +245,9 @@ fn attachDisplay(dev: Device) anyerror!void {
         return;
     };
     display_attached = true;
+    display_dev = dev;
+    display_backend = backend;
+    if (backend.inspect != null) display.setReporter(&reportDisplayRegisters);
 
     display.setAdapter(.{
         .backend = backend.name,

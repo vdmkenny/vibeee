@@ -134,6 +134,12 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
                 if (a.can_set) "can set modes" else "no modeset yet",
             });
         }
+    } else if (eq(key, "display.registers")) {
+        if (display.registerReporter()) |f| {
+            w.delegate(f);
+        } else {
+            try w.print("no adapter that reports registers", .{});
+        }
     } else if (eq(key, "console")) {
         try w.print("{d}x{d} cells", .{ console.width(), console.height() });
     } else if (eq(key, "font")) {
@@ -344,6 +350,14 @@ fn eq(a: []const u8, b: []const u8) bool {
 const Writer = struct {
     buf: []u8,
     len: usize = 0,
+
+    /// Hand the unused tail to something that formats for itself, and take up
+    /// however much of it was used.
+    fn delegate(self: *Writer, f: *const fn (*std.Io.Writer) void) void {
+        var stream = std.Io.Writer.fixed(self.buf[self.len..]);
+        f(&stream);
+        self.len += stream.end;
+    }
 
     fn print(self: *Writer, comptime fmt: []const u8, args: anytype) Error!void {
         var stream = std.Io.Writer.fixed(self.buf[self.len..]);
