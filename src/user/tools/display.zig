@@ -37,7 +37,7 @@ pub fn display(args: []const []const u8) void {
 /// a mode itself, and these are the registers it would have to write, so this
 /// is where the timings a native modeset needs are read from.
 fn registers() void {
-    var buf: [1024]u8 = @splat(0);
+    var buf: [2048]u8 = @splat(0);
     const text = info.ask("display.registers", &buf);
     if (text.len == 0) {
         out.text("nothing to report\n");

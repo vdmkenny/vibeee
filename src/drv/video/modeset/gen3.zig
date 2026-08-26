@@ -61,6 +61,8 @@ const Pipe = struct {
     cntr: u32,
     base: u32,
     stride: u32,
+    pos: u32,
+    size: u32,
 };
 
 /// A pipe from the addresses of its timing block and its plane block.
@@ -77,6 +79,8 @@ fn pipeAt(timing: u32, plane: u32) Pipe {
         .cntr = plane + 0x180,
         .base = plane + 0x184,
         .stride = plane + 0x188,
+        .pos = plane + 0x18C,
+        .size = plane + 0x190,
     };
 }
 
@@ -131,11 +135,22 @@ const Source = packed struct(u32) {
     }
 };
 
+/// The plane's own displayed size, which is not the pipe's source size and
+/// does not hold its halves the same way round: width low, height high.
+const PlaneSize = packed struct(u32) {
+    width_less_one: u16,
+    height_less_one: u16,
+
+    fn of(width: u16, height: u16) PlaneSize {
+        return .{ .width_less_one = width - 1, .height_less_one = height - 1 };
+    }
+};
+
 const Register = struct { name: []const u8, offset: u32 };
 
 /// What a pipe contributes to the dump, named for the pipe it belongs to so
 /// one listing covers both.
-fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [11]Register {
+fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [13]Register {
     return .{
         .{ .name = "htotal" ++ suffix, .offset = p.htotal },
         .{ .name = "hblank" ++ suffix, .offset = p.hblank },
@@ -148,6 +163,8 @@ fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [11]Register {
         .{ .name = "cntr" ++ suffix, .offset = p.cntr },
         .{ .name = "base" ++ suffix, .offset = p.base },
         .{ .name = "stride" ++ suffix, .offset = p.stride },
+        .{ .name = "pos" ++ suffix, .offset = p.pos },
+        .{ .name = "size" ++ suffix, .offset = p.size },
     };
 }
 
@@ -312,6 +329,12 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     const pitch = std.mem.alignForward(u32, @as(u32, want.width) * 4, STRIDE_ALIGN);
     write(Source, w, pipe.src, Source.of(want.width, want.height));
     write(u32, w, pipe.stride, pitch);
+
+    // The plane carries its own size and origin, which firmware sized to the
+    // smaller image it was scaling. A pipe told to scan out more than the plane
+    // paints shows the pipe's border colour for the rest.
+    write(PlaneSize, w, pipe.size, PlaneSize.of(want.width, want.height));
+    write(u32, w, pipe.pos, 0);
 
     // Writing the base arms the plane: the registers above are double buffered
     // and take effect together at the next vertical blank.
