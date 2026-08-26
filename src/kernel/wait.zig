@@ -108,6 +108,13 @@ pub fn blockOn(queues: []const *Queue, deadline_us: ?u64) Timeout!usize {
     std.debug.assert(queues.len > 0 and queues.len <= MAX_QUEUES);
     const self = sched.currentThread() orelse unreachable;
 
+    // A thread that has been asked to end does not start a new wait. Every
+    // caller already unwinds on a timeout, releasing whatever it holds, and
+    // that is exactly the path a kill needs: the thread reaches the end of the
+    // syscall, where it can be ended safely, instead of blocking again on
+    // something that may never arrive.
+    if (self.killed) return error.TimedOut;
+
     var waiters: [MAX_QUEUES]Waiter = undefined;
     for (queues, 0..) |q, i| {
         waiters[i] = .{ .thread = self };
@@ -125,6 +132,7 @@ pub fn blockOn(queues: []const *Queue, deadline_us: ?u64) Timeout!usize {
         q.remove(&waiters[i]);
     }
 
+    if (self.killed) return error.TimedOut;
     return fired orelse error.TimedOut;
 }
 

@@ -276,6 +276,13 @@ pub fn waitFor(child: *Thread) i32 {
     // block happens in: a child that exited between the caller deciding to
     // wait and getting here has already emptied its queue.
     while (child.state != .dead) {
+        // `wait.block` has nowhere to report a refusal to block, so the caller
+        // checks. Stopping the wait leaves the child an orphan, which init
+        // adopts like any other.
+        if (currentKilled()) {
+            child.awaited = false;
+            return KILLED_STATUS;
+        }
         wait.block(&child.exit_queue);
     }
 
@@ -550,6 +557,38 @@ fn dequeueCorpse(t: *Thread) void {
 
 pub const find = thread_mod.find;
 
+/// Ask a thread to end.
+///
+/// Marks rather than terminates. A thread part way through a syscall holds
+/// kernel state on its own stack, waiter nodes, an in-flight call record, and
+/// tearing it down from the outside would abandon all of it. Marked, it dies
+/// on its own next return to userspace, having unwound everything the ordinary
+/// way. One that is blocked or sleeping is woken so that return happens now
+/// rather than whenever the thing it was waiting for arrives.
+pub fn kill(id: u32) error{ NotFound, Refused }!void {
+    const t = find(id) orelse return error.NotFound;
+    if (t.state == .dead) return error.NotFound;
+
+    // `init` adopts orphans, and the idle thread is what runs when nothing
+    // else can. Neither has a replacement.
+    if (t.id == init_id) return error.Refused;
+    if (idle_thread) |idle| {
+        if (t == idle) return error.Refused;
+    }
+    // A kernel thread has no return to userspace, which is the only place the
+    // flag is acted on. Accepting would report a success that never happens.
+    if (t.space.pd_phys == 0) return error.Refused;
+
+    t.killed = true;
+    unblock(t);
+}
+
+/// Whether the running thread has been asked to end.
+pub fn currentKilled() bool {
+    const t = current orelse return false;
+    return t.killed;
+}
+
 /// Called from the timer interrupt. Only accounting here, the actual switch
 /// happens at interrupt exit, after the controller has been acknowledged.
 pub fn onTick() void {
@@ -563,10 +602,20 @@ pub fn onTick() void {
 }
 
 /// Called at interrupt exit, with interrupts still disabled.
-pub fn onInterruptExit() void {
-    if (!started or !need_resched) return;
+///
+/// `from_user` says whether the interrupted code was Ring 3. It is the only
+/// moment a thread is known to hold no kernel state, which makes it the one
+/// place a thread interrupted in a loop that never syscalls can be ended.
+pub fn onInterruptExit(from_user: bool) void {
+    if (!started) return;
+    if (from_user and currentKilled()) exitWith(KILLED_STATUS);
+    if (!need_resched) return;
     schedule();
 }
+
+/// What a killed process reports to whoever waits for it. Negative, because a
+/// process that was ended did not choose its own status.
+pub const KILLED_STATUS: i32 = -9;
 
 /// The thread that runs when nothing else can. Halting rather than spinning is
 /// what keeps the real machine cool and QEMU off a full host core.

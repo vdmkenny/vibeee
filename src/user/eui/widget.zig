@@ -24,6 +24,7 @@ const draw = @import("draw.zig");
 
 const theme = @import("theme.zig");
 const glyphs = @import("lib").font.glyphs;
+const tbl = @import("table.zig");
 
 const Rect = draw.Rect;
 const Surface = draw.Surface;
@@ -36,14 +37,14 @@ pub const KeyCode = @import("lib").syscalls.KeyCode;
 
 /// How a control looks right now. Kept per control so a pass can tell whether
 /// anything needs redrawing.
-const Visual = enum { idle, hot, active, checked, checked_hot };
+pub const Visual = enum { idle, hot, active, checked, checked_hot };
 
 /// One control's identity and remembered state.
 ///
 /// Identified by position rather than by a name or an index: a control is
 /// where it is on screen, two controls cannot occupy the same place, and it
 /// spares every caller inventing stable ids.
-const Entry = struct {
+pub const Entry = struct {
     x: i16 = 0,
     y: i16 = 0,
     used: bool = false,
@@ -84,6 +85,10 @@ pub const Context = struct {
     /// has focus, so a pass sees it at most once.
     pending_key: u8 = 0,
     key_mods: Modifiers = .{},
+
+    /// Wheel notches this pass, negative for away from the user. Consumed by
+    /// whichever control the pointer is over, since that is what a wheel means.
+    pending_wheel: i8 = 0,
 
     /// The control with keyboard focus, as an index into `entries`. Kept
     /// across passes: focus is state, and losing it every frame would make Tab
@@ -143,6 +148,11 @@ pub const Context = struct {
         }
         self.pending_key = code;
         self.key_mods = mods;
+    }
+
+    /// Offer wheel movement to this pass.
+    pub fn postScroll(self: *Context, dy: i8) void {
+        self.pending_wheel +|= dy;
     }
 
     /// Record that `area` needs sending to the screen.
@@ -227,6 +237,13 @@ pub const Context = struct {
     }
 
     /// Take the pending key if this control has focus.
+    /// Take the wheel movement for this pass, if it has not been taken.
+    pub fn takeWheel(self: *Context) i8 {
+        const value = self.pending_wheel;
+        self.pending_wheel = 0;
+        return value;
+    }
+
     fn takeKey(self: *Context, index: usize) ?u8 {
         if (self.focus != index or self.pending_key == 0) return null;
         const code = self.pending_key;
@@ -240,6 +257,8 @@ pub const Context = struct {
             if (e.used and !e.seen) e.* = .{};
         }
         self.damaged = false;
+        self.pending_key = 0;
+        self.pending_wheel = 0;
 
         if (!self.buttons.left) self.pressed = null;
     }
@@ -258,15 +277,15 @@ pub const Context = struct {
         self.damaged = true;
     }
 
-    fn pressedThisPass(self: *const Context) bool {
+    pub fn pressedThisPass(self: *const Context) bool {
         return self.buttons.left and !self.previous.left;
     }
 
-    fn releasedThisPass(self: *const Context) bool {
+    pub fn releasedThisPass(self: *const Context) bool {
         return !self.buttons.left and self.previous.left;
     }
 
-    fn slotFor(self: *Context, area: Rect) ?*Entry {
+    pub fn slotFor(self: *Context, area: Rect) ?*Entry {
         const x: i16 = @intCast(@max(@min(area.x, 32767), -32768));
         const y: i16 = @intCast(@max(@min(area.y, 32767), -32768));
 
@@ -286,6 +305,17 @@ pub const Context = struct {
     }
 
     // -----------------------------------------------------------------------
+    // For control authors
+    //
+    // Controls large enough to live in their own file reach the pass machinery
+    // through these. Nothing outside the toolkit should call them.
+    // -----------------------------------------------------------------------
+
+    pub fn takeKeyFor(self: *Context, entry: *const Entry) ?u8 {
+        return self.takeKey(self.indexOf(entry));
+    }
+
+    // -----------------------------------------------------------------------
     // Controls
     // -----------------------------------------------------------------------
 
@@ -295,7 +325,7 @@ pub const Context = struct {
     /// lives in one place: a control that gets any part of it subtly wrong is
     /// a control that behaves unlike the rest of the toolkit for no reason a
     /// person could guess.
-    const Interaction = struct {
+    pub const Interaction = struct {
         index: usize,
         over: bool,
         /// Held down on itself, so it should look pressed.
@@ -305,7 +335,7 @@ pub const Context = struct {
         activated: bool,
     };
 
-    fn interact(self: *Context, entry: *Entry, area: Rect) Interaction {
+    pub fn interact(self: *Context, entry: *Entry, area: Rect) Interaction {
         entry.seen = true;
         entry.focusable = true;
 
@@ -343,7 +373,7 @@ pub const Context = struct {
     ///
     /// One that looks the way it did last pass is left alone, which is what
     /// keeps the damage list short enough to be worth sending.
-    fn needsPaint(self: *const Context, entry: *const Entry, visual: Visual) bool {
+    pub fn needsPaint(self: *const Context, entry: *const Entry, visual: Visual) bool {
         return visual != entry.visual or self.damaged or self.focus_moved;
     }
 
@@ -413,6 +443,17 @@ pub const Context = struct {
         }
 
         return value;
+    }
+
+    /// A scrolling table of rows. Returns the row activated this pass, or null.
+    pub fn table(
+        self: *Context,
+        area: Rect,
+        state: *tbl.State,
+        columns: []const tbl.Column,
+        rows: []const tbl.Row,
+    ) ?usize {
+        return tbl.run(self, area, state, columns, rows);
     }
 
     /// Static text. Repainted only when something has damaged it, since a

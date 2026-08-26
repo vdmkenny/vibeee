@@ -133,7 +133,10 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
     // Preemption happens here rather than inside the handler: the interrupt
     // controller has been acknowledged, so switching stacks now cannot strand
     // a line un-acknowledged and wedge further interrupts.
-    @import("../../kernel/sched.zig").onInterruptExit();
+    // The low two bits of the saved CS are the privilege level the interrupt
+    // came from, which is how the scheduler knows the thread holds no kernel
+    // state and can be ended here.
+    @import("../../kernel/sched.zig").onInterruptExit(frame.cs & 3 == 3);
 }
 
 fn setGate(vec: u8, handler: *const anyopaque, dpl: u2, gate_type: GateType) void {

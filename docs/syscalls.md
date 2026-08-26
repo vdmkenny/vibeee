@@ -609,6 +609,23 @@ Read raw key events, claiming the keyboard.
 
 The first call claims the keyboard: events stop reaching the line discipline and arrive here instead, because a shell reading lines and a compositor reading keys cannot both consume the same keystroke. The claim is released when the process exits. Presses and releases both arrive, with the keycode for shortcuts and the codepoint for text.
 
+## `kill`  <sub>#34</sub>
+
+End another process.
+
+| arg | type | meaning |
+|---|---|---|
+| `pid` | uint | Process to end. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `ENOENT`, no such file or directory
+- `EPERM`, the operation is not allowed on that object
+
+There are no signals: this ends the process, it does not ask it to. The process dies at its next return to userspace, so kernel state it holds is unwound rather than abandoned; one blocked or sleeping is woken so that happens at once. Ending `init` is refused, since nothing would collect what it adopts.
+
 ---
 
-34 calls defined.
+35 calls defined.

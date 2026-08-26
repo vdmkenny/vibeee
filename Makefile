@@ -48,6 +48,7 @@ USER_INIT  := zig-out/bin/init
 USER_WM    := zig-out/bin/eeewm
 USER_EHELLO := zig-out/bin/ehello
 USER_SETTINGS := zig-out/bin/settings
+USER_MONITOR := zig-out/bin/monitor
 USER_HELLO := zig-out/bin/hello
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
@@ -114,6 +115,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/EEEWM
 	@$(MCOPY) -i $@ -o $(USER_EHELLO) ::/EHELLO
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/SETTINGS
+	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/MONITOR
 	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH

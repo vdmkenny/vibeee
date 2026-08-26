@@ -149,3 +149,64 @@ pub fn decimal(buf: []u8, value: usize) usize {
     for (0..written) |i| buf[i] = digits[n - 1 - i];
     return written;
 }
+
+/// Whether a short name is stored upper-cased because FAT had nowhere to record
+/// its case.
+///
+/// A name with any lowercase in it came from a long-name record, which does
+/// preserve case, so it is left alone. That is the rule Windows and macOS
+/// apply, and it means `README.TXT` on disk reads as `readme.txt` while
+/// `MyNotes.md` keeps its shape.
+pub fn caseless(text: []const u8) bool {
+    for (text) |c| {
+        if (c >= 'a' and c <= 'z') return false;
+    }
+    return true;
+}
+
+/// A filename or path written the way it should be read. The result points into
+/// `buf` when the case had to be changed, and into `text` when it did not.
+pub fn displayName(buf: []u8, text: []const u8) []const u8 {
+    if (!caseless(text) or text.len > buf.len) return text;
+    for (text, 0..) |c, i| buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    return buf[0..text.len];
+}
+
+/// Building a short string in a fixed buffer.
+///
+/// For text that goes somewhere other than standard output: a window's status
+/// line, a config file, a label. Silently stops at the end of the buffer,
+/// because every caller here is composing something whose length it already
+/// knows and a truncated label beats a fallible one.
+pub const Builder = struct {
+    buf: []u8,
+    len: usize = 0,
+
+    pub fn text(self: *Builder, s: []const u8) void {
+        const n = @min(s.len, self.buf.len - self.len);
+        @memcpy(self.buf[self.len..][0..n], s[0..n]);
+        self.len += n;
+    }
+
+    pub fn byte(self: *Builder, c: u8) void {
+        if (self.len < self.buf.len) {
+            self.buf[self.len] = c;
+            self.len += 1;
+        }
+    }
+
+    pub fn number(self: *Builder, value: usize) void {
+        self.len += decimal(self.buf[self.len..], value);
+    }
+
+    /// A number and its unit, the pair that always travels together.
+    pub fn quantity(self: *Builder, value: usize, unit: []const u8) void {
+        self.number(value);
+        self.byte(' ');
+        self.text(unit);
+    }
+
+    pub fn done(self: *const Builder) []const u8 {
+        return self.buf[0..self.len];
+    }
+};

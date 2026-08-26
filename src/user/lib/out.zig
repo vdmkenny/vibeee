@@ -4,6 +4,7 @@
 //! cost thousands of traps. Buffering into one write per line keeps a full
 //! system report to a couple of dozen.
 
+const str = @import("str.zig");
 const sys = @import("sys");
 
 var buffer: [1024]u8 = [_]u8{0} ** 1024;
@@ -77,32 +78,27 @@ pub fn byte(c: u8) void {
     if (c == '\n') flush();
 }
 
-/// Write `s` padded to `width`, for aligned columns.
-/// Write a filename or path as it should be read.
-///
-/// A short FAT name is stored upper-cased because the format has nowhere to
-/// record case, so printing it verbatim shouts. A name with any lowercase in
-/// it came from a long-name record, which does preserve case, and is printed
-/// as stored. That is the same rule Windows and macOS apply, and it means
-/// `README.TXT` on disk reads as `readme.txt` while `MyNotes.md` keeps its
-/// shape.
+/// Write a filename or path as it should be read, per `str.displayName`.
 pub fn name(text_bytes: []const u8) void {
-    var has_lower = false;
-    for (text_bytes) |c| {
-        if (c >= 'a' and c <= 'z') has_lower = true;
-    }
-
-    if (has_lower) {
+    if (!str.caseless(text_bytes)) {
         text(text_bytes);
         return;
     }
     for (text_bytes) |c| byte(if (c >= 'A' and c <= 'Z') c + 32 else c);
 }
 
+/// Write `s` padded to `width`, for aligned columns.
 pub fn pad(s: []const u8, width: usize) void {
     text(s);
     var n = s.len;
     while (n < width) : (n += 1) byte(' ');
+}
+
+/// A number in a left-aligned field, the numeric counterpart of `pad`.
+pub fn padNumber(value: usize, width: usize) void {
+    var buf: [20]u8 = @splat(0);
+    const n = str.decimal(&buf, value);
+    pad(buf[0..n], width);
 }
 
 pub fn decimal(value: usize) void {

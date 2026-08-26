@@ -11,6 +11,7 @@
 const sys = @import("sys");
 const out = @import("ulib").out;
 const info = @import("ulib").info;
+const procs = @import("ulib").procs;
 const str = @import("ulib").str;
 
 
@@ -99,7 +100,7 @@ pub fn top(args: []const []const u8) void {
         out.pad("TICKS", 8);
         out.text("NAME\n");
 
-        writeTree(info.ask("threads.list", &buf));
+        writeTree(&buf);
 
         if (round + 1 < rounds) {
             out.byte('\n');
@@ -111,86 +112,49 @@ pub fn top(args: []const []const u8) void {
     out.flush();
 }
 
-/// Rows arrive tab-separated; column widths are decided here so the kernel does
-/// not have to know how anything will be displayed.
-const MAX_THREADS = 64;
-
-const Row = struct {
-    pid: usize = 0,
-    parent: usize = 0,
-    state: []const u8 = "",
-    priority: []const u8 = "",
-    ticks: []const u8 = "",
-    name: []const u8 = "",
-    /// Set once printed, so a parent loop that has gone wrong cannot make this
-    /// print the same thread forever.
-    shown: bool = false,
-};
-
-var rows: [MAX_THREADS]Row = @splat(.{});
-
-/// Print the thread list as a tree.
+/// Print the process table as a tree.
 ///
 /// Which process started which is most of what anyone looking at this wants to
-/// know, whether the shell is init's child, whether a tool is still attached
-/// to the shell that ran it, and a flat list makes that guesswork.
-fn writeTree(text: []const u8) void {
-    var count: usize = 0;
+/// know: whether the shell is init's child, whether a tool is still attached to
+/// the shell that ran it. A flat list makes that guesswork.
+fn writeTree(buf: []u8) void {
+    const table = procs.read(buf);
 
-    var lines = str.lines(text);
-    while (lines.next()) |line| {
-        if (line.len == 0 or count >= MAX_THREADS) continue;
-        var it = str.fields(line);
-        rows[count] = .{
-            .pid = str.toUnsigned(it.next() orelse continue),
-            .parent = str.toUnsigned(it.next() orelse continue),
-            .state = it.next() orelse "",
-            .priority = it.next() orelse "",
-            .ticks = it.next() orelse "",
-            .name = it.next() orelse "",
-        };
-        count += 1;
-    }
+    for (table.items()) |p| {
+        out.decimalRight(p.pid, 4);
+        out.text("  ");
+        out.pad(p.state, 10);
+        out.padNumber(p.priority, 5);
+        out.padNumber(p.ticks, 8);
 
-    // Roots first: a thread whose parent is not in the list is one the kernel
-    // started itself, and is where a branch of the tree begins.
-    for (rows[0..count]) |*row| {
-        if (findRow(count, row.parent) == null) writeBranch(count, row, 0);
-    }
-
-    // Anything left is in a parent cycle, which should be impossible, but
-    // dropping threads silently from the one tool that lists them would hide
-    // exactly the bug that caused it.
-    for (rows[0..count]) |*row| {
-        if (!row.shown) writeBranch(count, row, 0);
+        for (0..p.depth) |_| out.text("  ");
+        out.name(p.name);
+        if (p.current) out.text(" *");
+        out.byte('\n');
     }
 }
 
-fn findRow(count: usize, pid: usize) ?*Row {
-    for (rows[0..count]) |*row| {
-        if (row.pid == pid) return row;
+/// End a process.
+///
+/// There are no signals, so there is nothing to choose between: this ends the
+/// process. Naming it `kill` anyway because that is what anyone will type.
+pub fn kill(args: []const []const u8) void {
+    if (args.len == 0) {
+        out.text("usage: kill <pid>\n");
+        out.flush();
+        return;
     }
-    return null;
-}
 
-fn writeBranch(count: usize, row: *Row, depth: usize) void {
-    if (row.shown) return;
-    row.shown = true;
-
-    out.decimalRight(row.pid, 4);
-    out.text("  ");
-    out.pad(row.state, 10);
-    out.pad(row.priority, 5);
-    out.pad(row.ticks, 8);
-
-    var indent: usize = 0;
-    while (indent < depth) : (indent += 1) out.text("  ");
-    out.text(row.name);
-    out.byte('\n');
-
-    for (rows[0..count]) |*child| {
-        if (child != row and child.parent == row.pid) writeBranch(count, child, depth + 1);
+    for (args) |arg| {
+        const pid = str.toUnsigned(arg);
+        const result = sys.kill(@intCast(pid));
+        if (result < 0) {
+            out.text("kill: ");
+            out.decimal(pid);
+            out.text(if (result == -1) ": not allowed\n" else ": no such process\n");
+        }
     }
+    out.flush();
 }
 
 pub fn disk(_: []const []const u8) void {

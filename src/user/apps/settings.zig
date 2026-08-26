@@ -107,26 +107,20 @@ fn save() void {
     defer _ = sys.close(@intCast(handle));
 
     var buf: [512]u8 = @splat(0);
-    var n: usize = 0;
+    var text = str.Builder{ .buf = &buf };
 
-    n += write(buf[n..], "# Written by Settings.\n\ntheme  = ");
-    n += write(buf[n..], themeName());
-    n += write(buf[n..], "\nbar    = ");
-    n += write(buf[n..], @tagName(settings.bar));
-    n += write(buf[n..], "\nlayout = ");
-    n += write(buf[n..], @tagName(settings.layout));
-    n += write(buf[n..], "\nmaster = ");
-    n += str.decimal(buf[n..], settings.master);
-    n += write(buf[n..], "\n");
+    text.text("# Written by Settings.\n\ntheme  = ");
+    text.text(themeName());
+    text.text("\nbar    = ");
+    text.text(@tagName(settings.bar));
+    text.text("\nlayout = ");
+    text.text(@tagName(settings.layout));
+    text.text("\nmaster = ");
+    text.number(settings.master);
+    text.byte('\n');
 
-    _ = sys.write(@intCast(handle), buf[0..n]);
+    _ = sys.write(@intCast(handle), text.done());
     saved = true;
-}
-
-fn write(dst: []u8, text: []const u8) usize {
-    const n = @min(text.len, dst.len);
-    @memcpy(dst[0..n], text[0..n]);
-    return n;
 }
 
 // ---------------------------------------------------------------------------

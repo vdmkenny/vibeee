@@ -35,6 +35,7 @@ const commands = [_]Command{
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
+    .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
     .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },

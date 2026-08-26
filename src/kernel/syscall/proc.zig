@@ -86,3 +86,11 @@ pub fn sys_getcwd(a: Args) Result {
     @memcpy(out[0..dir.len], dir);
     return @intCast(dir.len);
 }
+
+pub fn sys_kill(a: Args) Result {
+    sched.kill(@truncate(a.a0)) catch |err| return switch (err) {
+        error.NotFound => Errno.noent.value(),
+        error.Refused => Errno.perm.value(),
+    };
+    return 0;
+}

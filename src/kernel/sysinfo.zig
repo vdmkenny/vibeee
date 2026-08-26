@@ -163,7 +163,7 @@ fn writeServices(w: *Writer) Error!void {
     if (first) return error.UnknownKey;
 }
 
-/// One line per thread: id, parent, state, priority, ticks, name.
+/// One line per thread: id, parent, state, priority, ticks, name, running.
 ///
 /// The parent is included so a display can draw the process tree. Which
 /// process started which is most of what a supervisor's user wants to know,
@@ -175,14 +175,14 @@ fn writeThreads(w: *Writer) Error!void {
 
         fn visit(self: *@This(), t: sched.Snapshot) void {
             if (self.failed) return;
-            self.w.print("{d}\t{d}\t{s}\t{d}\t{d}\t{s}{s}\n", .{
+            self.w.print("{d}\t{d}\t{s}\t{d}\t{d}\t{s}\t{d}\n", .{
                 t.id,
                 t.parent_id,
                 @tagName(t.state),
                 t.priority,
                 t.cpu_ticks,
                 t.name,
-                if (t.is_current) " *" else "",
+                @intFromBool(t.is_current),
             }) catch {
                 // Truncate rather than fail: a partial list is more use than
                 // none, and the caller can ask for a bigger buffer.

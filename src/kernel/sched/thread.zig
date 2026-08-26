@@ -66,6 +66,10 @@ pub const Thread = struct {
     name_buf: [16]u8 = @splat(0),
     name_len: usize = 0,
     state: State = .ready,
+    /// Asked to end by something other than itself. Acted on at the next
+    /// return to userspace, never where it was noticed: a thread killed part
+    /// way through a syscall would abandon whatever that syscall was holding.
+    killed: bool = false,
     priority: u8,
     slice_left: u8 = 0,
     /// Monotonic microseconds at which a sleeping thread becomes runnable.

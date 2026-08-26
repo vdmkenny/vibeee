@@ -205,6 +205,10 @@ pub fn shutdown(action: usize) noreturn {
     unreachable;
 }
 
+pub fn kill(pid: u32) isize {
+    return syscall1(abi.number("kill"), pid);
+}
+
 pub fn exit(status: usize) noreturn {
     _ = syscall1(abi.number("exit"), status);
     unreachable;

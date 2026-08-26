@@ -109,6 +109,7 @@ const E = struct {
     const nospace = Err{ .name = "ENOSPC", .when = "the volume is full" };
     const busy = Err{ .name = "EBUSY", .when = "another process already owns it" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
+    const perm = Err{ .name = "EPERM", .when = "the operation is not allowed on that object" };
 };
 
 /// The number of a syscall, looked up by name at compile time.
@@ -921,6 +922,20 @@ pub const table = [_]Syscall{
             "keys cannot both consume the same keystroke. The claim is released when the " ++
             "process exits. Presses and releases both arrive, with the keycode for shortcuts " ++
             "and the codepoint for text.",
+    },
+    .{
+        .number = 34,
+        .name = "kill",
+        .summary = "End another process.",
+        .args = &.{
+            .{ .name = "pid", .kind = .uint, .desc = "Process to end." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.noent, E.perm },
+        .notes = "There are no signals: this ends the process, it does not ask it to. " ++
+            "The process dies at its next return to userspace, so kernel state it holds is " ++
+            "unwound rather than abandoned; one blocked or sleeping is woken so that happens " ++
+            "at once. Ending `init` is refused, since nothing would collect what it adopts.",
     },
 };
 

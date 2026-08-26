@@ -15,6 +15,7 @@
 const std = @import("std");
 const abi = @import("lib").syscalls;
 const ctx = @import("syscall/context.zig");
+const sched = @import("sched.zig");
 
 /// Every module that may contribute handlers. Adding a group is one line; the
 /// binding below searches all of them.
@@ -79,5 +80,11 @@ comptime {
 
 pub fn dispatch(number: usize, args: Args) Result {
     if (number >= handlers.len) return Errno.nosys.value();
-    return handlers[number](args);
+    const result = handlers[number](args);
+
+    // The handler has unwound, so anything it was holding is released and this
+    // is a safe place to act on a kill that arrived while it ran.
+    if (sched.currentKilled()) sched.exitWith(sched.KILLED_STATUS);
+
+    return result;
 }
