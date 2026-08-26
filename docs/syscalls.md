@@ -699,6 +699,27 @@ Create a directory.
 
 Only the last component is created; the parent must already exist. The new directory is written with its `.` and `..` already in place.
 
+## `set_mode`  <sub>#39</sub>
+
+Ask the display adapter for a mode.
+
+| arg | type | meaning |
+|---|---|---|
+| `width` | uint | Pixels across. |
+| `height` | uint | Pixels down. |
+| `bpp` | uint | Bits per pixel, or 0 for whatever the adapter prefers. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+- `EBUSY`, another process already owns it
+- `EPERM`, the operation is not allowed on that object
+- `EIO`, the underlying device failed
+
+Refused while something owns the display: changing the mode under a compositor would hand it a buffer of a different shape than the one it is drawing into. EPERM means no backend can drive this adapter, in which case what the firmware set is what there is.
+
 ---
 
-39 calls defined.
+40 calls defined.

@@ -13,8 +13,12 @@
 //! specific one without either needing to know about the other, which is what
 //! lets one image boot both the target machine and hardware it has never seen.
 
+const std = @import("std");
 const probe = @import("kernel/probe.zig");
 const ata = @import("drv/block/ata.zig");
+const console = @import("kernel/console.zig");
+const display = @import("kernel/display.zig");
+const modeset = @import("drv/video/modeset/modeset.zig");
 
 const Device = probe.Device;
 const Confidence = probe.Confidence;
@@ -33,6 +37,24 @@ fn class(comptime c: u8, comptime sub: u8) fn (Device) Confidence {
     return struct {
         fn f(dev: Device) Confidence {
             return if (dev.class == c and dev.subclass == sub) .weak else .no;
+        }
+    }.f;
+}
+
+/// Matches when the named modeset backend is the best fit for the adapter.
+///
+/// The families are described once, where the machines they shipped in are
+/// listed; this only asks which one won.
+fn modesetFamily(comptime name: []const u8) fn (Device) Confidence {
+    return struct {
+        fn f(dev: Device) Confidence {
+            const backend = modeset.backendFor(dev) orelse return .no;
+            if (!std.mem.eql(u8, backend.name, name)) return .no;
+            // A family that has no modeset written yet is recognised but not
+            // preferred: it still binds ahead of the generic entry, and the
+            // log says which it was, which is most of the value on a machine
+            // nobody has run this on before.
+            return if (backend.set != null) .exact else .strong;
         }
     }.f;
 }
@@ -59,17 +81,48 @@ pub const table = [_]probe.Driver{
     },
 
     // -- Video -----------------------------------------------------------
+    //
+    // One entry per modeset family rather than per part. Which one an adapter
+    // belongs to, and which machines it shipped in, is
+    // `drv/video/modeset/modeset.zig`; here they only need to bind.
     .{
-        .name = "gma900",
+        .name = "intel-gen3",
         .kind = .video,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x2592 } }},
-        .probe = &exact(0x8086, 0x2592),
+        .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
+        .probe = &modesetFamily("intel-gen3"),
+        .attach = &attachDisplay,
     },
     .{
+        .name = "intel-gen4",
+        .kind = .video,
+        .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
+        .probe = &modesetFamily("intel-gen4"),
+        .attach = &attachDisplay,
+    },
+    .{
+        .name = "intel-gen5",
+        .kind = .video,
+        .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
+        .probe = &modesetFamily("intel-gen5"),
+        .attach = &attachDisplay,
+    },
+    .{
+        .name = "poulsbo",
+        .kind = .video,
+        .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
+        .probe = &modesetFamily("poulsbo"),
+        .attach = &attachDisplay,
+    },
+    .{
+        // Whatever firmware left on the screen. Always available, always the
+        // fallback, and on a machine whose only output is that screen it is
+        // what makes an unrecognised adapter a working one rather than a dead
+        // one.
         .name = "vesafb",
         .kind = .video,
         .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
         .probe = &class(0x03, 0x00),
+        .attach = &attachDisplay,
     },
 
     // -- USB -------------------------------------------------------------
@@ -161,4 +214,42 @@ fn attachAta(dev: Device) anyerror!void {
     if (ata_attached) return;
     ata_attached = true;
     ata.init();
+}
+
+/// Bring up the display.
+///
+/// Nothing here sets a mode yet: firmware left one on the screen and that is
+/// what the console is already drawing to. What this does is say which
+/// adapter was recognised and what would drive it, which on a machine nobody
+/// has run this on before is the difference between a diagnosable panel and a
+/// blank one.
+fn attachDisplay(dev: Device) anyerror!void {
+    const backend = modeset.backendFor(dev) orelse {
+        console.debug("video", "unrecognised adapter, keeping the firmware's mode", .{});
+        return;
+    };
+
+    display.setAdapter(.{
+        .backend = backend.name,
+        .family = backend.describes,
+        .can_set = backend.set != null,
+    });
+
+    if (backend.set == null) {
+        console.debug("video", "{s} ({s}), no modeset yet, keeping the firmware's mode", .{
+            backend.name,
+            backend.describes,
+        });
+        return;
+    }
+
+    // A backend that exists is asked for the panel this machine has. Failure
+    // is not fatal: what firmware set is still on the screen.
+    const want = modeset.Mode{ .width = 800, .height = 480 };
+    _ = backend.set.?(dev, want) catch |err| {
+        console.warn("video: {s} could not set {d}x{d}: {s}", .{
+            backend.name, want.width, want.height, @errorName(err),
+        });
+        return;
+    };
 }

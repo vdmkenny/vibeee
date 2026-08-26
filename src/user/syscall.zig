@@ -269,6 +269,11 @@ pub fn pipe() ?Pipe {
     return .{ .read = ends[0], .write = ends[1] };
 }
 
+/// Ask the display adapter for a mode.
+pub fn setMode(width: u16, height: u16, bpp: u8) isize {
+    return syscall3(abi.number("set_mode"), width, height, bpp);
+}
+
 pub fn mkdir(path: []const u8) isize {
     return syscall3(abi.number("mkdir"), @intFromPtr(path.ptr), path.len, 0);
 }

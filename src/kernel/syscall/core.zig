@@ -5,6 +5,7 @@ const std = @import("std");
 const abi = @import("lib").syscalls;
 const clock = @import("../clock.zig");
 const console = @import("../console.zig");
+const display = @import("../display.zig");
 const handles = @import("../handle.zig");
 const vfs = @import("../vfs.zig");
 const ctx = @import("context.zig");
@@ -177,6 +178,20 @@ pub fn sys_shutdown(a: Args) Result {
         else => return Errno.inval.value(),
     };
     shutdown_mod.shutdown(action);
+}
+
+pub fn sys_set_mode(a: Args) Result {
+    display.requestMode(
+        @truncate(a.a0),
+        @truncate(a.a1),
+        @truncate(a.a2),
+    ) catch |err| return switch (err) {
+        error.Busy => Errno.busy.value(),
+        error.Unsupported => Errno.perm.value(),
+        error.Invalid => Errno.inval.value(),
+        error.Failed => Errno.io.value(),
+    };
+    return 0;
 }
 
 pub fn sys_sysinfo(a: Args) Result {

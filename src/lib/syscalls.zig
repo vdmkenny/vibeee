@@ -1006,6 +1006,22 @@ pub const table = [_]Syscall{
         .notes = "Only the last component is created; the parent must already exist. " ++
             "The new directory is written with its `.` and `..` already in place.",
     },
+    .{
+        .number = 39,
+        .name = "set_mode",
+        .summary = "Ask the display adapter for a mode.",
+        .args = &.{
+            .{ .name = "width", .kind = .uint, .desc = "Pixels across." },
+            .{ .name = "height", .kind = .uint, .desc = "Pixels down." },
+            .{ .name = "bpp", .kind = .uint, .desc = "Bits per pixel, or 0 for whatever the adapter prefers." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.inval, E.busy, E.perm, E.io },
+        .notes = "Refused while something owns the display: changing the mode under a " ++
+            "compositor would hand it a buffer of a different shape than the one it is " ++
+            "drawing into. EPERM means no backend can drive this adapter, in which case " ++
+            "what the firmware set is what there is.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

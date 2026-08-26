@@ -59,6 +59,30 @@ pub const Info = extern struct {
 };
 
 var info: Info = .{};
+
+/// Which adapter was recognised and what would drive it.
+///
+/// Recorded even when nothing can set a mode on it: on a machine nobody has
+/// run this on before, knowing the panel is being driven by what firmware left
+/// rather than by a driver is most of the diagnosis.
+pub const Adapter = struct {
+    /// The backend that fits, or empty when none does.
+    backend: []const u8 = "",
+    /// What family that backend covers, for a reader without a PCI database.
+    family: []const u8 = "",
+    /// Whether that backend can actually set a mode yet.
+    can_set: bool = false,
+};
+
+var adapter: Adapter = .{};
+
+pub fn setAdapter(a: Adapter) void {
+    adapter = a;
+}
+
+pub fn describeAdapter() Adapter {
+    return adapter;
+}
 var phys_base: usize = 0;
 var owned = false;
 var available = false;
@@ -105,6 +129,24 @@ pub fn acquire() Error!*shm.Segment {
     console.suspendFramebuffer();
     owned = true;
     return segment;
+}
+
+pub const ModeError = error{ Busy, Unsupported, Failed, Invalid };
+
+/// What the backend will be asked to do, once one exists.
+pub var setMode: ?*const fn (width: u16, height: u16, bpp: u8) ModeError!void = null;
+
+/// Ask the adapter for a mode.
+///
+/// Refused while somebody owns the display: a compositor holds a buffer of a
+/// fixed shape and a mode change underneath it would leave every write landing
+/// somewhere else.
+pub fn requestMode(width: u16, height: u16, bpp: u8) ModeError!void {
+    if (owned) return error.Busy;
+    if (width == 0 or height == 0) return error.Invalid;
+
+    const backend = setMode orelse return error.Unsupported;
+    try backend(width, height, bpp);
 }
 
 /// Hand the display back and return the console to it.

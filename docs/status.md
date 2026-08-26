@@ -75,6 +75,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 
 | Component | File | State |
 |---|---|---|
+| Modesetting | [`drv/video/modeset/`](../src/drv/video/modeset/) | One interface, a backend per adapter family, chosen by the same probe that binds every other driver. Covers the netbook era by PCI id: gen3 (GMA 900/950/3150), gen4, gen5, and GMA 500 named separately because it is PowerVR and shares only a vendor id. No backend sets a mode yet; what firmware left is the fallback and always will be. |
 | Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership, scanout buffer handed over as a shared segment. One buffer, no page flip or vblank, which is what a VESA framebuffer offers. |
 | Window manager | [`user/eeewm/`](../src/user/eeewm/) | Display server and tiling manager. Dynamic desktops, taskbar of named tabs with per-tab window menus, `V` launcher with session actions, tall/wide/monocle per desktop, floating windows, focus-follows-click, config file. Bindings by keycode; every action reachable by pointer and keyboard. |
 | Window protocol | [`user/proto/`](../src/user/proto/) | Channel for control, shm ring for events, shm surface per window. Wire types and the client half; the server half is policy and lives with the manager. `FileDialog` puts `eui`'s chooser panel in a floating window, which is here rather than in the toolkit because opening one means talking to the manager. |
@@ -87,7 +88,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq disk svc date eeefetch smbios pointer ringtest` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq display disk svc date eeefetch smbios pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
@@ -146,7 +147,7 @@ and exercised on every boot.
 | `eeelibc` | Not started. Blocks the C ports, `stb_image` among them |
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
-| **GMA900 native modeset** | Not started. The risk gate, and untestable in QEMU |
+| **GMA900 native modeset** | Framework, adapter table and the `display` tool are in and tested. The register programming is not, and cannot be until it runs on the machine |
 | `eeewm` + `libeui` | Done, and past what M1 asked for |
 | eTerm | Done |
 | Files, Edit | Not started |

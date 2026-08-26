@@ -16,6 +16,7 @@ const files = @import("tools/files.zig");
 const grep = @import("tools/grep.zig");
 const pointer = @import("tools/pointer.zig");
 const ringtest = @import("tools/ringtest.zig");
+const display_tool = @import("tools/display.zig");
 const irq_tool = @import("tools/irq.zig");
 const klog = @import("tools/klog.zig");
 const status = @import("tools/status.zig");
@@ -38,6 +39,7 @@ const commands = [_]Command{
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
+    .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
     .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
     .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },

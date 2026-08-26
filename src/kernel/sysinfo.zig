@@ -13,6 +13,7 @@
 const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
+const display = @import("display.zig");
 const hal = @import("hal.zig");
 const clock = @import("clock.zig");
 const heap = @import("heap.zig");
@@ -120,6 +121,17 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             try w.print("{d}x{d} {d}bpp", .{ platform.fb_width, platform.fb_height, platform.fb_bpp });
         } else {
             try w.print("text mode", .{});
+        }
+    } else if (eq(key, "display.adapter")) {
+        const a = display.describeAdapter();
+        if (a.backend.len == 0) {
+            try w.print("unrecognised, using the firmware's mode", .{});
+        } else {
+            try w.print("{s} ({s}), {s}", .{
+                a.backend,
+                a.family,
+                if (a.can_set) "can set modes" else "no modeset yet",
+            });
         }
     } else if (eq(key, "console")) {
         try w.print("{d}x{d} cells", .{ console.width(), console.height() });
