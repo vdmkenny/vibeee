@@ -62,10 +62,18 @@ pub fn onException(frame: *idt.Frame) noreturn {
                 frame.error_code,
                 r.sp,
             });
-            // Which register held the address is the whole question, and this
-            // machine has no debugger to ask afterwards.
-            panic.printRegisters(&r, 4);
         }
+
+        // Recorded rather than only drawn: a graphical program dies with the
+        // compositor owning the screen, so these have to survive in the kernel
+        // log for `log` to show afterwards. Which register held the address is
+        // the whole question, and there is no debugger to ask.
+        console.field("regs", "eax {x:0>8} ebx {x:0>8} ecx {x:0>8} edx {x:0>8}", .{
+            frame.eax, frame.ebx, frame.ecx, frame.edx,
+        });
+        console.field("", "esi {x:0>8} edi {x:0>8} ebp {x:0>8} efl {x:0>8}", .{
+            frame.esi, frame.edi, frame.ebp, frame.eflags,
+        });
         sched.exitWith(FAULTED);
     }
 
