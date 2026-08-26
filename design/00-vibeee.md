@@ -504,6 +504,12 @@ The highest-leverage item in this document for development speed. `eeewm` and ev
 
 Rebranded, in our own style, all `libeui`:
 
+**Build order.** Settings, Monitor, eTerm, Pad, then the rest. Settings first because
+it is pure Zig against things that already work and shakes out the toolkit under a real
+application; Monitor second because it needs only `sysinfo`, which exists; eTerm third
+because it needs pipes, which nothing else is waiting on; Pad fourth because it needs a text
+control that Monitor and eTerm will already have forced into `libeui`.
+
 **Naming.** System components carry the `eee` prefix: `eeewm`, `eeefetch`, `eeelibc`. Nobody
 types those, and the prefix says at a glance that the thing belongs to the system rather than
 to the user. Applications do not: they are typed, spoken and read constantly, and `eeeterm`
@@ -512,6 +518,7 @@ the rest are plain nouns because they are already short.
 
 | App | Analogue | Notes |
 |---|---|---|
+| **Settings** | Control Panel | Theme, bar position, layout, keymap. Writes `/etc/eeewm.cfg` |
 | **Pad** | WordPad | Rich-ish text: bold/italic, sizes, save as `.txt`/`.rtf`-lite |
 | **Draw** | MS Paint | Bitmap editor: pencil, fill, shapes, selection. Saves PNG via `stb_image_write` |
 | **Edit** | vim/kilo | Terminal editor, port `kilo.c` (§11 verdict) |
@@ -544,7 +551,7 @@ Candidate libraries, adjudicated against the hardware research and the budgets a
 | Library | Verdict | Reasoning |
 |---|---|---|
 | **`stb_truetype`** | **ADOPT** | Single file, public domain, `@cImport` clean. No realistic alternative at this size |
-| **`stb_image`** | **ADOPT (scoped)** | PNG + BMP compiled into the system; JPEG only linked into View and Draw to keep the base small |
+| **`stb_image`** | **ADOPT (scoped), blocked** | PNG + BMP compiled into the system; JPEG only linked into View and Draw to keep the base small. **Blocked on `eeelibc`**: stb is C and needs `malloc`/`free`/`realloc`, `memcpy`/`memset`, `assert` and a `zig cc` freestanding sysroot. The subset is small and the shape is favourable (no I/O, caller supplies the bytes), but none of it exists yet and nothing in M1 needs an image decoder. Revisit with View and Draw in M3, or sooner if a wallpaper is wanted |
 | **`stb_image_write`** | **ADOPT** | Draw and screenshots need PNG output |
 | **`dr_wav` / `dr_flac` / `dr_mp3`** | **ADOPT** | Exactly the right shape: no deps, PCM out, we own the sink |
 | **`miniaudio`** | **REJECT** | It's a cross-platform *backend abstraction*, its value is device enumeration across CoreAudio/WASAPI/ALSA. We are the backend. Its mixer is ~1 k lines we'd write anyway in Zig, without the porting layer |

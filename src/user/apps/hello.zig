@@ -127,9 +127,9 @@ fn draw() void {
     const surface = ctx.surface;
 
     const area = eui.Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
-    if (ctx.damaged) surface.fill(area, t.surface);
 
     ctx.begin(pointer_x, pointer_y, buttons);
+    if (ctx.damaged) surface.fill(area, t.surface);
 
     ctx.label(.{ .x = t.padding, .y = t.padding, .w = area.w - t.padding * 2, .h = 16 }, "A window of its own.");
 

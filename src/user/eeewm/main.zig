@@ -171,10 +171,10 @@ fn paintContent(area: Rect) void {
         .h = t.control_height,
     };
 
-    ctx.begin(pointer_x, pointer_y, buttons);
     // Every pass repaints: the window frame was just drawn underneath, so the
     // toolkit's own damage tracking has nothing to go on.
-    ctx.damage();
+    ctx.damageNow();
+    ctx.begin(pointer_x, pointer_y, buttons);
 
     if (ctx.button(row, "Do something")) clicks +%= 1;
 

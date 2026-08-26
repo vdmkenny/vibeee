@@ -92,9 +92,15 @@ pub const Context = struct {
     /// Set when focus moved this pass, so the control losing it repaints too.
     focus_moved: bool = false,
 
-    /// Force everything to redraw, because something outside the toolkit
-    /// painted over it.
+    /// Everything must redraw this pass.
     damaged: bool = true,
+    /// Damage asked for during a pass, which applies to the next one.
+    ///
+    /// Separate from `damaged` because a control that changes something
+    /// asks for a repaint *after* the pass has already decided what to draw:
+    /// folding the two together loses the request, and the caller sees a
+    /// window whose controls updated and whose background did not.
+    pending: bool = false,
 
     /// What changed this pass, in screen coordinates. A compositor sends these
     /// rather than the whole surface: design/10-gui.md §10.3, and the
@@ -112,6 +118,10 @@ pub const Context = struct {
 
     /// Start a pass. `x`, `y` and `buttons` are the pointer as it is now.
     pub fn begin(self: *Context, x: i32, y: i32, buttons: Buttons) void {
+        if (self.pending) {
+            self.damaged = true;
+            self.pending = false;
+        }
         self.previous = self.buttons;
         self.buttons = buttons;
         self.pointer_x = x;
@@ -235,7 +245,16 @@ pub const Context = struct {
     }
 
     /// Repaint everything on the next pass.
+    ///
+    /// Takes effect at the next `begin`, so a control asking for it mid-pass
+    /// gets a whole clean pass rather than half of one.
     pub fn damage(self: *Context) void {
+        self.pending = true;
+    }
+
+    /// Repaint everything in *this* pass. For a caller that knows before it
+    /// starts, such as one that has just been resized.
+    pub fn damageNow(self: *Context) void {
         self.damaged = true;
     }
 
@@ -270,15 +289,28 @@ pub const Context = struct {
     // Controls
     // -----------------------------------------------------------------------
 
-    /// A push button. Returns true on the pass where it is released, having
-    /// been pressed on itself.
-    pub fn button(self: *Context, area: Rect, text: []const u8) bool {
-        const entry = self.slotFor(area) orelse return false;
+    /// What a pass did to a control.
+    ///
+    /// The pointer and keyboard handling every activatable control shares
+    /// lives in one place: a control that gets any part of it subtly wrong is
+    /// a control that behaves unlike the rest of the toolkit for no reason a
+    /// person could guess.
+    const Interaction = struct {
+        index: usize,
+        over: bool,
+        /// Held down on itself, so it should look pressed.
+        holding: bool,
+        focused: bool,
+        /// Released on itself, or activated from the keyboard.
+        activated: bool,
+    };
+
+    fn interact(self: *Context, entry: *Entry, area: Rect) Interaction {
         entry.seen = true;
         entry.focusable = true;
 
-        const over = area.contains(self.pointer_x, self.pointer_y);
         const index = self.indexOf(entry);
+        const over = area.contains(self.pointer_x, self.pointer_y);
 
         if (over and self.pressedThisPass()) {
             self.pressed = index;
@@ -290,7 +322,6 @@ pub const Context = struct {
             }
         }
 
-        const holding = self.pressed == index and self.buttons.left;
         var activated = over and self.pressed == index and self.releasedThisPass();
 
         // Enter or Space activates the focused control, which is the whole
@@ -299,52 +330,85 @@ pub const Context = struct {
             if (code == @intFromEnum(KeyCode.enter) or code == @intFromEnum(KeyCode.space)) activated = true;
         }
 
-        const focused = self.focus == index;
-        const visual: Visual = if (holding) .active else if (over) .hot else .idle;
+        return .{
+            .index = index,
+            .over = over,
+            .holding = self.pressed == index and self.buttons.left,
+            .focused = self.focus == index,
+            .activated = activated,
+        };
+    }
 
-        if (visual != entry.visual or self.damaged or self.focus_moved) {
+    /// Whether a control has to be drawn this pass.
+    ///
+    /// One that looks the way it did last pass is left alone, which is what
+    /// keeps the damage list short enough to be worth sending.
+    fn needsPaint(self: *const Context, entry: *const Entry, visual: Visual) bool {
+        return visual != entry.visual or self.damaged or self.focus_moved;
+    }
+
+    fn hotOr(over: bool, comptime on: Visual, comptime off: Visual) Visual {
+        return if (over) on else off;
+    }
+
+    /// A push button. Returns true on the pass where it is released, having
+    /// been pressed on itself.
+    pub fn button(self: *Context, area: Rect, text: []const u8) bool {
+        const entry = self.slotFor(area) orelse return false;
+        const it = self.interact(entry, area);
+
+        const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
+        if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
-            paintButton(self.surface, area, text, visual, focused);
+            paintButton(self.surface, area, text, visual, it.focused);
             self.addDamage(area);
         }
 
-        return activated;
+        return it.activated;
+    }
+
+    /// One option out of a set where exactly one is chosen, drawn as a button
+    /// that stays down. At this size that reads better than a radio dot and
+    /// costs no extra width.
+    ///
+    /// Returns true on the pass where it is picked. The caller owns the
+    /// selection, so a group is a loop over the options with `selected` taken
+    /// from whatever the caller already stores.
+    pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
+        const entry = self.slotFor(area) orelse return false;
+        const it = self.interact(entry, area);
+
+        const visual: Visual = if (selected)
+            hotOr(it.over, .checked_hot, .checked)
+        else if (it.holding)
+            .active
+        else
+            hotOr(it.over, .hot, .idle);
+
+        if (self.needsPaint(entry, visual)) {
+            entry.visual = visual;
+            paintButton(self.surface, area, text, visual, it.focused);
+            self.addDamage(area);
+        }
+
+        return it.activated;
     }
 
     /// A checkbox. `checked` is the caller's state; the returned value is what
     /// it should be after this pass.
     pub fn checkbox(self: *Context, area: Rect, text: []const u8, checked: bool) bool {
         const entry = self.slotFor(area) orelse return checked;
-        entry.seen = true;
-        entry.focusable = true;
+        const it = self.interact(entry, area);
 
-        const over = area.contains(self.pointer_x, self.pointer_y);
-        const index = self.indexOf(entry);
-
-        if (over and self.pressedThisPass()) {
-            self.pressed = index;
-            if (self.focus != index) {
-                self.focus = index;
-                self.focus_moved = true;
-            }
-        }
-
-        var value = checked;
-        if (over and self.pressed == index and self.releasedThisPass()) value = !value;
-
-        if (self.takeKey(index)) |code| {
-            if (code == @intFromEnum(KeyCode.enter) or code == @intFromEnum(KeyCode.space)) value = !value;
-        }
-
-        const focused = self.focus == index;
+        const value = if (it.activated) !checked else checked;
         const visual: Visual = if (value)
-            (if (over) .checked_hot else .checked)
+            hotOr(it.over, .checked_hot, .checked)
         else
-            (if (over) .hot else .idle);
+            hotOr(it.over, .hot, .idle);
 
-        if (visual != entry.visual or self.damaged or self.focus_moved) {
+        if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
-            paintCheckbox(self.surface, area, text, value, over, focused);
+            paintCheckbox(self.surface, area, text, value, it.over, it.focused);
             self.addDamage(area);
         }
 
@@ -397,25 +461,31 @@ pub const Context = struct {
 
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {
     const t = theme.current();
+    const on = visual == .checked or visual == .checked_hot;
 
     const face = switch (visual) {
         .active => t.surface_pressed,
+        .checked, .checked_hot => t.accent,
         .hot => t.surface_hot,
         else => t.surface,
     };
+    const ink = if (on) t.accent_text else t.text;
 
     surface.fill(area, face);
-    surface.frame(area, if (focused) t.accent else t.line);
-    surface.textCentred(area, text, t.text);
+    // A selected control under the pointer takes a stronger edge: there is no
+    // lighter accent to shift to, and it still has to answer the pointer.
+    surface.frame(area, switch (visual) {
+        .checked_hot => t.text,
+        else => if (focused) t.accent else t.line,
+    });
+    surface.textCentred(area, text, ink);
 
-    if (focused) paintFocusRing(surface, area.inset(2));
+    if (focused) paintFocusRing(surface, area.inset(2), if (on) t.accent_text else t.text_dim);
 }
 
 /// A dotted rectangle marking keyboard focus. Dotted rather than solid so it
 /// reads as focus rather than as a border the control always had.
-fn paintFocusRing(surface: Surface, area: Rect) void {
-    const color = theme.current().text_dim;
-
+fn paintFocusRing(surface: Surface, area: Rect, color: draw.Color) void {
     var x = area.x;
     while (x < area.right()) : (x += 2) {
         surface.set(x, area.y, color);
@@ -456,7 +526,7 @@ fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, 
         t.text,
     );
 
-    if (focused) paintFocusRing(surface, area);
+    if (focused) paintFocusRing(surface, area, t.text_dim);
 }
 
 // ---------------------------------------------------------------------------
