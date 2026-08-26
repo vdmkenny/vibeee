@@ -448,21 +448,16 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
     });
 
+    // The mode is on trial: it reverts either way, leaving its testimony in
+    // the log, where a garbled screen cannot be read but a restored one can.
+    // Keeping a mode that held comes back once the fault is understood.
     if (stat & FIFO_UNDERRUN != 0) {
-        console.warn("video: fifo ran dry at {d}x{d}; putting the mode back", .{
-            want.width, want.height,
-        });
-        revert(w, pipe, dev.device, cntr, saved);
-        return error.Hardware;
+        console.warn("video: fifo ran dry at {d}x{d}", .{ want.width, want.height });
+    } else {
+        console.warn("video: {d}x{d} held for the trial, no underrun", .{ want.width, want.height });
     }
-
-    return .{
-        .phys = w.aperture,
-        .pitch = pitch,
-        .width = want.width,
-        .height = want.height,
-        .bpp = 32,
-    };
+    revert(w, pipe, dev.device, cntr, saved);
+    return error.Hardware;
 }
 
 /// What `set` changes, as the hardware held it beforehand.
