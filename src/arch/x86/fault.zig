@@ -9,12 +9,21 @@ const console = @import("../../kernel/console.zig");
 const cpu = @import("cpu.zig");
 const sched = @import("../../kernel/sched.zig");
 const idt = @import("idt.zig");
+const paging = @import("paging.zig");
 const panic = @import("../../kernel/panic.zig");
 
 const VECTOR_PAGE_FAULT = 14;
 
 /// Called for any CPU exception with no registered handler.
-pub fn onException(frame: *idt.Frame) noreturn {
+///
+/// Returns only when the fault was repairable, which is the one case that is
+/// not a fault at all: a kernel-half address the running space has not been
+/// given yet. Everything else ends the program or the machine.
+pub fn onException(frame: *idt.Frame) void {
+    if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 == 0) {
+        if (paging.syncKernelMapping(cpu.readCr2())) return;
+    }
+
     var r = panic.Report{
         .vector = frame.vector,
         .error_code = frame.error_code,

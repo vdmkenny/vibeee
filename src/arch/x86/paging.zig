@@ -167,6 +167,31 @@ fn pageDirectory() *Table {
     return @ptrFromInt(physToVirt(@intFromPtr(&boot_page_directory)));
 }
 
+/// Give the running address space a kernel-half entry it is missing.
+///
+/// Every address space copies the kernel half when it is created, so a device
+/// mapped after that is absent from every space already running. Rather than
+/// track them all and write to each, the entry is fetched the first time it is
+/// touched: at most one fault per address space per mapping, and nothing to
+/// keep in step.
+///
+/// Returns whether anything was repaired, which is how the fault handler tells
+/// this apart from a real fault at a kernel address.
+pub fn syncKernelMapping(addr: usize) bool {
+    if (addr < KERNEL_VMA) return false;
+
+    const index = addr / LARGE_PAGE_SIZE;
+    const master = pageDirectory();
+    if (!master[index].present) return false;
+
+    const running: *Table = @ptrFromInt(physToVirt(readCr3()));
+    if (running == master or running[index].present) return false;
+
+    running[index] = master[index];
+    flushAll();
+    return true;
+}
+
 /// Remove the identity mapping. Called once the kernel is executing from its
 /// virtual addresses; afterwards the low 3 GiB belongs entirely to user space.
 pub fn dropIdentityMapping() void {
@@ -212,9 +237,10 @@ const KERNEL_PDE_START = KERNEL_VMA / LARGE_PAGE_SIZE;
 /// A process address space.
 ///
 /// The kernel half is shared by every address space, the same 4 MiB entries,
-/// copied at creation and never changed afterwards, so a syscall needs no CR3
-/// switch and the kernel is addressable no matter which process is running.
-/// Only the low 3 GiB differs between processes.
+/// copied at creation, so a syscall needs no CR3 switch and the kernel is
+/// addressable no matter which process is running. Only the low 3 GiB differs
+/// between processes. An entry added to the kernel half after a space was
+/// created reaches it through `syncKernelMapping` on first touch.
 pub const AddressSpace = struct {
     /// Physical address of the page directory.
     pd_phys: usize,
