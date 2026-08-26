@@ -70,6 +70,13 @@ pub fn resumeFramebuffer() void {
     clear();
 }
 
+pub const FbLayout = fbcon.Layout;
+
+/// Where the framebuffer is, or a zero address in text mode.
+pub fn framebufferLayout() FbLayout {
+    return if (fbcon.active()) fbcon.layout() else .{ .addr = 0, .pitch = 0 };
+}
+
 pub fn pixelSize() Size {
     return if (fbcon.active()) fbcon.pixelSize() else .{ .width = 0, .height = 0 };
 }

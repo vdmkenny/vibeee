@@ -88,6 +88,8 @@ pub fn reportVideo() void {
         console.debug("video", "{d}x{d} pixels, {d}x{d} text, font {s}", .{
             px.width, px.height, console.width(), console.height(), console.fontName(),
         });
+        const fb = console.framebufferLayout();
+        console.debug("video", "framebuffer at {x:0>8}, pitch {d}", .{ fb.addr, fb.pitch });
     } else {
         console.debug("video", "{d}x{d} text mode", .{ console.width(), console.height() });
     }

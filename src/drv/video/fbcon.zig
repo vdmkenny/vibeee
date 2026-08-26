@@ -38,6 +38,7 @@ var fb: [*]volatile u8 = undefined;
 var font: *const fontlib.Font = &FONTS[0];
 /// The video ROM's font, used only if no font was compiled in.
 var rom_font: ?[*]const u8 = null;
+var phys: usize = 0;
 var pitch: usize = 0;
 var pixel_width: usize = 0;
 var pixel_height: usize = 0;
@@ -75,6 +76,7 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
     else
         null;
 
+    phys = bi.fb_addr;
     pitch = bi.fb_pitch;
     pixel_width = bi.fb_width;
     pixel_height = bi.fb_height;
@@ -102,6 +104,17 @@ pub fn active() bool {
 }
 
 pub const Grid = struct { columns: usize, rows: usize };
+
+/// Where the framebuffer is and how far apart its scanlines are.
+///
+/// A pitch wider than the visible width is normal, and everything drawing to
+/// the framebuffer has to honour it, so it belongs on the porting worksheet
+/// next to the geometry.
+pub const Layout = struct { addr: usize, pitch: usize };
+
+pub fn layout() Layout {
+    return .{ .addr = phys, .pitch = pitch };
+}
 
 pub fn dimensions() Grid {
     return .{ .columns = columns, .rows = rows };
