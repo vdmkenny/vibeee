@@ -257,47 +257,64 @@ fn draw() void {
 
     const pad = t.padding;
     const row = t.control_height;
+    const bottom = eui.statusbar.split(area);
 
-    drawSummary(.{ .x = pad, .y = pad, .w = area.w - pad * 2, .h = 34 });
-
-    const buttons_y = area.h - row - pad;
-    const body = Rect{
+    const buttons_y = bottom.body.h - row - pad;
+    _ = ctx.table(.{
         .x = pad,
-        .y = pad + 40,
+        .y = pad,
         .w = area.w - pad * 2,
-        .h = buttons_y - pad * 2 - 40,
-    };
-    _ = ctx.table(body, &list, &COLUMNS, rows[0..row_count]);
+        .h = buttons_y - pad * 2,
+    }, &list, &COLUMNS, rows[0..row_count]);
 
     if (ctx.button(.{ .x = pad, .y = buttons_y, .w = 90, .h = row }, "End task")) end();
     if (ctx.button(.{ .x = pad + 94, .y = buttons_y, .w = 76, .h = row }, "Close")) sys.exit(0);
 
-    ctx.label(
-        .{ .x = pad + 180, .y = buttons_y + 4, .w = area.w - pad - 180, .h = 16 },
-        status,
+    // The memory bar sits beside the buttons rather than above the table: it
+    // is the one number here that reads better as a length than as a figure.
+    const bar_x = pad + 178;
+    ctx.progress(
+        .{ .x = bar_x, .y = buttons_y + @divTrunc(row - 8, 2), .w = area.w - bar_x - pad, .h = 8 },
+        memoryPercent(),
     );
+
+    eui.statusbar.run(&ctx, bottom.bar, &.{
+        .{ .text = status },
+        .{ .text = processText(), .width = 92 },
+        .{ .text = memoryText(), .width = 118, .right = true },
+        .{ .text = uptimeText(), .width = 62, .right = true },
+    });
 
     ctx.end();
     connection.commit(window, ctx.damageList()) catch {};
 }
 
-/// Uptime, process count and memory, on one line above a bar.
-fn drawSummary(area: Rect) void {
-    var buf: [96]u8 = @splat(0);
-    var line = str.Builder{ .buf = &buf };
+fn memoryPercent() u8 {
+    if (mem_total == 0) return 0;
+    return @intCast((mem_total -| mem_free) * 100 / mem_total);
+}
 
+var uptime_buffer: [24]u8 = @splat(0);
+var process_buffer: [24]u8 = @splat(0);
+var memory_buffer: [40]u8 = @splat(0);
+
+fn uptimeText() []const u8 {
+    var line = str.Builder{ .buf = &uptime_buffer };
     line.text("up ");
     line.quantity(uptime, "s");
-    line.text(",  ");
+    return line.done();
+}
+
+fn processText() []const u8 {
+    var line = str.Builder{ .buf = &process_buffer };
     line.quantity(table.count, if (table.count == 1) "process" else "processes");
-    line.text(",  ");
+    return line.done();
+}
+
+fn memoryText() []const u8 {
+    var line = str.Builder{ .buf = &memory_buffer };
     line.number((mem_total -| mem_free) / (1024 * 1024));
     line.text(" of ");
     line.quantity(mem_total / (1024 * 1024), "MiB");
-
-    ctx.label(.{ .x = area.x, .y = area.y, .w = area.w, .h = 16 }, line.done());
-
-    const used = mem_total -| mem_free;
-    const percent: u8 = if (mem_total == 0) 0 else @intCast(used * 100 / mem_total);
-    ctx.progress(.{ .x = area.x, .y = area.y + 20, .w = area.w, .h = 8 }, percent);
+    return line.done();
 }

@@ -334,29 +334,32 @@ fn draw() void {
     ctx.begin(pointer_x, pointer_y, buttons);
     if (ctx.damaged) surface.fill(area, t.surface);
 
-    const pad = t.padding;
     const row = t.control_height;
 
     const strip = Rect{ .x = 0, .y = 0, .w = area.w, .h = row };
-    const status_y = area.h - 18 - pad;
+    const bottom = eui.statusbar.split(area);
 
-    // Edge to edge under the menu. The window frame is already a border, and a
-    // second one inset from it is a margin around a document that wanted the
-    // room.
+    // Everything between the menu and the status bar. The window frame is
+    // already a border, and a second one inset from it is a margin around a
+    // document that wanted the room.
     text.edit(&ctx, .{
         .x = 0,
         .y = strip.h,
         .w = area.w,
-        .h = status_y - pad - strip.h,
+        .h = bottom.body.h - strip.h,
     }, &editor, &document);
+
+    eui.statusbar.run(&ctx, bottom.bar, &.{
+        .{ .text = if (file_len > 0) path() else "untitled" },
+        .{ .text = sizeText(), .width = 78, .right = true },
+        .{ .text = stateText(), .width = 96 },
+    });
 
     if (editor.edited and !modified) {
         modified = true;
         status = "";
         setTitle();
     }
-
-    ctx.label(.{ .x = pad, .y = status_y, .w = area.w - pad * 2, .h = 16 }, statusLine());
 
     // Last in the pass: an open menu reaches over the document, and anything
     // drawn after it would draw over the menu instead.
@@ -368,20 +371,17 @@ fn draw() void {
     connection.commit(window, ctx.damageList()) catch {};
 }
 
-var status_buffer: [96]u8 = @splat(0);
+var size_buffer: [24]u8 = @splat(0);
 
-fn statusLine() []const u8 {
-    var line = str.Builder{ .buf = &status_buffer };
-    if (file_len > 0) {
-        line.text(path());
-        line.text(",  ");
-    }
+fn sizeText() []const u8 {
+    var line = str.Builder{ .buf = &size_buffer };
     line.quantity(document.len, if (document.len == 1) "byte" else "bytes");
-
-    if (modified) line.text(",  unsaved");
-    if (status.len > 0) {
-        line.text(",  ");
-        line.text(status);
-    }
     return line.done();
+}
+
+/// What just happened, or what is outstanding. The message wins while there is
+/// one: it is the newer fact, and "unsaved" is visible in the title as well.
+fn stateText() []const u8 {
+    if (status.len > 0) return status;
+    return if (modified) "Unsaved changes" else "";
 }
