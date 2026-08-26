@@ -23,6 +23,7 @@
 //! `design/00-vibeee.md` §6.8.
 
 const std = @import("std");
+const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");
 const heap = @import("heap.zig");
@@ -126,6 +127,17 @@ pub const Channel = struct {
     /// Servers blocked in `recv`.
     recv_queue: wait.Queue = .{},
 
+    /// Kept in step with `pending`, so a server can hold this channel in a
+    /// `wait_many` beside everything else it listens to rather than having
+    /// `recv` be the only way to hear about a call. That is what lets a server
+    /// with a channel, input and a settings event have one blocking call and
+    /// no polling.
+    ///
+    /// A level rather than a tally: one count while there is something to
+    /// receive and none when there is not, so a server that takes two calls
+    /// without waiting is not woken twice for nothing afterwards.
+    ready: event_mod.Event = .{},
+
     /// Received but not yet replied to, indexed by the low bits of the token.
     inflight: [MAX_INFLIGHT]?*Call = @splat(null),
     tokens: [MAX_INFLIGHT]u32 = @splat(0),
@@ -141,6 +153,17 @@ pub const Channel = struct {
     fn pushPending(self: *Channel, record: *Call) void {
         record.next = self.pending;
         self.pending = record;
+        self.refreshReady();
+    }
+
+    /// Keep `ready` saying what `pending` says. Called from every place that
+    /// changes the queue, so nobody has to remember to.
+    fn refreshReady(self: *Channel) void {
+        if (self.pending != null) {
+            if (self.ready.count == 0) self.ready.signalLocked();
+        } else {
+            self.ready.count = 0;
+        }
     }
 
     /// Oldest first, so a slow caller is not starved by a busy one.
@@ -150,6 +173,7 @@ pub const Channel = struct {
             if (c.next == null) {
                 link.* = null;
                 c.next = null;
+                self.refreshReady();
                 return c;
             }
             link = &c.next;
@@ -163,6 +187,7 @@ pub const Channel = struct {
             if (c == record) {
                 link.* = c.next;
                 c.next = null;
+                self.refreshReady();
                 return true;
             }
             link = &c.next;

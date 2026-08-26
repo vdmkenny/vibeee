@@ -6,6 +6,7 @@ const abi = @import("lib").syscalls;
 const clock = @import("../clock.zig");
 const console = @import("../console.zig");
 const display = @import("../display.zig");
+const event_mod = @import("../event.zig");
 const handles = @import("../handle.zig");
 const vfs = @import("../vfs.zig");
 const ctx = @import("context.zig");
@@ -260,6 +261,38 @@ pub fn sys_pointer_read(a: Args) Result {
     }
 
     return @intCast(written * size);
+}
+
+pub fn sys_watch(a: Args) Result {
+    // The input core's two events outlive every process, so the reference
+    // taken below is one they can spare. A thread's child event is made on
+    // first asking and outlives the thread by the same counting.
+    const source = switch (a.a0) {
+        @intFromEnum(abi.Watchable.keys) => input.keyReady(),
+        @intFromEnum(abi.Watchable.pointer) => input.pointerReady(),
+        @intFromEnum(abi.Watchable.children) => childEvent() orelse return Errno.nomem.value(),
+        else => return Errno.inval.value(),
+    };
+
+    event_mod.retain(source);
+    const slot = ctx.installHandle(.{
+        .kind = .event,
+        .rights = .{ .read = true },
+        .data = .{ .event = source },
+    }) orelse {
+        event_mod.release(source);
+        return Errno.nomem.value();
+    };
+    return @intCast(slot);
+}
+
+/// This thread's child-exit event, made on the first request for it.
+fn childEvent() ?*event_mod.Event {
+    const t = sched.currentThread() orelse return null;
+    if (t.child_event == null) {
+        t.child_event = event_mod.create() catch return null;
+    }
+    return t.child_event;
 }
 
 pub fn sys_key_read(a: Args) Result {

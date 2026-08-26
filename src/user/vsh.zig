@@ -27,7 +27,7 @@ const MAX_LINE = 256;
 const MAX_WORDS = 16;
 
 /// Where programs are looked up when a command has no path separator.
-const BIN_DIR = "/";
+const BIN_DIR = "/bin/";
 
 /// The multicall binary, tried when no program of the given name exists.
 const TOOLS_PATH = "/bin/tools";
@@ -398,24 +398,15 @@ fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
     return sys.spawnStreams(TOOLS_PATH, argv[0 .. words.len + 1], streams);
 }
 
-/// Turn a bare command name into a path.
-///
-/// Names are upper-cased because the filesystem is FAT and stores short names
-/// that way; typing `tools` should find `/TOOLS`.
+/// Turn a bare command name into a path. A name with a slash in it is already
+/// one and is left alone.
 fn resolvePath(name: []const u8, buf: []u8) []const u8 {
     if (name.len > 0 and name[0] == '/') return name;
 
-    var n: usize = 0;
-    for (BIN_DIR) |c| {
-        buf[n] = c;
-        n += 1;
-    }
-    for (name) |c| {
-        if (n >= buf.len) break;
-        buf[n] = if (c >= 'a' and c <= 'z') c - 32 else c;
-        n += 1;
-    }
-    return buf[0..n];
+    var path = str.Builder{ .buf = buf };
+    path.text(BIN_DIR);
+    path.text(name);
+    return path.done();
 }
 
 

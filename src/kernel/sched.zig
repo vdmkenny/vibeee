@@ -16,6 +16,7 @@
 //!
 //! See design/00-vibeee.md §6.4.
 
+const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const ports = @import("ports.zig");
@@ -176,7 +177,12 @@ pub fn exitWith(status: i32) noreturn {
         // writer to finish but for a third party to notice that it did, which
         // is a wait that need never end.
         t.handles.closeAll();
-        if (find(t.parent_id)) |p| _ = p.child_exit.wakeAll();
+        if (find(t.parent_id)) |p| {
+            _ = p.child_exit.wakeAll();
+            // Interrupts are already off here, which is what `signalLocked`
+            // is for.
+            if (p.child_event) |ready| ready.signalLocked();
+        }
         orphanChildren(t);
     }
     schedule();
@@ -529,6 +535,11 @@ fn collectCorpses() void {
 /// why it cannot happen inside `exit`: a thread cannot free the stack it is
 /// standing on.
 fn reap(t: *Thread) void {
+    if (t.child_event) |ready| {
+        event_mod.release(ready);
+        t.child_event = null;
+    }
+
     if (t.ports) |set| {
         heap.allocator.destroy(set);
         t.ports = null;

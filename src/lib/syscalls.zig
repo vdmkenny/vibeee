@@ -501,6 +501,19 @@ pub const OpenFlags = packed struct(u32) {
 /// writes it and userspace reads it through this one module, so the format has
 /// exactly one definition.
 /// How the console hands keystrokes to whoever is reading it.
+/// What `watch` will hand back an event for.
+///
+/// Everything else worth waiting on is already a handle, and `wait_many` takes
+/// those directly: a channel's serving end is ready when a call is waiting, a
+/// pipe's read end when there are bytes. These three are the happenings with
+/// no handle of their own.
+pub const Watchable = enum(u32) {
+    keys = 0,
+    pointer = 1,
+    /// A child of this process exited, so `wait` has something to collect.
+    children = 2,
+};
+
 pub const TtyMode = enum(u32) {
     /// A line at a time, echoed and editable with backspace. What a program
     /// that only wants an answer to a question needs.
@@ -1125,6 +1138,21 @@ pub const table = [_]Syscall{
             "produce no character and arrive as the escape sequences every terminal " ++
             "sends. The mode belongs to the console rather than to a handle, because " ++
             "there is one keyboard. A program that changes it puts it back.",
+    },
+    .{
+        .number = 43,
+        .name = "watch",
+        .summary = "An event that fires when something happens.",
+        .args = &.{
+            .{ .name = "what", .kind = .uint, .desc = "A Watchable: 0 keys, 1 pointer, 2 children." },
+        },
+        .returns = "an event handle",
+        .errors = &.{ E.inval, E.nomem },
+        .notes = "For a program with more than one thing to listen to. Each of these can " ++
+            "otherwise only be waited for by the call that consumes it, which forces a " ++
+            "program watching several into asking each in turn. This hands back the event " ++
+            "that call would have waited on, so it goes into a wait_many with everything " ++
+            "else and every read afterwards is one that never blocks.",
     },
 };
 

@@ -101,6 +101,10 @@ export fn wmMain() callconv(.c) noreturn {
     // chosen from a shell reaches the desktop without a restart. Zero when the
     // service is not up, which the poll below reads as nothing to hear.
     settings_event = proto.settings.watch("wm") catch 0;
+    listenTo(.keys, sys.watch(.keys));
+    listenTo(.pointer, sys.watch(.pointer));
+    listenTo(.children, sys.watch(.children));
+    listenTo(.settings, @intCast(settings_event));
 
     ctx = ui.Context.init(screen);
 
@@ -114,6 +118,7 @@ export fn wmMain() callconv(.c) noreturn {
         sys.exit(1);
     }
     service = @intCast(registered);
+    listenTo(.channel, registered);
 
     run();
 }
@@ -407,7 +412,7 @@ fn run() noreturn {
             acted = true;
         }
 
-        const moves = sys.pointerRead(&pointer_events, if (acted or dirty) sys.POLL else 200_000);
+        const moves = sys.pointerRead(&pointer_events, sys.POLL);
         var moved = false;
         for (moves) |event| {
             handlePointer(event);
@@ -433,7 +438,64 @@ fn run() noreturn {
             cursor.hide(screen);
             cursor.show(screen, pointer_x, pointer_y);
         }
+
+        // Nothing left to do, so sleep until something happens rather than
+        // asking again in a moment. Every source above has an event, so there
+        // is nothing a timer would catch that this does not.
+        if (!acted and !moved) idle();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Waiting
+// ---------------------------------------------------------------------------
+
+/// What the manager listens to. Each is a counting event, so a thing that
+/// happens while the loop is busy is still there when it comes back round.
+const Source = enum { keys, pointer, children, channel, settings };
+
+var sources: [@typeInfo(Source).@"enum".fields.len]u32 = @splat(0);
+var listening: usize = 0;
+
+/// Remember a source's event, if the kernel gave us one. A source that failed
+/// is left out of the wait rather than waited on as handle zero.
+fn listenTo(which: Source, handle: isize) void {
+    if (handle < 0) return;
+    sources[@intFromEnum(which)] = @intCast(handle);
+    listening += 1;
+}
+
+/// Block until one of the sources has something, or until the clock in the bar
+/// is due to change.
+///
+/// The whole loop above runs on polls, and this is what makes that correct: it
+/// drains everything, finds nothing, and then sleeps here until there is
+/// something to drain.
+///
+/// The timeout is not a poll. A poll is asking again in case something
+/// happened; this is waiting for something that happens at a time already
+/// known, and it is the difference between waking five times a second and
+/// waking once a minute.
+fn idle() void {
+    var waiting: [sources.len]u32 = undefined;
+    var count: usize = 0;
+    for (sources) |handle| {
+        if (handle == 0) continue;
+        waiting[count] = handle;
+        count += 1;
+    }
+    if (count == 0) return;
+
+    // A timeout rather than a signal means nothing happened and the minute
+    // turned, so the only thing on screen that is now wrong is the clock.
+    if (sys.waitMany(waiting[0..count], untilTheMinuteTurns()) < 0) dirty = true;
+}
+
+/// Microseconds until the bar's clock reads differently.
+fn untilTheMinuteTurns() usize {
+    const MINUTE = 60 * 1_000_000;
+    const now = sys.realtimeMicros() orelse return MINUTE;
+    return MINUTE - @as(usize, @intCast(@mod(now, MINUTE)));
 }
 
 /// Bindings are by keycode, not by symbol: a shortcut lives at a place on the
@@ -747,9 +809,8 @@ var settings_event: u32 = 0;
 
 /// Take up a settings change somebody else made.
 ///
-/// Polled rather than waited on: the loop already wakes at least five times a
-/// second, so one more poll costs nothing and the alternative is restructuring
-/// the whole loop around `wait_many` for a message that arrives twice a day.
+/// Checked without blocking, because the loop blocks once at the bottom on
+/// every source at once, including this one.
 fn settingsChanged() bool {
     if (settings_event == 0) return false;
     if (sys.waitMany(&.{settings_event}, sys.POLL) < 0) return false;

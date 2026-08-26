@@ -353,6 +353,12 @@ pub fn exit(status: usize) noreturn {
 // IPC
 // ---------------------------------------------------------------------------
 
+/// An event that fires when something happens, for a program with more than
+/// one thing to listen to and no business asking each in turn.
+pub fn watch(what: abi.Watchable) isize {
+    return syscall1(abi.number("watch"), @intFromEnum(what));
+}
+
 pub fn eventCreate() isize {
     return syscall0(abi.number("event_create"));
 }

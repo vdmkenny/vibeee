@@ -16,6 +16,7 @@ const ports_mod = @import("../ports.zig");
 const hal = @import("../hal.zig");
 const handle = @import("../handle.zig");
 const shm = @import("../shm.zig");
+const event_mod = @import("../event.zig");
 const wait = @import("../wait.zig");
 
 
@@ -142,6 +143,12 @@ pub const Thread = struct {
     /// rather than an event per child, because a supervisor waits for whichever
     /// of its children dies first and does not know in advance which that is.
     child_exit: wait.Queue = .{},
+
+    /// The same news, as an event a process can hold in a `wait_many` beside
+    /// its channels and its input. Created only when somebody asks for it:
+    /// most threads never wait on a child, and an event each would be an
+    /// allocation each for nothing.
+    child_event: ?*event_mod.Event = null,
 
     pub fn name(self: *const Thread) []const u8 {
         return self.name_buf[0..self.name_len];
