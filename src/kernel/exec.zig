@@ -15,6 +15,7 @@ const std = @import("std");
 const console = @import("console.zig");
 const elf = @import("elf.zig");
 const hal = @import("hal.zig");
+const handle = @import("handle.zig");
 const heap = @import("heap.zig");
 const sched = @import("sched.zig");
 const vfs = @import("vfs.zig");
@@ -38,19 +39,25 @@ const Request = struct {
 };
 
 /// Run `path` with `args` and return its exit status.
-pub fn spawn(path: []const u8, args: []const []const u8) Error!i32 {
-    const child = try start(path, args);
+/// What a child starts with on handles 0, 1 and 2. A null leaves the console
+/// it was given, which is what every caller but a terminal emulator wants.
+pub const Stdio = [3]?handle.Handle;
+
+pub const INHERIT: Stdio = .{ null, null, null };
+
+pub fn spawn(path: []const u8, args: []const []const u8, stdio: Stdio) Error!i32 {
+    const child = try start(path, args, stdio);
     return sched.waitFor(child);
 }
 
 /// Start `path` and return its id without waiting.
-pub fn spawnAsync(path: []const u8, args: []const []const u8) Error!u32 {
-    const child = try start(path, args);
+pub fn spawnAsync(path: []const u8, args: []const []const u8, stdio: Stdio) Error!u32 {
+    const child = try start(path, args, stdio);
     return child.id;
 }
 
 /// Load a program and put it on the run queue.
-fn start(path: []const u8, args: []const []const u8) Error!*sched.Thread {
+fn start(path: []const u8, args: []const []const u8, stdio: Stdio) Error!*sched.Thread {
     const entry = vfs.stat(path) catch return error.NotFound;
     if (entry.is_dir or entry.size == 0) return error.BadImage;
 
@@ -73,6 +80,15 @@ fn start(path: []const u8, args: []const []const u8) Error!*sched.Thread {
         return error.OutOfMemory;
     };
     sched.inheritCwd(child);
+
+    // Before the child can run: it gets the console on all three by default,
+    // and a terminal emulator's shell has to find its pipes there instead.
+    for (stdio, 0..) |replacement, i| {
+        if (replacement) |h| {
+            handle.release(child.handles.entries[i]);
+            child.handles.entries[i] = h;
+        }
+    }
 
     // The address space is the child's from here; it is freed when the child is
     // reaped, so a parent that never collects still gives the memory back.

@@ -17,6 +17,7 @@ const display_mod = @import("display.zig");
 const event_mod = @import("event.zig");
 const fat = @import("fat.zig");
 const heap = @import("heap.zig");
+const pipe_mod = @import("pipe.zig");
 const shm_mod = @import("shm.zig");
 const vfs = @import("vfs.zig");
 
@@ -35,7 +36,7 @@ pub const Rights = packed struct(u8) {
     _pad: u5 = 0,
 };
 
-pub const Kind = enum { none, console, file, directory, event, channel, shm, display };
+pub const Kind = enum { none, console, file, directory, event, channel, shm, display, pipe };
 
 pub const File = struct {
     /// Resolved at open and kept, so a later unmount cannot leave the handle
@@ -66,6 +67,14 @@ pub const Directory = struct {
     exhausted: bool = false,
 };
 
+/// One end of a pipe. Which end is recorded rather than inferred: the counts
+/// that decide end of file and a broken pipe are per end, so a handle that did
+/// not know which it was could not be released correctly.
+pub const PipeEnd = struct {
+    pipe: *pipe_mod.Pipe,
+    writer: bool,
+};
+
 pub const ChannelRef = struct {
     channel: *channel_mod.Channel,
     /// True for the handle that answers calls. Exactly one end serves, and
@@ -88,6 +97,7 @@ pub const Handle = struct {
         /// kind from `shm` only so that closing it also hands the display
         /// back: the segment itself is an ordinary one.
         display: *shm_mod.Segment,
+        pipe: PipeEnd,
     } = .{ .none = {} },
 };
 
@@ -116,7 +126,10 @@ pub fn transferable(h: Handle) ?Transfer {
         .display => .{ .display = h.data.display },
         // Files and directories carry a position, and a position means
         // nothing to anyone else. Consoles are shared already.
-        .none, .console, .file, .directory => null,
+        // A pipe end could cross, but nothing needs it to: a pipe reaches
+        // another process by being inherited at spawn, and adding a second
+        // route would be a second lifetime to get right.
+        .none, .console, .file, .directory, .pipe => null,
     };
 }
 
@@ -186,6 +199,7 @@ pub fn retain(h: Handle) Handle {
         .channel => channel_mod.retain(h.data.channel.channel),
         .shm => shm_mod.retain(h.data.shm),
         .display => shm_mod.retain(h.data.display),
+        .pipe => pipe_mod.retain(h.data.pipe.pipe, h.data.pipe.writer),
         .none, .console => {},
     }
     return h;
@@ -228,6 +242,7 @@ pub fn release(h: Handle) void {
             shm_mod.release(h.data.display);
             display_mod.release();
         },
+        .pipe => pipe_mod.release(h.data.pipe.pipe, h.data.pipe.writer),
         .none, .console => {},
     }
 }

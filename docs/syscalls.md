@@ -261,7 +261,7 @@ Load and run a program, and wait for it to finish.
 | `path_len` | len | Length of the path. |
 | `argv` | const ptr | Packed arguments: u16 count, then each as u16 length followed by bytes. |
 | `argv_len` | len | Length of the packed block. |
-| `flags` | flags | Bit 0 set returns immediately with the child's id instead of waiting. |
+| `options` | const ptr | A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. |
 
 **Returns:** the program's exit status
 
@@ -626,6 +626,23 @@ End another process.
 
 There are no signals: this ends the process, it does not ask it to. The process dies at its next return to userspace, so kernel state it holds is unwound rather than abandoned; one blocked or sleeping is woken so that happens at once. Ending `init` is refused, since nothing would collect what it adopts.
 
+## `pipe`  <sub>#35</sub>
+
+Create a pipe.
+
+| arg | type | meaning |
+|---|---|---|
+| `out` | ptr | Receives two u32 handles: the read end then the write end. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+Reading blocks until there are bytes, and returns 0 once every writer has closed. Writing blocks while the pipe is full, and fails with EPIPE once every reader has closed. The read end can be passed to wait_many, so a process waiting on a pipe and on something else has one blocking call.
+
 ---
 
-35 calls defined.
+36 calls defined.

@@ -11,6 +11,7 @@ const ctx = @import("context.zig");
 const display = @import("../display.zig");
 const event_mod = @import("../event.zig");
 const handles = @import("../handle.zig");
+const pipe_mod = @import("../pipe.zig");
 const sched = @import("../sched.zig");
 const shm = @import("../shm.zig");
 const svc = @import("../svc.zig");
@@ -28,6 +29,22 @@ fn getEvent(handle: u32) ?*event_mod.Event {
     const h = table.get(handle) orelse return null;
     if (h.kind != .event) return null;
     return h.data.event;
+}
+
+/// The event a handle becomes ready on, for `wait_many`.
+///
+/// An event is its own answer. A pipe's read end answers with the event that
+/// tracks whether it has anything to read, which is what lets one call wait on
+/// a window's event ring and a shell's output at the same time. Anything else
+/// has no readiness worth waiting on.
+fn waitableEvent(handle: u32) ?*event_mod.Event {
+    const table = currentHandles() orelse return null;
+    const h = table.get(handle) orelse return null;
+    return switch (h.kind) {
+        .event => h.data.event,
+        .pipe => if (h.data.pipe.writer) null else &h.data.pipe.pipe.readable,
+        else => null,
+    };
 }
 
 fn getChannel(handle: u32, serving: bool) ?*channel_mod.Channel {
@@ -71,7 +88,7 @@ pub fn sys_wait_many(a: Args) Result {
     var events: [event_mod.MAX_WAIT]*event_mod.Event = undefined;
     for (0..count) |i| {
         const handle = std.mem.readInt(u32, raw[i * 4 ..][0..4], .little);
-        events[i] = getEvent(handle) orelse return Errno.badf.value();
+        events[i] = waitableEvent(handle) orelse return Errno.badf.value();
     }
 
     const index = event_mod.waitMany(events[0..count], deadlineFrom(a.a2)) catch |err| {
@@ -356,4 +373,40 @@ pub fn sys_display_acquire(a: Args) Result {
     @memcpy(out[0..@sizeOf(abi.DisplayInfo)], std.mem.asBytes(&record));
 
     return @intCast(slot);
+}
+
+pub fn sys_pipe(a: Args) Result {
+    const out = userSlice(a, a.a0, 2 * @sizeOf(u32)) orelse return Errno.fault.value();
+    const table = currentHandles() orelse return Errno.nomem.value();
+
+    const read_slot = table.alloc() orelse return Errno.nomem.value();
+    // Claimed before the second, so the first cannot be handed out twice. The
+    // kind is set now for the same reason: `alloc` finds the lowest free slot,
+    // and a slot still marked free would be found again.
+    table.entries[read_slot] = .{ .kind = .console, .rights = .{} };
+
+    const write_slot = table.alloc() orelse {
+        table.entries[read_slot] = .{};
+        return Errno.nomem.value();
+    };
+
+    const p = pipe_mod.create() catch {
+        table.entries[read_slot] = .{};
+        return Errno.nomem.value();
+    };
+
+    table.entries[read_slot] = .{
+        .kind = .pipe,
+        .rights = .{ .read = true },
+        .data = .{ .pipe = .{ .pipe = p, .writer = false } },
+    };
+    table.entries[write_slot] = .{
+        .kind = .pipe,
+        .rights = .{ .write = true },
+        .data = .{ .pipe = .{ .pipe = p, .writer = true } },
+    };
+
+    std.mem.writeInt(u32, out[0..4], read_slot, .little);
+    std.mem.writeInt(u32, out[4..8], write_slot, .little);
+    return 0;
 }

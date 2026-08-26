@@ -4,6 +4,7 @@ const std = @import("std");
 const abi = @import("lib").syscalls;
 const ctx = @import("context.zig");
 const exec = @import("../exec.zig");
+const handles = @import("../handle.zig");
 const path_mod = @import("../path.zig");
 const sched = @import("../sched.zig");
 const vfs = @import("../vfs.zig");
@@ -14,6 +15,7 @@ const Errno = ctx.Errno;
 const userSlice = ctx.userSlice;
 const userPath = ctx.userPath;
 const deadlineFrom = ctx.deadlineFrom;
+const currentHandles = ctx.currentHandles;
 
 pub fn sys_spawn(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;
@@ -28,13 +30,57 @@ pub fn sys_spawn(a: Args) Result {
 
     const count = abi.Argv.unpack(packed_args, &storage, &slices) catch return Errno.inval.value();
 
-    const flags: abi.SpawnFlags = @bitCast(@as(u32, @truncate(a.a4)));
+    var options = abi.Spawn{};
+    if (a.a4 != 0) {
+        const raw = userSlice(a, a.a4, @sizeOf(abi.Spawn)) orelse return Errno.fault.value();
+        options = std.mem.bytesToValue(abi.Spawn, raw[0..@sizeOf(abi.Spawn)]);
+    }
+
+    var stdio = exec.INHERIT;
+    claimStdio(&options, &stdio) catch return Errno.badf.value();
+    errdefer releaseStdio(&stdio);
+
+    const flags: abi.SpawnFlags = @bitCast(options.flags);
 
     if (flags.detached) {
-        const id = exec.spawnAsync(path, slices[0..count]) catch |err| return spawnErrno(err);
+        const id = exec.spawnAsync(path, slices[0..count], stdio) catch |err| {
+            releaseStdio(&stdio);
+            return spawnErrno(err);
+        };
         return @intCast(id);
     }
-    return exec.spawn(path, slices[0..count]) catch |err| return spawnErrno(err);
+    return exec.spawn(path, slices[0..count], stdio) catch |err| {
+        releaseStdio(&stdio);
+        return spawnErrno(err);
+    };
+}
+
+/// Take a reference to each handle the caller nominated for the child.
+///
+/// A reference of its own, because the parent goes on holding its copy and
+/// either may close first. A terminal emulator closes its ends of the shell's
+/// pipes straight after spawning, and the shell must not lose them with it.
+fn claimStdio(options: *const abi.Spawn, out: *exec.Stdio) error{BadHandle}!void {
+    const table = currentHandles() orelse return error.BadHandle;
+    const wanted = [_]i32{ options.stdin, options.stdout, options.stderr };
+
+    for (wanted, 0..) |number, i| {
+        if (number == abi.Spawn.INHERIT) continue;
+        if (number < 0) return error.BadHandle;
+
+        const h = table.get(@intCast(number)) orelse {
+            releaseStdio(out);
+            return error.BadHandle;
+        };
+        out[i] = handles.retain(h.*);
+    }
+}
+
+fn releaseStdio(stdio: *exec.Stdio) void {
+    for (stdio) |maybe| {
+        if (maybe) |h| handles.release(h);
+    }
+    stdio.* = exec.INHERIT;
 }
 
 fn spawnErrno(err: exec.Error) Result {

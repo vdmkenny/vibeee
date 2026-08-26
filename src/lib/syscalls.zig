@@ -422,6 +422,22 @@ pub const SpawnFlags = packed struct(u32) {
 };
 
 /// Well-known handles, open in every process at start.
+/// What a child starts with, passed to `spawn` by pointer.
+///
+/// A struct rather than more argument registers: the list of things worth
+/// deciding about a child only grows, and each one added as an argument is an
+/// ABI change. `INHERIT` leaves a stream as the parent's, which for every
+/// caller but a terminal emulator is the console.
+pub const Spawn = extern struct {
+    /// Leave this stream alone.
+    pub const INHERIT: i32 = -1;
+
+    flags: u32 = 0,
+    stdin: i32 = INHERIT,
+    stdout: i32 = INHERIT,
+    stderr: i32 = INHERIT,
+};
+
 pub const STDIN: u32 = 0;
 pub const STDOUT: u32 = 1;
 pub const STDERR: u32 = 2;
@@ -667,7 +683,7 @@ pub const table = [_]Syscall{
             .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
             .{ .name = "argv", .kind = .cptr, .desc = "Packed arguments: u16 count, then each as u16 length followed by bytes." },
             .{ .name = "argv_len", .kind = .len, .desc = "Length of the packed block." },
-            .{ .name = "flags", .kind = .flags, .desc = "Bit 0 set returns immediately with the child's id instead of waiting." },
+            .{ .name = "options", .kind = .cptr, .desc = "A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting." },
         },
         .returns = "the program's exit status",
         .errors = &.{ E.fault, E.noent, E.inval, E.nomem },
@@ -936,6 +952,20 @@ pub const table = [_]Syscall{
             "The process dies at its next return to userspace, so kernel state it holds is " ++
             "unwound rather than abandoned; one blocked or sleeping is woken so that happens " ++
             "at once. Ending `init` is refused, since nothing would collect what it adopts.",
+    },
+    .{
+        .number = 35,
+        .name = "pipe",
+        .summary = "Create a pipe.",
+        .args = &.{
+            .{ .name = "out", .kind = .ptr, .desc = "Receives two u32 handles: the read end then the write end." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.fault, E.nomem },
+        .notes = "Reading blocks until there are bytes, and returns 0 once every writer has " ++
+            "closed. Writing blocks while the pipe is full, and fails with EPIPE once every " ++
+            "reader has closed. The read end can be passed to wait_many, so a process waiting " ++
+            "on a pipe and on something else has one blocking call.",
     },
 };
 

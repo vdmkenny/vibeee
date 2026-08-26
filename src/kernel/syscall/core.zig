@@ -48,8 +48,15 @@ pub fn sys_write(a: Args) Result {
     return switch (h.kind) {
         .console => writeConsole(number, buf),
         .file => writeFile(&h.data.file, buf),
+        .pipe => writePipe(h.data.pipe, buf),
         else => Errno.badf.value(),
     };
+}
+
+fn writePipe(end: handles.PipeEnd, buf: []const u8) Result {
+    if (!end.writer) return Errno.badf.value();
+    const n = end.pipe.write(buf) catch return Errno.pipe.value();
+    return @intCast(n);
 }
 
 fn writeConsole(number: u32, buf: []const u8) Result {
@@ -85,21 +92,45 @@ pub fn sys_read(a: Args) Result {
     if (buf.len == 0) return 0;
 
     const id: u32 = @truncate(a.a0);
-    if (id == abi.STDIN) {
-        // Block until a line is available. Sleeping rather than spinning
-        // matters: a shell waiting at a prompt must not consume the CPU
-        // everything else needs, and on a single core it would starve them.
-        while (!tty.hasLine()) sched.sleepMicros(10_000);
-        return @intCast(tty.read(buf));
-    }
 
-    const table = currentHandles() orelse return Errno.badf.value();
+    // Before the scheduler starts there is no table, and an early caller
+    // reading standard input means the console.
+    const table = currentHandles() orelse {
+        if (id == abi.STDIN) return readConsole(buf);
+        return Errno.badf.value();
+    };
+
     const h = table.get(id) orelse return Errno.badf.value();
-    if (h.kind != .file or !h.rights.read) return Errno.badf.value();
+    if (!h.rights.read) return Errno.badf.value();
 
-    const f = &h.data.file;
+    // Dispatched on what the handle is, not on its number: a shell whose input
+    // came from a terminal emulator has a pipe on handle 0, and reading the
+    // keyboard instead would take input from whoever else was typing.
+    return switch (h.kind) {
+        .console => readConsole(buf),
+        .file => readFile(&h.data.file, buf),
+        .pipe => readPipe(h.data.pipe, buf),
+        else => Errno.badf.value(),
+    };
+}
+
+fn readConsole(buf: []u8) Result {
+    // Block until a line is available. Sleeping rather than spinning matters:
+    // a shell waiting at a prompt must not consume the CPU everything else
+    // needs, and on a single core it would starve them.
+    while (!tty.hasLine()) sched.sleepMicros(10_000);
+    return @intCast(tty.read(buf));
+}
+
+fn readFile(f: *handles.File, buf: []u8) Result {
     const n = vfs.readAt(f.mount, f.entry, f.offset, buf) catch return Errno.io.value();
     f.offset += n;
+    return @intCast(n);
+}
+
+fn readPipe(end: handles.PipeEnd, buf: []u8) Result {
+    if (end.writer) return Errno.badf.value();
+    const n = end.pipe.read(buf) catch return Errno.pipe.value();
     return @intCast(n);
 }
 

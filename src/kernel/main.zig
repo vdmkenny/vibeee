@@ -14,6 +14,7 @@ const event = @import("event.zig");
 const hal = @import("hal.zig");
 const logo = @import("lib").logo;
 const panic_mod = @import("panic.zig");
+const pipe = @import("pipe.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
 const bcache = @import("bcache.zig");
@@ -267,6 +268,7 @@ fn supervisor(_: usize) callconv(.c) void {
     }
 
     selfTestIpc();
+    selfTestPipe();
 
     // Kernel bring-up is over; the screen belongs to userspace from here.
     //
@@ -293,6 +295,54 @@ fn supervisor(_: usize) callconv(.c) void {
         console.writeString("ready\n");
         console.setColor(.light_grey, .black);
     }
+}
+
+/// A pipe carries bytes, and reports end of file once its writer is gone.
+///
+/// Checked at boot because everything that uses one blocks on it: a pipe that
+/// silently never becomes readable is a terminal emulator that hangs with no
+/// output, which is a much harder thing to read than a failed line here.
+fn selfTestPipe() void {
+    const p = pipe.create() catch {
+        console.fail("pipe: cannot create", .{});
+        return;
+    };
+    // Two references, one per end, which is what `create` hands out.
+    defer pipe.release(p, false);
+
+    const sent = "vibeee";
+    _ = p.write(sent) catch {
+        console.fail("pipe: write failed", .{});
+        pipe.release(p, true);
+        return;
+    };
+
+    var buf: [16]u8 = undefined;
+    const n = p.read(&buf) catch {
+        console.fail("pipe: read failed", .{});
+        pipe.release(p, true);
+        return;
+    };
+
+    if (!std.mem.eql(u8, buf[0..n], sent)) {
+        console.fail("pipe: read back '{s}', not '{s}'", .{ buf[0..n], sent });
+        pipe.release(p, true);
+        return;
+    }
+
+    // Closing the write end has to turn a blocking read into end of file, or
+    // every reader of a finished program waits forever.
+    pipe.release(p, true);
+    const eof = p.read(&buf) catch {
+        console.fail("pipe: read after the writer closed failed", .{});
+        return;
+    };
+    if (eof != 0) {
+        console.fail("pipe: expected end of file, got {d} bytes", .{eof});
+        return;
+    }
+
+    console.debug("pipe", "{d} bytes through, end of file on close", .{n});
 }
 
 // ---------------------------------------------------------------------------

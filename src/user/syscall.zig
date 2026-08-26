@@ -172,7 +172,9 @@ pub fn wait(pid: u32, timeout_us: usize) ?Exited {
     return .{ .pid = @intCast(got), .status = status };
 }
 
-fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isize {
+/// Start a program with its standard streams bound to handles of the caller's
+/// choosing. What a terminal emulator uses; everything else wants `spawn`.
+pub fn spawnStreams(path: []const u8, args: []const []const u8, options: abi.Spawn) isize {
     const n = abi.Argv.pack(args, &spawn_buf) catch return -22;
     return syscall5(
         abi.number("spawn"),
@@ -180,8 +182,21 @@ fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isiz
         path.len,
         @intFromPtr(&spawn_buf),
         n,
-        @as(u32, @bitCast(flags)),
+        @intFromPtr(&options),
     );
+}
+
+fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isize {
+    return spawnStreams(path, args, .{ .flags = @bitCast(flags) });
+}
+
+pub const Pipe = struct { read: u32, write: u32 };
+
+/// Create a pipe. The read end can be passed to `waitMany`.
+pub fn pipe() ?Pipe {
+    var ends: [2]u32 = .{ 0, 0 };
+    if (syscall1(abi.number("pipe"), @intFromPtr(&ends)) < 0) return null;
+    return .{ .read = ends[0], .write = ends[1] };
 }
 
 pub fn chdir(path: []const u8) isize {
