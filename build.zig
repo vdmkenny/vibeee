@@ -54,6 +54,22 @@ pub fn build(b: *std.Build) void {
         .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
     });
 
+    const tools = b.addExecutable(.{
+        .name = "tools",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/user/tools.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .single_threaded = true,
+            .strip = true,
+            .stack_check = false,
+            .stack_protector = false,
+        }),
+    });
+    tools.setLinkerScript(b.path("src/user/linker.ld"));
+    tools.entry = .{ .symbol_name = "_start" };
+    b.installArtifact(tools);
+
     const hello = b.addExecutable(.{
         .name = "hello",
         .root_module = b.createModule(.{

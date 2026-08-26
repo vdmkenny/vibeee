@@ -14,6 +14,10 @@ pub const SYS_CLOCK_US = 5;
 pub const SYS_GETPID = 6;
 pub const SYS_LOG = 7;
 pub const SYS_SHUTDOWN = 8;
+pub const SYS_SYSINFO = 9;
+
+/// Matches the kernel limit in arch/x86/usermode.zig.
+pub const MAX_ARGS = 16;
 
 pub const STDIN = 0;
 pub const STDOUT = 1;
@@ -72,6 +76,21 @@ pub fn clockMicros() u64 {
     var out: u64 = 0;
     _ = syscall1(SYS_CLOCK_US, @intFromPtr(&out));
     return out;
+}
+
+fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
+    return asm volatile ("int $0x80"
+        : [ret] "={eax}" (-> isize),
+        : [nr] "{eax}" (nr),
+          [a0] "{ebx}" (a0),
+          [a1] "{ecx}" (a1),
+          [a2] "{edx}" (a2),
+          [a3] "{esi}" (a3),
+        : .{ .memory = true });
+}
+
+pub fn sysinfo(key: []const u8, buf: []u8) isize {
+    return syscall4(SYS_SYSINFO, @intFromPtr(key.ptr), key.len, @intFromPtr(buf.ptr), buf.len);
 }
 
 pub const POWER_OFF = 0;

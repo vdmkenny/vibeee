@@ -17,6 +17,8 @@ const acpi = @import("drv/acpi/tables.zig");
 const acpi_power = @import("drv/acpi/power.zig");
 const cmos = @import("drv/rtc/cmos.zig");
 const shutdown = @import("kernel/shutdown.zig");
+const smbios = @import("drv/platform/smbios.zig");
+const sysinfo = @import("kernel/sysinfo.zig");
 const kbd = @import("drv/input/i8042.zig");
 const uart = @import("drv/serial/uart16550.zig");
 const bcache = @import("kernel/bcache.zig");
@@ -46,6 +48,24 @@ pub fn earlyConsole() void {
     }
 }
 
+/// Hand firmware-derived identity to the kernel's information service.
+///
+/// Done here because it is the one place allowed to know about both the
+/// firmware tables and the kernel at once.
+fn publishPlatform() void {
+    sysinfo.setPlatform(.{
+        .system_manufacturer = smbios.systemManufacturer(),
+        .system_product = smbios.systemProduct(),
+        .bios_vendor = smbios.biosVendor(),
+        .bios_version = smbios.biosVersion(),
+        .smbios_table = if (smbios.get()) |i| i.table else null,
+    });
+
+    if (smbios.systemProduct()) |product| {
+        console.debug("board", "{s} {s}", .{ smbios.systemManufacturer() orelse "", product });
+    }
+}
+
 /// Report the console's geometry once the framebuffer, if any, is running.
 pub fn reportVideo() void {
     const px = console.pixelSize();
@@ -59,6 +79,9 @@ pub fn reportVideo() void {
 }
 
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
+    smbios.init();
+    publishPlatform();
+
     acpi.init(bi.rsdp);
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
 
@@ -233,12 +256,12 @@ fn enumeratePci() void {
 /// Never returns: the calling thread becomes the user process, and the only way
 /// back into the kernel is a trap. Runs from a thread so its kernel stack is the
 /// one the CPU switches to on that trap.
-pub fn enterUserMode() noreturn {
+pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
     // Prefer the copy on disk: that path exercises ATA, the partition table and
     // FAT together. The embedded copy is the fallback, so a machine whose
     // storage is not yet working still reaches user mode.
     var from_disk = true;
-    const image = readFile("/HELLO") orelse blk: {
+    const image = readFile(path) orelse blk: {
         from_disk = false;
         break :blk @embedFile("user_hello");
     };
@@ -253,8 +276,8 @@ pub fn enterUserMode() noreturn {
         sched.exit();
     };
 
-    const stack_top = usermode.setupStack(&space) catch {
-        console.fail("user: cannot map stack", .{});
+    const stack_top = usermode.setupStack(&space, args) catch {
+        console.fail("user: cannot set up stack", .{});
         sched.exit();
     };
 

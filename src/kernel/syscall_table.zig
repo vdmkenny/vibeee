@@ -185,6 +185,20 @@ pub const table = [_]Syscall{
         .errors = &.{E.inval},
         .notes = "Unmounts every filesystem and flushes every device before acting. FAT has no journal, so this is the only way to guarantee written data reached the medium.",
     },
+    .{
+        .number = 9,
+        .name = "sysinfo",
+        .summary = "Read a named piece of system information.",
+        .args = &.{
+            .{ .name = "key", .kind = .cptr, .desc = "Key name, e.g. \"cpu\", \"mem\", \"board\", \"smbios\"." },
+            .{ .name = "key_len", .kind = .len, .desc = "Length of the key." },
+            .{ .name = "buf", .kind = .ptr, .desc = "Where the value is written." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity of the buffer." },
+        },
+        .returns = "bytes written",
+        .errors = &.{ E.fault, E.inval },
+        .notes = "Values are text, except \"smbios\" which returns the raw DMI structure table for a userspace decoder. A keyed interface rather than a struct, so adding a value is not an ABI break.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

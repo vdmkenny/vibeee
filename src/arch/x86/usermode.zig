@@ -18,17 +18,68 @@ pub const USER_STACK_PAGES = 4;
 
 pub const Error = error{OutOfMemory};
 
-/// Give a freshly loaded process its stack.
-pub fn setupStack(space: *paging.AddressSpace) Error!usize {
+/// Give a freshly loaded process its stack, with arguments on it.
+///
+/// The initial stack follows the C convention a `_start` expects: argc, then
+/// the argv pointers, then a null, then the strings themselves. Building it
+/// here rather than in the program means a shell can hand arguments to anything
+/// without every program agreeing on a private protocol.
+///
+/// Written through the linear map while the process is not yet running, so the
+/// address space never has to be switched to populate it.
+pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!usize {
+    // Track each page's kernel-visible address, so the stack can be written
+    // before it is mapped anywhere the process can see.
+    var frames: [USER_STACK_PAGES]usize = undefined;
+
     var i: usize = 0;
     while (i < USER_STACK_PAGES) : (i += 1) {
         const phys = pmm.allocFrame() catch return error.OutOfMemory;
+        frames[i] = phys;
         @memset(@as([*]u8, @ptrFromInt(paging.physToVirt(phys)))[0..paging.PAGE_SIZE], 0);
         const virt = USER_STACK_TOP - (i + 1) * paging.PAGE_SIZE;
         space.map(virt, phys, true) catch return error.OutOfMemory;
     }
-    return USER_STACK_TOP;
+
+    // Only the topmost page is used for arguments; anything longer than that
+    // belongs in a file rather than a command line.
+    const top_phys = frames[0];
+    const page: [*]u8 = @ptrFromInt(paging.physToVirt(top_phys));
+
+    // Offsets are relative to the top page, whose last byte is USER_STACK_TOP-1.
+    var offset: usize = paging.PAGE_SIZE;
+
+    var arg_addrs: [MAX_ARGS]usize = undefined;
+    const count = @min(args.len, MAX_ARGS);
+
+    // Strings first, downward from the top.
+    var n: usize = count;
+    while (n > 0) {
+        n -= 1;
+        const arg = args[n];
+        if (arg.len + 1 > offset) return error.OutOfMemory;
+        offset -= arg.len + 1;
+        @memcpy(page[offset..][0..arg.len], arg);
+        page[offset + arg.len] = 0;
+        arg_addrs[n] = USER_STACK_TOP - paging.PAGE_SIZE + offset;
+    }
+
+    // Then the pointer array and argc, aligned so the callee sees a normal
+    // frame.
+    offset = std.mem.alignBackward(usize, offset, 4);
+    const words = count + 2; // argc, argv[0..count], null terminator
+    if (words * 4 > offset) return error.OutOfMemory;
+    offset -= words * 4;
+
+    const stack_words: [*]u32 = @alignCast(@ptrCast(page + offset));
+    stack_words[0] = @intCast(count);
+    for (0..count) |k| stack_words[1 + k] = @intCast(arg_addrs[k]);
+    stack_words[1 + count] = 0;
+
+    return USER_STACK_TOP - paging.PAGE_SIZE + offset;
 }
+
+pub const MAX_ARGS = 16;
 
 /// Drop to Ring 3. Does not return: from here the only way back into the kernel
 /// is a trap.

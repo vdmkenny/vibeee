@@ -38,6 +38,7 @@ PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
 
 KERNEL_ELF := zig-out/bin/vibeee.elf
 USER_HELLO := zig-out/bin/hello
+USER_TOOLS := zig-out/bin/tools
 KERNEL_BIN := $(BUILD)/kernel.bin
 STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
@@ -98,6 +99,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
+	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)

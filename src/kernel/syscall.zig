@@ -12,6 +12,7 @@ const console = @import("console.zig");
 const hal = @import("hal.zig");
 const sched = @import("sched.zig");
 const shutdown_mod = @import("shutdown.zig");
+const sysinfo = @import("sysinfo.zig");
 const tty = @import("tty.zig");
 
 pub const Errno = abi.Errno;
@@ -109,6 +110,18 @@ fn sys_shutdown(a: Args) Result {
         else => return Errno.inval.value(),
     };
     shutdown_mod.shutdown(action);
+}
+
+fn sys_sysinfo(a: Args) Result {
+    const key = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const out = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
+    if (key.len == 0 or key.len > 64) return Errno.inval.value();
+
+    const n = sysinfo.query(key, out) catch |err| return switch (err) {
+        error.UnknownKey => Errno.inval.value(),
+        error.NoSpace => Errno.nomem.value(),
+    };
+    return @intCast(n);
 }
 
 // ---------------------------------------------------------------------------

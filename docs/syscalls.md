@@ -140,6 +140,26 @@ Flush all filesystems and stop the machine.
 
 Unmounts every filesystem and flushes every device before acting. FAT has no journal, so this is the only way to guarantee written data reached the medium.
 
+## `sysinfo`  <sub>#9</sub>
+
+Read a named piece of system information.
+
+| arg | type | meaning |
+|---|---|---|
+| `key` | const ptr | Key name, e.g. "cpu", "mem", "board", "smbios". |
+| `key_len` | len | Length of the key. |
+| `buf` | ptr | Where the value is written. |
+| `buf_len` | len | Capacity of the buffer. |
+
+**Returns:** bytes written
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+
+Values are text, except "smbios" which returns the raw DMI structure table for a userspace decoder. A keyed interface rather than a struct, so adding a value is not an ABI break.
+
 ---
 
-9 calls defined.
+10 calls defined.
