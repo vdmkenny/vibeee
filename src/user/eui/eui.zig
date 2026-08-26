@@ -5,6 +5,12 @@
 //! looks and behaves the same everywhere and a new program gets the whole look
 //! by asking for controls rather than by drawing rectangles.
 //!
+//! **A control an application needs goes here, not in the application.** If it
+//! is reusable it belongs to the toolkit, and the second program to want a
+//! list box should find one rather than write a worse one. An app growing its
+//! own widgets is how a system ends up with four kinds of button that behave
+//! differently, which is the failure this library exists to prevent.
+//!
 //! Deliberately free of syscalls. It draws into a surface somebody else
 //! obtained and reacts to input somebody else read, which is what lets the
 //! same code paint the compositor's furniture, an application's window, and
