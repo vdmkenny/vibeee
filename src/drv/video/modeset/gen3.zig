@@ -55,6 +55,7 @@ const MMIO_BYTES: usize = 512 * 1024;
 /// written once, in `pipeAt`, and the register dump lists every field of this
 /// struct, so a register added here is dumped without further ceremony.
 const Pipe = struct {
+    dsl: u32,
     htotal: u32,
     hblank: u32,
     hsync: u32,
@@ -81,6 +82,7 @@ fn pipeAt(timing: u32, plane: u32) Pipe {
         .vblank = timing + 0x10,
         .vsync = timing + 0x14,
         .src = timing + 0x1C,
+        .dsl = plane + 0x000,
         .conf = plane + 0x008,
         .stat = plane + 0x024,
         .cntr = plane + 0x180,
@@ -396,10 +398,11 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
 
     acknowledgeUnderrun(w, pipe);
 
-    // The plane's geometry registers are not double buffered on this
-    // generation, so they change only between disabling the plane and
-    // re-enabling it, the way the reference drivers do it.
+    // The plane's geometry registers are not double buffered and the pipe
+    // latches its fetch schedule at start, so both stop before the geometry
+    // moves, the way the reference drivers do it.
     planeOff(w, pipe, cntr);
+    pipeOff(w, pipe);
 
     // The FIFO machinery before the geometry that raises its demand. Both
     // reference drivers retune it on every mode change; the firmware's
@@ -438,6 +441,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     write(Source, w, pipe.src, Source.of(want.width, want.height));
     write(u32, w, pipe.stride, pitch);
 
+    pipeOn(w, pipe);
     planeOn(w, pipe, cntr);
 
     // Half a second in the new mode before judging it: an underrun that only
@@ -493,6 +497,7 @@ const Saved = struct {
 /// Put back everything `set` changed, around the same plane restart.
 fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void {
     planeOff(w, pipe, cntr);
+    pipeOff(w, pipe);
 
     write(u32, w, PFIT_CONTROL, saved.pfit);
     write(u32, w, DSPARB, saved.dsparb);
@@ -504,6 +509,7 @@ fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void 
     write(u32, w, FW_BLC2, saved.fw_blc2);
     setSelfRefresh(w, device, saved.self_refresh);
 
+    pipeOn(w, pipe);
     planeOn(w, pipe, cntr);
     waitFrame();
     acknowledgeUnderrun(w, pipe);
@@ -523,6 +529,34 @@ fn planeOff(w: Windows, pipe: Pipe, cntr: Enable) void {
 fn planeOn(w: Windows, pipe: Pipe, cntr: Enable) void {
     write(Enable, w, pipe.cntr, cntr);
     write(u32, w, pipe.base, read(u32, w, pipe.base));
+}
+
+/// Stop the pipe and wait until its scanline counter freezes, which is the
+/// hardware's own statement that scanout has ended. The reference does the
+/// same before touching geometry: the pipe latches its per-line fetch
+/// schedule when it starts, so geometry changed under a running pipe is fed
+/// at the old width however the FIFO is tuned.
+fn pipeOff(w: Windows, pipe: Pipe) void {
+    var conf = read(Enable, w, pipe.conf);
+    conf.on = false;
+    write(Enable, w, pipe.conf, conf);
+
+    var last = read(u32, w, pipe.dsl);
+    var tries: u32 = 0;
+    while (tries < 100) : (tries += 1) {
+        waitMicros(1_000);
+        const now = read(u32, w, pipe.dsl);
+        if (now == last) return;
+        last = now;
+    }
+}
+
+/// Start the pipe again and give it a frame to relatch its schedule.
+fn pipeOn(w: Windows, pipe: Pipe) void {
+    var conf = read(Enable, w, pipe.conf);
+    conf.on = true;
+    write(Enable, w, pipe.conf, conf);
+    waitFrame();
 }
 
 /// Clear the sticky underrun record so the next reading is about now.
@@ -582,7 +616,11 @@ fn watermark(pixel_khz: u32, fifo_lines: u32) u6 {
 /// rather than a sleep because a mode is set from early boot, before there is
 /// a scheduler to sleep on.
 fn waitFrame() void {
-    const until = clock.monotonicMicros() + 30_000;
+    waitMicros(30_000);
+}
+
+fn waitMicros(us: u64) void {
+    const until = clock.monotonicMicros() + us;
     while (clock.monotonicMicros() < until) {}
 }
 
