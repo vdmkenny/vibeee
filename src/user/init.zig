@@ -164,7 +164,7 @@ fn parse(text: []const u8) void {
         }
 
         const kv = config.pair(line) orelse continue;
-        if (config.assign(&current, kv.key, kv.value)) dirty = true;
+        if (config.assign(&current, kv.key, kv.value) == .assigned) dirty = true;
     }
 
     if (dirty) commit(current);

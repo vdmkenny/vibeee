@@ -55,6 +55,7 @@ USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_DEVMGD := zig-out/bin/devmgd
+USER_CFGD := zig-out/bin/cfgd
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
 KERNEL_BIN := $(BUILD)/kernel.bin
@@ -121,13 +122,14 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
+	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
-	@$(MCOPY) -i $@ -o etc/eeewm.cfg ::/etc/eeewm.cfg
+	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
 	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/lib/drivers/e1000.man
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt

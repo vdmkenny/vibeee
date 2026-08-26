@@ -9,6 +9,7 @@
 
 pub const dialog = @import("dialog.zig");
 pub const FileDialog = dialog.FileDialog;
+pub const settings = @import("settings.zig");
 pub const wm = @import("wm.zig");
 pub const client = @import("client.zig");
 

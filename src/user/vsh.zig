@@ -15,6 +15,7 @@
 //! machine with only one shell.
 
 const sys = @import("sys");
+const cfg = @import("tools/cfg.zig");
 const complete = @import("ulib").complete;
 const registry = @import("tools/registry.zig");
 const dir_mod = @import("ulib").dir;
@@ -161,6 +162,7 @@ fn offerEntries(into: *complete.Collector, which: Which) void {
 const completion = [_]complete.Source{
     .{ .offer = &offerCommands },
     .{ .command = "cd", .offer = &offerDirectories },
+    .{ .command = "cfg", .offer = &cfg.offer },
     .{ .command = "display", .offer = &offerSubcommands },
     .{ .command = "cat", .offer = &offerFiles },
     .{ .command = "page", .offer = &offerFiles },

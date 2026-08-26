@@ -124,7 +124,7 @@ fn readOne(name: []const u8) void {
         if (line.len == 0 or line[0] == '#') continue;
 
         const kv = config.pair(line) orelse continue;
-        if (config.assign(&current, kv.key, kv.value)) dirty = true;
+        if (config.assign(&current, kv.key, kv.value) == .assigned) dirty = true;
     }
 
     if (!dirty or current.name.len == 0 or current.binary.len == 0) return;

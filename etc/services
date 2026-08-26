@@ -21,6 +21,13 @@ binary  = /bin/devmgd
 caps    = spawn,driver
 restart = never
 
+name    = cfgd
+binary  = /bin/cfgd
+# The settings store. Nothing else may write /etc, which is what makes two
+# programs saving at once safe.
+provides = cfg
+restart = always
+
 name    = vsh
 binary  = /bin/vsh
 restart = always

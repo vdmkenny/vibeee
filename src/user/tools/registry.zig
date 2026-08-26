@@ -7,6 +7,7 @@
 
 const eeefetch = @import("eeefetch.zig");
 const smbios = @import("smbios.zig");
+const cfg = @import("cfg.zig");
 const date = @import("date.zig");
 const file_tool = @import("file.zig");
 const files = @import("files.zig");
@@ -45,6 +46,7 @@ pub const commands = [_]Command{
     .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
     .{ .name = "tree", .summary = "a directory and everything under it", .run = &tree.run },
+    .{ .name = "cfg", .summary = "read and change system settings", .run = &cfg.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
     .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },
