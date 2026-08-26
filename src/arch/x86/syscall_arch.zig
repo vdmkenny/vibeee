@@ -113,23 +113,41 @@ const Frame = extern struct {
 /// a machine that never takes another interrupt.
 export fn sysenterEntry() callconv(.naked) noreturn {
     asm volatile (
-        \\ push %ebp
-        \\ push %ebp
-        \\ push %edi
-        \\ push %esi
-        \\ push %edx
-        \\ push %ecx
-        \\ push %ebx
-        \\ push %eax
+        \\ push %%ebp
+        \\ push %%ebp
+        \\ push %%edi
+        \\ push %%esi
+        \\ push %%edx
+        \\ push %%ecx
+        \\ push %%ebx
+        \\ push %%eax
+        // SYSENTER loads CS and SS and leaves the data segments alone, and
+        // SYSEXIT restores neither, so the kernel establishes its own here and
+        // puts the user's back below. Both halves are needed: a context switch
+        // carries no segment registers, so a thread resumed inside a syscall
+        // holds whatever selector the previously running thread left behind.
+        // Returning to ring 3 with a ring 0 one still reads and writes, the
+        // descriptor being cached and flat, right up until an interrupt
+        // returns through IRET and the CPU nulls a segment whose DPL sits
+        // below the privilege level it returns to. The next store faults.
+        \\ movw %[kds], %%ax
+        \\ movw %%ax, %%ds
+        \\ movw %%ax, %%es
         \\ sti
-        \\ push %esp
+        \\ push %%esp
         \\ call sysenterDispatch
-        \\ add $4, %esp
-        \\ pop %eax
-        \\ add $20, %esp
-        \\ pop %edx
-        \\ pop %ecx
+        \\ add $4, %%esp
+        \\ movw %[uds], %%ax
+        \\ movw %%ax, %%ds
+        \\ movw %%ax, %%es
+        \\ pop %%eax
+        \\ add $20, %%esp
+        \\ pop %%edx
+        \\ pop %%ecx
         \\ sysexit
+        :
+        : [kds] "i" (@as(u16, gdt.KERNEL_DATA)),
+          [uds] "i" (@as(u16, gdt.USER_DATA)),
     );
 }
 
