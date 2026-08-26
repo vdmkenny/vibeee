@@ -13,6 +13,7 @@
 //! machine whose only diagnostic is that panel.
 
 const std = @import("std");
+const clock = @import("../../../kernel/clock.zig");
 const hal = @import("../../../kernel/hal.zig");
 const pci = @import("../../bus/pci.zig");
 const probe = @import("../../../kernel/probe.zig");
@@ -98,6 +99,10 @@ const PP_STATUS = 0x61200;
 const PP_CONTROL = 0x61204;
 const BLC_PWM = 0x61254;
 const VGACNTRL = 0x71400;
+const DSPARB = 0x70030;
+const FW_BLC = 0x20D8;
+const FW_BLC2 = 0x20DC;
+const FW_BLC_SELF = 0x20E0;
 
 /// A register whose top bit enables the block it controls. A pipe, a plane and
 /// the panel fitter all put it there.
@@ -182,6 +187,10 @@ const registers = [_]Register{
     .{ .name = "pp_control", .offset = PP_CONTROL },
     .{ .name = "blc_pwm", .offset = BLC_PWM },
     .{ .name = "vgacntrl", .offset = VGACNTRL },
+    .{ .name = "dsparb", .offset = DSPARB },
+    .{ .name = "fw_blc", .offset = FW_BLC },
+    .{ .name = "fw_blc2", .offset = FW_BLC2 },
+    .{ .name = "fw_self", .offset = FW_BLC_SELF },
 };
 
 // ---------------------------------------------------------------------------
@@ -316,34 +325,41 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
 
     if (want.width != read(Timing, w, pipe.htotal).active()) return error.Unsupported;
     if (want.height != read(Timing, w, pipe.vtotal).active()) return error.Unsupported;
-    if (!read(Enable, w, pipe.cntr).on) return error.Hardware;
 
+    const cntr = read(Enable, w, pipe.cntr);
+    if (!cntr.on) return error.Hardware;
+
+    // The plane's geometry registers are not double buffered on this
+    // generation: they take effect the moment they are written, and writing
+    // them while the plane is fetching leaves its counters mid-frame in a
+    // shape they never agree on, which shows as moving garbage until the
+    // plane restarts. Every driver that runs on this hardware avoids exactly
+    // that: the modesetting X driver only writes them between disabling the
+    // plane and re-enabling it, and the kernel driver confines them to the
+    // vertical blank. Off, program, on is the sequence, with a frame's wait
+    // where a frame has to finish.
+
+    var off = cntr;
+    off.on = false;
+    write(Enable, w, pipe.cntr, off);
+    write(u32, w, pipe.base, read(u32, w, pipe.base));
+    waitFrame();
+
+    // Geometry, with nothing fetching. The fitter goes first so the timing's
+    // every pixel is the plane's own rather than a scaled copy.
     var fitter = read(Enable, w, PFIT_CONTROL);
     fitter.on = false;
     write(Enable, w, PFIT_CONTROL, fitter);
 
-    // Rounded up because the plane's stride has a granularity, which a width
-    // that is not a multiple of sixteen pixels would otherwise miss. The extra
-    // bytes are padding at the end of each line, which is why a framebuffer's
-    // pitch is reported rather than assumed to be its width.
     const pitch = std.mem.alignForward(u32, @as(u32, want.width) * 4, STRIDE_ALIGN);
-    write(Source, w, pipe.src, Source.of(want.width, want.height));
-
-    // The plane carries its own size and origin, which firmware sized to the
-    // smaller image it was scaling, so a pipe told to scan out more than that
-    // shows its border colour for the rest.
-    //
-    // Order matters as much as the values. Stride, position and size are set
-    // while the plane is unarmed, then the control register and the address
-    // arm them: the set is double buffered and latches together at the next
-    // vertical blank, and writing only part of it leaves the plane scanning
-    // out a mixture of the old geometry and the new.
-    write(u32, w, pipe.stride, pitch);
-    write(u32, w, pipe.pos, 0);
     write(PlaneSize, w, pipe.size, PlaneSize.of(want.width, want.height));
+    write(u32, w, pipe.pos, 0);
+    write(Source, w, pipe.src, Source.of(want.width, want.height));
+    write(u32, w, pipe.stride, pitch);
 
-    write(u32, w, pipe.cntr, read(u32, w, pipe.cntr));
+    write(Enable, w, pipe.cntr, cntr);
     write(u32, w, pipe.base, read(u32, w, pipe.base));
+    waitFrame();
 
     return .{
         .phys = w.aperture,
@@ -352,6 +368,18 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         .height = want.height,
         .bpp = 32,
     };
+}
+
+/// Let a display frame finish.
+///
+/// The reference drivers wait a flat interval where a vertical blank has to
+/// have passed and never poll for one; at sixty hertz this is nearly two
+/// frames, so it covers a refresh wherever in the frame it starts. A spin
+/// rather than a sleep because a mode is set from early boot, before there is
+/// a scheduler to sleep on.
+fn waitFrame() void {
+    const until = clock.monotonicMicros() + 30_000;
+    while (clock.monotonicMicros() < until) {}
 }
 
 /// Report the adapter's base registers and the display block's state.
