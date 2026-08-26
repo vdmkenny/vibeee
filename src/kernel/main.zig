@@ -246,7 +246,6 @@ fn supervisor(_: usize) callconv(.c) void {
     };
     sched.sleepMicros(200_000);
 
-    if (console.isVerbose()) platform.listMounts();
     bcache.report();
 
     if (console.isVerbose()) {

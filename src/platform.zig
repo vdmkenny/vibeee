@@ -90,32 +90,6 @@ fn reportMount(path: []const u8, dev: *const block.Device) void {
     });
 }
 
-/// List the root of every mount, so long names and the mount table are both
-/// visible at a glance.
-pub fn listMounts() void {
-    for (vfs.list()) |*m| {
-        if (!m.in_use) continue;
-        console.debug("mount", "{s} on {s}{s}", .{
-            m.path(), m.device.name, if (m.removable) " (removable)" else "",
-        });
-
-        var it = vfs.openDir(m.path()) catch continue;
-        var shown: usize = 0;
-        while (it.next() catch null) |entry| {
-            if (shown >= 6) {
-                console.debug("", "  ...", .{});
-                break;
-            }
-            console.debug("", "  {s}{s} {d}", .{
-                entry.nameSlice(),
-                if (entry.is_dir) "/" else "",
-                entry.size,
-            });
-            shown += 1;
-        }
-    }
-}
-
 /// Read a file into freshly allocated memory.
 fn readFile(path: []const u8) ?[]u8 {
     const entry = vfs.stat(path) catch |err| {
