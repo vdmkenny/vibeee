@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const cpu = @import("cpu.zig");
+const fpu = @import("fpu.zig");
 const gdt = @import("gdt.zig");
 const idt = @import("idt.zig");
 const port = @import("port.zig");
@@ -37,6 +38,8 @@ pub const invalidatePage = paging.invalidatePage;
 pub const dropBootIdentityMapping = paging.dropIdentityMapping;
 pub const AddressSpace = paging.AddressSpace;
 pub const kernelAddressSpace = paging.kernelAddressSpace;
+pub const setupUserStack = @import("usermode.zig").setupStack;
+pub const enterUserMode = @import("usermode.zig").enter;
 pub const mapMmio = paging.mapMmio;
 pub const isLinearPhys = paging.isLinear;
 
@@ -44,6 +47,9 @@ pub fn initCpu(kernel_stack_top: usize) void {
     cpu.cli();
     gdt.init(@intCast(kernel_stack_top));
     idt.init();
+    // Before any user code runs: its compiler emits SSE freely, and without
+    // this those instructions fault as invalid opcodes.
+    fpu.enable();
 }
 
 pub const initSyscalls = @import("syscall_arch.zig").init;
@@ -57,6 +63,20 @@ pub fn initInterruptController() void {
     idt.remapPic();
     idt.maskAllPic();
 }
+
+pub const FpuState = fpu.State;
+pub const enableFpu = fpu.enable;
+pub const saveFpu = fpu.save;
+pub const restoreFpu = fpu.restore;
+pub const initFpuState = fpu.initState;
+
+/// Point the CPU at the kernel stack to use on the next privilege transition.
+///
+/// Must be updated on every context switch. The CPU reads it from the TSS when
+/// user code traps, so a stale value sends a syscall onto another thread's
+/// stack — and once that thread has exited and its stack been freed, onto
+/// memory the allocator has handed to someone else.
+pub const setKernelStack = gdt.setKernelStack;
 
 pub const switchContext = context.switchTo;
 pub const initThreadStack = context.initStack;

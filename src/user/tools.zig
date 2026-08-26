@@ -12,7 +12,12 @@ const std = @import("std");
 const sys = @import("syscall.zig");
 const eeefetch = @import("tools/eeefetch.zig");
 const dmidecode = @import("tools/dmidecode.zig");
-const out = @import("tools/out.zig");
+const date = @import("tools/date.zig");
+const files = @import("tools/files.zig");
+const grep = @import("tools/grep.zig");
+const status = @import("tools/status.zig");
+const out = @import("lib/out.zig");
+const str = @import("lib/str.zig");
 
 const Command = struct {
     name: []const u8,
@@ -21,6 +26,14 @@ const Command = struct {
 };
 
 const commands = [_]Command{
+    .{ .name = "ls", .summary = "list a directory", .run = &files.ls },
+    .{ .name = "cat", .summary = "print a file", .run = &files.cat },
+    .{ .name = "hexdump", .summary = "dump a file in hex", .run = &files.hexdump },
+    .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
+    .{ .name = "free", .summary = "show memory use", .run = &status.free },
+    .{ .name = "top", .summary = "show threads and load", .run = &status.top },
+    .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
+    .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },
     .{ .name = "eeefetch", .summary = "show system information", .run = &eeefetch.run },
     .{ .name = "dmidecode", .summary = "decode the firmware DMI tables", .run = &dmidecode.run },
     .{ .name = "help", .summary = "list commands", .run = &help },
@@ -51,7 +64,7 @@ export fn toolsMain(frame: [*]const u32) callconv(.c) noreturn {
 
     for (0..count) |i| {
         const ptr: [*:0]const u8 = @ptrFromInt(frame[1 + i]);
-        argv_storage[i] = span(ptr);
+        argv_storage[i] = str.span(ptr);
     }
     const argv = argv_storage[0..count];
 
@@ -60,7 +73,7 @@ export fn toolsMain(frame: [*]const u32) callconv(.c) noreturn {
     const command = if (argv.len > 1) argv[1] else "help";
 
     for (commands) |c| {
-        if (eql(c.name, command)) {
+        if (str.eql(c.name, command)) {
             c.run(argv[@min(2, argv.len)..]);
             sys.exit(0);
         }
@@ -83,16 +96,4 @@ fn listCommands() void {
     }
 }
 
-fn span(ptr: [*:0]const u8) []const u8 {
-    var n: usize = 0;
-    while (ptr[n] != 0) n += 1;
-    return ptr[0..n];
-}
 
-fn eql(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (x != y) return false;
-    }
-    return true;
-}

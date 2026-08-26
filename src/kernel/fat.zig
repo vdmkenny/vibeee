@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const block = @import("block.zig");
+const civil = @import("lib").civil;
 
 pub const Error = error{
     NotFat,
@@ -80,6 +81,51 @@ const DirEntry = extern struct {
     }
 };
 
+/// FAT packs a timestamp into two 16-bit words: the date as year-since-1980,
+/// month and day; the time as hour, minute and *half* seconds. The odd
+/// resolution is the format's, not ours.
+///
+/// The format records no timezone. Every implementation writes whatever its
+/// local clock says and every reader takes it at face value, so a stamp is a
+/// wall-clock reading whose zone is unknowable. We read and write ours as UTC,
+/// which is self-consistent and makes files we create agree with our own clock;
+/// a volume written elsewhere will be off by that machine's offset, and no
+/// amount of care here can recover it.
+const FatStamp = struct { date: u16, time: u16 };
+
+fn epochFromFat(date: u16, time: u16) i64 {
+    // An all-zero date is what a formatter writes when it has no clock. There
+    // is no such day as 1980-00-00, so it cannot be confused with a real one.
+    if (date == 0) return 0;
+
+    return civil.toEpoch(.{
+        .year = 1980 + (date >> 9),
+        .month = @intCast((date >> 5) & 0x0F),
+        .day = @intCast(date & 0x1F),
+        .hour = @intCast(time >> 11),
+        .minute = @intCast((time >> 5) & 0x3F),
+        .second = @intCast((time & 0x1F) * 2),
+    });
+}
+
+/// The inverse, for stamping entries the write path creates.
+///
+/// Dates before 1980 cannot be represented, so they clamp to the format's
+/// epoch rather than wrapping into a plausible-looking wrong year.
+fn fatFromEpoch(seconds: i64) FatStamp {
+    const c = civil.fromEpoch(seconds);
+    if (c.year < 1980 or c.year > 2107) return .{ .date = 0, .time = 0 };
+
+    return .{
+        .date = (@as(u16, c.year - 1980) << 9) |
+            (@as(u16, c.month) << 5) |
+            @as(u16, c.day),
+        .time = (@as(u16, c.hour) << 11) |
+            (@as(u16, c.minute) << 5) |
+            @as(u16, c.second / 2),
+    };
+}
+
 /// Long names are capped rather than allowed the full 255 UTF-16 characters
 /// the format permits: an Entry is passed by value, and 255 characters of
 /// UTF-8 would make every directory step copy half a kilobyte.
@@ -91,6 +137,11 @@ pub const Entry = struct {
     is_dir: bool,
     size: u32,
     cluster: u32,
+    /// Seconds since the Unix epoch, or 0 when the entry carries no date.
+    /// Normalised here so nothing above this layer has to know FAT packs a
+    /// timestamp into two 16-bit words with a 1980 epoch and 2-second
+    /// resolution.
+    mtime: i64 = 0,
 
     pub fn nameSlice(self: *const Entry) []const u8 {
         return self.name[0..self.name_len];
@@ -452,6 +503,7 @@ pub const Iterator = struct {
                     .is_dir = raw.attr & ATTR_DIRECTORY != 0,
                     .size = raw.size,
                     .cluster = raw.firstCluster(),
+                    .mtime = epochFromFat(raw.write_date, raw.write_time),
                 };
 
                 // Prefer the long name; fall back to 8.3 when there is none, or
@@ -498,6 +550,28 @@ pub const Iterator = struct {
     }
 };
 
+/// Iterate a subdirectory, given its first cluster.
+pub fn directoryIterator(vol: *Volume, cluster: u32) Iterator {
+    return .{
+        .vol = vol,
+        .cluster = cluster,
+        .sector_in_cluster = 0,
+        .sector = vol.firstSectorOfCluster(cluster),
+        .sectors_left = 0,
+        .index_in_sector = 0,
+    };
+}
+
+/// An iterator over whatever directory `entry` names.
+///
+/// A subdirectory's ".." entry records cluster 0 when it refers to the root,
+/// because the root has no cluster number on FAT12/16 — so that case is mapped
+/// back to the root iterator rather than followed literally.
+pub fn iterate(vol: *Volume, entry: Entry) Iterator {
+    if (entry.cluster < 2) return rootIterator(vol);
+    return directoryIterator(vol, entry.cluster);
+}
+
 pub fn rootIterator(vol: *Volume) Iterator {
     if (vol.kind == .fat32) {
         return .{
@@ -519,16 +593,103 @@ pub fn rootIterator(vol: *Volume) Iterator {
     };
 }
 
-/// Look up a name in the root directory.
+/// Look up a single name in one directory.
 ///
-/// Flat for now: no path walking, because nothing yet needs subdirectories and
-/// an untested path parser is a liability.
-pub fn lookup(vol: *Volume, name: []const u8) Error!Entry {
-    var it = rootIterator(vol);
+/// Takes the iterator by value: the caller keeps its own position, which is
+/// what lets a path walk descend without losing where it was.
+pub fn lookupIn(dir: Iterator, name: []const u8) Error!Entry {
+    var it = dir;
     while (try it.next()) |entry| {
         if (nameMatches(entry.nameSlice(), name)) return entry;
     }
     return error.NotFound;
+}
+
+/// Look up a path from the root. Kept as the short name most callers use.
+pub const lookup = lookupPath;
+
+/// Walk a slash-separated path from the root.
+///
+/// Empty components are skipped, so a doubled or trailing slash is harmless
+/// rather than an error — the alternative is rejecting paths that every other
+/// system accepts. "." and ".." are honoured because FAT stores them as real
+/// directory entries.
+pub fn lookupPath(vol: *Volume, path: []const u8) Error!Entry {
+    var it = rootIterator(vol);
+    var found: ?Entry = null;
+
+    var rest = path;
+    while (rest.len > 0) {
+        while (rest.len > 0 and rest[0] == '/') rest = rest[1..];
+        if (rest.len == 0) break;
+
+        var end: usize = 0;
+        while (end < rest.len and rest[end] != '/') end += 1;
+        const component = rest[0..end];
+        rest = rest[end..];
+
+        // A component after a plain file is a path through something that is
+        // not a directory, which is an error rather than a miss.
+        if (found) |f| {
+            if (!f.is_dir) return error.NotDirectory;
+        }
+
+        const entry = try lookupIn(it, component);
+        found = entry;
+        if (entry.is_dir) it = iterate(vol, entry);
+    }
+
+    return found orelse error.NotFound;
+}
+
+/// Read from `offset` in a file. Returns the number of bytes read.
+///
+/// Walks the cluster chain from the start each time. That is O(n) in the
+/// offset, which is acceptable while reads are sequential and files are small;
+/// a handle that remembered its last cluster would make it O(1) for the
+/// sequential case, and is the obvious change when it matters.
+pub fn readAt(vol: *Volume, entry: Entry, offset: u64, buf: []u8) Error!usize {
+    if (entry.is_dir) return error.IsDirectory;
+    if (offset >= entry.size) return 0;
+
+    const cluster_size = vol.clusterSize();
+    var cluster = entry.cluster;
+    if (cluster < 2) return error.CorruptChain;
+
+    // Skip whole clusters until the one containing `offset`.
+    var skip = offset / cluster_size;
+    while (skip > 0) : (skip -= 1) {
+        cluster = try vol.nextCluster(cluster) orelse return error.CorruptChain;
+    }
+
+    var within: u32 = @intCast(offset % cluster_size);
+    var remaining: usize = @intCast(@min(entry.size - offset, buf.len));
+    var written: usize = 0;
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+
+    while (remaining > 0) {
+        const first = vol.firstSectorOfCluster(cluster);
+
+        var s: u32 = within / block.SECTOR_SIZE;
+        var in_sector: u32 = within % block.SECTOR_SIZE;
+
+        while (s < vol.sectors_per_cluster and remaining > 0) : (s += 1) {
+            vol.dev.read(first + s, &sector_buf) catch return error.Io;
+            const available = block.SECTOR_SIZE - in_sector;
+            const take = @min(remaining, available);
+            @memcpy(buf[written..][0..take], sector_buf[in_sector..][0..take]);
+            written += take;
+            remaining -= take;
+            in_sector = 0;
+        }
+
+        if (remaining == 0) break;
+        within = 0;
+        cluster = try vol.nextCluster(cluster) orelse return error.CorruptChain;
+    }
+
+    return written;
 }
 
 /// Read a whole file into `buf`. Returns the number of bytes read.

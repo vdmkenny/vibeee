@@ -86,6 +86,9 @@ pub const Errno = enum(i32) {
 
 const E = struct {
     const badf = Err{ .name = "EBADF", .when = "the handle is not open in this process" };
+    const noent = Err{ .name = "ENOENT", .when = "no such file or directory" };
+    const nomem = Err{ .name = "ENOMEM", .when = "no handle slots free, or the buffer is too small" };
+    const io = Err{ .name = "EIO", .when = "the underlying device failed" };
     const fault = Err{ .name = "EFAULT", .when = "a pointer argument is outside the caller's address space" };
     const inval = Err{ .name = "EINVAL", .when = "an argument is out of range" };
 };
@@ -198,6 +201,115 @@ pub const table = [_]Syscall{
         .returns = "bytes written",
         .errors = &.{ E.fault, E.inval },
         .notes = "Values are text, except \"smbios\" which returns the raw DMI structure table for a userspace decoder. A keyed interface rather than a struct, so adding a value is not an ABI break.",
+    },
+    .{
+        .number = 10,
+        .name = "open",
+        .summary = "Open a file or directory.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "Absolute path." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+            .{ .name = "flags", .kind = .flags, .desc = "Bit 0 set opens a directory for reading entries." },
+        },
+        .returns = "a handle",
+        .errors = &.{ E.fault, E.inval, E.noent, E.nomem },
+        .notes = "Read-only. Writing needs cluster allocation in the FAT driver, which is not written yet.",
+    },
+    .{
+        .number = 11,
+        .name = "close",
+        .summary = "Close a handle.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "Handle to release." },
+        },
+        .errors = &.{E.badf},
+        .notes = "Closing a file releases the mount reference it held; a volume with handles still open cannot be unmounted.",
+    },
+    .{
+        .number = 12,
+        .name = "seek",
+        .summary = "Move a file handle's read position.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "An open file." },
+            .{ .name = "offset", .kind = .int, .desc = "Displacement, interpreted per `whence`." },
+            .{ .name = "whence", .kind = .uint, .desc = "0 from start, 1 from current, 2 from end." },
+        },
+        .returns = "the new position",
+        .errors = &.{ E.badf, E.inval },
+    },
+    .{
+        .number = 13,
+        .name = "readdir",
+        .summary = "Read the next entry from an open directory.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "A directory handle from open() with the directory flag." },
+            .{ .name = "buf", .kind = .ptr, .desc = "Receives a DirEntry: u32 size, u8 flags, u8 name_len, then the name." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity of the buffer." },
+        },
+        .returns = "bytes written, or 0 when the directory is exhausted",
+        .errors = &.{ E.badf, E.fault, E.nomem },
+    },
+    .{
+        .number = 14,
+        .name = "stat",
+        .summary = "Describe a path without opening it.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "Absolute path." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+            .{ .name = "buf", .kind = .ptr, .desc = "Receives the same DirEntry layout readdir() produces." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity of the buffer." },
+        },
+        .returns = "bytes written",
+        .errors = &.{ E.fault, E.noent, E.nomem },
+    },
+    .{
+        .number = 15,
+        .name = "spawn",
+        .summary = "Load and run a program, and wait for it to finish.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "Absolute path to an ELF executable." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+            .{ .name = "argv", .kind = .cptr, .desc = "Packed arguments: u16 count, then each as u16 length followed by bytes." },
+            .{ .name = "argv_len", .kind = .len, .desc = "Length of the packed block." },
+        },
+        .returns = "the program's exit status",
+        .errors = &.{ E.fault, E.noent, E.inval, E.nomem },
+        .notes = "Synchronous: the caller blocks until the child exits. Deliberately not fork — see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.",
+    },
+    .{
+        .number = 16,
+        .name = "chdir",
+        .summary = "Change the working directory.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "Directory to move to; may be relative." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+        },
+        .errors = &.{ E.fault, E.noent, E.inval },
+        .notes = "The directory must exist. A child started afterwards inherits it.",
+    },
+    .{
+        .number = 17,
+        .name = "getcwd",
+        .summary = "Read the working directory.",
+        .args = &.{
+            .{ .name = "buf", .kind = .ptr, .desc = "Receives the absolute path." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity of the buffer." },
+        },
+        .returns = "bytes written",
+        .errors = &.{ E.fault, E.nomem },
+    },
+    .{
+        .number = 18,
+        .name = "realtime_us",
+        .summary = "Read the wall clock.",
+        .args = &.{
+            .{ .name = "out", .kind = .ptr, .desc = "Pointer to an i64 that receives microseconds since 1970-01-01 UTC." },
+        },
+        .errors = &.{ E.fault, E.inval },
+        .notes = "UTC, never local time. EINVAL until the clock has been set from a source; " ++
+            "a machine whose battery-backed clock has failed reports that it does not know the " ++
+            "time rather than claiming 1970. Use clock_us for measuring intervals: this one can " ++
+            "step when a better source corrects it.",
     },
 };
 

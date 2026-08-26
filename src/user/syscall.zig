@@ -15,6 +15,21 @@ pub const SYS_GETPID = 6;
 pub const SYS_LOG = 7;
 pub const SYS_SHUTDOWN = 8;
 pub const SYS_SYSINFO = 9;
+pub const SYS_OPEN = 10;
+pub const SYS_CLOSE = 11;
+pub const SYS_SEEK = 12;
+pub const SYS_READDIR = 13;
+pub const SYS_STAT = 14;
+pub const SYS_SPAWN = 15;
+pub const SYS_CHDIR = 16;
+pub const SYS_GETCWD = 17;
+pub const SYS_REALTIME_US = 18;
+
+pub const OPEN_DIRECTORY: usize = 1 << 0;
+
+/// Directory entry wire format, matching kernel/syscall.zig.
+pub const DIRENT_HEADER = 10; // u32 size, i32 mtime, u8 flags, u8 name_len
+pub const DIRENT_FLAG_DIR: u8 = 1 << 0;
 
 /// Matches the kernel limit in arch/x86/usermode.zig.
 pub const MAX_ARGS = 16;
@@ -78,6 +93,15 @@ pub fn clockMicros() u64 {
     return out;
 }
 
+/// Wall-clock microseconds since 1970-01-01 UTC, or null if the clock has
+/// never been set. Null rather than zero so a caller cannot mistake an unset
+/// clock for a real timestamp.
+pub fn realtimeMicros() ?i64 {
+    var out: i64 = 0;
+    if (syscall1(SYS_REALTIME_US, @intFromPtr(&out)) < 0) return null;
+    return out;
+}
+
 fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
     return asm volatile ("int $0x80"
         : [ret] "={eax}" (-> isize),
@@ -87,6 +111,56 @@ fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
           [a2] "{edx}" (a2),
           [a3] "{esi}" (a3),
         : .{ .memory = true });
+}
+
+pub fn open(path: []const u8, flags: usize) isize {
+    return syscall3(SYS_OPEN, @intFromPtr(path.ptr), path.len, flags);
+}
+
+pub fn close(handle: usize) isize {
+    return syscall1(SYS_CLOSE, handle);
+}
+
+pub fn seek(handle: usize, offset: isize, whence: usize) isize {
+    return syscall3(SYS_SEEK, handle, @bitCast(offset), whence);
+}
+
+pub fn readdir(handle: usize, buf: []u8) isize {
+    return syscall3(SYS_READDIR, handle, @intFromPtr(buf.ptr), buf.len);
+}
+
+pub fn stat(path: []const u8, buf: []u8) isize {
+    return syscall4(SYS_STAT, @intFromPtr(path.ptr), path.len, @intFromPtr(buf.ptr), buf.len);
+}
+
+/// Pack arguments and run a program, returning its exit status.
+var spawn_buf: [1024]u8 = undefined;
+
+pub fn spawn(path: []const u8, args: []const []const u8) isize {
+    var n: usize = 0;
+    if (spawn_buf.len < 2) return -22;
+    spawn_buf[0] = @truncate(args.len);
+    spawn_buf[1] = @truncate(args.len >> 8);
+    n = 2;
+
+    for (args) |arg| {
+        if (n + 2 + arg.len > spawn_buf.len) return -22;
+        spawn_buf[n] = @truncate(arg.len);
+        spawn_buf[n + 1] = @truncate(arg.len >> 8);
+        n += 2;
+        for (arg, 0..) |c, i| spawn_buf[n + i] = c;
+        n += arg.len;
+    }
+
+    return syscall4(SYS_SPAWN, @intFromPtr(path.ptr), path.len, @intFromPtr(&spawn_buf), n);
+}
+
+pub fn chdir(path: []const u8) isize {
+    return syscall3(SYS_CHDIR, @intFromPtr(path.ptr), path.len, 0);
+}
+
+pub fn getcwd(buf: []u8) isize {
+    return syscall3(SYS_GETCWD, @intFromPtr(buf.ptr), buf.len, 0);
 }
 
 pub fn sysinfo(key: []const u8, buf: []u8) isize {

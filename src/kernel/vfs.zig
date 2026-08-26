@@ -160,7 +160,7 @@ pub fn mountCount() usize {
 pub fn stat(path: []const u8) Error!fat.Entry {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath; // the mount point itself
-    return fat.lookup(&r.mount.volume, r.rest);
+    return fat.lookupPath(&r.mount.volume, r.rest);
 }
 
 /// Read a whole file into `buf`, returning the byte count.
@@ -168,7 +168,7 @@ pub fn readFile(path: []const u8, buf: []u8) Error!usize {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
 
-    const entry = try fat.lookup(&r.mount.volume, r.rest);
+    const entry = try fat.lookupPath(&r.mount.volume, r.rest);
 
     // Counted across the read so an unmount cannot pull the volume out from
     // under an in-flight transfer.
@@ -178,11 +178,26 @@ pub fn readFile(path: []const u8, buf: []u8) Error!usize {
     return fat.readFile(&r.mount.volume, entry, buf);
 }
 
-/// Iterate the root directory of the volume backing `path`.
-///
-/// Subdirectory listing arrives with path walking in the FAT driver; nothing
-/// yet needs it, and an untested directory walker is a liability.
+/// Open a file, returning the mount and entry a handle needs to keep.
+pub fn open(path: []const u8) Error!struct { mount: *Mount, entry: fat.Entry } {
+    const r = try resolve(path);
+    if (r.rest.len == 0) return error.BadPath;
+    const entry = try fat.lookupPath(&r.mount.volume, r.rest);
+    r.mount.open_files += 1;
+    return .{ .mount = r.mount, .entry = entry };
+}
+
+/// Read from an already-opened file.
+pub fn readAt(m: *Mount, entry: fat.Entry, offset: u64, buf: []u8) Error!usize {
+    return fat.readAt(&m.volume, entry, offset, buf);
+}
+
+/// Iterate the directory at `path`.
 pub fn openDir(path: []const u8) Error!fat.Iterator {
     const r = try resolve(path);
-    return fat.rootIterator(&r.mount.volume);
+    if (r.rest.len == 0) return fat.rootIterator(&r.mount.volume);
+
+    const entry = try fat.lookupPath(&r.mount.volume, r.rest);
+    if (!entry.is_dir) return error.NotDirectory;
+    return fat.iterate(&r.mount.volume, entry);
 }

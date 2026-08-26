@@ -54,42 +54,59 @@ pub fn build(b: *std.Build) void {
         .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
     });
 
-    const tools = b.addExecutable(.{
-        .name = "tools",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/user/tools.zig"),
-            .target = user_target,
-            .optimize = optimize,
-            .single_threaded = true,
-            .strip = true,
-            .stack_check = false,
-            .stack_protector = false,
-        }),
+    // Shared, platform-neutral code — see src/lib. Handed to the kernel and to
+    // every user program as the same named module rather than by relative
+    // path, so both sides get one instance of it and its types compare equal
+    // across the syscall boundary.
+    const user_lib = b.createModule(.{
+        .root_source_file = b.path("src/lib/lib.zig"),
+        .target = user_target,
+        .optimize = optimize,
     });
-    tools.setLinkerScript(b.path("src/user/linker.ld"));
-    tools.entry = .{ .symbol_name = "_start" };
-    b.installArtifact(tools);
 
-    const hello = b.addExecutable(.{
-        .name = "hello",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/user/hello.zig"),
-            .target = user_target,
-            .optimize = optimize,
-            .single_threaded = true,
-            .strip = true,
-            .stack_check = false,
-            .stack_protector = false,
-        }),
+    // Every user program is built identically; only its root file differs.
+    // Listing them keeps adding one to a single line here.
+    const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
+        .{ .name = "tools", .root = "src/user/tools.zig" },
+        .{ .name = "vsh", .root = "src/user/vsh.zig" },
+        .{ .name = "hello", .root = "src/user/hello.zig" },
+    };
+
+    var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
+
+    inline for (USER_PROGRAMS, 0..) |program, i| {
+        const exe = b.addExecutable(.{
+            .name = program.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(program.root),
+                .target = user_target,
+                .optimize = optimize,
+                .single_threaded = true,
+                .strip = true,
+                .stack_check = false,
+                .stack_protector = false,
+                .imports = &.{.{ .name = "lib", .module = user_lib }},
+            }),
+        });
+        exe.setLinkerScript(b.path("src/user/linker.ld"));
+        exe.entry = .{ .symbol_name = "_start" };
+        b.installArtifact(exe);
+        user_bins[i] = exe;
+    }
+
+    const hello = user_bins[USER_PROGRAMS.len - 1];
+
+    const kernel_lib = b.createModule(.{
+        .root_source_file = b.path("src/lib/lib.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    hello.setLinkerScript(b.path("src/user/linker.ld"));
-    hello.entry = .{ .symbol_name = "_start" };
-    b.installArtifact(hello);
 
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("src/start.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "lib", .module = kernel_lib }},
         // No red zone: interrupt handlers run on the same stack and would
         // otherwise clobber it.
         .red_zone = false,
@@ -206,11 +223,18 @@ pub fn build(b: *std.Build) void {
     // testable without hardware or emulation — see design §10.6.
     // ---------------------------------------------------------------------
     const test_step = b.step("test", "Run host-side unit tests");
+    const host_lib = b.createModule(.{
+        .root_source_file = b.path("src/lib/lib.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tests.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
+            .imports = &.{.{ .name = "lib", .module = host_lib }},
         }),
     });
     test_step.dependOn(&b.addRunArtifact(tests).step);

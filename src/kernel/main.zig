@@ -225,7 +225,7 @@ fn spinWorker(index: usize) callconv(.c) void {
 /// Reports the outcome once the workers have had time to run, then leaves the
 /// system idling.
 fn userThread(_: usize) callconv(.c) void {
-    platform.enterUserMode("/TOOLS", &.{ "tools", "eeefetch" });
+    platform.enterUserMode("/VSH", &.{"vsh"});
 }
 
 fn supervisor(_: usize) callconv(.c) void {

@@ -56,6 +56,29 @@ const RULES = [_]Rule{
         .forbid = "arch/arm",
         .why = "architectures must not depend on each other",
     },
+    // `lib/` is compiled into the kernel and into every user program. Anything
+    // it reached for would be pulled into both, so it stays pure computation:
+    // no state, no hardware, no syscalls.
+    .{
+        .from = "src/lib",
+        .forbid = "kernel/",
+        .why = "lib/ is shared by kernel and userspace, so it must not depend on either",
+    },
+    .{
+        .from = "src/lib",
+        .forbid = "arch/",
+        .why = "lib/ must stay architecture-neutral",
+    },
+    .{
+        .from = "src/lib",
+        .forbid = "drv/",
+        .why = "lib/ must not depend on drivers",
+    },
+    .{
+        .from = "src/lib",
+        .forbid = "user/",
+        .why = "lib/ is the shared half; userspace-only code belongs in user/lib/",
+    },
 };
 
 pub fn main(init: std.process.Init) !void {

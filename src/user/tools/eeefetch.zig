@@ -5,7 +5,8 @@
 //! keeps working as the kernel learns to report more.
 
 const sys = @import("../syscall.zig");
-const out = @import("out.zig");
+const out = @import("../lib/out.zig");
+const str = @import("../lib/str.zig");
 
 /// Drawn in the sixteen-colour palette the console has, which is also what the
 /// panel can display without dithering.
@@ -54,22 +55,20 @@ pub fn run(_: []const []const u8) void {
 
         // Multi-line values (storage, mounts) are indented under their label so
         // the columns still line up.
-        var start: usize = 0;
+        var it = str.lines(value);
         var first = true;
-        for (value, 0..) |c, i| {
-            if (c != '\n') continue;
-            emit(if (first) row.label else "", value[start..i]);
+        while (it.next()) |line| {
+            if (line.len == 0) continue;
+            emit(if (first) row.label else "", line);
             first = false;
-            start = i + 1;
         }
-        if (start < value.len) emit(if (first) row.label else "", value[start..]);
     }
 
     // Uptime last, formatted rather than raw: seconds since boot is not what a
     // reader wants to see.
     const n = sys.sysinfo("uptime", &buf);
     if (n > 0) {
-        const seconds = parse(buf[0..@intCast(n)]);
+        const seconds = str.toUnsigned(buf[0..@intCast(n)]);
         out.text(" ");
         out.pad("uptime", 9);
         writeDuration(seconds);
@@ -103,11 +102,3 @@ fn writeDuration(total: usize) void {
     out.text("s");
 }
 
-fn parse(text: []const u8) usize {
-    var value: usize = 0;
-    for (text) |c| {
-        if (c < '0' or c > '9') break;
-        value = value * 10 + (c - '0');
-    }
-    return value;
-}

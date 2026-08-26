@@ -18,11 +18,18 @@ IMAGE_MB ?= 48
 # QEMU's -append, so they travel in the stage2 header.
 CMDLINE  ?=
 
-# The emulated machine is as close to the Eee PC 701 as QEMU gets: 512 MB, a
-# pre-SSE3 CPU, and the PIIX3 chipset. It is NOT an ICH6 and has no GMA900, no
-# AR2425, no Attansic NIC and no EC — those are real-hardware-only. QEMU proves
-# the boot chain, memory, interrupts and PCI enumeration; nothing more.
-QEMU_FLAGS := -machine pc -cpu pentium2 -m 512M -no-reboot
+# The emulated machine is as close to the Eee PC 701 as QEMU gets: 512 MB and
+# the PIIX3 chipset. It is NOT an ICH6 and has no GMA900, no AR2425, no
+# Attansic NIC and no EC — those are real-hardware-only. QEMU proves the boot
+# chain, memory, interrupts, storage and PCI enumeration; nothing more.
+#
+# The CPU model matters more than it looks. The target is a Celeron M 353
+# (Dothan): SSE2 yes, SSE3 no, no long mode. Emulating something *less* capable
+# means user code compiled for the real target faults in emulation on
+# instructions the hardware would have run — so the model is pinned to match
+# the feature set rather than to a convenient preset.
+QEMU_CPU   := pentium3,+sse2,+pae,+nx,-sse3
+QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot
 
 # Partition 1 layout, mirrored from tools/mkimage.zig. mtools addresses an
 # image at a byte offset with the @@ syntax, which is how the filesystem gets
@@ -39,6 +46,7 @@ PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
 KERNEL_ELF := zig-out/bin/vibeee.elf
 USER_HELLO := zig-out/bin/hello
 USER_TOOLS := zig-out/bin/tools
+USER_VSH   := zig-out/bin/vsh
 KERNEL_BIN := $(BUILD)/kernel.bin
 STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
@@ -100,6 +108,11 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
+	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH
+	@printf "vibeee root filesystem\nbuild %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
+	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/README.TXT
+	@mmd -i $@ ::/DOCS 2>/dev/null || true
+	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/DOCS/NOTES.TXT
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)

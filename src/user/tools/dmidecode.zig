@@ -9,7 +9,7 @@
 //! still shows what is in it.
 
 const sys = @import("../syscall.zig");
-const out = @import("out.zig");
+const out = @import("../lib/out.zig");
 
 const Header = extern struct {
     type: u8,
@@ -56,7 +56,13 @@ const string_fields = [_]StringField{
     .{ .type = 17, .offset = 0x17, .label = "Manufacturer" },
 };
 
-var table: [16384]u8 = undefined;
+/// Zero-initialised, not `undefined`: reading undefined memory is undefined
+/// behaviour, and the optimiser is entitled to do anything with a function that
+/// does it — including deleting the bounds it was relying on.
+///
+/// 8 KiB is generous. A real machine's table is a couple of kilobytes; the
+/// buffer is bounded so an implausible one is reported rather than trusted.
+var table: [8192]u8 = [_]u8{0} ** 8192;
 
 pub fn run(_: []const []const u8) void {
     const n = sys.sysinfo("smbios", &table);

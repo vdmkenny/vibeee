@@ -77,6 +77,11 @@ pub const dropBootIdentityMapping = impl.dropBootIdentityMapping;
 pub const AddressSpace = impl.AddressSpace;
 /// The address space the kernel booted with, used by kernel-only threads.
 pub const kernelAddressSpace = impl.kernelAddressSpace;
+/// Build a process's initial stack, with arguments on it in whatever form the
+/// architecture's entry convention expects.
+pub const setupUserStack = impl.setupUserStack;
+/// Drop to user mode. Does not return.
+pub const enterUserMode = impl.enterUserMode;
 /// Map a device aperture into the kernel half. Needed for anything at a
 /// physical address above RAM, which the linear map does not reach.
 pub const mapMmio = impl.mapMmio;
@@ -89,6 +94,15 @@ pub const isLinearPhys = impl.isLinearPhys;
 
 /// Save the outgoing stack pointer through the first argument and resume the
 /// context at the second. Returns in the incoming thread.
+/// Saved floating-point and SIMD state, switched with the thread that owns it.
+pub const FpuState = impl.FpuState;
+pub const saveFpu = impl.saveFpu;
+pub const restoreFpu = impl.restoreFpu;
+pub const initFpuState = impl.initFpuState;
+
+/// Point the CPU at the kernel stack for the next privilege transition.
+pub const setKernelStack = impl.setKernelStack;
+
 pub const switchContext = impl.switchContext;
 /// Build a stack that `switchContext` can resume into, for a thread that has
 /// never run.

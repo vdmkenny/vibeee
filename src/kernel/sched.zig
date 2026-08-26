@@ -19,6 +19,7 @@
 const std = @import("std");
 const console = @import("console.zig");
 const hal = @import("hal.zig");
+const handle = @import("handle.zig");
 const heap = @import("heap.zig");
 
 pub const PRIORITY_LEVELS = 32;
@@ -73,6 +74,39 @@ pub const Thread = struct {
     stack: []u8,
     /// Intrusive link for whichever queue this thread is on.
     next: ?*Thread = null,
+
+    /// Open handles. Lives on the thread because a process is currently one
+    /// thread; it moves to a Process struct when that stops being true.
+    handles: handle.Table = .{},
+
+    /// The address space this thread runs in.
+    ///
+    /// Kernel threads share the kernel's. A user process has its own, and the
+    /// scheduler switches to it — without that, a thread resumed after another
+    /// process ran would execute against whatever page directory happened to be
+    /// loaded, which is at best the wrong memory and at worst freed.
+    space: hal.AddressSpace = .{ .pd_phys = 0 },
+
+    /// Floating-point and SIMD registers. Aligned because FXSAVE requires it,
+    /// and placed last so the alignment does not pad the hot fields apart.
+    fpu: hal.FpuState align(16) = @splat(0),
+
+    /// Timer ticks spent running. The only per-thread cost measure available
+    /// without a high-resolution clock read on every switch, which on this
+    /// machine would cost more than it measures.
+    cpu_ticks: u64 = 0,
+
+    /// Working directory, always absolute and without a trailing slash except
+    /// for "/" itself. Held per thread for the same reason handles are: a
+    /// process is currently one thread.
+    cwd_buf: [128]u8 = @splat(0),
+    cwd_len: usize = 1,
+
+    exit_status: i32 = 0,
+    /// Set when another thread intends to collect this one's status. Such a
+    /// thread is not freed on exit — it stays as a corpse until collected, or
+    /// its status would be gone before anyone could read it.
+    awaited: bool = false,
 };
 
 const Queue = struct {
@@ -138,6 +172,22 @@ var started = false;
 /// controller has been acknowledged and it is safe to switch stacks.
 var need_resched: bool = false;
 
+/// Page directory currently loaded, so a switch between threads sharing a space
+/// does not reload CR3 and flush the TLB for nothing.
+var active_space: usize = 0;
+
+/// Give a thread its own address space, and record it as current if the caller
+/// is that thread.
+pub fn setAddressSpace(t: *Thread, space: hal.AddressSpace) void {
+    t.space = space;
+}
+
+/// Note that the running thread has changed address space out of band, so the
+/// scheduler does not skip a needed reload later.
+pub fn noteAddressSpace(pd_phys: usize) void {
+    active_space = pd_phys;
+}
+
 pub const SpawnError = error{OutOfMemory};
 
 pub fn spawn(
@@ -182,6 +232,12 @@ fn create(
         .stack = stack,
         .sp = hal.initThreadStack(stack, entry, arg, &threadExit),
     };
+    t.handles.init();
+    t.cwd_buf[0] = '/';
+    t.cwd_len = 1;
+    hal.initFpuState(&t.fpu);
+    // Kernel space until something gives it one of its own.
+    t.space = hal.kernelAddressSpace();
     next_id += 1;
     thread_count += 1;
     return t;
@@ -194,13 +250,55 @@ fn threadExit() callconv(.c) noreturn {
 }
 
 pub fn exit() noreturn {
+    exitWith(0);
+}
+
+pub fn exitWith(status: i32) noreturn {
     hal.disableInterrupts();
     if (current) |t| {
+        t.exit_status = status;
         t.state = .dead;
         thread_count -= 1;
     }
     schedule();
     unreachable; // a dead thread is never rescheduled
+}
+
+/// Block until `child` exits, then return its status and free it.
+///
+/// Polling rather than a wait queue: with one waiter per child and a system
+/// this size, a queue would be machinery without a customer. It becomes one
+/// when something needs to wait on several children at once.
+pub fn waitFor(child: *Thread) i32 {
+    while (true) {
+        const flags = hal.saveAndDisableInterrupts();
+        if (child.state == .dead) {
+            const status = child.exit_status;
+            child.awaited = false;
+            reap(child);
+            hal.restoreInterrupts(flags);
+            return status;
+        }
+        hal.restoreInterrupts(flags);
+        sleepMicros(2_000);
+    }
+}
+
+/// Create a thread whose status will be collected by its parent.
+pub fn spawnAwaited(
+    name: []const u8,
+    priority: Priority,
+    entry: *const fn (usize) callconv(.c) void,
+    arg: usize,
+    stack_size: usize,
+) SpawnError!*Thread {
+    const t = try create(name, priority, entry, arg, stack_size);
+    t.awaited = true;
+
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+    active.push(t);
+    return t;
 }
 
 pub fn yield() void {
@@ -288,7 +386,22 @@ fn schedule() void {
     if (prev == target) return;
 
     switch_count += 1;
+
+    // Address space before stack: the incoming thread's kernel stack is mapped
+    // in every space, but its user memory is only mapped in its own.
+    if (target.space.pd_phys != 0 and target.space.pd_phys != active_space) {
+        target.space.activate();
+        active_space = target.space.pd_phys;
+    }
+
+    // Tell the CPU which kernel stack to use when this thread next traps.
+    // Without this the value is whatever the last process to enter user mode
+    // set, and a syscall lands on a stack belonging to a thread that may have
+    // exited and had its memory reused.
+    hal.setKernelStack(@intFromPtr(target.stack.ptr) + target.stack.len);
+
     if (prev) |p| {
+        hal.saveFpu(&p.fpu);
         hal.switchContext(&p.sp, target.sp);
     } else {
         // First switch of all: no outgoing context worth saving, but the
@@ -297,8 +410,14 @@ fn schedule() void {
         hal.switchContext(&discard, target.sp);
     }
 
+    // Execution resumes here as whichever thread was switched *to*, so the
+    // state restored is its own.
+    if (current) |c| hal.restoreFpu(&c.fpu);
+
+    // A thread someone is waiting on keeps its stack and its status until
+    // collected; freeing it here would destroy both.
     if (prev) |p| {
-        if (p.state == .dead) reap(p);
+        if (p.state == .dead and !p.awaited) reap(p);
     }
 }
 
@@ -306,6 +425,9 @@ fn schedule() void {
 /// why it cannot happen inside `exit`: a thread cannot free the stack it is
 /// standing on.
 fn reap(t: *Thread) void {
+    // Anything still open would otherwise keep a mount busy forever.
+    t.handles.closeAll();
+
     const gpa = heap.allocator;
     gpa.free(t.stack);
     gpa.destroy(t);
@@ -316,6 +438,7 @@ fn reap(t: *Thread) void {
 pub fn onTick() void {
     if (!started) return;
     if (current) |t| {
+        t.cpu_ticks += 1;
         if (t.slice_left > 0) t.slice_left -= 1;
         if (t.slice_left == 0) need_resched = true;
     }
@@ -358,4 +481,82 @@ pub fn stats() Stats {
 
 pub fn currentThread() ?*Thread {
     return current;
+}
+
+pub fn cwd() []const u8 {
+    const t = current orelse return "/";
+    return t.cwd_buf[0..t.cwd_len];
+}
+
+pub fn setCwd(path: []const u8) bool {
+    const t = current orelse return false;
+    if (path.len == 0 or path.len > t.cwd_buf.len) return false;
+    @memcpy(t.cwd_buf[0..path.len], path);
+    t.cwd_len = path.len;
+    return true;
+}
+
+/// A child starts where its parent was, which is what makes `cd` then run a
+/// program behave the way anyone expects.
+pub fn inheritCwd(child: *Thread) void {
+    const t = current orelse return;
+    @memcpy(child.cwd_buf[0..t.cwd_len], t.cwd_buf[0..t.cwd_len]);
+    child.cwd_len = t.cwd_len;
+}
+
+/// Snapshot of one thread, for reporting.
+pub const Snapshot = struct {
+    id: u32,
+    name: []const u8,
+    state: State,
+    priority: u8,
+    cpu_ticks: u64,
+    is_current: bool,
+};
+
+/// Walk every live thread.
+///
+/// Iterating the queues rather than keeping a separate list: the queues already
+/// hold every runnable thread, and a second list would be one more thing to
+/// keep consistent for the sake of a report nobody reads in a hot loop.
+pub fn forEachThread(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot) void) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
+    if (current) |t| visit(context, snapshotOf(t, true));
+
+    for (&queues) |*q| {
+        for (&q.levels) |*level| {
+            var node = level.head;
+            while (node) |t| : (node = t.next) {
+                if (t == current) continue;
+                visit(context, snapshotOf(t, false));
+            }
+        }
+    }
+
+    var sleeper = sleepers;
+    while (sleeper) |t| : (sleeper = t.next) {
+        if (t == current) continue;
+        visit(context, snapshotOf(t, false));
+    }
+
+    if (idle_thread) |t| {
+        if (t != current) visit(context, snapshotOf(t, false));
+    }
+}
+
+fn snapshotOf(t: *const Thread, is_current: bool) Snapshot {
+    return .{
+        .id = t.id,
+        .name = t.name,
+        .state = t.state,
+        .priority = t.priority,
+        .cpu_ticks = t.cpu_ticks,
+        .is_current = is_current,
+    };
+}
+
+pub fn totalTicks() u64 {
+    return switch_count;
 }

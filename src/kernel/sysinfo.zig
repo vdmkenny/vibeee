@@ -14,6 +14,7 @@ const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const hal = @import("hal.zig");
+const clock = @import("clock.zig");
 const heap = @import("heap.zig");
 const keymap = @import("keymap.zig");
 const pmm = @import("pmm.zig");
@@ -89,7 +90,10 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         const h = heap.stats();
         try w.print("{d} bytes live, {d} frames", .{ h.live_bytes, h.frames });
     } else if (eq(key, "uptime")) {
-        try w.print("{d}", .{hal.monotonicMicros() / 1_000_000});
+        try w.print("{d}", .{clock.monotonicMicros() / 1_000_000});
+    } else if (eq(key, "clock")) {
+        if (!clock.valid()) return error.UnknownKey;
+        try w.print("{s}", .{clock.sourceName()});
     } else if (eq(key, "threads")) {
         try w.print("{d}", .{sched.stats().threads});
     } else if (eq(key, "mem.hardware")) {
@@ -123,6 +127,10 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             platform.bios_vendor orelse "unknown",
             platform.bios_version orelse "",
         });
+    } else if (eq(key, "threads.list")) {
+        try writeThreads(&w);
+    } else if (eq(key, "disks")) {
+        try writeDisks(&w);
     } else if (eq(key, "storage")) {
         try writeStorage(&w);
     } else if (eq(key, "mounts")) {
@@ -137,6 +145,64 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
     }
 
     return w.len;
+}
+
+/// One line per thread: id, state, ticks, name.
+fn writeThreads(w: *Writer) Error!void {
+    const Ctx = struct {
+        w: *Writer,
+        failed: bool = false,
+
+        fn visit(self: *@This(), t: sched.Snapshot) void {
+            if (self.failed) return;
+            self.w.print("{d}\t{s}\t{d}\t{d}\t{s}{s}\n", .{
+                t.id,
+                @tagName(t.state),
+                t.priority,
+                t.cpu_ticks,
+                t.name,
+                if (t.is_current) " *" else "",
+            }) catch {
+                // Truncate rather than fail: a partial list is more use than
+                // none, and the caller can ask for a bigger buffer.
+                self.failed = true;
+            };
+        }
+    };
+
+    var ctx = Ctx{ .w = w };
+    sched.forEachThread(&ctx, Ctx.visit);
+}
+
+/// Storage described the way a person would ask about it, not the way the
+/// block layer stores it: each whole disk, then the volumes on it.
+fn writeDisks(w: *Writer) Error!void {
+    for (block.list(), 0..) |*dev, i| {
+        if (dev.offset != 0) continue;
+
+        try w.print("{s}\t{d}\t{s}\n", .{
+            dev.name,
+            dev.bytes(),
+            if (dev.read_only) "read-only" else "read-write",
+        });
+
+        // Partitions carry their parent's context pointer, so they are matched
+        // by name prefix rather than by identity.
+        for (block.list()) |*part| {
+            if (part.offset == 0) continue;
+            if (!std.mem.startsWith(u8, part.name, dev.name)) continue;
+
+            var mounted_at: []const u8 = "";
+            for (vfs.list()) |*m| {
+                if (m.in_use and std.mem.eql(u8, m.device.name, part.name)) {
+                    mounted_at = m.path();
+                }
+            }
+
+            try w.print("  {s}\t{d}\t{s}\n", .{ part.name, part.bytes(), mounted_at });
+        }
+        _ = i;
+    }
 }
 
 fn writeStorage(w: *Writer) Error!void {

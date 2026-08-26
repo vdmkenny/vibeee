@@ -15,6 +15,7 @@ const drivers = @import("drivers.zig");
 const ramdisk = @import("drv/block/ramdisk.zig");
 const acpi = @import("drv/acpi/tables.zig");
 const acpi_power = @import("drv/acpi/power.zig");
+const clock = @import("kernel/clock.zig");
 const cmos = @import("drv/rtc/cmos.zig");
 const shutdown = @import("kernel/shutdown.zig");
 const smbios = @import("drv/platform/smbios.zig");
@@ -104,10 +105,20 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
         }
     }
 
+    // The RTC is read exactly once. From here on the wall clock runs off the
+    // monotonic counter, so nothing pays for a CMOS round trip to ask the time.
     const t = cmos.now();
     if (cmos.looksUnset(t)) {
-        console.warn("rtc: clock not set; TLS will fail until time is corrected", .{});
+        console.warn("rtc: clock not set; timestamps and TLS will be wrong until corrected", .{});
     } else {
+        clock.setCivil(.{
+            .year = t.year,
+            .month = t.month,
+            .day = t.day,
+            .hour = t.hour,
+            .minute = t.minute,
+            .second = t.second,
+        }, "rtc");
         console.debug("rtc", "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
             t.year, t.month, t.day, t.hour, t.minute, t.second,
         });
@@ -301,8 +312,11 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
         loaded.entry, image.len, if (from_disk) "disk" else "kernel image",
     });
 
-    // From here the low half of the address space belongs to the process.
+    // From here the low half of the address space belongs to the process. The
+    // thread records it too, so the scheduler restores it after any switch.
+    sched.setAddressSpace(t, space);
     space.activate();
+    sched.noteAddressSpace(space.pd_phys);
 
     usermode.enter(
         loaded.entry,
