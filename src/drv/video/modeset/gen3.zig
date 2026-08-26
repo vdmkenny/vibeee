@@ -381,6 +381,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     // where a garbled screen cannot be read.
     const saved = Saved{
         .pfit = read(u32, w, PFIT_CONTROL),
+        .dsparb = read(u32, w, DSPARB),
         .size = read(u32, w, pipe.size),
         .pos = read(u32, w, pipe.pos),
         .src = read(u32, w, pipe.src),
@@ -406,15 +407,20 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     // settings are sized for the firmware's own smaller plane.
     disableSelfRefresh(w, dev.device);
 
+    // The whole FIFO to the one plane that fetches. Firmware splits it for
+    // its own arrangement: a share for plane A, which is off, a share for the
+    // hardware cursor, which nothing uses, and what is left for the plane
+    // carrying the panel, sized for the smaller fetch it was feeding. The
+    // reference gives a disabled plane exactly nothing.
+    const FIFO_LINES: u32 = 95;
+    write(Dsparb, w, DSPARB, .{ .a_end = 0, .c_start = FIFO_LINES, ._rest = 0 });
+
     const total_khz: u32 = @as(u32, read(Timing, w, pipe.htotal).total()) *
         read(Timing, w, pipe.vtotal).total() * want.refresh / 1000;
-    const dsparb = read(Dsparb, w, DSPARB);
-    const fifo_b: u32 = @as(u32, dsparb.c_start) -| dsparb.a_end;
     write(FwBlc, w, FW_BLC, .{
-        // Plane A is off; it keeps a nominal level within its own share.
-        .plane_a = @intCast(@min(0x3F, @max(1, @as(u32, dsparb.a_end) -| 2))),
+        .plane_a = 1,
         .burst_a = true,
-        .plane_b = watermark(total_khz, if (fifo_b == 0) 95 else fifo_b),
+        .plane_b = watermark(total_khz, FIFO_LINES),
         .burst_b = true,
     });
     write(FwBlc2, w, FW_BLC2, .{ .cursor = 2, .burst = true });
@@ -441,28 +447,40 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
 
     const stat = read(u32, w, pipe.stat);
     console.debug("video", "native: stat {x:0>8}, fwblc {x:0>8} dsparb {x:0>8} self {x:0>8}", .{
-        stat, read(u32, w, FW_BLC), @as(u32, @bitCast(dsparb)), readSelfRefresh(w, dev.device),
+        stat, read(u32, w, FW_BLC), read(u32, w, DSPARB), readSelfRefresh(w, dev.device),
+    });
+    console.debug("video", "native: firmware had fwblc {x:0>8} dsparb {x:0>8}", .{
+        saved.fw_blc, saved.dsparb,
     });
     console.debug("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
         read(u32, w, pipe.size), read(u32, w, pipe.src),
         read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
     });
 
-    // The mode is on trial: it reverts either way, leaving its testimony in
-    // the log, where a garbled screen cannot be read but a restored one can.
-    // Keeping a mode that held comes back once the fault is understood.
+    // The pipe judged its own trial: an underrun means the mode cannot be
+    // fed and everything goes back, anything else means it holds and stays.
+    // The judge is trusted because it has been seen to convict.
     if (stat & FIFO_UNDERRUN != 0) {
-        console.warn("video: fifo ran dry at {d}x{d}", .{ want.width, want.height });
-    } else {
-        console.warn("video: {d}x{d} held for the trial, no underrun", .{ want.width, want.height });
+        console.warn("video: fifo ran dry at {d}x{d}; mode put back", .{
+            want.width, want.height,
+        });
+        revert(w, pipe, dev.device, cntr, saved);
+        return error.Hardware;
     }
-    revert(w, pipe, dev.device, cntr, saved);
-    return error.Hardware;
+
+    return .{
+        .phys = w.aperture,
+        .pitch = pitch,
+        .width = want.width,
+        .height = want.height,
+        .bpp = 32,
+    };
 }
 
 /// What `set` changes, as the hardware held it beforehand.
 const Saved = struct {
     pfit: u32,
+    dsparb: u32,
     size: u32,
     pos: u32,
     src: u32,
@@ -481,6 +499,7 @@ fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void 
     waitFrame();
 
     write(u32, w, PFIT_CONTROL, saved.pfit);
+    write(u32, w, DSPARB, saved.dsparb);
     write(u32, w, pipe.size, saved.size);
     write(u32, w, pipe.pos, saved.pos);
     write(u32, w, pipe.src, saved.src);
