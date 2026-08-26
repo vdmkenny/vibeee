@@ -10,13 +10,14 @@
 
 const sys = @import("sys");
 const eeefetch = @import("tools/eeefetch.zig");
-const dmidecode = @import("tools/dmidecode.zig");
+const smbios = @import("tools/smbios.zig");
 const date = @import("tools/date.zig");
 const files = @import("tools/files.zig");
 const grep = @import("tools/grep.zig");
 const pointer = @import("tools/pointer.zig");
 const ringtest = @import("tools/ringtest.zig");
 const irq_tool = @import("tools/irq.zig");
+const klog = @import("tools/klog.zig");
 const status = @import("tools/status.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
@@ -37,13 +38,14 @@ const commands = [_]Command{
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
+    .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
     .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
     .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
     .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },
     .{ .name = "eeefetch", .summary = "show system information", .run = &eeefetch.run },
-    .{ .name = "dmidecode", .summary = "decode the firmware DMI tables", .run = &dmidecode.run },
+    .{ .name = "smbios", .summary = "decode the firmware DMI tables", .run = &smbios.run },
     .{ .name = "help", .summary = "list commands", .run = &help },
 };
 

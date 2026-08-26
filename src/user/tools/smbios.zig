@@ -1,4 +1,4 @@
-//! dmidecode, decode the firmware's DMI/SMBIOS tables.
+//! smbios, decode the firmware's DMI/SMBIOS tables.
 //!
 //! The kernel hands over the raw structure table and this does all the
 //! decoding. That split keeps several dozen structure layouts out of kernel
@@ -67,7 +67,7 @@ var table: [8192]u8 = [_]u8{0} ** 8192;
 pub fn run(_: []const []const u8) void {
     const n = sys.sysinfo("smbios", &table);
     if (n <= 0) {
-        out.text("dmidecode: no SMBIOS table\n");
+        out.text("smbios: no SMBIOS table\n");
         out.flush();
         return;
     }

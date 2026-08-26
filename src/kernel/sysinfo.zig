@@ -18,6 +18,7 @@ const clock = @import("clock.zig");
 const heap = @import("heap.zig");
 const irqevent = @import("irqevent.zig");
 const keymap = @import("keymap.zig");
+const klog = @import("klog.zig");
 const pmm = @import("pmm.zig");
 const sched = @import("sched.zig");
 const svc = @import("svc.zig");
@@ -146,6 +147,12 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         try writeStorage(&w);
     } else if (eq(key, "mounts")) {
         try writeMounts(&w);
+    } else if (eq(key, "log")) {
+        // Copied straight out rather than formatted: it is already text, and
+        // the ring is larger than the writer's idea of a line.
+        const n = klog.copyOut(buf);
+        if (n == 0) return error.UnknownKey;
+        return n;
     } else if (eq(key, "smbios")) {
         const table = platform.smbios_table orelse return error.UnknownKey;
         if (table.len > buf.len) return error.NoSpace;

@@ -6,6 +6,7 @@
 //! here depends on which one is in use.
 
 const std = @import("std");
+const klog = @import("klog.zig");
 const bootinfo = @import("bootinfo.zig");
 const fbcon = @import("../drv/video/fbcon.zig");
 const vgatext = @import("../drv/video/vgatext.zig");
@@ -273,6 +274,8 @@ pub fn printf(comptime fmt: []const u8, args: anytype) void {
 /// One boot-log line: a coloured key column, then the value. Terse by design,
 /// this is a system log, not narration.
 fn logLine(key: []const u8, key_color: Color, comptime fmt: []const u8, args: anytype) void {
+    recordLine(key, fmt, args);
+
     const saved = fg;
     setColor(key_color, bg);
     writeString(key);
@@ -305,9 +308,30 @@ pub fn isVerbose() bool {
     return verbose;
 }
 
-/// A diagnostic line: shown only in verbose mode.
+/// Keep a line whether or not it is printed.
+///
+/// A quiet boot shows almost nothing by design, and the machine should still
+/// know what happened. Formatted into a scratch buffer rather than written
+/// through the console's writer, which goes to the screen.
+fn recordLine(key: []const u8, comptime fmt: []const u8, args: anytype) void {
+    var scratch: [256]u8 = undefined;
+    var w = std.Io.Writer.fixed(&scratch);
+
+    w.print("{s}", .{key}) catch {};
+    var n = key.len;
+    while (n < KEY_WIDTH) : (n += 1) w.print(" ", .{}) catch {};
+    w.print(fmt, args) catch {};
+    w.print("\n", .{}) catch {};
+
+    klog.append(scratch[0..w.end]);
+}
+
+/// A diagnostic line: recorded always, shown only in verbose mode.
 pub fn debug(key: []const u8, comptime fmt: []const u8, args: anytype) void {
-    if (!verbose) return;
+    if (!verbose) {
+        recordLine(key, fmt, args);
+        return;
+    }
     logLine(key, .light_cyan, fmt, args);
 }
 

@@ -33,6 +33,8 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | Shared memory | [`shm.zig`](../src/kernel/shm.zig), [`lib/ring.zig`](../src/lib/ring.zig) | Segments, refcounted, mapped into a per-process window. Ring layout tested on the host. Frames survive one mapper exiting. |
 | Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel/shm. Up to four travel with a channel message. |
 | ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, sync and detached spawn. |
+| Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | An 8 KiB ring of every message, kept whether or not it was printed, so a quiet boot can still be read back with `log`. |
+| Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts. The kernel's handler masks and signals; the driver services the device and acknowledges. Not yet gated on a capability, which arrives with `devmgd`. |
 | Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. How the machine is wired is described in `kernel/irq.zig` and filled in by the composition root, so the architecture never reaches for a firmware parser. |
 | Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 35 calls, bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
@@ -62,7 +64,7 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | CMOS RTC | [`drv/rtc/cmos.zig`](../src/drv/rtc/cmos.zig) | Read at boot to seed the clock. |
 | ACPI tables | [`drv/acpi/tables.zig`](../src/drv/acpi/tables.zig) | RSDP/RSDT/FADT, `_S5_` pattern match. No AML interpreter. |
 | ACPI power | [`drv/acpi/power.zig`](../src/drv/acpi/power.zig) | Power off, reset. |
-| SMBIOS | [`drv/platform/smbios.zig`](../src/drv/platform/smbios.zig) | DMI decoding for `dmidecode` and `eeefetch`. |
+| SMBIOS | [`drv/platform/smbios.zig`](../src/drv/platform/smbios.zig) | DMI decoding for `smbios` and `eeefetch`. |
 | UART 16550 | [`drv/serial/uart16550.zig`](../src/drv/serial/uart16550.zig) | For machines that have one; the 701 does not. |
 
 Probed but **not implemented**, the table reports them so an unfamiliar machine is
@@ -85,7 +87,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top kill disk svc date eeefetch dmidecode pointer ringtest` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top kill log irq disk svc date eeefetch smbios pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
@@ -140,7 +142,7 @@ and exercised on every boot.
 |---|---|
 | PATA + FAT32 | Done, reading and writing |
 | `init` | Done: manifests, dependency order, restart policy, orphan reaping |
-| `devmgd` | Not started. Needs `irq_attach`, an MMIO aperture capability and port delegation, none of which exist |
+| `devmgd` | Not started. `irq_attach` is in; the MMIO aperture and port delegation it also needs are not |
 | `eeelibc` | Not started. Blocks the C ports, `stb_image` among them |
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
