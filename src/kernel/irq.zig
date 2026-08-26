@@ -9,6 +9,8 @@
 //! The vocabulary is a global line number, a polarity and a trigger mode,
 //! which is what every controller since the ISA bus has needed to be told.
 
+const Bounded = @import("lib").Bounded;
+
 /// Where a legacy interrupt really lands.
 pub const Line = struct {
     /// The number a driver asks for.
@@ -39,21 +41,19 @@ pub const Routing = struct {
     /// Where the per-CPU half of the controller lives, if there is one.
     local_address: u32 = 0,
 
-    controllers: [MAX_CONTROLLERS]Controller = undefined,
-    controller_count: usize = 0,
+    controllers: Bounded(Controller, MAX_CONTROLLERS) = .{},
 
     /// Only the lines firmware said something about. Everything else is
     /// identity mapped, edge triggered and active high.
-    lines: [MAX_LINES]Line = undefined,
-    line_count: usize = 0,
+    lines: Bounded(Line, MAX_LINES) = .{},
 
     pub fn list(self: *const Routing) []const Controller {
-        return self.controllers[0..self.controller_count];
+        return self.controllers.slice();
     }
 
     /// What firmware said about a line, or null if it said nothing.
     pub fn describedLine(self: *const Routing, irq: u8) ?Line {
-        for (self.lines[0..self.line_count]) |line| {
+        for (self.lines.slice()) |line| {
             if (line.irq == irq) return line;
         }
         return null;
@@ -62,17 +62,5 @@ pub const Routing = struct {
     /// Where a line lands, described or not.
     pub fn resolve(self: *const Routing, irq: u8) Line {
         return self.describedLine(irq) orelse .{ .irq = irq, .gsi = irq };
-    }
-
-    pub fn addController(self: *Routing, c: Controller) void {
-        if (self.controller_count == MAX_CONTROLLERS) return;
-        self.controllers[self.controller_count] = c;
-        self.controller_count += 1;
-    }
-
-    pub fn addLine(self: *Routing, line: Line) void {
-        if (self.line_count == MAX_LINES) return;
-        self.lines[self.line_count] = line;
-        self.line_count += 1;
     }
 };

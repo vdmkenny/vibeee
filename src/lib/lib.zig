@@ -9,6 +9,8 @@
 //! so kernel and userspace share one instance and its types are the same type
 //! on both sides of a syscall.
 
+pub const bounded = @import("bounded.zig");
+pub const Bounded = bounded.Bounded;
 pub const civil = @import("civil.zig");
 pub const font = @import("font.zig");
 pub const logo = @import("logo.zig");
@@ -17,6 +19,7 @@ pub const str = @import("str.zig");
 pub const syscalls = @import("syscalls.zig");
 
 test {
+    _ = bounded;
     _ = civil;
     _ = font;
     _ = logo;

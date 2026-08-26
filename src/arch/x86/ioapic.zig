@@ -52,7 +52,7 @@ pub fn init(info: *irq.Routing) bool {
         // than the number of entries. The table does not carry it.
         const inputs = ((read(&controllers[count], REG_VERSION) >> 16) & 0xFF) + 1;
         controllers[count].info.inputs = inputs;
-        info.controllers[i].inputs = inputs;
+        info.controllers.mutable()[i].inputs = inputs;
 
         var line: u32 = 0;
         while (line < inputs) : (line += 1) {

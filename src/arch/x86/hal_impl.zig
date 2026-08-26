@@ -79,8 +79,8 @@ pub fn initInterruptController(routing: ?irq.Routing) void {
     if (idt.useIoApic(described)) {
         console.debug("apic", "local at {x:0>8}, {d} controller(s), {d} described line(s)", .{
             described.local_address,
-            described.controller_count,
-            described.line_count,
+            described.controllers.len,
+            described.lines.len,
         });
         return;
     }

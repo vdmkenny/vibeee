@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const sys = @import("sys");
+const Bounded = @import("lib").Bounded;
 const str = @import("lib").str;
 
 /// One name, and enough about it to show a row.
@@ -22,13 +23,12 @@ pub const Entry = struct {
 pub const MAX = 96;
 
 pub const Listing = struct {
-    entries: [MAX]Entry = @splat(.{}),
-    count: usize = 0,
+    entries: Bounded(Entry, MAX) = .{},
     /// The directory held more than `MAX`, so what is here is not all of it.
     truncated: bool = false,
 
     pub fn items(self: *const Listing) []const Entry {
-        return self.entries[0..self.count];
+        return self.entries.slice();
     }
 };
 
@@ -55,10 +55,6 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
 
         const entry = sys.Dirent.decode(&record, @intCast(n)) orelse continue;
 
-        if (out.count == MAX) {
-            out.truncated = true;
-            break;
-        }
         if (used + entry.name.len > names.len) return error.NoRoom;
 
         // Written the way it should be read: a short FAT name is stored
@@ -68,17 +64,19 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
         @memcpy(stored, entry.name);
         str.lowerName(stored);
 
-        out.entries[out.count] = .{
+        out.entries.append(.{
             .name = stored,
             .size = entry.size,
             .mtime = entry.mtime,
             .is_dir = entry.is_dir,
+        }) catch {
+            out.truncated = true;
+            break;
         };
         used += entry.name.len;
-        out.count += 1;
     }
 
-    sort(out.entries[0..out.count]);
+    sort(out.entries.mutable());
 }
 
 fn sort(entries: []Entry) void {

@@ -6,6 +6,7 @@
 //! it happens once here.
 
 const info = @import("info.zig");
+const Bounded = @import("lib").Bounded;
 const str = @import("lib").str;
 
 /// Enough for anything the scheduler can hold. A list that silently stopped at
@@ -29,12 +30,11 @@ pub const Process = struct {
 };
 
 pub const Table = struct {
-    entries: [MAX]Process = @splat(.{}),
-    count: usize = 0,
+    entries: Bounded(Process, MAX) = .{},
 
     /// In tree order: each process is followed by its children.
     pub fn items(self: *const Table) []const Process {
-        return self.entries[0..self.count];
+        return self.entries.slice();
     }
 
     pub fn find(self: *const Table, pid: usize) ?*const Process {
@@ -106,12 +106,12 @@ fn parentIndex(flat: []const Process, pid: usize) ?usize {
 }
 
 fn append(table: *Table, flat: []Process, placed: []bool, index: usize, depth: u8) void {
-    if (placed[index] or table.count >= MAX) return;
+    if (placed[index]) return;
     placed[index] = true;
 
-    table.entries[table.count] = flat[index];
-    table.entries[table.count].depth = depth;
-    table.count += 1;
+    var entry = flat[index];
+    entry.depth = depth;
+    table.entries.append(entry) catch return;
 
     for (flat, 0..) |*child, i| {
         if (i != index and child.parent == flat[index].pid) {

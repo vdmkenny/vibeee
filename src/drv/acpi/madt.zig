@@ -65,12 +65,14 @@ pub fn parse() ?irq.Routing {
 fn readIoApic(out: *irq.Routing, payload: []const u8) void {
     if (payload.len < 10) return;
 
-    out.addController(.{
+    // A machine describing more controllers than there is room for is not one
+    // this kernel runs on, and stopping at the bound is the honest answer.
+    out.controllers.append(.{
         .id = payload[0],
         // payload[1] is reserved.
         .address = std.mem.readInt(u32, payload[2..6], .little),
         .gsi_base = std.mem.readInt(u32, payload[6..10], .little),
-    });
+    }) catch {};
 }
 
 fn readOverride(out: *irq.Routing, payload: []const u8) void {
@@ -78,12 +80,12 @@ fn readOverride(out: *irq.Routing, payload: []const u8) void {
 
     // payload[0] is the bus, always ISA.
     const flags = std.mem.readInt(u16, payload[6..8], .little);
-    out.addLine(.{
+    out.lines.append(.{
         .irq = payload[1],
         .gsi = std.mem.readInt(u32, payload[2..6], .little),
         // Two bits each, where 0 means "whatever the bus does" and the ISA bus
         // is active high and edge triggered.
         .active_low = flags & 0b11 == 0b11,
         .level = (flags >> 2) & 0b11 == 0b11,
-    });
+    }) catch {};
 }

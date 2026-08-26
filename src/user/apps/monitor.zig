@@ -149,7 +149,7 @@ fn ticksBefore(pid: usize) usize {
 }
 
 fn selectedPid() ?usize {
-    if (list.selected >= table.count) return null;
+    if (list.selected >= table.entries.len) return null;
     return table.items()[list.selected].pid;
 }
 
@@ -307,7 +307,8 @@ fn uptimeText() []const u8 {
 
 fn processText() []const u8 {
     var line = str.Builder{ .buf = &process_buffer };
-    line.quantity(table.count, if (table.count == 1) "process" else "processes");
+    const shown = table.entries.len;
+    line.quantity(shown, if (shown == 1) "process" else "processes");
     return line.done();
 }
 
