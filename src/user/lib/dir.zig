@@ -75,8 +75,15 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
     sort(out.entries.mutable());
 }
 
+/// Insertion sort, named rather than left to `std.mem.sort`.
+///
+/// `std.mem.sort` is a block sort, and a block sort keeps a `[512]T` cache in
+/// its own frame: for an entry of this size that is sixteen kilobytes of a
+/// thirty-two kilobyte user stack, which overflows the moment a caller reads
+/// one directory from inside another. Insertion sort needs no memory at all,
+/// and at `MAX` entries the comparisons are not worth counting.
 fn sort(entries: []Entry) void {
-    std.mem.sort(Entry, entries, {}, before);
+    std.sort.insertion(Entry, entries, {}, before);
 }
 
 pub const PARENT = "..";

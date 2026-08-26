@@ -25,6 +25,11 @@ pub fn startsWith(text: []const u8, prefix: []const u8) bool {
     return text.len >= prefix.len and eql(text[0..prefix.len], prefix);
 }
 
+/// Whether `text` ends with `suffix`. Shorter than the suffix is not.
+pub fn endsWith(text: []const u8, suffix: []const u8) bool {
+    return text.len >= suffix.len and eql(text[text.len - suffix.len ..], suffix);
+}
+
 /// Length of a NUL-terminated string, as a slice.
 pub fn span(ptr: [*:0]const u8) []const u8 {
     var n: usize = 0;

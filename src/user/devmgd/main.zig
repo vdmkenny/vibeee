@@ -18,9 +18,15 @@ const dir = @import("ulib").dir;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
-/// Where manifests live. One file per driver, dropped in rather than listed
-/// anywhere: adding a driver should be adding a file.
-const MANIFEST_DIR = "/lib";
+/// Where drivers live: each one's program and the manifest describing it, side
+/// by side. Not in /bin because nothing here is ever run by name. A driver is
+/// reached by matching hardware, so it has no business in what a shell searches
+/// or completes.
+const DRIVER_DIR = "/lib/drivers";
+
+/// What marks the manifest of the pair. Dropped in rather than listed anywhere:
+/// adding a driver should be adding two files and telling nothing.
+const MANIFEST_SUFFIX = ".man";
 
 /// Enough for a machine of this era. A netbook has six to a dozen devices and
 /// nothing like that many drivers.
@@ -71,7 +77,7 @@ fn readManifests() void {
     var names: [dir.MAX * 16]u8 = undefined;
     var listing: dir.Listing = .{};
 
-    dir.read(MANIFEST_DIR, &names, &listing) catch {
+    dir.read(DRIVER_DIR, &names, &listing) catch {
         // No directory at all is the ordinary case on a machine with no
         // userspace drivers yet, and is not worth a line.
         return;
@@ -79,6 +85,7 @@ fn readManifests() void {
 
     for (listing.items()) |entry| {
         if (entry.is_dir) continue;
+        if (!str.endsWith(entry.name, MANIFEST_SUFFIX)) continue;
         readOne(entry.name);
     }
 }
@@ -89,7 +96,7 @@ fn readOne(name: []const u8) void {
     if (manifest_count == MAX_DRIVERS) return;
 
     var path = str.Builder{ .buf = &path_buf };
-    path.text(MANIFEST_DIR);
+    path.text(DRIVER_DIR);
     path.byte('/');
     path.text(name);
 

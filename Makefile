@@ -116,7 +116,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
-	@for d in bin etc lib tmp home media; do $(MMD) -i $@ ::/$$d; done
+	@for d in bin etc lib lib/drivers tmp home media; do $(MMD) -i $@ ::/$$d; done
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
@@ -128,7 +128,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/eeewm.cfg ::/etc/eeewm.cfg
-	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/lib/e1000.man
+	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/lib/drivers/e1000.man
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 

@@ -306,7 +306,7 @@ does differently.
 /            the boot image, in RAM, rebuilt every boot
 ├── bin/     every program: init, vsh, tools, eeewm, eterm, pad, ...
 ├── etc/     configuration                              [persistent when installed]
-├── lib/     data that programs read: fonts, driver manifests
+├── lib/     what the system loads: drivers, and the data programs read
 ├── tmp/     scratch, in RAM with the root, gone at reboot
 ├── home/    everything the user keeps                  [persistent when installed]
 └── media/   removable volumes, one directory each
@@ -315,9 +315,20 @@ does differently.
 Every name is at most eight characters, because FAT stores short names in eight
 and the tree should read the same on the medium as it does at a prompt.
 
-`/bin` holds programs, `/lib` holds what they read. The split is worth having
-here for the same reason it is anywhere: `mkimage` can tell what has to be
-executable from where it is put, and a program is never confused with its data.
+`/bin` holds what is run by name, whether a person types it or `/etc/services`
+names it. `/lib` holds what the system loads without anyone naming it, which is
+why `/lib/drivers` is there and not in `/bin`: a driver is selected by matching
+hardware, so it has no business in what a shell searches or completes. Each
+driver sits beside its manifest, because the pair is one thing.
+
+That line is about who does the invoking, not about privilege. The privilege
+split a directory name implies is advisory, which is why there is no `/sbin`;
+capabilities decide what a driver may do, and they do not care where it sits.
+
+A subdirectory when there are several files of one kind that something looks up
+by name at runtime, and flat until then. `/lib/drivers` has earned one. Keymaps
+and fonts are compiled in today and would earn theirs on the day they are loaded
+from disk instead.
 
 `/etc` and `/home` are directories in the image until the machine is installed,
 and mount points afterwards. A program reads `/etc/services` either way and
@@ -332,7 +343,7 @@ an install seeds the persistent volume with.
 | `/proc`, `/sys` | `sysinfo` answers what these exist to answer, without a filesystem to serialise it through or a parser on the other end. |
 | `/svc` | The service registry is a kernel namespace reached by `svc_register` and `svc_open`, not a path. The `svc` tool lists it. |
 | `/usr` | The split exists because a disk filled up in 1974. There is one root here and it is small. |
-| `/sbin` | The privilege split a directory name implies is advisory. Capabilities do it for real, and they do not care where a binary sits. |
+| `/sbin` | See above: the split it implies is advisory, and capabilities do it for real. |
 | `/root`, `/home/<user>` | One person uses this machine. |
 | `/opt`, `/srv`, `/boot` | Nothing to put in them. The boot partition is read by the bootloader and never mounted. |
 | `/var` | Its contents on a machine like this are panic records, which belong where their owner can find and send them: `/home`. |
