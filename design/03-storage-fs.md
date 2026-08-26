@@ -1,5 +1,11 @@
 # vibeee 03 — Storage & Filesystems
 
+> **Superseded in part.** The custom `eeefs` design below is **rejected**:
+> vibeee uses **FAT32 as its only on-disk filesystem**. See
+> [`00-vibeee.md` §7](00-vibeee.md) for the reasoning. The PATA driver, block
+> layer, page-cache and FAT sections here still apply; treat everything about
+> `eeefs` as a record of an option that was considered and dropped.
+>
 > **Status: design only — not implemented.**
 > Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:

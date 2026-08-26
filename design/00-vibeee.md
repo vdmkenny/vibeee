@@ -253,16 +253,40 @@ The ICH6 EHCI does expose a debug port, but it needs a specific USB debug cable 
 
 **Filesystems:**
 
-| FS | Role | Verdict |
+| FS | Role | Notes |
 |---|---|---|
 | `vfs` + `ramfs` | `/`, `/tmp`, `/dev`, `/svc` | Rootfs lives in RAM permanently |
-| **FAT16/32 + VFAT LFN** | `/boot` (P1), SD cards, USB sticks | Required for interchange. Read/write |
-| **eeefs** | `/data`, `/cfg` | Log-structured, CoW, CRC'd |
+| **FAT32 + VFAT LFN** | `/boot`, `/data`, SD cards, USB sticks | The only on-disk filesystem. Read/write |
 | `vzi` | rootfs container | Read-only, zstd, built by `mkvzi` |
 
-**eeefs versus the alternatives.** ext2 is proven and simple; FAT32 is universal. Both do in-place overwrite, which on this SSD means read-modify-write against a controller whose small-random-write floor is **1–3 MB/s** — the measured weak point. A log-structured design turns scattered small writes into sequential segment appends, which is the one thing this flash is actually good at, and gives crash-consistency for free (no fsck, roll-forward from the last valid checkpoint) — which matters because a netbook gets its battery pulled. The cost is GC complexity and a real risk of GC pauses under a full volume. **Recommendation: build eeefs, but ship FAT32 as a fully supported alternative for `/data`** so there is always an escape hatch and a way to read the data from another machine. If eeefs GC proves painful in M2, dropping to FAT32 is a config change, not a redesign.
+**One filesystem, and not a new one.** An earlier draft specified a custom
+log-structured filesystem (`eeefs`) for `/data`, on the reasoning that turning
+scattered small writes into sequential segment appends suits an SSD whose
+small-random-write floor is 1–3 MB/s. That reasoning is sound and the design is
+still rejected, for reasons that outweigh it:
 
-eeefs shape: paired superblocks, 1 MB segments, RAM segment buffer (2 MB), inode map checkpointed per segment close, CRC32C on every block, roll-forward mount recovery, GC triggered on free-segment low-water with a cost-benefit victim policy. `fsync` = force segment close.
+- **Filesystems are where data loss lives.** Crash consistency, garbage
+  collection and the long tail of corner cases are hard to get right and
+  expensive to test properly. A bug costs the user their files.
+- **Nothing else could read it.** The single most valuable property for a hobby
+  OS is that a card can be taken out, put in any other machine, and inspected or
+  repaired. A private format forfeits that exactly when it matters most.
+- **The write-pattern argument is weaker than it looks.** The SM223 is not raw
+  NAND: it has its own flash translation layer doing wear levelling and write
+  coalescing behind the ATA interface. A log-structured layer on top is
+  second-guessing a controller we cannot see inside.
+- **One implementation instead of two.** FAT is already required for the boot
+  partition and for interchange, so making it the only on-disk filesystem halves
+  the code that has to be correct.
+
+The real cost is FAT's absence of crash consistency. That is handled where it
+belongs — above the filesystem — with the same atomic double-buffered write the
+config store already uses: write a new copy, flush, then flip a pointer. Files
+that matter are never modified in place. The rootfs is read-only and in RAM, so
+steady-state write volume is low to begin with.
+
+If a stronger filesystem is ever wanted, the answer is to port an existing one
+(littlefs is the natural fit for flash), not to write one.
 
 `/cfg` uses double-buffered atomic blobs (write B, fsync, flip pointer in superblock) — config must never be half-written after a power cut.
 
@@ -496,7 +520,7 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 | Milestone | Content | Runs on |
 |---|---|---|
 | **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU |
-| **M1** | PATA + FAT + eeefs, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, Term/Files/Edit, keymaps | **First real-hardware boot** |
+| **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, Term/Files/Edit, keymaps | **First real-hardware boot** |
 | **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Calc/Monitor/Mines/Settings | Hardware |
 | **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, Draw/View, install-to-SSD, A/B updater, turbo mode | Hardware |
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware |
