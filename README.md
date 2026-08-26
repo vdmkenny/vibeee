@@ -82,7 +82,7 @@ encoder is differentially tested against `libqrencode` across all eight masks.
 
 **Userspace**, `init` (PID 1) supervises services declared in `/etc/services` with
 dependency ordering and restart policy. `vsh` is the shell. A multicall binary provides
-`ls cat rm hexdump grep free top disk svc date eeefetch dmidecode ringtest`.
+`ls cat rm hexdump grep free top disk svc date eeefetch dmidecode pointer ringtest`.
 
 ## Not yet
 

@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const console = @import("kernel/console.zig");
+const input = @import("kernel/input.zig");
 const probe = @import("kernel/probe.zig");
 const bootinfo = @import("kernel/bootinfo.zig");
 const drivers = @import("drivers.zig");
@@ -21,6 +22,7 @@ const shutdown = @import("kernel/shutdown.zig");
 const smbios = @import("drv/platform/smbios.zig");
 const sysinfo = @import("kernel/sysinfo.zig");
 const kbd = @import("drv/input/i8042.zig");
+const mouse = @import("drv/input/ps2mouse.zig");
 const uart = @import("drv/serial/uart16550.zig");
 const bcache = @import("kernel/bcache.zig");
 const block = @import("kernel/block.zig");
@@ -125,6 +127,18 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     }
 
     kbd.init();
+
+    // The pointer is clamped to the screen, so the display has to be up first.
+    // Text mode reports no pixel geometry, so the pointer is bounded by the
+    // cell grid at the VGA font's size. A pointer free to leave the screen
+    // would be worse than one confined to an approximation.
+    const screen = console.pixelSize();
+    if (screen.width > 0) {
+        input.setPointerBounds(screen.width, screen.height);
+    } else {
+        input.setPointerBounds(console.width() * 9, console.height() * 16);
+    }
+    _ = mouse.init();
 }
 
 /// Enumerate every bus this machine has and bind drivers to what turns up.

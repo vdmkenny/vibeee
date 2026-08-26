@@ -6,7 +6,7 @@ is *for*, this says what has actually been written.
 **Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
 accurate about what exists; it is not a claim that any of it has been audited.
 
-Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 31 syscalls,
+Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 32 syscalls,
 36 host-side tests.
 
 ## Boot
@@ -56,7 +56,8 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 31 sys
 | PCI | [`drv/bus/pci.zig`](../src/drv/bus/pci.zig) | Enumeration, config space. |
 | VGA text | [`drv/video/vgatext.zig`](../src/drv/video/vgatext.zig) | Done. |
 | Framebuffer console | [`drv/video/fbcon.zig`](../src/drv/video/fbcon.zig) | 32bpp, Spleen font, pixel rectangles for the panic QR. |
-| i8042 | [`drv/input/i8042.zig`](../src/drv/input/i8042.zig) | Keyboard only; touchpad not started. |
+| i8042 | [`drv/input/i8042.zig`](../src/drv/input/i8042.zig) | Keyboard, scancode set 1. Owns the controller; the second port is below. |
+| PS/2 pointer | [`drv/input/ps2mouse.zig`](../src/drv/input/ps2mouse.zig) | Three buttons, motion, drag. IntelliMouse wheel negotiated and decoded but not verified against hardware. Synaptics and Elantech identified, both driven in relative mode. |
 | CMOS RTC | [`drv/rtc/cmos.zig`](../src/drv/rtc/cmos.zig) | Read at boot to seed the clock. |
 | ACPI tables | [`drv/acpi/tables.zig`](../src/drv/acpi/tables.zig) | RSDP/RSDT/FADT, `_S5_` pattern match. No AML interpreter. |
 | ACPI power | [`drv/acpi/power.zig`](../src/drv/acpi/power.zig) | Power off, reset. |
@@ -73,7 +74,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top disk svc date eeefetch dmidecode ringtest` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top disk svc date eeefetch dmidecode pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo. |
 
@@ -105,4 +106,6 @@ build.
 - No `mkdir`: directories cannot be created, only read.
 - The dispatcher is `int 0x80`; SYSENTER is designed but not wired.
 - Interrupt handling uses the 8259 PICs and the PIT, not the IOAPIC/LAPIC the design calls for.
-- No touchpad, USB, audio, networking or GUI.
+- The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
+- Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
+- No USB, audio, networking or GUI.

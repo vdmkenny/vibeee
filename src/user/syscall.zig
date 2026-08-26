@@ -299,6 +299,20 @@ pub fn reply(handle: usize, token: u32, payload: []const u8) isize {
 // Shared memory
 // ---------------------------------------------------------------------------
 
+pub const PointerEvent = abi.PointerEvent;
+
+/// Read pending pointer events, blocking until there is at least one.
+pub fn pointerRead(buf: []PointerEvent, timeout_us: usize) []PointerEvent {
+    const n = syscall3(
+        abi.number("pointer_read"),
+        @intFromPtr(buf.ptr),
+        buf.len * @sizeOf(PointerEvent),
+        timeout_us,
+    );
+    if (n <= 0) return buf[0..0];
+    return buf[0..@divTrunc(@as(usize, @intCast(n)), @sizeOf(PointerEvent))];
+}
+
 pub const MapFlags = abi.MapFlags;
 
 /// Allocate a shared-memory segment. Pass the handle over a channel to share it.

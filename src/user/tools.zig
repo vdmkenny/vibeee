@@ -15,6 +15,7 @@ const dmidecode = @import("tools/dmidecode.zig");
 const date = @import("tools/date.zig");
 const files = @import("tools/files.zig");
 const grep = @import("tools/grep.zig");
+const pointer = @import("tools/pointer.zig");
 const ringtest = @import("tools/ringtest.zig");
 const status = @import("tools/status.zig");
 const out = @import("lib/out.zig");
@@ -34,6 +35,7 @@ const commands = [_]Command{
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
+    .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
     .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },

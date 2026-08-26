@@ -8,6 +8,7 @@ const console = @import("../console.zig");
 const handles = @import("../handle.zig");
 const vfs = @import("../vfs.zig");
 const ctx = @import("context.zig");
+const input = @import("../input.zig");
 const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
@@ -157,4 +158,41 @@ pub fn sys_sysinfo(a: Args) Result {
         error.NoSpace => Errno.nomem.value(),
     };
     return @intCast(n);
+}
+pub fn sys_pointer_read(a: Args) Result {
+    const out = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+
+    const size = @sizeOf(abi.PointerEvent);
+    const capacity = out.len / size;
+    if (capacity == 0) return Errno.inval.value();
+
+    const deadline = ctx.deadlineFrom(a.a2);
+
+    // Block until there is something, rather than returning an empty read: a
+    // caller that got zero would spin, and the whole point of the queue is
+    // that a consumer can sleep between movements.
+    while (!input.hasPointerEvents()) {
+        input.pointerReady().waitOne(deadline) catch return Errno.timedout.value();
+    }
+
+    var written: usize = 0;
+    while (written < capacity) : (written += 1) {
+        const event = input.pollPointer() orelse break;
+        const record = abi.PointerEvent{
+            .x = event.x,
+            .y = event.y,
+            .dx = event.dx,
+            .dy = event.dy,
+            .wheel = event.wheel,
+            .buttons = .{
+                .left = event.buttons.left,
+                .right = event.buttons.right,
+                .middle = event.buttons.middle,
+            },
+            .buttons_changed = @intFromBool(event.buttons_changed),
+        };
+        @memcpy(out[written * size ..][0..size], std.mem.asBytes(&record));
+    }
+
+    return @intCast(written * size);
 }

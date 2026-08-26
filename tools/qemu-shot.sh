@@ -4,7 +4,12 @@
 # Exists because "screenshot the running kernel" is the main way to see what
 # happened on a machine with no serial port, and it should be one command.
 #
-#   tools/qemu-shot.sh <out.png> [-t "text to type"] [-w seconds] [-- qemu args]
+#   tools/qemu-shot.sh <out.png> [-t "text to type"] [-m "monitor commands"]
+#                      [-w seconds] [-- qemu args]
+#
+# `-m` sends raw QEMU monitor commands after the typing, one per line, which is
+# how the pointing device is exercised: `mouse_move dx dy`, `mouse_button mask`
+# with 1 left, 2 middle, 4 right.
 #
 # The CPU model comes from QEMU_CPU, which the Makefile exports. It must match
 # the target: emulating something less capable than the real Celeron M makes
@@ -17,11 +22,13 @@ set -e
 
 OUT="$1"; shift
 TYPE=""
+MONITOR=""
 BOOT_WAIT=3
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -t) TYPE="$2"; shift 2 ;;
+        -m) MONITOR="$2"; shift 2 ;;
         -w) BOOT_WAIT="$2"; shift 2 ;;
         --) shift; break ;;
         *) break ;;
@@ -107,6 +114,15 @@ if [ -n "$TYPE" ]; then
         done
         monitor "sendkey ret"
         sleep 0.6
+    done
+    sleep 1
+fi
+
+if [ -n "$MONITOR" ]; then
+    printf '%s\n' "$MONITOR" | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        monitor "$line"
+        sleep 0.3
     done
     sleep 1
 fi

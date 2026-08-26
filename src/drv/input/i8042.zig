@@ -13,15 +13,56 @@ const std = @import("std");
 const console = @import("../../kernel/console.zig");
 const input = @import("../../kernel/input.zig");
 const keymap = @import("../../kernel/keymap.zig");
+const cpu = @import("../../arch/x86/cpu.zig");
 const idt = @import("../../arch/x86/idt.zig");
 const port = @import("../../arch/x86/port.zig");
 
-const DATA = 0x60;
-const STATUS = 0x64;
-const COMMAND = 0x64;
+pub const DATA = 0x60;
+pub const STATUS = 0x64;
+pub const COMMAND = 0x64;
 
-const ST_OUTPUT_FULL: u8 = 1 << 0;
-const ST_INPUT_FULL: u8 = 1 << 1;
+pub const ST_OUTPUT_FULL: u8 = 1 << 0;
+pub const ST_INPUT_FULL: u8 = 1 << 1;
+/// Set when the byte waiting in the output buffer came from the second port
+/// rather than the keyboard.
+pub const ST_FROM_AUX: u8 = 1 << 5;
+
+/// One controller, two devices. The keyboard is below; the pointing device
+/// lives in `ps2mouse.zig` and reaches the controller through these.
+pub fn waitInputClear() void {
+    var spins: u32 = 0;
+    while (port.inb(STATUS) & ST_INPUT_FULL != 0 and spins < 100_000) : (spins += 1) {}
+}
+
+/// Wait for a byte to be available, then take it.
+pub fn readData() ?u8 {
+    var spins: u32 = 0;
+    while (port.inb(STATUS) & ST_OUTPUT_FULL == 0) : (spins += 1) {
+        if (spins >= 100_000) return null;
+    }
+    return port.inb(DATA);
+}
+
+pub fn command(byte: u8) void {
+    waitInputClear();
+    port.outb(COMMAND, byte);
+}
+
+pub fn writeData(byte: u8) void {
+    waitInputClear();
+    port.outb(DATA, byte);
+}
+
+/// Read the controller configuration byte.
+pub fn config() u8 {
+    command(0x20);
+    return readData() orelse 0;
+}
+
+pub fn setConfig(value: u8) void {
+    command(0x60);
+    writeData(value);
+}
 
 const KeyCode = input.KeyCode;
 
@@ -97,6 +138,11 @@ pub fn onKeyboardInterrupt() void {
     // Drain, because the controller may have more than one byte buffered and a
     // single read per interrupt would fall permanently behind under fast typing.
     while (port.inb(STATUS) & ST_OUTPUT_FULL != 0) {
+        // Both devices share one output buffer. A byte flagged as coming from
+        // the second port is the pointing device's, and reading it here would
+        // consume half a movement packet.
+        if (port.inb(STATUS) & ST_FROM_AUX != 0) return;
+
         const byte = port.inb(DATA);
 
         if (byte == 0xE0) {
@@ -143,12 +189,14 @@ pub fn onKeyboardInterrupt() void {
     }
 }
 
-fn waitForInputClear() void {
-    var spins: u32 = 0;
-    while (port.inb(STATUS) & ST_INPUT_FULL != 0 and spins < 100_000) : (spins += 1) {}
-}
-
 pub fn init() void {
+    // Interrupts off while the controller is configured: reading the
+    // configuration byte takes two round trips through the shared output
+    // buffer, and anything that reads from it in between corrupts the value
+    // written back.
+    const flags = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(flags);
+
     // Flush anything the BIOS left buffered, so the first real keystroke is not
     // preceded by a stale one.
     var drained: u32 = 0;
@@ -161,16 +209,7 @@ pub fn init() void {
     // this machine's translation and clock settings, and second-guessing that
     // on hardware with no serial port risks a keyboard that cannot report why
     // it is dead.
-    waitForInputClear();
-    port.outb(COMMAND, 0x20); // read configuration byte
-    var spins: u32 = 0;
-    while (port.inb(STATUS) & ST_OUTPUT_FULL == 0 and spins < 100_000) : (spins += 1) {}
-    const config = port.inb(DATA);
-
-    waitForInputClear();
-    port.outb(COMMAND, 0x60); // write configuration byte
-    waitForInputClear();
-    port.outb(DATA, config | 0x01); // bit 0: keyboard interrupt enable
+    setConfig(config() | 0x01); // bit 0: keyboard interrupt enable
 
     idt.setHandler(idt.IRQ_BASE + 1, onIrq);
     idt.setPicMask(1, false);

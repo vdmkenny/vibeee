@@ -199,6 +199,37 @@ pub const MAX_ARGS = 16;
 /// is bulk data and belongs in a shared ring.
 pub const MAX_PAYLOAD = 64;
 
+/// A pointer event as userspace sees it.
+///
+/// Position and delta both travel, because a consumer that only wants position
+/// should not have to accumulate one, and a consumer that wants motion should
+/// not have to difference one. `buttons_changed` distinguishes a click from a
+/// drag without comparing against the previous event.
+pub const PointerEvent = extern struct {
+    pub const Buttons = packed struct(u8) {
+        left: bool = false,
+        right: bool = false,
+        middle: bool = false,
+        _reserved: u5 = 0,
+    };
+
+    x: i16 = 0,
+    y: i16 = 0,
+    dx: i16 = 0,
+    dy: i16 = 0,
+    /// Positive scrolls up.
+    wheel: i8 = 0,
+    buttons: Buttons = .{},
+    buttons_changed: u8 = 0,
+    _pad: u8 = 0,
+
+    /// Motion with a button held.
+    pub fn isDrag(self: PointerEvent) bool {
+        const held = self.buttons.left or self.buttons.right or self.buttons.middle;
+        return self.buttons_changed == 0 and held and (self.dx != 0 or self.dy != 0);
+    }
+};
+
 /// A channel message as it crosses the boundary.
 ///
 /// Passed by pointer rather than as loose arguments because it carries handles
@@ -707,6 +738,22 @@ pub const table = [_]Syscall{
         .errors = &.{ E.fault, E.noent, E.inval, E.io },
         .notes = "Directories are not removed by this call. Clusters are freed immediately, so a " ++
             "handle still open on the file will read whatever claims them next.",
+    },
+    .{
+        .number = 31,
+        .name = "pointer_read",
+        .summary = "Read pending pointer events.",
+        .args = &.{
+            .{ .name = "buf", .kind = .ptr, .desc = "Receives an array of PointerEvent." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity in bytes." },
+            .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
+        },
+        .returns = "bytes written",
+        .errors = &.{ E.fault, E.inval, E.timedout },
+        .notes = "Events rather than pollable state: a press and release between two polls would " ++
+            "vanish, and the boundaries of a drag would blur. Motion carries the button mask, so " ++
+            "a drag is motion with a button already held. Motion may be dropped when the queue " ++
+            "fills; a button transition never is.",
     },
 };
 

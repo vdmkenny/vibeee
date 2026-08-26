@@ -548,6 +548,26 @@ Remove a file.
 
 Directories are not removed by this call. Clusters are freed immediately, so a handle still open on the file will read whatever claims them next.
 
+## `pointer_read`  <sub>#31</sub>
+
+Read pending pointer events.
+
+| arg | type | meaning |
+|---|---|---|
+| `buf` | ptr | Receives an array of PointerEvent. |
+| `buf_len` | len | Capacity in bytes. |
+| `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
+
+**Returns:** bytes written
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ETIMEDOUT`, the timeout elapsed before anything happened
+
+Events rather than pollable state: a press and release between two polls would vanish, and the boundaries of a drag would blur. Motion carries the button mask, so a drag is motion with a button already held. Motion may be dropped when the queue fills; a button transition never is.
+
 ---
 
-31 calls defined.
+32 calls defined.

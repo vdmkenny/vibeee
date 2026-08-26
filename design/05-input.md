@@ -4,7 +4,9 @@
 >
 > Built and working: the i8042 driver ([`drv/input/i8042.zig`](../src/drv/input/i8042.zig)) with scancode set 1 decoding, the kernel input core ([`input.zig`](../src/kernel/input.zig)), and keymaps compiled from one file per layout ([`src/keymaps/`](../src/keymaps/)): US-International and Belgian AZERTY, with dead-key composition and `Super+Space` to switch.
 >
-> Not yet: the touchpad probe ladder, `/dev/input`, and the ATKD hotkeys.
+> Also built: the PS/2 pointing device on the controller's second port ([`drv/input/ps2mouse.zig`](../src/drv/input/ps2mouse.zig)), with the Synaptics and Elantech probe ladder, three buttons, wheel negotiation and a pointer event queue that distinguishes a click from a drag.
+>
+> Not yet: absolute mode for either pad, so no tap zones, edge scrolling or multi-finger gestures; `/dev/input`; and the ATKD hotkeys.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
 > wins: it carries later decisions this document predates.

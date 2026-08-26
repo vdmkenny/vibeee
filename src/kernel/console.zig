@@ -43,10 +43,6 @@ pub fn height() usize {
     return rows;
 }
 
-/// Retained for callers that predate a resizable console.
-pub const COLUMNS = vgatext.WIDTH;
-pub const ROWS = vgatext.HEIGHT;
-
 /// Switch to the framebuffer if stage2 set a graphics mode.
 ///
 /// Called early, before anything has been drawn: in graphics mode the text

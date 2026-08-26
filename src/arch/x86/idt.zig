@@ -219,4 +219,9 @@ pub fn setPicMask(irq: u8, masked: bool) void {
         mask &= ~(@as(u8, 1) << bit);
     }
     port.outb(p, mask);
+
+    // The second PIC reaches the CPU through the first one's line 2. Unmasking
+    // a line on it achieves nothing while that cascade is masked, so it is
+    // opened here rather than left for every caller to remember.
+    if (!masked and irq >= 8) setPicMask(2, false);
 }
