@@ -155,9 +155,9 @@ Adding a driver = copy two files, no rebuild, no reboot. That is the modularity 
 Complete in [`01-boot.md`](01-boot.md). Summary of what the rest of the system depends on:
 
 - MBR stage1 (≤440 B, NASM) → stage2 (real-mode NASM stub + 32-bit Zig, PM↔RM trampolines for BIOS calls).
-- Loads kernel ELF to phys 1 MB + zstd rootfs container, CRC32-verified, A/B copies with 3-strike auto-fallback via a boot-journal sector.
+- Loads kernel ELF to phys 1 MB + the root FAT image, CRC32-verified, A/B copies with 3-strike auto-fallback via a boot-journal sector.
 - Handoff: `EAX=0x0EEEB007`, `EBX=&BootInfo` at phys 0x6000: E820, RSDP, kernel/rootfs ranges, cmdline, disk signature, and an **8 KB stage2 text-log ring** that the kernel imports into dmesg (this is how you debug early boot with no serial port).
-- Image: MBR | stage2 A/B | journal | P1 FAT16 32 MB (boot+system) | P2 /cfg | P3 /data, all 4 MB-aligned for SD erase blocks. Boot Booster's 0xEF partition is preserved, never used.
+- Image: MBR | stage2 A/B | journal | P1 FAT16 32 MB (boot + the root image) | P2 FAT32, the rest of the medium, holding `/etc` and `/home` once installed, all 4 MB-aligned for SD erase blocks. Boot Booster's 0xEF partition is preserved, never used.
 - **Boot-to-RAM is load-bearing**: the SD card is behind the BIOS's USB emulation, so once we leave real mode we cannot read it again until `usbd` is up. Everything needed to reach a shell must be in RAM before then.
 
 **Addition for portability:** accept a **Multiboot2** header as an alternate entry point. Costs ~150 lines, and buys `qemu -kernel vibeee.elf` (skipping the whole boot chain) plus GRUB-booting on any dev machine. The BootInfo struct is populated from either source.
@@ -271,12 +271,11 @@ The ICH6 EHCI does expose a debug port, but it needs a specific USB debug cable 
 
 | FS | Role | Notes |
 |---|---|---|
-| `vfs` + `ramfs` | `/`, `/tmp`, `/dev`, `/svc` | Rootfs lives in RAM permanently |
-| **FAT32 + VFAT LFN** | `/boot`, `/data`, SD cards, USB sticks | The only on-disk filesystem. Read/write |
-| `vzi` | rootfs container | Read-only, zstd, built by `mkvzi` |
+| **FAT16/32 + VFAT LFN** | every volume, every medium | The only filesystem |
+| `ramdisk` | `/` | The boot image's frames as a block device, so `/` and a card are read by the same code |
 
-**One filesystem, and not a new one.** An earlier draft specified a custom
-log-structured filesystem (`eeefs`) for `/data`, on the reasoning that turning
+**One filesystem, and not a new one.** The case for a custom log-structured
+filesystem is that turning
 scattered small writes into sequential segment appends suits an SSD whose
 small-random-write floor is 1–3 MB/s. That reasoning is sound and the design is
 still rejected, for reasons that outweigh it:

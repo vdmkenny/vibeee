@@ -13,7 +13,7 @@ Target: ASUS Eee PC 701 4G only. Celeron M 353 (Dothan C-0, 630 MHz, single core
 
 ## 1. Overview
 
-Monolithic-with-servers hybrid. Kernel core owns: physical/virtual memory, processes/threads/scheduler, time, interrupts, SYSENTER syscalls, channels/events/shm IPC, handles, ELF loading, VFS + page-cache-lite + ramfs/devfs (eeefs/FAT plug in via FsDriver registry), the user-driver API (PCI cfg, MMIO, ports, DMA, IRQ events), the ublk userspace-block bridge, and panic/debug infrastructure. Everything is single-core: no locks beyond IRQ-disable critical sections (`cli`/`sti` pairs wrapped in `SpinIrq` that compiles to pushf/cli/popf), no IPIs, no TLB shootdown. This assumption is load-bearing and pervasive.
+Monolithic-with-servers hybrid. Kernel core owns: physical/virtual memory, processes/threads/scheduler, time, interrupts, SYSENTER syscalls, channels/events/shm IPC, handles, ELF loading, VFS + page-cache-lite + FAT over a ramdisk for `/` and over a partition for the rest, the user-driver API (PCI cfg, MMIO, ports, DMA, IRQ events), the ublk userspace-block bridge, and panic/debug infrastructure. Everything is single-core: no locks beyond IRQ-disable critical sections (`cli`/`sti` pairs wrapped in `SpinIrq` that compiles to pushf/cli/popf), no IPIs, no TLB shootdown. This assumption is load-bearing and pervasive.
 
 Design center: minimize memory traffic (~1 GB/s bus), minimize code (≤1.5 MB ELF), keep GUI (8 ms frames) and audio (20 ms periods) schedulable, and be debuggable with no serial port.
 
@@ -321,8 +321,8 @@ pub fn Registry(comptime T: type, comptime decls: []const T) type {
     };
 }
 // board wiring, the ONLY file that differs between qemu and eee701 builds:
-pub const blk_registry  = Registry(BlockDriver, &.{ ata_piix.driver, ublk.driver });
-pub const fs_registry   = Registry(FsDriver, &.{ ramfs.driver, devfs.driver, fat.driver, eeefs.driver });
+pub const blk_registry  = Registry(BlockDriver, &.{ ramdisk.driver, ata_piix.driver, ublk.driver });
+pub const fs_registry   = Registry(FsDriver, &.{ fat.driver });
 pub const disp_registry = Registry(DisplayDriver, &.{ board.display });   // gma900 | bochsvbe
 pub const input_registry= Registry(InputDriver, &.{ i8042.driver, acpi_hotkey.driver });
 ```
@@ -332,12 +332,12 @@ pub const input_registry= Registry(InputDriver, &.{ i8042.driver, acpi_hotkey.dr
 
 ### 11.1 VFS core
 
-`Vnode{ino, type, size, ops, sb, refs}`; `Superblock{fsdrv, blockdev, root, gen}`. Mount table: fixed 8 entries `{path, sb}`, /, /dev, /tmp, /cfg, /data, /drivers, /svc. Path walk: component-wise, mount-crossing at boundaries, `..` clamped at root, max depth 32, path ≤ 512 B, **no symlinks in v1** (revisit M3). fd = handle of type file (`FileObj{vnode, off, oflags}`), so stdio grants are just handles 0/1/2. `/svc` is a kernel pseudo-fs over the service registry: `svc_register(name, chan)` (creates node), `svc_open(name, timeout)` → dup of the registered channel; listing readable for debugging. devfs nodes are created by kernel drivers and by devmgr (for server-owned devices, the node's ops forward over a channel).
+`Vnode{ino, type, size, ops, sb, refs}`; `Superblock{fsdrv, blockdev, root, gen}`. Mount table: fixed 8 entries `{path, sb}`, enough for `/`, `/etc`, `/home` and a few volumes under `/media`. Path walk: component-wise, mount-crossing at boundaries, `..` clamped at root, max depth 32, path ≤ 512 B, **no symlinks in v1** (revisit M3). fd = handle of type file (`FileObj{vnode, off, oflags}`), so stdio grants are just handles 0/1/2. The service registry is reached by syscall rather than by path: `svc_register(name, chan)`, `svc_open(name, timeout)` → dup of the registered channel, and a listing for the `svc` tool. There are no device files; hardware is reached through a capability granted at spawn.
 
 ### 11.2 Page-cache-lite: read cache, write-through
 
 Block-granular read cache: key `(sb_gen, blockdev, lba4k)` → frame; open-addressed hash (4096 entries), LRU eviction, **cap 4 MB** (tunable via kstats). Reads ≥128 KB sequential bypass the cache (streaming detection: 3 consecutive misses in ascending order) to avoid flushing it during media playback.
-**Writes are write-through** (update-or-invalidate cached copy, then submit): the SSD lies about nothing we can verify (SM223 internals unknown, FLUSH CACHE (0xE7) is optional in ATA-4 and may abort, treat command-abort as success-with-log), the battery/DC-jack yank risk is real, and vibeee's write volume is tiny (config saves, user documents, / is read-only RAM). Write-back caching would buy latency hiding for exactly the workload we don't have, at crash-consistency cost. Sustained-write smoothing (the 1–3 MB/s random-write cliff) is delegated to eeefs's log-structured layout (its design), not the cache.
+**Writes are write-through** (update-or-invalidate cached copy, then submit): the SSD lies about nothing we can verify (SM223 internals unknown, FLUSH CACHE (0xE7) is optional in ATA-4 and may abort, treat command-abort as success-with-log), the battery/DC-jack yank risk is real, and vibeee's write volume is tiny (config saves, user documents, / is read-only RAM). Write-back caching would buy latency hiding for exactly the workload we don't have, at crash-consistency cost. The 1-3 MB/s random-write cliff is avoided rather than smoothed: nothing here writes at that rate.
 
 ### 11.3 ublk, userspace block provider protocol (full spec)
 
@@ -365,7 +365,7 @@ Death/removal: server exit or `ublk_unregister` ⇒ all in-flight complete ECONN
 ## 13. Panic & debug (no serial port)
 
 1. **Framebuffer panic console**: panic path draws directly to whatever the display driver last configured (kernel keeps `{fb_vaddr, pitch, w, h, bpp}` in a pinned struct; a compiled-in 8×16 PSF font, 4 KB). Pre-modeset panics fall back to VGA text 0xB8000 (BIOS leaves 80×25 alive). Dump: reason, EIP/CR2/registers, last 8 klog lines, stack words. Then: wait 30 s showing the screen → warm reboot via 0xCF9=0x06 (keyboard-controller 0xFE pulse as fallback).
-2. **Persistent panic ring**: top 64 KB of usable RAM is reserved out of the allocator; page 0 of it = panic ring `{magic 'EPAN', seq u32, len u32, crc32, text[4080]}`. Panic appends before drawing. On boot, kernel checks magic+crc, if valid, copies to /tmp/lastpanic and exposes `lastpanic_read`; then re-arms. **Risk (MEDIUM): AMI POST may scrub RAM on warm reboot; BootBooster shortens POST and improves odds. Bring-up test #1 on real HW: write pattern, warm-reboot, check.** If RAM doesn't survive, fallback plan: stash panic text in RTC CMOS spare bytes (~100 B, truncated reason+EIP) and/or a reserved eeefs panic slot written raw via polled PIO (last resort, sync, no interrupts).
+2. **Persistent panic ring**: top 64 KB of usable RAM is reserved out of the allocator; page 0 of it = panic ring `{magic 'EPAN', seq u32, len u32, crc32, text[4080]}`. Panic appends before drawing. On boot, kernel checks magic+crc, if valid, copies to /tmp/lastpanic and exposes `lastpanic_read`; then re-arms. **Risk (MEDIUM): AMI POST may scrub RAM on warm reboot; BootBooster shortens POST and improves odds. Bring-up test #1 on real HW: write pattern, warm-reboot, check.** If RAM doesn't survive, fallback plan: stash panic text in RTC CMOS spare bytes (~100 B, truncated reason+EIP) and/or a reserved sector written raw via polled PIO (last resort, sync, no interrupts).
 3. **klog**: 64 KB ring in kernel memory, readable via `klog_read`, mirrored to an on-screen console (toggle hotkey via GUI) and to COM1 0x3F8 on the QEMU board build only.
 4. **EHCI debug port**: ICH6 EHCI implements the Debug Port capability (HCSPARAMS debug-port number nonzero per ICH6 datasheet: MEDIUM until read on HW). It requires a Net20DC-class debug dongle and lands on ONE specific physical port (mapping unknown: LOW). Verdict: **evaluate in M2 (read HCSPARAMS, identify the port), do not depend on it**; the panic ring + fb console are the primary story.
 5. **QEMU-first strategy**: everything except GMA900 modeset, ath5k, atl2, EC/ACPI-quirks runs in QEMU (`-M pc -cpu pentium-m-ish (pentium2+sse2 flags) -m 512`): PATA secondary channel at 0x170/IRQ15 exists, i8042, UHCI/EHCI, intel-hda IS ICH6 (8086:2668), Bochs-VBE display behind DisplayDev. GDB stub + `-d int` for triple-fault hunts. Host-native `zig test` covers phys/slab allocators, ring protocol, handle table, path walk (pure logic, no HW).
@@ -374,7 +374,7 @@ Death/removal: server exit or `ublk_unregister` ⇒ all in-flight complete ECONN
 
 Kernel idle RAM (counts against the 48 MB system budget): image ~0.9 MB • heap cap 4 MB (vnodes, threads, channels; expected ~1.5 used) • page cache cap 4 MB • kstacks ~0.5 MB (48 threads) • page tables ~0.6 MB (24 processes) • ioremap PTs 0.26 MB • IOPB/GDT/IDT/misc 0.1 MB • klog+panic 0.13 MB ⇒ **cap ~10.5 MB, expected ~7 MB**. (RAM-rootfs ≤24 MB is accounted to the rootfs, not the kernel.)
 
-Kernel ELF ≤1.5 MB, allocation (text+rodata, ReleaseSmall estimates): entry/stubs 8K • mm 40K • sched/proc 36K • syscall/IPC/handles 28K • time 12K • interrupts 12K • ACPI tables + mini-AML interpreter 160K (largest risk; hard cap 256K) • EC/platform/hotkeys 20K • PATA 14K • GMA900 modeset 56K • i8042+input core 16K • VFS core 32K • ramfs 10K • devfs 6K • FAT 28K • eeefs 36K • page cache 8K • ublk 10K • PSF font 4K • panic/fbcon/klog 18K • LZ4 decode + rootfs unpack 6K • Zig rt/compiler-rt 24K ⇒ **~584 KB, ~2.5× headroom**. Enforced by a Make size gate per milestone (fail build if ELF > budget).
+Kernel ELF ≤1.5 MB, allocation (text+rodata, ReleaseSmall estimates): entry/stubs 8K • mm 40K • sched/proc 36K • syscall/IPC/handles 28K • time 12K • interrupts 12K • ACPI tables + mini-AML interpreter 160K (largest risk; hard cap 256K) • EC/platform/hotkeys 20K • PATA 14K • GMA900 modeset 56K • i8042+input core 16K • VFS core 32K • FAT 28K • page cache 8K • ublk 10K • PSF font 4K • panic/fbcon/klog 18K • Zig rt/compiler-rt 24K ⇒ **~514 KB, ~2.9x headroom**. Enforced by a Make size gate per milestone (fail build if ELF > budget).
 
 ## 15. Bring-up & test plan
 
@@ -394,9 +394,9 @@ Self-test mode: `boot arg selftest=1` runs allocator/IPC/VFS test suites at boot
 ## 16. Risks & open questions
 
 - **PIRQ→GSI for HDA/wifi/ethernet unverified on the 4G** (MEDIUM/LOW): mitigated by triple-source boot-time resolution + hardware validation item. Worst case: mini-AML _PRT parse is mandatory earlier than planned.
-- **Panic RAM survival across warm reboot unproven** (MEDIUM): fallback CMOS/eeefs paths specced (§13.2).
+- **Panic RAM survival across warm reboot unproven** (MEDIUM): fallback CMOS/raw-sector paths specced (§13.2).
 - **Mini-AML interpreter scope creep**: needed for _PRT, EC _Qxx→Notify, battery/SCI methods. Cap at 256 KB; if it bloats, hardcode the 701 DSDT paths (extract DSDT once, precompile the 6 methods we call into a table, this machine never changes).
-- **SM223 FLUSH CACHE may be unimplemented** (ATA-4 optional): treat abort as no-op + log; eeefs must not rely on barriers (its design constraint, flagged to fs subsystem).
+- **SM223 FLUSH CACHE may be unimplemented** (ATA-4 optional): treat abort as no-op + log; nothing may rely on a barrier having happened.
 - **MTRR WC + VGA range interaction**: fixed-range MTRRs below 1 MB left as BIOS set them; only the 0xD000_0000 variable range is touched.
 - **FSB overclock (future)** would change TSC and LAPIC-timer rates: recalibration hooks exist; TSC demoted when engaged.
 - Open: does wait_many need edge-vs-level semantics per handle type for the GUI server's main loop? (current: channels level-readable, events sticky-counted, believed sufficient).

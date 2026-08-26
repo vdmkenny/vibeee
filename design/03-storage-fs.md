@@ -1,11 +1,5 @@
 # vibeee 03: Storage & Filesystems
 
-> **Superseded in part.** The custom `eeefs` design below is **rejected**:
-> vibeee uses **FAT32 as its only on-disk filesystem**. See
-> [`00-vibeee.md` §7](00-vibeee.md) for the reasoning. The PATA driver, block
-> layer, page-cache and FAT sections here still apply; treat everything about
-> `eeefs` as a record of an option that was considered and dropped.
->
 > **Status: partially implemented.**
 >
 > Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)) and the boot ramdisk.
@@ -27,14 +21,26 @@ Storage stack, bottom to top:
                                        ├── blockdev core (FIFO queue, merge, MBR scan, partitions)
                                        ├── page/buffer cache (4 KiB, reclaimable)
               ┌────────────────────────┘
-              ├── eeimg   (read-only compressed rootfs, mounted at /)
-              ├── eeefs   (log-structured persistent FS, /data)
-              ├── fatfs   (FAT16/32 + VFAT LFN, interchange + boot partition)
-              ├── cfgfs   (A/B atomic config blobs, /cfg)
-              └── ramfs   (/tmp, /dev, /svc, kernel-core owns ramfs; we consume)
+              ├── fatfs   (FAT16/32 + VFAT LFN: every volume, every medium)
+              └── ramdisk (the root, loaded by the bootloader)
 ```
 
-Design center: one soldered 4 GB PATA SSD (SM223AC: 28-bit LBA, no READ/WRITE MULTIPLE, UDMA/66, ~30 MB/s seq read, ~20 MB/s seq write, **1–3 MB/s small random writes**, unknown power-loss behavior in the FTL), plus removable SD/USB media via usbd. Everything that writes is shaped around two facts: small random writes are ~10× slower than sequential, and the user *will* yank power. Therefore: log-structured /data (all writes sequential), A/B-committed /cfg, read-only /, bounded dirty age everywhere, no swap.
+**One on-disk filesystem, and it is not ours.** FAT is what the boot path already
+has to read, what every other machine can read, and what the card in the reader
+arrives formatted as. A filesystem of our own would have to be written, made
+crash-safe, and then debugged against a device whose FTL nobody has
+characterised, in exchange for advantages this machine never spends: there is no
+database here, no sustained small-write load, nothing that a log structure would
+rescue. The cost of being unable to read the disk from another computer, on a
+machine whose whole recovery story is a card reader, is far higher than the
+throughput it would buy.
+
+What FAT costs is accepted rather than papered over: no atomic rename, no
+journal, so a power cut during a write can lose the file being written. Writes
+are ordered so that the loss is bounded to that file, and anything the system
+must not lose is written to a new name and renamed into place.
+
+Design center: one soldered 4 GB PATA SSD (SM223AC: 28-bit LBA, no READ/WRITE MULTIPLE, UDMA/66, ~30 MB/s seq read, ~20 MB/s seq write, **1–3 MB/s small random writes**, unknown power-loss behavior in the FTL), plus removable SD/USB media. Everything that writes is shaped around two facts: small random writes are ~10× slower than sequential, and the user *will* yank power. Therefore: read-only root, bounded dirty age everywhere, no swap.
 
 ## 2. Hardware facts used (with research confidence)
 
@@ -116,7 +122,7 @@ Per-command limits: **count register is 8-bit: 1–256 sectors (0 == 256) → ma
 1. Retry the command (max 3; log LBA + error reg).
 2. Soft reset channel (SRST pulse, wait BSY≤30 s), re-issue SET FEATURES (transfer mode is not guaranteed to survive reset), reprogram BM regs; retry.
 3. Drop to polled PIO for this request: READ SECTOR(S) 0x20 / WRITE SECTOR(S) 0x30, **one sector per DRQ block** (multi 0), nIEN=1, `rep insw/outsw` 256 words, status-poll between sectors (~2–4 MB/s, rescue speed).
-4. Persistent failure → mark device degraded read-only; notify /svc/health; EEEFS mounts go RO.
+4. Persistent failure → mark the device degraded read-only; notify the health service; its mounts go read-only.
 
 Timeout hang (BSY stuck): step 2 directly; if reset can't clear BSY in 30 s → device lost (`ssd_absent`), fail all queued bios with `NoDevice`.
 
@@ -124,14 +130,14 @@ Timeout hang (BSY stuck): step 2 directly; if reset can't clear BSY in 30 s → 
 
 Runtime-probed (research: IDENTIFY details unknown, LOW):
 - Word 83 bit12 set → `flush()` issues FLUSH CACHE (0xE7) (never 0xEA, no LBA48), 30 s timeout. An ABRT response is downgraded to no-op (some CF-class firmware lies about support).
-- Not set → `flush()` = drain queue (each write already completed only when BSY clears: CF-class controllers ack after data reaches internal buffer/NAND; residual FTL risk is **not eliminable from the host**). We therefore never rely on flush alone for integrity: EEEFS/cfgfs are torn-write-safe at 512 B granularity (§6, §8).
+- Not set → `flush()` = drain queue (each write already completed only when BSY clears: CF-class controllers ack after data reaches internal buffer/NAND; residual FTL risk is **not eliminable from the host**). We therefore never rely on flush alone for integrity: nothing that matters is written in place (§6, §8).
 - Paranoid mount option `wcache=off`: SET FEATURES 0x82 (disable write cache) if word 82 bit5, default off (kills write perf).
 
 ## 4. Block layer
 
 ### 4.1 Queueing: FIFO ("noop"), and why
 
-Flash has no seek arm: request cost is dominated by the SM223 FTL's erase behavior, which the host cannot model. Elevator sorting buys nothing (community consensus on this machine was `elevator=noop`, HIGH), costs RAM and code. What *does* pay: **contiguous merge** (back/front) up to the 128 KiB command cap, because per-command overhead is real at 630 MHz, and **two priority bands**: `fg` (synchronous reads, fsync) ahead of `bg` (writeback, GC). Ordering rule: writes are never reordered relative to other writes within a device (EEEFS commit correctness), and a `flush` bio is a full barrier: all prior writes complete → FLUSH CACHE → then later bios.
+Flash has no seek arm: request cost is dominated by the SM223 FTL's erase behavior, which the host cannot model. Elevator sorting buys nothing (community consensus on this machine was `elevator=noop`, HIGH), costs RAM and code. What *does* pay: **contiguous merge** (back/front) up to the 128 KiB command cap, because per-command overhead is real at 630 MHz, and **two priority bands**: `fg` (synchronous reads, fsync) ahead of `bg` (writeback, GC). Ordering rule: writes are never reordered relative to other writes within a device, which is what makes §6's ordering mean anything, and a `flush` bio is a full barrier: all prior writes complete → FLUSH CACHE → then later bios.
 
 One request in flight per device (single channel, single device; UHCI/EHCI MSC is also one-at-a-time in usbd). No tagging, no NCQ-alike.
 
@@ -174,7 +180,7 @@ pub fn blk_unregister(dev: DevHandle) void;                       // fails in-fl
 
 On `blk_register`: read LBA 0; if 0x55AA signature and ≥1 sane entry (start+len ≤ device, nonzero type) → register child devices `<name>p1..p4`; follow one extended-partition chain (types 0x05/0x0F) for camera-formatted SD cards, max 8 logicals. If no MBR but LBA 0 parses as a FAT BPB (jump opcode + sane BPB) → register whole-device as a single FAT candidate ("superfloppy", common on SD). GPT: not supported (legacy BIOS machine; document). Partition devices are offset/limit wrappers over the parent; a wrapper rejects out-of-range and forwards flush to parent.
 
-Recognized types: 0x0B/0x0C/0x06/0x0E/0x04/0x01 (FAT), 0x7F (EEEFS), 0xDA (cfg raw), 0x83 (probe for EEEFS magic, else ignore), 0xEF (BootBooster, never touched).
+Recognized types: 0x0B/0x0C/0x06/0x0E/0x04/0x01 (FAT), 0xEF (BootBooster, never touched). Everything else is reported and left alone, because a partition this cannot read belongs to something else that can.
 
 ### 4.4 ublk bridge (usbd-provided block devices)
 
@@ -199,7 +205,7 @@ pub const UblkCpl = extern struct { tag: u16, status: u16 /*0 ok, errno*/, _pad:
 // After hdr page: depth × UblkReq, depth × UblkCpl, then depth × slot_size data slots.
 ```
 
-Kernel copies between cache pages and slots (one copy, acceptable: SD path tops out ~20 MB/s; membw budget ~2% during bulk I/O). Events: `sq_doorbell` (kernel→usbd), `cq_doorbell` (usbd→kernel). Timeout 10 s/req → fail bio `Io`. usbd crash or media yank → devmgr restarts usbd → `UBLK_DETACH` semantics: kernel fails outstanding bios `NoDevice`, marks mounts dead (FAT: force-unmount, open files return `EIO`; EEEFS-on-SD: freeze, offer remount+roll-forward on re-attach). Media-change flag from MSC UNIT ATTENTION → `MediaChanged` → unmount + rescan.
+Kernel copies between cache pages and slots (one copy, acceptable: SD path tops out ~20 MB/s; membw budget ~2% during bulk I/O). Events: `sq_doorbell` (kernel→usbd), `cq_doorbell` (usbd→kernel). Timeout 10 s/req → fail bio `Io`. usbd crash or media yank → devmgr restarts usbd → `UBLK_DETACH` semantics: kernel fails outstanding bios `NoDevice`, marks mounts dead (force-unmount, open files fail). Media-change flag from MSC UNIT ATTENTION → `MediaChanged` → unmount + rescan.
 
 ## 5. Page cache & memory policy
 
@@ -224,8 +230,7 @@ pub fn sync_dev(dev: DevHandle) BlockError!void;                   // writeback 
 
 - Global dirty cap: 4 MiB (beyond → writer throttles by taking writeback work).
 - Age limit: dirty page older than 30 s → writeback (5 s for FAT metadata, §7).
-- Note EEEFS dirty data mostly does *not* live here, it lives in the segment buffer (§6.4); the page cache is dirty mainly for FAT and raw-device writes.
-- Events forcing global sync: `sync()` syscall, suspend entry (S3, battery may die while asleep), ACPI battery-critical, EEEFS checkpoint timer, clean shutdown.
+- Events forcing global sync: the `sync()` syscall, suspend entry (S3, since the battery may die while asleep), ACPI battery-critical, and clean shutdown.
 
 ### 5.3 No swap, and the OOM policy that replaces it
 
@@ -235,126 +240,22 @@ Instead: **commit accounting + kill policy.**
 - Anonymous-memory commit limit = RAM − kernel reserve (8 MiB) − pinned driver DMA. `mmap`/`sbrk` beyond limit fail cleanly (ENOMEM), no overcommit, so OOM kill is the backstop, not the norm.
 - Pressure order: (1) drop clean cache to floor; (2) emit low-mem event on `/svc/memd` (GUI shows warning, apps may trim); (3) OOM kill: badness = anon RSS × class weight; classes from process manifests: `app` (weight 4) > `service` (2) > `gui` (1) > `core` (never). Supervisor is notified and may restart.
 
-## 6. EEEFS, the /data filesystem
+## 6. Persistent storage: FAT32, everywhere
 
-### 6.1 Why log-structured (and the honest comparison)
+Not a filesystem of our own. See §1: the reasons are the recovery story and the
+absence of any workload that would repay one.
 
-| | FAT32 | ext2-style in-place | **EEEFS (LFS/CoW)** |
-|---|---|---|---|
-| Write pattern on flash | FAT area = hot spot rewritten on every alloc; small in-place writes | inode/bitmap/dir blocks rewritten in place, small scattered writes | **everything sequential, 256 KiB chunks → device runs at ~20 MB/s, not 1–3** |
-| Power-loss | dirent/FAT/data ordering races; classic yank corruption | fsck required; metadata may be inconsistent; journal (ext3) would double small writes | atomic commit units; mount = bounded roll-forward, ≤0.3 s |
-| Wear | FAT hot spot punishes the FTL | mild hot spots (bitmaps, inode table) | log rotation spreads writes before the FTL even tries |
-| Code cost | ~25 KB (needed anyway for interchange) | ~30 KB + fsck tool | ~40 KB + GC complexity + RAM tables (~0.8 MiB) |
-| Risk | none (well-known) | low | **medium: custom format, GC bugs are data-loss bugs** |
+Everything that persists is FAT32 on a partition of the medium the machine
+booted from, or of any medium plugged into it. One driver (§7) serves the boot
+partition, the persistent partition, SD cards and USB sticks alike, so there is
+one implementation to make crash-safe rather than three.
 
-Honest call: FAT32-with-write-through would *work* for /data and is our schedule fallback (M1 contingency, §12), and ASUS themselves dodged the problem with a read-only ext2 + overlay. But /data is the one place the OS does sustained small writes (app state, docs, downloads); on this device that's the difference between 2 MB/s + yank roulette and 20 MB/s + atomic commits. EEEFS is recommended; its scope is deliberately small (no journaling *and* no fsck needed, the log is the recovery mechanism).
-
-### 6.2 On-disk layout
-
-All multi-byte fields little-endian. Block = 4 KiB. Segment = 256 KiB (64 blocks) for volumes ≤ 8 GiB, 1 MiB for larger (set at mkfs; multiple of any plausible 128–256 KiB erase block).
-
-```
-LBA 0        …reserved (partition-relative block 0 unused; keeps SB off the FAT-boot-sector probe path)
-Block 1      Superblock A
-Block 2..N   Log area: segment 0 .. segment S-1  (segments are block-aligned runs)
-Mid-volume   Superblock B  (block = (S/2)*seg_blocks + 1, a *different erase block* than SB A)
-```
-
-```zig
-pub const Superblock = extern struct {           // one 4 KiB block, written as a whole
-    magic: u64,                // "EEEFS01\x00"
-    uuid: [16]u8,
-    generation: u64,           // monotonically increasing checkpoint number
-    total_segments: u32, seg_blocks: u32, block_size: u32,
-    head_seg: u32, head_blk: u32,   // log head at checkpoint time
-    imap_root: BlkAddr, imap_entries: u32,
-    sut_root: BlkAddr,         // segment usage table snapshot (in log)
-    free_segments: u32, live_blocks: u64,
-    root_ino: u32,             // == 1
-    clean: u8,                 // 1 = cleanly unmounted (skip roll-forward)
-    _pad: [...]u8,
-    crc32c: u32,               // over the whole block, field zeroed
-};
-pub const BlkAddr = u32;       // volume-relative block number; 0 = null. Max vol = 2^32·4KiB = 16 TiB (theoretical)
-```
-
-Mount reads both superblocks, picks highest generation with valid CRC. Checkpoint = write SB to the *older* slot (alternating), after flushing the log, the previous checkpoint is never overwritten by its successor.
-
-**Segment structure**, a segment is filled by one or more *commit units*, appended strictly sequentially:
-
-```
-[SegHeader | commit unit | commit unit | … | (padding)]
-SegHeader (512 B): magic, uuid, seq: u64 (global monotonic segment sequence), crc32c
-CommitUnit: [payload blocks…][CommitRec]
-CommitRec (512 B): magic, seq: u64, n_blocks: u16, table[ up to 120 ]{ BlkDesc }, crc32c(payloads+rec)
-BlkDesc: { kind: u8 (data|inode|imap|dir=data|sut), ino: u32, file_blk: u32 }
-```
-
-Torn-write safety: a commit unit is valid only if its CommitRec CRC (covering all payload blocks) checks out, a half-written unit is invisible. 512 B records mean even single-sector torn writes can't fake validity.
-
-**Inode** (one per 4 KiB block slot; 4 inodes/block packed):
-
-```zig
-pub const Inode = extern struct {   // 1 KiB
-    ino: u32, mode: u16, nlink: u16,
-    uid: u16, gid: u16, _r: u32,
-    size: u64, mtime_us: u64, ctime_us: u64,
-    extents: [24]Extent,            // direct extents
-    indirect: BlkAddr,              // block of 512 Extents (files > ~? fragmented)
-    crc32c: u32,
-};
-pub const Extent = extern struct { file_blk: u32, disk_blk: BlkAddr, len: u32 };
-```
-
-Max file: 24 + 512 extents; worst-case fully-fragmented = 536 × 4 KiB ≈ 2 MiB, typical (log locality keeps extents long) multi-GiB. Honest limit: files that are both huge *and* pathologically fragmented hit the extent cap → we return `EFBIG`; acceptable for this system (double-indirect deferred to M3 if ever needed).
-
-**Imap**: array of `BlkAddr` (inode number → block holding its latest inode), stored as log blocks of 1024 entries; imap root = radix-1 index block (1024 pointers → 1M inodes theoretical). Default mkfs cap: 16 K inodes (RAM: flat 64 KiB in-core copy). **SUT**: per-segment `{live_blocks: u16, flags: u16}`; snapshot written to log at checkpoint; in-core authoritative.
-
-**Directories** = regular files containing ext2-style records `{ino u32, rec_len u16, name_len u8, dtype u8, name…}`, linear scan. Honest scalability: fine ≤ ~1 000 entries (one 4 KiB block holds ~100 entries; 1 000-entry lookup ≈ 10 block reads, cached ≈ µs); design cap 65 535 entries/dir. No hashing, small system, keep the code small.
-
-### 6.3 Limits
-
-Volume: min 64 MiB (≥ 16 segments free after metadata), max supported 128 GiB (1 MiB segments → 128 K SUT entries = 512 KiB RAM), recommended ≤ 32 GiB. Serves the ~3.7 GiB internal /data and any SD card. Names: 255 bytes, UTF-8, case-sensitive. Hard links: yes (nlink u16). Symlinks: target in inode data. No sparse-file hole tricks beyond extent gaps (reads of gaps return zeros).
-
-### 6.4 Write path & RAM sizing
-
-All writes funnel into the **segment buffer**: 2 × 256 KiB (double buffered; on 1 MiB-segment volumes still 256 KiB units, a segment may contain multiple buffer flushes). Steady state RAM: 512 KiB buffers + 64 KiB imap + ≤512 KiB SUT + ~128 KiB open-inode/dirty-tracking ≈ **≤1.2 MiB**.
-
-Flow: write() → copy into segment buffer (allocating new disk blocks at log head; old blocks' SUT live-count decremented) → buffer full **or** 30 s age **or** fsync → seal commit unit (CRC) → bio chain (≤128 KiB writes, `bg` prio; `fg` for fsync) → on completion, in-core imap/SUT updated. Checkpoint (SB write + imap/SUT snapshot) every 64 committed segments or 30 s of metadata dirt or unmount. FLUSH CACHE before each SB write (if supported).
-
-**fsync(fd)**: seal current commit unit (even partial, padding only to 512 B record boundary, not to segment end), write, flush barrier, return. Cost: ≤256 KiB write ≈ 13 ms + flush. fsync of an untouched file = no-op. `rename()` is a single commit unit (new dir blocks + inodes) → **atomic on power loss**, this is the documented app-visible contract: "write tmp, fsync, rename" is fully safe.
-
-### 6.5 GC / space reclaim
-
-Trigger: free segments < 12% (or explicit `fstrim`-like ioctl). Cleaner (kernel writeback thread, `bg` prio, yields to fg I/O): pick victim = min(live_blocks) segment (greedy; cost-benefit aging deferred, churn on /data is low: docs/config/app-state, browser cache lives in /tmp); read its live blocks (identified via CommitRec tables + imap/inode cross-check), rewrite them at log head as a normal commit unit (kind=data moves carry {ino,file_blk} so recovery is uniform), mark segment free. Write amplification bound: with 12% reserve and low churn, expected WA < 1.5. Worst case (volume 95% full, hot rewrites): WA ~3, document "keep /data below 90%" and have `df` warn.
-
-### 6.6 Mount-time recovery (roll-forward)
-
-1. Read SB A/B → newest valid. If `clean==1` → done (mount ≈ 3 block reads + imap/SUT load ≈ 50 ms).
-2. Else: load imap/SUT snapshot from checkpoint; scan segments from `head_seg` following ascending `seq` in SegHeaders; within each, walk commit units until first invalid CRC; apply BlkDescs (imap updates, SUT deltas). Stop at seq break or clean segment.
-3. Bounded: ≤64 segments (checkpoint cadence) × 256 KiB = 16 MiB read ≈ 0.6 s worst case; typical < 150 ms. Then write a fresh checkpoint.
-4. Nothing is ever "repaired", invalid tails are simply ignored; ≤30 s of un-fsynced data is lost, consistency is never lost. No fsck tool exists or is needed; a read-only `eeefsck -n` verifier ships for development.
-
-### 6.7 Wear reasoning
-
-The FTL sees: long sequential 256 KiB-aligned writes marching circularly through LBA space, plus two SB blocks rewritten every ≤30 s of *activity* (idle = zero writes; checkpoint timer is dirty-gated). SB wear: worst case ~2 880 writes/day-of-constant-activity to 2 LBAs, the SM223's FTL remaps physical pages under any LBA (CF-class controllers do at least dynamic wear-leveling), and SLC endurance is ~100 K cycles; margin is >30× even assuming a pathological FTL. The log itself is the best-case input for any FTL.
-
-### 6.8 Public API (Zig)
-
-```zig
-pub const eeefs = struct {
-    pub fn probe(dev: DevHandle) bool;                       // magic + SB CRC
-    pub fn mount(dev: DevHandle, opts: MountOpts) Error!*Fs; // opts: rdonly, wcache_off
-    pub fn unmount(fs: *Fs) Error!void;                      // sync + clean checkpoint
-    pub fn mkfs(dev: *BlockDev, p: MkfsParams) Error!void;   // p: seg_size, max_inodes, uuid, label
-    pub fn statfs(fs: *Fs) StatFs;                           // incl. free_segments, wa_estimate
-    // vnode ops table handed to VFS: lookup, create, unlink, rename, read, write,
-    // truncate, fsync, readdir, symlink, link, getattr/setattr, signatures follow
-    // kernel-core's VFS vtable (consumed contract, §11).
-};
-```
-
-Core is **pure Zig, no kernel imports**: BlockDev vtable + allocator injected. Same source compiles into the kernel, into host-side tools (mkfs/fsck/fuzzer), and into the installer.
+The ordering discipline in §7 is what stands in for a journal: data clusters,
+then the FAT chain, then the directory entry. A power cut can leak clusters,
+which any other machine reclaims, but cannot leave a directory entry pointing at
+a chain that was never written. Anything the system must not lose is written
+under a temporary name and renamed into place, so the old contents survive until
+the new ones are complete.
 
 ## 7. FAT16/32 driver (interchange + boot partition)
 
@@ -366,100 +267,211 @@ Core is **pure Zig, no kernel imports**: BlockDev vtable + allocator injected. S
 - Boot partition: FAT16, 32 MiB, chosen because AMI EZ-Flash reads FAT16 USB media (BIOS-recovery friendliness) and 01-boot's INT 13h loader can navigate FAT16 trivially. If 01-boot prefers raw-sector kernel loading, driver is unaffected.
 - Limits honored: no >4 GiB files (EFBIG), 2 TiB volume cap, no exFAT (licensing/scope, document; SDXC cards arrive exFAT-formatted → user reformats FAT32 in our GUI).
 
-## 8. cfgfs, /cfg atomic config store
+## 8. Configuration
 
-Backing: 4 MiB raw partition (type 0xDA), two 2 MiB slots (different erase-block neighborhoods).
+Files under `/etc` (§9), on the same FAT32 volume as everything else. Written the
+way §6 describes: to a temporary name, then renamed, so a configuration file is
+either the old one or the new one and never half of either.
+
+There is no separate configuration filesystem and no separate partition for one.
+Config is a handful of small text files; the machinery to commit them atomically
+in pairs would be larger than the files it protected.
+
+## 9. The root, the namespace, and the shutdown story
+
+### 9.1 The root is a FAT image in RAM
+
+The bootloader loads a plain FAT image alongside the kernel and hands over its
+address; the kernel registers those frames as a ramdisk and mounts it at `/`.
+No container format of our own: the same driver that reads the boot partition
+reads the root, the image is built with the same host tools that build the boot
+partition, and it can be inspected on any machine by anything that reads FAT.
+
+It is not compressed. A compressed image saves RAM at the price of a
+decompressor in the boot path and a format only this system understands, and the
+root is small enough that the saving is not what decides whether this machine
+fits in its memory budget.
+
+The root is rebuilt from the image at every boot. Nothing written to it
+survives, which is a property rather than an accident: the system a boot starts
+from is the system the image describes, and there is no accumulated state to
+explain a machine's behaviour.
+
+### 9.2 The namespace
+
+POSIX names for the things POSIX has, and nothing for the things this system
+does differently.
 
 ```
-Slot: [SlotHdr 512 B | payload ≤ 2 MiB−512 B]
-SlotHdr: magic, generation: u64, payload_len: u32, payload_crc32c: u32, hdr_crc32c: u32
-Payload: flat serialized tree: [n_entries][{path_len u16, path…, val_len u32, val…}…]  (≤256 KiB budget)
+/            the boot image, in RAM, rebuilt every boot
+├── bin/     every program: init, vsh, tools, eeewm, eterm, pad, ...
+├── etc/     configuration                              [persistent when installed]
+├── lib/     data that programs read: fonts, driver manifests
+├── tmp/     scratch, in RAM with the root, gone at reboot
+├── home/    everything the user keeps                  [persistent when installed]
+└── media/   removable volumes, one directory each
 ```
 
-Mount: read both headers, pick highest valid generation (payload CRC must also verify, else fall back to other slot), load whole payload to RAM. All reads/writes hit RAM. Commit (explicit `commit()` syscall on the mount, or 5 s debounce after last write, and always on sync/suspend/shutdown): serialize → write *inactive* slot payload → flush → write its 512 B header (single sector = atomic on any sane device) → flush → flip in-core active. A yank at any point leaves the previous generation intact. Presented via VFS as a normal small directory tree (files = values) so tools just use open/read/write.
+Every name is at most eight characters, because FAT stores short names in eight
+and the tree should read the same on the medium as it does at a prompt.
 
-## 9. Rootfs: `eeimg` read-only image + mount layout + shutdown story
+`/bin` holds programs, `/lib` holds what they read. The split is worth having
+here for the same reason it is anywhere: `mkimage` can tell what has to be
+executable from where it is put, and a program is never confused with its data.
 
-### 9.1 Format decision: compressed block FS, not tree-unpack
+`/etc` and `/home` are directories in the image until the machine is installed,
+and mount points afterwards. A program reads `/etc/services` either way and
+never learns which. The image's copies are what a live card boots from, and what
+an install seeds the persistent volume with.
 
-Idle budget is 48 MiB *including* RAM-rootfs. Unpacking a 24 MiB tree into ramfs permanently spends 24 MiB + ramfs metadata. Keeping the compressed image (~10–12 MiB at LZ4, ~8–9 at zstd) resident and decompressing on demand costs the image + a reclaimable decompressed-page cache. At 630 MHz, LZ4 decompress runs ≥150 MB/s (a 32 KiB block < 0.25 ms), on-demand is imperceptible and cold-boot doesn't pay a full-image decompress either. **Recommendation: eeimg compressed-block format; codec = whatever 01-boot picks for the kernel (requirement we impose: ≥100 MB/s decompress at 630 MHz: LZ4 recommended; zstd acceptable if 01-boot needs the ratio for the 48 MiB SD budget, at ~2–3× the CPU).** No XIP in the mapping sense, pages decompress into the ordinary page cache and are evicted/re-decompressed freely, which *is* the RAM win.
+**What is deliberately absent, and why:**
 
-Layout (single codec id in SB; all offsets image-relative):
+| Not here | Because |
+|---|---|
+| `/dev` | There are no device files. A program reaches hardware through a capability granted at spawn and a handle it is given; `map_device`, `ioport_grant` and `irq_attach` are syscalls, and a name in a directory cannot grant a capability. `devices` reports what is on the bus. |
+| `/proc`, `/sys` | `sysinfo` answers what these exist to answer, without a filesystem to serialise it through or a parser on the other end. |
+| `/svc` | The service registry is a kernel namespace reached by `svc_register` and `svc_open`, not a path. The `svc` tool lists it. |
+| `/usr` | The split exists because a disk filled up in 1974. There is one root here and it is small. |
+| `/sbin` | The privilege split a directory name implies is advisory. Capabilities do it for real, and they do not care where a binary sits. |
+| `/root`, `/home/<user>` | One person uses this machine. |
+| `/opt`, `/srv`, `/boot` | Nothing to put in them. The boot partition is read by the bootloader and never mounted. |
+| `/var` | Its contents on a machine like this are panic records, which belong where their owner can find and send them: `/home`. |
 
-```
-[SB 4 KiB: magic "EEIMG01", codec_id, block_size=32 KiB, n_inodes, inode_tab_off,
- dir_tab_off, frag_tab_off, blocklist_off, data_off, image_crc32c]
-[inode table]  uncompressed; {mode u16, uid/gid u16, size u32, mtime u32,
-               blocklist_idx u32, frag: {frag_blk u32, frag_off u32} }: 24 B/inode
-[dir table]    uncompressed dirent runs (same record format as EEEFS dirs)
-[block lists]  u32 offsets of each file's compressed blocks (delta from data_off)
-[fragment blocks] files < 8 KiB tail-packed into shared 32 KiB compressed fragments
-[data blocks]  each: {u32 clen | compressed 32 KiB block}
-```
+### 9.3 Mounts
 
-Small-file packing matters: a rootfs is mostly small files; fragments keep waste near zero. Image built by host-side `mkeeimg` (same Zig code compiled for host).
+| Mount | Source | Policy |
+|---|---|---|
+| `/` | RAM, from the boot image | read-write, but volatile: gone at reboot |
+| `/etc`, `/home` | FAT32 partition of the boot medium, when installed | metadata ≤1 s, data ≤5 s |
+| `/media/*` | FAT on any removable volume found | metadata ≤1 s; unmounted on "safe remove" |
 
-### 9.2 Handover from 01-boot
+Described by `/etc/fstab`, read from the image's copy before anything is
+mounted over it, so the file that says what to mount is never the thing waiting
+to be mounted.
 
-Bootloader loads kernel + image into RAM, passes `bootinfo { rootfs_paddr, rootfs_len, rootfs_crc32c }`. Kernel: reserves those frames from the allocator, maps them (WB cacheable), verifies SB magic + (lazily, background) whole-image CRC, mounts as `/`. Zero copies. The image pages are the only permanently pinned storage RAM besides driver state.
+Global events: `sync()` flushes every mount. Shutdown, suspend and
+battery-critical force one. Clean shutdown: stop programs, sync, unmount.
 
-### 9.3 Mount table & flush discipline
-
-| Mount | FS | Source | Policy |
-|---|---|---|---|
-| `/` | eeimg | RAM image | RO, immutable |
-| `/tmp`, `/dev`, `/svc` | ramfs (kernel-core's) | RAM | volatile by definition; browser cache/logs live here |
-| `/data` | eeefs | SSD p3 (or SD p2 when SD-booted) | writeback ≤30 s, checkpoint ≤30 s; mounted async during GUI start (apps block on `/svc/vfs.data` readiness) |
-| `/cfg` | cfgfs | SSD p2 | RAM-backed, A/B commit ≤5 s debounce |
-| removable | fatfs (or eeefs) | ublk | metadata ≤1 s, data ≤30 s |
-
-Global events: `sync()` = all mounts flush + barriers. Suspend (S3), battery-critical, shutdown → forced global sync (and cfgfs commit). Battery-critical additionally drops all writeback ages to 5 s. Clean shutdown: kill apps → sync → unmount /data (clean checkpoint, `clean=1`) → cfgfs commit → EC poweroff.
-
-**Unclean shutdown, end to end**: `/` immune (RO RAM) → `/cfg` previous generation survives (≤5 s of config lost) → `/data` roll-forward (≤30 s of un-fsynced data lost, never inconsistent; fsync'd data never lost up to the device's own FTL honesty) → FAT media: possible lost clusters only, dirent/chain ordering prevents dangling metadata → next boot is normal speed (+≤0.6 s roll-forward worst case).
+**Unclean shutdown**: `/` is immune, being rebuilt from the image. `/etc` and
+`/home` lose at most the file being written, by §6's ordering, and never the
+file it was replacing.
 
 ## 10. Bring-up & test plan
 
-**Host-side (no hardware, continuous):** eeefs/fatfs/eeimg/cfgfs cores are pure Zig over the BlockDev vtable → compiled to host tools + test harness. Key harness: *power-cut fuzzer*, file-backed BlockDev that records every write, replays a random prefix (with 512 B torn tails and reordering **within** the rules §4.1 allows), then mounts and checks invariants (mountable, fsync'd data present, tree consistent). Run continuously in CI; this is where LFS bugs die. Also: `eeefsck -n` verifier, mkfs/mount round-trips, FAT images cross-checked against Linux mount + `fsck.vfat` and a real camera.
+**Host-side (no hardware, continuous):** the fatfs core is pure Zig over the
+BlockDev vtable, so it compiles for the host and runs under a test harness. The
+harness that matters is a *power-cut fuzzer*: a file-backed BlockDev records
+every write, replays a random prefix of them (with 512 B torn tails, and
+reordering within what §4.1 allows), then mounts and checks that the volume is
+mountable, that files written and synced are present, and that the directory
+tree is consistent. Images are cross-checked against Linux `mount` and
+`fsck.vfat`, and against a card written by a camera, because interchange is the
+reason FAT was chosen and a format only we can read would defeat it.
 
-**QEMU (i440FX `-machine pc`, disk as `-device ide-hd,bus=ide.1,unit=0`):** PIIX3-IDE is register-compatible for the command block + BMDMA hot path (IRQ15/0x170 path exercised for real). Differences to seam around: QEMU's device advertises LBA48 + multiple and ignores ICH timing regs → the driver's `Quirks` struct is populated from IDENTIFY but the SM223 profile can be **forced** (`quirk_override=sm223`: 28-bit, multi 0, probe-flush) so the exact production code paths run under QEMU; timing-reg writes are write-and-forget (verified only on real HW). ublk path: QEMU `usb-storage` device under EHCI exercises usbd+ublk end-to-end. eeimg/boot handover fully testable in QEMU.
+**QEMU (i440FX `-machine pc`, disk as `-device ide-hd,bus=ide.1,unit=0`):**
+PIIX3-IDE is register-compatible for the command block and the BMDMA hot path
+(the IRQ15/0x170 path is exercised for real). Differences to seam around:
+QEMU's device advertises LBA48 and READ MULTIPLE and ignores the ICH timing
+registers, so the driver's `Quirks` struct is populated from IDENTIFY but the
+SM223 profile can be **forced** (`quirk_override=sm223`: 28-bit, multi 0,
+probe-flush) and the exact production paths run under emulation. Timing-register
+writes are write-and-forget, verified only on real hardware. The ublk path is
+exercised end to end by a `usb-storage` device under EHCI. Root image load and
+handover are fully testable in QEMU.
 
-**Real hardware ladder:** (1) polled PIO IDENTIFY, dump words 47/49/60/61/80/82/83/85/88 to screen, *closes the LOW-confidence flush/wcache unknowns; do this first and record it*; (2) PIO read MBR; (3) DMA reads + PM-timer throughput check (expect ~30 MB/s seq, confirming UDMA4; ~25 → fell back to UDMA2); (4) DMA writes on a scratch partition + ATTO-style block-size sweep to validate the 1–3 MB/s small-write premise and tune segment size; (5) power-yank torture: scripted write load, pull power ×100, verify /data + /cfg recovery each boot; (6) Flash_con absence path if a mini-PCIe card is available.
+**Real hardware ladder:** (1) polled PIO IDENTIFY, dump words
+47/49/60/61/80/82/83/85/88 to the screen, which closes the LOW-confidence
+flush and write-cache unknowns, and is therefore first; (2) PIO read of the MBR;
+(3) DMA reads plus a PM-timer throughput check (expect ~30 MB/s sequential,
+confirming UDMA4; ~25 means it fell back to UDMA2); (4) DMA writes to a scratch
+partition with a block-size sweep, to check the 1-3 MB/s small-write premise
+against the device rather than against a review; (5) power-yank torture: a
+scripted write load, power pulled a hundred times, `/etc` and `/home` checked
+each boot; (6) the Flash_con absence path, if a mini-PCIe card is available.
 
-**Perf acceptance:** /data seq write ≥15 MB/s sustained; 4 KiB-file create+fsync ≤25 ms; /data mount ≤0.7 s worst case; boot contribution ≤1.0 s total (eeimg mount ~0 + async /data).
+**Perf acceptance:** sequential write to the persistent volume ≥15 MB/s
+sustained; create-plus-sync of a 4 KiB file ≤25 ms; mount ≤0.7 s worst case;
+contribution to boot ≤1.0 s (the root is already in RAM; the persistent volume
+mounts asynchronously).
 
 ## 11. Budgets
 
-**Kernel ELF share (~120 KB of 1.5 MB):** pata 6 + block/partition 10 + cache 10 + eeefs 40 + fatfs 25 + eeimg 8 + cfgfs 4 + ublk bridge 6 + glue 10 (KB, ReleaseSmall estimates).
-**Rootfs share:** mkfs.eeefs + eeefsck + mkfs.fat + installer ≈ 150 KB.
-**Idle RAM share (of 48 MiB):** compressed rootfs image ~12 MiB (pinned) + eeefs steady state ≤1.2 MiB + cfgfs payload ≤0.3 MiB + FAT/driver state ~0.2 MiB + dirty/pinned cache ≤2 MiB ≈ **15.7 MiB pinned**; clean cache above that is reclaimable and uncounted.
-**SD image (48 MiB):** no additional share beyond rootfs contents above.
+**Kernel ELF share (~70 KB of 1.5 MB):** pata 6 + block and partitions 10 +
+cache 10 + fatfs 25 + ramdisk 2 + ublk bridge 6 + glue 10 (KB, ReleaseSmall
+estimates).
+**Root image share:** `mkfs.fat` and the installer, ~40 KB.
+**Idle RAM share (of 48 MiB):** the root image ~12 MiB (pinned) + FAT and driver
+state ~0.2 MiB + dirty and pinned cache ≤2 MiB ≈ **14.2 MiB pinned**. Clean
+cache above that is reclaimable and uncounted.
 
-## 12. Install-to-SSD flow (design)
+## 12. Install to a volume
 
-Installer app (runs from SD-booted system, guided in GUI):
-1. Preflight: confirm SSD present (`ssd_absent`?), show model/size, require typed confirmation; refuse if /data-on-SSD is mounted.
-2. Partition (writes MBR, 1 MiB-aligned starts, synthesized CHS 255H/63S for old-BIOS INT 13h sanity):
-   p1 `0x0E` FAT16 boot 32 MiB (LBA 2048), **active**; p2 `0xDA` cfg 4 MiB; p3 `0x7F` EEEFS to end−8 MiB; p4 `0xEF` 8 MiB empty (optional, checkbox: lets AMI BootBooster cache POST, several seconds off boot; BIOS owns its contents).
-3. `mkfs.fat16` p1; copy bootloader stages + kernel + eeimg rootfs image from the running SD; install 01-boot's MBR boot code (440 B, preserving the partition table + disk signature).
-4. Init p2: write both cfg slots (gen 0/1) with current /cfg contents. `mkfs.eeefs` p3 (256 KiB segments); optional: copy current /data.
-5. Verify: FLUSH CACHE; read back and CRC-compare MBR, boot files, cfg headers, EEEFS SBs. Only then declare success.
-6. Reboot without SD; BIOS boots internal SSD (same INT 13h path, drive 0x80).
-Failure at any step before MBR write is a no-op; MBR is written *last-but-verified-first* into a staging sector then LBA 0, so a mid-install yank leaves either old or new table, not garbage.
+Installing means giving the system somewhere to keep `/etc` and `/home` across
+a boot. The target is a partition, and which medium holds it is not something
+the rest of the system knows: the remaining space on the SD card the machine
+booted from is as valid a target as the internal SSD, and is the safer one on a
+machine whose SSD holds something else.
+
+The installer runs from the booted system:
+
+1. Preflight: show the target's model, size and current partition table, and
+   require a typed confirmation. Refuse if the target is currently mounted, or
+   if it is the medium being booted from and the request is to repartition it
+   rather than to use free space on it.
+2. Partition, if the target needs it. MBR, 1 MiB-aligned starts, CHS synthesized
+   as 255H/63S so an old BIOS's INT 13h sees something sane: p1 `0x0E` FAT16
+   32 MiB, **active**, holding the bootloader, kernel and root image; p2 `0x0C`
+   FAT32 across the rest. An optional `0xEF` partition at the end is left empty
+   for AMI BootBooster, which caches POST into it and takes seconds off the
+   boot; the BIOS owns its contents.
+3. `mkfs.fat` both, copy the bootloader stages, kernel and root image, and write
+   01-boot's 440 B MBR code, preserving the partition table and disk signature.
+4. Seed the persistent volume from the root image's `/etc` and `/home`, and
+   write `/etc/fstab` naming it by disk signature and partition index rather
+   than by enumeration order, so plugging in a second card does not move it.
+5. Verify: FLUSH CACHE, then read back and compare CRC32s of the MBR, the boot
+   files and the seeded tree. Only then report success.
+
+Failure before the MBR write is a no-op. The MBR is written last, into a staging
+sector and verified before being written to LBA 0, so a yank mid-install leaves
+either the old table or the new one and never a mixture.
 
 ## 13. Risks & open questions
 
-- **SM223 FTL power-loss behavior unknown (LOW).** EEEFS tolerates torn 512 B writes, but an FTL that corrupts *unrelated* LBAs on yank defeats any FS. Mitigations: SB pair far apart, /cfg A/B on a separate partition, yank-torture testing (§10). Residual risk documented, not solved.
-- **FLUSH CACHE support unknown** → runtime probe + drain fallback (§3.7). Real-HW IDENTIFY dump is bring-up task #1.
-- **Erase-block size inferred** (128–256 KiB). Segment 256 KiB covers the plausible range; the block-size sweep (§10) validates; worst case we double segment size at mkfs, format field already exists.
-- **GC correctness** is the highest-severity software risk (data loss). Contained by: pure-core design, power-cut fuzzer in CI, GC lands in M2 behind a "no-GC until 88% full" gate.
-- ATTO-derived perf numbers are MEDIUM, acceptance thresholds may need one recalibration pass.
-- Open for 01-boot: codec choice (we impose ≥100 MB/s decompress; LZ4 preferred); bootinfo struct final layout; FAT16-vs-raw boot partition (we support both, recommend FAT16); who owns the 440 B MBR code (assumed 01-boot, installer embeds it).
-- Open for kernel-core: final VFS vtable + vnode locking model; ramfs ownership (assumed kernel-core); irqevent semantics for in-kernel drivers (we assume direct IRQ registration, not the userspace irq_attach path).
-- Open for usbd: ublk ring depth/slot-size negotiation; UNIT ATTENTION → MediaChanged mapping; who debounces SD-card insertion.
-- Open for GUI: safe-remove UX; low-mem warning surface; "dirty FAT" hint surface.
+- **SM223 FTL power-loss behavior unknown (LOW).** An FTL that corrupts
+  *unrelated* LBAs on a yank defeats any filesystem, ours or FAT's. Mitigated by
+  keeping the boot partition read-only in normal operation, by §6's write
+  ordering, and by the yank torture in §10. Residual risk is documented, not
+  solved.
+- **FLUSH CACHE support unknown**, so it is probed at init and falls back to
+  draining the queue (§3.7). The real-hardware IDENTIFY dump is bring-up task 1.
+- **FAT is not crash-safe and cannot be made so.** The bound on the damage is
+  the write ordering in §6, and the bound is one file: the one being written.
+  Anything that must not be lost is written to a new name and renamed over the
+  old one.
+- ATTO-derived performance figures are MEDIUM confidence; the acceptance
+  thresholds in §10 may need one recalibration pass against the real device.
+- Open for 01-boot: the final bootinfo layout, and who owns the 440 B MBR code
+  (assumed 01-boot, with the installer embedding it).
+- Open for kernel-core: the final VFS vtable and vnode locking model.
+- Open for usbd: ublk ring depth and slot-size negotiation, mapping UNIT
+  ATTENTION to MediaChanged, and who debounces card insertion.
+- Open for the GUI: how safe-remove is offered, where a low-memory warning
+  appears, and how a volume that was not unmounted cleanly is reported.
 
 ## 14. Phasing
 
-**M1 (boot & survive):** pata_ich6 (PIO + DMA read/write, no recovery ladder beyond reset-retry), block core + MBR, page cache (fixed 16 MiB cap, simple CLOCK), eeimg mount (this is the boot-critical path), fatfs read-only, cfgfs full (small + needed for settings), **/data = FAT32 write-through contingency** if EEEFS slips; host-side mkeeimg. QEMU-green + first real-HW IDENTIFY/throughput numbers.
-**M2 (real /data):** EEEFS complete minus GC (gated), fsync/rename contracts, roll-forward, power-cut fuzzer in CI, fatfs write + LFN + ordered metadata, ublk bridge + removable media lifecycle, adaptive cache + OOM policy, installer.
-**M3 (polish/hardening):** EEEFS GC + fstrim ioctl, eeefsck -n, FAT superfloppy/extended-partition edge cases, wcache=off paranoid mode, perf acceptance sweep, yank-torture ×100 sign-off, BootBooster partition option.
+**M1 (boot and survive):** `pata_ich6` with PIO and DMA read and write and
+reset-retry recovery, block core with MBR parsing, the page cache with a fixed
+16 MiB cap and a simple CLOCK, the ramdisk and the root mount, which is the
+boot-critical path, and fatfs read-only. Green under QEMU, plus the first
+real-hardware IDENTIFY and throughput numbers.
+
+**M2 (a place to keep things):** fatfs write with long names and ordered
+metadata, the persistent mount for `/etc` and `/home`, `fstab`, the power-cut
+fuzzer in CI, the ublk bridge with the removable-media lifecycle, the adaptive
+cache and the out-of-memory policy, and the installer.
+
+**M3 (hardening):** superfloppy and extended-partition edge cases, a paranoid
+mode with the write cache off, the performance acceptance sweep, a hundred-cycle
+yank torture sign-off, and the BootBooster partition option.

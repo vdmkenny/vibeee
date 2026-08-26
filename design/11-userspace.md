@@ -276,12 +276,137 @@ One static binary, applet dispatch on argv[0]/first arg; ≈ 450 KB total vs ≈
 - **No Ctrl+Alt+F1 VT switching**: display contract has ONE owner; live console/GUI switching would punch a hole in it for marginal benefit.
 - **Emergency shell: KEEP, as fallback not as VT**: init runs `econ` (kernel text console + esh) when (a) `recovery=1`, (b) GUI crash-loop breaker trips, (c) `gui.enabled=false` in /cfg. Kernel fb/text console for panic already exists; econ reuses the kernel console write syscall + input core stream. You are never stranded, and the display owner invariant holds (console owner ⇔ GUI absent).
 
-## 8. Configuration system (/cfg)
+## 8. Settings
 
-- Layout: `/cfg/system/{keymap,timezone,hostname,next-boot}`, `/cfg/svc/*.svc` (manifest overrides), `/cfg/net/{wifi.conf,eth.conf}`, `/cfg/gui/*`, `/cfg/audio/mixer.state`, `/cfg/VERSION`. Small files (<4 KB), one concern per file, matches the 8 MB eeefs P2 and the SSD's weak small-write behavior (writes are rare and whole-file).
-- **Atomic write** (libvibeee helper, used by everything): `write /cfg/x.tmp → fsync → rename over /cfg/x → fsync dir`. Requires eeefs atomic rename (contract point with 03-storage, OPEN-S1).
-- **Schema versioning**: first line `# v=N`. Services migrate old→new on read and rewrite; file from a *newer* version → rename to `x.vN.saved`, seed defaults, log, an old rootfs never bricks on new config.
-- **Factory reset**: recovery TUI or `factory-reset` applet = re-mkfs /cfg (and optionally /data), reboot; init seeds /cfg from `/etc/defaults/*` on first mount when empty. `next-boot=recovery` file gives the running system a path into recovery without keyboard timing.
+Two programs must be able to change the same setting and see each other do it:
+the Settings app and a shell. That is what a plain file per program does not
+give, and it is the whole reason there is a service here rather than just a
+parser.
+
+The shape is the one dconf and the Windows registry share, and the storage is
+not: a typed schema, one writer, and a change notification, over files anyone
+can read.
+
+### 8.1 The schema is the structs
+
+A domain is a Zig struct. Field names are keys, field types are the value
+grammar, and field defaults are the defaults. There is no schema language, no
+compiler for it, and no second table to forget to update, because the type is
+already all three of those things.
+
+```zig
+pub const domains = .{
+    .wm      = Wm,
+    .shell   = Shell,
+    .display = Display,
+    .power   = Power,
+};
+
+pub const Wm = struct {
+    theme:  enum { classic, paper, dusk } = .classic,
+    bar:    enum { top, bottom } = .top,
+    layout: enum { tall, wide, monocle } = .tall,
+    master: u7 = 58,
+};
+```
+
+A key is `domain.field`: `wm.theme`, `power.dim_after`. Two levels, not a tree.
+Two levels is what maps one-to-one onto one file per domain and one struct per
+domain, and a deeper namespace is how a registry ends up with orphaned subtrees
+nobody can attribute.
+
+What comptime reflection over this gives, at no further cost: the set of valid
+keys, the set of valid values for every enum, the range of every integer, and
+the default to reset to. Every consumer below is a walk over
+`std.meta.fields`.
+
+**Keys cannot be invented at runtime.** `cfg set nothing.here 1` is an error,
+not a new key. This is the property that separates a schema from a registry: the
+store cannot accumulate anything nobody declared, so it cannot rot.
+
+### 8.2 Storage stays text
+
+One file per domain, `/etc/wm.cfg` and so on, in the `key = value` format
+[`config.zig`](../src/user/lib/config.zig) already reads. A file holds only what
+differs from the default, so a fresh system has almost empty files and
+`cfg reset` is a deletion rather than a restoration.
+
+Text because the recovery story for this machine is a card in another computer's
+reader. A binary store would have to be readable by a tool that only runs on the
+machine that is broken. The cost is parsing, which is a few microseconds a
+domain, once.
+
+Writes go through §6's ordering: new name, then rename over the old. A yank
+during a settings write loses the write, never the file.
+
+### 8.3 `cfgd`, the one writer
+
+Registers `cfg` in `/svc`. Holds every domain parsed, answers over a channel:
+
+| Request | Effect |
+|---|---|
+| `get(key)` | the current value, formatted |
+| `set(key, value)` | validate against the type, apply, write the domain's file, bump its event |
+| `reset(key)` | drop the override, back to the field default |
+| `list(domain)` | every key, its value, and whether it is default |
+| `watch(domain)` | a handle to the domain's event |
+
+One writer means two programs setting keys at once cannot interleave into one
+file, which on a filesystem with no atomic anything is not a theoretical worry.
+
+**Notification is a counting event per domain.** A watcher already has an event
+loop and `wait_many`; a settings change wakes it and it re-reads. eeewm applies a
+theme change without restarting because of this, and that is the visible payoff.
+
+### 8.4 The library, and the boot-order escape hatch
+
+`ulib.cfg` is what everything calls. It connects to `cfg` on first use, and
+**falls back to reading the file directly** when the service is not registered.
+
+The fallback is not a convenience. `init` reads settings before it has started
+anything, `devmgd` runs beside `cfgd` rather than after it, and the recovery
+console has to work when the service is the thing that is broken. A design where
+configuration is only reachable through a running service is a design where a
+failed service is unrecoverable.
+
+Read-only in that mode. Anything early enough to need the fallback is early
+enough to have no business writing.
+
+### 8.5 What is not settings
+
+Manifests are not settings and do not go here. `/etc/services` says what to
+start and `/lib/*.man` says what a driver claims; both are read by things that
+run before `cfgd` exists, both are edited by whoever builds the image rather
+than by whoever uses the machine, and neither has a default to fall back to.
+They stay plain files, read directly.
+
+The line: **a manifest says what exists, a setting says how it behaves.**
+
+Nor is user data. Documents, state and caches live under `/home`. A settings
+store that programs use as scratch space is how a registry becomes a database.
+
+### 8.6 The two front ends
+
+`cfg` is the command-line one:
+
+```
+cfg                        every domain, every key
+cfg wm                     one domain
+cfg get wm.theme
+cfg set wm.theme dusk
+cfg reset wm.theme
+cfg watch wm               print changes as they happen
+```
+
+Completion comes free from §8.1 and the source table in
+[`complete.zig`](../src/user/lib/complete.zig): `cfg set wm.<tab>` offers the
+field names, and `cfg set wm.theme <tab>` offers the enum's values, because both
+are `std.meta.fields` over a type the tool already imports.
+
+**Settings**, the app, is generated from the same schema rather than hand-laid
+out: an enum becomes a dropdown, a bool a checkbox, a bounded integer a slider.
+Adding a setting is adding a field, and it appears in both front ends. The
+widgets belong to libeui; the app walks the schema and asks for one per field.
 
 ## 9. Build system
 
