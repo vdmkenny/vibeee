@@ -563,3 +563,74 @@ prepare_sleep/resume ordering with platformd and 04-graphics.
   layout for >per-tag window caps, theme verification pass on panel (R5), dynamic-linking
   re-evaluation with real binary sizes, WM-state persistence across server restart (R6), HW-cursor
   and buffer-age micro-optimizations validated by fbbench numbers.
+
+## 16. eTerm: terminal compatibility
+
+The escape subset in the §12 budget table is the eventual target. This is the order it gets
+built in, and what each step buys.
+
+### 16.1 v1 target: VT100, plus what `kilo` uses
+
+Deliberately short of the full subset. A terminal that renders our own shell and one ported
+editor correctly is worth more than a half-finished xterm, and this much is small enough to
+get right rather than nearly right.
+
+`kilo` hardcodes its escapes and never consults terminfo, so it needs exactly:
+
+| Sequence | Purpose |
+|---|---|
+| `ED` (`CSI 2J`) | clear screen |
+| `EL` (`CSI K`) | erase to end of line |
+| `CUP` (`CSI H`, `CSI r;cH`) | absolute cursor position |
+| `CUU`/`CUD`/`CUF`/`CUB` (`CSI A`–`D`) | relative movement |
+| `DSR`/`CPR` (`CSI 6n`) | window size, discovered by driving the cursor to 999,999 and asking where it landed |
+| `DECSET`/`DECRST` `?25` | hide and show the cursor |
+| `SGR` 0/1/7, 30–37, 40–47 | reset, bold, reverse, sixteen colours |
+
+That is VT100 with two private modes.
+
+### 16.2 Input encoding
+
+The output subset is only half of running a foreign program: an application discovers the
+keyboard through what arrives on its input, and a terminal with a perfect screen and wrong
+arrow keys is a broken terminal. Only the arrows and Home/End are needed for `kilo`; the rest
+is listed so the table is not half-written when something else needs it.
+
+| Key | Normal | Application cursor mode (DECCKM) |
+|---|---|---|
+| Up/Down/Right/Left | `CSI A/B/C/D` | `SS3 A/B/C/D` |
+| Home/End | `CSI H` / `CSI F` | `SS3 H` / `SS3 F` |
+| Insert/Delete/PgUp/PgDn | `CSI 2~` / `CSI 3~` / `CSI 5~` / `CSI 6~` | same |
+| F1–F4 | `SS3 P/Q/R/S` | same |
+| F5–F12 | `CSI 15~ 17~ 18~ 19~ 20~ 21~ 23~ 24~` | same |
+| Modified | `CSI 1;mX`, m = 1 + (shift 1, alt 2, ctrl 4) | same |
+| Ctrl+letter | the C0 control, `Ctrl+A` = 0x01 | same |
+| Alt+key | `ESC` then the key | same |
+| Enter / Tab / Backspace | `CR` / `HT` / `DEL` (0x7F) | same |
+
+### 16.3 Deferred, in the order vim needs them
+
+The rest of the §12 subset, plus:
+
+- **`DECCKM` (`?1`)**, application cursor keys. The one that bites first: vim sets it, and
+  without it the arrow keys break in a way that looks like our bug and is not.
+- **`?47` / `?1047`**, the older alternate-screen modes, still emitted by older terminfo entries.
+- **`DA2` (`CSI >c`)**, secondary device attributes. Answering is one fixed string; ignoring it
+  means a program waiting for a reply that never comes.
+- **`DECSCUSR` (`CSI Sp q`)**, cursor shape. Parsed and ignored, so it does not land as text.
+- **`SGR` 5 and 8**, blink and invisible. Blink renders as bold; the panel gains nothing from
+  flashing.
+
+### 16.4 `TERM`
+
+Only matters to programs that read terminfo, which `kilo` does not. When one arrives the
+target is `xterm-16color`, not a private `eeeterm` entry: a name nobody has in their database
+falls back to something crippled, so being compatible with a common one is cheaper than being
+unique. Where we differ, we differ by not implementing something rather than by implementing
+it differently.
+
+### 16.5 The honest limit: Latin-1, not UTF-8
+
+The font subset is Latin-1 plus box drawing, so a program emitting UTF-8 gets its multi-byte
+sequences rendered as separate glyphs. That is a font problem rather than a terminal problem,
+and it is deferred with that understood.
