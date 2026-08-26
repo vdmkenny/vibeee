@@ -724,7 +724,12 @@ pub const table = [_]Syscall{
         },
         .returns = "the program's exit status",
         .errors = &.{ E.fault, E.noent, E.inval, E.nomem },
-        .notes = "Synchronous: the caller blocks until the child exits. Deliberately not fork, see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.",
+        .notes = "Synchronous: the caller blocks until the child exits. The status is " ++
+            "never negative, so a negative result always means the child never ran: a " ++
+            "process that was stopped rather than exiting reports 128 plus the reason, " ++
+            "137 for killed and 139 for a fault. Deliberately not fork, see " ++
+            "design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which " ++
+            "needs somewhere to report a finished background job.",
     },
     .{
         .number = 16,
@@ -1058,6 +1063,22 @@ pub const table = [_]Syscall{
             "compositor would hand it a buffer of a different shape than the one it is " ++
             "drawing into. EPERM means no backend can drive this adapter, in which case " ++
             "what the firmware set is what there is.",
+    },
+    .{
+        .number = 40,
+        .name = "ioport_grant",
+        .summary = "Allow this process to use a range of I/O ports directly.",
+        .args = &.{
+            .{ .name = "base", .kind = .uint, .desc = "First port." },
+            .{ .name = "count", .kind = .len, .desc = "How many ports from there." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.perm, E.inval, E.nomem },
+        .notes = "Needs the driver capability. Granted through the CPU's I/O permission " ++
+            "bitmap rather than by mediating each access, so `in` and `out` then run at " ++
+            "full speed from Ring 3. Grants accumulate and last until the process exits; " ++
+            "there is no revoke, because a driver that no longer wants its ports is a " ++
+            "driver that should exit.",
     },
 };
 

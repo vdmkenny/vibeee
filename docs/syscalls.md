@@ -272,7 +272,7 @@ Load and run a program, and wait for it to finish.
 - `EINVAL`, an argument is out of range
 - `ENOMEM`, no handle slots free, or the buffer is too small
 
-Synchronous: the caller blocks until the child exits. Deliberately not fork, see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.
+Synchronous: the caller blocks until the child exits. The status is never negative, so a negative result always means the child never ran: a process that was stopped rather than exiting reports 128 plus the reason, 137 for killed and 139 for a fault. Deliberately not fork, see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.
 
 ## `chdir`  <sub>#16</sub>
 
@@ -720,6 +720,25 @@ Ask the display adapter for a mode.
 
 Refused while something owns the display: changing the mode under a compositor would hand it a buffer of a different shape than the one it is drawing into. EPERM means no backend can drive this adapter, in which case what the firmware set is what there is.
 
+## `ioport_grant`  <sub>#40</sub>
+
+Allow this process to use a range of I/O ports directly.
+
+| arg | type | meaning |
+|---|---|---|
+| `base` | uint | First port. |
+| `count` | len | How many ports from there. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+Needs the driver capability. Granted through the CPU's I/O permission bitmap rather than by mediating each access, so `in` and `out` then run at full speed from Ring 3. Grants accumulate and last until the process exits; there is no revoke, because a driver that no longer wants its ports is a driver that should exit.
+
 ---
 
-40 calls defined.
+41 calls defined.

@@ -479,6 +479,7 @@ fn schedule() void {
     // set, and a syscall lands on a stack belonging to a thread that may have
     // exited and had its memory reused.
     hal.setKernelStack(@intFromPtr(target.stack.ptr) + target.stack.len);
+    applyIoBitmap(target);
 
     if (prev) |p| {
         hal.saveFpu(&p.fpu);
@@ -519,6 +520,14 @@ fn collectCorpses() void {
 /// why it cannot happen inside `exit`: a thread cannot free the stack it is
 /// standing on.
 fn reap(t: *Thread) void {
+    if (t.io_bitmap) |bits| {
+        heap.allocator.destroy(bits);
+        t.io_bitmap = null;
+        // The next allocation could land on the same address, so a stale owner
+        // would skip the copy and leave a process with someone else's ports.
+        if (io_bitmap_owner == t) io_bitmap_owner = null;
+    }
+
     dequeueCorpse(t);
 
     // Anything still open would otherwise keep a mount busy forever.
@@ -551,6 +560,56 @@ fn dequeueCorpse(t: *Thread) void {
         }
         link = &node.next;
     }
+}
+
+/// Whose grants are currently in the machine's I/O bitmap.
+///
+/// Remembered across a switch to a process with no grants, so returning to a
+/// driver server costs a store rather than eight kilobytes. Cleared when that
+/// process dies, since the next one to be allocated could land on the same
+/// address.
+var io_bitmap_owner: ?*Thread = null;
+
+fn applyIoBitmap(target: *Thread) void {
+    const bits = target.io_bitmap orelse {
+        hal.denyIoPorts();
+        return;
+    };
+
+    if (io_bitmap_owner == target) {
+        hal.enableIoBitmap();
+        return;
+    }
+
+    hal.loadIoBitmap(bits);
+    io_bitmap_owner = target;
+}
+
+/// Give a thread a bitmap to be granted ports in, or the one it already has.
+///
+/// Not loaded into the machine here: the caller is about to change it, and a
+/// copy taken before that would be a copy of the denials it is removing.
+pub fn ioBitmapFor(t: *Thread) ?*[hal.IO_BITMAP_BYTES]u8 {
+    if (t.io_bitmap) |existing| return existing;
+
+    const bits = heap.allocator.create([hal.IO_BITMAP_BYTES]u8) catch return null;
+    // Every port denied to begin with; a grant clears the bits it opens.
+    @memset(bits, 0xFF);
+    t.io_bitmap = bits;
+    return bits;
+}
+
+/// Put a thread's grants into effect, after they have been changed.
+pub fn reloadIoBitmap(t: *Thread) void {
+    const bits = t.io_bitmap orelse return;
+    hal.loadIoBitmap(bits);
+    io_bitmap_owner = t;
+}
+
+/// What the running thread is called, for a message about it.
+pub fn currentName() []const u8 {
+    const t = current orelse return "the kernel";
+    return t.name();
 }
 
 pub const find = thread_mod.find;
@@ -611,9 +670,14 @@ pub fn onInterruptExit(from_user: bool) void {
     schedule();
 }
 
-/// What a killed process reports to whoever waits for it. Negative, because a
-/// process that was ended did not choose its own status.
-pub const KILLED_STATUS: i32 = -9;
+/// What a killed process reports to whoever waits for it.
+///
+/// 128 plus the number the same fate carries elsewhere, which is the long
+/// standing convention and, more importantly here, keeps it positive: `spawn`
+/// returns the child's status and an error in the same signed word, so a
+/// negative status would be indistinguishable from a spawn that never
+/// happened.
+pub const KILLED_STATUS: i32 = 128 + 9;
 
 /// The thread that runs when nothing else can. Halting rather than spinning is
 /// what keeps the real machine cool and QEMU off a full host core.

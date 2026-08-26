@@ -66,6 +66,11 @@ pub const Thread = struct {
     name_buf: [16]u8 = @splat(0),
     name_len: usize = 0,
     state: State = .ready,
+    /// Which I/O ports this process may touch, or null for the usual answer of
+    /// none. Allocated only when something is granted, because it is eight
+    /// kilobytes and almost nothing needs one.
+    io_bitmap: ?*[hal.IO_BITMAP_BYTES]u8 = null,
+
     /// What this process may do. Inherited at spawn and never widened, so the
     /// tree below a process can only ever be able to do less than it can.
     caps: abi.Caps = abi.Caps.all,

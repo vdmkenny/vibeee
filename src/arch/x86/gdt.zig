@@ -92,7 +92,29 @@ pub const Tss = extern struct {
     ldt: u32 = 0,
     trap: u16 = 0,
     iomap_base: u16 = 0,
+
+    /// One bit per port, cleared to allow. 65536 ports is 8 KiB.
+    ///
+    /// One bitmap for the machine rather than one TSS per process: switching
+    /// tasks through the CPU's own mechanism is slower than switching stacks,
+    /// and everything else here already switches stacks. The cost is that the
+    /// bitmap belongs to whichever process last needed it, and is rewritten
+    /// when that changes.
+    iopb: [IOPB_BYTES]u8 = @splat(0xFF),
+
+    /// The manual requires a byte of all ones after the bitmap: a port access
+    /// that straddles the end reads this rather than whatever follows.
+    iopb_guard: u8 = 0xFF,
 };
+
+pub const IOPB_BYTES = 8192;
+
+/// Where the bitmap sits inside the TSS.
+const IOPB_OFFSET: u16 = @offsetOf(Tss, "iopb");
+
+/// What `iomap_base` says when nothing may touch a port. Past the limit, which
+/// the CPU reads as "no bitmap", and therefore as deny.
+const IOPB_NONE: u16 = 0xFFFF;
 
 const Descriptor = extern struct {
     limit: u16 align(1),
@@ -153,4 +175,26 @@ pub fn init(kernel_stack_top: u32) void {
 /// Called on every context switch: the incoming thread's kernel stack.
 pub fn setKernelStack(esp0: u32) void {
     tss.esp0 = esp0;
+}
+
+/// Copy a process's grants into the machine's one bitmap.
+///
+/// Copied rather than pointed at, because the CPU reads it from inside the
+/// TSS. Only when the process holding it changes: a driver server is switched
+/// away from and back to constantly, and eight kilobytes on every one of those
+/// would cost more than the ports save.
+pub fn loadIoBitmap(shadow: *const [IOPB_BYTES]u8) void {
+    @memcpy(&tss.iopb, shadow);
+    tss.iomap_base = IOPB_OFFSET;
+}
+
+/// Let the bitmap through again, its contents already being this process's.
+pub fn enableIoBitmap() void {
+    tss.iomap_base = IOPB_OFFSET;
+}
+
+/// Deny every port. Costs a store: the bitmap is put out of reach rather than
+/// filled in, which is what makes a process with no grants pay nothing.
+pub fn denyIoPorts() void {
+    tss.iomap_base = IOPB_NONE;
 }

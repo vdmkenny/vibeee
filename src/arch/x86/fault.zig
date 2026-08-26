@@ -5,7 +5,9 @@
 //! CR2, the page-fault error bitfield, which registers are worth showing,
 //! stops here.
 
+const console = @import("../../kernel/console.zig");
 const cpu = @import("cpu.zig");
+const sched = @import("../../kernel/sched.zig");
 const idt = @import("idt.zig");
 const panic = @import("../../kernel/panic.zig");
 
@@ -38,5 +40,32 @@ pub fn onException(frame: *idt.Frame) noreturn {
     r.addReg("ebp", frame.ebp);
     r.addReg("efl", frame.eflags);
 
+    // A program's mistake stops the program. Only the kernel faulting is worth
+    // stopping the machine for: a buggy application taking the desktop with it
+    // would make every other kind of robustness here pointless.
+    if (r.from_user) {
+        if (r.decode_page_fault) {
+            console.warn("{s} in {s} at {x:0>8}, touching {x:0>8}", .{
+                panic.exceptionName(frame.vector),
+                sched.currentName(),
+                frame.eip,
+                r.fault_addr,
+            });
+        } else {
+            console.warn("{s} in {s} at {x:0>8}", .{
+                panic.exceptionName(frame.vector),
+                sched.currentName(),
+                frame.eip,
+            });
+        }
+        sched.exitWith(FAULTED);
+    }
+
     panic.report(&r);
 }
+
+/// What a process reports to whoever waits for it after a fault. Positive, and
+/// 128 plus the number the same fate carries elsewhere: `spawn` returns a
+/// status and an error in one signed word, so a negative status would read as
+/// a program that never started.
+const FAULTED: i32 = 128 + 11;

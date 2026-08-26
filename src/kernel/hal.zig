@@ -54,6 +54,12 @@ pub const initInterruptController = impl.initInterruptController;
 /// Install the syscall entry path. After this, user code can trap into the
 /// kernel; before it, the syscall vector is a fault like any other.
 pub const initSyscalls = impl.initSyscalls;
+/// Port access for a process the device manager trusted with it.
+pub const IO_BITMAP_BYTES = impl.IO_BITMAP_BYTES;
+pub const loadIoBitmap = impl.loadIoBitmap;
+pub const enableIoBitmap = impl.enableIoBitmap;
+pub const denyIoPorts = impl.denyIoPorts;
+
 /// Claiming a global interrupt line for a handler, for the driver capability.
 pub const InterruptFrame = impl.InterruptFrame;
 pub const gsiClaimed = impl.gsiClaimed;

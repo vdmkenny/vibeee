@@ -274,6 +274,12 @@ pub fn irqAttach(gsi: u32) IrqError!u32 {
     };
 }
 
+/// Allow this process to use a range of I/O ports directly. Needs the driver
+/// capability; grants last until the process exits.
+pub fn ioportGrant(base: u16, count: usize) isize {
+    return syscall3(abi.number("ioport_grant"), base, count, 0);
+}
+
 /// Say the device has been serviced, so its line may fire again.
 pub fn irqAck(handle: u32) isize {
     return syscall1(abi.number("irq_ack"), handle);

@@ -13,6 +13,7 @@ const abi = @import("lib").syscalls;
 const ctx = @import("context.zig");
 const handles = @import("../handle.zig");
 const irqevent = @import("../irqevent.zig");
+const sched = @import("../sched.zig");
 
 const Args = ctx.Args;
 const Result = ctx.Result;
@@ -60,3 +61,28 @@ pub fn sys_irq_ack(a: Args) Result {
 pub fn armIfIrq(h: *handles.Handle) void {
     if (h.kind == .irq and !h.data.irq.armed) irqevent.arm(h.data.irq);
 }
+
+pub fn sys_ioport_grant(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const base = a.a0;
+    const count = a.a1;
+    if (count == 0 or base + count > PORTS) return Errno.inval.value();
+
+    const t = sched.currentThread() orelse return Errno.perm.value();
+    const bits = sched.ioBitmapFor(t) orelse return Errno.nomem.value();
+
+    // Clear is allow, which is the opposite of how it reads, and is what the
+    // CPU defines: a set bit traps.
+    for (base..base + count) |port| {
+        bits[port / 8] &= ~(@as(u8, 1) << @truncate(port % 8));
+    }
+
+    // The CPU reads the bitmap from inside the TSS, so the change has to be
+    // copied there before the next instruction can benefit from it.
+    sched.reloadIoBitmap(t);
+    return 0;
+}
+
+/// Every port an x86 machine has.
+const PORTS = 65536;

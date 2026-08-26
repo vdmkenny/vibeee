@@ -52,6 +52,12 @@ const EXCEPTION_NAMES = [_][]const u8{
     "control protection exception",
 };
 
+/// What an exception is called, for anything reporting one without stopping.
+pub fn exceptionName(vector: u32) []const u8 {
+    if (vector < EXCEPTION_NAMES.len) return EXCEPTION_NAMES[vector];
+    return "unknown fault";
+}
+
 pub const MAX_BACKTRACE = 5;
 pub const MAX_REGS = 8;
 
