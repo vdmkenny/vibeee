@@ -400,7 +400,7 @@ writes), ~0.15 µs/glyph estimated; a full 100×32 terminal repaint ≈ 3200 gly
 
 | App | Binary est. | Purpose / design |
 |---|---|---|
-| eterm | 260 KB | Terminal. Grid of `{cp: u21, attr: u11}` packed u32; per-line dirty bits; scrollback 500 lines (~0.4 MB). Font mono-8x14. Escape subset ("eeeterm", xterm-16color-compatible): C0 BEL BS HT LF CR SO/SI; ESC 7/8/c/D/E/M, ESC ( B, ESC ( 0 (DEC graphics→box glyphs); CSI: CUU/CUD/CUF/CUB (A–D), CNL/CPL (E/F), CHA (G), CUP/HVP (H/f), ED (J), EL (K), IL/DL (L/M), DCH (P), ICH (@), SU/SD (S/T), ECH (X), REP (b), DA (c→"?6c"), VPA (d), TBC (g), SM/RM (h/l: 4 insert, 20 LNM), DECSET/DECRST (?7 wrap, ?25 cursor, ?1049 altscreen, ?2004 bracketed paste; mouse ?1000/1006 = M3), SGR (m: 0/1/4/7/22/24/27, 30–37/39, 40–47/49, 90–97/100–107; 38/48;5;n accepted → nearest-16 map), DSR (n: 5, 6/CPR), DECSTBM (r); OSC 0/2 title (BEL/ST). Child I/O: spawn(shell) with a pipe pair. **No pty.** A Unix pty is a byte channel plus termios plus a line discipline plus signals plus process groups; we have no signals and no process groups, and `vsh` does its own line editing (11-userspace §257), so canonical mode and echo have no customer. Pipes plus stdio binding at spawn plus a resize notification is the whole requirement, and pipes are needed for `\|` regardless. |
+| eterm | 260 KB | Terminal. Grid of `{cp: u21, attr: u11}` packed u32; per-line dirty bits; scrollback 500 lines (~0.4 MB). Font mono-8x14. Escape subset (extended VT100, xterm-16color-compatible; see §16): C0 BEL BS HT LF CR SO/SI; ESC 7/8/c/D/E/M, ESC ( B, ESC ( 0 (DEC graphics→box glyphs); CSI: CUU/CUD/CUF/CUB (A–D), CNL/CPL (E/F), CHA (G), CUP/HVP (H/f), ED (J), EL (K), IL/DL (L/M), DCH (P), ICH (@), SU/SD (S/T), ECH (X), REP (b), DA (c→"?6c"), VPA (d), TBC (g), SM/RM (h/l: 4 insert, 20 LNM), DECSET/DECRST (?7 wrap, ?25 cursor, ?1049 altscreen, ?2004 bracketed paste; mouse ?1000/1006 = M3), SGR (m: 0/1/4/7/22/24/27, 30–37/39, 40–47/49, 90–97/100–107; 38/48;5;n accepted → nearest-16 map), DSR (n: 5, 6/CPR), DECSTBM (r); OSC 0/2 title (BEL/ST). Child I/O: spawn(shell) with a pipe pair. **No pty.** A Unix pty is a byte channel plus termios plus a line discipline plus signals plus process groups; we have no signals and no process groups, and `vsh` does its own line editing (11-userspace §257), so canonical mode and echo have no customer. Pipes plus stdio binding at spawn plus a resize notification is the whole requirement, and pipes are needed for `\|` regardless. |
 | efm | 300 KB | File manager, dual-pane (2×396 px, ListView each). Tab = switch pane, Enter open (spawn by extension map in /cfg/open.map), F5 copy / F6 move / F7 mkdir / F8 delete(→trash /data/.trash) / e = eject. Subscribes `storage` feed; volumes header shows /data, /mnt/sd, /mnt/usb*; eject = usbd channel call `eject(volid)` (flush+offline) then toast. Copy runs in-process with progress dialog (files are small; no threads, chunked via timer callbacks). |
 | eedit | 340 KB | Editor on TextArea + line-array buffer. Syntax highlight: line-based lexers (comptime-registered per-language tables: keyword set, comment/string delimiters), per-line entry state (in_comment/in_string) cached, re-lex from edited line until state converges; spans feed TextArea attrs. v1: zig, c, sh, ini, md. Find (Ctrl+F palette-style), goto-line, LF only, UTF-8 only. |
 | eimg | 320 KB | Viewer: **BMP + PNG in v1** (PNG via Zig std flate + unfilter, ~25 KB code); **JPEG baseline-only in M3** (+~55 KB, no progressive, honest: a 3 MP JPEG decodes in ~2–4 s at 630 MHz; done in idle-chunks with progress). Decode with stride-downscale to ≤1600×960 to cap RAM (≤6 MB pixels); fit/100%/zoom ×2, pan arrows. |
@@ -566,35 +566,50 @@ prepare_sleep/resume ordering with platformd and 04-graphics.
 
 ## 16. eTerm: terminal compatibility
 
-The escape subset in the §12 budget table is the eventual target. This is the order it gets
-built in, and what each step buys.
+### 16.1 Target: extended VT100
 
-### 16.1 v1 target: VT100, plus what `kilo` uses
+Not strict VT100, which has no colour and none of the line-editing sequences, and not a full
+xterm either. The target is VT100 plus the extensions that are universal in practice: the
+VT220 editing set, ANSI colour, and the few private modes every terminal has implemented for
+thirty years. A program written against any of these works; a program reaching past them
+degrades rather than breaks.
 
-Deliberately short of the full subset. A terminal that renders our own shell and one ported
-editor correctly is worth more than a half-finished xterm, and this much is small enough to
-get right rather than nearly right.
+**C0**: `BEL` `BS` `HT` `LF` `VT` `FF` `CR`, `SO`/`SI` charset shifts.
 
-`kilo` hardcodes its escapes and never consults terminfo, so it needs exactly:
+**ESC**: `7`/`8` (DECSC/DECRC save and restore cursor), `c` (RIS reset), `D` (IND), `E` (NEL),
+`M` (RI reverse index), `H` (HTS set tab), `( B` and `( 0` (ASCII and DEC graphics, the latter
+mapped to our box-drawing glyphs).
 
-| Sequence | Purpose |
-|---|---|
-| `ED` (`CSI 2J`) | clear screen |
-| `EL` (`CSI K`) | erase to end of line |
-| `CUP` (`CSI H`, `CSI r;cH`) | absolute cursor position |
-| `CUU`/`CUD`/`CUF`/`CUB` (`CSI A`–`D`) | relative movement |
-| `DSR`/`CPR` (`CSI 6n`) | window size, discovered by driving the cursor to 999,999 and asking where it landed |
-| `DECSET`/`DECRST` `?25` | hide and show the cursor |
-| `SGR` 0/1/7, 30–37, 40–47 | reset, bold, reverse, sixteen colours |
+**CSI, cursor**: `A`–`D` (CUU/CUD/CUF/CUB), `E`/`F` (CNL/CPL), `G` (CHA), `H` and `f`
+(CUP/HVP), `d` (VPA).
 
-That is VT100 with two private modes.
+**CSI, editing**: `J` (ED), `K` (EL), `L` (IL), `M` (DL), `P` (DCH), `@` (ICH), `X` (ECH),
+`S`/`T` (SU/SD), `b` (REP), `g` (TBC).
+
+**CSI, modes**: `h`/`l` for `4` (IRM insert) and `20` (LNM); DECSET/DECRST for `?1` (DECCKM
+application cursor keys), `?7` (DECAWM autowrap), `?25` (DECTCEM cursor visibility), `?1049`
+and the older `?47`/`?1047` (alternate screen).
+
+**CSI, colour and attributes**: `SGR` 0, 1 bold, 2 dim, 4 underline, 5 blink, 7 reverse, 22,
+24, 25, 27, 30–37 and 39, 40–47 and 49, and the aixterm brights 90–97 and 100–107. Colour is
+itself an extension: VT100 has none. `38`/`48;5;n` is accepted and mapped to the nearest of
+the sixteen rather than ignored, so a program using 256 colours renders in approximately the
+right ones instead of leaving escape text on screen.
+
+**CSI, reports**: `DSR` `5` and `6` (CPR), `DA` (`c`, answered `?1;2c`), `DECSTBM` (`r`).
+
+**OSC**: `0` and `2` for the window title, terminated by BEL or ST.
+
+That set covers `kilo` several times over. `kilo` alone needs only `ED`, `EL`, `CUP`, the four
+cursor movements, `DSR`/`CPR` to discover the window size by driving the cursor to 999,999 and
+asking where it landed, `?25`, and `SGR` 0/1/7 with the base sixteen colours.
 
 ### 16.2 Input encoding
 
 The output subset is only half of running a foreign program: an application discovers the
 keyboard through what arrives on its input, and a terminal with a perfect screen and wrong
-arrow keys is a broken terminal. Only the arrows and Home/End are needed for `kilo`; the rest
-is listed so the table is not half-written when something else needs it.
+arrow keys is a broken terminal. `DECCKM` is in v1 precisely because of this table, it costs
+one flag, and getting it wrong looks like our bug when it is not.
 
 | Key | Normal | Application cursor mode (DECCKM) |
 |---|---|---|
@@ -608,24 +623,23 @@ is listed so the table is not half-written when something else needs it.
 | Alt+key | `ESC` then the key | same |
 | Enter / Tab / Backspace | `CR` / `HT` / `DEL` (0x7F) | same |
 
-### 16.3 Deferred, in the order vim needs them
+### 16.3 Deferred
 
-The rest of the §12 subset, plus:
+Genuinely optional, and each one is a program degrading rather than failing:
 
-- **`DECCKM` (`?1`)**, application cursor keys. The one that bites first: vim sets it, and
-  without it the arrow keys break in a way that looks like our bug and is not.
-- **`?47` / `?1047`**, the older alternate-screen modes, still emitted by older terminfo entries.
-- **`DA2` (`CSI >c`)**, secondary device attributes. Answering is one fixed string; ignoring it
-  means a program waiting for a reply that never comes.
-- **`DECSCUSR` (`CSI Sp q`)**, cursor shape. Parsed and ignored, so it does not land as text.
-- **`SGR` 5 and 8**, blink and invisible. Blink renders as bold; the panel gains nothing from
-  flashing.
+- **Mouse reporting** (`?1000`, `?1006`). Nothing needs a mouse in a terminal here yet.
+- **Bracketed paste** (`?2004`). There is no clipboard to paste from.
+- **`DECSCUSR`** (`CSI Sp q`), cursor shape. Parsed and discarded so it does not land as text.
+- **`DA2`** (`CSI >c`), secondary device attributes. Answering is one fixed string; worth adding
+  the moment something is seen waiting on it.
+- **Truecolour** `SGR 38;2;r;g;b`. The panel is 6-bit; the nearest-sixteen map is the honest
+  rendering either way.
 
 ### 16.4 `TERM`
 
-Only matters to programs that read terminfo, which `kilo` does not. When one arrives the
-target is `xterm-16color`, not a private `eeeterm` entry: a name nobody has in their database
-falls back to something crippled, so being compatible with a common one is cheaper than being
+Only matters to programs that read terminfo, which `kilo` does not. The target is
+`xterm-16color`: a private `eeeterm` entry is a name nobody has in their database, which falls
+back to something crippled, so being compatible with a common one is cheaper than being
 unique. Where we differ, we differ by not implementing something rather than by implementing
 it differently.
 
