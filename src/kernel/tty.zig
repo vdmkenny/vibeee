@@ -4,11 +4,15 @@
 //! rather than in each program, so every prompt, the shell, a password field,
 //! anything that reads a line, behaves the same way.
 //!
-//! Canonical mode only: input is delivered a line at a time, after Enter.
-//! Raw mode arrives with the terminal emulator, which needs per-keystroke
-//! delivery; nothing yet does.
+//! Two modes. Cooked delivers a line at a time, after Enter, and echoes as it
+//! goes: what a program that only wants an answer needs. Raw delivers each
+//! keystroke as it happens and echoes nothing, with the keys that produce no
+//! character arriving as the escape sequences a terminal sends for them: what
+//! a program drawing its own input line needs, because it has to know where
+//! the cursor went and the kernel must not draw over it.
 
 const std = @import("std");
+const abi = @import("lib").syscalls;
 const console = @import("console.zig");
 const input = @import("input.zig");
 
@@ -31,6 +35,45 @@ pub fn setEcho(on: bool) void {
     echo = on;
 }
 
+var mode: abi.TtyMode = .cooked;
+
+/// Choose the mode, returning the one that was in effect.
+pub fn setMode(wanted: abi.TtyMode) abi.TtyMode {
+    const was = mode;
+    mode = wanted;
+    // A half-typed line belongs to the mode it was typed in.
+    line_len = 0;
+    ready_len = 0;
+    ready_pos = 0;
+    return was;
+}
+
+/// What a key with no character of its own sends, which is what every terminal
+/// sends for it. Written once here so the kernel and the editors that read it
+/// cannot disagree about what an arrow key looks like.
+fn sequenceFor(code: input.KeyCode) ?[]const u8 {
+    return switch (code) {
+        .up => "\x1b[A",
+        .down => "\x1b[B",
+        .right => "\x1b[C",
+        .left => "\x1b[D",
+        .home => "\x1b[H",
+        .end => "\x1b[F",
+        .delete => "\x1b[3~",
+        .page_up => "\x1b[5~",
+        .page_down => "\x1b[6~",
+        else => null,
+    };
+}
+
+/// Hand a keystroke straight to the reader, as bytes.
+fn deliver(bytes: []const u8) void {
+    const room = ready.len - ready_len;
+    const n = @min(bytes.len, room);
+    @memcpy(ready[ready_len..][0..n], bytes[0..n]);
+    ready_len += n;
+}
+
 fn emit(bytes: []const u8) void {
     if (echo) console.writeString(bytes);
 }
@@ -44,6 +87,21 @@ fn emit(bytes: []const u8) void {
 fn pump() void {
     while (input.poll()) |event| {
         if (!event.pressed) continue;
+
+        // Raw mode has nothing to edit: every keystroke goes straight through,
+        // as its character or as the sequence that stands for it.
+        if (mode == .raw) {
+            if (sequenceFor(event.code)) |seq| {
+                deliver(seq);
+                continue;
+            }
+            if (event.codepoint == 0) continue;
+
+            var utf8: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(event.codepoint, &utf8) catch continue;
+            deliver(utf8[0..n]);
+            continue;
+        }
 
         // Editing keys that produce no character.
         switch (event.code) {

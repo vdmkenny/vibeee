@@ -141,6 +141,15 @@ fn readPipe(end: handles.PipeEnd, buf: []u8) Result {
     return @intCast(n);
 }
 
+pub fn sys_tty_mode(a: Args) Result {
+    const wanted: abi.TtyMode = switch (a.a0) {
+        0 => .cooked,
+        1 => .raw,
+        else => return Errno.inval.value(),
+    };
+    return @intCast(@intFromEnum(tty.setMode(wanted)));
+}
+
 pub fn sys_yield(_: Args) Result {
     sched.yield();
     return 0;

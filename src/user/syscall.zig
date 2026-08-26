@@ -295,6 +295,15 @@ pub fn irqAck(handle: u32) isize {
 pub const Pipe = struct { read: u32, write: u32 };
 
 /// Create a pipe. The read end can be passed to `waitMany`.
+pub const TtyMode = abi.TtyMode;
+
+/// Choose how the console delivers what is typed, returning the mode that was
+/// in effect so a caller can put it back.
+pub fn ttyMode(wanted: TtyMode) TtyMode {
+    const was = syscall1(abi.number("tty_mode"), @intFromEnum(wanted));
+    return if (was < 0) .cooked else @enumFromInt(@as(u32, @intCast(was)));
+}
+
 pub fn pipe() ?Pipe {
     var ends: [2]u32 = .{ 0, 0 };
     if (syscall1(abi.number("pipe"), @intFromPtr(&ends)) < 0) return null;

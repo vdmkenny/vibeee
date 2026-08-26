@@ -5,8 +5,10 @@
 //! Anything here that stopped needing a syscall would belong down there
 //! instead.
 
+pub const complete = @import("complete.zig");
 pub const config = @import("config.zig");
 pub const dir = @import("dir.zig");
+pub const edit = @import("edit.zig");
 pub const info = @import("info.zig");
 pub const ink = @import("ink.zig");
 pub const out = @import("out.zig");

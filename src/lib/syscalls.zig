@@ -500,6 +500,17 @@ pub const OpenFlags = packed struct(u32) {
 /// once, here, and neither side has to agree with Zig about padding. The kernel
 /// writes it and userspace reads it through this one module, so the format has
 /// exactly one definition.
+/// How the console hands keystrokes to whoever is reading it.
+pub const TtyMode = enum(u32) {
+    /// A line at a time, echoed and editable with backspace. What a program
+    /// that only wants an answer to a question needs.
+    cooked = 0,
+    /// Every keystroke as it happens, unechoed, with the keys that produce no
+    /// character arriving as the escape sequences a terminal sends for them.
+    /// What a program that draws its own input line needs.
+    raw = 1,
+};
+
 pub const Dirent = struct {
     pub const HEADER = 10; // u32 size, i32 mtime, u8 flags, u8 name_len
 
@@ -1099,6 +1110,21 @@ pub const table = [_]Syscall{
             "belonging elsewhere so ending the process unmaps it without handing device " ++
             "memory to the page allocator. There is no unmap: a driver that has finished " ++
             "with its device is a driver that should exit.",
+    },
+    .{
+        .number = 42,
+        .name = "tty_mode",
+        .summary = "Choose how the console delivers what is typed.",
+        .args = &.{
+            .{ .name = "mode", .kind = .uint, .desc = "A TtyMode: 0 cooked, 1 raw." },
+        },
+        .returns = "the mode in effect before the call",
+        .errors = &.{E.inval},
+        .notes = "Raw mode is what a shell drawing its own input line needs: it does its " ++
+            "own echoing, so the kernel must not, and it needs the arrow keys, which " ++
+            "produce no character and arrive as the escape sequences every terminal " ++
+            "sends. The mode belongs to the console rather than to a handle, because " ++
+            "there is one keyboard. A program that changes it puts it back.",
     },
 };
 

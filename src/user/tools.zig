@@ -5,61 +5,16 @@
 //! would repeat the same few kilobytes of support code thirty times, on a
 //! machine where the root filesystem is read into RAM at every boot.
 //!
-//! The command table is the single definition: dispatch and the help text are
-//! both generated from it, so a command cannot exist without being listed.
+//! The command table lives in `tools/registry.zig`, which the shell reads too:
+//! dispatch and the help text are both generated from it, so a command cannot
+//! exist without being listed.
 
 const sys = @import("sys");
-const eeefetch = @import("tools/eeefetch.zig");
-const smbios = @import("tools/smbios.zig");
-const date = @import("tools/date.zig");
-const file_tool = @import("tools/file.zig");
-const files = @import("tools/files.zig");
-const grep = @import("tools/grep.zig");
-const display_tool = @import("tools/display.zig");
-const irq_tool = @import("tools/irq.zig");
-const devices_tool = @import("tools/devices.zig");
-const driver_tool = @import("tools/driver.zig");
-const klog = @import("tools/klog.zig");
-const page = @import("tools/page.zig");
-const status = @import("tools/status.zig");
+const registry = @import("tools/registry.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
-const Command = struct {
-    name: []const u8,
-    summary: []const u8,
-    run: *const fn (args: []const []const u8) void,
-};
-
-const commands = [_]Command{
-    .{ .name = "ls", .summary = "list a directory", .run = &files.ls },
-    .{ .name = "cat", .summary = "print a file", .run = &files.cat },
-    .{ .name = "rm", .summary = "remove a file", .run = &files.rm },
-    .{ .name = "hexdump", .summary = "dump a file in hex", .run = &files.hexdump },
-    .{ .name = "file", .summary = "what kind of file something is", .run = &file_tool.run },
-    .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
-    .{ .name = "free", .summary = "show memory use", .run = &status.free },
-    .{ .name = "top", .summary = "show threads and load", .run = &status.top },
-    .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
-    .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
-    .{ .name = "devices", .summary = "what is on the bus, and what drives it", .run = &devices_tool.devices },
-    .{ .name = "driver", .summary = "what a driver can reach: ports and device registers", .run = &driver_tool.driver },
-    .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
-    .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
-    .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
-    .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
-    .{ .name = "svc", .summary = "list registered services", .run = &status.services },
-    .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
-    .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },
-    .{ .name = "eeefetch", .summary = "show system information", .run = &eeefetch.run },
-    .{ .name = "smbios", .summary = "decode the firmware DMI tables", .run = &smbios.run },
-    .{ .name = "help", .summary = "list commands", .run = &help },
-};
-
-fn help(_: []const []const u8) void {
-    listCommands();
-    out.flush();
-}
+const commands = registry.commands;
 
 export fn _start() callconv(.naked) noreturn {
     // argc and argv are already on the stack, placed there by the kernel. The

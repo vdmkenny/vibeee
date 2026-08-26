@@ -15,6 +15,10 @@
 //! machine with only one shell.
 
 const sys = @import("sys");
+const complete = @import("ulib").complete;
+const registry = @import("tools/registry.zig");
+const dir_mod = @import("ulib").dir;
+const edit = @import("ulib").edit;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
@@ -56,21 +60,18 @@ export fn shellMain() callconv(.c) noreturn {
     out.text("vibeee shell. 'help' for builtins, 'tools' for system tools.\n");
     out.flush();
 
-    var line: [MAX_LINE]u8 = undefined;
+    editor.sources = &completion;
 
-    var cwd: [256]u8 = [_]u8{0} ** 256;
+    var cwd: [256]u8 = @splat(0);
+    var prompt_buf: [cwd.len + 8]u8 = undefined;
 
     while (true) {
+        var prompt = str.Builder{ .buf = &prompt_buf };
         const dir_len = sys.getcwd(&cwd);
-        if (dir_len > 0) out.text(cwd[0..@intCast(dir_len)]);
-        out.text(" $ ");
-        out.flush();
+        if (dir_len > 0) prompt.text(cwd[0..@intCast(dir_len)]);
+        prompt.text(" $ ");
 
-        const n = sys.read(sys.STDIN, &line);
-        if (n <= 0) continue;
-
-        var text = line[0..@intCast(n)];
-        if (text.len > 0 and text[text.len - 1] == '\n') text = text[0 .. text.len - 1];
+        const text = editor.read(prompt.done()) orelse continue;
 
         var words: [MAX_WORDS][]const u8 = undefined;
         const count = str.splitWords(text, &words);
@@ -79,6 +80,86 @@ export fn shellMain() callconv(.c) noreturn {
         runLine(words[0..count]);
     }
 }
+
+/// The one line being edited, kept here because its history outlives any one
+/// prompt and it is far too large for a stack.
+var editor: edit.Editor = .{};
+
+// ---------------------------------------------------------------------------
+// Completion
+// ---------------------------------------------------------------------------
+
+/// What a command offers after its own name, for the commands whose arguments
+/// are words rather than files. A row per command: adding one is adding a row,
+/// which is the point of keeping them in a table.
+const Subcommands = struct {
+    command: []const u8,
+    words: []const []const u8,
+};
+
+const subcommands = [_]Subcommands{
+    .{ .command = "display", .words = &.{ "native", "regs" } },
+    .{ .command = "kill", .words = &.{} },
+};
+
+/// Everything that can be run: the builtins, and whatever is in the current
+/// directory, which is where the programs live.
+fn offerCommands(ctx: complete.Context, into: *complete.Collector) void {
+    _ = ctx;
+    for (builtins) |b| into.offer(b.name);
+    for (registry.names) |name| into.offer(name);
+    offerEntries(into, .any);
+}
+
+/// The names in the current directory, for the arguments that are files.
+fn offerFiles(ctx: complete.Context, into: *complete.Collector) void {
+    _ = ctx;
+    offerEntries(into, .any);
+}
+
+/// Only the directories, for a command that can go nowhere else.
+fn offerDirectories(ctx: complete.Context, into: *complete.Collector) void {
+    _ = ctx;
+    offerEntries(into, .directories);
+}
+
+/// The words a particular command takes after its name.
+fn offerSubcommands(ctx: complete.Context, into: *complete.Collector) void {
+    for (subcommands) |entry| {
+        if (!str.eql(entry.command, ctx.command)) continue;
+        for (entry.words) |word| into.offer(word);
+    }
+}
+
+const Which = enum { any, directories };
+
+/// Read the current directory once and offer what is in it. Shared by every
+/// source that answers with a name from the filesystem.
+fn offerEntries(into: *complete.Collector, which: Which) void {
+    var names: [dir_mod.MAX * 16]u8 = undefined;
+    var listing = dir_mod.Listing{};
+    dir_mod.read(".", &names, &listing) catch return;
+
+    for (listing.items()) |entry| {
+        if (which == .directories and !entry.is_dir) continue;
+        into.offer(entry.name);
+    }
+}
+
+/// Where candidates come from, in the order they are asked. A command with no
+/// row of its own falls to the file source, because a filename is what most
+/// arguments are.
+const completion = [_]complete.Source{
+    .{ .offer = &offerCommands },
+    .{ .command = "cd", .offer = &offerDirectories },
+    .{ .command = "display", .offer = &offerSubcommands },
+    .{ .command = "cat", .offer = &offerFiles },
+    .{ .command = "page", .offer = &offerFiles },
+    .{ .command = "file", .offer = &offerFiles },
+    .{ .command = "hexdump", .offer = &offerFiles },
+    .{ .command = "rm", .offer = &offerFiles },
+    .{ .command = "grep", .offer = &offerFiles },
+};
 
 /// Where a command's output goes.
 const Redirect = struct {
