@@ -90,8 +90,9 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq driver display disk svc date eeefetch smbios pointer ringtest` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq devices driver display disk svc date eeefetch smbios pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
+| `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Reads a manifest per driver from `/drivers`, matches it against the bus with an exact part beating a family, and starts it with the capabilities the manifest asks for. Leaves alone anything the kernel already drives. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
 | Pipes | [`kernel/pipe.zig`](../src/kernel/pipe.zig) | Byte stream with a reader and writer count, waitable by `wait_many`. Bound to a child's standard streams at spawn. |
@@ -145,7 +146,7 @@ and exercised on every boot.
 |---|---|
 | PATA + FAT32 | Done, reading and writing |
 | `init` | Done: manifests, dependency order, restart policy, orphan reaping |
-| `devmgd` | Not started. Everything it grants is in: interrupt lines, ports and device apertures. What remains is the manager itself, matching `/drivers/*.manifest` against the PCI table |
+| `devmgd` | Done. Matches `/drivers/*.manifest` against the bus and starts each driver with the capabilities its manifest asks for. No userspace driver is written yet, so it matches and reports |
 | `eeelibc` | Not started. Blocks the C ports, `stb_image` among them |
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |

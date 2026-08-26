@@ -21,6 +21,7 @@ const irqevent = @import("irqevent.zig");
 const keymap = @import("keymap.zig");
 const klog = @import("klog.zig");
 const pmm = @import("pmm.zig");
+const probe = @import("probe.zig");
 const sched = @import("sched.zig");
 const svc = @import("svc.zig");
 const vfs = @import("vfs.zig");
@@ -153,6 +154,8 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         try writeIrqs(&w);
     } else if (eq(key, "threads.list")) {
         try writeThreads(&w);
+    } else if (eq(key, "pci")) {
+        try writeDevices(&w);
     } else if (eq(key, "disks")) {
         try writeDisks(&w);
     } else if (eq(key, "storage")) {
@@ -220,6 +223,39 @@ fn writeThreads(w: *Writer) Error!void {
 
     var ctx = Ctx{ .w = w };
     sched.forEachThread(&ctx, Ctx.visit);
+}
+
+/// One line per device on the bus: where it is, what it is, and what claimed
+/// it. The table the device manager matches its manifests against, and the one
+/// anyone porting to an unfamiliar machine reads first.
+fn writeDevices(w: *Writer) Error!void {
+    const Ctx = struct {
+        w: *Writer,
+        any: bool = false,
+
+        fn visit(self: *@This(), b: probe.Binding) void {
+            self.any = true;
+            self.w.print("{x:0>2}:{x:0>2}.{d}\t{x:0>4}\t{x:0>4}\t{x:0>2}\t{x:0>2}\t{s}\t{s}\n", .{
+                b.dev.location[0],
+                b.dev.location[1],
+                b.dev.location[2],
+                b.dev.vendor,
+                b.dev.device,
+                b.dev.class,
+                b.dev.subclass,
+                // Named only when something actually took the device. A probe
+                // entry with no attach is a placeholder for a driver that has
+                // not been written, and reporting it as the owner would stop
+                // the device manager from offering the device to one that has.
+                if (b.attached) (if (b.driver) |d| d.name else "-") else "-",
+                b.dev.description,
+            }) catch {};
+        }
+    };
+
+    var ctx = Ctx{ .w = w };
+    probe.forEachDevice(&ctx, Ctx.visit);
+    if (!ctx.any) return error.UnknownKey;
 }
 
 /// One line per interrupt a userspace driver has taken: line, state, count.

@@ -1,0 +1,7 @@
+# Intel 82540EM gigabit ethernet, which is what QEMU offers and what several
+# machines of this era carry. No driver is written yet; the manifest is here so
+# the matching can be exercised, and it names the binary that will exist.
+name   = e1000
+binary = /DRV/E1000
+match  = pci:8086:100e
+caps   = driver

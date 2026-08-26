@@ -18,6 +18,7 @@ const pointer = @import("tools/pointer.zig");
 const ringtest = @import("tools/ringtest.zig");
 const display_tool = @import("tools/display.zig");
 const irq_tool = @import("tools/irq.zig");
+const devices_tool = @import("tools/devices.zig");
 const driver_tool = @import("tools/driver.zig");
 const klog = @import("tools/klog.zig");
 const status = @import("tools/status.zig");
@@ -40,6 +41,7 @@ const commands = [_]Command{
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
+    .{ .name = "devices", .summary = "what is on the bus, and what drives it", .run = &devices_tool.devices },
     .{ .name = "driver", .summary = "what a driver can reach: ports and device registers", .run = &driver_tool.driver },
     .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
     .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },

@@ -59,7 +59,7 @@ pub const Device = struct {
     description: []const u8,
 };
 
-const Binding = struct {
+pub const Binding = struct {
     dev: Device,
     driver: ?*const Driver,
     confidence: Confidence,
@@ -129,6 +129,12 @@ pub fn attachAll() void {
         }
         if (level == @intFromEnum(Confidence.weak)) break;
     }
+}
+
+/// One line per device: location, ids, class, the driver bound to it, and how
+/// confidently. What `devmgd` matches its manifests against.
+pub fn forEachDevice(context: anytype, comptime visit: fn (@TypeOf(context), Binding) void) void {
+    for (bindings[0..binding_count]) |b| visit(context, b);
 }
 
 /// Print what bound to what. This table is the porting worksheet on unfamiliar

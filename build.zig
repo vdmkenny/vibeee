@@ -121,6 +121,7 @@ pub fn build(b: *std.Build) void {
     // Listing them keeps adding one to a single line here.
     const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
         .{ .name = "init", .root = "src/user/init.zig" },
+        .{ .name = "devmgd", .root = "src/user/devmgd/main.zig" },
         .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },
         .{ .name = "tools", .root = "src/user/tools.zig" },
         .{ .name = "vsh", .root = "src/user/vsh.zig" },

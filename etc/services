@@ -13,6 +13,14 @@
 #             every spawn, so what is listed here bounds the whole tree below
 #             the service, not just the service itself.
 
+name    = devmgd
+binary  = /DEVMGD
+# Everything a device manager grants, so it can pass a subset to each driver.
+# It is the only thing in the tree with `driver`, which is what stops anything
+# else from reaching hardware.
+caps    = spawn,driver
+restart = never
+
 name    = vsh
 binary  = /VSH
 restart = always

@@ -1,0 +1,17 @@
+One manifest per userspace driver, dropped in rather than listed anywhere:
+adding a driver should be adding a file.
+
+Keys are the field names of `Manifest` in src/user/devmgd/main.zig, so this
+directory and the parser cannot drift.
+
+  name    what the driver is called, in logs and in the process list
+  binary  absolute path to the program
+  match   pci:VENDOR:DEVICE for one part, in hex
+          pci-class:CLASS:SUBCLASS for a whole family
+          An exact part always wins over a family.
+  caps    comma-separated capabilities. Defaults to `driver`, which is what a
+          driver needs and the most it should have: interrupt lines, I/O ports
+          and device apertures, and nothing else.
+
+A device the kernel already drives is left alone. Two drivers on one device is
+worse than the wrong one of them.

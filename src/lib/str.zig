@@ -9,6 +9,8 @@
 //! drawing a file size, and in a terminal answering a cursor position report,
 //! and each of those had written it out again for want of somewhere to reach.
 
+const std = @import("std");
+
 
 pub fn eql(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
@@ -34,6 +36,24 @@ pub fn toUnsigned(text: []const u8) usize {
         value = value * 10 + (c - '0');
     }
     return value;
+}
+
+/// A hexadecimal number, stopping at the first character that is not one.
+///
+/// Lenient in the same way `toUnsigned` is: hardware tables are full of hex and
+/// a caller reading one wants the number, not a diagnosis of the text.
+pub fn fromHex(text: []const u8) usize {
+    var out: usize = 0;
+    for (text) |c| {
+        const digit: usize = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => break,
+        };
+        out = out *| 16 +| digit;
+    }
+    return out;
 }
 
 pub fn contains(haystack: []const u8, needle: []const u8) bool {
@@ -224,3 +244,12 @@ pub const Builder = struct {
         return self.buf[0..self.len];
     }
 };
+
+test "hex reads both cases and stops at the first character that is not one" {
+    try std.testing.expectEqual(@as(usize, 0x8086), fromHex("8086"));
+    try std.testing.expectEqual(@as(usize, 0x100e), fromHex("100e"));
+    try std.testing.expectEqual(@as(usize, 0x100E), fromHex("100E"));
+    try std.testing.expectEqual(@as(usize, 0x1f), fromHex("1f:extra"));
+    try std.testing.expectEqual(@as(usize, 0), fromHex(""));
+    try std.testing.expectEqual(@as(usize, 0), fromHex("zz"));
+}

@@ -10,6 +10,7 @@ NASM     ?= nasm
 QEMU     ?= qemu-system-i386
 MFORMAT  ?= mformat
 MCOPY    ?= mcopy
+MMD      ?= mmd
 
 BUILD    := build
 IMAGE    := $(BUILD)/vibeee.img
@@ -51,6 +52,7 @@ USER_SETTINGS := zig-out/bin/settings
 USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
+USER_DEVMGD := zig-out/bin/devmgd
 USER_HELLO := zig-out/bin/hello
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
@@ -120,6 +122,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/MONITOR
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/ETERM
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/PAD
+	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/DEVMGD
 	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH
@@ -128,6 +131,8 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@mmd -i $@ ::/DOCS 2>/dev/null || true
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/DOCS/NOTES.TXT
 	@mmd -i $@ ::/ETC 2>/dev/null || true
+	@$(MMD) -i $@ ::/DRIVERS
+	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/DRIVERS/E1000.MAN
 	@$(MCOPY) -i $@ -o etc/services ::/ETC/SERVICES
 	@$(MCOPY) -i $@ -o etc/eeewm.cfg ::/ETC/EEEWM.CFG
 
