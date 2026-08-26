@@ -105,6 +105,19 @@ pub const Report = struct {
 };
 
 /// Report a fault the architecture layer has already decoded.
+/// The captured registers, `columns` to a line.
+///
+/// Shared with the userspace fault path: a program that died has the same
+/// question to answer as a kernel that panicked, which register held the
+/// address that was not there.
+pub fn printRegisters(r: *const Report, columns: usize) void {
+    for (r.regs[0..r.regs_len], 0..) |reg, i| {
+        console.printf(" {s: <3} {x:0>8} ", .{ reg.name, reg.value });
+        if (i % columns == columns - 1) console.putChar('\n');
+    }
+    if (r.regs_len % columns != 0) console.putChar('\n');
+}
+
 pub fn report(r: *Report) noreturn {
     if (r.trace_len == 0) collectBacktrace(r, r.fp);
     render(r);
@@ -253,12 +266,7 @@ fn drawText(r: *const Report, width: usize) void {
 
     console.setColor(DIM, BG);
     console.printf(" pc  {x:0>8}  sp  {x:0>8}\n", .{ r.pc, r.sp });
-    // Two register columns per line, in whatever order the architecture chose.
-    for (r.regs[0..r.regs_len], 0..) |reg, i| {
-        console.printf(" {s: <3} {x:0>8} ", .{ reg.name, reg.value });
-        if (i % 2 == 1) console.putChar('\n');
-    }
-    if (r.regs_len % 2 == 1) console.putChar('\n');
+    printRegisters(r, 2);
     console.setColor(FG, BG);
     console.putChar('\n');
 

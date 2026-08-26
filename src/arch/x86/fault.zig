@@ -62,6 +62,9 @@ pub fn onException(frame: *idt.Frame) noreturn {
                 frame.error_code,
                 r.sp,
             });
+            // Which register held the address is the whole question, and this
+            // machine has no debugger to ask afterwards.
+            panic.printRegisters(&r, 4);
         }
         sched.exitWith(FAULTED);
     }
