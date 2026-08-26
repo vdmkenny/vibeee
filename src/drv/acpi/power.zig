@@ -6,6 +6,37 @@ const tables = @import("tables.zig");
 /// Bit 13 of the PM1 control register commits the sleep type in bits 10-12.
 const SLP_EN: u16 = 1 << 13;
 
+/// Bit 0 of the same register: set when the chipset is in ACPI mode rather
+/// than the legacy mode firmware leaves it in.
+const SCI_EN: u16 = 1 << 0;
+
+/// Hand the machine from legacy mode into ACPI mode.
+///
+/// Until this happens the sleep registers do nothing: in legacy mode the
+/// chipset routes power management to the firmware's own handler and ignores
+/// writes to PM1 control. Firmware hands the kernel a machine in legacy mode,
+/// which is why a soft-off that works under an emulator, where the fallback
+/// ports do the work, does nothing at all on the real one.
+///
+/// No AML is involved. The command port and the value written to it both come
+/// from the FADT, which is why this works long before there is an interpreter.
+fn enterAcpiMode(info: tables.Info) bool {
+    if (port.inw(info.pm1a_control) & SCI_EN != 0) return true;
+    if (info.smi_command == 0 or info.acpi_enable == 0) return false;
+
+    port.outb(info.smi_command, info.acpi_enable);
+
+    // Firmware answers in its own time and this runs with interrupts off, so
+    // the wait counts spins rather than microseconds: there is no clock to
+    // read here that is still advancing.
+    var spins: u32 = 0;
+    while (spins < 20_000_000) : (spins += 1) {
+        if (port.inw(info.pm1a_control) & SCI_EN != 0) return true;
+        asm volatile ("pause");
+    }
+    return false;
+}
+
 /// Emulator soft-off ports. Tried only after ACPI fails, and harmless on real
 /// hardware: each is an unclaimed I/O port there, so the write is discarded.
 const EMULATOR_PORTS = [_]struct { port: u16, value: u16 }{
@@ -18,6 +49,8 @@ const EMULATOR_PORTS = [_]struct { port: u16, value: u16 }{
 pub fn off() void {
     if (tables.get()) |info| {
         if (info.s5_found and info.pm1a_control != 0) {
+            _ = enterAcpiMode(info);
+
             const a: u16 = (@as(u16, info.slp_typ_a) << 10) | SLP_EN;
             port.outw(info.pm1a_control, a);
 
