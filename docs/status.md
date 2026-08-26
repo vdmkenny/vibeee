@@ -36,7 +36,7 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | Panic record | [`kernel/panicring.zig`](../src/kernel/panicring.zig) | One page of low memory holding the last panic across a warm reboot, magic and checksum guarded so a page firmware clobbered reads as no record rather than a garbled one. The next boot reports it, puts it in the kernel log and clears it. |
 | Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | An 8 KiB ring of every message, kept whether or not it was printed, so a quiet boot can still be read back with `log`. |
 | Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | What a process may do, intersected at every spawn so an authority only ever shrinks down the tree. Declared per service in `/etc/services`. |
-| Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts: the kernel's handler masks and signals, the driver services the device and acknowledges. `ioport_grant` opens ports through the CPU's own permission bitmap, copied into the TSS only when the process holding it changes. Both need the driver capability. |
+| Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts: the kernel's handler masks and signals, the driver services the device and acknowledges. `ioport_grant` opens ports through the CPU's own permission bitmap, copied into the TSS only when the process holding it changes. `map_device` maps a register aperture uncached, marked as belonging elsewhere so teardown does not hand device memory to the page allocator. All three need the driver capability. |
 | Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. How the machine is wired is described in `kernel/irq.zig` and filled in by the composition root, so the architecture never reaches for a firmware parser. |
 | Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 35 calls, bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
@@ -90,7 +90,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq display disk svc date eeefetch smbios pointer ringtest` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq driver display disk svc date eeefetch smbios pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
@@ -145,7 +145,7 @@ and exercised on every boot.
 |---|---|
 | PATA + FAT32 | Done, reading and writing |
 | `init` | Done: manifests, dependency order, restart policy, orphan reaping |
-| `devmgd` | Not started. `irq_attach` and `ioport_grant` are in; the MMIO aperture is not |
+| `devmgd` | Not started. Everything it grants is in: interrupt lines, ports and device apertures. What remains is the manager itself, matching `/drivers/*.manifest` against the PCI table |
 | `eeelibc` | Not started. Blocks the C ports, `stb_image` among them |
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |

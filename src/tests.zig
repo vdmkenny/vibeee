@@ -9,6 +9,7 @@
 test {
     _ = @import("kernel/bootinfo.zig");
     _ = @import("kernel/klog.zig");
+    _ = @import("kernel/ports.zig");
     _ = @import("drv/video/modeset/modeset.zig");
     // Generic over its node type precisely so it can be tested here, off the
     // hardware: the run queues are where this system's worst bug lived.

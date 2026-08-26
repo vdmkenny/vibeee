@@ -5,7 +5,6 @@
 //! boot in full: the alternative is rebooting with `verbose` and hoping the
 //! fault happens again.
 
-const sys = @import("sys");
 const info = @import("ulib").info;
 const out = @import("ulib").out;
 const str = @import("ulib").str;

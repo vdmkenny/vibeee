@@ -55,7 +55,6 @@ pub const initInterruptController = impl.initInterruptController;
 /// kernel; before it, the syscall vector is a fault like any other.
 pub const initSyscalls = impl.initSyscalls;
 /// Port access for a process the device manager trusted with it.
-pub const IO_BITMAP_BYTES = impl.IO_BITMAP_BYTES;
 pub const loadIoBitmap = impl.loadIoBitmap;
 pub const enableIoBitmap = impl.enableIoBitmap;
 pub const denyIoPorts = impl.denyIoPorts;

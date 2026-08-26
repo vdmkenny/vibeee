@@ -9,10 +9,12 @@
 //! at every spawn and can never widen, so granting one to a driver server does
 //! not grant it to anything that server later starts.
 
-const abi = @import("lib").syscalls;
+const std = @import("std");
 const ctx = @import("context.zig");
 const handles = @import("../handle.zig");
+const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
+const ports = @import("../ports.zig");
 const sched = @import("../sched.zig");
 
 const Args = ctx.Args;
@@ -67,22 +69,48 @@ pub fn sys_ioport_grant(a: Args) Result {
 
     const base = a.a0;
     const count = a.a1;
-    if (count == 0 or base + count > PORTS) return Errno.inval.value();
+    if (count == 0 or base + count > ports.COUNT) return Errno.inval.value();
 
     const t = sched.currentThread() orelse return Errno.perm.value();
-    const bits = sched.ioBitmapFor(t) orelse return Errno.nomem.value();
-
-    // Clear is allow, which is the opposite of how it reads, and is what the
-    // CPU defines: a set bit traps.
-    for (base..base + count) |port| {
-        bits[port / 8] &= ~(@as(u8, 1) << @truncate(port % 8));
-    }
+    const set = sched.portsFor(t) orelse return Errno.nomem.value();
+    set.allow(base, count);
 
     // The CPU reads the bitmap from inside the TSS, so the change has to be
     // copied there before the next instruction can benefit from it.
-    sched.reloadIoBitmap(t);
+    sched.reloadPorts(t);
     return 0;
 }
 
-/// Every port an x86 machine has.
-const PORTS = 65536;
+pub fn sys_map_device(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const phys = a.a0;
+    const len = a.a1;
+    if (len == 0) return Errno.inval.value();
+
+    // Refusing anything inside RAM. A driver's aperture lives above it, and
+    // mapping RAM this way would hand a process memory the allocator believes
+    // it still owns.
+    if (hal.isLinearPhys(phys)) return Errno.inval.value();
+
+    const t = sched.currentThread() orelse return Errno.perm.value();
+
+    const base = std.mem.alignBackward(usize, phys, hal.PAGE_SIZE);
+    const end = std.mem.alignForward(usize, phys + len, hal.PAGE_SIZE);
+
+    const at = t.shm_window.reserve(end - base) catch return Errno.nomem.value();
+
+    var offset: usize = 0;
+    while (offset < end - base) : (offset += hal.PAGE_SIZE) {
+        t.space.map(at + offset, base + offset, .{
+            .writable = true,
+            // The frames are the device's, so tearing the address space down
+            // must unmap them without freeing them.
+            .shared = true,
+            .uncached = true,
+        }) catch return Errno.nomem.value();
+    }
+
+    // The page the aperture starts in, plus how far into it the caller asked.
+    return @intCast(at + (phys - base));
+}

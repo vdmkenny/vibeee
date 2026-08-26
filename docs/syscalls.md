@@ -739,6 +739,25 @@ Allow this process to use a range of I/O ports directly.
 
 Needs the driver capability. Granted through the CPU's I/O permission bitmap rather than by mediating each access, so `in` and `out` then run at full speed from Ring 3. Grants accumulate and last until the process exits; there is no revoke, because a driver that no longer wants its ports is a driver that should exit.
 
+## `map_device`  <sub>#41</sub>
+
+Map a device's registers into this process.
+
+| arg | type | meaning |
+|---|---|---|
+| `phys` | uint | Physical address of the aperture. |
+| `len` | len | Bytes to map, rounded up to a page. |
+
+**Returns:** the address it was mapped at
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+Needs the driver capability. Mapped uncached, since a write to a register that sat in the cache would never reach the device, and marked as belonging elsewhere so ending the process unmaps it without handing device memory to the page allocator. There is no unmap: a driver that has finished with its device is a driver that should exit.
+
 ---
 
-41 calls defined.
+42 calls defined.

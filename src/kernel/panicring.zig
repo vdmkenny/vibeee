@@ -14,7 +14,6 @@
 //! the record carries a magic and a checksum, and anything that does not add
 //! up is treated as no record at all rather than as a garbled panic.
 
-const std = @import("std");
 const hal = @import("hal.zig");
 
 /// Physical page holding the record.

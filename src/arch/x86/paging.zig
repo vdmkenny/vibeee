@@ -103,6 +103,9 @@ pub const MapOptions = struct {
     writable: bool = false,
     /// The frame is owned elsewhere and must outlive this mapping.
     shared: bool = false,
+    /// Device registers rather than memory. A write to one that sat in the
+    /// cache would never reach the device.
+    uncached: bool = false,
 };
 
 /// The boot page directory. Lives in `.bootdata` so it sits at a physical
@@ -291,6 +294,8 @@ pub const AddressSpace = struct {
         entry.user = true;
         entry.write = options.writable;
         entry.shared = options.shared;
+        entry.cache_disable = options.uncached;
+        entry.write_through = options.uncached;
         table[pt_index] = entry;
 
         if (isActive(self.*)) invalidatePage(virt);

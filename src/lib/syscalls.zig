@@ -1080,6 +1080,22 @@ pub const table = [_]Syscall{
             "there is no revoke, because a driver that no longer wants its ports is a " ++
             "driver that should exit.",
     },
+    .{
+        .number = 41,
+        .name = "map_device",
+        .summary = "Map a device's registers into this process.",
+        .args = &.{
+            .{ .name = "phys", .kind = .uint, .desc = "Physical address of the aperture." },
+            .{ .name = "len", .kind = .len, .desc = "Bytes to map, rounded up to a page." },
+        },
+        .returns = "the address it was mapped at",
+        .errors = &.{ E.perm, E.inval, E.nomem },
+        .notes = "Needs the driver capability. Mapped uncached, since a write to a " ++
+            "register that sat in the cache would never reach the device, and marked as " ++
+            "belonging elsewhere so ending the process unmaps it without handing device " ++
+            "memory to the page allocator. There is no unmap: a driver that has finished " ++
+            "with its device is a driver that should exit.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

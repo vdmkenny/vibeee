@@ -274,6 +274,12 @@ pub fn irqAttach(gsi: u32) IrqError!u32 {
     };
 }
 
+/// Map a device's registers into this process. Needs the driver capability.
+pub fn mapDevice(phys: usize, len: usize) ?[*]volatile u32 {
+    const at = syscall3(abi.number("map_device"), phys, len, 0);
+    return if (at < 0) null else @ptrFromInt(@as(usize, @intCast(at)));
+}
+
 /// Allow this process to use a range of I/O ports directly. Needs the driver
 /// capability; grants last until the process exits.
 pub fn ioportGrant(base: u16, count: usize) isize {

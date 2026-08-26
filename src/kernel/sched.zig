@@ -18,6 +18,7 @@
 
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
+const ports = @import("ports.zig");
 const input = @import("input.zig");
 const queue = @import("sched/queue.zig");
 const thread_mod = @import("sched/thread.zig");
@@ -520,9 +521,9 @@ fn collectCorpses() void {
 /// why it cannot happen inside `exit`: a thread cannot free the stack it is
 /// standing on.
 fn reap(t: *Thread) void {
-    if (t.io_bitmap) |bits| {
-        heap.allocator.destroy(bits);
-        t.io_bitmap = null;
+    if (t.ports) |set| {
+        heap.allocator.destroy(set);
+        t.ports = null;
         // The next allocation could land on the same address, so a stale owner
         // would skip the copy and leave a process with someone else's ports.
         if (io_bitmap_owner == t) io_bitmap_owner = null;
@@ -571,7 +572,7 @@ fn dequeueCorpse(t: *Thread) void {
 var io_bitmap_owner: ?*Thread = null;
 
 fn applyIoBitmap(target: *Thread) void {
-    const bits = target.io_bitmap orelse {
+    const set = target.ports orelse {
         hal.denyIoPorts();
         return;
     };
@@ -581,28 +582,27 @@ fn applyIoBitmap(target: *Thread) void {
         return;
     }
 
-    hal.loadIoBitmap(bits);
+    hal.loadIoBitmap(set.bytes());
     io_bitmap_owner = target;
 }
 
-/// Give a thread a bitmap to be granted ports in, or the one it already has.
+/// The port set a thread is granted in, created on first use.
 ///
-/// Not loaded into the machine here: the caller is about to change it, and a
-/// copy taken before that would be a copy of the denials it is removing.
-pub fn ioBitmapFor(t: *Thread) ?*[hal.IO_BITMAP_BYTES]u8 {
-    if (t.io_bitmap) |existing| return existing;
+/// Not put into effect here: the caller is about to change it, and a copy
+/// taken before that would be a copy of the denials it is removing.
+pub fn portsFor(t: *Thread) ?*ports.PortSet {
+    if (t.ports) |existing| return existing;
 
-    const bits = heap.allocator.create([hal.IO_BITMAP_BYTES]u8) catch return null;
-    // Every port denied to begin with; a grant clears the bits it opens.
-    @memset(bits, 0xFF);
-    t.io_bitmap = bits;
-    return bits;
+    const set = heap.allocator.create(ports.PortSet) catch return null;
+    set.* = .{};
+    t.ports = set;
+    return set;
 }
 
 /// Put a thread's grants into effect, after they have been changed.
-pub fn reloadIoBitmap(t: *Thread) void {
-    const bits = t.io_bitmap orelse return;
-    hal.loadIoBitmap(bits);
+pub fn reloadPorts(t: *Thread) void {
+    const set = t.ports orelse return;
+    hal.loadIoBitmap(set.bytes());
     io_bitmap_owner = t;
 }
 

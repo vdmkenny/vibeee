@@ -11,6 +11,7 @@
 //! why threads are found through here and not through them.
 
 const abi = @import("lib").syscalls;
+const ports_mod = @import("../ports.zig");
 const hal = @import("../hal.zig");
 const handle = @import("../handle.zig");
 const shm = @import("../shm.zig");
@@ -69,7 +70,7 @@ pub const Thread = struct {
     /// Which I/O ports this process may touch, or null for the usual answer of
     /// none. Allocated only when something is granted, because it is eight
     /// kilobytes and almost nothing needs one.
-    io_bitmap: ?*[hal.IO_BITMAP_BYTES]u8 = null,
+    ports: ?*ports_mod.PortSet = null,
 
     /// What this process may do. Inherited at spawn and never widened, so the
     /// tree below a process can only ever be able to do less than it can.

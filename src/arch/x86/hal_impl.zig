@@ -56,7 +56,6 @@ pub fn initCpu(kernel_stack_top: usize) void {
 
 const syscall_arch = @import("syscall_arch.zig");
 
-pub const IO_BITMAP_BYTES = gdt.IOPB_BYTES;
 pub const loadIoBitmap = gdt.loadIoBitmap;
 pub const enableIoBitmap = gdt.enableIoBitmap;
 pub const denyIoPorts = gdt.denyIoPorts;
