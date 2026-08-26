@@ -126,6 +126,33 @@ build.
   log rather than hanging, because the target has no serial port.
 - `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it.
 
+## Milestones
+
+Against the table in [design §15](../design/00-vibeee.md).
+
+**M0 is complete.** Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers,
+scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard and `vsh` are all in
+and exercised on every boot.
+
+**M1 is partial**, and a good deal of it landed early:
+
+| Item | State |
+|---|---|
+| PATA + FAT32 | Done, reading and writing |
+| `init` | Done: manifests, dependency order, restart policy, orphan reaping |
+| `devmgd` | Not started. Needs `irq_attach`, an MMIO aperture capability and port delegation, none of which exist |
+| `eeelibc` | Not started. Blocks the C ports, `stb_image` among them |
+| Multicall utilities | Done |
+| Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
+| **GMA900 native modeset** | Not started. The risk gate, and untestable in QEMU |
+| `eeewm` + `libeui` | Done, and past what M1 asked for |
+| eTerm | Done |
+| Files, Edit | Not started |
+| Keymaps | Done: US-International and Belgian AZERTY |
+
+M1's gate is the first boot on real hardware. Nothing in the list above has to be finished
+first: the design names 640x480 VESA as the fallback if the native modeset resists.
+
 ## Known gaps
 
 - Creating a file uses an 8.3 short name; long names are read but not written.
