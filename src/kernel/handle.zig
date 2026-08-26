@@ -54,6 +54,10 @@ pub const File = struct {
 
 pub const Directory = struct {
     mount: *vfs.Mount,
+    /// A mount root, which has no parent to report.
+    at_root: bool = false,
+    /// The synthetic `..` has been handed out.
+    sent_parent: bool = false,
     /// Heap-allocated rather than inline.
     ///
     /// A `fat.Iterator` carries a 512-byte sector buffer, and a `Handle` is a

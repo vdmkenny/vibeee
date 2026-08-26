@@ -87,7 +87,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top kill disk svc date eeefetch dmidecode pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
-| Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, sorted with directories first and names written the way they should be read. |
+| Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
 | Pipes | [`kernel/pipe.zig`](../src/kernel/pipe.zig) | Byte stream with a reader and writer count, waitable by `wait_many`. Bound to a child's standard streams at spawn. |
 
 ## Applications

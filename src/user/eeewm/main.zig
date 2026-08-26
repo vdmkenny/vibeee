@@ -131,7 +131,7 @@ fn paint() void {
     // After the windows: a dropdown reaches over them.
     bar.paintOverlay(screen, info.width, info.height, &desktop);
 
-    for (&window_dirty) |*flag| flag.* = false;
+    for (&window_damage) |*d| d.clear();
     cursor.show(screen, pointer_x, pointer_y);
 }
 
@@ -146,13 +146,20 @@ fn paintCommitted() void {
 
     var lifted = false;
     for (visible) |index| {
-        if (!window_dirty[index]) continue;
+        const damage = &window_damage[index];
+        if (damage.isEmpty()) continue;
+
         if (!lifted and cursor.covers(desktop.windows[index].area)) {
             cursor.hide(screen);
             lifted = true;
         }
-        paintWindow(index, desktop.focused == index);
-        window_dirty[index] = false;
+
+        if (damage.all) {
+            paintWindow(index, desktop.focused == index);
+        } else {
+            refreshWindow(index, damage.rects[0..damage.count]);
+        }
+        damage.clear();
     }
 
     // A menu floats over the tiles, so anything repainted underneath one has
@@ -161,8 +168,82 @@ fn paintCommitted() void {
     if (lifted) cursor.show(screen, pointer_x, pointer_y);
 }
 
-/// Which windows have committed since the last paint.
-var window_dirty: [layout.MAX_WINDOWS]bool = @splat(false);
+/// Bring the parts of a window that changed up to date, and nothing else.
+fn refreshWindow(index: usize, damage: []const Rect) void {
+    const t = theme.current();
+    const w = &desktop.windows[index];
+    if (!w.mapped or !surfaces[index].valid()) return;
+
+    const border = if (desktop.focused == index) t.border_width_focused else t.border_width;
+    const content = w.area.inset(border);
+
+    for (damage) |r| {
+        // The client counts from its own top left, which sits at the content
+        // origin.
+        const on_screen = (Rect{
+            .x = content.x + r.x,
+            .y = content.y + r.y,
+            .w = r.w,
+            .h = r.h,
+        }).intersect(content);
+        if (on_screen.isEmpty()) continue;
+
+        // A translucent window blends with what is behind it, so what is
+        // behind has to be put back first. Blending onto the last frame of the
+        // window itself would darken it a little more every time.
+        if (w.transparency != 0) screen.fill(on_screen, t.desktop);
+        clients.blit(screen, surfaces[index], content, on_screen, w.transparency);
+    }
+}
+
+/// What a window has committed since the last paint, in surface coordinates.
+///
+/// Kept rather than reduced to a flag because the flag was the flicker: a
+/// window that redraws when the pointer merely crosses it was repainting its
+/// whole area, and on a display with one buffer the erase is on screen before
+/// the redraw catches up.
+const Damage = struct {
+    rects: [MAX_RECTS]Rect = @splat(.{}),
+    count: usize = 0,
+    /// Everything, because the window moved or was just mapped and there is no
+    /// previous content to keep.
+    all: bool = false,
+
+    /// As many as a commit can carry.
+    const MAX_RECTS = 3;
+
+    fn isEmpty(self: Damage) bool {
+        return self.count == 0 and !self.all;
+    }
+
+    fn add(self: *Damage, area: Rect) void {
+        if (self.all or area.isEmpty()) return;
+
+        if (self.count == MAX_RECTS) {
+            // Past what a commit carries, everything merges into one box: the
+            // bookkeeping would cost more than the pixels it saved.
+            var all = self.rects[0];
+            for (self.rects[1..self.count]) |r| all = all.unite(r);
+            self.rects[0] = all.unite(area);
+            self.count = 1;
+            return;
+        }
+
+        self.rects[self.count] = area;
+        self.count += 1;
+    }
+
+    fn whole(self: *Damage) void {
+        self.all = true;
+        self.count = 0;
+    }
+
+    fn clear(self: *Damage) void {
+        self.* = .{};
+    }
+};
+
+var window_damage: [layout.MAX_WINDOWS]Damage = @splat(.{});
 
 fn paintWindow(index: usize, focused: bool) void {
     const t = theme.current();
@@ -172,7 +253,6 @@ fn paintWindow(index: usize, focused: bool) void {
 
     const width = if (focused) t.border_width_focused else t.border_width;
 
-    screen.fill(area, t.surface);
     // Drawn inside the tile, so focusing a window never changes its size and
     // never disturbs its neighbours.
     screen.borderInset(area, width, if (focused) t.border_focused else t.border);
@@ -182,9 +262,15 @@ fn paintWindow(index: usize, focused: bool) void {
     // looks like before anything has connected.
     const content = area.inset(width);
     if (w.mapped and surfaces[index].valid()) {
+        // Filled first only when the window is translucent, where the blend
+        // needs a backdrop. An opaque one covers every pixel it is about to
+        // write, and filling it grey first is a flash of grey.
+        if (w.transparency != 0) screen.fill(content, t.desktop);
         clients.blit(screen, surfaces[index], content, content, w.transparency);
         return;
     }
+
+    screen.fill(content, t.surface);
 
     const inner = content.inset(t.padding);
     screen.text(inner.x, inner.y, w.name(), t.text);
@@ -427,10 +513,17 @@ fn handlePointer(event: sys.PointerEvent) void {
     if (pressed_left or pressed_right) {
         // The bar gets first refusal: a menu it has open is modal, and it
         // reaches below its own strip.
+        const was_focused = desktop.focused;
         const action = bar.click(event.x, event.y, info.width, info.height, pressed_right, &desktop);
         if (action == .none and pressed_left) desktop.focusAt(event.x, event.y);
         apply(action);
-        dirty = true;
+
+        // Only when the desktop actually looks different. A click inside a
+        // window belongs to the window, and repainting the screen for it is
+        // what a person sees as the whole display flashing.
+        if (action != .none or desktop.focused != was_focused or bar.menuOpen()) {
+            dirty = true;
+        }
     }
 
     // Whatever the bar did not take goes to the window under the pointer. A
@@ -572,13 +665,18 @@ fn onAttach(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
 
 fn onCommit(pid: u32, req: *const wire.Req) Answer {
     const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
-    _ = req.body.commit;
+    const commit = req.body.commit;
 
-    // The window, not the screen. Honouring the damage rectangles the commit
-    // carries is the next step and would narrow this further; marking the one
-    // window already takes the desktop, the bar and every other tile out of
-    // the common case.
-    window_dirty[index] = true;
+    // What the client says changed, not the whole window. A window redraws
+    // whenever the pointer crosses it, and repainting all of it for that is
+    // what a person sees as flicker.
+    //
+    // No rectangles means nothing changed, which is the common answer from a
+    // toolkit whose controls all decided they looked the same as last pass.
+    // A client that wants everything says so by naming everything.
+    for (commit.rects[0..@min(commit.n, commit.rects.len)]) |r| {
+        window_damage[index].add(.{ .x = r.x, .y = r.y, .w = r.w, .h = r.h });
+    }
     return .{ .rep = .{ .gen = table.generation } };
 }
 

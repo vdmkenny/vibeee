@@ -124,12 +124,18 @@ pub const FileDialog = struct {
             self.entry_count += 1;
         }
         self.panel.list = .{};
+        self.panel.filled_from = null;
     }
 
     fn descend(self: *FileDialog) void {
         if (self.panel.chosen >= self.entry_count) return;
 
         const name = self.entries[self.panel.chosen].name;
+        if (ulib.str.eql(name, dir.PARENT)) {
+            self.ascend();
+            return;
+        }
+
         if (self.path_len + name.len + 1 >= MAX_PATH) return;
 
         @memcpy(self.path[self.path_len..][0..name.len], name);
@@ -137,6 +143,19 @@ pub const FileDialog = struct {
         self.path[self.path_len] = '/';
         self.path_len += 1;
 
+        self.reload();
+    }
+
+    /// Drop the last component, which is what `..` means.
+    fn ascend(self: *FileDialog) void {
+        // The trailing separator is always there, so the component to remove
+        // is what lies between the last two.
+        if (self.path_len <= 1) return;
+
+        var at = self.path_len - 1;
+        while (at > 0 and self.path[at - 1] != '/') at -= 1;
+
+        self.path_len = at;
         self.reload();
     }
 

@@ -1,6 +1,7 @@
 //! Filesystem calls.
 
 const abi = @import("lib").syscalls;
+const str = @import("lib").str;
 const clock = @import("../clock.zig");
 const ctx = @import("context.zig");
 const fat = @import("../fat.zig");
@@ -46,7 +47,13 @@ pub fn sys_open(a: Args) Result {
         h.* = .{
             .kind = .directory,
             .rights = .{ .read = true },
-            .data = .{ .directory = .{ .mount = r.mount, .iterator = iterator } },
+            .data = .{ .directory = .{
+                .mount = r.mount,
+                .iterator = iterator,
+                // Nothing above a mount root, so nothing to report as its
+                // parent. `resolve` leaves nothing over for one.
+                .at_root = r.rest.len == 0,
+            } },
         };
         return @intCast(slot);
     }
@@ -143,13 +150,35 @@ pub fn sys_readdir(a: Args) Result {
     const d = &h.data.directory;
     if (d.exhausted) return 0;
 
-    const entry = (d.iterator.next() catch return Errno.io.value()) orelse {
-        d.exhausted = true;
-        return 0;
-    };
+    // The parent comes first and is made up here rather than passed through.
+    //
+    // FAT records one in a subdirectory and not in a root, and a filesystem
+    // without directory entries at all would record none. A caller that had to
+    // know which is which could not be written once, so every directory that
+    // has a parent reports one and no directory reports itself.
+    if (!d.sent_parent) {
+        d.sent_parent = true;
+        if (!d.at_root) {
+            const record = abi.Dirent{ .size = 0, .mtime = 0, .is_dir = true, .name = ".." };
+            const n = record.encode(out) orelse return Errno.nomem.value();
+            return @intCast(n);
+        }
+    }
 
-    const n = writeDirent(out, entry) orelse return Errno.nomem.value();
-    return @intCast(n);
+    while (true) {
+        const entry = (d.iterator.next() catch return Errno.io.value()) orelse {
+            d.exhausted = true;
+            return 0;
+        };
+
+        // The filesystem's own dot entries are dropped: `..` was answered
+        // above, and `.` tells a reader nothing it did not already know.
+        const name = entry.nameSlice();
+        if (str.eql(name, ".") or str.eql(name, "..")) continue;
+
+        const n = writeDirent(out, entry) orelse return Errno.nomem.value();
+        return @intCast(n);
+    }
 }
 
 pub fn sys_stat(a: Args) Result {

@@ -69,11 +69,27 @@ pub const Chooser = struct {
     /// The row a click landed on when it was a directory, so the caller knows
     /// which one to descend into.
     chosen: usize = 0,
+    /// Which row the name field was last filled from, so moving the selection
+    /// refills it and typing over it is not undone on the next pass.
+    filled_from: ?usize = null,
+
+    /// The rows as the table wants them, rebuilt each pass.
+    ///
+    /// Here rather than on the stack because it is six kilobytes and a process
+    /// has sixteen. Caller-owned rather than a module variable so two choosers
+    /// cannot quietly share one, which is the bug a shared scratch buffer
+    /// always eventually becomes.
+    rows: [MAX_ROWS]table.Row = undefined,
+    /// What the size column says, which the rows above point into.
+    sizes: [MAX_ROWS][12]u8 = undefined,
 
     /// Set once, because `name` has to point at `name_storage` and a struct
     /// cannot point at itself before it exists.
     pub fn init(self: *Chooser, purpose: Purpose, initial: []const u8) void {
         self.* = .{ .purpose = purpose };
+        // The name given was typed by the caller, not picked from the list, so
+        // nothing should overwrite it until the selection actually moves.
+        self.filled_from = 0;
         self.name = .{ .bytes = &self.name_storage };
         _ = self.name.insert(0, initial[0..@min(initial.len, MAX_NAME)]);
         self.name_editor.cursor = self.name.len;
@@ -116,9 +132,7 @@ pub fn run(
     const name_y = buttons_y - row - 6;
     const list_top = area.y + pad + 20;
 
-    var rows: [MAX_ROWS]table.Row = undefined;
-    var sizes: [MAX_ROWS][12]u8 = undefined;
-    const shown = fill(entries, &rows, &sizes);
+    const shown = fill(entries, &state.rows, &state.sizes);
 
     var outcome = Outcome.none;
 
@@ -126,7 +140,7 @@ pub fn run(
         .{ .x = area.x + pad, .y = list_top, .w = area.w - pad * 2, .h = name_y - list_top - 6 },
         &state.list,
         &COLUMNS,
-        rows[0..shown],
+        state.rows[0..shown],
     )) |index| {
         if (index < entries.len) {
             state.chosen = index;
@@ -139,11 +153,15 @@ pub fn run(
         }
     }
 
-    // A single click fills the field without committing, so the name can be
-    // corrected before saving over something.
-    if (outcome == .none and state.list.selected < entries.len) {
+    // The name follows the selection, arrow keys included, so choosing a file
+    // and correcting its name are the same gesture. Only when the selection
+    // moves: refilling every pass would undo whatever was typed.
+    if (outcome == .none and state.list.selected < entries.len and
+        state.filled_from != state.list.selected)
+    {
+        state.filled_from = state.list.selected;
         const selected = entries[state.list.selected];
-        if (!selected.is_dir and ctx.pressedThisPass()) state.setName(selected.name);
+        if (!selected.is_dir) state.setName(selected.name);
     }
 
     if (text_mod.field(

@@ -43,7 +43,9 @@ pub fn ls(args: []const []const u8) void {
 
         // "." and ".." are in every directory and tell the reader nothing;
         // the shell resolves them without being shown them.
-        if (str.eql(name, ".") or str.eql(name, "..")) continue;
+        // Hidden the way every listing hides them, `..` included: someone
+        // typing `ls` wants what is in the directory, not the way out of it.
+        if (name.len > 0 and name[0] == '.') continue;
 
         // Fixed-width columns first so names, which vary wildly in length, line
         // up on the left where they are read.

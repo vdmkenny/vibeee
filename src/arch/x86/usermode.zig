@@ -14,7 +14,15 @@ const pmm = @import("../../kernel/pmm.zig");
 /// Top of the initial user stack. Below the loaded image, and well clear of the
 /// null page so a null dereference still faults.
 pub const USER_STACK_TOP: usize = 0x3FFF_0000;
-pub const USER_STACK_PAGES = 4;
+
+/// Thirty-two kilobytes.
+///
+/// Sixteen was not enough for a program that draws: a control that builds a
+/// list of rows before handing them to a table puts kilobytes in one frame,
+/// and the first one to do so overflowed. Nothing below the bottom page is
+/// mapped, so an overflow still faults at once and reports where, rather than
+/// quietly writing into whatever is under it.
+pub const USER_STACK_PAGES = 8;
 
 pub const Error = error{OutOfMemory};
 

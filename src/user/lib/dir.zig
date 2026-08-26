@@ -37,8 +37,9 @@ pub const Error = error{ NotFound, NoRoom };
 /// List `path`, copying the names into `names`.
 ///
 /// Directories come first and each group is sorted, because a listing in the
-/// order the filesystem happens to hold it is a listing nobody can scan.
-/// `.` and `..` are dropped: they are in every directory and say nothing.
+/// order the filesystem happens to hold it is a listing nobody can scan. The
+/// parent sorts to the very top, where a person looking for the way out of a
+/// directory will look for it.
 pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
     const handle = sys.open(path, .{ .directory = true });
     if (handle < 0) return error.NotFound;
@@ -53,7 +54,6 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
         if (n <= 0) break;
 
         const entry = sys.Dirent.decode(&record, @intCast(n)) orelse continue;
-        if (str.eql(entry.name, ".") or str.eql(entry.name, "..")) continue;
 
         if (out.count == MAX) {
             out.truncated = true;
@@ -85,7 +85,13 @@ fn sort(entries: []Entry) void {
     std.mem.sort(Entry, entries, {}, before);
 }
 
+pub const PARENT = "..";
+
 fn before(_: void, a: Entry, b: Entry) bool {
+    const a_parent = str.eql(a.name, PARENT);
+    const b_parent = str.eql(b.name, PARENT);
+    if (a_parent != b_parent) return a_parent;
+
     if (a.is_dir != b.is_dir) return a.is_dir;
     return lessCaseless(a.name, b.name);
 }
