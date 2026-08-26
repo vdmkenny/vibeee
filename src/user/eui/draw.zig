@@ -18,7 +18,15 @@ pub const Color = theme.Color;
 
 /// The interface face. Proportional on purpose: a fixed grid is what a
 /// terminal needs and what a button label should not look like.
-pub const ui_font: *const fontlib.Font = &fontlib.ark_ui_12;
+pub const Font = fontlib.Font;
+
+/// Interface text: proportional, because everything but a terminal reads
+/// better that way at this size.
+pub const ui_font: *const Font = &fontlib.ark_ui_12;
+
+/// Where columns have to line up. The console's face, so a terminal window and
+/// the console it replaces show the same shapes.
+pub const mono_font: *const Font = &fontlib.spleen_8x16;
 
 /// Walk a string as characters rather than bytes.
 ///
@@ -175,7 +183,12 @@ pub const Surface = struct {
 
     /// Draw one glyph with its top-left at (x, y).
     pub fn glyph(self: Surface, x: i32, y: i32, code: u21, color: Color) void {
-        const face = ui_font;
+        self.glyphIn(ui_font, x, y, code, color);
+    }
+
+    /// One glyph from a face of the caller's choosing. What a terminal uses,
+    /// since a grid needs the monospaced face and everything else does not.
+    pub fn glyphIn(self: Surface, face: *const Font, x: i32, y: i32, code: u21, color: Color) void {
         const bits = face.glyph(code) orelse face.fallback();
 
         var row: i32 = 0;
@@ -193,13 +206,17 @@ pub const Surface = struct {
     }
 
     pub fn text(self: Surface, x: i32, y: i32, message: []const u8, color: Color) void {
+        self.textIn(ui_font, x, y, message, color);
+    }
+
+    pub fn textIn(self: Surface, face: *const Font, x: i32, y: i32, message: []const u8, color: Color) void {
         var pen = x;
         var it = codepoints(message);
         while (it.next()) |cp| {
-            self.glyph(pen, y, cp, color);
-            // Per glyph, not per cell: the face is proportional, and advancing
-            // by the cell width would space it like a terminal.
-            pen += @intCast(ui_font.advance(cp));
+            self.glyphIn(face, pen, y, cp, color);
+            // Per glyph, not per cell: the interface face is proportional, and
+            // advancing by the cell width would space it like a terminal.
+            pen += @intCast(face.advance(cp));
         }
     }
 

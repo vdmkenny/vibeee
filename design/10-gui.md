@@ -627,6 +627,22 @@ one flag, and getting it wrong looks like our bug when it is not.
 | Alt+key | `ESC` then the key | same |
 | Enter / Tab / Backspace | `CR` / `HT` / `DEL` (0x7F) | same |
 
+### 16.2a Line discipline: where it ended up
+
+The plan above puts line editing in `vsh` (11-userspace §257), which would leave the terminal
+passing keys straight through. `vsh` does not do that yet: it reads whole lines and relies on
+the kernel console to assemble them, which works on the console and produces nothing at all
+over a pipe.
+
+So eTerm assembles lines itself, echoing as it goes and handling backspace, `Ctrl+U` and
+`Ctrl+C`, and sends a line when Enter is pressed. It stops doing so on the alternate screen,
+which is what a full-window program switches to and therefore needs no mode of our own: a
+program that wants raw keys already asks for the screen it needs them on.
+
+Moving the editing into `vsh` is still the right end state, and it is what gives history and
+completion on the console as well as in a window. Until then the terminal owns it, and a
+program on the main screen that wants raw input has no way to ask.
+
 ### 16.3 Deferred
 
 Genuinely optional, and each one is a program degrading rather than failing:
@@ -636,8 +652,10 @@ Genuinely optional, and each one is a program degrading rather than failing:
 - **`DECSCUSR`** (`CSI Sp q`), cursor shape. Parsed and discarded so it does not land as text.
 - **`DA2`** (`CSI >c`), secondary device attributes. Answering is one fixed string; worth adding
   the moment something is seen waiting on it.
-- **Truecolour** `SGR 38;2;r;g;b`. The panel is 6-bit; the nearest-sixteen map is the honest
-  rendering either way.
+- **Truecolour** `SGR 38;2;r;g;b`. Accepted and reduced to the 256-colour cube rather than to
+  the nearest sixteen: the cube costs no more per cell, since a cell already carries an index.
+- **Scrollback.** The buffer is sized for it and nothing writes to it yet, so what leaves the
+  top of the screen is gone.
 
 ### 16.4 `TERM`
 

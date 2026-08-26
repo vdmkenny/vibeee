@@ -55,23 +55,30 @@ pub fn sys_spawn(a: Args) Result {
     };
 }
 
-/// Take a reference to each handle the caller nominated for the child.
+/// Take a reference to each handle the child will find on 0, 1 and 2.
 ///
 /// A reference of its own, because the parent goes on holding its copy and
 /// either may close first. A terminal emulator closes its ends of the shell's
 /// pipes straight after spawning, and the shell must not lose them with it.
+///
+/// `INHERIT` means the caller's own handle of that number, not a fresh
+/// console. That is what makes a pipe survive a shell: a terminal gives the
+/// shell one, and every tool the shell runs finds it too.
 fn claimStdio(options: *const abi.Spawn, out: *exec.Stdio) error{BadHandle}!void {
     const table = currentHandles() orelse return error.BadHandle;
     const wanted = [_]i32{ options.stdin, options.stdout, options.stderr };
 
     for (wanted, 0..) |number, i| {
-        if (number == abi.Spawn.INHERIT) continue;
-        if (number < 0) return error.BadHandle;
+        const from: u32 = if (number == abi.Spawn.INHERIT)
+            @intCast(i)
+        else if (number < 0)
+            return error.BadHandle
+        else
+            @intCast(number);
 
-        const h = table.get(@intCast(number)) orelse {
-            releaseStdio(out);
-            return error.BadHandle;
-        };
+        // A caller with nothing on that number leaves the child the console it
+        // was given, which is what early boot and `init` rely on.
+        const h = table.get(from) orelse continue;
         out[i] = handles.retain(h.*);
     }
 }

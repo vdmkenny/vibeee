@@ -87,6 +87,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top kill disk svc date eeefetch dmidecode pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
+| Pipes | [`kernel/pipe.zig`](../src/kernel/pipe.zig) | Byte stream with a reader and writer count, waitable by `wait_many`. Bound to a child's standard streams at spawn. |
 
 ## Applications
 
@@ -97,6 +98,7 @@ before it forced into place.
 |---|---|---|
 | Settings | [`user/apps/settings.zig`](../src/user/apps/settings.zig) | Theme, bar position and layout. Reads and writes `/etc/eeewm.cfg`; the theme applies live. |
 | Monitor | [`user/apps/monitor.zig`](../src/user/apps/monitor.zig) | Process tree with per-process CPU share, memory and uptime, refreshed twice a second. Ends a selected process. |
+| eTerm | [`user/eterm/`](../src/user/eterm/) | Terminal window running `vsh` over a pipe pair. Extended VT100 per [design §16](../design/10-gui.md): cursor movement, erase, insert and delete, scrolling regions, alternate screen, SGR with 256 colours, DECCKM, OSC titles. Line editing is the terminal's, until `vsh` does its own. |
 
 ## Shared between kernel and userspace
 

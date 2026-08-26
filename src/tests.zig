@@ -15,4 +15,5 @@ test {
     _ = @import("lib");
     _ = @import("qr_test.zig");
     _ = @import("keymap_test.zig");
+    _ = @import("user/eterm/vt_test.zig");
 }
