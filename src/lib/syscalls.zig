@@ -1154,6 +1154,24 @@ pub const table = [_]Syscall{
             "that call would have waited on, so it goes into a wait_many with everything " ++
             "else and every read afterwards is one that never blocks.",
     },
+    .{
+        .number = 44,
+        .name = "rename",
+        .summary = "Move a file or directory, replacing what is already there.",
+        .args = &.{
+            .{ .name = "from", .kind = .cptr, .desc = "What to move." },
+            .{ .name = "from_len", .kind = .len, .desc = "Length of the path." },
+            .{ .name = "to", .kind = .cptr, .desc = "Where it goes." },
+            .{ .name = "to_len", .kind = .len, .desc = "Length of the path." },
+        },
+        .errors = &.{ E.fault, E.noent, E.exists, E.inval, E.io, E.perm },
+        .notes = "Within one volume: across two this would be a copy and a delete, which " ++
+            "takes time proportional to the file and fails differently, so it is refused " ++
+            "rather than done silently. Replacing an existing file repoints the record " ++
+            "that is already there, so the name means the old content or the new one and " ++
+            "never nothing, which is what makes write-then-rename worth doing on FAT. " ++
+            "A directory cannot replace or be replaced.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

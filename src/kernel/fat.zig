@@ -1134,7 +1134,25 @@ pub fn createDirectory(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64
     return create(vol, dir, name, mtime, true);
 }
 
+/// Content a new record should point at, for a rename moving something that
+/// already exists rather than making something that does not.
+const Adopted = struct {
+    cluster: u32,
+    size: u32,
+};
+
 fn create(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64, is_dir: bool) Error!Entry {
+    return build(vol, dir, name, mtime, is_dir, null);
+}
+
+fn build(
+    vol: *Volume,
+    dir: Iterator,
+    name: []const u8,
+    mtime: i64,
+    is_dir: bool,
+    adopt: ?Adopted,
+) Error!Entry {
     if (name.len == 0 or name.len > MAX_NAME) return error.NameTooLong;
     if (lookupIn(dir, name)) |_| return error.Exists else |err| switch (err) {
         error.NotFound => {},
@@ -1153,13 +1171,18 @@ fn create(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64, is_dir: boo
 
     // A directory's cluster is allocated before its record, so a failure part
     // way leaves a lost cluster rather than a directory nothing can enter.
+    // Adopted content is already there and is not this record's to free.
     var cluster: u32 = 0;
-    if (is_dir) {
+    var size: u32 = 0;
+    if (adopt) |existing| {
+        cluster = existing.cluster;
+        size = existing.size;
+    } else if (is_dir) {
         cluster = try table.alloc(&vol.fat);
         try zeroCluster(vol, cluster);
         try writeDotEntries(vol, cluster, parentCluster(vol, dir), mtime);
     }
-    errdefer if (is_dir) table.freeChain(&vol.fat, cluster) catch {};
+    errdefer if (is_dir and adopt == null) table.freeChain(&vol.fat, cluster) catch {};
 
     var records: [LFN_MAX_ENTRIES + 1][32]u8 = undefined;
     const checksum = shortNameChecksum(&short);
@@ -1185,7 +1208,7 @@ fn create(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64, is_dir: boo
         .write_time = stamp.time,
         .write_date = stamp.date,
         .cluster_low = @truncate(cluster),
-        .size = 0,
+        .size = size,
     };
     @memcpy(&records[long_records], std.mem.asBytes(&entry_record));
 
@@ -1197,7 +1220,7 @@ fn create(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64, is_dir: boo
         .name = undefined,
         .name_len = 0,
         .is_dir = is_dir,
-        .size = 0,
+        .size = size,
         .cluster = cluster,
         .mtime = mtime,
         .dir_sector = slot.sector,
@@ -1261,7 +1284,15 @@ pub fn unlink(vol: *Volume, entry: Entry) Error!void {
     if (entry.dir_sector == 0) return error.NotFound;
 
     if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
+    try forget(vol, entry);
+}
 
+/// Mark a record free without touching what it points at.
+///
+/// Separate from `unlink` because a rename wants exactly this half: the
+/// clusters the old name held are the ones the new name now holds, and freeing
+/// them would empty the file it just moved.
+fn forget(vol: *Volume, entry: Entry) Error!void {
     var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
     vol.dev.read(entry.dir_sector, &sector_buf) catch return error.Io;
 
@@ -1271,6 +1302,76 @@ pub fn unlink(vol: *Volume, entry: Entry) Error!void {
     // attached to whatever record lands there next.
     sector_buf[entry.dir_index * @sizeOf(DirEntry)] = 0xE5;
     vol.dev.write(entry.dir_sector, &sector_buf) catch return error.Io;
+}
+
+/// Move `source` to `name` in `dir`, replacing whatever is already called that.
+///
+/// The content never moves. What moves is which record names it, which is why
+/// this is a directory operation and costs nothing proportional to the size of
+/// the file.
+pub fn rename(vol: *Volume, source: Entry, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    if (source.dir_sector == 0) return error.NotFound;
+    if (name.len == 0 or name.len > MAX_NAME) return error.NameTooLong;
+
+    const moved = try relink(vol, source, dir, name, mtime);
+
+    // Renaming something onto itself has already done everything there is to
+    // do, and going on would delete the record just written.
+    if (moved.dir_sector == source.dir_sector and moved.dir_index == source.dir_index) {
+        return moved;
+    }
+
+    try forget(vol, source);
+
+    // A directory holds a pointer back to where it was.
+    if (source.is_dir) try setParent(vol, moved.cluster, parentCluster(vol, dir));
+    return moved;
+}
+
+/// Put `name` on `source`'s content, however that has to be done.
+fn relink(vol: *Volume, source: Entry, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    const adopted = Adopted{ .cluster = source.cluster, .size = source.size };
+
+    const target = lookupIn(dir, name) catch |err| switch (err) {
+        error.NotFound => return build(vol, dir, name, mtime, source.is_dir, adopted),
+        else => return err,
+    };
+
+    // Replacing. A directory is not replaceable in either direction: whatever
+    // is inside one would become unreachable, and there is nothing sensible to
+    // put in its place.
+    if (target.is_dir or source.is_dir) return error.Exists;
+
+    // The record that is already there is repointed rather than deleted and
+    // rebuilt. One sector write moves the name onto the new content, so a power
+    // cut leaves the name meaning either the old thing or the new one and never
+    // nothing, which is the whole reason write-then-rename is worth doing on a
+    // filesystem with no atomic anything.
+    const stale = target.cluster;
+    var moved = target;
+    moved.cluster = source.cluster;
+    moved.size = source.size;
+    try commit(vol, moved, mtime);
+
+    // Only now is the old content unreachable, and only now safe to lose.
+    if (stale >= 2 and stale != source.cluster) try table.freeChain(&vol.fat, stale);
+    return moved;
+}
+
+/// Point a directory's `..` at where it now lives.
+fn setParent(vol: *Volume, cluster: u32, parent: u32) Error!void {
+    if (cluster < 2) return;
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    const first = vol.firstSectorOfCluster(cluster);
+    vol.dev.read(first, &sector_buf) catch return error.Io;
+
+    // `..` is the second record of a directory's first cluster, always.
+    const raw: *align(1) DirEntry = @ptrCast(&sector_buf[@sizeOf(DirEntry)]);
+    raw.cluster_low = @truncate(parent);
+    raw.cluster_high = @truncate(parent >> 16);
+
+    vol.dev.write(first, &sector_buf) catch return error.Io;
 }
 
 /// Free clusters on the volume, for `df`.

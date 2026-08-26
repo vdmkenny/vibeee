@@ -35,10 +35,17 @@ rescue. The cost of being unable to read the disk from another computer, on a
 machine whose whole recovery story is a card reader, is far higher than the
 throughput it would buy.
 
-What FAT costs is accepted rather than papered over: no atomic rename, no
-journal, so a power cut during a write can lose the file being written. Writes
-are ordered so that the loss is bounded to that file, and anything the system
-must not lose is written to a new name and renamed into place.
+What FAT costs is accepted rather than papered over: no journal, so a power cut
+during a write can lose the file being written. Writes are ordered so the loss
+is bounded to that file, and anything the system must not lose is written under
+a new name and renamed over the old one.
+
+Rename is not atomic either, but replacing an existing file comes closer than
+anything else here: the directory record already carrying that name is
+repointed at the new content in a single sector write, rather than being
+deleted and rebuilt. The name therefore means the old file or the new one and
+never nothing, and the old content is only freed once nothing names it. That
+one property is what makes write-then-rename worth doing at all.
 
 Design center: one soldered 4 GB PATA SSD (SM223AC: 28-bit LBA, no READ/WRITE MULTIPLE, UDMA/66, ~30 MB/s seq read, ~20 MB/s seq write, **1–3 MB/s small random writes**, unknown power-loss behavior in the FTL), plus removable SD/USB media. Everything that writes is shaped around two facts: small random writes are ~10× slower than sequential, and the user *will* yank power. Therefore: read-only root, bounded dirty age everywhere, no swap.
 
@@ -458,8 +465,11 @@ either the old table or the new one and never a mixture.
   draining the queue (§3.7). The real-hardware IDENTIFY dump is bring-up task 1.
 - **FAT is not crash-safe and cannot be made so.** The bound on the damage is
   the write ordering in §6, and the bound is one file: the one being written.
-  Anything that must not be lost is written to a new name and renamed over the
-  old one.
+  Anything that must not be lost is written under a new name and renamed over
+  the old one, which §1 explains is as close to atomic as this gets.
+- **A rename cannot span volumes.** Across two it would be a copy and a delete,
+  which takes time proportional to the file and fails differently, so it is
+  refused rather than done silently under a name that promises otherwise.
 - ATTO-derived performance figures are MEDIUM confidence; the acceptance
   thresholds in §10 may need one recalibration pass against the real device.
 - Open for 01-boot: the final bootinfo layout, and who owns the 440 B MBR code

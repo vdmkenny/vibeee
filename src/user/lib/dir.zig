@@ -34,6 +34,17 @@ pub const Listing = struct {
 
 pub const Error = error{ NotFound, NoRoom };
 
+/// Whether `path` names a directory.
+///
+/// Asked by opening it as one, which is the same question the kernel would
+/// answer, put the way a caller can put it.
+pub fn isDirectory(path: []const u8) bool {
+    const handle = sys.open(path, .{ .directory = true });
+    if (handle < 0) return false;
+    _ = sys.close(@intCast(handle));
+    return true;
+}
+
 /// List `path`, copying the names into `names`.
 ///
 /// Directories come first and each group is sorted, because a listing in the

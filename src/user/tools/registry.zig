@@ -32,6 +32,7 @@ pub const commands = [_]Command{
     .{ .name = "ls", .summary = "list a directory", .run = &files.ls },
     .{ .name = "cat", .summary = "print a file", .run = &files.cat },
     .{ .name = "rm", .summary = "remove a file", .run = &files.rm },
+    .{ .name = "mv", .summary = "move or rename", .run = &files.mv },
     .{ .name = "hexdump", .summary = "dump a file in hex", .run = &files.hexdump },
     .{ .name = "file", .summary = "what kind of file something is", .run = &file_tool.run },
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },

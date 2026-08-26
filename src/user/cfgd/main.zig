@@ -156,23 +156,30 @@ fn reset(current: anytype, field: []const u8) config.Outcome {
 /// default, because a file somebody can read and edit is worth more here than
 /// a short one and the whole of it is a few hundred bytes.
 ///
-/// In place, which is what there is: `/etc` is part of the root, the root is in
-/// RAM and rebuilt every boot, so nothing written here outlives the boot and
-/// there is no torn file for a power cut to leave behind. When `/etc` becomes
-/// a mount on the persistent volume this has to become write-then-rename, per
-/// design/03-storage-fs.md §6, and that needs a rename the kernel does not
-/// have yet.
-fn write(path: []const u8, current: anytype) bool {
+/// Under a new name, then moved over the old one, per design/03-storage-fs.md
+/// §6. FAT has no atomic anything, but a rename that replaces a file repoints
+/// the record already there in one sector write, so a power cut leaves the
+/// settings as they were or as they are meant to be and never half of each.
+fn write(to: []const u8, current: anytype) bool {
     var text: [1024]u8 = @splat(0);
     var body = str.Builder{ .buf = &text };
     config.render(current, &body);
 
-    const handle = sys.open(path, .{ .write = true, .create = true, .truncate = true });
+    var name: [64]u8 = undefined;
+    var staged = str.Builder{ .buf = &name };
+    staged.text(to);
+    staged.text(".new");
+
+    if (!put(staged.done(), body.done())) return false;
+    return sys.rename(staged.done(), to) >= 0;
+}
+
+fn put(where: []const u8, body: []const u8) bool {
+    const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true });
     if (handle < 0) return false;
     defer _ = sys.close(@intCast(handle));
 
-    const written = body.done();
-    return sys.write(@intCast(handle), written) == @as(isize, @intCast(written.len));
+    return sys.write(@intCast(handle), body) == @as(isize, @intCast(body.len));
 }
 
 /// Wake everyone watching this domain.

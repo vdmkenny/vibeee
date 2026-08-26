@@ -169,6 +169,7 @@ const completion = [_]complete.Source{
     .{ .command = "file", .offer = &offerFiles },
     .{ .command = "hexdump", .offer = &offerFiles },
     .{ .command = "rm", .offer = &offerFiles },
+    .{ .command = "mv", .offer = &offerFiles },
     .{ .command = "grep", .offer = &offerFiles },
 };
 

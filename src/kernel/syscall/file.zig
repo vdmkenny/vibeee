@@ -99,7 +99,7 @@ fn errnoFor(err: anyerror) Result {
         error.Exists => Errno.exists.value(),
         error.ReadOnly => Errno.perm.value(),
         error.NoSpace => Errno.nospace.value(),
-        error.IsDirectory, error.NotDirectory, error.BadPath, error.NameTooLong => Errno.inval.value(),
+        error.IsDirectory, error.NotDirectory, error.BadPath, error.NameTooLong, error.CrossDevice => Errno.inval.value(),
         else => Errno.io.value(),
     };
 }
@@ -109,6 +109,17 @@ pub fn sys_mkdir(a: Args) Result {
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
 
     vfs.mkdir(path, clock.realtimeSeconds()) catch |err| return errnoFor(err);
+    return 0;
+}
+
+pub fn sys_rename(a: Args) Result {
+    var from_buf: [path_mod.MAX]u8 = undefined;
+    const from = userPath(a, a.a0, a.a1, &from_buf) orelse return Errno.fault.value();
+
+    var to_buf: [path_mod.MAX]u8 = undefined;
+    const to = userPath(a, a.a2, a.a3, &to_buf) orelse return Errno.fault.value();
+
+    vfs.rename(from, to, clock.realtimeSeconds()) catch |err| return errnoFor(err);
     return 0;
 }
 

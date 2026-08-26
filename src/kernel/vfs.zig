@@ -23,6 +23,8 @@ pub const Error = error{
     BadPath,
     Busy,
     ReadOnly,
+    /// The two paths are on different volumes, which a rename cannot span.
+    CrossDevice,
 } || fat.Error;
 
 pub const MAX_MOUNTS = 8;
@@ -284,6 +286,27 @@ pub fn truncate(m: *Mount, entry: *fat.Entry) Error!void {
 }
 
 /// Remove a file.
+/// Move `from` to `to`, replacing whatever is at `to`.
+///
+/// Within one volume only. Across volumes a rename would be a copy and a
+/// delete, which is a different operation with different failure modes and a
+/// duration proportional to the file: a caller that wants it should ask for it
+/// rather than have a rename quietly become it.
+pub fn rename(from: []const u8, to: []const u8, mtime: i64) Error!void {
+    const source = try resolve(from);
+    const destination = try resolve(to);
+    if (source.mount != destination.mount) return error.CrossDevice;
+    if (source.rest.len == 0 or destination.rest.len == 0) return error.BadPath;
+    try requireWritable(source.mount);
+
+    const entry = try fat.lookupPath(&source.mount.volume, source.rest);
+
+    const split = splitParent(to);
+    const dir = try openDir(split.dir);
+
+    _ = try fat.rename(&source.mount.volume, entry, dir, split.name, mtime);
+}
+
 pub fn unlink(path: []const u8) Error!void {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;

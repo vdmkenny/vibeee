@@ -353,6 +353,17 @@ pub fn exit(status: usize) noreturn {
 // IPC
 // ---------------------------------------------------------------------------
 
+/// Move a file, replacing whatever is at the destination. Within one volume.
+pub fn rename(from: []const u8, to: []const u8) isize {
+    return syscall4(
+        abi.number("rename"),
+        @intFromPtr(from.ptr),
+        from.len,
+        @intFromPtr(to.ptr),
+        to.len,
+    );
+}
+
 /// An event that fires when something happens, for a program with more than
 /// one thing to listen to and no business asking each in turn.
 pub fn watch(what: abi.Watchable) isize {

@@ -4,7 +4,9 @@
 //! system needs before anything else can be investigated from inside it.
 
 const sys = @import("sys");
+const dir = @import("ulib").dir;
 const out = @import("ulib").out;
+const paths = @import("ulib").paths;
 const time = @import("ulib").time;
 
 pub fn ls(args: []const []const u8) void {
@@ -68,6 +70,40 @@ pub fn ls(args: []const []const u8) void {
     out.text(if (files == 1) " entry, " else " entries, ");
     out.decimal(total);
     out.text(" bytes\n");
+    out.flush();
+}
+
+/// Move or rename. Several sources are allowed when the last argument is a
+/// directory, which is the only reading of `mv a b c somewhere` that makes
+/// sense.
+pub fn mv(args: []const []const u8) void {
+    if (args.len < 2) {
+        out.text("usage: mv <source>... <destination>\n");
+        out.flush();
+        return;
+    }
+
+    const destination = args[args.len - 1];
+    const sources = args[0 .. args.len - 1];
+    const into = dir.isDirectory(destination);
+
+    if (sources.len > 1 and !into) {
+        out.text("mv: ");
+        out.text(destination);
+        out.text(": not a directory\n");
+        out.flush();
+        return;
+    }
+
+    for (sources) |from| {
+        var buf: [256]u8 = undefined;
+        const to = if (into) paths.join(destination, paths.base(from), &buf) else destination;
+        if (sys.rename(from, to) < 0) {
+            out.text("mv: ");
+            out.text(from);
+            out.text(": cannot move\n");
+        }
+    }
     out.flush();
 }
 

@@ -10,6 +10,7 @@
 
 const dir = @import("ulib").dir;
 const out = @import("ulib").out;
+const paths = @import("ulib").paths;
 const str = @import("ulib").str;
 
 /// How far down to go. Bounded because the walk recurses and the stack is
@@ -87,8 +88,11 @@ const Walk = struct {
         const was = self.path.len;
         defer self.path.len = was;
 
-        if (was > 0 and self.path_buf[was - 1] != '/') self.path.byte('/');
-        self.path.text(name);
+        var below: [self.path_buf.len]u8 = undefined;
+        const joined = paths.join(self.path.done(), name, &below);
+        self.path.len = 0;
+        self.path.text(joined);
+
         self.list(depth + 1);
     }
 

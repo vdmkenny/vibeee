@@ -336,8 +336,9 @@ reader. A binary store would have to be readable by a tool that only runs on the
 machine that is broken. The cost is parsing, which is a few microseconds a
 domain, once.
 
-Writes go through §6's ordering: new name, then rename over the old. A yank
-during a settings write loses the write, never the file.
+Writes go through §6's ordering: a new name, then a rename over the old one.
+Replacing repoints the record already carrying the name, so a yank during a
+settings write loses the write and never the settings.
 
 ### 8.3 `cfgd`, the one writer
 

@@ -6,6 +6,7 @@
 //! from one built for another.
 
 const sys = @import("sys");
+const dir = @import("ulib").dir;
 const elf = @import("lib").elf;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
@@ -30,14 +31,7 @@ pub fn run(args: []const []const u8) void {
 }
 
 fn describe(path: []const u8) void {
-    // A directory opens only as one, which is the same question the kernel
-    // would answer, asked the way a caller can.
-    const dir = sys.open(path, .{ .directory = true });
-    if (dir >= 0) {
-        _ = sys.close(@intCast(dir));
-        out.text("directory");
-        return;
-    }
+    if (dir.isDirectory(path)) return out.text("directory");
 
     const handle = sys.open(path, .{});
     if (handle < 0) {
