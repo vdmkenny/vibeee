@@ -29,18 +29,18 @@ sharing one control library:
 
 | | |
 |---|---|
-| **eTerm** | terminal with its own VT emulator, running the shell over a pipe |
-| **Pad** | text editor, opening and saving through a floating file dialog |
-| **Monitor** | process tree, per-process CPU share, and a button to end one |
-| **Settings** | theme, layout and bar position, applied live |
+| **eTerm** | terminal, with its own VT emulator |
+| **Pad** | text editor |
+| **Monitor** | process list, CPU share, end a task |
+| **Settings** | theme, layout, bar position |
 
 The window manager is an ordinary userspace program that was handed the display. Clients
 connect to it over a channel, are told their geometry, draw into their own shared-memory
 surface, and have it composited.
 
 Underneath it: a preemptive O(1) scheduler, per-process address spaces, capability handles,
-channels and counting events, ATA and FAT with long names, LAPIC and IOAPIC, SYSENTER,
-40 syscalls, 99 host tests.
+channels and counting events as the only way to block, ATA and FAT with long names,
+interrupts through the IOAPIC and syscalls through SYSENTER.
 
 ## Status
 

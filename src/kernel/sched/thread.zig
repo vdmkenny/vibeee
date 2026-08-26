@@ -10,6 +10,7 @@
 //! on no run queue, so anything searching the queues cannot see one, which is
 //! why threads are found through here and not through them.
 
+const abi = @import("lib").syscalls;
 const hal = @import("../hal.zig");
 const handle = @import("../handle.zig");
 const shm = @import("../shm.zig");
@@ -65,6 +66,10 @@ pub const Thread = struct {
     name_buf: [16]u8 = @splat(0),
     name_len: usize = 0,
     state: State = .ready,
+    /// What this process may do. Inherited at spawn and never widened, so the
+    /// tree below a process can only ever be able to do less than it can.
+    caps: abi.Caps = abi.Caps.all,
+
     /// Asked to end by something other than itself. Acted on at the next
     /// return to userspace, never where it was noticed: a thread killed part
     /// way through a syscall would abandon whatever that syscall was holding.

@@ -428,6 +428,40 @@ pub const SpawnFlags = packed struct(u32) {
 /// deciding about a child only grows, and each one added as an argument is an
 /// ABI change. `INHERIT` leaves a stream as the parent's, which for every
 /// caller but a terminal emulator is the console.
+/// What a process is allowed to do.
+///
+/// Held per process and intersected at every spawn, so a capability can only
+/// ever be dropped going down the process tree. A parent cannot hand out what
+/// it does not have, and a child cannot regain what its parent gave up: that
+/// is the whole rule, and it is what makes granting one safe to do casually.
+pub const Caps = packed struct(u32) {
+    /// May take interrupt lines, map device apertures, and be granted I/O
+    /// ports. Everything a driver server needs and nothing else should have.
+    driver: bool = false,
+    /// May take the display away from the console.
+    display: bool = false,
+    /// May start other programs.
+    spawn: bool = false,
+    /// May stop other processes.
+    kill: bool = false,
+    /// May power the machine off or restart it.
+    power: bool = false,
+    _reserved: u27 = 0,
+
+    /// Everything. What the first process starts with, and what a spawn asks
+    /// for when it wants the child to keep whatever the parent had.
+    pub const all: Caps = @bitCast(@as(u32, 0xFFFF_FFFF));
+
+    pub fn has(self: Caps, wanted: Caps) bool {
+        return @as(u32, @bitCast(self)) & @as(u32, @bitCast(wanted)) == @as(u32, @bitCast(wanted));
+    }
+
+    /// What a child ends up with: never more than its parent had.
+    pub fn intersect(self: Caps, requested: Caps) Caps {
+        return @bitCast(@as(u32, @bitCast(self)) & @as(u32, @bitCast(requested)));
+    }
+};
+
 pub const Spawn = extern struct {
     /// Leave this stream alone.
     pub const INHERIT: i32 = -1;
@@ -436,6 +470,9 @@ pub const Spawn = extern struct {
     stdin: i32 = INHERIT,
     stdout: i32 = INHERIT,
     stderr: i32 = INHERIT,
+    /// What the child may do, intersected with what the caller may do. All
+    /// bits set, the default, means the child keeps whatever the parent had.
+    caps: u32 = 0xFFFF_FFFF,
 };
 
 pub const STDIN: u32 = 0;

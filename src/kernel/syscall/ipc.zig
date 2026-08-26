@@ -347,6 +347,8 @@ pub fn sys_shm_map(a: Args) Result {
 }
 
 pub fn sys_display_acquire(a: Args) Result {
+    if (ctx.require(.{ .display = true })) |denied| return denied;
+
     const out = userSlice(a, a.a0, @sizeOf(abi.DisplayInfo)) orelse return Errno.fault.value();
 
     const segment = display.acquire() catch |err| {

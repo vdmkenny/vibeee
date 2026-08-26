@@ -11,6 +11,7 @@
 //! dies first. Both leave a corpse the parent must collect, so a status is never
 //! lost before someone can read it.
 
+const abi = @import("lib").syscalls;
 const elf = @import("elf.zig");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");
@@ -43,19 +44,19 @@ pub const Stdio = [3]?handle.Handle;
 
 pub const INHERIT: Stdio = .{ null, null, null };
 
-pub fn spawn(path: []const u8, args: []const []const u8, stdio: Stdio) Error!i32 {
-    const child = try start(path, args, stdio);
+pub fn spawn(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Caps) Error!i32 {
+    const child = try start(path, args, stdio, caps);
     return sched.waitFor(child);
 }
 
 /// Start `path` and return its id without waiting.
-pub fn spawnAsync(path: []const u8, args: []const []const u8, stdio: Stdio) Error!u32 {
-    const child = try start(path, args, stdio);
+pub fn spawnAsync(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Caps) Error!u32 {
+    const child = try start(path, args, stdio, caps);
     return child.id;
 }
 
 /// Load a program and put it on the run queue.
-fn start(path: []const u8, args: []const []const u8, stdio: Stdio) Error!*sched.Thread {
+fn start(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Caps) Error!*sched.Thread {
     const entry = vfs.stat(path) catch return error.NotFound;
     if (entry.is_dir or entry.size == 0) return error.BadImage;
 
@@ -78,6 +79,7 @@ fn start(path: []const u8, args: []const []const u8, stdio: Stdio) Error!*sched.
         return error.OutOfMemory;
     };
     sched.inheritCwd(child);
+    child.caps = caps;
 
     // Before the child can run: it gets the console on all three by default,
     // and a terminal emulator's shell has to find its pipes there instead.

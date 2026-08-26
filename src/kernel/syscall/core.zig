@@ -171,6 +171,8 @@ pub fn sys_log(a: Args) Result {
 }
 
 pub fn sys_shutdown(a: Args) Result {
+    if (ctx.require(.{ .power = true })) |denied| return denied;
+
     const action: shutdown_mod.Action = switch (a.a0) {
         0 => .power_off,
         1 => .reboot,
@@ -181,6 +183,8 @@ pub fn sys_shutdown(a: Args) Result {
 }
 
 pub fn sys_set_mode(a: Args) Result {
+    if (ctx.require(.{ .display = true })) |denied| return denied;
+
     display.requestMode(
         @truncate(a.a0),
         @truncate(a.a1),

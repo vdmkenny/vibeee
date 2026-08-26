@@ -85,3 +85,18 @@ pub fn deadlineFrom(timeout_us: usize) ?u64 {
     if (timeout_us == abi.Timeout.forever) return null;
     return clock.monotonicMicros() + timeout_us;
 }
+
+/// What the calling process is allowed to do.
+///
+/// Everything before there is a process, which is the boot self-test and early
+/// init: they are the kernel, and the kernel is not something to hold back
+/// from itself.
+pub fn currentCaps() abi.Caps {
+    const t = sched.currentThread() orelse return abi.Caps.all;
+    return t.caps;
+}
+
+/// Refuse unless the caller holds every capability named.
+pub fn require(wanted: abi.Caps) ?Result {
+    return if (currentCaps().has(wanted)) null else Errno.perm.value();
+}

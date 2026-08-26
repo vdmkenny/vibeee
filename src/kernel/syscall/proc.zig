@@ -16,8 +16,11 @@ const userSlice = ctx.userSlice;
 const userPath = ctx.userPath;
 const deadlineFrom = ctx.deadlineFrom;
 const currentHandles = ctx.currentHandles;
+const currentCaps = ctx.currentCaps;
 
 pub fn sys_spawn(a: Args) Result {
+    if (ctx.require(.{ .spawn = true })) |denied| return denied;
+
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
     const packed_args = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
@@ -40,16 +43,21 @@ pub fn sys_spawn(a: Args) Result {
     claimStdio(&options, &stdio) catch return Errno.badf.value();
     errdefer releaseStdio(&stdio);
 
+    // Never more than the caller has. A parent cannot hand out an authority it
+    // was not given, which is what makes the tree below a process bounded by
+    // what that process could do.
+    const caps = currentCaps().intersect(@bitCast(options.caps));
+
     const flags: abi.SpawnFlags = @bitCast(options.flags);
 
     if (flags.detached) {
-        const id = exec.spawnAsync(path, slices[0..count], stdio) catch |err| {
+        const id = exec.spawnAsync(path, slices[0..count], stdio, caps) catch |err| {
             releaseStdio(&stdio);
             return spawnErrno(err);
         };
         return @intCast(id);
     }
-    return exec.spawn(path, slices[0..count], stdio) catch |err| {
+    return exec.spawn(path, slices[0..count], stdio, caps) catch |err| {
         releaseStdio(&stdio);
         return spawnErrno(err);
     };
@@ -141,6 +149,8 @@ pub fn sys_getcwd(a: Args) Result {
 }
 
 pub fn sys_kill(a: Args) Result {
+    if (ctx.require(.{ .kill = true })) |denied| return denied;
+
     sched.kill(@truncate(a.a0)) catch |err| return switch (err) {
         error.NotFound => Errno.noent.value(),
         error.Refused => Errno.perm.value(),

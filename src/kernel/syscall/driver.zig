@@ -4,10 +4,10 @@
 //! the kernel touch hardware, and keeping them together makes the whole of
 //! that surface one file to read. `design/02-kernel-core.md` §9.
 //!
-//! Not yet gated on a capability. The design has `devmgd` grant `Caps.driver`
-//! at spawn from a manifest, and there is no process capability set to check
-//! against until that exists; until then any process may take a free line.
-//! Written down rather than left to be discovered.
+//! Every call here needs `Caps.driver`, which a process only has because
+//! something above it in the tree passed it down. A capability is intersected
+//! at every spawn and can never widen, so granting one to a driver server does
+//! not grant it to anything that server later starts.
 
 const abi = @import("lib").syscalls;
 const ctx = @import("context.zig");
@@ -20,6 +20,8 @@ const Errno = ctx.Errno;
 const currentHandles = ctx.currentHandles;
 
 pub fn sys_irq_attach(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
     const table = currentHandles() orelse return Errno.nomem.value();
     const slot = table.alloc() orelse return Errno.nomem.value();
 
@@ -41,6 +43,8 @@ pub fn sys_irq_attach(a: Args) Result {
 }
 
 pub fn sys_irq_ack(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
     const table = currentHandles() orelse return Errno.badf.value();
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
     if (h.kind != .irq) return Errno.badf.value();
