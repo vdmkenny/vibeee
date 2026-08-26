@@ -20,184 +20,22 @@ const std = @import("std");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");
 const heap = @import("heap.zig");
+const queue = @import("sched/queue.zig");
+const thread_mod = @import("sched/thread.zig");
 const wait = @import("wait.zig");
 
-pub const PRIORITY_LEVELS = 32;
+pub const Thread = thread_mod.Thread;
+pub const State = thread_mod.State;
+pub const Priority = thread_mod.Priority;
+pub const PRIORITY_LEVELS = thread_mod.PRIORITY_LEVELS;
 
-/// Priority bands. Lower numbers win; the names exist so callers never write a
-/// bare integer whose meaning depends on the table above.
-pub const Priority = enum(u8) {
-    /// Audio mixing, input dispatch. Latency matters more than throughput.
-    realtime = 0,
-    /// The compositor and the focused application.
-    interactive = 8,
-    /// Everything else.
-    normal = 16,
-    /// Background work that should never delay anything visible.
-    batch = 24,
-};
+const sliceFor = thread_mod.sliceFor;
 
-/// Time slice per band, in ticks. Interactive threads get short slices so the
-/// system stays responsive; batch threads get long ones so they waste fewer
-/// cycles on switching.
-fn sliceFor(priority: u8) u8 {
-    return switch (priority) {
-        0...7 => 2, // realtime: 20 ms
-        8...15 => 3, // interactive: 30 ms
-        16...23 => 6, // normal: 60 ms
-        else => 10, // batch: 100 ms
-    };
-}
-
-pub const State = enum {
-    ready,
-    running,
-    /// Waiting for a wakeup that is not time-based.
-    blocked,
-    /// Waiting until `wake_at`.
-    sleeping,
-    dead,
-};
-
-pub const Thread = struct {
-    /// Saved stack pointer. Must be first: the context switch takes its address
-    /// and nothing else in this struct is touched by assembly.
-    sp: usize = 0,
-
-    id: u32,
-    /// Copied, not borrowed. A thread outlives the caller's stack frame, and
-    /// programs are named after a path the loader assembled in a buffer that
-    /// is gone by the time anything reads the name back.
-    name_buf: [16]u8 = @splat(0),
-    name_len: usize = 0,
-    state: State = .ready,
-    priority: u8,
-    slice_left: u8 = 0,
-    /// Monotonic microseconds at which a sleeping thread becomes runnable.
-    wake_at: u64 = 0,
-    stack: []u8,
-    /// Intrusive link for whichever queue this thread is on.
-    next: ?*Thread = null,
-    /// On a run queue right now. See `Queue.push`.
-    queued: bool = false,
-    /// Link in the registry of every thread that exists. A separate field from
-    /// `next` because a thread is on at most one run queue but is always here,
-    /// including as a corpse waiting to be collected.
-    all_next: ?*Thread = null,
-
-    /// Open handles. Lives on the thread because a process is currently one
-    /// thread; it moves to a Process struct when that stops being true.
-    handles: handle.Table = .{},
-
-    /// The address space this thread runs in.
-    ///
-    /// Kernel threads share the kernel's. A user process has its own, and the
-    /// scheduler switches to it — without that, a thread resumed after another
-    /// process ran would execute against whatever page directory happened to be
-    /// loaded, which is at best the wrong memory and at worst freed.
-    space: hal.AddressSpace = .{ .pd_phys = 0 },
-
-    /// Floating-point and SIMD registers. Aligned because FXSAVE requires it,
-    /// and placed last so the alignment does not pad the hot fields apart.
-    fpu: hal.FpuState align(16) = @splat(0),
-
-    /// Timer ticks spent running. The only per-thread cost measure available
-    /// without a high-resolution clock read on every switch, which on this
-    /// machine would cost more than it measures.
-    cpu_ticks: u64 = 0,
-
-    /// Working directory, always absolute and without a trailing slash except
-    /// for "/" itself. Held per thread for the same reason handles are: a
-    /// process is currently one thread.
-    cwd_buf: [128]u8 = @splat(0),
-    cwd_len: usize = 1,
-
-    exit_status: i32 = 0,
-    /// Set when another thread intends to collect this one's status. Such a
-    /// thread is not freed on exit — it stays as a corpse until collected, or
-    /// its status would be gone before anyone could read it.
-    awaited: bool = false,
-    /// Threads blocked in `waitFor` on this one.
-    exit_queue: wait.Queue = .{},
-
-    /// Who spawned this thread, or 0 for one the kernel started itself.
-    /// Supervision is the whole reason it is recorded: `init` has to know
-    /// which of its children died in order to decide whether to restart it.
-    parent_id: u32 = 0,
-    /// Woken when any child of *this* thread exits. One queue on the parent
-    /// rather than an event per child, because a supervisor waits for whichever
-    /// of its children dies first and does not know in advance which that is.
-    child_exit: wait.Queue = .{},
-
-    pub fn name(self: *const Thread) []const u8 {
-        return self.name_buf[0..self.name_len];
-    }
-
-    fn setName(self: *Thread, text: []const u8) void {
-        const n = @min(text.len, self.name_buf.len);
-        @memcpy(self.name_buf[0..n], text[0..n]);
-        self.name_len = n;
-    }
-
-};
-
-const Queue = struct {
-    head: ?*Thread = null,
-    tail: ?*Thread = null,
-
-    /// Enqueue, unless the thread is already on a queue.
-    ///
-    /// The guard is not decoration. These are intrusive lists: a node pushed
-    /// twice ends up pointing at itself, and the resulting cycle makes the
-    /// scheduler hand out one thread forever. That failure is silent, arrives
-    /// far from its cause, and on a machine with no serial port is close to
-    /// undiagnosable — so it is made impossible here rather than relied upon
-    /// not to happen.
-    fn push(self: *Queue, t: *Thread) void {
-        if (t.queued) return;
-        t.queued = true;
-        t.next = null;
-        if (self.tail) |tail| {
-            tail.next = t;
-        } else {
-            self.head = t;
-        }
-        self.tail = t;
-    }
-
-    fn pop(self: *Queue) ?*Thread {
-        const t = self.head orelse return null;
-        self.head = t.next;
-        if (self.head == null) self.tail = null;
-        t.next = null;
-        t.queued = false;
-        return t;
-    }
-};
-
-const RunQueues = struct {
-    /// Bit i set means level i has at least one thread.
-    bitmap: u32 = 0,
-    levels: [PRIORITY_LEVELS]Queue = @splat(.{}),
-
-    fn push(self: *RunQueues, t: *Thread) void {
-        const level = @min(t.priority, PRIORITY_LEVELS - 1);
-        self.levels[level].push(t);
-        self.bitmap |= @as(u32, 1) << @intCast(level);
-    }
-
-    /// Highest-priority thread, or null. This is the O(1) part: one bit scan,
-    /// no search over levels.
-    fn pop(self: *RunQueues) ?*Thread {
-        if (self.bitmap == 0) return null;
-        const level = @ctz(self.bitmap);
-        const t = self.levels[level].pop();
-        if (self.levels[level].head == null) {
-            self.bitmap &= ~(@as(u32, 1) << @intCast(level));
-        }
-        return t;
-    }
-};
+/// The run queues themselves live in `sched/queue.zig`, generic over the node
+/// type so they can be unit-tested on the host — which is where the intrusive
+/// double-push that once corrupted them is now covered.
+const RunQueues = queue.Levels(Thread, PRIORITY_LEVELS);
+const Queue = queue.Fifo(Thread);
 
 var queues: [2]RunQueues = .{ .{}, .{} };
 var active: *RunQueues = &queues[0];
@@ -216,12 +54,6 @@ var sleepers: ?*Thread = null;
 ///
 /// Linked through `next`, which a dead thread no longer needs for a run queue.
 var to_reap: ?*Thread = null;
-
-/// Every thread that exists, newest first, including dead ones not yet
-/// collected. Threads are found by id through this — a supervisor naming a
-/// child, a `wait` naming a process — and a corpse is invisible to a search
-/// of the run queues, which is exactly when it most needs to be found.
-var all_threads: ?*Thread = null;
 
 var current: ?*Thread = null;
 var idle_thread: ?*Thread = null;
@@ -263,7 +95,7 @@ pub fn spawn(
 
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
-    active.push(t);
+    active.push(t, t.priority);
 
     return t;
 }
@@ -298,8 +130,7 @@ fn create(
     t.cwd_buf[0] = '/';
     t.cwd_len = 1;
     t.parent_id = if (current) |c| c.id else 0;
-    t.all_next = all_threads;
-    all_threads = t;
+    thread_mod.register(t);
     hal.initFpuState(&t.fpu);
     // Kernel space until something gives it one of its own.
     t.space = hal.kernelAddressSpace();
@@ -366,7 +197,7 @@ fn orphanChildren(parent: *Thread) void {
     const adopter: ?*Thread = if (init_id != 0 and init_id != parent.id) find(init_id) else null;
     const adopter_alive = if (adopter) |a| a.state != .dead else false;
 
-    var node = all_threads;
+    var node = thread_mod.first();
     while (node) |t| {
         const next_node = t.all_next;
         // `init` itself is a child of whichever kernel thread started it, and
@@ -410,7 +241,7 @@ pub fn waitChild(id: u32, deadline_us: ?u64) WaitError!Exited {
 
     while (true) {
         var live: usize = 0;
-        var node = all_threads;
+        var node = thread_mod.first();
         while (node) |t| : (node = t.all_next) {
             if (t.parent_id != parent.id or t == parent) continue;
             if (id != 0 and t.id != id) continue;
@@ -462,7 +293,7 @@ pub fn spawnAwaited(
 
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
-    active.push(t);
+    active.push(t, t.priority);
     return t;
 }
 
@@ -542,7 +373,7 @@ pub fn unblock(t: *Thread) void {
 
     t.state = .ready;
     t.next = null;
-    active.push(t);
+    active.push(t, t.priority);
 }
 
 fn removeSleeper(t: *Thread) void {
@@ -567,7 +398,7 @@ fn wakeSleepers(now: u64) void {
             link.* = t.next;
             t.state = .ready;
             t.next = null;
-            active.push(t);
+            active.push(t, t.priority);
         } else {
             link = &t.next;
         }
@@ -597,9 +428,9 @@ fn schedule() void {
                 // keeps its remaining slice and stays in the current epoch.
                 if (t.slice_left == 0) {
                     t.slice_left = sliceFor(t.priority);
-                    expired.push(t);
+                    expired.push(t, t.priority);
                 } else {
-                    active.push(t);
+                    active.push(t, t.priority);
                 }
             },
             .sleeping, .blocked, .dead => {},
@@ -692,7 +523,7 @@ fn reap(t: *Thread) void {
         t.space.destroy();
     }
 
-    unregister(t);
+    thread_mod.unregister(t);
 
     const gpa = heap.allocator;
     gpa.free(t.stack);
@@ -712,24 +543,7 @@ fn dequeueCorpse(t: *Thread) void {
     }
 }
 
-fn unregister(t: *Thread) void {
-    var link = &all_threads;
-    while (link.*) |node| {
-        if (node == t) {
-            link.* = node.all_next;
-            return;
-        }
-        link = &node.all_next;
-    }
-}
-
-pub fn find(id: u32) ?*Thread {
-    var node = all_threads;
-    while (node) |t| : (node = t.all_next) {
-        if (t.id == id) return t;
-    }
-    return null;
-}
+pub const find = thread_mod.find;
 
 /// Called from the timer interrupt. Only accounting here — the actual switch
 /// happens at interrupt exit, after the controller has been acknowledged.
@@ -820,7 +634,7 @@ pub fn forEachThread(context: anytype, comptime visit: fn (@TypeOf(context), Sna
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    var node = all_threads;
+    var node = thread_mod.first();
     while (node) |t| : (node = t.all_next) {
         visit(context, snapshotOf(t, t == current));
     }
