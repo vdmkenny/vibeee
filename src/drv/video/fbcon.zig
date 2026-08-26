@@ -41,7 +41,6 @@ var rom_font: ?[*]const u8 = null;
 var pitch: usize = 0;
 var pixel_width: usize = 0;
 var pixel_height: usize = 0;
-var bytes_per_pixel: usize = 4;
 
 var columns: usize = 0;
 var rows: usize = 0;
@@ -79,7 +78,6 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
     pitch = bi.fb_pitch;
     pixel_width = bi.fb_width;
     pixel_height = bi.fb_height;
-    bytes_per_pixel = 4;
 
     // Pick the largest font that still leaves a usable console. Below roughly
     // 60 columns, wrapping makes the boot log and the panic screen unreadable,
@@ -109,23 +107,28 @@ pub fn dimensions() Grid {
     return .{ .columns = columns, .rows = rows };
 }
 
-inline fn pixelAt(x: usize, y: usize) [*]volatile u8 {
-    return fb + y * pitch + x * bytes_per_pixel;
+/// One scanline as 32-bit pixels.
+///
+/// Every mode this driver accepts is 32 bits per pixel with a pitch that is a
+/// whole number of them, so the cast always lands aligned. Addressing the
+/// framebuffer a word at a time rather than a byte at a time is what makes it
+/// usable on real hardware: the graphics aperture is uncached, so each access
+/// is a bus transaction rather than a cache hit, and a byte-wise pixel costs
+/// four of them.
+inline fn lineAt(y: usize) [*]volatile u32 {
+    return @ptrCast(@alignCast(fb + y * pitch));
 }
 
 fn putPixel(x: usize, y: usize, colour: u32) void {
-    const p = pixelAt(x, y);
-    p[0] = @truncate(colour);
-    p[1] = @truncate(colour >> 8);
-    p[2] = @truncate(colour >> 16);
-    p[3] = 0;
+    lineAt(y)[x] = colour & 0x00FF_FFFF;
 }
 
 fn clearAll(colour: u32) void {
     var y: usize = 0;
     while (y < pixel_height) : (y += 1) {
+        const line = lineAt(y);
         var x: usize = 0;
-        while (x < pixel_width) : (x += 1) putPixel(x, y, colour);
+        while (x < pixel_width) : (x += 1) line[x] = colour;
     }
 }
 
@@ -212,17 +215,19 @@ pub fn fill(ch: u21, fg: u4, bg: u4) void {
 pub fn scroll(bg: u4) void {
     if (!ready or suspended) return;
 
-    const row_bytes = pitch * font.height;
-    const moved = (rows - 1) * row_bytes;
+    const row_words = pitch * font.height / 4;
+    const moved = (rows - 1) * row_words;
+    const words: [*]volatile u32 = @ptrCast(@alignCast(fb));
 
     var i: usize = 0;
-    while (i < moved) : (i += 1) fb[i] = fb[i + row_bytes];
+    while (i < moved) : (i += 1) words[i] = words[i + row_words];
 
     const colour = PALETTE[bg];
     var y = (rows - 1) * font.height;
     while (y < rows * font.height) : (y += 1) {
+        const line = lineAt(y);
         var x: usize = 0;
-        while (x < pixel_width) : (x += 1) putPixel(x, y, colour);
+        while (x < pixel_width) : (x += 1) line[x] = colour;
     }
 }
 
