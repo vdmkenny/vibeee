@@ -4,11 +4,12 @@
 //! everything here is parsing and dispatch: split a line into words, run a
 //! builtin or spawn a program, report what happened.
 //!
-//! Output redirection works; pipes do not. A pipe needs a kernel object that
-//! does not exist yet and handle reassignment at spawn to go with it, and a
-//! shell that pretended otherwise would fail in ways that looked like shell
-//! bugs. Redirection needs neither: the shell opens the file itself and copies
-//! what the command produced.
+//! Output redirection works; pipes do not. Redirection is the shell opening
+//! the file and handing it to the command: a builtin follows the shell's own
+//! writer, a program is given the handle as its standard output. A pipe needs
+//! two programs running at once and the shell waiting on both, which is more
+//! than dispatch, and a shell that pretended otherwise would fail in ways that
+//! looked like shell bugs.
 //!
 //! The shell is a supervised service, not the root of userspace: `init` starts
 //! it and restarts it when it exits. That is what makes `exit` meaningful on a
@@ -116,7 +117,7 @@ fn runLine(words: []const []const u8) void {
     }
 
     if (!redirect.active()) {
-        run(command);
+        run(command, sys.Spawn.INHERIT);
         return;
     }
 
@@ -137,13 +138,19 @@ fn runLine(words: []const []const u8) void {
     }
 
     out.redirectTo(@intCast(handle));
-    run(command);
+    run(command, @intCast(handle));
     out.redirectTo(sys.STDOUT);
 
     _ = sys.close(@intCast(handle));
 }
 
-fn run(words: []const []const u8) void {
+/// Run a command, sending its output to `into`.
+///
+/// A builtin runs inside the shell and follows the shell's writer, which the
+/// caller has already pointed at the file. A program is its own process with
+/// its own writer, so the only thing that reaches it is the handle it starts
+/// with.
+fn run(words: []const []const u8, into: i32) void {
     for (builtins) |b| {
         if (str.eql(b.name, words[0])) {
             b.run(words);
@@ -156,7 +163,8 @@ fn run(words: []const []const u8) void {
     var path_buf: [MAX_LINE]u8 = undefined;
     const path = resolvePath(words[0], &path_buf);
 
-    var status = sys.spawn(path, words);
+    const streams = sys.Spawn{ .stdout = into };
+    var status = sys.spawnStreams(path, words, streams);
 
     // Not a program either: it may be a command inside the multicall binary.
     // FAT has no symlinks, so the usual argv[0] trick is unavailable and the
@@ -166,7 +174,7 @@ fn run(words: []const []const u8) void {
         var argv: [MAX_WORDS + 1][]const u8 = undefined;
         argv[0] = "tools";
         for (words, 0..) |w, i| argv[1 + i] = w;
-        status = sys.spawn(TOOLS_PATH, argv[0 .. words.len + 1]);
+        status = sys.spawnStreams(TOOLS_PATH, argv[0 .. words.len + 1], streams);
     }
 
     if (status < 0) {

@@ -24,6 +24,7 @@ pub const MAX_ARGS = abi.MAX_ARGS;
 pub const Dirent = abi.Dirent;
 pub const OpenFlags = abi.OpenFlags;
 pub const SpawnFlags = abi.SpawnFlags;
+pub const Spawn = abi.Spawn;
 pub const Caps = abi.Caps;
 
 // ---------------------------------------------------------------------------
