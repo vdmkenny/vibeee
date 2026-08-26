@@ -87,8 +87,10 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
 
     const cpu_info = hal.cpuInfo();
     console.debug("cpu", "{s}", .{cpu_info.brand});
+    // What was armed, not what the CPU advertises: the two differ when the
+    // MSRs could not be programmed, and userspace picks from the former.
     console.debug("", "{s}{s}", .{
-        if (cpu_info.fast_syscall) "sysenter" else "int80",
+        if (hal.fastSyscallArmed()) "sysenter" else "int80",
         if (cpu_info.freq_scaling) ", freq scaling" else ", fixed clock",
     });
 

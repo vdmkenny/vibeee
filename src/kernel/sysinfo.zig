@@ -66,6 +66,11 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
     } else if (eq(key, "cpu")) {
         const info = hal.cpuInfo();
         try w.print("{s}", .{info.brand});
+    } else if (eq(key, "syscall")) {
+        // What the kernel armed, not what the CPU can do. A stub that chose
+        // from CPUID alone would use a fast path whose MSRs were never
+        // programmed, and jump to nothing.
+        try w.print("{s}", .{if (hal.fastSyscallArmed()) "sysenter" else "int80"});
     } else if (eq(key, "cpu.features")) {
         const info = hal.cpuInfo();
         try w.print("{s}, {s}", .{

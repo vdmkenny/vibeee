@@ -54,8 +54,11 @@ pub fn initCpu(kernel_stack_top: usize) void {
     fpu.enable();
 }
 
-pub const initSyscalls = @import("syscall_arch.zig").init;
-pub const invokeSyscall = @import("syscall_arch.zig").invoke;
+const syscall_arch = @import("syscall_arch.zig");
+
+pub const initSyscalls = syscall_arch.init;
+pub const fastSyscallArmed = syscall_arch.fastPathArmed;
+pub const invokeSyscall = syscall_arch.invoke;
 
 /// Bring up whatever will deliver interrupts.
 ///
@@ -96,7 +99,12 @@ pub const initFpuState = fpu.initState;
 /// user code traps, so a stale value sends a syscall onto another thread's
 /// stack, and once that thread has exited and its stack been freed, onto
 /// memory the allocator has handed to someone else.
-pub const setKernelStack = gdt.setKernelStack;
+pub fn setKernelStack(esp0: u32) void {
+    gdt.setKernelStack(esp0);
+    // The fast path takes its stack from an MSR rather than from the TSS, so
+    // both have to be moved together or one of them goes stale.
+    syscall_arch.setKernelStack(esp0);
+}
 
 pub const switchContext = context.switchTo;
 pub const initThreadStack = context.initStack;

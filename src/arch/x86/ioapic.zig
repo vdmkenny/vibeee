@@ -56,7 +56,7 @@ pub fn init(info: *irq.Routing) bool {
 
         var line: u32 = 0;
         while (line < inputs) : (line += 1) {
-            writeEntry(&controllers[count], line, 0, MASKED);
+            writeEntry(&controllers[count], line, .{});
         }
 
         count += 1;
@@ -65,34 +65,52 @@ pub fn init(info: *irq.Routing) bool {
     return count > 0;
 }
 
-/// Bit 16 of the low word: nothing is delivered while it is set.
-const MASKED: u32 = 1 << 16;
-const ACTIVE_LOW: u32 = 1 << 13;
-const LEVEL: u32 = 1 << 15;
+/// A redirection entry, laid out as the hardware has it.
+///
+/// A packed struct rather than shifted constants: the field positions are the
+/// declaration, the compiler checks the whole thing adds up to sixty-four
+/// bits, and reading one back gives named fields rather than a word to mask
+/// apart. C's bitfields cannot be relied on for this; Zig's can.
+const Redirect = packed struct(u64) {
+    vector: u8 = 0,
+    delivery: Delivery = .fixed,
+    /// Address a set of CPUs rather than one by its APIC id.
+    logical: bool = false,
+    /// Hardware sets it while a previous one is still on its way. Read only.
+    pending: bool = false,
+    active_low: bool = false,
+    /// Hardware sets it between accepting a level interrupt and being told the
+    /// device is done. Read only.
+    servicing: bool = false,
+    level: bool = false,
+    /// Nothing is delivered while this is set.
+    masked: bool = true,
+    _reserved: u39 = 0,
+    /// Which CPU, by APIC id.
+    destination: u8 = 0,
+
+    const Delivery = enum(u3) { fixed = 0, lowest = 1, smi = 2, nmi = 4, init = 5, external = 7 };
+};
 
 /// Send a global interrupt to `vector` on `destination`, masked to begin with.
 pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u8) void {
     const owner = find(gsi) orelse return;
-    const line = gsi - owner.info.gsi_base;
-
-    var low: u32 = vector;
-    // Delivery mode fixed, destination mode physical: both are zero, and
-    // spelling them out would be spelling out zero.
-    if (active_low) low |= ACTIVE_LOW;
-    if (level) low |= LEVEL;
-    low |= MASKED;
-
-    writeEntry(owner, line, @as(u32, destination) << 24, low);
+    writeEntry(owner, gsi - owner.info.gsi_base, .{
+        .vector = vector,
+        .active_low = active_low,
+        .level = level,
+        .destination = destination,
+        .masked = true,
+    });
 }
 
 pub fn setMask(gsi: u32, masked: bool) void {
     const owner = find(gsi) orelse return;
     const line = gsi - owner.info.gsi_base;
 
-    const index = REG_REDIRECT + line * 2;
-    var low = read(owner, index);
-    if (masked) low |= MASKED else low &= ~MASKED;
-    write(owner, index, low);
+    var entry = readEntry(owner, line);
+    entry.masked = masked;
+    writeEntry(owner, line, entry);
 }
 
 fn find(gsi: u32) ?*Mapped {
@@ -102,12 +120,22 @@ fn find(gsi: u32) ?*Mapped {
     return null;
 }
 
-/// The high half first, so the destination is in place before the entry is
-/// usable. Writing the low half last is what makes that ordering matter.
-fn writeEntry(c: *Mapped, line: u32, high: u32, low: u32) void {
+/// The high half first, so the destination is in place before the entry
+/// becomes usable. Writing the low half last, which carries the mask bit, is
+/// what makes that ordering matter.
+fn writeEntry(c: *Mapped, line: u32, entry: Redirect) void {
+    const bits: u64 = @bitCast(entry);
     const index = REG_REDIRECT + line * 2;
-    write(c, index + 1, high);
-    write(c, index, low);
+
+    write(c, index + 1, @truncate(bits >> 32));
+    write(c, index, @truncate(bits));
+}
+
+fn readEntry(c: *Mapped, line: u32) Redirect {
+    const index = REG_REDIRECT + line * 2;
+    const low: u64 = read(c, index);
+    const high: u64 = read(c, index + 1);
+    return @bitCast(low | (high << 32));
 }
 
 fn read(c: *Mapped, index: u32) u32 {

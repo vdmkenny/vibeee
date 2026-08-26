@@ -31,6 +31,16 @@ const MSR_ENABLE: u64 = 1 << 11;
 /// four bits must be set on older parts.
 pub const SPURIOUS_VECTOR: u8 = 0xFF;
 
+/// The spurious interrupt vector register, whose enable bit is what actually
+/// lets interrupts through. Named fields rather than a shifted constant, so
+/// what is being turned on is written down.
+const Spurious = packed struct(u32) {
+    vector: u8,
+    enabled: bool,
+    focus_checking_off: bool = false,
+    _reserved: u22 = 0,
+};
+
 var base: ?[*]volatile u32 = null;
 
 pub fn active() bool {
@@ -52,9 +62,9 @@ pub fn init(phys: u32) bool {
 
     // Accept every priority. There is one core and nothing to defer to.
     write(TPR, 0);
-    // Bit 8 is the software enable, which is separate from the one in the MSR
-    // and is what actually lets interrupts through.
-    write(SPURIOUS, @as(u32, 0x100) | SPURIOUS_VECTOR);
+    // Separate from the enable in the MSR: that one powers the unit, this one
+    // lets interrupts through.
+    write(SPURIOUS, @bitCast(Spurious{ .vector = SPURIOUS_VECTOR, .enabled = true }));
     return true;
 }
 

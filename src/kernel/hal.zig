@@ -54,6 +54,8 @@ pub const initInterruptController = impl.initInterruptController;
 /// Install the syscall entry path. After this, user code can trap into the
 /// kernel; before it, the syscall vector is a fault like any other.
 pub const initSyscalls = impl.initSyscalls;
+/// Whether the fast syscall path is programmed and usable.
+pub const fastSyscallArmed = impl.fastSyscallArmed;
 /// Issue a syscall from kernel mode. Self-tests only.
 pub const invokeSyscall = impl.invokeSyscall;
 

@@ -34,7 +34,7 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel/shm. Up to four travel with a channel message. |
 | ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, sync and detached spawn. |
 | Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. How the machine is wired is described in `kernel/irq.zig` and filled in by the composition root, so the architecture never reaches for a firmware parser. |
-| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 35 calls, bound to the table at comptime in both directions. |
+| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 35 calls, bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
 | Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. |
 | Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
@@ -130,7 +130,6 @@ build.
 
 - Creating a file uses an 8.3 short name; long names are read but not written.
 - No `mkdir`: directories cannot be created, only read.
-- The dispatcher is `int 0x80`; SYSENTER is designed but not wired.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
 - No USB, audio or networking.

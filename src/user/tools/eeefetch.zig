@@ -20,6 +20,7 @@ const rows = [_]Row{
     .{ .label = "arch", .key = "arch" },
     .{ .label = "cpu", .key = "cpu" },
     .{ .label = "", .key = "cpu.features" },
+    .{ .label = "syscall", .key = "syscall" },
     .{ .label = "memory", .key = "mem" },
     .{ .label = "", .key = "mem.hardware" },
     .{ .label = "display", .key = "display" },

@@ -25,29 +25,108 @@ pub const Dirent = abi.Dirent;
 pub const OpenFlags = abi.OpenFlags;
 pub const SpawnFlags = abi.SpawnFlags;
 
-inline fn syscall0(nr: u32) isize {
-    return asm volatile ("int $0x80"
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-        : .{ .memory = true });
+// ---------------------------------------------------------------------------
+// Entering the kernel
+//
+// Two ways in, one register convention. `int 0x80` works everywhere; SYSENTER
+// skips the IDT lookup, the stack switch and the segment loads, which is most
+// of what a syscall costs on this core.
+//
+// One shape for every call rather than one per arity: the arguments live in
+// the same five registers whichever path is taken, so a call that needs fewer
+// passes zero for the rest. That costs a register clear and saves ten
+// near-identical copies of the trap sequence.
+// ---------------------------------------------------------------------------
+
+const Method = enum { unknown, trap, fast };
+var method: Method = .unknown;
+
+/// Which way in this process uses.
+///
+/// Asked once, through the slow path, and asked of the kernel rather than of
+/// CPUID: what matters is whether the kernel programmed the fast path's
+/// registers, and the capability bit cannot tell a kernel that did from one
+/// that did not. Getting that wrong means jumping to nothing.
+fn chooseMethod() Method {
+    const key = "syscall";
+    var answer: [16]u8 = @splat(0);
+
+    const n = trapIn(
+        abi.number("sysinfo"),
+        @intFromPtr(key.ptr),
+        key.len,
+        @intFromPtr(&answer),
+        answer.len,
+        0,
+    );
+
+    method = if (n > 0 and answer[0] == 's') .fast else .trap;
+    return method;
 }
 
-inline fn syscall1(nr: u32, a0: usize) isize {
-    return asm volatile ("int $0x80"
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-          [a0] "{ebx}" (a0),
-        : .{ .memory = true });
+inline fn enter(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
+    const how = if (method != .unknown) method else chooseMethod();
+    return switch (how) {
+        .fast => fastIn(nr, a0, a1, a2, a3, a4),
+        else => trapIn(nr, a0, a1, a2, a3, a4),
+    };
 }
 
-inline fn syscall3(nr: u32, a0: usize, a1: usize, a2: usize) isize {
+inline fn trapIn(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
     return asm volatile ("int $0x80"
         : [ret] "={eax}" (-> isize),
         : [nr] "{eax}" (nr),
           [a0] "{ebx}" (a0),
           [a1] "{ecx}" (a1),
           [a2] "{edx}" (a2),
+          [a3] "{esi}" (a3),
+          [a4] "{edi}" (a4),
         : .{ .memory = true });
+}
+
+/// The fast path.
+///
+/// SYSENTER saves neither the stack pointer nor the address to come back to,
+/// so both are stashed first: the stack pointer in `ebp`, and the return
+/// address pushed just below it where the kernel reads it back. SYSEXIT is
+/// given them in `ecx` and `edx`, which is why both are clobbered on return.
+inline fn fastIn(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
+    return asm volatile (
+        \\ push %%ebp
+        \\ push $1f
+        \\ mov  %%esp, %%ebp
+        \\ sysenter
+        \\ 1:
+        \\ add  $4, %%esp
+        \\ pop  %%ebp
+        : [ret] "={eax}" (-> isize),
+        : [nr] "{eax}" (nr),
+          [a0] "{ebx}" (a0),
+          [a1] "{ecx}" (a1),
+          [a2] "{edx}" (a2),
+          [a3] "{esi}" (a3),
+          [a4] "{edi}" (a4),
+        : .{ .memory = true, .ecx = true, .edx = true });
+}
+
+inline fn syscall0(nr: u32) isize {
+    return enter(nr, 0, 0, 0, 0, 0);
+}
+
+inline fn syscall1(nr: u32, a0: usize) isize {
+    return enter(nr, a0, 0, 0, 0, 0);
+}
+
+inline fn syscall3(nr: u32, a0: usize, a1: usize, a2: usize) isize {
+    return enter(nr, a0, a1, a2, 0, 0);
+}
+
+inline fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
+    return enter(nr, a0, a1, a2, a3, 0);
+}
+
+inline fn syscall5(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
+    return enter(nr, a0, a1, a2, a3, a4);
 }
 
 pub fn write(handle: u32, bytes: []const u8) isize {
@@ -98,28 +177,7 @@ fn syscall2(nr: u32, a0: usize, a1: usize) isize {
         : .{ .memory = true });
 }
 
-fn syscall4(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize) isize {
-    return asm volatile ("int $0x80"
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-          [a0] "{ebx}" (a0),
-          [a1] "{ecx}" (a1),
-          [a2] "{edx}" (a2),
-          [a3] "{esi}" (a3),
-        : .{ .memory = true });
-}
 
-fn syscall5(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
-    return asm volatile ("int $0x80"
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-          [a0] "{ebx}" (a0),
-          [a1] "{ecx}" (a1),
-          [a2] "{edx}" (a2),
-          [a3] "{esi}" (a3),
-          [a4] "{edi}" (a4),
-        : .{ .memory = true });
-}
 
 pub fn open(path: []const u8, flags: OpenFlags) isize {
     return syscall3(
