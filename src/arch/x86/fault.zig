@@ -74,6 +74,12 @@ pub fn onException(frame: *idt.Frame) noreturn {
         console.field("", "esi {x:0>8} edi {x:0>8} ebp {x:0>8} efl {x:0>8}", .{
             frame.esi, frame.edi, frame.ebp, frame.eflags,
         });
+        // The selectors, because a protection fault on an ordinary store is
+        // about the segment rather than the address: a null or ring-0 DS in
+        // ring 3 refuses a write that the page tables would have allowed.
+        console.field("", "cs {x:0>4}  ds {x:0>4}  es {x:0>4}  ss {x:0>4}", .{
+            frame.cs, frame.ds, frame.es, frame.user_ss,
+        });
         sched.exitWith(FAULTED);
     }
 
