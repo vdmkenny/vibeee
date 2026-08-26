@@ -4,12 +4,11 @@
 //! everything here is parsing and dispatch: split a line into words, run a
 //! builtin or spawn a program, report what happened.
 //!
-//! Output redirection works; pipes do not. Redirection is the shell opening
-//! the file and handing it to the command: a builtin follows the shell's own
-//! writer, a program is given the handle as its standard output. A pipe needs
-//! two programs running at once and the shell waiting on both, which is more
-//! than dispatch, and a shell that pretended otherwise would fail in ways that
-//! looked like shell bugs.
+//! Redirection and pipes both work by handing a command the handles it starts
+//! with. A builtin runs inside the shell and follows the shell's own writer; a
+//! program is given the handles at spawn. The stages of a pipeline run at once
+//! and the shell waits on all of them, because a stage that ran to completion
+//! before the next started would fill the pipe and stop.
 //!
 //! The shell is a supervised service, not the root of userspace: `init` starts
 //! it and restarts it when it exits. That is what makes `exit` meaningful on a
@@ -107,6 +106,28 @@ fn takeRedirect(words: []const []const u8, into: *Redirect) []const []const u8 {
     return words[0 .. words.len - 2];
 }
 
+/// Most stages anyone types. Past this the line is a mistake rather than a
+/// pipeline, and saying so beats running some of it.
+const MAX_STAGES = 8;
+
+/// Split a line on `|`. Zero when a stage is empty or there are too many,
+/// both of which are the line being wrong rather than a command to run.
+fn splitStages(words: []const []const u8, stages: [][]const []const u8) usize {
+    var count: usize = 0;
+    var start: usize = 0;
+
+    for (0..words.len + 1) |i| {
+        const end = i == words.len;
+        if (!end and !str.eql(words[i], "|")) continue;
+        if (i == start or count == stages.len) return 0;
+
+        stages[count] = words[start..i];
+        count += 1;
+        start = i + 1;
+    }
+    return count;
+}
+
 fn runLine(words: []const []const u8) void {
     var redirect: Redirect = .{};
     const command = takeRedirect(words, &redirect);
@@ -116,8 +137,20 @@ fn runLine(words: []const []const u8) void {
         return;
     }
 
+    var stages: [MAX_STAGES][]const []const u8 = undefined;
+    const count = splitStages(command, &stages);
+    if (count == 0) {
+        out.text("vsh: a pipeline needs a command on both sides of every |\n");
+        out.flush();
+        return;
+    }
+
     if (!redirect.active()) {
-        run(command, sys.Spawn.INHERIT);
+        if (count == 1) {
+            run(command, sys.Spawn.INHERIT);
+        } else {
+            runPipeline(stages[0..count], sys.Spawn.INHERIT);
+        }
         return;
     }
 
@@ -137,11 +170,92 @@ fn runLine(words: []const []const u8) void {
         return;
     }
 
-    out.redirectTo(@intCast(handle));
-    run(command, @intCast(handle));
-    out.redirectTo(sys.STDOUT);
+    // The file is the last stage's output, whether there is one stage or six.
+    if (count == 1) {
+        out.redirectTo(@intCast(handle));
+        run(command, @intCast(handle));
+        out.redirectTo(sys.STDOUT);
+    } else {
+        runPipeline(stages[0..count], @intCast(handle));
+    }
 
     _ = sys.close(@intCast(handle));
+}
+
+/// Run every stage at once, each reading what the one before it writes.
+///
+/// The shell closes its own copy of each pipe end as soon as the stage that
+/// needs it has started. A reader only sees end of file when every writer has
+/// let go, and the shell holding a spare copy is a writer that never will.
+fn runPipeline(stages: []const []const []const u8, last_out: i32) void {
+    var pids: [MAX_STAGES]u32 = undefined;
+    var started: usize = 0;
+    var feed: i32 = sys.Spawn.INHERIT;
+
+    for (stages, 0..) |stage, i| {
+        const last = i + 1 == stages.len;
+
+        var sink: i32 = last_out;
+        var next_feed: i32 = sys.Spawn.INHERIT;
+        if (!last) {
+            const conduit = sys.pipe() orelse {
+                out.text("vsh: no pipe available\n");
+                break;
+            };
+            sink = @intCast(conduit.write);
+            next_feed = @intCast(conduit.read);
+        }
+
+        const pid = spawnStage(stage, feed, sink);
+
+        if (feed != sys.Spawn.INHERIT) _ = sys.close(@intCast(feed));
+        if (!last) _ = sys.close(@intCast(sink));
+        feed = next_feed;
+
+        if (pid) |id| {
+            pids[started] = id;
+            started += 1;
+        } else if (!last) {
+            // Nothing will read what the rest write, so stop here rather than
+            // leaving stages blocked on a pipe with no other end.
+            _ = sys.close(@intCast(feed));
+            feed = sys.Spawn.INHERIT;
+            break;
+        }
+    }
+
+    if (feed != sys.Spawn.INHERIT) _ = sys.close(@intCast(feed));
+
+    // Every stage is waited for, so none is left behind as a zombie and the
+    // prompt does not come back while output is still arriving.
+    for (pids[0..started]) |id| _ = sys.wait(id, sys.FOREVER);
+    out.flush();
+}
+
+/// Start one stage of a pipeline, detached so the next can start beside it.
+fn spawnStage(words: []const []const u8, from: i32, into: i32) ?u32 {
+    for (builtins) |b| {
+        if (!str.eql(b.name, words[0])) continue;
+        // A builtin is the shell itself and cannot be a stage: it has no
+        // process of its own to give the pipe to.
+        out.text("vsh: ");
+        out.text(b.name);
+        out.text(" is a builtin and cannot be part of a pipeline\n");
+        return null;
+    }
+
+    const status = spawnProgram(words, .{
+        .flags = @bitCast(sys.SpawnFlags{ .detached = true }),
+        .stdin = from,
+        .stdout = into,
+    });
+    if (status < 0) {
+        out.text("vsh: ");
+        out.text(words[0]);
+        out.text(": not found\n");
+        return null;
+    }
+    return @intCast(status);
 }
 
 /// Run a command, sending its output to `into`.
@@ -159,24 +273,7 @@ fn run(words: []const []const u8, into: i32) void {
         }
     }
 
-    // Not a builtin: look for a program of that name.
-    var path_buf: [MAX_LINE]u8 = undefined;
-    const path = resolvePath(words[0], &path_buf);
-
-    const streams = sys.Spawn{ .stdout = into };
-    var status = sys.spawnStreams(path, words, streams);
-
-    // Not a program either: it may be a command inside the multicall binary.
-    // FAT has no symlinks, so the usual argv[0] trick is unavailable and the
-    // shell does the dispatch instead, cheaper than shipping a copy of the
-    // same 12 KiB image under every command name.
-    if (status < 0) {
-        var argv: [MAX_WORDS + 1][]const u8 = undefined;
-        argv[0] = "tools";
-        for (words, 0..) |w, i| argv[1 + i] = w;
-        status = sys.spawnStreams(TOOLS_PATH, argv[0 .. words.len + 1], streams);
-    }
-
+    const status = spawnProgram(words, .{ .stdout = into });
     if (status < 0) {
         out.text("vsh: ");
         out.text(words[0]);
@@ -188,6 +285,25 @@ fn run(words: []const []const u8, into: i32) void {
         out.text("\n");
     }
     out.flush();
+}
+
+/// Start a program by name, with the streams it should have.
+///
+/// A name is looked for as a program first and then as a command inside the
+/// multicall binary. FAT has no symlinks, so the usual argv[0] trick is
+/// unavailable and the shell does the dispatch instead, which is cheaper than
+/// shipping a copy of the same image under every command name.
+fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
+    var path_buf: [MAX_LINE]u8 = undefined;
+    const path = resolvePath(words[0], &path_buf);
+
+    const direct = sys.spawnStreams(path, words, streams);
+    if (direct >= 0) return direct;
+
+    var argv: [MAX_WORDS + 1][]const u8 = undefined;
+    argv[0] = "tools";
+    for (words, 0..) |w, i| argv[1 + i] = w;
+    return sys.spawnStreams(TOOLS_PATH, argv[0 .. words.len + 1], streams);
 }
 
 /// Turn a bare command name into a path.
