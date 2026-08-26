@@ -168,6 +168,14 @@ pub fn exitWith(status: i32) noreturn {
         // the one that matters: leaving it claimed by a dead process gives the
         // shell no input at all.
         if (input.keyOwner() == t.id) input.releaseKeys();
+
+        // Handles are a claim of the same kind, and they go here rather than
+        // with the rest of the corpse. A pipe ends when its last writer closes,
+        // and a writer that has exited has closed: leaving its handles open
+        // until somebody collects the body means a reader waits not for the
+        // writer to finish but for a third party to notice that it did, which
+        // is a wait that need never end.
+        t.handles.closeAll();
         if (find(t.parent_id)) |p| _ = p.child_exit.wakeAll();
         orphanChildren(t);
     }
@@ -530,9 +538,6 @@ fn reap(t: *Thread) void {
     }
 
     dequeueCorpse(t);
-
-    // Anything still open would otherwise keep a mount busy forever.
-    t.handles.closeAll();
 
     // The address space goes here rather than at the waiting parent, so a
     // process whose parent never collects it still gives its memory back. Safe
