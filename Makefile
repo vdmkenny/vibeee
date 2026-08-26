@@ -116,24 +116,21 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
-	@$(MCOPY) -i $@ -o $(USER_INIT) ::/INIT
-	@$(MCOPY) -i $@ -o $(USER_WM) ::/EEEWM
-	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/SETTINGS
-	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/MONITOR
-	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/ETERM
-	@$(MCOPY) -i $@ -o $(USER_PAD) ::/PAD
-	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/DEVMGD
-	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
-	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH
-	@printf "vibeee root filesystem\nbuild %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
-	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/README.TXT
-	@mmd -i $@ ::/DOCS 2>/dev/null || true
-	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/DOCS/NOTES.TXT
-	@mmd -i $@ ::/ETC 2>/dev/null || true
-	@$(MMD) -i $@ ::/DRIVERS
-	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/DRIVERS/E1000.MAN
-	@$(MCOPY) -i $@ -o etc/services ::/ETC/SERVICES
-	@$(MCOPY) -i $@ -o etc/eeewm.cfg ::/ETC/EEEWM.CFG
+	@for d in bin etc lib tmp home media; do $(MMD) -i $@ ::/$$d; done
+	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
+	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
+	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
+	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
+	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
+	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
+	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
+	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
+	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
+	@$(MCOPY) -i $@ -o etc/services ::/etc/services
+	@$(MCOPY) -i $@ -o etc/eeewm.cfg ::/etc/eeewm.cfg
+	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/lib/e1000.man
+	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
+	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)

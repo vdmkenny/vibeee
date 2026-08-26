@@ -18,6 +18,7 @@
 const std = @import("std");
 const block = @import("block.zig");
 const civil = @import("lib").civil;
+const str = @import("lib").str;
 const table = @import("fat/alloc.zig");
 
 pub const Error = error{
@@ -411,8 +412,20 @@ fn decodeName(raw: *const [11]u8, out: *[MAX_NAME]u8) usize {
             n += 1;
         }
     }
+
+    // 8.3 stores names upper-cased because the format has nowhere to record
+    // case. That is a fact about the medium and not about the file, so it is
+    // undone here, where the rest of the medium's encoding is undone, and
+    // nothing above the driver has to know FAT was ever involved.
+    //
+    // It is also what makes lowercase the cheap spelling: a name that reads
+    // back as it was written needs no long-name records, so `readme.txt`
+    // occupies one directory entry while `README.TXT`, which differs from how
+    // a short name reads, gets the records that preserve it.
+    str.lowerName(out[0..n]);
     return n;
 }
+
 
 /// Case-insensitive comparison against an 8.3 name.
 fn nameMatches(entry: []const u8, wanted: []const u8) bool {

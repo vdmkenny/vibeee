@@ -17,7 +17,7 @@ const config = @import("ulib").config;
 const layout = @import("layout.zig");
 const theme = @import("eui").theme;
 
-pub const PATH = "/ETC/EEEWM.CFG";
+pub const PATH = "/etc/eeewm.cfg";
 
 pub const BarPosition = enum { top, bottom };
 

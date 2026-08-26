@@ -29,7 +29,11 @@ const MAX_WORDS = 16;
 const BIN_DIR = "/";
 
 /// The multicall binary, tried when no program of the given name exists.
-const TOOLS_PATH = "/TOOLS";
+const TOOLS_PATH = "/bin/tools";
+
+/// Where a session starts, and where `cd` with no argument goes back to.
+/// A constant until there are environment variables for it to be `HOME` in.
+const HOME = "/home";
 
 const Builtin = struct {
     name: []const u8,
@@ -61,6 +65,11 @@ export fn shellMain() callconv(.c) noreturn {
     out.flush();
 
     editor.sources = &completion;
+
+    // A session belongs where the user's things are. Not fatal if it is
+    // missing: a shell that refused to start because a directory was gone
+    // would be a shell that could not be used to put it back.
+    _ = sys.chdir(HOME);
 
     var cwd: [256]u8 = @splat(0);
     var prompt_buf: [cwd.len + 8]u8 = undefined;
@@ -432,7 +441,7 @@ fn cmdHelp(_: []const []const u8) void {
 fn cmdCd(words: []const []const u8) void {
     // Bare `cd` goes home, which here is the root: there are no user
     // directories to have a home in yet.
-    const target = if (words.len > 1) words[1] else "/";
+    const target = if (words.len > 1) words[1] else HOME;
     if (sys.chdir(target) < 0) {
         out.text("cd: ");
         out.text(target);

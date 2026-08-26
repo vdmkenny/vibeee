@@ -488,7 +488,7 @@ fn handleKey(event: sys.KeyEvent) void {
                 desktop.zoom();
             } else {
                 // What a tiling manager's Mod+Enter has always opened.
-                _ = sys.spawnDetached("/ETERM", &.{"eterm"});
+                _ = sys.spawnDetached("/bin/eterm", &.{"eterm"});
             }
         },
         // Shift+c asks the focused window to close; Shift+k takes it away

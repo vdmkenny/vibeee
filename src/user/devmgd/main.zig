@@ -12,7 +12,6 @@
 //!
 //! `design/00-vibeee.md` §4.
 
-const std = @import("std");
 const sys = @import("sys");
 const config = @import("ulib").config;
 const dir = @import("ulib").dir;
@@ -21,7 +20,7 @@ const str = @import("ulib").str;
 
 /// Where manifests live. One file per driver, dropped in rather than listed
 /// anywhere: adding a driver should be adding a file.
-const MANIFEST_DIR = "/DRIVERS";
+const MANIFEST_DIR = "/lib";
 
 /// Enough for a machine of this era. A netbook has six to a dozen devices and
 /// nothing like that many drivers.

@@ -268,7 +268,7 @@ fn spinWorker(index: usize) callconv(.c) void {
 /// system idling.
 /// Process 1. Everything else in userspace descends from it.
 fn userThread(_: usize) callconv(.c) void {
-    platform.enterUserMode("/INIT", &.{"init"});
+    platform.enterUserMode("/bin/init", &.{"init"});
 }
 
 fn supervisor(_: usize) callconv(.c) void {

@@ -21,7 +21,7 @@ const str = @import("ulib").str;
 const wm = proto.wm;
 const theme = eui.theme;
 
-const PATH = "/ETC/EEEWM.CFG";
+const PATH = "/etc/eeewm.cfg";
 
 var connection: proto.Connection = undefined;
 var window: u8 = 0;

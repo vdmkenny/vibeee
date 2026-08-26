@@ -17,6 +17,7 @@ const devices_tool = @import("devices.zig");
 const klog = @import("klog.zig");
 const page = @import("page.zig");
 const status = @import("status.zig");
+const tree = @import("tree.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
@@ -43,6 +44,7 @@ pub const commands = [_]Command{
     .{ .name = "commands", .summary = "list command names, one per line", .run = &listNames },
     .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
+    .{ .name = "tree", .summary = "a directory and everything under it", .run = &tree.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
     .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },

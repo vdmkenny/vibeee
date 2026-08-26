@@ -21,25 +21,11 @@ fn openFlags(raw: usize) abi.OpenFlags {
 }
 
 fn writeDirent(out: []u8, entry: fat.Entry) ?usize {
-    // Lower-cased here, once, rather than by every caller that displays a
-    // name. FAT stores a short name upper-cased because the format has nowhere
-    // to record case, which is a fact about the medium and not about the file:
-    // shouting every filename is a decision nobody made. Lookup is
-    // case-insensitive, so a name handed out this way is one that can be
-    // handed straight back.
-    var cased: [abi.Dirent.NAME_MAX]u8 = undefined;
-    const name = entry.nameSlice();
-    const shown = if (name.len <= cased.len) blk: {
-        @memcpy(cased[0..name.len], name);
-        str.lowerName(cased[0..name.len]);
-        break :blk cased[0..name.len];
-    } else name;
-
     const record = abi.Dirent{
         .size = entry.size,
         .mtime = entry.mtime,
         .is_dir = entry.is_dir,
-        .name = shown,
+        .name = entry.nameSlice(),
     };
     return record.encode(out);
 }

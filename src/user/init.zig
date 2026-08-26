@@ -24,7 +24,7 @@ const config = @import("ulib").config;
 const info = @import("ulib").info;
 const str = @import("ulib").str;
 
-const CONFIG_PATH = "/ETC/SERVICES";
+const CONFIG_PATH = "/etc/services";
 
 /// Enough for the whole service table. Read once and kept, so every string in
 /// a `Service` is a slice into it rather than a copy, which is what makes the
@@ -130,7 +130,7 @@ fn useFallback(why: []const u8) void {
     report("init", why);
     services[0] = .{ .service = .{
         .name = "vsh",
-        .binary = "/VSH",
+        .binary = "/bin/vsh",
         .restart = .always,
     } };
     service_count = 1;

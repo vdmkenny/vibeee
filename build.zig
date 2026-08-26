@@ -226,7 +226,22 @@ pub fn build(b: *std.Build) void {
     layering.has_side_effects = true;
     kernel.step.dependOn(&layering.step);
 
-    b.step("check", "Verify the module layering rules").dependOn(&layering.step);
+    // An import nothing uses is a dependency claimed and not made. Same
+    // reasoning as the layering check, and the same enforcement: every build.
+    const imports = b.addRunArtifact(b.addExecutable(.{
+        .name = "check-imports",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/check-imports.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    }));
+    imports.has_side_effects = true;
+    kernel.step.dependOn(&imports.step);
+
+    const check = b.step("check", "Verify the module layering and import rules");
+    check.dependOn(&layering.step);
+    check.dependOn(&imports.step);
 
     // ---------------------------------------------------------------------
     // Syscall reference, generated from the same table the dispatcher is built

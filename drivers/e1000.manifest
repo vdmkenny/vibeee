@@ -2,6 +2,6 @@
 # machines of this era carry. No driver is written yet; the manifest is here so
 # the matching can be exercised, and it names the binary that will exist.
 name   = e1000
-binary = /DRV/E1000
+binary = /bin/e1000
 match  = pci:8086:100e
 caps   = driver

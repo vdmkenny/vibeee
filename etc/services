@@ -14,7 +14,7 @@
 #             the service, not just the service itself.
 
 name    = devmgd
-binary  = /DEVMGD
+binary  = /bin/devmgd
 # Everything a device manager grants, so it can pass a subset to each driver.
 # It is the only thing in the tree with `driver`, which is what stops anything
 # else from reaching hardware.
@@ -22,7 +22,7 @@ caps    = spawn,driver
 restart = never
 
 name    = vsh
-binary  = /VSH
+binary  = /bin/vsh
 restart = always
 # Everything a session needs and nothing a driver needs: the shell, the
 # desktop and every program either of them starts are all below this line, so

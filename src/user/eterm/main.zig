@@ -22,7 +22,7 @@ const vt = @import("vt.zig");
 
 const Rect = eui.Rect;
 
-const SHELL = "/VSH";
+const SHELL = "/bin/vsh";
 
 /// 15 percent, which is enough to see through and not enough to read through.
 const TRANSPARENCY: u8 = 38;
