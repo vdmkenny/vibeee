@@ -341,9 +341,26 @@ pub const Modifiers = abi.Modifiers;
 
 /// Take the screen. Returns a handle to the scanout buffer, which maps like
 /// any other segment, or null if something else already owns it.
-pub fn displayAcquire(info: *DisplayInfo) ?isize {
+pub const DisplayError = error{
+    /// Nothing to take: the console is in text mode.
+    NoDisplay,
+    /// Something else already owns it.
+    Busy,
+    OutOfMemory,
+};
+
+/// Take the display. The error says which of the two ordinary reasons it
+/// failed, because "no" and "not yet" call for different things from whoever
+/// is reading the message.
+pub fn displayAcquire(info: *DisplayInfo) DisplayError!isize {
     const handle = syscall1(abi.number("display_acquire"), @intFromPtr(info));
-    return if (handle < 0) null else handle;
+    if (handle >= 0) return handle;
+
+    return switch (-handle) {
+        @intFromEnum(abi.Errno.noent) => error.NoDisplay,
+        @intFromEnum(abi.Errno.busy) => error.Busy,
+        else => error.OutOfMemory,
+    };
 }
 
 /// Read raw key events, claiming the keyboard from the line discipline.

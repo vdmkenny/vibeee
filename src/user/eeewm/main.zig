@@ -68,8 +68,13 @@ export fn _start() callconv(.naked) noreturn {
 }
 
 export fn wmMain() callconv(.c) noreturn {
-    const display = sys.displayAcquire(&info) orelse {
-        out.text("eeewm: cannot take the display; is it in graphics mode?\n");
+    const display = sys.displayAcquire(&info) catch |err| {
+        out.text(switch (err) {
+            error.NoDisplay => "eeewm: no framebuffer. The machine booted in text mode; " ++
+                "add `fb` to the kernel command line.\n",
+            error.Busy => "eeewm: something already owns the display.\n",
+            error.OutOfMemory => "eeewm: not enough memory to take the display.\n",
+        });
         out.flush();
         sys.exit(1);
     };

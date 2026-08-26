@@ -284,12 +284,12 @@ fn supervisor(_: usize) callconv(.c) void {
         banner();
     }
 
-    _ = sched.spawn("init", .normal, userThread, 0, 16384) catch {
-        console.fail("sched: cannot spawn user thread", .{});
-        return;
-    };
-    sched.sleepMicros(200_000);
-
+    // Everything the kernel has to say is said before userspace starts.
+    //
+    // The console belongs to whoever is using it, and from the next line that
+    // is the shell. Reporting afterwards scrolled the shell's first prompt off
+    // the top, which looked like a machine that had booted to nothing until
+    // Enter was pressed and it drew another.
     bcache.report();
 
     if (console.isVerbose()) {
@@ -297,7 +297,13 @@ fn supervisor(_: usize) callconv(.c) void {
         console.setColor(.light_green, .black);
         console.writeString("ready\n");
         console.setColor(.light_grey, .black);
+        console.putChar('\n');
     }
+
+    _ = sched.spawn("init", .normal, userThread, 0, 16384) catch {
+        console.fail("sched: cannot spawn user thread", .{});
+        return;
+    };
 }
 
 /// A pipe carries bytes, and reports end of file once its writer is gone.
