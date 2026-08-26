@@ -513,7 +513,7 @@ Rebranded, in our own style, all `libeui`:
 | **Files** | Explorer | Dual-pane, mount/eject awareness for SD and USB |
 | **Calc** | Calculator | Basic + programmer modes |
 | **Mines** |, | Minesweeper: tiny, no assets, keyboard + mouse, fits the screen exactly |
-| **Term** | terminal | VT100/xterm subset via `libvterm` |
+| **eTerm** | terminal | VT100/xterm subset via `libvterm`. The first real client: a terminal is the most demanding thing on the window protocol, since a blinking cursor is continuous small damage and the keyboard has to reach the client rather than the manager |
 | **View** | image viewer | PNG/JPEG/BMP via `stb_image` |
 
 **System configuration, one app, plus two popovers.** `Control` is the single config utility, organised in panels, so there is one place to look and one settings schema:
@@ -616,7 +616,7 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 | Milestone | Content | Runs on |
 |---|---|---|
 | **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU |
-| **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, Term/Files/Edit, keymaps | **First real-hardware boot** |
+| **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm/Files/Edit, keymaps | **First real-hardware boot** |
 | **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Calc/Monitor/Mines/Settings | Hardware |
 | **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, Draw/View, install-to-SSD, A/B updater, turbo mode | Hardware |
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware |

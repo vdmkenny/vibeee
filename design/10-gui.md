@@ -159,7 +159,7 @@ AZERTY. Accelerators inside apps (Alt+F for &File) are symbol-based, that is lib
 Mod = **Super** (the 701 has a Windows key; Alt is left for apps). Defaults (dwm-flavored):
 | Chord | Action | | Chord | Action |
 |---|---|---|---|---|
-| Mod+Enter | spawn terminal | | Mod+j / Mod+k | focus next/prev |
+| Mod+Enter | spawn eTerm | | Mod+j / Mod+k | focus next/prev |
 | Mod+p | launcher (erun) | | Mod+h / Mod+l | mfact −/+ |
 | Mod+t / Mod+w / Mod+m | layout tall/wide/monocle | | Mod+Shift+Enter | zoom to master |
 | Mod+1..4, Mod+Shift+1..4 | view / move-to tag | | Mod+Tab | previous tag |
