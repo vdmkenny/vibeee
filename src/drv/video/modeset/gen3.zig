@@ -135,17 +135,6 @@ const Source = packed struct(u32) {
     }
 };
 
-/// The plane's own displayed size, which is not the pipe's source size and
-/// does not hold its halves the same way round: width low, height high.
-const PlaneSize = packed struct(u32) {
-    width_less_one: u16,
-    height_less_one: u16,
-
-    fn of(width: u16, height: u16) PlaneSize {
-        return .{ .width_less_one = width - 1, .height_less_one = height - 1 };
-    }
-};
-
 const Register = struct { name: []const u8, offset: u32 };
 
 /// What a pipe contributes to the dump, named for the pipe it belongs to so
@@ -330,11 +319,6 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     write(Source, w, pipe.src, Source.of(want.width, want.height));
     write(u32, w, pipe.stride, pitch);
 
-    // The plane carries its own size and origin, which firmware sized to the
-    // smaller image it was scaling. A pipe told to scan out more than the plane
-    // paints shows the pipe's border colour for the rest.
-    write(PlaneSize, w, pipe.size, PlaneSize.of(want.width, want.height));
-    write(u32, w, pipe.pos, 0);
 
     // Writing the base arms the plane: the registers above are double buffered
     // and take effect together at the next vertical blank.
