@@ -104,6 +104,14 @@ fn errnoFor(err: anyerror) Result {
     };
 }
 
+pub fn sys_mkdir(a: Args) Result {
+    var path_buf: [path_mod.MAX]u8 = undefined;
+    const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
+
+    vfs.mkdir(path, clock.realtimeSeconds()) catch |err| return errnoFor(err);
+    return 0;
+}
+
 pub fn sys_unlink(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();

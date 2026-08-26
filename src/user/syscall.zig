@@ -269,6 +269,10 @@ pub fn pipe() ?Pipe {
     return .{ .read = ends[0], .write = ends[1] };
 }
 
+pub fn mkdir(path: []const u8) isize {
+    return syscall3(abi.number("mkdir"), @intFromPtr(path.ptr), path.len, 0);
+}
+
 pub fn chdir(path: []const u8) isize {
     return syscall3(abi.number("chdir"), @intFromPtr(path.ptr), path.len, 0);
 }

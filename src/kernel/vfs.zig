@@ -247,6 +247,24 @@ pub fn create(path: []const u8, mtime: i64) Error!Opened {
     return .{ .mount = r.mount, .entry = entry };
 }
 
+/// Create an empty directory, failing if something is already there.
+pub fn mkdir(path: []const u8, mtime: i64) Error!void {
+    const r = try resolve(path);
+    if (r.rest.len == 0) return error.BadPath;
+    try requireWritable(r.mount);
+
+    if (fat.lookupPath(&r.mount.volume, r.rest)) |_| {
+        return error.Exists;
+    } else |err| switch (err) {
+        error.NotFound => {},
+        else => return err,
+    }
+
+    const split = splitParent(path);
+    const dir = try openDir(split.dir);
+    _ = try fat.createDirectory(&r.mount.volume, dir, split.name, mtime);
+}
+
 /// Write to an already-opened file. The entry is updated in place; the caller
 /// commits it when it closes the file.
 pub fn writeAt(m: *Mount, entry: *fat.Entry, offset: u64, data: []const u8) Error!usize {

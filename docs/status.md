@@ -87,7 +87,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm hexdump grep free top kill log irq disk svc date eeefetch smbios pointer ringtest` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq disk svc date eeefetch smbios pointer ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
@@ -157,8 +157,6 @@ first: the design names 640x480 VESA as the fallback if the native modeset resis
 
 ## Known gaps
 
-- Creating a file uses an 8.3 short name; long names are read but not written.
-- No `mkdir`: directories cannot be created, only read.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
 - No USB, audio or networking.

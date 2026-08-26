@@ -677,6 +677,28 @@ Say the device has been serviced, so its line may fire again.
 
 Acknowledging a line that was not held is not an error: a driver that found nothing to do should say so rather than track whether one was outstanding.
 
+## `mkdir`  <sub>#38</sub>
+
+Create a directory.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | Absolute or relative path. |
+| `path_len` | len | Length of the path. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `EEXIST`, the name is already registered
+- `ENOENT`, no such file or directory
+- `ENOSPC`, the volume is full
+- `EPERM`, the operation is not allowed on that object
+
+Only the last component is created; the parent must already exist. The new directory is written with its `.` and `..` already in place.
+
 ---
 
-38 calls defined.
+39 calls defined.

@@ -822,11 +822,10 @@ const Slot = struct { sector: u32, index: u32 };
 
 /// Pack a name into the 8.3 form, upper-cased.
 ///
-/// Short names only. Creating a long name means generating VFAT records and a
-/// unique `~1` short alias to go with them, and getting that wrong produces a
-/// volume other systems disagree with about what the file is called. Reading
-/// long names is supported; writing them is not, and a name that will not fit
-/// is refused rather than silently truncated into a different file.
+/// Fails on anything that will not fit, which is what tells the caller a long
+/// name is needed. Never truncates: a name silently shortened is a different
+/// file, and the volume would disagree with every other system about what it
+/// is called.
 fn encodeShortName(name: []const u8, out: *[11]u8) Error!void {
     @memset(out, ' ');
 
@@ -870,24 +869,44 @@ fn isShortNameChar(c: u8) bool {
     };
 }
 
-/// Find a free record in `dir`, extending the directory if it is full.
+const RECORDS_PER_SECTOR = block.SECTOR_SIZE / @sizeOf(DirEntry);
+
+/// A run of consecutive free records, and where to carry on writing.
+///
+/// A long name needs its records adjacent and in order, so the search is for a
+/// run rather than for a slot. The walker is kept because the run may cross a
+/// sector, and continuing the walk is the only way to know which sector comes
+/// next in a cluster chain.
+const Run = struct {
+    walk: Iterator,
+    index: u32,
+};
+
+/// Find `needed` consecutive free records in `dir`, extending it if it is full.
 ///
 /// Free means never used (0x00) or deleted (0xE5). A FAT12/16 root directory
 /// is a fixed run of sectors and cannot grow, which is the one case where a
 /// volume with free space still cannot take another file.
-fn findFreeSlot(vol: *Volume, dir: Iterator) Error!Slot {
+fn findFreeRun(vol: *Volume, dir: Iterator, needed: usize) Error!Run {
     var walk = dir;
     var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
-    const per_sector = block.SECTOR_SIZE / @sizeOf(DirEntry);
+
+    var start: ?Run = null;
+    var found: usize = 0;
 
     while (!walk.done) {
         vol.dev.read(walk.sector, &sector_buf) catch return error.Io;
 
         var i: u32 = 0;
-        while (i < per_sector) : (i += 1) {
+        while (i < RECORDS_PER_SECTOR) : (i += 1) {
             const first = sector_buf[i * @sizeOf(DirEntry)];
             if (first == 0x00 or first == 0xE5) {
-                return .{ .sector = walk.sector, .index = i };
+                if (start == null) start = .{ .walk = walk, .index = i };
+                found += 1;
+                if (found == needed) return start.?;
+            } else {
+                start = null;
+                found = 0;
             }
         }
 
@@ -899,10 +918,57 @@ fn findFreeSlot(vol: *Volume, dir: Iterator) Error!Slot {
             // zeroed first: uninitialised records would be read as entries.
             const fresh = try table.append(&vol.fat, last_cluster);
             try zeroCluster(vol, fresh);
-            return .{ .sector = vol.firstSectorOfCluster(fresh), .index = 0 };
+
+            var extended = walk;
+            extended.done = false;
+            extended.cluster = fresh;
+            extended.sector = vol.firstSectorOfCluster(fresh);
+            extended.sector_in_cluster = 0;
+            extended.sectors_left = vol.sectors_per_cluster;
+            extended.loaded = false;
+
+            // A fresh cluster is entirely free, so a run that started earlier
+            // continues into it and one that did not starts here.
+            if (start == null) start = .{ .walk = extended, .index = 0 };
+            walk = extended;
         }
     }
     return error.NoSpace;
+}
+
+/// Write consecutive records starting at `run`.
+///
+/// One sector at a time, so a run crossing a boundary costs two writes rather
+/// than one per record.
+fn writeRun(vol: *Volume, run: Run, records: []const [32]u8) Error!Slot {
+    var walk = run.walk;
+    var index = run.index;
+    var written: usize = 0;
+    var last = Slot{ .sector = walk.sector, .index = index };
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+
+    while (written < records.len) {
+        vol.dev.read(walk.sector, &sector_buf) catch return error.Io;
+
+        while (index < RECORDS_PER_SECTOR and written < records.len) : (index += 1) {
+            @memcpy(sector_buf[index * @sizeOf(DirEntry) ..][0..@sizeOf(DirEntry)], &records[written]);
+            last = .{ .sector = walk.sector, .index = index };
+            written += 1;
+        }
+
+        vol.dev.write(walk.sector, &sector_buf) catch return error.Io;
+
+        if (written < records.len) {
+            walk.advanceSector() catch return error.Io;
+            if (walk.done) return error.NoSpace;
+            index = 0;
+        }
+    }
+
+    // Where the short record landed, which is what the caller needs to find
+    // the file again.
+    return last;
 }
 
 fn zeroCluster(vol: *Volume, cluster: u32) Error!void {
@@ -915,53 +981,265 @@ fn zeroCluster(vol: *Volume, cluster: u32) Error!void {
     }
 }
 
+/// Whether a name can be stored as it is written.
+///
+/// Case is the usual reason it cannot: 8.3 has nowhere to record it, so a name
+/// with any lowercase in it needs long-name records to survive a round trip
+/// even when it is short enough to fit.
+fn fitsShortName(name: []const u8) bool {
+    var probe: [11]u8 = undefined;
+    encodeShortName(name, &probe) catch return false;
+
+    var back: [MAX_NAME]u8 = undefined;
+    const n = decodeName(&probe, &back);
+    return std.mem.eql(u8, back[0..n], name);
+}
+
+/// Invent a unique 8.3 alias for a long name: `LONGNA~1.TXT`.
+///
+/// Every long name needs one, because that is what a system reading only 8.3
+/// will see, and two files in a directory cannot share it.
+fn shortAlias(dir: Iterator, name: []const u8, out: *[11]u8) Error!void {
+    @memset(out, ' ');
+
+    // The stem takes what it can of the leading characters; the extension is
+    // whatever follows the last dot.
+    var stem: usize = 0;
+    var dot: ?usize = null;
+    for (name, 0..) |c, i| {
+        if (c == '.') dot = i;
+    }
+
+    for (name[0 .. dot orelse name.len]) |c| {
+        if (stem == 6) break;
+        if (!isShortNameChar(c)) continue;
+        out[stem] = if (c >= 'a' and c <= 'z') c - 32 else c;
+        stem += 1;
+    }
+    if (stem == 0) {
+        out[0] = 'F';
+        stem = 1;
+    }
+
+    if (dot) |at| {
+        var ext: usize = 0;
+        for (name[at + 1 ..]) |c| {
+            if (ext == 3) break;
+            if (!isShortNameChar(c)) continue;
+            out[8 + ext] = if (c >= 'a' and c <= 'z') c - 32 else c;
+            ext += 1;
+        }
+    }
+
+    // `~1` through `~99`, which is as far as anything sensible goes. A
+    // directory holding a hundred names that all shorten alike is one where
+    // refusing is better than searching.
+    var n: u32 = 1;
+    while (n <= 99) : (n += 1) {
+        var suffix: [3]u8 = undefined;
+        var len: usize = 0;
+        suffix[len] = '~';
+        len += 1;
+        if (n >= 10) {
+            suffix[len] = '0' + @as(u8, @intCast(n / 10));
+            len += 1;
+        }
+        suffix[len] = '0' + @as(u8, @intCast(n % 10));
+        len += 1;
+
+        const at = @min(stem, 8 - len);
+        @memcpy(out[at..][0..len], suffix[0..len]);
+
+        var back: [MAX_NAME]u8 = undefined;
+        const back_len = decodeName(out, &back);
+        _ = lookupIn(dir, back[0..back_len]) catch |err| switch (err) {
+            error.NotFound => return,
+            else => return err,
+        };
+    }
+    return error.NoSpace;
+}
+
+/// How many long-name records a name needs.
+fn longNameRecords(name: []const u8) usize {
+    return (name.len + LFN_CHARS - 1) / LFN_CHARS;
+}
+
+/// Build one long-name record: 13 characters of the name, in UTF-16.
+///
+/// Unused positions after the terminator are 0xFFFF, which is what every
+/// implementation writes and what some of them check for.
+fn buildLongRecord(name: []const u8, index: usize, last: bool, checksum: u8) LfnEntry {
+    var chars: [LFN_CHARS]u16 = @splat(0xFFFF);
+    const start = index * LFN_CHARS;
+
+    for (0..LFN_CHARS) |i| {
+        const at = start + i;
+        if (at < name.len) {
+            // Latin-1 into UTF-16 directly. Names above that need a decoder,
+            // and nothing here creates one yet.
+            chars[i] = name[at];
+        } else if (at == name.len) {
+            chars[i] = 0;
+        }
+    }
+
+    var e = LfnEntry{
+        .sequence = @intCast(index + 1),
+        .name_1 = undefined,
+        .attr = ATTR_LONG_NAME,
+        .type = 0,
+        .checksum = checksum,
+        .name_2 = undefined,
+        .cluster_low = 0,
+        .name_3 = undefined,
+    };
+    if (last) e.sequence |= LFN_LAST;
+
+    for (0..5) |i| std.mem.writeInt(u16, e.name_1[i * 2 ..][0..2], chars[i], .little);
+    for (0..6) |i| std.mem.writeInt(u16, e.name_2[i * 2 ..][0..2], chars[5 + i], .little);
+    for (0..2) |i| std.mem.writeInt(u16, e.name_3[i * 2 ..][0..2], chars[11 + i], .little);
+
+    return e;
+}
+
 /// Create an empty file called `name` in `dir`.
 ///
 /// The entry starts with no clusters at all: an empty file should cost a
 /// directory record and nothing else, and `writeAt` allocates the first
 /// cluster when there is finally something to put in it.
 pub fn createFile(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    return create(vol, dir, name, mtime, false);
+}
+
+/// Create an empty directory called `name` in `dir`.
+///
+/// Unlike a file it costs a cluster immediately, because a directory that
+/// exists must already hold its own `.` and `..`: a system reading one with no
+/// cluster would see a directory it cannot enter.
+pub fn createDirectory(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64) Error!Entry {
+    return create(vol, dir, name, mtime, true);
+}
+
+fn create(vol: *Volume, dir: Iterator, name: []const u8, mtime: i64, is_dir: bool) Error!Entry {
+    if (name.len == 0 or name.len > MAX_NAME) return error.NameTooLong;
+    if (lookupIn(dir, name)) |_| return error.Exists else |err| switch (err) {
+        error.NotFound => {},
+        else => return err,
+    }
+
+    // A name that survives the 8.3 round trip is stored as itself. Anything
+    // else, and that includes anything with lowercase in it, needs long-name
+    // records and an alias for systems that read only the short form.
     var short: [11]u8 = undefined;
-    try encodeShortName(name, &short);
+    const long = !fitsShortName(name);
+    if (long) try shortAlias(dir, name, &short) else try encodeShortName(name, &short);
 
-    const slot = try findFreeSlot(vol, dir);
+    const long_records = if (long) longNameRecords(name) else 0;
+    if (long_records > LFN_MAX_ENTRIES) return error.NameTooLong;
 
-    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
-    vol.dev.read(slot.sector, &sector_buf) catch return error.Io;
+    // A directory's cluster is allocated before its record, so a failure part
+    // way leaves a lost cluster rather than a directory nothing can enter.
+    var cluster: u32 = 0;
+    if (is_dir) {
+        cluster = try table.alloc(&vol.fat);
+        try zeroCluster(vol, cluster);
+        try writeDotEntries(vol, cluster, parentCluster(vol, dir), mtime);
+    }
+    errdefer if (is_dir) table.freeChain(&vol.fat, cluster) catch {};
 
-    const off = slot.index * @sizeOf(DirEntry);
-    const raw: *align(1) DirEntry = @ptrCast(&sector_buf[off]);
+    var records: [LFN_MAX_ENTRIES + 1][32]u8 = undefined;
+    const checksum = shortNameChecksum(&short);
+
+    // The records run last fragment first, so reading forward reaches the
+    // pieces in reverse and the short entry comes last.
+    for (0..long_records) |i| {
+        const index = long_records - 1 - i;
+        const record = buildLongRecord(name, index, index == long_records - 1, checksum);
+        @memcpy(&records[i], std.mem.asBytes(&record));
+    }
 
     const stamp = fatFromEpoch(mtime);
-    raw.* = .{
+    const entry_record = DirEntry{
         .name = short,
-        .attr = 0,
+        .attr = if (is_dir) ATTR_DIRECTORY else 0,
         .nt_reserved = 0,
         .create_tenths = 0,
         .create_time = stamp.time,
         .create_date = stamp.date,
         .access_date = stamp.date,
-        .cluster_high = 0,
+        .cluster_high = @truncate(cluster >> 16),
         .write_time = stamp.time,
         .write_date = stamp.date,
-        .cluster_low = 0,
+        .cluster_low = @truncate(cluster),
         .size = 0,
     };
+    @memcpy(&records[long_records], std.mem.asBytes(&entry_record));
 
-    vol.dev.write(slot.sector, &sector_buf) catch return error.Io;
+    const total = long_records + 1;
+    const run = try findFreeRun(vol, dir, total);
+    const slot = try writeRun(vol, run, records[0..total]);
 
     var entry = Entry{
         .name = undefined,
         .name_len = 0,
-        .is_dir = false,
+        .is_dir = is_dir,
         .size = 0,
-        .cluster = 0,
+        .cluster = cluster,
         .mtime = mtime,
         .dir_sector = slot.sector,
         .dir_index = slot.index,
     };
-    entry.name_len = decodeName(&short, &entry.name);
+
+    if (long) {
+        entry.name_len = @min(name.len, MAX_NAME);
+        @memcpy(entry.name[0..entry.name_len], name[0..entry.name_len]);
+    } else {
+        entry.name_len = decodeName(&short, &entry.name);
+    }
     return entry;
+}
+
+/// What a new directory's `..` should point at.
+///
+/// Zero when the parent is the root, whichever way this volume stores its
+/// root: that is the convention, and a `..` naming the root's own cluster is
+/// something other systems read as a loop.
+fn parentCluster(vol: *Volume, dir: Iterator) u32 {
+    if (dir.cluster == 0) return 0;
+    if (vol.kind == .fat32 and dir.cluster == vol.root_cluster) return 0;
+    return dir.cluster;
+}
+
+/// Write the `.` and `..` a directory must begin with.
+fn writeDotEntries(vol: *Volume, cluster: u32, parent: u32, mtime: i64) Error!void {
+    var sector_buf: [block.SECTOR_SIZE]u8 = @splat(0);
+    const stamp = fatFromEpoch(mtime);
+
+    const pair = [_]struct { name: *const [11]u8, cluster: u32 }{
+        .{ .name = ".          ", .cluster = cluster },
+        .{ .name = "..         ", .cluster = parent },
+    };
+
+    for (pair, 0..) |it, i| {
+        const record = DirEntry{
+            .name = it.name.*,
+            .attr = ATTR_DIRECTORY,
+            .nt_reserved = 0,
+            .create_tenths = 0,
+            .create_time = stamp.time,
+            .create_date = stamp.date,
+            .access_date = stamp.date,
+            .cluster_high = @truncate(it.cluster >> 16),
+            .write_time = stamp.time,
+            .write_date = stamp.date,
+            .cluster_low = @truncate(it.cluster),
+            .size = 0,
+        };
+        @memcpy(sector_buf[i * @sizeOf(DirEntry) ..][0..@sizeOf(DirEntry)], std.mem.asBytes(&record));
+    }
+
+    vol.dev.write(vol.firstSectorOfCluster(cluster), &sector_buf) catch return error.Io;
 }
 
 /// Remove a file: free its clusters and mark its record deleted.

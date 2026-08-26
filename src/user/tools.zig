@@ -39,6 +39,7 @@ const commands = [_]Command{
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
     .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
+    .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
     .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
     .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },

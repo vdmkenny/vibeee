@@ -172,3 +172,28 @@ pub fn rm(args: []const []const u8) void {
     }
     out.flush();
 }
+
+/// Create a directory.
+pub fn mkdir(args: []const []const u8) void {
+    if (args.len == 0) {
+        out.text("usage: mkdir <path>...\n");
+        out.flush();
+        return;
+    }
+
+    for (args) |path| {
+        const result = sys.mkdir(path);
+        if (result < 0) {
+            out.text("mkdir: ");
+            out.name(path);
+            out.text(switch (result) {
+                -17 => ": already exists\n",
+                -2 => ": no such parent directory\n",
+                -28 => ": no space\n",
+                -1 => ": read-only volume\n",
+                else => ": cannot create\n",
+            });
+        }
+    }
+    out.flush();
+}

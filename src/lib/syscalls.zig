@@ -993,6 +993,19 @@ pub const table = [_]Syscall{
         .notes = "Acknowledging a line that was not held is not an error: a driver that " ++
             "found nothing to do should say so rather than track whether one was outstanding.",
     },
+    .{
+        .number = 38,
+        .name = "mkdir",
+        .summary = "Create a directory.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "Absolute or relative path." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.fault, E.inval, E.exists, E.noent, E.nospace, E.perm },
+        .notes = "Only the last component is created; the parent must already exist. " ++
+            "The new directory is written with its `.` and `..` already in place.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the
