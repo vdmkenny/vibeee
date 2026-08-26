@@ -7,6 +7,7 @@
 //! the pass machinery.
 
 const draw = @import("draw.zig");
+const scroll = @import("scroll.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -48,6 +49,7 @@ pub const Row = struct {
 pub const State = struct {
     selected: usize = 0,
     scroll: usize = 0,
+    bar: scroll.State = .{},
 };
 
 pub fn rowHeight() i32 {
@@ -96,7 +98,7 @@ pub fn run(
     if (act.over) {
         const wheel = ctx.takeWheel();
         if (wheel != 0) {
-            state.scroll = scrolled(state.scroll, wheel, rows.len, visible);
+            state.scroll = wheeled(state.scroll, wheel, rows.len, visible);
             ctx.damage();
         }
     }
@@ -134,13 +136,26 @@ pub fn run(
         ctx.addDamage(area);
     }
 
+    // After the rows, or they would be drawn over it.
+    const bar = Rect{
+        .x = body.right() - scroll.WIDTH,
+        .y = body.y,
+        .w = scroll.WIDTH,
+        .h = body.h,
+    };
+    const dragged = ctx.scrollbar(bar, &state.bar, state.scroll, rows.len, visible);
+    if (dragged != state.scroll and rows.len > visible) {
+        state.scroll = dragged;
+        ctx.damage();
+    }
+
     return activated;
 }
 
-fn scrolled(scroll: usize, wheel: i8, count: usize, visible: usize) usize {
+fn wheeled(at: usize, wheel: i8, count: usize, visible: usize) usize {
     const step: usize = 3;
     const limit = count -| visible;
-    const moved = if (wheel < 0) scroll + step else scroll -| step;
+    const moved = if (wheel < 0) at + step else at -| step;
     return @min(moved, limit);
 }
 
@@ -171,7 +186,7 @@ fn fingerprint(
 fn paint(
     surface: Surface,
     area: Rect,
-    body: Rect,
+    body_full: Rect,
     columns: []const Column,
     rows: []const Row,
     state: *const State,
@@ -181,6 +196,11 @@ fn paint(
 ) void {
     const t = theme.current();
     const row_h = rowHeight();
+    // The rows stop where the scrollbar starts, so nothing is drawn under it.
+    const body = if (rows.len > visible)
+        Rect{ .x = body_full.x, .y = body_full.y, .w = body_full.w - scroll.WIDTH, .h = body_full.h }
+    else
+        body_full;
 
     surface.fill(area, t.surface);
 
@@ -231,7 +251,6 @@ fn paint(
         y += row_h;
     }
 
-    if (rows.len > visible) paintScrollbar(surface, body, state.scroll, rows.len, visible);
     surface.frame(area, if (focused) t.accent else t.line);
 }
 
@@ -245,22 +264,3 @@ fn columnWidth(columns: []const Column, index: usize, total: i32) i32 {
     return @max(total - used - 4, columns[index].width);
 }
 
-const SCROLLBAR_WIDTH: i32 = 6;
-
-fn paintScrollbar(surface: Surface, body: Rect, scroll: usize, count: usize, visible: usize) void {
-    const t = theme.current();
-    const track = Rect{
-        .x = body.right() - SCROLLBAR_WIDTH - 1,
-        .y = body.y,
-        .w = SCROLLBAR_WIDTH,
-        .h = body.h,
-    };
-    surface.fill(track, t.surface_pressed);
-
-    const span = @max(@divTrunc(track.h * @as(i32, @intCast(visible)), @as(i32, @intCast(count))), 8);
-    const room = track.h - span;
-    const limit = count -| visible;
-    const offset = if (limit == 0) 0 else @divTrunc(room * @as(i32, @intCast(scroll)), @as(i32, @intCast(limit)));
-
-    surface.fill(.{ .x = track.x, .y = track.y + offset, .w = track.w, .h = span }, t.line);
-}

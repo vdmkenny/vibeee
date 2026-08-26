@@ -22,6 +22,7 @@
 const draw = @import("draw.zig");
 
 const theme = @import("theme.zig");
+const scroll_mod = @import("scroll.zig");
 const tbl = @import("table.zig");
 
 const Rect = draw.Rect;
@@ -476,6 +477,18 @@ pub const Context = struct {
         }
 
         return value;
+    }
+
+    /// A vertical scrollbar. Returns where the view should scroll to.
+    pub fn scrollbar(
+        self: *Context,
+        area: Rect,
+        state: *scroll_mod.State,
+        at: usize,
+        total: usize,
+        visible: usize,
+    ) usize {
+        return scroll_mod.vertical(self, area, state, at, total, visible);
     }
 
     /// A scrolling table of rows. Returns the row activated this pass, or null.

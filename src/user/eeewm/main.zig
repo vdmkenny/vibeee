@@ -145,7 +145,11 @@ fn paintCommitted() void {
     const visible = desktop.visible(&buf);
 
     var lifted = false;
-    for (visible) |index| {
+    // Windows that something below them has just drawn over, and which
+    // therefore have to be put back on top.
+    var restore: [layout.MAX_WINDOWS]bool = @splat(false);
+
+    for (visible, 0..) |index, order| {
         const damage = &window_damage[index];
         if (damage.isEmpty()) continue;
 
@@ -160,6 +164,18 @@ fn paintCommitted() void {
             refreshWindow(index, damage.rects[0..damage.count]);
         }
         damage.clear();
+
+        // `visible` is in drawing order, so anything after this one is above
+        // it. A dialog floating over a window that redrew part of itself has
+        // just been painted over.
+        for (visible[order + 1 ..]) |above| {
+            const overlap = desktop.windows[above].area.intersect(desktop.windows[index].area);
+            if (!overlap.isEmpty()) restore[above] = true;
+        }
+    }
+
+    for (visible) |index| {
+        if (restore[index]) paintWindow(index, desktop.focused == index);
     }
 
     // A menu floats over the tiles, so anything repainted underneath one has

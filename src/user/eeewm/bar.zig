@@ -353,13 +353,19 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
 /// A downward triangle: this tab holds more than one window and will open a
 /// menu of them. The glyph rather than three drawn lines, now that the font
 /// carries one that reads correctly at this size.
+/// Three short rules, the mark everything uses for "there is a list behind
+/// this". Drawn rather than taken from the font: at this size a glyph is a
+/// smudge, and three rules are three rules at any size.
 fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
-    surface.glyph(
-        area.right() - MARKER_WIDTH,
-        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
-        glyphs.triangle_down,
-        color,
-    );
+    const width = MARKER_WIDTH - 3;
+    const x = area.right() - MARKER_WIDTH + 1;
+    const spacing = 3;
+    var y = area.y + @divTrunc(area.h - (spacing * 2 + 1), 2);
+
+    for (0..3) |_| {
+        surface.fill(.{ .x = x, .y = y, .w = width, .h = 1 }, color);
+        y += spacing;
+    }
 }
 
 fn paintLayoutGlyph(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {

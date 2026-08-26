@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const draw = @import("draw.zig");
+const scroll = @import("scroll.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -260,6 +261,7 @@ pub const Editor = struct {
     goal: ?i32 = null,
     /// Set on any change to the text, for the caller's modified flag.
     edited: bool = false,
+    bar: scroll.State = .{},
 
     pub fn selection(self: *const Editor) ?struct { from: usize, to: usize } {
         const anchor = self.anchor orelse return null;
@@ -296,6 +298,13 @@ pub fn inner(area: Rect) Rect {
     return area.inset(2);
 }
 
+/// The same, less the scrollbar, which is what the text actually wraps into.
+fn writable(area: Rect, scrollable: bool) Rect {
+    var box = inner(area);
+    if (scrollable) box.w -= scroll.WIDTH;
+    return box;
+}
+
 pub fn rowsIn(area: Rect) usize {
     const h: usize = @intCast(@max(inner(area).h, 1));
     return @max(h / @as(usize, face.height), 1);
@@ -306,9 +315,15 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     const entry = ctx.slotFor(area) orelse return;
     const act = ctx.interact(entry, area);
 
-    const box = inner(area);
     const rows = rowsIn(area);
     const line_height: i32 = @intCast(face.height);
+
+    // Whether there is a scrollbar changes how wide the text may be, which
+    // changes how many lines there are. Measured against the narrower width so
+    // the answer cannot flip back and forth between the two.
+    const wrapped = count(buffer.slice(), face, writable(area, true).w);
+    const scrollable = wrapped > rows;
+    const box = writable(area, scrollable);
 
     var changed = false;
 
@@ -325,8 +340,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     if (act.over) {
         const wheel = ctx.takeWheel();
         if (wheel != 0) {
-            const total = count(buffer.slice(), face, box.w);
-            const limit = total -| rows;
+            const limit = wrapped -| rows;
             state.scroll = @min(if (wheel < 0) state.scroll + 3 else state.scroll -| 3, limit);
             changed = true;
         }
@@ -353,8 +367,23 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
 
     if (changed or ctx.needsPaint(entry, .idle)) {
         entry.visual = .idle;
-        paint(ctx.surface, area, state, buffer, rows, act.focused);
+        paint(ctx.surface, area, box, state, buffer, rows, act.focused);
         ctx.addDamage(area);
+    }
+
+    // After the text, so it draws over the frame rather than under it.
+    if (scrollable) {
+        const bar = Rect{
+            .x = inner(area).right() - scroll.WIDTH,
+            .y = box.y,
+            .w = scroll.WIDTH,
+            .h = box.h,
+        };
+        const dragged = ctx.scrollbar(bar, &state.bar, state.scroll, wrapped, rows);
+        if (dragged != state.scroll) {
+            state.scroll = dragged;
+            ctx.damage();
+        }
     }
 }
 
@@ -462,6 +491,7 @@ fn vertical(state: *Editor, text: []const u8, width: i32, by: i32, extend: bool)
 fn paint(
     surface: Surface,
     area: Rect,
+    box: Rect,
     state: *const Editor,
     buffer: *const Buffer,
     rows: usize,
@@ -469,7 +499,6 @@ fn paint(
 ) void {
     const t = theme.current();
     const text = buffer.slice();
-    const box = inner(area);
     const line_height: i32 = @intCast(face.height);
 
     surface.fill(area, t.surface_hot);

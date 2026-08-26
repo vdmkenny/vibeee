@@ -340,11 +340,14 @@ fn draw() void {
     const strip = Rect{ .x = 0, .y = 0, .w = area.w, .h = row };
     const status_y = area.h - 18 - pad;
 
+    // Edge to edge under the menu. The window frame is already a border, and a
+    // second one inset from it is a margin around a document that wanted the
+    // room.
     text.edit(&ctx, .{
-        .x = pad,
-        .y = strip.h + pad,
-        .w = area.w - pad * 2,
-        .h = status_y - pad * 2 - strip.h,
+        .x = 0,
+        .y = strip.h,
+        .w = area.w,
+        .h = status_y - pad - strip.h,
     }, &editor, &document);
 
     if (editor.edited and !modified) {
