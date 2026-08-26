@@ -50,13 +50,11 @@ PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
 KERNEL_ELF := zig-out/bin/vibeee.elf
 USER_INIT  := zig-out/bin/init
 USER_WM    := zig-out/bin/eeewm
-USER_EHELLO := zig-out/bin/ehello
 USER_SETTINGS := zig-out/bin/settings
 USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_DEVMGD := zig-out/bin/devmgd
-USER_HELLO := zig-out/bin/hello
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
 KERNEL_BIN := $(BUILD)/kernel.bin
@@ -120,13 +118,11 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/INIT
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/EEEWM
-	@$(MCOPY) -i $@ -o $(USER_EHELLO) ::/EHELLO
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/SETTINGS
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/MONITOR
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/ETERM
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/PAD
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/DEVMGD
-	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH
 	@printf "vibeee root filesystem\nbuild %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
@@ -149,7 +145,6 @@ $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 .PHONY: populate
 populate: kernel
 	@$(MFORMAT) -i $(IMG)@@$(PART1_OFFSET) -F -T $(PART1_SECTORS) -v VIBEEE ::
-	@$(MCOPY) -i $(IMG)@@$(PART1_OFFSET) -o $(USER_HELLO) ::/HELLO
 	@echo "vibeee $(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/version.txt
 	@$(MCOPY) -i $(IMG)@@$(PART1_OFFSET) -o $(BUILD)/version.txt ::/VERSION.TXT
 

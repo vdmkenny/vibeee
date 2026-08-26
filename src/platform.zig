@@ -326,13 +326,9 @@ fn enumeratePci() void {
 /// back into the kernel is a trap. Runs from a thread so its kernel stack is the
 /// one the CPU switches to on that trap.
 pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
-    // Prefer the copy on disk: that path exercises ATA, the partition table and
-    // FAT together. The embedded copy is the fallback, so a machine whose
-    // storage is not yet working still reaches user mode.
-    var from_disk = true;
-    const image = readFile(path) orelse blk: {
-        from_disk = false;
-        break :blk @embedFile("user_hello");
+    const image = readFile(path) orelse {
+        console.fail("user: cannot read {s}", .{path});
+        sched.exit();
     };
 
     var space = hal.AddressSpace.create() catch {
@@ -355,9 +351,7 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
         sched.exit();
     };
 
-    console.debug("user", "entry {x:0>8}, {d} bytes from {s}", .{
-        loaded.entry, image.len, if (from_disk) "disk" else "kernel image",
-    });
+    console.debug("user", "entry {x:0>8}, {d} bytes", .{ loaded.entry, image.len });
 
     // This thread becomes process 1. Recording that is what lets the kernel
     // re-parent orphans onto it: a process whose parent has died still has

@@ -487,10 +487,8 @@ fn handleKey(event: sys.KeyEvent) void {
             if (mods.shift) {
                 desktop.zoom();
             } else {
-                // Until eTerm exists, the demo client is what Mod+Enter
-                // launches: it proves the whole path rather than adding
-                // another placeholder the manager drew itself.
-                _ = sys.spawnDetached("/EHELLO", &.{"ehello"});
+                // What a tiling manager's Mod+Enter has always opened.
+                _ = sys.spawnDetached("/ETERM", &.{"eterm"});
             }
         },
         // Shift+c asks the focused window to close; Shift+k takes it away

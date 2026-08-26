@@ -20,6 +20,11 @@ pub fn eql(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// Whether `text` begins with `prefix`. Shorter than the prefix is not.
+pub fn startsWith(text: []const u8, prefix: []const u8) bool {
+    return text.len >= prefix.len and eql(text[0..prefix.len], prefix);
+}
+
 /// Length of a NUL-terminated string, as a slice.
 pub fn span(ptr: [*:0]const u8) []const u8 {
     var n: usize = 0;

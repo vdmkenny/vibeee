@@ -145,8 +145,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },
         .{ .name = "tools", .root = "src/user/tools.zig" },
         .{ .name = "vsh", .root = "src/user/vsh.zig" },
-        .{ .name = "hello", .root = "src/user/hello.zig" },
-        .{ .name = "ehello", .root = "src/user/apps/hello.zig" },
         .{ .name = "settings", .root = "src/user/apps/settings.zig" },
         .{ .name = "monitor", .root = "src/user/apps/monitor.zig" },
         .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
@@ -174,8 +172,6 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
         user_bins[i] = exe;
     }
-
-    const hello = user_bins[USER_PROGRAMS.len - 1];
 
     const kernel_lib = b.createModule(.{
         .root_source_file = b.path("src/lib/lib.zig"),
@@ -205,13 +201,6 @@ pub fn build(b: *std.Build) void {
         .name = "vibeee.elf",
         .root_module = kernel_mod,
     });
-    // Embed the user programs so the kernel can load one without a filesystem.
-    // This is temporary scaffolding: once eeefs and the boot rootfs exist, init
-    // reads them from disk like anything else.
-    kernel_mod.addAnonymousImport("user_hello", .{
-        .root_source_file = hello.getEmittedBin(),
-    });
-
     kernel.setLinkerScript(b.path("src/arch/x86/linker.ld"));
     // Sections must not be reordered or GC'd: the linker script places the
     // Multiboot2 header first by name.

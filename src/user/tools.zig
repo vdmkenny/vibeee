@@ -12,10 +12,9 @@ const sys = @import("sys");
 const eeefetch = @import("tools/eeefetch.zig");
 const smbios = @import("tools/smbios.zig");
 const date = @import("tools/date.zig");
+const file_tool = @import("tools/file.zig");
 const files = @import("tools/files.zig");
 const grep = @import("tools/grep.zig");
-const pointer = @import("tools/pointer.zig");
-const ringtest = @import("tools/ringtest.zig");
 const display_tool = @import("tools/display.zig");
 const irq_tool = @import("tools/irq.zig");
 const devices_tool = @import("tools/devices.zig");
@@ -37,6 +36,7 @@ const commands = [_]Command{
     .{ .name = "cat", .summary = "print a file", .run = &files.cat },
     .{ .name = "rm", .summary = "remove a file", .run = &files.rm },
     .{ .name = "hexdump", .summary = "dump a file in hex", .run = &files.hexdump },
+    .{ .name = "file", .summary = "what kind of file something is", .run = &file_tool.run },
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
@@ -48,8 +48,6 @@ const commands = [_]Command{
     .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
     .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
-    .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
-    .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
     .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },

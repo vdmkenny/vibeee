@@ -27,40 +27,10 @@ const ELF_MAGIC = "\x7fELF";
 
 const ELFCLASS32 = 1;
 const ELFDATA2LSB = 1;
-const ET_EXEC = 2;
-const EM_386 = 3;
-const PT_LOAD = 1;
+const format = @import("lib").elf;
 
-const PF_X = 1;
-const PF_W = 2;
-
-const Header = extern struct {
-    ident: [16]u8,
-    type: u16,
-    machine: u16,
-    version: u32,
-    entry: u32,
-    phoff: u32,
-    shoff: u32,
-    flags: u32,
-    ehsize: u16,
-    phentsize: u16,
-    phnum: u16,
-    shentsize: u16,
-    shnum: u16,
-    shstrndx: u16,
-};
-
-const ProgramHeader = extern struct {
-    type: u32,
-    offset: u32,
-    vaddr: u32,
-    paddr: u32,
-    filesz: u32,
-    memsz: u32,
-    flags: u32,
-    aligned: u32,
-};
+const Header = format.Header;
+const ProgramHeader = format.ProgramHeader;
 
 pub const Loaded = struct {
     entry: usize,
@@ -74,10 +44,10 @@ pub fn load(space: *hal.AddressSpace, image: []const u8) Error!Loaded {
     if (image.len < @sizeOf(Header)) return error.NotElf;
 
     const hdr: *align(1) const Header = @ptrCast(image.ptr);
-    if (!std.mem.eql(u8, hdr.ident[0..4], ELF_MAGIC)) return error.NotElf;
-    if (hdr.ident[4] != ELFCLASS32 or hdr.ident[5] != ELFDATA2LSB) return error.WrongClass;
-    if (hdr.machine != EM_386) return error.WrongMachine;
-    if (hdr.type != ET_EXEC) return error.NotExecutable;
+    if (!Header.identifies(image)) return error.NotElf;
+    if (hdr.class != .bits32 or hdr.data != .little) return error.WrongClass;
+    if (hdr.machine != .x86) return error.WrongMachine;
+    if (hdr.type != .executable) return error.NotExecutable;
     if (hdr.phentsize != @sizeOf(ProgramHeader)) return error.Malformed;
 
     var brk: usize = 0;
@@ -87,7 +57,7 @@ pub fn load(space: *hal.AddressSpace, image: []const u8) Error!Loaded {
         if (off + @sizeOf(ProgramHeader) > image.len) return error.Malformed;
 
         const ph: *align(1) const ProgramHeader = @ptrCast(image.ptr + off);
-        if (ph.type != PT_LOAD or ph.memsz == 0) continue;
+        if (ph.type != .load or ph.memsz == 0) continue;
 
         // A segment must not claim more file bytes than it has, nor extend into
         // the kernel half, a crafted header is otherwise a way to have the
@@ -112,7 +82,7 @@ pub fn load(space: *hal.AddressSpace, image: []const u8) Error!Loaded {
 }
 
 fn loadSegment(space: *hal.AddressSpace, image: []const u8, ph: *align(1) const ProgramHeader) Error!void {
-    const writable = ph.flags & PF_W != 0;
+    const writable = ph.flags.writable;
 
     const first = std.mem.alignBackward(usize, ph.vaddr, hal.PAGE_SIZE);
     const last = std.mem.alignForward(usize, ph.vaddr + ph.memsz, hal.PAGE_SIZE);
