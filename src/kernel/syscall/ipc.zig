@@ -10,6 +10,7 @@ const channel_mod = @import("../channel.zig");
 const ctx = @import("context.zig");
 const display = @import("../display.zig");
 const event_mod = @import("../event.zig");
+const driver = @import("driver.zig");
 const handles = @import("../handle.zig");
 const pipe_mod = @import("../pipe.zig");
 const sched = @import("../sched.zig");
@@ -43,6 +44,12 @@ fn waitableEvent(handle: u32) ?*event_mod.Event {
     return switch (h.kind) {
         .event => h.data.event,
         .pipe => if (h.data.pipe.writer) null else &h.data.pipe.pipe.readable,
+        .irq => blk: {
+            // Waiting is what arms the line: a driver that attached before it
+            // was ready to service the device gets nothing until it asks.
+            driver.armIfIrq(h);
+            break :blk &h.data.irq.ready;
+        },
         else => null,
     };
 }

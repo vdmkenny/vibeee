@@ -56,6 +56,18 @@ pub fn initCpu(kernel_stack_top: usize) void {
 
 const syscall_arch = @import("syscall_arch.zig");
 
+pub const InterruptFrame = idt.Frame;
+pub const gsiClaimed = idt.gsiClaimed;
+pub const claimGsi = claimGsiImpl;
+pub const releaseGsi = idt.releaseGsi;
+pub const setGsiMask = idt.setGsiMask;
+
+/// True when the line was taken. The vector it landed on is the kernel's
+/// business, so it is not passed back.
+fn claimGsiImpl(gsi: u32, handler: idt.Handler) bool {
+    return idt.claimGsi(gsi, handler) != null;
+}
+
 pub const initSyscalls = syscall_arch.init;
 pub const fastSyscallArmed = syscall_arch.fastPathArmed;
 pub const invokeSyscall = syscall_arch.invoke;

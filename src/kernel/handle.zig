@@ -16,6 +16,7 @@ const display_mod = @import("display.zig");
 const event_mod = @import("event.zig");
 const fat = @import("fat.zig");
 const heap = @import("heap.zig");
+const irqevent = @import("irqevent.zig");
 const pipe_mod = @import("pipe.zig");
 const shm_mod = @import("shm.zig");
 const vfs = @import("vfs.zig");
@@ -35,7 +36,7 @@ pub const Rights = packed struct(u8) {
     _pad: u5 = 0,
 };
 
-pub const Kind = enum { none, console, file, directory, event, channel, shm, display, pipe };
+pub const Kind = enum { none, console, file, directory, event, channel, shm, display, pipe, irq };
 
 pub const File = struct {
     /// Resolved at open and kept, so a later unmount cannot leave the handle
@@ -101,6 +102,7 @@ pub const Handle = struct {
         /// back: the segment itself is an ordinary one.
         display: *shm_mod.Segment,
         pipe: PipeEnd,
+        irq: *irqevent.IrqEvent,
     } = .{ .none = {} },
 };
 
@@ -132,7 +134,9 @@ pub fn transferable(h: Handle) ?Transfer {
         // A pipe end could cross, but nothing needs it to: a pipe reaches
         // another process by being inherited at spawn, and adding a second
         // route would be a second lifetime to get right.
-        .none, .console, .file, .directory, .pipe => null,
+        // A line belongs to the process that took it. Handing one across
+        // would mean two servers believing they own a device.
+        .none, .console, .file, .directory, .pipe, .irq => null,
     };
 }
 
@@ -203,6 +207,7 @@ pub fn retain(h: Handle) Handle {
         .shm => shm_mod.retain(h.data.shm),
         .display => shm_mod.retain(h.data.display),
         .pipe => pipe_mod.retain(h.data.pipe.pipe, h.data.pipe.writer),
+        .irq => irqevent.retain(h.data.irq),
         .none, .console => {},
     }
     return h;
@@ -246,6 +251,7 @@ pub fn release(h: Handle) void {
             display_mod.release();
         },
         .pipe => pipe_mod.release(h.data.pipe.pipe, h.data.pipe.writer),
+        .irq => irqevent.release(h.data.irq),
         .none, .console => {},
     }
 }

@@ -16,6 +16,7 @@ const console = @import("console.zig");
 const hal = @import("hal.zig");
 const clock = @import("clock.zig");
 const heap = @import("heap.zig");
+const irqevent = @import("irqevent.zig");
 const keymap = @import("keymap.zig");
 const pmm = @import("pmm.zig");
 const sched = @import("sched.zig");
@@ -135,6 +136,8 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             platform.bios_vendor orelse "unknown",
             platform.bios_version orelse "",
         });
+    } else if (eq(key, "irq")) {
+        try writeIrqs(&w);
     } else if (eq(key, "threads.list")) {
         try writeThreads(&w);
     } else if (eq(key, "disks")) {
@@ -198,6 +201,30 @@ fn writeThreads(w: *Writer) Error!void {
 
     var ctx = Ctx{ .w = w };
     sched.forEachThread(&ctx, Ctx.visit);
+}
+
+/// One line per interrupt a userspace driver has taken: line, state, count.
+///
+/// The map of which device is being served from outside the kernel, which is
+/// the first thing worth knowing when one has gone quiet.
+fn writeIrqs(w: *Writer) Error!void {
+    const Ctx = struct {
+        w: *Writer,
+        any: bool = false,
+
+        fn visit(self: *@This(), line: irqevent.Snapshot) void {
+            self.any = true;
+            self.w.print("{d}\t{s}\t{d}\n", .{
+                line.gsi,
+                if (line.held) "held" else if (line.armed) "armed" else "masked",
+                line.count,
+            }) catch {};
+        }
+    };
+
+    var ctx = Ctx{ .w = w };
+    irqevent.forEach(&ctx, Ctx.visit);
+    if (!ctx.any) return error.UnknownKey;
 }
 
 /// Storage described the way a person would ask about it, not the way the

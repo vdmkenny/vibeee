@@ -54,6 +54,13 @@ pub const initInterruptController = impl.initInterruptController;
 /// Install the syscall entry path. After this, user code can trap into the
 /// kernel; before it, the syscall vector is a fault like any other.
 pub const initSyscalls = impl.initSyscalls;
+/// Claiming a global interrupt line for a handler, for the driver capability.
+pub const InterruptFrame = impl.InterruptFrame;
+pub const gsiClaimed = impl.gsiClaimed;
+pub const claimGsi = impl.claimGsi;
+pub const releaseGsi = impl.releaseGsi;
+pub const setGsiMask = impl.setGsiMask;
+
 /// Whether the fast syscall path is programmed and usable.
 pub const fastSyscallArmed = impl.fastSyscallArmed;
 /// Issue a syscall from kernel mode. Self-tests only.

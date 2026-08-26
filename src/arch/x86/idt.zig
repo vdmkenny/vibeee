@@ -242,6 +242,64 @@ fn vectorFor(irq: usize) u8 {
     return IRQ_BASE + @as(u8, @intCast(irq));
 }
 
+/// Which vector each global line was routed to at boot, or zero for one that
+/// was not routed at all.
+///
+/// The ISA lines are routed by their legacy number and land wherever firmware
+/// said, so the reverse lookup cannot be arithmetic. Everything above them is
+/// unrouted until a driver asks for it.
+var gsi_vector: [MAX_GSI]u8 = @splat(0);
+
+/// An IOAPIC has twenty-four inputs. Two of them would be a server part.
+const MAX_GSI = 48;
+
+/// Where interrupts that are not one of the sixteen legacy lines are sent.
+/// Far enough above them that the two ranges cannot be confused in a dump.
+const DEVICE_VECTOR_BASE: u8 = 0x30;
+
+/// The vector a global line delivers on, routing it first if nothing has.
+///
+/// Null when there is no controller to route with: on the 8259s there are
+/// sixteen lines and no way to add one, so a driver asking for a global line
+/// is asking for something this machine cannot do.
+pub fn vectorForGsi(gsi: u32) ?u8 {
+    if (!ioapic.active() or gsi >= MAX_GSI) return null;
+    if (gsi_vector[gsi] != 0) return gsi_vector[gsi];
+
+    const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
+    ioapic.route(gsi, vector, false, true, lapic.id());
+    gsi_vector[gsi] = vector;
+    return vector;
+}
+
+/// Whether something has already claimed the line.
+pub fn gsiClaimed(gsi: u32) bool {
+    const vector = if (gsi < MAX_GSI and gsi_vector[gsi] != 0) gsi_vector[gsi] else return false;
+    return handlers[vector] != null;
+}
+
+/// Take a global line for a handler, or null if something else has it.
+pub fn claimGsi(gsi: u32, handler: Handler) ?u8 {
+    if (gsiClaimed(gsi)) return null;
+    const vector = vectorForGsi(gsi) orelse return null;
+
+    setHandler(vector, handler);
+    setGsiMask(gsi, true);
+    return vector;
+}
+
+pub fn releaseGsi(gsi: u32) void {
+    setGsiMask(gsi, true);
+    if (gsi < MAX_GSI and gsi_vector[gsi] != 0) unsetHandler(gsi_vector[gsi]);
+}
+
+/// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a
+/// legacy number and resolves it: a driver holding a global line already knows
+/// which one it has.
+pub fn setGsiMask(gsi: u32, masked: bool) void {
+    if (ioapic.active()) ioapic.setMask(gsi, masked);
+}
+
 /// What the firmware said about the legacy lines. Empty until the MADT has
 /// been read, which is fine: nothing asks before then.
 var routing: irq_mod.Routing = .{};
@@ -269,12 +327,14 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
         const line = routing.describedLine(@intCast(irq)) orelse continue;
         ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination);
         if (line.gsi < taken.len) taken[line.gsi] = true;
+        if (line.gsi < MAX_GSI) gsi_vector[line.gsi] = vectorFor(irq);
     }
 
     for (0..16) |irq| {
         if (routing.describedLine(@intCast(irq)) != null) continue;
         if (taken[irq]) continue;
         ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination);
+        gsi_vector[irq] = vectorFor(irq);
     }
 
     maskAllPic();

@@ -16,6 +16,7 @@ const files = @import("tools/files.zig");
 const grep = @import("tools/grep.zig");
 const pointer = @import("tools/pointer.zig");
 const ringtest = @import("tools/ringtest.zig");
+const irq_tool = @import("tools/irq.zig");
 const status = @import("tools/status.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
@@ -35,6 +36,7 @@ const commands = [_]Command{
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
+    .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
     .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
     .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },

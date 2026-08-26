@@ -967,6 +967,32 @@ pub const table = [_]Syscall{
             "reader has closed. The read end can be passed to wait_many, so a process waiting " ++
             "on a pipe and on something else has one blocking call.",
     },
+    .{
+        .number = 36,
+        .name = "irq_attach",
+        .summary = "Take a device interrupt line.",
+        .args = &.{
+            .{ .name = "gsi", .kind = .uint, .desc = "Global interrupt number, as the firmware describes it." },
+        },
+        .returns = "a handle",
+        .errors = &.{ E.busy, E.inval, E.nomem },
+        .notes = "The handle can be passed to wait_many. The line stays masked until the " ++
+            "first wait, so a driver may attach before it is ready to service the device. " ++
+            "The kernel's own handler masks the line and signals; everything else about the " ++
+            "interrupt happens in the driver. Closing the handle gives the line back, masked.",
+    },
+    .{
+        .number = 37,
+        .name = "irq_ack",
+        .summary = "Say the device has been serviced, so its line may fire again.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "A handle from irq_attach." },
+        },
+        .returns = "0 on success",
+        .errors = &.{E.badf},
+        .notes = "Acknowledging a line that was not held is not an error: a driver that " ++
+            "found nothing to do should say so rather than track whether one was outstanding.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

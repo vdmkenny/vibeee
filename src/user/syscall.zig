@@ -248,6 +248,18 @@ fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isiz
     return spawnStreams(path, args, .{ .flags = @bitCast(flags) });
 }
 
+/// Take a device interrupt line. The handle can be passed to `waitMany`, and
+/// the line stays masked until the first wait.
+pub fn irqAttach(gsi: u32) ?u32 {
+    const handle = syscall1(abi.number("irq_attach"), gsi);
+    return if (handle < 0) null else @intCast(handle);
+}
+
+/// Say the device has been serviced, so its line may fire again.
+pub fn irqAck(handle: u32) isize {
+    return syscall1(abi.number("irq_ack"), handle);
+}
+
 pub const Pipe = struct { read: u32, write: u32 };
 
 /// Create a pipe. The read end can be passed to `waitMany`.

@@ -643,6 +643,40 @@ Create a pipe.
 
 Reading blocks until there are bytes, and returns 0 once every writer has closed. Writing blocks while the pipe is full, and fails with EPIPE once every reader has closed. The read end can be passed to wait_many, so a process waiting on a pipe and on something else has one blocking call.
 
+## `irq_attach`  <sub>#36</sub>
+
+Take a device interrupt line.
+
+| arg | type | meaning |
+|---|---|---|
+| `gsi` | uint | Global interrupt number, as the firmware describes it. |
+
+**Returns:** a handle
+
+**Errors:**
+
+- `EBUSY`, another process already owns it
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+The handle can be passed to wait_many. The line stays masked until the first wait, so a driver may attach before it is ready to service the device. The kernel's own handler masks the line and signals; everything else about the interrupt happens in the driver. Closing the handle gives the line back, masked.
+
+## `irq_ack`  <sub>#37</sub>
+
+Say the device has been serviced, so its line may fire again.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | A handle from irq_attach. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EBADF`, the handle is not open in this process
+
+Acknowledging a line that was not held is not an error: a driver that found nothing to do should say so rather than track whether one was outstanding.
+
 ---
 
-36 calls defined.
+38 calls defined.

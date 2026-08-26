@@ -21,6 +21,7 @@ const sched = @import("sched.zig");
 /// binding below searches all of them.
 const groups = .{
     @import("syscall/core.zig"),
+    @import("syscall/driver.zig"),
     @import("syscall/file.zig"),
     @import("syscall/ipc.zig"),
     @import("syscall/proc.zig"),
