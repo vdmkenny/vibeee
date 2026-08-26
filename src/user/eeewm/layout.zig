@@ -38,32 +38,28 @@ pub const SPLIT_LIMIT_H: i32 = 140;
 pub const MIN_TILE_W: i32 = 200;
 pub const MIN_TILE_H: i32 = 100;
 
-pub const Layout = enum {
-    /// Master left, stack right. The default: one thing being worked on and a
-    /// column of context.
-    tall,
-    /// Master top, stack bottom. For a terminal under a document.
-    wide,
-    /// Focused window fills the area, the rest hidden behind it.
-    monocle,
+/// The schema's, so the manager, the Settings app and `cfg set wm.layout` all
+/// mean the same three things by the same three names.
+pub const Layout = @import("proto").settings.Layout;
 
-    /// One letter for the bar, which has no room for a word.
-    pub fn glyph(self: Layout) []const u8 {
-        return switch (self) {
-            .tall => "T",
-            .wide => "W",
-            .monocle => "M",
-        };
-    }
+/// One letter for the bar, which has no room for a word. Beside the enum
+/// rather than on it because how a layout is drawn is the manager's business
+/// and the enum is everyone's.
+pub fn glyphOf(which: Layout) []const u8 {
+    return switch (which) {
+        .tall => "T",
+        .wide => "W",
+        .monocle => "M",
+    };
+}
 
-    pub fn next(self: Layout) Layout {
-        return switch (self) {
-            .tall => .wide,
-            .wide => .monocle,
-            .monocle => .tall,
-        };
-    }
-};
+pub fn after(which: Layout) Layout {
+    return switch (which) {
+        .tall => .wide,
+        .wide => .monocle,
+        .monocle => .tall,
+    };
+}
 
 pub const Window = struct {
     id: u32 = 0,
@@ -569,7 +565,7 @@ pub const Desktop = struct {
     }
 
     pub fn cycleLayout(self: *Desktop) void {
-        self.setLayout(self.layout().next());
+        self.setLayout(after(self.layout()));
     }
 
     /// Adjust master's share. Steps of 0.05 within 0.20 to 0.80, so it cannot

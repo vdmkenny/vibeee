@@ -10,35 +10,24 @@
 //! visible before the file is saved, because the point of choosing one is
 //! seeing it.
 
-const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
-const config = @import("ulib").config;
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 const wm = proto.wm;
 const theme = eui.theme;
 
-const PATH = "/etc/eeewm.cfg";
+const store = proto.settings;
 
 var connection: proto.Connection = undefined;
 var window: u8 = 0;
 var ctx: eui.Context = undefined;
 
-/// What the file says, and what the controls edit.
-const Settings = struct {
-    theme: [16]u8 = @splat(0),
-    bar: Bar = .top,
-    layout: Layout = .tall,
-    master: u8 = 58,
-
-    const Bar = enum { top, bottom };
-    const Layout = enum { tall, wide, monocle };
-};
-
-var settings: Settings = .{};
+/// What the controls edit. The schema, not a copy of it: `cfg` and this app
+/// change the same settings and a second field list is a second thing to keep
+/// in step.
+var current: store.Wm = .{};
 var saved = true;
 
 var pointer_x: i32 = 0;
@@ -69,57 +58,19 @@ export fn settingsMain() callconv(.c) noreturn {
 }
 
 // ---------------------------------------------------------------------------
-// The file
+// The store
 // ---------------------------------------------------------------------------
 
-var file_buffer: [512]u8 = @splat(0);
-
 fn load() void {
-    _ = config.load(PATH, &settings, &file_buffer);
-    // The manager already told us its theme at connect time, so an empty or
-    // missing file still shows what is actually in use.
-    if (nameLength() == 0) setThemeName(theme.current().name);
+    current = store.load("wm");
 }
 
-fn nameLength() usize {
-    var n: usize = 0;
-    while (n < settings.theme.len and settings.theme[n] != 0) n += 1;
-    return n;
-}
-
-fn themeName() []const u8 {
-    return settings.theme[0..nameLength()];
-}
-
-fn setThemeName(name: []const u8) void {
-    settings.theme = @splat(0);
-    const n = @min(name.len, settings.theme.len);
-    @memcpy(settings.theme[0..n], name[0..n]);
-}
-
-/// Write the file back.
+/// Hand the changes to `cfgd`, which is the only thing that writes them.
 ///
-/// Rewritten whole rather than edited in place: it is a few hundred bytes, and
-/// a partial update of a config file is a config file nobody can predict.
+/// Only what differs is sent, and the service tells every watcher, so the
+/// desktop finds out the same way a shell would.
 fn save() void {
-    const handle = sys.open(PATH, .{ .write = true, .create = true, .truncate = true });
-    if (handle < 0) return;
-    defer _ = sys.close(@intCast(handle));
-
-    var buf: [512]u8 = @splat(0);
-    var text = str.Builder{ .buf = &buf };
-
-    text.text("# Written by Settings.\n\ntheme  = ");
-    text.text(themeName());
-    text.text("\nbar    = ");
-    text.text(@tagName(settings.bar));
-    text.text("\nlayout = ");
-    text.text(@tagName(settings.layout));
-    text.text("\nmaster = ");
-    text.number(settings.master);
-    text.byte('\n');
-
-    _ = sys.write(@intCast(handle), text.done());
+    store.save("wm", current) catch return;
     saved = true;
 }
 
@@ -158,6 +109,13 @@ fn run() noreturn {
             else => {},
         }
     }
+}
+
+/// A heading over a row of controls, and where the row starts.
+fn group(y: *i32, area: eui.Rect, title: []const u8) i32 {
+    ctx.label(.{ .x = area.x, .y = y.*, .w = area.w, .h = 16 }, title);
+    y.* += 18;
+    return y.*;
 }
 
 /// A setting just changed: mark the file stale and repaint, since the group
@@ -209,50 +167,34 @@ fn draw() void {
     const row = t.control_height;
     var y: i32 = pad;
 
-    ctx.label(.{ .x = pad, .y = y, .w = area.w - pad * 2, .h = 16 }, "Theme");
-    y += 18;
+    // Every group is an enum field, so every group is one call: the tags are
+    // the buttons, and a value added to the schema appears here untouched.
+    const full = eui.Rect{ .x = pad, .y = y, .w = area.w - pad * 2, .h = row };
 
+    y = group(&y, full, "Theme");
     // Applied on the spot rather than on save, because seeing it is the point
     // of choosing it.
-    var x: i32 = pad;
-    for (theme.all) |candidate| {
-        const width = eui.Surface.textWidth(candidate.name) + pad * 3;
-        const on = std.mem.eql(u8, themeName(), candidate.name);
-        if (ctx.toggle(.{ .x = x, .y = y, .w = width, .h = row }, candidate.name, on) and !on) {
-            theme.use(candidate);
-            setThemeName(candidate.name);
-            change();
-        }
-        x += width + 4;
+    const wanted = ctx.choice(.{ .x = pad, .y = y, .w = full.w, .h = row }, current.theme);
+    if (wanted != current.theme) {
+        current.theme = wanted;
+        if (theme.byName(@tagName(wanted))) |chosen| theme.use(chosen);
+        change();
     }
     y += row + pad;
 
-    ctx.label(.{ .x = pad, .y = y, .w = area.w - pad * 2, .h = 16 }, "Bar");
-    y += 18;
-
-    x = pad;
-    inline for (@typeInfo(Settings.Bar).@"enum".fields) |field| {
-        const on = settings.bar == @as(Settings.Bar, @enumFromInt(field.value));
-        if (ctx.toggle(.{ .x = x, .y = y, .w = 76, .h = row }, field.name, on) and !on) {
-            settings.bar = @enumFromInt(field.value);
-            change();
-        }
-        x += 80;
+    y = group(&y, full, "Bar");
+    const bar = ctx.choice(.{ .x = pad, .y = y, .w = full.w, .h = row }, current.bar);
+    if (bar != current.bar) {
+        current.bar = bar;
+        change();
     }
     y += row + pad;
 
-    ctx.label(.{ .x = pad, .y = y, .w = area.w - pad * 2, .h = 16 }, "Layout");
-    y += 18;
-
-    x = pad;
-    inline for (@typeInfo(Settings.Layout).@"enum".fields) |field| {
-        const width = eui.Surface.textWidth(field.name) + pad * 3;
-        const on = settings.layout == @as(Settings.Layout, @enumFromInt(field.value));
-        if (ctx.toggle(.{ .x = x, .y = y, .w = width, .h = row }, field.name, on) and !on) {
-            settings.layout = @enumFromInt(field.value);
-            change();
-        }
-        x += width + 4;
+    y = group(&y, full, "Layout");
+    const chosen_layout = ctx.choice(.{ .x = pad, .y = y, .w = full.w, .h = row }, current.layout);
+    if (chosen_layout != current.layout) {
+        current.layout = chosen_layout;
+        change();
     }
     y += row + pad;
 

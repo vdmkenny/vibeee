@@ -375,7 +375,7 @@ fn paintLayoutGlyph(surface: Surface, width: i32, height: i32, desktop: *const l
         .w = 14,
         .h = t.bar_height - 1,
     };
-    surface.textCentred(area, desktop.layout().glyph(), t.bar_text);
+    surface.textCentred(area, layout.glyphOf(desktop.layout()), t.bar_text);
 }
 
 fn paintClock(surface: Surface, width: i32, height: i32) void {

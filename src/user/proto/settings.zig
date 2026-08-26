@@ -70,6 +70,16 @@ pub const Wm = struct {
     /// Master's share of the screen as a percentage, so the file holds a whole
     /// number rather than a decimal nobody types consistently.
     master: u7 = 58,
+
+    /// Master's share as the fraction a layout wants, held inside the range
+    /// that leaves both sides of the screen usable.
+    pub fn masterFraction(self: Wm) f32 {
+        const percent: f32 = @floatFromInt(@max(@min(self.master, MASTER_MAX), MASTER_MIN));
+        return percent / 100.0;
+    }
+
+    pub const MASTER_MIN = 20;
+    pub const MASTER_MAX = 80;
 };
 
 /// Every domain there is. The field name is the domain's name, which is also
@@ -216,6 +226,30 @@ pub fn watch(domain: []const u8) Error!u32 {
     const handles = reply.handleSlice();
     if (handles.len == 0) return error.Failed;
     return handles[0];
+}
+
+/// Store what differs from what is already stored, and nothing else.
+///
+/// A whole domain sent field by field would rewrite the file once per field
+/// and wake every watcher as many times, for a saving of one thing.
+pub fn save(comptime domain: []const u8, value: Domain(domain)) Error!void {
+    const stored = load(domain);
+
+    inline for (std.meta.fields(Domain(domain))) |field| {
+        if (!std.meta.eql(@field(value, field.name), @field(stored, field.name))) {
+            var key_text: [TEXT_MAX]u8 = undefined;
+            var key = str.Builder{ .buf = &key_text };
+            key.text(domain);
+            key.byte('.');
+            key.text(field.name);
+
+            var value_text: [TEXT_MAX]u8 = undefined;
+            var written = str.Builder{ .buf = &value_text };
+            config.format(&written, @field(value, field.name));
+
+            try set(key.done(), written.done());
+        }
+    }
 }
 
 fn ask(tag: Tag, key: []const u8, value: []const u8) Error!void {

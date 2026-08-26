@@ -436,6 +436,33 @@ pub const Context = struct {
     /// Returns true on the pass where it is picked. The caller owns the
     /// selection, so a group is a loop over the options with `selected` taken
     /// from whatever the caller already stores.
+    /// A row of toggles, one per tag of an enum, returning what is chosen
+    /// after this pass.
+    ///
+    /// The type is the list. An enum already says what its choices are, so a
+    /// caller naming them beside it would be naming them twice, and a choice
+    /// added to the type turns up here without anyone being told.
+    ///
+    /// Each toggle is as wide as its own name needs: one fixed width either
+    /// truncates the longest name or wastes the room the shortest does not use.
+    pub fn choice(self: *Context, area: Rect, chosen: anytype) @TypeOf(chosen) {
+        const T = @TypeOf(chosen);
+        const gap = theme.current().padding;
+
+        var picked = chosen;
+        var x = area.x;
+
+        inline for (@typeInfo(T).@"enum".fields) |field| {
+            const width = Surface.textWidth(field.name) + gap * 3;
+            const value: T = @enumFromInt(field.value);
+            if (self.toggle(.{ .x = x, .y = area.y, .w = width, .h = area.h }, field.name, chosen == value)) {
+                picked = value;
+            }
+            x += width + gap;
+        }
+        return picked;
+    }
+
     pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
         const entry = self.slotFor(area) orelse return false;
         const it = self.interact(entry, area);

@@ -92,10 +92,15 @@ export fn wmMain() callconv(.c) noreturn {
         info.stride_px,
     );
 
-    const settings = config.load();
+    const wanted = config.load();
     desktop.bounds = bar.contentArea(info.width, info.height);
-    desktop.layouts = @splat(settings.layout);
-    desktop.mfact = @splat(settings.masterFraction());
+    desktop.layouts = @splat(wanted.layout);
+    desktop.mfact = @splat(wanted.masterFraction());
+
+    // Signalled by cfgd when anything in the wm domain changes, so a theme
+    // chosen from a shell reaches the desktop without a restart. Zero when the
+    // service is not up, which the poll below reads as nothing to hear.
+    settings_event = proto.settings.watch("wm") catch 0;
 
     ctx = ui.Context.init(screen);
 
@@ -360,6 +365,8 @@ fn run() noreturn {
 
     while (true) {
         var acted = serve();
+
+        if (settingsChanged()) acted = true;
 
         // Applications are this process's children, so their exits arrive
         // here. Collecting them is both how a window closed from inside an
@@ -734,6 +741,31 @@ fn onDestroy(pid: u32, req: *const wire.Req) Answer {
     dirty = true;
 
     return .{ .rep = .{ .gen = table.generation } };
+}
+
+var settings_event: u32 = 0;
+
+/// Take up a settings change somebody else made.
+///
+/// Polled rather than waited on: the loop already wakes at least five times a
+/// second, so one more poll costs nothing and the alternative is restructuring
+/// the whole loop around `wait_many` for a message that arrives twice a day.
+fn settingsChanged() bool {
+    if (settings_event == 0) return false;
+    if (sys.waitMany(&.{settings_event}, sys.POLL) < 0) return false;
+    if (!config.reload()) return false;
+
+    const wanted = config.current();
+    desktop.layouts = @splat(wanted.layout);
+    desktop.mfact = @splat(wanted.masterFraction());
+    desktop.bounds = bar.contentArea(info.width, info.height);
+
+    // The theme is the desktop's, not this process's: a client draws its own
+    // window and has to be told what changed under it.
+    broadcastTheme();
+    ctx.damage();
+    dirty = true;
+    return true;
 }
 
 /// The active theme's name, padded for the wire.

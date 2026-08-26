@@ -1,68 +1,41 @@
-//! What the window manager reads from `/etc/eeewm.cfg`.
+//! The window manager's settings.
 //!
-//! The struct is the schema: `ulib.config` walks it, so a new setting is a
-//! field here and a line in the file, with nothing to keep in step. Every
-//! field has a default that makes a usable desktop, because a machine with no
-//! configuration file is the normal case and should not be a broken one.
-//!
-//! ```
-//! # /etc/eeewm.cfg
-//! theme = classic     # classic, paper, dusk
-//! bar   = top         # top or bottom
-//! layout = tall       # tall, wide, monocle
-//! master = 58         # master's share of the screen, per cent
-//! ```
+//! The schema lives in `proto.settings`, because the Settings app and `cfg`
+//! edit the same thing and a second copy of the field list is a second thing to
+//! keep in step. What is here is the manager's own business: reading the domain
+//! once at start, and putting the theme it names into effect.
 
-const config = @import("ulib").config;
-const layout = @import("layout.zig");
+const settings = @import("proto").settings;
 const theme = @import("eui").theme;
 
-pub const PATH = "/etc/eeewm.cfg";
+pub const Config = settings.Wm;
 
-pub const BarPosition = enum { top, bottom };
-
-pub const Config = struct {
-    /// One of the names in `eui.theme`. An unknown name keeps the default
-    /// rather than leaving the desktop unreadable.
-    theme: [16]u8 = nameOf("classic"),
-    bar: BarPosition = .top,
-    layout: layout.Layout = .tall,
-    /// Master's share as a percentage, so the file holds a whole number rather
-    /// than a decimal nobody can type consistently.
-    master: u8 = 58,
-
-    pub fn themeName(self: *const Config) []const u8 {
-        var n: usize = 0;
-        while (n < self.theme.len and self.theme[n] != 0) n += 1;
-        return self.theme[0..n];
-    }
-
-    /// Master's share as the fraction the layout wants, clamped to the range
-    /// that leaves both sides usable.
-    pub fn masterFraction(self: *const Config) f32 {
-        const percent: f32 = @floatFromInt(@max(@min(self.master, 80), 20));
-        return percent / 100.0;
-    }
-};
-
-fn nameOf(comptime text: []const u8) [16]u8 {
-    var out: [16]u8 = @splat(0);
-    @memcpy(out[0..text.len], text);
-    return out;
-}
-
-var storage: [512]u8 = @splat(0);
 var active: Config = .{};
 
-/// Read the file, apply what it says, and return the result.
+/// Read the settings and apply what they say, returning the result.
 pub fn load() *const Config {
-    active = .{};
-    _ = config.load(PATH, &active, &storage);
-
-    if (theme.byName(active.themeName())) |chosen| theme.use(chosen);
+    active = settings.load("wm");
+    apply();
     return &active;
+}
+
+/// Take up a change somebody else made. Returns true when anything moved, so a
+/// caller can skip the relayout that follows nothing.
+pub fn reload() bool {
+    const fresh = settings.load("wm");
+    if (std.meta.eql(fresh, active)) return false;
+
+    active = fresh;
+    apply();
+    return true;
+}
+
+fn apply() void {
+    if (theme.byName(@tagName(active.theme))) |chosen| theme.use(chosen);
 }
 
 pub fn current() *const Config {
     return &active;
 }
+
+const std = @import("std");
