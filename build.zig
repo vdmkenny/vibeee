@@ -7,12 +7,32 @@
 
 const std = @import("std");
 
+/// True when `name` appears in a comma-separated list.
+fn named(list: []const u8, name: []const u8) bool {
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, std.mem.trim(u8, entry, " "), name)) return true;
+    }
+    return false;
+}
+
 pub fn build(b: *std.Build) void {
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
         "Optimization mode (default: ReleaseSmall, footprint is a hard requirement)",
     ) orelse .ReleaseSmall;
+
+    // User programs to build with a symbol table, comma separated. A faulting
+    // address reported on the target is only a number until something can match
+    // it against a symbol, and the machine has no debugger and no serial port.
+    // Naming one program rather than all of them keeps the root filesystem
+    // inside its budget.
+    const symbols = b.option(
+        []const u8,
+        "symbols",
+        "User programs to build unstripped, comma separated",
+    ) orelse "";
 
     // ---------------------------------------------------------------------
     // Target: 32-bit x86, freestanding.
@@ -143,7 +163,7 @@ pub fn build(b: *std.Build) void {
                 .target = user_target,
                 .optimize = optimize,
                 .single_threaded = true,
-                .strip = true,
+                .strip = !named(symbols, program.name),
                 .stack_check = false,
                 .stack_protector = false,
                 .imports = &user_imports,

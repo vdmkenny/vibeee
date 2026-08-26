@@ -6,6 +6,9 @@
 # autotools, no root privileges, no loopback mounts. See design/00-vibeee.md §14.
 
 ZIG      ?= zig
+# Extra flags for `zig build`, e.g. ZIG_FLAGS=-Dsymbols=eeewm to keep one
+# program's symbol table for matching a fault address reported on the target.
+ZIG_FLAGS ?=
 NASM     ?= nasm
 QEMU     ?= qemu-system-i386
 MFORMAT  ?= mformat
@@ -83,7 +86,7 @@ $(BUILD):
 
 .PHONY: kernel
 kernel:
-	$(ZIG) build
+	$(ZIG) build $(ZIG_FLAGS)
 
 # The SD path loads a flat binary, not ELF: stage2 jumps to its first byte,
 # which is the entry stub placed there by the linker script.
