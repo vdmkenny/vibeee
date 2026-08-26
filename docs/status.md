@@ -6,7 +6,7 @@ is *for*, this says what has actually been written.
 **Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
 accurate about what exists; it is not a claim that any of it has been audited.
 
-Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 32 syscalls,
+Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 34 syscalls,
 36 host-side tests.
 
 ## Boot
@@ -68,6 +68,18 @@ Probed but **not implemented**, the table reports them so an unfamiliar machine 
 diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `ath5k`,
 `e1000`, `i801smb`, `lpc_ich`.
 
+## Graphics and the GUI
+
+| Component | File | State |
+|---|---|---|
+| Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership, scanout buffer handed over as a shared segment. One buffer, no page flip or vblank, which is what a VESA framebuffer offers. |
+| Window manager | [`user/eeewm/`](../src/user/eeewm/) | Tiling: 4 tags, tall/wide/monocle, per-tag layout and master fraction, floating windows, focus-follows-click, status bar. Bindings by keycode. |
+| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives, swappable theme, buttons, checkboxes, labels, progress bars, keyboard focus with Tab order, per-widget damage. |
+| Fonts | [`lib/font.zig`](../src/lib/font.zig) | Shared by kernel and userspace. Spleen 8x16 and 12x24 monospaced for the console, Ark Pixel 12 proportional for interface text. |
+
+Windows are the manager's own placeholders: there is no client protocol yet, so nothing
+else can open one. The arrangement, focus, input and drawing paths do not know that.
+
 ## Userspace
 
 | Program | File | State |
@@ -108,4 +120,5 @@ build.
 - Interrupt handling uses the 8259 PICs and the PIT, not the IOAPIC/LAPIC the design calls for.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
-- No USB, audio, networking or GUI.
+- No client protocol: the window manager tiles placeholders, not other processes.
+- No USB, audio or networking.

@@ -8,8 +8,8 @@
 //! are listed by type and size rather than skipped, so an unfamiliar table
 //! still shows what is in it.
 
-const sys = @import("../syscall.zig");
-const out = @import("../lib/out.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
 
 const Header = extern struct {
     type: u8,

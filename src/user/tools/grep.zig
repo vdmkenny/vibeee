@@ -7,9 +7,9 @@
 //! Reads a file when given one and standard input otherwise, so it already
 //! works as the receiving end of a pipeline once pipes exist.
 
-const sys = @import("../syscall.zig");
-const out = @import("../lib/out.zig");
-const str = @import("../lib/str.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const str = @import("ulib").str;
 
 pub fn run(args: []const []const u8) void {
     if (args.len == 0) {

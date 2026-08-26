@@ -9,7 +9,7 @@
 //! both generated from it, so a command cannot exist without being listed.
 
 const std = @import("std");
-const sys = @import("syscall.zig");
+const sys = @import("sys");
 const eeefetch = @import("tools/eeefetch.zig");
 const dmidecode = @import("tools/dmidecode.zig");
 const date = @import("tools/date.zig");
@@ -18,8 +18,8 @@ const grep = @import("tools/grep.zig");
 const pointer = @import("tools/pointer.zig");
 const ringtest = @import("tools/ringtest.zig");
 const status = @import("tools/status.zig");
-const out = @import("lib/out.zig");
-const str = @import("lib/str.zig");
+const out = @import("ulib").out;
+const str = @import("ulib").str;
 
 const Command = struct {
     name: []const u8,

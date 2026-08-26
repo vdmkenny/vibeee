@@ -85,6 +85,7 @@ pub const Errno = enum(i32) {
     inval = 22,
     exists = 17,
     child = 10,
+    busy = 16,
     nospace = 28,
     pipe = 32,
     nosys = 38,
@@ -106,6 +107,7 @@ const E = struct {
     const child = Err{ .name = "ECHILD", .when = "the caller has no such child to wait for" };
     const pipe = Err{ .name = "EPIPE", .when = "the far end of the channel has closed" };
     const nospace = Err{ .name = "ENOSPC", .when = "the volume is full" };
+    const busy = Err{ .name = "EBUSY", .when = "another process already owns it" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
 };
 
@@ -199,19 +201,118 @@ pub const MAX_ARGS = 16;
 /// is bulk data and belongs in a shared ring.
 pub const MAX_PAYLOAD = 64;
 
+/// What a display owner is told about the screen. Mirrors kernel/display.zig.
+pub const DisplayInfo = extern struct {
+    width: u16 = 0,
+    height: u16 = 0,
+    /// Pixels per scanline, which is not the width: a framebuffer is padded to
+    /// whatever the hardware finds convenient.
+    stride_px: u16 = 0,
+    format: u8 = 0,
+    buffers: u8 = 1,
+    caps: u32 = 0,
+    bytes: u32 = 0,
+};
+
 /// A pointer event as userspace sees it.
 ///
 /// Position and delta both travel, because a consumer that only wants position
 /// should not have to accumulate one, and a consumer that wants motion should
 /// not have to difference one. `buttons_changed` distinguishes a click from a
 /// drag without comparing against the previous event.
+pub const KeyCode = enum(u8) {
+    none = 0,
+
+    escape,
+    // Number row, left to right.
+    n1, n2, n3, n4, n5, n6, n7, n8, n9, n0,
+    minus, equal, backspace,
+
+    tab,
+    q, w, e, r, t, y, u, i, o, p,
+    bracket_left, bracket_right, enter,
+
+    control_left,
+    a, s, d, f, g, h, j, k, l,
+    semicolon, apostrophe, grave,
+
+    shift_left, backslash,
+    z, x, c, v, b, n, m,
+    comma, period, slash, shift_right,
+
+    keypad_asterisk,
+    alt_left, space, caps_lock,
+
+    f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
+
+    num_lock, scroll_lock,
+
+    // Keypad.
+    kp7, kp8, kp9, kp_minus,
+    kp4, kp5, kp6, kp_plus,
+    kp1, kp2, kp3, kp0, kp_period,
+    kp_enter, kp_slash,
+
+    // Extended (0xE0-prefixed) keys.
+    control_right, alt_right,
+    home, up, page_up, left, right, end, down, page_down,
+    insert, delete,
+    super_left, super_right, menu,
+
+    /// The key ISO keyboards have and ANSI ones do not: the extra one beside
+    /// the left shift. AZERTY uses it, so it cannot be omitted.
+    iso_extra,
+
+    pub fn isModifier(self: KeyCode) bool {
+        return switch (self) {
+            .shift_left, .shift_right, .control_left, .control_right,
+            .alt_left, .alt_right, .super_left, .super_right, .caps_lock,
+            => true,
+            else => false,
+        };
+    }
+};
+
+/// Keyboard modifier state.
+///
+/// Shared for the same reason `Buttons` is: the driver sets these bits, the
+/// keymap reads them, and the toolkit branches on them, with a syscall in
+/// between.
+pub const Modifiers = packed struct(u8) {
+    shift: bool = false,
+    control: bool = false,
+    alt: bool = false,
+    /// AltGr, the right Alt key. Distinct from `alt` because layouts use it as
+    /// a third symbol level, and Belgian AZERTY depends on it for @ # [ ] { }.
+    altgr: bool = false,
+    super: bool = false,
+    caps_lock: bool = false,
+    num_lock: bool = false,
+    _reserved: u1 = 0,
+
+    /// Whether a letter should come out uppercase. Caps Lock and Shift cancel
+    /// rather than compound.
+    pub fn letterShifted(self: Modifiers) bool {
+        return self.shift != self.caps_lock;
+    }
+};
+
+/// Which pointer buttons are held. Defined here because the driver, the
+/// kernel input core, the syscall boundary and the toolkit all speak about the
+/// same three bits, and three of those are on the far side of a syscall from
+/// the fourth.
+pub const Buttons = packed struct(u8) {
+    left: bool = false,
+    right: bool = false,
+    middle: bool = false,
+    _reserved: u5 = 0,
+
+    pub fn any(self: Buttons) bool {
+        return self.left or self.right or self.middle;
+    }
+};
+
 pub const PointerEvent = extern struct {
-    pub const Buttons = packed struct(u8) {
-        left: bool = false,
-        right: bool = false,
-        middle: bool = false,
-        _reserved: u5 = 0,
-    };
 
     x: i16 = 0,
     y: i16 = 0,
@@ -225,8 +326,32 @@ pub const PointerEvent = extern struct {
 
     /// Motion with a button held.
     pub fn isDrag(self: PointerEvent) bool {
-        const held = self.buttons.left or self.buttons.right or self.buttons.middle;
-        return self.buttons_changed == 0 and held and (self.dx != 0 or self.dy != 0);
+        return self.buttons_changed == 0 and self.buttons.any() and
+            (self.dx != 0 or self.dy != 0);
+    }
+};
+
+/// A key event as userspace sees it.
+///
+/// Both the keycode and the character: a text field wants what was typed, and
+/// a shortcut wants which key was pressed regardless of what it produces on
+/// the current layout. Sending only one would make one of the two impossible.
+pub const KeyEvent = extern struct {
+    /// Layout-independent key identity, matching kernel/input.zig KeyCode.
+    code: u8 = 0,
+    pressed: u8 = 0,
+    modifiers: u8 = 0,
+    _pad: u8 = 0,
+    /// Unicode codepoint the layout produced, or 0 for a key that produces no
+    /// character.
+    codepoint: u32 = 0,
+
+    pub fn mods(self: KeyEvent) Modifiers {
+        return @bitCast(self.modifiers);
+    }
+
+    pub fn isPress(self: KeyEvent) bool {
+        return self.pressed != 0;
     }
 };
 
@@ -754,6 +879,37 @@ pub const table = [_]Syscall{
             "vanish, and the boundaries of a drag would blur. Motion carries the button mask, so " ++
             "a drag is motion with a button already held. Motion may be dropped when the queue " ++
             "fills; a button transition never is.",
+    },
+    .{
+        .number = 32,
+        .name = "display_acquire",
+        .summary = "Take exclusive ownership of the screen.",
+        .args = &.{
+            .{ .name = "info", .kind = .ptr, .desc = "Receives a DisplayInfo describing the screen." },
+        },
+        .returns = "handle to the scanout buffer, mappable with shm_map",
+        .errors = &.{ E.fault, E.busy, E.noent, E.nomem },
+        .notes = "Exactly one process may own the display: a compositor and the kernel console " ++
+            "both drawing into one framebuffer produce a mess neither can recover from. " ++
+            "Acquiring stops the console drawing; closing the handle gives it back, cleared. " ++
+            "The buffer is an ordinary shared-memory handle, so it maps like any other.",
+    },
+    .{
+        .number = 33,
+        .name = "key_read",
+        .summary = "Read raw key events, claiming the keyboard.",
+        .args = &.{
+            .{ .name = "buf", .kind = .ptr, .desc = "Receives an array of KeyEvent." },
+            .{ .name = "buf_len", .kind = .len, .desc = "Capacity in bytes." },
+            .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
+        },
+        .returns = "bytes written",
+        .errors = &.{ E.fault, E.inval, E.timedout },
+        .notes = "The first call claims the keyboard: events stop reaching the line discipline " ++
+            "and arrive here instead, because a shell reading lines and a compositor reading " ++
+            "keys cannot both consume the same keystroke. The claim is released when the " ++
+            "process exits. Presses and releases both arrive, with the keycode for shortcuts " ++
+            "and the codepoint for text.",
     },
 };
 

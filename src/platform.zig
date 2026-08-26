@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const console = @import("kernel/console.zig");
+const display = @import("kernel/display.zig");
 const input = @import("kernel/input.zig");
 const probe = @import("kernel/probe.zig");
 const bootinfo = @import("kernel/bootinfo.zig");
@@ -139,6 +140,21 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
         input.setPointerBounds(console.width() * 9, console.height() * 16);
     }
     _ = mouse.init();
+
+    // The display becomes acquirable only once something has actually set a
+    // graphics mode. In text mode there is nothing a compositor could map.
+    if (bi.hasFramebuffer() and bi.fb_bpp == 32) {
+        display.present(bi.fb_addr, .{
+            .width = @intCast(bi.fb_width),
+            .height = @intCast(bi.fb_height),
+            .stride_px = @intCast(bi.fb_pitch / 4),
+            .buffers = 1,
+            // A VESA framebuffer offers no page flip, no hardware cursor and
+            // no vertical blank. The GMA900 driver will fill these in.
+            .caps = 0,
+            .bytes = @intCast(@as(usize, bi.fb_pitch) * bi.fb_height),
+        });
+    }
 }
 
 /// Enumerate every bus this machine has and bind drivers to what turns up.

@@ -15,9 +15,9 @@
 //! machine with only one shell.
 
 const std = @import("std");
-const sys = @import("syscall.zig");
-const out = @import("lib/out.zig");
-const str = @import("lib/str.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const str = @import("ulib").str;
 
 const MAX_LINE = 256;
 const MAX_WORDS = 16;

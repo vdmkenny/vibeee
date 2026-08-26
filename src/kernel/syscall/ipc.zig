@@ -8,6 +8,7 @@ const std = @import("std");
 const abi = @import("lib").syscalls;
 const channel_mod = @import("../channel.zig");
 const ctx = @import("context.zig");
+const display = @import("../display.zig");
 const event_mod = @import("../event.zig");
 const handles = @import("../handle.zig");
 const sched = @import("../sched.zig");
@@ -274,8 +275,13 @@ pub fn sys_reply(a: Args) Result {
 fn getSegment(handle: u32) ?*shm.Segment {
     const table = currentHandles() orelse return null;
     const h = table.get(handle) orelse return null;
-    if (h.kind != .shm) return null;
-    return h.data.shm;
+    return switch (h.kind) {
+        .shm => h.data.shm,
+        // The scanout buffer maps like any other segment; the separate kind
+        // exists only so closing it releases the display too.
+        .display => h.data.display,
+        else => null,
+    };
 }
 
 pub fn sys_shm_create(a: Args) Result {
@@ -307,4 +313,40 @@ pub fn sys_shm_map(a: Args) Result {
     shm.mapAt(seg, &t.space, at, flags.writable) catch return Errno.nomem.value();
 
     return @intCast(at);
+}
+
+pub fn sys_display_acquire(a: Args) Result {
+    const out = userSlice(a, a.a0, @sizeOf(abi.DisplayInfo)) orelse return Errno.fault.value();
+
+    const segment = display.acquire() catch |err| {
+        return switch (err) {
+            error.Busy => Errno.busy.value(),
+            error.NoDisplay => Errno.noent.value(),
+            else => Errno.nomem.value(),
+        };
+    };
+
+    const slot = installHandle(.{
+        .kind = .display,
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .display = segment },
+    }) orelse {
+        shm.release(segment);
+        display.release();
+        return Errno.nomem.value();
+    };
+
+    const geometry = display.describe();
+    const record = abi.DisplayInfo{
+        .width = geometry.width,
+        .height = geometry.height,
+        .stride_px = geometry.stride_px,
+        .format = geometry.format,
+        .buffers = geometry.buffers,
+        .caps = geometry.caps,
+        .bytes = geometry.bytes,
+    };
+    @memcpy(out[0..@sizeOf(abi.DisplayInfo)], std.mem.asBytes(&record));
+
+    return @intCast(slot);
 }

@@ -1,20 +1,22 @@
 //! Spleen 12x24, generated from spleen-12x24.bdf by `zig build fonts`. Do not edit.
 //!
-//! Spleen is Copyright (c) 2018-2026, Frederic Cambus, and is used
-//! under the BSD 2-Clause licence. See third_party/spleen/LICENSE.
+//! See third_party/ for the source font and its licence.
 
-const font = @import("../drv/video/font.zig");
+const font = @import("../font.zig");
 
 pub const glyph_width: usize = 12;
 pub const glyph_height: usize = 24;
 pub const row_bytes: usize = 2;
+pub const ascent: usize = 19;
 
 pub const desc = font.Font{
     .name = "Spleen 12x24",
     .width = glyph_width,
     .height = glyph_height,
     .row_bytes = row_bytes,
+    .ascent = ascent,
     .bitmap = &bitmap,
+    .advances = null,
 };
 
 /// 224 glyphs: Latin-1 plus the block elements at U+2580-U+259F,

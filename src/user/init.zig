@@ -18,10 +18,10 @@
 //! services it knows about: most of what it reaps, it never started.
 
 const std = @import("std");
-const sys = @import("syscall.zig");
-const out = @import("lib/out.zig");
-const info = @import("lib/info.zig");
-const str = @import("lib/str.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const info = @import("ulib").info;
+const str = @import("ulib").str;
 
 const CONFIG_PATH = "/ETC/SERVICES";
 

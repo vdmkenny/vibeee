@@ -12,77 +12,13 @@
 const std = @import("std");
 const event_mod = @import("event.zig");
 
-pub const KeyCode = enum(u8) {
-    none = 0,
+/// Layout-independent key identity. Defined in the ABI because a shortcut is
+/// bound to a physical key, and the program binding it is on the far side of a
+/// syscall from the driver reporting it.
+pub const KeyCode = @import("lib").syscalls.KeyCode;
 
-    escape,
-    // Number row, left to right.
-    n1, n2, n3, n4, n5, n6, n7, n8, n9, n0,
-    minus, equal, backspace,
-
-    tab,
-    q, w, e, r, t, y, u, i, o, p,
-    bracket_left, bracket_right, enter,
-
-    control_left,
-    a, s, d, f, g, h, j, k, l,
-    semicolon, apostrophe, grave,
-
-    shift_left, backslash,
-    z, x, c, v, b, n, m,
-    comma, period, slash, shift_right,
-
-    keypad_asterisk,
-    alt_left, space, caps_lock,
-
-    f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
-
-    num_lock, scroll_lock,
-
-    // Keypad.
-    kp7, kp8, kp9, kp_minus,
-    kp4, kp5, kp6, kp_plus,
-    kp1, kp2, kp3, kp0, kp_period,
-    kp_enter, kp_slash,
-
-    // Extended (0xE0-prefixed) keys.
-    control_right, alt_right,
-    home, up, page_up, left, right, end, down, page_down,
-    insert, delete,
-    super_left, super_right, menu,
-
-    /// The key ISO keyboards have and ANSI ones do not: the extra one beside
-    /// the left shift. AZERTY uses it, so it cannot be omitted.
-    iso_extra,
-
-    pub fn isModifier(self: KeyCode) bool {
-        return switch (self) {
-            .shift_left, .shift_right, .control_left, .control_right,
-            .alt_left, .alt_right, .super_left, .super_right, .caps_lock,
-            => true,
-            else => false,
-        };
-    }
-};
-
-pub const Modifiers = packed struct(u8) {
-    shift: bool = false,
-    control: bool = false,
-    alt: bool = false,
-    /// AltGr, the right Alt key. Distinct from `alt` because layouts use it as
-    /// a third symbol level, and Belgian AZERTY depends on it for @ # [ ] { }.
-    altgr: bool = false,
-    super: bool = false,
-    caps_lock: bool = false,
-    num_lock: bool = false,
-    _pad: u1 = 0,
-
-    /// Whether a letter should come out uppercase. Caps Lock and Shift cancel
-    /// rather than compound.
-    pub fn letterShifted(self: Modifiers) bool {
-        return self.shift != self.caps_lock;
-    }
-};
+/// One definition, shared with userspace through the ABI.
+pub const Modifiers = @import("lib").syscalls.Modifiers;
 
 pub const Event = struct {
     code: KeyCode,
@@ -93,16 +29,9 @@ pub const Event = struct {
     codepoint: u21 = 0,
 };
 
-pub const Buttons = packed struct(u8) {
-    left: bool = false,
-    right: bool = false,
-    middle: bool = false,
-    _reserved: u5 = 0,
-
-    pub fn any(self: Buttons) bool {
-        return self.left or self.right or self.middle;
-    }
-};
+/// One definition, shared with userspace through the ABI: the driver below and
+/// the toolkit above must agree on which bit is which.
+pub const Buttons = @import("lib").syscalls.Buttons;
 
 /// What a pointing device reports, after the driver has turned the wire format
 /// into something device-independent.
@@ -173,7 +102,67 @@ pub fn applyModifier(code: KeyCode, pressed: bool) void {
     }
 }
 
+/// Set while a process is reading raw key events.
+///
+/// The keyboard has one stream and two possible consumers: the line discipline
+/// turning keys into lines for a shell, and a compositor wanting keycodes and
+/// releases. They cannot both take the same keystroke, so ownership is
+/// explicit, the same way the display's is.
+/// Zero when nobody has claimed it. The claimant is recorded rather than a
+/// bare flag so the claim can be dropped when that process exits: a compositor
+/// that crashes while holding the keyboard would otherwise leave the shell
+/// with no input and no way to report it.
+var key_owner: u32 = 0;
+
+pub fn claimKeys(owner: u32) void {
+    key_owner = owner;
+}
+
+pub fn releaseKeys() void {
+    key_owner = 0;
+    raw_head = raw_tail;
+}
+
+pub fn keyOwner() u32 {
+    return key_owner;
+}
+
+/// Raw key events, for the claimant. Presses and releases both, where the line
+/// discipline only ever sees presses that produce characters.
+var raw_queue: [QUEUE_SIZE]Event = undefined;
+var raw_head: usize = 0;
+var raw_tail: usize = 0;
+var key_event: event_mod.Event = .{};
+
+pub fn keyReady() *event_mod.Event {
+    return &key_event;
+}
+
+pub fn pollKey() ?Event {
+    if (raw_head == raw_tail) return null;
+    const e = raw_queue[raw_head];
+    raw_head = (raw_head + 1) % QUEUE_SIZE;
+    return e;
+}
+
+pub fn hasKeyEvents() bool {
+    return raw_head != raw_tail;
+}
+
+fn postRaw(e: Event) void {
+    const next = (raw_tail + 1) % QUEUE_SIZE;
+    if (next == raw_head) return;
+    raw_queue[raw_tail] = e;
+    raw_tail = next;
+    key_event.signalLocked();
+}
+
 pub fn post(event: Event) void {
+    if (key_owner != 0) {
+        postRaw(event);
+        return;
+    }
+
     const next = (tail + 1) % QUEUE_SIZE;
     if (next == head) {
         // Drop the newest rather than the oldest: losing the end of a burst is

@@ -45,6 +45,7 @@ PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
 
 KERNEL_ELF := zig-out/bin/vibeee.elf
 USER_INIT  := zig-out/bin/init
+USER_WM    := zig-out/bin/eeewm
 USER_HELLO := zig-out/bin/hello
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
@@ -108,6 +109,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/INIT
+	@$(MCOPY) -i $@ -o $(USER_WM) ::/EEEWM
 	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH

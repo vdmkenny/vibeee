@@ -4,11 +4,11 @@
 //! from files the tool assumes exist, so it works on a system with no /proc and
 //! keeps working as the kernel learns to report more.
 
-const sys = @import("../syscall.zig");
-const out = @import("../lib/out.zig");
-const info = @import("../lib/info.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const info = @import("ulib").info;
 const logo = @import("lib").logo;
-const str = @import("../lib/str.zig");
+const str = @import("ulib").str;
 
 const Row = struct { label: []const u8, key: []const u8 };
 

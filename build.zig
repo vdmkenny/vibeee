@@ -64,10 +64,49 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Userspace is three modules, each its own domain, wired here so a
+    // program in a subdirectory can reach them: relative imports cannot climb
+    // out of a module's own root directory.
+    //
+    //   sys   the syscall layer
+    //   ulib  conveniences that assume a process (output, strings, time)
+    //   eui   the control library, which touches no syscalls at all
+    const sys_mod = b.createModule(.{
+        .root_source_file = b.path("src/user/syscall.zig"),
+        .target = user_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "lib", .module = user_lib }},
+    });
+
+    const ulib_mod = b.createModule(.{
+        .root_source_file = b.path("src/user/lib/ulib.zig"),
+        .target = user_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lib", .module = user_lib },
+            .{ .name = "sys", .module = sys_mod },
+        },
+    });
+
+    const eui_mod = b.createModule(.{
+        .root_source_file = b.path("src/user/eui/eui.zig"),
+        .target = user_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "lib", .module = user_lib }},
+    });
+
+    const user_imports = [_]std.Build.Module.Import{
+        .{ .name = "lib", .module = user_lib },
+        .{ .name = "sys", .module = sys_mod },
+        .{ .name = "ulib", .module = ulib_mod },
+        .{ .name = "eui", .module = eui_mod },
+    };
+
     // Every user program is built identically; only its root file differs.
     // Listing them keeps adding one to a single line here.
     const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
         .{ .name = "init", .root = "src/user/init.zig" },
+        .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },
         .{ .name = "tools", .root = "src/user/tools.zig" },
         .{ .name = "vsh", .root = "src/user/vsh.zig" },
         .{ .name = "hello", .root = "src/user/hello.zig" },
@@ -86,7 +125,7 @@ pub fn build(b: *std.Build) void {
                 .strip = true,
                 .stack_check = false,
                 .stack_protector = false,
-                .imports = &.{.{ .name = "lib", .module = user_lib }},
+                .imports = &user_imports,
             }),
         });
         exe.setLinkerScript(b.path("src/user/linker.ld"));
@@ -189,15 +228,38 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const fonts_step = b.step("fonts", "Regenerate src/fonts/ from third_party BDF files");
-    for ([_][3][]const u8{
-        .{ "third_party/spleen/spleen-8x16.bdf", "src/fonts/spleen_8x16.zig", "Spleen 8x16" },
-        .{ "third_party/spleen/spleen-12x24.bdf", "src/fonts/spleen_12x24.zig", "Spleen 12x24" },
+    const fonts_step = b.step("fonts", "Regenerate src/lib/fonts/ from third_party BDF files");
+
+    const FontSpec = struct {
+        source: []const u8,
+        out: []const u8,
+        name: []const u8,
+    };
+
+    for ([_]FontSpec{
+        .{
+            .source = "third_party/spleen/spleen-8x16.bdf",
+            .out = "src/lib/fonts/spleen_8x16.zig",
+            .name = "Spleen 8x16",
+        },
+        .{
+            .source = "third_party/spleen/spleen-12x24.bdf",
+            .out = "src/lib/fonts/spleen_12x24.zig",
+            .name = "Spleen 12x24",
+        },
+        // Proportional, for interface text. A terminal wants a fixed grid; a
+        // button label does not, and monospaced UI text is the loudest sign of
+        // an interface drawn by a program that only had a console font.
+        .{
+            .source = "third_party/ark-pixel/ark-pixel-12px-proportional-latin.bdf",
+            .out = "src/lib/fonts/ark_ui_12.zig",
+            .name = "Ark Pixel 12",
+        },
     }) |spec| {
         const run = b.addRunArtifact(mkfont);
-        run.addFileArg(b.path(spec[0]));
-        run.addArg(spec[1]);
-        run.addArg(spec[2]);
+        run.addFileArg(b.path(spec.source));
+        run.addArg(spec.out);
+        run.addArg(spec.name);
         run.has_side_effects = true;
         fonts_step.dependOn(&run.step);
     }

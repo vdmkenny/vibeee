@@ -17,9 +17,9 @@
 
 const std = @import("std");
 const ring = @import("lib").ring;
-const sys = @import("../syscall.zig");
-const out = @import("../lib/out.zig");
-const str = @import("../lib/str.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const str = @import("ulib").str;
 
 const SERVICE = "ring.test";
 const SELF = "/TOOLS";

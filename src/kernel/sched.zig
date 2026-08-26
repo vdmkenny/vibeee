@@ -20,6 +20,7 @@ const std = @import("std");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");
 const heap = @import("heap.zig");
+const input = @import("input.zig");
 const queue = @import("sched/queue.zig");
 const thread_mod = @import("sched/thread.zig");
 const wait = @import("wait.zig");
@@ -164,6 +165,10 @@ pub fn exitWith(status: i32) noreturn {
         // Before scheduling away: this thread never runs again, so anything
         // waiting on it must be released now or it never will be.
         _ = t.exit_queue.wakeAll();
+        // Claims that would otherwise outlive their claimant. The keyboard is
+        // the one that matters: leaving it claimed by a dead process gives the
+        // shell no input at all.
+        if (input.keyOwner() == t.id) input.releaseKeys();
         if (find(t.parent_id)) |p| _ = p.child_exit.wakeAll();
         orphanChildren(t);
     }

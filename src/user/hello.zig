@@ -5,8 +5,8 @@
 //! syscall numbers, which is the point. If this runs, the loader, the address
 //! space, the privilege drop and the syscall ABI are all correct together.
 
-const sys = @import("syscall.zig");
-const out = @import("lib/out.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
 
 /// Zero-initialised, so it lands in .bss: the file records no bytes for it and
 /// the loader must supply the zeroes. Reading it proves that happened.

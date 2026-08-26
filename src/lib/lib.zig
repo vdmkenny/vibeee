@@ -10,12 +10,14 @@
 //! on both sides of a syscall.
 
 pub const civil = @import("civil.zig");
+pub const font = @import("font.zig");
 pub const logo = @import("logo.zig");
 pub const ring = @import("ring.zig");
 pub const syscalls = @import("syscalls.zig");
 
 test {
     _ = civil;
+    _ = font;
     _ = logo;
     _ = ring;
     _ = syscalls;

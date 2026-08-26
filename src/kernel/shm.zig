@@ -52,6 +52,10 @@ pub const Segment = struct {
     frames: []usize,
     size: usize,
     refs: u32 = 1,
+    /// Whether the frames came from the allocator and go back to it. False for
+    /// a segment that describes memory belonging to a device, where freeing
+    /// the frames would hand a graphics aperture to the page allocator.
+    owned: bool = true,
 
     pub fn pageCount(self: *const Segment) usize {
         return self.frames.len;
@@ -89,6 +93,27 @@ pub fn create(size: usize) Error!*Segment {
     return seg;
 }
 
+/// Describe a range of physical memory that already exists, such as a
+/// framebuffer, as a segment.
+///
+/// Same object and same mapping path as allocated memory, so a device aperture
+/// can be handed to a process through the ordinary handle and `shm_map` route
+/// rather than a second mechanism that does the same thing.
+pub fn wrapPhysical(base: usize, size: usize) Error!*Segment {
+    if (size == 0) return error.BadSize;
+
+    const pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    const seg = heap.allocator.create(Segment) catch return error.OutOfMemory;
+    errdefer heap.allocator.destroy(seg);
+
+    const frames = heap.allocator.alloc(usize, pages) catch return error.OutOfMemory;
+    for (frames, 0..) |*f, i| f.* = base + i * PAGE_SIZE;
+
+    seg.* = .{ .frames = frames, .size = size, .owned = false };
+    return seg;
+}
+
 pub fn retain(seg: *Segment) void {
     seg.refs += 1;
 }
@@ -99,7 +124,9 @@ pub fn release(seg: *Segment) void {
         seg.refs -= 1;
         return;
     }
-    for (seg.frames) |f| pmm.freeFrame(f);
+    if (seg.owned) {
+        for (seg.frames) |f| pmm.freeFrame(f);
+    }
     heap.allocator.free(seg.frames);
     heap.allocator.destroy(seg);
 }

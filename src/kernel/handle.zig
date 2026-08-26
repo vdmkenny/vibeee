@@ -13,6 +13,7 @@
 const std = @import("std");
 const channel_mod = @import("channel.zig");
 const clock = @import("clock.zig");
+const display_mod = @import("display.zig");
 const event_mod = @import("event.zig");
 const fat = @import("fat.zig");
 const shm_mod = @import("shm.zig");
@@ -33,7 +34,7 @@ pub const Rights = packed struct(u8) {
     _pad: u5 = 0,
 };
 
-pub const Kind = enum { none, console, file, directory, event, channel, shm };
+pub const Kind = enum { none, console, file, directory, event, channel, shm, display };
 
 pub const File = struct {
     /// Resolved at open and kept, so a later unmount cannot leave the handle
@@ -75,6 +76,10 @@ pub const Handle = struct {
         event: *event_mod.Event,
         channel: ChannelRef,
         shm: *shm_mod.Segment,
+        /// The scanout buffer, held by whoever owns the screen. A separate
+        /// kind from `shm` only so that closing it also hands the display
+        /// back: the segment itself is an ordinary one.
+        display: *shm_mod.Segment,
     } = .{ .none = {} },
 };
 
@@ -90,6 +95,7 @@ pub fn retain(h: Handle) Handle {
         .event => event_mod.retain(h.data.event),
         .channel => channel_mod.retain(h.data.channel.channel),
         .shm => shm_mod.retain(h.data.shm),
+        .display => shm_mod.retain(h.data.display),
         .none, .console => {},
     }
     return h;
@@ -125,6 +131,10 @@ pub fn release(h: Handle) void {
             channel_mod.release(ref.channel);
         },
         .shm => shm_mod.release(h.data.shm),
+        .display => {
+            shm_mod.release(h.data.display);
+            display_mod.release();
+        },
         .none, .console => {},
     }
 }

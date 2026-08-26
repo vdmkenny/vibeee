@@ -18,13 +18,13 @@
 
 const std = @import("std");
 const bootinfo = @import("../../kernel/bootinfo.zig");
-const fontlib = @import("font.zig");
+const fontlib = @import("lib").font;
 const hal = @import("../../kernel/hal.zig");
 
 /// Available fonts, largest last. Selected at boot from the screen size.
 const FONTS = [_]fontlib.Font{
-    @import("../../fonts/spleen_8x16.zig").desc,
-    @import("../../fonts/spleen_12x24.zig").desc,
+    fontlib.spleen_8x16,
+    fontlib.spleen_12x24,
 };
 
 /// The standard VGA palette, as XRGB8888.
@@ -47,6 +47,14 @@ var bytes_per_pixel: usize = 4;
 var columns: usize = 0;
 var rows: usize = 0;
 var ready = false;
+/// Set while a userspace compositor owns the framebuffer. Drawing is skipped
+/// rather than the backend being torn down, so the console can be handed back
+/// without re-detecting the hardware.
+var suspended = false;
+
+pub fn setSuspended(value: bool) void {
+    suspended = value;
+}
 
 /// Set up from what stage2 recorded. Returns false when there is no usable
 /// framebuffer, leaving the caller to keep the text-mode backend.
@@ -93,7 +101,7 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
 }
 
 pub fn active() bool {
-    return ready;
+    return ready and !suspended;
 }
 
 pub const Grid = struct { columns: usize, rows: usize };
@@ -124,7 +132,7 @@ fn clearAll(colour: u32) void {
 
 /// Draw one character cell.
 pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
-    if (!ready or col >= columns or row >= rows) return;
+    if (!ready or suspended or col >= columns or row >= rows) return;
 
     const bits = font.glyph(cp) orelse font.fallback();
     const fg_colour = PALETTE[fg];
@@ -155,7 +163,7 @@ pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
 /// symbol that looks plausible and does not scan, the worst possible failure
 /// for a diagnostic whose only job is to be read off a photograph.
 pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
-    if (!ready) return;
+    if (!ready or suspended) return;
     const colour = PALETTE[colour_index];
 
     const x_end = @min(x + w, pixel_width);
@@ -183,7 +191,7 @@ pub fn fontName() []const u8 {
 }
 
 pub fn fill(ch: u21, fg: u4, bg: u4) void {
-    if (!ready) return;
+    if (!ready or suspended) return;
     // A blank cell is a solid rectangle, so the common case avoids the glyph
     // walk entirely, this runs on every clear and every panic.
     if (ch == ' ') {
@@ -203,7 +211,7 @@ pub fn fill(ch: u21, fg: u4, bg: u4) void {
 /// redraw would mean rasterising two thousand characters, and this runs
 /// every time the log reaches the bottom of the screen.
 pub fn scroll(bg: u4) void {
-    if (!ready) return;
+    if (!ready or suspended) return;
 
     const row_bytes = pitch * font.height;
     const moved = (rows - 1) * row_bytes;

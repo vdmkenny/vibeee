@@ -6,11 +6,11 @@
 //! trusting a file's timestamp and not, and the user is the only one who can
 //! tell which is which.
 
-const sys = @import("../syscall.zig");
-const out = @import("../lib/out.zig");
-const info = @import("../lib/info.zig");
-const str = @import("../lib/str.zig");
-const time = @import("../lib/time.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const info = @import("ulib").info;
+const str = @import("ulib").str;
+const time = @import("ulib").time;
 
 pub fn run(args: []const []const u8) void {
     const seconds = blk: {

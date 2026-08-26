@@ -63,6 +63,12 @@ but not yet written.
 **Console**: VGA text or a 32bpp linear framebuffer with the Spleen bitmap font, chosen at
 boot from what the firmware provided.
 
+**GUI**: `eeewm` is a tiling window manager with four tags, tall, wide and monocle layouts,
+floating windows above the tiles, hairline borders and a status bar. `libeui` is the shared
+control library: buttons, checkboxes, labels and progress bars, drawn flat from a swappable
+theme, with keyboard focus and Tab order. Painting is damage-driven, so an idle desktop
+writes no pixels. Text uses a proportional bitmap face rather than the terminal font.
+
 **Input**, i8042 keyboard, scancode set 1, with keymaps compiled from one file per layout:
 US-International and Belgian AZERTY, dead-key composition, `Super+Space` to switch.
 
@@ -98,7 +104,7 @@ src/arch/     ISA- and firmware-specific code, x86 only for now
 src/kernel/   portable core: memory, scheduling, IPC, VFS, syscalls, panic
 src/drv/      drivers, bound by runtime probe confidence
 src/lib/      pure code compiled into BOTH kernel and userspace
-src/user/     init, the shell, and the system tools
+src/user/     init, the shell, the system tools, the window manager and libeui
 src/keymaps/  keyboard layouts, one file each
 src/platform.zig  the only file that wires kernel, arch and drivers together
 design/       the design documents
@@ -144,3 +150,4 @@ VBE1|06|00000000|00000000|00103CFC|00162A78|00162F14|00101126,00107952
 ## Licence
 
 Spleen (`third_party/spleen/`) is BSD 2-Clause, © Frederic Cambus.
+Ark Pixel (`third_party/ark-pixel/`) is SIL Open Font License 1.1, © TakWolf.

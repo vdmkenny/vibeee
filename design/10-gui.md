@@ -1,7 +1,10 @@
 # 10: GUI: eeewm display server/compositor + libeui toolkit
 
-> **Status: design only, not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
+> **Status: partially implemented.**
+>
+> Built and working: the tiling model ([`user/eeewm/layout.zig`](../src/user/eeewm/layout.zig)) with 4 tags, tall, wide and monocle, per-tag layout and mfact, floating exceptions and focus-follows-click; the status bar with tag pips, layout glyph, title and clock; keycode bindings; and `libeui` ([`user/eui/`](../src/user/eui/)) with a swappable theme, damage-driven painting and keyboard focus.
+>
+> Not yet: the client protocol of §5, so windows are the manager's own placeholders. No page flipping, vblank pacing or hardware cursor, all of which need the GMA900 driver and are advertised through `DisplayInfo.caps`. No SSE2 blit kernels; no per-client shm surfaces.
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 

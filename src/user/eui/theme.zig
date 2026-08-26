@@ -1,0 +1,162 @@
+//! The look, in one place.
+//!
+//! Every colour and every measurement the toolkit and the window manager draw
+//! with comes from here, so a theme is a value rather than a search through
+//! the drawing code. Nothing below this file hard-codes a colour.
+//!
+//! **Classic, and shaped by this panel.** 800x480 on a 7-inch screen is about
+//! 133 DPI, which is dense enough that a one-pixel line is a hairline and
+//! sparse enough that every pixel of chrome is one not spent on content. So:
+//! light surfaces with dark text, hairline borders, solid fills, and no
+//! gradients or bevels. The panel is 6-bit plus frame-rate control, so a
+//! gradient shimmers rather than blends, and a dark theme on a backlit LCD of
+//! this era goes muddy rather than sleek.
+//!
+//! Colours and metrics follow design/10-gui.md §4.3, which fixed the border
+//! colours and the bar height against the panel's real geometry.
+
+const std = @import("std");
+
+pub const Color = u32;
+
+pub const Theme = struct {
+    name: []const u8,
+
+    /// The empty desktop behind everything.
+    desktop: Color,
+
+    /// Window and control surfaces.
+    surface: Color,
+    /// A control the pointer is over, or a field expecting input.
+    surface_hot: Color,
+    /// A control being pressed, and the trough of a progress bar.
+    surface_pressed: Color,
+
+    text: Color,
+    text_dim: Color,
+    text_inverted: Color,
+
+    /// The one colour that says "this, here": focus, selection, progress, and
+    /// the focused window's border.
+    accent: Color,
+    accent_text: Color,
+
+    /// Hairline separators and unfocused window borders.
+    line: Color,
+    border: Color,
+    border_focused: Color,
+
+    bar: Color,
+    bar_text: Color,
+    bar_line: Color,
+
+    warning: Color,
+
+    /// Bar height. 22 px at this density leaves 458 rows for tiles.
+    bar_height: i32 = 22,
+    /// Control height. 24 px is the smallest that stays comfortably hittable
+    /// on a touchpad here.
+    control_height: i32 = 24,
+    /// Tight on purpose: at 800x480 padding is the first thing to spend and
+    /// the last thing worth spending.
+    padding: i32 = 6,
+    border_width: i32 = 1,
+    border_width_focused: i32 = 2,
+};
+
+/// The default. Warm greys and a single medium blue, the way a workstation
+/// looked before anyone had a gradient to spare.
+pub const classic = Theme{
+    .name = "classic",
+    .desktop = 0x5C6670,
+    .surface = 0xD6D3CE,
+    .surface_hot = 0xE4E2DE,
+    .surface_pressed = 0xB8B5B0,
+    .text = 0x14140F,
+    .text_dim = 0x5A5A54,
+    .text_inverted = 0xF4F4F0,
+    .accent = 0x2864A4,
+    .accent_text = 0xFFFFFF,
+    .line = 0xA8A498,
+    .border = 0xA8A498,
+    .border_focused = 0x2864A4,
+    .bar = 0xC8C5C0,
+    .bar_text = 0x14140F,
+    .bar_line = 0x8C8880,
+    .warning = 0xA02820,
+};
+
+/// Higher contrast, for sunlight. Same shapes, harder edges.
+pub const paper = Theme{
+    .name = "paper",
+    .desktop = 0x707070,
+    .surface = 0xF0F0EC,
+    .surface_hot = 0xFFFFFC,
+    .surface_pressed = 0xD0D0CC,
+    .text = 0x000000,
+    .text_dim = 0x4A4A44,
+    .text_inverted = 0xFFFFFF,
+    .accent = 0x1A4E8C,
+    .accent_text = 0xFFFFFF,
+    .line = 0x808078,
+    .border = 0x808078,
+    .border_focused = 0x1A4E8C,
+    .bar = 0xE0E0DC,
+    .bar_text = 0x000000,
+    .bar_line = 0x707068,
+    .warning = 0x901810,
+};
+
+/// For a dark room, where a lit 7-inch panel is the brightest thing present.
+pub const dusk = Theme{
+    .name = "dusk",
+    .desktop = 0x1B1F24,
+    .surface = 0x2A2E35,
+    .surface_hot = 0x363B44,
+    .surface_pressed = 0x1F2229,
+    .text = 0xD8DBE0,
+    .text_dim = 0x8A9099,
+    .text_inverted = 0x14171B,
+    .accent = 0x3A78BE,
+    .accent_text = 0xF4F8FC,
+    .line = 0x424852,
+    .border = 0x424852,
+    .border_focused = 0x3A78BE,
+    .bar = 0x14171B,
+    .bar_text = 0xC8CCD2,
+    .bar_line = 0x2A2E35,
+    .warning = 0xC05050,
+};
+
+pub const all = [_]*const Theme{ &classic, &paper, &dusk };
+
+/// What everything draws with now. Assigning a different theme and repainting
+/// changes the whole interface, which is the point of it being one value.
+var active: *const Theme = &classic;
+
+pub fn current() *const Theme {
+    return active;
+}
+
+pub fn use(theme: *const Theme) void {
+    active = theme;
+}
+
+/// Switch to the next theme, for a key binding to call.
+pub fn cycle() *const Theme {
+    for (all, 0..) |candidate, i| {
+        if (candidate == active) {
+            active = all[(i + 1) % all.len];
+            return active;
+        }
+    }
+    active = all[0];
+    return active;
+}
+
+pub fn byName(name: []const u8) ?*const Theme {
+    for (all) |candidate| {
+        if (std.mem.eql(u8, candidate.name, name)) return candidate;
+    }
+    return null;
+}

@@ -196,3 +196,37 @@ pub fn sys_pointer_read(a: Args) Result {
 
     return @intCast(written * size);
 }
+
+pub fn sys_key_read(a: Args) Result {
+    const out = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+
+    const size = @sizeOf(abi.KeyEvent);
+    const capacity = out.len / size;
+    if (capacity == 0) return Errno.inval.value();
+
+    // Reading claims the keyboard. Doing it here rather than in a separate
+    // call means a process cannot claim the keyboard and then fail to read it,
+    // which would leave the shell with no input and no way to say so.
+    const self_id = if (sched.currentThread()) |t| t.id else 0;
+    input.claimKeys(self_id);
+
+    const deadline = ctx.deadlineFrom(a.a2);
+
+    while (!input.hasKeyEvents()) {
+        input.keyReady().waitOne(deadline) catch return Errno.timedout.value();
+    }
+
+    var written: usize = 0;
+    while (written < capacity) : (written += 1) {
+        const event = input.pollKey() orelse break;
+        const record = abi.KeyEvent{
+            .code = @intFromEnum(event.code),
+            .pressed = @intFromBool(event.pressed),
+            .modifiers = @bitCast(event.mods),
+            .codepoint = event.codepoint,
+        };
+        @memcpy(out[written * size ..][0..size], std.mem.asBytes(&record));
+    }
+
+    return @intCast(written * size);
+}

@@ -4,7 +4,7 @@
 //! cost thousands of traps. Buffering into one write per line keeps a full
 //! system report to a couple of dozen.
 
-const sys = @import("../syscall.zig");
+const sys = @import("sys");
 
 var buffer: [1024]u8 = [_]u8{0} ** 1024;
 var used: usize = 0;

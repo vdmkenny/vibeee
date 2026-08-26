@@ -568,6 +568,45 @@ Read pending pointer events.
 
 Events rather than pollable state: a press and release between two polls would vanish, and the boundaries of a drag would blur. Motion carries the button mask, so a drag is motion with a button already held. Motion may be dropped when the queue fills; a button transition never is.
 
+## `display_acquire`  <sub>#32</sub>
+
+Take exclusive ownership of the screen.
+
+| arg | type | meaning |
+|---|---|---|
+| `info` | ptr | Receives a DisplayInfo describing the screen. |
+
+**Returns:** handle to the scanout buffer, mappable with shm_map
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EBUSY`, another process already owns it
+- `ENOENT`, no such file or directory
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+Exactly one process may own the display: a compositor and the kernel console both drawing into one framebuffer produce a mess neither can recover from. Acquiring stops the console drawing; closing the handle gives it back, cleared. The buffer is an ordinary shared-memory handle, so it maps like any other.
+
+## `key_read`  <sub>#33</sub>
+
+Read raw key events, claiming the keyboard.
+
+| arg | type | meaning |
+|---|---|---|
+| `buf` | ptr | Receives an array of KeyEvent. |
+| `buf_len` | len | Capacity in bytes. |
+| `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
+
+**Returns:** bytes written
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ETIMEDOUT`, the timeout elapsed before anything happened
+
+The first call claims the keyboard: events stop reaching the line discipline and arrive here instead, because a shell reading lines and a compositor reading keys cannot both consume the same keystroke. The claim is released when the process exits. Presses and releases both arrive, with the keycode for shortcuts and the codepoint for text.
+
 ---
 
-32 calls defined.
+34 calls defined.

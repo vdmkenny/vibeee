@@ -300,6 +300,7 @@ pub fn reply(handle: usize, token: u32, payload: []const u8) isize {
 // ---------------------------------------------------------------------------
 
 pub const PointerEvent = abi.PointerEvent;
+pub const Buttons = abi.Buttons;
 
 /// Read pending pointer events, blocking until there is at least one.
 pub fn pointerRead(buf: []PointerEvent, timeout_us: usize) []PointerEvent {
@@ -314,6 +315,29 @@ pub fn pointerRead(buf: []PointerEvent, timeout_us: usize) []PointerEvent {
 }
 
 pub const MapFlags = abi.MapFlags;
+pub const DisplayInfo = abi.DisplayInfo;
+pub const KeyEvent = abi.KeyEvent;
+pub const KeyCode = abi.KeyCode;
+pub const Modifiers = abi.Modifiers;
+
+/// Take the screen. Returns a handle to the scanout buffer, which maps like
+/// any other segment, or null if something else already owns it.
+pub fn displayAcquire(info: *DisplayInfo) ?isize {
+    const handle = syscall1(abi.number("display_acquire"), @intFromPtr(info));
+    return if (handle < 0) null else handle;
+}
+
+/// Read raw key events, claiming the keyboard from the line discipline.
+pub fn keyRead(buf: []KeyEvent, timeout_us: usize) []KeyEvent {
+    const n = syscall3(
+        abi.number("key_read"),
+        @intFromPtr(buf.ptr),
+        buf.len * @sizeOf(KeyEvent),
+        timeout_us,
+    );
+    if (n <= 0) return buf[0..0];
+    return buf[0..@divTrunc(@as(usize, @intCast(n)), @sizeOf(KeyEvent))];
+}
 
 /// Allocate a shared-memory segment. Pass the handle over a channel to share it.
 pub fn shmCreate(size: usize) isize {

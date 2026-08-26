@@ -4,7 +4,7 @@
 //! repeating the same "negative means it failed, otherwise slice to the length"
 //! dance. One place to get it wrong is enough.
 
-const sys = @import("../syscall.zig");
+const sys = @import("sys");
 const str = @import("str.zig");
 
 /// The value of `key`, or an empty string if the kernel does not know it.

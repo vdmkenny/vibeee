@@ -126,3 +126,26 @@ pub fn stripIndent(text: []const u8) struct { text: []const u8, indented: bool }
     while (rest.len > 0 and rest[0] == ' ') rest = rest[1..];
     return .{ .text = rest, .indented = rest.len != text.len };
 }
+
+/// Write `value` as decimal into `buf`, returning how many bytes were used.
+///
+/// Here rather than in `out.zig` because a caller that wants a number in a
+/// buffer should not have to route it through the output stream to get one.
+pub fn decimal(buf: []u8, value: usize) usize {
+    var digits: [20]u8 = undefined;
+    var n: usize = 0;
+    var v = value;
+
+    if (v == 0) {
+        digits[0] = '0';
+        n = 1;
+    }
+    while (v > 0) : (v /= 10) {
+        digits[n] = '0' + @as(u8, @intCast(v % 10));
+        n += 1;
+    }
+
+    const written = @min(n, buf.len);
+    for (0..written) |i| buf[i] = digits[n - 1 - i];
+    return written;
+}

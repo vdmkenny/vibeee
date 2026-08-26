@@ -3,10 +3,10 @@
 //! Small on purpose. Each is the thin layer over a syscall that a from-scratch
 //! system needs before anything else can be investigated from inside it.
 
-const sys = @import("../syscall.zig");
-const out = @import("../lib/out.zig");
-const str = @import("../lib/str.zig");
-const time = @import("../lib/time.zig");
+const sys = @import("sys");
+const out = @import("ulib").out;
+const str = @import("ulib").str;
+const time = @import("ulib").time;
 
 pub fn ls(args: []const []const u8) void {
     // "." rather than "/": listing the working directory is what `ls` with no

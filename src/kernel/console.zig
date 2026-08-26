@@ -55,6 +55,20 @@ pub fn hasPixels() bool {
 
 pub const Size = fbcon.Size;
 
+/// Stop drawing to the framebuffer because something else owns it now.
+///
+/// Output is still accepted and still mirrored to the serial port, so a kernel
+/// message during a GUI session is not lost; it simply does not appear over
+/// the top of whatever is on screen.
+pub fn suspendFramebuffer() void {
+    fbcon.setSuspended(true);
+}
+
+pub fn resumeFramebuffer() void {
+    fbcon.setSuspended(false);
+    clear();
+}
+
 pub fn pixelSize() Size {
     return if (fbcon.active()) fbcon.pixelSize() else .{ .width = 0, .height = 0 };
 }
