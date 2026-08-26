@@ -56,6 +56,10 @@ pub const Service = struct {
     /// wait for the service to be genuinely ready rather than merely started.
     provides: []const u8 = "",
     restart: Restart = .on_failure,
+    /// Comma-separated capability names, from `Caps` in the syscall ABI. Empty
+    /// leaves the service with everything init has, which is what a service
+    /// that predates anyone thinking about this gets.
+    caps: []const u8 = "",
 };
 
 const MAX_SERVICES = 8;
@@ -135,9 +139,11 @@ fn useFallback(why: []const u8) void {
 /// Parse the service table.
 ///
 /// Stanzas separated by blank lines, `key = value` within one. Comments start
-/// with `#`. Deliberately not INI section headers: a stanza's identity is its
-/// `name` key, and a `[name]` header would state the same thing twice and let
-/// the two disagree.
+/// with `#` and are ignored wherever they appear, including between the keys
+/// of a stanza: a comment explaining the line below it must not be the thing
+/// that ends the stanza above it. Deliberately not INI section headers: a
+/// stanza's identity is its `name` key, and a `[name]` header would state the
+/// same thing twice and let the two disagree.
 fn parse(text: []const u8) void {
     var current: Service = .{};
     var dirty = false;
@@ -146,7 +152,9 @@ fn parse(text: []const u8) void {
     while (lines.next()) |raw| {
         const line = str.trim(raw);
 
-        if (line.len == 0 or line[0] == '#') {
+        if (line.len > 0 and line[0] == '#') continue;
+
+        if (line.len == 0) {
             if (dirty) {
                 commit(current);
                 current = .{};
@@ -223,8 +231,33 @@ fn lookup(name: []const u8) ?*State {
     return null;
 }
 
+/// Turn a manifest's capability list into the set the child gets.
+///
+/// By name, resolved against the ABI's own field names, so adding a capability
+/// needs no change here. An empty list means the service keeps whatever init
+/// has: capabilities are intersected at every spawn, so all bits set asks for
+/// no reduction rather than for everything.
+fn capsFrom(list: []const u8) u32 {
+    if (str.trim(list).len == 0) return @bitCast(sys.Caps.all);
+
+    var granted = sys.Caps{};
+    var it = str.split(list, ',');
+    while (it.next()) |raw| {
+        const wanted = str.trim(raw);
+        inline for (@typeInfo(sys.Caps).@"struct".fields) |field| {
+            if (field.type == bool and str.eql(wanted, field.name)) {
+                @field(granted, field.name) = true;
+            }
+        }
+    }
+    return @bitCast(granted);
+}
+
 fn start(state: *State) void {
-    const pid = sys.spawnDetached(state.service.binary, &.{state.service.name});
+    const pid = sys.spawnStreams(state.service.binary, &.{state.service.name}, .{
+        .flags = @bitCast(sys.SpawnFlags{ .detached = true }),
+        .caps = capsFrom(state.service.caps),
+    });
     if (pid < 0) {
         report(state.service.name, "cannot start");
         state.abandoned = true;

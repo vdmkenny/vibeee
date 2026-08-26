@@ -1077,3 +1077,35 @@ pub fn find(name: []const u8) ?Syscall {
     }
     return null;
 }
+
+test "a child never gets more than its parent had" {
+    const parent = Caps{ .spawn = true, .display = true };
+
+    // Asking for everything keeps what the parent has, and no more.
+    const kept = parent.intersect(Caps.all);
+    try std.testing.expect(kept.has(.{ .spawn = true, .display = true }));
+    try std.testing.expect(!kept.has(.{ .driver = true }));
+
+    // Asking for something the parent lacks does not conjure it.
+    const asked = parent.intersect(.{ .driver = true, .spawn = true });
+    try std.testing.expect(asked.has(.{ .spawn = true }));
+    try std.testing.expect(!asked.has(.{ .driver = true }));
+}
+
+test "capabilities only ever shrink down the tree" {
+    var caps = Caps.all;
+    // Three generations, each dropping one.
+    caps = caps.intersect(.{ .spawn = true, .kill = true, .display = true });
+    caps = caps.intersect(.{ .spawn = true, .kill = true });
+    caps = caps.intersect(.{ .spawn = true });
+
+    try std.testing.expect(caps.has(.{ .spawn = true }));
+    try std.testing.expect(!caps.has(.{ .kill = true }));
+    try std.testing.expect(!caps.has(.{ .display = true }));
+}
+
+test "holding several is all of them, not any of them" {
+    const caps = Caps{ .spawn = true };
+    try std.testing.expect(!caps.has(.{ .spawn = true, .kill = true }));
+    try std.testing.expect(Caps.all.has(.{ .spawn = true, .kill = true }));
+}

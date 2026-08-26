@@ -8,7 +8,15 @@
 #   needs     comma-separated services that must be up first
 #   provides  the /svc name it registers, if any; init waits for it to appear
 #   restart   never | on_failure | always
+#   caps      comma-separated capabilities, from `Caps` in the syscall ABI.
+#             Empty keeps everything init has. Capabilities are intersected at
+#             every spawn, so what is listed here bounds the whole tree below
+#             the service, not just the service itself.
 
 name    = vsh
 binary  = /VSH
 restart = always
+# Everything a session needs and nothing a driver needs: the shell, the
+# desktop and every program either of them starts are all below this line, so
+# none of them can take an interrupt line or map a device.
+caps    = spawn,kill,power,display

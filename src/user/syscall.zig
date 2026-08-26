@@ -24,6 +24,7 @@ pub const MAX_ARGS = abi.MAX_ARGS;
 pub const Dirent = abi.Dirent;
 pub const OpenFlags = abi.OpenFlags;
 pub const SpawnFlags = abi.SpawnFlags;
+pub const Caps = abi.Caps;
 
 // ---------------------------------------------------------------------------
 // Entering the kernel
@@ -248,11 +249,29 @@ fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isiz
     return spawnStreams(path, args, .{ .flags = @bitCast(flags) });
 }
 
+pub const IrqError = error{
+    /// The caller is not a driver. Capabilities come down the process tree,
+    /// so this means nothing above it granted one.
+    Denied,
+    /// Something already answers for the line, in the kernel or outside it.
+    Busy,
+    /// Not a line this machine has, or not one the controller can route.
+    NoLine,
+    OutOfMemory,
+};
+
 /// Take a device interrupt line. The handle can be passed to `waitMany`, and
 /// the line stays masked until the first wait.
-pub fn irqAttach(gsi: u32) ?u32 {
+pub fn irqAttach(gsi: u32) IrqError!u32 {
     const handle = syscall1(abi.number("irq_attach"), gsi);
-    return if (handle < 0) null else @intCast(handle);
+    if (handle >= 0) return @intCast(handle);
+
+    return switch (-handle) {
+        @intFromEnum(abi.Errno.perm) => error.Denied,
+        @intFromEnum(abi.Errno.busy) => error.Busy,
+        @intFromEnum(abi.Errno.inval) => error.NoLine,
+        else => error.OutOfMemory,
+    };
 }
 
 /// Say the device has been serviced, so its line may fire again.

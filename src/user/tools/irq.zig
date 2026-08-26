@@ -49,10 +49,15 @@ fn list() void {
 /// A line the kernel is already serving is refused rather than stolen: two
 /// handlers on one line means whichever ran second finds it already masked.
 fn take(gsi: usize) void {
-    const handle = sys.irqAttach(@intCast(gsi)) orelse {
+    const handle = sys.irqAttach(@intCast(gsi)) catch |err| {
         out.text("irq ");
         out.decimal(gsi);
-        out.text(": in use, or not a line this machine has\n");
+        out.text(switch (err) {
+            error.Denied => ": only a driver may take a line, and this is not one\n",
+            error.Busy => ": something already answers for it\n",
+            error.NoLine => ": not a line this machine has\n",
+            error.OutOfMemory => ": out of memory\n",
+        });
         out.flush();
         return;
     };
