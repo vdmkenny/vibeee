@@ -23,8 +23,14 @@ const currentHandles = ctx.currentHandles;
 
 pub fn sys_exit(a: Args) Result {
     const status: i32 = @truncate(@as(isize, @bitCast(a.a0)));
-    if (sched.currentThread()) |t| {
-        console.debug("exit", "{s} (thread {d}) status {d}", .{ t.name(), t.id, status });
+
+    // Only a program that failed is worth a line. A verbose boot already says
+    // plenty, and every `ls` reporting that it worked buries the one that did
+    // not among the ones that did.
+    if (status != 0) {
+        if (sched.currentThread()) |t| {
+            console.debug("exit", "{s} (thread {d}) status {d}", .{ t.name(), t.id, status });
+        }
     }
     // Never returns: the thread is unlinked and the next one is switched in.
     // The abandoned interrupt frame goes with the dying thread's stack.
