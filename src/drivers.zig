@@ -216,6 +216,8 @@ fn attachAta(dev: Device) anyerror!void {
     ata.init();
 }
 
+var display_attached = false;
+
 /// Bring up the display.
 ///
 /// Nothing here sets a mode yet: firmware left one on the screen and that is
@@ -224,10 +226,15 @@ fn attachAta(dev: Device) anyerror!void {
 /// has run this on before is the difference between a diagnosable panel and a
 /// blank one.
 fn attachDisplay(dev: Device) anyerror!void {
+    // The adapter answers on more than one PCI function for the same silicon,
+    // so the first function that resolves a backend speaks for all of them.
+    if (display_attached) return;
+
     const backend = modeset.backendFor(dev) orelse {
-        console.debug("video", "unrecognised adapter, keeping the firmware's mode", .{});
+        console.debug("video", "unrecognised adapter, keeping firmware mode", .{});
         return;
     };
+    display_attached = true;
 
     display.setAdapter(.{
         .backend = backend.name,
@@ -236,7 +243,7 @@ fn attachDisplay(dev: Device) anyerror!void {
     });
 
     if (backend.set == null) {
-        console.debug("video", "{s} ({s}), no modeset yet, keeping the firmware's mode", .{
+        console.debug("video", "{s} ({s}), no modeset, keeping firmware mode", .{
             backend.name,
             backend.describes,
         });
