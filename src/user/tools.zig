@@ -21,6 +21,7 @@ const irq_tool = @import("tools/irq.zig");
 const devices_tool = @import("tools/devices.zig");
 const driver_tool = @import("tools/driver.zig");
 const klog = @import("tools/klog.zig");
+const page = @import("tools/page.zig");
 const status = @import("tools/status.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
@@ -45,6 +46,7 @@ const commands = [_]Command{
     .{ .name = "driver", .summary = "what a driver can reach: ports and device registers", .run = &driver_tool.driver },
     .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
     .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
+    .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
     .{ .name = "pointer", .summary = "show pointer movement and clicks", .run = &pointer.run },
     .{ .name = "ringtest", .summary = "prove shared memory between two processes", .run = &ringtest.run },
