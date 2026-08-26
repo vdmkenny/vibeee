@@ -3,14 +3,17 @@
 //! Firmware brings the panel up before the kernel runs, and on this generation
 //! it does the hard parts correctly: the LVDS timing, the clock that feeds it
 //! and the panel's power sequence. What it also does is hand the pipe a plane
-//! smaller than the panel and switch the panel fitter on to stretch it.
+//! smaller than the panel, stretch it with the panel fitter, and split the
+//! display FIFO to suit that arrangement.
 //!
-//! So this drives what is left rather than programming a mode from nothing.
-//! Giving the pipe a plane the size of the timing it already runs, and turning
-//! the fitter off, is the whole difference between a stretched image and a
-//! native one, and it touches neither the clock nor the timing. Anything that
-//! would mean computing a clock is refused: a wrong clock is a dark panel on a
-//! machine whose only diagnostic is that panel.
+//! So this drives what is left rather than programming a mode from nothing:
+//! the plane grows to the size the timing already runs, the fitter goes off,
+//! and the FIFO is retuned for the wider fetch. The clock and the timing are
+//! never touched, and anything that would mean computing a clock is refused: a
+//! wrong clock is a dark panel on a machine whose only diagnostic is that
+//! panel. The change is then judged by the pipe's own underrun record and
+//! undone if the hardware could not feed it, so a refused mode costs a blink
+//! rather than a reboot.
 
 const std = @import("std");
 const clock = @import("../../../kernel/clock.zig");
@@ -49,8 +52,8 @@ const MMIO_BYTES: usize = 512 * 1024;
 ///
 /// The two pipes are identical blocks at different offsets, so which one drives
 /// the panel is data rather than a code path. The offsets within a block are
-/// written once, in `pipeAt`, and both pipes and the register dump derive from
-/// them.
+/// written once, in `pipeAt`, and the register dump lists every field of this
+/// struct, so a register added here is dumped without further ceremony.
 const Pipe = struct {
     htotal: u32,
     hblank: u32,
@@ -111,13 +114,17 @@ const INSTPM = 0x20C0;
 
 /// A register whose top bit enables the block it controls. A pipe, a plane and
 /// the panel fitter all put it there.
-/// In a pipe's status register, the sticky record that its FIFO ran dry.
-/// Cleared by writing it back set.
-const FIFO_UNDERRUN: u32 = 1 << 31;
-
 const Enable = packed struct(u32) {
     _rest: u31,
     on: bool,
+};
+
+/// A pipe's status register, as far as this driver reads it. The record is
+/// sticky and cleared by writing it back set, so writing the whole register
+/// back with the flag raised acknowledges it.
+const PipeStat = packed struct(u32) {
+    _rest: u31,
+    fifo_ran_dry: bool,
 };
 
 /// The LVDS port register, as far as this driver reads it.
@@ -164,12 +171,15 @@ const PlaneSize = packed struct(u32) {
     }
 };
 
-/// How the display FIFO's lines are split between the planes. What is not
-/// plane A's, up to the cursor's start, is plane B's.
+/// Lines of display FIFO, shared by the planes. 64 bytes each.
+const FIFO_TOTAL_LINES = 95;
+
+/// How the FIFO's lines are split: plane A owns the start, the cursor owns the
+/// end, and plane B owns whatever lies between.
 const Dsparb = packed struct(u32) {
     a_end: u7,
     c_start: u7,
-    _rest: u18,
+    _rest: u18 = 0,
 };
 
 /// The planes' fetch watermarks: the FIFO level at which refill begins. Too
@@ -195,25 +205,14 @@ const FwBlc2 = packed struct(u32) {
 
 const Register = struct { name: []const u8, offset: u32 };
 
-/// What a pipe contributes to the dump, named for the pipe it belongs to so
-/// one listing covers both.
-fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [14]Register {
-    return .{
-        .{ .name = "htotal" ++ suffix, .offset = p.htotal },
-        .{ .name = "hblank" ++ suffix, .offset = p.hblank },
-        .{ .name = "hsync" ++ suffix, .offset = p.hsync },
-        .{ .name = "vtotal" ++ suffix, .offset = p.vtotal },
-        .{ .name = "vblank" ++ suffix, .offset = p.vblank },
-        .{ .name = "vsync" ++ suffix, .offset = p.vsync },
-        .{ .name = "src" ++ suffix, .offset = p.src },
-        .{ .name = "conf" ++ suffix, .offset = p.conf },
-        .{ .name = "stat" ++ suffix, .offset = p.stat },
-        .{ .name = "cntr" ++ suffix, .offset = p.cntr },
-        .{ .name = "base" ++ suffix, .offset = p.base },
-        .{ .name = "stride" ++ suffix, .offset = p.stride },
-        .{ .name = "pos" ++ suffix, .offset = p.pos },
-        .{ .name = "size" ++ suffix, .offset = p.size },
-    };
+/// What a pipe contributes to the dump: every field of `Pipe`, named for the
+/// pipe it belongs to, derived from the struct so the two cannot drift.
+fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [std.meta.fields(Pipe).len]Register {
+    var out: [std.meta.fields(Pipe).len]Register = undefined;
+    inline for (std.meta.fields(Pipe), 0..) |field, i| {
+        out[i] = .{ .name = field.name ++ suffix, .offset = @field(p, field.name) };
+    }
+    return out;
 }
 
 /// Everything the dump reports, in the order that reads best.
@@ -319,6 +318,13 @@ fn write(comptime T: type, w: Windows, offset: u32, value: T) void {
     at.* = @bitCast(value);
 }
 
+/// A value for one of the masked registers, where the high half names which
+/// low bits the write may touch and the rest are left alone.
+fn masked(comptime bit: u4, on: bool) u32 {
+    const b = @as(u32, 1) << bit;
+    return (b << 16) | (if (on) b else 0);
+}
+
 /// The pipe the panel is on.
 ///
 /// Read rather than assumed: firmware picks, and it does not always pick the
@@ -375,10 +381,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     if (!cntr.on) return error.Hardware;
 
     // Everything about to change, saved raw, so a change the hardware rejects
-    // can be undone without a reboot. The pipe's own underrun bit is the
-    // judge: it is the one witness that can say whether a failure is the FIFO
-    // running dry or something else entirely, and it survives in the log
-    // where a garbled screen cannot be read.
+    // can be undone without a reboot.
     const saved = Saved{
         .pfit = read(u32, w, PFIT_CONTROL),
         .dsparb = read(u32, w, DSPARB),
@@ -388,39 +391,37 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         .stride = read(u32, w, pipe.stride),
         .fw_blc = read(u32, w, FW_BLC),
         .fw_blc2 = read(u32, w, FW_BLC2),
-        .self_refresh = readSelfRefresh(w, dev.device),
+        .self_refresh = selfRefreshOn(w, dev.device),
     };
 
-    clearUnderrun(w, pipe);
+    acknowledgeUnderrun(w, pipe);
 
     // The plane's geometry registers are not double buffered on this
     // generation, so they change only between disabling the plane and
     // re-enabling it, the way the reference drivers do it.
-    var off = cntr;
-    off.on = false;
-    write(Enable, w, pipe.cntr, off);
-    write(u32, w, pipe.base, read(u32, w, pipe.base));
-    waitFrame();
+    planeOff(w, pipe, cntr);
 
     // The FIFO machinery before the geometry that raises its demand. Both
     // reference drivers retune it on every mode change; the firmware's
     // settings are sized for the firmware's own smaller plane.
-    disableSelfRefresh(w, dev.device);
+    //
+    // Self refresh stays off: the reference found it broken with a linear
+    // framebuffer on this part, and ours is always linear. Left on with the
+    // firmware's wakeup watermark, the memory sleeps too long for the wider
+    // fetch and the plane starves.
+    setSelfRefresh(w, dev.device, false);
 
-    // The whole FIFO to the one plane that fetches. Firmware splits it for
-    // its own arrangement: a share for plane A, which is off, a share for the
-    // hardware cursor, which nothing uses, and what is left for the plane
-    // carrying the panel, sized for the smaller fetch it was feeding. The
+    // The whole FIFO to the one plane that fetches. Firmware reserves shares
+    // for plane A and the hardware cursor, both of which are off; the
     // reference gives a disabled plane exactly nothing.
-    const FIFO_LINES: u32 = 95;
-    write(Dsparb, w, DSPARB, .{ .a_end = 0, .c_start = FIFO_LINES, ._rest = 0 });
+    write(Dsparb, w, DSPARB, .{ .a_end = 0, .c_start = FIFO_TOTAL_LINES });
 
     const total_khz: u32 = @as(u32, read(Timing, w, pipe.htotal).total()) *
         read(Timing, w, pipe.vtotal).total() * want.refresh / 1000;
     write(FwBlc, w, FW_BLC, .{
         .plane_a = 1,
         .burst_a = true,
-        .plane_b = watermark(total_khz, FIFO_LINES),
+        .plane_b = watermark(total_khz, FIFO_TOTAL_LINES),
         .burst_b = true,
     });
     write(FwBlc2, w, FW_BLC2, .{ .cursor = 2, .burst = true });
@@ -437,17 +438,17 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     write(Source, w, pipe.src, Source.of(want.width, want.height));
     write(u32, w, pipe.stride, pitch);
 
-    write(Enable, w, pipe.cntr, cntr);
-    write(u32, w, pipe.base, read(u32, w, pipe.base));
+    planeOn(w, pipe, cntr);
 
     // Half a second in the new mode before judging it: an underrun that only
     // strikes under real fetch load takes frames to show, not microseconds.
     var settled: u32 = 0;
     while (settled < 25) : (settled += 1) waitFrame();
 
-    const stat = read(u32, w, pipe.stat);
-    console.debug("video", "native: stat {x:0>8}, fwblc {x:0>8} dsparb {x:0>8} self {x:0>8}", .{
-        stat, read(u32, w, FW_BLC), read(u32, w, DSPARB), readSelfRefresh(w, dev.device),
+    const stat = read(PipeStat, w, pipe.stat);
+    console.debug("video", "native: stat {x:0>8}, fwblc {x:0>8} dsparb {x:0>8} self {}", .{
+        @as(u32, @bitCast(stat)), read(u32, w, FW_BLC),
+        read(u32, w, DSPARB),     selfRefreshOn(w, dev.device),
     });
     console.debug("video", "native: firmware had fwblc {x:0>8} dsparb {x:0>8}", .{
         saved.fw_blc, saved.dsparb,
@@ -457,10 +458,9 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
     });
 
-    // The pipe judged its own trial: an underrun means the mode cannot be
-    // fed and everything goes back, anything else means it holds and stays.
-    // The judge is trusted because it has been seen to convict.
-    if (stat & FIFO_UNDERRUN != 0) {
+    // The pipe judges its own trial: an underrun means the mode cannot be fed
+    // and everything goes back, anything else means it holds and stays.
+    if (stat.fifo_ran_dry) {
         console.warn("video: fifo ran dry at {d}x{d}; mode put back", .{
             want.width, want.height,
         });
@@ -487,16 +487,12 @@ const Saved = struct {
     stride: u32,
     fw_blc: u32,
     fw_blc2: u32,
-    self_refresh: u32,
+    self_refresh: bool,
 };
 
 /// Put back everything `set` changed, around the same plane restart.
 fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void {
-    var off = cntr;
-    off.on = false;
-    write(Enable, w, pipe.cntr, off);
-    write(u32, w, pipe.base, read(u32, w, pipe.base));
-    waitFrame();
+    planeOff(w, pipe, cntr);
 
     write(u32, w, PFIT_CONTROL, saved.pfit);
     write(u32, w, DSPARB, saved.dsparb);
@@ -506,59 +502,59 @@ fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void 
     write(u32, w, pipe.stride, saved.stride);
     write(u32, w, FW_BLC, saved.fw_blc);
     write(u32, w, FW_BLC2, saved.fw_blc2);
-    restoreSelfRefresh(w, device, saved.self_refresh);
+    setSelfRefresh(w, device, saved.self_refresh);
 
-    write(Enable, w, pipe.cntr, cntr);
+    planeOn(w, pipe, cntr);
+    waitFrame();
+    acknowledgeUnderrun(w, pipe);
+}
+
+/// Disable the plane and let the frame in flight finish. Writing the base
+/// register is what arms a plane change.
+fn planeOff(w: Windows, pipe: Pipe, cntr: Enable) void {
+    var off = cntr;
+    off.on = false;
+    write(Enable, w, pipe.cntr, off);
     write(u32, w, pipe.base, read(u32, w, pipe.base));
     waitFrame();
-    clearUnderrun(w, pipe);
+}
+
+/// Enable the plane again and arm the change.
+fn planeOn(w: Windows, pipe: Pipe, cntr: Enable) void {
+    write(Enable, w, pipe.cntr, cntr);
+    write(u32, w, pipe.base, read(u32, w, pipe.base));
 }
 
 /// Clear the sticky underrun record so the next reading is about now.
-fn clearUnderrun(w: Windows, pipe: Pipe) void {
-    write(u32, w, pipe.stat, read(u32, w, pipe.stat) | FIFO_UNDERRUN);
+fn acknowledgeUnderrun(w: Windows, pipe: Pipe) void {
+    var stat = read(PipeStat, w, pipe.stat);
+    stat.fifo_ran_dry = true;
+    write(PipeStat, w, pipe.stat, stat);
 }
 
-/// The register holding this part's self-refresh switch, read raw.
-fn readSelfRefresh(w: Windows, device: u16) u32 {
+/// Whether the memory controller's display self refresh is on.
+///
+/// Where the switch lives moved between the generations, which is the whole
+/// reason these two functions exist.
+fn selfRefreshOn(w: Windows, device: u16) bool {
     return switch (device) {
-        0x2592, 0x2792 => read(u32, w, INSTPM),
-        0x27A2, 0x27AE => read(u32, w, FW_BLC_SELF),
-        0xA011, 0xA012 => read(u32, w, DSPFW3),
-        else => 0,
+        0x2592, 0x2792 => read(u32, w, INSTPM) & (1 << 12) != 0,
+        0x27A2, 0x27AE => read(u32, w, FW_BLC_SELF) & (1 << 15) != 0,
+        0xA011, 0xA012 => read(u32, w, DSPFW3) & (1 << 30) != 0,
+        else => false,
     };
 }
 
-/// Put the self-refresh switch back the way firmware had it. The enable
-/// registers on the older parts are masked, the high half naming which low
-/// bits a write may touch.
-fn restoreSelfRefresh(w: Windows, device: u16, old: u32) void {
+/// Switch the memory controller's display self refresh. The older parts hold
+/// the switch in a masked register; Pineview holds it in a plain one.
+fn setSelfRefresh(w: Windows, device: u16, on: bool) void {
     switch (device) {
-        0x2592, 0x2792 => write(u32, w, INSTPM, (@as(u32, 1 << 12) << 16) | (old & (1 << 12))),
-        0x27A2, 0x27AE => write(u32, w, FW_BLC_SELF, (@as(u32, 1) << 31) | (old & (1 << 15))),
+        0x2592, 0x2792 => write(u32, w, INSTPM, masked(12, on)),
+        0x27A2, 0x27AE => write(u32, w, FW_BLC_SELF, masked(15, on)),
         0xA011, 0xA012 => {
-            const now = read(u32, w, DSPFW3) & ~(@as(u32, 1) << 30);
-            write(u32, w, DSPFW3, now | (old & (@as(u32, 1) << 30)));
-        },
-        else => {},
-    }
-}
-
-/// Stop the memory controller's display self refresh.
-///
-/// The reference driver found self refresh broken with a linear framebuffer
-/// on this part and keeps it off outright there, and ours is always linear.
-/// Left on with the firmware's wakeup watermark, the memory sleeps too long
-/// for a wider fetch and the plane starves. Where the switch lives moved
-/// between the generations; the enable registers are masked, the high half
-/// naming which low bits a write may touch.
-fn disableSelfRefresh(w: Windows, device: u16) void {
-    switch (device) {
-        0x2592, 0x2792 => write(u32, w, INSTPM, @as(u32, 1 << 12) << 16),
-        0x27A2, 0x27AE => write(u32, w, FW_BLC_SELF, 1 << 31),
-        0xA011, 0xA012 => {
-            const dspfw3 = read(u32, w, DSPFW3);
-            write(u32, w, DSPFW3, dspfw3 & ~(@as(u32, 1) << 30));
+            const bit = @as(u32, 1) << 30;
+            const now = read(u32, w, DSPFW3);
+            write(u32, w, DSPFW3, if (on) now | bit else now & ~bit);
         },
         else => {},
     }
@@ -571,10 +567,11 @@ fn disableSelfRefresh(w: Windows, device: u16) void {
 fn watermark(pixel_khz: u32, fifo_lines: u32) u6 {
     // Five microseconds, the reference's pessimal figure, in tenths.
     const latency = 50;
+    const burst = 8;
     const bytes = (pixel_khz * 4 * latency + 9999) / 10000;
     const need = (bytes + 63) / 64 + 2;
-    if (fifo_lines <= need + 8) return 8;
-    return @intCast(@min(fifo_lines - need, 0x3F));
+    if (fifo_lines <= need + burst) return burst;
+    return @intCast(@min(fifo_lines - need, std.math.maxInt(u6)));
 }
 
 /// Let a display frame finish.
