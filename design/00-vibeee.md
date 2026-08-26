@@ -2,6 +2,11 @@
 
 A from-scratch minimal graphical OS in Zig. Flagship target: **ASUS Eee PC 701 4G**. Written to be portable to similar constrained machines (other netbooks, ARM CE-era devices) by containing machine-specific code behind explicit boundaries.
 
+**How this was built.** vibeee is vibecoded: the code and these documents were written by
+Claude under the author's direction. The design decisions recorded here are real decisions
+with real reasoning, and the hardware research is verified against primary sources — but
+nothing here has been audited by a human line by line.
+
 **Implementation status.** This document is the design. What exists today is the M0 set plus part
 of M1 — boot chain, memory, interrupts, the O(1) scheduler, syscalls, Ring 3 with per-process
 address spaces and an ELF loader, IPC (channels, events, `/svc`), ATA and FAT behind a mount
