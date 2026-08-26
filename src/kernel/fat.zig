@@ -1,17 +1,19 @@
-//! FAT12/16/32 reader.
+//! FAT12/16/32: volumes, directories and files.
 //!
 //! The only on-disk filesystem vibeee uses (design/00-vibeee.md §7). The
 //! decisive property is not performance: it is that any other machine can read
 //! the card. On hardware this old, being able to pull the SD out and fix it
 //! elsewhere is worth more than anything a private format would buy.
 //!
-//! Read support first. Writing needs free-cluster allocation, FAT-chain
-//! extension and directory-entry updates, and none of that should be written
-//! before reading is known to be correct.
-//!
 //! All three widths are handled because they differ only in how a FAT entry is
-//! fetched, the directory and cluster-chain logic above that is identical, so
-//! supporting FAT16 costs a branch rather than a second driver.
+//! fetched. The directory and cluster-chain logic above that is identical, so
+//! supporting FAT16 costs a branch rather than a second driver, and the part
+//! that differs is confined to `fat/alloc.zig`.
+//!
+//! Creating a file writes a short 8.3 name. Long names are read but not
+//! written: producing them means generating VFAT records and a unique `~1`
+//! alias, and a wrong alias makes other systems disagree about what a file is
+//! called.
 
 const std = @import("std");
 const block = @import("block.zig");
@@ -706,9 +708,9 @@ pub fn readFile(vol: *Volume, entry: Entry, buf: []u8) Error!usize {
 // ---------------------------------------------------------------------------
 // Writing
 //
-// Read support came first deliberately: every operation here depends on the
-// chain walking and directory decoding above being correct, and a write path
-// built on a shaky reader corrupts the volume rather than merely failing.
+// Sizes and timestamps reach the disk through `commit`, which the caller
+// invokes once when it is done rather than after every write: a directory
+// sector rewritten per call would cost more than the data itself.
 // ---------------------------------------------------------------------------
 
 /// Write `data` at `offset`, growing the file if needed.

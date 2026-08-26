@@ -3,9 +3,8 @@
 //! Thin: each function packs registers and traps. Everything the two sides must
 //! agree on, call numbers, flag layouts, wire formats, comes from
 //! `lib/syscalls.zig`, which the kernel compiles too, so there is nothing here
-//! to keep in sync. The numbers in particular used to be a hand-kept list, and
-//! it drifted; `abi.number` resolves them at compile time and fails the build
-//! on a name that does not exist.
+//! to keep in sync. `abi.number` resolves a call number at compile time and
+//! fails the build on a name that does not exist.
 
 const abi = @import("lib").syscalls;
 

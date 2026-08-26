@@ -1,8 +1,9 @@
 //! Kernel console: cursor tracking, scrolling, formatting and the boot log.
 //!
-//! Device-independent. The cell-level work belongs to a backend, currently
-//! `drv/video/vgatext.zig`, later the framebuffer console once the display
-//! driver is up. Both present the same cell interface, so nothing here changes.
+//! Device-independent. The cell-level work belongs to a backend, either
+//! `drv/video/vgatext.zig` or `drv/video/fbcon.zig`, chosen at boot from what
+//! the firmware provided. Both present the same cell interface, so nothing
+//! here depends on which one is in use.
 
 const std = @import("std");
 const bootinfo = @import("bootinfo.zig");

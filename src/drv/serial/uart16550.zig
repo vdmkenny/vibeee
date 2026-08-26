@@ -3,7 +3,7 @@
 //! The target machine has no serial port. This driver exists anyway, for two
 //! reasons that both pay for its eighty lines many times over:
 //!
-//!   * **QEMU has one.** Mirroring the console to it turns kernel debugging
+//!   * **QEMU has one.** Mirroring the console to it turns kernel output
 //!     from screenshot archaeology into readable, greppable, scrollable text.
 //!   * **Other machines have one.** A generic netbook or development board is
 //!     far easier to bring up when the very first boot can talk.

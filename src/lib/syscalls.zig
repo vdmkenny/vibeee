@@ -111,10 +111,10 @@ const E = struct {
 
 /// The number of a syscall, looked up by name at compile time.
 ///
-/// Userspace names calls through this rather than through a hand-kept list of
-/// integers. That list existed, and it drifted: adding a call meant editing two
-/// files and remembering the second one existed. A name with no entry is a
-/// compile error, so the drift is now impossible rather than merely unlikely.
+/// Userspace names calls through this rather than through a list of integers
+/// of its own, which would be a second place to edit and a second place to get
+/// wrong. A name with no entry is a compile error, so the two sides cannot
+/// disagree about a number.
 pub fn number(comptime name: []const u8) u32 {
     return comptime blk: {
         for (table) |sc| {

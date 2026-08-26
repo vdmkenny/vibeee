@@ -7,9 +7,8 @@
 //! sched.zig from being the file every change had to touch.
 //!
 //! The registry includes dead threads that have not been collected. A corpse is
-//! on no run queue, so a search of the queues cannot see one, and a leak of
-//! exactly those went unnoticed for exactly that reason, because the tool that
-//! lists threads was walking the queues.
+//! on no run queue, so anything searching the queues cannot see one, which is
+//! why threads are found through here and not through them.
 
 const std = @import("std");
 const hal = @import("../hal.zig");

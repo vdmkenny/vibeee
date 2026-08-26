@@ -60,8 +60,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     platform.earlyConsole();
 
     // The backend is chosen before anything is drawn: in graphics mode the text
-    // buffer is no longer displayed, so output written first would vanish,
-    // which is exactly what happened to the banner when it came first.
+    // buffer is no longer displayed, so anything written first would vanish.
     _ = console.useFramebuffer(bi);
 
     banner();

@@ -69,10 +69,10 @@ fn retire(e: *Entry) void {
 
 /// Publish `ch` under `name`.
 ///
-/// A name whose server has exited is free to take. Without that, a service
-/// could be started exactly once per boot: the entry would sit there holding a
-/// channel nobody serves, and the restart the registry exists to support would
-/// fail with the name already registered. Only a *live* server blocks the name.
+/// A name whose server has exited is free to take: otherwise the entry would
+/// sit there holding a channel nobody serves, and the restart the registry
+/// exists to support would fail with the name already registered. Only a live
+/// server blocks a name.
 pub fn register(name: []const u8, ch: *channel.Channel) Error!void {
     if (!isValidName(name)) return error.BadName;
 

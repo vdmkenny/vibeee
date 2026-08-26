@@ -65,10 +65,9 @@ keyname() {
         '[') echo bracket_left ;;
         ']') echo bracket_right ;;
         '\\') echo backslash ;;
-        # Shifted punctuation. The monitor speaks scancodes, so anything that
-        # needs shift on a US layout has to say so: without this, `>` in a test
-        # line is silently dropped and the command under test runs unredirected,
-        # which looks like a shell bug and is not one.
+        # Shifted punctuation. The monitor speaks scancodes, so anything
+        # needing shift on a US layout has to say so; an unmapped character is
+        # dropped silently, which makes a test line run as something else.
         '>') echo shift-dot ;;
         '<') echo shift-comma ;;
         '|') echo shift-backslash ;;

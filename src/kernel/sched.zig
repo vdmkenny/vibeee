@@ -46,11 +46,11 @@ var sleepers: ?*Thread = null;
 /// Threads that have exited with nobody to collect them, waiting to be freed.
 ///
 /// Freeing cannot happen in `exit`: a thread cannot free the stack it is
-/// standing on. It also cannot happen immediately after the context switch,
-/// the code there runs in the *resumed* thread's frame, where `prev` names
-/// whatever that thread last switched away from, not the corpse. So the corpse
-/// is queued here and collected at the top of a later `schedule`, by which
-/// point it is provably off the CPU.
+/// standing on. Nor immediately after the context switch, where the code runs
+/// in the *resumed* thread's frame and `prev` names whatever that thread last
+/// switched away from rather than the corpse. So the corpse is queued here and
+/// collected at the top of a later `schedule`, by which point it is provably
+/// off the CPU.
 ///
 /// Linked through `next`, which a dead thread no longer needs for a run queue.
 var to_reap: ?*Thread = null;

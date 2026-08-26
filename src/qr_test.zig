@@ -4,7 +4,7 @@
 //! `make qr-verify`, which diffs our matrix against the reference encoder for
 //! several payloads and versions. A QR that merely *looks* right is worthless:
 //! the failure mode is a panic screen nobody can scan, found only when you are
-//! already debugging something else.
+//! already looking at something else.
 //!
 //! What lives here is everything that does not need a subprocess.
 

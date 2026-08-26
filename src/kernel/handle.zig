@@ -6,9 +6,9 @@
 //! reasoning as file descriptors, for the same reasons.
 //!
 //! Rights are carried per handle rather than per object, so the same file can
-//! be handed to one process readable and another writable. Nothing uses that
-//! yet; it is here because retrofitting rights onto an established handle table
-//! means auditing every call site.
+//! be open readable in one process and writable in another. A write to a
+//! handle without the write right fails whatever the underlying object would
+//! have allowed.
 
 const std = @import("std");
 const channel_mod = @import("channel.zig");

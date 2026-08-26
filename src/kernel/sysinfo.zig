@@ -151,8 +151,8 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
 }
 
 /// One line per registered service. The registry is the map of what is running
-/// and answerable, which is exactly what someone debugging a wedged system
-/// wants to see first.
+/// and answerable, which is the first thing worth knowing when something that
+/// should respond does not.
 fn writeServices(w: *Writer) Error!void {
     var first = true;
     for (svc.list()) |name| {

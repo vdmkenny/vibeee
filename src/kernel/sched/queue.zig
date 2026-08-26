@@ -1,12 +1,11 @@
 //! Run queues: an intrusive FIFO, and the priority array built from them.
 //!
-//! Generic over the node type rather than hard-coded to `Thread`, for one
-//! reason: it makes this file testable on the host. The worst scheduler bug
-//! this system has had was a node pushed onto an intrusive list twice, which
-//! links the node to itself and makes the queue hand out the same entry
-//! forever. It presented as sleeps returning instantly and then as a hang,
-//! nowhere near its cause, on a machine with no serial port. Tests at the
-//! bottom of this file now cover exactly that.
+//! Generic over the node type rather than hard-coded to `Thread`, so that it
+//! can be tested on the host. A node pushed onto an intrusive list twice links
+//! to itself, and a queue with a cycle in it hands out the same entry forever:
+//! a failure that is silent, arrives far from its cause, and on a machine with
+//! no serial port is close to undiagnosable. The tests at the bottom of this
+//! file cover it.
 //!
 //! A node must carry two fields, checked at compile time:
 //!
@@ -36,10 +35,9 @@ pub fn Fifo(comptime T: type) type {
 
         /// Enqueue, unless the node is already on a queue.
         ///
-        /// The guard is not decoration, see the note at the top of this file.
-        /// It is a silent no-op rather than a panic because the callers that
-        /// could trip it run in the timer interrupt, where a panic would
-        /// replace a recoverable mistake with a dead machine.
+        /// A silent no-op rather than a panic: the callers that could trip it
+        /// run in the timer interrupt, where a panic would replace a
+        /// recoverable mistake with a dead machine.
         pub fn push(self: *Self, node: *T) void {
             if (node.queued) return;
             node.queued = true;
@@ -138,9 +136,8 @@ test "fifo preserves order" {
 }
 
 test "pushing the same node twice does not make it point at itself" {
-    // The regression this file exists for. Before the guard, the second push
-    // set `tail.next = node` where tail *was* the node, and every pop after
-    // that returned it forever.
+    // Without the guard, the second push sets `tail.next = node` where tail is
+    // the node itself, and every pop after that returns it forever.
     var a = Node{ .id = 1 };
 
     var q: Fifo(Node) = .{};
