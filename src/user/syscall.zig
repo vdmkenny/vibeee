@@ -239,28 +239,43 @@ pub fn svcConnect(name: []const u8) isize {
     return syscall2(abi.number("svc_connect"), @intFromPtr(name.ptr), name.len);
 }
 
+pub const Message = abi.Message;
+
 /// Send a request and block until the reply arrives.
-pub fn call(handle: usize, request: []const u8, reply_buf: []u8) isize {
-    return syscall5(
+///
+/// `reply_out` receives the whole reply message, including any handles the
+/// server sent: a segment handle arrives as a number valid in this process.
+pub fn callMsg(handle: usize, request: *const Message, reply_out: *Message) isize {
+    return syscall3(
         abi.number("call"),
         handle,
-        @intFromPtr(request.ptr),
-        request.len,
-        @intFromPtr(reply_buf.ptr),
-        reply_buf.len,
+        @intFromPtr(request),
+        @intFromPtr(reply_out),
     );
+}
+
+/// The common case: bytes out, bytes back, no handles.
+pub fn call(handle: usize, request: []const u8, reply_buf: []u8) isize {
+    const msg = Message.init(request, &.{});
+    var answer: Message = .{};
+
+    const n = callMsg(handle, &msg, &answer);
+    if (n < 0) return n;
+
+    const got = @min(@as(usize, @intCast(n)), reply_buf.len);
+    @memcpy(reply_buf[0..got], answer.data[0..got]);
+    return @intCast(got);
 }
 
 pub const Request = struct { len: usize, token: u32 };
 
 /// Block until a request arrives on a served channel.
-pub fn recv(handle: usize, buf: []u8, timeout_us: usize) ?Request {
+pub fn recv(handle: usize, msg: *Message, timeout_us: usize) ?Request {
     var token: u32 = 0;
-    const n = syscall5(
+    const n = syscall4(
         abi.number("recv"),
         handle,
-        @intFromPtr(buf.ptr),
-        buf.len,
+        @intFromPtr(msg),
         @intFromPtr(&token),
         timeout_us,
     );
@@ -268,6 +283,29 @@ pub fn recv(handle: usize, buf: []u8, timeout_us: usize) ?Request {
     return .{ .len = @intCast(n), .token = token };
 }
 
+pub fn replyMsg(handle: usize, token: u32, msg: *const Message) isize {
+    return syscall3(abi.number("reply"), handle, token, @intFromPtr(msg));
+}
+
 pub fn reply(handle: usize, token: u32, payload: []const u8) isize {
-    return syscall4(abi.number("reply"), handle, token, @intFromPtr(payload.ptr), payload.len);
+    const msg = Message.init(payload, &.{});
+    return replyMsg(handle, token, &msg);
+}
+
+// ---------------------------------------------------------------------------
+// Shared memory
+// ---------------------------------------------------------------------------
+
+pub const MapFlags = abi.MapFlags;
+
+/// Allocate a shared-memory segment. Pass the handle over a channel to share it.
+pub fn shmCreate(size: usize) isize {
+    return syscall1(abi.number("shm_create"), size);
+}
+
+/// Map a segment into this process, returning its address.
+pub fn shmMap(handle: usize, flags: MapFlags) ?[*]u8 {
+    const at = syscall2(abi.number("shm_map"), handle, @as(u32, @bitCast(flags)));
+    if (at < 0) return null;
+    return @ptrFromInt(@as(usize, @intCast(at)));
 }

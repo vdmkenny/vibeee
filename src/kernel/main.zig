@@ -333,7 +333,7 @@ fn ipcServer(_: usize) callconv(.c) void {
     // Reversed, so a reply that merely echoes the request buffer back by
     // accident is not mistaken for one that made the round trip.
     for (0..n) |i| answer[i] = got.message.data[n - 1 - i];
-    channel.reply(ch, got.token, answer[0..n]) catch {};
+    channel.reply(ch, got.token, answer[0..n], &.{}) catch {};
 
     svc.unregister(IPC_SERVICE);
     channel.release(ch);
@@ -367,7 +367,7 @@ fn selfTestIpc() void {
     defer channel.release(ch);
 
     var reply: channel.Message = .{};
-    channel.call(ch, "vibeee", &reply, sched.deadlineIn(1_000_000)) catch |err| {
+    channel.call(ch, "vibeee", &.{}, &reply, sched.deadlineIn(1_000_000)) catch |err| {
         console.fail("ipc: call failed: {s}", .{@errorName(err)});
         return;
     };

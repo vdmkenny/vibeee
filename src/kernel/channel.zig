@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const hal = @import("hal.zig");
+const handle = @import("handle.zig");
 const heap = @import("heap.zig");
 const wait = @import("wait.zig");
 
@@ -48,9 +49,18 @@ pub const MAX_PAYLOAD = @import("lib").syscalls.MAX_PAYLOAD;
 /// work rather than let the backlog grow without limit.
 pub const MAX_INFLIGHT = 16;
 
+/// Handles one message may carry.
+pub const MAX_HANDLES = @import("lib").syscalls.MAX_MSG_HANDLES;
+
 pub const Message = struct {
     len: u8 = 0,
     data: [MAX_PAYLOAD]u8 = @splat(0),
+    /// Handles travelling with the message, as kernel objects rather than
+    /// numbers: a handle number means nothing outside the process that owns
+    /// it, so a transfer moves the reference and the receiver is given a fresh
+    /// number for it.
+    handle_count: u8 = 0,
+    handles: [MAX_HANDLES]handle.Handle = @splat(.{}),
 
     pub fn slice(self: *const Message) []const u8 {
         return self.data[0..self.len];
@@ -60,6 +70,26 @@ pub const Message = struct {
         if (bytes.len > MAX_PAYLOAD) return error.TooLarge;
         @memcpy(self.data[0..bytes.len], bytes);
         self.len = @intCast(bytes.len);
+    }
+
+    pub fn handleSlice(self: *const Message) []const handle.Handle {
+        return self.handles[0..self.handle_count];
+    }
+
+    /// Attach handles, taking a reference to each. The message owns them from
+    /// here: whoever ends up with it either installs them in a process or
+    /// releases them.
+    pub fn attach(self: *Message, items: []const handle.Handle) Error!void {
+        if (items.len > MAX_HANDLES) return error.TooLarge;
+        for (items, 0..) |h, i| self.handles[i] = handle.retain(h);
+        self.handle_count = @intCast(items.len);
+    }
+
+    /// Give back anything still attached. Called when a message is dropped
+    /// rather than delivered, which is the path that leaks if it is missed.
+    pub fn discard(self: *Message) void {
+        for (self.handles[0..self.handle_count]) |h| handle.release(h);
+        self.handle_count = 0;
     }
 };
 
@@ -143,9 +173,17 @@ pub const Channel = struct {
 /// On timeout the call is withdrawn from every list the server could reach it
 /// through before returning, because the record is about to go out of scope
 /// with the caller's stack frame.
-pub fn call(ch: *Channel, request: []const u8, answer: *Message, deadline_us: ?u64) Error!void {
+pub fn call(
+    ch: *Channel,
+    request: []const u8,
+    send_handles: []const handle.Handle,
+    answer: *Message,
+    deadline_us: ?u64,
+) Error!void {
     var record = Call{ .request = .{} };
     try record.request.set(request);
+    try record.request.attach(send_handles);
+    errdefer record.request.discard();
 
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
@@ -159,11 +197,16 @@ pub fn call(ch: *Channel, request: []const u8, answer: *Message, deadline_us: ?u
         _ = wait.blockOn(&.{&record.queue}, deadline_us) catch {
             _ = ch.removePending(&record);
             ch.dropInflight(&record);
+            record.request.discard();
             return error.TimedOut;
         };
     }
 
-    if (record.failed) return error.Disconnected;
+    if (record.failed) {
+        record.request.discard();
+        record.reply.discard();
+        return error.Disconnected;
+    }
     answer.* = record.reply;
 }
 
@@ -206,7 +249,12 @@ pub fn recv(ch: *Channel, deadline_us: ?u64) Error!Received {
 }
 
 /// Answer a call received earlier.
-pub fn reply(ch: *Channel, token: u32, payload: []const u8) Error!void {
+pub fn reply(
+    ch: *Channel,
+    token: u32,
+    payload: []const u8,
+    send_handles: []const handle.Handle,
+) Error!void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
@@ -216,6 +264,7 @@ pub fn reply(ch: *Channel, token: u32, payload: []const u8) Error!void {
 
     const c = ch.inflight[slot] orelse return error.BadToken;
     try c.reply.set(payload);
+    try c.reply.attach(send_handles);
 
     ch.inflight[slot] = null;
     ch.tokens[slot] = 0;

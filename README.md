@@ -48,8 +48,11 @@ detached `spawn`, `wait`, parent tracking, and orphan re-parenting onto PID 1. N
 
 **IPC**: Synchronous channels with a 64-byte inline payload, counting events with
 `wait_many` as the only blocking primitive, and a `/svc` name registry. Blocking is real:
-a waiting thread is off the run queues, not polling. The SPSC shared-ring layout is
-defined and tested; mapping one across address spaces is not done yet.
+a waiting thread is off the run queues, not polling. Messages carry up to four handles,
+translated across the boundary so the receiver gets its own numbers for the same objects,
+and shared-memory segments can be mapped into several processes at once. `ringtest` proves
+the whole chain between two processes: register, connect, hand over a segment, map it,
+and move bytes through an SPSC ring.
 
 **Storage**: ATA PIO, MBR partition parsing, a block cache, and FAT12/16/32 with VFAT
 long names, behind a mount table that resolves paths by longest matching prefix. Read-only
@@ -77,7 +80,7 @@ encoder is differentially tested against `libqrencode` across all eight masks.
 
 **Userspace**, `init` (PID 1) supervises services declared in `/etc/services` with
 dependency ordering and restart policy. `vsh` is the shell. A multicall binary provides
-`ls cat hexdump grep free top disk svc date eeefetch dmidecode`.
+`ls cat hexdump grep free top disk svc date eeefetch dmidecode ringtest`.
 
 ## Not yet
 

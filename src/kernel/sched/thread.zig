@@ -14,6 +14,7 @@
 const std = @import("std");
 const hal = @import("../hal.zig");
 const handle = @import("../handle.zig");
+const shm = @import("../shm.zig");
 const wait = @import("../wait.zig");
 
 
@@ -119,6 +120,10 @@ pub const Thread = struct {
     /// Supervision is the whole reason it is recorded: `init` has to know
     /// which of its children died in order to decide whether to restart it.
     parent_id: u32 = 0,
+    /// Where the next mapped shared-memory segment goes in this process's
+    /// address space. Per process because the window is per address space.
+    shm_window: shm.Mapper = .{},
+
     /// Woken when any child of *this* thread exits. One queue on the parent
     /// rather than an event per child, because a supervisor waits for whichever
     /// of its children dies first and does not know in advance which that is.

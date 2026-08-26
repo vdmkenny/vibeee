@@ -139,6 +139,6 @@ fn loadSegment(space: *hal.AddressSpace, image: []const u8, ph: *align(1) const 
             @memcpy(dest[copy_start - page_start ..][0..len], image[src_off..][0..len]);
         }
 
-        try space.map(page, phys, writable);
+        try space.map(page, phys, .{ .writable = writable });
     }
 }

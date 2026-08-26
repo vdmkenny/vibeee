@@ -419,12 +419,10 @@ Send a request and block until the server replies.
 | arg | type | meaning |
 |---|---|---|
 | `handle` | handle | A channel from svc_connect. |
-| `request` | const ptr | Request bytes, at most 64. |
-| `request_len` | len | Length of the request. |
-| `reply` | ptr | Receives the reply. |
-| `reply_len` | len | Capacity of the reply buffer. |
+| `request` | const ptr | A Message to send. |
+| `reply` | ptr | Receives the reply Message. |
 
-**Returns:** bytes of reply written
+**Returns:** bytes of reply payload
 
 **Errors:**
 
@@ -433,7 +431,7 @@ Send a request and block until the server replies.
 - `EINVAL`, an argument is out of range
 - `EPIPE`, the far end of the channel has closed
 
-Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a shared ring, with the channel carrying the message that says which ring and how much. EPIPE means the serving end closed.
+Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a shared ring, and the message carries the handle to that ring. Up to four handles travel with a message; the receiver gets fresh numbers for the same objects. EPIPE means the serving end closed.
 
 ## `recv`  <sub>#25</sub>
 
@@ -442,12 +440,11 @@ Block until a request arrives on a served channel.
 | arg | type | meaning |
 |---|---|---|
 | `handle` | handle | A channel from svc_register. |
-| `buf` | ptr | Receives the request bytes. |
-| `buf_len` | len | Capacity of the buffer. |
+| `msg` | ptr | Receives the request Message, including any handles. |
 | `token` | ptr | Receives a u32 naming this call, to pass to reply(). |
 | `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
 
-**Returns:** bytes of request written
+**Returns:** bytes of request payload
 
 **Errors:**
 
@@ -464,8 +461,7 @@ Answer a call taken by recv().
 |---|---|---|
 | `handle` | handle | The channel the call arrived on. |
 | `token` | uint | The token recv() produced. |
-| `buf` | const ptr | Reply bytes, at most 64. |
-| `buf_len` | len | Length of the reply. |
+| `msg` | const ptr | The reply Message, which may carry handles. |
 
 **Returns:** 0
 
@@ -497,6 +493,41 @@ Collect a child that has exited.
 
 A process that has exited stays as a corpse until collected, so a status is never lost before its parent can read it. Children of a process that dies are re-parented onto init, which collects them; ECHILD means there is nothing to wait for, now or ever.
 
+## `shm_create`  <sub>#28</sub>
+
+Allocate a shared-memory segment.
+
+| arg | type | meaning |
+|---|---|---|
+| `size` | len | Bytes, rounded up to a page. |
+
+**Returns:** handle to the segment
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+The segment is zeroed, and is not mapped anywhere until shm_map. Pass the handle over a channel to share it: the segment outlives any one mapping, and its frames are freed only when the last reference goes.
+
+## `shm_map`  <sub>#29</sub>
+
+Map a segment into the calling process.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | A segment from shm_create or received over a channel. |
+| `flags` | flags | Bit 0 set maps it writable. |
+
+**Returns:** address the segment is mapped at
+
+**Errors:**
+
+- `EBADF`, the handle is not open in this process
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+Mapping the same segment twice returns two addresses onto the same memory. Addresses are not reused, so a process that maps repeatedly will eventually run out of window rather than silently aliasing.
+
 ---
 
-28 calls defined.
+30 calls defined.

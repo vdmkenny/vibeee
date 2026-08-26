@@ -49,7 +49,30 @@ fn isValidName(name: []const u8) bool {
     return true;
 }
 
+/// Whether an entry still has a server behind it.
+///
+/// A channel stops serving the moment its serving handle closes, which is what
+/// happens when a server exits or crashes. The name outlives that by design so
+/// clients keep a stable thing to look up, but a dead entry must not behave
+/// like a live one.
+fn isLive(e: *const Entry) bool {
+    const ch = e.ch orelse return false;
+    return ch.serving;
+}
+
+/// Release an entry whose server has gone.
+fn retire(e: *Entry) void {
+    if (e.ch) |ch| channel.release(ch);
+    e.ch = null;
+    e.name_len = 0;
+}
+
 /// Publish `ch` under `name`.
+///
+/// A name whose server has exited is free to take. Without that, a service
+/// could be started exactly once per boot: the entry would sit there holding a
+/// channel nobody serves, and the restart the registry exists to support would
+/// fail with the name already registered. Only a *live* server blocks the name.
 pub fn register(name: []const u8, ch: *channel.Channel) Error!void {
     if (!isValidName(name)) return error.BadName;
 
@@ -57,7 +80,9 @@ pub fn register(name: []const u8, ch: *channel.Channel) Error!void {
     defer hal.restoreInterrupts(flags);
 
     for (&table) |*e| {
-        if (e.ch != null and std.mem.eql(u8, e.name(), name)) return error.AlreadyRegistered;
+        if (e.ch == null or !std.mem.eql(u8, e.name(), name)) continue;
+        if (isLive(e)) return error.AlreadyRegistered;
+        retire(e);
     }
     for (&table) |*e| {
         if (e.ch != null) continue;
@@ -88,16 +113,23 @@ pub fn unregister(name: []const u8) void {
 }
 
 /// Look a name up, taking a reference on the channel for the caller to hold.
+///
+/// A name whose server has gone reports NotFound rather than handing back a
+/// channel that would fail every call: "the service is not there" is the
+/// answer a client can act on, and it is the same answer it will get until the
+/// server comes back.
 pub fn lookup(name: []const u8) Error!*channel.Channel {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
     for (&table) |*e| {
-        if (e.ch) |ch| {
-            if (!std.mem.eql(u8, e.name(), name)) continue;
-            channel.retain(ch);
-            return ch;
+        if (e.ch == null or !std.mem.eql(u8, e.name(), name)) continue;
+        if (!isLive(e)) {
+            retire(e);
+            return error.NotFound;
         }
+        channel.retain(e.ch.?);
+        return e.ch.?;
     }
     return error.NotFound;
 }
@@ -115,7 +147,7 @@ pub fn list() [][]const u8 {
 
     var n: usize = 0;
     for (&table) |*e| {
-        if (e.ch == null) continue;
+        if (!isLive(e)) continue;
         listing[n] = e.name();
         n += 1;
     }
@@ -125,7 +157,7 @@ pub fn list() [][]const u8 {
 pub fn count() usize {
     var n: usize = 0;
     for (&table) |*e| {
-        if (e.ch != null) n += 1;
+        if (isLive(e)) n += 1;
     }
     return n;
 }

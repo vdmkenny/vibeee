@@ -45,6 +45,20 @@ pub const Flags = struct {
     pub const dirty: u32 = 1 << 6;
     pub const large: u32 = 1 << 7;
     pub const global: u32 = 1 << 8;
+
+    /// Bits 9 to 11 are ignored by the CPU and free for software. This one
+    /// marks a page whose frame belongs to something else, a shared-memory
+    /// segment, so tearing an address space down must unmap it without
+    /// freeing it. Without the mark, the first process to exit would hand
+    /// frames back to the allocator that another process is still reading.
+    pub const shared: u32 = 1 << 9;
+};
+
+/// How a user page is mapped.
+pub const MapOptions = struct {
+    writable: bool = false,
+    /// The frame is owned elsewhere and must outlive this mapping.
+    shared: bool = false,
 };
 
 /// The boot page directory. Lives in `.bootdata` so it sits at a physical
@@ -187,7 +201,11 @@ pub const AddressSpace = struct {
             if (pde & Flags.present == 0) continue;
             const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
             for (table) |pte| {
-                if (pte & Flags.present != 0) pmm.freeFrame(pte & 0xFFFF_F000);
+                if (pte & Flags.present == 0) continue;
+                // A shared frame is somebody else's; the segment that owns it
+                // frees it when its last reference goes.
+                if (pte & Flags.shared != 0) continue;
+                pmm.freeFrame(pte & 0xFFFF_F000);
             }
             pmm.freeFrame(pde & 0xFFFF_F000);
         }
@@ -201,7 +219,7 @@ pub const AddressSpace = struct {
     /// Kernel mappings use 4 MiB pages and never come through here; user
     /// mappings need 4 KiB granularity because a process's code, data and stack
     /// are not megabyte-aligned and must not share protection with each other.
-    pub fn map(self: *AddressSpace, virt: usize, phys: usize, writable: bool) Error!void {
+    pub fn map(self: *AddressSpace, virt: usize, phys: usize, options: MapOptions) Error!void {
         if (virt >= KERNEL_VMA) return error.OutOfMemory;
 
         const pmm = @import("../../kernel/pmm.zig");
@@ -221,7 +239,8 @@ pub const AddressSpace = struct {
 
         const table: *[1024]u32 = @ptrFromInt(physToVirt(pde & 0xFFFF_F000));
         table[pt_index] = @as(u32, @intCast(phys)) | Flags.present | Flags.user |
-            (if (writable) Flags.write else 0);
+            (if (options.writable) Flags.write else 0) |
+            (if (options.shared) Flags.shared else 0);
 
         if (isActive(self.*)) invalidatePage(virt);
     }

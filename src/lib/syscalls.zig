@@ -197,6 +197,54 @@ pub const MAX_ARGS = 16;
 /// is bulk data and belongs in a shared ring.
 pub const MAX_PAYLOAD = 64;
 
+/// A channel message as it crosses the boundary.
+///
+/// Passed by pointer rather than as loose arguments because it carries handles
+/// as well as bytes, and five registers do not stretch to both. `extern` so
+/// the layout is the same on each side without either having to agree with Zig
+/// about padding.
+///
+/// Handle *numbers* here, not objects. A number means nothing outside the
+/// process that owns it, so the kernel translates: it takes a reference to what
+/// the sender named and gives the receiver a fresh number for the same object.
+pub const Message = extern struct {
+    len: u16 = 0,
+    handle_count: u16 = 0,
+    handles: [MAX_MSG_HANDLES]u32 = @splat(0),
+    data: [MAX_PAYLOAD]u8 = @splat(0),
+
+    pub fn bytes(self: *const Message) []const u8 {
+        return self.data[0..@min(self.len, MAX_PAYLOAD)];
+    }
+
+    pub fn handleSlice(self: *const Message) []const u32 {
+        return self.handles[0..@min(self.handle_count, MAX_MSG_HANDLES)];
+    }
+
+    pub fn init(payload: []const u8, send_handles: []const u32) Message {
+        var m = Message{};
+        const n = @min(payload.len, MAX_PAYLOAD);
+        @memcpy(m.data[0..n], payload[0..n]);
+        m.len = @intCast(n);
+
+        const h = @min(send_handles.len, MAX_MSG_HANDLES);
+        @memcpy(m.handles[0..h], send_handles[0..h]);
+        m.handle_count = @intCast(h);
+        return m;
+    }
+};
+
+/// Options for `shm_map`.
+pub const MapFlags = packed struct(u32) {
+    writable: bool = false,
+    _reserved: u31 = 0,
+};
+
+/// Most handles one channel message may carry. Four is what the design allows
+/// and more than anything needs: a request hands over a ring and its wakeup
+/// event, which is two.
+pub const MAX_MSG_HANDLES = 4;
+
 /// Options for `spawn`. A packed struct rather than loose bit constants: the
 /// bit positions are then stated once, both sides `@bitCast` the same type, and
 /// adding an option cannot silently collide with an existing one.
@@ -559,15 +607,14 @@ pub const table = [_]Syscall{
         .summary = "Send a request and block until the server replies.",
         .args = &.{
             .{ .name = "handle", .kind = .handle, .desc = "A channel from svc_connect." },
-            .{ .name = "request", .kind = .cptr, .desc = "Request bytes, at most 64." },
-            .{ .name = "request_len", .kind = .len, .desc = "Length of the request." },
-            .{ .name = "reply", .kind = .ptr, .desc = "Receives the reply." },
-            .{ .name = "reply_len", .kind = .len, .desc = "Capacity of the reply buffer." },
+            .{ .name = "request", .kind = .cptr, .desc = "A Message to send." },
+            .{ .name = "reply", .kind = .ptr, .desc = "Receives the reply Message." },
         },
-        .returns = "bytes of reply written",
+        .returns = "bytes of reply payload",
         .errors = &.{ E.badf, E.fault, E.inval, E.pipe },
         .notes = "Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a " ++
-            "shared ring, with the channel carrying the message that says which ring and how much. " ++
+            "shared ring, and the message carries the handle to that ring. Up to four handles " ++
+            "travel with a message; the receiver gets fresh numbers for the same objects. " ++
             "EPIPE means the serving end closed.",
     },
     .{
@@ -576,12 +623,11 @@ pub const table = [_]Syscall{
         .summary = "Block until a request arrives on a served channel.",
         .args = &.{
             .{ .name = "handle", .kind = .handle, .desc = "A channel from svc_register." },
-            .{ .name = "buf", .kind = .ptr, .desc = "Receives the request bytes." },
-            .{ .name = "buf_len", .kind = .len, .desc = "Capacity of the buffer." },
+            .{ .name = "msg", .kind = .ptr, .desc = "Receives the request Message, including any handles." },
             .{ .name = "token", .kind = .ptr, .desc = "Receives a u32 naming this call, to pass to reply()." },
             .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
         },
-        .returns = "bytes of request written",
+        .returns = "bytes of request payload",
         .errors = &.{ E.badf, E.fault, E.inval, E.timedout },
     },
     .{
@@ -591,8 +637,7 @@ pub const table = [_]Syscall{
         .args = &.{
             .{ .name = "handle", .kind = .handle, .desc = "The channel the call arrived on." },
             .{ .name = "token", .kind = .uint, .desc = "The token recv() produced." },
-            .{ .name = "buf", .kind = .cptr, .desc = "Reply bytes, at most 64." },
-            .{ .name = "buf_len", .kind = .len, .desc = "Length of the reply." },
+            .{ .name = "msg", .kind = .cptr, .desc = "The reply Message, which may carry handles." },
         },
         .errors = &.{ E.badf, E.fault, E.inval },
         .notes = "The token carries a generation, so a reply to a call that has already been " ++
@@ -613,6 +658,33 @@ pub const table = [_]Syscall{
             "never lost before its parent can read it. Children of a process that dies are " ++
             "re-parented onto init, which collects them; ECHILD means there is nothing to wait " ++
             "for, now or ever.",
+    },
+    .{
+        .number = 28,
+        .name = "shm_create",
+        .summary = "Allocate a shared-memory segment.",
+        .args = &.{
+            .{ .name = "size", .kind = .len, .desc = "Bytes, rounded up to a page." },
+        },
+        .returns = "handle to the segment",
+        .errors = &.{ E.inval, E.nomem },
+        .notes = "The segment is zeroed, and is not mapped anywhere until shm_map. Pass the " ++
+            "handle over a channel to share it: the segment outlives any one mapping, and its " ++
+            "frames are freed only when the last reference goes.",
+    },
+    .{
+        .number = 29,
+        .name = "shm_map",
+        .summary = "Map a segment into the calling process.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "A segment from shm_create or received over a channel." },
+            .{ .name = "flags", .kind = .flags, .desc = "Bit 0 set maps it writable." },
+        },
+        .returns = "address the segment is mapped at",
+        .errors = &.{ E.badf, E.nomem },
+        .notes = "Mapping the same segment twice returns two addresses onto the same memory. " ++
+            "Addresses are not reused, so a process that maps repeatedly will eventually run " ++
+            "out of window rather than silently aliasing.",
     },
 };
 

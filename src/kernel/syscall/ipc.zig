@@ -10,6 +10,8 @@ const channel_mod = @import("../channel.zig");
 const ctx = @import("context.zig");
 const event_mod = @import("../event.zig");
 const handles = @import("../handle.zig");
+const sched = @import("../sched.zig");
+const shm = @import("../shm.zig");
 const svc = @import("../svc.zig");
 
 const Args = ctx.Args;
@@ -129,15 +131,80 @@ pub fn sys_svc_connect(a: Args) Result {
     return @intCast(slot);
 }
 
+/// Copy the handles a user message names into kernel objects, taking a
+/// reference to each.
+///
+/// Resolved before anything blocks: the sender's table can change while a call
+/// is in flight, and a handle validated then re-read is the same
+/// time-of-check bug as a pointer validated then re-read.
+fn collectHandles(msg: *const abi.Message, out: []handles.Handle) ?usize {
+    const table = currentHandles() orelse return null;
+    const wanted = msg.handleSlice();
+    if (wanted.len > out.len) return null;
+
+    for (wanted, 0..) |number, i| {
+        const h = table.get(number) orelse {
+            // Release what was gathered so far: a message that fails to send
+            // must leave the sender's references exactly as it found them.
+            for (out[0..i]) |taken| handles.release(taken);
+            return null;
+        };
+        out[i] = handles.retain(h.*);
+    }
+    return wanted.len;
+}
+
+/// Install received handles into the calling process, filling in the numbers
+/// it will use for them.
+///
+/// On failure everything is released rather than half-delivered: a receiver
+/// that got two of four handles has no way to say so.
+fn deliverHandles(msg: *channel_mod.Message, out: *abi.Message) bool {
+    const table = currentHandles() orelse return false;
+
+    var installed: usize = 0;
+    for (msg.handleSlice()) |h| {
+        const slot = table.alloc() orelse break;
+        table.entries[slot] = h;
+        out.handles[installed] = slot;
+        installed += 1;
+    }
+
+    if (installed < msg.handle_count) {
+        for (out.handles[0..installed]) |number| _ = table.close(number);
+        for (msg.handleSlice()[installed..]) |h| handles.release(h);
+        msg.handle_count = 0;
+        return false;
+    }
+
+    out.handle_count = @intCast(installed);
+    // The message no longer owns them; the table does.
+    msg.handle_count = 0;
+    return true;
+}
+
+fn userMessage(a: Args, ptr: usize) ?*abi.Message {
+    const raw = userSlice(a, ptr, @sizeOf(abi.Message)) orelse return null;
+    return @ptrCast(@alignCast(raw.ptr));
+}
+
 pub fn sys_call(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), false) orelse return Errno.badf.value();
 
-    const request = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
-    if (request.len > abi.MAX_PAYLOAD) return Errno.inval.value();
-    const out = userSlice(a, a.a3, a.a4) orelse return Errno.fault.value();
+    const request = userMessage(a, a.a1) orelse return Errno.fault.value();
+    const out = userMessage(a, a.a2) orelse return Errno.fault.value();
+
+    // Copied out of user memory before the call blocks, for the same reason
+    // every other pointer argument is.
+    const sent = request.*;
+    if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
+
+    var taken: [channel_mod.MAX_HANDLES]handles.Handle = @splat(.{});
+    const count = collectHandles(&sent, &taken) orelse return Errno.badf.value();
 
     var answer: channel_mod.Message = .{};
-    channel_mod.call(ch, request, &answer, null) catch |err| {
+    channel_mod.call(ch, sent.bytes(), taken[0..count], &answer, null) catch |err| {
+        for (taken[0..count]) |h| handles.release(h);
         return switch (err) {
             error.Disconnected => Errno.pipe.value(),
             error.TimedOut => Errno.timedout.value(),
@@ -146,17 +213,20 @@ pub fn sys_call(a: Args) Result {
         };
     };
 
-    const n = @min(answer.len, out.len);
-    @memcpy(out[0..n], answer.data[0..n]);
-    return @intCast(n);
+    out.* = .{};
+    @memcpy(out.data[0..answer.len], answer.data[0..answer.len]);
+    out.len = answer.len;
+    if (!deliverHandles(&answer, out)) return Errno.nomem.value();
+
+    return @intCast(answer.len);
 }
 
 pub fn sys_recv(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), true) orelse return Errno.badf.value();
-    const out = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
-    const token_out = userSlice(a, a.a3, @sizeOf(u32)) orelse return Errno.fault.value();
+    const out = userMessage(a, a.a1) orelse return Errno.fault.value();
+    const token_out = userSlice(a, a.a2, @sizeOf(u32)) orelse return Errno.fault.value();
 
-    const got = channel_mod.recv(ch, deadlineFrom(a.a4)) catch |err| {
+    var got = channel_mod.recv(ch, deadlineFrom(a.a3)) catch |err| {
         return switch (err) {
             error.TimedOut => Errno.timedout.value(),
             error.Busy => Errno.nomem.value(),
@@ -165,22 +235,76 @@ pub fn sys_recv(a: Args) Result {
     };
 
     std.mem.writeInt(u32, token_out[0..4], got.token, .little);
-    const n = @min(got.message.len, out.len);
-    @memcpy(out[0..n], got.message.data[0..n]);
-    return @intCast(n);
+
+    out.* = .{};
+    @memcpy(out.data[0..got.message.len], got.message.data[0..got.message.len]);
+    out.len = got.message.len;
+    if (!deliverHandles(&got.message, out)) return Errno.nomem.value();
+
+    return @intCast(got.message.len);
 }
 
 pub fn sys_reply(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), true) orelse return Errno.badf.value();
-    const payload = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
-    if (payload.len > abi.MAX_PAYLOAD) return Errno.inval.value();
+    const msg = userMessage(a, a.a2) orelse return Errno.fault.value();
 
-    channel_mod.reply(ch, @intCast(a.a1), payload) catch |err| {
+    const sent = msg.*;
+    if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
+
+    var taken: [channel_mod.MAX_HANDLES]handles.Handle = @splat(.{});
+    const count = collectHandles(&sent, &taken) orelse return Errno.badf.value();
+
+    channel_mod.reply(ch, @intCast(a.a1), sent.bytes(), taken[0..count]) catch |err| {
+        for (taken[0..count]) |h| handles.release(h);
         return switch (err) {
             error.BadToken => Errno.inval.value(),
             error.TooLarge => Errno.inval.value(),
             else => Errno.io.value(),
         };
     };
+    // The reply message took its own references; ours go back.
+    for (taken[0..count]) |h| handles.release(h);
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Shared memory
+// ---------------------------------------------------------------------------
+
+fn getSegment(handle: u32) ?*shm.Segment {
+    const table = currentHandles() orelse return null;
+    const h = table.get(handle) orelse return null;
+    if (h.kind != .shm) return null;
+    return h.data.shm;
+}
+
+pub fn sys_shm_create(a: Args) Result {
+    const seg = shm.create(a.a0) catch |err| {
+        return switch (err) {
+            error.BadSize => Errno.inval.value(),
+            else => Errno.nomem.value(),
+        };
+    };
+
+    const slot = installHandle(.{
+        .kind = .shm,
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .shm = seg },
+    }) orelse {
+        shm.release(seg);
+        return Errno.nomem.value();
+    };
+    return @intCast(slot);
+}
+
+pub fn sys_shm_map(a: Args) Result {
+    const seg = getSegment(@intCast(a.a0)) orelse return Errno.badf.value();
+    const flags: abi.MapFlags = @bitCast(@as(u32, @truncate(a.a1)));
+
+    const t = sched.currentThread() orelse return Errno.inval.value();
+
+    const at = t.shm_window.reserve(seg.size) catch return Errno.nomem.value();
+    shm.mapAt(seg, &t.space, at, flags.writable) catch return Errno.nomem.value();
+
+    return @intCast(at);
 }

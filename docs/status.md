@@ -6,7 +6,7 @@ is *for*, this says what has actually been written.
 **Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
 accurate about what exists; it is not a claim that any of it has been audited.
 
-Last updated 2026-08-26. Roughly 15,900 lines of Zig and 870 of assembly, 28 syscalls,
+Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 30 syscalls,
 36 host-side tests.
 
 ## Boot
@@ -30,10 +30,10 @@ Last updated 2026-08-26. Roughly 15,900 lines of Zig and 870 of assembly, 28 sys
 | Events | [`event.zig`](../src/kernel/event.zig) | Counting, with `waitMany`. |
 | Channels | [`channel.zig`](../src/kernel/channel.zig) | Synchronous call/reply, 64-byte payload, generation-tagged reply tokens. |
 | Service registry | [`svc.zig`](../src/kernel/svc.zig) | Name → channel. |
-| Shared rings | [`lib/ring.zig`](../src/lib/ring.zig) | Layout and arithmetic done and tested. **Not yet mapped between address spaces.** |
-| Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel. |
+| Shared memory | [`shm.zig`](../src/kernel/shm.zig), [`lib/ring.zig`](../src/lib/ring.zig) | Segments, refcounted, mapped into a per-process window. Ring layout tested on the host. Frames survive one mapper exiting. |
+| Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel/shm. Up to four travel with a channel message. |
 | ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, sync and detached spawn. |
-| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 28 calls, bound to the table at comptime in both directions. |
+| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 30 calls, bound to the table at comptime in both directions. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
 | Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. |
 | Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
@@ -73,7 +73,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch. No pipes or redirection. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat hexdump grep free top disk svc date eeefetch dmidecode` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat hexdump grep free top disk svc date eeefetch dmidecode ringtest` |
 | `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo. |
 
@@ -102,8 +102,6 @@ build.
 ## Known gaps
 
 - FAT is read-only; nothing can create or modify a file.
-- Rings exist but cannot be shared between processes, so IPC is limited to 64-byte messages.
-- Handles cannot be passed over channels.
 - The dispatcher is `int 0x80`; SYSENTER is designed but not wired.
 - Interrupt handling uses the 8259 PICs and the PIT, not the IOAPIC/LAPIC the design calls for.
 - No touchpad, USB, audio, networking or GUI.

@@ -38,7 +38,7 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
         frames[i] = phys;
         @memset(@as([*]u8, @ptrFromInt(paging.physToVirt(phys)))[0..paging.PAGE_SIZE], 0);
         const virt = USER_STACK_TOP - (i + 1) * paging.PAGE_SIZE;
-        space.map(virt, phys, true) catch return error.OutOfMemory;
+        space.map(virt, phys, .{ .writable = true }) catch return error.OutOfMemory;
     }
 
     // Only the topmost page is used for arguments; anything longer than that
