@@ -92,6 +92,24 @@ pub fn describeAdapter() Adapter {
 /// this, the same way it supplies the description above.
 var reporter: ?*const fn (*std.Io.Writer) void = null;
 
+/// The size a panel runs at, as the adapter reports it.
+///
+/// Its own small type rather than `modeset.Mode`, because the kernel may not
+/// import a driver: the composition root translates.
+pub const Panel = struct { width: u16, height: u16 };
+
+var panel_query: ?*const fn () ?Panel = null;
+
+pub fn setPanelQuery(f: *const fn () ?Panel) void {
+    panel_query = f;
+}
+
+/// What the panel runs at, or null when nothing can say.
+pub fn panelMode() ?Panel {
+    const f = panel_query orelse return null;
+    return f();
+}
+
 pub fn setReporter(f: *const fn (*std.Io.Writer) void) void {
     reporter = f;
 }

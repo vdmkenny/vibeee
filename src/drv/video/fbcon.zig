@@ -154,6 +154,48 @@ pub fn layout() Layout {
     return .{ .addr = phys, .pitch = pitch };
 }
 
+/// Choose a font for the current geometry and derive the character grid.
+///
+/// Pick the largest font that still leaves a usable console. Below roughly 60
+/// columns, wrapping makes the boot log and the panic screen unreadable, so
+/// legibility gives way to fitting the text.
+fn fitConsole() void {
+    font = &FONTS[0];
+    for (&FONTS) |*candidate| {
+        if (pixel_width / candidate.width >= 60 and pixel_height / candidate.height >= 20) {
+            font = candidate;
+        }
+    }
+
+    columns = @min(pixel_width / font.width, MAX_COLUMNS);
+    rows = @min(pixel_height / font.height, MAX_ROWS);
+}
+
+/// Point the console at a framebuffer of a different shape.
+///
+/// For after a modeset: the pixels sit in the same aperture, but the geometry
+/// changed underneath, and everything from the font down to the cell grid is
+/// derived from it.
+pub fn adopt(new_phys: usize, new_pitch: usize, width: usize, height: usize) bool {
+    if (!ready) return false;
+
+    const virt = if (hal.isLinearPhys(new_phys))
+        hal.physToVirt(new_phys)
+    else
+        hal.mapMmio(new_phys, new_pitch * height, .cached) catch return false;
+
+    fb = @ptrFromInt(virt);
+    phys = new_phys;
+    pitch = new_pitch;
+    pixel_width = width;
+    pixel_height = height;
+
+    fitConsole();
+    setAll(Cell.of(' ', 0, 0));
+    clearAll(PALETTE[0]);
+    return true;
+}
+
 pub fn dimensions() Grid {
     return .{ .columns = columns, .rows = rows };
 }

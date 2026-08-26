@@ -134,6 +134,10 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
                 if (a.can_set) "can set modes" else "no modeset yet",
             });
         }
+    } else if (eq(key, "display.panel")) {
+        if (display.panelMode()) |p| {
+            try w.print("{d}x{d}", .{ p.width, p.height });
+        }
     } else if (eq(key, "display.registers")) {
         if (display.registerReporter()) |f| {
             w.delegate(f);

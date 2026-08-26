@@ -77,6 +77,17 @@ pub fn framebufferLayout() FbLayout {
     return if (fbcon.active()) fbcon.layout() else .{ .addr = 0, .pitch = 0 };
 }
 
+/// Point the console at a framebuffer of a different shape, after a modeset.
+pub fn adoptFramebuffer(phys: usize, pitch: usize, px_width: usize, px_height: usize) bool {
+    if (!fbcon.active()) return false;
+    if (!fbcon.adopt(phys, pitch, px_width, px_height)) return false;
+    const dims = fbcon.dimensions();
+    columns = dims.columns;
+    rows = dims.rows;
+    moveTo(0, 0);
+    return true;
+}
+
 pub fn pixelSize() Size {
     return if (fbcon.active()) fbcon.pixelSize() else .{ .width = 0, .height = 0 };
 }

@@ -48,6 +48,10 @@ pub const Backend = struct {
     /// written, which is what makes this table an honest status board rather
     /// than a claim.
     set: ?*const fn (dev: probe.Device, want: Mode) Error!Framebuffer = null,
+    /// The size the panel already runs at, when the backend can tell. What
+    /// makes `set` usable on a machine nobody has characterised: the panel
+    /// describes itself instead of being looked up.
+    native: ?*const fn (dev: probe.Device) ?Mode = null,
     /// Report the adapter's registers. Reading is safe where writing is not,
     /// so a backend can carry this long before it can carry `set`, and on
     /// hardware without public documentation it is what `set` gets written
@@ -96,7 +100,9 @@ pub const backends = [_]Backend{
     .{
         .name = "intel-gen3",
         .describes = "GMA 900/950/3150",
-        .fits = &gen3_backend.fits,
+        .fits = &anyOf(0x8086, &gen3_backend.devices),
+        .set = &gen3_backend.set,
+        .native = &gen3_backend.native,
         .inspect = &gen3_backend.inspect,
     },
     .{

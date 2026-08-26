@@ -17,6 +17,17 @@ pub fn display(args: []const []const u8) void {
         registers();
         return;
     }
+    if (str.eql(args[0], "native")) {
+        var buf: [32]u8 = @splat(0);
+        const panel = info.ask("display.panel", &buf);
+        if (panel.len == 0) {
+            out.text("the adapter cannot say what the panel runs at\n");
+            out.flush();
+            return;
+        }
+        request(panel);
+        return;
+    }
     request(args[0]);
 }
 
@@ -42,6 +53,7 @@ fn report() void {
 
     show("mode", info.ask("display", &buf), &buf);
     show("console", info.ask("console", &buf), &buf);
+    show("panel", info.ask("display.panel", &buf), &buf);
     show("adapter", info.ask("display.adapter", &buf), &buf);
     show("font", info.ask("font", &buf), &buf);
     out.flush();
@@ -59,7 +71,7 @@ fn show(label: []const u8, value: []const u8, _: []u8) void {
 /// Parse `800x480` and ask for it.
 fn request(spec: []const u8) void {
     const cross = indexOfX(spec) orelse {
-        out.text("usage: display [regs | <width>x<height>]\n");
+        out.text("usage: display [native | regs | <width>x<height>]\n");
         out.flush();
         return;
     };

@@ -221,6 +221,15 @@ var display_attached = false;
 var display_dev: Device = undefined;
 var display_backend: ?*const modeset.Backend = null;
 
+/// What the panel runs at, for a caller that should not have to know the
+/// machine it is on.
+fn panelMode() ?display.Panel {
+    const backend = display_backend orelse return null;
+    const ask = backend.native orelse return null;
+    const mode = ask(display_dev) orelse return null;
+    return .{ .width = mode.width, .height = mode.height };
+}
+
 /// Report the display adapter's registers, for `display regs`.
 fn reportDisplayRegisters(w: *std.Io.Writer) void {
     const backend = display_backend orelse return;
@@ -248,6 +257,7 @@ fn attachDisplay(dev: Device) anyerror!void {
     display_dev = dev;
     display_backend = backend;
     if (backend.inspect != null) display.setReporter(&reportDisplayRegisters);
+    if (backend.native != null) display.setPanelQuery(&panelMode);
 
     display.setAdapter(.{
         .backend = backend.name,
@@ -263,13 +273,35 @@ fn attachDisplay(dev: Device) anyerror!void {
         return;
     }
 
-    // A backend that exists is asked for the panel this machine has. Failure
-    // is not fatal: what firmware set is still on the screen.
-    const want = modeset.Mode{ .width = 800, .height = 480 };
-    _ = backend.set.?(dev, want) catch |err| {
-        console.warn("video: {s} could not set {d}x{d}: {s}", .{
-            backend.name, want.width, want.height, @errorName(err),
-        });
-        return;
+    // Asking on demand rather than at boot. Whatever firmware left is already
+    // on the screen and readable, and it is the surface every diagnostic on
+    // this machine arrives through, so it is not worth replacing until a
+    // caller asks for something better.
+    display.setMode = &requestMode;
+}
+
+/// Ask the bound adapter for a mode, and bring the console with it.
+///
+/// The console draws straight into the framebuffer, so a mode change it did
+/// not follow would leave every glyph landing at the wrong offset.
+fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
+    const backend = display_backend orelse return error.Unsupported;
+    const set = backend.set orelse return error.Unsupported;
+
+    const fb = set(display_dev, .{ .width = width, .height = height, .bpp = bpp }) catch |err| {
+        return switch (err) {
+            error.Unsupported => error.Unsupported,
+            error.Hardware => error.Failed,
+        };
     };
+
+    if (!console.adoptFramebuffer(fb.phys, fb.pitch, fb.width, fb.height)) return error.Failed;
+
+    display.present(fb.phys, .{
+        .width = fb.width,
+        .height = fb.height,
+        .stride_px = @intCast(fb.pitch / 4),
+        .bytes = fb.pitch * fb.height,
+    });
+    console.debug("video", "{d}x{d} from the adapter", .{ fb.width, fb.height });
 }
