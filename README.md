@@ -1,8 +1,19 @@
 # vibeee
 
-A graphical operating system written from nothing, in Zig, for one machine: the **ASUS Eee
-PC 701 4G**. A 2007 netbook with a 630 MHz Celeron M, 512 MB of RAM, a 4 GB PATA SSD, an
-800×480 panel and no serial port.
+A graphical operating system written from nothing, in Zig, for low-end netbooks.
+
+The machine it is built and tested against is the **ASUS Eee PC 701 4G**: a 2007 netbook
+with a 630 MHz Celeron M, 512 MB of RAM, a 4 GB PATA SSD, an 800×480 panel and no serial
+port. Targeting one machine is what makes the decisions concrete, and this one is at the
+bottom of the range, so what fits here fits the rest of the class.
+
+But nothing is written as though the 701 were the only machine. The netbook era ran to the
+early 2010s and the hardware is a small, well-known set: Intel integrated graphics of three
+generations, PATA or SATA, i8042, PS/2 or Synaptics touchpads, a handful of wireless parts.
+Drivers bind by probe confidence rather than by assumption, so an exact match beats a
+class-level fallback and one image boots both this machine and hardware it has never seen.
+Where a family is recognised but not yet driven, it says so and falls back rather than
+guessing. Later Eees, the Acer Aspire One and the HP Mini are the ones kept in view.
 
 Own bootloader, own kernel, own userspace. No Linux, no BSD, no libc. It builds to a raw
 `dd`-able image with `zig`, `nasm` and `make`: no cross-GCC, no root, no loopback mounts.
@@ -73,6 +84,15 @@ driver services the device with the line held down. A driver that crashes leaves
 masked rather than the machine livelocked. Nothing has moved out yet; the mechanism is
 there and the first server is next.
 
+**One machine to build against, several to run on.** Modesetting is an interface with a
+backend per adapter family, chosen by the same probe that binds every other driver, and the
+families are named by the machines they shipped in rather than by part number: gen3 covers
+the Eee 701 through the 1001PX, the Aspire One AOA110 and D255, and the HP Mini 110 and 210.
+GMA 500 is named separately and deliberately left undriven, because it is a licensed PowerVR
+core sharing nothing with Intel graphics but a vendor id. Keyboard layouts are one file
+each. Architecture-specific code is reached only through a HAL, and that rule is checked on
+every build.
+
 **The interface is one file.** `src/lib/syscalls.zig` declares the syscall table as data.
 The dispatcher binding, the userspace stubs and [`docs/syscalls.md`](docs/syscalls.md) are
 all derived from it, and a call that is documented without existing, or exists without
@@ -88,10 +108,11 @@ filesystem, console, keyboard, shell. **M1 is partway**: storage, `init`, the wi
 manager, the toolkit and the terminal are done and past what that milestone asked for;
 a userspace device manager, a C library and the native GMA900 modeset are not.
 
-**It has never run on the real machine.** Everything so far has been QEMU. That first boot
-is M1's actual gate, and the honest risk is the panel: the GMA900 has no public
-documentation and cannot be tested under emulation. The fallback is the VESA mode the
-firmware already set, which works.
+**It has never run on real hardware.** Everything so far has been QEMU. That first boot is
+M1's actual gate, and the honest risk is the panel: no Intel modeset is written yet, the
+gen3 registers have no public documentation, and none of it can be tested under emulation.
+The fallback is whatever mode the firmware already set, which works and is why an
+unrecognised adapter is still a usable machine.
 
 [`docs/status.md`](docs/status.md) is the current state, component by component, including
 what is missing. [`design/00-vibeee.md`](design/00-vibeee.md) is the master design and is
