@@ -100,9 +100,11 @@ const PP_CONTROL = 0x61204;
 const BLC_PWM = 0x61254;
 const VGACNTRL = 0x71400;
 const DSPARB = 0x70030;
+const DSPFW3 = 0x7003C;
 const FW_BLC = 0x20D8;
 const FW_BLC2 = 0x20DC;
 const FW_BLC_SELF = 0x20E0;
+const INSTPM = 0x20C0;
 
 /// A register whose top bit enables the block it controls. A pipe, a plane and
 /// the panel fitter all put it there.
@@ -128,6 +130,10 @@ const Timing = packed struct(u32) {
     fn active(self: Timing) u32 {
         return @as(u32, self.active_less_one) + 1;
     }
+
+    fn total(self: Timing) u32 {
+        return @as(u32, self.total_less_one) + 1;
+    }
 };
 
 /// The plane's source size, held the way a timing register is.
@@ -149,6 +155,35 @@ const PlaneSize = packed struct(u32) {
     fn of(width: u16, height: u16) PlaneSize {
         return .{ .width_less_one = width - 1, .height_less_one = height - 1 };
     }
+};
+
+/// How the display FIFO's lines are split between the planes. What is not
+/// plane A's, up to the cursor's start, is plane B's.
+const Dsparb = packed struct(u32) {
+    a_end: u7,
+    c_start: u7,
+    _rest: u18,
+};
+
+/// The planes' fetch watermarks: the FIFO level at which refill begins. Too
+/// low a level with too slow a memory and the FIFO runs dry mid line.
+const FwBlc = packed struct(u32) {
+    plane_a: u6,
+    _a: u2 = 0,
+    /// Fetch eight lines per request rather than one.
+    burst_a: bool,
+    _b: u7 = 0,
+    plane_b: u6,
+    _c: u2 = 0,
+    burst_b: bool,
+    _d: u7 = 0,
+};
+
+const FwBlc2 = packed struct(u32) {
+    cursor: u5,
+    _a: u3 = 0,
+    burst: bool,
+    _b: u23 = 0,
 };
 
 const Register = struct { name: []const u8, offset: u32 };
@@ -191,6 +226,8 @@ const registers = [_]Register{
     .{ .name = "fw_blc", .offset = FW_BLC },
     .{ .name = "fw_blc2", .offset = FW_BLC2 },
     .{ .name = "fw_self", .offset = FW_BLC_SELF },
+    .{ .name = "instpm", .offset = INSTPM },
+    .{ .name = "dspfw3", .offset = DSPFW3 },
 };
 
 // ---------------------------------------------------------------------------
@@ -345,6 +382,26 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     write(u32, w, pipe.base, read(u32, w, pipe.base));
     waitFrame();
 
+    // The FIFO machinery comes before the geometry that raises its demand.
+    // Both reference drivers retune it on every mode change; the firmware's
+    // settings are sized for the firmware's own smaller plane, and a fetch
+    // that outruns them starves mid line, every line, however correctly the
+    // geometry itself was programmed.
+    disableSelfRefresh(w, dev.device);
+
+    const total_khz: u32 = @as(u32, read(Timing, w, pipe.htotal).total()) *
+        read(Timing, w, pipe.vtotal).total() * want.refresh / 1000;
+    const dsparb = read(Dsparb, w, DSPARB);
+    const fifo_b: u32 = @as(u32, dsparb.c_start) -| dsparb.a_end;
+    write(FwBlc, w, FW_BLC, .{
+        // Plane A is off; it keeps a nominal level within its own share.
+        .plane_a = @intCast(@min(0x3F, @max(1, @as(u32, dsparb.a_end) -| 2))),
+        .burst_a = true,
+        .plane_b = watermark(total_khz, if (fifo_b == 0) 95 else fifo_b),
+        .burst_b = true,
+    });
+    write(FwBlc2, w, FW_BLC2, .{ .cursor = 2, .burst = true });
+
     // Geometry, with nothing fetching. The fitter goes first so the timing's
     // every pixel is the plane's own rather than a scaled copy.
     var fitter = read(Enable, w, PFIT_CONTROL);
@@ -368,6 +425,39 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         .height = want.height,
         .bpp = 32,
     };
+}
+
+/// Stop the memory controller's display self refresh.
+///
+/// The reference driver found self refresh broken with a linear framebuffer
+/// on this part and keeps it off outright there, and ours is always linear.
+/// Left on with the firmware's wakeup watermark, the memory sleeps too long
+/// for a wider fetch and the plane starves. Where the switch lives moved
+/// between the generations; the enable registers are masked, the high half
+/// naming which low bits a write may touch.
+fn disableSelfRefresh(w: Windows, device: u16) void {
+    switch (device) {
+        0x2592, 0x2792 => write(u32, w, INSTPM, @as(u32, 1 << 12) << 16),
+        0x27A2, 0x27AE => write(u32, w, FW_BLC_SELF, 1 << 31),
+        0xA011, 0xA012 => {
+            const dspfw3 = read(u32, w, DSPFW3);
+            write(u32, w, DSPFW3, dspfw3 & ~(@as(u32, 1) << 30));
+        },
+        else => {},
+    }
+}
+
+/// A plane's fetch watermark, from the reference's small-buffer method: the
+/// lines the panel drains during the memory's worst-case latency, plus a
+/// guard, taken from the lines the plane owns. Floored at the burst length
+/// and capped at what the field holds.
+fn watermark(pixel_khz: u32, fifo_lines: u32) u6 {
+    // Five microseconds, the reference's pessimal figure, in tenths.
+    const latency = 50;
+    const bytes = (pixel_khz * 4 * latency + 9999) / 10000;
+    const need = (bytes + 63) / 64 + 2;
+    if (fifo_lines <= need + 8) return 8;
+    return @intCast(@min(fifo_lines - need, 0x3F));
 }
 
 /// Let a display frame finish.
