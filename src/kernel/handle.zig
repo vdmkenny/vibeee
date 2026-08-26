@@ -16,6 +16,7 @@ const clock = @import("clock.zig");
 const display_mod = @import("display.zig");
 const event_mod = @import("event.zig");
 const fat = @import("fat.zig");
+const heap = @import("heap.zig");
 const shm_mod = @import("shm.zig");
 const vfs = @import("vfs.zig");
 
@@ -53,7 +54,14 @@ pub const File = struct {
 
 pub const Directory = struct {
     mount: *vfs.Mount,
-    iterator: fat.Iterator,
+    /// Heap-allocated rather than inline.
+    ///
+    /// A `fat.Iterator` carries a 512-byte sector buffer, and a `Handle` is a
+    /// union: inlining it would make every handle that size, a 32-entry table
+    /// 140 KiB, and a channel message carrying four handles larger than the
+    /// kernel stack it is built on. One pointer costs an allocation per
+    /// `opendir` and saves all of that.
+    iterator: *fat.Iterator,
     /// Set once the iterator has run out, so repeated reads stay cheap.
     exhausted: bool = false,
 };
@@ -83,6 +91,85 @@ pub const Handle = struct {
     } = .{ .none = {} },
 };
 
+/// What may cross a channel.
+///
+/// A pointer-sized tagged union rather than a whole `Handle`, for two reasons.
+/// A `Handle` is a union over every kind, so it is as large as the largest,
+/// and four of them in a message put a kilobyte and a half on a kernel stack
+/// that has 16 KiB for everything. And it makes the rule explicit: an object
+/// is transferable or it is not, decided here, rather than a file handle
+/// silently arriving somewhere with an offset that means nothing to the
+/// receiver.
+pub const Transfer = union(enum) {
+    event: *event_mod.Event,
+    channel: ChannelRef,
+    shm: *shm_mod.Segment,
+    display: *shm_mod.Segment,
+};
+
+/// The transferable part of a handle, or null if it is not transferable.
+pub fn transferable(h: Handle) ?Transfer {
+    return switch (h.kind) {
+        .event => .{ .event = h.data.event },
+        .channel => .{ .channel = h.data.channel },
+        .shm => .{ .shm = h.data.shm },
+        .display => .{ .display = h.data.display },
+        // Files and directories carry a position, and a position means
+        // nothing to anyone else. Consoles are shared already.
+        .none, .console, .file, .directory => null,
+    };
+}
+
+/// Rebuild a handle from something that arrived over a channel.
+pub fn fromTransfer(t: Transfer) Handle {
+    return switch (t) {
+        .event => |e| .{
+            .kind = .event,
+            .rights = .{ .read = true, .write = true },
+            .data = .{ .event = e },
+        },
+        .channel => |c| .{
+            .kind = .channel,
+            .rights = .{ .read = true, .write = true },
+            .data = .{ .channel = c },
+        },
+        .shm => |seg| .{
+            .kind = .shm,
+            .rights = .{ .read = true, .write = true },
+            .data = .{ .shm = seg },
+        },
+        .display => |seg| .{
+            .kind = .display,
+            .rights = .{ .read = true, .write = true },
+            .data = .{ .display = seg },
+        },
+    };
+}
+
+pub fn retainTransfer(t: Transfer) Transfer {
+    switch (t) {
+        .event => |e| event_mod.retain(e),
+        .channel => |c| channel_mod.retain(c.channel),
+        .shm, .display => |seg| shm_mod.retain(seg),
+    }
+    return t;
+}
+
+pub fn releaseTransfer(t: Transfer) void {
+    switch (t) {
+        .event => |e| event_mod.release(e),
+        .channel => |c| channel_mod.release(c.channel),
+        .shm, .display => |seg| shm_mod.release(seg),
+    }
+}
+
+/// Allocate an iterator for a directory handle.
+pub fn newIterator(it: fat.Iterator) ?*fat.Iterator {
+    const out = heap.allocator.create(fat.Iterator) catch return null;
+    out.* = it;
+    return out;
+}
+
 /// Take a second reference to whatever a handle names.
 ///
 /// Used when a handle is duplicated into another process over a channel: the
@@ -91,6 +178,9 @@ pub const Handle = struct {
 pub fn retain(h: Handle) Handle {
     switch (h.kind) {
         .file => h.data.file.mount.open_files += 1,
+        // A directory handle owns its iterator, so duplicating one would need
+        // a copy of it. Nothing passes directories over a channel, and doing
+        // so would need that decided rather than defaulted.
         .directory => h.data.directory.mount.open_files += 1,
         .event => event_mod.retain(h.data.event),
         .channel => channel_mod.retain(h.data.channel.channel),
@@ -121,7 +211,10 @@ pub fn release(h: Handle) void {
             }
             releaseMount(file.mount);
         },
-        .directory => releaseMount(h.data.directory.mount),
+        .directory => {
+            releaseMount(h.data.directory.mount);
+            heap.allocator.destroy(h.data.directory.iterator);
+        },
         .event => event_mod.release(h.data.event),
         .channel => {
             const ref = h.data.channel;
@@ -141,6 +234,13 @@ pub fn release(h: Handle) void {
 
 fn releaseMount(m: *vfs.Mount) void {
     if (m.open_files > 0) m.open_files -= 1;
+}
+
+comptime {
+    // Every thread carries a table, so its size is per-process overhead on a
+    // machine with 512 MB. A `Handle` that grew without anyone noticing would
+    // multiply by 32 here and again by the thread count.
+    if (@sizeOf(Handle) > 256) @compileError("Handle has grown; the table is per-process");
 }
 
 pub const Table = struct {

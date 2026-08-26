@@ -106,15 +106,6 @@ export fn wmMain() callconv(.c) noreturn {
     }
     service = @intCast(registered);
 
-    // Stand-ins until the client protocol exists. Real clients will open
-    // windows over a channel; the arrangement, focus and input paths below do
-    // not know the difference.
-    _ = desktop.open("Terminal", false);
-    _ = desktop.open("Files", false);
-    desktop.view(1);
-    _ = desktop.open("Editor", false);
-    desktop.view(0);
-
     run();
 }
 
@@ -132,6 +123,9 @@ fn paint() void {
     for (desktop.visible(&buf)) |index| {
         paintWindow(index, desktop.focused == index);
     }
+
+    // After the windows: a dropdown reaches over them.
+    bar.paintOverlay(screen, info.width, &desktop);
 
     drawCursor();
 }
@@ -263,11 +257,15 @@ fn run() noreturn {
 
         const keys = sys.keyRead(&key_events, sys.POLL);
         for (keys) |event| {
-            // A chord with the manager's modifier belongs to the manager;
-            // everything else belongs to whoever has focus. Without that split
-            // a client would swallow Mod+q and the desktop would be
-            // unnavigable from inside a full-screen application.
-            if (event.mods().super) {
+            // While the bar holds focus it takes everything, so plain arrows
+            // walk tabs instead of reaching a window. Otherwise a chord with
+            // the manager's modifier belongs to the manager and the rest
+            // belongs to whoever has focus: without that split a client would
+            // swallow Mod+q and the desktop would be unnavigable from inside a
+            // full-screen application.
+            if (bar.hasFocus()) {
+                if (event.isPress()) handleKey(event);
+            } else if (event.mods().super) {
                 if (event.isPress()) handleKey(event);
             } else {
                 postToFocused(.{
@@ -313,10 +311,23 @@ fn handleKey(event: sys.KeyEvent) void {
     const mods = event.mods();
     const code: KeyCode = @enumFromInt(event.code);
 
+    // The bar takes every key while it has focus, so arrows walk tabs rather
+    // than reaching a window. Everything it can be told by pointer it can be
+    // told by keyboard, which is the point of it holding focus at all.
+    if (bar.hasFocus()) {
+        switch (bar.key(code, &desktop)) {
+            .handled, .released => {
+                dirty = true;
+                return;
+            },
+            .ignored => {},
+        }
+    }
+
     if (!mods.super) return;
 
     switch (code) {
-        .n1, .n2, .n3, .n4 => {
+        .n1, .n2, .n3, .n4, .n5, .n6, .n7, .n8, .n9 => {
             const tag: u8 = @intCast(@intFromEnum(code) - @intFromEnum(KeyCode.n1));
             if (mods.shift) desktop.moveToTag(tag) else desktop.view(tag);
         },
@@ -333,6 +344,11 @@ fn handleKey(event: sys.KeyEvent) void {
         .l => desktop.nudgeMaster(0.05),
 
         .f => desktop.toggleFloating(),
+
+        // The taskbar and the launcher, from the keyboard.
+        .b => bar.focus(&desktop),
+        .p => bar.openLauncher(),
+        .n => _ = desktop.addDesktop(),
         .enter => {
             if (mods.shift) {
                 desktop.zoom();
@@ -367,11 +383,12 @@ fn handlePointer(event: sys.PointerEvent) void {
     // small, hovering over the wrong tile is something that happens by
     // accident several times a minute.
     if (!was_down and buttons.left) {
-        if (event.y < theme.current().bar_height) {
-            bar.click(event.x, &desktop);
-        } else {
+        // The bar gets first refusal: a menu it has open is modal, and it
+        // reaches below its own strip.
+        if (!bar.click(event.x, event.y, info.width, &desktop)) {
             desktop.focusAt(event.x, event.y);
         }
+        dirty = true;
     }
 }
 

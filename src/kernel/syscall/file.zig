@@ -41,11 +41,13 @@ pub fn sys_open(a: Args) Result {
     if (openFlags(a.a2).directory) {
         const it = vfs.openDir(path) catch return Errno.noent.value();
         const r = vfs.resolve(path) catch return Errno.noent.value();
+
+        const iterator = handles.newIterator(it) orelse return Errno.nomem.value();
         r.mount.open_files += 1;
         h.* = .{
             .kind = .directory,
             .rights = .{ .read = true },
-            .data = .{ .directory = .{ .mount = r.mount, .iterator = it } },
+            .data = .{ .directory = .{ .mount = r.mount, .iterator = iterator } },
         };
         return @intCast(slot);
     }

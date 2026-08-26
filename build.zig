@@ -105,6 +105,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lib", .module = user_lib },
             .{ .name = "sys", .module = sys_mod },
             .{ .name = "eui", .module = eui_mod },
+            .{ .name = "ulib", .module = ulib_mod },
         },
     });
 

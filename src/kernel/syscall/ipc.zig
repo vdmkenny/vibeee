@@ -138,21 +138,27 @@ pub fn sys_svc_connect(a: Args) Result {
 /// Resolved before anything blocks: the sender's table can change while a call
 /// is in flight, and a handle validated then re-read is the same
 /// time-of-check bug as a pointer validated then re-read.
-fn collectHandles(msg: *const abi.Message, out: []handles.Handle) ?usize {
+fn collectHandles(msg: *const abi.Message, out: []handles.Transfer) ?usize {
     const table = currentHandles() orelse return null;
     const wanted = msg.handleSlice();
     if (wanted.len > out.len) return null;
 
     for (wanted, 0..) |number, i| {
-        const h = table.get(number) orelse {
-            // Release what was gathered so far: a message that fails to send
-            // must leave the sender's references exactly as it found them.
-            for (out[0..i]) |taken| handles.release(taken);
-            return null;
-        };
-        out[i] = handles.retain(h.*);
+        const h = table.get(number) orelse return unwind(out, i);
+        // Not everything can be sent. A file handle carries a position, which
+        // means nothing to the receiver, so it is refused rather than
+        // delivered as something useless.
+        const item = handles.transferable(h.*) orelse return unwind(out, i);
+        out[i] = handles.retainTransfer(item);
     }
     return wanted.len;
+}
+
+/// Give back what was gathered before a failure, so a message that cannot be
+/// sent leaves the sender's references exactly as it found them.
+fn unwind(taken: []handles.Transfer, count: usize) ?usize {
+    for (taken[0..count]) |item| handles.releaseTransfer(item);
+    return null;
 }
 
 /// Install received handles into the calling process, filling in the numbers
@@ -164,16 +170,16 @@ fn deliverHandles(msg: *channel_mod.Message, out: *abi.Message) bool {
     const table = currentHandles() orelse return false;
 
     var installed: usize = 0;
-    for (msg.handleSlice()) |h| {
+    for (msg.handleSlice()) |item| {
         const slot = table.alloc() orelse break;
-        table.entries[slot] = h;
+        table.entries[slot] = handles.fromTransfer(item);
         out.handles[installed] = slot;
         installed += 1;
     }
 
     if (installed < msg.handle_count) {
         for (out.handles[0..installed]) |number| _ = table.close(number);
-        for (msg.handleSlice()[installed..]) |h| handles.release(h);
+        for (msg.handleSlice()[installed..]) |item| handles.releaseTransfer(item);
         msg.handle_count = 0;
         return false;
     }
@@ -200,12 +206,12 @@ pub fn sys_call(a: Args) Result {
     const sent = request.*;
     if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
 
-    var taken: [channel_mod.MAX_HANDLES]handles.Handle = @splat(.{});
+    var taken: [channel_mod.MAX_HANDLES]handles.Transfer = @splat(.{ .event = undefined });
     const count = collectHandles(&sent, &taken) orelse return Errno.badf.value();
 
     var answer: channel_mod.Message = .{};
     channel_mod.call(ch, sent.bytes(), taken[0..count], &answer, null) catch |err| {
-        for (taken[0..count]) |h| handles.release(h);
+        for (taken[0..count]) |item| handles.releaseTransfer(item);
         return switch (err) {
             error.Disconnected => Errno.pipe.value(),
             error.TimedOut => Errno.timedout.value(),
@@ -253,11 +259,11 @@ pub fn sys_reply(a: Args) Result {
     const sent = msg.*;
     if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
 
-    var taken: [channel_mod.MAX_HANDLES]handles.Handle = @splat(.{});
+    var taken: [channel_mod.MAX_HANDLES]handles.Transfer = @splat(.{ .event = undefined });
     const count = collectHandles(&sent, &taken) orelse return Errno.badf.value();
 
     channel_mod.reply(ch, @intCast(a.a1), sent.bytes(), taken[0..count]) catch |err| {
-        for (taken[0..count]) |h| handles.release(h);
+        for (taken[0..count]) |item| handles.releaseTransfer(item);
         return switch (err) {
             error.BadToken => Errno.inval.value(),
             error.TooLarge => Errno.inval.value(),
@@ -265,7 +271,7 @@ pub fn sys_reply(a: Args) Result {
         };
     };
     // The reply message took its own references; ours go back.
-    for (taken[0..count]) |h| handles.release(h);
+    for (taken[0..count]) |item| handles.releaseTransfer(item);
     return 0;
 }
 

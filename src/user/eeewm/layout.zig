@@ -21,8 +21,18 @@ const theme = @import("eui").theme;
 
 const Rect = draw.Rect;
 
-pub const TAGS = 4;
+/// Desktops are created as they are needed rather than fixed at four. A
+/// numbered row of empty slots is a menu of nothing; a row of named tabs is a
+/// list of what is actually open, and it should be exactly as long as that.
+/// The cap exists because every mapped client keeps its surface resident, not
+/// because the model wants one.
+pub const MAX_DESKTOPS = 9;
 pub const MAX_WINDOWS = 16;
+
+/// Below this a further split stops being usable, and a new window goes to a
+/// new desktop instead of making every existing tile unreadable.
+pub const SPLIT_LIMIT_W: i32 = 240;
+pub const SPLIT_LIMIT_H: i32 = 140;
 
 /// Smallest useful tile. The layout still splits below it rather than refusing
 /// to, because refusing leaves a window with nowhere to be; the minimum is
@@ -98,15 +108,20 @@ pub const Desktop = struct {
     windows: [MAX_WINDOWS]Window = @splat(.{}),
     next_id: u32 = 1,
 
-    /// Which tag is on screen, and which was before it, for Mod+Tab.
+    /// Which desktop is on screen, and which was before it.
     tag: u8 = 0,
     previous_tag: u8 = 0,
+    /// How many exist. Always at least one, and grown on demand.
+    count: u8 = 1,
 
-    /// Per tag, because a tag is a workspace and each wants its own shape.
-    layouts: [TAGS]Layout = @splat(.tall),
-    /// Master's share of the screen, per tag. Bounded well away from zero and
-    /// one: a master column of twelve pixels helps nobody.
-    mfact: [TAGS]f32 = @splat(0.58),
+    /// Per desktop, because each wants its own shape.
+    layouts: [MAX_DESKTOPS]Layout = @splat(.tall),
+    /// Master's share, per desktop. Bounded well away from zero and one: a
+    /// master column of twelve pixels helps nobody.
+    mfact: [MAX_DESKTOPS]f32 = @splat(0.58),
+    /// The window each desktop last had focused, so its tab can be named after
+    /// what the user was actually doing there.
+    last_focused: [MAX_DESKTOPS]?usize = @splat(null),
 
     focused: ?usize = null,
 
@@ -142,7 +157,7 @@ pub const Desktop = struct {
 
             w.* = .{
                 .id = self.next_id,
-                .tag = self.tag,
+                .tag = self.placementFor(floating),
                 .floating = floating,
                 .used = true,
             };
@@ -153,7 +168,17 @@ pub const Desktop = struct {
             // centred once and left where the user puts it thereafter.
             if (floating) w.area = self.centred(320, 200);
 
+            // Follow the window if the heuristic sent it elsewhere: a program
+            // that opened somewhere invisible looks like a program that failed
+            // to open.
+            if (w.tag != self.tag) {
+                self.last_focused[self.tag] = self.focused;
+                self.previous_tag = self.tag;
+                self.tag = w.tag;
+            }
+
             self.focused = i;
+            self.last_focused[w.tag] = i;
             self.arrange();
             return i;
         }
@@ -327,12 +352,131 @@ pub const Desktop = struct {
     // -----------------------------------------------------------------------
 
     pub fn view(self: *Desktop, tag: u8) void {
-        if (tag >= TAGS or tag == self.tag) return;
+        if (tag >= self.count or tag == self.tag) return;
+
+        // Remembered before leaving, so coming back lands where it was left.
+        self.last_focused[self.tag] = self.focused;
+
         self.previous_tag = self.tag;
         self.tag = tag;
-        self.focused = null;
+        self.focused = self.validate(self.last_focused[tag]);
         self.focusFirst();
         self.arrange();
+    }
+
+    /// Switch to `tag` and focus `window` on it, which is what activating an
+    /// entry in a tab's dropdown means.
+    pub fn viewWindow(self: *Desktop, index: usize) void {
+        if (index >= MAX_WINDOWS or !self.windows[index].used) return;
+
+        const tag = self.windows[index].tag;
+        if (tag != self.tag) {
+            self.last_focused[self.tag] = self.focused;
+            self.previous_tag = self.tag;
+            self.tag = tag;
+        }
+        self.focused = index;
+        self.last_focused[tag] = index;
+        self.arrange();
+    }
+
+    fn validate(self: *const Desktop, index: ?usize) ?usize {
+        const value = index orelse return null;
+        if (value >= MAX_WINDOWS) return null;
+        const w = self.windows[value];
+        if (!w.used or w.tag != self.tag) return null;
+        return value;
+    }
+
+    /// Add a desktop and switch to it. Returns false when there is no room.
+    pub fn addDesktop(self: *Desktop) bool {
+        if (self.count >= MAX_DESKTOPS) return false;
+        self.count += 1;
+        self.view(self.count - 1);
+        return true;
+    }
+
+    /// Drop trailing desktops that hold nothing.
+    ///
+    /// Only from the end, and never the one being viewed: renumbering a
+    /// desktop out from under someone would move every tab they had learned
+    /// the position of.
+    pub fn pruneDesktops(self: *Desktop) void {
+        const occupied_tags = self.occupied();
+        while (self.count > 1) {
+            const last = self.count - 1;
+            if (occupied_tags[last] or self.tag == last) break;
+            self.count -= 1;
+        }
+    }
+
+    /// How many windows are on a desktop.
+    pub fn countOn(self: *const Desktop, tag: u8) usize {
+        var n: usize = 0;
+        for (self.windows) |w| {
+            if (w.used and w.tag == tag) n += 1;
+        }
+        return n;
+    }
+
+    /// The window whose name a desktop's tab should carry: whatever was last
+    /// focused there, or failing that the first one on it.
+    pub fn representative(self: *const Desktop, tag: u8) ?usize {
+        if (self.last_focused[tag]) |index| {
+            if (index < MAX_WINDOWS) {
+                const w = self.windows[index];
+                if (w.used and w.tag == tag) return index;
+            }
+        }
+        for (self.windows, 0..) |w, i| {
+            if (w.used and w.tag == tag) return i;
+        }
+        return null;
+    }
+
+    /// Every window on a desktop, for its dropdown.
+    pub fn windowsOn(self: *const Desktop, tag: u8, out: []usize) []usize {
+        var n: usize = 0;
+        for (self.windows, 0..) |w, i| {
+            if (!w.used or w.tag != tag) continue;
+            if (n == out.len) break;
+            out[n] = i;
+            n += 1;
+        }
+        return out[0..n];
+    }
+
+    /// Where a new window should go.
+    ///
+    /// Splitting is right until the tiles stop being usable. Past that a new
+    /// desktop is better than four unreadable columns, which is the judgement
+    /// a person would make and the one a tiling manager should make for them.
+    pub fn placementFor(self: *Desktop, floating: bool) u8 {
+        // A dialog belongs with whatever raised it, whatever the crowding.
+        if (floating) return self.tag;
+
+        const here = self.countOn(self.tag);
+        if (here == 0) return self.tag;
+
+        const area = self.bounds;
+        const fits = switch (self.layouts[self.tag]) {
+            // Monocle stacks rather than splits, so it never runs out of room.
+            .monocle => true,
+            .tall => @divTrunc(area.w, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_W,
+            .wide => @divTrunc(area.h, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_H,
+        };
+        if (fits) return self.tag;
+
+        // Full: the first empty desktop, or a new one.
+        const occupied_tags = self.occupied();
+        for (0..self.count) |i| {
+            if (!occupied_tags[i]) return @intCast(i);
+        }
+        if (self.count < MAX_DESKTOPS) {
+            self.count += 1;
+            return self.count - 1;
+        }
+        return self.tag;
     }
 
     pub fn viewPrevious(self: *Desktop) void {
@@ -341,7 +485,8 @@ pub const Desktop = struct {
 
     /// Send the focused window to `tag` and stop showing it here.
     pub fn moveToTag(self: *Desktop, tag: u8) void {
-        if (tag >= TAGS) return;
+        if (tag >= MAX_DESKTOPS) return;
+        if (tag >= self.count) self.count = tag + 1;
         const index = self.focused orelse return;
         self.windows[index].tag = tag;
         self.focused = null;
@@ -435,10 +580,10 @@ pub const Desktop = struct {
     }
 
     /// Which tags have anything on them, for the bar's pips.
-    pub fn occupied(self: *const Desktop) [TAGS]bool {
-        var out: [TAGS]bool = @splat(false);
+    pub fn occupied(self: *const Desktop) [MAX_DESKTOPS]bool {
+        var out: [MAX_DESKTOPS]bool = @splat(false);
         for (self.windows) |w| {
-            if (w.used and w.tag < TAGS) out[w.tag] = true;
+            if (w.used and w.tag < MAX_DESKTOPS) out[w.tag] = true;
         }
         return out;
     }

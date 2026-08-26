@@ -458,3 +458,102 @@ fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, 
 
     if (focused) paintFocusRing(surface, area);
 }
+
+// ---------------------------------------------------------------------------
+// Menu
+//
+// A list of choices with one highlighted. Two things wanted it, a taskbar
+// dropdown and an application launcher, which is the threshold at which it
+// stops being drawing and starts being a control.
+// ---------------------------------------------------------------------------
+
+pub const ROW_HEIGHT: i32 = 18;
+
+pub const Menu = struct {
+    /// Which row is highlighted. Survives between passes: a menu that forgot
+    /// where the selection was every frame could not be driven by keyboard.
+    selected: usize = 0,
+    open: bool = false,
+
+    pub fn show(self: *Menu) void {
+        self.open = true;
+        self.selected = 0;
+    }
+
+    pub fn hide(self: *Menu) void {
+        self.open = false;
+    }
+
+    /// How large a menu of `count` rows needs to be, so a caller can place it
+    /// before drawing it.
+    pub fn sizeFor(count: usize, width: i32) Rect {
+        return .{
+            .x = 0,
+            .y = 0,
+            .w = width,
+            .h = @as(i32, @intCast(count)) * ROW_HEIGHT + 2,
+        };
+    }
+
+    pub fn paint(self: *const Menu, surface: Surface, area: Rect, items: []const []const u8) void {
+        const t = theme.current();
+
+        surface.fill(area, t.surface);
+        surface.frame(area, t.line);
+
+        for (items, 0..) |text, row| {
+            const line = rowRect(area, row);
+            const highlighted = row == self.selected;
+            if (highlighted) surface.fill(line, t.accent);
+
+            const clipped = surface.clipped(line);
+            clipped.text(
+                line.x + t.padding,
+                line.y + @divTrunc(line.h - Surface.textHeight(), 2),
+                text,
+                if (highlighted) t.accent_text else t.text,
+            );
+        }
+    }
+
+    /// Which row a point falls on, or null if it misses the menu entirely.
+    pub fn rowAt(area: Rect, count: usize, x: i32, y: i32) ?usize {
+        if (!area.contains(x, y)) return null;
+        const row: usize = @intCast(@max(@divTrunc(y - area.y - 1, ROW_HEIGHT), 0));
+        return if (row < count) row else null;
+    }
+
+    pub const KeyAction = enum { ignored, moved, chosen, cancelled };
+
+    /// Drive the selection. The caller acts on `chosen`, because only it knows
+    /// what the rows mean.
+    pub fn key(self: *Menu, code: KeyCode, count: usize) KeyAction {
+        if (count == 0) return .cancelled;
+
+        switch (code) {
+            .up => {
+                self.selected = if (self.selected == 0) count - 1 else self.selected - 1;
+                return .moved;
+            },
+            .down => {
+                self.selected = (self.selected + 1) % count;
+                return .moved;
+            },
+            .enter, .space => return .chosen,
+            .escape => {
+                self.hide();
+                return .cancelled;
+            },
+            else => return .ignored,
+        }
+    }
+
+    fn rowRect(area: Rect, row: usize) Rect {
+        return .{
+            .x = area.x + 1,
+            .y = area.y + 1 + @as(i32, @intCast(row)) * ROW_HEIGHT,
+            .w = area.w - 2,
+            .h = ROW_HEIGHT,
+        };
+    }
+};
