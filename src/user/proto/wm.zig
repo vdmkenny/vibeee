@@ -135,6 +135,11 @@ pub const Rep = extern struct {
             screen_w: u16,
             screen_h: u16,
             caps: u32,
+            /// The manager's theme, so a client draws in the same palette
+            /// rather than its own default. The name rather than the colours:
+            /// both sides compile the same presets, and sixteen bytes is
+            /// cheaper than a table.
+            theme: [16]u8,
         },
         create: extern struct {
             win: u8,
@@ -163,6 +168,8 @@ pub const EvTag = enum(u8) {
     close_req,
     /// The window stopped being visible, and painting it is wasted work.
     visibility,
+    /// The manager's theme changed; redraw in the new one.
+    theme,
     /// Events were dropped. The client should redraw rather than trust its
     /// idea of what it has seen.
     overflow,
@@ -186,6 +193,7 @@ pub const Ev = extern struct {
         focus: extern struct { focused: u8 },
         configure: extern struct { w: u16, h: u16 },
         visibility: extern struct { visible: u8 },
+        theme: extern struct { name: [16]u8 },
         raw: [16]u8,
     } = .{ .raw = @splat(0) },
 };

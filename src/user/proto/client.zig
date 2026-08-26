@@ -75,6 +75,7 @@ pub const Connection = struct {
         self.generation = rep.gen;
         self.screen_w = rep.body.hello.screen_w;
         self.screen_h = rep.body.hello.screen_h;
+        applyTheme(&rep.body.hello.theme);
 
         // Two handles come back: the event ring's memory, and the event that
         // says there is something in it.
@@ -226,6 +227,14 @@ pub const Connection = struct {
         return rep.*;
     }
 };
+
+/// Adopt the manager's theme. A desktop where every window picked its own
+/// palette would look like several desktops.
+pub fn applyTheme(name: *const [16]u8) void {
+    var n: usize = 0;
+    while (n < name.len and name[n] != 0) n += 1;
+    if (eui.theme.byName(name[0..n])) |chosen| eui.theme.use(chosen);
+}
 
 fn toWire(r: eui.Rect) wm.Rect {
     return .{

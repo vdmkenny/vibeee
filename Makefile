@@ -121,6 +121,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/DOCS/NOTES.TXT
 	@mmd -i $@ ::/ETC 2>/dev/null || true
 	@$(MCOPY) -i $@ -o etc/services ::/ETC/SERVICES
+	@$(MCOPY) -i $@ -o etc/eeewm.cfg ::/ETC/EEEWM.CFG
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)

@@ -22,8 +22,40 @@ const theme = @import("eui").theme;
 
 const ui = @import("eui").widget;
 
+const settings = @import("config.zig");
+
 const Rect = draw.Rect;
 const Surface = draw.Surface;
+
+/// Where the strip sits. One function answers it and everything else asks,
+/// because the bar's position appears in painting, in hit testing, in where a
+/// menu drops and in how much room the tiles get, and four copies of that
+/// arithmetic is four chances to disagree.
+pub fn strip(screen_h: i32) Rect {
+    const height = theme.current().bar_height;
+    return switch (settings.current().bar) {
+        .top => .{ .x = 0, .y = 0, .w = 0, .h = height },
+        .bottom => .{ .x = 0, .y = screen_h - height, .w = 0, .h = height },
+    };
+}
+
+/// The area left for windows.
+pub fn contentArea(screen_w: i32, screen_h: i32) Rect {
+    const height = theme.current().bar_height;
+    const top = settings.current().bar == .top;
+    return .{
+        .x = 0,
+        .y = if (top) height else 0,
+        .w = screen_w,
+        .h = screen_h - height,
+    };
+}
+
+/// Whether a point is on the bar. Vertical only: the strip spans the width.
+pub fn contains(y: i32, screen_h: i32) bool {
+    const area = strip(screen_h);
+    return y >= area.y and y < area.y + area.h;
+}
 
 /// Widest a tab gets. Narrow enough that several fit, wide enough that a name
 /// is usually legible rather than an ellipsis.
@@ -32,6 +64,8 @@ const TAB_MIN_WIDTH: i32 = 56;
 const CLOCK_WIDTH: i32 = 46;
 /// The stack marker's column, shown only on a tab holding more than one.
 const MARKER_WIDTH: i32 = 12;
+/// The button that adds a desktop, after the last tab.
+const ADD_WIDTH: i32 = 18;
 
 /// The V button: the applications menu, top left. A classic start button,
 /// because a tiling manager still needs a way to start something without
@@ -98,22 +132,22 @@ pub fn unfocus() void {
 // ---------------------------------------------------------------------------
 
 fn tabWidth(width: i32, count: u8) i32 {
-    const available = width - CLOCK_WIDTH - LAUNCH_WIDTH;
+    const available = width - CLOCK_WIDTH - LAUNCH_WIDTH - ADD_WIDTH;
     const each = @divTrunc(available, @as(i32, count));
     return @max(TAB_MIN_WIDTH, @min(each, TAB_MAX_WIDTH));
 }
 
-fn launchRect() Rect {
+fn launchRect(screen_h: i32) Rect {
     const t = theme.current();
-    return .{ .x = 0, .y = 0, .w = LAUNCH_WIDTH, .h = t.bar_height - 1 };
+    return .{ .x = 0, .y = strip(screen_h).y, .w = LAUNCH_WIDTH, .h = t.bar_height - 1 };
 }
 
-fn tabRect(width: i32, count: u8, index: u8) Rect {
+fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
     const t = theme.current();
     const each = tabWidth(width, count);
     return .{
         .x = LAUNCH_WIDTH + @as(i32, index) * each,
-        .y = 0,
+        .y = strip(height).y,
         .w = each,
         .h = t.bar_height - 1,
     };
@@ -123,23 +157,51 @@ fn tabRect(width: i32, count: u8, index: u8) Rect {
 // Painting
 // ---------------------------------------------------------------------------
 
-pub fn paint(surface: Surface, width: i32, desktop: *const layout.Desktop) void {
+pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     const t = theme.current();
+    const area = strip(height);
+    const top = settings.current().bar == .top;
 
-    surface.fill(.{ .x = 0, .y = 0, .w = width, .h = t.bar_height }, t.bar);
-    // A hairline rather than a bevel: it separates without spending a row on
-    // looking like it does.
-    surface.fill(.{ .x = 0, .y = t.bar_height - 1, .w = width, .h = 1 }, t.bar_line);
+    surface.fill(.{ .x = 0, .y = area.y, .w = width, .h = t.bar_height }, t.bar);
+    // A hairline on whichever edge faces the windows, so the separation reads
+    // the same whichever end the bar is at.
+    surface.fill(.{
+        .x = 0,
+        .y = if (top) area.y + t.bar_height - 1 else area.y,
+        .w = width,
+        .h = 1,
+    }, t.bar_line);
 
-    paintLaunch(surface);
+    paintLaunch(surface, height);
 
     var i: u8 = 0;
     while (i < desktop.count) : (i += 1) {
-        paintTab(surface, tabRect(width, desktop.count, i), desktop, i);
+        paintTab(surface, tabRect(width, height, desktop.count, i), desktop, i);
     }
 
-    paintLayoutGlyph(surface, width, desktop);
-    paintClock(surface, width);
+    paintAdd(surface, width, height, desktop);
+    paintLayoutGlyph(surface, width, height, desktop);
+    paintClock(surface, width, height);
+}
+
+fn addRect(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
+    const t = theme.current();
+    const last = tabRect(width, height, desktop.count, desktop.count - 1);
+    return .{ .x = last.right(), .y = strip(height).y, .w = ADD_WIDTH, .h = t.bar_height - 1 };
+}
+
+/// A plus, drawn rather than lettered: at this size two strokes read better
+/// than a glyph, and it is unambiguous in any font.
+fn paintAdd(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
+    if (desktop.count >= layout.MAX_DESKTOPS) return;
+
+    const t = theme.current();
+    const area = addRect(width, height, desktop);
+    const cx = area.x + @divTrunc(area.w, 2);
+    const cy = area.y + @divTrunc(area.h, 2);
+
+    surface.fill(.{ .x = cx - 4, .y = cy, .w = 9, .h = 1 }, t.bar_text);
+    surface.fill(.{ .x = cx, .y = cy - 4, .w = 1, .h = 9 }, t.bar_text);
 }
 
 /// Menus, drawn after everything else.
@@ -147,7 +209,7 @@ pub fn paint(surface: Surface, width: i32, desktop: *const layout.Desktop) void 
 /// A dropdown reaches below the bar and over the tiles, so painting it with
 /// the strip would put it under whatever is drawn next. Overlays go last, by
 /// definition.
-pub fn paintOverlay(surface: Surface, width: i32, desktop: *const layout.Desktop) void {
+pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     if (menu_tab) |tab| {
         var buf: [layout.MAX_WINDOWS]usize = undefined;
         const list = desktop.windowsOn(tab, &buf);
@@ -155,32 +217,45 @@ pub fn paintOverlay(surface: Surface, width: i32, desktop: *const layout.Desktop
         var labels: [layout.MAX_WINDOWS][]const u8 = undefined;
         for (list, 0..) |index, k| labels[k] = desktop.windows[index].name();
 
-        window_menu.paint(surface, menuRect(width, desktop, tab), labels[0..list.len]);
+        window_menu.paint(surface, menuRect(width, height, desktop, tab), labels[0..list.len]);
     }
 
     if (launcher.open) {
         var labels: [apps.len][]const u8 = undefined;
-        launcher.paint(surface, launchMenuRect(), appLabels(&labels));
+        launcher.paint(surface, launchMenuRect(height), appLabels(&labels));
     }
 }
 
 /// The V button. A wordmark rather than an icon: at 133 DPI a glyph from the
 /// font we already have is sharper than anything drawn by hand at this size.
-fn paintLaunch(surface: Surface) void {
+fn paintLaunch(surface: Surface, height: i32) void {
     const t = theme.current();
-    const area = launchRect();
+    const area = launchRect(height);
 
     if (launcher.open) surface.fill(area, t.accent);
     surface.textCentred(area, "V", if (launcher.open) t.accent_text else t.bar_text);
-    surface.fill(.{ .x = area.right() - 1, .y = 2, .w = 1, .h = area.h - 4 }, t.bar_line);
+    surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
 
-fn launchMenuRect() Rect {
+/// A menu drops away from the bar: down from a bar at the top, up from one at
+/// the bottom. Dropping it off the screen would be the alternative.
+fn dropFrom(anchor: Rect, height: i32, size: Rect) Rect {
     const t = theme.current();
-    var area = ui.Menu.sizeFor(apps.len, TAB_MAX_WIDTH);
-    area.x = 0;
-    area.y = t.bar_height;
+    var area = size;
+    area.x = anchor.x;
+    area.y = switch (settings.current().bar) {
+        .top => t.bar_height,
+        .bottom => height - t.bar_height - area.h,
+    };
     return area;
+}
+
+fn launchMenuRect(height: i32) Rect {
+    return dropFrom(
+        .{ .x = 0, .y = 0, .w = LAUNCH_WIDTH, .h = 0 },
+        height,
+        ui.Menu.sizeFor(apps.len, TAB_MAX_WIDTH),
+    );
 }
 
 fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index: u8) void {
@@ -218,7 +293,7 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
     if (count > 1) paintStackMarker(surface, area, color);
 
     // A hairline between tabs, so two adjacent ones do not read as one.
-    surface.fill(.{ .x = area.right() - 1, .y = 2, .w = 1, .h = area.h - 4 }, t.bar_line);
+    surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
 
 /// Three stacked lines: this tab holds more than one window and will open a
@@ -233,20 +308,20 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
     }
 }
 
-fn paintLayoutGlyph(surface: Surface, width: i32, desktop: *const layout.Desktop) void {
+fn paintLayoutGlyph(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     const t = theme.current();
     const area = Rect{
         .x = width - CLOCK_WIDTH - 16,
-        .y = 0,
+        .y = strip(height).y,
         .w = 14,
         .h = t.bar_height - 1,
     };
     surface.textCentred(area, desktop.layout().glyph(), t.bar_text);
 }
 
-fn paintClock(surface: Surface, width: i32) void {
+fn paintClock(surface: Surface, width: i32, height: i32) void {
     const t = theme.current();
-    const area = Rect{ .x = width - CLOCK_WIDTH, .y = 0, .w = CLOCK_WIDTH - 4, .h = t.bar_height - 1 };
+    const area = Rect{ .x = width - CLOCK_WIDTH, .y = strip(height).y, .w = CLOCK_WIDTH - 4, .h = t.bar_height - 1 };
 
     const us = sys.realtimeMicros() orelse return;
     const minutes = @divFloor(@divFloor(us, 1_000_000), 60);
@@ -264,14 +339,13 @@ fn paintClock(surface: Surface, width: i32) void {
     surface.textCentred(area, buf[0..5], t.bar_text);
 }
 
-fn menuRect(width: i32, desktop: *const layout.Desktop, tab: u8) Rect {
-    const t = theme.current();
-    const anchor = tabRect(width, desktop.count, tab);
-
-    var area = ui.Menu.sizeFor(desktop.countOn(tab), @max(anchor.w, TAB_MAX_WIDTH));
-    area.x = anchor.x;
-    area.y = t.bar_height;
-    return area;
+fn menuRect(width: i32, height: i32, desktop: *const layout.Desktop, tab: u8) Rect {
+    const anchor = tabRect(width, height, desktop.count, tab);
+    return dropFrom(
+        anchor,
+        height,
+        ui.Menu.sizeFor(desktop.countOn(tab), @max(anchor.w, TAB_MAX_WIDTH)),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -279,57 +353,86 @@ fn menuRect(width: i32, desktop: *const layout.Desktop, tab: u8) Rect {
 // ---------------------------------------------------------------------------
 
 /// Route a click. Returns true if the bar consumed it.
-pub fn click(x: i32, y: i32, width: i32, desktop: *layout.Desktop) bool {
-    const t = theme.current();
+pub const Action = union(enum) {
+    none,
+    /// The bar consumed the click and nothing else need happen.
+    consumed,
+    /// Close this window, asking its client first.
+    close_window: usize,
+    /// Close this desktop and everything on it.
+    close_desktop: u8,
+};
+
+pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *layout.Desktop) Action {
 
     // A menu is modal while open: a click outside dismisses it rather than
     // doing two things at once.
     if (launcher.open) {
-        if (ui.Menu.rowAt(launchMenuRect(), apps.len, x, y)) |row| launch(row);
+        if (ui.Menu.rowAt(launchMenuRect(height), apps.len, x, y)) |row| launch(row);
         launcher.hide();
         keyboard_focus = false;
-        return true;
+        return .consumed;
     }
 
     if (menu_tab) |tab| {
         var buf: [layout.MAX_WINDOWS]usize = undefined;
         const list = desktop.windowsOn(tab, &buf);
-        const area = menuRect(width, desktop, tab);
+        const area = menuRect(width, height, desktop, tab);
 
-        if (ui.Menu.rowAt(area, list.len, x, y)) |row| desktop.viewWindow(list[row]);
+        if (ui.Menu.rowAt(area, list.len, x, y)) |row| {
+            menu_tab = null;
+            // Right-click closes the window the row names; left-click goes to
+            // it. Two verbs, one list, no second menu.
+            if (right) return .{ .close_window = list[row] };
+            desktop.viewWindow(list[row]);
+            return .consumed;
+        }
         menu_tab = null;
-        return true;
+        return .consumed;
     }
 
-    if (y >= t.bar_height) return false;
+    if (!contains(y, height)) return .none;
 
-    if (launchRect().contains(x, y)) {
+    if (launchRect(height).contains(x, y)) {
         openLauncher();
-        return true;
+        return .consumed;
+    }
+
+    if (desktop.count < layout.MAX_DESKTOPS and addRect(width, height, desktop).contains(x, y)) {
+        _ = desktop.addDesktop();
+        return .consumed;
     }
 
     var i: u8 = 0;
     while (i < desktop.count) : (i += 1) {
-        const area = tabRect(width, desktop.count, i);
+        const area = tabRect(width, height, desktop.count, i);
         if (!area.contains(x, y)) continue;
 
-        // The marker opens the menu; the rest of the tab switches to it.
+        // Right-click closes the desktop; the marker opens its menu; the rest
+        // of the tab switches to it.
+        if (right) return .{ .close_desktop = i };
+
         if (desktop.countOn(i) > 1 and x >= area.right() - MARKER_WIDTH) {
             menu_tab = i;
             window_menu.show();
         } else {
             desktop.view(i);
         }
-        return true;
+        return .consumed;
     }
 
-    const glyph = Rect{ .x = width - CLOCK_WIDTH - 16, .y = 0, .w = 14, .h = t.bar_height };
+    const glyph = Rect{
+        .x = width - CLOCK_WIDTH - 16,
+        .y = strip(height).y,
+        .w = 14,
+        .h = theme.current().bar_height,
+    };
     if (glyph.contains(x, y)) {
         desktop.cycleLayout();
-        return true;
+        return .consumed;
     }
 
-    return true;
+    return .consumed;
 }
 
 fn launch(index: usize) void {

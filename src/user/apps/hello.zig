@@ -81,6 +81,11 @@ fn run() noreturn {
                 ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
                 if (event.body.key.down != 0) redraw();
             },
+            .theme => {
+                proto.client.applyTheme(&event.body.theme.name);
+                ctx.damage();
+                redraw();
+            },
             .close_req => sys.exit(0),
             // Events were dropped, so nothing about the current state can be
             // trusted; a full redraw is cheaper than working out what was lost.

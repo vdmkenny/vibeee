@@ -396,6 +396,44 @@ pub const Desktop = struct {
         return true;
     }
 
+    /// Close every window on a desktop and remove it if it is not the last.
+    ///
+    /// The windows go through the caller, which knows how to ask a client to
+    /// close rather than dropping it: a client with unsaved work deserves to
+    /// be told, not have its surface taken away.
+    pub fn windowsToClose(self: *const Desktop, tag: u8, out: []usize) []usize {
+        return self.windowsOn(tag, out);
+    }
+
+    /// Remove an empty desktop, renumbering the ones after it.
+    ///
+    /// Windows on later desktops move down with them, so a tab does not change
+    /// what it holds. The last desktop is never removed: a session with none
+    /// has nowhere to put anything.
+    pub fn removeDesktop(self: *Desktop, tag: u8) void {
+        if (self.count <= 1 or tag >= self.count) return;
+        if (self.countOn(tag) != 0) return;
+
+        for (&self.windows) |*w| {
+            if (w.used and w.tag > tag) w.tag -= 1;
+        }
+
+        var i: u8 = tag;
+        while (i + 1 < self.count) : (i += 1) {
+            self.layouts[i] = self.layouts[i + 1];
+            self.mfact[i] = self.mfact[i + 1];
+            self.last_focused[i] = self.last_focused[i + 1];
+        }
+        self.count -= 1;
+
+        if (self.tag >= self.count) self.tag = self.count - 1;
+        if (self.previous_tag >= self.count) self.previous_tag = 0;
+
+        self.focused = null;
+        self.focusFirst();
+        self.arrange();
+    }
+
     /// Drop trailing desktops that hold nothing.
     ///
     /// Only from the end, and never the one being viewed: renumbering a
@@ -481,6 +519,36 @@ pub const Desktop = struct {
 
     pub fn viewPrevious(self: *Desktop) void {
         self.view(self.previous_tag);
+    }
+
+    /// Move `step` desktops along, wrapping.
+    ///
+    /// Wrapping rather than stopping: with a handful of desktops the end is
+    /// never far from the beginning, and a key that silently does nothing at
+    /// the edge reads as a key that is broken.
+    pub fn viewRelative(self: *Desktop, step: i32) void {
+        if (self.count <= 1) return;
+        const count: i32 = @intCast(self.count);
+        const target = @mod(@as(i32, self.tag) + step + count, count);
+        self.view(@intCast(target));
+    }
+
+    /// Send the focused window `step` desktops along and follow it there.
+    ///
+    /// Following is deliberate: a window that moved somewhere invisible looks
+    /// like a window that vanished.
+    pub fn sendRelative(self: *Desktop, step: i32) void {
+        if (self.count <= 1) return;
+        const index = self.focused orelse return;
+
+        const count: i32 = @intCast(self.count);
+        const target: u8 = @intCast(@mod(@as(i32, self.tag) + step + count, count));
+
+        self.windows[index].tag = target;
+        self.view(target);
+        self.focused = index;
+        self.last_focused[target] = index;
+        self.arrange();
     }
 
     /// Send the focused window to `tag` and stop showing it here.

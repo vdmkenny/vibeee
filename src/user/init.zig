@@ -20,6 +20,7 @@
 const std = @import("std");
 const sys = @import("sys");
 const out = @import("ulib").out;
+const config = @import("ulib").config;
 const info = @import("ulib").info;
 const str = @import("ulib").str;
 
@@ -154,39 +155,11 @@ fn parse(text: []const u8) void {
             continue;
         }
 
-        const eq = indexOf(line, '=') orelse continue;
-        const key = str.trim(line[0..eq]);
-        const value = str.trim(line[eq + 1 ..]);
-
-        if (parseInto(&current, key, value)) dirty = true;
+        const kv = config.pair(line) orelse continue;
+        if (config.assign(&current, kv.key, kv.value)) dirty = true;
     }
 
     if (dirty) commit(current);
-}
-
-/// Assign one key, driven by the shape of `Service` itself.
-///
-/// Returns false for a key the struct does not have, so a typo in the manifest
-/// is silently ignored rather than silently mis-assigned.
-fn parseInto(service: *Service, key: []const u8, value: []const u8) bool {
-    inline for (std.meta.fields(Service)) |field| {
-        if (str.eql(key, field.name)) {
-            switch (@typeInfo(field.type)) {
-                .@"enum" => {
-                    // An unrecognised enum value keeps the default rather than
-                    // taking the service down; the default is the safe policy.
-                    if (std.meta.stringToEnum(field.type, value)) |parsed| {
-                        @field(service, field.name) = parsed;
-                    } else {
-                        report(key, "unrecognised value, using the default");
-                    }
-                },
-                else => @field(service, field.name) = value,
-            }
-            return true;
-        }
-    }
-    return false;
 }
 
 fn commit(service: Service) void {
@@ -366,9 +339,3 @@ fn report(who: []const u8, what: []const u8) void {
     out.flush();
 }
 
-fn indexOf(haystack: []const u8, needle: u8) ?usize {
-    for (haystack, 0..) |c, i| {
-        if (c == needle) return i;
-    }
-    return null;
-}

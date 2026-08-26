@@ -23,6 +23,7 @@ const theme = @import("eui").theme;
 const clients = @import("clients.zig");
 const layout = @import("layout.zig");
 const bar = @import("bar.zig");
+const config = @import("config.zig");
 const proto = @import("proto");
 const ui = @import("eui").widget;
 const sys = @import("sys");
@@ -85,13 +86,10 @@ export fn wmMain() callconv(.c) noreturn {
         info.stride_px,
     );
 
-    const t = theme.current();
-    desktop.bounds = .{
-        .x = 0,
-        .y = t.bar_height,
-        .w = info.width,
-        .h = info.height - t.bar_height,
-    };
+    const settings = config.load();
+    desktop.bounds = bar.contentArea(info.width, info.height);
+    desktop.layouts = @splat(settings.layout);
+    desktop.mfact = @splat(settings.masterFraction());
 
     ctx = ui.Context.init(screen);
 
@@ -117,7 +115,7 @@ fn paint() void {
     const t = theme.current();
 
     screen.fill(.{ .x = 0, .y = 0, .w = info.width, .h = info.height }, t.desktop);
-    bar.paint(screen, info.width, &desktop);
+    bar.paint(screen, info.width, info.height, &desktop);
 
     var buf: [layout.MAX_WINDOWS]usize = undefined;
     for (desktop.visible(&buf)) |index| {
@@ -125,7 +123,7 @@ fn paint() void {
     }
 
     // After the windows: a dropdown reaches over them.
-    bar.paintOverlay(screen, info.width, &desktop);
+    bar.paintOverlay(screen, info.width, info.height, &desktop);
 
     drawCursor();
 }
@@ -333,12 +331,20 @@ fn handleKey(event: sys.KeyEvent) void {
         },
         .tab => desktop.viewPrevious(),
 
+        // Relative movement between desktops, and taking the focused window
+        // along with shift. Bracket keys because they sit next to each other
+        // and read as "that way".
+        .bracket_left => {
+            if (mods.shift) desktop.sendRelative(-1) else desktop.viewRelative(-1);
+        },
+        .bracket_right => {
+            if (mods.shift) desktop.sendRelative(1) else desktop.viewRelative(1);
+        },
+
         .t => desktop.setLayout(.tall),
-        .w => desktop.setLayout(.wide),
         .m => desktop.setLayout(.monocle),
 
         .j => desktop.focusNext(1),
-        .k => desktop.focusNext(-1),
 
         .h => desktop.nudgeMaster(-0.05),
         .l => desktop.nudgeMaster(0.05),
@@ -359,13 +365,32 @@ fn handleKey(event: sys.KeyEvent) void {
                 _ = sys.spawnDetached("/EHELLO", &.{"ehello"});
             }
         },
+        // Shift+c asks the focused window to close; Shift+k takes it away
+        // whether it agrees or not; Shift+w closes the whole desktop.
         .c => if (mods.shift) {
-            if (desktop.focused) |index| desktop.close(index);
+            if (desktop.focused) |index| requestClose(index);
+        },
+        .k => {
+            // Shift takes a window away whether it agrees or not, which is the
+            // escape hatch for one that will not go. Without shift it is just
+            // focus movement.
+            if (mods.shift) {
+                if (desktop.focused) |index| dropWindow(index);
+            } else {
+                desktop.focusNext(-1);
+            }
+        },
+        .w => {
+            if (mods.shift) closeDesktop(desktop.tag) else desktop.setLayout(.wide);
         },
 
-        // Not in the design's table, but a theme that cannot be changed from
-        // the machine it runs on is not themable in any useful sense.
-        .grave => _ = theme.cycle(),
+        // A theme that cannot be changed on the machine it runs on is not
+        // themable in any useful sense. The file decides the default; this
+        // tries the others without editing it.
+        .grave => {
+            _ = theme.cycle();
+            broadcastTheme();
+        },
 
         else => return,
     }
@@ -377,16 +402,23 @@ fn handlePointer(event: sys.PointerEvent) void {
     pointer_x = event.x;
     pointer_y = event.y;
     const was_down = buttons.left;
+    const was_right = buttons.right;
     buttons = event.buttons;
 
     // Focus follows click, not hover: at this size and with a touchpad this
     // small, hovering over the wrong tile is something that happens by
     // accident several times a minute.
-    if (!was_down and buttons.left) {
+    const pressed_left = !was_down and buttons.left;
+    const pressed_right = !was_right and buttons.right;
+
+    if (pressed_left or pressed_right) {
         // The bar gets first refusal: a menu it has open is modal, and it
         // reaches below its own strip.
-        if (!bar.click(event.x, event.y, info.width, &desktop)) {
-            desktop.focusAt(event.x, event.y);
+        switch (bar.click(event.x, event.y, info.width, info.height, pressed_right, &desktop)) {
+            .none => if (pressed_left) desktop.focusAt(event.x, event.y),
+            .consumed => {},
+            .close_window => |index| requestClose(index),
+            .close_desktop => |tag| closeDesktop(tag),
         }
         dirty = true;
     }
@@ -464,6 +496,7 @@ fn onHello(pid: u32, req: *const wire.Req) Answer {
                 .screen_w = @intCast(info.width),
                 .screen_h = @intCast(info.height),
                 .caps = 0,
+                .theme = themeName(),
             } },
         },
         .handles = &hello_handles,
@@ -551,6 +584,75 @@ fn onDestroy(pid: u32, req: *const wire.Req) Answer {
     dirty = true;
 
     return .{ .rep = .{ .gen = table.generation } };
+}
+
+/// The active theme's name, padded for the wire.
+fn themeName() [16]u8 {
+    var padded: [16]u8 = @splat(0);
+    const name = theme.current().name;
+    const n = @min(name.len, padded.len);
+    @memcpy(padded[0..n], name[0..n]);
+    return padded;
+}
+
+/// Tell every client the theme changed, so the desktop stays one desktop.
+fn broadcastTheme() void {
+    for (&table.clients) |*client| {
+        if (client.pid == 0) continue;
+        client.post(.{
+            .tag = .theme,
+            .t_us = @truncate(sys.clockMicros()),
+            .body = .{ .theme = .{ .name = themeName() } },
+        });
+    }
+}
+
+/// Ask a window to close, or close it if nothing owns it.
+///
+/// A client is asked rather than dropped: it may have something to save, and
+/// taking its surface away gives it no chance to. One that ignores the request
+/// is dealt with by `Mod+Shift+k`, which is the escape hatch for a program
+/// that will not go.
+fn requestClose(index: usize) void {
+    const w = &desktop.windows[index];
+    if (!w.used) return;
+
+    if (w.client_pid == 0) {
+        desktop.close(index);
+        dirty = true;
+        return;
+    }
+
+    const client = table.find(w.client_pid) orelse {
+        dropWindow(index);
+        return;
+    };
+    client.post(.{
+        .tag = .close_req,
+        .win = w.client_win,
+        .t_us = @truncate(sys.clockMicros()),
+    });
+}
+
+/// Take a window away without asking. For a client that has gone, or one that
+/// refused to.
+fn dropWindow(index: usize) void {
+    if (surfaces[index].handle != 0) _ = sys.close(surfaces[index].handle);
+    surfaces[index] = .{};
+    desktop.close(index);
+    dirty = true;
+}
+
+/// Close everything on a desktop, then the desktop itself.
+pub fn closeDesktop(tag: u8) void {
+    var buf: [layout.MAX_WINDOWS]usize = undefined;
+    const list = desktop.windowsToClose(tag, &buf);
+    for (list) |index| requestClose(index);
+
+    // Removed only once it is actually empty: a client that takes a moment to
+    // exit should not have its desktop vanish from under it.
+    desktop.removeDesktop(tag);
+    dirty = true;
 }
 
 fn refuse(status: wire.Status) Answer {
