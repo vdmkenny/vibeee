@@ -453,6 +453,8 @@ Block until a request arrives on a served channel.
 - `EINVAL`, an argument is out of range
 - `ETIMEDOUT`, the timeout elapsed before anything happened
 
+The message's `sender` field is filled in with the calling process's id. A server with many clients on one channel needs to know which is talking, and the kernel is the only party that cannot be lied to about it.
+
 ## `reply`  <sub>#26</sub>
 
 Answer a call taken by recv().

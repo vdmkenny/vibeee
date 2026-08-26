@@ -20,8 +20,10 @@
 const std = @import("std");
 const eui = @import("eui").draw;
 const theme = @import("eui").theme;
+const clients = @import("clients.zig");
 const layout = @import("layout.zig");
 const bar = @import("bar.zig");
+const proto = @import("proto");
 const ui = @import("eui").widget;
 const sys = @import("sys");
 const out = @import("ulib").out;
@@ -29,7 +31,6 @@ const out = @import("ulib").out;
 const Rect = eui.Rect;
 const KeyCode = sys.KeyCode;
 
-const SERVICE = "gui";
 
 var screen: eui.Surface = undefined;
 var info: sys.DisplayInfo = .{};
@@ -41,6 +42,12 @@ var desktop: layout.Desktop = .{};
 /// context per window would keep hover and focus state for controls nobody can
 /// reach. Real clients will each own their own, in their own process.
 var ctx: ui.Context = undefined;
+
+/// Connected clients and the surfaces they have given us.
+var table: clients.Table = .{};
+var surfaces: [layout.MAX_WINDOWS]clients.Surface = @splat(.{});
+/// The channel clients call in on.
+var service: u32 = 0;
 
 var pointer_x: i32 = 0;
 var pointer_y: i32 = 0;
@@ -91,7 +98,13 @@ export fn wmMain() callconv(.c) noreturn {
     pointer_x = @divTrunc(info.width, 2);
     pointer_y = @divTrunc(info.height, 2);
 
-    _ = sys.svcRegister(SERVICE);
+    const registered = sys.svcRegister(proto.wm.SERVICE);
+    if (registered < 0) {
+        out.text("eeewm: cannot register the gui service\n");
+        out.flush();
+        sys.exit(1);
+    }
+    service = @intCast(registered);
 
     // Stand-ins until the client protocol exists. Real clients will open
     // windows over a channel; the arrangement, focus and input paths below do
@@ -136,11 +149,16 @@ fn paintWindow(index: usize, focused: bool) void {
     // never disturbs its neighbours.
     screen.borderInset(area, width, if (focused) t.border_focused else t.border);
 
-    // Client content goes here once there is a protocol to receive it. Until
-    // then the window draws its own, through the same toolkit an application
-    // would use, which is what keeps that toolkit exercised rather than merely
-    // present.
-    const inner = area.inset(width + t.padding);
+    // A client that has given us a surface gets composited from it. One that
+    // has not draws the manager's own placeholder, which is what the desktop
+    // looks like before anything has connected.
+    const content = area.inset(width);
+    if (w.mapped and surfaces[index].valid()) {
+        clients.blit(screen, surfaces[index], content, content);
+        return;
+    }
+
+    const inner = content.inset(t.padding);
     screen.text(inner.x, inner.y, w.name(), t.text);
 
     var size: [24]u8 = @splat(0);
@@ -241,12 +259,32 @@ fn run() noreturn {
     paint();
 
     while (true) {
-        var acted = false;
+        var acted = serve();
 
         const keys = sys.keyRead(&key_events, sys.POLL);
         for (keys) |event| {
-            if (!event.isPress()) continue;
-            handleKey(event);
+            // A chord with the manager's modifier belongs to the manager;
+            // everything else belongs to whoever has focus. Without that split
+            // a client would swallow Mod+q and the desktop would be
+            // unnavigable from inside a full-screen application.
+            if (event.mods().super) {
+                if (event.isPress()) handleKey(event);
+            } else {
+                postToFocused(.{
+                    .tag = .key,
+                    .body = .{ .key = .{
+                        .code = event.code,
+                        .down = event.pressed,
+                        .mods = event.modifiers,
+                    } },
+                });
+                if (event.codepoint != 0 and event.isPress()) {
+                    postToFocused(.{
+                        .tag = .text,
+                        .body = .{ .text = .{ .cp = event.codepoint } },
+                    });
+                }
+            }
             acted = true;
         }
 
@@ -257,6 +295,13 @@ fn run() noreturn {
         }
 
         if (!acted) continue;
+
+        // A layout change moves every tile, so each client is told its new
+        // size before anything is drawn from its surface.
+        for (0..layout.MAX_WINDOWS) |i| {
+            if (desktop.windows[i].used) tellSize(i);
+        }
+
         paint();
     }
 }
@@ -292,7 +337,10 @@ fn handleKey(event: sys.KeyEvent) void {
             if (mods.shift) {
                 desktop.zoom();
             } else {
-                _ = desktop.open("Terminal", false);
+                // Until eTerm exists, the demo client is what Mod+Enter
+                // launches: it proves the whole path rather than adding
+                // another placeholder the manager drew itself.
+                _ = sys.spawnDetached("/EHELLO", &.{"ehello"});
             }
         },
         .c => if (mods.shift) {
@@ -325,4 +373,212 @@ fn handlePointer(event: sys.PointerEvent) void {
             desktop.focusAt(event.x, event.y);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Serving clients
+//
+// The other half of the loop. Requests arrive on one channel from every
+// client; the kernel attests who sent each one, so a client cannot act for
+// another and no per-client channel is needed to tell them apart.
+// ---------------------------------------------------------------------------
+
+const wire = proto.wm;
+
+/// Handle every request waiting, without blocking.
+fn serve() bool {
+    var handled = false;
+
+    while (true) {
+        var message: sys.Message = .{};
+        const request = sys.recv(service, &message, sys.POLL) orelse break;
+        handled = true;
+
+        const req: *const wire.Req = @ptrCast(@alignCast(&message.data));
+        const reply = dispatch(message.sender, req, &message);
+
+        var answer = sys.Message.init(std.mem.asBytes(&reply.rep), reply.handles);
+        _ = sys.replyMsg(service, request.token, &answer);
+    }
+
+    return handled;
+}
+
+const Answer = struct {
+    rep: wire.Rep,
+    handles: []const u32 = &.{},
+};
+
+fn dispatch(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer {
+    return switch (req.tag) {
+        .hello => onHello(pid, req),
+        .create_win => onCreate(pid, req),
+        .attach => onAttach(pid, req, message),
+        .commit => onCommit(pid, req),
+        .set_title => onTitle(pid, req),
+        .map => onMap(pid, req),
+        .unmap, .destroy_win => onDestroy(pid, req),
+        .bye => blk: {
+            desktop.closeClient(pid);
+            table.evict(pid);
+            dirty = true;
+            break :blk .{ .rep = .{ .gen = table.generation } };
+        },
+    };
+}
+
+var hello_handles: [2]u32 = @splat(0);
+
+fn onHello(pid: u32, req: *const wire.Req) Answer {
+    if (req.body.hello.proto != wire.VERSION) {
+        return .{ .rep = .{ .status = .bad_version, .gen = table.generation } };
+    }
+
+    const client = table.admit(pid, &req.body.hello.app_name) orelse {
+        return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+    };
+
+    hello_handles = .{ client.events_handle, client.signal };
+
+    return .{
+        .rep = .{
+            .gen = table.generation,
+            .body = .{ .hello = .{
+                .screen_w = @intCast(info.width),
+                .screen_h = @intCast(info.height),
+                .caps = 0,
+            } },
+        },
+        .handles = &hello_handles,
+    };
+}
+
+fn onCreate(pid: u32, req: *const wire.Req) Answer {
+    if (table.find(pid) == null) return refuse(.bad_request);
+
+    const index = desktop.open("", req.body.create.flags.floating) orelse
+        return refuse(.no_room);
+
+    const w = &desktop.windows[index];
+    w.client_pid = pid;
+    // The client's id for the window, which is per client rather than global:
+    // the slot index is ours and would collide across clients.
+    w.client_win = @intCast(index);
+    dirty = true;
+
+    // The size is the server's decision in a tiling manager, so the client is
+    // told rather than asked. It finds out through `configure`.
+    tellSize(index);
+
+    return .{ .rep = .{
+        .gen = table.generation,
+        .body = .{ .create = .{ .win = w.client_win } },
+    } };
+}
+
+fn onAttach(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer {
+    const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
+    if (message.handle_count < 1) return refuse(.bad_request);
+
+    const handle = message.handles[0];
+    const surface = clients.adoptSurface(
+        handle,
+        req.body.attach.w,
+        req.body.attach.h,
+        req.body.attach.stride_px,
+    ) orelse return refuse(.no_room);
+
+    // The previous surface is released only now, so there is never a moment
+    // with nothing to composite from.
+    if (surfaces[index].handle != 0) _ = sys.close(surfaces[index].handle);
+    surfaces[index] = surface;
+    dirty = true;
+
+    return .{ .rep = .{ .gen = table.generation } };
+}
+
+fn onCommit(pid: u32, req: *const wire.Req) Answer {
+    const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
+    _ = index;
+    _ = req.body.commit;
+
+    // Every commit repaints the window in full for now. Honouring the damage
+    // rectangles is the optimisation this protocol exists to allow, and it
+    // needs a per-window damage list the paint pass consults rather than the
+    // whole-screen flag below.
+    dirty = true;
+    return .{ .rep = .{ .gen = table.generation } };
+}
+
+fn onTitle(pid: u32, req: *const wire.Req) Answer {
+    const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
+    const n = @min(req.body.title.len, req.body.title.text.len);
+    desktop.windows[index].setTitle(req.body.title.text[0..n]);
+    dirty = true;
+    return .{ .rep = .{ .gen = table.generation } };
+}
+
+fn onMap(pid: u32, req: *const wire.Req) Answer {
+    const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
+    desktop.windows[index].mapped = true;
+    dirty = true;
+    return .{ .rep = .{ .gen = table.generation } };
+}
+
+fn onDestroy(pid: u32, req: *const wire.Req) Answer {
+    const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
+
+    if (surfaces[index].handle != 0) _ = sys.close(surfaces[index].handle);
+    surfaces[index] = .{};
+    desktop.close(index);
+    dirty = true;
+
+    return .{ .rep = .{ .gen = table.generation } };
+}
+
+fn refuse(status: wire.Status) Answer {
+    return .{ .rep = .{ .status = status, .gen = table.generation } };
+}
+
+/// Tell a window's client what size it is, if that has changed.
+fn tellSize(index: usize) void {
+    const w = &desktop.windows[index];
+    if (w.client_pid == 0) return;
+
+    const inner = contentRect(index);
+    const width: u16 = @intCast(@max(inner.w, 0));
+    const height: u16 = @intCast(@max(inner.h, 0));
+    if (width == w.told_w and height == w.told_h) return;
+
+    w.told_w = width;
+    w.told_h = height;
+
+    const client = table.find(w.client_pid) orelse return;
+    client.post(.{
+        .tag = .configure,
+        .win = w.client_win,
+        .t_us = @truncate(sys.clockMicros()),
+        .body = .{ .configure = .{ .w = width, .h = height } },
+    });
+}
+
+/// Where a window's client content goes: the tile, less its border.
+fn contentRect(index: usize) Rect {
+    const t = theme.current();
+    const w = &desktop.windows[index];
+    const width = if (desktop.focused == index) t.border_width_focused else t.border_width;
+    return w.area.inset(width);
+}
+
+/// Send input to whichever client owns the focused window.
+fn postToFocused(event: wire.Ev) void {
+    const index = desktop.focused orelse return;
+    const w = &desktop.windows[index];
+    if (w.client_pid == 0) return;
+
+    const client = table.find(w.client_pid) orelse return;
+    var copy = event;
+    copy.win = w.client_win;
+    copy.t_us = @truncate(sys.clockMicros());
+    client.post(copy);
 }

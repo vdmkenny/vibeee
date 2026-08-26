@@ -59,6 +59,16 @@ pub const Layout = enum {
 
 pub const Window = struct {
     id: u32 = 0,
+    /// The client that owns it, or 0 for one the manager made itself.
+    client_pid: u32 = 0,
+    /// The client's window id, which is per client rather than global.
+    client_win: u8 = 0,
+    /// Set once the client has attached a surface and mapped the window.
+    mapped: bool = false,
+    /// What the layout last told the client its size was, so a `configure` is
+    /// only sent when it actually changed.
+    told_w: u16 = 0,
+    told_h: u16 = 0,
     title: [32]u8 = @splat(0),
     title_len: usize = 0,
     tag: u8 = 0,
@@ -71,6 +81,10 @@ pub const Window = struct {
 
     pub fn name(self: *const Window) []const u8 {
         return self.title[0..self.title_len];
+    }
+
+    pub fn setTitle(self: *Window, text: []const u8) void {
+        self.setName(text);
     }
 
     fn setName(self: *Window, text: []const u8) void {
@@ -106,6 +120,21 @@ pub const Desktop = struct {
     // -----------------------------------------------------------------------
     // Windows
     // -----------------------------------------------------------------------
+
+    /// Find a window by the client that owns it and that client's id for it.
+    pub fn byClient(self: *Desktop, pid: u32, win: u8) ?usize {
+        for (&self.windows, 0..) |*w, i| {
+            if (w.used and w.client_pid == pid and w.client_win == win) return i;
+        }
+        return null;
+    }
+
+    /// Drop everything a departed client owned.
+    pub fn closeClient(self: *Desktop, pid: u32) void {
+        for (&self.windows, 0..) |*w, i| {
+            if (w.used and w.client_pid == pid) self.close(i);
+        }
+    }
 
     pub fn open(self: *Desktop, title: []const u8, floating: bool) ?usize {
         for (&self.windows, 0..) |*w, i| {

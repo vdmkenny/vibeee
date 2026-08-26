@@ -369,6 +369,14 @@ pub const Message = extern struct {
     len: u16 = 0,
     handle_count: u16 = 0,
     handles: [MAX_MSG_HANDLES]u32 = @splat(0),
+    /// Filled in by the kernel on `recv` with the calling process's id, and
+    /// ignored on send.
+    ///
+    /// A server with many clients on one channel has to know which one is
+    /// talking, and a client-supplied identifier could name somebody else. The
+    /// kernel already knows, so it says: this is attested rather than claimed,
+    /// and it saves inventing per-client channels for the sake of identity.
+    sender: u32 = 0,
     data: [MAX_PAYLOAD]u8 = @splat(0),
 
     pub fn bytes(self: *const Message) []const u8 {
@@ -794,6 +802,9 @@ pub const table = [_]Syscall{
             .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
         },
         .returns = "bytes of request payload",
+        .notes = "The message's `sender` field is filled in with the calling process's id. A " ++
+            "server with many clients on one channel needs to know which is talking, and the " ++
+            "kernel is the only party that cannot be lied to about it.",
         .errors = &.{ E.badf, E.fault, E.inval, E.timedout },
     },
     .{

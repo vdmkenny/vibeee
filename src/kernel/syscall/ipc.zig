@@ -240,6 +240,7 @@ pub fn sys_recv(a: Args) Result {
     out.* = .{};
     @memcpy(out.data[0..got.message.len], got.message.data[0..got.message.len]);
     out.len = got.message.len;
+    out.sender = got.message.sender;
     if (!deliverHandles(&got.message, out)) return Errno.nomem.value();
 
     return @intCast(got.message.len);

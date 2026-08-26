@@ -95,11 +95,25 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "lib", .module = user_lib }},
     });
 
+    // The window protocol: wire types only, so client and server compile the
+    // same definitions and neither can drift.
+    const proto_mod = b.createModule(.{
+        .root_source_file = b.path("src/user/proto/proto.zig"),
+        .target = user_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lib", .module = user_lib },
+            .{ .name = "sys", .module = sys_mod },
+            .{ .name = "eui", .module = eui_mod },
+        },
+    });
+
     const user_imports = [_]std.Build.Module.Import{
         .{ .name = "lib", .module = user_lib },
         .{ .name = "sys", .module = sys_mod },
         .{ .name = "ulib", .module = ulib_mod },
         .{ .name = "eui", .module = eui_mod },
+        .{ .name = "proto", .module = proto_mod },
     };
 
     // Every user program is built identically; only its root file differs.
@@ -110,6 +124,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "tools", .root = "src/user/tools.zig" },
         .{ .name = "vsh", .root = "src/user/vsh.zig" },
         .{ .name = "hello", .root = "src/user/hello.zig" },
+        .{ .name = "ehello", .root = "src/user/apps/hello.zig" },
     };
 
     var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;

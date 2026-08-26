@@ -26,6 +26,7 @@ const std = @import("std");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");
 const heap = @import("heap.zig");
+const sched = @import("sched.zig");
 const wait = @import("wait.zig");
 
 pub const Error = error{
@@ -55,6 +56,10 @@ pub const MAX_HANDLES = @import("lib").syscalls.MAX_MSG_HANDLES;
 pub const Message = struct {
     len: u8 = 0,
     data: [MAX_PAYLOAD]u8 = @splat(0),
+    /// Who sent it. Recorded by `call` from the running thread, so a receiver
+    /// learns the caller's identity from the kernel rather than from the
+    /// caller.
+    sender: u32 = 0,
     /// Handles travelling with the message, as kernel objects rather than
     /// numbers: a handle number means nothing outside the process that owns
     /// it, so a transfer moves the reference and the receiver is given a fresh
@@ -184,6 +189,8 @@ pub fn call(
     try record.request.set(request);
     try record.request.attach(send_handles);
     errdefer record.request.discard();
+
+    record.request.sender = if (sched.currentThread()) |t| t.id else 0;
 
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
