@@ -11,6 +11,7 @@ const abi = @import("syscall_table.zig");
 const console = @import("console.zig");
 const hal = @import("hal.zig");
 const sched = @import("sched.zig");
+const shutdown_mod = @import("shutdown.zig");
 const tty = @import("tty.zig");
 
 pub const Errno = abi.Errno;
@@ -98,6 +99,16 @@ fn sys_log(a: Args) Result {
     if (buf.len == 0 or buf.len > 256) return Errno.inval.value();
     console.field("user", "{s}", .{buf});
     return 0;
+}
+
+fn sys_shutdown(a: Args) Result {
+    const action: shutdown_mod.Action = switch (a.a0) {
+        0 => .power_off,
+        1 => .reboot,
+        2 => .halt,
+        else => return Errno.inval.value(),
+    };
+    shutdown_mod.shutdown(action);
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 const std = @import("std");
 
 pub const MAGIC: u32 = 0x0EEEB007;
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 pub const BootSource = enum(u16) {
     /// boot/stage2.asm, the path the real machine takes.
@@ -81,6 +81,24 @@ pub const BootInfo = extern struct {
     mmap_len: u32 = 0,
     mmap: [32]MemRange = std.mem.zeroes([32]MemRange),
 
+    /// Linear framebuffer, when stage2 managed to set a graphics mode.
+    ///
+    /// Physical address; zero means the machine is still in text mode and the
+    /// VGA console applies.
+    fb_addr: u32 = 0,
+    fb_width: u16 = 0,
+    fb_height: u16 = 0,
+    /// Bytes per scanline. Not width*bpp/8: hardware frequently pads rows.
+    fb_pitch: u16 = 0,
+    fb_bpp: u8 = 0,
+    _fb_pad: u8 = 0,
+
+    /// The BIOS's own 8x16 character bitmaps, copied somewhere safe by stage2.
+    ///
+    /// Taken from the video ROM rather than embedded in the kernel: it costs
+    /// nothing, and the result looks like what the machine displays natively.
+    font_addr: u32 = 0,
+
     pub fn cmdlineSlice(self: *const BootInfo) []const u8 {
         return self.cmdline[0..@min(self.cmdline_len, self.cmdline.len)];
     }
@@ -90,6 +108,10 @@ pub const BootInfo = extern struct {
     }
 
     /// Total usable RAM in bytes, for reporting and for sizing the PMM bitmap.
+    pub fn hasFramebuffer(self: *const BootInfo) bool {
+        return self.fb_addr != 0 and self.fb_width != 0 and self.fb_height != 0;
+    }
+
     pub fn usableBytes(self: *const BootInfo) u64 {
         var total: u64 = 0;
         for (self.memoryMap()) |r| {
@@ -126,4 +148,11 @@ comptime {
     expect.at("mmap", 304);
 
     if (@sizeOf(MemRange) != 24) @compileError("MemRange size changed; stage2 copy stride is 24");
+
+    expect.at("fb_addr", 1072);
+    expect.at("fb_width", 1076);
+    expect.at("fb_height", 1078);
+    expect.at("fb_pitch", 1080);
+    expect.at("fb_bpp", 1082);
+    expect.at("font_addr", 1084);
 }

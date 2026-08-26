@@ -44,11 +44,28 @@ BI_LOG_LEN      equ 292
 BI_LOG_PHYS     equ 296
 BI_MMAP_LEN     equ 300
 BI_MMAP         equ 304
+BI_FB_ADDR      equ 1072
+BI_FB_WIDTH     equ 1076
+BI_FB_HEIGHT    equ 1078
+BI_FB_PITCH     equ 1080
+BI_FB_BPP       equ 1082
+BI_FONT_ADDR    equ 1084
+BOOTINFO_SIZE   equ 1088
 MEMRANGE_SIZE   equ 24
 MAX_MMAP        equ 32
 
 BOOTINFO_MAGIC  equ 0x0EEEB007
-BOOTINFO_VER    equ 1
+BOOTINFO_VER    equ 2
+
+FONT_PHYS       equ 0x5000          ; 4 KiB of 8x16 glyphs, below BootInfo
+VBE_INFO        equ 0x0500          ; scratch for the VBE controller block
+VBE_MODE_INFO   equ 0x0700          ; scratch for one mode block
+
+; Preferred display size. The target panel is 800x480, which its video BIOS
+; does not offer as a VBE mode — so the search falls back by area and this is
+; an aspiration rather than a requirement.
+WANT_WIDTH      equ 800
+WANT_HEIGHT     equ 480
 
 ; ---------------------------------------------------------------------------
 ; Header. mkimage locates this by signature and patches the fields.
@@ -89,6 +106,8 @@ main:
     call find_rsdp
     call load_kernel
     call load_rootfs
+    call copy_font
+    call maybe_set_video
     call finish_bootinfo
 
     mov si, msg_entering
@@ -175,7 +194,7 @@ zero_bootinfo:
     mov ax, 0
     mov es, ax
     mov di, BOOTINFO_ADDR
-    mov cx, (BI_MMAP + MAX_MMAP * MEMRANGE_SIZE) / 2
+    mov cx, BOOTINFO_SIZE / 2
     xor ax, ax
     rep stosw
     pop es
@@ -221,6 +240,175 @@ finish_bootinfo:
     xor eax, eax
     mov al, [boot_drive]
     mov [BOOTINFO_ADDR + BI_DISK_SIG], eax          ; refined once we read the MBR
+    ret
+
+; ---------------------------------------------------------------------------
+; Copy the video ROM's 8x16 font somewhere the kernel can reach.
+;
+; INT 10h AX=1130 BH=06 returns a pointer to the BIOS's own character bitmaps.
+; Using them rather than embedding a font costs nothing and matches what the
+; machine displays natively. Must happen before any mode change, while the
+; video BIOS still has its text-mode state.
+; ---------------------------------------------------------------------------
+copy_font:
+    push es
+    push bp
+
+    mov ax, 0x1130
+    mov bh, 0x06                    ; 8x16 font
+    int 0x10                        ; -> ES:BP
+
+    ; ES:BP -> flat source. 256 glyphs * 16 bytes.
+    mov ax, es
+    mov ds, ax
+    mov si, bp
+    xor ax, ax
+    mov es, ax
+    mov di, FONT_PHYS
+    mov cx, 4096 / 2
+    rep movsw
+
+    xor ax, ax
+    mov ds, ax
+    mov dword [BOOTINFO_ADDR + BI_FONT_ADDR], FONT_PHYS
+
+    pop bp
+    pop es
+    ret
+
+; ---------------------------------------------------------------------------
+; Set a linear-framebuffer VBE mode, if one was asked for and one exists.
+;
+; Gated on "fb" appearing in the command line. Switching to graphics silences
+; the text console, so on a machine whose only output is the screen the default
+; has to be the mode that is already known to work.
+; ---------------------------------------------------------------------------
+maybe_set_video:
+    ; Look for "fb" in the command line.
+    mov si, cmdline
+.scan:
+    mov al, [si]
+    test al, al
+    jz .done                        ; end of string, not requested
+    cmp al, 'f'
+    jne .next
+    cmp byte [si + 1], 'b'
+    je .requested
+.next:
+    inc si
+    jmp .scan
+.done:
+    ret
+
+.requested:
+    call vbe_setup
+    ret
+
+vbe_setup:
+    push es
+
+    ; --- controller info ---
+    xor ax, ax
+    mov es, ax
+    mov di, VBE_INFO
+    mov dword [es:di], 'VBE2'       ; ask for VBE 2+ information
+    mov ax, 0x4F00
+    int 0x10
+    cmp ax, 0x004F
+    jne .fail
+
+    ; Mode list pointer is a real-mode far pointer at offset 14.
+    mov si, [VBE_INFO + 14]
+    mov ax, [VBE_INFO + 16]
+    mov fs, ax                      ; FS:SI walks the mode list
+
+    xor ebx, ebx                    ; best mode area so far
+    xor edx, edx                    ; best mode number (in DX)
+
+.next_mode:
+    mov cx, [fs:si]
+    add si, 2
+    cmp cx, 0xFFFF
+    je .have_best
+
+    ; --- mode info ---
+    push cx
+    xor ax, ax
+    mov es, ax
+    mov di, VBE_MODE_INFO
+    mov ax, 0x4F01
+    int 0x10
+    pop cx
+    cmp ax, 0x004F
+    jne .next_mode
+
+    ; Require: supported, graphics, and a linear framebuffer.
+    mov ax, [VBE_MODE_INFO]         ; mode attributes
+    test ax, 0x0001                 ; supported in hardware
+    jz .next_mode
+    test ax, 0x0010                 ; graphics rather than text
+    jz .next_mode
+    test ax, 0x0080                 ; linear framebuffer available
+    jz .next_mode
+
+    ; 32bpp only. Mixing depths would mean the console handling several pixel
+    ; formats before anything can be seen at all.
+    cmp byte [VBE_MODE_INFO + 25], 32
+    jne .next_mode
+
+    ; Score by area, capped at the preferred size: the largest mode that is no
+    ; bigger than the panel.
+    movzx eax, word [VBE_MODE_INFO + 18]    ; width
+    cmp ax, WANT_WIDTH
+    ja .next_mode
+    movzx ebp, word [VBE_MODE_INFO + 20]    ; height
+    cmp bp, WANT_HEIGHT
+    ja .next_mode
+    imul eax, ebp
+    cmp eax, ebx
+    jbe .next_mode
+
+    mov ebx, eax
+    mov dx, cx
+    jmp .next_mode
+
+.have_best:
+    test dx, dx
+    jz .fail                        ; nothing suitable
+
+    ; Re-read the winning mode so its geometry can be recorded.
+    push dx
+    xor ax, ax
+    mov es, ax
+    mov di, VBE_MODE_INFO
+    mov cx, dx
+    mov ax, 0x4F01
+    int 0x10
+    pop dx
+    cmp ax, 0x004F
+    jne .fail
+
+    ; --- set it, with bit 14 asking for the linear framebuffer ---
+    mov bx, dx
+    or bx, 0x4000
+    mov ax, 0x4F02
+    int 0x10
+    cmp ax, 0x004F
+    jne .fail
+
+    mov eax, [VBE_MODE_INFO + 40]   ; physical framebuffer base
+    mov [BOOTINFO_ADDR + BI_FB_ADDR], eax
+    mov ax, [VBE_MODE_INFO + 18]
+    mov [BOOTINFO_ADDR + BI_FB_WIDTH], ax
+    mov ax, [VBE_MODE_INFO + 20]
+    mov [BOOTINFO_ADDR + BI_FB_HEIGHT], ax
+    mov ax, [VBE_MODE_INFO + 16]    ; bytes per scanline
+    mov [BOOTINFO_ADDR + BI_FB_PITCH], ax
+    mov al, [VBE_MODE_INFO + 25]
+    mov [BOOTINFO_ADDR + BI_FB_BPP], al
+
+.fail:
+    pop es
     ret
 
 ; ---------------------------------------------------------------------------

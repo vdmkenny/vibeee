@@ -5,11 +5,72 @@
 //! driver is up. Both present the same cell interface, so nothing here changes.
 
 const std = @import("std");
-const backend = @import("../drv/video/vgatext.zig");
+const bootinfo = @import("bootinfo.zig");
+const fbcon = @import("../drv/video/fbcon.zig");
+const vgatext = @import("../drv/video/vgatext.zig");
 
-pub const Color = backend.Color;
-pub const COLUMNS = backend.WIDTH;
-pub const ROWS = backend.HEIGHT;
+pub const Color = vgatext.Color;
+
+/// Console geometry. Fixed at 80x25 in text mode, and whatever the framebuffer
+/// affords otherwise, so it cannot be a compile-time constant.
+var columns: usize = vgatext.WIDTH;
+var rows: usize = vgatext.HEIGHT;
+
+pub fn width() usize {
+    return columns;
+}
+
+pub fn height() usize {
+    return rows;
+}
+
+/// Retained for callers that predate a resizable console.
+pub const COLUMNS = vgatext.WIDTH;
+pub const ROWS = vgatext.HEIGHT;
+
+/// Switch to the framebuffer if stage2 set a graphics mode.
+///
+/// Called early, before anything has been drawn: in graphics mode the text
+/// buffer at 0xB8000 is not displayed, so output written before the switch
+/// would simply vanish.
+pub fn useFramebuffer(bi: *const bootinfo.BootInfo) bool {
+    if (!fbcon.init(bi)) return false;
+    const dims = fbcon.dimensions();
+    columns = dims.columns;
+    rows = dims.rows;
+    moveTo(0, 0);
+    return true;
+}
+
+const backend = struct {
+    fn putAt(x: usize, y: usize, ch: u8, front: Color, back: Color) void {
+        if (fbcon.active()) {
+            fbcon.putAt(x, y, ch, @intFromEnum(front), @intFromEnum(back));
+        } else {
+            vgatext.putAt(x, y, ch, front, back);
+        }
+    }
+
+    fn fill(ch: u8, front: Color, back: Color) void {
+        if (fbcon.active()) {
+            fbcon.fill(ch, @intFromEnum(front), @intFromEnum(back));
+        } else {
+            vgatext.fill(ch, front, back);
+        }
+    }
+
+    fn scroll(front: Color, back: Color) void {
+        if (fbcon.active()) {
+            fbcon.scroll(@intFromEnum(back));
+        } else {
+            vgatext.scroll(front, back);
+        }
+    }
+
+    fn setCursor(x: usize, y: usize) void {
+        if (!fbcon.active()) vgatext.setCursor(x, y);
+    }
+};
 
 /// Width of the key column in the boot log. Defined once so `field`, `warn`
 /// and `fail` cannot drift out of alignment with each other.
@@ -42,8 +103,8 @@ pub fn fill(background: Color, foreground: Color) void {
 }
 
 pub fn moveTo(x: usize, y: usize) void {
-    col = @min(x, COLUMNS - 1);
-    row = @min(y, ROWS - 1);
+    col = @min(x, columns - 1);
+    row = @min(y, rows - 1);
     backend.setCursor(col, row);
 }
 
@@ -56,9 +117,9 @@ pub fn putAt(x: usize, y: usize, ch: u8, f: Color, b: Color) void {
 fn newline() void {
     col = 0;
     row += 1;
-    if (row >= ROWS) {
+    if (row >= rows) {
         backend.scroll(fg, bg);
-        row = ROWS - 1;
+        row = rows - 1;
     }
 }
 
@@ -69,10 +130,10 @@ pub fn putChar(c: u8) void {
         '\r' => col = 0,
         '\t' => {
             const next = (col + 8) & ~@as(usize, 7);
-            while (col < next and col < COLUMNS) : (col += 1) {
+            while (col < next and col < columns) : (col += 1) {
                 backend.putAt(col, row, ' ', fg, bg);
             }
-            if (col >= COLUMNS) newline();
+            if (col >= columns) newline();
         },
         8 => if (col > 0) {
             col -= 1;
@@ -81,7 +142,7 @@ pub fn putChar(c: u8) void {
         else => {
             backend.putAt(col, row, c, fg, bg);
             col += 1;
-            if (col >= COLUMNS) newline();
+            if (col >= columns) newline();
         },
     }
 }
@@ -159,8 +220,11 @@ fn logLine(key: []const u8, key_color: Color, comptime fmt: []const u8, args: an
     writeString(key);
     setColor(saved, bg);
 
+    // At least one space, so a key exactly KEY_WIDTH long does not run into
+    // its value.
     var n = key.len;
     while (n < KEY_WIDTH) : (n += 1) putChar(' ');
+    if (key.len >= KEY_WIDTH) putChar(' ');
 
     printf(fmt, args);
     putChar('\n');

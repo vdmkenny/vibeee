@@ -205,10 +205,10 @@ fn render(r: *const Report) noreturn {
 
     const quiet = 4;
     const qr_cols: usize = if (have_qr) @as(usize, code.size) + 2 * quiet else 0;
-    const text_width: usize = console.COLUMNS - qr_cols - 1;
+    const text_width: usize = console.width() - qr_cols - 1;
 
     drawText(r, text_width);
-    if (have_qr) drawQr(&code, console.COLUMNS - qr_cols, 1, quiet);
+    if (have_qr) drawQr(&code, console.width() - qr_cols, 1, quiet);
 
     hal.halt();
 }
@@ -263,10 +263,10 @@ fn drawText(r: *const Report, width: usize) void {
     }
 
     _ = width;
-    console.moveTo(1, console.ROWS - 3);
+    console.moveTo(1, console.height() - 3);
     console.setColor(DIM, BG);
     console.writeString("Scan the code for the full dump,");
-    console.moveTo(1, console.ROWS - 2);
+    console.moveTo(1, console.height() - 2);
     console.writeString("or photograph the whole screen.");
     console.setColor(FG, BG);
 }

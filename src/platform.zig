@@ -13,7 +13,10 @@ const probe = @import("kernel/probe.zig");
 const bootinfo = @import("kernel/bootinfo.zig");
 const drivers = @import("drivers.zig");
 const ramdisk = @import("drv/block/ramdisk.zig");
+const acpi = @import("drv/acpi/tables.zig");
+const acpi_power = @import("drv/acpi/power.zig");
 const cmos = @import("drv/rtc/cmos.zig");
+const shutdown = @import("kernel/shutdown.zig");
 const kbd = @import("drv/input/i8042.zig");
 const uart = @import("drv/serial/uart16550.zig");
 const bcache = @import("kernel/bcache.zig");
@@ -43,7 +46,18 @@ pub fn earlyConsole() void {
     }
 }
 
-pub fn earlyDevices() void {
+pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
+    acpi.init(bi.rsdp);
+    shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
+
+    if (acpi.get()) |a| {
+        if (a.s5_found) {
+            console.debug("acpi", "pm1a {x:0>4}, S5 type {d}", .{ a.pm1a_control, a.slp_typ_a });
+        } else {
+            console.warn("acpi: no S5 in DSDT; power off will fall back", .{});
+        }
+    }
+
     const t = cmos.now();
     if (cmos.looksUnset(t)) {
         console.warn("rtc: clock not set; TLS will fail until time is corrected", .{});

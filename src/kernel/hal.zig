@@ -77,6 +77,11 @@ pub const dropBootIdentityMapping = impl.dropBootIdentityMapping;
 pub const AddressSpace = impl.AddressSpace;
 /// The address space the kernel booted with, used by kernel-only threads.
 pub const kernelAddressSpace = impl.kernelAddressSpace;
+/// Map a device aperture into the kernel half. Needed for anything at a
+/// physical address above RAM, which the linear map does not reach.
+pub const mapMmio = impl.mapMmio;
+/// True when a physical address is reachable through the linear map.
+pub const isLinearPhys = impl.isLinearPhys;
 
 // ---------------------------------------------------------------------------
 // Threads

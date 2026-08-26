@@ -174,6 +174,17 @@ pub const table = [_]Syscall{
         .errors = &.{ E.fault, E.inval },
         .notes = "Separate from write() so diagnostics survive a process losing its console handle. Rate-limited.",
     },
+    .{
+        .number = 8,
+        .name = "shutdown",
+        .summary = "Flush all filesystems and stop the machine.",
+        .args = &.{
+            .{ .name = "action", .kind = .uint, .desc = "0 power off, 1 reboot, 2 halt." },
+        },
+        .returns = "does not return",
+        .errors = &.{E.inval},
+        .notes = "Unmounts every filesystem and flushes every device before acting. FAT has no journal, so this is the only way to guarantee written data reached the medium.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

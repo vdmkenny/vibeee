@@ -37,6 +37,8 @@ pub const invalidatePage = paging.invalidatePage;
 pub const dropBootIdentityMapping = paging.dropIdentityMapping;
 pub const AddressSpace = paging.AddressSpace;
 pub const kernelAddressSpace = paging.kernelAddressSpace;
+pub const mapMmio = paging.mapMmio;
+pub const isLinearPhys = paging.isLinear;
 
 pub fn initCpu(kernel_stack_top: usize) void {
     cpu.cli();

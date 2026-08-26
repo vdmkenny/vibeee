@@ -13,6 +13,7 @@ pub const SYS_SLEEP_US = 4;
 pub const SYS_CLOCK_US = 5;
 pub const SYS_GETPID = 6;
 pub const SYS_LOG = 7;
+pub const SYS_SHUTDOWN = 8;
 
 pub const STDIN = 0;
 pub const STDOUT = 1;
@@ -71,6 +72,15 @@ pub fn clockMicros() u64 {
     var out: u64 = 0;
     _ = syscall1(SYS_CLOCK_US, @intFromPtr(&out));
     return out;
+}
+
+pub const POWER_OFF = 0;
+pub const REBOOT = 1;
+pub const HALT = 2;
+
+pub fn shutdown(action: usize) noreturn {
+    _ = syscall1(SYS_SHUTDOWN, action);
+    unreachable;
 }
 
 pub fn exit(status: usize) noreturn {

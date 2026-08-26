@@ -77,7 +77,7 @@ export fn main() callconv(.c) noreturn {
 
     // Echo what is typed, proving the whole input chain: i8042 to keycode to
     // layout to line discipline to read().
-    _ = sys.write(sys.STDOUT, "type something (or 'quit'):\n");
+    _ = sys.write(sys.STDOUT, "type something ('off' to power down, 'quit' to exit):\n");
 
     var buf: [256]u8 = undefined;
     while (true) {
@@ -90,6 +90,8 @@ export fn main() callconv(.c) noreturn {
         if (line.len > 0 and line[line.len - 1] == '\n') line = line[0 .. line.len - 1];
 
         if (eql(line, "quit")) break;
+        if (eql(line, "off")) sys.shutdown(sys.POWER_OFF);
+        if (eql(line, "reboot")) sys.shutdown(sys.REBOOT);
 
         _ = sys.write(sys.STDOUT, "you typed: ");
         _ = sys.write(sys.STDOUT, line);

@@ -43,6 +43,10 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     console.setVerbose(std.mem.indexOf(u8, bi.cmdlineSlice(), "verbose") != null);
     platform.earlyConsole();
 
+    // Before anything is drawn: in graphics mode the text buffer is no longer
+    // displayed, so output written first would vanish.
+    _ = console.useFramebuffer(bi);
+
     // stage2 has no serial port to log to, so it logs to a RAM ring. Replay it
     // only when it has something to say.
     if (bi.log_phys != 0 and bi.log_len != 0) {
@@ -98,16 +102,16 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
 
     selfTestSyscalls();
 
-    platform.earlyDevices();
+    platform.earlyDevices(bi);
     platform.probeHardware(bi);
-
-    startThreads();
 
     if (std.mem.indexOf(u8, bi.cmdlineSlice(), "panictest") != null) {
         // Paging is on, but nothing unmapped is easy to name; an invalid opcode
         // is the reliable way to exercise the exception path.
         asm volatile ("ud2");
     }
+
+    startThreads();
 
     // Idle rather than spin: QEMU should not burn a host core, and the real
     // machine should not cook itself.

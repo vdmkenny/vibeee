@@ -124,6 +124,22 @@ Write a line to the kernel log.
 
 Separate from write() so diagnostics survive a process losing its console handle. Rate-limited.
 
+## `shutdown`  <sub>#8</sub>
+
+Flush all filesystems and stop the machine.
+
+| arg | type | meaning |
+|---|---|---|
+| `action` | uint | 0 power off, 1 reboot, 2 halt. |
+
+**Returns:** does not return
+
+**Errors:**
+
+- `EINVAL` — an argument is out of range
+
+Unmounts every filesystem and flushes every device before acting. FAT has no journal, so this is the only way to guarantee written data reached the medium.
+
 ---
 
-8 calls defined.
+9 calls defined.
