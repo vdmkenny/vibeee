@@ -504,6 +504,12 @@ The highest-leverage item in this document for development speed. `eeewm` and ev
 
 Rebranded, in our own style, all `libeui`:
 
+**Naming.** System components carry the `eee` prefix: `eeewm`, `eeefetch`, `eeelibc`. Nobody
+types those, and the prefix says at a glance that the thing belongs to the system rather than
+to the user. Applications do not: they are typed, spoken and read constantly, and `eeeterm`
+is three wasted keystrokes every time. `eTerm` keeps the family resemblance at one character;
+the rest are plain nouns because they are already short.
+
 | App | Analogue | Notes |
 |---|---|---|
 | **Pad** | WordPad | Rich-ish text: bold/italic, sizes, save as `.txt`/`.rtf`-lite |
