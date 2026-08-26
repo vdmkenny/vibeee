@@ -8,6 +8,8 @@
 ZIG      ?= zig
 NASM     ?= nasm
 QEMU     ?= qemu-system-i386
+MFORMAT  ?= mformat
+MCOPY    ?= mcopy
 
 BUILD    := build
 IMAGE    := $(BUILD)/vibeee.img
@@ -22,7 +24,15 @@ CMDLINE  ?=
 # the boot chain, memory, interrupts and PCI enumeration; nothing more.
 QEMU_FLAGS := -machine pc -cpu pentium2 -m 512M -no-reboot
 
+# Partition 1 layout, mirrored from tools/mkimage.zig. mtools addresses an
+# image at a byte offset with the @@ syntax, which is how the filesystem gets
+# created inside the partition without loopback mounts or root.
+PART1_LBA     := 8192
+PART1_OFFSET  := $(shell expr $(PART1_LBA) \* 512)
+PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
+
 KERNEL_ELF := zig-out/bin/vibeee.elf
+USER_HELLO := zig-out/bin/hello
 KERNEL_BIN := $(BUILD)/kernel.bin
 STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
@@ -76,6 +86,17 @@ image: $(IMAGE)
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)"
+	@$(MAKE) --no-print-directory populate IMG=$@
+
+# Create the filesystem in partition 1 and fill it. Separate from mkimage
+# because formatting FAT is exactly the kind of thing not worth reimplementing:
+# mtools is proven, and it needs neither root nor a loopback mount.
+.PHONY: populate
+populate: kernel
+	@$(MFORMAT) -i $(IMG)@@$(PART1_OFFSET) -F -T $(PART1_SECTORS) -v VIBEEE ::
+	@$(MCOPY) -i $(IMG)@@$(PART1_OFFSET) -o $(USER_HELLO) ::/HELLO
+	@echo "vibeee $(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/version.txt
+	@$(MCOPY) -i $(IMG)@@$(PART1_OFFSET) -o $(BUILD)/version.txt ::/VERSION.TXT
 
 # ---------------------------------------------------------------------------
 # Running
@@ -93,6 +114,7 @@ $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
 # A plain `make image` is quiet: a working system should boot without narrating.
 qemu: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-dev.img $(IMAGE_MB) verbose
+	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-dev.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-dev.img
 
 run: qemu
@@ -127,6 +149,7 @@ qr-verify: $(BUILD)/qrdump
 .PHONY: qemu-panic
 qemu-panic: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-panic.img $(IMAGE_MB) panictest
+	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-panic.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-panic.img
 
 # ---------------------------------------------------------------------------
