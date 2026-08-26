@@ -1,9 +1,13 @@
 # vibeee Kernel Core Design (02-kernel-core)
 
-> **Status: design only — not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
-> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
-> it carries later decisions this document predates.
+> **Status: partially implemented.**
+>
+> Built and working: physical memory ([`pmm.zig`](../src/kernel/pmm.zig)), the slab heap ([`heap.zig`](../src/kernel/heap.zig)), the O(1) scheduler with per-thread FPU state ([`sched.zig`](../src/kernel/sched.zig)), per-process address spaces, the ELF loader ([`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig)), the handle table ([`handle.zig`](../src/kernel/handle.zig)), table-driven syscalls ([`syscall_table.zig`](../src/kernel/syscall_table.zig)), timekeeping ([`clock.zig`](../src/kernel/clock.zig)), and clean shutdown ([`shutdown.zig`](../src/kernel/shutdown.zig)).
+>
+> Not yet: IPC channels and shared-memory rings, the userspace-driver API, the ublk bridge, SYSENTER (the dispatcher is still `int 0x80`), and devfs.
+>
+> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
+> wins: it carries later decisions this document predates.
 
 Target: ASUS Eee PC 701 4G only. Celeron M 353 (Dothan C-0, 630 MHz, single core, 32-bit), 512 MB DDR2 (~504 MB usable), no serial port. Zig freestanding i686 + NASM stubs, ReleaseSmall.
 

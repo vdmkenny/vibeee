@@ -160,6 +160,171 @@ Read a named piece of system information.
 
 Values are text, except "smbios" which returns the raw DMI structure table for a userspace decoder. A keyed interface rather than a struct, so adding a value is not an ABI break.
 
+## `open`  <sub>#10</sub>
+
+Open a file or directory.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | Absolute path. |
+| `path_len` | len | Length of the path. |
+| `flags` | flags | Bit 0 set opens a directory for reading entries. |
+
+**Returns:** a handle
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+- `ENOENT` — no such file or directory
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+Read-only. Writing needs cluster allocation in the FAT driver, which is not written yet.
+
+## `close`  <sub>#11</sub>
+
+Close a handle.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | Handle to release. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+
+Closing a file releases the mount reference it held; a volume with handles still open cannot be unmounted.
+
+## `seek`  <sub>#12</sub>
+
+Move a file handle's read position.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | An open file. |
+| `offset` | int | Displacement, interpreted per `whence`. |
+| `whence` | uint | 0 from start, 1 from current, 2 from end. |
+
+**Returns:** the new position
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+- `EINVAL` — an argument is out of range
+
+## `readdir`  <sub>#13</sub>
+
+Read the next entry from an open directory.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | A directory handle from open() with the directory flag. |
+| `buf` | ptr | Receives a DirEntry: u32 size, u8 flags, u8 name_len, then the name. |
+| `buf_len` | len | Capacity of the buffer. |
+
+**Returns:** bytes written, or 0 when the directory is exhausted
+
+**Errors:**
+
+- `EBADF` — the handle is not open in this process
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+## `stat`  <sub>#14</sub>
+
+Describe a path without opening it.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | Absolute path. |
+| `path_len` | len | Length of the path. |
+| `buf` | ptr | Receives the same DirEntry layout readdir() produces. |
+| `buf_len` | len | Capacity of the buffer. |
+
+**Returns:** bytes written
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ENOENT` — no such file or directory
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+## `spawn`  <sub>#15</sub>
+
+Load and run a program, and wait for it to finish.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | Absolute path to an ELF executable. |
+| `path_len` | len | Length of the path. |
+| `argv` | const ptr | Packed arguments: u16 count, then each as u16 length followed by bytes. |
+| `argv_len` | len | Length of the packed block. |
+
+**Returns:** the program's exit status
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ENOENT` — no such file or directory
+- `EINVAL` — an argument is out of range
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+Synchronous: the caller blocks until the child exits. Deliberately not fork — see design/00-vibeee.md §13. Asynchronous spawn arrives with job control, which needs somewhere to report a finished background job.
+
+## `chdir`  <sub>#16</sub>
+
+Change the working directory.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | Directory to move to; may be relative. |
+| `path_len` | len | Length of the path. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ENOENT` — no such file or directory
+- `EINVAL` — an argument is out of range
+
+The directory must exist. A child started afterwards inherits it.
+
+## `getcwd`  <sub>#17</sub>
+
+Read the working directory.
+
+| arg | type | meaning |
+|---|---|---|
+| `buf` | ptr | Receives the absolute path. |
+| `buf_len` | len | Capacity of the buffer. |
+
+**Returns:** bytes written
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ENOMEM` — no handle slots free, or the buffer is too small
+
+## `realtime_us`  <sub>#18</sub>
+
+Read the wall clock.
+
+| arg | type | meaning |
+|---|---|---|
+| `out` | ptr | Pointer to an i64 that receives microseconds since 1970-01-01 UTC. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `EINVAL` — an argument is out of range
+
+UTC, never local time. EINVAL until the clock has been set from a source; a machine whose battery-backed clock has failed reports that it does not know the time rather than claiming 1970. Use clock_us for measuring intervals: this one can step when a better source corrects it.
+
 ---
 
-10 calls defined.
+19 calls defined.

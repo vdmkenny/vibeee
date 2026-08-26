@@ -1,9 +1,13 @@
 # vibeee Input Stack Design (05-input)
 
-> **Status: design only — not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
-> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
-> it carries later decisions this document predates.
+> **Status: partially implemented.**
+>
+> Built and working: the i8042 driver ([`drv/input/i8042.zig`](../src/drv/input/i8042.zig)) with scancode set 1 decoding, the kernel input core ([`input.zig`](../src/kernel/input.zig)), and keymaps compiled from one file per layout ([`src/keymaps/`](../src/keymaps/)) — US-International and Belgian AZERTY, with dead-key composition and `Super+Space` to switch.
+>
+> Not yet: the touchpad probe ladder, `/dev/input`, and the ATKD hotkeys.
+>
+> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
+> wins: it carries later decisions this document predates.
 
 Status: implementation-ready design. Target: ASUS Eee PC 701 4G only.
 Scope: i8042 controller, PS/2 keyboard (set-2 decode, keycodes), touchpad

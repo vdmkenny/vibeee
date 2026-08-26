@@ -2,11 +2,12 @@
 
 A from-scratch minimal graphical OS in Zig. Flagship target: **ASUS Eee PC 701 4G**. Written to be portable to similar constrained machines (other netbooks, ARM CE-era devices) by containing machine-specific code behind explicit boundaries.
 
-**Implementation status.** This document is the design. What actually exists today is the M0
-set — bootloader, kernel entry, console, descriptor tables, interrupt vectors, physical memory
-manager, PCI enumeration, driver probing, and the QR panic screen — listed precisely in
-[`../README.md`](../README.md). Everything else here is unbuilt. Subsystem documents
-`01`–`11` carry their own status headers.
+**Implementation status.** This document is the design. What exists today is the M0–M1 set —
+boot chain, memory, interrupts, the O(1) scheduler, syscalls, Ring 3 with per-process address
+spaces and an ELF loader, ATA and FAT behind a mount table, the framebuffer console, the i8042
+keyboard with switchable layouts, timekeeping, ACPI shutdown, and a shell with a set of system
+tools — listed precisely in [`../README.md`](../README.md). Everything else here is unbuilt.
+Subsystem documents `01`–`11` carry their own status headers.
 
 Companion docs: [`01-boot.md`](01-boot.md) … [`11-userspace.md`](11-userspace.md) hold the
 per-subsystem detail; this document is authoritative where they differ, since it carries later
@@ -82,7 +83,9 @@ src/
   board/generic-pc/# Fallback board: VESA + PS/2 + PATA + ACPI only
   kernel/          # Portable: mm, sched, ipc, vfs, handles, driver registry
   drv/             # Drivers; each declares which arch/bus it needs
-  svc/  lib/  app/ # Userspace — portable by construction
+  lib/             # Pure computation, compiled into BOTH kernel and userspace
+  user/            # The shell and system tools, as ordinary ELF programs
+  svc/  app/       # Userspace servers and applications — portable by construction
 ```
 
 Rules:
@@ -91,7 +94,8 @@ Rules:
 3. **`board/` supplies data, not code, wherever possible** — device tables, quirk flags, timings. A new machine should be mostly a new table.
 4. **Endianness and word size** are parameters (`usize`, `std.mem.readInt` with explicit endianness) — never assumed.
 5. Port I/O (`in`/`out`) exists only on x86; drivers needing it declare `.needs = .{ .port_io = true }` and are excluded from non-x86 builds at comptime.
-6. **The rules are enforced, not just documented.** `tools/check-layering.zig` runs as part of every `zig build` and fails it on a violation, with the offending file, line and rule. A rule that is only written down decays: the breach stays invisible until someone attempts a port and finds the HAL was quietly bypassed a dozen times. Exceptions are listed in that file, each with its reason, so the compromises are countable. `src/platform.zig` is the composition root — the one file permitted to know about kernel core, the architecture layer and concrete drivers at once — which is what lets everything else stay strict.
+6. **`lib/` is shared by both sides of the privilege boundary**, so it holds nothing but pure computation — no state, no hardware, no syscalls. Calendar arithmetic lives there because the kernel needs it to stamp a FAT directory entry and `date` needs it to print one, and one leap-year rule in the system is better than two that can disagree. It is imported as a named module rather than by relative path, so kernel and userspace get the same instance and its types are the same type across a syscall.
+7. **The rules are enforced, not just documented.** `tools/check-layering.zig` runs as part of every `zig build` and fails it on a violation, with the offending file, line and rule. A rule that is only written down decays: the breach stays invisible until someone attempts a port and finds the HAL was quietly bypassed a dozen times. Exceptions are listed in that file, each with its reason, so the compromises are countable. `src/platform.zig` is the composition root — the one file permitted to know about kernel core, the architecture layer and concrete drivers at once — which is what lets everything else stay strict.
 
 A second, cheaper portability payoff: the **host backend** (§10.6) lets the GUI and most userspace compile as a normal Linux/macOS binary, which is where most iteration happens.
 
@@ -185,7 +189,13 @@ Tick source: **LAPIC timer** in one-shot mode (tickless-ish; ~250 Hz effective u
 
 ### 6.5 Time
 
-Ladder, in order of preference: **HPET** (must be force-enabled ourselves — read RCBA from LPC cfg 0xF0, set bit in HPTC at RCBA+0x3404, then it decodes at 0xFED00000; the BIOS does not declare it in ACPI) → **ACPI PM timer** at I/O 0x808 (always present, 3.579545 MHz) → PIT. TSC is used only as a fast *relative* counter within a scheduling quantum, never as the monotonic clock, because it stops in idle. Wall clock from the CMOS RTC (0x70/0x71) with century handling, corrected by SNTP once networking is up — the research is right that these machines' CMOS batteries are long dead, and **a wrong clock breaks TLS**, so SNTP is a v1 requirement, not a nicety.
+Ladder, in order of preference: **HPET** (must be force-enabled ourselves — read RCBA from LPC cfg 0xF0, set bit in HPTC at RCBA+0x3404, then it decodes at 0xFED00000; the BIOS does not declare it in ACPI) → **ACPI PM timer** at I/O 0x808 (always present, 3.579545 MHz) → PIT. TSC is used only as a fast *relative* counter within a scheduling quantum, never as the monotonic clock, because it stops in idle.
+
+**Two clocks, one of them derived.** [`kernel/clock.zig`](../src/kernel/clock.zig) exposes a monotonic clock counting microseconds since boot, and a wall clock that is *not* read from hardware on demand: it is an offset, established once, plus however long the machine has been up. Reading the CMOS RTC costs several port round trips and must be retried to avoid catching a mid-carry update, which is too much to pay per timestamp; deriving from the monotonic counter also gives microsecond resolution and guarantees that two timestamps taken in order compare in order.
+
+Where the offset comes from is not the clock's concern. The RTC (0x70/0x71, with century handling) supplies it at boot; SNTP will supply a better one over the network later, through the same `set` call, so nothing else has to learn that the source changed. The research is right that these machines' CMOS batteries are long dead, and **a wrong clock breaks TLS**, so SNTP is a v1 requirement, not a nicety. Until something sets it, the clock reports that it does not know the time rather than claiming 1970 — `realtime_us` returns `EINVAL` and `date` says so.
+
+UTC throughout, never local time. A timezone is a display concern; applying one in the kernel would mean every holder of a timestamp had to know whether it had already been shifted. The calendar arithmetic is in [`lib/civil.zig`](../src/lib/civil.zig), shared with userspace (§3 rule 6).
 
 ### 6.6 Interrupts
 

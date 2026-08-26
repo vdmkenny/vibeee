@@ -6,10 +6,14 @@
 > layer, page-cache and FAT sections here still apply; treat everything about
 > `eeefs` as a record of an option that was considered and dropped.
 >
-> **Status: design only — not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
-> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
-> it carries later decisions this document predates.
+> **Status: partially implemented.**
+>
+> Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)) and the boot ramdisk.
+>
+> Not yet: writes of any kind, the page cache, swap, and mounting removable media (which needs USB first).
+>
+> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
+> wins: it carries later decisions this document predates.
 
 Status: design v1. Owner: storage subsystem. Targets kernel contracts v0.
 

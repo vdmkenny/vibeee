@@ -1,9 +1,13 @@
 # vibeee Userspace Foundations (design/11-userspace.md)
 
-> **Status: design only — not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
-> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
-> it carries later decisions this document predates.
+> **Status: partially implemented.**
+>
+> Built and working: the shell ([`vsh.zig`](../src/user/vsh.zig)) with builtins and command lookup, the multicall tools binary ([`tools.zig`](../src/user/tools.zig)) carrying `ls`, `cat`, `hexdump`, `grep`, `free`, `top`, `disk`, `date`, `eeefetch` and `dmidecode`, and the shared userspace helpers in [`src/user/lib/`](../src/user/lib/).
+>
+> Not yet: pipes and redirection, the `kilo` editor, `eeelibc`, the service supervisor, and package management.
+>
+> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
+> wins: it carries later decisions this document predates.
 
 Subsystem: init/service management, devmgd, eeelibc, CLI environment, configuration system, and the build system (Makefiles → dd-able SD image).
 
