@@ -340,6 +340,14 @@ fn run() noreturn {
     while (true) {
         var acted = serve();
 
+        // Applications are this process's children, so their exits arrive
+        // here. Collecting them is both how a window closed from inside an
+        // application disappears and how the process table stays clean.
+        while (sys.wait(0, sys.POLL)) |exited| {
+            forgetClient(exited.pid);
+            acted = true;
+        }
+
         const keys = sys.keyRead(&key_events, sys.POLL);
         for (keys) |event| {
             // While the bar holds focus it takes everything, so plain arrows
@@ -500,6 +508,11 @@ fn handleKey(event: sys.KeyEvent) void {
 fn handlePointer(event: sys.PointerEvent) void {
     pointer_x = event.x;
     pointer_y = event.y;
+
+    // An open menu tracks the pointer. Nothing else does: motion is otherwise
+    // just the cursor moving, and repainting for it is what made the display
+    // flicker.
+    if (bar.hover(event.x, event.y, info.width, info.height, &desktop)) dirty = true;
     const was_down = buttons.left;
     const was_right = buttons.right;
     buttons = event.buttons;
@@ -579,9 +592,7 @@ fn dispatch(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
         .map => onMap(pid, req),
         .unmap, .destroy_win => onDestroy(pid, req),
         .bye => blk: {
-            desktop.closeClient(pid);
-            table.evict(pid);
-            dirty = true;
+            forgetClient(pid);
             break :blk .{ .rep = .{ .gen = table.generation } };
         },
     };
@@ -780,6 +791,21 @@ fn requestClose(index: usize) void {
         .win = w.client_win,
         .t_us = @truncate(sys.clockMicros()),
     });
+}
+
+/// Let go of everything a client had.
+///
+/// Both for a client that says goodbye and for one that simply exits. The
+/// second is the ordinary case rather than the exception: a program closed
+/// from its own menu, or one that crashed, never gets to say anything, and a
+/// window left behind by a process that no longer exists is a window nothing
+/// can ever remove.
+fn forgetClient(pid: u32) void {
+    for (0..layout.MAX_WINDOWS) |i| {
+        const w = &desktop.windows[i];
+        if (w.used and w.client_pid == pid) dropWindow(i);
+    }
+    table.evict(pid);
 }
 
 /// Take a window away without asking. For a client that has gone, or one that

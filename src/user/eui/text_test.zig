@@ -129,3 +129,27 @@ test "measuring counts characters, not bytes" {
         text.positionOf(sample, mono, columns(10), 4),
     );
 }
+
+test "the cursor after a trailing newline is on the new line, not the old one" {
+    const sample = "abc\n";
+    try std.testing.expectEqual(
+        text.Position{ .line = 1, .x = 0 },
+        text.positionOf(sample, mono, columns(20), 4),
+    );
+}
+
+test "the cursor at the end of text without a newline stays on the last line" {
+    const sample = "abc";
+    try std.testing.expectEqual(
+        text.Position{ .line = 0, .x = columns(3) },
+        text.positionOf(sample, mono, columns(20), 3),
+    );
+}
+
+test "the cursor on an empty line between two others" {
+    const sample = "a\n\nb";
+    try std.testing.expectEqual(
+        text.Position{ .line = 1, .x = 0 },
+        text.positionOf(sample, mono, columns(20), 2),
+    );
+}

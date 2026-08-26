@@ -187,17 +187,28 @@ pub const Position = struct { line: usize, x: i32 };
 pub fn positionOf(text: []const u8, font: *const draw.Font, width: i32, offset: usize) Position {
     var index: usize = 0;
     var it = lines(text, font, width);
+    var last = Line{ .start = 0, .end = 0, .next = 0 };
+    var last_index: usize = 0;
 
-    while (it.next()) |line| {
-        // `next` rather than `end`, so an offset on a newline belongs to the
-        // line it terminates rather than to the one after.
-        if (offset < line.next or line.next == text.len) {
+    while (it.next()) |line| : (index += 1) {
+        // The first line that has not gone past the offset yet. `next` rather
+        // than `end`, so an offset on a newline belongs to the line that
+        // newline terminates rather than to the one after it.
+        if (offset < line.next) {
             const upto = text[line.start..@min(@max(offset, line.start), line.end)];
             return .{ .line = index, .x = @intCast(font.measure(upto)) };
         }
-        index += 1;
+        last = line;
+        last_index = index;
     }
-    return .{ .line = index -| 1, .x = 0 };
+
+    // Past every line, which is where the cursor sits at the end of the text.
+    // Reached by falling through rather than by a test inside the loop: a
+    // document ending in a newline has a last line that is empty and holds
+    // nothing to compare against, and treating the end of the text as part of
+    // the line before it put the cursor at the end of the previous line until
+    // the next character was typed.
+    return .{ .line = last_index, .x = @intCast(font.measure(text[last.start..last.end])) };
 }
 
 /// The line at `index`, or the last one.

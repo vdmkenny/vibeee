@@ -702,6 +702,15 @@ pub const Menu = struct {
         };
     }
 
+    /// Move the selection to whatever the pointer is over.
+    ///
+    /// Called before painting, so the highlight follows the cursor as well as
+    /// the arrow keys: a menu whose highlight sat still while the pointer
+    /// moved over it looks like a menu that has stopped responding.
+    pub fn hover(self: *Menu, area: Rect, items: []const MenuItem, x: i32, y: i32) void {
+        if (rowAt(area, items, x, y)) |row| self.selected = row;
+    }
+
     pub fn paint(self: *const Menu, surface: Surface, area: Rect, items: []const MenuItem) void {
         const t = theme.current();
 

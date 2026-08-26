@@ -236,6 +236,33 @@ fn paintAdd(surface: Surface, width: i32, height: i32, desktop: *const layout.De
 /// A dropdown reaches below the bar and over the tiles, so painting it with
 /// the strip would put it under whatever is drawn next. Overlays go last, by
 /// definition.
+/// Move an open menu's highlight to whatever the pointer is over.
+///
+/// True when it changed, so the manager knows to repaint. Motion does not
+/// otherwise repaint anything, which is what keeps moving the pointer cheap.
+pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Desktop) bool {
+    if (menu_tab) |tab| {
+        var buf: [layout.MAX_WINDOWS]usize = undefined;
+        const list = desktop.windowsOn(tab, &buf);
+
+        var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+        for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+
+        const before = window_menu.selected;
+        window_menu.hover(menuRect(width, height, desktop, tab), rows[0..list.len], x, y);
+        return window_menu.selected != before;
+    }
+
+    if (launcher.open) {
+        var rows: [items.len]ui.MenuItem = undefined;
+        const before = launcher.selected;
+        launcher.hover(launchMenuRect(height), menuItems(&rows), x, y);
+        return launcher.selected != before;
+    }
+
+    return false;
+}
+
 pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     if (menu_tab) |tab| {
         var buf: [layout.MAX_WINDOWS]usize = undefined;
