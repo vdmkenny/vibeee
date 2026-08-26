@@ -264,7 +264,8 @@ sd: $(IMAGE)
 	@diskutil info $(DEV) 2>/dev/null | grep -E "Device / Media Name|Disk Size|Removable Media|Virtual" || true
 	@printf "Type ERASE to continue: "; read ans; [ "$$ans" = "ERASE" ] || { echo aborted; exit 1; }
 	diskutil unmountDisk $(DEV) || true
-	dd if=$(IMAGE) of=$(DEV) bs=1m status=progress
+	@echo "Writing to a raw device needs root; the build itself does not."
+	sudo dd if=$(IMAGE) of=$(DEV) bs=1m status=progress
 	sync
 	diskutil eject $(DEV) || true
 
