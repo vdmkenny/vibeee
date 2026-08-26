@@ -71,48 +71,50 @@ pub fn splitWords(text: []const u8, words: [][]const u8) usize {
 
 /// Iterate lines, without the terminator. A final line with no newline still
 /// counts, which is what makes it safe over a truncated read.
-pub const LineIterator = struct {
+/// Split on a single separator byte.
+///
+/// One iterator rather than one per separator: lines, tab-separated columns and
+/// comma-separated lists are the same traversal, and having three near-copies
+/// of it was three places for the end-of-input case to differ.
+///
+/// A trailing separator does not produce a final empty piece, so "a\n" is one
+/// line rather than two — which is what every caller here wants and what the
+/// alternative kept getting wrong.
+pub const Splitter = struct {
     text: []const u8,
+    separator: u8,
     pos: usize = 0,
 
-    pub fn next(self: *LineIterator) ?[]const u8 {
+    pub fn next(self: *Splitter) ?[]const u8 {
         if (self.pos >= self.text.len) return null;
         const start = self.pos;
-        while (self.pos < self.text.len and self.text[self.pos] != '\n') self.pos += 1;
-        const line = self.text[start..self.pos];
+        while (self.pos < self.text.len and self.text[self.pos] != self.separator) self.pos += 1;
+        const piece = self.text[start..self.pos];
         if (self.pos < self.text.len) self.pos += 1;
-        return line;
+        return piece;
     }
 };
 
-pub fn lines(text: []const u8) LineIterator {
-    return .{ .text = text };
+pub fn split(text: []const u8, separator: u8) Splitter {
+    return .{ .text = text, .separator = separator };
 }
 
-/// Iterate tab-separated fields, which is how the kernel returns tabular
-/// information: it emits the values and leaves column widths to whoever is
-/// displaying them.
-pub const FieldIterator = struct {
-    text: []const u8,
-    pos: usize = 0,
-    done: bool = false,
+pub fn lines(text: []const u8) Splitter {
+    return split(text, '\n');
+}
 
-    pub fn next(self: *FieldIterator) ?[]const u8 {
-        if (self.done) return null;
-        const start = self.pos;
-        while (self.pos < self.text.len and self.text[self.pos] != '\t') self.pos += 1;
-        const field = self.text[start..self.pos];
-        if (self.pos < self.text.len) {
-            self.pos += 1;
-        } else {
-            self.done = true;
-        }
-        return field;
-    }
-};
+/// Tab-separated fields, which is how the kernel returns tabular information:
+/// it emits the values and leaves column widths to whoever displays them.
+pub fn fields(text: []const u8) Splitter {
+    return split(text, '\t');
+}
 
-pub fn fields(text: []const u8) FieldIterator {
-    return .{ .text = text };
+/// Drop leading and trailing whitespace.
+pub fn trim(text: []const u8) []const u8 {
+    var rest = text;
+    while (rest.len > 0 and isSpace(rest[0])) rest = rest[1..];
+    while (rest.len > 0 and isSpace(rest[rest.len - 1])) rest = rest[0 .. rest.len - 1];
+    return rest;
 }
 
 /// Strip leading spaces, reporting whether there were any.

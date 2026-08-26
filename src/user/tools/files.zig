@@ -4,7 +4,6 @@
 //! system needs before anything else can be investigated from inside it.
 
 const sys = @import("../syscall.zig");
-const dirent = @import("../lib/dirent.zig");
 const out = @import("../lib/out.zig");
 const str = @import("../lib/str.zig");
 const time = @import("../lib/time.zig");
@@ -14,7 +13,7 @@ pub fn ls(args: []const []const u8) void {
     // argument means, and the kernel resolves "." against it.
     const path = if (args.len > 0) args[0] else ".";
 
-    const handle = sys.open(path, sys.OPEN_DIRECTORY);
+    const handle = sys.open(path, .{ .directory = true });
     if (handle < 0) {
         out.text("ls: ");
         out.text(path);
@@ -38,7 +37,7 @@ pub fn ls(args: []const []const u8) void {
         if (n <= 0) break;
         const count: usize = @intCast(n);
 
-        const entry = dirent.decode(&buf, count) orelse continue;
+        const entry = sys.Dirent.decode(&buf, count) orelse continue;
         const name = entry.name;
         const is_dir = entry.is_dir;
 
@@ -79,7 +78,7 @@ pub fn cat(args: []const []const u8) void {
     }
 
     for (args) |path| {
-        const handle = sys.open(path, 0);
+        const handle = sys.open(path, .{});
         if (handle < 0) {
             out.text("cat: ");
             out.text(path);
@@ -105,7 +104,7 @@ pub fn hexdump(args: []const []const u8) void {
         return;
     }
 
-    const handle = sys.open(args[0], 0);
+    const handle = sys.open(args[0], .{});
     if (handle < 0) {
         out.text("hexdump: ");
         out.text(args[0]);

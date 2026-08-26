@@ -65,7 +65,11 @@ pub const Thread = struct {
     sp: usize = 0,
 
     id: u32,
-    name: []const u8,
+    /// Copied, not borrowed. A thread outlives the caller's stack frame, and
+    /// programs are named after a path the loader assembled in a buffer that
+    /// is gone by the time anything reads the name back.
+    name_buf: [16]u8 = @splat(0),
+    name_len: usize = 0,
     state: State = .ready,
     priority: u8,
     slice_left: u8 = 0,
@@ -76,6 +80,10 @@ pub const Thread = struct {
     next: ?*Thread = null,
     /// On a run queue right now. See `Queue.push`.
     queued: bool = false,
+    /// Link in the registry of every thread that exists. A separate field from
+    /// `next` because a thread is on at most one run queue but is always here,
+    /// including as a corpse waiting to be collected.
+    all_next: ?*Thread = null,
 
     /// Open handles. Lives on the thread because a process is currently one
     /// thread; it moves to a Process struct when that stops being true.
@@ -111,6 +119,26 @@ pub const Thread = struct {
     awaited: bool = false,
     /// Threads blocked in `waitFor` on this one.
     exit_queue: wait.Queue = .{},
+
+    /// Who spawned this thread, or 0 for one the kernel started itself.
+    /// Supervision is the whole reason it is recorded: `init` has to know
+    /// which of its children died in order to decide whether to restart it.
+    parent_id: u32 = 0,
+    /// Woken when any child of *this* thread exits. One queue on the parent
+    /// rather than an event per child, because a supervisor waits for whichever
+    /// of its children dies first and does not know in advance which that is.
+    child_exit: wait.Queue = .{},
+
+    pub fn name(self: *const Thread) []const u8 {
+        return self.name_buf[0..self.name_len];
+    }
+
+    fn setName(self: *Thread, text: []const u8) void {
+        const n = @min(text.len, self.name_buf.len);
+        @memcpy(self.name_buf[0..n], text[0..n]);
+        self.name_len = n;
+    }
+
 };
 
 const Queue = struct {
@@ -176,6 +204,25 @@ var active: *RunQueues = &queues[0];
 var expired: *RunQueues = &queues[1];
 
 var sleepers: ?*Thread = null;
+
+/// Threads that have exited with nobody to collect them, waiting to be freed.
+///
+/// Freeing cannot happen in `exit`: a thread cannot free the stack it is
+/// standing on. It also cannot happen immediately after the context switch —
+/// the code there runs in the *resumed* thread's frame, where `prev` names
+/// whatever that thread last switched away from, not the corpse. So the corpse
+/// is queued here and collected at the top of a later `schedule`, by which
+/// point it is provably off the CPU.
+///
+/// Linked through `next`, which a dead thread no longer needs for a run queue.
+var to_reap: ?*Thread = null;
+
+/// Every thread that exists, newest first, including dead ones not yet
+/// collected. Threads are found by id through this — a supervisor naming a
+/// child, a `wait` naming a process — and a corpse is invisible to a search
+/// of the run queues, which is exactly when it most needs to be found.
+var all_threads: ?*Thread = null;
+
 var current: ?*Thread = null;
 var idle_thread: ?*Thread = null;
 var next_id: u32 = 1;
@@ -241,15 +288,18 @@ fn create(
 
     t.* = .{
         .id = next_id,
-        .name = name,
         .priority = @intFromEnum(priority),
         .slice_left = sliceFor(@intFromEnum(priority)),
         .stack = stack,
         .sp = hal.initThreadStack(stack, entry, arg, &threadExit),
     };
+    t.setName(name);
     t.handles.init();
     t.cwd_buf[0] = '/';
     t.cwd_len = 1;
+    t.parent_id = if (current) |c| c.id else 0;
+    t.all_next = all_threads;
+    all_threads = t;
     hal.initFpuState(&t.fpu);
     // Kernel space until something gives it one of its own.
     t.space = hal.kernelAddressSpace();
@@ -274,12 +324,111 @@ pub fn exitWith(status: i32) noreturn {
         t.exit_status = status;
         t.state = .dead;
         thread_count -= 1;
+        // A thread nobody will wait for is queued for collection now. One that
+        // is awaited stays as a corpse until its parent takes the status.
+        if (!t.awaited) {
+            t.next = to_reap;
+            to_reap = t;
+        }
         // Before scheduling away: this thread never runs again, so anything
         // waiting on it must be released now or it never will be.
         _ = t.exit_queue.wakeAll();
+        if (find(t.parent_id)) |p| _ = p.child_exit.wakeAll();
+        orphanChildren(t);
     }
     schedule();
     unreachable; // a dead thread is never rescheduled
+}
+
+/// The first userspace process. Orphans are re-parented onto it, and it is
+/// expected to collect them — the arrangement every Unix uses, for the reason
+/// every Unix has it: a corpse nobody collects keeps its stack and its status
+/// forever, and a supervisor that crashes would otherwise take the memory of
+/// everything it started with it.
+var init_id: u32 = 0;
+
+pub fn setInit(id: u32) void {
+    init_id = id;
+}
+
+pub fn initId() u32 {
+    return init_id;
+}
+
+/// Re-parent this thread's children before it goes.
+///
+/// If `init` is alive and is not the thread that is dying, the children become
+/// its problem and it will reap them. If there is no `init` — early boot, or
+/// `init` itself exiting — they are marked uncollectable instead, so the
+/// scheduler frees each one the moment it dies rather than leaving a zombie
+/// with no possible parent.
+fn orphanChildren(parent: *Thread) void {
+    const adopter: ?*Thread = if (init_id != 0 and init_id != parent.id) find(init_id) else null;
+    const adopter_alive = if (adopter) |a| a.state != .dead else false;
+
+    var node = all_threads;
+    while (node) |t| {
+        const next_node = t.all_next;
+        // `init` itself is a child of whichever kernel thread started it, and
+        // adopting it onto itself would make it its own parent — a one-node
+        // cycle that no walk of the tree can terminate on.
+        if (t.parent_id == parent.id and t != parent and t.id != init_id) {
+            if (adopter_alive) {
+                t.parent_id = init_id;
+                // Already dead: init has to be told, or it will sit waiting for
+                // an exit that happened before the adoption.
+                if (t.state == .dead) {
+                    if (adopter) |a| _ = a.child_exit.wakeAll();
+                }
+            } else {
+                t.parent_id = 0;
+                t.awaited = false;
+                if (t.state == .dead) reap(t);
+            }
+        }
+        node = next_node;
+    }
+}
+
+pub const Exited = struct { id: u32, status: i32 };
+
+pub const WaitError = error{
+    /// The caller has no child matching the request, now or ever.
+    NoChildren,
+    TimedOut,
+};
+
+/// Collect a child that has exited, blocking until one does.
+///
+/// `id` of zero means any child, which is what a supervisor wants: it waits for
+/// whichever of its services dies first rather than guessing.
+pub fn waitChild(id: u32, deadline_us: ?u64) WaitError!Exited {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
+    const parent = current orelse return error.NoChildren;
+
+    while (true) {
+        var live: usize = 0;
+        var node = all_threads;
+        while (node) |t| : (node = t.all_next) {
+            if (t.parent_id != parent.id or t == parent) continue;
+            if (id != 0 and t.id != id) continue;
+
+            if (t.state == .dead) {
+                const exited = Exited{ .id = t.id, .status = t.exit_status };
+                t.awaited = false;
+                reap(t);
+                return exited;
+            }
+            live += 1;
+        }
+
+        // Nothing to wait for is an answer, not a reason to block forever.
+        if (live == 0) return error.NoChildren;
+
+        _ = wait.blockOn(&.{&parent.child_exit}, deadline_us) catch return error.TimedOut;
+    }
 }
 
 /// Block until `child` exits, then return its status and free it.
@@ -428,6 +577,7 @@ fn wakeSleepers(now: u64) void {
 /// Pick the next thread and switch to it. Must be called with interrupts off.
 fn schedule() void {
     need_resched = false;
+    collectCorpses();
 
     const prev = current;
 
@@ -503,10 +653,24 @@ fn schedule() void {
     // state restored is its own.
     if (current) |c| hal.restoreFpu(&c.fpu);
 
-    // A thread someone is waiting on keeps its stack and its status until
-    // collected; freeing it here would destroy both.
-    if (prev) |p| {
-        if (p.state == .dead and !p.awaited) reap(p);
+}
+
+/// Free anything queued by `exitWith`, except whatever is running right now.
+///
+/// The exclusion matters: a thread that has just exited calls `schedule` from
+/// its own stack, and that call must not free it out from under itself. It is
+/// still on the list, and the next `schedule` — made by some other thread —
+/// collects it.
+fn collectCorpses() void {
+    var link = &to_reap;
+    while (link.*) |t| {
+        if (t == current) {
+            link = &t.next;
+            continue;
+        }
+        link.* = t.next;
+        t.next = null;
+        reap(t);
     }
 }
 
@@ -514,12 +678,57 @@ fn schedule() void {
 /// why it cannot happen inside `exit`: a thread cannot free the stack it is
 /// standing on.
 fn reap(t: *Thread) void {
+    dequeueCorpse(t);
+
     // Anything still open would otherwise keep a mount busy forever.
     t.handles.closeAll();
+
+    // The address space goes here rather than at the waiting parent, so a
+    // process whose parent never collects it still gives its memory back. Safe
+    // because `schedule` has already loaded the incoming thread's page
+    // directory by the time this runs: the space being freed is not the one
+    // the CPU is standing on.
+    if (t.space.pd_phys != 0 and t.space.pd_phys != hal.kernelAddressSpace().pd_phys) {
+        t.space.destroy();
+    }
+
+    unregister(t);
 
     const gpa = heap.allocator;
     gpa.free(t.stack);
     gpa.destroy(t);
+}
+
+/// Take a thread off the collection list, so a parent collecting it directly
+/// cannot race the scheduler into a double free.
+fn dequeueCorpse(t: *Thread) void {
+    var link = &to_reap;
+    while (link.*) |node| {
+        if (node == t) {
+            link.* = node.next;
+            return;
+        }
+        link = &node.next;
+    }
+}
+
+fn unregister(t: *Thread) void {
+    var link = &all_threads;
+    while (link.*) |node| {
+        if (node == t) {
+            link.* = node.all_next;
+            return;
+        }
+        link = &node.all_next;
+    }
+}
+
+pub fn find(id: u32) ?*Thread {
+    var node = all_threads;
+    while (node) |t| : (node = t.all_next) {
+        if (t.id == id) return t;
+    }
+    return null;
 }
 
 /// Called from the timer interrupt. Only accounting here — the actual switch
@@ -596,6 +805,7 @@ pub fn inheritCwd(child: *Thread) void {
 /// Snapshot of one thread, for reporting.
 pub const Snapshot = struct {
     id: u32,
+    parent_id: u32,
     name: []const u8,
     state: State,
     priority: u8,
@@ -603,42 +813,24 @@ pub const Snapshot = struct {
     is_current: bool,
 };
 
-/// Walk every live thread.
-///
-/// Iterating the queues rather than keeping a separate list: the queues already
-/// hold every runnable thread, and a second list would be one more thing to
-/// keep consistent for the sake of a report nobody reads in a hot loop.
+/// Walk every thread, including corpses that have exited but not been
+/// collected — a supervisor's job is largely about those, so hiding them from
+/// the one tool that lists threads would be the wrong economy.
 pub fn forEachThread(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot) void) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    if (current) |t| visit(context, snapshotOf(t, true));
-
-    for (&queues) |*q| {
-        for (&q.levels) |*level| {
-            var node = level.head;
-            while (node) |t| : (node = t.next) {
-                if (t == current) continue;
-                visit(context, snapshotOf(t, false));
-            }
-        }
-    }
-
-    var sleeper = sleepers;
-    while (sleeper) |t| : (sleeper = t.next) {
-        if (t == current) continue;
-        visit(context, snapshotOf(t, false));
-    }
-
-    if (idle_thread) |t| {
-        if (t != current) visit(context, snapshotOf(t, false));
+    var node = all_threads;
+    while (node) |t| : (node = t.all_next) {
+        visit(context, snapshotOf(t, t == current));
     }
 }
 
 fn snapshotOf(t: *const Thread, is_current: bool) Snapshot {
     return .{
         .id = t.id,
-        .name = t.name,
+        .parent_id = t.parent_id,
+        .name = t.name(),
         .state = t.state,
         .priority = t.priority,
         .cpu_ticks = t.cpu_ticks,

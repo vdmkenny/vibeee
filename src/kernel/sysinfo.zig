@@ -163,7 +163,11 @@ fn writeServices(w: *Writer) Error!void {
     if (first) return error.UnknownKey;
 }
 
-/// One line per thread: id, state, ticks, name.
+/// One line per thread: id, parent, state, priority, ticks, name.
+///
+/// The parent is included so a display can draw the process tree. Which
+/// process started which is most of what a supervisor's user wants to know,
+/// and it is knowable only here.
 fn writeThreads(w: *Writer) Error!void {
     const Ctx = struct {
         w: *Writer,
@@ -171,8 +175,9 @@ fn writeThreads(w: *Writer) Error!void {
 
         fn visit(self: *@This(), t: sched.Snapshot) void {
             if (self.failed) return;
-            self.w.print("{d}\t{s}\t{d}\t{d}\t{s}{s}\n", .{
+            self.w.print("{d}\t{d}\t{s}\t{d}\t{d}\t{s}{s}\n", .{
                 t.id,
+                t.parent_id,
                 @tagName(t.state),
                 t.priority,
                 t.cpu_ticks,

@@ -312,6 +312,12 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
         loaded.entry, image.len, if (from_disk) "disk" else "kernel image",
     });
 
+    // This thread becomes process 1. Recording that is what lets the kernel
+    // re-parent orphans onto it: a process whose parent has died still has
+    // someone to collect it, which is the difference between a zombie that is
+    // eventually freed and one that is never freed.
+    sched.setInit(t.id);
+
     // From here the low half of the address space belongs to the process. The
     // thread records it too, so the scheduler restores it after any switch.
     sched.setAddressSpace(t, space);

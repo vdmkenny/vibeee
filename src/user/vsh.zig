@@ -4,10 +4,13 @@
 //! everything here is parsing and dispatch: split a line into words, run a
 //! builtin or spawn a program, report what happened.
 //!
-//! No job control, no pipes, no redirection yet. Each needs a kernel primitive
-//! that does not exist — asynchronous spawn, a pipe object, handle
-//! reassignment — and a shell that pretended otherwise would fail in ways that
-//! looked like shell bugs.
+//! No job control, no pipes, no redirection yet. Those need a pipe object and
+//! handle reassignment at spawn, neither of which exists; a shell that
+//! pretended otherwise would fail in ways that looked like shell bugs.
+//!
+//! The shell is a supervised service, not the root of userspace: `init` starts
+//! it and restarts it when it exits. That is what makes `exit` meaningful on a
+//! machine with only one shell.
 
 const std = @import("std");
 const sys = @import("syscall.zig");
@@ -34,7 +37,7 @@ const builtins = [_]Builtin{
     .{ .name = "cd", .summary = "change directory", .run = &cmdCd },
     .{ .name = "pwd", .summary = "print working directory", .run = &cmdPwd },
     .{ .name = "echo", .summary = "print arguments", .run = &cmdEcho },
-    .{ .name = "exit", .summary = "leave the shell", .run = &cmdExit },
+    .{ .name = "exit", .summary = "restart the shell", .run = &cmdExit },
     .{ .name = "off", .summary = "flush everything and power down", .run = &cmdPowerOff },
     .{ .name = "reboot", .summary = "flush everything and restart", .run = &cmdReboot },
 };
@@ -185,7 +188,11 @@ fn cmdEcho(words: []const []const u8) void {
 }
 
 fn cmdExit(_: []const []const u8) void {
-    out.text("vsh: nothing to exit to; use 'off' to power down\n");
+    // There is nothing to exit *to* — this is the only shell — but init
+    // supervises it with `restart = always`, so exiting gets a fresh one. That
+    // is the useful meaning here: it is how you recover a wedged shell.
+    out.flush();
+    sys.exit(0);
 }
 
 fn cmdPowerOff(_: []const []const u8) void {

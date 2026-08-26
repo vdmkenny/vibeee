@@ -44,6 +44,7 @@ PART1_OFFSET  := $(shell expr $(PART1_LBA) \* 512)
 PART1_SECTORS := $(shell expr $(IMAGE_MB) \* 2048 - $(PART1_LBA))
 
 KERNEL_ELF := zig-out/bin/vibeee.elf
+USER_INIT  := zig-out/bin/init
 USER_HELLO := zig-out/bin/hello
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
@@ -106,6 +107,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
+	@$(MCOPY) -i $@ -o $(USER_INIT) ::/INIT
 	@$(MCOPY) -i $@ -o $(USER_HELLO) ::/HELLO
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/TOOLS
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/VSH
@@ -113,6 +115,8 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/README.TXT
 	@mmd -i $@ ::/DOCS 2>/dev/null || true
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/DOCS/NOTES.TXT
+	@mmd -i $@ ::/ETC 2>/dev/null || true
+	@$(MCOPY) -i $@ -o etc/services ::/ETC/SERVICES
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)

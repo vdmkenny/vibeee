@@ -27,7 +27,7 @@ pub fn run(args: []const []const u8) void {
         // file, which is what makes the output unambiguous without being noisy.
         const show_names = args.len > 2;
         for (args[1..]) |path| {
-            const handle = sys.open(path, 0);
+            const handle = sys.open(path, .{});
             if (handle < 0) {
                 out.text("grep: ");
                 out.text(path);

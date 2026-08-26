@@ -67,6 +67,7 @@ pub fn build(b: *std.Build) void {
     // Every user program is built identically; only its root file differs.
     // Listing them keeps adding one to a single line here.
     const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
+        .{ .name = "init", .root = "src/user/init.zig" },
         .{ .name = "tools", .root = "src/user/tools.zig" },
         .{ .name = "vsh", .root = "src/user/vsh.zig" },
         .{ .name = "hello", .root = "src/user/hello.zig" },

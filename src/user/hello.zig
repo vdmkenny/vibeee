@@ -6,6 +6,7 @@
 //! space, the privilege drop and the syscall ABI are all correct together.
 
 const sys = @import("syscall.zig");
+const out = @import("lib/out.zig");
 
 /// Zero-initialised, so it lands in .bss: the file records no bytes for it and
 /// the loader must supply the zeroes. Reading it proves that happened.
@@ -25,21 +26,6 @@ export fn _start() callconv(.naked) noreturn {
         \\ call main
         \\ hlt
     );
-}
-
-fn writeDecimal(value: isize) void {
-    var buf: [12]u8 = undefined;
-    var i: usize = buf.len;
-    var v: usize = if (value < 0) @intCast(-value) else @intCast(value);
-    if (v == 0) {
-        i -= 1;
-        buf[i] = '0';
-    }
-    while (v > 0) : (v /= 10) {
-        i -= 1;
-        buf[i] = '0' + @as(u8, @intCast(v % 10));
-    }
-    _ = sys.write(sys.STDOUT, buf[i..]);
 }
 
 /// Check that .bss arrived zeroed.
@@ -94,7 +80,8 @@ export fn main() callconv(.c) noreturn {
     while (greeting[n] != 0) n += 1;
     _ = sys.write(sys.STDOUT, greeting[0..n]);
     _ = sys.write(sys.STDOUT, ", pid ");
-    writeDecimal(sys.getpid());
+    out.decimal(@intCast(sys.getpid()));
+    out.flush();
     _ = sys.write(sys.STDOUT, if (bss_clean) ", bss clean\n" else ", BSS DIRTY\n");
 
     // Prove scheduling works from user mode: sleep, and confirm the clock moved

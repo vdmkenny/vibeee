@@ -1,13 +1,15 @@
 //! Loading and running programs.
 //!
-//! Synchronous: `spawn` returns the child's exit status, having waited for it.
 //! Deliberately not fork — the design refuses it (design/00-vibeee.md §13),
 //! because fork on a from-scratch kernel means copy-on-write page tables, and
 //! every program worth running follows it immediately with exec.
 //!
-//! Asynchronous spawn arrives with job control, which needs somewhere to report
-//! a finished background job. Until a shell has that, a call that returns a
-//! status is the more useful primitive.
+//! Two ways to start a program, and the difference is only who waits. `spawn`
+//! runs a child and returns its status, which is what a shell running a command
+//! wants. `spawnAsync` returns as soon as the child exists, which is what a
+//! supervisor wants: `init` starts a dozen services and then waits for whichever
+//! dies first. Both leave a corpse the parent must collect, so a status is never
+//! lost before someone can read it.
 
 const std = @import("std");
 const console = @import("console.zig");
@@ -23,7 +25,9 @@ pub const Error = error{
     OutOfMemory,
 };
 
-pub const MAX_ARGS = 16;
+/// Both halves of the boundary have to agree on how many arguments a program
+/// can take, so the limit lives with the rest of the ABI.
+pub const MAX_ARGS = @import("lib").syscalls.MAX_ARGS;
 pub const MAX_ARG_BYTES = 512;
 
 /// What a child needs to start, held while the parent waits.
@@ -35,6 +39,18 @@ const Request = struct {
 
 /// Run `path` with `args` and return its exit status.
 pub fn spawn(path: []const u8, args: []const []const u8) Error!i32 {
+    const child = try start(path, args);
+    return sched.waitFor(child);
+}
+
+/// Start `path` and return its id without waiting.
+pub fn spawnAsync(path: []const u8, args: []const []const u8) Error!u32 {
+    const child = try start(path, args);
+    return child.id;
+}
+
+/// Load a program and put it on the run queue.
+fn start(path: []const u8, args: []const []const u8) Error!*sched.Thread {
     const entry = vfs.stat(path) catch return error.NotFound;
     if (entry.is_dir or entry.size == 0) return error.BadImage;
 
@@ -52,19 +68,29 @@ pub fn spawn(path: []const u8, args: []const []const u8) Error!i32 {
     const request = heap.allocator.create(Request) catch return error.OutOfMemory;
     request.* = .{ .entry = loaded.entry, .stack_top = stack_top, .space = space };
 
-    const child = sched.spawnAwaited("user", .normal, childEntry, @intFromPtr(request), 16384) catch {
+    const child = sched.spawnAwaited(nameOf(path), .normal, childEntry, @intFromPtr(request), 16384) catch {
         heap.allocator.destroy(request);
         return error.OutOfMemory;
     };
     sched.inheritCwd(child);
 
-    const status = sched.waitFor(child);
+    // The address space is the child's from here; it is freed when the child is
+    // reaped, so a parent that never collects still gives the memory back.
+    return child;
+}
 
-    // Safe only because the scheduler has switched back to this thread's own
-    // address space by now. Freeing it while it was still loaded would unmap
-    // the ground underneath the caller.
-    space.destroy();
-    return status;
+/// The last path component, for the thread name.
+///
+/// Naming threads after their program is what makes `top` legible: a list of
+/// six processes all called "user" tells the reader nothing about which one is
+/// wedged.
+fn nameOf(path: []const u8) []const u8 {
+    var start_index: usize = 0;
+    for (path, 0..) |c, i| {
+        if (c == '/') start_index = i + 1;
+    }
+    const name = path[start_index..];
+    return if (name.len == 0) "user" else name;
 }
 
 fn childEntry(arg: usize) callconv(.c) void {

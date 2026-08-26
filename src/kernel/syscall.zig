@@ -1,13 +1,13 @@
 //! Syscall dispatch.
 //!
-//! The table in `syscall_table.zig` is the contract; this file binds each entry
+//! The table in `lib/syscalls.zig` is the contract; this file binds each entry
 //! to an implementation. The binding is checked at comptime: a documented
 //! syscall with no `sys_<name>` function fails the build, and so does a handler
 //! with no table entry. The interface therefore cannot drift from its
 //! documentation, because neither can exist alone.
 
 const std = @import("std");
-const abi = @import("syscall_table.zig");
+const abi = @import("lib").syscalls;
 const channel_mod = @import("channel.zig");
 const clock = @import("clock.zig");
 const event_mod = @import("event.zig");
@@ -50,7 +50,7 @@ pub const Result = isize;
 fn sys_exit(a: Args) Result {
     const status: i32 = @truncate(@as(isize, @bitCast(a.a0)));
     if (sched.currentThread()) |t| {
-        console.debug("exit", "{s} (thread {d}) status {d}", .{ t.name, t.id, status });
+        console.debug("exit", "{s} (thread {d}) status {d}", .{ t.name(), t.id, status });
     }
     // Never returns: the thread is unlinked and the next one is switched in.
     // The abandoned interrupt frame goes with the dying thread's stack.
@@ -176,14 +176,16 @@ fn userSlice(a: Args, ptr: usize, len: usize) ?[]u8 {
 // pointers on one side and kernel objects on the other.
 // ---------------------------------------------------------------------------
 
-/// Timeouts arrive as a u32 with two sentinel values, so a caller can poll, or
-/// block forever, or bound the wait, without a second argument to say which.
-const TIMEOUT_POLL: usize = 0;
-const TIMEOUT_FOREVER: usize = 0xFFFF_FFFF;
-
+/// Timeouts arrive as a u32 with two sentinel values (`abi.Timeout`), so a
+/// caller can poll, block forever, or bound the wait without a second argument
+/// saying which. Null here means no deadline.
 fn deadlineFrom(timeout_us: usize) ?u64 {
-    if (timeout_us == TIMEOUT_FOREVER) return null;
+    if (timeout_us == abi.Timeout.forever) return null;
     return clock.monotonicMicros() + timeout_us;
+}
+
+fn openFlags(raw: usize) abi.OpenFlags {
+    return @bitCast(@as(u32, @truncate(raw)));
 }
 
 fn installHandle(h: handles.Handle) ?u32 {
@@ -306,7 +308,7 @@ fn sys_call(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), false) orelse return Errno.badf.value();
 
     const request = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
-    if (request.len > channel_mod.MAX_PAYLOAD) return Errno.inval.value();
+    if (request.len > abi.MAX_PAYLOAD) return Errno.inval.value();
     const out = userSlice(a, a.a3, a.a4) orelse return Errno.fault.value();
 
     var answer: channel_mod.Message = .{};
@@ -346,7 +348,7 @@ fn sys_recv(a: Args) Result {
 fn sys_reply(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), true) orelse return Errno.badf.value();
     const payload = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
-    if (payload.len > channel_mod.MAX_PAYLOAD) return Errno.inval.value();
+    if (payload.len > abi.MAX_PAYLOAD) return Errno.inval.value();
 
     channel_mod.reply(ch, @intCast(a.a1), payload) catch |err| {
         return switch (err) {
@@ -384,7 +386,7 @@ comptime {
     for (@typeInfo(@This()).@"struct".decls) |decl| {
         if (!std.mem.startsWith(u8, decl.name, "sys_")) continue;
         if (abi.find(decl.name["sys_".len..]) == null) @compileError(
-            "handler `" ++ decl.name ++ "` has no entry in syscall_table.zig; " ++
+            "handler `" ++ decl.name ++ "` has no entry in lib/syscalls.zig; " ++
                 "an undocumented syscall is unusable",
         );
     }
@@ -406,28 +408,14 @@ pub fn dispatch(number: usize, args: Args) Result {
 // Files
 // ---------------------------------------------------------------------------
 
-const OPEN_DIRECTORY: u32 = 1 << 0;
-
-/// Wire format for a directory entry, shared by readdir and stat.
-///
-/// Packed by hand rather than as an extern struct so the layout is stated
-/// once, here, and userspace can decode it without agreeing on Zig's rules.
-const DIRENT_HEADER = 10; // u32 size, i32 mtime, u8 flags, u8 name_len
-const DIRENT_FLAG_DIR: u8 = 1 << 0;
-
 fn writeDirent(out: []u8, entry: fat.Entry) ?usize {
-    const total = DIRENT_HEADER + entry.name_len;
-    if (out.len < total) return null;
-
-    std.mem.writeInt(u32, out[0..4], entry.size, .little);
-    // Signed, and 32-bit: FAT cannot express a date outside 1980-2107, so the
-    // 2038 problem cannot arise through this path, and a signed field leaves
-    // room for a future filesystem that can express dates before 1970.
-    std.mem.writeInt(i32, out[4..8], @truncate(entry.mtime), .little);
-    out[8] = if (entry.is_dir) DIRENT_FLAG_DIR else 0;
-    out[9] = @intCast(entry.name_len);
-    @memcpy(out[DIRENT_HEADER..][0..entry.name_len], entry.nameSlice());
-    return total;
+    const record = abi.Dirent{
+        .size = entry.size,
+        .mtime = entry.mtime,
+        .is_dir = entry.is_dir,
+        .name = entry.nameSlice(),
+    };
+    return record.encode(out);
 }
 
 fn currentHandles() ?*handles.Table {
@@ -457,7 +445,7 @@ fn sys_open(a: Args) Result {
     const slot = table.alloc() orelse return Errno.nomem.value();
     const h = &table.entries[slot];
 
-    if (a.a2 & OPEN_DIRECTORY != 0) {
+    if (openFlags(a.a2).directory) {
         const it = vfs.openDir(path) catch return Errno.noent.value();
         const r = vfs.resolve(path) catch return Errno.noent.value();
         r.mount.open_files += 1;
@@ -546,50 +534,39 @@ fn sys_spawn(a: Args) Result {
     var storage: [exec.MAX_ARG_BYTES]u8 = undefined;
     var slices: [exec.MAX_ARGS][]const u8 = undefined;
 
-    const count = unpackArgs(packed_args, &storage, &slices) catch return Errno.inval.value();
+    const count = abi.Argv.unpack(packed_args, &storage, &slices) catch return Errno.inval.value();
 
-    const status = exec.spawn(path, slices[0..count]) catch |err| return switch (err) {
+    const flags: abi.SpawnFlags = @bitCast(@as(u32, @truncate(a.a4)));
+
+    if (flags.detached) {
+        const id = exec.spawnAsync(path, slices[0..count]) catch |err| return spawnErrno(err);
+        return @intCast(id);
+    }
+    return exec.spawn(path, slices[0..count]) catch |err| return spawnErrno(err);
+}
+
+fn spawnErrno(err: exec.Error) Result {
+    return switch (err) {
         error.NotFound => Errno.noent.value(),
         error.BadImage => Errno.inval.value(),
         error.OutOfMemory => Errno.nomem.value(),
     };
-    return status;
 }
 
-/// Decode the packed argument block: u16 count, then each argument as a u16
-/// length followed by its bytes.
-///
-/// A length-prefixed block rather than an array of pointers: pointers would
-/// each need validating against the caller's address space separately, and one
-/// contiguous copy is both simpler and harder to get wrong.
-fn unpackArgs(
-    input: []const u8,
-    storage: []u8,
-    out: [][]const u8,
-) error{Malformed}!usize {
-    if (input.len < 2) return 0;
+fn sys_wait(a: Args) Result {
+    const status_out = userSlice(a, a.a2, @sizeOf(i32)) orelse return Errno.fault.value();
 
-    const count = std.mem.readInt(u16, input[0..2], .little);
-    if (count > out.len) return error.Malformed;
+    const exited = sched.waitChild(@intCast(a.a0), deadlineFrom(a.a1)) catch |err| {
+        return switch (err) {
+            error.NoChildren => Errno.child.value(),
+            error.TimedOut => Errno.timedout.value(),
+        };
+    };
 
-    var pos: usize = 2;
-    var used: usize = 0;
-
-    for (0..count) |i| {
-        if (pos + 2 > input.len) return error.Malformed;
-        const len = std.mem.readInt(u16, input[pos..][0..2], .little);
-        pos += 2;
-        if (pos + len > input.len) return error.Malformed;
-        if (used + len > storage.len) return error.Malformed;
-
-        @memcpy(storage[used..][0..len], input[pos..][0..len]);
-        out[i] = storage[used..][0..len];
-        used += len;
-        pos += len;
-    }
-
-    return count;
+    std.mem.writeInt(i32, status_out[0..4], exited.status, .little);
+    return @intCast(exited.id);
 }
+
 
 fn sys_chdir(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;

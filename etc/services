@@ -1,0 +1,14 @@
+# Services started by init, in dependency order.
+#
+# One stanza per service, separated by blank lines. Keys are the field names of
+# `Service` in src/user/init.zig, so this file and the parser cannot drift.
+#
+#   name      what other services call this one in `needs`
+#   binary    absolute path to the program
+#   needs     comma-separated services that must be up first
+#   provides  the /svc name it registers, if any; init waits for it to appear
+#   restart   never | on_failure | always
+
+name    = vsh
+binary  = /VSH
+restart = always

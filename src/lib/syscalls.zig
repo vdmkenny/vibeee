@@ -5,13 +5,19 @@
 //!
 //!   * the kernel dispatcher      (kernel/syscall.zig)
 //!   * the reference documentation (tools/gen-syscall-docs.zig → docs/syscalls.md)
-//!   * userspace stubs            (later, for eeelibc)
+//!   * userspace stubs            (src/user/syscall.zig)
 //!
 //! Deliberately free of handler pointers and kernel imports, so host tools can
 //! import it directly. `kernel/syscall.zig` binds each entry to its
 //! implementation and fails to compile if any entry is unbound — a syscall
 //! cannot be documented without existing, or exist without being documented.
-
+//!
+//! Lives in `lib/` because it is the contract *between* the kernel and
+//! userspace, not a possession of either. Both compile the same declarations,
+//! so a number, a flag layout or a wire format is written once: the dispatcher,
+//! the userspace stubs and [`docs/syscalls.md`](../../docs/syscalls.md) are all
+//! derived from what is here, and none of them can drift from the others
+//! without failing to build.
 const std = @import("std");
 
 pub const ArgKind = enum {
@@ -78,6 +84,7 @@ pub const Errno = enum(i32) {
     fault = 14,
     inval = 22,
     exists = 17,
+    child = 10,
     pipe = 32,
     nosys = 38,
     timedout = 110,
@@ -95,14 +102,174 @@ const E = struct {
     const fault = Err{ .name = "EFAULT", .when = "a pointer argument is outside the caller's address space" };
     const inval = Err{ .name = "EINVAL", .when = "an argument is out of range" };
     const exists = Err{ .name = "EEXIST", .when = "the name is already registered" };
+    const child = Err{ .name = "ECHILD", .when = "the caller has no such child to wait for" };
     const pipe = Err{ .name = "EPIPE", .when = "the far end of the channel has closed" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
+};
+
+/// The number of a syscall, looked up by name at compile time.
+///
+/// Userspace names calls through this rather than through a hand-kept list of
+/// integers. That list existed, and it drifted: adding a call meant editing two
+/// files and remembering the second one existed. A name with no entry is a
+/// compile error, so the drift is now impossible rather than merely unlikely.
+pub fn number(comptime name: []const u8) u32 {
+    return comptime blk: {
+        for (table) |sc| {
+            if (std.mem.eql(u8, sc.name, name)) break :blk sc.number;
+        }
+        @compileError("no syscall named '" ++ name ++ "'");
+    };
+}
+
+/// How a blocking call is told how long to wait. Two sentinels rather than a
+/// second argument saying which: a caller either polls, waits forever, or
+/// bounds the wait, and those are not three different shapes of call.
+pub const Timeout = struct {
+    pub const poll: u32 = 0;
+    pub const forever: u32 = 0xFFFF_FFFF;
+};
+
+/// How `spawn` carries a program's arguments across the boundary.
+///
+/// One length-prefixed block rather than an array of pointers: pointers would
+/// each need validating against the caller's address space separately, and one
+/// contiguous copy is both simpler and harder to get wrong. Packer and unpacker
+/// live together so the format has one definition rather than two that agree
+/// until someone changes one.
+pub const Argv = struct {
+    pub const Error = error{ TooMany, TooLong, Malformed };
+
+    /// Write `args` into `out`, returning the bytes used.
+    pub fn pack(args: []const []const u8, out: []u8) Error!usize {
+        if (args.len > MAX_ARGS) return error.TooMany;
+        if (out.len < 2) return error.TooLong;
+
+        std.mem.writeInt(u16, out[0..2], @intCast(args.len), .little);
+        var n: usize = 2;
+
+        for (args) |arg| {
+            if (arg.len > 0xFFFF or n + 2 + arg.len > out.len) return error.TooLong;
+            std.mem.writeInt(u16, out[n..][0..2], @intCast(arg.len), .little);
+            n += 2;
+            @memcpy(out[n..][0..arg.len], arg);
+            n += arg.len;
+        }
+        return n;
+    }
+
+    /// Read a packed block back, copying the bytes into `storage` and filling
+    /// `slices` with views of it. Returns how many arguments there were.
+    ///
+    /// Copied rather than borrowed because the kernel unpacks a block that a
+    /// user process owns, and the child's address space is about to replace it.
+    pub fn unpack(input: []const u8, storage: []u8, slices: [][]const u8) Error!usize {
+        if (input.len < 2) return error.Malformed;
+
+        const count = std.mem.readInt(u16, input[0..2], .little);
+        if (count > slices.len or count > MAX_ARGS) return error.TooMany;
+
+        var pos: usize = 2;
+        var used: usize = 0;
+
+        for (0..count) |i| {
+            if (pos + 2 > input.len) return error.Malformed;
+            const len = std.mem.readInt(u16, input[pos..][0..2], .little);
+            pos += 2;
+
+            if (pos + len > input.len) return error.Malformed;
+            if (used + len > storage.len) return error.TooLong;
+
+            @memcpy(storage[used..][0..len], input[pos..][0..len]);
+            slices[i] = storage[used..][0..len];
+            used += len;
+            pos += len;
+        }
+        return count;
+    }
+};
+
+/// Most arguments a program can be started with. Bounded because the loader
+/// copies them onto the new stack before the process exists to own them.
+pub const MAX_ARGS = 16;
+
+/// Largest inline channel payload. Small on purpose: anything that does not fit
+/// is bulk data and belongs in a shared ring.
+pub const MAX_PAYLOAD = 64;
+
+/// Options for `spawn`. A packed struct rather than loose bit constants: the
+/// bit positions are then stated once, both sides `@bitCast` the same type, and
+/// adding an option cannot silently collide with an existing one.
+pub const SpawnFlags = packed struct(u32) {
+    /// Return the child's id immediately instead of waiting for it to exit.
+    detached: bool = false,
+    _reserved: u31 = 0,
 };
 
 /// Well-known handles, open in every process at start.
 pub const STDIN: u32 = 0;
 pub const STDOUT: u32 = 1;
 pub const STDERR: u32 = 2;
+
+/// Flags for `open`.
+pub const OpenFlags = packed struct(u32) {
+    /// Open a directory for reading entries rather than a file.
+    directory: bool = false,
+    _reserved: u31 = 0,
+};
+
+/// The directory entry `readdir` and `stat` produce.
+///
+/// Encoded by hand rather than as an `extern struct` so the layout is stated
+/// once, here, and neither side has to agree with Zig about padding. The kernel
+/// writes it and userspace reads it through this one module, so the format has
+/// exactly one definition.
+pub const Dirent = struct {
+    pub const HEADER = 10; // u32 size, i32 mtime, u8 flags, u8 name_len
+
+    pub const Flags = packed struct(u8) {
+        directory: bool = false,
+        _reserved: u7 = 0,
+    };
+
+    size: u32 = 0,
+    /// Seconds since the Unix epoch, or 0 when the filesystem recorded none.
+    mtime: i64 = 0,
+    is_dir: bool = false,
+    name: []const u8 = "",
+
+    /// Write into `out`, returning the bytes used, or null if it will not fit.
+    pub fn encode(self: Dirent, out: []u8) ?usize {
+        const total = HEADER + self.name.len;
+        if (out.len < total or self.name.len > 255) return null;
+
+        std.mem.writeInt(u32, out[0..4], self.size, .little);
+        // Signed and 32-bit: FAT cannot express a date outside 1980-2107, so
+        // 2038 cannot arise through this path, and a signed field leaves room
+        // for a filesystem that can express dates before 1970.
+        std.mem.writeInt(i32, out[4..8], @truncate(self.mtime), .little);
+        out[8] = @bitCast(Flags{ .directory = self.is_dir });
+        out[9] = @intCast(self.name.len);
+        @memcpy(out[HEADER..][0..self.name.len], self.name);
+        return total;
+    }
+
+    /// Read `n` bytes back. Null when the buffer is shorter than it claims.
+    pub fn decode(buf: []const u8, n: usize) ?Dirent {
+        if (n < HEADER) return null;
+
+        const name_len = buf[9];
+        if (HEADER + name_len > n) return null;
+
+        const flags: Flags = @bitCast(buf[8]);
+        return .{
+            .size = std.mem.readInt(u32, buf[0..4], .little),
+            .mtime = std.mem.readInt(i32, buf[4..8], .little),
+            .is_dir = flags.directory,
+            .name = buf[HEADER..][0..name_len],
+        };
+    }
+};
 
 /// The table. Numbers are permanent once released: append, never renumber.
 pub const table = [_]Syscall{
@@ -277,6 +444,7 @@ pub const table = [_]Syscall{
             .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
             .{ .name = "argv", .kind = .cptr, .desc = "Packed arguments: u16 count, then each as u16 length followed by bytes." },
             .{ .name = "argv_len", .kind = .len, .desc = "Length of the packed block." },
+            .{ .name = "flags", .kind = .flags, .desc = "Bit 0 set returns immediately with the child's id instead of waiting." },
         },
         .returns = "the program's exit status",
         .errors = &.{ E.fault, E.noent, E.inval, E.nomem },
@@ -429,6 +597,22 @@ pub const table = [_]Syscall{
         .errors = &.{ E.badf, E.fault, E.inval },
         .notes = "The token carries a generation, so a reply to a call that has already been " ++
             "abandoned is rejected rather than landing on whichever call inherited the slot.",
+    },
+    .{
+        .number = 27,
+        .name = "wait",
+        .summary = "Collect a child that has exited.",
+        .args = &.{
+            .{ .name = "pid", .kind = .uint, .desc = "Which child, or 0 for whichever exits first." },
+            .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
+            .{ .name = "status", .kind = .ptr, .desc = "Receives the child's i32 exit status." },
+        },
+        .returns = "the process id that exited",
+        .errors = &.{ E.fault, E.child, E.timedout },
+        .notes = "A process that has exited stays as a corpse until collected, so a status is " ++
+            "never lost before its parent can read it. Children of a process that dies are " ++
+            "re-parented onto init, which collects them; ECHILD means there is nothing to wait " ++
+            "for, now or ever.",
     },
 };
 

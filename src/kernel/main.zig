@@ -18,7 +18,7 @@ const heap = @import("heap.zig");
 const bcache = @import("bcache.zig");
 const sched = @import("sched.zig");
 const svc = @import("svc.zig");
-const syscall_abi = @import("syscall_table.zig");
+const syscall_abi = @import("lib").syscalls;
 const platform = @import("../platform.zig");
 
 pub const panic = std.debug.FullPanic(panic_mod.kpanic);
@@ -227,8 +227,9 @@ fn spinWorker(index: usize) callconv(.c) void {
 
 /// Reports the outcome once the workers have had time to run, then leaves the
 /// system idling.
+/// Process 1. Everything else in userspace descends from it.
 fn userThread(_: usize) callconv(.c) void {
-    platform.enterUserMode("/VSH", &.{"vsh"});
+    platform.enterUserMode("/INIT", &.{"init"});
 }
 
 fn supervisor(_: usize) callconv(.c) void {
@@ -259,7 +260,7 @@ fn supervisor(_: usize) callconv(.c) void {
     // verbose mode exists to show.
     if (!console.isVerbose()) console.clear();
 
-    _ = sched.spawn("user", .normal, userThread, 0, 16384) catch {
+    _ = sched.spawn("init", .normal, userThread, 0, 16384) catch {
         console.fail("sched: cannot spawn user thread", .{});
         return;
     };

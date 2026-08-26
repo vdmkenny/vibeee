@@ -11,8 +11,10 @@
 
 pub const civil = @import("civil.zig");
 pub const ring = @import("ring.zig");
+pub const syscalls = @import("syscalls.zig");
 
 test {
     _ = civil;
     _ = ring;
+    _ = syscalls;
 }

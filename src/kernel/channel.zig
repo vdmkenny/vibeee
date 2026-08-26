@@ -39,9 +39,9 @@ pub const Error = error{
     TooLarge,
 };
 
-/// Inline payload, per design §6.8. Small on purpose: anything that does not
-/// fit is bulk data and belongs in a ring.
-pub const MAX_PAYLOAD = 64;
+/// Inline payload, per design §6.8. Defined with the rest of the ABI, since
+/// userspace has to agree with it.
+pub const MAX_PAYLOAD = @import("lib").syscalls.MAX_PAYLOAD;
 
 /// Calls one channel may have outstanding. Bounded because each occupies a
 /// slot in the channel, and a server that has fallen behind should refuse new

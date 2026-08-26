@@ -1,6 +1,6 @@
 # vibeee system calls
 
-<!-- Generated from src/kernel/syscall_table.zig by `zig build syscall-docs`.
+<!-- Generated from src/lib/syscalls.zig by `zig build syscall-docs`.
      Do not edit: change the table instead. -->
 
 Calls enter the kernel through `SYSENTER` where the CPU provides it, and
@@ -261,6 +261,7 @@ Load and run a program, and wait for it to finish.
 | `path_len` | len | Length of the path. |
 | `argv` | const ptr | Packed arguments: u16 count, then each as u16 length followed by bytes. |
 | `argv_len` | len | Length of the packed block. |
+| `flags` | flags | Bit 0 set returns immediately with the child's id instead of waiting. |
 
 **Returns:** the program's exit status
 
@@ -476,6 +477,26 @@ Answer a call taken by recv().
 
 The token carries a generation, so a reply to a call that has already been abandoned is rejected rather than landing on whichever call inherited the slot.
 
+## `wait`  <sub>#27</sub>
+
+Collect a child that has exited.
+
+| arg | type | meaning |
+|---|---|---|
+| `pid` | uint | Which child, or 0 for whichever exits first. |
+| `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
+| `status` | ptr | Receives the child's i32 exit status. |
+
+**Returns:** the process id that exited
+
+**Errors:**
+
+- `EFAULT` — a pointer argument is outside the caller's address space
+- `ECHILD` — the caller has no such child to wait for
+- `ETIMEDOUT` — the timeout elapsed before anything happened
+
+A process that has exited stays as a corpse until collected, so a status is never lost before its parent can read it. Children of a process that dies are re-parented onto init, which collects them; ECHILD means there is nothing to wait for, now or ever.
+
 ---
 
-27 calls defined.
+28 calls defined.

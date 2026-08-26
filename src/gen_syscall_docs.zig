@@ -5,7 +5,7 @@
 //! kernel does not implement, which is the usual way syscall docs go wrong.
 
 const std = @import("std");
-const abi = @import("kernel/syscall_table.zig");
+const abi = @import("lib/syscalls.zig");
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     try w.appendSlice(gpa,
         \\# vibeee system calls
         \\
-        \\<!-- Generated from src/kernel/syscall_table.zig by `zig build syscall-docs`.
+        \\<!-- Generated from src/lib/syscalls.zig by `zig build syscall-docs`.
         \\     Do not edit: change the table instead. -->
         \\
         \\Calls enter the kernel through `SYSENTER` where the CPU provides it, and

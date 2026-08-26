@@ -6,6 +6,7 @@
 
 const sys = @import("../syscall.zig");
 const out = @import("../lib/out.zig");
+const info = @import("../lib/info.zig");
 const str = @import("../lib/str.zig");
 
 /// Drawn in the sixteen-colour palette the console has, which is also what the
@@ -49,9 +50,8 @@ pub fn run(_: []const []const u8) void {
     }
 
     for (rows) |row| {
-        const n = sys.sysinfo(row.key, &buf);
-        if (n <= 0) continue;
-        const value = buf[0..@intCast(n)];
+        const value = info.ask(row.key, &buf);
+        if (value.len == 0) continue;
 
         // Multi-line values (storage, mounts) are indented under their label so
         // the columns still line up.
@@ -66,9 +66,9 @@ pub fn run(_: []const []const u8) void {
 
     // Uptime last, formatted rather than raw: seconds since boot is not what a
     // reader wants to see.
-    const n = sys.sysinfo("uptime", &buf);
-    if (n > 0) {
-        const seconds = str.toUnsigned(buf[0..@intCast(n)]);
+    const uptime = info.ask("uptime", &buf);
+    if (uptime.len > 0) {
+        const seconds = str.toUnsigned(uptime);
         out.text(" ");
         out.pad("uptime", 9);
         writeDuration(seconds);

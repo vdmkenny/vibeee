@@ -8,6 +8,7 @@
 
 const sys = @import("../syscall.zig");
 const out = @import("../lib/out.zig");
+const info = @import("../lib/info.zig");
 const str = @import("../lib/str.zig");
 const time = @import("../lib/time.zig");
 
@@ -34,11 +35,11 @@ pub fn run(args: []const []const u8) void {
     time.writeStamp(seconds);
     out.text(" UTC\n");
 
-    var buf: [64]u8 = [_]u8{0} ** 64;
-    const n = sys.sysinfo("clock", &buf);
-    if (n > 0) {
+    var buf: [64]u8 = @splat(0);
+    const source = info.ask("clock", &buf);
+    if (source.len > 0) {
         out.text("source  ");
-        out.text(buf[0..@intCast(n)]);
+        out.text(source);
         out.byte('\n');
     }
 

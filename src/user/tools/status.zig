@@ -10,17 +10,9 @@
 
 const sys = @import("../syscall.zig");
 const out = @import("../lib/out.zig");
+const info = @import("../lib/info.zig");
 const str = @import("../lib/str.zig");
 
-fn ask(key: []const u8, buf: []u8) []const u8 {
-    const n = sys.sysinfo(key, buf);
-    return if (n > 0) buf[0..@intCast(n)] else "";
-}
-
-fn askNumber(key: []const u8) usize {
-    var buf: [32]u8 = [_]u8{0} ** 32;
-    return str.toUnsigned(ask(key, &buf));
-}
 
 
 /// A bar is worth more than a percentage at a glance, and costs nothing.
@@ -38,8 +30,8 @@ fn mib(bytes: usize) void {
 }
 
 pub fn free(_: []const []const u8) void {
-    const total = askNumber("mem.total");
-    const available = askNumber("mem.free");
+    const total = info.askNumber("mem.total");
+    const available = info.askNumber("mem.free");
     const used = total -| available;
 
     var buf: [128]u8 = [_]u8{0} ** 128;
@@ -61,14 +53,14 @@ pub fn free(_: []const []const u8) void {
     mib(total);
     out.text(" total\n");
 
-    const fitted = ask("mem.hardware", &buf);
+    const fitted = info.ask("mem.hardware", &buf);
     if (fitted.len > 0) {
         out.text("fitted  ");
         out.text(fitted);
         out.byte('\n');
     }
 
-    const heap = ask("heap", &buf);
+    const heap = info.ask("heap", &buf);
     if (heap.len > 0) {
         out.text("kernel  ");
         out.text(heap);
@@ -88,9 +80,9 @@ pub fn top(args: []const []const u8) void {
 
     var round: usize = 0;
     while (round < rounds) : (round += 1) {
-        const uptime = askNumber("uptime");
-        const total = askNumber("mem.total");
-        const available = askNumber("mem.free");
+        const uptime = info.askNumber("uptime");
+        const total = info.askNumber("mem.total");
+        const available = info.askNumber("mem.free");
 
         out.text("up ");
         out.decimal(uptime);
@@ -101,16 +93,13 @@ pub fn top(args: []const []const u8) void {
         out.byte('\n');
         out.byte('\n');
 
-        out.pad("ID", 5);
+        out.pad("PID", 6);
         out.pad("STATE", 10);
         out.pad("PRI", 5);
         out.pad("TICKS", 8);
         out.text("NAME\n");
 
-        var rows = str.lines(ask("threads.list", &buf));
-        while (rows.next()) |row| {
-            if (row.len > 0) writeRow(row);
-        }
+        writeTree(info.ask("threads.list", &buf));
 
         if (round + 1 < rounds) {
             out.byte('\n');
@@ -124,21 +113,89 @@ pub fn top(args: []const []const u8) void {
 
 /// Rows arrive tab-separated; column widths are decided here so the kernel does
 /// not have to know how anything will be displayed.
-fn writeRow(row: []const u8) void {
-    const widths = [_]usize{ 5, 10, 5, 8, 0 };
+const MAX_THREADS = 64;
 
-    var it = str.fields(row);
-    var index: usize = 0;
-    while (it.next()) |field| : (index += 1) {
-        const width = widths[@min(index, widths.len - 1)];
-        if (width == 0) out.text(field) else out.pad(field, width);
+const Row = struct {
+    pid: usize = 0,
+    parent: usize = 0,
+    state: []const u8 = "",
+    priority: []const u8 = "",
+    ticks: []const u8 = "",
+    name: []const u8 = "",
+    /// Set once printed, so a parent loop that has gone wrong cannot make this
+    /// print the same thread forever.
+    shown: bool = false,
+};
+
+var rows: [MAX_THREADS]Row = @splat(.{});
+
+/// Print the thread list as a tree.
+///
+/// Which process started which is most of what anyone looking at this wants to
+/// know — whether the shell is init's child, whether a tool is still attached
+/// to the shell that ran it — and a flat list makes that guesswork.
+fn writeTree(text: []const u8) void {
+    var count: usize = 0;
+
+    var lines = str.lines(text);
+    while (lines.next()) |line| {
+        if (line.len == 0 or count >= MAX_THREADS) continue;
+        var it = str.fields(line);
+        rows[count] = .{
+            .pid = str.toUnsigned(it.next() orelse continue),
+            .parent = str.toUnsigned(it.next() orelse continue),
+            .state = it.next() orelse "",
+            .priority = it.next() orelse "",
+            .ticks = it.next() orelse "",
+            .name = it.next() orelse "",
+        };
+        count += 1;
     }
+
+    // Roots first: a thread whose parent is not in the list is one the kernel
+    // started itself, and is where a branch of the tree begins.
+    for (rows[0..count]) |*row| {
+        if (findRow(count, row.parent) == null) writeBranch(count, row, 0);
+    }
+
+    // Anything left is in a parent cycle, which should be impossible — but
+    // dropping threads silently from the one tool that lists them would hide
+    // exactly the bug that caused it.
+    for (rows[0..count]) |*row| {
+        if (!row.shown) writeBranch(count, row, 0);
+    }
+}
+
+fn findRow(count: usize, pid: usize) ?*Row {
+    for (rows[0..count]) |*row| {
+        if (row.pid == pid) return row;
+    }
+    return null;
+}
+
+fn writeBranch(count: usize, row: *Row, depth: usize) void {
+    if (row.shown) return;
+    row.shown = true;
+
+    out.decimalRight(row.pid, 4);
+    out.text("  ");
+    out.pad(row.state, 10);
+    out.pad(row.priority, 5);
+    out.pad(row.ticks, 8);
+
+    var indent: usize = 0;
+    while (indent < depth) : (indent += 1) out.text("  ");
+    out.text(row.name);
     out.byte('\n');
+
+    for (rows[0..count]) |*child| {
+        if (child != row and child.parent == row.pid) writeBranch(count, child, depth + 1);
+    }
 }
 
 pub fn disk(_: []const []const u8) void {
     var buf: [1024]u8 = [_]u8{0} ** 1024;
-    const list = ask("disks", &buf);
+    const list = info.ask("disks", &buf);
 
     if (list.len == 0) {
         out.text("no storage devices\n");
@@ -148,8 +205,8 @@ pub fn disk(_: []const []const u8) void {
 
     out.text("device       size        mounted\n");
 
-    var rows = str.lines(list);
-    while (rows.next()) |row| {
+    var listing = str.lines(list);
+    while (listing.next()) |row| {
         if (row.len > 0) writeDiskRow(row);
     }
     out.flush();

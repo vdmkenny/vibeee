@@ -1,58 +1,30 @@
 //! Userspace syscall stubs.
 //!
-//! Hand-written for now; these become generated output from
-//! `kernel/syscall_table.zig` once eeelibc exists, so the numbers and argument
-//! order cannot drift from the kernel's.
+//! Thin: each function packs registers and traps. Everything the two sides must
+//! agree on — call numbers, flag layouts, wire formats — comes from
+//! `lib/syscalls.zig`, which the kernel compiles too, so there is nothing here
+//! to keep in sync. The numbers in particular used to be a hand-kept list, and
+//! it drifted; `abi.number` resolves them at compile time and fails the build
+//! on a name that does not exist.
 
-/// Numbers must match kernel/syscall_table.zig.
-pub const SYS_EXIT = 0;
-pub const SYS_WRITE = 1;
-pub const SYS_READ = 2;
-pub const SYS_YIELD = 3;
-pub const SYS_SLEEP_US = 4;
-pub const SYS_CLOCK_US = 5;
-pub const SYS_GETPID = 6;
-pub const SYS_LOG = 7;
-pub const SYS_SHUTDOWN = 8;
-pub const SYS_SYSINFO = 9;
-pub const SYS_OPEN = 10;
-pub const SYS_CLOSE = 11;
-pub const SYS_SEEK = 12;
-pub const SYS_READDIR = 13;
-pub const SYS_STAT = 14;
-pub const SYS_SPAWN = 15;
-pub const SYS_CHDIR = 16;
-pub const SYS_GETCWD = 17;
-pub const SYS_REALTIME_US = 18;
-pub const SYS_EVENT_CREATE = 19;
-pub const SYS_EVENT_SIGNAL = 20;
-pub const SYS_WAIT_MANY = 21;
-pub const SYS_SVC_REGISTER = 22;
-pub const SYS_SVC_CONNECT = 23;
-pub const SYS_CALL = 24;
-pub const SYS_RECV = 25;
-pub const SYS_REPLY = 26;
+const abi = @import("lib").syscalls;
 
-/// Timeout sentinels for the blocking calls.
-pub const POLL: usize = 0;
-pub const FOREVER: usize = 0xFFFF_FFFF;
+/// Re-exported so call sites say `sys.STDOUT` rather than reaching two modules
+/// deep for a constant. One definition, still; this is only the local name.
+pub const STDIN = abi.STDIN;
+pub const STDOUT = abi.STDOUT;
+pub const STDERR = abi.STDERR;
 
-/// Largest inline channel payload, matching kernel/channel.zig. Anything
-/// bigger is bulk data and belongs in a shared ring.
-pub const MAX_PAYLOAD = 64;
+pub const Timeout = abi.Timeout;
+pub const POLL = abi.Timeout.poll;
+pub const FOREVER = abi.Timeout.forever;
 
-pub const OPEN_DIRECTORY: usize = 1 << 0;
+pub const MAX_PAYLOAD = abi.MAX_PAYLOAD;
+pub const MAX_ARGS = abi.MAX_ARGS;
 
-/// Directory entry wire format, matching kernel/syscall.zig.
-pub const DIRENT_HEADER = 10; // u32 size, i32 mtime, u8 flags, u8 name_len
-pub const DIRENT_FLAG_DIR: u8 = 1 << 0;
-
-/// Matches the kernel limit in arch/x86/usermode.zig.
-pub const MAX_ARGS = 16;
-
-pub const STDIN = 0;
-pub const STDOUT = 1;
-pub const STDERR = 2;
+pub const Dirent = abi.Dirent;
+pub const OpenFlags = abi.OpenFlags;
+pub const SpawnFlags = abi.SpawnFlags;
 
 inline fn syscall0(nr: u32) isize {
     return asm volatile ("int $0x80"
@@ -80,32 +52,32 @@ inline fn syscall3(nr: u32, a0: usize, a1: usize, a2: usize) isize {
 }
 
 pub fn write(handle: u32, bytes: []const u8) isize {
-    return syscall3(SYS_WRITE, handle, @intFromPtr(bytes.ptr), bytes.len);
+    return syscall3(abi.number("write"), handle, @intFromPtr(bytes.ptr), bytes.len);
 }
 
 pub fn read(handle: u32, buf: []u8) isize {
-    return syscall3(SYS_READ, handle, @intFromPtr(buf.ptr), buf.len);
+    return syscall3(abi.number("read"), handle, @intFromPtr(buf.ptr), buf.len);
 }
 
 pub fn log(bytes: []const u8) isize {
-    return syscall3(SYS_LOG, @intFromPtr(bytes.ptr), bytes.len, 0);
+    return syscall3(abi.number("log"), @intFromPtr(bytes.ptr), bytes.len, 0);
 }
 
 pub fn getpid() isize {
-    return syscall0(SYS_GETPID);
+    return syscall0(abi.number("getpid"));
 }
 
 pub fn yield() void {
-    _ = syscall0(SYS_YIELD);
+    _ = syscall0(abi.number("yield"));
 }
 
 pub fn sleepMicros(us: usize) void {
-    _ = syscall1(SYS_SLEEP_US, us);
+    _ = syscall1(abi.number("sleep_us"), us);
 }
 
 pub fn clockMicros() u64 {
     var out: u64 = 0;
-    _ = syscall1(SYS_CLOCK_US, @intFromPtr(&out));
+    _ = syscall1(abi.number("clock_us"), @intFromPtr(&out));
     return out;
 }
 
@@ -114,7 +86,7 @@ pub fn clockMicros() u64 {
 /// clock for a real timestamp.
 pub fn realtimeMicros() ?i64 {
     var out: i64 = 0;
-    if (syscall1(SYS_REALTIME_US, @intFromPtr(&out)) < 0) return null;
+    if (syscall1(abi.number("realtime_us"), @intFromPtr(&out)) < 0) return null;
     return out;
 }
 
@@ -150,58 +122,75 @@ fn syscall5(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isiz
         : .{ .memory = true });
 }
 
-pub fn open(path: []const u8, flags: usize) isize {
-    return syscall3(SYS_OPEN, @intFromPtr(path.ptr), path.len, flags);
+pub fn open(path: []const u8, flags: OpenFlags) isize {
+    return syscall3(
+        abi.number("open"),
+        @intFromPtr(path.ptr),
+        path.len,
+        @as(u32, @bitCast(flags)),
+    );
 }
 
 pub fn close(handle: usize) isize {
-    return syscall1(SYS_CLOSE, handle);
+    return syscall1(abi.number("close"), handle);
 }
 
 pub fn seek(handle: usize, offset: isize, whence: usize) isize {
-    return syscall3(SYS_SEEK, handle, @bitCast(offset), whence);
+    return syscall3(abi.number("seek"), handle, @bitCast(offset), whence);
 }
 
 pub fn readdir(handle: usize, buf: []u8) isize {
-    return syscall3(SYS_READDIR, handle, @intFromPtr(buf.ptr), buf.len);
+    return syscall3(abi.number("readdir"), handle, @intFromPtr(buf.ptr), buf.len);
 }
 
 pub fn stat(path: []const u8, buf: []u8) isize {
-    return syscall4(SYS_STAT, @intFromPtr(path.ptr), path.len, @intFromPtr(buf.ptr), buf.len);
+    return syscall4(abi.number("stat"), @intFromPtr(path.ptr), path.len, @intFromPtr(buf.ptr), buf.len);
 }
 
 /// Pack arguments and run a program, returning its exit status.
 var spawn_buf: [1024]u8 = undefined;
 
 pub fn spawn(path: []const u8, args: []const []const u8) isize {
-    var n: usize = 0;
-    if (spawn_buf.len < 2) return -22;
-    spawn_buf[0] = @truncate(args.len);
-    spawn_buf[1] = @truncate(args.len >> 8);
-    n = 2;
+    return spawnWith(path, args, .{});
+}
 
-    for (args) |arg| {
-        if (n + 2 + arg.len > spawn_buf.len) return -22;
-        spawn_buf[n] = @truncate(arg.len);
-        spawn_buf[n + 1] = @truncate(arg.len >> 8);
-        n += 2;
-        for (arg, 0..) |c, i| spawn_buf[n + i] = c;
-        n += arg.len;
-    }
+/// Start a program without waiting; returns its process id.
+pub fn spawnDetached(path: []const u8, args: []const []const u8) isize {
+    return spawnWith(path, args, .{ .detached = true });
+}
 
-    return syscall4(SYS_SPAWN, @intFromPtr(path.ptr), path.len, @intFromPtr(&spawn_buf), n);
+pub const Exited = struct { pid: u32, status: i32 };
+
+/// Collect a child that has exited. `pid` of 0 takes whichever exits first.
+pub fn wait(pid: u32, timeout_us: usize) ?Exited {
+    var status: i32 = 0;
+    const got = syscall3(abi.number("wait"), pid, timeout_us, @intFromPtr(&status));
+    if (got < 0) return null;
+    return .{ .pid = @intCast(got), .status = status };
+}
+
+fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isize {
+    const n = abi.Argv.pack(args, &spawn_buf) catch return -22;
+    return syscall5(
+        abi.number("spawn"),
+        @intFromPtr(path.ptr),
+        path.len,
+        @intFromPtr(&spawn_buf),
+        n,
+        @as(u32, @bitCast(flags)),
+    );
 }
 
 pub fn chdir(path: []const u8) isize {
-    return syscall3(SYS_CHDIR, @intFromPtr(path.ptr), path.len, 0);
+    return syscall3(abi.number("chdir"), @intFromPtr(path.ptr), path.len, 0);
 }
 
 pub fn getcwd(buf: []u8) isize {
-    return syscall3(SYS_GETCWD, @intFromPtr(buf.ptr), buf.len, 0);
+    return syscall3(abi.number("getcwd"), @intFromPtr(buf.ptr), buf.len, 0);
 }
 
 pub fn sysinfo(key: []const u8, buf: []u8) isize {
-    return syscall4(SYS_SYSINFO, @intFromPtr(key.ptr), key.len, @intFromPtr(buf.ptr), buf.len);
+    return syscall4(abi.number("sysinfo"), @intFromPtr(key.ptr), key.len, @intFromPtr(buf.ptr), buf.len);
 }
 
 pub const POWER_OFF = 0;
@@ -209,12 +198,12 @@ pub const REBOOT = 1;
 pub const HALT = 2;
 
 pub fn shutdown(action: usize) noreturn {
-    _ = syscall1(SYS_SHUTDOWN, action);
+    _ = syscall1(abi.number("shutdown"), action);
     unreachable;
 }
 
 pub fn exit(status: usize) noreturn {
-    _ = syscall1(SYS_EXIT, status);
+    _ = syscall1(abi.number("exit"), status);
     unreachable;
 }
 
@@ -223,17 +212,17 @@ pub fn exit(status: usize) noreturn {
 // ---------------------------------------------------------------------------
 
 pub fn eventCreate() isize {
-    return syscall0(SYS_EVENT_CREATE);
+    return syscall0(abi.number("event_create"));
 }
 
 pub fn eventSignal(handle: usize) isize {
-    return syscall1(SYS_EVENT_SIGNAL, handle);
+    return syscall1(abi.number("event_signal"), handle);
 }
 
 /// Block until one of `handles` is signalled; returns which. This is the only
 /// way a program stops running without spinning.
 pub fn waitMany(handles: []const u32, timeout_us: usize) isize {
-    return syscall3(SYS_WAIT_MANY, @intFromPtr(handles.ptr), handles.len, timeout_us);
+    return syscall3(abi.number("wait_many"), @intFromPtr(handles.ptr), handles.len, timeout_us);
 }
 
 pub fn eventWait(handle: u32, timeout_us: usize) isize {
@@ -243,17 +232,17 @@ pub fn eventWait(handle: u32, timeout_us: usize) isize {
 
 /// Publish a service under `name`, returning the serving end of its channel.
 pub fn svcRegister(name: []const u8) isize {
-    return syscall2(SYS_SVC_REGISTER, @intFromPtr(name.ptr), name.len);
+    return syscall2(abi.number("svc_register"), @intFromPtr(name.ptr), name.len);
 }
 
 pub fn svcConnect(name: []const u8) isize {
-    return syscall2(SYS_SVC_CONNECT, @intFromPtr(name.ptr), name.len);
+    return syscall2(abi.number("svc_connect"), @intFromPtr(name.ptr), name.len);
 }
 
 /// Send a request and block until the reply arrives.
 pub fn call(handle: usize, request: []const u8, reply_buf: []u8) isize {
     return syscall5(
-        SYS_CALL,
+        abi.number("call"),
         handle,
         @intFromPtr(request.ptr),
         request.len,
@@ -268,7 +257,7 @@ pub const Request = struct { len: usize, token: u32 };
 pub fn recv(handle: usize, buf: []u8, timeout_us: usize) ?Request {
     var token: u32 = 0;
     const n = syscall5(
-        SYS_RECV,
+        abi.number("recv"),
         handle,
         @intFromPtr(buf.ptr),
         buf.len,
@@ -280,5 +269,5 @@ pub fn recv(handle: usize, buf: []u8, timeout_us: usize) ?Request {
 }
 
 pub fn reply(handle: usize, token: u32, payload: []const u8) isize {
-    return syscall4(SYS_REPLY, handle, token, @intFromPtr(payload.ptr), payload.len);
+    return syscall4(abi.number("reply"), handle, token, @intFromPtr(payload.ptr), payload.len);
 }
