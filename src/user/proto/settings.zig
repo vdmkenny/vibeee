@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const config = @import("ulib").config;
+const keymaps = @import("keymaps");
 const str = @import("lib").str;
 const sys = @import("sys");
 const theme = @import("eui").theme;
@@ -84,7 +85,16 @@ pub const Wm = struct {
 
 /// Every domain there is. The field name is the domain's name, which is also
 /// its file's name, so neither is written twice.
+/// Which keyboard layout the keys mean. The registry's own names, so a value
+/// accepted here is one the kernel can be given.
+pub const Keymap = keymaps.Name;
+
+pub const Input = struct {
+    keymap: Keymap = keymaps.default,
+};
+
 pub const Domains = struct {
+    input: Input = .{},
     wm: Wm = .{},
 };
 
@@ -202,6 +212,16 @@ pub fn load(comptime domain: []const u8) Domain(domain) {
     var value: Domain(domain) = .{};
     _ = config.load(pathOf(domain), &value, &storage);
     return value;
+}
+
+/// Put the input settings into effect.
+///
+/// Everything else is applied by whoever reads it: the desktop themes itself.
+/// The keyboard layout is the kernel's, so somebody has to hand it over, and
+/// doing it here means the one place that knows a setting has changed is the
+/// one place that says so.
+pub fn applyInput() void {
+    _ = sys.setKeymap(load("input").keymap);
 }
 
 pub fn set(key: []const u8, value: []const u8) Error!void {

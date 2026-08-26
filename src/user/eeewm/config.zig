@@ -11,10 +11,12 @@ const theme = @import("eui").theme;
 pub const Config = settings.Wm;
 
 var active: Config = .{};
+var keys: settings.Input = .{};
 
 /// Read the settings and apply what they say, returning the result.
 pub fn load() *const Config {
     active = settings.load("wm");
+    keys = settings.load("input");
     apply();
     return &active;
 }
@@ -36,6 +38,21 @@ fn apply() void {
 
 pub fn current() *const Config {
     return &active;
+}
+
+/// The keyboard settings. Not applied here: `cfgd` hands the layout to the
+/// kernel, and this is only what the bar draws.
+pub fn keyboard() *const settings.Input {
+    return &keys;
+}
+
+/// Take up a keyboard change, whoever made it. True when it moved.
+pub fn reloadKeyboard() bool {
+    const fresh = settings.load("input");
+    if (std.meta.eql(fresh, keys)) return false;
+
+    keys = fresh;
+    return true;
 }
 
 const std = @import("std");

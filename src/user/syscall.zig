@@ -7,6 +7,7 @@
 //! fails the build on a name that does not exist.
 
 const abi = @import("lib").syscalls;
+const keymaps = @import("keymaps");
 
 /// Re-exported so call sites say `sys.STDOUT` rather than reaching two modules
 /// deep for a constant. One definition, still; this is only the local name.
@@ -352,6 +353,11 @@ pub fn exit(status: usize) noreturn {
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
+
+/// Choose which keyboard layout the keys mean.
+pub fn setKeymap(layout: keymaps.Name) isize {
+    return syscall1(abi.number("set_keymap"), @intFromEnum(layout));
+}
 
 /// Move a file, replacing whatever is at the destination. Within one volume.
 pub fn rename(from: []const u8, to: []const u8) isize {

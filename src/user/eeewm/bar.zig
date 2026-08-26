@@ -20,6 +20,7 @@ const theme = @import("eui").theme;
 
 const ui = @import("eui").widget;
 
+const keymaps = @import("keymaps");
 const settings = @import("config.zig");
 
 const Rect = draw.Rect;
@@ -207,6 +208,7 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
 
     paintAdd(surface, width, height, desktop);
     paintLayoutGlyph(surface, width, height, desktop);
+    paintKeymapTag(surface, width, height);
     paintClock(surface, width, height);
 }
 
@@ -376,6 +378,20 @@ fn paintLayoutGlyph(surface: Surface, width: i32, height: i32, desktop: *const l
         .h = t.bar_height - 1,
     };
     surface.textCentred(area, layout.glyphOf(desktop.layout()), t.bar_text);
+}
+
+/// Which keyboard layout the keys mean, in the two letters the layout gives
+/// for the purpose. Always shown: a machine whose keycaps disagree with its
+/// layout is one where this is the first thing worth checking.
+fn paintKeymapTag(surface: Surface, width: i32, height: i32) void {
+    const t = theme.current();
+    const area = Rect{
+        .x = width - CLOCK_WIDTH - 42,
+        .y = strip(height).y,
+        .w = 22,
+        .h = t.bar_height - 1,
+    };
+    surface.textCentred(area, keymaps.tags[@intFromEnum(settings.keyboard().keymap)], t.bar_text);
 }
 
 fn paintClock(surface: Surface, width: i32, height: i32) void {

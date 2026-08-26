@@ -25,6 +25,7 @@ const layout = @import("layout.zig");
 const bar = @import("bar.zig");
 const cursor = @import("cursor.zig");
 const config = @import("config.zig");
+const keymaps = @import("keymaps");
 const proto = @import("proto");
 const ui = @import("eui").widget;
 const sys = @import("sys");
@@ -101,10 +102,12 @@ export fn wmMain() callconv(.c) noreturn {
     // chosen from a shell reaches the desktop without a restart. Zero when the
     // service is not up, which the poll below reads as nothing to hear.
     settings_event = proto.settings.watch("wm") catch 0;
+    keyboard_event = proto.settings.watch("input") catch 0;
     listenTo(.keys, sys.watch(.keys));
     listenTo(.pointer, sys.watch(.pointer));
     listenTo(.children, sys.watch(.children));
-    listenTo(.settings, @intCast(settings_event));
+    listenTo(.wm_settings, @intCast(settings_event));
+    listenTo(.keyboard_settings, @intCast(keyboard_event));
 
     ctx = ui.Context.init(screen);
 
@@ -452,7 +455,7 @@ fn run() noreturn {
 
 /// What the manager listens to. Each is a counting event, so a thing that
 /// happens while the loop is busy is still there when it comes back round.
-const Source = enum { keys, pointer, children, channel, settings };
+const Source = enum { keys, pointer, children, channel, wm_settings, keyboard_settings };
 
 var sources: [@typeInfo(Source).@"enum".fields.len]u32 = @splat(0);
 var listening: usize = 0;
@@ -527,6 +530,7 @@ fn handleKey(event: sys.KeyEvent) void {
             if (mods.shift) desktop.moveToTag(tag) else desktop.view(tag);
         },
         .tab => desktop.viewPrevious(),
+        .space => nextKeymap(),
 
         // Relative movement between desktops, and taking the focused window
         // along with shift. Bracket keys because they sit next to each other
@@ -805,13 +809,35 @@ fn onDestroy(pid: u32, req: *const wire.Req) Answer {
     return .{ .rep = .{ .gen = table.generation } };
 }
 
+/// Move to the next keyboard layout.
+///
+/// Through the settings rather than straight at the kernel, because a layout
+/// chosen with a chord and one chosen in a settings file should be the same
+/// choice: `cfgd` applies it and writes it down, so it is still the layout
+/// next time.
+fn nextKeymap() void {
+    const now = @intFromEnum(proto.settings.load("input").keymap);
+    const next: proto.settings.Keymap = @enumFromInt((now + 1) % keymaps.count);
+
+    proto.settings.set("input.keymap", @tagName(next)) catch return;
+
+    dirty = true;
+}
+
 var settings_event: u32 = 0;
+var keyboard_event: u32 = 0;
 
 /// Take up a settings change somebody else made.
 ///
 /// Checked without blocking, because the loop blocks once at the bottom on
 /// every source at once, including this one.
 fn settingsChanged() bool {
+    // The keyboard is somebody else's to apply; all this has to do is redraw
+    // the two letters in the bar that say which one it is.
+    if (keyboard_event != 0 and sys.waitMany(&.{keyboard_event}, sys.POLL) >= 0) {
+        if (config.reloadKeyboard()) dirty = true;
+    }
+
     if (settings_event == 0) return false;
     if (sys.waitMany(&.{settings_event}, sys.POLL) < 0) return false;
     if (!config.reload()) return false;

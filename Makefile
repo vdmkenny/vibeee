@@ -129,6 +129,7 @@ $(ROOTFS_IMG): kernel | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
+	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
 	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/lib/drivers/e1000.man
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt

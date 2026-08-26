@@ -42,6 +42,10 @@ export fn cfgdMain() callconv(.c) noreturn {
         if (handle >= 0) event.* = @intCast(handle);
     }
 
+    // What is stored is what the machine should already be doing, and at
+    // startup it is not yet: the kernel is on whichever layout it compiled in.
+    settings.applyInput();
+
     const channel = sys.svcRegister(settings.SERVICE);
     if (channel < 0) {
         out.text("cfgd: cannot register\n");
@@ -133,6 +137,11 @@ fn applyTo(comptime domain: []const u8, asked: anytype) settings.Status {
     }
 
     if (!write(settings.pathOf(domain), &current)) return .failed;
+
+    // The kernel holds the keyboard layout, so a change to it is not in effect
+    // until somebody says so. Everything else is applied by whoever reads it.
+    if (comptime str.eql(domain, "input")) settings.applyInput();
+
     announce(domain);
     return .ok;
 }

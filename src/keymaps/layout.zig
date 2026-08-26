@@ -13,10 +13,14 @@
 //! compile time for duplicate keys, so a typo is a build error rather than a key
 //! that mysteriously does nothing.
 
-const input = @import("../kernel/input.zig");
+// From the ABI rather than from the kernel: a layout says which key produces
+// which character and needs the shared names for keys to say it, not anything
+// the kernel does with them. Reaching for the kernel here would put a copy of
+// it in every program that only wanted to name a layout.
+const abi = @import("lib").syscalls;
 
-pub const KeyCode = input.KeyCode;
-pub const Modifiers = input.Modifiers;
+pub const KeyCode = abi.KeyCode;
+pub const Modifiers = abi.Modifiers;
 
 /// The four symbol levels a key can produce.
 pub const Levels = struct {

@@ -11,6 +11,7 @@ const handles = @import("../handle.zig");
 const vfs = @import("../vfs.zig");
 const ctx = @import("context.zig");
 const input = @import("../input.zig");
+const keymap = @import("../keymap.zig");
 const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
@@ -261,6 +262,12 @@ pub fn sys_pointer_read(a: Args) Result {
     }
 
     return @intCast(written * size);
+}
+
+pub fn sys_set_keymap(a: Args) Result {
+    if (a.a0 >= keymap.layoutCount()) return Errno.inval.value();
+    keymap.setLayout(a.a0);
+    return 0;
 }
 
 pub fn sys_watch(a: Args) Result {

@@ -91,11 +91,25 @@ pub fn build(b: *std.Build) void {
     //   sys   the syscall layer
     //   ulib  conveniences that assume a process (output, strings, time)
     //   eui   the control library, which touches no syscalls at all
+    // The keyboard layouts. Userspace needs the names of them, for a setting
+    // and the control that edits it; the kernel needs the tables. Both compile
+    // the same list, so a name chosen in a settings file is one the kernel
+    // knows.
+    const keymaps_mod = b.createModule(.{
+        .root_source_file = b.path("src/keymaps/registry.zig"),
+        .target = user_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "lib", .module = user_lib }},
+    });
+
     const sys_mod = b.createModule(.{
         .root_source_file = b.path("src/user/syscall.zig"),
         .target = user_target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "lib", .module = user_lib }},
+        .imports = &.{
+            .{ .name = "lib", .module = user_lib },
+            .{ .name = "keymaps", .module = keymaps_mod },
+        },
     });
 
     const ulib_mod = b.createModule(.{
@@ -125,6 +139,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lib", .module = user_lib },
             .{ .name = "sys", .module = sys_mod },
             .{ .name = "eui", .module = eui_mod },
+            .{ .name = "keymaps", .module = keymaps_mod },
             .{ .name = "ulib", .module = ulib_mod },
         },
     });
@@ -134,6 +149,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "sys", .module = sys_mod },
         .{ .name = "ulib", .module = ulib_mod },
         .{ .name = "eui", .module = eui_mod },
+        .{ .name = "keymaps", .module = keymaps_mod },
         .{ .name = "proto", .module = proto_mod },
     };
 

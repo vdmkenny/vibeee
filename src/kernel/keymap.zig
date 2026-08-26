@@ -30,7 +30,7 @@ pub const Levels = l.Levels;
 pub const layouts = &registry.all;
 
 
-var active: usize = registry.default_index;
+var active: usize = @intFromEnum(registry.default);
 
 pub fn current() *const l.Compiled {
     return &layouts[active];

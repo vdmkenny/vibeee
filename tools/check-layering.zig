@@ -89,6 +89,23 @@ const RULES = [_]Rule{
         .forbid = "user/",
         .why = "lib/ is the shared half; userspace-only code belongs in user/lib/",
     },
+    // Keyboard layouts are compiled into the kernel and named by userspace. A
+    // layout that reached for either would drag it into the other.
+    .{
+        .from = "src/keymaps",
+        .forbid = "kernel/",
+        .why = "a layout names keys through the ABI, not through the kernel",
+    },
+    .{
+        .from = "src/keymaps",
+        .forbid = "drv/",
+        .why = "a layout describes a keyboard, not the controller it arrives from",
+    },
+    .{
+        .from = "src/keymaps",
+        .forbid = "user/",
+        .why = "keymaps are shared; nothing there may depend on one side of the boundary",
+    },
 };
 
 pub fn main(init: std.process.Init) !void {

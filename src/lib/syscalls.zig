@@ -1172,6 +1172,19 @@ pub const table = [_]Syscall{
             "never nothing, which is what makes write-then-rename worth doing on FAT. " ++
             "A directory cannot replace or be replaced.",
     },
+    .{
+        .number = 45,
+        .name = "set_keymap",
+        .summary = "Choose which keyboard layout the keys mean.",
+        .args = &.{
+            .{ .name = "layout", .kind = .uint, .desc = "A keymaps.Name, which is its index in the layout table." },
+        },
+        .errors = &.{E.inval},
+        .notes = "The layouts are compiled into the kernel and userspace names them by the " ++
+            "same list, so the number crossing here means the same layout on both sides. " ++
+            "There is no call to read it back: the setting is where it is written down and " ++
+            "reading the file is reading the answer.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

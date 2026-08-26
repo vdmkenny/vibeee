@@ -295,20 +295,24 @@ compiler for it, and no second table to forget to update, because the type is
 already all three of those things.
 
 ```zig
-pub const domains = .{
-    .wm      = Wm,
-    .shell   = Shell,
-    .display = Display,
-    .power   = Power,
+pub const Domains = struct {
+    input: Input = .{},
+    wm: Wm = .{},
 };
 
 pub const Wm = struct {
-    theme:  enum { classic, paper, dusk } = .classic,
-    bar:    enum { top, bottom } = .top,
-    layout: enum { tall, wide, monocle } = .tall,
+    theme:  Theme = .classic,
+    bar:    Bar = .top,
+    layout: Layout = .tall,
     master: u7 = 58,
 };
 ```
+
+A value set is a value the type already had a name for. `Theme` is checked at
+compile time against the toolkit's list of themes and `Input.keymap` is the
+keyboard registry's own name type, so a layout added to `src/keymaps` is one
+the settings accept, the completer offers and the Settings app lists, with no
+second list anywhere to fall behind the first.
 
 A key is `domain.field`: `wm.theme`, `power.dim_after`. Two levels, not a tree.
 Two levels is what maps one-to-one onto one file per domain and one struct per
@@ -373,7 +377,23 @@ failed service is unrecoverable.
 Read-only in that mode. Anything early enough to need the fallback is early
 enough to have no business writing.
 
-### 8.5 What is not settings
+### 8.5 Settings the kernel holds
+
+Most settings are applied by whoever reads them: the desktop themes itself. The
+keyboard layout is different, because the kernel holds it and translates every
+keystroke through it, so somebody has to hand it over.
+
+`cfgd` does, once at startup and again whenever the domain changes. Not because
+the store should be in the business of policy, but because it is already the one
+place that knows a setting has changed, and a second party watching for it would
+be a second place for the kernel's copy and the file to disagree.
+
+That keeps one answer to "which layout is this": the file. `Super+Space` cycles
+by setting the value rather than by calling the kernel, so a layout chosen with
+a chord and one chosen in a file are the same choice, and the bar draws the two
+letters the layout gives for the purpose.
+
+### 8.6 What is not settings
 
 Manifests are not settings and do not go here. `/etc/services` says what to
 start and `/lib/*.man` says what a driver claims; both are read by things that
@@ -386,7 +406,7 @@ The line: **a manifest says what exists, a setting says how it behaves.**
 Nor is user data. Documents, state and caches live under `/home`. A settings
 store that programs use as scratch space is how a registry becomes a database.
 
-### 8.6 The two front ends
+### 8.7 The two front ends
 
 `cfg` is the command-line one:
 
