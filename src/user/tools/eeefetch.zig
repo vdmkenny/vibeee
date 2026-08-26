@@ -7,18 +7,8 @@
 const sys = @import("../syscall.zig");
 const out = @import("../lib/out.zig");
 const info = @import("../lib/info.zig");
+const logo = @import("lib").logo;
 const str = @import("../lib/str.zig");
-
-/// Drawn in the sixteen-colour palette the console has, which is also what the
-/// panel can display without dithering.
-const logo = [_][]const u8{
-    "        _ _                     ",
-    " __   _(_) |__   ___  ___  ___  ",
-    " \\ \\ / / | '_ \\ / _ \\/ _ \\/ _ \\ ",
-    "  \\ V /| | |_) |  __/  __/  __/ ",
-    "   \\_/ |_|_.__/ \\___|\\___|\\___| ",
-    "                                ",
-};
 
 const Row = struct { label: []const u8, key: []const u8 };
 
@@ -44,7 +34,7 @@ const rows = [_]Row{
 pub fn run(_: []const []const u8) void {
     var buf: [512]u8 = undefined;
 
-    for (logo) |line| {
+    for (logo.lines) |line| {
         out.text(line);
         out.text("\n");
     }

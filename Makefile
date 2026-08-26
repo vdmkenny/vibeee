@@ -148,9 +148,16 @@ populate: kernel
 # A plain `make image` is quiet: a working system should boot without narrating.
 DEV_IMAGE := $(BUILD)/vibeee-dev.img
 
+# The development loop boots verbose and in the framebuffer console, so the
+# self-test output is visible and it is rendered in the same font the real
+# machine will use. `fb` is opt-in rather than the default because switching to
+# graphics silences the text console: on a machine whose only output is the
+# screen, the default has to be the mode already known to work.
+DEV_CMDLINE ?= verbose fb
+
 .PHONY: dev-image
 dev-image: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
-	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) verbose $(ROOTFS_IMG)
+	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) "$(DEV_CMDLINE)" $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$(DEV_IMAGE)
 
 qemu: dev-image
@@ -167,6 +174,27 @@ shot: dev-image
 		-- -drive if=ide,format=raw,file=$(DEV_IMAGE)
 
 run: qemu
+
+# Boot with a VNC server instead of a local window, so the machine can be
+# driven from anywhere — including from a phone, and including while a
+# screenshot run is using the local display.
+#
+# macOS has a VNC client built in: `open vnc://localhost:5901`.
+VNC_DISPLAY ?= 1
+
+.PHONY: vnc
+vnc: dev-image
+	@echo "vnc://localhost:$$(( 5900 + $(VNC_DISPLAY) ))  (macOS: open vnc://localhost:$$(( 5900 + $(VNC_DISPLAY) )))"
+	$(QEMU) $(QEMU_FLAGS) -vnc :$(VNC_DISPLAY) \
+		-drive if=ide,format=raw,file=$(DEV_IMAGE)
+
+# The same, for the real image on the SD path the 701 actually boots.
+.PHONY: vnc-sd
+vnc-sd: $(IMAGE)
+	@echo "vnc://localhost:$$(( 5900 + $(VNC_DISPLAY) ))"
+	$(QEMU) $(QEMU_FLAGS) -vnc :$(VNC_DISPLAY) \
+		-drive if=none,id=sd,format=raw,file=$(IMAGE) \
+		-device usb-storage,drive=sd,bootindex=0
 
 # Boot the real image. `-drive if=none,format=raw` + `usb-storage` mirrors the
 # 701's actual path: the SD card sits behind a USB mass-storage reader, and the

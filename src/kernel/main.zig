@@ -12,6 +12,7 @@ const channel = @import("channel.zig");
 const console = @import("console.zig");
 const event = @import("event.zig");
 const hal = @import("hal.zig");
+const logo = @import("lib").logo;
 const panic_mod = @import("panic.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
@@ -29,14 +30,26 @@ pub const VERSION = "0.1.0-M0";
 /// exists; until then this is also what the TSS esp0 points at.
 var kernel_stack: [32 * 1024]u8 align(16) = undefined;
 
-pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
-    console.init();
-
+/// The first thing on screen. Drawn before anything can fail, so a machine that
+/// dies during bring-up has still said what it was trying to be — which on
+/// hardware with no serial port is the difference between a diagnosable failure
+/// and a blank panel.
+fn banner() void {
     console.setColor(.light_cyan, .black);
+    for (logo.lines) |line| {
+        console.writeString(line);
+        console.putChar('\n');
+    }
+
+    console.setColor(.light_grey, .black);
     console.printf("vibeee {s}", .{VERSION});
     console.setColor(.dark_grey, .black);
     console.printf("  {s}\n\n", .{@tagName(builtin.cpu.arch)});
     console.setColor(.light_grey, .black);
+}
+
+pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
+    console.init();
 
     if (bi.magic != bootinfo.MAGIC or bi.version != bootinfo.VERSION) {
         console.fail("bootinfo mismatch (magic {x}, v{d}); rebuild image", .{ bi.magic, bi.version });
@@ -46,9 +59,12 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     console.setVerbose(std.mem.indexOf(u8, bi.cmdlineSlice(), "verbose") != null);
     platform.earlyConsole();
 
-    // Before anything is drawn: in graphics mode the text buffer is no longer
-    // displayed, so output written first would vanish.
+    // The backend is chosen before anything is drawn: in graphics mode the text
+    // buffer is no longer displayed, so output written first would vanish —
+    // which is exactly what happened to the banner when it came first.
     _ = console.useFramebuffer(bi);
+
+    banner();
     platform.reportVideo();
 
     // stage2 has no serial port to log to, so it logs to a RAM ring. Replay it
@@ -257,8 +273,12 @@ fn supervisor(_: usize) callconv(.c) void {
     //
     // Not cleared in verbose mode: on a machine with no serial port the boot
     // log is only on screen, and wiping it would destroy the diagnostics
-    // verbose mode exists to show.
-    if (!console.isVerbose()) console.clear();
+    // verbose mode exists to show. On a quiet boot the banner is redrawn after
+    // the clear, so the screen userspace inherits still says what it is.
+    if (!console.isVerbose()) {
+        console.clear();
+        banner();
+    }
 
     _ = sched.spawn("init", .normal, userThread, 0, 16384) catch {
         console.fail("sched: cannot spawn user thread", .{});
