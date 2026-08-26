@@ -135,6 +135,17 @@ const Source = packed struct(u32) {
     }
 };
 
+/// The plane's own displayed size, which is not the pipe's source size and
+/// does not hold its halves the same way round: width low, height high.
+const PlaneSize = packed struct(u32) {
+    width_less_one: u16,
+    height_less_one: u16,
+
+    fn of(width: u16, height: u16) PlaneSize {
+        return .{ .width_less_one = width - 1, .height_less_one = height - 1 };
+    }
+};
+
 const Register = struct { name: []const u8, offset: u32 };
 
 /// What a pipe contributes to the dump, named for the pipe it belongs to so
@@ -317,11 +328,21 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     // pitch is reported rather than assumed to be its width.
     const pitch = std.mem.alignForward(u32, @as(u32, want.width) * 4, STRIDE_ALIGN);
     write(Source, w, pipe.src, Source.of(want.width, want.height));
+
+    // The plane carries its own size and origin, which firmware sized to the
+    // smaller image it was scaling, so a pipe told to scan out more than that
+    // shows its border colour for the rest.
+    //
+    // Order matters as much as the values. Stride, position and size are set
+    // while the plane is unarmed, then the control register and the address
+    // arm them: the set is double buffered and latches together at the next
+    // vertical blank, and writing only part of it leaves the plane scanning
+    // out a mixture of the old geometry and the new.
     write(u32, w, pipe.stride, pitch);
+    write(u32, w, pipe.pos, 0);
+    write(PlaneSize, w, pipe.size, PlaneSize.of(want.width, want.height));
 
-
-    // Writing the base arms the plane: the registers above are double buffered
-    // and take effect together at the next vertical blank.
+    write(u32, w, pipe.cntr, read(u32, w, pipe.cntr));
     write(u32, w, pipe.base, read(u32, w, pipe.base));
 
     return .{
