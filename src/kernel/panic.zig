@@ -9,19 +9,16 @@
 //! form a phone can decode, so the register values and backtrace addresses
 //! reach a symboliser without being transcribed by hand from a photo.
 //!
-//! design/00-vibeee.md §6.9 describes the wider ladder; the persistent panic
-//! ring (survives warm reboot) lands in M1, and its page is already reserved
-//! here so the address never moves.
+//! design/00-vibeee.md §6.9 describes the wider ladder. The same payload the
+//! QR carries is also written to `panicring.zig`, which survives a warm
+//! reboot: a fault you are watching leaves by photograph, and one that happens
+//! while your back is turned leaves by the next boot's log.
 
 const std = @import("std");
 const console = @import("console.zig");
 const hal = @import("hal.zig");
+const panicring = @import("panicring.zig");
 const qr = @import("qr.zig");
-
-/// Physical page reserved for the panic ring, in low memory below the kernel
-/// where no boot path writes, so a warm reboot preserves it.
-pub const PANIC_RING_PHYS: u32 = 0x7000;
-pub const PANIC_RING_MAGIC: u32 = 0x50414E43; // 'PANC'
 
 /// Panic screen palette. Blue is the convention for "the machine stopped", and
 /// being visually unmistakable matters: it must be obvious across a room, and
@@ -197,6 +194,11 @@ fn render(r: *const Report) noreturn {
 
     var payload_buf: [qr.MAX_PAYLOAD]u8 = undefined;
     const payload = buildPayload(r, &payload_buf);
+
+    // Written before anything is drawn. Rendering touches the framebuffer and
+    // the QR encoder, either of which could be what faulted; the record is the
+    // one thing that must survive being here.
+    panicring.record(payload);
 
     // Encode first: the QR's width decides how much room the text gets, and a
     // failed encode must not cost us the text half of the screen.

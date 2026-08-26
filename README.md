@@ -1,13 +1,13 @@
 # vibeee
 
-A from-scratch graphical operating system in Zig, targeting the **ASUS Eee PC 701 4G**,
-a 2007 netbook: 630 MHz Celeron M, 512 MB RAM, 4 GB PATA SSD, 800×480 panel, no serial port.
+A graphical operating system written from nothing, in Zig, for one machine: the **ASUS Eee
+PC 701 4G**. A 2007 netbook with a 630 MHz Celeron M, 512 MB of RAM, a 4 GB PATA SSD, an
+800×480 panel and no serial port.
+
+Own bootloader, own kernel, own userspace. No Linux, no BSD, no libc. It builds to a raw
+`dd`-able image with `zig`, `nasm` and `make`: no cross-GCC, no root, no loopback mounts.
 
 ![eeefetch running on vibeee in framebuffer mode](docs/img/eeefetch.png)
-
-Own bootloader, own kernel, own userspace. No Linux, no BSD, no libc. Builds to a raw
-`dd`-able SD-card image with `zig`, `nasm` and `make`, no cross-GCC, no root, no loopback
-mounts.
 
 > ### ⚠️ This is vibecoded
 >
@@ -21,131 +21,93 @@ mounts.
 > security-reviewed, not something to trust with anything you care about.
 
 ```bash
-make            # build/vibeee.img
-make qemu       # boot it (the dev loop)
-make vnc        # same, over VNC on :5901
-make test       # host-side unit tests + QR differential verification
+make qemu       # build and boot it
+make vnc        # the same, over VNC on :5901
+make test       # host-side unit tests
+make sd DEV=…   # write the image to a card, guarded and interactive
 ```
 
-## What works today
+## What it is
 
-**Boot**: two-stage bootloader. A 440-byte MBR loading a real-mode stage2 that reads the
-kernel over INT 13h EDD through unreal mode, captures the E820 map, finds the ACPI RSDP,
-optionally sets a VBE mode, and loads the root filesystem into RAM. The kernel then goes
-higher-half at `0xC0100000` with all physical memory linearly mapped through 4 MiB pages.
+It boots to a shell in about a second. Typing `eeewm` starts the desktop.
 
-**Memory**: Bitmap physical allocator over the real E820 map. Slab allocator exposed as a
-`std.mem.Allocator`, so kernel code reads like ordinary Zig. Per-process page directories.
+The desktop is a tiling window manager with tabs. Each tab is a workspace named after
+what is in it rather than numbered, so the bar reads `eTerm  Pad  Monitor` instead of
+`1 2 3`. Workspaces are created as you need them. Windows tile tall, wide or monocle;
+dialogs float above. A `V` menu at the top left launches things and ends the session.
+Everything is reachable by pointer and by keyboard, not one with the other bolted on.
 
-**Scheduling**: Preemptive O(1) scheduler: two run-queue arrays, a `u32` bitmap and one
-`@ctz` to pick the next thread, so scheduling costs the same at three threads or three
-hundred. Sleeping, yielding, per-thread FPU/SSE state, and a thread registry that includes
-uncollected corpses.
+Four applications so far, all in Zig against a shared control library:
 
-**Processes**: Ring 3 with per-process address spaces, an ELF loader, synchronous and
-detached `spawn`, `wait`, parent tracking, and orphan re-parenting onto PID 1. No `fork`
-, deliberately (see the design doc).
+- **eTerm**, a terminal with its own VT emulator, running the shell over a pipe
+- **Pad**, a text editor, soft-wrapped, opening and saving through a floating file dialog
+- **Monitor**, the process tree with per-process CPU share, and a button to end one
+- **Settings**, theme, bar position and layout, applied live and written to `/etc/eeewm.cfg`
 
-**IPC**: Synchronous channels with a 64-byte inline payload, counting events with
-`wait_many` as the only blocking primitive, and a `/svc` name registry. Blocking is real:
-a waiting thread is off the run queues, not polling. Messages carry up to four handles,
-translated across the boundary so the receiver gets its own numbers for the same objects,
-and shared-memory segments can be mapped into several processes at once. `ringtest` proves
-the whole chain between two processes: register, connect, hand over a segment, map it,
-and move bytes through an SPSC ring.
+They share `libeui`: buttons, menus, tables, scrollbars, editable text, a status bar, a file
+chooser. Painting is damage-driven, so an idle desktop writes no pixels, which matters when
+the whole machine is a 630 MHz core with no graphics acceleration.
 
-**Storage**: ATA PIO, MBR partition parsing, a write-through block cache, and FAT12/16/32
-with VFAT long names, behind a mount table that resolves paths by longest matching prefix.
-Reading and writing both work: files can be created, appended to, truncated and removed,
-and the shell has `>` and `>>`. Creating a file uses a short 8.3 name; long names are read
-but not yet written.
+## The shape of it
 
-**Console**: VGA text or a 32bpp linear framebuffer with the Spleen bitmap font, chosen at
-boot from what the firmware provided.
+A few decisions distinguish this from a toy kernel that happens to draw:
 
-**GUI**: `eeewm` is a display server and tiling window manager. Windows belong to other
-processes: a client connects over a channel, is told its geometry, draws into its own
-shared-memory surface and has it composited. Desktops are created as needed and shown as a
-taskbar of named tabs, with a dropdown for a desktop holding several windows and a `V` menu
-for launching and for ending the session. Layouts are tall, wide and monocle, per desktop,
-with floating windows above the tiles. Everything is driveable by both pointer and keyboard.
-Settings come from `/etc/eeewm.cfg`: theme, bar at top or bottom, layout, master fraction.
+**The window manager is not in the kernel.** `eeewm` is an ordinary Ring 3 process that
+owns the display through a handle it was granted. Clients connect over a channel, are told
+their geometry, draw into their own shared-memory surface and have it composited. The
+kernel knows nothing about windows.
 
-`libeui` is the shared control library: buttons, checkboxes, labels, progress bars and menus,
-drawn flat from a swappable theme, with keyboard focus and Tab order by screen position.
-Painting is damage-driven, so an idle desktop writes no pixels. Interface text is a
-proportional bitmap face, rendered from UTF-8, with box drawing, arrows and shapes.
+**No ambient authority.** Everything the kernel exposes is a handle in a per-process table
+carrying rights bits. Handles pass over channels as objects, not numbers, so a server can
+be given a segment it may map but not resize. A process can do exactly what its handles
+permit.
 
-**Input**, i8042 keyboard, scancode set 1, with keymaps compiled from one file per layout:
-US-International and Belgian AZERTY, dead-key composition, `Super+Space` to switch.
+**One blocking primitive.** Counting events and `wait_many`, and everything else built on
+it. A waiting thread is off the run queues entirely rather than polling: on a single core
+a dozen pollers waking every two milliseconds is real time spent deciding to go back to
+sleep.
 
-**Time**: Monotonic clock from the PIT (ACPI PM timer supported, with wrap accumulation),
-and a wall clock seeded once from the CMOS RTC. File timestamps and `date` are real.
+**Drivers can leave the kernel.** `irq_attach` hands a device interrupt to userspace as
+something `wait_many` accepts: the kernel's handler masks the line and signals, and the
+driver services the device with the line held down. A driver that crashes leaves its line
+masked rather than the machine livelocked. Nothing has moved out yet; the mechanism is
+there and the first server is next.
 
-**Devices**: PCI enumeration, SMBIOS/DMI decoding, and confidence-ranked driver probing:
-an exact vendor:device match beats a class-level fallback, so one image boots the target
-machine and hardware it has never seen.
+**The interface is one file.** `src/lib/syscalls.zig` declares the syscall table as data.
+The dispatcher binding, the userspace stubs and [`docs/syscalls.md`](docs/syscalls.md) are
+all derived from it, and a call that is documented without existing, or exists without
+being documented, fails the build.
 
-**Shutdown**: Handles flushed, volumes unmounted, then ACPI power off via the FADT and a
-`_S5_` pattern match.
+40 syscalls, 99 host tests, and layering rules enforced on every build rather than written
+down and hoped for.
 
-**Diagnostics**: A panic screen that encodes the register dump and backtrace as a QR code,
-drawn as raw pixel rectangles so it does not depend on a font having block glyphs. The
-encoder is differentially tested against `libqrencode` across all eight masks.
+## Where it is
 
-**Userspace**, `init` (PID 1) supervises services declared in `/etc/services` with
-dependency ordering and restart policy. `vsh` is the shell. A multicall binary provides
-`ls cat rm hexdump grep free top disk svc date eeefetch dmidecode pointer ringtest`.
+**M0 is complete**: boot chain, memory, scheduler, Ring 3, IPC, LAPIC/IOAPIC, SYSENTER,
+filesystem, console, keyboard, shell. **M1 is partway**: storage, `init`, the window
+manager, the toolkit and the terminal are done and past what that milestone asked for;
+a userspace device manager, a C library and the native GMA900 modeset are not.
 
-## Not yet
+**It has never run on the real machine.** Everything so far has been QEMU. That first boot
+is M1's actual gate, and the honest risk is the panel: the GMA900 has no public
+documentation and cannot be tested under emulation. The fallback is the VESA mode the
+firmware already set, which works.
 
-Shared memory across address spaces · pipes and redirection · filesystem writes · a text
-editor · USB · touchpad · GMA900 native modeset · audio · networking · the GUI
-(`eeewm` + `libeui`).
+[`docs/status.md`](docs/status.md) is the current state, component by component, including
+what is missing. [`design/00-vibeee.md`](design/00-vibeee.md) is the master design and is
+authoritative; `01`–`11` cover subsystems.
 
-## Layout
+## No serial port
 
-```
-boot/         stage1 (MBR) and stage2, NASM
-src/arch/     ISA- and firmware-specific code, x86 only for now
-src/kernel/   portable core: memory, scheduling, IPC, VFS, syscalls, panic
-src/drv/      drivers, bound by runtime probe confidence
-src/lib/      pure code compiled into BOTH kernel and userspace
-src/user/     init, the shell, the system tools, the window manager, libeui and apps
-src/user/proto/   the window protocol, wire types plus the client half
-src/keymaps/  keyboard layouts, one file each
-src/platform.zig  the only file that wires kernel, arch and drivers together
-design/       the design documents
-docs/         syscall reference and verified hardware research
-```
-
-## Design
-
-[`design/00-vibeee.md`](design/00-vibeee.md) is the master design and is authoritative;
-`01`–`11` cover subsystems and carry their own status headers.
-[`docs/syscalls.md`](docs/syscalls.md) is generated from the syscall table, so it cannot
-drift from the implementation.
-
-Three rules are enforced by `tools/check-layering.zig` on every build, not just written
-down:
-
-1. `kernel/` never imports `arch/`, it reaches the architecture only through `kernel/hal.zig`.
-2. `kernel/` never imports `drv/`, driver selection is a composition decision.
-3. `lib/` imports nothing, it is compiled into both sides of the privilege boundary, so it
-   holds pure computation only.
-
-## Debugging without a serial port
-
-The 701 has no serial port, which shapes everything: QEMU-first development, a stage2 log
-ring replayed into the boot log, self-tests at boot that report `fail` rather than hanging,
-and the QR panic screen, photograph the stop screen and the crash comes back as text.
-
-Under emulation there *is* a serial port, and the console mirrors to it, so
-`make shot OUT=x.png TYPE="..."` leaves a full text transcript beside the screenshot.
-That is how a `fail` line scrolled off a 30-row display gets noticed.
+The 701 has none, and that shapes the whole project. Development happens in QEMU first,
+where there *is* one and the console mirrors to it. On the machine itself the ladder is:
+boot self-tests that report `fail` rather than hanging, a kernel log ring that keeps every
+message whether or not it was printed, a panic record in low memory that survives a warm
+reboot and is read back by the next boot, and a panic screen that encodes the register dump
+and backtrace as a QR code: photograph the stop screen and the crash comes back as text.
 
 ```
-VBE1|06|00000000|00000000|00103CFC|00162A78|00162F14|00101126,00107952
+VBE1|06|00000000|00000000|C010D400|C0103CE4|C0104FD0|00101126,00107952
      │  │        │        │        │        │        └ backtrace
      │  │        │        │        │        └ ebp
      │  │        │        │        └ esp
@@ -153,6 +115,21 @@ VBE1|06|00000000|00000000|00103CFC|00162A78|00162F14|00101126,00107952
      │  │        └ cr2 (page faults)
      │  └ error code
      └ exception vector
+```
+
+## Layout
+
+```
+boot/             stage1 (MBR) and stage2, NASM
+src/arch/         ISA- and firmware-specific code, x86 only for now
+src/kernel/       portable core: memory, scheduling, IPC, VFS, syscalls, panic
+src/drv/          drivers, bound by runtime probe confidence
+src/lib/          pure code compiled into BOTH kernel and userspace
+src/user/         init, shell, tools, the window manager, libeui and the apps
+src/keymaps/      keyboard layouts, one file each
+src/platform.zig  the only file wiring kernel, arch and drivers together
+design/           the design documents
+docs/             syscall reference, status, and verified hardware research
 ```
 
 ## Licence

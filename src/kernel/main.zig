@@ -14,6 +14,7 @@ const event = @import("event.zig");
 const hal = @import("hal.zig");
 const logo = @import("lib").logo;
 const panic_mod = @import("panic.zig");
+const panicring = @import("panicring.zig");
 const pipe = @import("pipe.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
@@ -109,6 +110,8 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     heap.init();
     selfTestHeap();
 
+    reportPreviousPanic();
+
     console.debug("boot", "{s}", .{switch (bi.source) {
         .stage2 => "sd",
         .multiboot => "multiboot",
@@ -141,6 +144,20 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     // Idle rather than spin: QEMU should not burn a host core, and the real
     // machine should not cook itself.
     while (true) hal.idle();
+}
+
+/// Say whether the last boot ended in a fault.
+///
+/// Shown whatever the verbosity: a machine that crashed and restarted is news
+/// even on a quiet boot, and it is the one thing a person needs to be told
+/// without having asked. The record goes into the kernel log with it, so the
+/// detail is there for `log` after the line has scrolled away.
+fn reportPreviousPanic() void {
+    var buf: [panicring.CAPACITY]u8 = undefined;
+    const previous = panicring.take(&buf) orelse return;
+
+    console.warn("the last boot ended in a fault (panic {d} on this machine)", .{previous.sequence});
+    console.field("panic", "{s}", .{previous.text});
 }
 
 /// A boot-time sanity check on the allocator. Cheap, and it fails loudly here

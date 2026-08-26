@@ -18,6 +18,20 @@
 BITS 16
 ORG 0x8000
 
+; Low memory, in order. Anything added here has to fit between the pieces
+; already listed, and the panic record is the one that must be left alone: it
+; is how a fault survives a warm reboot on a machine with no serial port.
+;
+;   0x0000-0x0500  IVT and BIOS data area
+;   0x0500-0x0900  VBE scratch, below
+;   0x1000-0x2000  panic record (kernel/panicring.zig), never touched here
+;   0x5000-0x6000  font
+;   0x6000-0x7000  BootInfo
+;   0x7000-0x7100  E820 scratch
+;   0x7C00         stage1, whose stack grows down from here
+;   0x8000         stage2, this code
+;   0x20000        disk staging buffer
+
 KERNEL_PHYS     equ 0x100000        ; where the kernel lands
 ROOTFS_PHYS     equ 0x1000000       ; 16 MiB: clear of the kernel and its heap
 LOAD_BUF_SEG    equ 0x2000          ; 0x20000: staging buffer for disk reads
