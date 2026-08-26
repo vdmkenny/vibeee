@@ -8,7 +8,6 @@
 //! Everything it does with text is `libeui`'s, which is where an editable area
 //! belongs: the next program that needs one should not write a second.
 
-const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
@@ -35,6 +34,24 @@ var editor: text.Editor = .{};
 /// Where the document came from and where Save writes it back.
 var file_path: [128]u8 = @splat(0);
 var file_len: usize = 0;
+
+/// What the File menu offers. The application names its commands; the bar
+/// draws them and says which one was chosen.
+const Command = enum(u16) { new, open, save, save_as, close };
+
+const MENUS = [_]eui.menubar.Menu{
+    .{ .label = "File", .items = &.{
+        .{ .label = "New", .id = @intFromEnum(Command.new) },
+        .{ .label = "Open...", .id = @intFromEnum(Command.open) },
+        eui.menubar.Item.separator,
+        .{ .label = "Save", .id = @intFromEnum(Command.save) },
+        .{ .label = "Save as...", .id = @intFromEnum(Command.save_as) },
+        eui.menubar.Item.separator,
+        .{ .label = "Close", .id = @intFromEnum(Command.close) },
+    } },
+};
+
+var menus: eui.menubar.State = .{};
 
 /// The open and save dialog, which is a floating window of its own.
 var dialog: proto.FileDialog = .{};
@@ -243,6 +260,17 @@ fn run() noreturn {
             },
             .key => {
                 if (event.body.key.down == 0) continue;
+                const code: eui.widget.KeyCode = @enumFromInt(event.body.key.code);
+
+                // An open menu is modal: arrows walk it rather than moving the
+                // cursor in the document behind it.
+                if (eui.menubar.isOpen(&menus)) {
+                    if (eui.menubar.key(&menus, code, &MENUS)) {
+                        redraw();
+                        continue;
+                    }
+                }
+
                 ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
                 redraw();
             },
@@ -259,6 +287,16 @@ fn run() noreturn {
             .overflow => redraw(),
             else => {},
         }
+    }
+}
+
+fn run_command(command: Command) void {
+    switch (command) {
+        .new => newDocument(),
+        .open => ask(.open),
+        .save => save(),
+        .save_as => ask(.save),
+        .close => sys.exit(0),
     }
 }
 
@@ -299,24 +337,14 @@ fn draw() void {
     const pad = t.padding;
     const row = t.control_height;
 
-    // A row of what can be done, and the name in the title rather than in a
-    // field: the dialog is where a name is chosen, and a field beside it would
-    // be a second place to type one.
-    var x = pad;
-    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "New")) newDocument();
-    x += 66;
-    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "Open")) ask(.open);
-    x += 66;
-    if (ctx.button(.{ .x = x, .y = pad, .w = 62, .h = row }, "Save")) save();
-    x += 66;
-    if (ctx.button(.{ .x = x, .y = pad, .w = 76, .h = row }, "Save as")) ask(.save);
-
+    const strip = Rect{ .x = 0, .y = 0, .w = area.w, .h = row };
     const status_y = area.h - 18 - pad;
+
     text.edit(&ctx, .{
         .x = pad,
-        .y = pad + row + 4,
+        .y = strip.h + pad,
         .w = area.w - pad * 2,
-        .h = status_y - pad * 2 - row - 4,
+        .h = status_y - pad * 2 - strip.h,
     }, &editor, &document);
 
     if (editor.edited and !modified) {
@@ -326,6 +354,12 @@ fn draw() void {
     }
 
     ctx.label(.{ .x = pad, .y = status_y, .w = area.w - pad * 2, .h = 16 }, statusLine());
+
+    // Last in the pass: an open menu reaches over the document, and anything
+    // drawn after it would draw over the menu instead.
+    if (eui.menubar.run(&ctx, strip, &menus, &MENUS)) |id| {
+        run_command(@enumFromInt(id));
+    }
 
     ctx.end();
     connection.commit(window, ctx.damageList()) catch {};

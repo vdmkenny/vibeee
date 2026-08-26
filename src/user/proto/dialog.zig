@@ -11,7 +11,6 @@
 //! less code and the behaviour a person expects: the dialog can be moved, and
 //! what is behind it stays where it was.
 
-const std = @import("std");
 const client = @import("client.zig");
 const eui = @import("eui");
 const sys = @import("sys");

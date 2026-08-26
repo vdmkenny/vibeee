@@ -166,11 +166,27 @@ pub fn adoptSurface(handle: u32, w: u16, h: u16, stride: u16) ?Surface {
 /// blending. Tiles do not overlap by construction, so there is nothing to
 /// blend with, and on this machine the memory traffic is the cost rather than
 /// the arithmetic.
-pub fn blit(screen: eui.Surface, surface: Surface, at: eui.Rect, damage: eui.Rect) void {
+/// Copy a client's surface onto the screen.
+///
+/// `transparency` is how much of what is behind shows through: zero copies,
+/// which is both what almost every window wants and the only path fast enough
+/// to be free.
+pub fn blit(
+    screen: eui.Surface,
+    surface: Surface,
+    at: eui.Rect,
+    damage: eui.Rect,
+    transparency: u8,
+) void {
     const pixels = surface.pixels orelse return;
 
     const target = at.intersect(damage).intersect(screen.clip);
     if (target.isEmpty()) return;
+
+    // 0 to 256, so the blend below is a shift rather than a division. 256 is
+    // reachable and 255 is not, which matters: at 255 a fully opaque window
+    // would still lose a level per composite.
+    const weight: u32 = 256 - (@as(u32, transparency) + 1) * 256 / 256;
 
     var y = target.y;
     while (y < target.bottom()) : (y += 1) {
@@ -184,7 +200,28 @@ pub fn blit(screen: eui.Surface, surface: Surface, at: eui.Rect, damage: eui.Rec
         while (x < target.right()) : (x += 1) {
             const source_x = x - at.x;
             if (source_x < 0 or source_x >= surface.width) continue;
-            destination[@intCast(x)] = source[@intCast(source_x)];
+
+            const src = source[@intCast(source_x)];
+            destination[@intCast(x)] = if (transparency == 0)
+                src
+            else
+                mix(src, destination[@intCast(x)], weight);
         }
     }
+}
+
+/// Blend two packed colours, `weight` being how much of `src` shows, 0 to 256.
+///
+/// Red and blue are blended together in one multiply by keeping them in
+/// alternate halves of the word: each sixteen-bit slot holds at most 255 times
+/// 256, so they cannot run into each other. Three multiplies a pixel instead
+/// of six, which on a core with no vector unit is the difference between a
+/// translucent window being usable and not.
+fn mix(src: u32, dst: u32, weight: u32) u32 {
+    const rest = 256 - weight;
+
+    const rb = ((src & 0x00FF00FF) * weight + (dst & 0x00FF00FF) * rest) >> 8;
+    const g = ((src & 0x0000FF00) * weight + (dst & 0x0000FF00) * rest) >> 8;
+
+    return (rb & 0x00FF00FF) | (g & 0x0000FF00);
 }

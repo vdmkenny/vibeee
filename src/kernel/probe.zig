@@ -9,9 +9,7 @@
 //!
 //! See design/00-vibeee.md §4.
 
-const std = @import("std");
 const console = @import("console.zig");
-const hal = @import("hal.zig");
 
 pub const Confidence = enum(u8) {
     /// Not my device.

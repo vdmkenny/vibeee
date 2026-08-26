@@ -10,7 +10,6 @@
 //! is a shimmer; flat colour on exact levels is both cheaper and better
 //! looking (design/10-gui.md §2).
 
-const std = @import("std");
 const fontlib = @import("lib").font;
 const theme = @import("theme.zig");
 
@@ -28,45 +27,11 @@ pub const ui_font: *const Font = &fontlib.ark_ui_12;
 /// the console it replaces show the same shapes.
 pub const mono_font: *const Font = &fontlib.spleen_8x16;
 
-/// Walk a string as characters rather than bytes.
-///
-/// Strings here are UTF-8, and the font carries box drawing, arrows and shapes
-/// well above Latin-1. Iterating bytes drew a three-byte character as three
-/// wrong ones, which is what a box-drawing rule looked like before this.
-///
-/// Malformed input yields U+FFFD and advances one byte, so a bad string
-/// renders as visible nonsense rather than desynchronising everything after
-/// it.
-pub const Codepoints = struct {
-    bytes: []const u8,
-    pos: usize = 0,
-
-    pub fn next(self: *Codepoints) ?u21 {
-        if (self.pos >= self.bytes.len) return null;
-
-        const first = self.bytes[self.pos];
-        const length = std.unicode.utf8ByteSequenceLength(first) catch {
-            self.pos += 1;
-            return 0xFFFD;
-        };
-
-        if (self.pos + length > self.bytes.len) {
-            self.pos = self.bytes.len;
-            return 0xFFFD;
-        }
-
-        const cp = std.unicode.utf8Decode(self.bytes[self.pos..][0..length]) catch {
-            self.pos += 1;
-            return 0xFFFD;
-        };
-        self.pos += length;
-        return cp;
-    }
-};
-
-pub fn codepoints(bytes: []const u8) Codepoints {
-    return .{ .bytes = bytes };
-}
+/// Walking a string as characters rather than bytes. Lives in `lib` because
+/// the font's own measuring needs it and the kernel's console draws from the
+/// same faces.
+pub const Codepoints = fontlib.Codepoints;
+pub const codepoints = fontlib.codepoints;
 
 pub const Rect = struct {
     x: i32 = 0,
@@ -231,10 +196,7 @@ pub const Surface = struct {
     /// Width of `message` in pixels, for centring and for sizing a control to
     /// its label.
     pub fn textWidth(message: []const u8) i32 {
-        var total: i32 = 0;
-        var it = codepoints(message);
-        while (it.next()) |cp| total += @intCast(ui_font.advance(cp));
-        return total;
+        return @intCast(ui_font.measure(message));
     }
 
     pub fn textHeight() i32 {

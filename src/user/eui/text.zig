@@ -10,6 +10,9 @@
 //! a document that runs off the side is a document read one scroll bar drag at
 //! a time, and wrapping means the cursor only ever has to move in two
 //! directions.
+//!
+//! Measured in pixels rather than columns, because the face is proportional.
+//! A terminal is the only thing here that wants a grid, and it has its own.
 
 const std = @import("std");
 const draw = @import("draw.zig");
@@ -112,14 +115,15 @@ pub const Line = struct {
     next: usize,
 };
 
-/// Walk the visual lines of `text` wrapped at `columns` characters.
+/// Walk the visual lines of `text` wrapped at `width` pixels.
 ///
 /// One definition of a line, used by drawing and by cursor movement alike. Two
 /// would drift, and the symptom is a cursor that draws in a different place
 /// from the one it edits at.
 pub const Lines = struct {
     text: []const u8,
-    columns: usize,
+    font: *const draw.Font,
+    width: i32,
     pos: usize = 0,
     finished: bool = false,
 
@@ -128,7 +132,7 @@ pub const Lines = struct {
 
         const start = self.pos;
         var i = start;
-        var column: usize = 0;
+        var x: i32 = 0;
         // Where the last space was, so a break can fall between words.
         var space: ?usize = null;
 
@@ -140,18 +144,24 @@ pub const Lines = struct {
                 return .{ .start = start, .end = i, .next = i + 1 };
             }
 
-            if (column == self.columns) {
+            const n = sequenceLength(byte);
+            const advance: i32 = @intCast(self.font.measure(self.text[i..@min(i + n, self.text.len)]));
+
+            // Never breaks before the first character: a window narrower than
+            // one glyph would otherwise produce lines that hold nothing and
+            // never advance.
+            if (x + advance > self.width and i > start) {
                 // Breaking after the space keeps it on the line above, where a
                 // trailing space is invisible, rather than starting the next
                 // line with one.
-                const at = if (space) |s| s + 1 else i;
+                const at = if (space) |sp| sp + 1 else i;
                 self.pos = at;
                 return .{ .start = start, .end = at, .next = at };
             }
 
             if (byte == ' ') space = i;
-            i += sequenceLength(byte);
-            column += 1;
+            i += n;
+            x += advance;
         }
 
         self.finished = true;
@@ -159,39 +169,40 @@ pub const Lines = struct {
     }
 };
 
-pub fn lines(text: []const u8, columns: usize) Lines {
-    return .{ .text = text, .columns = @max(columns, 1) };
+pub fn lines(text: []const u8, font: *const draw.Font, width: i32) Lines {
+    return .{ .text = text, .font = font, .width = @max(width, 1) };
 }
 
 /// How many visual lines `text` occupies.
-pub fn count(text: []const u8, columns: usize) usize {
+pub fn count(text: []const u8, font: *const draw.Font, width: i32) usize {
     var n: usize = 0;
-    var it = lines(text, columns);
+    var it = lines(text, font, width);
     while (it.next()) |_| n += 1;
     return n;
 }
 
-/// Which visual line an offset falls on, and how far along it.
-pub const Position = struct { line: usize, column: usize };
+/// Which visual line an offset falls on, and how far along it in pixels.
+pub const Position = struct { line: usize, x: i32 };
 
-pub fn positionOf(text: []const u8, columns: usize, offset: usize) Position {
+pub fn positionOf(text: []const u8, font: *const draw.Font, width: i32, offset: usize) Position {
     var index: usize = 0;
-    var it = lines(text, columns);
+    var it = lines(text, font, width);
 
     while (it.next()) |line| {
         // `next` rather than `end`, so an offset on a newline belongs to the
         // line it terminates rather than to the one after.
         if (offset < line.next or line.next == text.len) {
-            return .{ .line = index, .column = columnOf(text[line.start..@min(@max(offset, line.start), line.end)]) };
+            const upto = text[line.start..@min(@max(offset, line.start), line.end)];
+            return .{ .line = index, .x = @intCast(font.measure(upto)) };
         }
         index += 1;
     }
-    return .{ .line = index -| 1, .column = 0 };
+    return .{ .line = index -| 1, .x = 0 };
 }
 
 /// The line at `index`, or the last one.
-pub fn lineAt(text: []const u8, columns: usize, index: usize) Line {
-    var it = lines(text, columns);
+pub fn lineAt(text: []const u8, font: *const draw.Font, width: i32, index: usize) Line {
+    var it = lines(text, font, width);
     var last = Line{ .start = 0, .end = 0, .next = 0 };
     var i: usize = 0;
 
@@ -202,21 +213,22 @@ pub fn lineAt(text: []const u8, columns: usize, index: usize) Line {
     return last;
 }
 
-/// The offset `column` characters into a line.
-pub fn offsetIn(text: []const u8, line: Line, column: usize) usize {
+/// The offset nearest `x` pixels into a line.
+///
+/// Nearest rather than the one it falls inside, so clicking the right half of
+/// a character puts the cursor after it, which is where a click there means.
+pub fn offsetAt(text: []const u8, font: *const draw.Font, line: Line, x: i32) usize {
     var i = line.start;
-    var n: usize = 0;
-    while (i < line.end and n < column) : (n += 1) {
-        i += sequenceLength(text[i]);
-    }
-    return i;
-}
+    var pen: i32 = 0;
 
-fn columnOf(text: []const u8) usize {
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) : (n += 1) i += sequenceLength(text[i]);
-    return n;
+    while (i < line.end) {
+        const n = sequenceLength(text[i]);
+        const advance: i32 = @intCast(font.measure(text[i..@min(i + n, text.len)]));
+        if (x < pen + @divTrunc(advance, 2)) return i;
+        pen += advance;
+        i += n;
+    }
+    return line.end;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,9 +243,10 @@ pub const Editor = struct {
     anchor: ?usize = null,
     /// First visual line shown.
     scroll: usize = 0,
-    /// The column to aim for when moving up and down, so a cursor crossing a
-    /// short line comes back to where it was rather than staying at its end.
-    goal: ?usize = null,
+    /// The pixel column to aim for when moving up and down, so a cursor
+    /// crossing a short line comes back to where it was rather than staying at
+    /// its end.
+    goal: ?i32 = null,
     /// Set on any change to the text, for the caller's modified flag.
     edited: bool = false,
 
@@ -263,38 +276,37 @@ pub const Editor = struct {
     }
 };
 
-pub fn columnsIn(area: Rect) usize {
-    const w: usize = @intCast(@max(area.w - 4, 1));
-    return @max(w / @as(usize, draw.mono_font.width), 1);
+/// The face text is edited in. The interface face, not the terminal's: a
+/// document is read, and a grid is for a program that draws one.
+pub const face: *const draw.Font = draw.ui_font;
+
+/// The inside of a text area: its frame and padding taken off.
+pub fn inner(area: Rect) Rect {
+    return area.inset(2);
 }
 
 pub fn rowsIn(area: Rect) usize {
-    const h: usize = @intCast(@max(area.h - 4, 1));
-    return @max(h / @as(usize, draw.mono_font.height), 1);
+    const h: usize = @intCast(@max(inner(area).h, 1));
+    return @max(h / @as(usize, face.height), 1);
 }
 
 /// An editable, scrolling, soft-wrapped text area.
-///
-/// Monospaced, because wrapping and cursor movement are arithmetic on column
-/// counts and a proportional face would make every one of them a measurement.
 pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) void {
     const entry = ctx.slotFor(area) orelse return;
     const act = ctx.interact(entry, area);
 
-    const columns = columnsIn(area);
+    const box = inner(area);
     const rows = rowsIn(area);
-    const cw: i32 = @intCast(draw.mono_font.width);
-    const ch: i32 = @intCast(draw.mono_font.height);
+    const line_height: i32 = @intCast(face.height);
 
     var changed = false;
 
     if (act.over and ctx.pressedThisPass()) {
         const text = buffer.slice();
         const line_index = state.scroll +
-            @as(usize, @intCast(@max(@divTrunc(ctx.pointer_y - area.y - 2, ch), 0)));
-        const line = lineAt(text, columns, line_index);
-        const column: usize = @intCast(@max(@divTrunc(ctx.pointer_x - area.x - 2, cw), 0));
-        state.moveTo(offsetIn(text, line, column), false);
+            @as(usize, @intCast(@max(@divTrunc(ctx.pointer_y - box.y, line_height), 0)));
+        const line = lineAt(text, face, box.w, line_index);
+        state.moveTo(offsetAt(text, face, line, ctx.pointer_x - box.x), false);
         state.goal = null;
         changed = true;
     }
@@ -302,7 +314,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     if (act.over) {
         const wheel = ctx.takeWheel();
         if (wheel != 0) {
-            const total = count(buffer.slice(), columns);
+            const total = count(buffer.slice(), face, box.w);
             const limit = total -| rows;
             state.scroll = @min(if (wheel < 0) state.scroll + 3 else state.scroll -| 3, limit);
             changed = true;
@@ -310,7 +322,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     }
 
     if (ctx.takeKeyFor(entry)) |code| {
-        if (key(state, buffer, @enumFromInt(code), ctx.key_mods, columns, rows)) changed = true;
+        if (key(state, buffer, @enumFromInt(code), ctx.key_mods, box.w, rows)) changed = true;
     }
     if (ctx.takeTextFor(entry)) |codepoint| {
         if (insert(state, buffer, codepoint)) changed = true;
@@ -318,7 +330,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
 
     // Follow the cursor. Done after every input rather than in each branch, so
     // a caller that moved the cursor itself gets it too.
-    const here = positionOf(buffer.slice(), columns, state.cursor);
+    const here = positionOf(buffer.slice(), face, box.w, state.cursor);
     if (here.line < state.scroll) {
         state.scroll = here.line;
         changed = true;
@@ -330,7 +342,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
 
     if (changed or ctx.needsPaint(entry, .idle)) {
         entry.visual = .idle;
-        paint(ctx.surface, area, state, buffer, columns, rows, act.focused);
+        paint(ctx.surface, area, state, buffer, rows, act.focused);
         ctx.addDamage(area);
     }
 }
@@ -355,7 +367,7 @@ fn key(
     buffer: *Buffer,
     code: KeyCode,
     mods: widget.Modifiers,
-    columns: usize,
+    width: i32,
     rows: usize,
 ) bool {
     const text = buffer.slice();
@@ -370,18 +382,18 @@ fn key(
             state.moveTo(buffer.after(state.cursor), extend);
             state.goal = null;
         },
-        .up => vertical(state, text, columns, -1, extend),
-        .down => vertical(state, text, columns, 1, extend),
-        .page_up => vertical(state, text, columns, -@as(i32, @intCast(rows)), extend),
-        .page_down => vertical(state, text, columns, @intCast(rows), extend),
+        .up => vertical(state, text, width, -1, extend),
+        .down => vertical(state, text, width, 1, extend),
+        .page_up => vertical(state, text, width, -@as(i32, @intCast(rows)), extend),
+        .page_down => vertical(state, text, width, @intCast(rows), extend),
         .home => {
-            const here = positionOf(text, columns, state.cursor);
-            state.moveTo(lineAt(text, columns, here.line).start, extend);
+            const here = positionOf(text, face, width, state.cursor);
+            state.moveTo(lineAt(text, face, width, here.line).start, extend);
             state.goal = null;
         },
         .end => {
-            const here = positionOf(text, columns, state.cursor);
-            state.moveTo(lineAt(text, columns, here.line).end, extend);
+            const here = positionOf(text, face, width, state.cursor);
+            state.moveTo(lineAt(text, face, width, here.line).end, extend);
             state.goal = null;
         },
         .enter, .kp_enter => {
@@ -420,17 +432,17 @@ fn key(
     return true;
 }
 
-fn vertical(state: *Editor, text: []const u8, columns: usize, by: i32, extend: bool) void {
-    const here = positionOf(text, columns, state.cursor);
-    const goal = state.goal orelse here.column;
+fn vertical(state: *Editor, text: []const u8, width: i32, by: i32, extend: bool) void {
+    const here = positionOf(text, face, width, state.cursor);
+    const goal = state.goal orelse here.x;
 
     const target: usize = if (by < 0)
         here.line -| @as(usize, @intCast(-by))
     else
         here.line + @as(usize, @intCast(by));
 
-    const line = lineAt(text, columns, target);
-    state.moveTo(offsetIn(text, line, goal), extend);
+    const line = lineAt(text, face, width, target);
+    state.moveTo(offsetAt(text, face, line, goal), extend);
     // Kept across the move, so a run of Up keys tracks the original column
     // rather than the shortest line it passed through.
     state.goal = goal;
@@ -441,22 +453,21 @@ fn paint(
     area: Rect,
     state: *const Editor,
     buffer: *const Buffer,
-    columns: usize,
     rows: usize,
     focused: bool,
 ) void {
     const t = theme.current();
     const text = buffer.slice();
-    const cw: i32 = @intCast(draw.mono_font.width);
-    const ch: i32 = @intCast(draw.mono_font.height);
+    const box = inner(area);
+    const line_height: i32 = @intCast(face.height);
 
     surface.fill(area, t.surface_hot);
     surface.frame(area, if (focused) t.accent else t.line);
 
     const span = state.selection();
-    const inner = surface.clipped(area.inset(2));
+    const clipped = surface.clipped(box);
 
-    var it = lines(text, columns);
+    var it = lines(text, face, box.w);
     var index: usize = 0;
     var drawn: usize = 0;
 
@@ -464,67 +475,62 @@ fn paint(
         if (index < state.scroll) continue;
         if (drawn >= rows) break;
 
-        const y = area.y + 2 + @as(i32, @intCast(drawn)) * ch;
-        var x = area.x + 2;
+        const y = box.y + @as(i32, @intCast(drawn)) * line_height;
+        var x = box.x;
         var i = line.start;
 
         while (i < line.end) {
             const n = sequenceLength(text[i]);
-            const selected = if (span) |s| i >= s.from and i < s.to else false;
+            const piece = text[i..@min(i + n, text.len)];
+            const advance: i32 = @intCast(face.measure(piece));
+            const selected = if (span) |sp| i >= sp.from and i < sp.to else false;
 
             if (selected) {
-                inner.fill(.{ .x = x, .y = y, .w = cw, .h = ch }, t.accent);
+                clipped.fill(.{ .x = x, .y = y, .w = advance, .h = line_height }, t.accent);
             }
-            inner.textIn(
-                draw.mono_font,
-                x,
-                y,
-                text[i..@min(i + n, text.len)],
-                if (selected) t.accent_text else t.text,
-            );
+            clipped.text(x, y, piece, if (selected) t.accent_text else t.text);
 
-            x += cw;
+            x += advance;
             i += n;
         }
 
         // A newline inside the selection shows as a marked space, so a
         // multi-line selection does not look like it stops at each line end.
-        if (span) |s| {
-            if (line.next > line.end and line.end >= s.from and line.end < s.to) {
-                inner.fill(.{ .x = x, .y = y, .w = cw, .h = ch }, t.accent);
+        if (span) |sp| {
+            if (line.next > line.end and line.end >= sp.from and line.end < sp.to) {
+                const space: i32 = @intCast(face.advance(' '));
+                clipped.fill(.{ .x = x, .y = y, .w = space, .h = line_height }, t.accent);
             }
         }
 
         drawn += 1;
     }
 
-    if (focused and span == null) paintCursor(inner, area, state, text, columns, cw, ch);
+    if (focused and span == null) paintCursor(clipped, box, state, text, line_height);
 }
 
 fn paintCursor(
     surface: Surface,
-    area: Rect,
+    box: Rect,
     state: *const Editor,
     text: []const u8,
-    columns: usize,
-    cw: i32,
-    ch: i32,
+    line_height: i32,
 ) void {
-    const here = positionOf(text, columns, state.cursor);
+    const here = positionOf(text, face, box.w, state.cursor);
     if (here.line < state.scroll) return;
 
-    const x = area.x + 2 + @as(i32, @intCast(here.column)) * cw;
-    const y = area.y + 2 + @as(i32, @intCast(here.line - state.scroll)) * ch;
+    const x = box.x + here.x;
+    const y = box.y + @as(i32, @intCast(here.line - state.scroll)) * line_height;
     // A bar between characters rather than a block over one: this is an
     // insertion point, and a block says the character under it is selected.
-    surface.fill(.{ .x = x, .y = y, .w = 1, .h = ch }, theme.current().text);
+    surface.fill(.{ .x = x, .y = y, .w = 1, .h = line_height }, theme.current().text);
 }
 
 /// A one-line text field.
 ///
-/// The same editor with the wrapping turned off and Enter meaning "done"
-/// rather than "new line". Returns true on the pass where Enter was pressed,
-/// which is what a field is usually waiting for.
+/// The same editor with Enter meaning "done" rather than "new line". Returns
+/// true on the pass where Enter was pressed, which is what a field is usually
+/// waiting for.
 pub fn field(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) bool {
     // Enter is taken before the editor sees it, so it never lands in the text.
     const entry = ctx.slotFor(area) orelse return false;
@@ -538,8 +544,6 @@ pub fn field(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) 
         }
     }
 
-    // A field is one line, so its width in columns is what it can hold before
-    // the text runs off the end rather than wraps.
     edit(ctx, area, state, buffer);
     return accepted;
 }

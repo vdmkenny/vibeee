@@ -11,7 +11,6 @@
 //! power off because one unmount failed is worse than one that reports the
 //! failure and powers off anyway.
 
-const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const hal = @import("hal.zig");

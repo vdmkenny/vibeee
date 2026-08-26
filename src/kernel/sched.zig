@@ -16,9 +16,7 @@
 //!
 //! See design/00-vibeee.md §6.4.
 
-const std = @import("std");
 const hal = @import("hal.zig");
-const handle = @import("handle.zig");
 const heap = @import("heap.zig");
 const input = @import("input.zig");
 const queue = @import("sched/queue.zig");

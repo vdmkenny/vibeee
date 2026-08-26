@@ -25,7 +25,6 @@
 //! happened.
 
 const std = @import("std");
-const hal = @import("hal.zig");
 const sched = @import("sched.zig");
 
 /// Most queues a single `blockOn` can cover. Bounded so the waiter array can

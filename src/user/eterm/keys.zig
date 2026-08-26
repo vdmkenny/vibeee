@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const abi = @import("lib").syscalls;
+const str = @import("lib").str;
 
 const KeyCode = abi.KeyCode;
 const Modifiers = abi.Modifiers;
@@ -140,8 +141,8 @@ const Writer = struct {
     }
 
     fn number(self: *Writer, value: u32) void {
-        if (value >= 10) self.number(value / 10);
-        self.byte('0' + @as(u8, @intCast(value % 10)));
+        var buf: [12]u8 = undefined;
+        self.text(buf[0..str.decimal(&buf, value)]);
     }
 
     fn codepoint(self: *Writer, cp: u32) void {

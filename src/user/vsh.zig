@@ -14,7 +14,6 @@
 //! it and restarts it when it exits. That is what makes `exit` meaningful on a
 //! machine with only one shell.
 
-const std = @import("std");
 const sys = @import("sys");
 const out = @import("ulib").out;
 const str = @import("ulib").str;

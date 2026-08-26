@@ -8,7 +8,6 @@
 //! this and deliberately so: this window is a view, and a view that could not
 //! be reproduced by a shell command would be hiding something.
 
-const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");

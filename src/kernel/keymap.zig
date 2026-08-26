@@ -14,7 +14,6 @@
 //! terminal, a password field, an editor, therefore behaves identically,
 //! which it would not if each widget implemented its own.
 
-const std = @import("std");
 const input = @import("input.zig");
 const l = @import("../keymaps/layout.zig");
 const registry = @import("../keymaps/registry.zig");

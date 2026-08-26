@@ -13,10 +13,8 @@
 //! while a client is wedged, and giving it a surface of its own would cost a
 //! megabyte and a half to save nothing. design/10-gui.md §4.4.
 
-const std = @import("std");
 const draw = @import("eui").draw;
 const layout = @import("layout.zig");
-const str = @import("ulib").str;
 const sys = @import("sys");
 const theme = @import("eui").theme;
 

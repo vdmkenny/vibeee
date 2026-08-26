@@ -1,6 +1,5 @@
 //! Filesystem calls.
 
-const std = @import("std");
 const abi = @import("lib").syscalls;
 const clock = @import("../clock.zig");
 const ctx = @import("context.zig");

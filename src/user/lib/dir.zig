@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const sys = @import("sys");
-const str = @import("str.zig");
+const str = @import("lib").str;
 
 /// One name, and enough about it to show a row.
 pub const Entry = struct {

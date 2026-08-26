@@ -5,7 +5,6 @@
 //! program asks for it. It is also what makes the emulator testable on the
 //! host, where there is no window to look at.
 
-const std = @import("std");
 
 /// The largest grid worth allocating. At 800x480 with an 8x16 face the panel
 /// holds 100 by 30; the headroom is for a larger screen, not for scrolling.

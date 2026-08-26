@@ -15,9 +15,7 @@
 //! windows are the exception, and they are exceptions on purpose: dialogs,
 //! pickers and the launcher, which are transient and want to be above.
 
-const std = @import("std");
 const draw = @import("eui").draw;
-const theme = @import("eui").theme;
 
 const Rect = draw.Rect;
 
@@ -84,6 +82,9 @@ pub const Window = struct {
     tag: u8 = 0,
     /// Above the tiles, positioned by hand rather than by the layout.
     floating: bool = false,
+    /// How much of what is behind shows through. Zero is opaque, which is what
+    /// every window but a terminal asks for.
+    transparency: u8 = 0,
     /// Where it is now. Set by `arrange` for tiled windows and by dragging for
     /// floating ones.
     area: Rect = .{},

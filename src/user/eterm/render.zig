@@ -6,7 +6,6 @@
 //! What was last drawn is kept here and compared against, which makes the
 //! damage exact rather than approximate.
 
-const std = @import("std");
 const eui = @import("eui");
 const screen = @import("screen.zig");
 const vt = @import("vt.zig");

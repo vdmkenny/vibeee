@@ -14,7 +14,6 @@
 //! its window's event ring has one blocking call rather than two threads. That
 //! is the same reason `wait_many` exists at all.
 
-const std = @import("std");
 const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");

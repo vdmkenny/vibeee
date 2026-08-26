@@ -17,7 +17,6 @@
 //!
 //! `design/10-gui.md` §3.2.
 
-const std = @import("std");
 const console = @import("console.zig");
 const shm = @import("shm.zig");
 

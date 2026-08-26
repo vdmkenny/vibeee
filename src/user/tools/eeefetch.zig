@@ -4,7 +4,6 @@
 //! from files the tool assumes exist, so it works on a system with no /proc and
 //! keeps working as the kernel learns to report more.
 
-const sys = @import("sys");
 const out = @import("ulib").out;
 const info = @import("ulib").info;
 const logo = @import("lib").logo;

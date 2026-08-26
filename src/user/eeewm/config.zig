@@ -13,7 +13,6 @@
 //! master = 58         # master's share of the screen, per cent
 //! ```
 
-const std = @import("std");
 const config = @import("ulib").config;
 const layout = @import("layout.zig");
 const theme = @import("eui").theme;

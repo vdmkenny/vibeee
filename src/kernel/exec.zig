@@ -11,8 +11,6 @@
 //! dies first. Both leave a corpse the parent must collect, so a status is never
 //! lost before someone can read it.
 
-const std = @import("std");
-const console = @import("console.zig");
 const elf = @import("elf.zig");
 const hal = @import("hal.zig");
 const handle = @import("handle.zig");

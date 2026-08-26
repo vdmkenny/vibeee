@@ -5,7 +5,6 @@
 //! arrives. Everything a real application does, with nothing in it that a real
 //! application would not.
 
-const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");

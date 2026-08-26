@@ -6,7 +6,6 @@
 //! the rest of the controls put together and shares nothing with them beyond
 //! the pass machinery.
 
-const std = @import("std");
 const draw = @import("draw.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
@@ -145,7 +144,7 @@ fn scrolled(scroll: usize, wheel: i8, count: usize, visible: usize) usize {
     return @min(moved, limit);
 }
 
-/// A cheap hash of everything the table would draw.
+/// Everything the table would draw, hashed.
 fn fingerprint(
     rows: []const Row,
     state: *const State,
@@ -153,29 +152,20 @@ fn fingerprint(
     focused: bool,
     visible: usize,
 ) i32 {
-    var h: u32 = 2166136261;
-    const mix = struct {
-        fn in(acc: *u32, value: usize) void {
-            acc.* = (acc.* ^ @as(u32, @truncate(value))) *% 16777619;
-        }
-    };
-
-    mix.in(&h, state.scroll);
-    mix.in(&h, state.selected);
-    mix.in(&h, hovered orelse ~@as(usize, 0));
-    mix.in(&h, @intFromBool(focused));
-    mix.in(&h, rows.len);
+    var h = widget.Fingerprint{};
+    h.number(state.scroll);
+    h.number(state.selected);
+    h.number(hovered orelse ~@as(usize, 0));
+    h.flag(focused);
+    h.number(rows.len);
 
     const last = @min(state.scroll + visible, rows.len);
     for (rows[@min(state.scroll, rows.len)..last]) |row| {
-        for (row.cells) |cell| {
-            for (cell) |c| mix.in(&h, c);
-            mix.in(&h, 0);
-        }
-        mix.in(&h, row.depth);
+        for (row.cells) |cell| h.text(cell);
+        h.number(row.depth);
     }
 
-    return @bitCast(h);
+    return h.done();
 }
 
 fn paint(

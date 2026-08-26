@@ -5,7 +5,7 @@
 //! dance. One place to get it wrong is enough.
 
 const sys = @import("sys");
-const str = @import("str.zig");
+const str = @import("lib").str;
 
 /// The value of `key`, or an empty string if the kernel does not know it.
 ///

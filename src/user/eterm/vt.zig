@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const parser = @import("parser.zig");
+const str = @import("lib").str;
 const screen = @import("screen.zig");
 
 const Cell = screen.Cell;
@@ -85,6 +86,11 @@ pub const Terminal = struct {
         self.* = .{};
         self.grid.init();
         self.alternate.init();
+
+        // A usable size before the window has said how big it is. Output can
+        // arrive before the first configure does, and a terminal with no rows
+        // would drop it: the shell prints its banner the moment it starts.
+        self.resize(80, 24);
     }
 
     // -----------------------------------------------------------------------
@@ -140,25 +146,8 @@ pub const Terminal = struct {
     }
 
     fn replyNumber(self: *Terminal, value: usize) void {
-        var buf: [12]u8 = @splat(0);
-        var n: usize = 0;
-        var v = value;
-        if (v == 0) {
-            buf[0] = '0';
-            n = 1;
-        }
-        var digits: [12]u8 = @splat(0);
-        var d: usize = 0;
-        while (v > 0) : (v /= 10) {
-            digits[d] = '0' + @as(u8, @intCast(v % 10));
-            d += 1;
-        }
-        while (d > 0) {
-            d -= 1;
-            buf[n] = digits[d];
-            n += 1;
-        }
-        self.reply(buf[0..n]);
+        var buf: [12]u8 = undefined;
+        self.reply(buf[0..str.decimal(&buf, value)]);
     }
 
     fn apply(self: *Terminal, action: parser.Action) void {

@@ -10,7 +10,6 @@
 //! on no run queue, so anything searching the queues cannot see one, which is
 //! why threads are found through here and not through them.
 
-const std = @import("std");
 const hal = @import("../hal.zig");
 const handle = @import("../handle.zig");
 const shm = @import("../shm.zig");

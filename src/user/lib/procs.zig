@@ -6,7 +6,7 @@
 //! it happens once here.
 
 const info = @import("info.zig");
-const str = @import("str.zig");
+const str = @import("lib").str;
 
 /// Enough for anything the scheduler can hold. A list that silently stopped at
 /// the interesting process would be worse than no list.

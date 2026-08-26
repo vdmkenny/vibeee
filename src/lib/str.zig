@@ -1,10 +1,14 @@
-//! String helpers shared by every userspace program.
+//! String helpers, shared by everything.
 //!
 //! Each of these existed three or four times over before this file did, once
 //! per tool that needed it. A shared copy is not just less code: it is one
 //! place for the edge cases to be right.
+//!
+//! In `lib` rather than with the rest of userspace because it is pure
+//! computation. Formatting a number is the same work in a kernel, in a toolkit
+//! drawing a file size, and in a terminal answering a cursor position report,
+//! and each of those had written it out again for want of somewhere to reach.
 
-const std = @import("std");
 
 pub fn eql(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;

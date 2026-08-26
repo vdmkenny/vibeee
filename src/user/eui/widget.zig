@@ -19,11 +19,9 @@
 //! area under it. A pass over an interface where nothing happened writes no
 //! pixels at all.
 
-const std = @import("std");
 const draw = @import("draw.zig");
 
 const theme = @import("theme.zig");
-const glyphs = @import("lib").font.glyphs;
 const tbl = @import("table.zig");
 
 const Rect = draw.Rect;
@@ -615,11 +613,48 @@ fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, 
 // stops being drawing and starts being a control.
 // ---------------------------------------------------------------------------
 
-/// A cheap hash, for deciding whether what a control would draw has changed.
-pub fn fingerprint(text: []const u8) i32 {
-    var h: u32 = 2166136261;
-    for (text) |c| h = (h ^ c) *% 16777619;
-    return @bitCast(h);
+/// A cheap hash of what a control would draw, for deciding whether to draw it.
+///
+/// Comparing the result against last pass is the only check that is both cheap
+/// and right for a control whose contents change under it: a table refreshed
+/// twice a second, a label showing a count.
+pub const Fingerprint = struct {
+    value: u32 = 2166136261,
+
+    pub fn text(self: *Fingerprint, bytes: []const u8) void {
+        for (bytes) |c| self.byte(c);
+        // A separator, so two fields that ran together cannot hash the same as
+        // the same characters split differently.
+        self.byte(0);
+    }
+
+    pub fn number(self: *Fingerprint, value: usize) void {
+        var v = value;
+        var i: usize = 0;
+        while (i < @sizeOf(usize)) : (i += 1) {
+            self.byte(@truncate(v));
+            v >>= 8;
+        }
+    }
+
+    pub fn flag(self: *Fingerprint, value: bool) void {
+        self.byte(@intFromBool(value));
+    }
+
+    fn byte(self: *Fingerprint, c: u8) void {
+        self.value = (self.value ^ c) *% 16777619;
+    }
+
+    pub fn done(self: *const Fingerprint) i32 {
+        return @bitCast(self.value);
+    }
+};
+
+/// The fingerprint of one string, which is what a label needs.
+pub fn fingerprint(bytes: []const u8) i32 {
+    var h = Fingerprint{};
+    h.text(bytes);
+    return h.done();
 }
 
 pub const ROW_HEIGHT: i32 = 19;
@@ -630,6 +665,9 @@ pub const ROW_HEIGHT: i32 = 19;
 pub const MenuItem = struct {
     label: []const u8 = "",
     kind: Kind = .item,
+    /// Drawn right-aligned and dim: the chord that does the same thing. A menu
+    /// is where people find out a command has a shortcut.
+    detail: []const u8 = "",
 
     pub const Kind = enum { item, separator, disabled };
 
@@ -689,13 +727,23 @@ pub const Menu = struct {
             const highlighted = row == self.selected and item.selectable();
             if (highlighted) surface.fill(line, t.accent);
 
+            const baseline = line.y + @divTrunc(line.h - Surface.textHeight(), 2);
             const clipped = surface.clipped(line);
             clipped.text(
                 line.x + t.padding,
-                line.y + @divTrunc(line.h - Surface.textHeight(), 2),
+                baseline,
                 item.label,
                 if (highlighted) t.accent_text else if (item.kind == .disabled) t.text_dim else t.text,
             );
+
+            if (item.detail.len > 0) {
+                clipped.text(
+                    line.right() - t.padding - Surface.textWidth(item.detail),
+                    baseline,
+                    item.detail,
+                    if (highlighted) t.accent_text else t.text_dim,
+                );
+            }
         }
     }
 

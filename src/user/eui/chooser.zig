@@ -14,6 +14,7 @@ const std = @import("std");
 const draw = @import("draw.zig");
 const table = @import("table.zig");
 const text_mod = @import("text.zig");
+const str = @import("lib").str;
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -197,23 +198,8 @@ fn describe(buf: []u8, bytes: u32) []const u8 {
     var unit: usize = 0;
     while (value >= 10240 and unit + 1 < units.len) : (unit += 1) value /= 1024;
 
-    var n: usize = 0;
-    var digits: [12]u8 = undefined;
-    var d: usize = 0;
-    if (value == 0) {
-        digits[0] = '0';
-        d = 1;
-    }
-    while (value > 0) : (value /= 10) {
-        digits[d] = '0' + @as(u8, @intCast(value % 10));
-        d += 1;
-    }
-    while (d > 0) {
-        d -= 1;
-        buf[n] = digits[d];
-        n += 1;
-    }
-    const suffix = units[unit];
-    @memcpy(buf[n..][0..suffix.len], suffix);
-    return buf[0 .. n + suffix.len];
+    var out = str.Builder{ .buf = buf };
+    out.number(value);
+    out.text(units[unit]);
+    return out.done();
 }

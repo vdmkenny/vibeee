@@ -10,7 +10,6 @@
 //! handle without the write right fails whatever the underlying object would
 //! have allowed.
 
-const std = @import("std");
 const channel_mod = @import("channel.zig");
 const clock = @import("clock.zig");
 const display_mod = @import("display.zig");

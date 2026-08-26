@@ -19,7 +19,6 @@
 //! Everything here is `extern` and little-endian: it crosses a process
 //! boundary between separately compiled programs.
 
-const std = @import("std");
 
 /// Bumped when a change would make an old client misread a new server. The
 /// server rejects a mismatch at `hello` rather than failing later in a way
@@ -80,7 +79,13 @@ pub const Req = extern struct {
         },
         create: extern struct {
             flags: WinFlags,
-            _pad: u8 = 0,
+            /// How much of what is behind shows through, 0 opaque and 255
+            /// invisible.
+            ///
+            /// Expressed as transparency rather than opacity so that zero, the
+            /// value every caller gets by not thinking about it, is the one
+            /// every window but a terminal wants.
+            transparency: u8 = 0,
             min_w: u16,
             min_h: u16,
             tag_hint: u8,

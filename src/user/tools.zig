@@ -8,7 +8,6 @@
 //! The command table is the single definition: dispatch and the help text are
 //! both generated from it, so a command cannot exist without being listed.
 
-const std = @import("std");
 const sys = @import("sys");
 const eeefetch = @import("tools/eeefetch.zig");
 const dmidecode = @import("tools/dmidecode.zig");

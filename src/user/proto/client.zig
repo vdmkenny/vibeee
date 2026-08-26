@@ -99,9 +99,21 @@ pub const Connection = struct {
     /// What the client asks for is a minimum, and what it gets is a
     /// `configure` event.
     pub fn createWindow(self: *Connection, flags: wm.WinFlags, min_w: u16, min_h: u16) Error!u8 {
+        return self.createTranslucent(flags, min_w, min_h, 0);
+    }
+
+    /// The same, letting what is behind show through. Zero is opaque.
+    pub fn createTranslucent(
+        self: *Connection,
+        flags: wm.WinFlags,
+        min_w: u16,
+        min_h: u16,
+        transparency: u8,
+    ) Error!u8 {
         var req = wm.Req{ .tag = .create_win };
         req.body = .{ .create = .{
             .flags = flags,
+            .transparency = transparency,
             .min_w = min_w,
             .min_h = min_h,
             .tag_hint = 0,

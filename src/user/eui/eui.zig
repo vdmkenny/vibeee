@@ -18,6 +18,7 @@
 
 pub const draw = @import("draw.zig");
 pub const chooser = @import("chooser.zig");
+pub const menubar = @import("menubar.zig");
 pub const table = @import("table.zig");
 pub const text = @import("text.zig");
 pub const theme = @import("theme.zig");

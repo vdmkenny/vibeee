@@ -11,13 +11,11 @@
 //! events are each an event handle, and `wait_many` takes both, so a terminal
 //! sitting idle costs nothing.
 
-const std = @import("std");
 const abi = @import("lib").syscalls;
 const eui = @import("eui");
 const keys = @import("keys.zig");
 const proto = @import("proto");
 const render = @import("render.zig");
-const screen = @import("screen.zig");
 const sys = @import("sys");
 const out = @import("ulib").out;
 const vt = @import("vt.zig");
@@ -25,6 +23,9 @@ const vt = @import("vt.zig");
 const Rect = eui.Rect;
 
 const SHELL = "/VSH";
+
+/// 15 percent, which is enough to see through and not enough to read through.
+const TRANSPARENCY: u8 = 38;
 
 var connection: proto.Connection = undefined;
 var window: u8 = 0;
@@ -67,7 +68,10 @@ export fn etermMain() callconv(.c) noreturn {
         sys.exit(1);
     };
 
-    window = connection.createWindow(.{}, 480, 320) catch sys.exit(1);
+    // Slightly translucent, so what is behind a terminal is still legible
+    // through it. The one window that wants it: everything else is a document
+    // or a control panel, where anything showing through is noise.
+    window = connection.createTranslucent(.{}, 480, 320, TRANSPARENCY) catch sys.exit(1);
     connection.setTitle(window, "eTerm") catch {};
 
     startShell();

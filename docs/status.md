@@ -75,7 +75,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership, scanout buffer handed over as a shared segment. One buffer, no page flip or vblank, which is what a VESA framebuffer offers. |
 | Window manager | [`user/eeewm/`](../src/user/eeewm/) | Display server and tiling manager. Dynamic desktops, taskbar of named tabs with per-tab window menus, `V` launcher with session actions, tall/wide/monocle per desktop, floating windows, focus-follows-click, config file. Bindings by keycode; every action reachable by pointer and keyboard. |
 | Window protocol | [`user/proto/`](../src/user/proto/) | Channel for control, shm ring for events, shm surface per window. Wire types and the client half; the server half is policy and lives with the manager. `FileDialog` puts `eui`'s chooser panel in a floating window, which is here rather than in the toolkit because opening one means talking to the manager. |
-| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives, swappable theme, buttons, toggles, checkboxes, labels, progress bars, menus, a scrolling table with columns and a tree column, an editable soft-wrapped text area and one-line field, a file chooser panel, keyboard focus with Tab order, per-widget damage. |
+| Control library | [`user/eui/`](../src/user/eui/) | Surface and primitives, swappable theme, buttons, toggles, checkboxes, labels, progress bars, menus, a scrolling table with columns and a tree column, an editable soft-wrapped text area and one-line field, a menu bar with dropdowns and shortcut hints, a file chooser panel, keyboard focus with Tab order, per-widget damage. |
 | Fonts | [`lib/font.zig`](../src/lib/font.zig) | Shared by kernel and userspace. Spleen 8x16 and 12x24 monospaced for the console, Ark Pixel 12 proportional for interface text. Subset covers Latin-1, punctuation, arrows, box drawing, blocks and shapes; the range table is shared with the generator so slots cannot disagree. |
 
 ## Userspace
@@ -99,7 +99,7 @@ before it forced into place.
 |---|---|---|
 | Settings | [`user/apps/settings.zig`](../src/user/apps/settings.zig) | Theme, bar position and layout. Reads and writes `/etc/eeewm.cfg`; the theme applies live. |
 | Monitor | [`user/apps/monitor.zig`](../src/user/apps/monitor.zig) | Process tree with per-process CPU share, memory and uptime, refreshed twice a second. Ends a selected process. |
-| Pad | [`user/apps/pad.zig`](../src/user/apps/pad.zig) | Text editor: soft-wrapped editing, open and save through the floating file dialog, live byte count. |
+| Pad | [`user/apps/pad.zig`](../src/user/apps/pad.zig) | Text editor: soft-wrapped editing in the interface face, a File menu, open and save through the floating file dialog, live byte count. |
 | eTerm | [`user/eterm/`](../src/user/eterm/) | Terminal window running `vsh` over a pipe pair. Extended VT100 per [design §16](../design/10-gui.md): cursor movement, erase, insert and delete, scrolling regions, alternate screen, SGR with 256 colours, DECCKM, OSC titles. Line editing is the terminal's, until `vsh` does its own. |
 
 ## Shared between kernel and userspace

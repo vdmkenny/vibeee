@@ -15,7 +15,6 @@
 //! The command re-spawns itself with an argument to get the second process,
 //! which is also a small proof that detached spawn and `wait` behave.
 
-const std = @import("std");
 const ring = @import("lib").ring;
 const sys = @import("sys");
 const out = @import("ulib").out;

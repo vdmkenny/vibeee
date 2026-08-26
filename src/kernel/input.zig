@@ -9,7 +9,6 @@
 //! positions, `.q` is the key where Q sits on a US keyboard, which on AZERTY
 //! produces `a`.
 
-const std = @import("std");
 const event_mod = @import("event.zig");
 
 /// Layout-independent key identity. Defined in the ABI because a shortcut is

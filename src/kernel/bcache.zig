@@ -23,7 +23,6 @@
 //! the application believes data landed and it has not, which is precisely the
 //! failure the strategy exists to prevent.
 
-const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 

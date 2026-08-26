@@ -10,5 +10,8 @@ pub const dir = @import("dir.zig");
 pub const info = @import("info.zig");
 pub const out = @import("out.zig");
 pub const procs = @import("procs.zig");
-pub const str = @import("str.zig");
+/// Strings, one layer down: they are pure computation, so the toolkit and the
+/// kernel can reach them too. Re-exported here because every program that
+/// wants `ulib` wants these.
+pub const str = @import("lib").str;
 pub const time = @import("time.zig");

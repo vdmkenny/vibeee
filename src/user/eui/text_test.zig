@@ -4,7 +4,19 @@
 //! right in a screenshot and is wrong one character from the edge.
 
 const std = @import("std");
+const font = @import("lib").font;
 const text = @import("text.zig");
+
+/// A monospaced face, so a width in pixels reads as a count of characters and
+/// the expectations below say what they mean. The control itself uses the
+/// proportional interface face; what is under test is the arithmetic, and it
+/// is the same arithmetic either way.
+const mono = &font.spleen_8x16;
+const CELL: i32 = 8;
+
+fn columns(n: i32) i32 {
+    return n * CELL;
+}
 
 fn buffer(storage: []u8, initial: []const u8) text.Buffer {
     var b = text.Buffer{ .bytes = storage };
@@ -44,7 +56,7 @@ test "moving by character steps over a whole UTF-8 sequence" {
 }
 
 test "a hard newline ends a line and is not shown" {
-    var it = text.lines("ab\ncd", 10);
+    var it = text.lines("ab\ncd", mono, columns(10));
     const first = it.next().?;
     try std.testing.expectEqual(@as(usize, 2), first.end);
     try std.testing.expectEqual(@as(usize, 3), first.next);
@@ -56,7 +68,7 @@ test "a hard newline ends a line and is not shown" {
 
 test "wrapping breaks between words" {
     const sample = "hello world";
-    var it = text.lines(sample, 8);
+    var it = text.lines(sample, mono, columns(8));
     const first = it.next().?;
     try std.testing.expectEqualStrings("hello ", sample[first.start..first.end]);
 
@@ -66,47 +78,54 @@ test "wrapping breaks between words" {
 
 test "a word longer than the line breaks inside it" {
     const sample = "abcdefghij";
-    var it = text.lines(sample, 4);
+    var it = text.lines(sample, mono, columns(4));
     try std.testing.expectEqualStrings("abcd", sample[it.next().?.start..][0..4]);
 }
 
 test "an empty buffer is one line" {
-    try std.testing.expectEqual(@as(usize, 1), text.count("", 10));
+    try std.testing.expectEqual(@as(usize, 1), text.count("", mono, columns(10)));
 }
 
 test "a trailing newline leaves an empty line to type on" {
-    try std.testing.expectEqual(@as(usize, 2), text.count("a\n", 10));
+    try std.testing.expectEqual(@as(usize, 2), text.count("a\n", mono, columns(10)));
 }
 
-test "an offset maps to the line and column it draws at" {
+test "an offset maps to the line and place it draws at" {
     const sample = "ab\ncdef";
     try std.testing.expectEqual(
-        text.Position{ .line = 0, .column = 1 },
-        text.positionOf(sample, 10, 1),
+        text.Position{ .line = 0, .x = columns(1) },
+        text.positionOf(sample, mono, columns(10), 1),
     );
     try std.testing.expectEqual(
-        text.Position{ .line = 1, .column = 2 },
-        text.positionOf(sample, 10, 5),
+        text.Position{ .line = 1, .x = columns(2) },
+        text.positionOf(sample, mono, columns(10), 5),
     );
 }
 
 test "the end of a wrapped line and the start of the next are the same offset" {
     const sample = "hello world";
-    const at_break = text.positionOf(sample, 8, 6);
+    const at_break = text.positionOf(sample, mono, columns(8), 6);
     try std.testing.expectEqual(@as(usize, 1), at_break.line);
-    try std.testing.expectEqual(@as(usize, 0), at_break.column);
+    try std.testing.expectEqual(@as(i32, 0), at_break.x);
 }
 
-test "a column past the end of a line lands on its end" {
+test "a click past the end of a line lands on its end" {
     const sample = "ab\ncdef";
-    const line = text.lineAt(sample, 10, 0);
-    try std.testing.expectEqual(@as(usize, 2), text.offsetIn(sample, line, 9));
+    const line = text.lineAt(sample, mono, columns(10), 0);
+    try std.testing.expectEqual(@as(usize, 2), text.offsetAt(sample, mono, line, columns(9)));
 }
 
-test "columns count characters, not bytes" {
+test "a click on the right half of a character puts the cursor after it" {
+    const sample = "abc";
+    const line = text.lineAt(sample, mono, columns(10), 0);
+    try std.testing.expectEqual(@as(usize, 0), text.offsetAt(sample, mono, line, 3));
+    try std.testing.expectEqual(@as(usize, 1), text.offsetAt(sample, mono, line, 5));
+}
+
+test "measuring counts characters, not bytes" {
     const sample = "\xC3\xA9\xC3\xA9x";
     try std.testing.expectEqual(
-        text.Position{ .line = 0, .column = 2 },
-        text.positionOf(sample, 10, 4),
+        text.Position{ .line = 0, .x = columns(2) },
+        text.positionOf(sample, mono, columns(10), 4),
     );
 }

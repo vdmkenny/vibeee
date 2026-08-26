@@ -121,9 +121,14 @@ pub const Font = struct {
     }
 
     /// Width of a string in pixels.
+    ///
+    /// By character, not by byte: a three-byte box-drawing rule advances once,
+    /// and counting its bytes made every measurement of anything above Latin-1
+    /// three times too wide.
     pub fn measure(self: *const Font, text: []const u8) usize {
         var total: usize = 0;
-        for (text) |c| total += self.advance(c);
+        var it = codepoints(text);
+        while (it.next()) |cp| total += self.advance(cp);
         return total;
     }
 
@@ -142,3 +147,43 @@ pub const spleen_12x24 = @import("fonts/spleen_12x24.zig").desc;
 /// Proportional, for interface text rather than a terminal grid.
 /// Ark Pixel by TakWolf, SIL Open Font License 1.1.
 pub const ark_ui_12 = @import("fonts/ark_ui_12.zig").desc;
+
+/// Walk a string as characters rather than bytes.
+///
+/// Strings here are UTF-8, and the font carries box drawing, arrows and shapes
+/// well above Latin-1. Iterating bytes drew a three-byte character as three
+/// wrong ones, which is what a box-drawing rule looked like before this.
+///
+/// Malformed input yields U+FFFD and advances one byte, so a bad string
+/// renders as visible nonsense rather than desynchronising everything after
+/// it.
+pub const Codepoints = struct {
+    bytes: []const u8,
+    pos: usize = 0,
+
+    pub fn next(self: *Codepoints) ?u21 {
+        if (self.pos >= self.bytes.len) return null;
+
+        const first = self.bytes[self.pos];
+        const length = std.unicode.utf8ByteSequenceLength(first) catch {
+            self.pos += 1;
+            return 0xFFFD;
+        };
+
+        if (self.pos + length > self.bytes.len) {
+            self.pos = self.bytes.len;
+            return 0xFFFD;
+        }
+
+        const cp = std.unicode.utf8Decode(self.bytes[self.pos..][0..length]) catch {
+            self.pos += 1;
+            return 0xFFFD;
+        };
+        self.pos += length;
+        return cp;
+    }
+};
+
+pub fn codepoints(bytes: []const u8) Codepoints {
+    return .{ .bytes = bytes };
+}

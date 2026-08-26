@@ -10,7 +10,7 @@
 //! by hand on a machine with one text editor.
 
 const std = @import("std");
-const str = @import("str.zig");
+const str = @import("lib").str;
 const sys = @import("sys");
 
 /// Assign one key to one field of `target`, driven by the shape of its type.

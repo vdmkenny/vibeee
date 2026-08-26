@@ -182,7 +182,7 @@ fn paintWindow(index: usize, focused: bool) void {
     // looks like before anything has connected.
     const content = area.inset(width);
     if (w.mapped and surfaces[index].valid()) {
-        clients.blit(screen, surfaces[index], content, content);
+        clients.blit(screen, surfaces[index], content, content, w.transparency);
         return;
     }
 
@@ -532,6 +532,7 @@ fn onCreate(pid: u32, req: *const wire.Req) Answer {
         return refuse(.no_room);
 
     const w = &desktop.windows[index];
+    w.transparency = req.body.create.transparency;
     w.client_pid = pid;
     // The client's id for the window, which is per client rather than global:
     // the slot index is ours and would collide across clients.

@@ -299,3 +299,10 @@ test "insert mode shifts rather than overwrites" {
     t.write("abcd\x1B[1;2H\x1B[4hXY");
     try expectLine(&t, 0, "aXYbcd");
 }
+
+test "a terminal has a usable size before it is told one" {
+    var t: vt.Terminal = undefined;
+    t.init();
+    t.write("output before the first configure");
+    try expectLine(&t, 0, "output before the first configure");
+}

@@ -19,7 +19,6 @@
 //!
 //! UTC throughout, never local time. See `lib/civil.zig`.
 
-const std = @import("std");
 const civil = @import("lib").civil;
 const hal = @import("hal.zig");
 

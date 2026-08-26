@@ -21,7 +21,6 @@
 //!
 //! `design/00-vibeee.md` §6.8.
 
-const std = @import("std");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const pmm = @import("pmm.zig");
