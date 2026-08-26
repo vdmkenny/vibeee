@@ -135,9 +135,17 @@ const Device = struct {
     device: u16,
     class: u8,
     subclass: u8,
-    /// What the kernel already bound, or "-" for nothing.
+    /// What the kernel bound, or "-" for nothing.
     driver: []const u8,
+    /// What became of that binding, from the kernel's own vocabulary. A driver
+    /// that merely matched is not driving the device, and the device is still
+    /// there to be offered to one that can.
+    state: []const u8,
     description: []const u8,
+
+    fn isDriven(self: Device) bool {
+        return str.eql(self.state, "driven");
+    }
 };
 
 fn bindDevices() void {
@@ -154,7 +162,7 @@ fn bindDevices() void {
 
         // Something in the kernel already drives it. Two drivers on one device
         // is worse than the wrong one of them.
-        if (!str.eql(dev.driver, "-")) continue;
+        if (dev.isDriven()) continue;
 
         const manifest = matchFor(dev) orelse continue;
         matched += 1;
@@ -179,6 +187,7 @@ fn parseDevice(line: []const u8) ?Device {
         .class = @intCast(str.fromHex(it.next() orelse return null)),
         .subclass = @intCast(str.fromHex(it.next() orelse return null)),
         .driver = it.next() orelse "-",
+        .state = it.next() orelse "",
         .description = it.next() orelse "",
     };
 }

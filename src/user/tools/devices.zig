@@ -1,8 +1,9 @@
 //! What is on the bus, and what is driving it.
 //!
-//! The first thing to look at when a machine does less than it should: a
-//! device with nothing against it is one nothing has claimed, which on
-//! unfamiliar hardware is usually the answer.
+//! The first thing to look at when a machine does less than it should. A
+//! device with nothing against it is one nothing has claimed, and one whose
+//! driver merely matched is one a driver was written for but cannot yet run,
+//! which on unfamiliar hardware is usually the answer.
 
 const info = @import("ulib").info;
 const out = @import("ulib").out;
@@ -12,6 +13,7 @@ const ADDRESS = 10;
 const ID = 12;
 const CLASS = 8;
 const DRIVER = 13;
+const STATE = 10;
 
 /// Two colon-joined fields in one column, which is how both the identifiers
 /// and the class codes read.
@@ -39,6 +41,7 @@ pub fn devices(_: []const []const u8) void {
     out.pad("id", ID);
     out.pad("class", CLASS);
     out.pad("driver", DRIVER);
+    out.pad("state", STATE);
     out.text("what\n");
 
     var lines = str.lines(table);
@@ -50,8 +53,11 @@ pub fn devices(_: []const []const u8) void {
         pair(it.next() orelse "", it.next() orelse "", ID);
         pair(it.next() orelse "", it.next() orelse "", CLASS);
 
-        // A dash rather than a name means nothing has taken it.
+        // The driver is named whatever became of it, and the state beside it
+        // says which: this is the boot probe's table, seen from userspace, and
+        // the two should not tell different stories about the same device.
         out.pad(it.next() orelse "-", DRIVER);
+        out.pad(it.next() orelse "", STATE);
         out.text(it.next() orelse "");
         out.byte('\n');
     }

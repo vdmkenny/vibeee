@@ -22,6 +22,32 @@ pub const Confidence = enum(u8) {
     exact = 3,
 };
 
+/// What became of a device once the drivers had their say.
+///
+/// One vocabulary, so the boot table and the `devices` tool cannot describe
+/// the same binding differently. A driver that merely matched is not driving
+/// anything: the entry names the device without being able to run it.
+pub const State = enum {
+    /// A driver took it and it is running.
+    driven,
+    /// A driver matched but never attached, having none to attach with.
+    matched,
+    /// A driver tried and failed.
+    failed,
+    /// Nothing claimed it.
+    unclaimed,
+
+    /// The one-character shorthand the boot table puts beside a driver.
+    pub fn mark(self: State) []const u8 {
+        return switch (self) {
+            .driven => " ",
+            .matched => "*",
+            .failed => "!",
+            .unclaimed => " ",
+        };
+    }
+};
+
 pub const Match = union(enum) {
     /// Vendor+device.
     pci_id: struct { vendor: u16, device: u16 },
@@ -65,6 +91,18 @@ pub const Binding = struct {
     confidence: Confidence,
     attached: bool = false,
     failed: bool = false,
+
+    pub fn state(self: Binding) State {
+        if (self.driver == null) return .unclaimed;
+        if (self.failed) return .failed;
+        return if (self.attached) .driven else .matched;
+    }
+
+    /// What is driving the device, or the empty string when nothing is.
+    pub fn driverName(self: Binding) []const u8 {
+        const d = self.driver orelse return "";
+        return d.name;
+    }
 };
 
 var bindings: [64]Binding = undefined;
@@ -177,10 +215,7 @@ pub fn report() void {
             console.setColor(.dark_grey, .black);
             // The marker states what actually happened, so a driver that
             // exists but failed cannot be mistaken for one that is running.
-            console.printf("{s: <7}{s}", .{
-                @tagName(b.confidence),
-                if (b.failed) "! " else if (b.attached) "  " else "* ",
-            });
+            console.printf("{s: <7}{s} ", .{ @tagName(b.confidence), b.state().mark() });
         } else {
             console.printf("{s: <12}{s: <9}", .{ "-", "" });
         }
