@@ -390,7 +390,7 @@ worth building before something actually runs out of memory.
 
 ## 8. Graphics
 
-In-kernel driver for the GMA 900. **This is the highest-risk component after WiFi**, because VBE genuinely does not offer 800×480 on this BIOS (`[HIGH]` confidence, the whole `915resolution` saga exists because of this), so a native modeset is mandatory for the native resolution.
+In-kernel driver for the GMA 900. VBE genuinely does not offer 800×480 on this BIOS (`[HIGH]` confidence, the whole `915resolution` saga exists because of this), so reaching the native resolution means programming the display engine directly. Done, and without touching a clock: firmware leaves the timing correct and only the plane and the panel fitter need changing.
 
 Sequence: map MMIO/GTT/aperture BARs (gen3 has a *separate* GTT BAR, unlike gen4+) → reuse the ~7932 KB of stolen memory as the framebuffer (avoids consuming main RAM and its bandwidth) → disable plane/pipe/port → program **DPLL_B** for the 29.58 MHz pixel clock from the 96 MHz reference (gen3 LVDS limits: VCO 1.4–2.8 GHz, m1 8–18, m2 3–11, p1 1–8, **p2 = 14** for single-channel LVDS) → pipe B timings from the known-good modeline `800 816 896 992 / 480 481 484 497 -HSync +VSync` → LVDS port at 0x61180 with dithering (the panel is 6-bit + FRC) → plane B → panel power sequencing → enable in the required order with vblank waits.
 
@@ -635,13 +635,15 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware |
 | **M5** | Browser experiment (litehtml + quickjs + Zig TLS), explicitly exploratory | Hardware |
 
-**M1 is the honest risk gate**: it contains the GMA900 modeset, which cannot be tested in QEMU and has no public gen3 documentation. If the native modeset resists, the fallback is 640×480 VESA (ugly, letterboxed, but a working GUI) while the modeset is debugged against the i915 source and `xf86-video-intel` as references.
+**M1's risk gate, the GMA900 modeset, is cleared**: the target machine runs its panel at native 800x480. It turned out not to need a modeset at all in the sense the risk assumed. Firmware programs the LVDS timing, the clock and the panel's power sequence correctly, and then feeds the pipe a smaller plane stretched by the panel fitter; the driver grows the plane to the timing already running and switches the fitter off, so no clock is ever computed. Nothing in it is specific to this machine, the panel's size being read from the pipe, so a gen3 netbook of another resolution is driven by the same code.
+
+What the failures cost was the sequence, not the values: **the pipe latches its per-line fetch schedule when it starts**, so geometry moved under a running pipe is fed at the old width however the FIFO is tuned. Pipe and plane both stop, the geometry moves, both start. The FIFO is retuned too, since firmware sizes it for its own narrower fetch. The change is then judged by the pipe's own underrun record and undone if the hardware could not feed it, which is what makes it safe to attempt at boot on a machine nobody has run this on.
 
 ---
 
 ## 16. Principal risks
 
-1. **GMA900 modeset**, no public gen3 PRM, untestable in QEMU, and the panel has no EDID so timings come from the known-good modeline or the VBT. *Mitigation*: VESA fallback always present; panic screen falls back to VGA text.
+1. **GMA900 modeset**: settled. Timings are read from the pipe firmware programmed rather than from a modeline or the VBT, so no EDID is needed. Still untestable in QEMU, which is why the driver judges its own result on the hardware and reverts a mode the panel cannot be fed.
 2. **AR2425 WiFi**, reverse-engineered silicon, no datasheet, known calibration bugs in early ath5k, plus the power-gate hot-unplug dance. *Mitigation*: ethernet first, WiFi in M3, ath5k as the reference implementation, and accept that b/g at moderate rates is a success condition.
 3. **AML interpreter**, battery, backlight, hotkeys, and the radio gates all depend on it. *Mitigation*: uACPI, with a hardcoded direct-EC degraded mode (the research gives us the exact EC registers) so the machine remains usable if AML misbehaves.
 4. **No serial port**, every hardware-only bug is debugged through a framebuffer and a persistent panic ring. *Mitigation*: §6.9's five mechanisms, and maximising what QEMU covers.

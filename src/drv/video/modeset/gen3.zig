@@ -444,29 +444,29 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     pipeOn(w, pipe);
     planeOn(w, pipe, cntr);
 
-    // Half a second in the new mode before judging it: an underrun that only
-    // strikes under real fetch load takes frames to show, not microseconds.
+    // A few frames in the new mode before judging it. The record is sticky and
+    // a starved plane misses on its first line, so this is generous already.
     var settled: u32 = 0;
-    while (settled < 25) : (settled += 1) waitFrame();
-
-    const stat = read(PipeStat, w, pipe.stat);
-    console.debug("video", "native: stat {x:0>8}, fwblc {x:0>8} dsparb {x:0>8} self {}", .{
-        @as(u32, @bitCast(stat)), read(u32, w, FW_BLC),
-        read(u32, w, DSPARB),     selfRefreshOn(w, dev.device),
-    });
-    console.debug("video", "native: firmware had fwblc {x:0>8} dsparb {x:0>8}", .{
-        saved.fw_blc, saved.dsparb,
-    });
-    console.debug("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
-        read(u32, w, pipe.size), read(u32, w, pipe.src),
-        read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
-    });
+    while (settled < 3) : (settled += 1) waitFrame();
 
     // The pipe judges its own trial: an underrun means the mode cannot be fed
-    // and everything goes back, anything else means it holds and stays.
+    // and everything goes back, anything else means it holds and stays. The
+    // reading is worth reporting only when it convicts, and then in full,
+    // because the next person to see it will be on a machine nobody has run
+    // this on before.
+    const stat = read(PipeStat, w, pipe.stat);
     if (stat.fifo_ran_dry) {
         console.warn("video: fifo ran dry at {d}x{d}; mode put back", .{
             want.width, want.height,
+        });
+        console.debug("video", "native: fwblc {x:0>8} dsparb {x:0>8} self {}, was {x:0>8} {x:0>8}", .{
+            read(u32, w, FW_BLC),      read(u32, w, DSPARB),
+            selfRefreshOn(w, dev.device), saved.fw_blc,
+            saved.dsparb,
+        });
+        console.debug("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
+            read(u32, w, pipe.size),   read(u32, w, pipe.src),
+            read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
         });
         revert(w, pipe, dev.device, cntr, saved);
         return error.Hardware;
