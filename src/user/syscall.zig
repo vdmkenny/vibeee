@@ -322,6 +322,13 @@ pub fn irqAck(handle: u32) isize {
     return syscall1(abi.number("irq_ack"), handle);
 }
 
+/// Open or close the chipset's gate on the system control interrupt, the
+/// switch the firmware's protocol says opens after its own handshake.
+/// Needs the driver capability.
+pub fn sciEnable(on: bool) isize {
+    return syscall1(abi.number("sci_enable"), @intFromBool(on));
+}
+
 pub const Pipe = struct { read: u32, write: u32 };
 
 /// Create a pipe. The read end can be passed to `waitMany`.

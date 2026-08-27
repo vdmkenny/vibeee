@@ -16,6 +16,7 @@ const console = @import("../console.zig");
 const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
+const irq_mod = @import("../irq.zig");
 const pmm = @import("../pmm.zig");
 const pcicfg = @import("../pcicfg.zig");
 const probe = @import("../probe.zig");
@@ -89,6 +90,16 @@ pub fn sys_dma_alloc(a: Args) Result {
     // same segment differ, and a DMA engine does not care about mapping.
     std.mem.writeInt(u32, out[0..4], @intCast(shm.physBase(seg)), .little);
     return @intCast(slot);
+}
+
+/// Open or close the chipset's system-control gate. The SCI line itself is
+/// born masked and the runtime never writes the controller; this PM register
+/// bit is the switch the firmware's protocol says opens after its own
+/// handshake, once the trap-port dance is done.
+pub fn sys_sci_enable(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    irq_mod.sciEnabled(a.a0 != 0);
+    return 0;
 }
 
 pub fn sys_irq_attach(a: Args) Result {    if (ctx.require(.{ .driver = true })) |denied| return denied;

@@ -283,7 +283,7 @@ pub fn vectorForGsi(gsi: u32) ?u8 {
     // Reached only for a line beyond what boot routed, which on this
     // controller is none: every input is routed before anything runs.
     const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
-    ioapic.route(gsi, vector, gsi >= irq_mod.MAX_LINES, true, lapic.id());
+    ioapic.route(gsi, vector, gsi >= irq_mod.MAX_LINES, true, lapic.id(), false);
     gsi_vector[gsi] = vector;
     return vector;
 }
@@ -360,7 +360,7 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
 
     for (0..16) |irq| {
         const line = routing.describedLine(@intCast(irq)) orelse continue;
-        ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination);
+        ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination, line.sci);
         if (line.gsi < taken.len) taken[line.gsi] = true;
         if (line.gsi < MAX_GSI) gsi_vector[line.gsi] = vectorFor(irq);
     }
@@ -368,7 +368,7 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     for (0..16) |irq| {
         if (routing.describedLine(@intCast(irq)) != null) continue;
         if (taken[irq]) continue;
-        ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination);
+        ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination, false);
         gsi_vector[irq] = vectorFor(irq);
     }
 
@@ -382,7 +382,7 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     const pins = @min(ioapic.inputs(), MAX_GSI);
     while (gsi < pins) : (gsi += 1) {
         const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
-        ioapic.route(gsi, vector, true, true, destination);
+        ioapic.route(gsi, vector, true, true, destination, false);
         gsi_vector[gsi] = vector;
     }
 

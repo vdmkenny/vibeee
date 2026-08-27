@@ -115,22 +115,21 @@ fn hold() bool {
 const release = cpu.restoreInterrupts;
 
 /// Send a global interrupt to `vector` on `destination`, masked to begin with.
-pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u8) void {
+pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u8, masked: bool) void {
     const owner = find(gsi) orelse return;
     const was = hold();
     defer release(was);
-    // Born unmasked. There is exactly one window this machine tolerates a
-    // redirection write, and it is this boot-time one: the firmware's trap
-    // answers any later write to the controller by never returning. A line
-    // asserts only when something really happened, and the kernel's
-    // unknown-vector stub acknowledges those, so an unmasked quiet line
-    // costs nothing before its driver claims it.
+    // Unmasked for almost every line: this machine has exactly one window
+    // that tolerates a redirection write, and it is this boot-time one. The
+    // firmware's trap answers any later write by never returning. The SCI is
+    // the exception and arrives masked, because its gate belongs to the
+    // chipset, which opens it only once the firmware handshake is over.
     writeEntry(owner, gsi - owner.info.gsi_base, .{
         .vector = vector,
         .active_low = active_low,
         .level = level,
         .destination = destination,
-        .masked = false,
+        .masked = masked,
     });
 }
 

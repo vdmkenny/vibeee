@@ -15,10 +15,10 @@ const probe = @import("kernel/probe.zig");
 const bootinfo = @import("kernel/bootinfo.zig");
 const drivers = @import("drivers.zig");
 const ramdisk = @import("drv/block/ramdisk.zig");
+const irq = @import("kernel/irq.zig");
 const acpi = @import("drv/acpi/tables.zig");
 const madt = @import("drv/acpi/madt.zig");
 const acpi_power = @import("drv/acpi/power.zig");
-const irq = @import("kernel/irq.zig");
 const clock = @import("kernel/clock.zig");
 const cmos = @import("drv/rtc/cmos.zig");
 const shutdown = @import("kernel/shutdown.zig");
@@ -127,7 +127,7 @@ pub fn interruptRouting() ?irq.Routing {
         if (fadt.sci_int != 0 and fadt.sci_int < irq.MAX_LINES and
             routing.describedLine(@intCast(fadt.sci_int)) == null)
         {
-            routing.describe(@intCast(fadt.sci_int), true, true);
+            routing.describeSci(@intCast(fadt.sci_int), true, true);
         }
     }
 
@@ -139,6 +139,7 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     publishPlatform();
 
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
+    irq.setSciGate(acpi_power.setSciEnabled);
 
     if (acpi.get()) |a| {
         if (a.s5_found) {

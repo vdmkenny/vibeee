@@ -13,6 +13,9 @@ const Bounded = @import("lib").Bounded;
 
 /// Where a legacy interrupt really lands.
 pub const Line = struct {
+    /// The system control interrupt: boot leaves this one masked, and the
+    /// chipset's own gate opens it after the firmware handshake.
+    sci: bool = false,
     /// The number a driver asks for.
     irq: u8,
     /// The global line it arrives on.
@@ -33,6 +36,20 @@ pub const Controller = struct {
 
 /// More than one controller is a server part. Two costs nothing to allow.
 pub const MAX_CONTROLLERS = 2;
+
+/// The chipset's gate on the system control interrupt, filled in by the
+/// composition root: the SCI is routed and left masked at boot, and this
+/// PM-register bit, not the controller's entry, is what the runtime may
+/// write. Nothing below this point touches ACPI tables itself.
+var sci_gate: ?*const fn (bool) void = null;
+
+pub fn setSciGate(gate: ?*const fn (bool) void) void {
+    sci_gate = gate;
+}
+
+pub fn sciEnabled(on: bool) void {
+    if (sci_gate) |gate| gate(on);
+}
 
 /// The ISA range is sixteen lines, and firmware overrides at most all of them.
 pub const MAX_LINES = 16;
@@ -62,6 +79,27 @@ pub const Routing = struct {
             .active_low = active_low,
             .level = level,
         }) catch {};
+    }
+
+    /// The system control interrupt: the same describe, and the line is
+    /// marked as the SCI, which this machine keeps masked at boot and gates
+    /// through the chipset's own SCI_EN once the firmware handshake is done.
+    pub fn describeSci(self: *Routing, irq_num: u8, active_low: bool, level: bool) void {
+        if (self.describedLine(irq_num) != null) return;
+        self.lines.append(.{
+            .irq = irq_num,
+            .gsi = irq_num,
+            .active_low = active_low,
+            .level = level,
+            .sci = true,
+        }) catch {};
+    }
+
+    pub fn isSci(self: *const Routing, gsi: u32) bool {
+        for (self.lines.slice()) |line| {
+            if (line.gsi == gsi and line.sci) return true;
+        }
+        return false;
     }
 
     /// What firmware said about a line, or null if it said nothing.

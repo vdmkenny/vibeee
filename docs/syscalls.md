@@ -990,6 +990,22 @@ Become the console's foreground.
 
 From this call on, only the claimer and its descendants render to the console; everything else's lines go to the kernel's ring alone, where the log tool reads them. The boot narrates onto the console because nothing has claimed it yet; the shell claims it when the console becomes a conversation.
 
+## `sci_enable`  <sub>#55</sub>
+
+Open or close the chipset's gate on the system control interrupt.
+
+| arg | type | meaning |
+|---|---|---|
+| `on` | uint | One opens the gate, zero closes it. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. The SCI line is routed and left masked at boot; the runtime performs no controller writes, and this PM register bit is the switch the firmware's protocol says opens after its own handshake.
+
 ---
 
-55 calls defined.
+56 calls defined.

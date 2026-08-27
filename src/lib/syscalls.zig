@@ -1365,6 +1365,19 @@ pub const table = [_]Syscall{
             "because nothing has claimed it yet; the shell claims it when the " ++
             "console becomes a conversation.",
     },
+    .{
+        .number = 55,
+        .name = "sci_enable",
+        .summary = "Open or close the chipset's gate on the system control interrupt.",
+        .args = &.{
+            .{ .name = "on", .kind = .uint, .desc = "One opens the gate, zero closes it." },
+        },
+        .returns = "0",
+        .errors = &.{E.perm},
+        .notes = "Requires Caps.driver. The SCI line is routed and left masked at boot; " ++
+            "the runtime performs no controller writes, and this PM register bit is " ++
+            "the switch the firmware's protocol says opens after its own handshake.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

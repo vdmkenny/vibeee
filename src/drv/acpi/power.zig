@@ -19,6 +19,21 @@ fn pm1(at: u16) Pm1Control {
     return @bitCast(port.inw(at));
 }
 
+/// Open or close the chipset's own gate on the system control interrupt.
+///
+/// Not the controller's entry: SCI_EN is a bit in PM1a_CNT, which the
+/// firmware's trap has no interest in protecting. The SCI line itself is
+/// routed and left masked at boot; this bit is the one way a write to any
+/// direction is meant to travel at runtime.
+pub fn setSciEnabled(on: bool) void {
+    const info = tables.get() orelse return;
+    if (info.pm1a_control == 0) return;
+
+    var current = port.inw(info.pm1a_control);
+    if (on) current |= 1 else current &= ~@as(u16, 1);
+    port.outw(info.pm1a_control, current);
+}
+
 /// Hand the machine from legacy mode into ACPI mode.
 ///
 /// Until this happens the sleep registers do nothing: in legacy mode the

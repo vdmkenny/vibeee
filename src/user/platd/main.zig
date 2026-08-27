@@ -46,6 +46,12 @@ export fn platdMain() callconv(.c) noreturn {
     ready = bringUp();
     if (!ready) log.warn("platd", "carrying on without the firmware");
 
+    // The system control interrupt is routed and left masked at boot; its
+    // gate is this chipset register bit, written only now, when the
+    // firmware's own trap-port handshake is over and an arriving event can
+    // no longer meet it halfway.
+    if (ready) _ = sys.sciEnable(true);
+
     const channel = sys.svcRegister(proto.SERVICE);
     if (channel < 0) {
         log.failed("platd", "cannot register", channel);
