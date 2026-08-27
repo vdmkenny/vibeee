@@ -325,9 +325,13 @@ pub fn resolveIrq(number: u32) irq_mod.Line {
     return routing.resolve(@intCast(number));
 }
 
-/// Make a PCI-used legacy line signal the way PCI signals: level, held low.
-/// Boot only, and only where the firmware's override table said nothing;
-/// where it spoke, its word stands.
+/// Make a PCI-used legacy line level-sensed, in the polarity this board
+/// presents. PCI wires signal active low, but this chipset inverts them on
+/// the way to the controller: the firmware's own override table declares
+/// its one described level line active high, and every pin that has ever
+/// worked on this machine agrees. Sensed low, the idle line reads asserted
+/// from the moment it is unmasked. Boot only, and only where the table said
+/// nothing; where it spoke, its word stands.
 pub fn correctPciLine(number: u4) void {
     if (!ioapic.active()) return;
     if (routing.describedLine(number) != null) return;
@@ -336,7 +340,7 @@ pub fn correctPciLine(number: u4) void {
     if (gsi >= MAX_GSI) return;
     const vector = gsi_vector[gsi];
     if (vector == 0) return;
-    ioapic.correct(gsi, vector, true, true, lapic.id());
+    ioapic.correct(gsi, vector, false, true, lapic.id());
 }
 
 /// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a
