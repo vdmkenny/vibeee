@@ -36,6 +36,17 @@ pub fn active() bool {
     return count > 0;
 }
 
+/// How many inputs the controllers actually have, as the highest line any of
+/// them answers for plus one.
+pub fn inputs() u32 {
+    var highest: u32 = 0;
+    for (controllers[0..count]) |c| {
+        const top = c.info.gsi_base + c.info.inputs;
+        if (top > highest) highest = top;
+    }
+    return highest;
+}
+
 /// Map each controller and mask every line it owns.
 ///
 /// Masked rather than left as the firmware had them: what the firmware routed
@@ -51,12 +62,12 @@ pub fn init(info: *irq.Routing) bool {
         controllers[count] = .{ .info = entry, .regs = regs };
         // The input count is in the version register's second byte, one less
         // than the number of entries. The table does not carry it.
-        const inputs = ((read(&controllers[count], REG_VERSION) >> 16) & 0xFF) + 1;
-        controllers[count].info.inputs = inputs;
-        info.controllers.mutable()[i].inputs = inputs;
+        const pin_count = ((read(&controllers[count], REG_VERSION) >> 16) & 0xFF) + 1;
+        controllers[count].info.inputs = pin_count;
+        info.controllers.mutable()[i].inputs = pin_count;
 
         var line: u32 = 0;
-        while (line < inputs) : (line += 1) {
+        while (line < pin_count) : (line += 1) {
             writeEntry(&controllers[count], line, .{});
         }
 

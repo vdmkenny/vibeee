@@ -284,9 +284,8 @@ pub fn vectorForGsi(gsi: u32) ?u8 {
     if (!ioapic.active() or gsi >= MAX_GSI) return null;
     if (gsi_vector[gsi] != 0) return gsi_vector[gsi];
 
-    // A line above the legacy sixteen is one the routing tables named, and
-    // those pins carry PCI interrupts in PCI's own convention: a level held
-    // low. The legacy pins keep whatever boot routing gave them.
+    // Reached only for a line beyond what boot routed, which on this
+    // controller is none: every input is routed before anything runs.
     const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
     ioapic.route(gsi, vector, gsi >= irq_mod.MAX_LINES, true, lapic.id());
     gsi_vector[gsi] = vector;
@@ -370,6 +369,20 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
         if (taken[irq]) continue;
         ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination);
         gsi_vector[irq] = vectorFor(irq);
+    }
+
+    // The lines above the legacy sixteen, routed now and never again: these
+    // are the PIRQ pins the firmware's routing tables name, level and low as
+    // that hardware signals, masked until a driver's first wait. Routed at
+    // boot because this machine's firmware co-owns the controller from
+    // system management mode and tolerates the boot writing entries while a
+    // rewrite at runtime is followed shortly by a trap that never returns.
+    var gsi: u32 = 16;
+    const pins = @min(ioapic.inputs(), MAX_GSI);
+    while (gsi < pins) : (gsi += 1) {
+        const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
+        ioapic.route(gsi, vector, true, true, destination);
+        gsi_vector[gsi] = vector;
     }
 
     maskAllPic();
