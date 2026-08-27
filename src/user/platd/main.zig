@@ -58,10 +58,32 @@ export fn platdMain() callconv(.c) noreturn {
     serve(@intCast(channel));
 }
 
+/// Two things to listen to: somebody asking, and the firmware saying.
+///
+/// The system control interrupt is a line the kernel turns into an event, and
+/// the handler uACPI installed runs here rather than in interrupt context: an
+/// AML method can take milliseconds and there is one thread to run it on.
 fn serve(channel: u32) noreturn {
+    var sources: [2]u32 = undefined;
+
+    while (true) {
+        drain(channel);
+        if (glue.sci.attached()) glue.sci.service();
+
+        var count: usize = 1;
+        sources[0] = channel;
+        if (glue.sci.attached()) {
+            sources[1] = glue.sci.event;
+            count = 2;
+        }
+        _ = sys.waitMany(sources[0..count], sys.FOREVER);
+    }
+}
+
+fn drain(channel: u32) void {
     while (true) {
         var message = sys.Message{};
-        const request = sys.recv(channel, &message, sys.FOREVER) orelse continue;
+        const request = sys.recv(channel, &message, sys.POLL) orelse return;
 
         var body = proto.Rep{};
         body.status = answer(&message, &body);

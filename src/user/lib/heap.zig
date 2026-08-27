@@ -29,10 +29,22 @@ const CLASS_MIN = 16;
 pub const MIN_ALIGN = CLASS_MIN;
 const CLASSES = 8; // 16, 32, 64, 128, 256, 512, 1024, 2048
 
-/// How much is taken from the kernel at once. Large enough that a program
-/// allocating steadily is not making a syscall every few objects, small enough
-/// that a program allocating once is not holding a megabyte to do it.
-const ARENA = 64 * 1024;
+/// How much is taken from the kernel the first time, and the ceiling it grows
+/// to.
+///
+/// Each arena costs a handle, and a process has thirty-two of them. A fixed
+/// small arena therefore has a hard limit that is not memory but handles: at
+/// sixty-four kilobytes each, a program is out of handles before it is out of
+/// megabytes, and what it sees is an allocation failing with plenty of memory
+/// left. That is what stopped `_PTS` evaluating on the target machine.
+///
+/// So each arena is twice the last. A program that allocates a little pays a
+/// little, and one that allocates a lot reaches eight megabytes in seven
+/// handles rather than a hundred and twenty-eight.
+const ARENA_FIRST = 64 * 1024;
+const ARENA_MAX = 4 * 1024 * 1024;
+
+var arena_size: usize = ARENA_FIRST;
 
 /// What every block carries, so `free` knows what it was given without being
 /// told. One word, which is the price of not making the caller remember.
@@ -119,8 +131,13 @@ fn take(class: u32, width: usize) ?[*]u8 {
     }
 
     if (arena_left < width) {
-        arena = fromKernel(ARENA) orelse return null;
-        arena_left = ARENA;
+        // Whatever is left of the old arena is abandoned. It is less than one
+        // block of the widest class, and threading it onto a free list would
+        // cost more in bookkeeping than the bytes are worth.
+        arena = fromKernel(arena_size) orelse return null;
+        arena_left = arena_size;
+
+        if (arena_size < ARENA_MAX) arena_size *= 2;
     }
 
     const block = arena;

@@ -349,25 +349,58 @@ var token: u8 = 0;
 // Events, which nothing here waits on yet
 // ---------------------------------------------------------------------------
 
+/// The kernel's own counting events, one syscall each.
+///
+/// A handle is a small number and a handle of zero is standard input, so it is
+/// carried as one more than itself: null would otherwise be indistinguishable
+/// from a valid event.
 export fn uacpi_kernel_create_event() callconv(.c) ?*anyopaque {
-    return &token;
+    const handle = sys.eventCreate();
+    if (handle < 0) return null;
+    return @ptrFromInt(@as(usize, @intCast(handle)) + 1);
 }
-export fn uacpi_kernel_free_event(_: ?*anyopaque) callconv(.c) void {}
-export fn uacpi_kernel_signal_event(_: ?*anyopaque) callconv(.c) void {}
+
+export fn uacpi_kernel_free_event(event: ?*anyopaque) callconv(.c) void {
+    if (handleOf(event)) |handle| _ = sys.close(handle);
+}
+
+export fn uacpi_kernel_signal_event(event: ?*anyopaque) callconv(.c) void {
+    if (handleOf(event)) |handle| _ = sys.eventSignal(handle);
+}
+
+/// A counting event has nothing to reset: an unconsumed signal is a signal
+/// that has not been acted on, and dropping it would lose the news.
 export fn uacpi_kernel_reset_event(_: ?*anyopaque) callconv(.c) void {}
 
-/// Nothing signals these yet, so waiting would be waiting forever. Saying so
-/// at once is the honest answer until the system control interrupt is handled.
-///
-/// What it costs today: the ACPI global lock cannot be waited for, so a method
-/// that needs it while the firmware holds it fails rather than blocking. One
-/// `_STA` on a processor object does this at start-up and is reported. Nothing
-/// this machine needs depends on it, and the fix is the same fix as for the
-/// general-purpose events, which is a handler for the interrupt that signals
-/// them both.
-export fn uacpi_kernel_wait_for_event(_: ?*anyopaque, _: u16) callconv(.c) bool {
-    return false;
+fn handleOf(event: ?*anyopaque) ?u32 {
+    const carried = @intFromPtr(event);
+    return if (carried == 0) null else @intCast(carried - 1);
 }
+
+/// Wait for one, and actually wait.
+///
+/// Returning at once was worse than not waiting at all. uACPI's global lock is
+/// taken in a loop that waits between attempts, so an instant answer turned
+/// "wait for the firmware to release it" into a tight spin that exhausted its
+/// sixty-five thousand attempts in microseconds and gave up, which is what
+/// stopped `_BIF` reading the battery on the target machine.
+///
+/// The wait is capped well below what uACPI asks for. What it asks for is how
+/// long the caller is prepared to be blocked; what this is prepared to be
+/// blocked for is bounded by there being one thread here, and a caller that
+/// gets an early false will ask again.
+export fn uacpi_kernel_wait_for_event(event: ?*anyopaque, millis: u16) callconv(.c) bool {
+    const handle = handleOf(event) orelse return false;
+    const capped: usize = @min(@as(usize, millis), WAIT_MAX_MS);
+    const waiting: usize = capped * 1000;
+
+    return sys.waitMany(&.{handle}, waiting) >= 0;
+}
+
+/// Long enough that the firmware has a chance to finish what it is doing,
+/// short enough that a service does not disappear for a minute if it never
+/// does.
+const WAIT_MAX_MS: usize = 20;
 
 // ---------------------------------------------------------------------------
 // The rest
@@ -390,20 +423,46 @@ export fn uacpi_kernel_handle_firmware_request(_: ?*anyopaque) callconv(.c) u32 
     return Status.ok.value();
 }
 
+/// The system control interrupt, which is how the firmware says anything at
+/// all: a general-purpose event, a lid closing, the global lock being released.
+///
+/// Attached rather than handled here. The line becomes an event the serve loop
+/// waits on beside its channel, and the handler runs there, on the one thread
+/// this process has. Running it in an interrupt context is not available and
+/// would not be wanted: an AML method can take milliseconds.
+pub var sci: Line = .{};
+
+pub const Line = struct {
+    event: u32 = 0,
+    handler: ?*const fn (?*anyopaque) callconv(.c) u32 = null,
+    context: ?*anyopaque = null,
+
+    pub fn attached(self: Line) bool {
+        return self.handler != null and self.event != 0;
+    }
+
+    /// Run what uACPI installed, and tell the kernel the line may fire again.
+    pub fn service(self: Line) void {
+        if (self.handler) |run| _ = run(self.context);
+        _ = sys.irqAck(self.event);
+    }
+};
+
 export fn uacpi_kernel_install_interrupt_handler(
-    _: u32,
-    _: ?*anyopaque,
-    _: ?*anyopaque,
+    irq: u32,
+    handler: ?*const fn (?*anyopaque) callconv(.c) u32,
+    context: ?*anyopaque,
     out_handle: *?*anyopaque,
 ) callconv(.c) u32 {
-    // The system control interrupt is what this is for, and nothing acts on it
-    // yet: the tables load and methods evaluate without it. It arrives with
-    // the general-purpose events.
-    out_handle.* = &token;
+    const attached = sys.irqAttach(irq) catch return Status.not_found.value();
+
+    sci = .{ .event = attached, .handler = handler, .context = context };
+    out_handle.* = @ptrFromInt(@as(usize, attached) + 1);
     return Status.ok.value();
 }
 
 export fn uacpi_kernel_uninstall_interrupt_handler(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) u32 {
+    sci = .{};
     return Status.ok.value();
 }
 
