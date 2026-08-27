@@ -186,6 +186,11 @@ fn standardMax(node: *uacpi.Node) u32 {
 const ASUS_MAX = 15;
 
 fn asusDevice() ?*uacpi.Node {
+    // A unit that stated its features and did not name the panel among them
+    // is believed; one that stated nothing is tried.
+    if (asus.methods()) |claimed| {
+        if (!claimed.panel_brightness) return null;
+    }
     return asus.node() orelse uacpi.firstWith("PBLS");
 }
 

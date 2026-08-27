@@ -47,6 +47,50 @@ pub const Handover = packed struct(u32) {
 
 const TAKEN = Handover{ .wlan = true, .display_switch = true };
 
+/// What `CMSG` answers: which of the vendor's fixed feature list this unit
+/// has. The list is the vendor's and does not vary; which bits are set does,
+/// per model, which is why it is asked rather than assumed.
+pub const Methods = packed struct(u32) {
+    wlan: bool = false,
+    bluetooth: bool = false,
+    irda: bool = false,
+    ieee1394: bool = false,
+    camera: bool = false,
+    tv: bool = false,
+    gps: bool = false,
+    dvd: bool = false,
+    display_switch: bool = false,
+    panel_brightness: bool = false,
+    bios_flash: bool = false,
+    acpi_flash: bool = false,
+    cpu_speed: bool = false,
+    cpu_temperature: bool = false,
+    fan_cpu: bool = false,
+    fan_chassis: bool = false,
+    usb_port_1: bool = false,
+    usb_port_2: bool = false,
+    usb_port_3: bool = false,
+    modem: bool = false,
+    card_reader: bool = false,
+    wwan: bool = false,
+    wimax: bool = false,
+    hwcf: bool = false,
+    lid: bool = false,
+    kind: bool = false,
+    panel_power: bool = false,
+    touchpad: bool = false,
+    _rest: u4 = 0,
+};
+
+/// What the unit said it has, or null while ungreeted or when `CMSG` did not
+/// answer. Null means unknown, not absent: some of these firmwares underclaim,
+/// so an absent answer is treated as permission to try.
+var claimed: ?Methods = null;
+
+pub fn methods() ?Methods {
+    return claimed;
+}
+
 var found: ?*uacpi.Node = null;
 var looked = false;
 
@@ -68,15 +112,15 @@ pub fn greet() void {
         return;
     }
 
-    // What this unit can do, as a mask over the vendor's fixed feature list.
     // Logged because it differs per model and is otherwise only discoverable
     // by calling methods that may not exist.
-    var methods: u64 = 0;
+    var mask: u64 = 0;
     log.begin("platd", .key);
     out.text("vendor firmware greeted");
-    if (uacpi.uacpi_eval_simple_integer(device, "CMSG", &methods) == .ok) {
+    if (uacpi.uacpi_eval_simple_integer(device, "CMSG", &mask) == .ok) {
+        claimed = @bitCast(@as(u32, @truncate(mask)));
         out.text("; control methods 0x");
-        out.hex(@truncate(methods), 4);
+        out.hex(@truncate(mask), 4);
     }
     log.end();
 }
