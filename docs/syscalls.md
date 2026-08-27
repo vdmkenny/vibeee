@@ -122,7 +122,7 @@ Write a line to the kernel log.
 - `EFAULT`, a pointer argument is outside the caller's address space
 - `EINVAL`, an argument is out of range
 
-Separate from write() so diagnostics survive a process losing its console handle. Rate-limited.
+Recorded into the kernel's ring and never printed: display is write()'s business, and a service line reaches the ring even on a quiet boot. The log tool reads the ring back, so what is said here is kept whether or not anyone saw it. Callers gate their own debug lines, which are the ones not worth keeping when nobody asked.
 
 ## `shutdown`  <sub>#8</sub>
 
@@ -896,6 +896,18 @@ Make an open file exactly this long.
 
 Shrinking gives back what is past the new end. Growing only moves the end: the space between is allocated when something writes into it, so a file made large and left alone costs a directory entry and nothing more.
 
+## `quiesce`  <sub>#49</sub>
+
+Flush and unmount everything, and return.
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.power. The half of a shutdown only the kernel can do, for a caller that will finish it: entering a sleep state properly means evaluating the firmware's own methods first, which is an interpreter's job. Nothing is mounted afterwards, so a caller that needs a file should have read it already.
+
 ---
 
-49 calls defined.
+50 calls defined.

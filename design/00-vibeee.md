@@ -7,12 +7,18 @@ Claude under the author's direction. The design decisions recorded here are real
 with real reasoning, and the hardware research is verified against primary sources, but
 nothing here has been audited by a human line by line.
 
-**Implementation status.** This document is the design. What exists today is the M0 set plus part
-of M1, boot chain, memory, interrupts, the O(1) scheduler, syscalls, Ring 3 with per-process
-address spaces and an ELF loader, IPC (channels, events, `/svc`), ATA and FAT behind a mount
-table, the framebuffer console, the i8042 keyboard with switchable layouts, timekeeping, ACPI
-shutdown, and a shell with a set of system tools, listed precisely in [`../README.md`](../README.md). Everything else here is unbuilt.
-Subsystem documents `01`–`11` carry their own status headers.
+**Implementation status.** M0 is complete and M1 is complete. What runs, on QEMU and on
+the target machine: the whole boot chain, memory and interrupts, the O(1) scheduler,
+syscalls, Ring 3 with per-process address spaces and an ELF loader, IPC, ATA and FAT, the
+console and terminal, the window manager and control library with Pad, Monitor, Settings
+and eTerm, keymaps, and the desktop. `platd` exists too, pulled forward from M2: the AML
+interpreter, the embedded controller, hotkeys, battery and backlight all run against the
+real firmware. The GUI app work not yet done (Files/Edit, Calc, Mines) has moved to M3,
+where Draw and View already wait; until then the GUI is exercised by what M1 built. Open
+items: the last part of power off (the machine's final power cut), the settings store
+surviving a reboot, and the M2 hardware services yet to be written (USB, audio,
+networking). Precisely what exists is listed in [`../docs/status.md`](../docs/status.md);
+this document is the design, and the status changes faster than design text.
 
 Companion docs: [`01-boot.md`](01-boot.md) … [`11-userspace.md`](11-userspace.md) hold the
 per-subsystem detail; this document is authoritative where they differ, since it carries later
@@ -625,14 +631,14 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 
 ## 15. Phasing
 
-| Milestone | Content | Runs on |
-|---|---|---|
-| **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU |
-| **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm/Files/Edit, keymaps | **First real-hardware boot** |
-| **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Calc/Monitor/Mines/Settings | Hardware |
-| **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, Draw/View, install-to-SSD, A/B updater, turbo mode | Hardware |
-| **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware |
-| **M5** | Browser experiment (litehtml + quickjs + Zig TLS), explicitly exploratory | Hardware |
+| Milestone | Content | Runs on | State |
+|---|---|---|---|
+| **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU | **Done** |
+| **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm, keymaps | **First real-hardware boot** | **Done** |
+| **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Partial**: platd, Pad, Monitor, Settings done; usbd/sndd/netd left |
+| **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, install-to-SSD, A/B updater, turbo mode, and the GUI apps parked from M1/M2: Files/Edit, Calc, Mines, Draw/View | Hardware | Not started |
+| **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware | Not started |
+| **M5** | Browser experiment (litehtml + quickjs + Zig TLS), explicitly exploratory | Hardware | Not started |
 
 **M1's risk gate, the GMA900 modeset, is cleared**: the target machine runs its panel at native 800x480. It turned out not to need a modeset at all in the sense the risk assumed. Firmware programs the LVDS timing, the clock and the panel's power sequence correctly, and then feeds the pipe a smaller plane stretched by the panel fitter; the driver grows the plane to the timing already running and switches the fitter off, so no clock is ever computed. Nothing in it is specific to this machine, the panel's size being read from the pipe, so a gen3 netbook of another resolution is driven by the same code.
 

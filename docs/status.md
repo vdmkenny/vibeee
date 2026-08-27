@@ -3,8 +3,8 @@
 What exists, file by file. Kept plain on purpose: the design documents say what the system
 is *for*, this says what has actually been written.
 
-**Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
-accurate about what exists; it is not a claim that any of it has been audited.
+The inventory is accurate about what exists; it is not a claim that any of it has been
+audited. See the README for the honest warning.
 
 No counts here: lines, syscalls and tests all change faster than a document can
 follow, and a number that is wrong is worse than one that was never given. Git
@@ -35,14 +35,13 @@ knows when this was last true, and the tree knows how big it is.
 | Handles | [`handle.zig`](../src/kernel/handle.zig) | Per-process table, rights bits, console/file/directory/event/channel/shm. Up to four travel with a channel message. |
 | ELF loading | [`elf.zig`](../src/kernel/elf.zig), [`exec.zig`](../src/kernel/exec.zig) | Static ELF32, sync and detached spawn. |
 | Panic record | [`kernel/panicring.zig`](../src/kernel/panicring.zig) | One page of low memory holding the last panic across a warm reboot, magic and checksum guarded so a page firmware clobbered reads as no record rather than a garbled one. The next boot reports it, puts it in the kernel log and clears it. |
-| Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | An 8 KiB ring of every message, kept whether or not it was printed, so a quiet boot can still be read back with `log`. |
+| Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | A 16 KiB ring of everything said: kernel lines recorded whether or not they were printed, and the services' own lines teed into the same ring through the `log` syscall. `verbose` and `debug` are separate command-line gates (see below); a quiet boot can still be read back in full with `log`, and a `debug` line that was never asked for was never recorded. |
 | Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | What a process may do, intersected at every spawn so an authority only ever shrinks down the tree. Declared per service in `/etc/services`. |
 | Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts: the kernel's handler masks and signals, the driver services the device and acknowledges. `ioport_grant` opens ports through the CPU's own permission bitmap, copied into the TSS only when the process holding it changes. `map_device` maps a register aperture uncached, marked as belonging elsewhere so teardown does not hand device memory to the page allocator. All three need the driver capability. |
 | Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. How the machine is wired is described in `kernel/irq.zig` and filled in by the composition root, so the architecture never reaches for a firmware parser. |
 | Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | Bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
-| Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. |
-| Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
+| Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. || Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
 
 ## Storage
 
@@ -94,8 +93,9 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mv mkdir tree hexdump file grep page free top kill log irq devices display disk mount unmount svc cfg date eeefetch smbios` |
 | `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
 | `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Reads a manifest per driver from `/lib/drivers`, matches it against the bus with an exact part beating a family, and starts it with the capabilities the manifest asks for. Leaves alone anything the kernel already drives. |
+| `platd` | [`user/platd/`](../src/user/platd/) | The platform service: what the BIOS and the embedded controller still own. uACPI interprets the tables in a process with the driver and power capabilities and nothing else. What runs on it: the embedded controller (`ec`), vendor bring-up and quirks (`asus`, `quirks`), battery, backlight, hotkeys, sleep states and power off through the firmware's own methods. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered streams, the heap, paths, colour by role, console shape, config parsing, line editing, completion, time formatting, sysinfo, the process table. |
-| Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over pages the kernel hands out, exposed both as raw calls and as `std.mem.Allocator`. `malloc` is a wrapper over it, not the other way round. |
+| Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over pages the kernel hands out, exposed both as raw calls and as `std.mem.Allocator`. `malloc` is a wrapper over it, not the other way round. Blocks larger than the classes get a whole segment and are recycled through a reuse list rather than let go, so a caller that churns one size pays for the segment once. |
 | Streams | [`user/lib/stream.zig`](../src/user/lib/stream.zig) | Buffered reads and writes over a handle. Standard output is one instance; a C `FILE` is another. |
 | eeelibc | [`user/libc/`](../src/user/libc/) | Enough C for a POSIX program to build and run: crt0, errno, descriptors, the heap, stdio with one formatter and a scanner, strings and ctype, termios, `TIOCGWINSZ`, time. A descriptor is a kernel handle, so there is no table. No `fork`, no asynchronous signals, no sockets, no float conversions. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
@@ -133,13 +133,23 @@ build.
 ## Testing
 
 - `make test`: host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
-  queues, calendar, ring buffer, the terminal emulator and its key encoding, text wrapping
+  queues, calendar, ring buffer, battery arithmetic and its mislabeled-percent correction,
+  command-line flag matching, the terminal emulator and its key encoding, text wrapping
   and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
   across all eight masks.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
 - `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it.
+
+## The boot log
+
+Two command-line gates, and they decide different things. `verbose` shows the boot's
+narration, one line per component and per service as it comes up; `debug` is the tier
+beneath it, for chasing a fault, and is the one kind of line that is not recorded when it
+was never asked for. A quiet boot shows failures and warnings only, and the whole story,
+kernel and services alike, is still in the ring behind `log`, which keeps its own needle
+filter and a `-n` tail.
 
 ## Milestones
 
@@ -149,7 +159,7 @@ Against the table in [design §15](../design/00-vibeee.md).
 scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard and `vsh` are all in
 and exercised on every boot.
 
-**M1 is partial**, and a good deal of it landed early:
+**M1 is nearly complete**, and the gate is met:
 
 | Item | State |
 |---|---|
@@ -160,25 +170,31 @@ and exercised on every boot.
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
 | **GMA900 native modeset** | Done and verified on the machine: gen3 reads the panel's timing from the registers firmware programmed and sets it at boot, reverting if the pipe reports an underrun |
+| **First boot on real hardware** | Done. The machine boots its image from the SD slot and comes up running; what remains below is the polish, not the bring-up |
+| Battery and backlight | Done: `_BIF`/`_BST` through the embedded controller, with this family's mislabeled-percent quirk corrected by vendor in `quirks` and the health figure labelled as the firmware's own word. `_BIF` is read once per session, because spamming it wedged the interpreter into an out-of-memory state that took `_PTS` down with it; a derived rate covers the times the firmware's own is unusable |
 | `eeewm` + `libeui` | Done, and past what M1 asked for |
 | eTerm | Done |
-| Files, Edit | Not started. `kilo` covers editing at a prompt; a GUI editor is still owed |
+| Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |
 | Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
-M1's gate is the first boot on real hardware, which has happened once. A great deal has
-landed since: the console became a terminal, the keyboard became a setting, and C programs
-became buildable. None of that has run on the machine yet, and on this project the machine
-has found what QEMU could not.
+**M1 is complete**: the machine boots the image from its SD slot and runs. What M2 still
+owes is the hardware services (USB, audio, networking) and what M3 owes includes the GUI
+apps parked there.
 
 ## Known gaps
 
 - Nothing written survives a reboot. `/etc` and `/home` are part of the root image, which
   is rebuilt from the boot medium every time, so settings are set for one session only.
   The persistent volume they are meant to mount from does not exist yet.
+- **The final power cut.** Power off reaches `_PTS` and writes the sleep state, the panel
+  goes dark, and the power LED stays on: the transition is not finishing. The causes that
+  made it look finished are gone: the fallback path no longer writes the sleep registers a
+  second time with the raw FADT's values after the service answered, and the kernel's own
+  write preserves SCI_EN and splits SLP_TYP from SLP_EN the way ACPICA does. Every step of
+  a shutdown is now narrated, so the next try says where it stops. What the machine needs
+  after a formed `_S5_` request is still open.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
 - No USB, audio or networking.
-- Powering off hangs on the real machine after the last flush. An instrumented build is in
-  the tree and the line it stops on decides between four causes.
 - No environment: `getenv` answers null, and `HOME` and the program search path are
   constants in the shell.
