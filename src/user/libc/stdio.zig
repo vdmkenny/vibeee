@@ -13,52 +13,29 @@
 
 const errno = @import("errno.zig");
 const heap = @import("ulib").heap;
+const stream_mod = @import("ulib").stream;
+const string = @import("string.zig");
 const unistd = @import("unistd.zig");
+
+const Stream = stream_mod.Stream;
 
 pub const BUFSIZ = 1024;
 pub const EOF: c_int = -1;
 
-const Buffering = enum(u8) {
-    /// Written out when a line ends. What a terminal wants.
-    line,
-    /// Written out when the buffer fills. What a file wants.
-    full,
-    /// Written out immediately. What a diagnostic wants, because a program
-    /// that crashes should not take its last words with it.
-    none,
-};
-
-pub const File = extern struct {
-    fd: c_int,
-    buffer: ?[*]u8,
-    /// How much of the buffer is in use, and where reading has got to in it.
-    used: usize,
-    at: usize,
-    capacity: usize,
-    buffering: Buffering,
-    /// Whether `used` counts bytes waiting to go out or bytes read in. A
-    /// stream does one or the other between flushes, never both.
-    writing: bool,
-    at_end: bool,
-    failed: bool,
+/// A `FILE`, which C only ever holds a pointer to, so it can be whatever
+/// shape suits: a `ulib.stream.Stream` and the two things C asks of a stream
+/// that the stream itself has no opinion about.
+pub const File = struct {
+    stream: Stream,
     /// One character pushed back by `ungetc`, which every parser written in C
     /// expects to be able to do exactly once.
-    pushed: c_int,
+    pushed: c_int = EOF,
+    /// Whether this library allocated the buffer, and therefore owes it back.
+    owns_buffer: bool = false,
 };
 
-fn blank(fd: c_int, buffering: Buffering) File {
-    return .{
-        .fd = fd,
-        .buffer = null,
-        .used = 0,
-        .at = 0,
-        .capacity = 0,
-        .buffering = buffering,
-        .writing = false,
-        .at_end = false,
-        .failed = false,
-        .pushed = EOF,
-    };
+fn blank(fd: c_int, buffering: stream_mod.Buffering) File {
+    return .{ .stream = Stream.init(@intCast(fd), &.{}, buffering) };
 }
 
 var standard_in = blank(0, .line);
@@ -77,17 +54,23 @@ pub fn flushAll() void {
     _ = fflush(stdout);
     _ = fflush(stderr);
     for (open_files) |entry| {
-        if (entry) |stream| _ = fflush(stream);
+        if (entry) |file| _ = fflush(file);
     }
 }
 
-fn ensureBuffer(stream: *File) bool {
-    if (stream.buffer != null) return true;
-    if (stream.buffering == .none) return false;
+/// Give the stream a buffer, on the first use that needs one.
+///
+/// Lazily, so a program that opens files it never reads pays nothing for them,
+/// and a kilobyte rather than the eight most libraries use: on a machine with
+/// 512 MB shared between everything, twenty open files should not be 160 KB
+/// nobody has written to.
+fn ensureBuffer(file: *File) bool {
+    if (file.stream.buffer.len > 0) return true;
+    if (file.stream.buffering == .none) return false;
 
-    const block = heap.alloc(BUFSIZ) orelse return false;
-    stream.buffer = @ptrCast(block);
-    stream.capacity = BUFSIZ;
+    const block: [*]u8 = @ptrCast(heap.alloc(BUFSIZ) orelse return false);
+    file.stream.buffer = block[0..BUFSIZ];
+    file.owns_buffer = true;
     return true;
 }
 
@@ -139,34 +122,34 @@ fn adopt(fd: c_int) ?*File {
         return null;
     };
 
-    const stream: *File = @alignCast(@ptrCast(block));
-    stream.* = blank(fd, if (unistd.isatty(fd) != 0) .line else .full);
+    const file: *File = @alignCast(@ptrCast(block));
+    file.* = blank(fd, if (unistd.isatty(fd) != 0) .line else .full);
 
     for (&open_files) |*slot| {
         if (slot.* == null) {
-            slot.* = stream;
+            slot.* = file;
             break;
         }
     }
-    return stream;
+    return file;
 }
 
-export fn fclose(stream: *File) callconv(.c) c_int {
-    const result = fflush(stream);
-    _ = unistd.close(stream.fd);
+export fn fclose(file: *File) callconv(.c) c_int {
+    const result = fflush(file);
+    _ = unistd.close(@intCast(file.stream.handle));
 
     for (&open_files) |*slot| {
-        if (slot.* == stream) slot.* = null;
+        if (slot.* == file) slot.* = null;
     }
-    if (stream.buffer) |buffer| heap.release(buffer);
-    heap.release(stream);
+    if (file.owns_buffer) heap.release(file.stream.buffer.ptr);
+    heap.release(file);
     return result;
 }
 
-export fn setvbuf(stream: *File, buffer: ?[*]u8, mode: c_int, size: usize) callconv(.c) c_int {
+export fn setvbuf(file: *File, buffer: ?[*]u8, mode: c_int, size: usize) callconv(.c) c_int {
     _ = buffer;
     _ = size;
-    stream.buffering = switch (mode) {
+    file.stream.buffering = switch (mode) {
         0 => .full,
         1 => .line,
         else => .none,
@@ -178,65 +161,37 @@ export fn setvbuf(stream: *File, buffer: ?[*]u8, mode: c_int, size: usize) callc
 // Writing
 // ---------------------------------------------------------------------------
 
-pub export fn fflush(stream: ?*File) callconv(.c) c_int {
-    const target = stream orelse {
+pub export fn fflush(file: ?*File) callconv(.c) c_int {
+    const target = file orelse {
         flushAll();
         return 0;
     };
-    if (!target.writing or target.used == 0) return 0;
-
-    const buffer = target.buffer orelse return 0;
-    const written = unistd.write(target.fd, buffer, target.used);
-    target.used = 0;
-
-    if (written < 0) {
-        target.failed = true;
-        return EOF;
-    }
-    return 0;
+    target.stream.flush();
+    return if (target.stream.failed) EOF else 0;
 }
 
-fn put(stream: *File, byte: u8) void {
-    // A stream that was reading has to forget what it read before it writes:
-    // the buffer holds one thing at a time.
-    if (!stream.writing) {
-        stream.used = 0;
-        stream.at = 0;
-        stream.writing = true;
-    }
-
-    if (stream.buffering == .none or !ensureBuffer(stream)) {
-        var one = [_]u8{byte};
-        if (unistd.write(stream.fd, &one, 1) < 0) stream.failed = true;
-        return;
-    }
-
-    const buffer = stream.buffer.?;
-    buffer[stream.used] = byte;
-    stream.used += 1;
-
-    if (stream.used == stream.capacity or (stream.buffering == .line and byte == '\n')) {
-        _ = fflush(stream);
-    }
+fn put(file: *File, byte: u8) void {
+    _ = ensureBuffer(file);
+    file.stream.writeByte(byte);
 }
 
-pub export fn fputc(byte: c_int, stream: *File) callconv(.c) c_int {
-    put(stream, @truncate(@as(c_uint, @bitCast(byte))));
-    return if (stream.failed) EOF else byte;
+pub export fn fputc(byte: c_int, file: *File) callconv(.c) c_int {
+    put(file, @truncate(@as(c_uint, @bitCast(byte))));
+    return if (file.stream.failed) EOF else byte;
 }
 
-export fn putc(byte: c_int, stream: *File) callconv(.c) c_int {
-    return fputc(byte, stream);
+export fn putc(byte: c_int, file: *File) callconv(.c) c_int {
+    return fputc(byte, file);
 }
 
 export fn putchar(byte: c_int) callconv(.c) c_int {
     return fputc(byte, stdout);
 }
 
-pub export fn fputs(text: [*:0]const u8, stream: *File) callconv(.c) c_int {
-    var i: usize = 0;
-    while (text[i] != 0) : (i += 1) put(stream, text[i]);
-    return if (stream.failed) EOF else 0;
+pub export fn fputs(text: [*:0]const u8, file: *File) callconv(.c) c_int {
+    _ = ensureBuffer(file);
+    file.stream.write(string.spanOf(text));
+    return if (file.stream.failed) EOF else 0;
 }
 
 /// The one that adds a newline, which is the difference between it and
@@ -244,13 +199,13 @@ pub export fn fputs(text: [*:0]const u8, stream: *File) callconv(.c) c_int {
 export fn puts(text: [*:0]const u8) callconv(.c) c_int {
     _ = fputs(text, stdout);
     put(stdout, '\n');
-    return if (stdout.failed) EOF else 0;
+    return if (stdout.stream.failed) EOF else 0;
 }
 
-export fn fwrite(source: [*]const u8, size: usize, count: usize, stream: *File) callconv(.c) usize {
-    const total = size * count;
-    for (0..total) |i| put(stream, source[i]);
-    if (stream.failed or size == 0) return 0;
+export fn fwrite(source: [*]const u8, size: usize, count: usize, file: *File) callconv(.c) usize {
+    _ = ensureBuffer(file);
+    file.stream.write(source[0 .. size * count]);
+    if (file.stream.failed or size == 0) return 0;
     return count;
 }
 
@@ -258,62 +213,39 @@ export fn fwrite(source: [*]const u8, size: usize, count: usize, stream: *File) 
 // Reading
 // ---------------------------------------------------------------------------
 
-fn fill(stream: *File) bool {
-    if (!ensureBuffer(stream)) return false;
-
-    const buffer = stream.buffer.?;
-    const n = unistd.read(stream.fd, buffer, stream.capacity);
-    if (n <= 0) {
-        if (n == 0) stream.at_end = true else stream.failed = true;
-        return false;
-    }
-
-    stream.used = @intCast(n);
-    stream.at = 0;
-    return true;
-}
-
-pub export fn fgetc(stream: *File) callconv(.c) c_int {
-    if (stream.pushed != EOF) {
-        const back = stream.pushed;
-        stream.pushed = EOF;
+pub export fn fgetc(file: *File) callconv(.c) c_int {
+    if (file.pushed != EOF) {
+        const back = file.pushed;
+        file.pushed = EOF;
         return back;
     }
 
-    if (stream.writing) {
-        _ = fflush(stream);
-        stream.writing = false;
-    }
-
-    if (stream.at == stream.used and !fill(stream)) return EOF;
-
-    const byte = stream.buffer.?[stream.at];
-    stream.at += 1;
-    return byte;
+    _ = ensureBuffer(file);
+    return file.stream.readByte() orelse EOF;
 }
 
-export fn getc(stream: *File) callconv(.c) c_int {
-    return fgetc(stream);
+export fn getc(file: *File) callconv(.c) c_int {
+    return fgetc(file);
 }
 
 export fn getchar() callconv(.c) c_int {
     return fgetc(stdin);
 }
 
-export fn ungetc(byte: c_int, stream: *File) callconv(.c) c_int {
+export fn ungetc(byte: c_int, file: *File) callconv(.c) c_int {
     if (byte == EOF) return EOF;
-    stream.pushed = byte;
-    stream.at_end = false;
+    file.pushed = byte;
+    file.stream.at_end = false;
     return byte;
 }
 
-export fn fgets(into: [*]u8, size: c_int, stream: *File) callconv(.c) ?[*]u8 {
+export fn fgets(into: [*]u8, size: c_int, file: *File) callconv(.c) ?[*]u8 {
     if (size <= 0) return null;
 
     const limit: usize = @intCast(size - 1);
     var n: usize = 0;
     while (n < limit) {
-        const byte = fgetc(stream);
+        const byte = fgetc(file);
         if (byte == EOF) break;
 
         into[n] = @truncate(@as(c_uint, @bitCast(byte)));
@@ -330,15 +262,13 @@ export fn fgets(into: [*]u8, size: c_int, stream: *File) callconv(.c) ?[*]u8 {
 ///
 /// The one function in this library that allocates on the caller's behalf and
 /// hands the result back, which is why it takes the buffer and its capacity by
-/// pointer: it may replace both.
-///
-/// A first call with a null buffer starts from nothing, which is how every
-/// program that uses this is written.
-export fn getline(into: *?[*]u8, capacity: *usize, stream: *File) callconv(.c) isize {
-    return getdelim(into, capacity, '\n', stream);
+/// pointer: it may replace both. A first call with a null buffer starts from
+/// nothing, which is how every program that uses this is written.
+export fn getline(into: *?[*]u8, capacity: *usize, file: *File) callconv(.c) isize {
+    return getdelim(into, capacity, '\n', file);
 }
 
-export fn getdelim(into: *?[*]u8, capacity: *usize, delimiter: c_int, stream: *File) callconv(.c) isize {
+export fn getdelim(into: *?[*]u8, capacity: *usize, delimiter: c_int, file: *File) callconv(.c) isize {
     var buffer = into.* orelse blk: {
         const start: [*]u8 = @ptrCast(heap.alloc(GETLINE_START) orelse return -1);
         capacity.* = GETLINE_START;
@@ -347,15 +277,14 @@ export fn getdelim(into: *?[*]u8, capacity: *usize, delimiter: c_int, stream: *F
 
     var n: usize = 0;
     while (true) {
-        const byte = fgetc(stream);
+        const byte = fgetc(file);
         if (byte == EOF) break;
 
         // One spare for the terminator, always: a line exactly as long as the
         // buffer still has to end with one.
         if (n + 1 >= capacity.*) {
             const wider = capacity.* * 2;
-            const grown: [*]u8 = @ptrCast(heap.resize(buffer, wider) orelse return -1);
-            buffer = grown;
+            buffer = @ptrCast(heap.resize(buffer, wider) orelse return -1);
             capacity.* = wider;
         }
 
@@ -376,14 +305,9 @@ export fn getdelim(into: *?[*]u8, capacity: *usize, delimiter: c_int, stream: *F
 /// character.
 const GETLINE_START = 128;
 
-export fn fread(into: [*]u8, size: usize, count: usize, stream: *File) callconv(.c) usize {
-    const total = size * count;
-    var n: usize = 0;
-    while (n < total) : (n += 1) {
-        const byte = fgetc(stream);
-        if (byte == EOF) break;
-        into[n] = @truncate(@as(c_uint, @bitCast(byte)));
-    }
+export fn fread(into: [*]u8, size: usize, count: usize, file: *File) callconv(.c) usize {
+    _ = ensureBuffer(file);
+    const n = file.stream.read(into[0 .. size * count]);
     return if (size == 0) 0 else n / size;
 }
 
@@ -391,46 +315,47 @@ export fn fread(into: [*]u8, size: usize, count: usize, stream: *File) callconv(
 // Position and state
 // ---------------------------------------------------------------------------
 
-export fn fseek(stream: *File, offset: c_long, whence: c_int) callconv(.c) c_int {
-    _ = fflush(stream);
-    stream.at = 0;
-    stream.used = 0;
-    stream.at_end = false;
-    stream.pushed = EOF;
+export fn fseek(file: *File, offset: c_long, whence: c_int) callconv(.c) c_int {
+    file.stream.flush();
+    file.stream.at = 0;
+    file.stream.used = 0;
+    file.stream.at_end = false;
+    file.pushed = EOF;
 
-    return if (unistd.lseek(stream.fd, offset, whence) < 0) EOF else 0;
+    return if (unistd.lseek(@intCast(file.stream.handle), offset, whence) < 0) EOF else 0;
 }
 
-export fn ftell(stream: *File) callconv(.c) c_long {
-    _ = fflush(stream);
-    const at = unistd.lseek(stream.fd, 0, unistd.SEEK_CUR);
+export fn ftell(file: *File) callconv(.c) c_long {
+    file.stream.flush();
+
+    const at = unistd.lseek(@intCast(file.stream.handle), 0, unistd.SEEK_CUR);
     if (at < 0) return -1;
 
     // What is still in the buffer has been read from the descriptor but not
     // handed to the caller, so the caller is that much behind.
-    return at - @as(c_long, @intCast(stream.used - stream.at));
+    return at - @as(c_long, @intCast(file.stream.used - file.stream.at));
 }
 
-export fn rewind(stream: *File) callconv(.c) void {
-    _ = fseek(stream, 0, unistd.SEEK_SET);
-    stream.failed = false;
+export fn rewind(file: *File) callconv(.c) void {
+    _ = fseek(file, 0, unistd.SEEK_SET);
+    file.stream.failed = false;
 }
 
-export fn feof(stream: *File) callconv(.c) c_int {
-    return if (stream.at_end) 1 else 0;
+export fn feof(file: *File) callconv(.c) c_int {
+    return if (file.stream.at_end) 1 else 0;
 }
 
-export fn ferror(stream: *File) callconv(.c) c_int {
-    return if (stream.failed) 1 else 0;
+export fn ferror(file: *File) callconv(.c) c_int {
+    return if (file.stream.failed) 1 else 0;
 }
 
-export fn clearerr(stream: *File) callconv(.c) void {
-    stream.failed = false;
-    stream.at_end = false;
+export fn clearerr(file: *File) callconv(.c) void {
+    file.stream.failed = false;
+    file.stream.at_end = false;
 }
 
-export fn fileno(stream: *File) callconv(.c) c_int {
-    return stream.fd;
+export fn fileno(file: *File) callconv(.c) c_int {
+    return @intCast(file.stream.handle);
 }
 
 export fn perror(prefix: ?[*:0]const u8) callconv(.c) void {

@@ -185,27 +185,45 @@ pub fn stripIndent(text: []const u8) struct { text: []const u8, indented: bool }
     return .{ .text = rest, .indented = rest.len != text.len };
 }
 
-/// Write `value` as decimal into `buf`, returning how many bytes were used.
+pub const Case = enum { lower, upper };
+
+const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+/// `value` in `base`, written into the tail of `buf` and returned as the slice
+/// it occupies.
 ///
-/// Here rather than in `out.zig` because a caller that wants a number in a
-/// buffer should not have to route it through the output stream to get one.
+/// The one place a number becomes digits. Backwards from the end because
+/// digits come out least significant first, so writing forward would mean
+/// generating them and then reversing them.
+pub fn number(buf: []u8, value: usize, base: u8, case: Case) []const u8 {
+    if (buf.len == 0) return buf[0..0];
+
+    var at = buf.len;
+    var left = value;
+    while (true) {
+        at -= 1;
+        const digit = ALPHABET[@intCast(left % base)];
+        buf[at] = if (case == .upper) upperOf(digit) else digit;
+
+        left /= base;
+        if (left == 0 or at == 0) break;
+    }
+    return buf[at..];
+}
+
+fn upperOf(c: u8) u8 {
+    return if (c >= 'a' and c <= 'z') c - 32 else c;
+}
+
+/// The same in base ten, written from the *start* of `buf`, for a caller
+/// building a string forward. Returns how many bytes it used.
 pub fn decimal(buf: []u8, value: usize) usize {
-    var digits: [20]u8 = undefined;
-    var n: usize = 0;
-    var v = value;
+    var scratch: [24]u8 = undefined;
+    const written = number(&scratch, value, 10, .lower);
 
-    if (v == 0) {
-        digits[0] = '0';
-        n = 1;
-    }
-    while (v > 0) : (v /= 10) {
-        digits[n] = '0' + @as(u8, @intCast(v % 10));
-        n += 1;
-    }
-
-    const written = @min(n, buf.len);
-    for (0..written) |i| buf[i] = digits[n - 1 - i];
-    return written;
+    const n = @min(written.len, buf.len);
+    @memcpy(buf[0..n], written[0..n]);
+    return n;
 }
 
 /// Whether a short name is stored upper-cased because FAT had nowhere to record

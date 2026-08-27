@@ -1,24 +1,29 @@
-//! Buffered output.
+//! Standard output: one buffered stream, and the shorthands for writing to it.
 //!
-//! Every write is a syscall, so emitting a report a character at a time would
-//! cost thousands of traps. Buffering into one write per line keeps a full
-//! system report to a couple of dozen.
+//! The buffering is `ulib.stream`'s, because a stream to standard output and a
+//! stream to a file are the same thing pointed at different handles. What is
+//! here is the part that is specific to *this* stream: that there is one of
+//! it, that a program need not carry it around to write a line, and that the
+//! shell can point it somewhere else.
+//!
+//! The buffer is static because this stream exists before a program has had a
+//! chance to allocate anything: the first thing many of them do is print.
 
 const str = @import("lib").str;
+const stream_mod = @import("stream.zig");
 const sys = @import("sys");
 
-var buffer: [1024]u8 = [_]u8{0} ** 1024;
-var used: usize = 0;
+var buffer: [1024]u8 = @splat(0);
+var standard = stream_mod.Stream.init(sys.STDOUT, &buffer, .line);
 
-/// Where flushed bytes go. Standard output unless something has redirected it,
-/// which is how the shell sends a command's output to a file without the
-/// command knowing: a builtin writes through this the same way either way.
-var sink: u32 = sys.STDOUT;
+/// The stream itself, for a caller that wants to hand it somewhere expecting
+/// one rather than call through the shorthands below.
+pub fn stream() *stream_mod.Stream {
+    return &standard;
+}
 
 pub fn flush() void {
-    if (used == 0) return;
-    _ = sys.write(sink, buffer[0..used]);
-    used = 0;
+    standard.flush();
 }
 
 /// Send everything after this point to `handle`.
@@ -27,55 +32,18 @@ pub fn flush() void {
 /// and letting them follow the switch would put the tail of one command's
 /// output into another's file.
 pub fn redirectTo(handle: u32) void {
-    flush();
-    sink = handle;
+    standard.flush();
+    standard.handle = handle;
 }
 
-/// Append bytes, flushing when the buffer fills or a line completes.
-///
-/// Copies in runs rather than byte at a time: the common case is a whole word
-/// or line with no newline in it, and a per-byte loop makes every string cost
-/// its length in branches.
 pub fn text(s: []const u8) void {
-    text_(s);
-}
-
-fn text_(s: []const u8) void {
-    var rest = s;
-    while (rest.len > 0) {
-        const space = buffer.len - used;
-        if (space == 0) {
-            flush();
-            continue;
-        }
-
-        // Copy up to and including the next newline, so line-buffering still
-        // holds without inspecting each byte twice.
-        var take = @min(rest.len, space);
-        var newline = false;
-        for (rest[0..take], 0..) |c, i| {
-            if (c == '\n') {
-                take = i + 1;
-                newline = true;
-                break;
-            }
-        }
-
-        @memcpy(buffer[used..][0..take], rest[0..take]);
-        used += take;
-        rest = rest[take..];
-
-        if (newline) flush();
-    }
+    standard.write(s);
 }
 
 /// Append a single byte. Cheaper than `text` for the one-character case, which
 /// hexdump does thousands of times.
 pub fn byte(c: u8) void {
-    if (used == buffer.len) flush();
-    buffer[used] = c;
-    used += 1;
-    if (c == '\n') flush();
+    standard.writeByte(c);
 }
 
 /// Write `s` padded to `width`, for aligned columns.
@@ -93,30 +61,20 @@ pub fn padNumber(value: usize, width: usize) void {
 }
 
 pub fn decimal(value: usize) void {
-    var buf: [20]u8 = [_]u8{0} ** 20;
-    var i = buf.len;
-    var v = value;
-    if (v == 0) {
-        i -= 1;
-        buf[i] = '0';
-    }
-    while (v > 0) : (v /= 10) {
-        i -= 1;
-        buf[i] = '0' + @as(u8, @intCast(v % 10));
-    }
-    text(buf[i..]);
+    var buf: [24]u8 = undefined;
+    text(str.number(&buf, value, 10, .lower));
 }
 
-const HEX_DIGITS = "0123456789abcdef";
-
+/// Exactly `digits` hex digits, zero-filled. Fixed width rather than minimal,
+/// because what this is for is addresses and registers, where the width is
+/// what makes a column of them readable.
 pub fn hex(value: usize, digits: usize) void {
-    var buf: [16]u8 = [_]u8{0} ** 16;
-    const n = @min(digits, buf.len);
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        buf[i] = HEX_DIGITS[(value >> @intCast((n - 1 - i) * 4)) & 0xF];
-    }
-    text(buf[0..n]);
+    var buf: [24]u8 = undefined;
+    const written = str.number(&buf, value, 16, .lower);
+
+    var leading = digits -| written.len;
+    while (leading > 0) : (leading -= 1) byte('0');
+    text(written);
 }
 
 /// Write `value` right-aligned in `width` columns. Used for size columns,

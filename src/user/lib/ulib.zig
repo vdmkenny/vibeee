@@ -14,6 +14,7 @@ pub const edit = @import("edit.zig");
 pub const info = @import("info.zig");
 pub const ink = @import("ink.zig");
 pub const out = @import("out.zig");
+pub const stream = @import("stream.zig");
 pub const paths = @import("paths.zig");
 pub const procs = @import("procs.zig");
 /// Strings, one layer down: they are pure computation, so the toolkit and the

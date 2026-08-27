@@ -10,6 +10,7 @@
 //! buffer was too small, so it is counted whether or not it was written.
 
 const stdio = @import("stdio.zig");
+const str = @import("lib").str;
 
 /// A stream. Counts what it hands over so the two destinations answer the
 /// same question.
@@ -211,20 +212,9 @@ fn unsigned(out: anytype, value: c_ulong, spec: *Spec, base: u8, upper: bool) vo
     padded(out, decimal(&digits, value, base, upper), spec, prefix, .number);
 }
 
-/// The digits, written backwards into the end of `into` and returned as the
-/// slice they occupy.
+/// The digits, from the one place that turns a number into them.
 fn decimal(into: *[24]u8, value: c_ulong, base: u8, upper: bool) []const u8 {
-    const alphabet = if (upper) "0123456789ABCDEF" else "0123456789abcdef";
-
-    var at: usize = into.len;
-    var left = value;
-    while (true) {
-        at -= 1;
-        into[at] = alphabet[@intCast(left % base)];
-        left /= base;
-        if (left == 0) break;
-    }
-    return into[at..];
+    return str.number(into, @intCast(value), base, if (upper) .upper else .lower);
 }
 
 /// Lay a converted value out: the sign or prefix, then the padding, then the
