@@ -363,9 +363,19 @@ an install seeds the persistent volume with.
 | `/etc`, `/home` | FAT32 partition of the boot medium, when installed | metadata ≤1 s, data ≤5 s |
 | `/media/*` | FAT on any removable volume found | metadata ≤1 s; unmounted on "safe remove" |
 
-Described by `/etc/fstab`, read from the image's copy before anything is
-mounted over it, so the file that says what to mount is never the thing waiting
-to be mounted.
+The kernel attaches the root and whatever it finds under `/media`. Everything
+else is userspace's to decide, through `mount` and `unmount`, which need
+`Caps.mount`: attaching a volume changes what every path in the system means,
+which is a different power from reading a disk and is not one a driver has.
+
+A volume is named rather than addressed. `mount hd0p1 /tmp/card` takes the name
+`disk` lists, because the name is what a person can see and a path to a device
+is a thing this system does not have.
+
+`/etc/fstab` will say what to attach at boot, read from the image's copy before
+anything is mounted over it, so the file that says what to mount is never the
+thing waiting to be mounted. Not yet written: nothing persistent exists for it
+to describe.
 
 Global events: `sync()` flushes every mount. Shutdown, suspend and
 battery-critical force one. Clean shutdown: stop programs, sync, unmount.

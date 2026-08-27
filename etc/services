@@ -34,4 +34,4 @@ restart = always
 # Everything a session needs and nothing a driver needs: the shell, the
 # desktop and every program either of them starts are all below this line, so
 # none of them can take an interrupt line or map a device.
-caps    = spawn,kill,power,display
+caps    = spawn,kill,power,display,mount

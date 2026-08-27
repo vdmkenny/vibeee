@@ -78,7 +78,7 @@ fn unmountAll() void {
         for (vfs.list()) |*m| {
             if (!m.in_use or m.path().len != depth) continue;
 
-            vfs.umount(m.path()) catch |err| {
+            vfs.unmount(m.path()) catch |err| {
                 console.warn("shutdown: {s} did not unmount: {s}", .{ m.path(), @errorName(err) });
                 remaining += 1;
             };

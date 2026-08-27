@@ -19,6 +19,7 @@ const klog = @import("klog.zig");
 const page = @import("page.zig");
 const status = @import("status.zig");
 const tree = @import("tree.zig");
+const volumes = @import("volumes.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
@@ -50,6 +51,8 @@ pub const commands = [_]Command{
     .{ .name = "cfg", .summary = "read and change system settings", .run = &cfg.run },
     .{ .name = "svc", .summary = "list registered services", .run = &status.services },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
+    .{ .name = "mount", .summary = "attach a volume at a path", .run = &volumes.mount },
+    .{ .name = "unmount", .summary = "detach a volume, flushing it first", .run = &volumes.unmount },
     .{ .name = "date", .summary = "show the wall-clock time", .run = &date.run },
     .{ .name = "eeefetch", .summary = "show system information", .run = &eeefetch.run },
     .{ .name = "smbios", .summary = "decode the firmware DMI tables", .run = &smbios.run },

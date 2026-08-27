@@ -354,6 +354,23 @@ pub fn exit(status: usize) noreturn {
 // IPC
 // ---------------------------------------------------------------------------
 
+/// Attach a volume at a path.
+pub fn mount(device: []const u8, path: []const u8, flags: abi.MountFlags) isize {
+    return syscall5(
+        abi.number("mount"),
+        @intFromPtr(device.ptr),
+        device.len,
+        @intFromPtr(path.ptr),
+        path.len,
+        @as(u32, @bitCast(flags)),
+    );
+}
+
+/// Detach the volume at a path, flushing it first.
+pub fn unmount(path: []const u8) isize {
+    return syscall2(abi.number("unmount"), @intFromPtr(path.ptr), path.len);
+}
+
 /// Choose which keyboard layout the keys mean.
 pub fn setKeymap(layout: keymaps.Name) isize {
     return syscall1(abi.number("set_keymap"), @intFromEnum(layout));
@@ -479,6 +496,10 @@ pub fn pointerRead(buf: []PointerEvent, timeout_us: usize) []PointerEvent {
 pub const MapFlags = abi.MapFlags;
 pub const DisplayInfo = abi.DisplayInfo;
 pub const KeyEvent = abi.KeyEvent;
+pub const MountFlags = abi.MountFlags;
+
+/// Why a syscall said no, for a tool that has to tell somebody.
+pub const reasonFor = abi.reasonFor;
 pub const KeyCode = abi.KeyCode;
 pub const Modifiers = abi.Modifiers;
 

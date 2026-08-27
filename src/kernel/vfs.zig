@@ -38,6 +38,9 @@ pub const Mount = struct {
     /// Removable media may vanish without warning; the flag drives whether an
     /// unmount is expected to be able to flush.
     removable: bool = false,
+    /// Refuse writes to this mount whatever the device would allow. For a
+    /// volume being inspected rather than used.
+    read_only: bool = false,
     in_use: bool = false,
     /// Open file count. Unmounting with files open would leave userspace
     /// holding handles to a volume that no longer exists.
@@ -75,6 +78,7 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
         m.volume = volume;
         m.device = dev;
         m.removable = removable;
+        m.read_only = false;
         m.open_files = 0;
         m.in_use = true;
         return m;
@@ -86,7 +90,7 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
 ///
 /// Flushing before detaching is the point: FAT has no journal, so anything the
 /// device is still holding is lost if the medium goes away first.
-pub fn umount(path: []const u8) Error!void {
+pub fn unmount(path: []const u8) Error!void {
     for (&mounts) |*m| {
         if (!m.in_use or !std.mem.eql(u8, m.path(), path)) continue;
         if (m.open_files > 0) return error.Busy;
@@ -213,7 +217,7 @@ pub fn readAt(m: *Mount, entry: fat.Entry, offset: u64, buf: []u8) Error!usize {
 /// backed by a device that cannot write. Checking here means every write path
 /// gets the check rather than each remembering to.
 fn requireWritable(m: *Mount) Error!void {
-    if (m.device.read_only) return error.ReadOnly;
+    if (m.read_only or m.device.read_only) return error.ReadOnly;
 }
 
 /// Split a path into the directory holding it and the final component.

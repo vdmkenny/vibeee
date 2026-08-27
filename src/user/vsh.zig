@@ -163,6 +163,8 @@ const completion = [_]complete.Source{
     .{ .offer = &offerCommands },
     .{ .command = "cd", .offer = &offerDirectories },
     .{ .command = "cfg", .offer = &cfg.offer },
+    .{ .command = "mount", .offer = &offerDirectories },
+    .{ .command = "unmount", .offer = &offerDirectories },
     .{ .command = "display", .offer = &offerSubcommands },
     .{ .command = "cat", .offer = &offerFiles },
     .{ .command = "page", .offer = &offerFiles },

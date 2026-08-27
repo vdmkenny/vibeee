@@ -94,7 +94,45 @@ pub const Errno = enum(i32) {
     pub fn value(self: Errno) i32 {
         return -@as(i32, @intFromEnum(self));
     }
+
+    /// The error a syscall result names, or null when it succeeded.
+    pub fn of(result: isize) ?Errno {
+        if (result >= 0) return null;
+        return std.enums.fromInt(Errno, -result);
+    }
+
+    /// What it means, for a person reading a tool's output.
+    ///
+    /// Separate from the `when` lines in the table below, which explain to
+    /// somebody writing against a call what that particular call means by an
+    /// error. This is what a tool prints when something did not work, and the
+    /// two are different sentences for different readers.
+    pub fn reason(self: Errno) []const u8 {
+        return switch (self) {
+            .perm => "not allowed",
+            .noent => "no such file or directory",
+            .io => "the device failed",
+            .badf => "no such handle",
+            .nomem => "out of room",
+            .fault => "bad address",
+            .inval => "not a value that takes",
+            .exists => "already there",
+            .child => "no such child",
+            .busy => "in use",
+            .nospace => "the volume is full",
+            .pipe => "the other end has closed",
+            .nosys => "no such call",
+            .timedout => "timed out",
+        };
+    }
 };
+
+/// What a syscall result says went wrong, in words. Empty for a success, so a
+/// caller that got one has nothing to print.
+pub fn reasonFor(result: isize) []const u8 {
+    const err = Errno.of(result) orelse return "";
+    return err.reason();
+}
 
 const E = struct {
     const badf = Err{ .name = "EBADF", .when = "the handle is not open in this process" };
@@ -446,7 +484,11 @@ pub const Caps = packed struct(u32) {
     kill: bool = false,
     /// May power the machine off or restart it.
     power: bool = false,
-    _reserved: u27 = 0,
+    /// May attach and detach volumes. Separate from `driver` because reading a
+    /// disk and deciding what a path means are different powers: a driver
+    /// serves blocks and has no business changing the namespace above it.
+    mount: bool = false,
+    _reserved: u26 = 0,
 
     /// Everything. What the first process starts with, and what a spawn asks
     /// for when it wants the child to keep whatever the parent had.
@@ -512,6 +554,16 @@ pub const Watchable = enum(u32) {
     pointer = 1,
     /// A child of this process exited, so `wait` has something to collect.
     children = 2,
+};
+
+/// How a volume is attached.
+pub const MountFlags = packed struct(u32) {
+    /// Refuse every write. For a volume being inspected rather than used.
+    read_only: bool = false,
+    /// The medium may leave without warning, which changes what an unmount is
+    /// entitled to expect of it.
+    removable: bool = false,
+    _reserved: u30 = 0,
 };
 
 pub const TtyMode = enum(u32) {
@@ -1184,6 +1236,34 @@ pub const table = [_]Syscall{
             "same list, so the number crossing here means the same layout on both sides. " ++
             "There is no call to read it back: the setting is where it is written down and " ++
             "reading the file is reading the answer.",
+    },
+    .{
+        .number = 46,
+        .name = "mount",
+        .summary = "Attach a volume at a path.",
+        .args = &.{
+            .{ .name = "device", .kind = .cptr, .desc = "Volume name, as `disk` lists it." },
+            .{ .name = "device_len", .kind = .len, .desc = "Length of the name." },
+            .{ .name = "path", .kind = .cptr, .desc = "Where it goes. Must exist as a directory of the mount above it." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+            .{ .name = "flags", .kind = .flags, .desc = "MountFlags: bit 0 read-only, bit 1 removable." },
+        },
+        .errors = &.{ E.fault, E.noent, E.exists, E.inval, E.nomem, E.perm },
+        .notes = "Requires Caps.mount. The longest mount path matching a lookup wins, so a " ++
+            "volume attached deeper shadows what the one above it had there.",
+    },
+    .{
+        .number = 47,
+        .name = "unmount",
+        .summary = "Detach the volume at a path, flushing it first.",
+        .args = &.{
+            .{ .name = "path", .kind = .cptr, .desc = "A mount point, exactly as it was mounted." },
+            .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
+        },
+        .errors = &.{ E.fault, E.noent, E.busy, E.perm },
+        .notes = "Requires Caps.mount. Refused while anything on the volume is open, because " ++
+            "a handle to a volume that no longer exists has no answer to give. FAT has no " ++
+            "journal, so the flush is the only thing that puts written data on the medium.",
     },
 };
 

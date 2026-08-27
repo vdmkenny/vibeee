@@ -7,6 +7,7 @@ const ctx = @import("context.zig");
 const fat = @import("../fat.zig");
 const handles = @import("../handle.zig");
 const path_mod = @import("../path.zig");
+const block = @import("../block.zig");
 const vfs = @import("../vfs.zig");
 
 const Args = ctx.Args;
@@ -95,8 +96,11 @@ pub fn sys_open(a: Args) Result {
 /// being told ENOENT for a full disk.
 fn errnoFor(err: anyerror) Result {
     return switch (err) {
-        error.NotFound => Errno.noent.value(),
-        error.Exists => Errno.exists.value(),
+        error.NotFound, error.NotMounted => Errno.noent.value(),
+        error.Exists, error.AlreadyMounted => Errno.exists.value(),
+        error.Busy => Errno.busy.value(),
+        error.TableFull => Errno.nomem.value(),
+        error.NotFat, error.Unsupported => Errno.inval.value(),
         error.ReadOnly => Errno.perm.value(),
         error.NoSpace => Errno.nospace.value(),
         error.IsDirectory, error.NotDirectory, error.BadPath, error.NameTooLong, error.CrossDevice => Errno.inval.value(),
@@ -109,6 +113,34 @@ pub fn sys_mkdir(a: Args) Result {
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
 
     vfs.mkdir(path, clock.realtimeSeconds()) catch |err| return errnoFor(err);
+    return 0;
+}
+
+pub fn sys_mount(a: Args) Result {
+    if (ctx.require(.{ .mount = true })) |denied| return denied;
+
+    // A volume is named, not addressed: `userPath` would resolve it against the
+    // working directory and turn `hd0p1` into a path nothing is called.
+    const name = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+
+    var path_buf: [path_mod.MAX]u8 = undefined;
+    const path = userPath(a, a.a2, a.a3, &path_buf) orelse return Errno.fault.value();
+
+    const device = block.find(name) orelse return Errno.noent.value();
+    const flags: abi.MountFlags = @bitCast(@as(u32, @truncate(a.a4)));
+
+    const attached = vfs.mount(path, device, flags.removable) catch |err| return errnoFor(err);
+    attached.read_only = flags.read_only;
+    return 0;
+}
+
+pub fn sys_unmount(a: Args) Result {
+    if (ctx.require(.{ .mount = true })) |denied| return denied;
+
+    var path_buf: [path_mod.MAX]u8 = undefined;
+    const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
+
+    vfs.unmount(path) catch |err| return errnoFor(err);
     return 0;
 }
 
