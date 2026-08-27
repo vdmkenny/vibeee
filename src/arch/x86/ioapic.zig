@@ -109,6 +109,11 @@ pub fn setMask(gsi: u32, masked: bool) void {
     const line = gsi - owner.info.gsi_base;
 
     var entry = readEntry(owner, line);
+    if (entry.masked == masked) return;
+
+    // A mask already in the wanted state is left alone. The write is the one
+    // thing a shared controller notices, and firmware that also owns this
+    // machine notices more than the value.
     entry.masked = masked;
     writeEntry(owner, line, entry);
 }
