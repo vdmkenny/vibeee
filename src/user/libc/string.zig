@@ -241,9 +241,7 @@ fn isUpper(c: c_int) bool {
 fn lowerInt(c: c_int) c_int {
     return if (isUpper(c)) c + 32 else c;
 }
-fn lower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
-}
+const lower = @import("lib").str.lower;
 fn yes(condition: bool) c_int {
     return if (condition) 1 else 0;
 }
@@ -252,6 +250,4 @@ const heap = @import("ulib").heap;
 
 /// A terminated string as a slice, for the parts of this library that work in
 /// Zig terms once they have crossed the boundary.
-pub fn spanOf(text: [*:0]const u8) []const u8 {
-    return text[0..strlen(text)];
-}
+pub const spanOf = @import("lib").str.span;

@@ -21,9 +21,19 @@ const REG_YEAR = 0x09;
 const REG_STATUS_A = 0x0A;
 const REG_STATUS_B = 0x0B;
 
-const STATUS_A_UPDATING: u8 = 1 << 7;
-const STATUS_B_24_HOUR: u8 = 1 << 1;
-const STATUS_B_BINARY: u8 = 1 << 2;
+/// Status register A: the update bit is the only one read.
+const StatusA = packed struct(u8) {
+    _rate: u7 = 0,
+    updating: bool = false,
+};
+
+/// Status register B: how the clock encodes what it reports.
+const StatusB = packed struct(u8) {
+    _0: u1 = 0,
+    hours_24: bool = false,
+    binary: bool = false,
+    _rest: u5 = 0,
+};
 
 pub const DateTime = struct {
     year: u16,
@@ -42,7 +52,8 @@ fn read(reg: u8) u8 {
 }
 
 fn updating() bool {
-    return read(REG_STATUS_A) & STATUS_A_UPDATING != 0;
+    const a: StatusA = @bitCast(read(REG_STATUS_A));
+    return a.updating;
 }
 
 fn fromBcd(value: u8) u8 {
@@ -79,8 +90,9 @@ fn readRaw() DateTime {
     };
 
     const status_b = read(REG_STATUS_B);
-    const is_binary = status_b & STATUS_B_BINARY != 0;
-    const is_24_hour = status_b & STATUS_B_24_HOUR != 0;
+    const b: StatusB = @bitCast(status_b);
+    const is_binary = b.binary;
+    const is_24_hour = b.hours_24;
 
     // The 12-hour PM flag lives in bit 7 of the hours register and has to be
     // stripped before any BCD conversion, or it corrupts the digit.

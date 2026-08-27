@@ -65,9 +65,11 @@ fn status() EcStatus {
 }
 
 /// Commands the specification defines.
-const READ: u8 = 0x80;
-const WRITE: u8 = 0x81;
-const QUERY: u8 = 0x84;
+const Command = enum(u8) {
+    read = 0x80,
+    write = 0x81,
+    query = 0x84,
+};
 
 /// The longest one handshake phase may take before the controller is declared
 /// unresponsive. Generous against a real answer, which arrives in microseconds.
@@ -90,9 +92,9 @@ fn wait(comptime field: []const u8, set: bool) bool {
     }
 }
 
-fn command(cmd: u8) bool {
+fn command(cmd: Command) bool {
     if (!wait("input_full", false)) return false;
-    ports.out8(status_port, cmd);
+    ports.out8(status_port, @intFromEnum(cmd));
     return true;
 }
 
@@ -108,13 +110,13 @@ fn pull() ?u8 {
 }
 
 pub fn read(address: u8) ?u8 {
-    if (!command(READ)) return null;
+    if (!command(.read)) return null;
     if (!push(address)) return null;
     return pull();
 }
 
 pub fn write(address: u8, value: u8) bool {
-    if (!command(WRITE)) return false;
+    if (!command(.write)) return false;
     if (!push(address)) return false;
     return push(value);
 }
@@ -122,7 +124,7 @@ pub fn write(address: u8, value: u8) bool {
 /// Which event the controller is raising, or null when it is raising none.
 fn query() ?u8 {
     if (!status().event) return null;
-    if (!command(QUERY)) return null;
+    if (!command(.query)) return null;
     const which = pull() orelse return null;
     // Zero is the controller saying the queue was empty after all.
     return if (which == 0) null else which;

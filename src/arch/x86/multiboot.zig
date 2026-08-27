@@ -86,8 +86,14 @@ const MbInfo = extern struct {
     mmap_addr: u32,
 };
 
-const MMAP_VALID: u32 = 1 << 6;
-const CMDLINE_VALID: u32 = 1 << 2;
+/// Which of the info structure's fields the loader filled in.
+const Provided = packed struct(u32) {
+    _0: u2 = 0,
+    cmdline: bool = false,
+    _3: u3 = 0,
+    memory_map: bool = false,
+    _rest: u25 = 0,
+};
 
 /// One memory-map entry. `size` excludes itself, so advancing means
 /// `p += size + 4`, a classic off-by-four if read carelessly.
@@ -111,7 +117,8 @@ pub fn translate(bi: *bootinfo.BootInfo, info_phys: u32) void {
     if (info_phys == 0) return;
     const info: *const MbInfo = @ptrFromInt(paging.physToVirt(info_phys));
 
-    if (info.flags & CMDLINE_VALID != 0 and info.cmdline != 0) {
+    const provided: Provided = @bitCast(info.flags);
+    if (provided.cmdline and info.cmdline != 0) {
         const str: [*:0]const u8 = @ptrFromInt(paging.physToVirt(info.cmdline));
         const s = std.mem.span(str);
         const n = @min(s.len, bi.cmdline.len - 1);
@@ -119,7 +126,7 @@ pub fn translate(bi: *bootinfo.BootInfo, info_phys: u32) void {
         bi.cmdline_len = @intCast(n);
     }
 
-    if (info.flags & MMAP_VALID != 0 and info.mmap_addr != 0) {
+    if (provided.memory_map and info.mmap_addr != 0) {
         var p: u32 = info.mmap_addr;
         const end = info.mmap_addr + info.mmap_length;
         while (p + @sizeOf(MmapEntry) <= end and bi.mmap_len < bi.mmap.len) {

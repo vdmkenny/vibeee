@@ -138,6 +138,14 @@ pub const Device = extern struct {
     name: [4]u8 = @splat(0),
     methods: Methods = .{},
     _reserved: [3]u8 = @splat(0),
+
+    /// The name with the format's padding off: four characters padded with
+    /// underscores, and the padding is not part of what anything is called.
+    pub fn label(self: *const Device) []const u8 {
+        var end = self.name.len;
+        while (end > 0 and (self.name[end - 1] == '_' or self.name[end - 1] == 0)) end -= 1;
+        return self.name[0..end];
+    }
 };
 
 /// The panel, as whichever method this machine offers describes it.

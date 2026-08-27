@@ -26,7 +26,15 @@ const REG_LINE_CTRL = 3;
 const REG_MODEM_CTRL = 4;
 const REG_LINE_STATUS = 5;
 
-const LSR_TX_EMPTY: u8 = 1 << 5;
+/// Line status: the transmit-empty bit is the only one read.
+const LineStatus = packed struct(u8) {
+    _low: u5 = 0,
+    tx_empty: bool = false,
+    _high: u2 = 0,
+};
+
+/// Line control. The divisor latch bit repurposes the two data registers as
+/// the baud divisor while set.
 const LCR_DLAB: u8 = 1 << 7;
 const LCR_8N1: u8 = 0x03;
 
@@ -80,7 +88,10 @@ fn putByte(io: u16, byte: u8) void {
     // Bounded wait: a UART with no reader attached still drains, but a
     // misconfigured one must not hang the machine that is trying to report why.
     var spins: u32 = 0;
-    while (port.inb(io + REG_LINE_STATUS) & LSR_TX_EMPTY == 0 and spins < 100_000) : (spins += 1) {}
+    while (spins < 100_000) : (spins += 1) {
+        const line: LineStatus = @bitCast(port.inb(io + REG_LINE_STATUS));
+        if (line.tx_empty) break;
+    }
     port.outb(io + REG_DATA, byte);
 }
 

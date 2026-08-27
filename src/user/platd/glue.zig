@@ -197,11 +197,14 @@ export fn platd_pci_open(
     if (segment != 0) return Status.not_found.value();
     if (!haveConfigPorts()) return Status.not_found.value();
 
-    const selector: u32 = (@as(u32, bus) << 16) |
-        (@as(u32, device) << 11) |
-        (@as(u32, function) << 8);
+    const selector = Selector{
+        .bus = bus,
+        .device = @truncate(device),
+        .function = @truncate(function),
+        .enable = true,
+    };
 
-    out_handle.* = @ptrFromInt(selector | ENABLE);
+    out_handle.* = @ptrFromInt(@as(u32, @bitCast(selector)));
     return Status.ok.value();
 }
 
@@ -256,7 +259,9 @@ fn configWrite(handle: ?*anyopaque, offset: usize, value: u32) void {
 }
 
 fn selectorFor(handle: ?*anyopaque, offset: usize) u32 {
-    return @as(u32, @truncate(@intFromPtr(handle))) | (@as(u32, @truncate(offset)) & 0xFC);
+    var selector: Selector = @bitCast(@as(u32, @truncate(@intFromPtr(handle))));
+    selector.register = @truncate(offset >> 2);
+    return @bitCast(selector);
 }
 
 fn shiftFor(offset: usize) u5 {
@@ -281,7 +286,19 @@ var granted = false;
 
 const ADDRESS: u16 = 0xCF8;
 const DATA: u16 = 0xCFC;
-const ENABLE: u32 = 0x8000_0000;
+
+/// The address register, as the mechanism lays it out. The low two bits of an
+/// offset select a byte within the dword the port returns, so they are not
+/// part of the address written.
+const Selector = packed struct(u32) {
+    _byte: u2 = 0,
+    register: u6 = 0,
+    function: u3 = 0,
+    device: u5 = 0,
+    bus: u8 = 0,
+    _reserved: u7 = 0,
+    enable: bool = false,
+};
 
 // ---------------------------------------------------------------------------
 // Time

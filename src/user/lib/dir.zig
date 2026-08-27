@@ -114,13 +114,11 @@ fn before(_: void, a: Entry, b: Entry) bool {
 fn lessCaseless(a: []const u8, b: []const u8) bool {
     const n = @min(a.len, b.len);
     for (a[0..n], b[0..n]) |x, y| {
-        const lx = lower(x);
-        const ly = lower(y);
+        const lx = str.lower(x);
+        const ly = str.lower(y);
         if (lx != ly) return lx < ly;
     }
     return a.len < b.len;
 }
 
-fn lower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
-}
+

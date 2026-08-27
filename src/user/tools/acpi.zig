@@ -69,7 +69,7 @@ fn under(name: []const u8) void {
         platform.callUnder(.child, name, index, &reply) catch break;
 
         // Four to a row: these are short and there can be dozens.
-        out.pad(trimmed(&reply.body.device.name), 8);
+        out.pad(reply.body.device.label(), 8);
         shown += 1;
         if (shown % 8 == 0) out.byte('\n');
     }
@@ -111,7 +111,7 @@ fn list() void {
 }
 
 fn write(device: platform.Device) void {
-    out.pad(trimmed(&device.name), 9);
+    out.pad(device.label(), 9);
 
     for (columns) |column| {
         // Present or not, rather than a name repeated in every row: the column
@@ -126,12 +126,6 @@ fn write(device: platform.Device) void {
 }
 
 /// A namespace name is four characters, padded with spaces when it is shorter.
-fn trimmed(name: []const u8) []const u8 {
-    var end = name.len;
-    while (end > 0 and (name[end - 1] == ' ' or name[end - 1] == 0)) end -= 1;
-    return name[0..end];
-}
-
 /// More than a machine of this age describes, so the walk ends because the
 /// answers run out rather than because this stopped asking.
 const LIMIT = 64;

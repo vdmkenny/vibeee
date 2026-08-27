@@ -44,17 +44,22 @@ const SET_RESOLUTION = 0xE8;
 
 const ACK = 0xFA;
 
-/// First byte of every packet has this set. Anything else means the stream is
-/// out of step.
-const SYNC_BIT: u8 = 1 << 3;
+/// The first byte of every packet, as the protocol lays it out. `sync` is
+/// always set, and is the only synchronisation the protocol offers.
+const Flags = packed struct(u8) {
+    left: bool = false,
+    right: bool = false,
+    middle: bool = false,
+    sync: bool = false,
+    x_negative: bool = false,
+    y_negative: bool = false,
+    x_overflow: bool = false,
+    y_overflow: bool = false,
 
-const BTN_LEFT: u8 = 1 << 0;
-const BTN_RIGHT: u8 = 1 << 1;
-const BTN_MIDDLE: u8 = 1 << 2;
-const X_SIGN: u8 = 1 << 4;
-const Y_SIGN: u8 = 1 << 5;
-const X_OVERFLOW: u8 = 1 << 6;
-const Y_OVERFLOW: u8 = 1 << 7;
+    fn buttons(self: Flags) input.Buttons {
+        return .{ .left = self.left, .right = self.right, .middle = self.middle };
+    }
+};
 
 pub const Kind = enum {
     none,
@@ -80,7 +85,7 @@ var kind: Kind = .none;
 var packet: [4]u8 = @splat(0);
 var index: usize = 0;
 var packet_len: usize = 3;
-var buttons: u8 = 0;
+var held: input.Buttons = .{};
 
 // ---------------------------------------------------------------------------
 // Talking to the device
@@ -216,8 +221,8 @@ pub fn present() bool {
 fn onIrq(_: *idt.Frame) void {
     // Drain: the controller may hold more than one byte, and a single read per
     // interrupt falls permanently behind a moving finger.
-    while (port.inb(kbc.STATUS) & kbc.ST_OUTPUT_FULL != 0) {
-        if (port.inb(kbc.STATUS) & kbc.ST_FROM_AUX == 0) return;
+    while (kbc.status().output_full) {
+        if (!kbc.status().from_aux) return;
         feed(port.inb(kbc.DATA));
     }
 }
@@ -226,7 +231,8 @@ fn feed(byte: u8) void {
     // The protocol's only synchronisation. A first byte without the sync bit
     // means a byte was lost somewhere, and continuing would offset every
     // packet from here on.
-    if (index == 0 and byte & SYNC_BIT == 0) return;
+    const first: Flags = @bitCast(byte);
+    if (index == 0 and !first.sync) return;
 
     packet[index] = byte;
     index += 1;
@@ -237,15 +243,15 @@ fn feed(byte: u8) void {
 }
 
 fn decode() void {
-    const flags = packet[0];
+    const flags: Flags = @bitCast(packet[0]);
 
     // An overflowed axis carries no usable magnitude. Dropping the movement but
     // keeping the buttons means a click during a fast swipe still registers.
-    const overflowed = flags & (X_OVERFLOW | Y_OVERFLOW) != 0;
+    const overflowed = flags.x_overflow or flags.y_overflow;
 
-    const dx: i16 = if (overflowed) 0 else signed(packet[1], flags & X_SIGN != 0);
+    const dx: i16 = if (overflowed) 0 else signed(packet[1], flags.x_negative);
     // PS/2 counts Y upwards and screens count it downwards.
-    const dy: i16 = if (overflowed) 0 else -signed(packet[2], flags & Y_SIGN != 0);
+    const dy: i16 = if (overflowed) 0 else -signed(packet[2], flags.y_negative);
 
     // The Z counter is four bits, two's complement, and the device counts it
     // positive when the wheel turns towards the user. Negated so that positive
@@ -258,24 +264,20 @@ fn decode() void {
         break :blk @intCast(-@max(@min(z, 7), -7));
     } else 0;
 
-    const now = flags & (BTN_LEFT | BTN_RIGHT | BTN_MIDDLE);
-    const changed = now ^ buttons;
-    buttons = now;
+    const now = flags.buttons();
+    const changed = @as(u8, @bitCast(now)) != @as(u8, @bitCast(held));
+    held = now;
 
     input.postPointer(.{
         .dx = dx,
         .dy = dy,
         .wheel = wheel,
-        .buttons = .{
-            .left = now & BTN_LEFT != 0,
-            .right = now & BTN_RIGHT != 0,
-            .middle = now & BTN_MIDDLE != 0,
-        },
+        .buttons = now,
         // A packet that only changes buttons still moves nothing, and one that
         // only moves changes no buttons. Both are reported, and the flag says
         // which happened, so a consumer can tell a click from a drag without
         // comparing against the previous event itself.
-        .buttons_changed = changed != 0,
+        .buttons_changed = changed,
     });
 }
 

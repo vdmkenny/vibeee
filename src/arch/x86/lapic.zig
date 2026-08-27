@@ -24,7 +24,12 @@ const SPURIOUS = 0x0F0;
 
 /// The MSR carrying the base address and the hardware enable.
 const APIC_BASE_MSR = 0x1B;
-const MSR_ENABLE: u64 = 1 << 11;
+/// The APIC base MSR: the enable bit powers the unit; the rest is its address.
+const BaseMsr = packed struct(u64) {
+    _0: u11 = 0,
+    enabled: bool = false,
+    _rest: u52 = 0,
+};
 
 /// Delivered when an interrupt is withdrawn between being raised and being
 /// taken. Needs a vector even though the handler does nothing, and the low
@@ -57,8 +62,11 @@ pub fn init(phys: u32) bool {
 
     // The firmware normally leaves it enabled, but a machine that came out of
     // a mode where it was not would deliver nothing at all.
-    const current = cpu.readMsr(APIC_BASE_MSR);
-    if (current & MSR_ENABLE == 0) cpu.writeMsr(APIC_BASE_MSR, current | MSR_ENABLE);
+    var current: BaseMsr = @bitCast(cpu.readMsr(APIC_BASE_MSR));
+    if (!current.enabled) {
+        current.enabled = true;
+        cpu.writeMsr(APIC_BASE_MSR, @bitCast(current));
+    }
 
     // Accept every priority. There is one core and nothing to defer to.
     write(TPR, 0);

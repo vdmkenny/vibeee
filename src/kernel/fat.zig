@@ -59,24 +59,36 @@ const Bpb = extern struct {
     backup_boot: u16 align(1),
 };
 
-const ATTR_READ_ONLY = 0x01;
-const ATTR_HIDDEN = 0x02;
-const ATTR_SYSTEM = 0x04;
-const ATTR_VOLUME_ID = 0x08;
-const ATTR_DIRECTORY = 0x10;
-const ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
+/// The attribute byte, as the format lays it out.
+const Attributes = packed struct(u8) {
+    read_only: bool = false,
+    hidden: bool = false,
+    system: bool = false,
+    volume_id: bool = false,
+    directory: bool = false,
+    archive: bool = false,
+    _reserved: u2 = 0,
+
+    /// All four low bits at once, which no real file has: the marker VFAT
+    /// chose for a long-name entry precisely because it cannot collide.
+    const LONG_NAME = Attributes{ .read_only = true, .hidden = true, .system = true, .volume_id = true };
+
+    fn isLongName(self: Attributes) bool {
+        return self.read_only and self.hidden and self.system and self.volume_id;
+    }
+};
 
 const DirEntry = extern struct {
     name: [11]u8,
-    attr: u8,
+    attr: Attributes,
     nt_reserved: u8,
     create_tenths: u8,
-    create_time: u16 align(1),
-    create_date: u16 align(1),
-    access_date: u16 align(1),
+    create_time: FatTime align(1),
+    create_date: FatDate align(1),
+    access_date: FatDate align(1),
     cluster_high: u16 align(1),
-    write_time: u16 align(1),
-    write_date: u16 align(1),
+    write_time: FatTime align(1),
+    write_date: FatDate align(1),
     cluster_low: u16 align(1),
     size: u32 align(1),
 
@@ -95,20 +107,34 @@ const DirEntry = extern struct {
 /// which is self-consistent and makes files we create agree with our own clock;
 /// a volume written elsewhere will be off by that machine's offset, and no
 /// amount of care here can recover it.
-const FatStamp = struct { date: u16, time: u16 };
+const FatStamp = struct { date: FatDate, time: FatTime };
 
-fn epochFromFat(date: u16, time: u16) i64 {
+/// The two packed words the format keeps a moment in. Seconds count in twos,
+/// which is why the field is halved and the resolution is what it is.
+const FatDate = packed struct(u16) {
+    day: u5 = 0,
+    month: u4 = 0,
+    years_since_1980: u7 = 0,
+};
+
+const FatTime = packed struct(u16) {
+    half_seconds: u5 = 0,
+    minute: u6 = 0,
+    hour: u5 = 0,
+};
+
+fn epochFromFat(date: FatDate, time: FatTime) i64 {
     // An all-zero date is what a formatter writes when it has no clock. There
     // is no such day as 1980-00-00, so it cannot be confused with a real one.
-    if (date == 0) return 0;
+    if (@as(u16, @bitCast(date)) == 0) return 0;
 
     return civil.toEpoch(.{
-        .year = 1980 + (date >> 9),
-        .month = @intCast((date >> 5) & 0x0F),
-        .day = @intCast(date & 0x1F),
-        .hour = @intCast(time >> 11),
-        .minute = @intCast((time >> 5) & 0x3F),
-        .second = @intCast((time & 0x1F) * 2),
+        .year = 1980 + @as(u16, date.years_since_1980),
+        .month = date.month,
+        .day = date.day,
+        .hour = time.hour,
+        .minute = time.minute,
+        .second = @as(u8, time.half_seconds) * 2,
     });
 }
 
@@ -118,15 +144,19 @@ fn epochFromFat(date: u16, time: u16) i64 {
 /// epoch rather than wrapping into a plausible-looking wrong year.
 fn fatFromEpoch(seconds: i64) FatStamp {
     const c = civil.fromEpoch(seconds);
-    if (c.year < 1980 or c.year > 2107) return .{ .date = 0, .time = 0 };
+    if (c.year < 1980 or c.year > 2107) return .{ .date = .{}, .time = .{} };
 
     return .{
-        .date = (@as(u16, c.year - 1980) << 9) |
-            (@as(u16, c.month) << 5) |
-            @as(u16, c.day),
-        .time = (@as(u16, c.hour) << 11) |
-            (@as(u16, c.minute) << 5) |
-            @as(u16, c.second / 2),
+        .date = .{
+            .years_since_1980 = @intCast(c.year - 1980),
+            .month = @intCast(c.month),
+            .day = @intCast(c.day),
+        },
+        .time = .{
+            .hour = @intCast(c.hour),
+            .minute = @intCast(c.minute),
+            .half_seconds = @intCast(c.second / 2),
+        },
     };
 }
 
@@ -274,7 +304,7 @@ pub fn mount(dev: *const block.Device) Error!Volume {
 const LfnEntry = extern struct {
     sequence: u8,
     name_1: [10]u8,
-    attr: u8,
+    attr: Attributes,
     type: u8,
     /// Checksum of the 8.3 name this belongs to. Without checking it, orphaned
     /// long-name entries left by another operating system would be attached to
@@ -477,12 +507,12 @@ pub const Iterator = struct {
                 }
 
                 // Long-name fragments precede the entry they describe.
-                if (raw.attr & ATTR_LONG_NAME == ATTR_LONG_NAME) {
+                if (raw.attr.isLongName()) {
                     self.lfn.add(@ptrCast(raw));
                     continue;
                 }
 
-                if (raw.attr & ATTR_VOLUME_ID != 0) {
+                if (raw.attr.volume_id) {
                     self.lfn.reset();
                     continue;
                 }
@@ -494,7 +524,7 @@ pub const Iterator = struct {
                     // Already advanced past this record, so the index is one
                     // behind the cursor.
                     .dir_index = self.index_in_sector - 1,
-                    .is_dir = raw.attr & ATTR_DIRECTORY != 0,
+                    .is_dir = raw.attr.directory,
                     .size = raw.size,
                     .cluster = raw.firstCluster(),
                     .mtime = epochFromFat(raw.write_date, raw.write_time),
@@ -1139,7 +1169,7 @@ fn buildLongRecord(name: []const u8, index: usize, last: bool, checksum: u8) Lfn
     var e = LfnEntry{
         .sequence = @intCast(index + 1),
         .name_1 = undefined,
-        .attr = ATTR_LONG_NAME,
+        .attr = Attributes.LONG_NAME,
         .type = 0,
         .checksum = checksum,
         .name_2 = undefined,
@@ -1237,7 +1267,7 @@ fn build(
     const stamp = fatFromEpoch(mtime);
     const entry_record = DirEntry{
         .name = short,
-        .attr = if (is_dir) ATTR_DIRECTORY else 0,
+        .attr = .{ .directory = is_dir },
         .nt_reserved = 0,
         .create_tenths = 0,
         .create_time = stamp.time,
@@ -1299,7 +1329,7 @@ fn writeDotEntries(vol: *Volume, cluster: u32, parent: u32, mtime: i64) Error!vo
     for (pair, 0..) |it, i| {
         const record = DirEntry{
             .name = it.name.*,
-            .attr = ATTR_DIRECTORY,
+            .attr = .{ .directory = true },
             .nt_reserved = 0,
             .create_tenths = 0,
             .create_time = stamp.time,

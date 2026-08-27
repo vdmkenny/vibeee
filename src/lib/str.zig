@@ -248,9 +248,12 @@ pub fn caseless(text: []const u8) bool {
 /// know the medium was ever involved.
 pub fn lowerName(name: []u8) void {
     if (!caseless(name)) return;
-    for (name) |*c| {
-        if (c.* >= 'A' and c.* <= 'Z') c.* += 32;
-    }
+    for (name) |*c| c.* = lower(c.*);
+}
+
+/// One character, lowered. ASCII only, which is all the callers speak.
+pub fn lower(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
 }
 
 /// Building a short string in a fixed buffer.

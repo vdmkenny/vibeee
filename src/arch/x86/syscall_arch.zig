@@ -20,9 +20,16 @@ const sched = @import("../../kernel/sched.zig");
 const syscall = @import("../../kernel/syscall.zig");
 
 /// Where the CPU takes the fast path's kernel context from.
-const MSR_CS: u32 = 0x174;
-const MSR_ESP: u32 = 0x175;
-const MSR_EIP: u32 = 0x176;
+/// The three SYSENTER MSRs, consecutive by definition.
+const Msr = enum(u32) {
+    sysenter_cs = 0x174,
+    sysenter_esp = 0x175,
+    sysenter_eip = 0x176,
+
+    fn write(self: Msr, value: u64) void {
+        cpu.writeMsr(@intFromEnum(self), value);
+    }
+};
 
 var armed = false;
 
@@ -52,8 +59,8 @@ pub fn init() void {
         }
     }
 
-    cpu.writeMsr(MSR_CS, gdt.KERNEL_CODE);
-    cpu.writeMsr(MSR_EIP, @intFromPtr(&sysenterEntry));
+    Msr.sysenter_cs.write(gdt.KERNEL_CODE);
+    Msr.sysenter_eip.write(@intFromPtr(&sysenterEntry));
     // The stack is per-thread and set on every switch, below.
     armed = true;
 }
@@ -64,7 +71,7 @@ pub fn init() void {
 /// does: a stale value sends the next syscall onto a stack that belongs to
 /// someone else, or to nobody.
 pub fn setKernelStack(esp0: u32) void {
-    if (armed) cpu.writeMsr(MSR_ESP, esp0);
+    if (armed) Msr.sysenter_esp.write(esp0);
 }
 
 // ---------------------------------------------------------------------------

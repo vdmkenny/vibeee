@@ -4,12 +4,20 @@ const console = @import("../../kernel/console.zig");
 const port = @import("../../arch/x86/port.zig");
 const tables = @import("tables.zig");
 
-/// Bit 13 of the PM1 control register commits the sleep type in bits 10-12.
-const SLP_EN: u16 = 1 << 13;
+/// The PM1 control register. Writing `sleep_enable` commits `sleep_type`,
+/// and `acpi_mode` says the chipset listens to any of this at all rather
+/// than routing power management to the firmware's own handler.
+const Pm1Control = packed struct(u16) {
+    acpi_mode: bool = false,
+    _1: u9 = 0,
+    sleep_type: u3 = 0,
+    sleep_enable: bool = false,
+    _14: u2 = 0,
+};
 
-/// Bit 0 of the same register: set when the chipset is in ACPI mode rather
-/// than the legacy mode firmware leaves it in.
-const SCI_EN: u16 = 1 << 0;
+fn pm1(at: u16) Pm1Control {
+    return @bitCast(port.inw(at));
+}
 
 /// Hand the machine from legacy mode into ACPI mode.
 ///
@@ -22,7 +30,7 @@ const SCI_EN: u16 = 1 << 0;
 /// No AML is involved. The command port and the value written to it both come
 /// from the FADT, which is why this works long before there is an interpreter.
 fn enterAcpiMode(info: tables.Info) bool {
-    if (port.inw(info.pm1a_control) & SCI_EN != 0) return true;
+    if (pm1(info.pm1a_control).acpi_mode) return true;
     if (info.smi_command == 0 or info.acpi_enable == 0) return false;
 
     port.outb(info.smi_command, info.acpi_enable);
@@ -32,7 +40,7 @@ fn enterAcpiMode(info: tables.Info) bool {
     // read here that is still advancing.
     var spins: u32 = 0;
     while (spins < 20_000_000) : (spins += 1) {
-        if (port.inw(info.pm1a_control) & SCI_EN != 0) return true;
+        if (pm1(info.pm1a_control).acpi_mode) return true;
         asm volatile ("pause");
     }
     return false;
@@ -65,15 +73,15 @@ pub fn off() void {
                 in_acpi, port.inw(info.pm1a_control),
             });
 
-            const a: u16 = (@as(u16, info.slp_typ_a) << 10) | SLP_EN;
-            console.debug("shutdown", "sleeping with {x:0>4}", .{a});
-            port.outw(info.pm1a_control, a);
+            const a = Pm1Control{ .sleep_type = @truncate(info.slp_typ_a), .sleep_enable = true };
+            console.debug("shutdown", "sleeping with {x:0>4}", .{@as(u16, @bitCast(a))});
+            port.outw(info.pm1a_control, @bitCast(a));
 
             // The second register exists on chipsets that split the power
             // management block; writing it when absent is harmless.
             if (info.pm1b_control != 0) {
-                const b: u16 = (@as(u16, info.slp_typ_b) << 10) | SLP_EN;
-                port.outw(info.pm1b_control, b);
+                const b = Pm1Control{ .sleep_type = @truncate(info.slp_typ_b), .sleep_enable = true };
+                port.outw(info.pm1b_control, @bitCast(b));
             }
 
             // Power does not drop instantly; give the hardware time before
