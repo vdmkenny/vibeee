@@ -11,7 +11,6 @@
 //! plumbing rather than the meaning.
 
 const std = @import("std");
-const acpi = @import("../drv/acpi/tables.zig");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const display = @import("display.zig");
@@ -38,6 +37,10 @@ pub const Platform = struct {
     bios_version: ?[]const u8 = null,
     /// Raw SMBIOS structure table, for a userspace decoder.
     smbios_table: ?[]const u8 = null,
+    /// Where the firmware left the ACPI root pointer, for the userspace
+    /// process that interprets the tables. A physical address and nothing
+    /// more: reaching it needs the driver capability, which is the point.
+    acpi_rsdp: u32 = 0,
 
     /// What the firmware says is physically fitted, which is not the same as
     /// what the allocator ended up with.
@@ -167,7 +170,7 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         // Where the tables begin, for the process that interprets them. A
         // physical address rather than anything mapped: what to do with it is
         // the asker's business, and it needs the driver capability to do it.
-        return say(buf, "{x}", .{acpi.rsdp()});
+        try w.print("{x}", .{platform.acpi_rsdp});
     } else if (eq(key, "pci")) {
         try writeDevices(&w);
     } else if (eq(key, "disks")) {

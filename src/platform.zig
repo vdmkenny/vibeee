@@ -60,6 +60,7 @@ fn publishPlatform() void {
     const ram = smbios.memoryHardware();
 
     sysinfo.setPlatform(.{
+        .acpi_rsdp = acpi_root,
         .system_manufacturer = smbios.systemManufacturer(),
         .system_product = smbios.systemProduct(),
         .bios_vendor = smbios.biosVendor(),
@@ -98,8 +99,15 @@ pub fn reportVideo() void {
 /// controller is chosen from the MADT, and that happens before there is a heap
 /// or a driver of any kind. Reading tables needs neither.
 pub fn readFirmwareTables(bi: *const bootinfo.BootInfo) void {
+    acpi_root = bi.rsdp;
     acpi.init(bi.rsdp);
 }
+
+/// Kept from the handover so `publishPlatform` can pass it on. The tables are
+/// read long before anything can be published, and the address is the one
+/// thing a userspace interpreter needs that it cannot find for itself without
+/// mapping and searching the BIOS area again.
+var acpi_root: u32 = 0;
 
 /// How this machine wires its interrupts, as the firmware describes it.
 ///

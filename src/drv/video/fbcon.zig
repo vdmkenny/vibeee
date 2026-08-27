@@ -288,7 +288,7 @@ pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
 
     const cell = Cell.of(cp, fg, bg);
     cells[row * columns + col] = cell;
-    if (col == Cursor.col and row == Cursor.row) Cursor.forget();
+    if (col == Cursor.col and row == Cursor.row) Cursor.painted = false;
     drawCell(col, row, cell);
 }
 
@@ -323,7 +323,7 @@ fn drawCell(col: usize, row: usize, cell: Cell) void {
 /// symbol that looks plausible and does not scan, the worst possible failure
 /// for a diagnostic whose only job is to be read off a photograph.
 pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
-    Cursor.forget();
+    Cursor.lift();
     if (!ready or suspended) return;
     // Pixels the grid has no way to describe, so it no longer speaks for the
     // screen and the next scroll repaints unconditionally.
@@ -356,7 +356,7 @@ pub fn fontName() []const u8 {
 
 pub fn fill(ch: u21, fg: u4, bg: u4) void {
     if (!ready or suspended) return;
-    Cursor.forget();
+    Cursor.lift();
 
     const cell = Cell.of(ch, fg, bg);
     setAll(cell);
@@ -387,7 +387,7 @@ fn setAll(cell: Cell) void {
 /// aperture is uncached those reads dominate everything else the console does.
 pub fn scroll(bg: u4) void {
     if (!ready or suspended) return;
-    Cursor.forget();
+    Cursor.lift();
 
     // The text moves in RAM and only the cells whose contents actually changed
     // are repainted, so the framebuffer is written and never read. A boot log
@@ -461,11 +461,17 @@ const Cursor = struct {
         drawCell(col, row, cells[row * columns + col]);
     }
 
-    /// Called by anything that repaints the whole screen: the cursor is gone
-    /// with everything else, and erasing it afterwards would put a stale cell
-    /// back over the new picture.
-    fn forget() void {
-        painted = false;
+    /// Take the cursor off the screen before something moves the screen out
+    /// from under it.
+    ///
+    /// Erasing rather than forgetting, because `scroll` repaints only the
+    /// cells whose contents changed and the cursor is in none of them: it is
+    /// drawn straight to the framebuffer and lives nowhere in the grid, so a
+    /// cell that scrolled to identical content is stepped over and keeps the
+    /// block that was drawn on top of it. That is how a command leaves a
+    /// stray cursor behind on every line it scrolled.
+    fn lift() void {
+        erase();
     }
 };
 
