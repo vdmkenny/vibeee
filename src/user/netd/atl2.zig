@@ -525,9 +525,12 @@ fn readMac(dev: *NicDev) void {
     // story: nothing is invented.
     const low = device.regs.rd32(.mac_sta_addr);
     const high = device.regs.rd32(.mac_sta_addr_hi);
+    // The high word holds the first two octets with the first in its upper
+    // byte: the vendor's own assignment begins 00:1f:c6, and swapped halves
+    // put the multicast bit in the station address.
     dev.mac = .{
-        @truncate(high),
         @truncate(high >> 8),
+        @truncate(high),
         @truncate(low >> 24),
         @truncate(low >> 16),
         @truncate(low >> 8),

@@ -284,6 +284,12 @@ pub fn mapDevice(phys: usize, len: usize) ?[*]volatile u32 {
 
 /// Physically contiguous DMA memory. Returns the handle to map with `shmMap`
 /// and writes the physical base to `physOut`. Needs the driver capability.
+/// Tell the kernel this process now drives the PCI device, so its table says
+/// driven rather than matched and nothing else probes it as free.
+pub fn claimDevice(bus: u16, device: u16, function: u16) isize {
+    return syscall3(abi.number("claim_device"), bus, device, function);
+}
+
 pub fn dmaAlloc(size: usize, physOut: *u32) isize {
     return syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut));
 }

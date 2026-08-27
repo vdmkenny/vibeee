@@ -176,6 +176,10 @@ fn attach(iface: *dev.NicDev) bool {
         log.warn("netd", "the adapter did not start");
         return false;
     }
+
+    // Only now, with the adapter actually running: the kernel's table says
+    // driven for what is driven, not for what was attempted.
+    _ = sys.claimDevice(iface.location.bus, iface.location.device, iface.location.function);
     return true;
 }
 
@@ -272,6 +276,11 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         return .ok;
     }
 
+    // Fresh link state first, then the reply packed whole from it: patched
+    // afterwards, the one field patched disagrees with the rest, and a link
+    // that came up during autonegotiation reads as up at no speed.
+    iface.state = iface.ops.link(iface);
+
     reply.iface = .{
         .up = @intFromBool(iface.state.up),
         .duplex = iface.state.duplex,
@@ -288,11 +297,6 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         reply.iface.peer_ip = peer.addr;
         reply.iface.peer_mac = peer.mac;
     }
-
-    // Fresh link state: the adapter may have seen a change whose line
-    // arrived between asks, and this is a read of it either way.
-    iface.state = iface.ops.link(iface);
-    reply.iface.up = @intFromBool(iface.state.up);
 
     return .ok;
 }

@@ -177,6 +177,9 @@ pub fn exitWith(status: i32) noreturn {
         // writer to finish but for a third party to notice that it did, which
         // is a wait that need never end.
         t.handles.closeAll();
+        // Device claims are a claim of the same kind: a dead driver's device
+        // must read as free, or its own restart finds it taken.
+        @import("probe.zig").dropClaims(t.id);
         if (find(t.parent_id)) |p| {
             _ = p.child_exit.wakeAll();
             // Interrupts are already off here, which is what `signalLocked`

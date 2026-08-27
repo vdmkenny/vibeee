@@ -17,6 +17,7 @@ const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
 const pmm = @import("../pmm.zig");
+const probe = @import("../probe.zig");
 const sched = @import("../sched.zig");
 const shm = @import("../shm.zig");
 
@@ -35,6 +36,15 @@ const currentHandles = ctx.currentHandles;
 /// when the last reference closes. Cached, because on these machines
 /// coherency is the chipset's job and an uncached ring would pay a cache
 /// miss on every descriptor a driver touches.
+pub fn sys_claim_device(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const t = sched.currentThread() orelse return Errno.perm.value();
+    const location = [3]u16{ @truncate(a.a0), @truncate(a.a1), @truncate(a.a2) };
+    if (!probe.markDriven(location, t.id)) return Errno.noent.value();
+    return 0;
+}
+
 pub fn sys_dma_alloc(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 

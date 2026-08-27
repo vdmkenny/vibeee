@@ -64,6 +64,10 @@ pub const Binding = struct {
     confidence: Confidence,
     attached: bool = false,
     failed: bool = false,
+    /// Which process claimed it from userspace, or zero for a kernel driver.
+    /// The claim dies with the claimer, so a restarted driver finds its
+    /// device free rather than reading its own past self as competition.
+    claimed_by: u32 = 0,
 
     pub fn state(self: Binding) State {
         if (self.driver == null) return .unclaimed;
@@ -80,6 +84,35 @@ pub const Binding = struct {
 
 var bindings: [64]Binding = undefined;
 var binding_count: usize = 0;
+
+/// A userspace driver took the device at `location` on the PCI bus.
+///
+/// The table's word for a bound kernel driver is `driven`, and a device a
+/// process drives deserves the same word: everything reading the table, the
+/// listing and a second service probing for unclaimed hardware alike, would
+/// otherwise read a driven device as free.
+pub fn markDriven(location: [3]u16, claimer: u32) bool {
+    for (bindings[0..binding_count]) |*b| {
+        if (!@import("lib").str.eql(b.dev.bus, "pci")) continue;
+        if (b.dev.location[0] != location[0] or
+            b.dev.location[1] != location[1] or
+            b.dev.location[2] != location[2]) continue;
+        b.attached = true;
+        b.claimed_by = claimer;
+        return true;
+    }
+    return false;
+}
+
+/// The claimer is gone; its devices are free again.
+pub fn dropClaims(claimer: u32) void {
+    if (claimer == 0) return;
+    for (bindings[0..binding_count]) |*b| {
+        if (b.claimed_by != claimer) continue;
+        b.attached = false;
+        b.claimed_by = 0;
+    }
+}
 
 /// Drivers available to bind, supplied by the composition root.
 var registry: []const Driver = &.{};

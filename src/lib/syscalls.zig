@@ -1306,6 +1306,23 @@ pub const table = [_]Syscall{
             "contiguous physical run, addressable by a DMA engine. Maps cached; the " ++
             "frames go back to the allocator when the last reference closes.",
     },
+    .{
+        .number = 51,
+        .name = "claim_device",
+        .summary = "Say a userspace driver now drives this device.",
+        .args = &.{
+            .{ .name = "bus", .kind = .uint, .desc = "PCI bus number." },
+            .{ .name = "device", .kind = .uint, .desc = "PCI device number." },
+            .{ .name = "function", .kind = .uint, .desc = "PCI function number." },
+        },
+        .returns = "0",
+        .errors = &.{ E.perm, E.noent },
+        .notes = "Requires Caps.driver. The kernel's device table says driven for a " ++
+            "device a kernel driver attached; a userspace driver is invisible to it " ++
+            "until it says so here, and everything reading the table, the listing and " ++
+            "a second service probing for unclaimed hardware alike, would read a " ++
+            "driven device as free.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the
