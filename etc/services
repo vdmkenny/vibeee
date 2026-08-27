@@ -36,8 +36,11 @@ binary  = /bin/netd
 # The network service: drives every ethernet adapter it finds, behind the
 # driver capability. One process for the wired port and later the radio, so
 # its interrupt routing question goes to the platform service and its answer
-# names one line per card.
+# names one line per card. Raised after the platform service, rather than
+# racing it: the routing tables are the firmware's, and asking before the
+# interpreter is up invites a fallback answer and a busy config bus.
 caps    = driver
+needs   = platd
 provides = net
 restart = always
 
