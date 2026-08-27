@@ -52,7 +52,7 @@ pub const commands = [_]Command{
     .{ .name = "devices", .summary = "what is on the bus, and what drives it", .run = &devices_tool.devices },
     .{ .name = "acpi", .summary = "what the firmware says this machine has", .run = &acpi.run },
     .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
-    .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
+    .{ .name = "log", .summary = "what the kernel and the services have said", .run = &klog.log },
     .{ .name = "commands", .summary = "list command names, one per line", .run = &listNames },
     .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },

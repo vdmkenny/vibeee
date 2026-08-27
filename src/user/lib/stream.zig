@@ -59,6 +59,13 @@ pub const Stream = struct {
         if (self.writing and self.used >= to) self.used = to;
     }
 
+    /// The bytes written since `mark`, for a caller that wants to copy them
+    /// somewhere rather than take them back. Valid only until the next flush.
+    pub fn since(self: *Stream, from: usize) []const u8 {
+        if (!self.writing or self.used < from) return &.{};
+        return self.buffer[from..self.used];
+    }
+
     pub fn flush(self: *Stream) void {
         if (!self.writing or self.used == 0) return;
 
