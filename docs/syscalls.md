@@ -928,6 +928,68 @@ Allocate physically contiguous DMA memory.
 
 Requires Caps.driver. The promise shm_create does not make: one contiguous physical run, addressable by a DMA engine. Maps cached; the frames go back to the allocator when the last reference closes.
 
+## `claim_device`  <sub>#51</sub>
+
+Say a userspace driver now drives this device.
+
+| arg | type | meaning |
+|---|---|---|
+| `bus` | uint | PCI bus number. |
+| `device` | uint | PCI device number. |
+| `function` | uint | PCI function number. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `ENOENT`, no such file or directory
+
+Requires Caps.driver. The kernel's device table says driven for a device a kernel driver attached; a userspace driver is invisible to it until it says so here, and everything reading the table, the listing and a second service probing for unclaimed hardware alike, would read a driven device as free.
+
+## `pci_read`  <sub>#52</sub>
+
+Read one dword of PCI configuration space.
+
+| arg | type | meaning |
+|---|---|---|
+| `location` | uint | bus << 8 | device << 3 | function. |
+| `offset` | uint | Register offset, dword aligned. |
+
+**Returns:** the register's value
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. The two configuration ports are one shared index pair; every access in the system goes through the kernel so no two of them can interleave. Narrower reads are cut from the dword by the caller.
+
+## `pci_write`  <sub>#53</sub>
+
+Write one dword of PCI configuration space.
+
+| arg | type | meaning |
+|---|---|---|
+| `location` | uint | bus << 8 | device << 3 | function. |
+| `offset` | uint | Register offset, dword aligned. |
+| `value` | uint | The dword to write. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. Read-modify-write for narrower widths is the caller's, made safe by every access sharing the kernel's one pair.
+
+## `console_claim`  <sub>#54</sub>
+
+Become the console's foreground.
+
+**Returns:** 0
+
+From this call on, only the claimer and its descendants render to the console; everything else's lines go to the kernel's ring alone, where the log tool reads them. The boot narrates onto the console because nothing has claimed it yet; the shell claims it when the console becomes a conversation.
+
 ---
 
-51 calls defined.
+55 calls defined.
