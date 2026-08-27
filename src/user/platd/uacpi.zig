@@ -220,43 +220,66 @@ pub extern fn uacpi_for_each_device_resource(
 
 /// The fixed description table, which says which of those buttons exist.
 ///
-/// A fixed-layout table rather than bytecode, so unlike everything else here it
-/// is read at an offset instead of evaluated. `flags` has been where the
-/// specification puts it since ACPI 1.0.
-pub extern fn uacpi_table_fadt(out: *?*const anyopaque) Status;
+/// A fixed-layout table rather than bytecode, so unlike everything else here
+/// it is a declared shape rather than an evaluation. Only the fields this
+/// system reads are named; the rest are spans, and the offsets the
+/// specification fixes are checked where the shape is declared.
+pub extern fn uacpi_table_fadt(out: *?*const Fadt) Status;
 
-pub const FADT_FLAGS = 112;
+pub const Fadt = extern struct {
+    header: [36]u8,
+    firmware_ctrl: u32,
+    dsdt: u32,
+    _int_model: u8,
+    _profile: u8,
+    sci_int: u16,
+    _blocks: [63]u8,
+    _reserved: u8,
+    flags: Features,
 
-/// The flags are stated the other way round: a bit set means the button is a
-/// device in the namespace rather than a fixed feature, so asking for a fixed
-/// handler for it is asking for one that cannot exist.
-pub const FADT_POWER_BUTTON_IS_DEVICE: u32 = 1 << 4;
-pub const FADT_SLEEP_BUTTON_IS_DEVICE: u32 = 1 << 5;
+    comptime {
+        if (@offsetOf(Fadt, "firmware_ctrl") != 36) @compileError("the FADT names the FACS at 36");
+        if (@offsetOf(Fadt, "sci_int") != 46) @compileError("the FADT names the SCI at 46");
+        if (@offsetOf(Fadt, "flags") != 112) @compileError("the FADT keeps its flags at 112");
+    }
+};
 
-/// Where the firmware control structure is, which the FADT names.
-pub const FADT_FIRMWARE_CTRL = 36;
+/// The feature flags, stated the other way round for the buttons: a set bit
+/// means the button is a device in the namespace rather than a fixed feature,
+/// so asking for a fixed handler for it is asking for one that cannot exist.
+pub const Features = packed struct(u32) {
+    _low: u4 = 0,
+    power_button_is_device: bool = false,
+    sleep_button_is_device: bool = false,
+    _rest: u26 = 0,
+};
 
-/// The global lock word inside it.
+/// The global lock word inside the firmware control structure.
 pub const FACS_GLOBAL_LOCK = 16;
 
-pub const GLOBAL_LOCK_PENDING: u32 = 1 << 0;
-pub const GLOBAL_LOCK_OWNED: u32 = 1 << 1;
+/// The word both sides negotiate through: the owner holds, and a waiter sets
+/// pending so the release is announced.
+pub const LockWord = packed struct(u32) {
+    pending: bool = false,
+    owned: bool = false,
+    _rest: u30 = 0,
+};
 
-/// The lock's raw value, or null when there is no firmware control structure.
+/// The lock as it stands, or null when there is no firmware control structure.
 ///
-/// Bit 0 is pending and bit 1 is owned. Owned at start-up means every method
-/// that takes the lock waits for a release, so this is the one word that says
-/// whether locked methods can work at all.
+/// Owned at start-up means every method that takes the lock waits for a
+/// release, so this is the one word that says whether locked methods can work
+/// at all.
 pub fn globalLock() ?GlobalLock {
-    const fadt = fadtBytes() orelse return null;
+    var fadt: ?*const Fadt = null;
+    if (uacpi_table_fadt(&fadt) != .ok) return null;
+    const table = fadt orelse return null;
+    if (table.firmware_ctrl == 0) return null;
 
-    const facs_phys = @as(*align(1) const u32, @ptrCast(fadt + FADT_FIRMWARE_CTRL)).*;
-    if (facs_phys == 0) return null;
-
-    const facs = uacpi_kernel_map(facs_phys, 64) orelse return null;
+    const facs = uacpi_kernel_map(table.firmware_ctrl, 64) orelse return null;
     return .{
-        .facs = facs_phys,
-        .value = @as(*align(1) const volatile u32, @ptrCast(facs + FACS_GLOBAL_LOCK)).*,
+        .facs = table.firmware_ctrl,
+        .word = @as(*align(1) const volatile LockWord, @ptrCast(facs + FACS_GLOBAL_LOCK)).*,
     };
 }
 
@@ -264,11 +287,7 @@ pub const GlobalLock = struct {
     /// Where the firmware control structure is, so this can be checked against
     /// the address the table listing reports.
     facs: u32,
-    value: u32,
-
-    pub fn owned(self: GlobalLock) bool {
-        return self.value & GLOBAL_LOCK_OWNED != 0;
-    }
+    word: LockWord,
 };
 
 /// uACPI's own mapping call, which is answered by `glue`. Used here so a table
@@ -281,9 +300,10 @@ fn fadtBytes() ?[*]const u8 {
     return @ptrCast(fadt orelse return null);
 }
 
-pub fn fadtFlags() u32 {
-    const fadt = fadtBytes() orelse return 0;
-    return @as(*align(1) const u32, @ptrCast(fadt + FADT_FLAGS)).*;
+pub fn fadtFlags() Features {
+    var fadt: ?*const Fadt = null;
+    if (uacpi_table_fadt(&fadt) != .ok) return .{};
+    return (fadt orelse return .{}).flags;
 }
 
 // ---------------------------------------------------------------------------

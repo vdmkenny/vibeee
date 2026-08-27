@@ -12,6 +12,7 @@
 const std = @import("std");
 const ctx = @import("context.zig");
 const handles = @import("../handle.zig");
+const console = @import("../console.zig");
 const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
@@ -29,7 +30,12 @@ pub fn sys_irq_attach(a: Args) Result {
     const table = currentHandles() orelse return Errno.nomem.value();
     const slot = table.alloc() orelse return Errno.nomem.value();
 
-    const line = irqevent.attach(@truncate(a.a0)) catch |err| {
+    // The caller's number is the firmware's: a table said 9, and where 9
+    // actually arrives is this machine's business, not the driver's.
+    const gsi = hal.resolveIrq(@truncate(a.a0));
+    if (gsi != a.a0) console.debug("irq", "{d} arrives on line {d}", .{ a.a0, gsi });
+
+    const line = irqevent.attach(gsi) catch |err| {
         table.entries[slot] = .{};
         return switch (err) {
             error.Busy => Errno.busy.value(),

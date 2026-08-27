@@ -683,8 +683,17 @@ pub fn onInterruptExit(from_user: bool) void {
     if (!started) return;
     if (from_user and currentKilled()) exitWith(KILLED_STATUS);
     if (!need_resched) return;
+    // A line being rendered finishes first. `need_resched` stays set, so the
+    // switch happens at the next interrupt after the hold is released.
+    if (no_preempt) return;
     schedule();
 }
+
+/// Held while the console renders one write, so two processes' lines come out
+/// whole rather than interleaved mid-word. One core, so a flag is the whole
+/// mechanism: the holder is the running thread, and nothing else runs until
+/// it clears the flag.
+pub var no_preempt: bool = false;
 
 /// What a killed process reports to whoever waits for it.
 ///

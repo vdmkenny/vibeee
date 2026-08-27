@@ -232,7 +232,10 @@ fn bringUp() bool {
     // is listening waits for a release that cannot arrive and fails after
     // sixty-five thousand attempts that all resolve in microseconds.
     if (glue.sci.arm()) {
-        log.note("platd", "system control interrupt live");
+        log.begin("platd", .key);
+        out.text("system control interrupt live, line ");
+        out.decimal(glue.sci.line);
+        log.end();
     } else {
         log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
     }
@@ -259,12 +262,12 @@ fn reportGlobalLock() void {
         return;
     };
 
-    log.begin("platd", if (value.owned()) .warn else .key);
+    log.begin("platd", if (value.word.owned) .warn else .key);
     out.text("FACS 0x");
     out.hex(value.facs, 8);
     out.text(" global lock 0x");
-    out.hex(value.value, 8);
-    out.text(if (value.owned()) ", held by the firmware" else ", free");
+    out.hex(@as(u32, @bitCast(value.word)), 8);
+    out.text(if (value.word.owned) ", held by the firmware" else ", free");
     log.end();
 }
 

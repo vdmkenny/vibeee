@@ -71,6 +71,7 @@ pub const denyIoPorts = impl.denyIoPorts;
 pub const InterruptFrame = impl.InterruptFrame;
 pub const gsiClaimed = impl.gsiClaimed;
 pub const claimGsi = impl.claimGsi;
+pub const resolveIrq = impl.resolveIrq;
 pub const releaseGsi = impl.releaseGsi;
 pub const setGsiMask = impl.setGsiMask;
 

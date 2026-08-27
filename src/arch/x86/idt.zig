@@ -124,21 +124,25 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
         h(frame);
     } else if (vec < 32) {
         @import("fault.zig").onException(frame);
+    } else if (vec != lapic.SPURIOUS_VECTOR) {
+        // A line delivering into a vector nobody claimed. Held down and said
+        // once: a level line nobody acknowledges at its device refires the
+        // moment it is acknowledged at the controller, and a machine that is
+        // all interrupt handler does nothing else.
+        quietUnclaimed(vec);
     }
-    // Acknowledged at the controller that delivered it. Writing to the wrong
-    // one leaves the line asserted and nothing else ever arrives.
-    if (vec >= IRQ_BASE and vec < IRQ_BASE + 16) {
-        if (lapic.active()) {
-            lapic.eoi();
-        } else {
-            const irq = vec - IRQ_BASE;
-            if (irq >= 8) port.outb(0xA0, 0x20);
-            port.outb(0x20, 0x20);
-        }
-    } else if (lapic.active() and vec == lapic.SPURIOUS_VECTOR) {
-        // A spurious interrupt needs no acknowledgement, and the vector is
-        // outside the legacy range, so it is caught here rather than falling
-        // through to the exception handler.
+
+    // Acknowledged at the controller that delivered it, whichever vector it
+    // was. An interrupt the local APIC delivers and never sees acknowledged
+    // raises its priority floor for good, and everything at or below, the
+    // timer included, is silently never delivered again. Only the spurious
+    // vector is excepted: it is the APIC's own and takes no acknowledgement.
+    if (lapic.active()) {
+        if (vec >= IRQ_BASE and vec != lapic.SPURIOUS_VECTOR) lapic.eoi();
+    } else if (vec >= IRQ_BASE and vec < IRQ_BASE + 16) {
+        const irq = vec - IRQ_BASE;
+        if (irq >= 8) port.outb(0xA0, 0x20);
+        port.outb(0x20, 0x20);
     }
 
     // Preemption happens here rather than inside the handler: the interrupt
@@ -148,6 +152,20 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
     // came from, which is how the scheduler knows the thread holds no kernel
     // state and can be ended here.
     @import("../../kernel/sched.zig").onInterruptExit(frame.cs & 3 == 3);
+}
+
+/// Which unclaimed vectors have already been complained about, so a storm
+/// costs one line rather than a screenful.
+var complained: [256]bool = @splat(false);
+
+fn quietUnclaimed(vec: u8) void {
+    for (gsi_vector, 0..) |v, gsi| {
+        if (v == vec) setGsiMask(@intCast(gsi), true);
+    }
+
+    if (complained[vec]) return;
+    complained[vec] = true;
+    @import("../../kernel/console.zig").fail("vector {x} has no handler; its line is masked", .{vec});
 }
 
 fn setGate(vec: u8, handler: *const anyopaque, dpl: u2, gate_type: GateType) void {
@@ -291,6 +309,17 @@ pub fn claimGsi(gsi: u32, handler: Handler) ?u8 {
 pub fn releaseGsi(gsi: u32) void {
     setGsiMask(gsi, true);
     if (gsi < MAX_GSI and gsi_vector[gsi] != 0) unsetHandler(gsi_vector[gsi]);
+}
+
+/// Where a firmware-described interrupt number actually lands.
+///
+/// The sixteen legacy numbers are what a driver reads out of a table the
+/// firmware wrote, and the firmware may have moved any of them: the FADT says
+/// the system control interrupt is 9 whether it arrives on line 9 or not.
+/// Everything above the legacy range names a line directly.
+pub fn resolveIrq(number: u32) u32 {
+    if (number >= irq_mod.MAX_LINES) return number;
+    return routing.resolve(@intCast(number)).gsi;
 }
 
 /// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a

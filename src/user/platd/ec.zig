@@ -47,10 +47,22 @@ pub fn driven() bool {
     return node != null and status_port != 0;
 }
 
-/// The status register's bits.
-const OBF: u8 = 1 << 0;
-const IBF: u8 = 1 << 1;
-const SCI_EVT: u8 = 1 << 5;
+/// The status register, as the specification lays it out.
+const EcStatus = packed struct(u8) {
+    /// The controller has a byte waiting to be read.
+    output_full: bool = false,
+    /// The controller has not yet taken the last byte written.
+    input_full: bool = false,
+    _2: u2 = 0,
+    _command: bool = false,
+    /// The query queue is not empty.
+    event: bool = false,
+    _6: u2 = 0,
+};
+
+fn status() EcStatus {
+    return @bitCast(ports.in8(status_port));
+}
 
 /// Commands the specification defines.
 const READ: u8 = 0x80;
@@ -69,30 +81,29 @@ const BREATHER_US = 50;
 /// "your byte is ready", only the status bit. The events it does offer, the
 /// query queue, arrive as interrupts and are waited on properly. So the bit is
 /// read, and between reads the thread yields rather than spins.
-fn wait(bit: u8, set: bool) bool {
+fn wait(comptime field: []const u8, set: bool) bool {
     const until = sys.clockMicros() + DEADLINE_US;
     while (true) {
-        const on = ports.in8(status_port) & bit != 0;
-        if (on == set) return true;
+        if (@field(status(), field) == set) return true;
         if (sys.clockMicros() >= until) return false;
         sys.sleepMicros(BREATHER_US);
     }
 }
 
 fn command(cmd: u8) bool {
-    if (!wait(IBF, false)) return false;
+    if (!wait("input_full", false)) return false;
     ports.out8(status_port, cmd);
     return true;
 }
 
 fn push(byte: u8) bool {
-    if (!wait(IBF, false)) return false;
+    if (!wait("input_full", false)) return false;
     ports.out8(data_port, byte);
     return true;
 }
 
 fn pull() ?u8 {
-    if (!wait(OBF, true)) return null;
+    if (!wait("output_full", true)) return null;
     return ports.in8(data_port);
 }
 
@@ -110,7 +121,7 @@ pub fn write(address: u8, value: u8) bool {
 
 /// Which event the controller is raising, or null when it is raising none.
 fn query() ?u8 {
-    if (ports.in8(status_port) & SCI_EVT == 0) return null;
+    if (!status().event) return null;
     if (!command(QUERY)) return null;
     const which = pull() orelse return null;
     // Zero is the controller saying the queue was empty after all.

@@ -34,6 +34,17 @@ pub fn sys_exit(a: Args) Result {
             console.debug("exit", "{s} (thread {d}) status {d}", .{ t.name(), t.id, status });
         }
     }
+    // The one process whose death is the machine's: everything else restarts
+    // under a supervisor, but the supervisor's own exit leaves nothing to
+    // restart anything, and a machine that silently sits is worse than one
+    // that says why. Userspace cannot draw the panic screen; dying as process
+    // one is the one way to reach it.
+    if (sched.currentThread()) |t| {
+        if (t.id == 1) {
+            @import("../panic.zig").kpanic("init exited", null);
+        }
+    }
+
     // Never returns: the thread is unlinked and the next one is switched in.
     // The abandoned interrupt frame goes with the dying thread's stack.
     sched.exitWith(status);
@@ -69,6 +80,12 @@ fn writePipe(end: handles.PipeEnd, buf: []const u8) Result {
 }
 
 fn writeConsole(number: u32, buf: []const u8) Result {
+    // One write comes out whole. Every process shares this console, and a
+    // write preempted mid-render leaves half a word from one program spliced
+    // into another's line.
+    sched.no_preempt = true;
+    defer sched.no_preempt = false;
+
     // Standard error is coloured so a failure stands out in a log that is
     // otherwise the only output this machine has.
     const is_err = number == abi.STDERR;
