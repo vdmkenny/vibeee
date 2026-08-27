@@ -196,6 +196,18 @@ fn bringUp() bool {
 
     if (!step("devices", uacpi.uacpi_namespace_initialize())) return false;
 
+    // The line is claimed first, while nothing has been enabled yet: which
+    // enablement the firmware's trap handler cannot survive is only visible
+    // when the claim and the enablements happen at different times.
+    if (glue.sci.arm()) {
+        log.begin("platd", .key);
+        out.text("system control interrupt live, line ");
+        out.decimal(glue.sci.line);
+        log.end();
+    } else {
+        log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
+    }
+
     // The bytecode learns its controller regions are answered, then the
     // vendor is told a driver is present. Both switch firmware off the
     // fallback paths it keeps for a machine with no operating system, and
@@ -225,22 +237,6 @@ fn bringUp() bool {
 
         ec.listen();
         backlight.check("with the controller listening");
-    }
-
-    // Before anything is evaluated, and this is the whole of why it is here.
-    // The global lock is held by the firmware and released by it raising the
-    // system control interrupt, so a method that takes the lock while nothing
-    // is listening waits for a release that cannot arrive and fails after
-    // sixty-five thousand attempts that all resolve in microseconds.
-    if (glue.sci.arm()) {
-        log.begin("platd", .key);
-        out.text("system control interrupt live, line ");
-        out.decimal(glue.sci.line);
-        log.end();
-        reportGlobalLock();
-        backlight.check("with the line live");
-    } else {
-        log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
     }
 
     // Only now, because both of these call methods.
