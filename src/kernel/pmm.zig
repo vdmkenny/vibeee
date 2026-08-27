@@ -61,6 +61,42 @@ inline fn clearBit(frame: usize) void {
 extern const __kernel_phys_start: anyopaque;
 extern const __kernel_phys_end: anyopaque;
 
+/// The ranges the firmware called ordinary memory.
+///
+/// Kept because "is this the allocator's?" and "is this in RAM?" are different
+/// questions, and only the first one is a reason to refuse a mapping. ACPI
+/// tables sit in RAM the firmware reserved: physically memory, never this
+/// allocator's, and a process that has to interpret them has to reach them.
+const Range = struct { start: usize, end: usize };
+
+/// More than any firmware of this era reports, and small enough to keep.
+const MAX_RANGES = 16;
+
+var usable_ranges: [MAX_RANGES]Range = @splat(.{ .start = 0, .end = 0 });
+var usable_count: usize = 0;
+
+fn remember(start: u64, end: u64) void {
+    if (usable_count == MAX_RANGES or end <= start) return;
+
+    usable_ranges[usable_count] = .{
+        .start = @intCast(@min(start, 0xFFFF_FFFF)),
+        .end = @intCast(@min(end, 0x1_0000_0000)),
+    };
+    usable_count += 1;
+}
+
+/// Whether any of `start..end` is memory this allocator hands out.
+///
+/// The test a mapping request has to pass, and the reason it is phrased this
+/// way rather than as "is it RAM": handing a process a frame the allocator
+/// believes it still owns is how two things come to write the same page.
+pub fn isManaged(start: usize, end: usize) bool {
+    for (usable_ranges[0..usable_count]) |r| {
+        if (start < r.end and end > r.start) return true;
+    }
+    return false;
+}
+
 pub fn init(bi: *const bootinfo.BootInfo) void {
     // Start with everything marked used; free only what the memory map says is
     // usable. Defaulting to "used" means an incomplete or absent memory map
@@ -71,8 +107,11 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
 
     var highest: usize = 0;
 
+    usable_count = 0;
+
     for (bi.memoryMap()) |r| {
         if (r.kind != .usable) continue;
+        remember(r.base, r.base +| r.len);
         // Ignore anything above 4 GiB: this CPU is 32-bit physical.
         const start_addr = r.base;
         const end_addr = @min(r.base +| r.len, 0x1_0000_0000);

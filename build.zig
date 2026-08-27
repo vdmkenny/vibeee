@@ -185,6 +185,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "init", .root = "src/user/init.zig" },
         .{ .name = "devmgd", .root = "src/user/devmgd/main.zig" },
         .{ .name = "cfgd", .root = "src/user/cfgd/main.zig" },
+        .{ .name = "platd", .root = "src/user/platd/main.zig" },
         .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },
         .{ .name = "tools", .root = "src/user/tools.zig" },
         .{ .name = "vsh", .root = "src/user/vsh.zig" },
@@ -192,6 +193,34 @@ pub fn build(b: *std.Build) void {
         .{ .name = "monitor", .root = "src/user/apps/monitor.zig" },
         .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
         .{ .name = "pad", .root = "src/user/apps/pad.zig" },
+    };
+
+    // platd carries uACPI, which is C. Compiled into the program rather than
+    // linked as an archive: it is one program's dependency, not the system's,
+    // and whole-program dead-code elimination gets to see all of it.
+    //
+    // `UACPI_PHYS_ADDR_IS_32BITS` because this machine is, and it saves
+    // 64-bit arithmetic on every address the interpreter touches.
+    const uacpi_sources = [_][]const u8{
+            "third_party/uacpi/source/default_handlers.c",
+            "third_party/uacpi/source/event.c",
+            "third_party/uacpi/source/interpreter.c",
+            "third_party/uacpi/source/io.c",
+            "third_party/uacpi/source/mutex.c",
+            "third_party/uacpi/source/namespace.c",
+            "third_party/uacpi/source/notify.c",
+            "third_party/uacpi/source/opcodes.c",
+            "third_party/uacpi/source/opregion.c",
+            "third_party/uacpi/source/osi.c",
+            "third_party/uacpi/source/registers.c",
+            "third_party/uacpi/source/resources.c",
+            "third_party/uacpi/source/shareable.c",
+            "third_party/uacpi/source/sleep.c",
+            "third_party/uacpi/source/stdlib.c",
+            "third_party/uacpi/source/tables.c",
+            "third_party/uacpi/source/types.c",
+            "third_party/uacpi/source/uacpi.c",
+            "third_party/uacpi/source/utilities.c",
     };
 
     var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
@@ -210,6 +239,20 @@ pub fn build(b: *std.Build) void {
                 .imports = &user_imports,
             }),
         });
+        if (comptime std.mem.eql(u8, program.name, "platd")) {
+            exe.root_module.addIncludePath(b.path("third_party/uacpi/include"));
+            exe.root_module.addCSourceFiles(.{
+                .files = &(uacpi_sources ++ [_][]const u8{"src/user/platd/abi.c"}),
+                .flags = &.{
+                    "-std=c11",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                    "-DUACPI_PHYS_ADDR_IS_32BITS",
+                    "-DUACPI_SIZED_FREES=0",
+                },
+            });
+        }
+
         exe.setLinkerScript(b.path("src/user/linker.ld"));
         exe.entry = .{ .symbol_name = "_start" };
         b.installArtifact(exe);

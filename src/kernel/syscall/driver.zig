@@ -15,6 +15,7 @@ const handles = @import("../handle.zig");
 const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
+const pmm = @import("../pmm.zig");
 const sched = @import("../sched.zig");
 
 const Args = ctx.Args;
@@ -88,15 +89,18 @@ pub fn sys_map_device(a: Args) Result {
     const len = a.a1;
     if (len == 0) return Errno.inval.value();
 
-    // Refusing anything inside RAM. A driver's aperture lives above it, and
-    // mapping RAM this way would hand a process memory the allocator believes
-    // it still owns.
-    if (hal.isLinearPhys(phys)) return Errno.inval.value();
-
     const t = sched.currentThread() orelse return Errno.perm.value();
 
     const base = std.mem.alignBackward(usize, phys, hal.PAGE_SIZE);
     const end = std.mem.alignForward(usize, phys + len, hal.PAGE_SIZE);
+
+    // Refusing the allocator's memory, which is not the same as refusing RAM.
+    // A device aperture lives above it and the firmware's tables live inside
+    // it: both are physically addressable and neither is the allocator's, and
+    // a process that has to read the tables cannot be told they are RAM and
+    // therefore out of bounds. What must never be handed over is a frame the
+    // allocator believes it still owns.
+    if (pmm.isManaged(base, end)) return Errno.inval.value();
 
     const at = t.shm_window.reserve(end - base) catch return Errno.nomem.value();
 

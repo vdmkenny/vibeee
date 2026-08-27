@@ -56,6 +56,7 @@ USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_DEVMGD := zig-out/bin/devmgd
 USER_CFGD := zig-out/bin/cfgd
+USER_PLATD := zig-out/bin/platd
 USER_TOOLS := zig-out/bin/tools
 USER_VSH   := zig-out/bin/vsh
 KERNEL_BIN := $(BUILD)/kernel.bin
@@ -137,6 +138,7 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
+	@$(MCOPY) -i $@ -o $(USER_PLATD) ::/bin/platd
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
