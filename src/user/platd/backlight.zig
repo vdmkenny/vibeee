@@ -141,7 +141,7 @@ fn standardDevice() ?*uacpi.Node {
 
 fn standardRead(node: *uacpi.Node) ?u32 {
     var value: u64 = 0;
-    if (uacpi.uacpi_eval_simple_integer(node, "_BQC", &value) != uacpi.OK) return null;
+    if (uacpi.uacpi_eval_simple_integer(node, "_BQC", &value) != .ok) return null;
     return @truncate(value);
 }
 
@@ -153,15 +153,15 @@ fn standardWrite(node: *uacpi.Node, level: u32) bool {
 /// two entries saying what the firmware uses on mains and on battery.
 fn standardMax(node: *uacpi.Node) u32 {
     var package: ?*uacpi.Object = null;
-    if (uacpi.uacpi_eval_simple_package(node, "_BCL", &package) != uacpi.OK) return 100;
+    if (uacpi.uacpi_eval_simple_package(node, "_BCL", &package) != .ok) return 100;
     defer uacpi.uacpi_object_unref(package);
 
     var levels: uacpi.ObjectArray = undefined;
-    if (uacpi.uacpi_object_get_package(package, &levels) != uacpi.OK) return 100;
+    if (uacpi.uacpi_object_get_package(package, &levels) != .ok) return 100;
     if (levels.count == 0) return 100;
 
     var highest: u64 = 0;
-    if (uacpi.uacpi_object_get_integer(levels.objects[levels.count - 1], &highest) != uacpi.OK) {
+    if (uacpi.uacpi_object_get_integer(levels.objects[levels.count - 1], &highest) != .ok) {
         return 100;
     }
     return @truncate(highest);
@@ -189,7 +189,7 @@ fn asusDevice() ?*uacpi.Node {
 
 fn asusRead(node: *uacpi.Node) ?u32 {
     var value: u64 = 0;
-    if (uacpi.uacpi_eval_simple_integer(node, "PBLG", &value) != uacpi.OK) return null;
+    if (uacpi.uacpi_eval_simple_integer(node, "PBLG", &value) != .ok) return null;
     return @truncate(value);
 }
 

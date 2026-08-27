@@ -246,6 +246,15 @@ pub const Press = extern struct {
     _reserved: [3]u8 = @splat(0),
     value: u32 = 0,
     device: [4]u8 = @splat(0),
+
+    /// The sender with the format's padding off: a namespace name is four
+    /// characters padded with underscores. Empty means no device sent it, so
+    /// it was one of the chipset's own buttons.
+    pub fn sender(self: *const Press) []const u8 {
+        var end = self.device.len;
+        while (end > 0 and (self.device[end - 1] == '_' or self.device[end - 1] == 0)) end -= 1;
+        return self.device[0..end];
+    }
 };
 
 pub const Rep = extern struct {

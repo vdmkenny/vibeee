@@ -66,7 +66,7 @@ fn show(press: platform.Press) void {
     out.pad(press.hotkey.label(), 20);
     ink.plain();
 
-    const device = trimmed(&press.device);
+    const device = press.sender();
     if (device.len == 0) {
         // A fixed event: the chipset raised it, and there is no device that
         // sent it and no number it sent.
@@ -79,11 +79,4 @@ fn show(press: platform.Press) void {
     out.text("  0x");
     out.hex(press.value, 2);
     out.byte('\n');
-}
-
-/// A namespace name is four characters padded with underscores.
-fn trimmed(name: []const u8) []const u8 {
-    var end = name.len;
-    while (end > 0 and (name[end - 1] == '_' or name[end - 1] == 0)) end -= 1;
-    return name[0..end];
 }

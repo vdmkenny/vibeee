@@ -16,9 +16,6 @@ const uacpi = @import("uacpi.zig");
 const Object = uacpi.Object;
 const Node = uacpi.Node;
 const ObjectArray = uacpi.ObjectArray;
-const OK = uacpi.OK;
-
-const STOP = uacpi.BREAK;
 
 /// What the ACPI specification calls a control-method battery.
 const BATTERY_HID = "PNP0C0A";
@@ -49,18 +46,11 @@ fn locate() ?*Node {
     if (looked) return found;
     looked = true;
 
-    _ = uacpi.uacpi_find_devices(BATTERY_HID, remember, null);
-    return found;
-}
-
-fn remember(_: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
     // The first is taken and the rest left alone. This machine has one bay,
     // and a second battery would want its own entry rather than to overwrite
     // the first.
-    if (found != null) return STOP;
-
-    found = node;
-    return STOP;
+    found = uacpi.firstWithHid(BATTERY_HID);
+    return found;
 }
 
 /// `_BIF`: what the pack was built as, and what it has come to.
@@ -70,11 +60,11 @@ fn remember(_: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
 /// and is not what somebody asking about health wants to know.
 fn readInfo(node: *Node, into: *proto.Battery) bool {
     var package: ?*Object = null;
-    if (uacpi.uacpi_eval_simple_package(node, "_BIF", &package) != OK) return false;
+    if (uacpi.uacpi_eval_simple_package(node, "_BIF", &package) != .ok) return false;
     defer uacpi.uacpi_object_unref(package);
 
     var fields: ObjectArray = undefined;
-    if (uacpi.uacpi_object_get_package(package, &fields) != OK) return false;
+    if (uacpi.uacpi_object_get_package(package, &fields) != .ok) return false;
     if (fields.count < 7) return false;
 
     // Element zero says which unit the capacities are in. Everything below is
@@ -93,11 +83,11 @@ fn readInfo(node: *Node, into: *proto.Battery) bool {
 /// `_BST`: what it is doing now.
 fn readState(node: *Node, into: *proto.Battery) bool {
     var package: ?*Object = null;
-    if (uacpi.uacpi_eval_simple_package(node, "_BST", &package) != OK) return false;
+    if (uacpi.uacpi_eval_simple_package(node, "_BST", &package) != .ok) return false;
     defer uacpi.uacpi_object_unref(package);
 
     var fields: ObjectArray = undefined;
-    if (uacpi.uacpi_object_get_package(package, &fields) != OK) return false;
+    if (uacpi.uacpi_object_get_package(package, &fields) != .ok) return false;
     if (fields.count < 4) return false;
 
     const flags = integer(fields, 0);
@@ -121,6 +111,6 @@ fn integer(fields: ObjectArray, index: usize) u64 {
     if (index >= fields.count) return 0;
 
     var value: u64 = 0;
-    if (uacpi.uacpi_object_get_integer(fields.objects[index], &value) != OK) return 0;
+    if (uacpi.uacpi_object_get_integer(fields.objects[index], &value) != .ok) return 0;
     return value;
 }

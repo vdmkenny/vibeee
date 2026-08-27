@@ -42,26 +42,26 @@ pub fn describe(index: u8, into: *proto.Device) proto.Status {
     return if (wanted.found) .ok else .end;
 }
 
-fn visit(_: ?*anyopaque, node: ?*uacpi.Node, depth: u32) callconv(.c) u32 {
+fn visit(_: ?*anyopaque, node: ?*uacpi.Node, depth: u32) callconv(.c) uacpi.Walk {
     // A child walk wants the named device's own children and not their
     // children in turn, which is a different question and a much longer answer.
-    if (!wanted.devices_only and depth > 1) return uacpi.CONTINUE;
+    if (!wanted.devices_only and depth > 1) return .proceed;
 
     // Everything under the root is offered, most of it the methods and values
     // that belong to a device rather than devices. Listing those would report
     // `_HID` as a thing the machine has.
-    if (wanted.devices_only and !uacpi.isDevice(node)) return uacpi.CONTINUE;
+    if (wanted.devices_only and !uacpi.isDevice(node)) return .proceed;
 
     if (wanted.seen != wanted.index) {
         wanted.seen += 1;
-        return uacpi.CONTINUE;
+        return .proceed;
     }
 
     const into = wanted.into;
     into.name = uacpi.namespace_node_name(node).text;
     into.methods = methodsOf(node);
     wanted.found = true;
-    return uacpi.BREAK;
+    return .stop;
 }
 
 /// One name under the device called `parent`.

@@ -15,17 +15,12 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const ports = @import("ulib").ports;
 const sys = @import("sys");
+const uacpi = @import("uacpi.zig");
+const work = @import("work.zig");
 
 /// uACPI's own numbering, which crosses the boundary as plain integers.
-const Status = enum(u32) {
-    ok = 0,
-    not_found = 6,
-    unimplemented = 8,
-
-    fn value(self: Status) u32 {
-        return @intFromEnum(self);
-    }
-};
+/// One status enum for the whole process, `uacpi.zig`'s.
+const Status = uacpi.Status;
 
 /// Its log levels, which run the other way from what a reader expects: one is
 /// the worst.
@@ -316,8 +311,16 @@ export fn uacpi_kernel_get_nanoseconds_since_boot() callconv(.c) u64 {
 // would be a syscall to discover that nothing else was waiting. Interrupts are
 // the kernel's and are not this process's to disable.
 
+/// Uncontended does not mean interchangeable. uACPI recognises the mutex that
+/// stands for the global lock by comparing handles, so every mutex must have
+/// its own: with one shared handle, acquiring any AML mutex acquires the
+/// firmware's global lock, and the next locked operation waits forever on a
+/// lock this process is holding. Never dereferenced, so a bare number serves.
+var next_mutex: usize = 1;
+
 export fn uacpi_kernel_create_mutex() callconv(.c) ?*anyopaque {
-    return &token;
+    next_mutex += 1;
+    return @ptrFromInt(next_mutex);
 }
 export fn uacpi_kernel_free_mutex(_: ?*anyopaque) callconv(.c) void {}
 export fn uacpi_kernel_acquire_mutex(_: ?*anyopaque, _: u16) callconv(.c) u32 {
@@ -532,19 +535,21 @@ export fn uacpi_kernel_uninstall_interrupt_handler(_: ?*anyopaque, _: ?*anyopaqu
     return Status.ok.value();
 }
 
-/// Run now rather than later. There is one thread, so deferring work would
-/// mean building a queue that only this could drain, and draining it is what
-/// the caller wanted anyway.
+/// Queued, never run here. The caller is the interpreter's own dispatch, and
+/// the work is AML: running it in place would enter the interpreter from
+/// inside itself. The serve loop drains the queue.
 export fn uacpi_kernel_schedule_work(
     _: u32,
     handler: ?*const fn (?*anyopaque) callconv(.c) void,
     ctx: ?*anyopaque,
 ) callconv(.c) u32 {
-    if (handler) |run| run(ctx);
-    return Status.ok.value();
+    const run = handler orelse return Status.ok.value();
+    return if (work.submit(run, ctx)) Status.ok.value() else Status.denied.value();
 }
 
+/// Called from the top of the loop, where running AML is allowed.
 export fn uacpi_kernel_wait_for_work_completion() callconv(.c) u32 {
+    work.drain();
     return Status.ok.value();
 }
 

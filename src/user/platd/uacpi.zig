@@ -18,11 +18,24 @@ pub const Name = extern union {
     id: u32,
 };
 
-pub const OK: c_uint = 0;
+/// What a call came to. Non-exhaustive: uACPI has more codes than this system
+/// acts on, and an unlisted one is still an error.
+pub const Status = enum(c_uint) {
+    ok = 0,
+    not_found = 6,
+    not_implemented = 8,
+    hardware_timeout = 17,
+    denied = 20,
+    _,
+
+    /// For the glue exports, whose ABI is the bare number.
+    pub fn value(self: Status) c_uint {
+        return @intFromEnum(self);
+    }
+};
 
 /// What a walk does next.
-pub const CONTINUE: u32 = 0;
-pub const BREAK: u32 = 1;
+pub const Walk = enum(u32) { proceed = 0, stop = 1 };
 
 pub extern fn uacpi_namespace_root() ?*Node;
 pub extern fn uacpi_namespace_node_name(node: ?*Node) Name;
@@ -31,28 +44,28 @@ pub extern fn uacpi_namespace_node_name(node: ?*Node) Name;
 /// one, and a walk that reported them would report `_HID` as a device.
 pub const DEVICE: u32 = 6;
 
-pub extern fn uacpi_namespace_node_type(node: ?*Node, out: *u32) c_uint;
+pub extern fn uacpi_namespace_node_type(node: ?*Node, out: *u32) Status;
 pub extern fn uacpi_namespace_node_find(
     parent: ?*Node,
     path: [*:0]const u8,
     out: *?*Node,
-) c_uint;
+) Status;
 pub extern fn uacpi_namespace_for_each_child_simple(
     parent: ?*Node,
-    callback: *const fn (?*anyopaque, ?*Node, u32) callconv(.c) u32,
+    callback: *const fn (?*anyopaque, ?*Node, u32) callconv(.c) Walk,
     user: ?*anyopaque,
-) c_uint;
+) Status;
 
 pub extern fn uacpi_find_devices(
     hid: [*:0]const u8,
-    callback: *const fn (?*anyopaque, ?*Node, u32) callconv(.c) u32,
+    callback: *const fn (?*anyopaque, ?*Node, u32) callconv(.c) Walk,
     user: ?*anyopaque,
-) c_uint;
+) Status;
 
-pub extern fn uacpi_eval_simple_package(parent: ?*Node, path: [*:0]const u8, ret: *?*Object) c_uint;
-pub extern fn uacpi_eval_simple_integer(parent: ?*Node, path: [*:0]const u8, ret: *u64) c_uint;
-pub extern fn uacpi_object_get_package(object: ?*Object, out: *ObjectArray) c_uint;
-pub extern fn uacpi_object_get_integer(object: ?*Object, out: *u64) c_uint;
+pub extern fn uacpi_eval_simple_package(parent: ?*Node, path: [*:0]const u8, ret: *?*Object) Status;
+pub extern fn uacpi_eval_simple_integer(parent: ?*Node, path: [*:0]const u8, ret: *u64) Status;
+pub extern fn uacpi_object_get_package(object: ?*Object, out: *ObjectArray) Status;
+pub extern fn uacpi_object_get_integer(object: ?*Object, out: *u64) Status;
 pub extern fn uacpi_object_unref(object: ?*Object) void;
 pub extern fn uacpi_object_create_integer(value: u64) ?*Object;
 pub extern fn uacpi_eval(
@@ -60,7 +73,7 @@ pub extern fn uacpi_eval(
     path: [*:0]const u8,
     args: ?*const ObjectArray,
     ret: ?*?*Object,
-) c_uint;
+) Status;
 
 /// Call a method with one integer, which is every setter this system uses:
 /// the firmware's own convention is a name ending in S taking a value.
@@ -71,7 +84,7 @@ pub fn callWith(node: ?*Node, path: [*:0]const u8, value: u64) bool {
     var one = [_]?*Object{argument};
     const args = ObjectArray{ .objects = &one, .count = 1 };
 
-    return uacpi_eval(node, path, &args, null) == OK;
+    return uacpi_eval(node, path, &args, null) == .ok;
 }
 
 // Shorter names for the ones used often enough that the prefix is noise.
@@ -89,9 +102,9 @@ pub const namespace_for_each_child_simple = uacpi_namespace_for_each_child_simpl
 /// A handler on the root receives every one of them, whichever device sent it.
 pub extern fn uacpi_install_notify_handler(
     node: ?*Node,
-    handler: *const fn (?*anyopaque, ?*Node, u64) callconv(.c) c_uint,
+    handler: *const fn (?*anyopaque, ?*Node, u64) callconv(.c) Status,
     context: ?*anyopaque,
-) c_uint;
+) Status;
 
 /// The buttons wired to the chipset rather than to a device.
 ///
@@ -110,16 +123,107 @@ pub extern fn uacpi_install_fixed_event_handler(
     event: FixedEvent,
     handler: *const fn (?*anyopaque) callconv(.c) u32,
     user: ?*anyopaque,
-) c_uint;
+) Status;
 
 pub const INTERRUPT_HANDLED: u32 = 1;
+pub const GPE_REENABLE: u32 = 1 << 7;
+
+/// How a general-purpose event announces itself.
+pub const Triggering = enum(c_uint) { level = 0, edge = 1 };
+
+pub extern fn uacpi_install_gpe_handler(
+    device: ?*Node,
+    idx: u16,
+    triggering: Triggering,
+    handler: *const fn (?*anyopaque, ?*Node, u16) callconv(.c) u32,
+    context: ?*anyopaque,
+) Status;
+pub extern fn uacpi_enable_gpe(device: ?*Node, idx: u16) Status;
+
+// ---------------------------------------------------------------------------
+// Operation regions
+// ---------------------------------------------------------------------------
+//
+// An operation region is a promise: AML declares that a field lives in some
+// address space, and the host moves the actual bytes. Installing a handler is
+// how the promise is kept, and uACPI evaluates `_REG` on installation so the
+// DSDT knows it is being kept.
+
+pub const SPACE_EMBEDDED_CONTROLLER: c_uint = 3;
+
+/// What uACPI is asking a region handler to do. Non-exhaustive: the serial
+/// and vendor spaces have their own operations, and an unhandled one is
+/// answered `not_implemented` rather than being a missing case.
+pub const RegionOp = enum(u32) {
+    attach = 0,
+    detach = 1,
+    read = 2,
+    write = 3,
+    _,
+};
+
+pub const RegionRw = extern struct {
+    handler_context: ?*anyopaque,
+    region_context: ?*anyopaque,
+    offset: u64 align(4),
+    value: u64 align(4),
+    byte_width: u8,
+};
+
+pub extern fn uacpi_install_address_space_handler(
+    device: ?*Node,
+    space: c_uint,
+    handler: *const fn (op: RegionOp, data: ?*anyopaque) callconv(.c) Status,
+    context: ?*anyopaque,
+) Status;
+
+// ---------------------------------------------------------------------------
+// Resources
+// ---------------------------------------------------------------------------
+
+/// The kinds of resource a `_CRS` can carry. Non-exhaustive: only the ports
+/// are read here, and the rest walk past.
+pub const ResourceKind = enum(u32) {
+    io = 4,
+    fixed_io = 5,
+    _,
+};
+
+pub const ResourceIo = extern struct {
+    decode_type: u8,
+    minimum: u16,
+    maximum: u16,
+    alignment: u8,
+    length: u8,
+};
+
+pub const ResourceFixedIo = extern struct {
+    address: u16,
+    length: u8,
+};
+
+pub const Resource = extern struct {
+    kind: ResourceKind,
+    length: u32,
+    body: extern union {
+        io: ResourceIo,
+        fixed_io: ResourceFixedIo,
+    },
+};
+
+pub extern fn uacpi_for_each_device_resource(
+    device: ?*Node,
+    method: [*:0]const u8,
+    callback: *const fn (?*anyopaque, *const Resource) callconv(.c) Walk,
+    user: ?*anyopaque,
+) Status;
 
 /// The fixed description table, which says which of those buttons exist.
 ///
 /// A fixed-layout table rather than bytecode, so unlike everything else here it
 /// is read at an offset instead of evaluated. `flags` has been where the
 /// specification puts it since ACPI 1.0.
-pub extern fn uacpi_table_fadt(out: *?*const anyopaque) c_uint;
+pub extern fn uacpi_table_fadt(out: *?*const anyopaque) Status;
 
 pub const FADT_FLAGS = 112;
 
@@ -173,7 +277,7 @@ pub extern fn uacpi_kernel_map(phys: u32, len: usize) ?[*]u8;
 
 fn fadtBytes() ?[*]const u8 {
     var fadt: ?*const anyopaque = null;
-    if (uacpi_table_fadt(&fadt) != OK) return null;
+    if (uacpi_table_fadt(&fadt) != .ok) return null;
     return @ptrCast(fadt orelse return null);
 }
 
@@ -206,13 +310,13 @@ const Probe = struct {
     found: ?*Node = null,
 };
 
-fn matchMethod(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
+fn matchMethod(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
     const probe: *Probe = @alignCast(@ptrCast(user.?));
-    if (!isDevice(node)) return CONTINUE;
-    if (!has(node, probe.method)) return CONTINUE;
+    if (!isDevice(node)) return .proceed;
+    if (!has(node, probe.method)) return .proceed;
 
     probe.found = node;
-    return BREAK;
+    return .stop;
 }
 
 /// The device the firmware identifies by a hardware id.
@@ -225,10 +329,10 @@ pub fn firstWithHid(hid: [*:0]const u8) ?*Node {
     return found;
 }
 
-fn keepFirst(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
+fn keepFirst(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
     const found: *?*Node = @alignCast(@ptrCast(user.?));
     found.* = node;
-    return BREAK;
+    return .stop;
 }
 
 /// The node called `name`, wherever it sits. Any node, not only a device: a
@@ -246,14 +350,14 @@ const ByName = struct {
     found: ?*Node = null,
 };
 
-fn matchName(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
+fn matchName(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
     const by: *ByName = @alignCast(@ptrCast(user.?));
 
     const name = namespace_node_name(node).text;
-    if (!sameName(&name, by.wanted)) return CONTINUE;
+    if (!sameName(&name, by.wanted)) return .proceed;
 
     by.found = node;
-    return BREAK;
+    return .stop;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +387,7 @@ pub fn trimmed(name: []const u8) []const u8 {
 /// Whether this node is a device rather than something belonging to one.
 pub fn isDevice(node: ?*Node) bool {
     var kind: u32 = 0;
-    if (uacpi_namespace_node_type(node, &kind) != OK) return false;
+    if (uacpi_namespace_node_type(node, &kind) != .ok) return false;
     return kind == DEVICE;
 }
 
@@ -293,5 +397,5 @@ pub fn isDevice(node: ?*Node) bool {
 /// asking before writing a driver around one.
 pub fn has(node: ?*Node, name: [*:0]const u8) bool {
     var found: ?*Node = null;
-    return uacpi_namespace_node_find(node, name, &found) == OK;
+    return uacpi_namespace_node_find(node, name, &found) == .ok;
 }

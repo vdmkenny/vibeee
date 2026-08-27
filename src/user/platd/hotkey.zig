@@ -74,7 +74,7 @@ pub fn listen() void {
     // On the root rather than on each of them. A handler there receives every
     // notification, which is what makes a device nobody thought of still
     // audible.
-    if (uacpi.uacpi_install_notify_handler(uacpi.namespace_root(), arrived, null) != uacpi.OK) {
+    if (uacpi.uacpi_install_notify_handler(uacpi.namespace_root(), arrived, null) != .ok) {
         log.warn("platd", "no hotkeys; the firmware would not take a notify handler");
         return;
     }
@@ -86,7 +86,7 @@ pub fn listen() void {
     const flags = uacpi.fadtFlags();
     for (buttons) |b| {
         if (flags & b.is_device != 0) continue;
-        if (uacpi.uacpi_install_fixed_event_handler(b.event, b.handler, null) == uacpi.OK) {
+        if (uacpi.uacpi_install_fixed_event_handler(b.event, b.handler, null) == .ok) {
             heard += 1;
         }
     }
@@ -202,7 +202,7 @@ const BRIGHTNESS_LAST = 0x2f;
 /// calling a method from inside a notify is asking the interpreter to re-enter
 /// itself while it is holding a node it is still walking. What this service
 /// owes the panel is counted and paid on the serve loop instead.
-fn arrived(_: ?*anyopaque, node: ?*uacpi.Node, value: u64) callconv(.c) c_uint {
+fn arrived(_: ?*anyopaque, node: ?*uacpi.Node, value: u64) callconv(.c) uacpi.Status {
     const name = uacpi.namespace_node_name(node);
 
     var press = proto.Press{ .value = @truncate(value), .device = name.text };
@@ -217,7 +217,7 @@ fn arrived(_: ?*anyopaque, node: ?*uacpi.Node, value: u64) callconv(.c) c_uint {
     push(press);
 
     if (event != 0) _ = sys.eventSignal(event);
-    return uacpi.OK;
+    return .ok;
 }
 
 fn unnamed(press: proto.Press) void {

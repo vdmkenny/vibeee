@@ -16,6 +16,7 @@
 const glue = @import("glue.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const str = @import("ulib").str;
 const sys = @import("sys");
 
 /// uACPI's own entry points. The rest of it reaches back through `glue`.
@@ -27,6 +28,7 @@ extern fn uacpi_prepare_for_sleep_state(state: c_uint) c_uint;
 extern fn uacpi_enter_sleep_state(state: c_uint) c_uint;
 extern fn uacpi_reboot() c_uint;
 extern fn uacpi_finalize_gpe_initialization() c_uint;
+extern fn uacpi_context_set_loop_timeout(seconds: u32) void;
 
 /// uACPI numbers the sleep states from S0.
 const S5: c_uint = 5;
@@ -81,22 +83,27 @@ var ready = false;
 /// the handler uACPI installed runs here rather than in interrupt context: an
 /// AML method can take milliseconds and there is one thread to run it on.
 fn serve(channel: u32) noreturn {
-    var sources: [2]u32 = undefined;
+    var sources: [3]u32 = undefined;
 
     while (true) {
         drain(channel);
         if (glue.sci.attached()) glue.sci.service();
 
-        // What the firmware said while that ran. Off the handler on purpose:
-        // acting on a key means calling a method, and the handler runs inside
-        // the interpreter that would have to be called.
+        // What the interrupt queued, and then what the firmware said. Both
+        // run here and not in the handler: they are AML, and the handler runs
+        // inside the interpreter that would have to be entered.
+        work.drain();
         hotkey.apply();
 
         var count: usize = 1;
         sources[0] = channel;
         if (glue.sci.attached()) {
-            sources[1] = glue.sci.event;
-            count = 2;
+            sources[count] = glue.sci.event;
+            count += 1;
+        }
+        if (work.event != 0) {
+            sources[count] = work.event;
+            count += 1;
         }
         _ = sys.waitMany(sources[0..count], sys.FOREVER);
     }
@@ -173,9 +180,11 @@ fn restart() proto.Status {
 
 const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
+const ec = @import("ec.zig");
 const hotkey = @import("hotkey.zig");
 const namespace = @import("namespace.zig");
 const uacpi = @import("uacpi.zig");
+const work = @import("work.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
 
@@ -185,16 +194,37 @@ const std = @import("std");
 /// namespace built from them, and then the `_INI` methods that let the
 /// firmware set itself up now that somebody is listening.
 fn bringUp() bool {
+    work.init();
+
+    // A While loop in AML is firmware code with no supervisor. The interpreter
+    // aborts one that outlives this bound, so a controller that stops
+    // answering costs a refused method rather than the machine.
+    uacpi_context_set_loop_timeout(LOOP_TIMEOUT_S);
+
     if (!step("tables", uacpi_initialize(0))) return false;
     reportGlobalLock();
     if (!step("namespace", uacpi_namespace_load())) return false;
+
+    // Before the namespace is initialised, so `_INI` methods already run with
+    // a driven controller. Half of this machine is behind it.
+    ec.bind();
+
     if (!step("devices", uacpi_namespace_initialize())) return false;
 
     // The general-purpose events, which is what the system control interrupt
     // carries. Finalised before the line is made live, because a handler that
     // has not been told about a GPE cannot clear the one that fired and the
     // interrupt simply arrives again.
-    _ = step("events", uacpi_finalize_gpe_initialization());
+    //
+    // Left off entirely when there is a controller nobody drives: its event
+    // fires with nobody able to drain the query queue behind it, and a line
+    // that cannot be quieted is a machine that does nothing else.
+    if (ec.present() and !ec.driven()) {
+        log.warn("platd", "events stay off; the embedded controller is not driven");
+    } else {
+        _ = step("events", uacpi_finalize_gpe_initialization());
+        ec.listen();
+    }
 
     // Before anything is evaluated, and this is the whole of why it is here.
     // The global lock is held by the firmware and released by it raising the
@@ -214,6 +244,9 @@ fn bringUp() bool {
     log.note("platd", "firmware ready");
     return true;
 }
+
+/// Seconds an AML loop may run before the interpreter gives up on it.
+const LOOP_TIMEOUT_S = 5;
 
 /// Say so when the global lock is held at start-up.
 ///
@@ -241,14 +274,7 @@ fn step(what: []const u8, status: c_uint) bool {
     log.begin("platd", .bad);
     out.text(what);
     out.text(": ");
-    out.text(span(uacpi_status_to_string(status)));
+    out.text(str.span(uacpi_status_to_string(status)));
     log.end();
     return false;
 }
-
-fn span(text: [*:0]const u8) []const u8 {
-    var n: usize = 0;
-    while (text[n] != 0) n += 1;
-    return text[0..n];
-}
-
