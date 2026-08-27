@@ -50,7 +50,11 @@ pub const Handover = packed struct(u32) {
     _rest: u20 = 0,
 };
 
-const TAKEN = Handover{ .wlan = true, .display_switch = true };
+/// Nothing is taken, on this machine: the handover bits arm the vendor's
+/// trap handler, and the trap handlers are what stop returning. The keys
+/// stay on the firmware's side, where they do not hang the boot, until each
+/// feature is driven for itself and its trap is known safe.
+const TAKEN = Handover{};
 
 /// What `CMSG` answers: which of the vendor's fixed feature list this unit
 /// has. The list is the vendor's and does not vary; which bits are set does,
