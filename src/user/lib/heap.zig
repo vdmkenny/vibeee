@@ -7,7 +7,9 @@
 //!
 //! Size-class free lists carved from arenas. Sixteen classes from 16 bytes to
 //! 2 KiB, because that covers what ported code actually asks for; anything
-//! larger gets its own pages and is given back when freed.
+//! larger gets its own segment and is kept on a list for reuse when it comes
+//! back, so a caller that allocates one size repeatedly pays for the segment
+//! once.
 //!
 //! The arenas come from shared-memory segments, which is the only anonymous
 //! memory a process can ask for. Mapped private and never handed to anybody,
@@ -51,15 +53,30 @@ var arena_size: usize = ARENA_FIRST;
 const Header = extern struct {
     /// The class it came from, or `OWN_SEGMENT` for a block with its own pages.
     class: u32,
-    /// Padding to the alignment every block promises.
+    /// For a block with its own segment: how many bytes its payload holds.
     ///
     /// Sixteen bytes to hold four is waste, and it is the cheaper of the two
     /// mistakes available: the alternative is handing back a pointer four
     /// bytes past an aligned block, and this target has SSE, so the first
-    /// aligned store into anything allocated would fault.
+    /// aligned store into anything allocated would fault. The spare half of
+    /// the field is where a large block's size is written, so a freed large
+    /// block can be handed back out whole.
+
     _reserved: [CLASS_MIN - 4]u8,
 
     const OWN_SEGMENT: u32 = 0xFFFF_FFFF;
+
+    fn capacity(self: *const Header) usize {
+        return self._reserved[0] | (@as(usize, self._reserved[1]) << 8) |
+            (@as(usize, self._reserved[2]) << 16) | (@as(usize, self._reserved[3]) << 24);
+    }
+
+    fn setCapacity(self: *Header, bytes: usize) void {
+        self._reserved[0] = @truncate(bytes);
+        self._reserved[1] = @truncate(bytes >> 8);
+        self._reserved[2] = @truncate(bytes >> 16);
+        self._reserved[3] = @truncate(bytes >> 24);
+    }
 };
 
 const Free = extern struct {
@@ -115,12 +132,57 @@ pub fn alloc(size: usize) ?*anyopaque {
 }
 
 /// A block of its own, for a request no class serves.
+///
+/// Freed large blocks are kept on a list and handed back out, rather than
+/// let go as the classes' blocks are. A class's block is always the full
+/// width of its class and comes back as the same request it left; a large
+/// block is whatever its original request was, and a caller that asked for
+/// three kilobytes once will ask for three kilobytes forever. Letting one go
+/// means only that the next identical request pays for a new segment and a
+/// new handle, and an interpreter churning its work buffers walks straight
+/// into the process's handle limit and dies of "out of memory" with the
+/// machine's own memory untouched. First fit, not best fit: with a handful
+/// of live large blocks, walking order costs less than fragmenting.
 fn ownSegment(wanted: usize) ?*anyopaque {
+    // What the caller needs to hold, which is what a reused segment's
+    // capacity is measured in.
+    const want_payload = wanted - @sizeOf(Header);
+
+    var node: *Free = undefined;
+    var prev: ?*Free = null;
+
+    var at = large_blocks;
+    while (at) |candidate| {
+        node = candidate;
+        if (headerOf(node).capacity() >= want_payload) {
+            if (prev) |p| p.next = node.next else large_blocks = node.next;
+            headerOf(node).class = Header.OWN_SEGMENT;
+            return @ptrCast(@as([*]u8, @ptrCast(node)) + @sizeOf(Header));
+        }
+        prev = candidate;
+        at = node.next;
+    }
+
     const block = fromKernel(wanted) orelse return null;
 
     const header: *Header = @alignCast(@ptrCast(block));
     header.class = Header.OWN_SEGMENT;
+    header.setCapacity(segmentPayload(wanted));
     return @ptrCast(block + @sizeOf(Header));
+}
+
+/// Freed blocks of their own pages, first fit.
+var large_blocks: ?*Free = null;
+
+fn headerOf(node: *Free) *Header {
+    return @alignCast(@ptrCast(node));
+}
+
+/// The payload of a whole segment: what was requested, minus the header at
+/// its front. What a freed segment can hold again is that payload, not the
+/// raw request, because the header is part of the segment either way.
+fn segmentPayload(wanted: usize) usize {
+    return wanted - @sizeOf(Header);
 }
 
 /// One block of `width`, from the class's list or from the arena.
@@ -157,12 +219,17 @@ pub fn release(pointer: ?*anyopaque) void {
     // read back afterwards is a pointer being used as an index.
     const class = header.class;
 
-    // A block with its own segment is simply let go: the pages stay mapped
-    // until the process ends, which for a program that allocates a few large
-    // things and exits is the same outcome as unmapping and cheaper to reach.
-    if (class == Header.OWN_SEGMENT) return;
-
     const node: *Free = @alignCast(@ptrCast(block - @sizeOf(Header)));
+
+    // A block with its own segment joins the large list: the pages stay
+    // mapped, the handle stays open, and the next large request takes the
+    // block back off rather than paying for both again.
+    if (class == Header.OWN_SEGMENT) {
+        node.next = large_blocks;
+        large_blocks = node;
+        return;
+    }
+
     node.next = lists[class];
     lists[class] = node;
 }
@@ -198,7 +265,7 @@ pub fn resize(pointer: ?*anyopaque, size: usize) ?*anyopaque {
     // Never more than the old block held, whatever the new size is: growing an
     // allocation is not permission to read past the end of the old one.
     const carry = if (header.class == Header.OWN_SEGMENT)
-        size
+        @min(size, header.capacity())
     else
         @min(size, widthOf(header.class) - @sizeOf(Header));
 
@@ -245,6 +312,6 @@ fn vtableFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void 
 /// How much a block can hold, read from the header it carries.
 fn widthOfBlock(pointer: [*]u8) usize {
     const header: *Header = @alignCast(@ptrCast(pointer - @sizeOf(Header)));
-    if (header.class == Header.OWN_SEGMENT) return 0;
+    if (header.class == Header.OWN_SEGMENT) return header.capacity();
     return widthOf(header.class) - @sizeOf(Header);
 }
