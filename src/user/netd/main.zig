@@ -150,11 +150,16 @@ fn attach(iface: *dev.NicDev) bool {
             }
         }
         if (!shared) {
-            iface.irq = sys.irqAttach(line) catch {
+            iface.irq = sys.irqAttach(line, .pci) catch {
                 log.warn("netd", "the interrupt line refused to attach");
                 return false;
             };
         }
+    } else {
+        // An adapter with no line still opens; it just never hears anything.
+        // Worth a line of its own, because everything after looks like a
+        // silent wire.
+        log.warn("netd", "the firmware assigned no interrupt line");
     }
 
     if (!iface.ops.open(iface.location, iface)) {

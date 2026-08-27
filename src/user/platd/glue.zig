@@ -565,7 +565,7 @@ pub const Line = struct {
     pub fn arm(self: *Line) bool {
         if (self.handler == null or self.event != 0) return false;
 
-        self.event = sys.irqAttach(self.line) catch return false;
+        self.event = sys.irqAttach(self.line, .isa) catch return false;
         return true;
     }
 

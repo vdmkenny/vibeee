@@ -49,7 +49,7 @@ fn list() void {
 /// A line the kernel is already serving is refused rather than stolen: two
 /// handlers on one line means whichever ran second finds it already masked.
 fn take(gsi: usize) void {
-    const handle = sys.irqAttach(@intCast(gsi)) catch |err| {
+    const handle = sys.irqAttach(@intCast(gsi), .isa) catch |err| {
         out.text("irq ");
         out.decimal(gsi);
         out.text(switch (err) {

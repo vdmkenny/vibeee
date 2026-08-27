@@ -320,9 +320,25 @@ pub fn releaseGsi(gsi: u32) void {
 /// firmware wrote, and the firmware may have moved any of them: the FADT says
 /// the system control interrupt is 9 whether it arrives on line 9 or not.
 /// Everything above the legacy range names a line directly.
-pub fn resolveIrq(number: u32) u32 {
-    if (number >= irq_mod.MAX_LINES) return number;
-    return routing.resolve(@intCast(number)).gsi;
+pub fn resolveIrq(number: u32) irq_mod.Line {
+    if (number >= irq_mod.MAX_LINES) return .{ .irq = 0, .gsi = number };
+    return routing.resolve(@intCast(number));
+}
+
+/// Whether the firmware's override table described this legacy number.
+pub fn irqDescribed(number: u32) bool {
+    if (number >= irq_mod.MAX_LINES) return false;
+    return routing.describedLine(@intCast(number)) != null;
+}
+
+/// Make a line's redirection entry match `line`, touching the controller
+/// only when it disagrees: a rewrite carries no information when the entry
+/// already says this, and on this machine the firmware notices the touch.
+pub fn programGsi(line: irq_mod.Line) void {
+    if (!ioapic.active() or line.gsi >= MAX_GSI) return;
+    const vector = gsi_vector[line.gsi];
+    if (vector == 0) return;
+    ioapic.correct(line.gsi, vector, line.active_low, line.level, lapic.id());
 }
 
 /// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a
