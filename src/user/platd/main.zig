@@ -156,6 +156,8 @@ fn bringUp() bool {
     // interrupt simply arrives again.
     _ = step("events", uacpi_finalize_gpe_initialization());
 
+    backlight.report();
+
     if (glue.sci.arm()) {
         out.text("platd: system control interrupt live\n");
     }

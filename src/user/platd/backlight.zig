@@ -8,11 +8,16 @@
 //! would have to, and they would disagree the first time one of them was
 //! written against a machine the other had not seen.
 
+const out = @import("ulib").out;
 const proto = @import("proto").platform;
 const uacpi = @import("uacpi.zig");
 
 /// How a machine offers brightness.
 const Backend = struct {
+    /// What to call it in the boot log. Which one was picked is the first
+    /// thing worth knowing when the panel does not dim, and inferring it from
+    /// silence is how an afternoon goes.
+    name: []const u8,
     /// Whether this machine has it, and where. Sets `where` when it does.
     find: *const fn () ?*uacpi.Node,
     read: *const fn (node: *uacpi.Node) ?u32,
@@ -25,8 +30,8 @@ const Backend = struct {
 /// knowing anything about who made it. The vendor's own is the fallback, and on
 /// the Eee PC it is the only one: the panel there offers no `_BCM` at all.
 const backends = [_]Backend{
-    .{ .find = &standardDevice, .read = &standardRead, .write = &standardWrite, .max = 0 },
-    .{ .find = &asusDevice, .read = &asusRead, .write = &asusWrite, .max = ASUS_MAX },
+    .{ .name = "standard", .find = &standardDevice, .read = &standardRead, .write = &standardWrite, .max = 0 },
+    .{ .name = "asus", .find = &asusDevice, .read = &asusRead, .write = &asusWrite, .max = ASUS_MAX },
 };
 
 /// A backend and the device it drives, found once and kept: the namespace does
@@ -50,6 +55,43 @@ fn pick() ?Chosen {
         }
     }
     return null;
+}
+
+/// Say which way this machine offers it, once, at start-up.
+///
+/// Probed here rather than on the first request so the answer is in the boot
+/// log whether or not anybody asks: a machine whose panel will not dim should
+/// not have to be interrogated to find out that nothing claimed it.
+pub fn report() void {
+    const found = pick() orelse {
+        out.text("platd: no backlight; neither _BCM nor a vendor method\n");
+        out.flush();
+        return;
+    };
+
+    out.text("platd: backlight via ");
+    out.text(found.backend.name);
+    out.text(" on ");
+    out.text(trimmed(&uacpi.namespace_node_name(found.node).text));
+
+    // The range too, because it is the thing a caller has to know and the one
+    // number that differs between the two ways of doing this.
+    var panel = proto.Backlight{};
+    if (read(&panel) == .ok and panel.isPresent()) {
+        out.text(", level ");
+        out.decimal(panel.level);
+        out.text(" of ");
+        out.decimal(panel.max);
+    }
+    out.byte('\n');
+    out.flush();
+}
+
+/// A namespace name is four characters padded with underscores.
+fn trimmed(name: []const u8) []const u8 {
+    var end = name.len;
+    while (end > 0 and (name[end - 1] == '_' or name[end - 1] == 0)) end -= 1;
+    return name[0..end];
 }
 
 pub fn read(into: *proto.Backlight) proto.Status {
