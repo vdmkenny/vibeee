@@ -36,13 +36,12 @@ const CLEAR = 0x0C;
 const MAX_COLUMNS = 128;
 
 pub fn run(args: []const []const u8) void {
-    if (args.len == 0) {
-        out.text("usage: page <file>\n");
-        out.flush();
-        return;
-    }
+    // With no argument the text comes from whatever is feeding standard
+    // input, which is what makes `log | page` work and is most of what a
+    // pager is for on a console that does not scroll back.
+    const from: []const u8 = if (args.len > 0) args[0] else STDIN;
 
-    if (!load(args[0])) return;
+    if (!load(from)) return;
     index();
 
     // The whole screen, and the shell's scrollback put aside rather than
@@ -57,7 +56,7 @@ pub fn run(args: []const []const u8) void {
 
     var top: usize = 0;
     while (true) {
-        draw(top, window, args[0]);
+        draw(top, window, from);
         switch (command()) {
             .quit => break,
             .down => top = forward(top, 1, window),
@@ -72,19 +71,26 @@ pub fn run(args: []const []const u8) void {
 
 }
 
-fn load(path: []const u8) bool {
-    const handle = sys.open(path, .{});
-    if (handle < 0) {
+/// What the status bar calls the stream when there is no file behind it.
+const STDIN = "standard input";
+
+fn load(from: []const u8) bool {
+    const handle = open(from) orelse {
         out.text("page: ");
-        out.text(path);
+        out.text(from);
         out.text(": cannot open\n");
         out.flush();
         return false;
-    }
-    defer _ = sys.close(@intCast(handle));
+    };
+    defer if (handle != sys.STDIN) {
+        _ = sys.close(handle);
+    };
 
+    // Everything at once, before the screen is taken. A pager that read as it
+    // scrolled could not say how many lines there are, and a pipe cannot be
+    // rewound to count them later.
     while (filled < text.len) {
-        const n = sys.read(@intCast(handle), text[filled..]);
+        const n = sys.read(handle, text[filled..]);
         if (n <= 0) break;
         filled += @intCast(n);
     }
@@ -92,6 +98,13 @@ fn load(path: []const u8) bool {
     // A read that filled the buffer may have left more behind it.
     truncated = filled == text.len;
     return true;
+}
+
+fn open(from: []const u8) ?u32 {
+    if (str.eql(from, STDIN)) return sys.STDIN;
+
+    const handle = sys.open(from, .{});
+    return if (handle < 0) null else @intCast(handle);
 }
 
 /// Record where every line starts.
@@ -130,6 +143,10 @@ fn draw(top: usize, window: usize, path: []const u8) void {
     // so it is always in the same place to look at.
     while (n < window) : (n += 1) out.byte('\n');
 
+    // Whatever the text was written in ends here. A line that set a colour and
+    // did not clear it would otherwise colour the bar, and reversing an
+    // inherited colour gives a bar in a different shade every screen.
+    ink.plain();
     status(top, window, path);
     out.flush();
 }
