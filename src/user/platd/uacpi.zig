@@ -54,6 +54,25 @@ pub extern fn uacpi_eval_simple_integer(parent: ?*Node, path: [*:0]const u8, ret
 pub extern fn uacpi_object_get_package(object: ?*Object, out: *ObjectArray) c_uint;
 pub extern fn uacpi_object_get_integer(object: ?*Object, out: *u64) c_uint;
 pub extern fn uacpi_object_unref(object: ?*Object) void;
+pub extern fn uacpi_object_create_integer(value: u64) ?*Object;
+pub extern fn uacpi_eval(
+    parent: ?*Node,
+    path: [*:0]const u8,
+    args: ?*const ObjectArray,
+    ret: ?*?*Object,
+) c_uint;
+
+/// Call a method with one integer, which is every setter this system uses:
+/// the firmware's own convention is a name ending in S taking a value.
+pub fn callWith(node: ?*Node, path: [*:0]const u8, value: u64) bool {
+    const argument = uacpi_object_create_integer(value) orelse return false;
+    defer uacpi_object_unref(argument);
+
+    var one = [_]?*Object{argument};
+    const args = ObjectArray{ .objects = &one, .count = 1 };
+
+    return uacpi_eval(node, path, &args, null) == OK;
+}
 
 // Shorter names for the ones used often enough that the prefix is noise.
 pub const namespace_root = uacpi_namespace_root;

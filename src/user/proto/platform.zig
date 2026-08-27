@@ -21,6 +21,10 @@ pub const Tag = enum(u8) {
     /// One device from the firmware's namespace, by position. How a caller
     /// finds out what this machine actually offers.
     device,
+    /// The panel's brightness, however this machine offers it.
+    backlight,
+    /// Set it. `index` carries the level, which is what it is for.
+    backlight_set,
     /// One name under a named device, by position. What the six columns of
     /// `device` cannot say: a vendor's methods are called whatever the vendor
     /// called them, and nothing can guess at those.
@@ -132,11 +136,34 @@ pub const Device = extern struct {
     _reserved: [3]u8 = @splat(0),
 };
 
+/// The panel, as whichever method this machine offers describes it.
+pub const Backlight = extern struct {
+    present: u8 = 0,
+    _reserved: [3]u8 = @splat(0),
+    /// Where it is, and the highest this machine accepts. Levels rather than a
+    /// percentage: the number of steps is the panel's and rounding a
+    /// percentage onto them would make some steps unreachable.
+    level: u32 = 0,
+    max: u32 = 0,
+
+    pub fn isPresent(self: Backlight) bool {
+        return self.present != 0;
+    }
+
+    /// As a percentage, for showing. Not for setting: a level is what the
+    /// hardware takes.
+    pub fn percent(self: Backlight) u32 {
+        if (self.max == 0) return 0;
+        return @intCast(@min(@as(u64, self.level) * 100 / self.max, 100));
+    }
+};
+
 pub const Rep = extern struct {
     status: Status = .ok,
     _reserved: [3]u8 = @splat(0),
     battery: Battery = .{},
     device: Device = .{},
+    backlight: Backlight = .{},
 };
 
 comptime {

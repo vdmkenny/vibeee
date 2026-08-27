@@ -102,6 +102,8 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         .battery => battery.read(&reply.battery),
         .device => namespace.describe(request.index, &reply.device),
         .child => namespace.describeChild(&request.name, request.index, &reply.device),
+        .backlight => backlight.read(&reply.backlight),
+        .backlight_set => backlight.write(request.index, &reply.backlight),
     };
 }
 
@@ -131,6 +133,7 @@ fn restart() proto.Status {
     return .refused;
 }
 
+const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
 const namespace = @import("namespace.zig");
 const proto = @import("proto").platform;

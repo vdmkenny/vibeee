@@ -8,6 +8,7 @@
 const eeefetch = @import("eeefetch.zig");
 const smbios = @import("smbios.zig");
 const acpi = @import("acpi.zig");
+const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
 const cfg = @import("cfg.zig");
 const date = @import("date.zig");
@@ -42,6 +43,7 @@ pub const commands = [_]Command{
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "battery", .summary = "what the pack is doing, and what it has come to", .run = &battery.run },
+    .{ .name = "backlight", .summary = "how bright the panel is, and making it otherwise", .run = &backlight.run },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
