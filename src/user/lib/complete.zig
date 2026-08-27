@@ -90,23 +90,49 @@ pub const Collector = struct {
     }
 };
 
-/// A source of candidates: when it applies, and what it would offer.
-pub const Source = struct {
-    /// The command whose arguments this completes, or empty to complete the
-    /// command position itself.
-    command: []const u8 = "",
-    offer: *const fn (ctx: Context, into: *Collector) void,
-
-    fn applies(self: Source, ctx: Context) bool {
-        if (self.command.len == 0) return ctx.atCommand();
-        return !ctx.atCommand() and str.eql(self.command, ctx.command);
-    }
+/// When a source applies.
+pub const When = enum {
+    /// The command position: the names of things that can be run.
+    command,
+    /// The arguments of the one command it names.
+    named,
+    /// The arguments of every command no `named` source claims.
+    ///
+    /// Where filenames belong. Most commands take one, so making that the
+    /// default rather than an entry per command means a program added to the
+    /// system completes its arguments without anybody remembering to say so,
+    /// and the table holds only the commands that want something else.
+    otherwise,
 };
 
-/// Ask every source that applies, and return what they agree on.
+/// A source of candidates: when it applies, and what it would offer.
+pub const Source = struct {
+    when: When = .named,
+    /// Which command, for a `named` source. Ignored by the other two.
+    command: []const u8 = "",
+    offer: *const fn (ctx: Context, into: *Collector) void,
+};
+
+/// Ask every source that applies, and gather what they agree on.
 pub fn resolve(sources: []const Source, ctx: Context, into: *Collector) void {
+    if (ctx.atCommand()) {
+        for (sources) |source| {
+            if (source.when == .command) source.offer(ctx, into);
+        }
+        return;
+    }
+
+    var claimed = false;
     for (sources) |source| {
-        if (source.applies(ctx)) source.offer(ctx, into);
+        if (source.when == .named and str.eql(source.command, ctx.command)) {
+            source.offer(ctx, into);
+            claimed = true;
+        }
+    }
+    if (claimed) return;
+
+    for (sources) |source| {
+        if (source.when == .otherwise) source.offer(ctx, into);
     }
 }
 

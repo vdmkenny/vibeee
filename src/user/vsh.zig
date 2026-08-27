@@ -112,25 +112,27 @@ const subcommands = [_]Subcommands{
     .{ .command = "kill", .words = &.{} },
 };
 
-/// Everything that can be run: the builtins, and whatever is in the current
-/// directory, which is where the programs live.
+/// Everything that can be run: the builtins, the commands the tools binary
+/// answers to, and whatever is in `/bin`.
+///
+/// `/bin` rather than the working directory, because that is where programs
+/// live and a bare name is resolved there. A program installed today completes
+/// because it is in the directory, not because anybody listed it.
 fn offerCommands(ctx: complete.Context, into: *complete.Collector) void {
     _ = ctx;
     for (builtins) |b| into.offer(b.name);
     for (registry.names) |name| into.offer(name);
-    offerEntries(into, .any);
+    listInto(BIN_DIR, "", into, .any);
 }
 
 /// The names in the current directory, for the arguments that are files.
 fn offerFiles(ctx: complete.Context, into: *complete.Collector) void {
-    _ = ctx;
-    offerEntries(into, .any);
+    offerEntries(ctx, into, .any);
 }
 
 /// Only the directories, for a command that can go nowhere else.
 fn offerDirectories(ctx: complete.Context, into: *complete.Collector) void {
-    _ = ctx;
-    offerEntries(into, .directories);
+    offerEntries(ctx, into, .directories);
 }
 
 /// The words a particular command takes after its name.
@@ -145,34 +147,73 @@ const Which = enum { any, directories };
 
 /// Read the current directory once and offer what is in it. Shared by every
 /// source that answers with a name from the filesystem.
-fn offerEntries(into: *complete.Collector, which: Which) void {
+/// Offer what is in the directory the word names, rather than what is in the
+/// working directory.
+///
+/// A half-typed path is a directory and a prefix, and only the prefix is being
+/// completed. Listing the working directory instead means `/home/read` matches
+/// nothing, because the entries there are called `readme.txt` and not
+/// `/home/readme.txt`, which is what was typed.
+///
+/// What is offered is therefore the whole word as it would become, path and
+/// all: the collector compares against what was typed, so a candidate has to
+/// be spelled the same way.
+fn offerEntries(ctx: complete.Context, into: *complete.Collector, which: Which) void {
+    const cut = lastSeparator(ctx.word);
+
+    // Everything up to and including the separator, kept exactly as typed so
+    // the completion reads as a continuation of it.
+    const typed_dir = if (cut) |at| ctx.word[0 .. at + 1] else "";
+    const where = if (cut) |at| (if (at == 0) "/" else ctx.word[0..at]) else ".";
+
+    listInto(where, typed_dir, into, which);
+}
+
+/// Offer what is in `where`, each spelled with `typed_dir` in front of it so a
+/// candidate reads as a continuation of what was typed.
+fn listInto(where: []const u8, typed_dir: []const u8, into: *complete.Collector, which: Which) void {
     var names: [dir_mod.MAX * 16]u8 = undefined;
     var listing = dir_mod.Listing{};
-    dir_mod.read(".", &names, &listing) catch return;
+    dir_mod.read(where, &names, &listing) catch return;
 
     for (listing.items()) |entry| {
         if (which == .directories and !entry.is_dir) continue;
-        into.offer(entry.name);
+
+        var buf: [edit.LINE_MAX]u8 = undefined;
+        var candidate = str.Builder{ .buf = &buf };
+        candidate.text(typed_dir);
+        candidate.text(entry.name);
+        // A directory is not a finished answer: the slash is what lets the
+        // next tab go into it rather than stopping at its name.
+        if (entry.is_dir) candidate.byte('/');
+
+        into.offer(candidate.done());
     }
+}
+
+fn lastSeparator(word: []const u8) ?usize {
+    var i = word.len;
+    while (i > 0) {
+        i -= 1;
+        if (word[i] == '/') return i;
+    }
+    return null;
 }
 
 /// Where candidates come from, in the order they are asked. A command with no
 /// row of its own falls to the file source, because a filename is what most
 /// arguments are.
+/// Only the commands that want something other than a filename are listed.
+/// Everything else, including a program installed today, completes filenames
+/// because that is what the last source says to do when nothing claimed it.
 const completion = [_]complete.Source{
-    .{ .offer = &offerCommands },
-    .{ .command = "cd", .offer = &offerDirectories },
-    .{ .command = "cfg", .offer = &cfg.offer },
-    .{ .command = "mount", .offer = &offerDirectories },
-    .{ .command = "unmount", .offer = &offerDirectories },
-    .{ .command = "display", .offer = &offerSubcommands },
-    .{ .command = "cat", .offer = &offerFiles },
-    .{ .command = "page", .offer = &offerFiles },
-    .{ .command = "file", .offer = &offerFiles },
-    .{ .command = "hexdump", .offer = &offerFiles },
-    .{ .command = "rm", .offer = &offerFiles },
-    .{ .command = "mv", .offer = &offerFiles },
-    .{ .command = "grep", .offer = &offerFiles },
+    .{ .when = .command, .offer = &offerCommands },
+    .{ .when = .named, .command = "cd", .offer = &offerDirectories },
+    .{ .when = .named, .command = "mount", .offer = &offerDirectories },
+    .{ .when = .named, .command = "unmount", .offer = &offerDirectories },
+    .{ .when = .named, .command = "cfg", .offer = &cfg.offer },
+    .{ .when = .named, .command = "display", .offer = &offerSubcommands },
+    .{ .when = .otherwise, .offer = &offerFiles },
 };
 
 /// Where a command's output goes.

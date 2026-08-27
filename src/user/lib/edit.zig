@@ -194,12 +194,22 @@ pub const Editor = struct {
         complete_mod.resolve(self.sources, ctx, &found);
 
         const whole = found.resolve();
-        if (whole.len <= ctx.word.len) return;
+
+        // Nothing more to add and still a choice: the word is as far as the
+        // candidates agree, and the next keystroke is what narrows them.
+        if (whole.len <= ctx.word.len and !found.settledOne()) return;
 
         for (whole[ctx.word.len..]) |c| self.insertAt(self.cursor, c);
+
         // One answer is a finished word, and the next one starts after a
-        // space. Several are still a choice, so the cursor stays put.
-        if (found.settledOne()) self.insertAt(self.cursor, ' ');
+        // space. That holds even when the word was already the answer: typing
+        // a name in full and pressing the key should say so, not do nothing.
+        //
+        // A single answer ending in a separator is not finished, though: it is
+        // a directory, and the next keystroke belongs inside it.
+        if (found.settledOne() and whole.len > 0 and whole[whole.len - 1] != '/') {
+            self.insertAt(self.cursor, ' ');
+        }
         self.redraw(prompt);
     }
 
