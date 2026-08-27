@@ -83,6 +83,22 @@ pub fn arpRequest(
     write32(out, .target_ip, target_addr);
 }
 
+/// What any ARP frame says, whichever way it points: the operation, and
+/// whoever sent it. Null for anything that is not ARP.
+pub fn arpParts(frame: []const u8) ?struct { op: Op, peer_mac: [6]u8, peer_addr: u32 } {
+    if (frame.len < FRAME) return null;
+    if (std.mem.readInt(u16, frame[@intFromEnum(At.ether_type)..][0..2], .big) !=
+        @intFromEnum(EtherType.arp)) return null;
+
+    var mac: [6]u8 = undefined;
+    @memcpy(&mac, frame[@intFromEnum(At.sender_mac)..@intFromEnum(At.sender_ip)]);
+    return .{
+        .op = @enumFromInt(std.mem.readInt(u16, frame[@intFromEnum(At.op)..][0..2], .big)),
+        .peer_mac = mac,
+        .peer_addr = std.mem.readInt(u32, frame[@intFromEnum(At.sender_ip)..][0..4], .big),
+    };
+}
+
 /// What an ARP reply says: the peer that answered, by hardware and by
 /// protocol address. Null for anything else, including a frame that is not
 /// ARP or is a request: a pointer into the frame, alive as long as it is.

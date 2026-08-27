@@ -8,6 +8,8 @@
 //! frame handed up is counted here and copied later by whoever owns it.
 
 const lib = @import("lib");
+const log = @import("ulib").log;
+const out = @import("ulib").out;
 const proto = @import("proto").net;
 const pci = @import("ulib").pci;
 
@@ -109,6 +111,21 @@ pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     }
     dev.stats.rx_pkts += 1;
     dev.stats.rx_bytes += report.frame.len;
+
+    // The wire's version of the conversation, for the debug boot: every
+    // ARP frame that came up, whatever it asked. The 2s beacons tell us
+    // whether the far end is talking to us, and how.
+    if (lib.eth.arpParts(report.frame)) |parts| {
+        log.begin(dev.name, .dim);
+        out.text("arp ");
+        out.text(if (parts.op == .request) "who-has " else "reply ");
+        var field: [15]u8 = @splat(0);
+        out.text(lib.ipv4.text(parts.peer_addr, &field));
+        out.text(" from ");
+        const spelled = lib.mac.text(parts.peer_mac);
+        out.text(&spelled);
+        log.end();
+    }
 
     if (lib.eth.arpPeer(report.frame)) |peer| {
         dev.peer = .{ .mac = peer.mac, .addr = peer.addr };
