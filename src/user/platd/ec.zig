@@ -189,7 +189,7 @@ pub fn bind() void {
 
     if (uacpi.uacpi_install_address_space_handler(
         found,
-        uacpi.SPACE_EMBEDDED_CONTROLLER,
+        .embedded_controller,
         region,
         null,
     ) != .ok) {

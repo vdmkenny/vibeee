@@ -85,7 +85,7 @@ pub fn listen() void {
     // finding it. Enabled by the act of installing.
     const flags = uacpi.fadtFlags();
     for (buttons) |b| {
-        if (b.wired_as_device(flags)) continue;
+        if (b.wiredAsDevice(flags)) continue;
         if (uacpi.uacpi_install_fixed_event_handler(b.event, b.handler, null) == .ok) {
             heard += 1;
         }
@@ -105,25 +105,24 @@ pub fn listen() void {
 const Button = struct {
     event: uacpi.FixedEvent,
     handler: *const fn (?*anyopaque) callconv(.c) u32,
+
     /// Whether the FADT says this one is a device in the namespace instead,
     /// in which case it is heard through `sources` and asking for a fixed
     /// handler only produces a failure at every boot about a thing that is
     /// not wrong.
-    wired_as_device: *const fn (uacpi.Features) bool,
+    fn wiredAsDevice(self: Button, flags: uacpi.Features) bool {
+        return switch (self.event) {
+            .power_button => flags.power_button_is_device,
+            .sleep_button => flags.sleep_button_is_device,
+            else => false,
+        };
+    }
 };
 
 const buttons = [_]Button{
-    .{ .event = .power_button, .handler = &powerPressed, .wired_as_device = &powerIsDevice },
-    .{ .event = .sleep_button, .handler = &sleepPressed, .wired_as_device = &sleepIsDevice },
+    .{ .event = .power_button, .handler = &powerPressed },
+    .{ .event = .sleep_button, .handler = &sleepPressed },
 };
-
-fn powerIsDevice(flags: uacpi.Features) bool {
-    return flags.power_button_is_device;
-}
-
-fn sleepIsDevice(flags: uacpi.Features) bool {
-    return flags.sleep_button_is_device;
-}
 
 fn powerPressed(_: ?*anyopaque) callconv(.c) u32 {
     return pressed(.power);

@@ -19,22 +19,6 @@ const out = @import("ulib").out;
 const str = @import("ulib").str;
 const sys = @import("sys");
 
-/// uACPI's own entry points. The rest of it reaches back through `glue`.
-extern fn uacpi_initialize(flags: u64) c_uint;
-extern fn uacpi_namespace_load() c_uint;
-extern fn uacpi_namespace_initialize() c_uint;
-extern fn uacpi_status_to_string(status: c_uint) [*:0]const u8;
-extern fn uacpi_prepare_for_sleep_state(state: c_uint) c_uint;
-extern fn uacpi_enter_sleep_state(state: c_uint) c_uint;
-extern fn uacpi_reboot() c_uint;
-extern fn uacpi_finalize_gpe_initialization() c_uint;
-extern fn uacpi_context_set_loop_timeout(seconds: u32) void;
-
-/// uACPI numbers the sleep states from S0.
-const S5: c_uint = 5;
-
-const OK: c_uint = 0;
-
 comptime {
     // Nothing calls into `glue` from Zig: uACPI links against it. Naming it
     // here is what puts it in the program.
@@ -164,8 +148,8 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
 fn powerOff() proto.Status {
     if (sys.quiesce() < 0) return .refused;
 
-    if (uacpi_prepare_for_sleep_state(S5) != OK) return .refused;
-    if (uacpi_enter_sleep_state(S5) != OK) return .refused;
+    if (uacpi.uacpi_prepare_for_sleep_state(.soft_off) != .ok) return .refused;
+    if (uacpi.uacpi_enter_sleep_state(.soft_off) != .ok) return .refused;
 
     // Reached only if the firmware took the request and did nothing, which is
     // news: it is what the pattern-matched path did every time.
@@ -174,7 +158,7 @@ fn powerOff() proto.Status {
 
 fn restart() proto.Status {
     if (sys.quiesce() < 0) return .refused;
-    if (uacpi_reboot() != OK) return .refused;
+    if (uacpi.uacpi_reboot() != .ok) return .refused;
     return .refused;
 }
 
@@ -199,17 +183,17 @@ fn bringUp() bool {
     // A While loop in AML is firmware code with no supervisor. The interpreter
     // aborts one that outlives this bound, so a controller that stops
     // answering costs a refused method rather than the machine.
-    uacpi_context_set_loop_timeout(LOOP_TIMEOUT_S);
+    uacpi.uacpi_context_set_loop_timeout(LOOP_TIMEOUT_S);
 
-    if (!step("tables", uacpi_initialize(0))) return false;
+    if (!step("tables", uacpi.uacpi_initialize(0))) return false;
     reportGlobalLock();
-    if (!step("namespace", uacpi_namespace_load())) return false;
+    if (!step("namespace", uacpi.uacpi_namespace_load())) return false;
 
     // Before the namespace is initialised, so `_INI` methods already run with
     // a driven controller. Half of this machine is behind it.
     ec.bind();
 
-    if (!step("devices", uacpi_namespace_initialize())) return false;
+    if (!step("devices", uacpi.uacpi_namespace_initialize())) return false;
 
     // The general-purpose events, which is what the system control interrupt
     // carries. Finalised before the line is made live, because a handler that
@@ -222,7 +206,7 @@ fn bringUp() bool {
     if (ec.present() and !ec.driven()) {
         log.warn("platd", "events stay off; the embedded controller is not driven");
     } else {
-        _ = step("events", uacpi_finalize_gpe_initialization());
+        _ = step("events", uacpi.uacpi_finalize_gpe_initialization());
         ec.listen();
     }
 
@@ -271,13 +255,13 @@ fn reportGlobalLock() void {
     log.end();
 }
 
-fn step(what: []const u8, status: c_uint) bool {
-    if (status == OK) return true;
+fn step(what: []const u8, status: uacpi.Status) bool {
+    if (status == .ok) return true;
 
     log.begin("platd", .bad);
     out.text(what);
     out.text(": ");
-    out.text(str.span(uacpi_status_to_string(status)));
+    out.text(str.span(uacpi.uacpi_status_to_string(status)));
     log.end();
     return false;
 }

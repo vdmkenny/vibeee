@@ -37,14 +37,38 @@ pub const Status = enum(c_uint) {
 /// What a walk does next.
 pub const Walk = enum(u32) { proceed = 0, stop = 1 };
 
+// ---------------------------------------------------------------------------
+// Bring-up and power
+// ---------------------------------------------------------------------------
+
+pub extern fn uacpi_initialize(flags: u64) Status;
+pub extern fn uacpi_namespace_load() Status;
+pub extern fn uacpi_namespace_initialize() Status;
+pub extern fn uacpi_finalize_gpe_initialization() Status;
+pub extern fn uacpi_context_set_loop_timeout(seconds: u32) void;
+pub extern fn uacpi_status_to_string(status: Status) [*:0]const u8;
+
+/// The sleep states, S0 through S5. Only the one that means off is named:
+/// suspend states need a resume path before asking for them means anything.
+pub const SleepState = enum(c_uint) {
+    soft_off = 5,
+};
+
+pub extern fn uacpi_prepare_for_sleep_state(state: SleepState) Status;
+pub extern fn uacpi_enter_sleep_state(state: SleepState) Status;
+pub extern fn uacpi_reboot() Status;
+
 pub extern fn uacpi_namespace_root() ?*Node;
 pub extern fn uacpi_namespace_node_name(node: ?*Node) Name;
-/// The kinds of namespace object. Only one of them is a device, which is the
-/// only kind worth listing: the rest are the methods and values that belong to
-/// one, and a walk that reported them would report `_HID` as a device.
-pub const DEVICE: u32 = 6;
+/// The kinds of namespace object. Non-exhaustive: only the device matters to
+/// a walk, because the rest are the methods and values that belong to one,
+/// and a walk that reported them would report `_HID` as a device.
+pub const ObjectType = enum(u32) {
+    device = 6,
+    _,
+};
 
-pub extern fn uacpi_namespace_node_type(node: ?*Node, out: *u32) Status;
+pub extern fn uacpi_namespace_node_type(node: ?*Node, out: *ObjectType) Status;
 pub extern fn uacpi_namespace_node_find(
     parent: ?*Node,
     path: [*:0]const u8,
@@ -149,7 +173,12 @@ pub extern fn uacpi_enable_gpe(device: ?*Node, idx: u16) Status;
 // how the promise is kept, and uACPI evaluates `_REG` on installation so the
 // DSDT knows it is being kept.
 
-pub const SPACE_EMBEDDED_CONTROLLER: c_uint = 3;
+/// The address spaces a region can live in. Non-exhaustive: only the one this
+/// system installs a handler for is named.
+pub const AddressSpace = enum(c_uint) {
+    embedded_controller = 3,
+    _,
+};
 
 /// What uACPI is asking a region handler to do. Non-exhaustive: the serial
 /// and vendor spaces have their own operations, and an unhandled one is
@@ -172,7 +201,7 @@ pub const RegionRw = extern struct {
 
 pub extern fn uacpi_install_address_space_handler(
     device: ?*Node,
-    space: c_uint,
+    space: AddressSpace,
     handler: *const fn (op: RegionOp, data: ?*anyopaque) callconv(.c) Status,
     context: ?*anyopaque,
 ) Status;
@@ -406,9 +435,9 @@ pub fn trimmed(name: []const u8) []const u8 {
 
 /// Whether this node is a device rather than something belonging to one.
 pub fn isDevice(node: ?*Node) bool {
-    var kind: u32 = 0;
+    var kind: ObjectType = @enumFromInt(0);
     if (uacpi_namespace_node_type(node, &kind) != .ok) return false;
-    return kind == DEVICE;
+    return kind == .device;
 }
 
 /// Whether `node` has a child called `name`.
