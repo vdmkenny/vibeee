@@ -4,6 +4,7 @@
 //! from files the tool assumes exist, so it works on a system with no /proc and
 //! keeps working as the kernel learns to report more.
 
+const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const info = @import("ulib").info;
 const logo = @import("lib").logo;
@@ -34,10 +35,19 @@ const rows = [_]Row{
 pub fn run(_: []const []const u8) void {
     var buf: [512]u8 = undefined;
 
+    // The same colour the kernel drew it in at boot, by the same role: this
+    // is the machine saying its own name, twice.
     for (logo.lines) |line| {
-        out.text(line);
-        out.text("\n");
+        ink.write(.key, line);
+        out.byte('\n');
     }
+
+    ink.write(.value, "vibeee");
+    ink.use(.dim);
+    out.text("  ");
+    out.text(info.ask("arch", &buf));
+    ink.plain();
+    out.text("\n\n");
 
     for (rows) |row| {
         const value = info.ask(row.key, &buf);
@@ -59,8 +69,8 @@ pub fn run(_: []const []const u8) void {
     const uptime = info.ask("uptime", &buf);
     if (uptime.len > 0) {
         const seconds = str.toUnsigned(uptime);
-        out.text(" ");
-        out.pad("uptime", 9);
+        out.byte(' ');
+        ink.write(.key, "uptime   ");
         writeDuration(seconds);
         out.text("\n");
     }
@@ -68,12 +78,23 @@ pub fn run(_: []const []const u8) void {
     out.flush();
 }
 
+/// A label and what it is worth. The label carries the colour, which is the
+/// boot log's arrangement: one coloured word to scan down, and the values
+/// plain so they are read rather than scanned.
 fn emit(label: []const u8, value: []const u8) void {
-    out.text(" ");
-    out.pad(label, 9);
+    out.byte(' ');
+
+    var padded: [LABEL]u8 = @splat(' ');
+    @memcpy(padded[0..@min(label.len, LABEL)], label[0..@min(label.len, LABEL)]);
+    ink.write(.key, &padded);
+
     out.text(value);
-    out.text("\n");
+    out.byte('\n');
 }
+
+/// Width of the label column, so `emit` and the uptime line below cannot drift
+/// apart about where the values start.
+const LABEL = 9;
 
 fn writeDuration(total: usize) void {
     const hours = total / 3600;

@@ -37,17 +37,20 @@ var kernel_stack: [32 * 1024]u8 align(16) = undefined;
 /// hardware with no serial port is the difference between a diagnosable failure
 /// and a blank panel.
 fn banner() void {
-    console.setColor(.light_cyan, .black);
+    // By role rather than by colour, so the wordmark here and the one
+    // `eeefetch` prints later are the same colour because they mean the same
+    // thing, not because two files happen to agree.
+    console.setColor(console.colourOf(.key), .black);
     for (logo.lines) |line| {
         console.writeString(line);
         console.putChar('\n');
     }
 
-    console.setColor(.light_grey, .black);
+    console.setColor(console.colourOf(.value), .black);
     console.printf("vibeee {s}", .{VERSION});
-    console.setColor(.dark_grey, .black);
+    console.setColor(console.colourOf(.dim), .black);
     console.printf("  {s}\n\n", .{@tagName(builtin.cpu.arch)});
-    console.setColor(.light_grey, .black);
+    console.setColor(console.colourOf(.value), .black);
 }
 
 pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
