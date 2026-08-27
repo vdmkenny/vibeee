@@ -20,6 +20,10 @@ pub const Tag = enum(u8) {
     start,
     /// Stop one, and do not bring it back.
     stop,
+    /// Start it at every boot.
+    enable,
+    /// Do not, and do not start it now either.
+    disable,
 };
 
 pub const Req = extern struct {
@@ -78,15 +82,29 @@ pub const Entry = extern struct {
     }
 };
 
+/// How a request turned out. Richer than "did it work" because the reasons
+/// call for different answers: a name nobody has is a typo, and a store that
+/// will not remember is a fact about the machine.
+pub const Result = enum(u8) {
+    ok,
+    /// Nothing is called that.
+    unknown,
+    /// It was done, and will not survive a reboot: the volume holding the
+    /// decision is memory.
+    not_kept,
+    /// Nothing at that index. How a caller walking the table finds the end.
+    end,
+    /// It could not be done.
+    failed,
+};
+
 pub const Rep = extern struct {
-    /// Zero when there is nothing to report: no service at that index, or the
-    /// request could not be carried out.
-    ok: u8 = 1,
+    result: Result = .ok,
     _reserved: [3]u8 = @splat(0),
     entry: Entry = .{},
 };
 
-pub const Error = error{ NoService, Refused, TooLong };
+pub const Error = error{ NoService, Unknown, NotKept, End, Failed, TooLong };
 
 /// Ask about, or act on, one service.
 ///
@@ -104,13 +122,20 @@ pub fn ask(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
     const message = sys.Message.init(std.mem.asBytes(&request), &.{});
 
     var reply = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
+    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Failed;
 
     const bytes = reply.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Refused;
+    if (bytes.len < @sizeOf(Rep)) return error.Failed;
 
     into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
-    if (into.ok == 0) return error.Refused;
+
+    return switch (into.result) {
+        .ok => {},
+        .unknown => error.Unknown,
+        .not_kept => error.NotKept,
+        .end => error.End,
+        .failed => error.Failed,
+    };
 }
 
 comptime {

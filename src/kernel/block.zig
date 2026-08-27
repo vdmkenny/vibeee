@@ -33,6 +33,13 @@ pub const Device = struct {
     /// Set for a partition; zero for a whole device.
     offset: u64 = 0,
     read_only: bool = false,
+    /// Backed by memory, so everything written to it is gone at the next boot.
+    ///
+    /// Not a property anything here has to act on, and one a caller often has
+    /// to: a program that saves a choice on a volatile volume has saved it
+    /// until the machine is switched off, and should be able to say so rather
+    /// than appear to have done what was asked.
+    is_volatile: bool = false,
     /// Whether anything has been written since the device was registered.
     /// Nothing to commit means nothing to flush, and a drive asked to flush a
     /// cache it never filled can only answer with an error it does not owe.

@@ -21,6 +21,8 @@ pub fn run(args: []const []const u8) void {
 
     if (str.eql(verb, "start")) return act(.start, args[1], "started");
     if (str.eql(verb, "stop")) return act(.stop, args[1], "stopped");
+    if (str.eql(verb, "enable")) return act(.enable, args[1], "enabled");
+    if (str.eql(verb, "disable")) return act(.disable, args[1], "disabled");
     usage();
 }
 
@@ -73,13 +75,29 @@ fn act(tag: service.Tag, name: []const u8, done: []const u8) void {
     var reply = service.Rep{};
 
     service.ask(tag, name, 0, &reply) catch |err| {
+        // Done, but not remembered. Worth saying rather than reporting either
+        // success or failure, because it is both.
+        if (err == error.NotKept) {
+            out.text(name);
+            out.byte(' ');
+            out.text(done);
+            ink.write(.warn, ", until the next boot: / is memory\n");
+            return out.flush();
+        }
+
         out.text("svc: ");
-        out.text(switch (err) {
-            error.NoService => "init is not answering",
-            error.TooLong => "no service has a name that long",
-            error.Refused => name,
-        });
-        if (err == error.Refused) out.text(": no such service, or it would not");
+        switch (err) {
+            error.NoService => out.text("init is not answering"),
+            error.TooLong => out.text("no service has a name that long"),
+            error.Unknown => {
+                out.text(name);
+                out.text(": nothing is called that");
+            },
+            else => {
+                out.text(name);
+                out.text(": would not");
+            },
+        }
         out.byte('\n');
         return out.flush();
     };
@@ -116,8 +134,10 @@ var column: [12]u8 = @splat(0);
 const LIMIT = 32;
 
 fn usage() void {
-    out.text("usage: svc              what is declared, and what became of it\n");
-    out.text("       svc start <name>\n");
-    out.text("       svc stop <name>\n");
+    out.text("usage: svc                 what is declared, and what became of it\n");
+    out.text("       svc start <name>    now\n");
+    out.text("       svc stop <name>     now\n");
+    out.text("       svc enable <name>   at every boot\n");
+    out.text("       svc disable <name>  at none\n");
     out.flush();
 }

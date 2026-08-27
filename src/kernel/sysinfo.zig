@@ -349,6 +349,9 @@ fn writeMounts(w: *Writer) Error!void {
         if (!first) try w.print("\n", .{});
         first = false;
         try w.print("{s} on {s}", .{ m.path(), m.device.name });
+        // Said plainly, because a caller deciding whether a write is worth
+        // making has no other way to find out.
+        if (m.device.is_volatile) try w.print(" volatile", .{});
     }
     if (first) try w.print("none", .{});
 }

@@ -81,6 +81,10 @@ pub fn register(phys: usize, len: usize, read_only: bool) ?*const block.Device {
         .ops = &ops,
         .sectors = len / block.SECTOR_SIZE,
         .read_only = read_only,
+        // The whole point of this driver: what is written here lasts until the
+        // machine is switched off, and a caller saving a choice should be able
+        // to find that out before it appears to have worked.
+        .is_volatile = true,
     };
 
     // Deliberately not wrapped in the block cache: the backing store is already

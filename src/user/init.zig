@@ -77,6 +77,9 @@ const State = struct {
     /// Somebody asked for it to stop. Distinct from `abandoned`, which is init
     /// giving up: this one is a decision and is not reconsidered on its own.
     held: bool = false,
+    /// Whether it should start at all. `held` is for this boot; this is for
+    /// every one after it, and is what `/etc/disabled` records.
+    enabled: bool = true,
 };
 
 var services: [MAX_SERVICES]State = @splat(.{});
@@ -97,6 +100,8 @@ export fn _start() callconv(.naked) noreturn {
 
 export fn initMain() callconv(.c) noreturn {
     loadConfig();
+    // Read before anything starts, because it decides what does.
+    readDisabled();
     startAll();
     supervise();
 }
@@ -197,7 +202,7 @@ fn startAll() void {
     while (progress) {
         progress = false;
         for (services[0..service_count]) |*state| {
-            if (state.running or state.abandoned) continue;
+            if (state.running or state.abandoned or !state.enabled) continue;
             if (!dependenciesMet(state.service)) continue;
             start(state);
             progress = true;
@@ -205,7 +210,7 @@ fn startAll() void {
     }
 
     for (services[0..service_count]) |*state| {
-        if (!state.running and !state.abandoned) {
+        if (!state.running and !state.abandoned and state.enabled) {
             report(state.service.name, "needs a service that never came up");
             state.abandoned = true;
         }
@@ -365,15 +370,17 @@ fn answerAll(channel: u32) void {
 fn answer(message: *const sys.Message, reply: *proto.Rep) void {
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(proto.Req)) {
-        reply.ok = 0;
+        reply.result = .failed;
         return;
     }
 
     const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
     switch (request.tag) {
         .list => describe(request.index, reply),
-        .start => reply.ok = if (resume_(request.named())) 1 else 0,
-        .stop => reply.ok = if (halt(request.named())) 1 else 0,
+        .start => reply.result = resume_(request.named()),
+        .stop => reply.result = halt(request.named()),
+        .enable => reply.result = setEnabled(request.named(), true),
+        .disable => reply.result = setEnabled(request.named(), false),
     }
 }
 
@@ -381,7 +388,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) void {
 /// caller walking the table learns where it stops.
 fn describe(index: u8, reply: *proto.Rep) void {
     if (index >= service_count) {
-        reply.ok = 0;
+        reply.result = .end;
         return;
     }
 
@@ -403,9 +410,9 @@ fn describe(index: u8, reply: *proto.Rep) void {
     @memcpy(reply.entry.name[0..reply.entry.name_len], name[0..reply.entry.name_len]);
 }
 
-fn resume_(name: []const u8) bool {
-    const state = byName(name) orelse return false;
-    if (state.running) return true;
+fn resume_(name: []const u8) proto.Result {
+    const state = byName(name) orelse return .unknown;
+    if (state.running) return .ok;
 
     // Asking for it clears both the hold and the giving-up: somebody has
     // decided it is worth another try, which is more than init knows.
@@ -414,18 +421,110 @@ fn resume_(name: []const u8) bool {
     state.flapping = 0;
 
     start(state);
-    return state.running;
+    return if (state.running) .ok else .failed;
 }
 
-fn halt(name: []const u8) bool {
-    const state = byName(name) orelse return false;
+fn halt(name: []const u8) proto.Result {
+    const state = byName(name) orelse return .unknown;
 
     // Marked first. The child's death arrives through the same loop, and a
     // hold set afterwards would race with the restart it is meant to prevent.
     state.held = true;
-    if (!state.running) return true;
+    if (!state.running) return .ok;
 
-    return sys.kill(state.pid) >= 0;
+    return if (sys.kill(state.pid) >= 0) .ok else .failed;
+}
+
+/// Names not to start at the next boot, one per line.
+///
+/// A file of its own rather than a field in the manifest, because the manifest
+/// says what exists and who wrote it wrote comments in it: rewriting it to
+/// record a decision would mean re-rendering it and losing them. This is the
+/// decision, and it is a list of names.
+const DISABLED = "/etc/disabled";
+
+/// Remember, or forget, that a service should not start.
+///
+/// Says so when the decision will not outlive the boot. The root is memory
+/// until there is somewhere persistent to mount over it, so writing here works
+/// and is forgotten, and a caller told it worked would be told something
+/// misleading.
+fn setEnabled(name: []const u8, enabled: bool) proto.Result {
+    const state = byName(name) orelse return .unknown;
+
+    state.enabled = enabled;
+    if (!enabled) {
+        state.held = true;
+        if (state.running) _ = sys.kill(state.pid);
+    } else {
+        state.held = false;
+        state.abandoned = false;
+        state.flapping = 0;
+    }
+
+    if (!writeDisabled()) return .failed;
+    return if (volatileRoot()) .not_kept else .ok;
+}
+
+/// Write the list out whole, which at this size is simpler than editing it and
+/// leaves no half-written state to read back.
+fn writeDisabled() bool {
+    var text: [512]u8 = @splat(0);
+    var body = str.Builder{ .buf = &text };
+
+    for (services[0..service_count]) |*s| {
+        if (s.enabled) continue;
+        body.text(s.service.name);
+        body.byte('\n');
+    }
+
+    const handle = sys.open(DISABLED, .{ .write = true, .create = true, .truncate = true });
+    if (handle < 0) return false;
+    defer _ = sys.close(@intCast(handle));
+
+    const written = body.done();
+    return sys.write(@intCast(handle), written) == @as(isize, @intCast(written.len));
+}
+
+/// Read it back at start-up, before anything is started.
+fn readDisabled() void {
+    var text: [512]u8 = @splat(0);
+
+    const handle = sys.open(DISABLED, .{});
+    if (handle < 0) return;
+    defer _ = sys.close(@intCast(handle));
+
+    const n = sys.read(@intCast(handle), &text);
+    if (n <= 0) return;
+
+    var lines = str.lines(text[0..@intCast(n)]);
+    while (lines.next()) |line| {
+        const name = str.trim(line);
+        if (name.len == 0) continue;
+
+        if (byName(name)) |state| {
+            state.enabled = false;
+            state.held = true;
+        }
+    }
+}
+
+/// Whether what is written to the root is gone at the next boot.
+///
+/// Asked of the mount table rather than assumed, so that the day there is a
+/// persistent volume under `/etc` this starts telling the truth without being
+/// edited.
+fn volatileRoot() bool {
+    var buf: [512]u8 = @splat(0);
+    const n = sys.sysinfo("mounts", &buf);
+    if (n <= 0) return true;
+
+    var lines = str.lines(buf[0..@intCast(n)]);
+    while (lines.next()) |line| {
+        if (!str.startsWith(line, "/ on ")) continue;
+        return str.contains(line, "volatile");
+    }
+    return true;
 }
 
 fn byName(name: []const u8) ?*State {
