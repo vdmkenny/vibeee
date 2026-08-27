@@ -107,19 +107,27 @@ $(STAGE2_BIN): boot/stage2.asm | $(BUILD)
 $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 	$(ZIG) build-exe $< -O ReleaseSafe --name mkimage -femit-bin=$@
 
+# C programs, built against eeelibc with the wrapper rather than with the Zig
+# build graph: a port arrives as a Makefile expecting a compiler, and `eeecc`
+# is what it should find.
+.PHONY: examples
+examples: kernel
+	@tools/eeecc -o $(BUILD)/greet examples/greet.c
+
 image: $(IMAGE)
 
 # The root filesystem: a plain FAT image, loaded into RAM by stage2.
 #
 # FAT rather than a bespoke container because the driver already exists, and
 # because it can then be inspected and edited from any other machine.
-$(ROOTFS_IMG): kernel | $(BUILD)
+$(ROOTFS_IMG): kernel examples | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@for d in bin etc lib lib/drivers tmp home media; do $(MMD) -i $@ ::/$$d; done
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
+	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd

@@ -1,0 +1,40 @@
+#!/bin/sh
+# eeecc: build a C program for vibeee.
+#
+# A wrapper around `zig cc` rather than a compiler of our own: it already
+# cross-compiles to freestanding i686 and already carries a C frontend, so what
+# is left is knowing where this system's headers and library are.
+#
+#   eeecc -o build/edit edit.c
+#
+# The flags that matter, and why:
+#   -nostdlibinc  the host's headers describe the host; ours describe this
+#   -nostdlib     no crt files but our own, and no libc but ours
+#   -static       there is no dynamic loader, by decision, not by omission
+#
+set -e
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ZIG="${ZIG:-zig}"
+
+LIB="$ROOT/zig-out/lib/libeeelibc.a"
+if [ ! -f "$LIB" ]; then
+    echo "eeecc: $LIB is missing; run 'zig build' first" >&2
+    exit 1
+fi
+
+exec "$ZIG" cc \
+    -target x86-freestanding-none \
+    -mcpu=pentium_m \
+    -Os \
+    -static \
+    -nostdlibinc \
+    -nostdlib \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -isystem "$ROOT/include" \
+    -Wl,-T,"$ROOT/src/user/linker.ld" \
+    -Wl,--entry=_start \
+    "$@" \
+    "$LIB"

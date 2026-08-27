@@ -144,6 +144,32 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // eeelibc: a static archive, because the alternative is a dynamic loader
+    // and on a machine with ten programs that costs more in complexity and
+    // per-spawn milliseconds than the duplication costs in RAM.
+    const libc = b.addLibrary(.{
+        .name = "eeelibc",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/user/libc/libc.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .single_threaded = true,
+            .stack_check = false,
+            .stack_protector = false,
+            .imports = &.{
+                .{ .name = "lib", .module = user_lib },
+                .{ .name = "sys", .module = sys_mod },
+                .{ .name = "ulib", .module = ulib_mod },
+            },
+        }),
+    });
+    // A C program links this and nothing else, so the archive has to carry the
+    // routines the compiler emits calls to: 64-bit division on a 32-bit target
+    // is a call to compiler-rt, not an instruction.
+    libc.bundle_compiler_rt = true;
+    b.installArtifact(libc);
+
     const user_imports = [_]std.Build.Module.Import{
         .{ .name = "lib", .module = user_lib },
         .{ .name = "sys", .module = sys_mod },
