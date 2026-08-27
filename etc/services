@@ -27,7 +27,7 @@ binary  = /bin/platd
 # what reaching the embedded controller and the power registers takes, and it
 # holds nothing else: if an AML method goes wrong it takes a restartable
 # server with it and not the machine.
-caps    = driver
+caps    = driver,power
 provides = platform
 restart = always
 

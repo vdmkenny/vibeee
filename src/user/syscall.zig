@@ -336,6 +336,15 @@ pub const POWER_OFF = 0;
 pub const REBOOT = 1;
 pub const HALT = 2;
 
+/// Flush and unmount everything, and come back.
+///
+/// For a caller that will finish the shutdown itself: entering a sleep state
+/// properly means evaluating the firmware's own methods, which is `platd`'s
+/// job. Nothing is mounted afterwards.
+pub fn quiesce() isize {
+    return syscall0(abi.number("quiesce"));
+}
+
 pub fn shutdown(action: usize) noreturn {
     _ = syscall1(abi.number("shutdown"), action);
     unreachable;

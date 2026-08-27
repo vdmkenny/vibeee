@@ -1278,6 +1278,16 @@ pub const table = [_]Syscall{
             "the space between is allocated when something writes into it, so a file made " ++
             "large and left alone costs a directory entry and nothing more.",
     },
+    .{
+        .number = 49,
+        .name = "quiesce",
+        .summary = "Flush and unmount everything, and return.",
+        .errors = &.{E.perm},
+        .notes = "Requires Caps.power. The half of a shutdown only the kernel can do, for a " ++
+            "caller that will finish it: entering a sleep state properly means evaluating " ++
+            "the firmware's own methods first, which is an interpreter's job. Nothing is " ++
+            "mounted afterwards, so a caller that needs a file should have read it already.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

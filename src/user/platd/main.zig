@@ -22,6 +22,12 @@ extern fn uacpi_initialize(flags: u64) c_uint;
 extern fn uacpi_namespace_load() c_uint;
 extern fn uacpi_namespace_initialize() c_uint;
 extern fn uacpi_status_to_string(status: c_uint) [*:0]const u8;
+extern fn uacpi_prepare_for_sleep_state(state: c_uint) c_uint;
+extern fn uacpi_enter_sleep_state(state: c_uint) c_uint;
+extern fn uacpi_reboot() c_uint;
+
+/// uACPI numbers the sleep states from S0.
+const S5: c_uint = 5;
 
 const OK: c_uint = 0;
 
@@ -42,20 +48,64 @@ export fn _start() callconv(.naked) noreturn {
 export fn platdMain() callconv(.c) noreturn {
     if (!bringUp()) sys.exit(1);
 
-    // Nothing calls this yet. Registering anyway, so the name exists the
-    // moment there is something behind it and a client written against it can
-    // be tried before that.
-    const channel = sys.svcRegister(SERVICE);
+    const channel = sys.svcRegister(proto.SERVICE);
     if (channel < 0) {
         out.text("platd: cannot register\n");
         out.flush();
         sys.exit(1);
     }
 
-    sleepForever();
+    serve(@intCast(channel));
 }
 
-pub const SERVICE = "platform";
+fn serve(channel: u32) noreturn {
+    while (true) {
+        var message = sys.Message{};
+        const request = sys.recv(channel, &message, sys.FOREVER) orelse continue;
+
+        const body = proto.Rep{ .status = answer(&message) };
+        _ = sys.reply(channel, request.token, std.mem.asBytes(&body));
+    }
+}
+
+fn answer(message: *const sys.Message) proto.Status {
+    const bytes = message.bytes();
+    if (bytes.len < @sizeOf(proto.Req)) return .unknown;
+
+    return switch (@as(*const proto.Req, @alignCast(@ptrCast(bytes.ptr))).tag) {
+        .power_off => powerOff(),
+        .reboot => restart(),
+    };
+}
+
+/// Off, through the firmware's own account of what that means.
+///
+/// `_PTS` first, which is the BIOS doing its own bookkeeping and the step a
+/// hand-written sequence has no way to perform: without it an AMI machine of
+/// this age takes the sleep request and ignores it. Then the `_S5_` package,
+/// evaluated rather than pattern-matched out of the raw table.
+///
+/// The kernel is asked to quiesce first, because flushing is the half only it
+/// can do and there is no coming back from the half after.
+fn powerOff() proto.Status {
+    if (sys.quiesce() < 0) return .refused;
+
+    if (uacpi_prepare_for_sleep_state(S5) != OK) return .refused;
+    if (uacpi_enter_sleep_state(S5) != OK) return .refused;
+
+    // Reached only if the firmware took the request and did nothing, which is
+    // news: it is what the pattern-matched path did every time.
+    return .refused;
+}
+
+fn restart() proto.Status {
+    if (sys.quiesce() < 0) return .refused;
+    if (uacpi_reboot() != OK) return .refused;
+    return .refused;
+}
+
+const proto = @import("proto").platform;
+const std = @import("std");
 
 /// Read the tables and make the namespace usable.
 ///
@@ -90,7 +140,3 @@ fn span(text: [*:0]const u8) []const u8 {
     return text[0..n];
 }
 
-/// Nothing to serve yet, and exiting would have `init` restart it forever.
-fn sleepForever() noreturn {
-    while (true) sys.sleepMicros(1_000_000);
-}

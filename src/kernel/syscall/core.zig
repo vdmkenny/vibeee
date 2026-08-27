@@ -187,6 +187,13 @@ pub fn sys_log(a: Args) Result {
     return 0;
 }
 
+pub fn sys_quiesce(_: Args) Result {
+    if (ctx.require(.{ .power = true })) |denied| return denied;
+
+    shutdown_mod.quiesce();
+    return 0;
+}
+
 pub fn sys_shutdown(a: Args) Result {
     if (ctx.require(.{ .power = true })) |denied| return denied;
 

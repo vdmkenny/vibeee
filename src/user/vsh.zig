@@ -18,6 +18,7 @@ const sys = @import("sys");
 const cfg = @import("tools/cfg.zig");
 const complete = @import("ulib").complete;
 const font = @import("lib").font;
+const platform = @import("proto").platform;
 const ink = @import("ulib").ink;
 const registry = @import("tools/registry.zig");
 const dir_mod = @import("ulib").dir;
@@ -576,14 +577,38 @@ fn cmdExit(_: []const []const u8) u8 {
     return 0;
 }
 
+/// Ask `platd`, and fall back to the kernel's own way.
+///
+/// The service evaluates the firmware's methods, which is what makes a power
+/// off actually happen on a machine whose BIOS expects `_PTS` first. The
+/// kernel's path is a pattern match on the raw table and is what there is when
+/// nothing is serving: worse, and better than nothing.
+fn requestPower(tag: platform.Tag, fallback: usize) u8 {
+    platform.ask(tag) catch |err| {
+        // Worth telling apart. Nothing serving is ordinary and the kernel's
+        // way is what there is. A service that tried and was refused means the
+        // firmware said no to the proper request, and the cruder one is
+        // unlikely to do better, so say what happened before trying it.
+        if (err == error.Refused) {
+            out.text("the firmware refused; trying the kernel's way\n");
+            out.flush();
+        }
+        sys.shutdown(fallback);
+    };
+
+    // Only reached if the service answered at all, which means it did not
+    // happen: a power off that works never gets as far as a reply.
+    out.text("nothing happened\n");
+    out.flush();
+    return 1;
+}
+
 fn cmdPowerOff(_: []const []const u8) u8 {
     out.flush();
-    sys.shutdown(sys.POWER_OFF);
-    return 0;
+    return requestPower(.power_off, sys.POWER_OFF);
 }
 
 fn cmdReboot(_: []const []const u8) u8 {
     out.flush();
-    sys.shutdown(sys.REBOOT);
-    return 0;
+    return requestPower(.reboot, sys.REBOOT);
 }

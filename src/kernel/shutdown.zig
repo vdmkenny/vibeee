@@ -44,8 +44,7 @@ pub fn shutdown(action: Action) noreturn {
         .halt => "halting",
     }});
 
-    unmountAll();
-    flushDevices();
+    quiesce();
 
     // Interrupts off from here: nothing should be able to start new I/O after
     // the flush, or the work just done would be pointless.
@@ -66,6 +65,18 @@ pub fn shutdown(action: Action) noreturn {
 
     console.field("shutdown", "safe to power off", .{});
     hal.halt();
+}
+
+/// Flush and detach everything, and come back.
+///
+/// The half of a shutdown that has to happen whoever finishes it. `platd` owns
+/// the sleep states, because entering one properly means evaluating the
+/// firmware's own methods first, and that is an interpreter's job rather than
+/// the kernel's. So the kernel does the part only it can do, says so, and
+/// leaves the machine quiet for whoever asked.
+pub fn quiesce() void {
+    unmountAll();
+    flushDevices();
 }
 
 fn unmountAll() void {

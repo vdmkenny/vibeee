@@ -357,7 +357,14 @@ export fn uacpi_kernel_signal_event(_: ?*anyopaque) callconv(.c) void {}
 export fn uacpi_kernel_reset_event(_: ?*anyopaque) callconv(.c) void {}
 
 /// Nothing signals these yet, so waiting would be waiting forever. Saying so
-/// at once is the honest answer until the general-purpose events are wired.
+/// at once is the honest answer until the system control interrupt is handled.
+///
+/// What it costs today: the ACPI global lock cannot be waited for, so a method
+/// that needs it while the firmware holds it fails rather than blocking. One
+/// `_STA` on a processor object does this at start-up and is reported. Nothing
+/// this machine needs depends on it, and the fix is the same fix as for the
+/// general-purpose events, which is a handler for the interrupt that signals
+/// them both.
 export fn uacpi_kernel_wait_for_event(_: ?*anyopaque, _: u16) callconv(.c) bool {
     return false;
 }
