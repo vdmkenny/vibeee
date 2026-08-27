@@ -14,6 +14,7 @@
 //! interface is probed, opened, its link reported and its traffic counted.
 //! That is the part QEMU can test, and it is what `net` shows.
 
+const atl2 = @import("atl2.zig");
 const dev = @import("dev.zig");
 const e1000 = @import("e1000.zig");
 const log = @import("ulib").log;
@@ -37,6 +38,7 @@ const Driver = struct {
 
 const DRIVERS = [_]Driver{
     .{ .name = e1000.name, .vendor = e1000.vendor, .device = e1000.device_id, .ops = e1000.ops },
+    .{ .name = atl2.name, .vendor = atl2.vendor, .device = atl2.device_id, .ops = atl2.ops },
 };
 
 /// How many interfaces a machine of this class can have behind one service.
