@@ -545,6 +545,11 @@ fn readMac(dev: *NicDev) void {
 }
 
 pub fn start(nic: *NicDev) bool {
+    // The PHY has been latching events since the reset armed them; whatever
+    // it holds is folded into the link read below. Cleared before the line
+    // is ever unmasked, or the stale latch is the first interrupt.
+    _ = readPhy(.interrupt_clear);
+
     nic.state = link(nic);
     applyLinkState(nic.state);
     return true;
@@ -561,9 +566,16 @@ pub fn stop(_: *NicDev) void {
 // MII, hosts of PHY transactions
 // ---------------------------------------------------------------------------
 
+/// An MDIO frame takes tens of microseconds on the real bus, and each look
+/// at the busy bit is an uncached read costing about one. The budget covers
+/// the slowest frame with a wide margin and still bounds a wedged bus to
+/// milliseconds; the emulator's instant answers taught a budget of ten,
+/// which real silicon spends before the frame has clocked its preamble.
+const MDIO_SPINS = 4000;
+
 fn writePhy(reg: Phy, value: u16) void {
     if (mdioBegin(reg, false, value)) return;
-    _ = spinUntil(10, struct {
+    _ = spinUntil(MDIO_SPINS, struct {
         fn idle(r: Regs) bool {
             return !@as(MdioCtrl, @bitCast(r.rd32(.mdio_ctrl))).busy;
         }
@@ -572,7 +584,7 @@ fn writePhy(reg: Phy, value: u16) void {
 
 fn readPhy(reg: Phy) u16 {
     if (mdioBegin(reg, true, 0)) return 0;
-    const done = spinUntil(10, struct {
+    const done = spinUntil(MDIO_SPINS, struct {
         fn idle(r: Regs) bool {
             return !@as(MdioCtrl, @bitCast(r.rd32(.mdio_ctrl))).busy;
         }
@@ -584,7 +596,7 @@ fn readPhy(reg: Phy) u16 {
 /// One MDIO transaction, returning true if the bus would not answer within
 /// the bound. Waiting for the bus first, then starting.
 fn mdioBegin(reg: Phy, read: bool, value: u16) bool {
-    if (!spinUntil(10, struct {
+    if (!spinUntil(MDIO_SPINS, struct {
         fn idle(r: Regs) bool {
             return !@as(MdioCtrl, @bitCast(r.rd32(.mdio_ctrl))).busy;
         }

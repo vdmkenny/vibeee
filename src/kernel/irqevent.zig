@@ -12,6 +12,7 @@
 //! stops firing, and the supervisor restarts it and it attaches again.
 //! `design/00-vibeee.md` §6.
 
+const console = @import("console.zig");
 const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
@@ -136,6 +137,13 @@ fn onInterrupt(_: *hal.InterruptFrame) void {
         hal.setGsiMask(self.gsi, true);
         self.held = true;
         self.count += 1;
+
+        // A line delivering this often is a source nobody manages to quiet,
+        // and the machine it saturates cannot run the tool that would say
+        // so: the count is narrated from here, once per hundred thousand.
+        if (self.count % 100_000 == 0) {
+            console.fail("line {d} has fired {d} times", .{ self.gsi, self.count });
+        }
         self.ready.signalLocked();
         return;
     }
