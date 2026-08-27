@@ -101,6 +101,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         .reboot => restart(),
         .battery => battery.read(&reply.battery),
         .device => namespace.describe(request.index, &reply.device),
+        .child => namespace.describeChild(&request.name, request.index, &reply.device),
     };
 }
 

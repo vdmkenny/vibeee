@@ -48,7 +48,43 @@ fn powerState(m: platform.Methods) bool {
     return m.power_state;
 }
 
-pub fn run(_: []const []const u8) void {
+pub fn run(args: []const []const u8) void {
+    // Named, and the answer is that device's own methods. A vendor's are
+    // called whatever the vendor called them, so the only way to find out what
+    // a machine offers is to read the list rather than check a list of guesses.
+    if (args.len > 0) return under(args[0]);
+    list();
+}
+
+fn under(name: []const u8) void {
+    ink.use(.dim);
+    out.text(name);
+    out.text(" offers\n");
+    ink.plain();
+
+    var index: u8 = 0;
+    var shown: usize = 0;
+    while (index < LIMIT) : (index += 1) {
+        var reply = platform.Rep{};
+        platform.callUnder(.child, name, index, &reply) catch break;
+
+        // Four to a row: these are short and there can be dozens.
+        out.pad(trimmed(&reply.device.name), 8);
+        shown += 1;
+        if (shown % 8 == 0) out.byte('\n');
+    }
+
+    if (shown % 8 != 0) out.byte('\n');
+    if (shown == 0) {
+        out.text("nothing, or no device is called that\n");
+    } else {
+        out.decimal(shown);
+        out.text(if (shown == 1) " name\n" else " names\n");
+    }
+    out.flush();
+}
+
+fn list() void {
     ink.use(.dim);
     out.pad("device", 9);
     for (columns) |column| out.pad(column.head, 6);

@@ -21,6 +21,10 @@ pub const Tag = enum(u8) {
     /// One device from the firmware's namespace, by position. How a caller
     /// finds out what this machine actually offers.
     device,
+    /// One name under a named device, by position. What the six columns of
+    /// `device` cannot say: a vendor's methods are called whatever the vendor
+    /// called them, and nothing can guess at those.
+    child,
 };
 
 pub const Req = extern struct {
@@ -28,6 +32,9 @@ pub const Req = extern struct {
     /// Which one, for the requests that walk a list.
     index: u8 = 0,
     _reserved: [2]u8 = @splat(0),
+    /// Whose children to walk, for `child`. Four characters, because that is
+    /// what a namespace name is.
+    name: [4]u8 = @splat(0),
 };
 
 pub const Status = enum(u8) {
@@ -156,11 +163,18 @@ pub fn call(tag: Tag, into: *Rep) Error!void {
 }
 
 pub fn callAt(tag: Tag, index: u8, into: *Rep) Error!void {
+    return callUnder(tag, "", index, into);
+}
+
+/// The same, naming what to look under.
+pub fn callUnder(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
     const channel = sys.svcConnect(SERVICE);
     if (channel < 0) return error.NoService;
     defer _ = sys.close(@intCast(channel));
 
-    const request = Req{ .tag = tag, .index = index };
+    var request = Req{ .tag = tag, .index = index };
+    @memcpy(request.name[0..@min(name.len, 4)], name[0..@min(name.len, 4)]);
+
     const message = sys.Message.init(std.mem.asBytes(&request), &.{});
 
     var reply = sys.Message{};

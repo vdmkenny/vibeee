@@ -377,29 +377,52 @@ fn handleOf(event: ?*anyopaque) ?u32 {
     return if (carried == 0) null else @intCast(carried - 1);
 }
 
-/// Wait for one, and actually wait.
+/// Wait for one, servicing the interrupt that would signal it.
 ///
-/// Returning at once was worse than not waiting at all. uACPI's global lock is
-/// taken in a loop that waits between attempts, so an instant answer turned
-/// "wait for the firmware to release it" into a tight spin that exhausted its
-/// sixty-five thousand attempts in microseconds and gave up, which is what
-/// stopped `_BIF` reading the battery on the target machine.
+/// This is where uACPI waits for the firmware to release the global lock, and
+/// the release arrives as a system control interrupt whose handler signals the
+/// very event being waited for. So the wait has to service that interrupt
+/// itself: `platd` has one thread, and during start-up it is inside uACPI and
+/// has not reached the loop that would otherwise do it. Waiting without
+/// servicing is waiting for something only this could cause.
 ///
-/// The wait is capped well below what uACPI asks for. What it asks for is how
-/// long the caller is prepared to be blocked; what this is prepared to be
-/// blocked for is bounded by there being one thread here, and a caller that
-/// gets an early false will ask again.
+/// Bounded anyway. A firmware that holds the lock and never says otherwise
+/// would block a service that has other callers, and the loop above this one
+/// treats a false as a reason to try again rather than as a failure.
 export fn uacpi_kernel_wait_for_event(event: ?*anyopaque, millis: u16) callconv(.c) bool {
     const handle = handleOf(event) orelse return false;
-    const capped: usize = @min(@as(usize, millis), WAIT_MAX_MS);
-    const waiting: usize = capped * 1000;
 
-    return sys.waitMany(&.{handle}, waiting) >= 0;
+    const capped: usize = @min(@as(usize, millis), WAIT_MAX_MS);
+    const deadline = sys.clockMicros() + capped * 1000;
+
+    // Nothing can signal it yet. The interrupt is attached part-way through
+    // start-up and the global lock is wanted before that, so a wait here would
+    // be a wait for something that cannot happen: uACPI's loop treats a false
+    // as a reason to try again, and trying again is the only thing that can
+    // work. Sitting here instead is how a twenty-millisecond wait and
+    // sixty-five thousand attempts became a machine that never finished
+    // starting.
+    if (!sci.attached()) return false;
+
+    while (sys.clockMicros() < deadline) {
+        const woke = sys.waitMany(&.{ handle, sci.event }, SLICE_US);
+        if (woke == 0) return true;
+
+        // The interrupt, or nothing. Servicing it is what may signal the event
+        // this is waiting for, so it is done here and the wait goes round.
+        if (woke > 0) sci.service();
+    }
+    return false;
 }
+
+/// How long to sit in one wait before looking again. Short, because what is
+/// being waited for is caused by work this same thread has to do.
+const SLICE_US: usize = 2000;
 
 /// Long enough that the firmware has a chance to finish what it is doing,
 /// short enough that a service does not disappear for a minute if it never
-/// does.
+/// does. uACPI asks for sixty-five seconds and retries sixty-five thousand
+/// times; taking that literally is a machine that stops for a fortnight.
 const WAIT_MAX_MS: usize = 20;
 
 // ---------------------------------------------------------------------------
@@ -454,10 +477,24 @@ export fn uacpi_kernel_install_interrupt_handler(
     context: ?*anyopaque,
     out_handle: *?*anyopaque,
 ) callconv(.c) u32 {
-    const attached = sys.irqAttach(irq) catch return Status.not_found.value();
+    _ = irq;
+    _ = handler;
+    _ = context;
 
-    sci = .{ .event = attached, .handler = handler, .context = context };
-    out_handle.* = @ptrFromInt(@as(usize, attached) + 1);
+    // Accepted and not attached, which is a decision rather than an omission.
+    //
+    // Attaching the line stops the namespace initialising: uACPI enables ACPI
+    // mode while it runs, the interrupt begins firing into a process that is
+    // still inside the call that armed it, and start-up never finishes. It was
+    // reproducible and immediate, which is more than enough reason not to ship
+    // it attached while the cause is a guess.
+    //
+    // What it costs is known and bounded. The global lock cannot be waited
+    // for, because the release arrives on this line, so a method wanting it
+    // while the firmware holds it fails instead of blocking: `_BIF` on the
+    // target machine does this, which is why the battery reads nothing there.
+    // Everything that does not touch the embedded controller works.
+    out_handle.* = &token;
     return Status.ok.value();
 }
 
