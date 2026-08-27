@@ -33,7 +33,7 @@ const Backend = struct {
 /// the Eee PC it is the only one: the panel there offers no `_BCM` at all.
 const backends = [_]Backend{
     .{ .name = "standard", .find = &standardDevice, .read = &standardRead, .write = &standardWrite, .max = 0 },
-    .{ .name = "asus", .find = &asusDevice, .read = &asusRead, .write = &asusWrite, .max = ASUS_MAX },
+    .{ .name = "asus", .find = &asus.panelDevice, .read = &asus.panelLevel, .write = &asus.setPanelLevel, .max = asus.PANEL_LEVELS },
 };
 
 /// A backend and the device it drives, found once and kept: the namespace does
@@ -168,40 +168,6 @@ fn standardMax(node: *uacpi.Node) u32 {
         return 100;
     }
     return @truncate(highest);
-}
-
-// ---------------------------------------------------------------------------
-// The Eee PC's way
-// ---------------------------------------------------------------------------
-//
-// `PBLS` sets and `PBLG` reads, on the vendor's own device. The names follow
-// the convention every method on it follows: a feature, then S to set it or G
-// to get it, which is also how the wireless radio and the card reader are
-// reached.
-//
-// Sixteen levels, which is what the hardware takes and is not discoverable
-// from the namespace. Written down here because the alternative is a caller
-// asking for a hundred and getting whatever the firmware makes of it.
-
-const ASUS_MAX = 15;
-
-fn asusDevice() ?*uacpi.Node {
-    // A unit that stated its features and did not name the panel among them
-    // is believed; one that stated nothing is tried.
-    if (asus.methods()) |claimed| {
-        if (!claimed.panel_brightness) return null;
-    }
-    return asus.node() orelse uacpi.firstWith("PBLS");
-}
-
-fn asusRead(node: *uacpi.Node) ?u32 {
-    var value: u64 = 0;
-    if (uacpi.uacpi_eval_simple_integer(node, "PBLG", &value) != .ok) return null;
-    return @truncate(value);
-}
-
-fn asusWrite(node: *uacpi.Node, level: u32) bool {
-    return uacpi.callWith(node, "PBLS", @min(level, ASUS_MAX));
 }
 
 // ---------------------------------------------------------------------------

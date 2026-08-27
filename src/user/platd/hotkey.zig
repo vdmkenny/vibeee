@@ -154,7 +154,7 @@ fn pressed(which: proto.Hotkey) u32 {
 /// on any machine that raises them at all.
 fn meaning(kind: Kind, value: u64) proto.Hotkey {
     return switch (kind) {
-        .vendor => vendor(value),
+        .vendor => asus.press(value),
         .display => switch (value) {
             0x80, 0x81, 0x82, 0x83, 0x84 => .display_switch,
             0x85 => .brightness_cycle,
@@ -169,40 +169,6 @@ fn meaning(kind: Kind, value: u64) proto.Hotkey {
         .mains => .mains_changed,
     };
 }
-
-/// The vendor's own numbering.
-///
-/// Not a specification and not derivable from the namespace: what these
-/// machines send, which is only knowable by reading it off a running one.
-/// Anything absent here arrives as `unknown` carrying its number, which is how
-/// the rest of this table gets written.
-fn vendor(value: u64) proto.Hotkey {
-    // The brightness keys carry the level the firmware has already moved to in
-    // the low nibble, so there is nothing to set and nothing to work out from
-    // the direction: the panel is where it says it is.
-    if (value >= BRIGHTNESS_FIRST and value <= BRIGHTNESS_LAST) return .brightness_changed;
-
-    return switch (value) {
-        0x10, 0x11 => .wireless,
-        0x12 => .performance,
-        0x13 => .mute,
-        0x14 => .volume_down,
-        0x15 => .volume_up,
-        0x16 => .display_off,
-        0x1a => .lock,
-        0x1b => .resolution,
-        0x30, 0x31, 0x32 => .display_switch,
-        0x37 => .touchpad,
-        // Not a key. The vendor device is also where this machine says the
-        // mains came or went, and a listener that wanted to know has no other
-        // way of hearing it: there is no ACPI0003 here.
-        0x50, 0x51 => .mains_changed,
-        else => .unknown,
-    };
-}
-
-const BRIGHTNESS_FIRST = 0x20;
-const BRIGHTNESS_LAST = 0x2f;
 
 // ---------------------------------------------------------------------------
 // Hearing one
