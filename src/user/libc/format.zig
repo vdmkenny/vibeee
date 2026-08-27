@@ -148,6 +148,11 @@ fn readNumber(format: [*:0]const u8, i: *usize) usize {
     return n;
 }
 
+/// What a precision means for this conversion, which is not the same thing
+/// for a number as for a string: on a number it is a minimum digit count met
+/// with leading zeroes, and on a string it is a maximum length.
+const Kind = enum { number, text };
+
 fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void {
     switch (verb) {
         'd', 'i' => signed(out, @cVaArg(args, c_long), spec),
@@ -157,14 +162,14 @@ fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void 
         'o' => unsigned(out, @cVaArg(args, c_ulong), spec, 8, false),
         'c' => {
             const byte: u8 = @truncate(@as(c_uint, @bitCast(@cVaArg(args, c_int))));
-            padded(out, &[_]u8{byte}, spec, "");
+            padded(out, &[_]u8{byte}, spec, "", .text);
         },
         's' => {
             const text = @cVaArg(args, ?[*:0]const u8) orelse "(null)";
             var n: usize = 0;
             while (text[n] != 0) n += 1;
             if (spec.precision) |limit| n = @min(n, limit);
-            padded(out, text[0..n], spec, "");
+            padded(out, text[0..n], spec, "", .text);
         },
         'p' => {
             const value = @intFromPtr(@cVaArg(args, ?*anyopaque));
@@ -190,7 +195,7 @@ fn signed(out: anytype, value: c_long, spec: *Spec) void {
     const sign = if (negative) "-" else if (spec.plus) "+" else if (spec.space) " " else "";
 
     var digits: [24]u8 = undefined;
-    padded(out, decimal(&digits, magnitude, 10, false), spec, sign);
+    padded(out, decimal(&digits, magnitude, 10, false), spec, sign, .number);
 }
 
 fn unsigned(out: anytype, value: c_ulong, spec: *Spec, base: u8, upper: bool) void {
@@ -203,7 +208,7 @@ fn unsigned(out: anytype, value: c_ulong, spec: *Spec, base: u8, upper: bool) vo
     };
 
     var digits: [24]u8 = undefined;
-    padded(out, decimal(&digits, value, base, upper), spec, prefix);
+    padded(out, decimal(&digits, value, base, upper), spec, prefix, .number);
 }
 
 /// The digits, written backwards into the end of `into` and returned as the
@@ -224,10 +229,14 @@ fn decimal(into: *[24]u8, value: c_ulong, base: u8, upper: bool) []const u8 {
 
 /// Lay a converted value out: the sign or prefix, then the padding, then the
 /// body, in whichever order the flags call for.
-fn padded(out: anytype, body: []const u8, spec: *Spec, prefix: []const u8) void {
+fn padded(out: anytype, body: []const u8, spec: *Spec, prefix: []const u8, kind: Kind) void {
     // A precision on a number is a minimum digit count, met with zeroes that
-    // sit inside the sign rather than outside it.
-    const zeroes = if (spec.precision) |wanted| wanted -| body.len else 0;
+    // sit inside the sign rather than outside it. On a string it is a maximum,
+    // already applied by taking a shorter slice, and there is nothing to fill.
+    const zeroes = switch (kind) {
+        .number => if (spec.precision) |wanted| wanted -| body.len else 0,
+        .text => 0,
+    };
     const total = prefix.len + zeroes + body.len;
     const pad = spec.width -| total;
 
@@ -235,7 +244,9 @@ fn padded(out: anytype, body: []const u8, spec: *Spec, prefix: []const u8) void 
     // and `00-7` is not. It gives way to a precision, which already said how
     // many digits there are to be, and to left alignment, which has nothing
     // to fill.
-    const zero_pad = spec.zero and !spec.left and spec.precision == null;
+    // The zero flag is a number's: on a string C leaves it undefined and
+    // filling a name with zeroes is never what anybody meant.
+    const zero_pad = kind == .number and spec.zero and !spec.left and spec.precision == null;
 
     if (!spec.left and !zero_pad) write(out, ' ', pad);
     for (prefix) |byte| out.put(byte);
@@ -300,6 +311,140 @@ export fn sprintf(into: [*]u8, format: [*:0]const u8, ...) callconv(.c) c_int {
 
 export fn vsprintf(into: [*]u8, format: [*:0]const u8, args: std.builtin.VaList) callconv(.c) c_int {
     return vsnprintf(into, ~@as(usize, 0), format, args);
+}
+
+// ---------------------------------------------------------------------------
+// Reading it back
+// ---------------------------------------------------------------------------
+//
+// The inverse of the above, and here beside it because the two share a
+// vocabulary: a conversion means the same thing being read as being written,
+// and the pair drift apart if they are written apart.
+
+/// Take values out of `text` as `format` describes them, and return how many
+/// were stored.
+///
+/// Whitespace in the format matches any run of whitespace, including none.
+/// Anything else must match itself. That is C's rule and ported code leans on
+/// it heavily, usually without noticing.
+export fn sscanf(text: [*:0]const u8, format: [*:0]const u8, ...) callconv(.c) c_int {
+    var args = @cVaStart();
+    defer @cVaEnd(&args);
+    return vsscanf(text, format, args);
+}
+
+export fn vsscanf(text: [*:0]const u8, format: [*:0]const u8, args: std.builtin.VaList) callconv(.c) c_int {
+    var taken = args;
+    var stored: c_int = 0;
+
+    var at: usize = 0;
+    var i: usize = 0;
+    while (format[i] != 0) : (i += 1) {
+        if (isSpace(format[i])) {
+            while (isSpace(text[at])) at += 1;
+            continue;
+        }
+
+        if (format[i] != '%') {
+            if (text[at] != format[i]) return stored;
+            at += 1;
+            continue;
+        }
+
+        i += 1;
+        if (format[i] == '%') {
+            if (text[at] != '%') return stored;
+            at += 1;
+            continue;
+        }
+
+        // `*` reads a value and throws it away, which is how a format skips a
+        // field without the caller providing somewhere to put it.
+        const discard = format[i] == '*';
+        if (discard) i += 1;
+
+        const width = readNumber(format, &i);
+        // Length modifiers change the width of the destination, which for the
+        // conversions here is always an int or a pointer either way.
+        while (format[i] == 'l' or format[i] == 'h' or format[i] == 'z') i += 1;
+
+        if (!scanOne(text, &at, format[i], width, discard, &taken)) return stored;
+        if (!discard) stored += 1;
+    }
+    return stored;
+}
+
+fn scanOne(
+    text: [*:0]const u8,
+    at: *usize,
+    verb: u8,
+    width: usize,
+    discard: bool,
+    args: *std.builtin.VaList,
+) bool {
+    // Every conversion but `c` skips leading whitespace first.
+    if (verb != 'c') {
+        while (isSpace(text[at.*])) at.* += 1;
+    }
+
+    const limit = if (width == 0) ~@as(usize, 0) else width;
+
+    switch (verb) {
+        'd', 'i', 'u', 'x' => {
+            const base: u8 = if (verb == 'x') 16 else 10;
+
+            const negative = text[at.*] == '-';
+            if (text[at.*] == '-' or text[at.*] == '+') at.* += 1;
+
+            var value: c_ulong = 0;
+            var any = false;
+            var read: usize = 0;
+            while (read < limit) : (read += 1) {
+                const digit = digitOf(text[at.*], base) orelse break;
+                value = value *% base +% digit;
+                at.* += 1;
+                any = true;
+            }
+            if (!any) return false;
+
+            if (!discard) {
+                const slot = @cVaArg(args, *c_long);
+                slot.* = if (negative) -@as(c_long, @bitCast(value)) else @bitCast(value);
+            }
+        },
+        'c' => {
+            if (text[at.*] == 0) return false;
+            if (!discard) @cVaArg(args, *u8).* = text[at.*];
+            at.* += 1;
+        },
+        's' => {
+            if (text[at.*] == 0) return false;
+
+            const into: ?[*]u8 = if (discard) null else @cVaArg(args, [*]u8);
+            var read: usize = 0;
+            while (read < limit and text[at.*] != 0 and !isSpace(text[at.*])) : (read += 1) {
+                if (into) |slot| slot[read] = text[at.*];
+                at.* += 1;
+            }
+            if (into) |slot| slot[read] = 0;
+        },
+        else => return false,
+    }
+    return true;
+}
+
+fn digitOf(c: u8, base: u8) ?u8 {
+    const value: u8 = switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => return null,
+    };
+    return if (value < base) value else null;
+}
+
+fn isSpace(c: u8) bool {
+    return c == ' ' or (c >= '\t' and c <= '\r');
 }
 
 const std = @import("std");

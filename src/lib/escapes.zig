@@ -4,6 +4,11 @@
 //! it turns a stream into printable characters, control characters, and
 //! parsed sequences, and hands each to a terminal that decides what to do.
 //!
+//! Shared, because there are two terminals here and there is one grammar. The
+//! kernel console draws into a text grid and `eterm` draws into a window, but
+//! what `ESC [ 2 J` means is not either one's opinion, and a program writing
+//! it should not have to know which is on the other end.
+//!
 //! Structured as an explicit state machine because that is what the input is.
 //! An escape sequence arrives split across reads whenever the program on the
 //! other end writes it in pieces, so parsing has to survive stopping anywhere.

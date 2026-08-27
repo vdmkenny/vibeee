@@ -116,6 +116,17 @@ pub fn sys_mkdir(a: Args) Result {
     return 0;
 }
 
+pub fn sys_ftruncate(a: Args) Result {
+    const table = currentHandles() orelse return Errno.badf.value();
+    const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
+    if (h.kind != .file) return Errno.inval.value();
+
+    const open = &h.data.file;
+    vfs.resize(open.mount, &open.entry, @truncate(a.a1)) catch |err| return errnoFor(err);
+    vfs.commit(open.mount, open.entry, clock.realtimeSeconds()) catch {};
+    return 0;
+}
+
 pub fn sys_mount(a: Args) Result {
     if (ctx.require(.{ .mount = true })) |denied| return denied;
 

@@ -24,4 +24,5 @@ unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 
 extern char **environ;
+int ftruncate(int fd, off_t size);
 #endif

@@ -76,6 +76,29 @@ export fn _exit(status: c_int) callconv(.c) noreturn {
     sys.exit(@intCast(@as(u8, @truncate(@as(u32, @bitCast(status))))));
 }
 
+/// Registered and never called.
+///
+/// There is no asynchronous delivery here, by decision: a handler that can run
+/// between any two instructions is a class of bug that only shows up under
+/// load. Ported code that installs one compiles and runs; what it installed
+/// simply does not fire, which is the same outcome as the signal never
+/// arriving and is not a state the program has no code for.
+const SIGNAL_MAX = 32;
+var installed: [SIGNAL_MAX]?*const anyopaque = @splat(null);
+
+export fn signal(which: c_int, handler: ?*const anyopaque) callconv(.c) ?*const anyopaque {
+    if (which < 0 or which >= SIGNAL_MAX) return @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+
+    const before = installed[@intCast(which)];
+    installed[@intCast(which)] = handler;
+    return before;
+}
+
+export fn raise(which: c_int) callconv(.c) c_int {
+    _ = which;
+    return 0;
+}
+
 export fn abort() callconv(.c) noreturn {
     sys.exit(134); // 128 + SIGABRT, which is what a shell reports for one.
 }

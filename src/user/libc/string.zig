@@ -132,7 +132,7 @@ export fn strstr(haystack: [*:0]const u8, needle: [*:0]const u8) callconv(.c) ?*
 
 export fn strdup(s: [*:0]const u8) callconv(.c) ?[*]u8 {
     const n = strlen(s);
-    const copy: [*]u8 = @ptrCast(mem.malloc(n + 1) orelse return null);
+    const copy: [*]u8 = @ptrCast(heap.alloc(n + 1) orelse return null);
     @memcpy(copy[0..n], s[0..n]);
     copy[n] = 0;
     return copy;
@@ -140,7 +140,7 @@ export fn strdup(s: [*:0]const u8) callconv(.c) ?[*]u8 {
 
 export fn strndup(s: [*]const u8, limit: usize) callconv(.c) ?[*]u8 {
     const n = strnlen(s, limit);
-    const copy: [*]u8 = @ptrCast(mem.malloc(n + 1) orelse return null);
+    const copy: [*]u8 = @ptrCast(heap.alloc(n + 1) orelse return null);
     @memcpy(copy[0..n], s[0..n]);
     copy[n] = 0;
     return copy;
@@ -248,7 +248,7 @@ fn yes(condition: bool) c_int {
     return if (condition) 1 else 0;
 }
 
-const mem = @import("mem.zig");
+const heap = @import("ulib").heap;
 
 /// A terminated string as a slice, for the parts of this library that work in
 /// Zig terms once they have crossed the boundary.

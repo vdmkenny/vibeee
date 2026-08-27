@@ -12,7 +12,7 @@
 //! destination rather than three implementations that drift.
 
 const errno = @import("errno.zig");
-const mem = @import("mem.zig");
+const heap = @import("ulib").heap;
 const unistd = @import("unistd.zig");
 
 pub const BUFSIZ = 1024;
@@ -85,7 +85,7 @@ fn ensureBuffer(stream: *File) bool {
     if (stream.buffer != null) return true;
     if (stream.buffering == .none) return false;
 
-    const block = mem.malloc(BUFSIZ) orelse return false;
+    const block = heap.alloc(BUFSIZ) orelse return false;
     stream.buffer = @ptrCast(block);
     stream.capacity = BUFSIZ;
     return true;
@@ -134,7 +134,7 @@ export fn fdopen(fd: c_int, mode: [*:0]const u8) callconv(.c) ?*File {
 
 /// Wrap a descriptor in a stream and remember it, so `exit` can flush it.
 fn adopt(fd: c_int) ?*File {
-    const block = mem.malloc(@sizeOf(File)) orelse {
+    const block = heap.alloc(@sizeOf(File)) orelse {
         _ = unistd.close(fd);
         return null;
     };
@@ -158,8 +158,8 @@ export fn fclose(stream: *File) callconv(.c) c_int {
     for (&open_files) |*slot| {
         if (slot.* == stream) slot.* = null;
     }
-    if (stream.buffer) |buffer| mem.free(buffer);
-    mem.free(stream);
+    if (stream.buffer) |buffer| heap.release(buffer);
+    heap.release(stream);
     return result;
 }
 
@@ -325,6 +325,56 @@ export fn fgets(into: [*]u8, size: c_int, stream: *File) callconv(.c) ?[*]u8 {
     into[n] = 0;
     return into;
 }
+
+/// Read a whole line, growing the caller's buffer to fit it.
+///
+/// The one function in this library that allocates on the caller's behalf and
+/// hands the result back, which is why it takes the buffer and its capacity by
+/// pointer: it may replace both.
+///
+/// A first call with a null buffer starts from nothing, which is how every
+/// program that uses this is written.
+export fn getline(into: *?[*]u8, capacity: *usize, stream: *File) callconv(.c) isize {
+    return getdelim(into, capacity, '\n', stream);
+}
+
+export fn getdelim(into: *?[*]u8, capacity: *usize, delimiter: c_int, stream: *File) callconv(.c) isize {
+    var buffer = into.* orelse blk: {
+        const start: [*]u8 = @ptrCast(heap.alloc(GETLINE_START) orelse return -1);
+        capacity.* = GETLINE_START;
+        break :blk start;
+    };
+
+    var n: usize = 0;
+    while (true) {
+        const byte = fgetc(stream);
+        if (byte == EOF) break;
+
+        // One spare for the terminator, always: a line exactly as long as the
+        // buffer still has to end with one.
+        if (n + 1 >= capacity.*) {
+            const wider = capacity.* * 2;
+            const grown: [*]u8 = @ptrCast(heap.resize(buffer, wider) orelse return -1);
+            buffer = grown;
+            capacity.* = wider;
+        }
+
+        buffer[n] = @truncate(@as(c_uint, @bitCast(byte)));
+        n += 1;
+        if (byte == delimiter) break;
+    }
+
+    into.* = buffer;
+    if (n == 0) return -1;
+
+    buffer[n] = 0;
+    return @intCast(n);
+}
+
+/// Where a line starts before anything is known about how long it is. Doubling
+/// from here means a long line costs a handful of copies rather than one per
+/// character.
+const GETLINE_START = 128;
 
 export fn fread(into: [*]u8, size: usize, count: usize, stream: *File) callconv(.c) usize {
     const total = size * count;

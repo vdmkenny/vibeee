@@ -354,6 +354,11 @@ pub fn exit(status: usize) noreturn {
 // IPC
 // ---------------------------------------------------------------------------
 
+/// Make an open file exactly this long.
+pub fn ftruncate(handle: usize, size: usize) isize {
+    return syscall2(abi.number("ftruncate"), handle, size);
+}
+
 /// Attach a volume at a path.
 pub fn mount(device: []const u8, path: []const u8, flags: abi.MountFlags) isize {
     return syscall5(

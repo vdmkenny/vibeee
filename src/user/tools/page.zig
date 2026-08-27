@@ -11,7 +11,7 @@
 //! keyboard back on its own.
 
 const sys = @import("sys");
-const info = @import("ulib").info;
+const console = @import("ulib").console;
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
@@ -30,6 +30,10 @@ var lines: usize = 0;
 /// Form feed clears the console, which is the whole of the screen control
 /// needed here.
 const CLEAR = 0x0C;
+
+/// Widest console the status bar has to fill. The grid the kernel keeps is
+/// bounded too, and this is that bound.
+const MAX_COLUMNS = 128;
 
 pub fn run(args: []const []const u8) void {
     if (args.len == 0) {
@@ -130,7 +134,7 @@ fn draw(top: usize, window: usize, path: []const u8) void {
 /// Where in the file the reader is, set apart by reversing the colours rather
 /// than by picking one, which reads the same on any palette.
 fn status(top: usize, window: usize, path: []const u8) void {
-    var buf: [Size.MAX_COLUMNS]u8 = undefined;
+    var buf: [MAX_COLUMNS]u8 = undefined;
     var bar = str.Builder{ .buf = &buf };
 
     bar.text(path);
@@ -182,25 +186,7 @@ fn back(top: usize, by: usize) usize {
     return if (top > by) top - by else 0;
 }
 
-const Size = struct {
-    columns: usize,
-    rows: usize,
-
-    /// Widest console the status bar has to fill. The grid the kernel keeps is
-    /// bounded too, and this is that bound.
-    const MAX_COLUMNS = 128;
-};
-
 /// The console's shape, which decides how much fits on a screen.
-fn consoleSize() Size {
-    var buf: [64]u8 = @splat(0);
-    const value = info.ask("console", &buf);
-
-    var it = str.split(value, 'x');
-    const columns = str.toUnsigned(it.next() orelse "");
-    const rows = str.toUnsigned(it.next() orelse "");
-    return .{
-        .columns = if (columns == 0) 80 else columns,
-        .rows = if (rows == 0) 25 else rows,
-    };
+fn consoleSize() console.Size {
+    return console.size();
 }

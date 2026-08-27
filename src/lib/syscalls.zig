@@ -1265,6 +1265,19 @@ pub const table = [_]Syscall{
             "a handle to a volume that no longer exists has no answer to give. FAT has no " ++
             "journal, so the flush is the only thing that puts written data on the medium.",
     },
+    .{
+        .number = 48,
+        .name = "ftruncate",
+        .summary = "Make an open file exactly this long.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "An open file." },
+            .{ .name = "size", .kind = .len, .desc = "Bytes the file should end up holding." },
+        },
+        .errors = &.{ E.badf, E.inval, E.io, E.perm },
+        .notes = "Shrinking gives back what is past the new end. Growing only moves the end: " ++
+            "the space between is allocated when something writes into it, so a file made " ++
+            "large and left alone costs a directory entry and nothing more.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

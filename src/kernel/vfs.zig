@@ -284,6 +284,12 @@ pub fn commit(m: *Mount, entry: fat.Entry, mtime: i64) Error!void {
     return fat.commit(&m.volume, entry, mtime);
 }
 
+/// Make an open file exactly `size` bytes.
+pub fn resize(m: *Mount, entry: *fat.Entry, size: u32) Error!void {
+    try requireWritable(m);
+    return fat.resize(&m.volume, entry, size);
+}
+
 pub fn truncate(m: *Mount, entry: *fat.Entry) Error!void {
     try requireWritable(m);
     return fat.truncate(&m.volume, entry);

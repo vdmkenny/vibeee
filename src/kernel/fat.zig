@@ -819,11 +819,50 @@ pub fn commit(vol: *Volume, entry: Entry, mtime: i64) Error!void {
 
 /// Drop everything a file holds, leaving it empty but still present.
 pub fn truncate(vol: *Volume, entry: *Entry) Error!void {
+    return resize(vol, entry, 0);
+}
+
+/// Make a file exactly `size` bytes.
+///
+/// Shrinking gives the clusters past the new end back, rather than leaving a
+/// chain longer than the size it belongs to: that is legal for a reader, which
+/// stops at the size, but it is what a checker reports as a mismatch and it is
+/// space nothing will ever reclaim.
+///
+/// Growing only moves the end: the clusters between are allocated when
+/// something writes into them, so a file made large and left alone costs a
+/// directory entry.
+pub fn resize(vol: *Volume, entry: *Entry, size: u32) Error!void {
     if (entry.is_dir) return error.IsDirectory;
 
-    if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
-    entry.cluster = 0;
-    entry.size = 0;
+    if (size == 0) {
+        if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
+        entry.cluster = 0;
+        entry.size = 0;
+        return;
+    }
+
+    if (size < entry.size) try dropTail(vol, entry, size);
+    entry.size = size;
+}
+
+/// Free whatever lies past the cluster holding byte `size - 1`, and end the
+/// chain there.
+fn dropTail(vol: *Volume, entry: *Entry, size: u32) Error!void {
+    if (entry.cluster < 2) return;
+
+    const per_cluster = vol.clusterSize();
+    const keep = (size + per_cluster - 1) / per_cluster;
+
+    var cluster = entry.cluster;
+    var held: u32 = 1;
+    while (held < keep) : (held += 1) {
+        cluster = try table.next(&vol.fat, cluster) orelse return;
+    }
+
+    const tail = try table.next(&vol.fat, cluster) orelse return;
+    try table.set(&vol.fat, cluster, table.endOfChain(vol.fat.kind));
+    try table.freeChain(&vol.fat, tail);
 }
 
 // ---------------------------------------------------------------------------

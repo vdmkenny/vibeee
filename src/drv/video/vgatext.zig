@@ -66,6 +66,18 @@ pub fn scroll(fg: Color, bg: Color) void {
 
 /// Position the hardware cursor. Cosmetic, but it makes a hang visibly
 /// different from a slow boot.
+/// Show or hide the hardware cursor.
+///
+/// Bit 5 of the cursor-start register turns it off. What a full-screen program
+/// asks for while it redraws, so the cursor is not seen skating across a
+/// half-drawn screen on its way to where it belongs.
+pub fn showCursor(visible: bool) void {
+    port.outb(CRTC_INDEX, 0x0A);
+    const start = port.inb(CRTC_DATA);
+    port.outb(CRTC_INDEX, 0x0A);
+    port.outb(CRTC_DATA, if (visible) start & ~@as(u8, 0x20) else start | 0x20);
+}
+
 pub fn setCursor(x: usize, y: usize) void {
     const pos: u16 = @intCast(@min(y, HEIGHT - 1) * WIDTH + @min(x, WIDTH - 1));
     port.outb(CRTC_INDEX, 0x0F);

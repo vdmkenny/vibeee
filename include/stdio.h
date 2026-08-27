@@ -61,4 +61,8 @@ int vprintf(const char *format, va_list args);
 int vfprintf(FILE *stream, const char *format, va_list args);
 int vsprintf(char *into, const char *format, va_list args);
 int vsnprintf(char *into, size_t size, const char *format, va_list args);
+int sscanf(const char *text, const char *format, ...);
+int vsscanf(const char *text, const char *format, va_list args);
+ssize_t getline(char **into, size_t *capacity, FILE *stream);
+ssize_t getdelim(char **into, size_t *capacity, int delimiter, FILE *stream);
 #endif

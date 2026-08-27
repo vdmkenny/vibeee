@@ -131,6 +131,11 @@ export fn usleep(microseconds: c_uint) callconv(.c) c_int {
     return 0;
 }
 
+export fn ftruncate(fd: c_int, size: c_long) callconv(.c) c_int {
+    if (fd < 0 or size < 0) return @intCast(errno.fail(errno.EINVAL));
+    return @intCast(errno.wrap(sys.ftruncate(@intCast(fd), @intCast(size))));
+}
+
 export fn fsync(fd: c_int) callconv(.c) c_int {
     _ = fd;
     // Every write is already through to the device: the page cache is

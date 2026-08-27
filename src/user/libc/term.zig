@@ -10,8 +10,7 @@
 //! and restores them gets back exactly what it had.
 
 const errno = @import("errno.zig");
-const info = @import("ulib").info;
-const str = @import("lib").str;
+const console = @import("ulib").console;
 const sys = @import("sys");
 
 pub const NCCS = 32;
@@ -112,13 +111,7 @@ export fn ioctl(fd: c_int, request: c_ulong, ...) callconv(.c) c_int {
 /// that got 80x24 on a 100x30 screen would draw a box in the wrong place and
 /// have no way to find out.
 fn size(out: *Winsize) c_int {
-    var buf: [64]u8 = @splat(0);
-    var it = str.split(info.ask("console", &buf), 'x');
-
-    const columns = str.toUnsigned(it.next() orelse "");
-    const rows = str.toUnsigned(it.next() orelse "");
-    if (columns == 0 or rows == 0) return @intCast(errno.fail(errno.ENOTTY));
-
-    out.* = .{ .ws_col = @intCast(columns), .ws_row = @intCast(rows) };
+    const shape = console.size();
+    out.* = .{ .ws_col = @intCast(shape.columns), .ws_row = @intCast(shape.rows) };
     return 0;
 }

@@ -8,6 +8,7 @@
 const std = @import("std");
 const klog = @import("klog.zig");
 const bootinfo = @import("bootinfo.zig");
+const escapes = @import("lib").escapes;
 const fbcon = @import("../drv/video/fbcon.zig");
 const vgatext = @import("../drv/video/vgatext.zig");
 
@@ -145,6 +146,12 @@ const backend = struct {
     fn setCursor(x: usize, y: usize) void {
         if (!fbcon.active()) vgatext.setCursor(x, y);
     }
+
+    /// Only text mode has a cursor to hide: the framebuffer console draws
+    /// none, so there is nothing there for a program to be asking about.
+    fn showCursor(visible: bool) void {
+        if (!fbcon.active()) vgatext.showCursor(visible);
+    }
 };
 
 /// Width of the key column in the boot log. Defined once so `field`, `warn`
@@ -197,6 +204,7 @@ pub fn fill(background: Color, foreground: Color) void {
 pub fn moveTo(x: usize, y: usize) void {
     col = @min(x, columns - 1);
     row = @min(y, rows - 1);
+    wrap_pending = false;
     backend.setCursor(col, row);
 }
 
@@ -215,62 +223,123 @@ fn newline() void {
     }
 }
 
-/// Where a select-graphic-rendition sequence has got to.
+/// The escape sequences this console acts on.
 ///
-/// The console understands one escape sequence, `ESC [ ... m`, because it is
-/// the one a program needs to say anything about colour. A program writes to
-/// its output stream and does not care whether a terminal emulator or this
-/// console is on the other end, which is the whole point of using the sequence
-/// every terminal already speaks rather than inventing a syscall for it.
+/// The grammar is `lib.escapes`, shared with `eterm`, because there are two
+/// terminals here and one meaning of `ESC [ 2 J`. What differs is only what
+/// each does about it: this draws into a text grid and that draws into a
+/// window.
+///
+/// Enough of the set that a full-screen program can work: colour, moving the
+/// cursor, erasing, and hiding the cursor while redrawing. A program writes to
+/// its output stream without knowing which terminal is on the other end, which
+/// is the whole point of speaking the sequences every terminal already does.
 const Escape = struct {
-    /// Digits of the parameter being read, and the state all at once: null
-    /// means no sequence is in progress.
-    var pending: ?u8 = null;
-    var seen_bracket = false;
-    var value: u8 = 0;
+    var reader = escapes.Parser{};
 
-    /// Feed a byte to the sequence reader. True when it was consumed.
+    /// Feed a byte. True when the sequence machinery consumed it, which is
+    /// every byte that is not an ordinary character.
     fn take(c: u8) bool {
-        if (pending == null) {
-            if (c != 0x1B) return false;
-            pending = 0;
-            seen_bracket = false;
-            value = 0;
-            return true;
-        }
+        const action = reader.next(c) orelse return true;
 
-        if (!seen_bracket) {
-            // Anything but a bracket is a sequence this does not know; drop
-            // it rather than printing its remains.
-            seen_bracket = c == '[';
-            if (!seen_bracket) pending = null;
-            return true;
-        }
-
-        switch (c) {
-            '0'...'9' => value = value *| 10 +| (c - '0'),
-            ';' => {
-                apply(value);
-                value = 0;
+        switch (action) {
+            .print => |cp| {
+                draw(@intCast(cp));
+                return true;
             },
+            .control => return false,
+            .csi => |sequence| {
+                apply(sequence);
+                return true;
+            },
+            .escape, .osc => return true,
+        }
+    }
+
+    /// One parsed `CSI`. Parameters default to what the standard says they
+    /// default to, which is why `get` takes the fallback rather than the
+    /// caller checking for absence.
+    fn apply(sequence: escapes.Csi) void {
+        if (sequence.private) return cursorVisibility(sequence);
+
+        switch (sequence.final) {
             'm' => {
-                apply(value);
-                pending = null;
+                var i: usize = 0;
+                while (i < @max(sequence.count, 1)) : (i += 1) rendition(sequence.get(i, 0));
             },
-            else => pending = null,
+            // Rows and columns count from one in the sequence and from nought here.
+            'H', 'f' => moveTo(param(sequence, 1) -| 1, param(sequence, 0) -| 1),
+            'A' => moveTo(col, row -| param(sequence, 0)),
+            'B' => moveTo(col, row + param(sequence, 0)),
+            'C' => moveTo(col + param(sequence, 0), row),
+            'D' => moveTo(col -| param(sequence, 0), row),
+            'J' => eraseDisplay(sequence.get(0, 0)),
+            'K' => eraseLine(sequence.get(0, 0)),
+            else => {},
         }
-        return true;
+    }
+
+    /// `?25h` and `?25l`, which is how a program stops the cursor flickering
+    /// across a screen it is in the middle of redrawing.
+    fn cursorVisibility(sequence: escapes.Csi) void {
+        if (sequence.get(0, 0) != 25) return;
+        backend.showCursor(sequence.final == 'h');
+    }
+
+    /// One parameter as a cell count. Defaulting to one, which is what every
+    /// movement and position sequence means by an absent parameter.
+    fn param(sequence: escapes.Csi, index: usize) usize {
+        return sequence.get(index, 1);
+    }
+
+    /// 0 to the end, 1 from the start, 2 the whole thing. The cursor does not
+    /// move: a program that meant to move it says so separately, and one that
+    /// did not would be surprised to find it had.
+    fn eraseDisplay(how: usize) void {
+        const from = switch (how) {
+            1 => 0,
+            2 => 0,
+            else => row * columns + col,
+        };
+        const to = switch (how) {
+            1 => row * columns + col + 1,
+            else => rows * columns,
+        };
+        eraseCells(from, to);
+    }
+
+    fn eraseLine(how: usize) void {
+        const start_of_line = row * columns;
+        const from = switch (how) {
+            1 => start_of_line,
+            2 => start_of_line,
+            else => start_of_line + col,
+        };
+        const to = switch (how) {
+            1 => start_of_line + col + 1,
+            else => start_of_line + columns,
+        };
+        eraseCells(from, to);
+    }
+
+    fn eraseCells(from: usize, to: usize) void {
+        var cell = from;
+        while (cell < @min(to, rows * columns)) : (cell += 1) {
+            backend.putAt(cell % columns, cell / columns, ' ', fg, bg);
+        }
     }
 
     /// One rendition parameter, in the numbering every terminal shares.
-    fn apply(param: u8) void {
-        switch (param) {
+    fn rendition(which: usize) void {
+        switch (which) {
             0 => setColor(.light_grey, .black),
             1 => setColor(bright(fg), bg),
             7 => setColor(bg, fg),
-            30...37 => setColor(@enumFromInt(param - 30), bg),
-            40...47 => setColor(fg, @enumFromInt(param - 40)),
-            90...97 => setColor(bright(@enumFromInt(param - 90)), bg),
+            30...37 => setColor(@enumFromInt(which - 30), bg),
+            39 => setColor(.light_grey, bg),
+            40...47 => setColor(fg, @enumFromInt(which - 40)),
+            49 => setColor(fg, .black),
+            90...97 => setColor(bright(@enumFromInt(which - 90)), bg),
             else => {},
         }
     }
@@ -282,12 +351,47 @@ const Escape = struct {
     }
 };
 
+/// Set when the last column has been written and the line is full, but nothing
+/// has yet arrived that needs the next one.
+///
+/// A terminal wraps late, not eagerly: writing the eightieth character of an
+/// eighty-column line leaves the cursor on that character rather than on the
+/// next line. Wrapping there instead would scroll the screen for a line that
+/// exactly fits, which is why a full-screen program that draws to the last
+/// column loses its top line on a console that gets this wrong.
+var wrap_pending = false;
+
+/// Put one character where the cursor is and move it along.
+fn draw(c: u8) void {
+    if (wrap_pending) {
+        newline();
+        wrap_pending = false;
+    }
+
+    backend.putAt(col, row, c, fg, bg);
+
+    if (col + 1 >= columns) {
+        wrap_pending = true;
+    } else {
+        col += 1;
+    }
+}
+
 pub fn putChar(c: u8) void {
     if (mirror) |sink| sink(&[_]u8{c});
     if (Escape.take(c)) return;
+
+    // What is left is a control character the parser passed through, which is
+    // the only kind this has an opinion about.
     switch (c) {
-        '\n' => newline(),
-        '\r' => col = 0,
+        '\n' => {
+            wrap_pending = false;
+            newline();
+        },
+        '\r' => {
+            wrap_pending = false;
+            col = 0;
+        },
         // Form feed clears the screen. The traditional meaning, and it saves
         // inventing a syscall for something a terminal has always done with a
         // byte: `clear` in the shell is one write.
@@ -300,14 +404,11 @@ pub fn putChar(c: u8) void {
             if (col >= columns) newline();
         },
         8 => if (col > 0) {
-            col -= 1;
+            if (!wrap_pending) col -= 1;
+            wrap_pending = false;
             backend.putAt(col, row, ' ', fg, bg);
         },
-        else => {
-            backend.putAt(col, row, c, fg, bg);
-            col += 1;
-            if (col >= columns) newline();
-        },
+        else => draw(c),
     }
 }
 

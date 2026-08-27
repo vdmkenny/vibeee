@@ -16,6 +16,7 @@ pub const font = @import("font.zig");
 pub const logo = @import("logo.zig");
 pub const ring = @import("ring.zig");
 pub const elf = @import("elf.zig");
+pub const escapes = @import("escapes.zig");
 pub const str = @import("str.zig");
 pub const syscalls = @import("syscalls.zig");
 
@@ -26,6 +27,7 @@ test {
     _ = logo;
     _ = ring;
     _ = elf;
+    _ = escapes;
     _ = str;
     _ = syscalls;
 }

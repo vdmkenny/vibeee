@@ -113,6 +113,7 @@ $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 .PHONY: examples
 examples: kernel
 	@tools/eeecc -o $(BUILD)/greet examples/greet.c
+	@tools/eeecc -o $(BUILD)/edit third_party/kilo/kilo.c
 
 image: $(IMAGE)
 
@@ -128,6 +129,7 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
+	@$(MCOPY) -i $@ -o $(BUILD)/edit ::/bin/edit
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd

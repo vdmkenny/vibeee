@@ -10,7 +10,7 @@
 //! program producing them has no way to find out.
 
 const std = @import("std");
-const parser = @import("parser.zig");
+const parser = @import("lib").escapes;
 const str = @import("lib").str;
 const screen = @import("screen.zig");
 
