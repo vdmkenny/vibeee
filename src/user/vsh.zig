@@ -68,6 +68,11 @@ export fn _start() callconv(.naked) noreturn {
 }
 
 export fn shellMain() callconv(.c) noreturn {
+    // The console stops being a broadcast and becomes this conversation:
+    // from here on, only the shell and what it starts render; services'
+    // lines go to the ring, where `log` reads them.
+    _ = sys.consoleClaim();
+
     out.text("vibeee shell. 'help' for builtins, 'tools' for system tools.\n");
     out.flush();
 

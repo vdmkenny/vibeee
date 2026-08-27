@@ -667,6 +667,20 @@ pub fn currentKilled() bool {
 
 /// Called from the timer interrupt. Only accounting here, the actual switch
 /// happens at interrupt exit, after the controller has been acknowledged.
+/// Whether `id` is `ancestor` or one of its descendants, by the parent
+/// chain. Bounded: a chain deeper than the thread table is a cycle.
+pub fn descendsFrom(id: u32, ancestor: u32) bool {
+    var at = id;
+    var hops: u8 = 0;
+    while (hops < 32) : (hops += 1) {
+        if (at == ancestor) return true;
+        const t = find(at) orelse return false;
+        if (t.parent_id == 0) return false;
+        at = t.parent_id;
+    }
+    return false;
+}
+
 pub fn onTick() void {
     if (!started) return;
     if (current) |t| {

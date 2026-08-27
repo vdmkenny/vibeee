@@ -1352,6 +1352,19 @@ pub const table = [_]Syscall{
         .notes = "Requires Caps.driver. Read-modify-write for narrower widths is the " ++
             "caller's, made safe by every access sharing the kernel's one pair.",
     },
+    .{
+        .number = 54,
+        .name = "console_claim",
+        .summary = "Become the console's foreground.",
+        .args = &.{},
+        .returns = "0",
+        .errors = &.{},
+        .notes = "From this call on, only the claimer and its descendants render to " ++
+            "the console; everything else's lines go to the kernel's ring alone, " ++
+            "where the log tool reads them. The boot narrates onto the console " ++
+            "because nothing has claimed it yet; the shell claims it when the " ++
+            "console becomes a conversation.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

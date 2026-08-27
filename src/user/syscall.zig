@@ -284,6 +284,12 @@ pub fn mapDevice(phys: usize, len: usize) ?[*]volatile u32 {
 
 /// Physically contiguous DMA memory. Returns the handle to map with `shmMap`
 /// and writes the physical base to `physOut`. Needs the driver capability.
+/// Become the console's foreground: from now on only this process and its
+/// children render there; other processes' lines go to the log ring alone.
+pub fn consoleClaim() isize {
+    return syscall1(abi.number("console_claim"), 0);
+}
+
 /// One dword of PCI configuration space, read through the kernel: the two
 /// configuration ports are one shared index pair, and the kernel is the one
 /// place an access cannot be interleaved with another process's.

@@ -80,7 +80,24 @@ fn writePipe(end: handles.PipeEnd, buf: []const u8) Result {
     return @intCast(n);
 }
 
+/// Set by console_claim: the process whose conversation the console is.
+var console_owner: u32 = 0;
+
+pub fn sys_console_claim(_: Args) Result {
+    const t = sched.currentThread() orelse return Errno.perm.value();
+    console_owner = t.id;
+    return 0;
+}
+
 fn writeConsole(number: u32, buf: []const u8) Result {
+    // Once somebody owns the console, everyone else's lines stop rendering:
+    // they are already in the kernel's ring by the log tee, which is where
+    // the log tool reads them. Before anyone owns it, the boot narrates.
+    if (console_owner != 0) {
+        const t = sched.currentThread() orelse return @intCast(buf.len);
+        if (!sched.descendsFrom(t.id, console_owner)) return @intCast(buf.len);
+    }
+
     // One write comes out whole. Every process shares this console, and a
     // write preempted mid-render leaves half a word from one program spliced
     // into another's line.

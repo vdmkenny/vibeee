@@ -312,6 +312,23 @@ fn enumeratePci() void {
             const class: u8 = @truncate(class_reg >> 24);
             const subclass: u8 = @truncate(class_reg >> 16);
 
+            // The firmware runs USB keyboard emulation from system
+            // management mode, polled on a periodic trap that shares its
+            // interrupt plumbing with whatever else sits on those pins:
+            // unmasking such a pin with the emulation live is a machine that
+            // stops. The handover is one register: the trap enables cleared
+            // and their latched statuses written away. This machine's own
+            // keyboard is not USB, so nothing is lost but the trap.
+            if (class == 0x0C and subclass == 0x03 and (class_reg >> 8) & 0xFF == 0x00) {
+                const LEGSUP: u8 = 0xC0;
+                const RELEASED: u32 = 0x8F00;
+                const kept = pci.configRead32(addr, LEGSUP) & 0xFFFF_0000;
+                pci.configWrite32(addr, LEGSUP, kept | RELEASED);
+                console.debug("usb", "legacy emulation handed over at {x:0>2}:{x:0>2}.{d}", .{
+                    addr.bus, addr.slot, addr.func,
+                });
+            }
+
             probe.consider(.{
                 .bus = "pci",
                 .location = .{ addr.bus, addr.slot, addr.func },
