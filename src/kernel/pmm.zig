@@ -205,11 +205,13 @@ fn findFree(from: usize, to: usize) ?usize {
     return null;
 }
 
-/// Allocate `count` physically contiguous frames. Used for DMA buffers; the
-/// linear scan is acceptable because these allocations are rare and early.
-pub fn allocContiguous(count: usize, below: usize) AllocError!usize {
+/// Allocate `count` physically contiguous frames, none at or above `below`.
+/// Used for DMA buffers; the linear scan is acceptable because these
+/// allocations are rare and early. `below` is a u64 because a DMA ceiling
+/// like four gigabytes is one byte past what a 32-bit frame counter can say.
+pub fn allocContiguous(count: usize, below: u64) AllocError!usize {
     if (count == 0) return error.OutOfMemory;
-    const limit = @min(below >> PAGE_SHIFT, total_frames);
+    const limit = @min(@as(usize, @intCast(below >> PAGE_SHIFT)), total_frames);
     var f = lowest_usable;
     while (f + count <= limit) {
         var run: usize = 0;

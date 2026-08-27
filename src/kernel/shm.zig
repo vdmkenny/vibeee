@@ -92,6 +92,47 @@ pub fn create(size: usize) Error!*Segment {
     return seg;
 }
 
+/// Allocate a segment whose frames are one physical run.
+///
+/// The promise every other segment deliberately does not make: a DMA
+/// engine's descriptor rings and receive buffers are addressed by one base
+/// plus an offset, so the backing must be contiguous. Rare and early, so the
+/// linear scan in the allocator costs nothing worth measuring.
+pub fn createDma(size: usize) Error!*Segment {
+    if (size == 0 or size > MAX_BYTES) return error.BadSize;
+
+    const pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    const seg = heap.allocator.create(Segment) catch return error.OutOfMemory;
+    errdefer heap.allocator.destroy(seg);
+
+    const frames = heap.allocator.alloc(usize, pages) catch return error.OutOfMemory;
+    errdefer heap.allocator.free(frames);
+
+    const base = pmm.allocContiguous(pages, 0x1_0000_0000) catch return error.OutOfMemory;
+    errdefer {
+        for (frames[0..]) |f| pmm.freeFrame(f);
+    }
+
+    // Zeroed before anyone can see it or any engine can read it: a fresh
+    // ring must not carry whatever the last owner of those frames left
+    // behind, and a device never reads what the CPU has not written.
+    for (0..pages) |i| {
+        frames[i] = base + i * PAGE_SIZE;
+        const page: *[PAGE_SIZE]u8 = @ptrFromInt(hal.physToVirt(frames[i]));
+        @memset(page, 0);
+    }
+
+    seg.* = .{ .frames = frames, .size = size };
+    return seg;
+}
+
+/// The physical address of the first byte, for a caller that has to program
+/// it into a DMA engine.
+pub fn physBase(self: *const Segment) usize {
+    return self.frames[0];
+}
+
 /// Describe a range of physical memory that already exists, such as a
 /// framebuffer, as a segment.
 ///

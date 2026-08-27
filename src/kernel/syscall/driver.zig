@@ -18,14 +18,49 @@ const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
 const pmm = @import("../pmm.zig");
 const sched = @import("../sched.zig");
+const shm = @import("../shm.zig");
 
 const Args = ctx.Args;
 const Result = ctx.Result;
 const Errno = ctx.Errno;
 const currentHandles = ctx.currentHandles;
 
-pub fn sys_irq_attach(a: Args) Result {
+/// Contiguous DMA memory, the promise `shm_create` deliberately does not
+/// make. A device engine addresses its rings as one base plus offsets, so the
+/// backing has to be one physical run, and the caller has to know where it
+/// starts: the physical base is written to `phys_out`.
+///
+/// Everything else is an ordinary segment: it maps with `shm_map`, travels
+/// through channels as a handle, and its frames come back to the allocator
+/// when the last reference closes. Cached, because on these machines
+/// coherency is the chipset's job and an uncached ring would pay a cache
+/// miss on every descriptor a driver touches.
+pub fn sys_dma_alloc(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const out = ctx.userSlice(a, a.a1, @sizeOf(u32)) orelse return Errno.fault.value();
+
+    const seg = shm.createDma(a.a0) catch |err| return switch (err) {
+        error.BadSize => Errno.inval.value(),
+        else => Errno.nomem.value(),
+    };
+
+    const slot = ctx.installHandle(.{
+        .kind = .shm,
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .shm = seg },
+    }) orelse {
+        shm.release(seg);
+        return Errno.nomem.value();
+    };
+
+    // The address is the hardware's, not the process's: two mappings of the
+    // same segment differ, and a DMA engine does not care about mapping.
+    std.mem.writeInt(u32, out[0..4], @intCast(shm.physBase(seg)), .little);
+    return @intCast(slot);
+}
+
+pub fn sys_irq_attach(a: Args) Result {    if (ctx.require(.{ .driver = true })) |denied| return denied;
 
     const table = currentHandles() orelse return Errno.nomem.value();
     const slot = table.alloc() orelse return Errno.nomem.value();

@@ -1292,6 +1292,20 @@ pub const table = [_]Syscall{
             "the firmware's own methods first, which is an interpreter's job. Nothing is " ++
             "mounted afterwards, so a caller that needs a file should have read it already.",
     },
+    .{
+        .number = 50,
+        .name = "dma_alloc",
+        .summary = "Allocate physically contiguous DMA memory.",
+        .args = &.{
+            .{ .name = "size", .kind = .len, .desc = "Bytes, rounded up to a page." },
+            .{ .name = "phys", .kind = .cptr, .desc = "Where the physical base is written." },
+        },
+        .returns = "handle to map with shm_map",
+        .errors = &.{ E.perm, E.fault, E.inval, E.nomem },
+        .notes = "Requires Caps.driver. The promise shm_create does not make: one " ++
+            "contiguous physical run, addressable by a DMA engine. Maps cached; the " ++
+            "frames go back to the allocator when the last reference closes.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

@@ -908,6 +908,26 @@ Flush and unmount everything, and return.
 
 Requires Caps.power. The half of a shutdown only the kernel can do, for a caller that will finish it: entering a sleep state properly means evaluating the firmware's own methods first, which is an interpreter's job. Nothing is mounted afterwards, so a caller that needs a file should have read it already.
 
+## `dma_alloc`  <sub>#50</sub>
+
+Allocate physically contiguous DMA memory.
+
+| arg | type | meaning |
+|---|---|---|
+| `size` | len | Bytes, rounded up to a page. |
+| `phys` | const ptr | Where the physical base is written. |
+
+**Returns:** handle to map with shm_map
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+Requires Caps.driver. The promise shm_create does not make: one contiguous physical run, addressable by a DMA engine. Maps cached; the frames go back to the allocator when the last reference closes.
+
 ---
 
-50 calls defined.
+51 calls defined.

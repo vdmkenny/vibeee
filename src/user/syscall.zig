@@ -282,6 +282,12 @@ pub fn mapDevice(phys: usize, len: usize) ?[*]volatile u32 {
     return if (at < 0) null else @ptrFromInt(@as(usize, @intCast(at)));
 }
 
+/// Physically contiguous DMA memory. Returns the handle to map with `shmMap`
+/// and writes the physical base to `physOut`. Needs the driver capability.
+pub fn dmaAlloc(size: usize, physOut: *u32) isize {
+    return syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut));
+}
+
 /// Allow this process to use a range of I/O ports directly. Needs the driver
 /// capability; grants last until the process exits.
 pub fn ioportGrant(base: u16, count: usize) isize {
