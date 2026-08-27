@@ -66,6 +66,11 @@ pub const NicOps = struct {
     transmit: *const fn (dev: *NicDev, frame: []const u8) void,
     /// The link as the hardware last reported it.
     link: *const fn (dev: *NicDev) Link,
+    /// Write the link state into the adapter's own registers. Some MACs gate
+    /// their engine on it at boot and never look again; a driver with that
+    /// policy provides this so every refresh re-arms the engine, and the
+    /// answer "up" can never outrun the hardware being told so.
+    sync_link: ?*const fn (dev: *NicDev) void = null,
 };
 
 /// One attached adapter.

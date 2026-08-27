@@ -149,7 +149,6 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
-	@$(MCOPY) -i $@ -o drivers/ethernet.manifest ::/lib/drivers/ethernet.man
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 

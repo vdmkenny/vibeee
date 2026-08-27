@@ -31,6 +31,16 @@ caps    = driver,power
 provides = platform
 restart = always
 
+name    = netd
+binary  = /bin/netd
+# The network service: drives every ethernet adapter it finds, behind the
+# driver capability. One process for the wired port and later the radio, so
+# its interrupt routing question goes to the platform service and its answer
+# names one line per card.
+caps    = driver
+provides = net
+restart = always
+
 name    = cfgd
 binary  = /bin/cfgd
 # The settings store. Nothing else may write /etc, which is what makes two

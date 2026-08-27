@@ -314,6 +314,11 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
 
     const iface = &ifaces[request.index];
 
+    // Fresh link state before anything uses it: what the adapter reports
+    // and what its registers were told must agree.
+    iface.state = iface.ops.link(iface);
+    if (iface.ops.sync_link) |sync| sync(iface);
+
     if (request.tag == .arp_probe) {
         // The whole of outbound traffic until the stack lands: one ARP
         // request, hand-built by the pure frame library, asking who holds
