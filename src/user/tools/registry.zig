@@ -15,6 +15,7 @@ const date = @import("date.zig");
 const file_tool = @import("file.zig");
 const files = @import("files.zig");
 const grep = @import("grep.zig");
+const hotkeys = @import("hotkeys.zig");
 const display_tool = @import("display.zig");
 const irq_tool = @import("irq.zig");
 const devices_tool = @import("devices.zig");
@@ -44,6 +45,7 @@ pub const commands = [_]Command{
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
     .{ .name = "battery", .summary = "what the pack is doing, and what it has come to", .run = &battery.run },
     .{ .name = "backlight", .summary = "how bright the panel is, and making it otherwise", .run = &backlight.run },
+    .{ .name = "hotkeys", .summary = "the keys that do not arrive as keys", .run = &hotkeys.run },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },

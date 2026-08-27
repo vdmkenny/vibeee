@@ -72,45 +72,11 @@ fn visit(_: ?*anyopaque, node: ?*uacpi.Node, depth: u32) callconv(.c) u32 {
 pub fn describeChild(parent: []const u8, index: u8, into: *proto.Device) proto.Status {
     into.* = .{};
 
-    const node = find(parent) orelse return .unknown;
+    const node = uacpi.named(parent) orelse return .unknown;
     wanted = .{ .index = index, .into = into, .devices_only = false };
 
     _ = uacpi.namespace_for_each_child_simple(node, visit, null);
     return if (wanted.found) .ok else .end;
-}
-
-/// The device called `name`, wherever it sits.
-fn find(name: []const u8) ?*uacpi.Node {
-    if (name.len == 0) return null;
-
-    looking_for = name;
-    match = null;
-
-    _ = uacpi.namespace_for_each_child_simple(uacpi.namespace_root(), compare, null);
-    return match;
-}
-
-var looking_for: []const u8 = "";
-var match: ?*uacpi.Node = null;
-
-fn compare(_: ?*anyopaque, node: ?*uacpi.Node, _: u32) callconv(.c) u32 {
-    if (match != null) return uacpi.BREAK;
-
-    const name = uacpi.namespace_node_name(node).text;
-    if (!sameName(&name, looking_for)) return uacpi.CONTINUE;
-
-    match = node;
-    return uacpi.BREAK;
-}
-
-/// A namespace name is four characters padded with underscores, so `LID_` and
-/// `LID` are the same device asked for two ways.
-fn sameName(name: *const [4]u8, wanted_name: []const u8) bool {
-    for (name, 0..) |c, i| {
-        const asked = if (i < wanted_name.len) wanted_name[i] else '_';
-        if (c != asked and !(c == '_' and i >= wanted_name.len)) return false;
-    }
-    return true;
 }
 
 /// Which of the methods worth having this device has.

@@ -44,7 +44,7 @@ const Chosen = struct {
 var chosen: ?Chosen = null;
 var looked = false;
 
-fn pick() ?Chosen {
+pub fn pick() ?Chosen {
     if (looked) return chosen;
     looked = true;
 
@@ -72,7 +72,8 @@ pub fn report() void {
     out.text("platd: backlight via ");
     out.text(found.backend.name);
     out.text(" on ");
-    out.text(trimmed(&uacpi.namespace_node_name(found.node).text));
+    const name = uacpi.namespace_node_name(found.node);
+    out.text(uacpi.trimmed(&name.text));
 
     // The range too, because it is the thing a caller has to know and the one
     // number that differs between the two ways of doing this.
@@ -85,13 +86,6 @@ pub fn report() void {
     }
     out.byte('\n');
     out.flush();
-}
-
-/// A namespace name is four characters padded with underscores.
-fn trimmed(name: []const u8) []const u8 {
-    var end = name.len;
-    while (end > 0 and (name[end - 1] == '_' or name[end - 1] == 0)) end -= 1;
-    return name[0..end];
 }
 
 pub fn read(into: *proto.Backlight) proto.Status {
@@ -134,7 +128,7 @@ pub fn write(level: u32, into: *proto.Backlight) proto.Status {
 // it.
 
 fn standardDevice() ?*uacpi.Node {
-    return findWith("_BCM");
+    return uacpi.firstWith("_BCM");
 }
 
 fn standardRead(node: *uacpi.Node) ?u32 {
@@ -182,7 +176,7 @@ const ASUS_HID = "ASUS010";
 const ASUS_MAX = 15;
 
 fn asusDevice() ?*uacpi.Node {
-    return findByHid(ASUS_HID) orelse findWith("PBLS");
+    return uacpi.firstWithHid(ASUS_HID) orelse uacpi.firstWith("PBLS");
 }
 
 fn asusRead(node: *uacpi.Node) ?u32 {
@@ -196,39 +190,21 @@ fn asusWrite(node: *uacpi.Node, level: u32) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Looking
+// Stepping
 // ---------------------------------------------------------------------------
 
-var wanted_method: [*:0]const u8 = "";
-var found_node: ?*uacpi.Node = null;
+/// One step brighter or darker, and stop at the ends.
+///
+/// What a brightness key means. A step rather than a percentage for the same
+/// reason a level is: sixteen steps is what this panel has, and moving by five
+/// percent would move by nothing most of the time and by two steps sometimes.
+pub fn step(by: i32) void {
+    var panel = proto.Backlight{};
+    if (read(&panel) != .ok or !panel.isPresent()) return;
 
-/// The first device offering a named method.
-fn findWith(method: [*:0]const u8) ?*uacpi.Node {
-    wanted_method = method;
-    found_node = null;
+    const moved = @as(i64, panel.level) + by;
+    const level: u32 = @intCast(@min(@max(moved, 0), @as(i64, panel.max)));
+    if (level == panel.level) return;
 
-    _ = uacpi.namespace_for_each_child_simple(uacpi.namespace_root(), offersMethod, null);
-    return found_node;
-}
-
-fn offersMethod(_: ?*anyopaque, node: ?*uacpi.Node, _: u32) callconv(.c) u32 {
-    if (found_node != null) return uacpi.BREAK;
-    if (!uacpi.isDevice(node)) return uacpi.CONTINUE;
-    if (!uacpi.has(node, wanted_method)) return uacpi.CONTINUE;
-
-    found_node = node;
-    return uacpi.BREAK;
-}
-
-/// The device the firmware identifies by a hardware id, which is the reliable
-/// way to find a vendor's own: the node's name is whatever they called it.
-fn findByHid(hid: [*:0]const u8) ?*uacpi.Node {
-    found_node = null;
-    _ = uacpi.uacpi_find_devices(hid, remember, null);
-    return found_node;
-}
-
-fn remember(_: ?*anyopaque, node: ?*uacpi.Node, _: u32) callconv(.c) u32 {
-    found_node = node;
-    return uacpi.BREAK;
+    _ = write(level, &panel);
 }

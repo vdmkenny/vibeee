@@ -25,6 +25,10 @@ pub const Tag = enum(u8) {
     backlight,
     /// Set it. `index` carries the level, which is what it is for.
     backlight_set,
+    /// The next thing the firmware said a person did, if anything.
+    hotkey,
+    /// An event handle that fires whenever it says another.
+    hotkey_watch,
     /// One name under a named device, by position. What the six columns of
     /// `device` cannot say: a vendor's methods are called whatever the vendor
     /// called them, and nothing can guess at those.
@@ -158,12 +162,109 @@ pub const Backlight = extern struct {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Keys the keyboard never sees
+// ---------------------------------------------------------------------------
+
+/// What a person pressed, once the machine's own numbering is off it.
+///
+/// The top row of a netbook is not wired to the keyboard controller. The
+/// embedded controller sees those keys and the firmware raises a notification,
+/// so they arrive as ACPI rather than as scancodes and have to be named
+/// somewhere. Named by what they mean rather than by which key they sit on:
+/// the same meaning is a different key on the next machine.
+pub const Hotkey = enum(u8) {
+    /// The firmware said something this build has no name for. Its own number
+    /// and the device that sent it are in the press, which is the only way a
+    /// machine nobody has tried yet can still be read.
+    unknown,
+
+    brightness_up,
+    brightness_down,
+    brightness_cycle,
+    brightness_off,
+    /// The firmware moved it itself and is saying so afterwards, which is what
+    /// the vendor method does: there is nothing to do but notice.
+    brightness_changed,
+
+    volume_up,
+    volume_down,
+    mute,
+
+    wireless,
+    touchpad,
+    display_switch,
+    display_off,
+    resolution,
+    performance,
+    lock,
+
+    power,
+    sleep,
+    /// The lid moved. Which way it moved is `_LID`, which is a question and
+    /// not a key: asking it means calling a method, and nothing reads it yet.
+    lid_changed,
+    battery_changed,
+    mains_changed,
+
+    /// For showing. Here rather than at each caller so the tool and the log
+    /// cannot come to call the same key two things.
+    pub fn label(self: Hotkey) []const u8 {
+        return switch (self) {
+            .unknown => "unknown",
+            .brightness_up => "brightness up",
+            .brightness_down => "brightness down",
+            .brightness_cycle => "brightness cycle",
+            .brightness_off => "brightness off",
+            .brightness_changed => "brightness changed",
+            .volume_up => "volume up",
+            .volume_down => "volume down",
+            .mute => "mute",
+            .wireless => "wireless",
+            .touchpad => "touchpad",
+            .display_switch => "display switch",
+            .display_off => "display off",
+            .resolution => "resolution",
+            .performance => "performance",
+            .lock => "lock",
+            .power => "power",
+            .sleep => "sleep",
+            .lid_changed => "lid changed",
+            .battery_changed => "battery changed",
+            .mains_changed => "mains changed",
+        };
+    }
+};
+
+/// One of them, with what the firmware actually sent still attached.
+///
+/// The raw value and the device outlive the meaning on purpose. A machine
+/// whose numbering nobody has written down yet reports `unknown` for
+/// everything, and these two fields are what makes writing it down possible.
+pub const Press = extern struct {
+    hotkey: Hotkey = .unknown,
+    _reserved: [3]u8 = @splat(0),
+    value: u32 = 0,
+    device: [4]u8 = @splat(0),
+};
+
 pub const Rep = extern struct {
     status: Status = .ok,
     _reserved: [3]u8 = @splat(0),
-    battery: Battery = .{},
-    device: Device = .{},
-    backlight: Backlight = .{},
+    body: Body = .{ .battery = .{} },
+};
+
+/// Exactly one of these, chosen by what was asked.
+///
+/// A union rather than one field per answer. Every reply used to carry all of
+/// them and mean one, which cost the payload three empty answers and had
+/// reached the size of a message exactly: the next question could not have
+/// been asked at all.
+pub const Body = extern union {
+    battery: Battery,
+    device: Device,
+    backlight: Backlight,
+    press: Press,
 };
 
 comptime {
@@ -173,6 +274,34 @@ comptime {
 }
 
 pub const Error = error{ NoService, Refused, End };
+
+/// The next press, or `error.End` once there are none waiting.
+///
+/// Collected rather than delivered: a caller waits on the event and then takes
+/// what is there, which is the same shape settings changes take and means a
+/// caller that was busy finds both keys rather than the later one.
+pub fn nextHotkey(into: *Press) Error!void {
+    var reply = Rep{};
+    try call(.hotkey, &reply);
+    into.* = reply.body.press;
+}
+
+/// An event that fires whenever the firmware reports another one.
+pub fn watchHotkeys() Error!u32 {
+    const channel = sys.svcConnect(SERVICE);
+    if (channel < 0) return error.NoService;
+    defer _ = sys.close(@intCast(channel));
+
+    var request = Req{ .tag = .hotkey_watch };
+    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
+
+    var reply = sys.Message{};
+    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
+
+    const handles = reply.handleSlice();
+    if (handles.len == 0) return error.Refused;
+    return handles[0];
+}
 
 /// Ask, and say whether it was done.
 ///

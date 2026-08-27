@@ -22,7 +22,7 @@ pub fn run(_: []const []const u8) void {
         return;
     };
 
-    const pack = reply.battery;
+    const pack = reply.body.battery;
     if (!pack.isPresent()) {
         out.text("no battery\n");
         out.flush();

@@ -71,6 +71,11 @@ fn serve(channel: u32) noreturn {
         drain(channel);
         if (glue.sci.attached()) glue.sci.service();
 
+        // What the firmware said while that ran. Off the handler on purpose:
+        // acting on a key means calling a method, and the handler runs inside
+        // the interpreter that would have to be called.
+        hotkey.apply();
+
         var count: usize = 1;
         sources[0] = channel;
         if (glue.sci.attached()) {
@@ -86,13 +91,22 @@ fn drain(channel: u32) void {
         var message = sys.Message{};
         const request = sys.recv(channel, &message, sys.POLL) orelse return;
 
+        // Built as a message rather than a payload, because one of these
+        // answers with a handle and the rest would otherwise need a second
+        // way out of here.
+        var reply = sys.Message{};
+
         var body = proto.Rep{};
-        body.status = answer(&message, &body);
-        _ = sys.reply(channel, request.token, std.mem.asBytes(&body));
+        body.status = answer(&message, &body, &reply);
+
+        @memcpy(reply.data[0..@sizeOf(proto.Rep)], std.mem.asBytes(&body));
+        reply.len = @sizeOf(proto.Rep);
+
+        _ = sys.replyMsg(channel, request.token, &reply);
     }
 }
 
-fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
+fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) proto.Status {
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(proto.Req)) return .unknown;
 
@@ -100,11 +114,13 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     return switch (request.tag) {
         .power_off => powerOff(),
         .reboot => restart(),
-        .battery => battery.read(&reply.battery),
-        .device => namespace.describe(request.index, &reply.device),
-        .child => namespace.describeChild(&request.name, request.index, &reply.device),
-        .backlight => backlight.read(&reply.backlight),
-        .backlight_set => backlight.write(request.index, &reply.backlight),
+        .battery => battery.read(&body.body.battery),
+        .device => namespace.describe(request.index, &body.body.device),
+        .child => namespace.describeChild(&request.name, request.index, &body.body.device),
+        .backlight => backlight.read(&body.body.backlight),
+        .backlight_set => backlight.write(request.index, &body.body.backlight),
+        .hotkey => hotkey.take(&body.body.press),
+        .hotkey_watch => hotkey.subscribe(reply),
     };
 }
 
@@ -136,6 +152,7 @@ fn restart() proto.Status {
 
 const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
+const hotkey = @import("hotkey.zig");
 const namespace = @import("namespace.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
@@ -157,6 +174,7 @@ fn bringUp() bool {
     _ = step("events", uacpi_finalize_gpe_initialization());
 
     backlight.report();
+    hotkey.listen();
 
     if (glue.sci.arm()) {
         out.text("platd: system control interrupt live\n");

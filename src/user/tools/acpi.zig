@@ -69,7 +69,7 @@ fn under(name: []const u8) void {
         platform.callUnder(.child, name, index, &reply) catch break;
 
         // Four to a row: these are short and there can be dozens.
-        out.pad(trimmed(&reply.device.name), 8);
+        out.pad(trimmed(&reply.body.device.name), 8);
         shown += 1;
         if (shown % 8 == 0) out.byte('\n');
     }
@@ -97,7 +97,7 @@ fn list() void {
         var reply = platform.Rep{};
         platform.callAt(.device, index, &reply) catch break;
 
-        write(reply.device);
+        write(reply.body.device);
         shown += 1;
     }
 

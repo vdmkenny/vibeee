@@ -1,6 +1,11 @@
 # 09: Platform / ACPI / Power subsystem (vibeee)
 
-> **Status: design only, not implemented.**
+> **Status: partly built.** `platd` runs uACPI in userspace and holds the driver capability
+> and nothing else. Built: table load and namespace bring-up, the SCI, `_PTS`/`_S5_` power off
+> and reboot, `_BIF`/`_BST` battery, backlight through `_BCM` or the vendor's `PBLS`, and the
+> hotkeys of §6.6 as a queue anyone may watch. Not built: the EC transaction layer, thermal
+> and fan, S3, the radio and camera gates, and the overclock module. There is no `powerd`:
+> what §6.6 calls policy has nowhere to live until there is a session to have a policy about.
 >
 > **§4 is superseded.** It decides to write a minimal AML interpreter. That decision was
 > taken when there was no C toolchain here and no third-party interpreter small enough to

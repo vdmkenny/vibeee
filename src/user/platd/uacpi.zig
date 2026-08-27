@@ -79,6 +79,139 @@ pub const namespace_root = uacpi_namespace_root;
 pub const namespace_node_name = uacpi_namespace_node_name;
 pub const namespace_for_each_child_simple = uacpi_namespace_for_each_child_simple;
 
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+/// What the firmware raises when something happened that it cannot describe by
+/// a value changing: a lid closing, a key the keyboard controller never sees.
+///
+/// A handler on the root receives every one of them, whichever device sent it.
+pub extern fn uacpi_install_notify_handler(
+    node: ?*Node,
+    handler: *const fn (?*anyopaque, ?*Node, u64) callconv(.c) c_uint,
+    context: ?*anyopaque,
+) c_uint;
+
+/// The buttons wired to the chipset rather than to a device.
+///
+/// A power button is usually not in the namespace at all: it sets a bit in the
+/// power management block, and the firmware never mentions it. So it is asked
+/// for by name from a fixed list instead of found.
+pub const FixedEvent = enum(c_uint) {
+    timer = 1,
+    power_button,
+    sleep_button,
+    rtc,
+};
+
+/// Installing one enables it, which is why nothing here enables it.
+pub extern fn uacpi_install_fixed_event_handler(
+    event: FixedEvent,
+    handler: *const fn (?*anyopaque) callconv(.c) u32,
+    user: ?*anyopaque,
+) c_uint;
+
+pub const INTERRUPT_HANDLED: u32 = 1;
+
+// ---------------------------------------------------------------------------
+// Looking
+// ---------------------------------------------------------------------------
+//
+// uACPI hands nodes to a callback with a context pointer, so every search is
+// the same three lines around a different test. Here once, because a search
+// written again at each caller is a walk that stops at a different place each
+// time it is written again.
+
+/// The first device offering a named method, wherever it sits.
+///
+/// How a machine is asked whether it can do a thing at all. The display device
+/// has no hardware id and is known only by offering `_BCM`.
+pub fn firstWith(method: [*:0]const u8) ?*Node {
+    var probe = Probe{ .method = method };
+    _ = namespace_for_each_child_simple(namespace_root(), matchMethod, &probe);
+    return probe.found;
+}
+
+const Probe = struct {
+    method: [*:0]const u8,
+    found: ?*Node = null,
+};
+
+fn matchMethod(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
+    const probe: *Probe = @alignCast(@ptrCast(user.?));
+    if (!isDevice(node)) return CONTINUE;
+    if (!has(node, probe.method)) return CONTINUE;
+
+    probe.found = node;
+    return BREAK;
+}
+
+/// The device the firmware identifies by a hardware id.
+///
+/// The reliable way to find a vendor's own: what a node is called is whatever
+/// the vendor called it, and the id is what they had to register.
+pub fn firstWithHid(hid: [*:0]const u8) ?*Node {
+    var found: ?*Node = null;
+    _ = uacpi_find_devices(hid, keepFirst, @ptrCast(&found));
+    return found;
+}
+
+fn keepFirst(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
+    const found: *?*Node = @alignCast(@ptrCast(user.?));
+    found.* = node;
+    return BREAK;
+}
+
+/// The node called `name`, wherever it sits. Any node, not only a device: a
+/// caller asking for one by name has usually read it off a listing.
+pub fn named(name: []const u8) ?*Node {
+    if (name.len == 0) return null;
+
+    var by = ByName{ .wanted = name };
+    _ = namespace_for_each_child_simple(namespace_root(), matchName, &by);
+    return by.found;
+}
+
+const ByName = struct {
+    wanted: []const u8,
+    found: ?*Node = null,
+};
+
+fn matchName(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
+    const by: *ByName = @alignCast(@ptrCast(user.?));
+
+    const name = namespace_node_name(node).text;
+    if (!sameName(&name, by.wanted)) return CONTINUE;
+
+    by.found = node;
+    return BREAK;
+}
+
+// ---------------------------------------------------------------------------
+// Names
+// ---------------------------------------------------------------------------
+//
+// Four characters padded with underscores, which is all the format has room
+// for. Both directions of that padding belong together.
+
+/// Whether a node's name is the one asked for, so `LID_` and `LID` are the
+/// same device asked for two ways.
+pub fn sameName(name: *const [4]u8, wanted: []const u8) bool {
+    for (name, 0..) |c, i| {
+        const asked = if (i < wanted.len) wanted[i] else '_';
+        if (c != asked and !(c == '_' and i >= wanted.len)) return false;
+    }
+    return true;
+}
+
+/// The padding off, for showing.
+pub fn trimmed(name: []const u8) []const u8 {
+    var end = name.len;
+    while (end > 0 and (name[end - 1] == '_' or name[end - 1] == 0)) end -= 1;
+    return name[0..end];
+}
+
 /// Whether this node is a device rather than something belonging to one.
 pub fn isDevice(node: ?*Node) bool {
     var kind: u32 = 0;

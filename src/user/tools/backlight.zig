@@ -28,7 +28,7 @@ pub fn run(args: []const []const u8) void {
         return;
     };
 
-    const panel = reply.backlight;
+    const panel = reply.body.backlight;
     if (!panel.isPresent()) {
         out.text("this machine offers no way to set the backlight\n");
         out.flush();
