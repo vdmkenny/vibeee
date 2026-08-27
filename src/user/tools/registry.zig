@@ -7,6 +7,7 @@
 
 const eeefetch = @import("eeefetch.zig");
 const smbios = @import("smbios.zig");
+const battery = @import("battery.zig");
 const cfg = @import("cfg.zig");
 const date = @import("date.zig");
 const file_tool = @import("file.zig");
@@ -39,6 +40,7 @@ pub const commands = [_]Command{
     .{ .name = "file", .summary = "what kind of file something is", .run = &file_tool.run },
     .{ .name = "grep", .summary = "print lines matching a pattern", .run = &grep.run },
     .{ .name = "free", .summary = "show memory use", .run = &status.free },
+    .{ .name = "battery", .summary = "what the pack is doing, and what it has come to", .run = &battery.run },
     .{ .name = "top", .summary = "show threads and load", .run = &status.top },
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },

@@ -63,18 +63,20 @@ fn serve(channel: u32) noreturn {
         var message = sys.Message{};
         const request = sys.recv(channel, &message, sys.FOREVER) orelse continue;
 
-        const body = proto.Rep{ .status = answer(&message) };
+        var body = proto.Rep{};
+        body.status = answer(&message, &body);
         _ = sys.reply(channel, request.token, std.mem.asBytes(&body));
     }
 }
 
-fn answer(message: *const sys.Message) proto.Status {
+fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(proto.Req)) return .unknown;
 
     return switch (@as(*const proto.Req, @alignCast(@ptrCast(bytes.ptr))).tag) {
         .power_off => powerOff(),
         .reboot => restart(),
+        .battery => battery.read(&reply.battery),
     };
 }
 
@@ -104,6 +106,7 @@ fn restart() proto.Status {
     return .refused;
 }
 
+const battery = @import("battery.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
 
