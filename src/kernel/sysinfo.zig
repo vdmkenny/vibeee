@@ -64,6 +64,11 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
 
     if (eq(key, "kernel")) {
         try w.print("vibeee {s}", .{VERSION});
+    } else if (eq(key, "log")) {
+        // The threshold services log at, so their detail lines follow the
+        // kernel's own: one `verbose` on the command line decides for the
+        // whole boot.
+        try w.print("{s}", .{if (console.isVerbose()) "detail" else "info"});
     } else if (eq(key, "arch")) {
         try w.print("{s}", .{@tagName(@import("builtin").cpu.arch)});
     } else if (eq(key, "cpu")) {

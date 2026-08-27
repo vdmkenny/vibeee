@@ -11,11 +11,41 @@
 
 const ink = @import("ink.zig");
 const out = @import("out.zig");
+const str = @import("lib").str;
 const style = @import("lib").style;
+const sys = @import("sys");
 const syscalls = @import("lib").syscalls;
 
 /// The kernel's column, so a service's lines and the kernel's line up.
 pub const KEY_WIDTH = 8;
+
+/// How much a line is worth showing. Severity is the colour; this is the
+/// other axis, whether the line is for a person following the boot or for a
+/// person chasing a fault.
+pub const Level = enum { detail, info };
+
+/// The threshold comes from the kernel, once: `verbose` on the command line
+/// decides for the whole boot, services included.
+var shown: ?Level = null;
+
+fn threshold() Level {
+    if (shown) |level| return level;
+
+    var buf: [8]u8 = undefined;
+    const n = sys.sysinfo("log", &buf);
+    const level: Level = if (n > 0 and str.eql(buf[0..@intCast(n)], "detail")) .detail else .info;
+    shown = level;
+    return level;
+}
+
+/// Whether the line being started is kept. Dim lines are detail: present for
+/// the person chasing a fault, absent for the person using the machine.
+fn levelOf(role: style.Role) Level {
+    return if (role == .dim) .detail else .info;
+}
+
+var muted = false;
+var muted_from: usize = 0;
 
 /// The whole of a line that is one piece of text.
 pub fn say(key: []const u8, role: style.Role, message: []const u8) void {
@@ -61,6 +91,14 @@ pub fn failed(key: []const u8, message: []const u8, result: isize) void {
 /// stream, and a logger called mid-line flushes the half-built line inside
 /// its own. Gather answers first, then say them.
 pub fn begin(key: []const u8, role: style.Role) void {
+    if (@intFromEnum(levelOf(role)) < @intFromEnum(threshold())) {
+        // Built and then taken back rather than suppressed at each caller:
+        // the pieces between `begin` and `end` are ordinary writes, and this
+        // is the one place that sees the whole line.
+        muted = true;
+        muted_from = out.stream().mark();
+    }
+
     ink.use(role);
     out.text(key);
     ink.plain();
@@ -73,6 +111,11 @@ pub fn begin(key: []const u8, role: style.Role) void {
 }
 
 pub fn end() void {
+    if (muted) {
+        muted = false;
+        out.stream().rewind(muted_from);
+        return;
+    }
     out.byte('\n');
     out.flush();
 }

@@ -47,6 +47,18 @@ pub const Stream = struct {
     // Out
     // -----------------------------------------------------------------------
 
+    /// Where writing stands, for a caller that may yet take back what it is
+    /// about to write. Only meaningful until something flushes.
+    pub fn mark(self: *Stream) usize {
+        return if (self.writing) self.used else 0;
+    }
+
+    /// Drop everything written since `mark`. A line that was decided against
+    /// costs nothing, provided it stayed within the buffer.
+    pub fn rewind(self: *Stream, to: usize) void {
+        if (self.writing and self.used >= to) self.used = to;
+    }
+
     pub fn flush(self: *Stream) void {
         if (!self.writing or self.used == 0) return;
 

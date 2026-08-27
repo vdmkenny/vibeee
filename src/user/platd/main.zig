@@ -264,7 +264,9 @@ fn reportGlobalLock() void {
         return;
     };
 
-    log.begin("platd", if (value.word.owned) .warn else .key);
+    // A held lock is a warning, because every locked method is behind it.
+    // A free one is only detail.
+    log.begin("platd", if (value.word.owned) .warn else .dim);
     out.text("FACS 0x");
     out.hex(value.facs, 8);
     out.text(" global lock 0x");
