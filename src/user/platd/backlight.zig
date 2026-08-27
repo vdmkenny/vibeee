@@ -69,29 +69,31 @@ pub fn report() void {
         return;
     };
 
-    // Read first and print afterwards. Reading calls a method, and a method
-    // that complains does it through the same console: a line half written
-    // when that happens comes out with the complaint inside it.
-    var panel = proto.Backlight{};
-    const got = read(&panel) == .ok and panel.isPresent();
-
+    // Two whole lines rather than one: which backend claimed the panel is
+    // known before its method is called, and the call runs firmware code. A
+    // boot that stops between the two lines has named where it stopped.
     const name = uacpi.namespace_node_name(found.node);
 
-    log.begin("platd", if (got) .key else .warn);
+    log.begin("platd", .key);
     out.text("backlight via ");
     out.text(found.backend.name);
     out.text(" on ");
     out.text(uacpi.trimmed(&name.text));
+    log.end();
 
+    var panel = proto.Backlight{};
+    const got = read(&panel) == .ok and panel.isPresent();
+
+    log.begin("platd", if (got) .key else .warn);
     if (got) {
         // The range too: it is what a caller has to know and the one number
         // that differs between the two ways of doing this.
-        out.text(", level ");
+        out.text("panel at ");
         out.decimal(panel.level);
         out.text(" of ");
         out.decimal(panel.max);
     } else {
-        out.text(", which would not answer");
+        out.text("the panel would not answer");
     }
     log.end();
 }

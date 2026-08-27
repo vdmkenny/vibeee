@@ -87,9 +87,21 @@ fn wait(comptime field: []const u8, set: bool) bool {
     const until = sys.clockMicros() + DEADLINE_US;
     while (true) {
         if (@field(status(), field) == set) return true;
-        if (sys.clockMicros() >= until) return false;
+        if (sys.clockMicros() >= until) return silent();
         sys.sleepMicros(BREATHER_US);
     }
+}
+
+/// Said once. A controller that misses one deadline has usually missed them
+/// all, and the first is the one that says where things stood.
+var said_silent = false;
+
+fn silent() bool {
+    if (!said_silent) {
+        said_silent = true;
+        log.warn("platd", "the controller went silent mid-handshake");
+    }
+    return false;
 }
 
 fn command(cmd: Command) bool {

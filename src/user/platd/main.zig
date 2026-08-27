@@ -50,23 +50,23 @@ export fn _start() callconv(.naked) noreturn {
 }
 
 export fn platdMain() callconv(.c) noreturn {
-    // Before the firmware is touched, for two reasons. init waits for this
-    // name, so the rest of the boot proceeds as soon as it is there. And uACPI
-    // takes a handle for every synchronisation object the firmware's tables
-    // ask for, so the one handle this service cannot do without is claimed
-    // while the table is empty.
+    // The firmware first, the name after. init holds the rest of the boot
+    // until this name appears, which is what keeps every line of bring-up
+    // above the shell rather than bleeding into it; a bring-up that wedges is
+    // bounded by init's own patience, so the shell arrives either way.
+    //
+    // A machine whose firmware will not come up is still a machine. Whatever
+    // failed here is answered with a refusal rather than with an absent
+    // service: the shell, the disk and everything that does not go through the
+    // BIOS are unaffected by it.
+    ready = bringUp();
+    if (!ready) log.warn("platd", "carrying on without the firmware");
+
     const channel = sys.svcRegister(proto.SERVICE);
     if (channel < 0) {
         log.failed("platd", "cannot register", channel);
         sys.exit(1);
     }
-
-    // A machine whose firmware will not come up is still a machine. Whatever
-    // failed here is answered with a refusal rather than with an absent
-    // service: the shell, the disk and everything that does not go through the
-    // BIOS are unaffected by it and should not be made to wait for it.
-    ready = bringUp();
-    if (!ready) log.warn("platd", "carrying on without the firmware");
 
     serve(@intCast(channel));
 }
