@@ -73,10 +73,12 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(proto.Req)) return .unknown;
 
-    return switch (@as(*const proto.Req, @alignCast(@ptrCast(bytes.ptr))).tag) {
+    const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
+    return switch (request.tag) {
         .power_off => powerOff(),
         .reboot => restart(),
         .battery => battery.read(&reply.battery),
+        .device => namespace.describe(request.index, &reply.device),
     };
 }
 
@@ -107,6 +109,7 @@ fn restart() proto.Status {
 }
 
 const battery = @import("battery.zig");
+const namespace = @import("namespace.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
 

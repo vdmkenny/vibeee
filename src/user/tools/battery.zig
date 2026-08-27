@@ -16,7 +16,7 @@ pub fn run(_: []const []const u8) void {
     platform.call(.battery, &reply) catch |err| {
         out.text(switch (err) {
             error.NoService => "battery: the platform service is not answering\n",
-            error.Refused => "battery: the firmware would not say\n",
+            else => "battery: the firmware would not say\n",
         });
         out.flush();
         return;

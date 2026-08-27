@@ -11,28 +11,14 @@
 
 const proto = @import("proto").platform;
 
-/// uACPI, for the parts of it this needs.
-const Object = opaque {};
-const Node = opaque {};
+const uacpi = @import("uacpi.zig");
 
-const ObjectArray = extern struct {
-    objects: [*]?*Object,
-    count: usize,
-};
+const Object = uacpi.Object;
+const Node = uacpi.Node;
+const ObjectArray = uacpi.ObjectArray;
+const OK = uacpi.OK;
 
-extern fn uacpi_find_devices(
-    hid: [*:0]const u8,
-    callback: *const fn (?*anyopaque, ?*Node, u32) callconv(.c) u32,
-    user: ?*anyopaque,
-) c_uint;
-extern fn uacpi_eval_simple_package(parent: ?*Node, path: [*:0]const u8, ret: *?*Object) c_uint;
-extern fn uacpi_object_get_package(object: ?*Object, out: *ObjectArray) c_uint;
-extern fn uacpi_object_get_integer(object: ?*Object, out: *u64) c_uint;
-extern fn uacpi_object_unref(object: ?*Object) void;
-
-const OK: c_uint = 0;
-const KEEP_LOOKING: u32 = 0;
-const STOP: u32 = 1;
+const STOP = uacpi.BREAK;
 
 /// What the ACPI specification calls a control-method battery.
 const BATTERY_HID = "PNP0C0A";
@@ -63,7 +49,7 @@ fn locate() ?*Node {
     if (looked) return found;
     looked = true;
 
-    _ = uacpi_find_devices(BATTERY_HID, remember, null);
+    _ = uacpi.uacpi_find_devices(BATTERY_HID, remember, null);
     return found;
 }
 
@@ -84,11 +70,11 @@ fn remember(_: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) u32 {
 /// and is not what somebody asking about health wants to know.
 fn readInfo(node: *Node, into: *proto.Battery) bool {
     var package: ?*Object = null;
-    if (uacpi_eval_simple_package(node, "_BIF", &package) != OK) return false;
-    defer uacpi_object_unref(package);
+    if (uacpi.uacpi_eval_simple_package(node, "_BIF", &package) != OK) return false;
+    defer uacpi.uacpi_object_unref(package);
 
     var fields: ObjectArray = undefined;
-    if (uacpi_object_get_package(package, &fields) != OK) return false;
+    if (uacpi.uacpi_object_get_package(package, &fields) != OK) return false;
     if (fields.count < 7) return false;
 
     // Element zero says which unit the capacities are in. Everything below is
@@ -107,11 +93,11 @@ fn readInfo(node: *Node, into: *proto.Battery) bool {
 /// `_BST`: what it is doing now.
 fn readState(node: *Node, into: *proto.Battery) bool {
     var package: ?*Object = null;
-    if (uacpi_eval_simple_package(node, "_BST", &package) != OK) return false;
-    defer uacpi_object_unref(package);
+    if (uacpi.uacpi_eval_simple_package(node, "_BST", &package) != OK) return false;
+    defer uacpi.uacpi_object_unref(package);
 
     var fields: ObjectArray = undefined;
-    if (uacpi_object_get_package(package, &fields) != OK) return false;
+    if (uacpi.uacpi_object_get_package(package, &fields) != OK) return false;
     if (fields.count < 4) return false;
 
     const flags = integer(fields, 0);
@@ -135,6 +121,6 @@ fn integer(fields: ObjectArray, index: usize) u64 {
     if (index >= fields.count) return 0;
 
     var value: u64 = 0;
-    if (uacpi_object_get_integer(fields.objects[index], &value) != OK) return 0;
+    if (uacpi.uacpi_object_get_integer(fields.objects[index], &value) != OK) return 0;
     return value;
 }

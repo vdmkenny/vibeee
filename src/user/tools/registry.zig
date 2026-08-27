@@ -7,6 +7,7 @@
 
 const eeefetch = @import("eeefetch.zig");
 const smbios = @import("smbios.zig");
+const acpi = @import("acpi.zig");
 const battery = @import("battery.zig");
 const cfg = @import("cfg.zig");
 const date = @import("date.zig");
@@ -45,6 +46,7 @@ pub const commands = [_]Command{
     .{ .name = "kill", .summary = "end a process by id", .run = &status.kill },
     .{ .name = "irq", .summary = "interrupt lines held outside the kernel", .run = &irq_tool.irq },
     .{ .name = "devices", .summary = "what is on the bus, and what drives it", .run = &devices_tool.devices },
+    .{ .name = "acpi", .summary = "what the firmware says this machine has", .run = &acpi.run },
     .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
     .{ .name = "log", .summary = "what the kernel has said", .run = &klog.log },
     .{ .name = "commands", .summary = "list command names, one per line", .run = &listNames },

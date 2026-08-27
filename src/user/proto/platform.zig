@@ -18,11 +18,16 @@ pub const Tag = enum(u8) {
     reboot,
     /// What the battery is doing, and what it was built as.
     battery,
+    /// One device from the firmware's namespace, by position. How a caller
+    /// finds out what this machine actually offers.
+    device,
 };
 
 pub const Req = extern struct {
     tag: Tag,
-    _reserved: [3]u8 = @splat(0),
+    /// Which one, for the requests that walk a list.
+    index: u8 = 0,
+    _reserved: [2]u8 = @splat(0),
 };
 
 pub const Status = enum(u8) {
@@ -31,6 +36,8 @@ pub const Status = enum(u8) {
     refused,
     /// Nothing here answers that.
     unknown,
+    /// Nothing at that position. How a caller walking a list finds the end.
+    end,
 };
 
 /// The battery as the firmware describes it.
@@ -91,10 +98,38 @@ pub const Battery = extern struct {
     }
 };
 
+/// The methods worth knowing a device has.
+///
+/// Presence, not behaviour: whether the firmware defines the method. What it
+/// does when called is its own business and is not asked here.
+pub const Methods = packed struct(u8) {
+    /// `_BCL`: the brightness levels this panel accepts.
+    brightness_levels: bool = false,
+    /// `_BCM`: set one of them.
+    brightness_set: bool = false,
+    /// `_BQC`: which one is in use.
+    brightness_now: bool = false,
+    /// `_BIF`: what a battery was built as.
+    battery_info: bool = false,
+    /// `_BST`: what it is doing.
+    battery_state: bool = false,
+    /// `_STA`: whether the device is there and switched on.
+    power_state: bool = false,
+    _reserved: u2 = 0,
+};
+
+pub const Device = extern struct {
+    /// Four characters, which is all the format has room for.
+    name: [4]u8 = @splat(0),
+    methods: Methods = .{},
+    _reserved: [3]u8 = @splat(0),
+};
+
 pub const Rep = extern struct {
     status: Status = .ok,
     _reserved: [3]u8 = @splat(0),
     battery: Battery = .{},
+    device: Device = .{},
 };
 
 comptime {
@@ -103,7 +138,7 @@ comptime {
     }
 }
 
-pub const Error = error{ NoService, Refused };
+pub const Error = error{ NoService, Refused, End };
 
 /// Ask, and say whether it was done.
 ///
@@ -117,11 +152,15 @@ pub fn ask(tag: Tag) Error!void {
 /// The same, keeping the answer. What a question rather than an instruction
 /// needs.
 pub fn call(tag: Tag, into: *Rep) Error!void {
+    return callAt(tag, 0, into);
+}
+
+pub fn callAt(tag: Tag, index: u8, into: *Rep) Error!void {
     const channel = sys.svcConnect(SERVICE);
     if (channel < 0) return error.NoService;
     defer _ = sys.close(@intCast(channel));
 
-    const request = Req{ .tag = tag };
+    const request = Req{ .tag = tag, .index = index };
     const message = sys.Message.init(std.mem.asBytes(&request), &.{});
 
     var reply = sys.Message{};
@@ -131,5 +170,10 @@ pub fn call(tag: Tag, into: *Rep) Error!void {
     if (bytes.len < @sizeOf(Rep)) return error.Refused;
 
     into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
-    if (into.status != .ok) return error.Refused;
+
+    return switch (into.status) {
+        .ok => {},
+        .end => error.End,
+        else => error.Refused,
+    };
 }
