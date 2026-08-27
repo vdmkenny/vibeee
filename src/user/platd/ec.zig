@@ -282,6 +282,13 @@ pub fn listen() void {
         return;
     }
     _ = uacpi.uacpi_enable_gpe(null, gpe);
+
+    // The queue has been filling since power-on, and a controller holding a
+    // query is busy to everything else that talks to it, the firmware's own
+    // trap handler included: it waits for the controller to go idle while the
+    // controller waits for the host to take the query. Emptied here, before
+    // any method can walk into that.
+    drainQueries(null);
 }
 
 /// The event fired. Interrupt context: queue the drain and get out.

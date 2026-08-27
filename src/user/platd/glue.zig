@@ -137,9 +137,29 @@ export fn uacpi_kernel_io_read32(handle: ?*anyopaque, offset: usize, value: *u32
 }
 
 export fn uacpi_kernel_io_write8(handle: ?*anyopaque, offset: usize, value: u8) callconv(.c) u32 {
-    ports.out8(portOf(handle, offset), value);
+    const at = portOf(handle, offset);
+
+    // Said before it happens, because it may not return. A write here raises a
+    // system management interrupt: the CPU disappears into the firmware's own
+    // handler, and whether it comes back is that handler's decision. A boot
+    // that stops with this as its last line has named both the door and the
+    // knock.
+    if (at == TRAP_PORT or at == TRAP_PORT + 1) {
+        log.begin("platd", .dim);
+        out.text("trap port 0x");
+        out.hex(at, 2);
+        out.text(" takes 0x");
+        out.hex(value, 2);
+        log.end();
+    }
+
+    ports.out8(at, value);
     return Status.ok.value();
 }
+
+/// Where the chipset listens for the firmware's own attention. The FADT names
+/// it too; 0xB2 is where every ICH has kept it.
+const TRAP_PORT: u16 = 0xB2;
 
 export fn uacpi_kernel_io_write16(handle: ?*anyopaque, offset: usize, value: u16) callconv(.c) u32 {
     ports.out16(portOf(handle, offset), value);
