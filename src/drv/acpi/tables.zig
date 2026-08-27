@@ -115,10 +115,20 @@ fn mapTable(phys: u32) ?*align(1) const Header {
 }
 
 /// Locate the FADT and extract the sleep values from the DSDT.
+/// Where the firmware left the root pointer, kept so a userspace interpreter
+/// can be told rather than having to search the BIOS area again from a process
+/// that would need to map it to look.
+var rsdp_at: u32 = 0;
+
+pub fn rsdp() u32 {
+    return rsdp_at;
+}
+
 pub fn init(rsdp_phys: u32) void {
     const rsdp_hdr = mapTable(rsdp_phys) orelse return;
     const rsdp: *align(1) const Rsdp = @ptrCast(rsdp_hdr);
     if (!std.mem.eql(u8, rsdp.signature[0..8], "RSD PTR ")) return;
+    rsdp_at = rsdp_phys;
 
     const rsdt = mapTable(rsdp.rsdt_address) orelse return;
     if (!std.mem.eql(u8, &rsdt.signature, "RSDT")) return;

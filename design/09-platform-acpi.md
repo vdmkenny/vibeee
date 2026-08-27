@@ -1,7 +1,16 @@
 # 09: Platform / ACPI / Power subsystem (vibeee)
 
 > **Status: design only, not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
+>
+> **§4 is superseded.** It decides to write a minimal AML interpreter. That decision was
+> taken when there was no C toolchain here and no third-party interpreter small enough to
+> consider; both have changed, and `platd` uses [uACPI](../third_party/uacpi/) instead. The
+> reasoning in §4 for *why an interpreter is needed at all* still stands and is worth
+> reading: it is the argument against a hardcoded EC register map, and it has not weakened.
+> What no longer holds is the conclusion that we had to write one.
+>
+> §4.1's scope list is now a description of what uACPI already covers rather than a
+> specification to build against.
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
@@ -74,9 +83,22 @@ Kernel module layout (`kernel/platform/`): `acpi_tables.zig`, `aml/` (lexer, ns,
 Interrupt path: GSI9 (level/high per MADT override) → SCI handler → PM1_STS fixed events + GPE0 scan → EC GPE →
 query drain → `_Qxx` (Tier1) / static Q-table (Tier2) → Notify(ATKD, code) → hotkey decode → input core (05).
 
-## 4. THE AML DECISION, minimal interpreter, with hardcoded degraded mode
+## 4. THE AML DECISION, an interpreter rather than a register map
 
-**Recommendation: ship the minimal AML interpreter (Tier 1). Hardcoded-EC-only is the fallback, not the plan.**
+**Superseded in its conclusion, kept for its reasoning.** The decision below is that an
+interpreter is necessary and a hardcoded EC map is not good enough. That part is unchanged
+and the six arguments for it are the reason `platd` carries an interpreter at all.
+
+What changed is who writes it. uACPI is some thirty thousand lines, includes nothing but
+`stdint.h` and its neighbours, and fits inside the size cap this document had already set
+aside for a smaller one of our own. An interpreter is a thing to be correct at, not a thing
+to have written, and the correctness here is somebody else's decade of it.
+
+It runs in `platd` rather than in the kernel, which §3 assumed it would not. This is
+bytecode from a 2007 AMI BIOS, interpreted at runtime, whose job is to poke an embedded
+controller: that belongs in a restartable process holding a capability.
+
+**Original recommendation: ship the minimal AML interpreter (Tier 1). Hardcoded-EC-only is the fallback, not the plan.**
 
 Justification:
 1. **WLDS/CAMS are not reimplementable safely.** They flip EC GPIOs whose identities are *explicitly unknown*

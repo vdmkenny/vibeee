@@ -11,6 +11,7 @@
 //! plumbing rather than the meaning.
 
 const std = @import("std");
+const acpi = @import("../drv/acpi/tables.zig");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const display = @import("display.zig");
@@ -162,6 +163,11 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         try writeIrqs(&w);
     } else if (eq(key, "threads.list")) {
         try writeThreads(&w);
+    } else if (eq(key, "acpi")) {
+        // Where the tables begin, for the process that interprets them. A
+        // physical address rather than anything mapped: what to do with it is
+        // the asker's business, and it needs the driver capability to do it.
+        return say(buf, "{x}", .{acpi.rsdp()});
     } else if (eq(key, "pci")) {
         try writeDevices(&w);
     } else if (eq(key, "disks")) {
