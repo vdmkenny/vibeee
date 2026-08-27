@@ -185,8 +185,8 @@ comptime {
 // The rings, one DMA segment
 // ---------------------------------------------------------------------------
 
-/// The legacy descriptor, sixteen bytes, exactly as the manual lays it out.
-const Desc = extern struct {
+/// The legacy receive descriptor, sixteen bytes, the manual's layout.
+const RxDesc = extern struct {
     addr: u32 = 0,
     _reserved: u32 = 0,
     len: u16 = 0,
@@ -196,21 +196,39 @@ const Desc = extern struct {
     special: u16 = 0,
 };
 
+/// The legacy transmit descriptor: same sixteen bytes, different words. The
+/// lower word carries the length in its low half and the commands in the
+/// high; the writeback lands a DONE bit where the hardware of this era
+/// agreed to put it, which is the low bit of the lower word.
+const TxDesc = extern struct {
+    addr: u32 = 0,
+    _reserved: u32 = 0,
+    lower: u32 = 0,
+    upper: u32 = 0,
+
+    /// Mark one end in the frame's words.
+    fn done(self: TxDesc) bool {
+        return self.lower & 0x1 != 0;
+    }
+};
+
 const DESC_DONE = 0x01;
 
-/// TX SPECIAL: end of packet, insert the frame check sequence, report status.
-const TX_CMD = 0x0B;
+/// The three commands one descriptor needs, in the manual's high-half bits.
+const TX_CMD = 0x01000000 | 0x02000000 | 0x08000000; // EOP | IFCS | RS
 
 comptime {
-    if (@sizeOf(Desc) != 16) @compileError("an 82540 descriptor is sixteen bytes");
+    if (@sizeOf(RxDesc) != 16 or @sizeOf(TxDesc) != 16) {
+        @compileError("an 82540 descriptor is sixteen bytes, whichever way");
+    }
 }
 
 /// Receive descriptors, then the buffers they point at. One DMA segment, so
 /// every address in it is DMA-visible from the start.
 const Rings = struct {
-    rx_desc: [RingSlots]Desc = @splat(.{}),
+    rx_desc: [RingSlots]RxDesc = @splat(.{}),
     rx_buffer: [RingSlots][Slab]u8 = @splat(@splat(0)),
-    tx_desc: [RingSlots]Desc = @splat(.{}),
+    tx_desc: [RingSlots]TxDesc = @splat(.{}),
     tx_buffer: [RingSlots][Slab]u8 = @splat(@splat(0)),
 };
 
@@ -221,7 +239,7 @@ const Device = struct {
     regs: Regs = .{ .base = undefined },
     rings: *Rings = undefined,
     phys: u32 = 0,
-    rx_tail: u16 = 0, // next slot we hand the hardware
+    rx_at: u16 = 0, // next slot the hardware owes us
     tx_head: u16 = 0, // next slot we write into
     tx_tail: u16 = 0, // next slot the hardware writes back
 };
@@ -259,14 +277,17 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // Receive path: the descriptor ring and its buffers are one run.
     device.regs.wr(.rdbal, device.phys + @offsetOf(Rings, "rx_desc"));
     device.regs.wr(.rdbah, 0);
-    device.regs.wr(.rdlen, RingSlots * @sizeOf(Desc));
+    device.regs.wr(.rdlen, RingSlots * @sizeOf(RxDesc));
     device.regs.wr(.rdh, 0);
-    device.regs.wr(.rdt, 0);
+    // The receive ring starts with every slot the hardware may use: RDT is
+    // the last ownable descriptor, so a value of 63 hands over all 64, and
+    // the reap below walks them back one at a time.
+    device.regs.wr(.rdt, RingSlots - 1);
 
     // Transmit path.
     device.regs.wr(.tdbal, device.phys + @offsetOf(Rings, "tx_desc"));
     device.regs.wr(.tdbah, 0);
-    device.regs.wr(.tdlen, RingSlots * @sizeOf(Desc));
+    device.regs.wr(.tdlen, RingSlots * @sizeOf(TxDesc));
     device.regs.wr(.tdh, 0);
     device.regs.wr(.tdt, 0);
 
@@ -340,28 +361,23 @@ pub fn irq(dev: *NicDev) void {
 
 fn reapRx(dev: *NicDev) void {
     while (true) {
-        const head = device.regs.rd(.rdh);
-        if (head == device.rx_tail) break;
+        const desc = &device.rings.rx_desc[device.rx_at];
+        if (desc.status & DESC_DONE == 0) break;
 
-        const index = device.rx_tail % RingSlots;
-        const desc = &device.rings.rx_desc[index];
-
-        if (desc.status & DESC_DONE != 0) {
-            dev_mod.deliverRx(dev, .{
-                .ok = desc.errors == 0 and desc.len >= 60 and desc.len <= Slab,
-                .frame = device.rings.rx_buffer[index][0..desc.len],
-            });
-            desc.status = 0; // the slot is ours again
-            device.rx_tail = (device.rx_tail + 1) % RingSlots;
-            device.regs.wr(.rdt, device.rx_tail);
-        }
+        dev_mod.deliverRx(dev, .{
+            .ok = desc.errors == 0 and desc.len >= 60 and desc.len <= Slab,
+            .frame = device.rings.rx_buffer[device.rx_at][0..desc.len],
+        });
+        desc.status = 0; // the slot is ours again
+        device.rx_at = (device.rx_at + 1) % RingSlots;
+        device.regs.wr(.rdt, (device.rx_at + RingSlots - 1) % RingSlots);
     }
 }
 
 fn reapTx() void {
     while (device.tx_tail != device.tx_head) {
         const desc = &device.rings.tx_desc[device.tx_tail];
-        if (desc.status & DESC_DONE == 0) break;
+        if (!desc.done()) break;
         device.tx_tail = (device.tx_tail + 1) % RingSlots;
     }
 }
@@ -381,10 +397,8 @@ pub fn transmit(nic: *NicDev, frame: []const u8) void {
     const desc = &device.rings.tx_desc[slot];
     @memcpy(device.rings.tx_buffer[slot][0..frame.len], frame);
     desc.addr = device.phys + @offsetOf(Rings, "tx_buffer") + slot * Slab;
-    desc.len = @intCast(frame.len);
-    desc.status = 0;
-    desc.errors = 0;
-    desc.special = TX_CMD;
+    desc.lower = frame.len | TX_CMD;
+    desc.upper = 0;
 
     device.tx_head = (slot + 1) % RingSlots;
     device.regs.wr(.tdt, device.tx_head);
