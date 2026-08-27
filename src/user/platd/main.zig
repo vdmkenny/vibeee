@@ -14,6 +14,7 @@
 //! not the machine.
 
 const glue = @import("glue.zig");
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const sys = @import("sys");
 
@@ -47,17 +48,32 @@ export fn _start() callconv(.naked) noreturn {
 }
 
 export fn platdMain() callconv(.c) noreturn {
-    if (!bringUp()) sys.exit(1);
-
+    // Before the firmware is touched, for two reasons. init waits for this
+    // name, so the rest of the boot proceeds as soon as it is there. And uACPI
+    // takes a handle for every synchronisation object the firmware's tables
+    // ask for, so the one handle this service cannot do without is claimed
+    // while the table is empty.
     const channel = sys.svcRegister(proto.SERVICE);
     if (channel < 0) {
-        out.text("platd: cannot register\n");
-        out.flush();
+        log.failed("platd", "cannot register", channel);
         sys.exit(1);
     }
 
+    // A machine whose firmware will not come up is still a machine. Whatever
+    // failed here is answered with a refusal rather than with an absent
+    // service: the shell, the disk and everything that does not go through the
+    // BIOS are unaffected by it and should not be made to wait for it.
+    ready = bringUp();
+    if (!ready) log.warn("platd", "carrying on without the firmware");
+
     serve(@intCast(channel));
 }
+
+/// Whether the firmware answered at all.
+///
+/// Everything below goes through an interpreter that may not have started, and
+/// calling into one that did not is a fault rather than a refusal.
+var ready = false;
 
 /// Two things to listen to: somebody asking, and the firmware saying.
 ///
@@ -111,6 +127,11 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
     if (bytes.len < @sizeOf(proto.Req)) return .unknown;
 
     const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
+
+    // Everything here is the firmware's to answer, so with no firmware there
+    // is nothing to say but no.
+    if (!ready) return .refused;
+
     return switch (request.tag) {
         .power_off => powerOff(),
         .reboot => restart(),
@@ -154,6 +175,7 @@ const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
 const hotkey = @import("hotkey.zig");
 const namespace = @import("namespace.zig");
+const uacpi = @import("uacpi.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
 
@@ -164,6 +186,7 @@ const std = @import("std");
 /// firmware set itself up now that somebody is listening.
 fn bringUp() bool {
     if (!step("tables", uacpi_initialize(0))) return false;
+    reportGlobalLock();
     if (!step("namespace", uacpi_namespace_load())) return false;
     if (!step("devices", uacpi_namespace_initialize())) return false;
 
@@ -173,27 +196,53 @@ fn bringUp() bool {
     // interrupt simply arrives again.
     _ = step("events", uacpi_finalize_gpe_initialization());
 
+    // Before anything is evaluated, and this is the whole of why it is here.
+    // The global lock is held by the firmware and released by it raising the
+    // system control interrupt, so a method that takes the lock while nothing
+    // is listening waits for a release that cannot arrive and fails after
+    // sixty-five thousand attempts that all resolve in microseconds.
+    if (glue.sci.arm()) {
+        log.note("platd", "system control interrupt live");
+    } else {
+        log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
+    }
+
+    // Only now, because both of these call methods.
     backlight.report();
     hotkey.listen();
 
-    if (glue.sci.arm()) {
-        out.text("platd: system control interrupt live\n");
-    }
-
-    out.text("platd: acpi ready\n");
-    out.flush();
+    log.note("platd", "firmware ready");
     return true;
+}
+
+/// Say so when the global lock is held at start-up.
+///
+/// Every method that takes it waits for a release the firmware signals through
+/// the system control interrupt, so a lock that is already owned is the reason
+/// those methods fail and is not visible from anywhere else.
+fn reportGlobalLock() void {
+    const value = uacpi.globalLock() orelse {
+        log.note("platd", "no global lock; nothing has to wait for one");
+        return;
+    };
+
+    log.begin("platd", if (value.owned()) .warn else .key);
+    out.text("FACS 0x");
+    out.hex(value.facs, 8);
+    out.text(" global lock 0x");
+    out.hex(value.value, 8);
+    out.text(if (value.owned()) ", held by the firmware" else ", free");
+    log.end();
 }
 
 fn step(what: []const u8, status: c_uint) bool {
     if (status == OK) return true;
 
-    out.text("platd: ");
+    log.begin("platd", .bad);
     out.text(what);
     out.text(": ");
     out.text(span(uacpi_status_to_string(status)));
-    out.byte('\n');
-    out.flush();
+    log.end();
     return false;
 }
 

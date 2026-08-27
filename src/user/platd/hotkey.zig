@@ -18,6 +18,7 @@
 //! the way to learn the next machine's is to watch it say so.
 
 const backlight = @import("backlight.zig");
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
 const sys = @import("sys");
@@ -74,8 +75,7 @@ pub fn listen() void {
     // notification, which is what makes a device nobody thought of still
     // audible.
     if (uacpi.uacpi_install_notify_handler(uacpi.namespace_root(), arrived, null) != uacpi.OK) {
-        out.text("platd: no hotkeys; the firmware would not take a notify handler\n");
-        out.flush();
+        log.warn("platd", "no hotkeys; the firmware would not take a notify handler");
         return;
     }
 
@@ -83,18 +83,21 @@ pub fn listen() void {
     // a power button sets a bit in the power management block and the firmware
     // never describes it, so listening for it is asking by name rather than
     // finding it. Enabled by the act of installing.
+    const flags = uacpi.fadtFlags();
     for (buttons) |b| {
+        if (flags & b.is_device != 0) continue;
         if (uacpi.uacpi_install_fixed_event_handler(b.event, b.handler, null) == uacpi.OK) {
             heard += 1;
         }
     }
 
-    out.text("platd: hotkeys from ");
+    log.begin("platd", if (heard > 0) .key else .warn);
+    out.text("hotkeys from ");
     out.decimal(heard);
     out.text(" of ");
     out.decimal(sources.len + buttons.len);
-    out.text(" sources\n");
-    out.flush();
+    out.text(" sources");
+    log.end();
 }
 
 /// A fixed event and what it means. There is no value to read and no device to
@@ -102,11 +105,15 @@ pub fn listen() void {
 const Button = struct {
     event: uacpi.FixedEvent,
     handler: *const fn (?*anyopaque) callconv(.c) u32,
+    /// The flag that says this one is a device in the namespace instead, in
+    /// which case it is heard through `sources` and asking for a fixed handler
+    /// only produces a failure at every boot about a thing that is not wrong.
+    is_device: u32,
 };
 
 const buttons = [_]Button{
-    .{ .event = .power_button, .handler = &powerPressed },
-    .{ .event = .sleep_button, .handler = &sleepPressed },
+    .{ .event = .power_button, .handler = &powerPressed, .is_device = uacpi.FADT_POWER_BUTTON_IS_DEVICE },
+    .{ .event = .sleep_button, .handler = &sleepPressed, .is_device = uacpi.FADT_SLEEP_BUTTON_IS_DEVICE },
 };
 
 fn powerPressed(_: ?*anyopaque) callconv(.c) u32 {
@@ -214,12 +221,12 @@ fn arrived(_: ?*anyopaque, node: ?*uacpi.Node, value: u64) callconv(.c) c_uint {
 }
 
 fn unnamed(press: proto.Press) void {
-    out.text("platd: ");
+    log.begin("platd", .dim);
     out.text(uacpi.trimmed(&press.device));
     out.text(" said 0x");
     out.hex(press.value, 2);
-    out.text(", which has no meaning here yet\n");
-    out.flush();
+    out.text(", which has no meaning here yet");
+    log.end();
 }
 
 fn kindOf(node: ?*uacpi.Node) ?Kind {

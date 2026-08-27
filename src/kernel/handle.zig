@@ -21,7 +21,14 @@ const pipe_mod = @import("pipe.zig");
 const shm_mod = @import("shm.zig");
 const vfs = @import("vfs.zig");
 
-pub const MAX_HANDLES = 32;
+/// How many things one process may hold open at once.
+///
+/// Sized for a process that hosts an interpreter. `platd` runs the firmware's
+/// own bytecode, and the firmware decides how many synchronisation objects its
+/// tables ask for: that count belongs to the machine rather than to this
+/// system, and sits on top of the files, channels and events the process holds
+/// for its own reasons.
+pub const MAX_HANDLES = 64;
 
 /// Handles 0, 1 and 2 are the console, open in every process from the start.
 pub const STDIN: u32 = 0;

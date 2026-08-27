@@ -15,6 +15,7 @@
 const sys = @import("sys");
 const config = @import("ulib").config;
 const dir = @import("ulib").dir;
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 
@@ -179,7 +180,7 @@ fn bindDevices() void {
     // which is worth knowing; a manifest that matched and failed has already
     // said so for itself.
     if (manifest_count > 0 and matched == 0) {
-        out.text("devmgd: no device matched a manifest\n");
+        log.warn("devmgd", "no device matched a manifest");
     }
 }
 
@@ -244,17 +245,18 @@ fn start(manifest: *const Manifest, dev: Device) bool {
     });
 
     if (pid < 0) {
-        out.text("devmgd: ");
+        log.begin("devmgd", .bad);
         out.text(manifest.name);
-        out.text(": cannot start\n");
+        out.text(": cannot start");
+        log.end();
         return false;
     }
 
-    out.text("devmgd: ");
+    log.begin("devmgd", .key);
     out.text(manifest.name);
     out.text(" for ");
     out.text(dev.description);
-    out.byte('\n');
+    log.end();
     return true;
 }
 

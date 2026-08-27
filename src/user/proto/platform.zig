@@ -256,10 +256,8 @@ pub const Rep = extern struct {
 
 /// Exactly one of these, chosen by what was asked.
 ///
-/// A union rather than one field per answer. Every reply used to carry all of
-/// them and mean one, which cost the payload three empty answers and had
-/// reached the size of a message exactly: the next question could not have
-/// been asked at all.
+/// A union rather than one field per answer: a reply naming all of them would
+/// spend the payload on three empty ones, and the payload is a single message.
 pub const Body = extern union {
     battery: Battery,
     device: Device,

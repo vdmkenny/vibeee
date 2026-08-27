@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const sys = @import("sys");
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const config = @import("ulib").config;
 const info = @import("ulib").info;
@@ -580,11 +581,10 @@ fn idle() noreturn {
 // ---------------------------------------------------------------------------
 
 fn report(who: []const u8, what: []const u8) void {
-    out.text("init: ");
+    log.begin("init", .warn);
     out.text(who);
     out.text(": ");
     out.text(what);
-    out.byte('\n');
-    out.flush();
+    log.end();
 }
 

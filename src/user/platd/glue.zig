@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const heap = @import("ulib").heap;
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const ports = @import("ulib").ports;
 const sys = @import("sys");
@@ -63,8 +64,7 @@ export fn uacpi_kernel_map(phys: u32, len: usize) callconv(.c) ?[*]u8 {
     // A refusal is worth saying: uACPI does not check, and a null handed back
     // becomes a fault somewhere with no obvious connection to the mapping.
     const mapped = sys.mapDevice(base, len + skew) orelse {
-        out.text("acpi fail    cannot map firmware memory\n");
-        out.flush();
+        log.fail("acpi", "cannot map firmware memory");
         return null;
     };
     return @as([*]u8, @ptrCast(@volatileCast(mapped))) + skew;
@@ -395,10 +395,23 @@ fn handleOf(event: ?*anyopaque) ?u32 {
 export fn uacpi_kernel_wait_for_event(event: ?*anyopaque, millis: u16) callconv(.c) bool {
     const handle = handleOf(event) orelse return false;
 
-    if (spent >= BUDGET_US or !sci.attached()) return false;
+    if (spent >= BUDGET_US) return false;
 
     const slice = @min(@as(usize, millis) * 1000, SLICE_US);
     spent += slice;
+
+    // Bring-up runs before the line is live, and the global lock is released
+    // by the firmware raising it. With nothing to wait on, the handler is
+    // called directly: it is what reads the status bits and signals whatever
+    // the release was holding up.
+    if (!sci.attached()) {
+        sci.poll();
+        if (sys.waitMany(&.{handle}, slice) == 0) {
+            spent = 0;
+            return true;
+        }
+        return false;
+    }
 
     const woke = sys.waitMany(&.{ handle, sci.event }, slice);
     if (woke == 0) {
@@ -482,9 +495,18 @@ pub const Line = struct {
         return true;
     }
 
-    /// Run what uACPI installed, and tell the kernel the line may fire again.
-    pub fn service(self: Line) void {
+    /// Run what uACPI installed.
+    ///
+    /// The handler reads the firmware's status bits and dispatches what it
+    /// finds. Which thread calls it is not part of what it does, so it is also
+    /// how the firmware is asked directly while there is no line.
+    pub fn poll(self: Line) void {
         if (self.handler) |run| _ = run(self.context);
+    }
+
+    /// The same, and tell the kernel the line may fire again.
+    pub fn service(self: Line) void {
+        self.poll();
         _ = sys.irqAck(self.event);
     }
 };
@@ -495,17 +517,11 @@ export fn uacpi_kernel_install_interrupt_handler(
     context: ?*anyopaque,
     out_handle: *?*anyopaque,
 ) callconv(.c) u32 {
-    // Remembered, and not attached yet.
-    //
-    // uACPI installs this while the namespace is still initialising, and the
-    // line must not be live before the general-purpose events are finalised:
-    // the handler cannot dispatch a GPE it has not been told about, so it
-    // cannot clear the one that fired, and the interrupt arrives again the
-    // moment it is acknowledged. On the target machine that is a boot that
-    // never finishes. QEMU never raises it, which is why this only appeared on
-    // hardware.
-    //
-    // `arm` is called when bring-up is done.
+    // Remembered, not attached. uACPI installs this while the namespace is
+    // still initialising, and the line must stay dark until the
+    // general-purpose events are finalised: a handler that has not been told
+    // about a GPE cannot clear the one that fired, so the interrupt arrives
+    // again the moment it is acknowledged. `arm` makes it live.
     sci = .{ .line = irq, .handler = handler, .context = context };
     out_handle.* = @ptrFromInt(@as(usize, irq) + 1);
     return Status.ok.value();
@@ -540,14 +556,17 @@ export fn uacpi_kernel_wait_for_work_completion() callconv(.c) u32 {
 export fn uacpi_kernel_log(level: u32, text: [*:0]const u8) callconv(.c) void {
     const said = std.mem.span(text);
 
-    out.pad(switch (@as(Level, @enumFromInt(level))) {
-        .err => "acpi fail",
-        .warn => "acpi warn",
-        .info => "acpi",
-        .trace => "acpi trace",
-        .debug => "acpi debug",
-    }, 13);
-    out.text(said);
-    if (said.len == 0 or said[said.len - 1] != '\n') out.byte('\n');
-    out.flush();
+    // The label says where the line came from and the colour says how bad it
+    // is, which is what the kernel's own log does with its column.
+    log.begin("acpi", switch (@as(Level, @enumFromInt(level))) {
+        .err => .bad,
+        .warn => .warn,
+        .info => .key,
+        .trace, .debug => .dim,
+    });
+
+    // uACPI ends its lines and `log` ends them too, so one of the two has to
+    // give way.
+    out.text(if (said.len > 0 and said[said.len - 1] == '\n') said[0 .. said.len - 1] else said);
+    log.end();
 }

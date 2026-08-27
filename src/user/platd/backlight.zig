@@ -8,6 +8,7 @@
 //! would have to, and they would disagree the first time one of them was
 //! written against a machine the other had not seen.
 
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
 const uacpi = @import("uacpi.zig");
@@ -64,28 +65,35 @@ pub fn pick() ?Chosen {
 /// not have to be interrogated to find out that nothing claimed it.
 pub fn report() void {
     const found = pick() orelse {
-        out.text("platd: no backlight; neither _BCM nor a vendor method\n");
-        out.flush();
+        log.warn("platd", "no backlight; neither _BCM nor a vendor method");
         return;
     };
 
-    out.text("platd: backlight via ");
+    // Read first and print afterwards. Reading calls a method, and a method
+    // that complains does it through the same console: a line half written
+    // when that happens comes out with the complaint inside it.
+    var panel = proto.Backlight{};
+    const got = read(&panel) == .ok and panel.isPresent();
+
+    const name = uacpi.namespace_node_name(found.node);
+
+    log.begin("platd", if (got) .key else .warn);
+    out.text("backlight via ");
     out.text(found.backend.name);
     out.text(" on ");
-    const name = uacpi.namespace_node_name(found.node);
     out.text(uacpi.trimmed(&name.text));
 
-    // The range too, because it is the thing a caller has to know and the one
-    // number that differs between the two ways of doing this.
-    var panel = proto.Backlight{};
-    if (read(&panel) == .ok and panel.isPresent()) {
+    if (got) {
+        // The range too: it is what a caller has to know and the one number
+        // that differs between the two ways of doing this.
         out.text(", level ");
         out.decimal(panel.level);
         out.text(" of ");
         out.decimal(panel.max);
+    } else {
+        out.text(", which would not answer");
     }
-    out.byte('\n');
-    out.flush();
+    log.end();
 }
 
 pub fn read(into: *proto.Backlight) proto.Status {

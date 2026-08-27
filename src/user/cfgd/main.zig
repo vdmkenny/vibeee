@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const config = @import("ulib").config;
+const log = @import("ulib").log;
 const out = @import("ulib").out;
 const settings = @import("proto").settings;
 const str = @import("lib").str;
@@ -48,7 +49,7 @@ export fn cfgdMain() callconv(.c) noreturn {
 
     const channel = sys.svcRegister(settings.SERVICE);
     if (channel < 0) {
-        out.text("cfgd: cannot register\n");
+        log.failed("cfgd", "cannot register", channel);
         out.flush();
         sys.exit(1);
     }
