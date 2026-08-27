@@ -8,6 +8,7 @@
 //! would have to, and they would disagree the first time one of them was
 //! written against a machine the other had not seen.
 
+const asus = @import("asus.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
@@ -182,11 +183,10 @@ fn standardMax(node: *uacpi.Node) u32 {
 // from the namespace. Written down here because the alternative is a caller
 // asking for a hundred and getting whatever the firmware makes of it.
 
-const ASUS_HID = "ASUS010";
 const ASUS_MAX = 15;
 
 fn asusDevice() ?*uacpi.Node {
-    return uacpi.firstWithHid(ASUS_HID) orelse uacpi.firstWith("PBLS");
+    return asus.node() orelse uacpi.firstWith("PBLS");
 }
 
 fn asusRead(node: *uacpi.Node) ?u32 {

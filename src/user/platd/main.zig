@@ -162,6 +162,7 @@ fn restart() proto.Status {
     return .refused;
 }
 
+const asus = @import("asus.zig");
 const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
 const ec = @import("ec.zig");
@@ -194,6 +195,11 @@ fn bringUp() bool {
     ec.bind();
 
     if (!step("devices", uacpi.uacpi_namespace_initialize())) return false;
+
+    // The vendor handshake, before any of its methods are called: it is what
+    // switches the firmware off the trap paths it keeps for a machine with no
+    // operating system.
+    asus.greet();
 
     // The general-purpose events, which is what the system control interrupt
     // carries. Finalised before the line is made live, because a handler that

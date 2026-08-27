@@ -17,6 +17,7 @@
 //! deliberate: this machine's numbering was not knowable in advance either, and
 //! the way to learn the next machine's is to watch it say so.
 
+const asus = @import("asus.zig");
 const backlight = @import("backlight.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -41,7 +42,9 @@ const Source = struct {
 };
 
 const sources = [_]Source{
-    .{ .kind = .vendor, .hid = "ASUS010" },
+    // The vendor device is `asus.zig`'s; the hid here is a fallback for a
+    // machine of the same make this build has not met.
+    .{ .kind = .vendor, .hid = asus.HID },
     .{ .kind = .display, .method = "_BCM" },
     .{ .kind = .power_button, .hid = "PNP0C0C" },
     .{ .kind = .lid, .hid = "PNP0C0D" },
@@ -59,7 +62,9 @@ pub fn listen() void {
     var heard: usize = 0;
 
     for (sources, 0..) |source, i| {
-        owners[i] = if (source.hid) |hid|
+        owners[i] = if (source.kind == .vendor)
+            asus.node()
+        else if (source.hid) |hid|
             uacpi.firstWithHid(hid)
         else if (source.method) |method|
             uacpi.firstWith(method)
