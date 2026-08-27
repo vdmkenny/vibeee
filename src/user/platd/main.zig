@@ -144,19 +144,28 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
 /// evaluated rather than pattern-matched out of the raw table.
 ///
 /// The kernel is asked to quiesce first, because flushing is the half only it
-/// can do and there is no coming back from the half after.
+/// can do and there is no coming back from the half after. Each step after is
+/// said before it happens: the screen is the only record on this machine, and
+/// once the sleep write is made it is the write that will have been the last
+/// thing said.
 fn powerOff() proto.Status {
+    log.note("platd", "power off: flushing done by the kernel");
     if (sys.quiesce() < 0) return .refused;
 
-    if (uacpi.uacpi_prepare_for_sleep_state(.soft_off) != .ok) return .refused;
+    log.note("platd", "power off: asking the firmware to prepare");
+    if (!step("_PTS", uacpi.uacpi_prepare_for_sleep_state(.soft_off))) return .refused;
+
+    log.note("platd", "power off: writing the sleep state");
     if (uacpi.uacpi_enter_sleep_state(.soft_off) != .ok) return .refused;
 
     // Reached only if the firmware took the request and did nothing, which is
     // news: it is what the pattern-matched path did every time.
+    log.warn("platd", "the sleep write was made and the machine is still here");
     return .refused;
 }
 
 fn restart() proto.Status {
+    log.note("platd", "reboot: flushing done by the kernel");
     if (sys.quiesce() < 0) return .refused;
     if (uacpi.uacpi_reboot() != .ok) return .refused;
     return .refused;

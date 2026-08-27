@@ -577,23 +577,29 @@ fn cmdExit(_: []const []const u8) u8 {
     return 0;
 }
 
-/// Ask `platd`, and fall back to the kernel's own way.
+/// Ask `platd`, and fall back to the kernel's own way only when there is no
+/// service to ask.
 ///
 /// The service evaluates the firmware's methods, which is what makes a power
 /// off actually happen on a machine whose BIOS expects `_PTS` first. The
-/// kernel's path is a pattern match on the raw table and is what there is when
-/// nothing is serving: worse, and better than nothing.
+/// kernel's path is a pattern match on the raw table and is what there is
+/// when nothing is serving: worse, and better than nothing.
+///
+/// It is not tried after the service answered: by then the firmware has been
+/// asked properly, and a second, cruder write is the last thing a machine
+/// mid-transition needs. Writing the sleep registers twice is how one goes
+/// dark without going off.
 fn requestPower(tag: platform.Tag, fallback: usize) u8 {
     platform.ask(tag) catch |err| {
-        // Worth telling apart. Nothing serving is ordinary and the kernel's
-        // way is what there is. A service that tried and was refused means the
-        // firmware said no to the proper request, and the cruder one is
-        // unlikely to do better, so say what happened before trying it.
-        if (err == error.Refused) {
-            out.text("the firmware refused; trying the kernel's way\n");
-            out.flush();
+        switch (err) {
+            error.NoService => sys.shutdown(fallback),
+            error.End => {},
+            else => {
+                out.text("the firmware refused\n");
+                out.flush();
+            },
         }
-        sys.shutdown(fallback);
+        return 1;
     };
 
     // Only reached if the service answered at all, which means it did not

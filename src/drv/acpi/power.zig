@@ -73,15 +73,45 @@ pub fn off() void {
                 in_acpi, port.inw(info.pm1a_control),
             });
 
-            const a = Pm1Control{ .sleep_type = @truncate(info.slp_typ_a), .sleep_enable = true };
-            console.debug("shutdown", "sleeping with {x:0>4}", .{@as(u16, @bitCast(a))});
-            port.outw(info.pm1a_control, @bitCast(a));
+            // What is already there, so this write does not undo an earlier
+            // one: the SCI_EN bit keeps the chipset in ACPI mode, and clearing
+            // it mid-shutdown is how a perfectly formed sleep request becomes
+            // a machine that went dark but never went off.
+            const held = pm1(info.pm1a_control);
+
+            const slp = Pm1Control{
+                .acpi_mode = held.acpi_mode,
+                .sleep_type = @truncate(info.slp_typ_a),
+                .sleep_enable = false,
+            };
+            const go = Pm1Control{
+                .acpi_mode = held.acpi_mode,
+                .sleep_type = @truncate(info.slp_typ_a),
+                .sleep_enable = true,
+            };
+
+            // Two writes rather than one, the way ACPICA does it: buggy
+            // firmware of this era cannot take SLP_TYP and SLP_EN in the same
+            // write, which is one more way a one-shot sequence does nothing.
+            console.debug("shutdown", "sleeping with {x:0>4}", .{@as(u16, @bitCast(go))});
+            port.outw(info.pm1a_control, @bitCast(slp));
+            port.outw(info.pm1a_control, @bitCast(go));
 
             // The second register exists on chipsets that split the power
             // management block; writing it when absent is harmless.
             if (info.pm1b_control != 0) {
-                const b = Pm1Control{ .sleep_type = @truncate(info.slp_typ_b), .sleep_enable = true };
-                port.outw(info.pm1b_control, @bitCast(b));
+                const b_slp = Pm1Control{
+                    .acpi_mode = held.acpi_mode,
+                    .sleep_type = @truncate(info.slp_typ_b),
+                    .sleep_enable = false,
+                };
+                const b_go = Pm1Control{
+                    .acpi_mode = held.acpi_mode,
+                    .sleep_type = @truncate(info.slp_typ_b),
+                    .sleep_enable = true,
+                };
+                port.outw(info.pm1b_control, @bitCast(b_slp));
+                port.outw(info.pm1b_control, @bitCast(b_go));
             }
 
             // Power does not drop instantly; give the hardware time before
