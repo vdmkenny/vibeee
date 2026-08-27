@@ -326,6 +326,13 @@ fn pullQueries() void {
 /// oldest for the same reason the hotkey queue does.
 var pulled = Fifo(u8, 16){};
 
+/// How many pulled queries are still waiting for their method to run. The
+/// trap port is bracketed with this number because the firmware's handler
+/// has opinions about it.
+pub fn pulledCount() usize {
+    return pulled.count;
+}
+
 fn stash(which: u8) void {
     pulled.pushDropOldest(which);
 }

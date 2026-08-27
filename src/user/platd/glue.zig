@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const heap = @import("ulib").heap;
+const ec = @import("ec.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const ports = @import("ulib").ports;
@@ -182,6 +183,11 @@ fn knock(at: u16, value: u32) void {
     out.hex(at, 2);
     out.text(" takes 0x");
     out.hex(value, 2);
+    out.text(", ");
+    out.decimal(ec.pulledCount());
+    out.text(" pull");
+    if (ec.pulledCount() != 1) out.byte('s');
+    out.text(" waiting");
     log.end();
 }
 
