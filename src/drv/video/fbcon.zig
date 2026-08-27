@@ -288,6 +288,7 @@ pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
 
     const cell = Cell.of(cp, fg, bg);
     cells[row * columns + col] = cell;
+    if (col == Cursor.col and row == Cursor.row) Cursor.forget();
     drawCell(col, row, cell);
 }
 
@@ -322,6 +323,7 @@ fn drawCell(col: usize, row: usize, cell: Cell) void {
 /// symbol that looks plausible and does not scan, the worst possible failure
 /// for a diagnostic whose only job is to be read off a photograph.
 pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
+    Cursor.forget();
     if (!ready or suspended) return;
     // Pixels the grid has no way to describe, so it no longer speaks for the
     // screen and the next scroll repaints unconditionally.
@@ -354,6 +356,7 @@ pub fn fontName() []const u8 {
 
 pub fn fill(ch: u21, fg: u4, bg: u4) void {
     if (!ready or suspended) return;
+    Cursor.forget();
 
     const cell = Cell.of(ch, fg, bg);
     setAll(cell);
@@ -384,6 +387,7 @@ fn setAll(cell: Cell) void {
 /// aperture is uncached those reads dominate everything else the console does.
 pub fn scroll(bg: u4) void {
     if (!ready or suspended) return;
+    Cursor.forget();
 
     // The text moves in RAM and only the cells whose contents actually changed
     // are repainted, so the framebuffer is written and never read. A boot log
@@ -414,4 +418,72 @@ pub fn scroll(bg: u4) void {
 /// No hardware cursor exists in a linear framebuffer. Drawing one would mean
 /// tracking and restoring what is underneath; the console works without it, and
 /// the terminal will draw its own.
-pub fn setCursor(_: usize, _: usize) void {}
+/// Where the cursor is, and whether it is on the screen right now.
+///
+/// Text mode has a cursor in hardware; a framebuffer has whatever is drawn, so
+/// this draws one. A block with the cell's colours swapped, rather than an
+/// underline: at sixteen pixels an underline is a row or two of dim pixels
+/// against a dark panel, and on this machine that is a cursor nobody can find.
+const Cursor = struct {
+    var col: usize = 0;
+    var row: usize = 0;
+    /// Whether a program wants it seen. A full-screen program turns it off
+    /// while it redraws, so it is not watched skating across a half-drawn
+    /// screen on its way to where it belongs.
+    var wanted = true;
+    /// Whether it is currently painted, so it is not erased twice or left
+    /// behind by something that repainted the whole screen underneath it.
+    var painted = false;
+
+    /// The colours the console is writing in, which is what the block is drawn
+    /// with rather than the cell's own.
+    ///
+    /// A blank cell has no foreground: the grid normalises it away, because a
+    /// space draws the same whatever colour it is not drawn in. Swapping such
+    /// a cell's own colours therefore gives black on black, and a cursor at
+    /// the end of a line is exactly where it always sits.
+    var fg: u4 = 7;
+    var bg: u4 = 0;
+
+    fn paint() void {
+        if (!wanted or painted) return;
+        if (col >= columns or row >= rows) return;
+
+        drawCell(col, row, .{ .cp = cells[row * columns + col].cp, .fg = bg, .bg = fg });
+        painted = true;
+    }
+
+    fn erase() void {
+        if (!painted) return;
+        painted = false;
+        if (col >= columns or row >= rows) return;
+
+        drawCell(col, row, cells[row * columns + col]);
+    }
+
+    /// Called by anything that repaints the whole screen: the cursor is gone
+    /// with everything else, and erasing it afterwards would put a stale cell
+    /// back over the new picture.
+    fn forget() void {
+        painted = false;
+    }
+};
+
+pub fn setCursor(to_col: usize, to_row: usize, fg: u4, bg: u4) void {
+    Cursor.erase();
+    Cursor.col = to_col;
+    Cursor.row = to_row;
+    Cursor.fg = fg;
+    Cursor.bg = bg;
+    Cursor.paint();
+}
+
+pub fn showCursor(visible: bool) void {
+    if (visible) {
+        Cursor.wanted = true;
+        Cursor.paint();
+    } else {
+        Cursor.erase();
+        Cursor.wanted = false;
+    }
+}

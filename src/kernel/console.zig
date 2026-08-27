@@ -145,13 +145,15 @@ const backend = struct {
     }
 
     fn setCursor(x: usize, y: usize) void {
-        if (!fbcon.active()) vgatext.setCursor(x, y);
+        if (fbcon.active()) {
+            fbcon.setCursor(x, y, @intFromEnum(fg), @intFromEnum(bg));
+        } else {
+            vgatext.setCursor(x, y);
+        }
     }
 
-    /// Only text mode has a cursor to hide: the framebuffer console draws
-    /// none, so there is nothing there for a program to be asking about.
     fn showCursor(visible: bool) void {
-        if (!fbcon.active()) vgatext.showCursor(visible);
+        if (fbcon.active()) fbcon.showCursor(visible) else vgatext.showCursor(visible);
     }
 
     /// What is in a cell, for saving the screen before something draws over it.
