@@ -16,7 +16,6 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const ports = @import("ulib").ports;
-const std = @import("std");
 const sys = @import("sys");
 
 const NicDev = dev_mod.NicDev;
@@ -239,11 +238,12 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     };
     const arena: *Arena = @alignCast(@ptrCast(mapped));
     device.rx = @ptrCast(&arena.rx);
-    device.rx_phys = @as(u32, @intCast(std.mem.alignForward(usize, phys, 4) + @offsetOf(Arena, "rx")));
+    // DMA memory is page-granular, which is every alignment this chip asks
+    // for; adjusting the physical side alone would part it from the mapping.
+    device.rx_phys = phys + @offsetOf(Arena, "rx");
     device.tx_buffer = @ptrCast(&arena.tx);
-    const tx_base = @as(u32, @intCast(std.mem.alignForward(usize, phys, 16) + @offsetOf(Arena, "tx")));
     inline for (0..TX_SLOTS) |i| {
-        device.tx_phys[i] = tx_base + i * 2048;
+        device.tx_phys[i] = phys + @offsetOf(Arena, "tx") + i * 2048;
     }
 
     // Reset the card, then let the EEPROM's auto-load put the permanent MAC
@@ -258,12 +258,14 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // Receive: everything through, ring of 32 KiB. The buffer length bits
     // are the chip's own 2-bit size field: 2 means 32 KiB.
     device.window.out32(.rbstart, device.rx_phys);
+    // No overflow past the end: with WRAP off the chip splits a frame at
+    // the boundary instead of running into the guard, and the reader below
+    // already reads everything modulo the ring.
     device.window.out32(.rcr, @bitCast(RxConfig{
         .accept_physical = true,
         .accept_broadcast = true,
         .accept_multicast = true,
         .physical_match = true,
-        .wrap = true,
         .buffer_len = 3, // the 64 KiB the offsets wrap at
     }));
 
@@ -359,7 +361,10 @@ fn reapRx(nic: *NicDev) void {
         }
 
         device.rx_at = next_write;
-        device.window.out16(.capr, @truncate(next_write));
+        // Sixteen back, by the chip's own convention: CAPR reads ahead of
+        // itself by the header it has already consumed, and a raw offset
+        // here tells it the host has read sixteen bytes it has not.
+        device.window.out16(.capr, @truncate(next_write -% 16));
     }
 }
 
@@ -398,7 +403,11 @@ pub fn transmit(nic: *NicDev, frame: []const u8) void {
         return;
     }
 
+    // This chip pads nothing: a frame below the ethernet minimum leaves as
+    // a runt and every receiver on a real wire discards it.
+    const wired = @max(frame.len, 60);
     @memcpy(device.tx_buffer[slot][0..frame.len], frame);
+    if (frame.len < wired) @memset(device.tx_buffer[slot][frame.len..wired], 0);
     const at: R = @enumFromInt(@intFromEnum(R.tsd0) + slot * 4);
     const addr_at: R = @enumFromInt(@intFromEnum(R.tsad0) + slot * 4);
     device.pending[slot] = true;
@@ -409,7 +418,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) void {
     // window this register lives in only answers that width.
     device.window.out32(at, tsdWord(0, true));
     device.window.out32(addr_at, device.tx_phys[slot]);
-    device.window.out32(at, tsdWord(@intCast(frame.len), false));
+    device.window.out32(at, tsdWord(@intCast(wired), false));
     device.tx_at = (slot + 1) % TX_SLOTS;
 
     dev_mod.deliverTx(nic, frame.len);
