@@ -1,10 +1,15 @@
 //! battery: what the pack is doing, and what it has come to.
 //!
-//! Two questions, and the second is the one nothing else answers. How full it
-//! is now is a number anybody can watch; how much it can still hold against
-//! what it was built to hold is what says whether a netbook of this age has a
-//! battery or an ornament, and it is inferred from the firmware's own record
-//! of the last full charge.
+//! Three answers, of which two are only asked here. How full it is now is a
+//! number anybody can watch; what it is doing — charging, draining, in
+//! trouble — and how much longer it will drain for is the pair a person
+//! actually wants, and how much it can still hold against what it was built
+//! to hold is what says whether a netbook of this age has a battery or an
+//! ornament.
+//!
+//! All three are worked out by the shared `Battery` type, not here: the
+//! desktop's own interface will ask the same questions, and the answers have
+//! to be the same words.
 
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
@@ -34,7 +39,7 @@ pub fn run(_: []const []const u8) void {
 }
 
 fn report(pack: platform.Battery) void {
-    const unit = if (pack.in_milliamps != 0) "mAh" else "mWh";
+    const unit = pack.capacityUnit();
 
     field("charge");
     if (pack.charge()) |percent| {
@@ -50,10 +55,24 @@ fn report(pack: platform.Battery) void {
     out.byte('\n');
 
     field("state");
-    ink.write(stateRole(pack), stateWord(pack));
+    ink.write(stateRole(pack), pack.stateLabel());
     if (pack.rate != 0 and pack.rate != platform.Battery.UNKNOWN) {
         out.text(" at ");
-        quantity(pack.rate, if (pack.in_milliamps != 0) "mA" else "mW");
+        quantity(pack.rate, pack.currentUnit());
+    } else if (pack.state() != .full) {
+        // Said rather than left blank: a draining pack with no rate is the
+        // firmware declining to answer, which a reader should not have to
+        // infer from the absence of a number.
+        out.text(" at an unknown rate");
+    }
+    if (pack.runtimeLeft()) |left| {
+        out.text(", about ");
+        if (left.hours != 0) {
+            out.decimal(left.hours);
+            out.text(" h ");
+        }
+        out.decimal(left.minutes);
+        out.text(" m left");
     }
     out.byte('\n');
 
@@ -69,6 +88,10 @@ fn report(pack: platform.Battery) void {
         out.text(" of the ");
         quantity(pack.design, unit);
         out.text(" it was built for");
+        // On machines whose `_BIF` says "last full" only as a percentage it
+        // was designed to, this pair is the firmware's own word rather than
+        // a measured ratio, and the line says which it is.
+        if (pack.health_reported != 0) out.text(", as the firmware reports");
     } else {
         out.text("the firmware does not say");
     }
@@ -113,23 +136,18 @@ fn quantity(value: u32, unit: []const u8) void {
     out.text(unit);
 }
 
-fn stateWord(pack: platform.Battery) []const u8 {
-    if (pack.critical != 0) return "critical";
-    if (pack.charging != 0) return "charging";
-    if (pack.discharging != 0) return "discharging";
-    return "full";
-}
-
 fn stateRole(pack: platform.Battery) @import("lib").style.Role {
-    if (pack.critical != 0) return .bad;
-    if (pack.charging != 0) return .good;
-    return .value;
+    return switch (pack.state()) {
+        .critical => .bad,
+        .charging => .good,
+        else => .value,
+    };
 }
 
 /// Charge is only alarming when it is low and going down: a machine on mains
 /// at ten per cent is filling up, not about to stop.
 fn roleFor(pack: platform.Battery, percent: u32) @import("lib").style.Role {
-    if (pack.charging != 0) return .good;
+    if (pack.state() == .charging) return .good;
     if (percent <= 10) return .bad;
     if (percent <= 25) return .warn;
     return .value;

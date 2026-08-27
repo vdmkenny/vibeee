@@ -11,6 +11,8 @@
 
 const proto = @import("proto").platform;
 
+const quirks = @import("quirks.zig");
+const sys = @import("sys");
 const uacpi = @import("uacpi.zig");
 
 const Object = uacpi.Object;
@@ -32,14 +34,82 @@ pub fn read(into: *proto.Battery) proto.Status {
         return .ok;
     };
 
-    into.* = .{ .present = 1 };
+    return readInto(node, into);
+}
 
-    // The static half first: without it the live numbers have no scale, and a
-    // remaining capacity with nothing to compare it against is a number rather
-    // than a state of charge.
-    if (!readInfo(node, into)) return .refused;
+fn readInto(node: *Node, into: *proto.Battery) proto.Status {
+    // The static half is cached: what the pack was built as does not change
+    // between two asks, the method walks the embedded controller at length,
+    // and asking it twice shortens the distance to a controller that stops
+    // answering. One `_BIF` ever, and a repeated ask costs only a `_BST`.
+    if (info_read) {
+        into.* = cached_info;
+    } else {
+        into.* = .{ .present = 1 };
+        if (!readInfo(node, into)) return .refused;
+        info_read = true;
+        cached_info = into.*;
+    }
+
     if (!readState(node, into)) return .refused;
+
+    // What the firmware got wrong, set right before the answer leaves. The
+    // quirks funnel owns this: each vendor corrects what its own machines
+    // misreport, and a machine nobody knows about passes straight through.
+    quirks.battery(into);
+
+    // A second opinion on the rate. Some of this machine's readings say the
+    // pack is draining and the rate is zero at once, which makes every
+    // consumer's estimate silently impossible. Two askings some time apart
+    // are a rate of their own: the drop between them over the time between
+    // them, and it is used only when the firmware's number is unusable.
+    deriveRate(into);
+
+    // The remembered half stays the corrected half, so a correction cannot
+    // apply twice to the same numbers.
+    cached_info = into.*;
     return .ok;
+}
+
+/// The static half, read once.
+var info_read = false;
+var cached_info = proto.Battery{};
+
+/// What `_BST` said at the previous ask, and when: the pair that becomes a
+/// rate when the firmware will not say one.
+var last_poll_us: u64 = 0;
+var last_remaining: u32 = 0;
+
+/// The least time between two askings worth turning into a rate. Anything
+/// sooner is noise: a percentage mislabeled as capacity moves in steps of
+/// one, and over seconds that step is a wildly wrong amperage.
+const MIN_SAMPLE_SECONDS = 10;
+
+fn deriveRate(into: *proto.Battery) void {
+    // Tracked no matter what, so the next ask compares against this one.
+    const now = sys.clockMicros();
+    defer {
+        last_poll_us = now;
+        last_remaining = into.remaining;
+    }
+
+    // Only while draining, and only when the firmware's own number is one
+    // nobody can do arithmetic with.
+    if (into.state() != .discharging) return;
+    if (into.rate != 0 and into.rate != proto.Battery.UNKNOWN) return;
+    if (last_poll_us == 0 or into.remaining == proto.Battery.UNKNOWN) return;
+
+    // Only a drop counts: what was gained between two asks was a charge the
+    // machine made room for, not a drain this side can clock.
+    if (into.remaining >= last_remaining) return;
+
+    const elapsed_s = (now - last_poll_us) / 1_000_000;
+    if (elapsed_s < MIN_SAMPLE_SECONDS) return;
+
+    // Capacity over hours: milliamp-hours over hours is milliamps, and the
+    // watt pair is the same shape.
+    const drop = last_remaining - into.remaining;
+    into.rate = @intCast(@min(@as(u64, drop) * 3600 / elapsed_s, proto.Battery.UNKNOWN - 1));
 }
 
 fn locate() ?*Node {

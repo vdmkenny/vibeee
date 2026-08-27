@@ -7,6 +7,7 @@
 //! can be worked out from outside, and an interpreter belongs in a process.
 
 const std = @import("std");
+const lib = @import("lib");
 const sys = @import("sys");
 
 pub const SERVICE = "platform";
@@ -71,7 +72,12 @@ pub const Battery = extern struct {
     charging: u8 = 0,
     discharging: u8 = 0,
     critical: u8 = 0,
-    _reserved: [3]u8 = @splat(0),
+    /// The health figure is the firmware's own word, not a ratio this side
+    /// derived. Set by the quirk for machines whose `_BIF` says "last full"
+    /// as a percentage of design and never revisits it: what that produces is
+    /// a reported number, and a caller showing it should say so.
+    health_reported: u8 = 0,
+    _reserved: [2]u8 = @splat(0),
 
     /// What it holds now, and how fast that is changing.
     remaining: u32 = 0,
@@ -91,6 +97,62 @@ pub const Battery = extern struct {
 
     pub const UNKNOWN: u32 = 0xFFFF_FFFF;
 
+    /// What the pack is doing, as one thing rather than as three flags.
+    ///
+    /// The flags are how the ACPI format says it; this is what each
+    /// combination means. The derivation itself is `lib.battery`'s, so the
+    /// arithmetic is host-tested and shared with every program that draws a
+    /// battery; this pair of methods is the wire type's own spelling of it.
+    pub const State = lib.battery.State;
+
+    pub fn state(self: Battery) State {
+        return lib.battery.state(.{
+            .charging = self.charging != 0,
+            .discharging = self.discharging != 0,
+            .critical = self.critical != 0,
+        });
+    }
+
+    /// The state in words, one name for every caller that shows it.
+    pub fn stateLabel(self: Battery) []const u8 {
+        return lib.battery.stateLabel(self.state());
+    }
+
+    /// The scale this pack reports in. One pair of units per battery, and
+    /// the two names agree within a pack: milliamp-hours with milliamps, or
+    /// milliwatt-hours with milliwatts.
+    pub fn capacityUnit(self: Battery) []const u8 {
+        return if (self.in_milliamps != 0) "mAh" else "mWh";
+    }
+
+    /// The unit the change is reported in.
+    pub fn currentUnit(self: Battery) []const u8 {
+        return if (self.in_milliamps != 0) "mA" else "mW";
+    }
+
+    /// How much longer the pack will last, when that is knowable.
+    ///
+    /// Only while discharging: the rate the firmware reports for a charging
+    /// pack is not committed to meaning what a time-to-full would need it to
+    /// mean, and a full pack has no estimate to give. Unknown rather than
+    /// zero when the firmware cannot say the rate, so a caller can tell "no
+    /// answer" from "answer: none left".
+    pub const Left = extern struct {
+        hours: u16 = 0,
+        minutes: u8 = 0,
+        _reserved: u8 = 0,
+    };
+
+    /// Time left, or null when nothing about it is knowable.
+    ///
+    /// Capacity over rate, in whichever unit the pair reports: milliamp-hours
+    /// over milliamps is hours, and the watt pair is the same shape.
+    pub fn runtimeLeft(self: Battery) ?Left {
+        if (self.state() != .discharging) return null;
+        const left = lib.battery.runtimeLeft(self.remaining, self.rate) orelse return null;
+        return .{ .hours = left.hours, .minutes = left.minutes };
+    }
+
     pub fn isPresent(self: Battery) bool {
         return self.present != 0;
     }
@@ -98,18 +160,13 @@ pub const Battery = extern struct {
     /// Charge as a percentage of what it can currently hold, which is the
     /// number a person means by "how full is it".
     pub fn charge(self: Battery) ?u32 {
-        return percent(self.remaining, self.last_full);
+        return lib.battery.percent(self.remaining, self.last_full);
     }
 
     /// What it can hold against what it was built to hold. The one number that
     /// says whether the pack is worn out, and the reason `_BIF` is read at all.
     pub fn health(self: Battery) ?u32 {
-        return percent(self.last_full, self.design);
-    }
-
-    fn percent(part: u32, whole: u32) ?u32 {
-        if (whole == 0 or whole == UNKNOWN or part == UNKNOWN) return null;
-        return @intCast(@min(@as(u64, part) * 100 / whole, 999));
+        return lib.battery.percent(self.last_full, self.design);
     }
 };
 

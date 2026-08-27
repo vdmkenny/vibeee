@@ -15,9 +15,12 @@
 //! Both are interface facts read from the vendor's published driver, which is
 //! the only place this contract is written down.
 
+const info = @import("ulib").info;
+const lib = @import("lib");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
+const str = @import("ulib").str;
 const uacpi = @import("uacpi.zig");
 
 /// The id the firmware registers the device under. Its name in the namespace
@@ -102,6 +105,85 @@ pub fn node() ?*uacpi.Node {
     looked = true;
     found = uacpi.firstWithHid(HID);
     return found;
+}
+
+/// Whether this machine is one of ours: the vendor device exists, which no
+/// machine of another vendor's would say. Everything ASUS in this build
+/// hangs off the answer, and the answer is asked once.
+pub fn present() bool {
+    return node() != null;
+}
+
+// ---------------------------------------------------------------------------
+// Quirks
+// ---------------------------------------------------------------------------
+//
+// What this vendor's firmware gets wrong, corrected where the reading is
+// made. The funnel in `quirks.zig` calls these, so a reader never needs to
+// know a machine existed.
+//
+// Grown over time and by machine: a correction guarded by `present()` and by
+// the shape of the data it corrects holds for every model that shares the
+// firmware, and the day one of them is found not to, its detection narrows
+// here and nothing downstream moves.
+
+/// The DMI product name, for quirks that are about one model rather than the
+/// whole vendor. Asked once; empty when the firmware does not say.
+///
+/// The kernel's `board` is "manufacturer product", and the product is the
+/// last token: "ASUSTeK Computer INC. 701" answers "701", which is the word
+/// a model gate compares against.
+var product: []const u8 = "";
+var product_read = false;
+
+pub fn model() []const u8 {
+    if (!product_read) {
+        product_read = true;
+        product = lastWord(info.ask("board", &model_buf));
+    }
+    return product;
+}
+
+/// The last whitespace-separated word of the board's name, which is where
+/// the product sits in "manufacturer product".
+fn lastWord(text: []const u8) []const u8 {
+    var words: [8][]u8 = undefined;
+    const n = str.splitWords(text, words[0..]);
+    return if (n == 0) "" else words[n - 1];
+}
+
+var model_buf: [64]u8 = @splat(0);
+
+/// The Eee PC line's `_BIF`/`_BST` label percentages as capacities: what the
+/// table says is "last full capacity 100" means a hundred per cent, standing
+/// next to a design capacity the same table honestly states as 5200 mAh
+/// (research-quirks), so everything derived from the pair comes out wrong by
+/// that factor unless the reading is corrected first.
+///
+/// The correction scales nothing unless the firmware's own numbers say it
+/// must: capacities that look like percentages — no more than a hundred,
+/// beside a design capacity that plainly is not one — are the mislabel, and
+/// honest numbers pass through exactly as read. That shape is what lets the
+/// correction stand unlisted: it holds for every Eee of the family, the 900
+/// and 1000 among them, and stays silent on a unit with different firmware.
+pub fn correctBattery(into: *proto.Battery) void {
+    if (!present()) return;
+    if (into.design == 0 or into.design == proto.Battery.UNKNOWN) return;
+    if (into.design <= 100) return;
+
+    // Reported as a percentage, kept as a percentage; converted to the real
+    // capacity so every consumer downstream does ordinary math. The rate is
+    // the firmware's honest one and is not touched.
+    if (into.remaining <= 100) into.remaining = lib.battery.percentToCapacity(into.remaining, into.design);
+    if (into.last_full <= 100) {
+        into.last_full = lib.battery.percentToCapacity(into.last_full, into.design);
+        // A "last full" that is a percentage is the firmware's word, and on
+        // these DSDTs a word it never revisits: the pack wears out and the
+        // number stays what it was. Callers show it as reported.
+        into.health_reported = 1;
+    }
+    if (into.warning <= 100) into.warning = lib.battery.percentToCapacity(into.warning, into.design);
+    if (into.low <= 100) into.low = lib.battery.percentToCapacity(into.low, into.design);
 }
 
 /// Say hello, once the namespace is up and before anything else asks the
