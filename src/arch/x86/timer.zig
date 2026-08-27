@@ -93,10 +93,10 @@ var beat: u32 = 0;
 fn heartbeat() void {
     beat +%= 1;
     // A phase step every quarter second: watching the corner for one second
-    // answers whether the kernel is alive.
+    // answers whether the kernel is alive. Handed to the console, which owns
+    // the paint: it keeps the pulse above every line its own output draws.
     if (beat % (TICK_HZ / 4) != 0) return;
-    const glyph = HEARTBEAT[(beat / (TICK_HZ / 4)) % HEARTBEAT.len];
-    console.putAt(console.width() - 1, 0, glyph, .dark_grey, .black);
+    console.setPulse(HEARTBEAT[(beat / (TICK_HZ / 4)) % HEARTBEAT.len]);
 }
 
 pub fn tickCount() u64 {

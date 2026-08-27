@@ -191,6 +191,23 @@ var col: usize = 0;
 var fg: Color = .light_grey;
 var bg: Color = .black;
 
+/// The debug pulse: what the corner cell currently holds, set from the
+/// timer tick and repainted after every console write, so scrolling output
+/// can never bury it and its stillness is exactly the arrival of dead ticks.
+var pulse_glyph: ?u21 = null;
+
+pub fn setPulse(glyph: u21) void {
+    pulse_glyph = glyph;
+    repaintPulse();
+}
+
+/// The corner cell, redrawn after everything this console draws. A pulse
+/// that survives every line is the one that freezes when interrupts do.
+fn repaintPulse() void {
+    const glyph = pulse_glyph orelse return;
+    backend.putAt(columns - 1, 0, glyph, .light_grey, .black);
+}
+
 /// Whether colour reaches the screen at all.
 ///
 /// Turned off by `nocolor` on the kernel command line. Every caller keeps
@@ -498,7 +515,7 @@ fn draw(cp: u21) void {
 
 pub fn putChar(c: u8) void {
     if (mirror) |sink| sink(&[_]u8{c});
-    if (Escape.take(c)) return;
+    if (Escape.take(c)) return repaintPulse();
 
     // What is left is a control character the parser passed through, which is
     // the only kind this has an opinion about.
@@ -529,6 +546,7 @@ pub fn putChar(c: u8) void {
         },
         else => draw(c),
     }
+    repaintPulse();
 }
 
 pub fn writeString(s: []const u8) void {
