@@ -101,6 +101,18 @@ export fn uacpi_kernel_free(pointer: ?*anyopaque) callconv(.c) void {
 export fn uacpi_kernel_io_map(base: u32, len: usize, out_handle: *?*anyopaque) callconv(.c) u32 {
     if (sys.ioportGrant(@truncate(base), len) < 0) return Status.not_found.value();
 
+    // Each range once, when it is first asked for. Which ports the bytecode
+    // reaches is not knowable in advance, and the one named just before a
+    // silent stop is the answer to what the machine was doing when it stopped:
+    // a write to the firmware's trap port enters system management mode, and
+    // whether that returns is the firmware's decision alone.
+    log.begin("platd", .dim);
+    out.text("firmware asked for ports 0x");
+    out.hex(base, 2);
+    out.text("..0x");
+    out.hex(base + len - 1, 2);
+    log.end();
+
     out_handle.* = @ptrFromInt(base);
     return Status.ok.value();
 }

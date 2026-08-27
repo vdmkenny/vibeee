@@ -92,6 +92,17 @@ fn wait(comptime field: []const u8, set: bool) bool {
     }
 }
 
+/// Said once, the first time bytecode reaches the controller at all: the
+/// boundary between interpreting and touching the machine, which is the line
+/// that matters when a boot stops between the two.
+var said_reached = false;
+
+fn reached() void {
+    if (said_reached) return;
+    said_reached = true;
+    log.say("platd", .dim, "bytecode reached the controller");
+}
+
 /// Said once. A controller that misses one deadline has usually missed them
 /// all, and the first is the one that says where things stood.
 var said_silent = false;
@@ -228,6 +239,7 @@ fn region(op: uacpi.RegionOp, data: ?*anyopaque) callconv(.c) uacpi.Status {
     switch (op) {
         .attach, .detach => return .ok,
         .read => {
+            reached();
             const rw: *uacpi.RegionRw = @alignCast(@ptrCast(data.?));
             var value: u64 = 0;
             var i: u8 = 0;
@@ -239,6 +251,7 @@ fn region(op: uacpi.RegionOp, data: ?*anyopaque) callconv(.c) uacpi.Status {
             return .ok;
         },
         .write => {
+            reached();
             const rw: *uacpi.RegionRw = @alignCast(@ptrCast(data.?));
             var i: u8 = 0;
             while (i < rw.byte_width) : (i += 1) {
