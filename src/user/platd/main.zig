@@ -131,6 +131,7 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
         .child => namespace.describeChild(&request.name, request.index, &body.body.device),
         .backlight => backlight.read(&body.body.backlight),
         .backlight_set => backlight.write(request.index, &body.body.backlight),
+        .pci_route => route.answer(@bitCast(request.param), &body.body.route),
         .hotkey => hotkey.take(&body.body.press),
         .hotkey_watch => hotkey.subscribe(reply),
     };
@@ -177,6 +178,7 @@ const battery = @import("battery.zig");
 const ec = @import("ec.zig");
 const hotkey = @import("hotkey.zig");
 const namespace = @import("namespace.zig");
+const route = @import("route.zig");
 const uacpi = @import("uacpi.zig");
 const work = @import("work.zig");
 const proto = @import("proto").platform;
@@ -216,6 +218,11 @@ fn bringUp() bool {
     } else {
         log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
     }
+
+    // The interrupt model first: the routing tables answer for the mode the
+    // operating system announces, and this system runs the one the firmware
+    // does not assume.
+    _ = step("interrupt model", uacpi.uacpi_set_interrupt_model(.ioapic));
 
     // The bytecode learns its controller regions are answered, then the
     // vendor is told a driver is present. Both switch firmware off the

@@ -22,6 +22,7 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const proto = @import("proto").net;
+const proto_platform = @import("proto").platform;
 const std = @import("std");
 const sys = @import("sys");
 const str = @import("lib").str;
@@ -133,7 +134,7 @@ fn probe() void {
 
 /// Map, open and interrupt-wire one interface.
 fn attach(iface: *dev.NicDev) bool {
-    const line = pci.interruptLine(iface.location);
+    const line = routedLine(iface);
 
     // Lines are shared on this machine's wiring, and the kernel hands a
     // line to one holder. One process holding it once is enough: every
@@ -191,6 +192,35 @@ fn attach(iface: *dev.NicDev) bool {
     // driven for what is driven, not for what was attempted.
     _ = sys.claimDevice(iface.location.bus, iface.location.device, iface.location.function);
     return true;
+}
+
+/// Which line this adapter's interrupt arrives on.
+///
+/// The firmware's routing table is the answer for the interrupt model this
+/// system runs; the number in configuration space answers for the mode it
+/// does not. Where the platform service cannot say, the legacy number is
+/// what remains, alive but possibly deaf.
+fn routedLine(iface: *dev.NicDev) u8 {
+    var ask = proto_platform.RouteAsk{
+        .pin = 0, // INTA, which every single-function adapter uses
+        .device = @truncate(iface.location.device),
+    };
+    if (pci.carrierOf(iface.location.bus)) |bridge| {
+        ask.behind_bridge = true;
+        ask.bridge_device = @truncate(bridge.device);
+        ask.bridge_function = @truncate(bridge.function);
+    }
+
+    if (proto_platform.routePci(ask)) |gsi| {
+        log.begin("netd", .dim);
+        out.text("the firmware routes this interrupt to line ");
+        out.decimal(gsi);
+        log.end();
+        return @intCast(gsi);
+    } else |_| {
+        log.say("netd", .dim, "no routing table answer; using the legacy line");
+        return pci.interruptLine(iface.location);
+    }
 }
 
 // ---------------------------------------------------------------------------

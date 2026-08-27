@@ -75,3 +75,34 @@ pub fn enableMemoryAndMaster(loc: Location) void {
     const command = read(loc, 0x04);
     write(loc, 0x04, command | 0x06);
 }
+
+/// The root-bus bridge whose window contains `bus`, or null for the root
+/// bus itself and for a bus nothing on the root claims. One level of
+/// bridges is what this machine has; a deeper machine repeats the walk.
+pub fn carrierOf(bus: u8) ?Location {
+    if (bus == 0) return null;
+
+    var device: u5 = 0;
+    while (true) : (device += 1) {
+        var function: u3 = 0;
+        while (true) : (function += 1) {
+            const loc = Location{ .bus = 0, .device = device, .function = function };
+            const id = read(loc, 0);
+            if (id != 0xFFFF_FFFF) {
+                // Header type 1 is a bridge; its window is the pair of bus
+                // numbers at the fixed offsets the specification gives them.
+                const header = read8(loc, 0x0E);
+                if (header & 0x7F == 1) {
+                    const secondary = read8(loc, 0x19);
+                    const subordinate = read8(loc, 0x1A);
+                    if (bus >= secondary and bus <= subordinate) return loc;
+                }
+                if (function == 0 and header & 0x80 == 0) break;
+            } else if (function == 0) break;
+
+            if (function == 7) break;
+        }
+        if (device == 31) break;
+    }
+    return null;
+}

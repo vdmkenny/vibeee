@@ -284,8 +284,11 @@ pub fn vectorForGsi(gsi: u32) ?u8 {
     if (!ioapic.active() or gsi >= MAX_GSI) return null;
     if (gsi_vector[gsi] != 0) return gsi_vector[gsi];
 
+    // A line above the legacy sixteen is one the routing tables named, and
+    // those pins carry PCI interrupts in PCI's own convention: a level held
+    // low. The legacy pins keep whatever boot routing gave them.
     const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
-    ioapic.route(gsi, vector, false, true, lapic.id());
+    ioapic.route(gsi, vector, gsi >= irq_mod.MAX_LINES, true, lapic.id());
     gsi_vector[gsi] = vector;
     return vector;
 }
@@ -323,24 +326,6 @@ pub fn releaseGsi(gsi: u32) void {
 pub fn resolveIrq(number: u32) irq_mod.Line {
     if (number >= irq_mod.MAX_LINES) return .{ .irq = 0, .gsi = number };
     return routing.resolve(@intCast(number));
-}
-
-/// Make a PCI-used legacy line level-sensed, in the polarity this board
-/// presents. PCI wires signal active low, but this chipset inverts them on
-/// the way to the controller: the firmware's own override table declares
-/// its one described level line active high, and every pin that has ever
-/// worked on this machine agrees. Sensed low, the idle line reads asserted
-/// from the moment it is unmasked. Boot only, and only where the table said
-/// nothing; where it spoke, its word stands.
-pub fn correctPciLine(number: u4) void {
-    if (!ioapic.active()) return;
-    if (routing.describedLine(number) != null) return;
-
-    const gsi = routing.resolve(number).gsi;
-    if (gsi >= MAX_GSI) return;
-    const vector = gsi_vector[gsi];
-    if (vector == 0) return;
-    ioapic.correct(gsi, vector, false, true, lapic.id());
 }
 
 /// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a

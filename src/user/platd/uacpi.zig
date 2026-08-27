@@ -58,6 +58,45 @@ pub extern fn uacpi_prepare_for_sleep_state(state: SleepState) Status;
 pub extern fn uacpi_enter_sleep_state(state: SleepState) Status;
 pub extern fn uacpi_reboot() Status;
 
+// ---------------------------------------------------------------------------
+// Interrupt routing
+// ---------------------------------------------------------------------------
+//
+// The firmware keeps two answers for where a PCI interrupt goes: the 8259
+// number in a device's configuration space, and the routing table naming the
+// controller input. Which answer the tables give depends on the model the
+// operating system announces, which is what `_PIC` is for, and announcing is
+// part of setting it.
+
+pub const InterruptModel = enum(c_uint) {
+    pic = 0,
+    ioapic = 1,
+};
+
+pub extern fn uacpi_set_interrupt_model(model: InterruptModel) Status;
+
+/// One routing table entry: which device and pin, and where it goes. With
+/// the controller model announced, `source` is null and `index` is the
+/// global line itself; a link node in `source` is the legacy indirection.
+pub const RouteEntry = extern struct {
+    address: u32,
+    index: u32,
+    source: ?*Node,
+    pin: u8,
+};
+
+pub const RouteTable = extern struct {
+    num_entries: usize,
+
+    pub fn entries(self: *const RouteTable) []const RouteEntry {
+        const base: [*]const RouteEntry = @ptrCast(@alignCast(@as([*]const u8, @ptrCast(self)) + @sizeOf(RouteTable)));
+        return base[0..self.num_entries];
+    }
+};
+
+pub extern fn uacpi_get_pci_routing_table(parent: ?*Node, out: *?*RouteTable) Status;
+pub extern fn uacpi_free_pci_routing_table(table: ?*RouteTable) void;
+
 pub extern fn uacpi_namespace_root() ?*Node;
 pub extern fn uacpi_namespace_node_name(node: ?*Node) Name;
 /// The kinds of namespace object. Non-exhaustive: only the device matters to

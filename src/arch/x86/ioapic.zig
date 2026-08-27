@@ -117,25 +117,6 @@ pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u
     });
 }
 
-/// Bring one entry to the given routing, keeping its mask, writing only on
-/// disagreement.
-pub fn correct(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u8) void {
-    const owner = find(gsi) orelse return;
-    const line = gsi - owner.info.gsi_base;
-
-    const was = hold();
-    defer release(was);
-    var entry = readEntry(owner, line);
-    if (entry.vector == vector and entry.active_low == active_low and
-        entry.level == level and entry.destination == destination) return;
-
-    entry.vector = vector;
-    entry.active_low = active_low;
-    entry.level = level;
-    entry.destination = destination;
-    writeEntry(owner, line, entry);
-}
-
 pub fn setMask(gsi: u32, masked: bool) void {
     const owner = find(gsi) orelse return;
     const line = gsi - owner.info.gsi_base;

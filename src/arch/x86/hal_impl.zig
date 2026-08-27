@@ -63,7 +63,6 @@ pub const denyIoPorts = gdt.denyIoPorts;
 pub const InterruptFrame = idt.Frame;
 pub const gsiClaimed = idt.gsiClaimed;
 pub const resolveIrq = idt.resolveIrq;
-pub const correctPciLine = idt.correctPciLine;
 pub const claimGsi = claimGsiImpl;
 pub const releaseGsi = idt.releaseGsi;
 pub const setGsiMask = idt.setGsiMask;

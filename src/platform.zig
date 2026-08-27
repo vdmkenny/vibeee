@@ -182,40 +182,10 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     }
 }
 
-/// The legacy lines PCI devices sit on, collected during enumeration.
-var pci_lines: u16 = 0;
-
-fn noteInterruptLine(line: u8) void {
-    if (line == 0 or line >= 16) return;
-    pci_lines |= @as(u16, 1) << @intCast(line);
-}
-
-/// Make the pins PCI devices use signal the way PCI signals.
-///
-/// The override table describes a handful of lines; the rest default to the
-/// ISA convention, an edge pulsed high, and a PCI interrupt is the other
-/// convention entirely: a level held low. A PCI line left at the default
-/// never fires. Corrected here, at boot with every line masked and nothing
-/// armed, because that is when this machine's firmware tolerates the
-/// controller being written.
-///
-/// The compatibility-mode disk lines stay untouched: an IDE controller in
-/// that mode raises real ISA edges on fourteen and fifteen whatever its
-/// configuration space says.
-fn correctPciLines() void {
-    var line: u4 = 1;
-    while (true) : (line += 1) {
-        const wanted = pci_lines & (@as(u16, 1) << line) != 0;
-        if (wanted and line != 14 and line != 15) hal.correctPciLine(line);
-        if (line == 15) break;
-    }
-}
-
 /// Enumerate every bus this machine has and bind drivers to what turns up.
 pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
     probe.begin(&drivers.table);
     enumeratePci();
-    correctPciLines();
     // Attach before reporting, so the table shows what actually came up rather
     // than what merely matched.
     probe.attachAll();
@@ -341,12 +311,6 @@ fn enumeratePci() void {
             const class_reg = pci.configRead32(addr, pci.CLASS_OFFSET);
             const class: u8 = @truncate(class_reg >> 24);
             const subclass: u8 = @truncate(class_reg >> 16);
-
-            // Which legacy line the firmware assigned this device, remembered
-            // so the pins can be corrected while correcting is still safe:
-            // this machine's firmware co-owns the interrupt controller, and
-            // it tolerates the boot writing pins and notices anything later.
-            noteInterruptLine(pci.configRead8(addr, pci.INTERRUPT_LINE_OFFSET));
 
             probe.consider(.{
                 .bus = "pci",

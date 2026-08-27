@@ -34,6 +34,9 @@ pub const Tag = enum(u8) {
     /// `device` cannot say: a vendor's methods are called whatever the vendor
     /// called them, and nothing can guess at those.
     child,
+    /// Where a PCI device's interrupt pin goes, from the firmware's routing
+    /// table. `param` carries the question, packed as `RouteAsk`.
+    pci_route,
 };
 
 pub const Req = extern struct {
@@ -44,6 +47,26 @@ pub const Req = extern struct {
     /// Whose children to walk, for `child`. Four characters, because that is
     /// what a namespace name is.
     name: [4]u8 = @splat(0),
+    /// The request's argument, for the tags that take one.
+    param: u32 = 0,
+};
+
+/// The routing question: which device, which of its four pins, and, when the
+/// device sits behind a bridge, which root-bus bridge carries it. The
+/// firmware routes a bridge's children through the bridge's own table.
+pub const RouteAsk = packed struct(u32) {
+    /// INTA is zero, as the configuration space counts them.
+    pin: u2 = 0,
+    device: u5 = 0,
+    behind_bridge: bool = false,
+    bridge_device: u5 = 0,
+    bridge_function: u3 = 0,
+    _rest: u16 = 0,
+};
+
+/// The answer: a global line, wired as the routing tables wire them.
+pub const Route = extern struct {
+    gsi: u32 = 0,
 };
 
 pub const Status = enum(u8) {
@@ -337,6 +360,7 @@ pub const Body = extern union {
     device: Device,
     backlight: Backlight,
     press: Press,
+    route: Route,
 };
 
 comptime {
@@ -395,6 +419,36 @@ pub fn callAt(tag: Tag, index: u8, into: *Rep) Error!void {
 }
 
 /// The same, naming what to look under.
+/// Where a PCI device's interrupt pin goes, per the firmware.
+pub fn routePci(question: RouteAsk) Error!u32 {
+    var reply = Rep{};
+    try callWith(.pci_route, @bitCast(question), &reply);
+    return reply.body.route.gsi;
+}
+
+/// The same as `call`, carrying an argument word.
+pub fn callWith(tag: Tag, param: u32, into: *Rep) Error!void {
+    const channel = sys.svcConnect(SERVICE);
+    if (channel < 0) return error.NoService;
+    defer _ = sys.close(@intCast(channel));
+
+    var request = Req{ .tag = tag, .param = param };
+    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
+
+    var reply = sys.Message{};
+    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
+
+    const bytes = reply.bytes();
+    if (bytes.len < @sizeOf(Rep)) return error.Refused;
+    into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
+
+    return switch (into.status) {
+        .ok => {},
+        .end => error.End,
+        else => error.Refused,
+    };
+}
+
 pub fn callUnder(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
     const channel = sys.svcConnect(SERVICE);
     if (channel < 0) return error.NoService;
