@@ -84,6 +84,11 @@ fn writePipe(end: handles.PipeEnd, buf: []const u8) Result {
 var console_owner: u32 = 0;
 
 pub fn sys_console_claim(_: Args) Result {
+    // A debug boot is a boot being watched: the whole point of the flag is
+    // seeing everything, and a service that stops mid-bring-up after the
+    // shell starts must be able to say where. The console stays a broadcast.
+    if (console.isDebug()) return 0;
+
     const t = sched.currentThread() orelse return Errno.perm.value();
     console_owner = t.id;
     return 0;
