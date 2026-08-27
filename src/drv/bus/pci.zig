@@ -5,6 +5,7 @@
 //! config space; that path lands with ACPI table parsing in M1, behind the same
 //! interface.
 
+const pcicfg = @import("../../kernel/pcicfg.zig");
 const port = @import("../../arch/x86/port.zig");
 
 const CONFIG_ADDRESS: u16 = 0xCF8;
@@ -40,9 +41,20 @@ fn configAddress(addr: Address, offset: u8) u32 {
     });
 }
 
+/// Through the kernel's one owner of the pair: an access split by an
+/// interrupt, or raced by another process, lands its data on whatever the
+/// other selected.
+fn selectorFor(addr: Address, offset: u8) pcicfg.Selector {
+    return .{
+        .bus = addr.bus,
+        .device = addr.slot,
+        .function = addr.func,
+        .register = @truncate(offset >> 2),
+    };
+}
+
 pub fn configRead32(addr: Address, offset: u8) u32 {
-    port.outl(CONFIG_ADDRESS, configAddress(addr, offset));
-    return port.inl(CONFIG_DATA);
+    return pcicfg.read(selectorFor(addr, offset));
 }
 
 pub fn configRead16(addr: Address, offset: u8) u16 {
@@ -56,8 +68,7 @@ pub fn configRead8(addr: Address, offset: u8) u8 {
 }
 
 pub fn configWrite32(addr: Address, offset: u8, value: u32) void {
-    port.outl(CONFIG_ADDRESS, configAddress(addr, offset));
-    port.outl(CONFIG_DATA, value);
+    pcicfg.write(selectorFor(addr, offset), value);
 }
 
 pub const CLASS_OFFSET: u8 = 0x08;

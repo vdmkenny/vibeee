@@ -1323,6 +1323,35 @@ pub const table = [_]Syscall{
             "a second service probing for unclaimed hardware alike, would read a " ++
             "driven device as free.",
     },
+    .{
+        .number = 52,
+        .name = "pci_read",
+        .summary = "Read one dword of PCI configuration space.",
+        .args = &.{
+            .{ .name = "location", .kind = .uint, .desc = "bus << 8 | device << 3 | function." },
+            .{ .name = "offset", .kind = .uint, .desc = "Register offset, dword aligned." },
+        },
+        .returns = "the register's value",
+        .errors = &.{E.perm},
+        .notes = "Requires Caps.driver. The two configuration ports are one shared " ++
+            "index pair; every access in the system goes through the kernel so no " ++
+            "two of them can interleave. Narrower reads are cut from the dword by " ++
+            "the caller.",
+    },
+    .{
+        .number = 53,
+        .name = "pci_write",
+        .summary = "Write one dword of PCI configuration space.",
+        .args = &.{
+            .{ .name = "location", .kind = .uint, .desc = "bus << 8 | device << 3 | function." },
+            .{ .name = "offset", .kind = .uint, .desc = "Register offset, dword aligned." },
+            .{ .name = "value", .kind = .uint, .desc = "The dword to write." },
+        },
+        .returns = "0",
+        .errors = &.{E.perm},
+        .notes = "Requires Caps.driver. Read-modify-write for narrower widths is the " ++
+            "caller's, made safe by every access sharing the kernel's one pair.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

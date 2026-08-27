@@ -45,6 +45,8 @@ pub const disableInterrupts = impl.disableInterrupts;
 pub const enableInterrupts = impl.enableInterrupts;
 /// Disable interrupts, returning the previous state for nested restore.
 pub const saveAndDisableInterrupts = impl.saveAndDisableInterrupts;
+pub const outl = impl.outl;
+pub const inl = impl.inl;
 pub const restoreInterrupts = impl.restoreInterrupts;
 /// Park the CPU until the next interrupt. The idle loop's entire body.
 pub const idle = impl.idle;

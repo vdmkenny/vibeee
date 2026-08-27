@@ -17,6 +17,7 @@ const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
 const pmm = @import("../pmm.zig");
+const pcicfg = @import("../pcicfg.zig");
 const probe = @import("../probe.zig");
 const sched = @import("../sched.zig");
 const shm = @import("../shm.zig");
@@ -36,6 +37,26 @@ const currentHandles = ctx.currentHandles;
 /// when the last reference closes. Cached, because on these machines
 /// coherency is the chipset's job and an uncached ring would pay a cache
 /// miss on every descriptor a driver touches.
+pub fn sys_pci_read(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    return @intCast(pcicfg.read(pciSelector(a.a0, a.a1)));
+}
+
+pub fn sys_pci_write(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    pcicfg.write(pciSelector(a.a0, a.a1), @truncate(a.a2));
+    return 0;
+}
+
+fn pciSelector(packed_location: usize, offset: usize) pcicfg.Selector {
+    return .{
+        .bus = @truncate(packed_location >> 8),
+        .device = @truncate((packed_location >> 3) & 0x1F),
+        .function = @truncate(packed_location & 0x7),
+        .register = @truncate((offset & 0xFC) >> 2),
+    };
+}
+
 pub fn sys_claim_device(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 

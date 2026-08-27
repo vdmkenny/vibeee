@@ -284,6 +284,17 @@ pub fn mapDevice(phys: usize, len: usize) ?[*]volatile u32 {
 
 /// Physically contiguous DMA memory. Returns the handle to map with `shmMap`
 /// and writes the physical base to `physOut`. Needs the driver capability.
+/// One dword of PCI configuration space, read through the kernel: the two
+/// configuration ports are one shared index pair, and the kernel is the one
+/// place an access cannot be interleaved with another process's.
+pub fn pciRead(location: u32, offset: u8) u32 {
+    return @bitCast(@as(i32, @truncate(syscall2(abi.number("pci_read"), location, offset))));
+}
+
+pub fn pciWrite(location: u32, offset: u8, value: u32) void {
+    _ = syscall3(abi.number("pci_write"), location, offset, value);
+}
+
 /// Tell the kernel this process now drives the PCI device, so its table says
 /// driven rather than matched and nothing else probes it as free.
 pub fn claimDevice(bus: u16, device: u16, function: u16) isize {

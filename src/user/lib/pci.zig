@@ -1,46 +1,32 @@
-//! PCI configuration space, reached over the mechanism-one ports.
+//! PCI configuration space, reached through the kernel.
 //!
-//! The two ports every x86 chipset answers at, granted once for the life of
-//! the process and addressed with the lanes in `lib.pci`. A driver server
-//! holds the driver capability anyway; what this adds is the one place that
-//! knows how a configuration read is actually made, so no driver reaches for
-//! raw port numbers of its own.
+//! The two configuration ports are one shared index pair for the whole
+//! machine, and this process is not the only one talking to them: the
+//! firmware interpreter reads config space too, from its own process. An
+//! access made with raw ports here can interleave with one made there, and
+//! the transfer lands on whatever the other selected. The kernel is the one
+//! place an access cannot be interleaved, so every access is a syscall.
 //!
-//! The addressing half is `lib.pci`; this is the port dance.
+//! The addressing half is `lib.pci`; this is the crossing.
 
 const lib = @import("lib");
-const ports = @import("ports.zig");
 const sys = @import("sys");
 
 pub const Location = lib.pci.Location;
 pub const parse = lib.pci.parse;
 
-const CONFIG_ADDRESS: u16 = 0xCF8;
-const CONFIG_DATA: u16 = 0xCFC;
-
-/// The grant, asked for once. A config access without it is a fault, and the
-/// ask is cheap enough that laziness costs more than it saves.
-var granted = false;
-
-fn open() bool {
-    if (granted) return true;
-    if (sys.ioportGrant(CONFIG_ADDRESS, 8) < 0) return false;
-    granted = true;
-    return true;
+fn packedLocation(loc: Location) u32 {
+    return (@as(u32, loc.bus) << 8) | (@as(u32, loc.device) << 3) | loc.function;
 }
 
 /// A dword of configuration space. The register is dword-granular.
 pub fn read(loc: Location, register: u8) u32 {
-    if (!open()) return 0xFFFF_FFFF;
-    ports.out32(CONFIG_ADDRESS, loc.address(register));
-    return ports.in32(CONFIG_DATA);
+    return sys.pciRead(packedLocation(loc), register);
 }
 
 /// A dword written into configuration space.
 pub fn write(loc: Location, register: u8, value: u32) void {
-    if (!open()) return;
-    ports.out32(CONFIG_ADDRESS, loc.address(register));
-    ports.out32(CONFIG_DATA, value);
+    sys.pciWrite(packedLocation(loc), register, value);
 }
 
 /// One byte of configuration space, at any offset.
@@ -71,7 +57,6 @@ pub fn interruptLine(loc: Location) u8 {
 /// bus mastering. Reading first and writing the union keeps whatever the
 /// firmware already enabled.
 pub fn enableMemoryAndMaster(loc: Location) void {
-    if (!open()) return;
     const command = read(loc, 0x04);
     write(loc, 0x04, command | 0x06);
 }

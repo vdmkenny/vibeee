@@ -18,6 +18,8 @@ pub const KERNEL_BASE = paging.KERNEL_VMA;
 pub const disableInterrupts = cpu.cli;
 pub const enableInterrupts = cpu.sti;
 pub const saveAndDisableInterrupts = cpu.saveAndDisableInterrupts;
+pub const outl = port.outl;
+pub const inl = port.inl;
 pub const restoreInterrupts = cpu.restoreInterrupts;
 pub const halt = cpu.halt;
 

@@ -249,16 +249,12 @@ export fn platd_pci_open(
     out_handle: *?*anyopaque,
 ) callconv(.c) u32 {
     if (segment != 0) return Status.not_found.value();
-    if (!haveConfigPorts()) return Status.not_found.value();
 
-    const selector = Selector{
-        .bus = bus,
-        .device = @truncate(device),
-        .function = @truncate(function),
-        .enable = true,
-    };
-
-    out_handle.* = @ptrFromInt(@as(u32, @bitCast(selector)));
+    // The handle is the kernel's packed location; the kernel owns the
+    // configuration ports, because this process is not the only one that
+    // reads them and the pair cannot serve two selectors at once.
+    const location = (@as(u32, bus) << 8) | (@as(u32, device & 0x1F) << 3) | (function & 0x7);
+    out_handle.* = @ptrFromInt(location | HANDLE_MARK);
     return Status.ok.value();
 }
 
@@ -302,44 +298,25 @@ fn configMerge(handle: ?*anyopaque, offset: usize, value: u32, mask: u32) u32 {
     return Status.ok.value();
 }
 
+/// A location handle is never null even for bus zero device zero, so the
+/// packed location carries a mark bit above the location bits.
+const HANDLE_MARK: u32 = 1 << 31;
+
 fn configRead(handle: ?*anyopaque, offset: usize) u32 {
-    ports.out32(ADDRESS, selectorFor(handle, offset));
-    return ports.in32(DATA);
+    return sys.pciRead(locationOf(handle), @truncate(offset & 0xFC));
 }
 
 fn configWrite(handle: ?*anyopaque, offset: usize, value: u32) void {
-    ports.out32(ADDRESS, selectorFor(handle, offset));
-    ports.out32(DATA, value);
+    sys.pciWrite(locationOf(handle), @truncate(offset & 0xFC), value);
 }
 
-fn selectorFor(handle: ?*anyopaque, offset: usize) u32 {
-    var selector: Selector = @bitCast(@as(u32, @truncate(@intFromPtr(handle))));
-    selector.register = @truncate(offset >> 2);
-    return @bitCast(selector);
+fn locationOf(handle: ?*anyopaque) u32 {
+    return @as(u32, @truncate(@intFromPtr(handle))) & ~HANDLE_MARK;
 }
 
 fn shiftFor(offset: usize) u5 {
     return @intCast((offset & 3) * 8);
 }
-
-/// Ask for the two configuration ports, once.
-///
-/// Every other port this process touches is one uACPI asked to map, and it
-/// never asks for these: it expects its host to already have whatever reaching
-/// configuration space takes. On this machine that is the address and data
-/// pair, so this is where they are asked for.
-fn haveConfigPorts() bool {
-    if (granted) return true;
-    if (sys.ioportGrant(ADDRESS, 8) < 0) return false;
-
-    granted = true;
-    return true;
-}
-
-var granted = false;
-
-const ADDRESS: u16 = 0xCF8;
-const DATA: u16 = 0xCFC;
 
 /// The address register, as the mechanism lays it out. The low two bits of an
 /// offset select a byte within the dword the port returns, so they are not
