@@ -187,6 +187,14 @@ pub const table = [_]probe.Driver{
         .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x100E } }},
         .probe = &exact(0x8086, 0x100E),
     },
+    .{
+        // The Realtek 8139: QEMU's other emulated NIC, and a card a wide
+        // slice of the era's hardware carried. Lives in netd.
+        .name = "rtl8139",
+        .kind = .net,
+        .match = &.{.{ .pci_id = .{ .vendor = 0x10EC, .device = 0x8139 } }},
+        .probe = &exact(0x10EC, 0x8139),
+    },
 
     // -- Platform --------------------------------------------------------
     .{
