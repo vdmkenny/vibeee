@@ -7,6 +7,7 @@
 //! written in C reaches it through `ioctl`.
 
 const info = @import("info.zig");
+const out = @import("out.zig");
 const str = @import("lib").str;
 
 pub const Size = struct {
@@ -17,6 +18,22 @@ pub const Size = struct {
     /// ever standardised on, so a layout built against it fits anywhere.
     pub const fallback = Size{ .columns = 80, .rows = 24 };
 };
+
+/// Take the whole screen, putting aside what was on it.
+///
+/// What a full-screen program does on the way in, so that what it draws over
+/// is a blank screen rather than the shell's scrollback, and so that leaving
+/// puts the scrollback back exactly as it was.
+pub fn takeScreen() void {
+    out.text("\x1b[?1049h");
+    out.flush();
+}
+
+/// Give it back, and with it everything that was on it.
+pub fn giveBackScreen() void {
+    out.text("\x1b[?1049l");
+    out.flush();
+}
 
 /// How many cells the console has. Asked of the console rather than assumed:
 /// a program that drew an 80x24 box on a 100x30 screen would leave a border of

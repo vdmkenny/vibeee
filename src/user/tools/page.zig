@@ -45,6 +45,11 @@ pub fn run(args: []const []const u8) void {
     if (!load(args[0])) return;
     index();
 
+    // The whole screen, and the shell's scrollback put aside rather than
+    // scrolled away: quitting a pager should leave what was there before it.
+    console.takeScreen();
+    defer console.giveBackScreen();
+
     const size = consoleSize();
     // One row goes to the status line, which is what tells a reader whether
     // there is more below.
@@ -65,8 +70,6 @@ pub fn run(args: []const []const u8) void {
         }
     }
 
-    out.byte(CLEAR);
-    out.flush();
 }
 
 fn load(path: []const u8) bool {

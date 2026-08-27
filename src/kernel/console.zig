@@ -9,6 +9,7 @@ const std = @import("std");
 const klog = @import("klog.zig");
 const bootinfo = @import("bootinfo.zig");
 const escapes = @import("lib").escapes;
+const heap = @import("heap.zig");
 const fbcon = @import("../drv/video/fbcon.zig");
 const vgatext = @import("../drv/video/vgatext.zig");
 
@@ -152,6 +153,16 @@ const backend = struct {
     fn showCursor(visible: bool) void {
         if (!fbcon.active()) vgatext.showCursor(visible);
     }
+
+    /// What is in a cell, for saving the screen before something draws over it.
+    fn cellAt(x: usize, y: usize) Saved {
+        if (fbcon.active()) {
+            const cell = fbcon.cellAt(x, y);
+            return .{ .cp = cell.cp, .fg = @enumFromInt(cell.fg), .bg = @enumFromInt(cell.bg) };
+        }
+        const cell = vgatext.cellAt(x, y);
+        return .{ .cp = cell.ch, .fg = cell.fg, .bg = cell.bg };
+    }
 };
 
 /// Width of the key column in the boot log. Defined once so `field`, `warn`
@@ -260,7 +271,7 @@ const Escape = struct {
     /// default to, which is why `get` takes the fallback rather than the
     /// caller checking for absence.
     fn apply(sequence: escapes.Csi) void {
-        if (sequence.private) return cursorVisibility(sequence);
+        if (sequence.private) return privateMode(sequence);
 
         switch (sequence.final) {
             'm' => {
@@ -279,11 +290,20 @@ const Escape = struct {
         }
     }
 
-    /// `?25h` and `?25l`, which is how a program stops the cursor flickering
-    /// across a screen it is in the middle of redrawing.
-    fn cursorVisibility(sequence: escapes.Csi) void {
-        if (sequence.get(0, 0) != 25) return;
-        backend.showCursor(sequence.final == 'h');
+    /// The private modes: hiding the cursor, and putting the screen aside.
+    fn privateMode(sequence: escapes.Csi) void {
+        const on = sequence.final == 'h';
+
+        switch (sequence.get(0, 0)) {
+            // How a program stops the cursor flickering across a screen it is
+            // in the middle of redrawing.
+            25 => backend.showCursor(on),
+            // 47 is the older spelling of the same idea and still what some
+            // programs send. Both are answered, because a program that asked
+            // either way meant the same thing.
+            47, 1047, 1049 => if (on) Alternate.enter() else Alternate.leave(),
+            else => {},
+        }
     }
 
     /// One parameter as a cell count. Defaulting to one, which is what every
@@ -348,6 +368,63 @@ const Escape = struct {
     /// is what makes bold and the 90-series the same operation.
     fn bright(c: Color) Color {
         return @enumFromInt(@intFromEnum(c) | 0x8);
+    }
+};
+
+/// One cell as it was, for putting back.
+const Saved = struct {
+    cp: u21,
+    fg: Color,
+    bg: Color,
+};
+
+/// The screen a full-screen program is drawing over.
+///
+/// `ESC [ ? 1049 h` puts the screen aside and hands over a blank one; the `l`
+/// form puts it back. That is what lets an editor take the whole display and
+/// leave the shell's scrollback exactly as it was, rather than the shell
+/// drawing its next prompt over whatever the editor left behind.
+///
+/// Allocated when a program asks and given back when it leaves, because most
+/// of the time nothing is using it and a screen's worth of cells is not free.
+const Alternate = struct {
+    var cells: ?[]Saved = null;
+    var at_col: usize = 0;
+    var at_row: usize = 0;
+    var was_fg: Color = .light_grey;
+    var was_bg: Color = .black;
+
+    fn enter() void {
+        if (cells != null) return;
+
+        const room = heap.allocator.alloc(Saved, columns * rows) catch return;
+        for (0..rows) |y| {
+            for (0..columns) |x| room[y * columns + x] = backend.cellAt(x, y);
+        }
+
+        cells = room;
+        at_col = col;
+        at_row = row;
+        was_fg = fg;
+        was_bg = bg;
+
+        clear();
+    }
+
+    fn leave() void {
+        const room = cells orelse return;
+        cells = null;
+        defer heap.allocator.free(room);
+
+        for (0..rows) |y| {
+            for (0..columns) |x| {
+                const cell = room[y * columns + x];
+                backend.putAt(x, y, cell.cp, cell.fg, cell.bg);
+            }
+        }
+
+        setColor(was_fg, was_bg);
+        moveTo(at_col, at_row);
     }
 };
 

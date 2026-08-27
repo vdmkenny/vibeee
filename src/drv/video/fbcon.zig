@@ -274,6 +274,15 @@ fn clearAll(colour: u32) void {
 }
 
 /// Draw one character cell.
+/// What is in a cell. For saving the screen before a full-screen program
+/// draws over it, which is the only thing that reads the grid back out.
+pub fn cellAt(col: usize, row: usize) struct { cp: u21, fg: u4, bg: u4 } {
+    if (col >= columns or row >= rows) return .{ .cp = ' ', .fg = 0, .bg = 0 };
+
+    const cell = cells[row * columns + col];
+    return .{ .cp = cell.cp, .fg = cell.fg, .bg = cell.bg };
+}
+
 pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
     if (!ready or suspended or col >= columns or row >= rows) return;
 

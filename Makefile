@@ -117,7 +117,7 @@ $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 .PHONY: examples
 examples: kernel
 	@tools/eeecc -o $(BUILD)/greet examples/greet.c
-	@tools/eeecc -o $(BUILD)/kilo third_party/kilo/kilo.c
+	@tools/eeecc -o $(BUILD)/kilo -Dmain=kilo_main third_party/kilo/kilo.c src/user/ports/kilo.c
 
 image: $(IMAGE)
 

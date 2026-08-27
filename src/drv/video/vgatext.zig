@@ -71,6 +71,19 @@ pub fn scroll(fg: Color, bg: Color) void {
 /// Bit 5 of the cursor-start register turns it off. What a full-screen program
 /// asks for while it redraws, so the cursor is not seen skating across a
 /// half-drawn screen on its way to where it belongs.
+/// What is in a cell, read back out of the text buffer. The attribute byte
+/// holds both colours: foreground low, background high.
+pub fn cellAt(x: usize, y: usize) struct { ch: u8, fg: Color, bg: Color } {
+    if (x >= WIDTH or y >= HEIGHT) return .{ .ch = ' ', .fg = .light_grey, .bg = .black };
+
+    const raw = cells[y * WIDTH + x];
+    return .{
+        .ch = @truncate(raw),
+        .fg = @enumFromInt(@as(u4, @truncate(raw >> 8))),
+        .bg = @enumFromInt(@as(u4, @truncate(raw >> 12))),
+    };
+}
+
 pub fn showCursor(visible: bool) void {
     port.outb(CRTC_INDEX, 0x0A);
     const start = port.inb(CRTC_DATA);
