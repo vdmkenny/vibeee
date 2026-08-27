@@ -119,12 +119,18 @@ pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u
     const owner = find(gsi) orelse return;
     const was = hold();
     defer release(was);
+    // Born unmasked. There is exactly one window this machine tolerates a
+    // redirection write, and it is this boot-time one: the firmware's trap
+    // answers any later write to the controller by never returning. A line
+    // asserts only when something really happened, and the kernel's
+    // unknown-vector stub acknowledges those, so an unmasked quiet line
+    // costs nothing before its driver claims it.
     writeEntry(owner, gsi - owner.info.gsi_base, .{
         .vector = vector,
         .active_low = active_low,
         .level = level,
         .destination = destination,
-        .masked = true,
+        .masked = false,
     });
 }
 

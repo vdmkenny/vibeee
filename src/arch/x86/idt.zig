@@ -159,13 +159,9 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
 var complained: [256]bool = @splat(false);
 
 fn quietUnclaimed(vec: u8) void {
-    for (gsi_vector, 0..) |v, gsi| {
-        if (v == vec) setGsiMask(@intCast(gsi), true);
-    }
-
     if (complained[vec]) return;
     complained[vec] = true;
-    @import("../../kernel/console.zig").fail("vector {x} has no handler; its line is masked", .{vec});
+    @import("../../kernel/console.zig").fail("vector {x} has no handler and its line stays up", .{vec});
 }
 
 fn setGate(vec: u8, handler: *const anyopaque, dpl: u2, gate_type: GateType) void {
@@ -312,7 +308,6 @@ pub fn claimGsi(gsi: u32, handler: Handler) ?u8 {
 }
 
 pub fn releaseGsi(gsi: u32) void {
-    setGsiMask(gsi, true);
     if (gsi < MAX_GSI and gsi_vector[gsi] != 0) unsetHandler(gsi_vector[gsi]);
 }
 

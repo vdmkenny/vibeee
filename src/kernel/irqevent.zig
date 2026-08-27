@@ -77,21 +77,15 @@ pub fn arm(self: *IrqEvent) void {
     // that dies here says which side it died on, with the entry as the
     // controller holds it now: firmware that co-owns the controller can have
     // rewritten what boot routed.
+    // Born unmasked at boot and never touched again: every line was let
+    // through in the one window this machine tolerates a controller write.
+    // Arming is bookkeeping only, which is what keeps the runtime a place
+    // the firmware's trap has nothing to say about.
     const live = hal.gsiEntryLow(self.gsi);
     const boot = hal.bootEntry(self.gsi);
-    if (first) console.debug("irq", "line {d} opening, boot wrote {x:0>8}, controller holds {x:0>8}", .{ self.gsi, boot, live });
+    if (first) console.debug("irq", "line {d} open, boot wrote {x:0>8}, controller holds {x:0>8}", .{ self.gsi, boot, live });
     self.armed = true;
     self.held = false;
-    // The firmware co-owns the controller. An entry that no longer holds what
-    // boot wrote was rewritten by somebody else, and writing it again at
-    // runtime is how that dispute has ended before. The line stays as the
-    // controller has it; the words above say so.
-    if (boot == 0 or live != boot) {
-        if (first) console.debug("irq", "line {d} left alone", .{self.gsi});
-        return;
-    }
-    hal.setGsiMask(self.gsi, false);
-    if (first) console.debug("irq", "line {d} unmasked", .{self.gsi});
 }
 
 /// The driver has finished with the device, so the line may fire again.
@@ -151,9 +145,10 @@ fn onInterrupt(_: *hal.InterruptFrame) void {
         const self = maybe orelse continue;
         if (!self.armed or self.held) continue;
 
-        // Masked before the event is signalled, so a level-triggered device
-        // still asserting cannot re-enter the moment interrupts are on again.
-        hal.setGsiMask(self.gsi, true);
+        // Held before the event is signalled: a level-triggered device still
+        // asserting re-enters the moment interrupts are on again, and the
+        // held flag makes the re-entry say so without a word to the
+        // controller, which the runtime may not write.
         self.held = true;
         self.count += 1;
         if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
