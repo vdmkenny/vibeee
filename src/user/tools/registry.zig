@@ -18,6 +18,7 @@ const devices_tool = @import("devices.zig");
 const klog = @import("klog.zig");
 const page = @import("page.zig");
 const status = @import("status.zig");
+const svc = @import("svc.zig");
 const tree = @import("tree.zig");
 const volumes = @import("volumes.zig");
 const out = @import("ulib").out;
@@ -49,7 +50,7 @@ pub const commands = [_]Command{
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },
     .{ .name = "tree", .summary = "a directory and everything under it", .run = &tree.run },
     .{ .name = "cfg", .summary = "read and change system settings", .run = &cfg.run },
-    .{ .name = "svc", .summary = "list registered services", .run = &status.services },
+    .{ .name = "svc", .summary = "what is supposed to be running, and what is", .run = &svc.run },
     .{ .name = "disk", .summary = "list drives and volumes", .run = &status.disk },
     .{ .name = "mount", .summary = "attach a volume at a path", .run = &volumes.mount },
     .{ .name = "unmount", .summary = "detach a volume, flushing it first", .run = &volumes.unmount },

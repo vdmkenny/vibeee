@@ -74,6 +74,9 @@ const State = struct {
     /// Set when the service has been given up on, so the report is printed
     /// once rather than every time round the loop.
     abandoned: bool = false,
+    /// Somebody asked for it to stop. Distinct from `abandoned`, which is init
+    /// giving up: this one is a decision and is not reconsidered on its own.
+    held: bool = false,
 };
 
 var services: [MAX_SERVICES]State = @splat(.{});
@@ -300,17 +303,45 @@ fn waitForService(name: []const u8) void {
 /// re-parented here, and collecting it is what returns its memory. So the wait
 /// is for *any* child, and a pid that matches no service is simply reaped.
 fn supervise() noreturn {
-    while (true) {
-        const exited = sys.wait(0, sys.FOREVER) orelse {
-            // ECHILD: nothing left alive and nothing left to collect. With no
-            // restartable service there is no way for that to change, so
-            // saying so beats spinning on a wait that can only fail.
-            report("init", "no children left to supervise");
-            idle();
-        };
+    // Two things to listen to and one call that listens to both. A child
+    // exiting and somebody asking about the table are unrelated, arrive
+    // whenever they arrive, and neither is worth waking up to check for.
+    const children = sys.watch(.children);
+    const channel = sys.svcRegister(proto.SERVICE);
 
+    var sources: [2]u32 = undefined;
+    var count: usize = 0;
+    for ([_]isize{ children, channel }) |handle| {
+        if (handle >= 0) {
+            sources[count] = @intCast(handle);
+            count += 1;
+        }
+    }
+
+    while (true) {
+        collect();
+        if (channel >= 0) answerAll(@intCast(channel));
+
+        if (count == 0) {
+            report("init", "nothing left to supervise");
+            idle();
+        }
+        _ = sys.waitMany(sources[0..count], sys.FOREVER);
+    }
+}
+
+/// Reap whatever has died, restarting what should come back.
+///
+/// Most of what this reaps is not a service: any process whose parent died is
+/// re-parented here, and collecting it is what returns its memory. So the wait
+/// is for *any* child, and a pid matching no service is simply reaped.
+fn collect() void {
+    while (sys.wait(0, sys.POLL)) |exited| {
         const state = byPid(exited.pid) orelse continue;
         state.running = false;
+        state.pid = 0;
+
+        if (state.held) continue;
 
         if (shouldRestart(state, exited.status)) {
             start(state);
@@ -319,6 +350,92 @@ fn supervise() noreturn {
         }
     }
 }
+
+fn answerAll(channel: u32) void {
+    while (true) {
+        var message = sys.Message{};
+        const request = sys.recv(channel, &message, sys.POLL) orelse return;
+
+        var reply = proto.Rep{};
+        answer(&message, &reply);
+        _ = sys.reply(channel, request.token, std.mem.asBytes(&reply));
+    }
+}
+
+fn answer(message: *const sys.Message, reply: *proto.Rep) void {
+    const bytes = message.bytes();
+    if (bytes.len < @sizeOf(proto.Req)) {
+        reply.ok = 0;
+        return;
+    }
+
+    const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
+    switch (request.tag) {
+        .list => describe(request.index, reply),
+        .start => reply.ok = if (resume_(request.named())) 1 else 0,
+        .stop => reply.ok = if (halt(request.named())) 1 else 0,
+    }
+}
+
+/// One service, by position. `ok` goes to zero past the end, which is how a
+/// caller walking the table learns where it stops.
+fn describe(index: u8, reply: *proto.Rep) void {
+    if (index >= service_count) {
+        reply.ok = 0;
+        return;
+    }
+
+    const state = &services[index];
+    const name = state.service.name;
+
+    reply.entry = .{
+        .state = if (state.running)
+            .up
+        else if (state.held)
+            .stopped
+        else if (state.abandoned)
+            .failed
+        else
+            .down,
+        .pid = state.pid,
+        .name_len = @intCast(@min(name.len, proto.NAME_MAX)),
+    };
+    @memcpy(reply.entry.name[0..reply.entry.name_len], name[0..reply.entry.name_len]);
+}
+
+fn resume_(name: []const u8) bool {
+    const state = byName(name) orelse return false;
+    if (state.running) return true;
+
+    // Asking for it clears both the hold and the giving-up: somebody has
+    // decided it is worth another try, which is more than init knows.
+    state.held = false;
+    state.abandoned = false;
+    state.flapping = 0;
+
+    start(state);
+    return state.running;
+}
+
+fn halt(name: []const u8) bool {
+    const state = byName(name) orelse return false;
+
+    // Marked first. The child's death arrives through the same loop, and a
+    // hold set afterwards would race with the restart it is meant to prevent.
+    state.held = true;
+    if (!state.running) return true;
+
+    return sys.kill(state.pid) >= 0;
+}
+
+fn byName(name: []const u8) ?*State {
+    for (services[0..service_count]) |*s| {
+        if (str.eql(s.service.name, name)) return s;
+    }
+    return null;
+}
+
+const proto = @import("proto").service;
 
 fn shouldRestart(state: *State, status: i32) bool {
     const wanted = switch (state.service.restart) {
