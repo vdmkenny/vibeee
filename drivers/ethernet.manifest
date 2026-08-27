@@ -1,0 +1,8 @@
+# Ethernet interfaces, as a whole family. netd starts once per machine and
+# walks the bus itself, taking every adapter a driver in it knows: the same
+# service answers for the wired port and, later, the radio. A manifest that
+# named one card would start one netd per card.
+name   = netd
+binary = /bin/netd
+match  = pci-class:02:00
+caps   = driver

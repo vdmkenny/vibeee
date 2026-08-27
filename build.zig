@@ -184,6 +184,7 @@ pub fn build(b: *std.Build) void {
     const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
         .{ .name = "init", .root = "src/user/init.zig" },
         .{ .name = "devmgd", .root = "src/user/devmgd/main.zig" },
+        .{ .name = "netd", .root = "src/user/netd/main.zig" },
         .{ .name = "cfgd", .root = "src/user/cfgd/main.zig" },
         .{ .name = "platd", .root = "src/user/platd/main.zig" },
         .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },

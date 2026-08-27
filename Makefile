@@ -55,6 +55,7 @@ USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_DEVMGD := zig-out/bin/devmgd
+USER_NETD    := zig-out/bin/netd
 USER_CFGD := zig-out/bin/cfgd
 USER_PLATD := zig-out/bin/platd
 USER_TOOLS := zig-out/bin/tools
@@ -137,6 +138,7 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o $(BUILD)/kilo ::/bin/kilo
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
+	@$(MCOPY) -i $@ -o $(USER_NETD) ::/bin/netd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
 	@$(MCOPY) -i $@ -o $(USER_PLATD) ::/bin/platd
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
@@ -147,7 +149,7 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
-	@$(MCOPY) -i $@ -o drivers/e1000.manifest ::/lib/drivers/e1000.man
+	@$(MCOPY) -i $@ -o drivers/ethernet.manifest ::/lib/drivers/ethernet.man
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 

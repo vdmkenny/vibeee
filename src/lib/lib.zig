@@ -16,6 +16,7 @@ pub const civil = @import("civil.zig");
 pub const cmdline = @import("cmdline.zig");
 pub const font = @import("font.zig");
 pub const logo = @import("logo.zig");
+pub const mac = @import("mac.zig");
 pub const pci = @import("pci.zig");
 pub const fifo = @import("fifo.zig");
 pub const ring = @import("ring.zig");
@@ -33,6 +34,7 @@ test {
     _ = cmdline;
     _ = font;
     _ = logo;
+    _ = mac;
     _ = pci;
     _ = ring;
     _ = driver;
