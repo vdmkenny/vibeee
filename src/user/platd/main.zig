@@ -203,6 +203,12 @@ fn bringUp() bool {
     ec.connect();
     asus.greet();
 
+    // The panel is asked once now and once after each enablement below. The
+    // firmware's trap handler answers this exact question in this machine
+    // state and stops answering in a later one; the stage named by the last
+    // line printed is the one that killed it.
+    backlight.check("before events");
+
     // The general-purpose events, which is what the system control interrupt
     // carries. Finalised before the line is made live, because a handler that
     // has not been told about a GPE cannot clear the one that fired and the
@@ -215,7 +221,10 @@ fn bringUp() bool {
         log.warn("platd", "events stay off; the embedded controller is not driven");
     } else {
         _ = step("events", uacpi.uacpi_finalize_gpe_initialization());
+        backlight.check("with events enabled");
+
         ec.listen();
+        backlight.check("with the controller listening");
     }
 
     // Before anything is evaluated, and this is the whole of why it is here.
@@ -228,6 +237,7 @@ fn bringUp() bool {
         out.text("system control interrupt live, line ");
         out.decimal(glue.sci.line);
         log.end();
+        backlight.check("with the line live");
     } else {
         log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
     }

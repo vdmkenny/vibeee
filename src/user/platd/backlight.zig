@@ -189,3 +189,29 @@ pub fn step(by: i32) void {
 
     _ = write(level, &panel);
 }
+
+/// One bounded reading, labelled with where bring-up stands.
+///
+/// The firmware's trap handler survives this call in some machine states and
+/// not in others, and which enablement is the difference is only visible by
+/// asking at every stage: the stage named by the last line printed is the one
+/// that killed it.
+pub fn check(stage: []const u8) void {
+    if (pick() == null) return;
+
+    var panel = proto.Backlight{};
+    const got = read(&panel) == .ok and panel.isPresent();
+
+    log.begin("platd", .dim);
+    out.text("panel ");
+    out.text(stage);
+    if (got) {
+        out.text(": ");
+        out.decimal(panel.level);
+        out.text(" of ");
+        out.decimal(panel.max);
+    } else {
+        out.text(": no answer");
+    }
+    log.end();
+}
