@@ -211,16 +211,27 @@ fn routedLine(iface: *dev.NicDev) u8 {
         ask.bridge_function = @truncate(bridge.function);
     }
 
-    if (proto_platform.routePci(ask)) |gsi| {
-        log.begin("netd", .dim);
-        out.text("the firmware routes this interrupt to line ");
-        out.decimal(gsi);
-        log.end();
-        return @intCast(gsi);
-    } else |_| {
-        log.say("netd", .dim, "no routing table answer; using the legacy line");
-        return pci.interruptLine(iface.location);
+    // The platform service owns the routing tables and comes up in parallel
+    // with this one: the device manager spawns drivers as devices match,
+    // while the firmware's own bring-up takes its hundreds of milliseconds.
+    // Waited out rather than raced, the way init waits for a name; a real
+    // refusal, as against an absent service, falls through at once.
+    var waited: u32 = 0;
+    while (waited < 2_000_000) : (waited += 20_000) {
+        if (proto_platform.routePci(ask)) |gsi| {
+            log.begin("netd", .dim);
+            out.text("the firmware routes this interrupt to line ");
+            out.decimal(gsi);
+            log.end();
+            return @intCast(gsi);
+        } else |err| {
+            if (err != error.NoService) break;
+            sys.sleepMicros(20_000);
+        }
     }
+
+    log.say("netd", .dim, "no routing table answer; using the legacy line");
+    return pci.interruptLine(iface.location);
 }
 
 // ---------------------------------------------------------------------------
