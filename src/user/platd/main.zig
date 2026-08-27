@@ -25,6 +25,7 @@ extern fn uacpi_status_to_string(status: c_uint) [*:0]const u8;
 extern fn uacpi_prepare_for_sleep_state(state: c_uint) c_uint;
 extern fn uacpi_enter_sleep_state(state: c_uint) c_uint;
 extern fn uacpi_reboot() c_uint;
+extern fn uacpi_finalize_gpe_initialization() c_uint;
 
 /// uACPI numbers the sleep states from S0.
 const S5: c_uint = 5;
@@ -148,6 +149,16 @@ fn bringUp() bool {
     if (!step("tables", uacpi_initialize(0))) return false;
     if (!step("namespace", uacpi_namespace_load())) return false;
     if (!step("devices", uacpi_namespace_initialize())) return false;
+
+    // The general-purpose events, which is what the system control interrupt
+    // carries. Finalised before the line is made live, because a handler that
+    // has not been told about a GPE cannot clear the one that fired and the
+    // interrupt simply arrives again.
+    _ = step("events", uacpi_finalize_gpe_initialization());
+
+    if (glue.sci.arm()) {
+        out.text("platd: system control interrupt live\n");
+    }
 
     out.text("platd: acpi ready\n");
     out.flush();

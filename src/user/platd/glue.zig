@@ -464,12 +464,22 @@ export fn uacpi_kernel_handle_firmware_request(_: ?*anyopaque) callconv(.c) u32 
 pub var sci: Line = .{};
 
 pub const Line = struct {
+    /// Which interrupt uACPI asked for, and the event it becomes once armed.
+    line: u32 = 0,
     event: u32 = 0,
     handler: ?*const fn (?*anyopaque) callconv(.c) u32 = null,
     context: ?*anyopaque = null,
 
     pub fn attached(self: Line) bool {
         return self.handler != null and self.event != 0;
+    }
+
+    /// Make the line live, once there is something able to answer it.
+    pub fn arm(self: *Line) bool {
+        if (self.handler == null or self.event != 0) return false;
+
+        self.event = sys.irqAttach(self.line) catch return false;
+        return true;
     }
 
     /// Run what uACPI installed, and tell the kernel the line may fire again.
@@ -485,10 +495,19 @@ export fn uacpi_kernel_install_interrupt_handler(
     context: ?*anyopaque,
     out_handle: *?*anyopaque,
 ) callconv(.c) u32 {
-    const attached = sys.irqAttach(irq) catch return Status.not_found.value();
-
-    sci = .{ .event = attached, .handler = handler, .context = context };
-    out_handle.* = @ptrFromInt(@as(usize, attached) + 1);
+    // Remembered, and not attached yet.
+    //
+    // uACPI installs this while the namespace is still initialising, and the
+    // line must not be live before the general-purpose events are finalised:
+    // the handler cannot dispatch a GPE it has not been told about, so it
+    // cannot clear the one that fired, and the interrupt arrives again the
+    // moment it is acknowledged. On the target machine that is a boot that
+    // never finishes. QEMU never raises it, which is why this only appeared on
+    // hardware.
+    //
+    // `arm` is called when bring-up is done.
+    sci = .{ .line = irq, .handler = handler, .context = context };
+    out_handle.* = @ptrFromInt(@as(usize, irq) + 1);
     return Status.ok.value();
 }
 
