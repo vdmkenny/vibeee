@@ -287,28 +287,62 @@ pub fn listen() void {
     }
     _ = uacpi.uacpi_enable_gpe(null, gpe);
 
-    // The queue has been filling since power-on, and a controller holding a
-    // query is busy to everything else that talks to it, the firmware's own
-    // trap handler included: it waits for the controller to go idle while the
-    // controller waits for the host to take the query. Emptied here, before
-    // any method can walk into that.
-    drainQueries(null);
+    // The queue has been filling since power-on. Emptied now, and the
+    // methods the backlog names run in the same breath: bring-up is top
+    // level, where AML is allowed.
+    pullQueries();
+    runPulled(null);
 }
 
-/// The event fired. Interrupt context: queue the drain and get out.
+/// The event fired. The bytes leave the controller here and now; the methods
+/// they name run later.
+///
+/// The split is the point. A controller holding a query is busy to everything
+/// else that talks to it, the firmware's trap handler included, and any
+/// method may trap: the queue must already be empty by then. Pulling is a
+/// bounded port handshake and safe here; the `_Qxx` methods are AML and are
+/// not, so they go to the serve loop.
 fn raised(_: ?*anyopaque, _: ?*uacpi.Node, _: u16) callconv(.c) u32 {
-    _ = work.submit(drainQueries, null);
+    pullQueries();
+    _ = work.submit(runPulled, null);
     return uacpi.INTERRUPT_HANDLED | uacpi.GPE_REENABLE;
 }
 
-/// Ask the controller what happened until it says nothing more did, and run
-/// the `_Qxx` method each answer names. Serve loop only: those methods are AML.
-fn drainQueries(_: ?*anyopaque) callconv(.c) void {
-    // Bounded by the queue a controller can hold, so a stuck event bit cannot
-    // turn this into the loop that never returns.
+/// Take every waiting query out of the controller, so it reads as idle again.
+///
+/// Bounded by the queue a controller can hold, so a stuck event bit cannot
+/// turn this into the loop that never returns.
+fn pullQueries() void {
     var rounds: u8 = 0;
-    while (rounds < 16) : (rounds += 1) {
+    while (rounds < PULLED) : (rounds += 1) {
         const which = query() orelse return;
+        stash(which);
+    }
+}
+
+/// Queries taken out of the controller and not yet answered. Small: these
+/// are keypresses, and a machine this far behind on them is dropping the
+/// oldest for the same reason the hotkey queue does.
+const PULLED = 16;
+var pulled: [PULLED]u8 = undefined;
+var pulled_first: usize = 0;
+var pulled_count: usize = 0;
+
+fn stash(which: u8) void {
+    if (pulled_count == PULLED) {
+        pulled_first = (pulled_first + 1) % PULLED;
+        pulled_count -= 1;
+    }
+    pulled[(pulled_first + pulled_count) % PULLED] = which;
+    pulled_count += 1;
+}
+
+/// Run the `_Qxx` method each pulled query names. Serve loop only: AML.
+fn runPulled(_: ?*anyopaque) callconv(.c) void {
+    while (pulled_count > 0) {
+        const which = pulled[pulled_first];
+        pulled_first = (pulled_first + 1) % PULLED;
+        pulled_count -= 1;
         runQuery(which);
     }
 }
