@@ -2,9 +2,9 @@
 
 > **Status: partially implemented.**
 >
-> Built and working: the shell ([`vsh.zig`](../src/user/vsh.zig)) with builtins and command lookup, the multicall tools binary ([`tools.zig`](../src/user/tools.zig)) carrying `ls`, `cat`, `hexdump`, `grep`, `free`, `top`, `disk`, `date`, `eeefetch` and `dmidecode`, and the shared userspace helpers in [`src/user/lib/`](../src/user/lib/).
+> Built and working: the shell ([`vsh.zig`](../src/user/vsh.zig)) with pipelines, redirection, line editing, history and modular completion; the multicall tools binary ([`tools.zig`](../src/user/tools.zig)); the service supervisor ([`init.zig`](../src/user/init.zig)) and the device manager ([`devmgd/`](../src/user/devmgd/)); the settings store ([`cfgd/`](../src/user/cfgd/)) and the `cfg` tool over it; `eeelibc` ([`libc/`](../src/user/libc/)) and the `eeecc` wrapper, enough that antirez's `kilo` builds unmodified and runs; and the shared userspace helpers in [`src/user/lib/`](../src/user/lib/), including the heap and the buffered streams the C library is a wrapper over.
 >
-> Not yet: pipes and redirection, the `kilo` editor, `eeelibc`, the service supervisor, and package management.
+> Not yet: environment variables, package management, and anything that outlives a reboot.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
 > wins: it carries later decisions this document predates.

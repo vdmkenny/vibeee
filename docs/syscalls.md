@@ -758,6 +758,144 @@ Map a device's registers into this process.
 
 Needs the driver capability. Mapped uncached, since a write to a register that sat in the cache would never reach the device, and marked as belonging elsewhere so ending the process unmaps it without handing device memory to the page allocator. There is no unmap: a driver that has finished with its device is a driver that should exit.
 
+## `tty_mode`  <sub>#42</sub>
+
+Choose how the console delivers what is typed.
+
+| arg | type | meaning |
+|---|---|---|
+| `mode` | uint | A TtyMode: 0 cooked, 1 raw. |
+
+**Returns:** the mode in effect before the call
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+
+Raw mode is what a shell drawing its own input line needs: it does its own echoing, so the kernel must not, and it needs the arrow keys, which produce no character and arrive as the escape sequences every terminal sends. The mode belongs to the console rather than to a handle, because there is one keyboard. A program that changes it puts it back.
+
+## `watch`  <sub>#43</sub>
+
+An event that fires when something happens.
+
+| arg | type | meaning |
+|---|---|---|
+| `what` | uint | A Watchable: 0 keys, 1 pointer, 2 children. |
+
+**Returns:** an event handle
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+
+For a program with more than one thing to listen to. Each of these can otherwise only be waited for by the call that consumes it, which forces a program watching several into asking each in turn. This hands back the event that call would have waited on, so it goes into a wait_many with everything else and every read afterwards is one that never blocks.
+
+## `rename`  <sub>#44</sub>
+
+Move a file or directory, replacing what is already there.
+
+| arg | type | meaning |
+|---|---|---|
+| `from` | const ptr | What to move. |
+| `from_len` | len | Length of the path. |
+| `to` | const ptr | Where it goes. |
+| `to_len` | len | Length of the path. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EEXIST`, the name is already registered
+- `EINVAL`, an argument is out of range
+- `EIO`, the underlying device failed
+- `EPERM`, the operation is not allowed on that object
+
+Within one volume: across two this would be a copy and a delete, which takes time proportional to the file and fails differently, so it is refused rather than done silently. Replacing an existing file repoints the record that is already there, so the name means the old content or the new one and never nothing, which is what makes write-then-rename worth doing on FAT. A directory cannot replace or be replaced.
+
+## `set_keymap`  <sub>#45</sub>
+
+Choose which keyboard layout the keys mean.
+
+| arg | type | meaning |
+|---|---|---|
+| `layout` | uint | A keymaps.Name, which is its index in the layout table. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+
+The layouts are compiled into the kernel and userspace names them by the same list, so the number crossing here means the same layout on both sides. There is no call to read it back: the setting is where it is written down and reading the file is reading the answer.
+
+## `mount`  <sub>#46</sub>
+
+Attach a volume at a path.
+
+| arg | type | meaning |
+|---|---|---|
+| `device` | const ptr | Volume name, as `disk` lists it. |
+| `device_len` | len | Length of the name. |
+| `path` | const ptr | Where it goes. Must exist as a directory of the mount above it. |
+| `path_len` | len | Length of the path. |
+| `flags` | flags | MountFlags: bit 0 read-only, bit 1 removable. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EEXIST`, the name is already registered
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.mount. The longest mount path matching a lookup wins, so a volume attached deeper shadows what the one above it had there.
+
+## `unmount`  <sub>#47</sub>
+
+Detach the volume at a path, flushing it first.
+
+| arg | type | meaning |
+|---|---|---|
+| `path` | const ptr | A mount point, exactly as it was mounted. |
+| `path_len` | len | Length of the path. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `ENOENT`, no such file or directory
+- `EBUSY`, another process already owns it
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.mount. Refused while anything on the volume is open, because a handle to a volume that no longer exists has no answer to give. FAT has no journal, so the flush is the only thing that puts written data on the medium.
+
+## `ftruncate`  <sub>#48</sub>
+
+Make an open file exactly this long.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | An open file. |
+| `size` | len | Bytes the file should end up holding. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EBADF`, the handle is not open in this process
+- `EINVAL`, an argument is out of range
+- `EIO`, the underlying device failed
+- `EPERM`, the operation is not allowed on that object
+
+Shrinking gives back what is past the new end. Growing only moves the end: the space between is allocated when something writes into it, so a file made large and left alone costs a directory entry and nothing more.
+
 ---
 
-42 calls defined.
+49 calls defined.

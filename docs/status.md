@@ -6,8 +6,9 @@ is *for*, this says what has actually been written.
 **Mostly vibecoded.** See the note in the [README](../README.md). The inventory below is
 accurate about what exists; it is not a claim that any of it has been audited.
 
-Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 syscalls,
-36 host-side tests.
+No counts here: lines, syscalls and tests all change faster than a document can
+follow, and a number that is wrong is worse than one that was never given. Git
+knows when this was last true, and the tree knows how big it is.
 
 ## Boot
 
@@ -38,7 +39,7 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | What a process may do, intersected at every spawn so an authority only ever shrinks down the tree. Declared per service in `/etc/services`. |
 | Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts: the kernel's handler masks and signals, the driver services the device and acknowledges. `ioport_grant` opens ports through the CPU's own permission bitmap, copied into the TSS only when the process holding it changes. `map_device` maps a register aperture uncached, marked as belonging elsewhere so teardown does not hand device memory to the page allocator. All three need the driver capability. |
 | Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. How the machine is wired is described in `kernel/irq.zig` and filled in by the composition root, so the architecture never reaches for a firmware parser. |
-| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | 35 calls, bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
+| Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | Bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
 | Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. |
 | Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
@@ -49,8 +50,8 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 |---|---|---|
 | Block layer | [`block.zig`](../src/kernel/block.zig) | Device registry, MBR partition parsing. |
 | Block cache | [`bcache.zig`](../src/kernel/bcache.zig) | Read cache with hit reporting. |
-| FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Read and write: cluster allocation across all FAT copies, chain extension, create, append, truncate, unlink. Creating uses 8.3 names only. |
-| Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement. Every write goes through here. |
+| FAT | [`fat.zig`](../src/kernel/fat.zig), [`fat/alloc.zig`](../src/kernel/fat/alloc.zig) | FAT12/16/32, VFAT long names, timestamps. Read and write: cluster allocation across all FAT copies, chain extension, create, append, truncate to a length, unlink, and rename. Renaming moves the record, never the content: replacing repoints the entry already carrying the name in one sector write. |
+| Mount table | [`vfs.zig`](../src/kernel/vfs.zig) | Longest-prefix resolution, open-file counting, read-only enforcement per mount and per device. Every write goes through here. Userspace attaches and detaches volumes with the `mount` capability. |
 | ATA | [`drv/block/ata.zig`](../src/drv/block/ata.zig) | PIO. No DMA. |
 | Ramdisk | [`drv/block/ramdisk.zig`](../src/drv/block/ramdisk.zig) | Backs the boot-to-RAM rootfs. |
 
@@ -59,8 +60,8 @@ Last updated 2026-08-26. Roughly 16,400 lines of Zig and 870 of assembly, 35 sys
 | Driver | File | State |
 |---|---|---|
 | PCI | [`drv/bus/pci.zig`](../src/drv/bus/pci.zig) | Enumeration, config space. |
-| VGA text | [`drv/video/vgatext.zig`](../src/drv/video/vgatext.zig) | Done. |
-| Framebuffer console | [`drv/video/fbcon.zig`](../src/drv/video/fbcon.zig) | 32bpp, Spleen font, pixel rectangles for the panic QR. |
+| VGA text | [`drv/video/vgatext.zig`](../src/drv/video/vgatext.zig) | Done, including the hardware cursor and hiding it. |
+| Framebuffer console | [`drv/video/fbcon.zig`](../src/drv/video/fbcon.zig) | 32bpp, Spleen font, pixel rectangles for the panic QR, a drawn cursor, and a cell grid that carries content across a mode change. |
 | i8042 | [`drv/input/i8042.zig`](../src/drv/input/i8042.zig) | Keyboard, scancode set 1. Owns the controller; the second port is below. |
 | PS/2 pointer | [`drv/input/ps2mouse.zig`](../src/drv/input/ps2mouse.zig) | Three buttons, motion, drag. IntelliMouse wheel negotiated and decoded but not verified against hardware. Synaptics and Elantech identified, both driven in relative mode. |
 | CMOS RTC | [`drv/rtc/cmos.zig`](../src/drv/rtc/cmos.zig) | Read at boot to seed the clock. |
@@ -77,7 +78,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 
 | Component | File | State |
 |---|---|---|
-| Modesetting | [`drv/video/modeset/`](../src/drv/video/modeset/) | One interface, a backend per adapter family, chosen by the same probe that binds every other driver. Covers the netbook era by PCI id: gen3 (GMA 900/950/3150), gen4, gen5, and GMA 500 named separately because it is PowerVR and shares only a vendor id. No backend sets a mode yet; what firmware left is the fallback and always will be. |
+| Modesetting | [`drv/video/modeset/`](../src/drv/video/modeset/) | One interface, a backend per adapter family, chosen by the same probe that binds every other driver. Covers the netbook era by PCI id: gen3 (GMA 900/950/3150), gen4, gen5, and GMA 500 named separately because it is PowerVR and shares only a vendor id. gen3 sets the panel's native mode at boot, read from the LVDS timing registers the firmware programmed, and reverts if the pipe reports an underrun. What firmware left is the fallback and always will be. |
 | Display owner | [`display.zig`](../src/kernel/display.zig) | Exclusive ownership, scanout buffer handed over as a shared segment. One buffer, no page flip or vblank, which is what a VESA framebuffer offers. |
 | Window manager | [`user/eeewm/`](../src/user/eeewm/) | Display server and tiling manager. Dynamic desktops, taskbar of named tabs with per-tab window menus, `V` launcher with session actions, tall/wide/monocle per desktop, floating windows, focus-follows-click, config file. Bindings by keycode; every action reachable by pointer and keyboard. |
 | Window protocol | [`user/proto/`](../src/user/proto/) | Channel for control, shm ring for events, shm surface per window. Wire types and the client half; the server half is policy and lives with the manager. `FileDialog` puts `eui`'s chooser panel in a floating window, which is here rather than in the toolkit because opening one means talking to the manager. |
@@ -89,11 +90,14 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | Program | File | State |
 |---|---|---|
 | `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
-| `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup, multicall dispatch, `>` and `>>` redirection. No pipes. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mkdir hexdump grep free top kill log irq devices driver display disk svc date eeefetch smbios pointer ringtest` |
-| `hello` | [`user/hello.zig`](../src/user/hello.zig) | Loader, `.bss`, sleep and IPC checks from Ring 3. |
-| `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Reads a manifest per driver from `/drivers`, matches it against the bus with an exact part beating a family, and starts it with the capabilities the manifest asks for. Leaves alone anything the kernel already drives. |
-| Shared code | [`user/lib/`](../src/user/lib/) | Buffered output, strings, time formatting, sysinfo, the process table. |
+| `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup in `/bin`, multicall dispatch, pipelines, `>` and `>>` redirection. Line editing with history and completion; the prompt shortens home to `~` and carries the last command's status in the colour of its arrow. |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mv mkdir tree hexdump file grep page free top kill log irq devices display disk mount unmount svc cfg date eeefetch smbios` |
+| `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
+| `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Reads a manifest per driver from `/lib/drivers`, matches it against the bus with an exact part beating a family, and starts it with the capabilities the manifest asks for. Leaves alone anything the kernel already drives. |
+| Shared code | [`user/lib/`](../src/user/lib/) | Buffered streams, the heap, paths, colour by role, console shape, config parsing, line editing, completion, time formatting, sysinfo, the process table. |
+| Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over pages the kernel hands out, exposed both as raw calls and as `std.mem.Allocator`. `malloc` is a wrapper over it, not the other way round. |
+| Streams | [`user/lib/stream.zig`](../src/user/lib/stream.zig) | Buffered reads and writes over a handle. Standard output is one instance; a C `FILE` is another. |
+| eeelibc | [`user/libc/`](../src/user/libc/) | Enough C for a POSIX program to build and run: crt0, errno, descriptors, the heap, stdio with one formatter and a scanner, strings and ctype, termios, `TIOCGWINSZ`, time. A descriptor is a kernel handle, so there is no table. No `fork`, no asynchronous signals, no sockets, no float conversions. |
 | Directory listing | [`user/lib/dir.zig`](../src/user/lib/dir.zig) | One decoded listing, parent first, then directories, then names written the way they should be read. |
 | Pipes | [`kernel/pipe.zig`](../src/kernel/pipe.zig) | Byte stream with a reader and writer count, waitable by `wait_many`. Bound to a child's standard streams at spawn. |
 
@@ -104,9 +108,10 @@ before it forced into place.
 
 | Program | File | State |
 |---|---|---|
-| Settings | [`user/apps/settings.zig`](../src/user/apps/settings.zig) | Theme, bar position and layout. Reads and writes `/etc/eeewm.cfg`; the theme applies live. |
+| Settings | [`user/apps/settings.zig`](../src/user/apps/settings.zig) | Theme, bar position and layout, edited through `cfgd` and generated from the same schema `cfg` uses. The theme applies live. |
 | Monitor | [`user/apps/monitor.zig`](../src/user/apps/monitor.zig) | Process tree with per-process CPU share, memory and uptime, refreshed twice a second. Ends a selected process. |
 | Pad | [`user/apps/pad.zig`](../src/user/apps/pad.zig) | Text editor: soft-wrapped editing in the interface face, a File menu, open and save through the floating file dialog, live byte count. |
+| kilo | [`third_party/kilo/`](../third_party/kilo/), [`user/ports/kilo.c`](../src/user/ports/kilo.c) | antirez's editor, unmodified, built with `eeecc` against eeelibc. A wrapper renames its `main` at compile time to give it the alternate screen, so an update is a re-fetch rather than a merge. |
 | eTerm | [`user/eterm/`](../src/user/eterm/) | Terminal window running `vsh` over a pipe pair. Extended VT100 per [design §16](../design/10-gui.md): cursor movement, erase, insert and delete, scrolling regions, alternate screen, SGR with 256 colours, DECCKM, OSC titles. Line editing is the terminal's, until `vsh` does its own. |
 
 ## Shared between kernel and userspace
@@ -119,15 +124,19 @@ build.
 | [`syscalls.zig`](../src/lib/syscalls.zig) | The ABI as data: numbers, flags, wire formats. Generates the dispatcher binding and [`syscalls.md`](syscalls.md). |
 | [`ring.zig`](../src/lib/ring.zig) | SPSC shared-memory ring layout. |
 | [`civil.zig`](../src/lib/civil.zig) | Calendar arithmetic. |
+| [`escapes.zig`](../src/lib/escapes.zig) | The terminal escape-sequence state machine. Two terminals here and one grammar: the console draws into a text grid and eTerm into a window. |
+| [`style.zig`](../src/lib/style.zig) | What a line of output means, so both sides colour it the same. Roles rather than colours, because the two do not encode colour the same way. |
+| [`driver.zig`](../src/lib/driver.zig) | Driver confidence and binding state, so the boot table and `devices` cannot describe the same binding differently. |
+| [`str.zig`](../src/lib/str.zig) | Strings, and the one place a number becomes digits. |
 | [`logo.zig`](../src/lib/logo.zig) | The wordmark, drawn by the kernel and by `eeefetch`. |
 
 ## Testing
 
-- `make test`: 89 host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
+- `make test`: host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
   queues, calendar, ring buffer, the terminal emulator and its key encoding, text wrapping
   and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
   across all eight masks.
-- `zig build check`, the layering rules.
+- `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
 - `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it.
@@ -147,20 +156,29 @@ and exercised on every boot.
 | PATA + FAT32 | Done, reading and writing |
 | `init` | Done: manifests, dependency order, restart policy, orphan reaping |
 | `devmgd` | Done. Matches `/drivers/*.manifest` against the bus and starts each driver with the capabilities its manifest asks for. No userspace driver is written yet, so it matches and reports |
-| `eeelibc` | Not started. Blocks the C ports, `stb_image` among them |
+| `eeelibc` | Done enough to build and run a POSIX program: kilo compiles unmodified and edits and saves. No `fork`, no asynchronous signals, no sockets, no float conversions |
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
-| **GMA900 native modeset** | Framework, adapter table and the `display` tool are in and tested. The register programming is not, and cannot be until it runs on the machine |
+| **GMA900 native modeset** | Done and verified on the machine: gen3 reads the panel's timing from the registers firmware programmed and sets it at boot, reverting if the pipe reports an underrun |
 | `eeewm` + `libeui` | Done, and past what M1 asked for |
 | eTerm | Done |
-| Files, Edit | Not started |
-| Keymaps | Done: US-International and Belgian AZERTY |
+| Files, Edit | Not started. `kilo` covers editing at a prompt; a GUI editor is still owed |
+| Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
-M1's gate is the first boot on real hardware. Nothing in the list above has to be finished
-first: the design names 640x480 VESA as the fallback if the native modeset resists.
+M1's gate is the first boot on real hardware, which has happened once. A great deal has
+landed since: the console became a terminal, the keyboard became a setting, and C programs
+became buildable. None of that has run on the machine yet, and on this project the machine
+has found what QEMU could not.
 
 ## Known gaps
 
+- Nothing written survives a reboot. `/etc` and `/home` are part of the root image, which
+  is rebuilt from the boot medium every time, so settings are set for one session only.
+  The persistent volume they are meant to mount from does not exist yet.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
 - No USB, audio or networking.
+- Powering off hangs on the real machine after the last flush. An instrumented build is in
+  the tree and the line it stops on decides between four causes.
+- No environment: `getenv` answers null, and `HOME` and the program search path are
+  constants in the shell.
