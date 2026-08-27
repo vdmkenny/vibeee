@@ -179,7 +179,7 @@ pub fn init() Kind {
     kbc.setConfig(cfg);
 
     if (!send(SET_DEFAULTS)) {
-        console.debug("mouse", "no device on the second port", .{});
+        console.info("mouse", "no device on the second port", .{});
         return .none;
     }
 
@@ -206,7 +206,7 @@ pub fn init() Kind {
     idt.setHandler(idt.IRQ_BASE + 12, onIrq);
     idt.setIrqMask(12, false);
 
-    console.debug("mouse", "{s} on irq12, {d}-byte packets", .{ kind.name(), packet_len });
+    console.info("mouse", "{s} on irq12, {d}-byte packets", .{ kind.name(), packet_len });
     return kind;
 }
 

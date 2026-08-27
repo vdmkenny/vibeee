@@ -242,7 +242,7 @@ pub fn init() void {
     idt.setHandler(idt.IRQ_BASE + 1, onIrq);
     idt.setIrqMask(1, false);
 
-    console.debug("kbd", "i8042 ready, layout {s}", .{keymap.current().name});
+    console.info("kbd", "i8042 ready, layout {s}", .{keymap.current().name});
 }
 
 fn onIrq(_: *idt.Frame) void {

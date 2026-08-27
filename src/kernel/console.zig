@@ -632,13 +632,20 @@ fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: an
     backend.setCursor(col, row);
 }
 
-/// Verbose boot logging. Off by default: a working system should boot quietly,
-/// and a self-test that passed is not news to a user. Enabled with `verbose` on
-/// the kernel command line.
+/// The two ways a boot line reaches the screen.
 ///
-/// The checks themselves always run, only their success output is suppressed,
-/// so a regression still surfaces as a `warn` or `fail` line.
+/// `verbose` shows the narration: one line per component as it comes up. A
+/// working system boots quietly by default, and the checks themselves always
+/// run; only their success output is suppressed, so a regression still
+/// surfaces as a `warn` or `fail` line. Enabled with `verbose` on the kernel
+/// command line.
+///
+/// `debug` is the deeper tier, for chasing a fault: register values, the
+/// steps of a shutdown, what a probe read back. Separate because the
+/// narration is wanted for itself, and because a debug line is the one kind
+/// that is *not* recorded when it is not asked for. Enabled with `debug`.
 var verbose = false;
+var debug_enabled = false;
 
 pub fn setVerbose(on: bool) void {
     verbose = on;
@@ -646,6 +653,14 @@ pub fn setVerbose(on: bool) void {
 
 pub fn isVerbose() bool {
     return verbose;
+}
+
+pub fn setDebug(on: bool) void {
+    debug_enabled = on;
+}
+
+pub fn isDebug() bool {
+    return debug_enabled;
 }
 
 /// Keep a line whether or not it is printed.
@@ -666,12 +681,25 @@ fn recordLine(key: []const u8, comptime fmt: []const u8, args: anytype) void {
     klog.append(scratch[0..w.end]);
 }
 
-/// A diagnostic line: recorded always, shown only in verbose mode.
-pub fn debug(key: []const u8, comptime fmt: []const u8, args: anytype) void {
+/// A boot-narration line: one component saying what it came to.
+///
+/// Recorded always, shown only in verbose mode. The line still exists on a
+/// quiet boot, in the kernel log, so `log` can say what happened without a
+/// reboot: the alternative is booting with `verbose` and hoping the fault
+/// repeats.
+pub fn info(key: []const u8, comptime fmt: []const u8, args: anytype) void {
     if (!verbose) {
         recordLine(key, fmt, args);
         return;
     }
+    logLine(key, .key, fmt, args);
+}
+
+/// A fault-chasing line: what a register held, which write was about to be
+/// made. The one kind that costs nothing when it is off: with `debug` absent
+/// from the command line the line is neither shown nor recorded.
+pub fn debug(key: []const u8, comptime fmt: []const u8, args: anytype) void {
+    if (!debug_enabled) return;
     logLine(key, .key, fmt, args);
 }
 

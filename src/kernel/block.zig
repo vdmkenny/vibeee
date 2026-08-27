@@ -212,12 +212,12 @@ pub fn scanPartitions(disk: *const Device) usize {
 
     const signature = std.mem.readInt(u16, sector[510..512], .little);
     if (signature != MBR_SIGNATURE) {
-        console.debug("block", "{s}: no boot signature, treating as unpartitioned", .{disk.name});
+        console.info("block", "{s}: no boot signature, treating as unpartitioned", .{disk.name});
         return 0;
     }
 
     if (looksLikeBootSector(&sector)) {
-        console.debug("block", "{s}: filesystem at sector 0, no partition table", .{disk.name});
+        console.info("block", "{s}: filesystem at sector 0, no partition table", .{disk.name});
         return 0;
     }
 
@@ -251,7 +251,7 @@ pub fn scanPartitions(disk: *const Device) usize {
         // simply never appears leaves a reader wondering whether the disk was
         // seen at all.
         const kind: PartitionType = @enumFromInt(raw.type);
-        console.debug("block", "{s}p{d} type {x:0>2} lba {d} +{d} ({d} MiB){s}{s}", .{
+        console.info("block", "{s}p{d} type {x:0>2} lba {d} +{d} ({d} MiB){s}{s}", .{
             disk.name,
             i + 1,
             raw.type,

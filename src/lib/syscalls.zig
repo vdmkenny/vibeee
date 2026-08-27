@@ -704,7 +704,11 @@ pub const table = [_]Syscall{
             .{ .name = "len", .kind = .len, .desc = "Message length." },
         },
         .errors = &.{ E.fault, E.inval },
-        .notes = "Separate from write() so diagnostics survive a process losing its console handle. Rate-limited.",
+        .notes = "Recorded into the kernel's ring and never printed: display is write()'s " ++
+            "business, and a service line reaches the ring even on a quiet boot. The log " ++
+            "tool reads the ring back, so what is said here is kept whether or not anyone " ++
+            "saw it. Callers gate their own debug lines, which are the ones not worth " ++
+            "keeping when nobody asked.",
     },
     .{
         .number = 8,

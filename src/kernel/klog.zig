@@ -11,9 +11,10 @@
 
 const std = @import("std");
 
-/// Eight kilobytes holds a verbose boot with room to spare, and is small
-/// enough not to be worth thinking about against 512 MB.
-pub const CAPACITY = 8 * 1024;
+/// Sixteen kilobytes holds a verbose boot, the services' lines included,
+/// with room to spare, and is small enough not to be worth thinking about
+/// against 512 MB.
+pub const CAPACITY = 16 * 1024;
 
 var buffer: [CAPACITY]u8 = undefined;
 /// Where the next byte goes.

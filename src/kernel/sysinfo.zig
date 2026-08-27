@@ -64,11 +64,13 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
 
     if (eq(key, "kernel")) {
         try w.print("vibeee {s}", .{VERSION});
-    } else if (eq(key, "log")) {
-        // The threshold services log at, so their detail lines follow the
+    } else if (eq(key, "log.verbose")) {
+        // The two gates services log under, so their lines follow the
         // kernel's own: one `verbose` on the command line decides for the
-        // whole boot.
-        try w.print("{s}", .{if (console.isVerbose()) "detail" else "info"});
+        // whole boot, and one `debug` for the fault-chasing tier beneath it.
+        try w.print("{d}", .{@intFromBool(console.isVerbose())});
+    } else if (eq(key, "log.debug")) {
+        try w.print("{d}", .{@intFromBool(console.isDebug())});
     } else if (eq(key, "arch")) {
         try w.print("{s}", .{@tagName(@import("builtin").cpu.arch)});
     } else if (eq(key, "cpu")) {
@@ -185,8 +187,9 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
     } else if (eq(key, "mounts")) {
         try writeMounts(&w);
     } else if (eq(key, "log")) {
-        // Copied straight out rather than formatted: it is already text, and
-        // the ring is larger than the writer's idea of a line.
+        // The whole ring, copied straight out rather than formatted: it is
+        // already text, and the ring is larger than the writer's idea of a
+        // line.
         const n = klog.copyOut(buf);
         if (n == 0) return error.UnknownKey;
         return n;

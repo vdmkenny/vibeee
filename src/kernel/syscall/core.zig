@@ -12,6 +12,7 @@ const vfs = @import("../vfs.zig");
 const ctx = @import("context.zig");
 const input = @import("../input.zig");
 const keymap = @import("../keymap.zig");
+const klog = @import("../klog.zig");
 const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
@@ -31,7 +32,7 @@ pub fn sys_exit(a: Args) Result {
     // not among the ones that did.
     if (status != 0) {
         if (sched.currentThread()) |t| {
-            console.debug("exit", "{s} (thread {d}) status {d}", .{ t.name(), t.id, status });
+            console.info("exit", "{s} (thread {d}) status {d}", .{ t.name(), t.id, status });
         }
     }
     // The one process whose death is the machine's: everything else restarts
@@ -200,7 +201,12 @@ pub fn sys_getpid(_: Args) Result {
 pub fn sys_log(a: Args) Result {
     const buf = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
     if (buf.len == 0 or buf.len > 256) return Errno.inval.value();
-    console.field("user", "{s}", .{buf});
+
+    // Recorded, never printed: display is write()'s business, and this is the
+    // way a service's line reaches the ring even when the boot is quiet. What
+    // is said here shows up in `log`, which is the point.
+    klog.append(buf);
+    klog.append("\n");
     return 0;
 }
 

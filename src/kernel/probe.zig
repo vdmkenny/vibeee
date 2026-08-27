@@ -165,7 +165,7 @@ pub fn report() void {
         if (b.driver != null) matched += 1;
         if (b.attached) driven += 1;
     }
-    console.debug("pci", "{d} devices, {d} matched, {d} driven", .{ binding_count, matched, driven });
+    console.info("pci", "{d} devices, {d} matched, {d} driven", .{ binding_count, matched, driven });
 
     // The per-device table is a porting and bug-report aid, not something a
     // user needs at every boot.

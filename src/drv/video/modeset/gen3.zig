@@ -459,12 +459,12 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         console.warn("video: fifo ran dry at {d}x{d}; mode put back", .{
             want.width, want.height,
         });
-        console.debug("video", "native: fwblc {x:0>8} dsparb {x:0>8} self {}, was {x:0>8} {x:0>8}", .{
+        console.info("video", "native: fwblc {x:0>8} dsparb {x:0>8} self {}, was {x:0>8} {x:0>8}", .{
             read(u32, w, FW_BLC),      read(u32, w, DSPARB),
             selfRefreshOn(w, dev.device), saved.fw_blc,
             saved.dsparb,
         });
-        console.debug("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
+        console.info("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
             read(u32, w, pipe.size),   read(u32, w, pipe.src),
             read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
         });

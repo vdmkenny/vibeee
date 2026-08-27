@@ -97,7 +97,7 @@ fn unmountAll() void {
     }
 
     if (remaining == 0) {
-        console.debug("shutdown", "all filesystems unmounted", .{});
+        console.info("shutdown", "all filesystems unmounted", .{});
     }
 }
 

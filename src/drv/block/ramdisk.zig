@@ -91,7 +91,7 @@ pub fn register(phys: usize, len: usize, read_only: bool) ?*const block.Device {
     // RAM, so a cache would only copy memory to other memory.
     block.register(dev);
 
-    console.debug("ramdisk", "{s}: {d} KiB at {x:0>8}{s}", .{
+    console.info("ramdisk", "{s}: {d} KiB at {x:0>8}{s}", .{
         disk.nameSlice(), len / 1024, phys, if (read_only) ", read-only" else "",
     });
 

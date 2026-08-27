@@ -48,7 +48,7 @@ const hal = @import("kernel/hal.zig");
 pub fn earlyConsole() void {
     if (uart.init()) |io| {
         console.setMirror(uart.write);
-        console.debug("serial", "16550 at {x:0>3}, mirroring console", .{io});
+        console.info("serial", "16550 at {x:0>3}, mirroring console", .{io});
     }
 }
 
@@ -75,7 +75,7 @@ fn publishPlatform() void {
     });
 
     if (smbios.systemProduct()) |product| {
-        console.debug("board", "{s} {s}", .{ smbios.systemManufacturer() orelse "", product });
+        console.info("board", "{s} {s}", .{ smbios.systemManufacturer() orelse "", product });
     }
 }
 
@@ -83,13 +83,13 @@ fn publishPlatform() void {
 pub fn reportVideo() void {
     const px = console.pixelSize();
     if (px.width != 0) {
-        console.debug("video", "{d}x{d} pixels, {d}x{d} text, font {s}", .{
+        console.info("video", "{d}x{d} pixels, {d}x{d} text, font {s}", .{
             px.width, px.height, console.width(), console.height(), console.fontName(),
         });
         const fb = console.framebufferLayout();
-        console.debug("video", "framebuffer at {x:0>8}, pitch {d}", .{ fb.addr, fb.pitch });
+        console.info("video", "framebuffer at {x:0>8}, pitch {d}", .{ fb.addr, fb.pitch });
     } else {
-        console.debug("video", "{d}x{d} text mode", .{ console.width(), console.height() });
+        console.info("video", "{d}x{d} text mode", .{ console.width(), console.height() });
     }
 }
 
@@ -127,7 +127,7 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
 
     if (acpi.get()) |a| {
         if (a.s5_found) {
-            console.debug("acpi", "pm1a {x:0>4}, S5 type {d}", .{ a.pm1a_control, a.slp_typ_a });
+            console.info("acpi", "pm1a {x:0>4}, S5 type {d}", .{ a.pm1a_control, a.slp_typ_a });
         } else {
             console.warn("acpi: no S5 in DSDT; power off will fall back", .{});
         }
@@ -147,7 +147,7 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
             .minute = t.minute,
             .second = t.second,
         }, "rtc");
-        console.debug("rtc", "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
+        console.info("rtc", "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
             t.year, t.month, t.day, t.hour, t.minute, t.second,
         });
     }
@@ -264,7 +264,7 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
 fn reportMount(path: []const u8, dev: *const block.Device) void {
     const r = vfs.resolve(path) catch return;
     const vol = &r.mount.volume;
-    console.debug("mount", "{s} on {s} ({s}, {d} MiB)", .{
+    console.info("mount", "{s} on {s} ({s}, {d} MiB)", .{
         path,
         dev.name,
         @tagName(vol.kind),
@@ -302,7 +302,7 @@ fn reportStorage() void {
     for (devs) |d| {
         if (d.offset == 0) total += d.bytes();
     }
-    console.debug("block", "{d} device(s), {d} MiB total", .{ devs.len, total / (1024 * 1024) });
+    console.info("block", "{d} device(s), {d} MiB total", .{ devs.len, total / (1024 * 1024) });
 }
 
 fn enumeratePci() void {

@@ -12,7 +12,8 @@ const channel = @import("channel.zig");
 const console = @import("console.zig");
 const event = @import("event.zig");
 const hal = @import("hal.zig");
-const logo = @import("lib").logo;
+const lib = @import("lib");
+const logo = lib.logo;
 const panic_mod = @import("panic.zig");
 const panicring = @import("panicring.zig");
 const pipe = @import("pipe.zig");
@@ -61,8 +62,9 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
         hal.halt();
     }
 
-    console.setVerbose(std.mem.indexOf(u8, bi.cmdlineSlice(), "verbose") != null);
-    console.setColorEnabled(std.mem.indexOf(u8, bi.cmdlineSlice(), "nocolor") == null);
+    console.setVerbose(lib.cmdline.has(bi.cmdlineSlice(), "verbose"));
+    console.setDebug(lib.cmdline.has(bi.cmdlineSlice(), "debug"));
+    console.setColorEnabled(!lib.cmdline.has(bi.cmdlineSlice(), "nocolor"));
     platform.earlyConsole();
 
     // The backend is chosen before anything is drawn: in graphics mode the text
@@ -91,17 +93,17 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     hal.enableInterrupts();
 
     const cpu_info = hal.cpuInfo();
-    console.debug("cpu", "{s}", .{cpu_info.brand});
+    console.info("cpu", "{s}", .{cpu_info.brand});
     // What was armed, not what the CPU advertises: the two differ when the
     // MSRs could not be programmed, and userspace picks from the former.
-    console.debug("", "{s}{s}", .{
+    console.info("", "{s}{s}", .{
         if (hal.fastSyscallArmed()) "sysenter" else "int80",
         if (cpu_info.freq_scaling) ", freq scaling" else ", fixed clock",
     });
 
     pmm.init(bi);
     const m = pmm.stats();
-    console.debug("mem", "{d}M usable, {d}M free, {d} frames", .{
+    console.info("mem", "{d}M usable, {d}M free, {d} frames", .{
         m.totalBytes() / (1024 * 1024),
         m.freeBytes() / (1024 * 1024),
         m.total_frames,
@@ -116,18 +118,18 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
 
     reportPreviousPanic();
 
-    console.debug("boot", "{s}", .{switch (bi.source) {
+    console.info("boot", "{s}", .{switch (bi.source) {
         .stage2 => "sd",
         .multiboot => "multiboot",
     }});
 
     if (bi.rsdp != 0) {
-        console.debug("acpi", "rsdp {x:0>8}", .{bi.rsdp});
+        console.info("acpi", "rsdp {x:0>8}", .{bi.rsdp});
     } else {
         console.warn("no acpi rsdp; battery, hotkeys, backlight unavailable", .{});
     }
 
-    if (bi.cmdline_len > 0) console.debug("cmdline", "{s}", .{bi.cmdlineSlice()});
+    if (bi.cmdline_len > 0) console.info("cmdline", "{s}", .{bi.cmdlineSlice()});
 
     const h = heap.stats();
     console.debug("heap", "slab ok, {d} frame(s) held", .{h.frames});
@@ -137,7 +139,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     platform.earlyDevices(bi);
     platform.probeHardware(bi);
 
-    if (std.mem.indexOf(u8, bi.cmdlineSlice(), "panictest") != null) {
+    if (lib.cmdline.has(bi.cmdlineSlice(), "panictest")) {
         // Paging is on, but nothing unmapped is easy to name; an invalid opcode
         // is the reliable way to exercise the exception path.
         asm volatile ("ud2");
@@ -209,8 +211,10 @@ fn selfTestHeap() void {
 /// Confirms the trap gate, the dispatcher, argument passing and error returns
 /// all line up.
 fn selfTestSyscalls() void {
-    const SYS_WRITE = 1;
-    const SYS_CLOCK = 5;
+    // Looked up by name at compile time rather than written as numbers: a
+    // renumbered table would make these silently test the wrong calls.
+    const SYS_WRITE = syscall_abi.number("write");
+    const SYS_CLOCK = syscall_abi.number("clock_us");
     const SYS_UNKNOWN = 9999;
 
     const text = "";
@@ -318,7 +322,7 @@ fn supervisor(_: usize) callconv(.c) void {
     if (console.isVerbose()) {
         console.putChar('\n');
         console.setColor(.light_green, .black);
-        console.writeString("ready\n");
+        console.writeString("kernel ready, starting userspace\n");
         console.setColor(.light_grey, .black);
         console.putChar('\n');
     }

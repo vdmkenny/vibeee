@@ -250,7 +250,7 @@ fn attachDisplay(dev: Device) anyerror!void {
     if (display_attached) return;
 
     const backend = modeset.backendFor(dev) orelse {
-        console.debug("video", "unrecognised adapter, keeping firmware mode", .{});
+        console.info("video", "unrecognised adapter, keeping firmware mode", .{});
         return;
     };
     display_attached = true;
@@ -266,7 +266,7 @@ fn attachDisplay(dev: Device) anyerror!void {
     });
 
     if (backend.set == null) {
-        console.debug("video", "{s} ({s}), no modeset, keeping firmware mode", .{
+        console.info("video", "{s} ({s}), no modeset, keeping firmware mode", .{
             backend.name,
             backend.describes,
         });
@@ -311,5 +311,5 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
         .stride_px = @intCast(fb.pitch / 4),
         .bytes = fb.pitch * fb.height,
     });
-    console.debug("video", "{d}x{d} native, panel fitter off", .{ fb.width, fb.height });
+    console.info("video", "{d}x{d} native, panel fitter off", .{ fb.width, fb.height });
 }

@@ -81,7 +81,7 @@ pub fn init() void {
             .minor = ep.minor,
         };
 
-        console.debug("smbios", "{d}.{d}, {d} structures, {d} bytes", .{
+        console.info("smbios", "{d}.{d}, {d} structures, {d} bytes", .{
             ep.major, ep.minor, ep.structure_count, ep.table_length,
         });
         return;

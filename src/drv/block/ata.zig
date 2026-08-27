@@ -334,7 +334,7 @@ pub fn init() void {
             d.name_len = 3;
             drive_count += 1;
 
-            console.debug("ata", "{s}: {s} {s} {s}, {d} MiB", .{
+            console.info("ata", "{s}: {s} {s} {s}, {d} MiB", .{
                 d.nameSlice(),
                 ch.name,
                 if (slave) "slave" else "master",
