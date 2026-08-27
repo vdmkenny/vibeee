@@ -13,7 +13,6 @@
 const dev_mod = @import("dev.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
-const std = @import("std");
 const sys = @import("sys");
 
 const NicDev = dev_mod.NicDev;
@@ -198,17 +197,17 @@ const RxDesc = extern struct {
 
 /// The legacy transmit descriptor: same sixteen bytes, different words. The
 /// lower word carries the length in its low half and the commands in the
-/// high; the writeback lands a DONE bit where the hardware of this era
-/// agreed to put it, which is the low bit of the lower word.
+/// high; the writeback lands in the upper word, whose low byte is the
+/// status and whose low bit says done.
 const TxDesc = extern struct {
     addr: u32 = 0,
     _reserved: u32 = 0,
     lower: u32 = 0,
     upper: u32 = 0,
 
-    /// Mark one end in the frame's words.
+    /// DD, the writeback: the status byte is the upper word's low byte.
     fn done(self: TxDesc) bool {
-        return self.lower & 0x1 != 0;
+        return self.upper & 0x1 != 0;
     }
 };
 
@@ -266,7 +265,17 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         return false;
     };
     device.rings = @alignCast(@ptrCast(mapped));
-    device.phys = @intCast(std.mem.alignForward(usize, phys, 128));
+    // DMA memory is page-granular, which covers the sixteen bytes a
+    // descriptor ring demands; adjusting one side without the other would
+    // have the CPU and the card each writing a different ring.
+    device.phys = phys;
+
+    // Every receive descriptor names its buffer before the ring is handed
+    // over: a descriptor left at zero is an invitation to scribble the
+    // frame over the real mode vector table.
+    for (&device.rings.rx_desc, 0..) |*desc, i| {
+        desc.addr = device.phys + @offsetOf(Rings, "rx_buffer") + i * Slab;
+    }
 
     reset();
     readMac(dev);
@@ -362,13 +371,17 @@ pub fn irq(dev: *NicDev) void {
 fn reapRx(dev: *NicDev) void {
     while (true) {
         const desc = &device.rings.rx_desc[device.rx_at];
-        if (desc.status & DESC_DONE == 0) break;
+        // The hardware writes these words; the loads must happen every lap.
+        const status = @as(*const volatile u8, &desc.status).*;
+        if (status & DESC_DONE == 0) break;
+        const len = @as(*const volatile u16, &desc.len).*;
+        const errors = @as(*const volatile u8, &desc.errors).*;
 
         dev_mod.deliverRx(dev, .{
-            .ok = desc.errors == 0 and desc.len >= 60 and desc.len <= Slab,
-            .frame = device.rings.rx_buffer[device.rx_at][0..desc.len],
+            .ok = errors == 0 and len >= 60 and len <= Slab,
+            .frame = device.rings.rx_buffer[device.rx_at][0..len],
         });
-        desc.status = 0; // the slot is ours again
+        @as(*volatile u8, &desc.status).* = 0; // the slot is ours again
         device.rx_at = (device.rx_at + 1) % RingSlots;
         device.regs.wr(.rdt, (device.rx_at + RingSlots - 1) % RingSlots);
     }
@@ -376,7 +389,7 @@ fn reapRx(dev: *NicDev) void {
 
 fn reapTx() void {
     while (device.tx_tail != device.tx_head) {
-        const desc = &device.rings.tx_desc[device.tx_tail];
+        const desc = @as(*const volatile TxDesc, &device.rings.tx_desc[device.tx_tail]).*;
         if (!desc.done()) break;
         device.tx_tail = (device.tx_tail + 1) % RingSlots;
     }
