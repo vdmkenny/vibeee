@@ -110,10 +110,14 @@ $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 # C programs, built against eeelibc with the wrapper rather than with the Zig
 # build graph: a port arrives as a Makefile expecting a compiler, and `eeecc`
 # is what it should find.
+#
+# A ported program keeps the name it came with. `kilo` is somebody else's
+# editor and calling it anything else would hide where it came from, and take
+# the name our own editor is going to want.
 .PHONY: examples
 examples: kernel
 	@tools/eeecc -o $(BUILD)/greet examples/greet.c
-	@tools/eeecc -o $(BUILD)/edit third_party/kilo/kilo.c
+	@tools/eeecc -o $(BUILD)/kilo third_party/kilo/kilo.c
 
 image: $(IMAGE)
 
@@ -129,7 +133,7 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
-	@$(MCOPY) -i $@ -o $(BUILD)/edit ::/bin/edit
+	@$(MCOPY) -i $@ -o $(BUILD)/kilo ::/bin/kilo
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
