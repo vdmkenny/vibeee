@@ -4,9 +4,9 @@
 //! you are looking for is somewhere in a shape you do not know yet. This draws
 //! the shape.
 //!
-//! Drawn in ASCII rather than box characters: the console writes bytes, so a
-//! multi-byte glyph would arrive as several cells of nothing. The line art is
-//! the same either way.
+//! Drawn in the box-drawing characters, which the console reads: it decodes
+//! UTF-8 and, in text mode, maps them onto the ones the hardware font has had
+//! since it was a hardware font.
 
 const dir = @import("ulib").dir;
 const out = @import("ulib").out;
@@ -27,8 +27,8 @@ const Rung = enum {
     /// Drawn beside the entry's own name.
     fn stem(self: Rung) []const u8 {
         return switch (self) {
-            .more => "|-- ",
-            .last => "`-- ",
+            .more => "\u{251C}\u{2500}\u{2500} ",
+            .last => "\u{2514}\u{2500}\u{2500} ",
         };
     }
 
@@ -36,12 +36,10 @@ const Rung = enum {
     /// something further down to reach, blank once there is not.
     fn under(self: Rung) []const u8 {
         return switch (self) {
-            .more => "|   ",
+            .more => "\u{2502}   ",
             .last => "    ",
         };
     }
-
-    const WIDTH = "|   ".len;
 };
 
 /// One level's listing and the names it points into. One per level, because a
@@ -53,8 +51,11 @@ const Level = struct {
 
 const Walk = struct {
     levels: [MAX_DEPTH]Level = @splat(.{}),
-    /// The rails to the left of a name, one rung's worth per ancestor.
-    rails: [MAX_DEPTH * Rung.WIDTH]u8 = @splat(' '),
+    /// What each ancestor was, which is what decides whether its rail carries
+    /// down past this line. Kept as the rungs themselves rather than as the
+    /// characters they draw: the two forms are different byte lengths, and a
+    /// buffer of them could not be indexed by depth.
+    rails: [MAX_DEPTH]Rung = @splat(.last),
     path_buf: [256]u8 = @splat(0),
     path: str.Builder = undefined,
 
@@ -71,19 +72,19 @@ const Walk = struct {
         self.cut = false;
     }
 
-    fn indent(self: *const Walk, depth: usize) []const u8 {
-        return self.rails[0 .. depth * Rung.WIDTH];
+    fn indent(self: *const Walk, depth: usize) void {
+        for (self.rails[0..depth]) |rung| out.text(rung.under());
     }
 
     fn note(self: *Walk, depth: usize, rung: Rung, what: []const u8) void {
-        out.text(self.indent(depth));
+        self.indent(depth);
         out.text(rung.stem());
         out.text(what);
         out.byte('\n');
     }
 
     fn descend(self: *Walk, depth: usize, rung: Rung, name: []const u8) void {
-        @memcpy(self.rails[depth * Rung.WIDTH ..][0..Rung.WIDTH], rung.under());
+        self.rails[depth] = rung;
 
         const was = self.path.len;
         defer self.path.len = was;
@@ -115,7 +116,7 @@ const Walk = struct {
             seen += 1;
             const rung: Rung = if (seen == shown and !level.listing.truncated) .last else .more;
 
-            out.text(self.indent(depth));
+            self.indent(depth);
             out.text(rung.stem());
             out.text(entry.name);
             if (entry.is_dir) out.byte('/');

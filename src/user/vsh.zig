@@ -17,6 +17,8 @@
 const sys = @import("sys");
 const cfg = @import("tools/cfg.zig");
 const complete = @import("ulib").complete;
+const font = @import("lib").font;
+const ink = @import("ulib").ink;
 const registry = @import("tools/registry.zig");
 const dir_mod = @import("ulib").dir;
 const edit = @import("ulib").edit;
@@ -39,7 +41,10 @@ const HOME = "/home";
 const Builtin = struct {
     name: []const u8,
     summary: []const u8,
-    run: *const fn (words: []const []const u8) void,
+    /// What it did, in the shape a program reports it: nought when it worked.
+    /// A builtin that cannot fail says so by always returning nought, which is
+    /// still worth saying: the prompt colours itself from this.
+    run: *const fn (words: []const []const u8) u8,
 };
 
 const builtins = [_]Builtin{
@@ -73,13 +78,24 @@ export fn shellMain() callconv(.c) noreturn {
     _ = sys.chdir(HOME);
 
     var cwd: [256]u8 = @splat(0);
-    var prompt_buf: [cwd.len + 8]u8 = undefined;
+    // Room for the path, the arrow's three bytes, and the escapes that colour
+    // it, which are part of the prompt because the editor redraws it whole.
+    var prompt_buf: [cwd.len + 32]u8 = undefined;
 
     while (true) {
         var prompt = str.Builder{ .buf = &prompt_buf };
         const dir_len = sys.getcwd(&cwd);
-        if (dir_len > 0) prompt.text(cwd[0..@intCast(dir_len)]);
-        prompt.text(" $ ");
+        if (dir_len > 0) prompt.text(shortened(cwd[0..@intCast(dir_len)]));
+        prompt.byte(' ');
+
+        // The one coloured mark on the line, and the only thing that says this
+        // is a prompt rather than output. It carries what became of the last
+        // command, which is the only report of it a shell with no `$?` can
+        // give. Plain again straight after, so what gets typed is not green.
+        ink.append(&prompt, if (last_status == 0) .accent else .bad);
+        ink.appendGlyph(&prompt, font.glyphs.arrow_right);
+        ink.appendPlain(&prompt);
+        prompt.byte(' ');
 
         const text = editor.read(prompt.done()) orelse continue;
 
@@ -94,6 +110,18 @@ export fn shellMain() callconv(.c) noreturn {
 /// The one line being edited, kept here because its history outlives any one
 /// prompt and it is far too large for a stack.
 var editor: edit.Editor = .{};
+
+/// What the last thing to run made of itself.
+///
+/// Kept because the prompt is drawn from it: an arrow in the failure colour
+/// says the last command did not work, which is the thing a shell without a
+/// `$?` has no other way to tell anybody.
+var last_status: u8 = 0;
+
+/// What a name that is not a program at all reports. Chosen to match what a
+/// shell has always said for it, so a script comparing against it is not
+/// surprised by this one.
+const NOT_FOUND: u8 = 127;
 
 // ---------------------------------------------------------------------------
 // Completion
@@ -363,8 +391,14 @@ fn runPipeline(stages: []const []const []const u8, last_out: i32) void {
     if (feed != sys.Spawn.INHERIT) _ = sys.close(@intCast(feed));
 
     // Every stage is waited for, so none is left behind as a zombie and the
-    // prompt does not come back while output is still arriving.
-    for (pids[0..started]) |id| _ = sys.wait(id, sys.FOREVER);
+    // prompt does not come back while output is still arriving. A pipeline is
+    // reported by its last stage, which is the one whose output was wanted.
+    for (pids[0..started], 0..) |id, i| {
+        const exited = sys.wait(id, sys.FOREVER);
+        if (i + 1 == started) {
+            last_status = if (exited) |e| @truncate(@as(u32, @bitCast(e.status))) else 0;
+        }
+    }
     out.flush();
 }
 
@@ -403,13 +437,15 @@ fn spawnStage(words: []const []const u8, from: i32, into: i32) ?u32 {
 fn run(words: []const []const u8, into: i32) void {
     for (builtins) |b| {
         if (str.eql(b.name, words[0])) {
-            b.run(words);
+            last_status = b.run(words);
             out.flush();
             return;
         }
     }
 
     const status = spawnProgram(words, .{ .stdout = into });
+    last_status = if (status < 0) NOT_FOUND else @truncate(@as(usize, @intCast(status)));
+
     if (status < 0) {
         out.text("vsh: ");
         out.text(words[0]);
@@ -442,6 +478,21 @@ fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
     return sys.spawnStreams(TOOLS_PATH, argv[0 .. words.len + 1], streams);
 }
 
+/// The working directory as a prompt should show it: `~` where the path
+/// begins at home, because that is most of them and the full path is noise
+/// in the one place there is least room for it.
+fn shortened(path: []const u8) []const u8 {
+    if (str.eql(path, HOME)) return "~";
+    if (!str.startsWith(path, HOME) or path[HOME.len] != '/') return path;
+
+    var shown = str.Builder{ .buf = &short_buf };
+    shown.byte('~');
+    shown.text(path[HOME.len..]);
+    return shown.done();
+}
+
+var short_buf: [256]u8 = @splat(0);
+
 /// Turn a bare command name into a path. A name with a slash in it is already
 /// one and is left alone.
 fn resolvePath(name: []const u8, buf: []u8) []const u8 {
@@ -460,7 +511,7 @@ fn resolvePath(name: []const u8, buf: []u8) []const u8 {
 // Builtins
 // ---------------------------------------------------------------------------
 
-fn cmdHelp(_: []const []const u8) void {
+fn cmdHelp(_: []const []const u8) u8 {
     out.text("builtins:\n");
     for (builtins) |b| {
         out.text("  ");
@@ -473,58 +524,66 @@ fn cmdHelp(_: []const []const u8) void {
     out.text(", or as a command in ");
     out.text(TOOLS_PATH);
     out.text("\n");
+    return 0;
 }
 
-fn cmdCd(words: []const []const u8) void {
-    // Bare `cd` goes home, which here is the root: there are no user
-    // directories to have a home in yet.
+fn cmdCd(words: []const []const u8) u8 {
+    // Bare `cd` goes home, which is where a session starts.
     const target = if (words.len > 1) words[1] else HOME;
     if (sys.chdir(target) < 0) {
         out.text("cd: ");
         out.text(target);
         out.text(": no such directory\n");
+        return 1;
     }
+    return 0;
 }
 
-fn cmdPwd(_: []const []const u8) void {
+fn cmdPwd(_: []const []const u8) u8 {
     var buf: [256]u8 = [_]u8{0} ** 256;
     const n = sys.getcwd(&buf);
     if (n > 0) {
         out.text(buf[0..@intCast(n)]);
         out.byte('\n');
     }
+    return 0;
 }
 
-fn cmdEcho(words: []const []const u8) void {
+fn cmdEcho(words: []const []const u8) u8 {
     for (words[1..], 0..) |w, i| {
         if (i > 0) out.text(" ");
         out.text(w);
     }
     out.text("\n");
+    return 0;
 }
 
 /// Form feed, which the console reads as "clear". No escape sequences: the
 /// line discipline does not parse ANSI, and a single byte with a meaning that
 /// predates ANSI does the job.
-fn cmdClear(_: []const []const u8) void {
+fn cmdClear(_: []const []const u8) u8 {
     out.byte(0x0C);
     out.flush();
+    return 0;
 }
 
-fn cmdExit(_: []const []const u8) void {
+fn cmdExit(_: []const []const u8) u8 {
     // There is nothing to exit *to*, this is the only shell, but init
     // supervises it with `restart = always`, so exiting gets a fresh one. That
     // is the useful meaning here: it is how you recover a wedged shell.
     out.flush();
     sys.exit(0);
+    return 0;
 }
 
-fn cmdPowerOff(_: []const []const u8) void {
+fn cmdPowerOff(_: []const []const u8) u8 {
     out.flush();
     sys.shutdown(sys.POWER_OFF);
+    return 0;
 }
 
-fn cmdReboot(_: []const []const u8) void {
+fn cmdReboot(_: []const []const u8) u8 {
     out.flush();
     sys.shutdown(sys.REBOOT);
+    return 0;
 }

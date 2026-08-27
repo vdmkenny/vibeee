@@ -30,6 +30,20 @@ fn toCp437(cp: u21) u8 {
         BLOCK_UPPER_HALF => 0xDF,
         0x2584 => 0xDC, // lower half block
         0x2588 => 0xDB, // full block
+        // Arrows, which is what a prompt and a listing reach for.
+        0x2190 => 0x1B,
+        0x2191 => 0x18,
+        0x2192 => 0x1A,
+        0x2193 => 0x19,
+        // Box drawing, so a tree looks like a tree in both modes.
+        0x2500 => 0xC4,
+        0x2502 => 0xB3,
+        0x250C => 0xDA,
+        0x2510 => 0xBF,
+        0x2514 => 0xC0,
+        0x2518 => 0xD9,
+        0x251C => 0xC3,
+        0x2524 => 0xB4,
         else => '?',
     };
 }
@@ -258,7 +272,7 @@ const Escape = struct {
 
         switch (action) {
             .print => |cp| {
-                draw(@intCast(cp));
+                draw(@truncate(cp));
                 return true;
             },
             .control => return false,
@@ -463,13 +477,17 @@ const Alternate = struct {
 var wrap_pending = false;
 
 /// Put one character where the cursor is and move it along.
-fn draw(c: u8) void {
+///
+/// A codepoint rather than a byte: the parser ahead of this assembles UTF-8,
+/// so anything past ASCII arrives here whole and truncating it to a byte would
+/// draw a different character or none.
+fn draw(cp: u21) void {
     if (wrap_pending) {
         newline();
         wrap_pending = false;
     }
 
-    backend.putAt(col, row, c, fg, bg);
+    backend.putAt(col, row, cp, fg, bg);
 
     if (col + 1 >= columns) {
         wrap_pending = true;
@@ -588,6 +606,7 @@ pub fn colourOf(role: style.Role) Color {
         .warn => .yellow,
         .bad => .light_red,
         .dim => .dark_grey,
+        .accent => .light_green,
     };
 }
 

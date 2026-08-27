@@ -23,4 +23,7 @@ pub const Role = enum {
     bad,
     /// Present and not important: a detail the eye should be able to skip.
     dim,
+    /// The one mark on a line that should catch the eye without saying
+    /// anything is wrong. A prompt, and little else.
+    accent,
 };

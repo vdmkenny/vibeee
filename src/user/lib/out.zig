@@ -9,6 +9,7 @@
 //! The buffer is static because this stream exists before a program has had a
 //! chance to allocate anything: the first thing many of them do is print.
 
+const std = @import("std");
 const str = @import("lib").str;
 const stream_mod = @import("stream.zig");
 const sys = @import("sys");
@@ -44,6 +45,17 @@ pub fn text(s: []const u8) void {
 /// hexdump does thousands of times.
 pub fn byte(c: u8) void {
     standard.writeByte(c);
+}
+
+/// One codepoint, as the UTF-8 the console reads.
+///
+/// Here rather than at each call site because encoding is not something a
+/// program naming a glyph should have to think about, and hand-written escape
+/// bytes are how two callers come to disagree about the same character.
+pub fn glyph(cp: u21) void {
+    var encoded: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(cp, &encoded) catch return;
+    text(encoded[0..n]);
 }
 
 /// Write `s` padded to `width`, for aligned columns.

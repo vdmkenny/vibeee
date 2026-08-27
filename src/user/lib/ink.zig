@@ -11,6 +11,8 @@
 //! them to disagree.
 
 const out = @import("out.zig");
+const std = @import("std");
+const str = @import("lib").str;
 const style = @import("lib").style;
 
 /// The sixteen colours a text console has, in the order the escape sequences
@@ -29,18 +31,48 @@ pub const Colour = enum(u8) {
     pub const bright_offset = 60;
 };
 
-/// Write in the colour a role has. The scheme is `lib.style`'s, shared with
-/// the console, so a tool showing what the kernel said looks like the kernel
-/// saying it.
+/// The rendition parameter a role is written with. The scheme is
+/// `lib.style`'s, shared with the console, so a tool showing what the kernel
+/// said looks like the kernel saying it.
+///
+/// One number per role, so writing a role and appending one to a string are
+/// the same decision reached two ways rather than two tables to keep in step.
+fn paramFor(role: style.Role) u8 {
+    const base = 30 + Colour.bright_offset;
+    return switch (role) {
+        .key => base + @intFromEnum(Colour.cyan),
+        .value => PLAIN,
+        .good, .accent => base + @intFromEnum(Colour.green),
+        .warn => 30 + @intFromEnum(Colour.yellow),
+        .bad => base + @intFromEnum(Colour.red),
+        .dim => base + @intFromEnum(Colour.black),
+    };
+}
+
+const PLAIN: u8 = 0;
+
+/// Write in the colour a role has. Ends at the next `plain`.
 pub fn use(role: style.Role) void {
-    switch (role) {
-        .key => bright(.cyan),
-        .value => plain(),
-        .good => bright(.green),
-        .warn => on(.yellow),
-        .bad => bright(.red),
-        .dim => bright(.black),
-    }
+    sequence(paramFor(role));
+}
+
+/// The same, appended to a string a caller is assembling rather than written.
+///
+/// What a prompt needs: the line editor is handed one string and redraws it,
+/// so its colour has to be part of it rather than something written before it.
+pub fn append(into: *str.Builder, role: style.Role) void {
+    appendSequence(into, paramFor(role));
+}
+
+pub fn appendPlain(into: *str.Builder) void {
+    appendSequence(into, PLAIN);
+}
+
+/// One codepoint, appended as the UTF-8 the console reads.
+pub fn appendGlyph(into: *str.Builder, cp: u21) void {
+    var encoded: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(cp, &encoded) catch return;
+    into.text(encoded[0..n]);
 }
 
 /// Write `text` in a role's colour and go back to plain, which is what almost
@@ -48,6 +80,13 @@ pub fn use(role: style.Role) void {
 pub fn write(role: style.Role, text: []const u8) void {
     use(role);
     out.text(text);
+    plain();
+}
+
+/// One codepoint in a role's colour.
+pub fn mark(role: style.Role, cp: u21) void {
+    use(role);
+    out.glyph(cp);
     plain();
 }
 
@@ -69,7 +108,7 @@ pub fn reverse() void {
 
 /// Back to the default, which every other sequence is measured against.
 pub fn plain() void {
-    sequence(0);
+    sequence(PLAIN);
 }
 
 /// Write one rendition parameter.
@@ -78,4 +117,11 @@ fn sequence(param: u8) void {
     out.byte('[');
     out.decimal(param);
     out.byte('m');
+}
+
+fn appendSequence(into: *str.Builder, param: u8) void {
+    into.byte(0x1B);
+    into.byte('[');
+    into.number(param);
+    into.byte('m');
 }
