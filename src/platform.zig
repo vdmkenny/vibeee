@@ -116,7 +116,22 @@ var acpi_root: u32 = 0;
 /// another board would answer this from a device tree without a line of the
 /// interrupt code changing.
 pub fn interruptRouting() ?irq.Routing {
-    return madt.parse();
+    var routing = madt.parse() orelse return null;
+
+    // The system control interrupt is level and active low, by the
+    // specification and by this machine's wiring. The FADT says which number
+    // it is, and the MADT rarely bothers: where the number lies in the
+    // legacy range and nothing else described it, describe it here, so boot
+    // routes the pin the way the hardware signals rather than as edge-high.
+    if (acpi.get()) |fadt| {
+        if (fadt.sci_int != 0 and fadt.sci_int < irq.MAX_LINES and
+            routing.describedLine(@intCast(fadt.sci_int)) == null)
+        {
+            routing.describe(@intCast(fadt.sci_int), true, true);
+        }
+    }
+
+    return routing;
 }
 
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {

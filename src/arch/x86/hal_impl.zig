@@ -69,6 +69,7 @@ pub const claimGsi = claimGsiImpl;
 pub const releaseGsi = idt.releaseGsi;
 pub const setGsiMask = idt.setGsiMask;
 pub const gsiEntryLow = idt.gsiEntryLow;
+pub const bootEntry = idt.bootEntry;
 
 /// True when the line was taken. The vector it landed on is the kernel's
 /// business, so it is not passed back.

@@ -51,6 +51,19 @@ pub const Routing = struct {
         return self.controllers.slice();
     }
 
+    /// Say what firmware did not, when another table does: the electrical
+    /// form of a line. Added rather than asserted over, because an override
+    /// that exists outranks the default this provides.
+    pub fn describe(self: *Routing, irq_num: u8, active_low: bool, level: bool) void {
+        if (self.describedLine(irq_num) != null) return;
+        self.lines.append(.{
+            .irq = irq_num,
+            .gsi = irq_num,
+            .active_low = active_low,
+            .level = level,
+        }) catch {};
+    }
+
     /// What firmware said about a line, or null if it said nothing.
     pub fn describedLine(self: *const Routing, irq: u8) ?Line {
         for (self.lines.slice()) |line| {

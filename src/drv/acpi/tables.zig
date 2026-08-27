@@ -57,6 +57,8 @@ const Fadt = extern struct {
 };
 
 pub const Info = struct {
+    /// The system control interrupt's number, as the FADT names it.
+    sci_int: u16 = 0,
     pm1a_control: u16 = 0,
     pm1b_control: u16 = 0,
     pm_timer: u16 = 0,
@@ -132,6 +134,7 @@ pub fn init(rsdp_phys: u32) void {
     info.pm_timer = @truncate(fadt.pm_tmr_blk);
     info.smi_command = @truncate(fadt.smi_cmd);
     info.acpi_enable = fadt.acpi_enable;
+    info.sci_int = fadt.sci_int;
     have_info = true;
 
     findS5(fadt.dsdt);

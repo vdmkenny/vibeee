@@ -391,8 +391,28 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
         gsi_vector[gsi] = vector;
     }
 
+    captureBootEntries();
     maskAllPic();
     return true;
+}
+
+/// What boot wrote into a line's redirection entry, remembered so a later
+/// moment can tell whether the entry it sees is still the one it wrote. The
+/// firmware co-owns the controller, and a line whose entry changed since
+/// boot is one nobody should write again at runtime.
+var boot_entries: [MAX_GSI]u32 = @splat(0);
+
+pub fn bootEntry(gsi: u32) u32 {
+    if (gsi >= MAX_GSI or boot_entries[gsi] == 0) return 0;
+    return boot_entries[gsi];
+}
+
+pub fn captureBootEntries() void {
+    var gsi: u32 = 0;
+    const pins = @min(ioapic.inputs(), MAX_GSI);
+    while (gsi < pins) : (gsi += 1) {
+        boot_entries[gsi] = ioapic.entryLow(gsi);
+    }
 }
 
 fn setPicMask(irq: u8, masked: bool) void {
