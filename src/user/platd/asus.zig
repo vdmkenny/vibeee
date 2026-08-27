@@ -195,6 +195,16 @@ pub fn correctBattery(into: *proto.Battery) void {
 pub fn greet() void {
     const device = node() orelse return;
 
+    // The greeting itself writes the vendor's trap port, and this machine's
+    // trap handler for it sometimes never returns: SMM owns the CPU from
+    // that moment and no OS-side timeout exists. So the greeting is left
+    // unperformed for now; the firmware keeps its own handling of the keys
+    // and the panel. Restored the day the trap's mood is understood.
+    if (!GREET) {
+        log.note("platd", "vendor firmware left ungreeted; its trap stays closed");
+        return;
+    }
+
     if (!uacpi.callWith(device, "INIT", @as(u32, @bitCast(TAKEN)))) {
         log.warn("platd", "the vendor firmware declined the handshake");
         return;
@@ -217,6 +227,10 @@ pub fn greet() void {
     }
     log.end();
 }
+
+/// Whether the vendor greeting is performed. Off until the trap stays
+/// closed: the machine boots without it, on firmware-side key handling.
+const GREET = false;
 
 // ---------------------------------------------------------------------------
 // The panel
