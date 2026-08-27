@@ -46,15 +46,17 @@ export fn platdMain() callconv(.c) noreturn {
     ready = bringUp();
     if (!ready) log.warn("platd", "carrying on without the firmware");
 
-    // The system control interrupt is routed and left masked at boot; its
-    // gate is this chipset register bit, written only now, when the
-    // firmware's own trap-port handshake is over and an arriving event can
-    // no longer meet it halfway. A settle first: whatever the controller
-    // finished saying takes its own hundred milliseconds, and the gate
-    // opens onto a line that has finished talking.
-    if (ready) {
+    // The event channel stays closed by default. What it carries on this
+    // machine is a boot-time burst of AC and battery notifications whose
+    // AML, run through the same embedded controller the firmware only
+    // half-shared, hangs the machine about every second boot. On-demand
+    // reads (battery, backlight) do not pass through here. Flipped on when
+    // the burst's own firmware methods are understood.
+    if (ready and EVENTS) {
         sys.sleepMicros(100_000);
         _ = sys.sciEnable(true);
+    } else {
+        log.warn("platd", "events stay off; ac, hotkeys and panel notices wait");
     }
 
     const channel = sys.svcRegister(proto.SERVICE);
@@ -276,6 +278,11 @@ fn bringUp() bool {
 
 /// Seconds an AML loop may run before the interpreter gives up on it.
 const LOOP_TIMEOUT_S = 5;
+
+/// Whether the SCI gate opens at all. Off until the boot burst's methods are
+/// understood: with it on, the first delivered event is a coin flip to
+/// survive. Everything on-demand still works without it.
+const EVENTS = false;
 
 /// Say so when the global lock is held at start-up.
 ///
