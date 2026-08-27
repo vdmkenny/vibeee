@@ -18,6 +18,7 @@
 //! the way to learn the next machine's is to watch it say so.
 
 const asus = @import("asus.zig");
+const Fifo = @import("lib").fifo.Fifo;
 const backlight = @import("backlight.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -257,31 +258,19 @@ var event: u32 = 0;
 
 /// Presses queued for whoever is listening.
 ///
-/// A ring rather than one slot, because two keys pressed before anyone looks
+/// A queue rather than one slot, because two keys pressed before anyone looks
 /// are two keys and the second is not the more interesting one. Small: a
 /// listener this far behind has stopped listening, and the oldest press is the
 /// one worth dropping.
-const DEPTH = 16;
-var queued: [DEPTH]proto.Press = undefined;
-var first: usize = 0;
-var count: usize = 0;
+var queued = Fifo(proto.Press, 16){};
 
 fn push(press: proto.Press) void {
-    if (count == DEPTH) {
-        first = (first + 1) % DEPTH;
-        count -= 1;
-    }
-    queued[(first + count) % DEPTH] = press;
-    count += 1;
+    queued.pushDropOldest(press);
 }
 
 /// The oldest one waiting, or `end` when there are none.
 pub fn take(into: *proto.Press) proto.Status {
-    if (count == 0) return .end;
-
-    into.* = queued[first];
-    first = (first + 1) % DEPTH;
-    count -= 1;
+    into.* = queued.pop() orelse return .end;
     return .ok;
 }
 

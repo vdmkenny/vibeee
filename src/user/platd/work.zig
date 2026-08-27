@@ -9,6 +9,7 @@
 //! So scheduling queues here, and the serve loop drains. The queue wakes the
 //! same `wait_many` the loop already sleeps in.
 
+const Fifo = @import("lib").fifo.Fifo;
 const log = @import("ulib").log;
 const sys = @import("sys");
 
@@ -19,11 +20,7 @@ const Item = struct {
 
 /// Deep enough for a burst of events; a machine that queues more than this
 /// between two turns of the loop is dropping work, and says so.
-const DEPTH = 32;
-
-var queued: [DEPTH]Item = undefined;
-var first: usize = 0;
-var count: usize = 0;
+var queued = Fifo(Item, 32){};
 var dropped = false;
 
 /// Signalled on submit, waited on by the serve loop.
@@ -36,16 +33,13 @@ pub fn init() void {
 
 /// Called from inside uACPI's dispatch. Queues and wakes; nothing more.
 pub fn submit(run: *const fn (?*anyopaque) callconv(.c) void, context: ?*anyopaque) bool {
-    if (count == DEPTH) {
+    if (!queued.push(.{ .run = run, .context = context })) {
         if (!dropped) {
             dropped = true;
             log.warn("platd", "work queue overflow; an event was dropped");
         }
         return false;
     }
-
-    queued[(first + count) % DEPTH] = .{ .run = run, .context = context };
-    count += 1;
 
     if (event != 0) _ = sys.eventSignal(event);
     return true;
@@ -62,10 +56,5 @@ pub fn drain() void {
     draining = true;
     defer draining = false;
 
-    while (count > 0) {
-        const item = queued[first];
-        first = (first + 1) % DEPTH;
-        count -= 1;
-        item.run(item.context);
-    }
+    while (queued.pop()) |item| item.run(item.context);
 }

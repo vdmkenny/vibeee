@@ -14,6 +14,7 @@ pub const Bounded = bounded.Bounded;
 pub const civil = @import("civil.zig");
 pub const font = @import("font.zig");
 pub const logo = @import("logo.zig");
+pub const fifo = @import("fifo.zig");
 pub const ring = @import("ring.zig");
 pub const driver = @import("driver.zig");
 pub const elf = @import("elf.zig");

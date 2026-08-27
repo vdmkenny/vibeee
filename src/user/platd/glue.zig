@@ -137,25 +137,27 @@ export fn uacpi_kernel_io_read32(handle: ?*anyopaque, offset: usize, value: *u32
 }
 
 export fn uacpi_kernel_io_write8(handle: ?*anyopaque, offset: usize, value: u8) callconv(.c) u32 {
-    const at = portOf(handle, offset);
-    knock(at, value);
-    ports.out8(at, value);
-    answered(at);
-    return Status.ok.value();
+    return ioWrite(u8, handle, offset, value);
 }
 
 export fn uacpi_kernel_io_write16(handle: ?*anyopaque, offset: usize, value: u16) callconv(.c) u32 {
-    const at = portOf(handle, offset);
-    knock(at, value);
-    ports.out16(at, value);
-    answered(at);
-    return Status.ok.value();
+    return ioWrite(u16, handle, offset, value);
 }
 
 export fn uacpi_kernel_io_write32(handle: ?*anyopaque, offset: usize, value: u32) callconv(.c) u32 {
+    return ioWrite(u32, handle, offset, value);
+}
+
+/// One shape for the three widths, bracketing the trap port on both sides.
+fn ioWrite(comptime T: type, handle: ?*anyopaque, offset: usize, value: T) u32 {
     const at = portOf(handle, offset);
     knock(at, value);
-    ports.out32(at, value);
+    switch (T) {
+        u8 => ports.out8(at, value),
+        u16 => ports.out16(at, value),
+        u32 => ports.out32(at, value),
+        else => @compileError("a port takes one of the three widths"),
+    }
     answered(at);
     return Status.ok.value();
 }
@@ -168,8 +170,12 @@ const TRAP_PORT: u16 = 0xB2;
 /// may not return: the CPU disappears into the firmware's own handler, and
 /// whether it comes back is that handler's decision. A boot that stops with
 /// this as its last line has named both the door and the knock.
+fn isTrap(at: u16) bool {
+    return at == TRAP_PORT or at == TRAP_PORT + 1;
+}
+
 fn knock(at: u16, value: u32) void {
-    if (at != TRAP_PORT and at != TRAP_PORT + 1) return;
+    if (!isTrap(at)) return;
 
     log.begin("platd", .dim);
     out.text("trap port 0x");
@@ -183,7 +189,7 @@ fn knock(at: u16, value: u32) void {
 /// never having handed the CPU back; an answer line followed by silence moves
 /// the fault out of the firmware and into what ran next.
 fn answered(at: u16) void {
-    if (at != TRAP_PORT and at != TRAP_PORT + 1) return;
+    if (!isTrap(at)) return;
     log.say("platd", .dim, "trap answered");
 }
 

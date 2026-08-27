@@ -17,6 +17,7 @@
 //! Those methods are AML, so the general-purpose event only queues a drain and
 //! the serve loop runs it.
 
+const Fifo = @import("lib").fifo.Fifo;
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const ports = @import("ulib").ports;
@@ -314,7 +315,7 @@ fn raised(_: ?*anyopaque, _: ?*uacpi.Node, _: u16) callconv(.c) u32 {
 /// turn this into the loop that never returns.
 fn pullQueries() void {
     var rounds: u8 = 0;
-    while (rounds < PULLED) : (rounds += 1) {
+    while (rounds < 16) : (rounds += 1) {
         const which = query() orelse return;
         stash(which);
     }
@@ -323,28 +324,15 @@ fn pullQueries() void {
 /// Queries taken out of the controller and not yet answered. Small: these
 /// are keypresses, and a machine this far behind on them is dropping the
 /// oldest for the same reason the hotkey queue does.
-const PULLED = 16;
-var pulled: [PULLED]u8 = undefined;
-var pulled_first: usize = 0;
-var pulled_count: usize = 0;
+var pulled = Fifo(u8, 16){};
 
 fn stash(which: u8) void {
-    if (pulled_count == PULLED) {
-        pulled_first = (pulled_first + 1) % PULLED;
-        pulled_count -= 1;
-    }
-    pulled[(pulled_first + pulled_count) % PULLED] = which;
-    pulled_count += 1;
+    pulled.pushDropOldest(which);
 }
 
 /// Run the `_Qxx` method each pulled query names. Serve loop only: AML.
 fn runPulled(_: ?*anyopaque) callconv(.c) void {
-    while (pulled_count > 0) {
-        const which = pulled[pulled_first];
-        pulled_first = (pulled_first + 1) % PULLED;
-        pulled_count -= 1;
-        runQuery(which);
-    }
+    while (pulled.pop()) |which| runQuery(which);
 }
 
 fn runQuery(which: u8) void {
