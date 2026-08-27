@@ -10,6 +10,7 @@
 //! written to one and the value read or written through the other, which means
 //! every access is two writes and none of them can be reordered.
 
+const cpu = @import("cpu.zig");
 const irq = @import("../../kernel/irq.zig");
 const paging = @import("paging.zig");
 
@@ -92,9 +93,21 @@ const Redirect = packed struct(u64) {
     const Delivery = enum(u3) { fixed = 0, lowest = 1, smi = 2, nmi = 4, init = 5, external = 7 };
 };
 
+/// The index and data registers are one shared pair. An interrupt landing
+/// between selecting and accessing runs a handler that selects for itself,
+/// and the interrupted access then lands on whatever the handler chose:
+/// every sequence below holds interrupts off around the pair.
+fn hold() bool {
+    return cpu.saveAndDisableInterrupts();
+}
+
+const release = cpu.restoreInterrupts;
+
 /// Send a global interrupt to `vector` on `destination`, masked to begin with.
 pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u8) void {
     const owner = find(gsi) orelse return;
+    const was = hold();
+    defer release(was);
     writeEntry(owner, gsi - owner.info.gsi_base, .{
         .vector = vector,
         .active_low = active_low,
@@ -110,6 +123,8 @@ pub fn correct(gsi: u32, vector: u8, active_low: bool, level: bool, destination:
     const owner = find(gsi) orelse return;
     const line = gsi - owner.info.gsi_base;
 
+    const was = hold();
+    defer release(was);
     var entry = readEntry(owner, line);
     if (entry.vector == vector and entry.active_low == active_low and
         entry.level == level and entry.destination == destination) return;
@@ -125,6 +140,8 @@ pub fn setMask(gsi: u32, masked: bool) void {
     const owner = find(gsi) orelse return;
     const line = gsi - owner.info.gsi_base;
 
+    const was = hold();
+    defer release(was);
     var entry = readEntry(owner, line);
     if (entry.masked == masked) return;
 
