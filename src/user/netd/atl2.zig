@@ -722,6 +722,15 @@ pub fn transmit(nic: *NicDev, frame: []const u8) void {
     device.txs_fill +%= 1;
     device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write >> 2));
 
+    log.begin("atl2", .dim);
+    out.text("tx ");
+    out.decimal(frame.len);
+    out.text("B, write idx ");
+    out.decimal(device.txd_write >> 2);
+    out.text(", isr 0x");
+    out.hex(device.regs.rd32(.isr), 8);
+    log.end();
+
     dev_mod.deliverTx(nic, frame.len);
 }
 
@@ -762,6 +771,15 @@ pub fn syncLink(nic: *NicDev) void {
     const state = link(nic);
     nic.state = state;
     applyLinkState(state);
+
+    log.begin("atl2", .dim);
+    out.text("sync mac_ctrl 0x");
+    out.hex(device.regs.rd32(.mac_ctrl), 8);
+    out.text(" imr 0x");
+    out.hex(device.regs.rd32(.imr), 8);
+    out.text(" isr 0x");
+    out.hex(device.regs.rd32(.isr), 8);
+    log.end();
 }
 
 fn applyLinkState(state: dev_mod.Link) void {
