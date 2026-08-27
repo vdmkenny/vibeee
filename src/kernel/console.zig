@@ -10,6 +10,7 @@ const klog = @import("klog.zig");
 const bootinfo = @import("bootinfo.zig");
 const escapes = @import("lib").escapes;
 const heap = @import("heap.zig");
+const style = @import("lib").style;
 const fbcon = @import("../drv/video/fbcon.zig");
 const vgatext = @import("../drv/video/vgatext.zig");
 
@@ -351,17 +352,38 @@ const Escape = struct {
         }
     }
 
+    /// A colour in the sequence's numbering, as one in this console's.
+    ///
+    /// The two orderings are not the same and never were: a terminal counts
+    /// red, green, yellow, blue, and a VGA-descended console counts blue,
+    /// green, cyan, red. Reading one as the other turns every colour into a
+    /// different one, which is subtle enough to look like a palette choice
+    /// rather than a bug.
+    fn fromAnsi(index: usize) Color {
+        return switch (index) {
+            0 => .black,
+            1 => .red,
+            2 => .green,
+            3 => .brown,
+            4 => .blue,
+            5 => .magenta,
+            6 => .cyan,
+            else => .light_grey,
+        };
+    }
+
     /// One rendition parameter, in the numbering every terminal shares.
     fn rendition(which: usize) void {
         switch (which) {
             0 => setColor(.light_grey, .black),
             1 => setColor(bright(fg), bg),
             7 => setColor(bg, fg),
-            30...37 => setColor(@enumFromInt(which - 30), bg),
+            30...37 => setColor(fromAnsi(which - 30), bg),
             39 => setColor(.light_grey, bg),
-            40...47 => setColor(fg, @enumFromInt(which - 40)),
+            40...47 => setColor(fg, fromAnsi(which - 40)),
             49 => setColor(fg, .black),
-            90...97 => setColor(bright(@enumFromInt(which - 90)), bg),
+            90...97 => setColor(bright(fromAnsi(which - 90)), bg),
+            100...107 => setColor(fg, bright(fromAnsi(which - 100))),
             else => {},
         }
     }
@@ -556,9 +578,23 @@ pub fn printf(comptime fmt: []const u8, args: anytype) void {
 // Boot log
 // ---------------------------------------------------------------------------
 
+/// A role in this console's palette. The scheme is `lib.style`'s; this is the
+/// half that spells it in the colours a VGA-descended console has.
+pub fn colourOf(role: style.Role) Color {
+    return switch (role) {
+        .key => .light_cyan,
+        .value => .light_grey,
+        .good => .light_green,
+        .warn => .yellow,
+        .bad => .light_red,
+        .dim => .dark_grey,
+    };
+}
+
 /// One boot-log line: a coloured key column, then the value. Terse by design,
 /// this is a system log, not narration.
-fn logLine(key: []const u8, key_color: Color, comptime fmt: []const u8, args: anytype) void {
+fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: anytype) void {
+    const key_color = colourOf(role);
     recordLine(key, fmt, args);
 
     const saved = fg;
@@ -617,18 +653,18 @@ pub fn debug(key: []const u8, comptime fmt: []const u8, args: anytype) void {
         recordLine(key, fmt, args);
         return;
     }
-    logLine(key, .light_cyan, fmt, args);
+    logLine(key, .key, fmt, args);
 }
 
 /// A line worth showing a user regardless of verbosity.
 pub fn field(key: []const u8, comptime fmt: []const u8, args: anytype) void {
-    logLine(key, .light_cyan, fmt, args);
+    logLine(key, .key, fmt, args);
 }
 
 pub fn warn(comptime fmt: []const u8, args: anytype) void {
-    logLine("warn", .yellow, fmt, args);
+    logLine("warn", .warn, fmt, args);
 }
 
 pub fn fail(comptime fmt: []const u8, args: anytype) void {
-    logLine("fail", .light_red, fmt, args);
+    logLine("fail", .bad, fmt, args);
 }

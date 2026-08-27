@@ -6,8 +6,35 @@
 //! fault happens again.
 
 const info = @import("ulib").info;
+const ink = @import("ulib").ink;
+const style = @import("lib").style;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
+
+/// One recorded line, coloured the way the console coloured it when it was
+/// written. The key is the first word and the rest is the message, which is
+/// the shape `console.field` gave it.
+fn writeLine(line: []const u8) void {
+    const key = firstWord(line);
+
+    ink.write(roleOf(key), key);
+    out.text(line[key.len..]);
+    out.byte('\n');
+}
+
+/// What a line is: a failure, a warning, or one component reporting.
+fn roleOf(key: []const u8) style.Role {
+    if (str.eql(key, "fail")) return .bad;
+    if (str.eql(key, "warn")) return .warn;
+    return .key;
+}
+
+fn firstWord(line: []const u8) []const u8 {
+    for (line, 0..) |c, i| {
+        if (c == ' ') return line[0..i];
+    }
+    return line;
+}
 
 /// The kernel's ring is eight kilobytes, so this is never truncated by being
 /// too small. A stack that size would be half of what a process has, so it is
@@ -31,8 +58,7 @@ pub fn log(args: []const []const u8) void {
         if (line.len == 0) continue;
         if (filter.len > 0 and !str.contains(line, filter)) continue;
 
-        out.text(line);
-        out.byte('\n');
+        writeLine(line);
     }
     out.flush();
 }

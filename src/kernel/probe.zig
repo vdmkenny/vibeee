@@ -11,42 +11,15 @@
 
 const console = @import("console.zig");
 
-pub const Confidence = enum(u8) {
-    /// Not my device.
-    no = 0,
-    /// Generic class-level match, works, but dumbly.
-    weak = 1,
-    /// Recognised family; most functionality available.
-    strong = 2,
-    /// Exact device match, all quirks known.
-    exact = 3,
-};
+/// Shared with userspace, so the boot probe's table and the `devices` tool
+/// agree about what the words mean and how each is coloured.
+pub const Confidence = @import("lib").driver.Confidence;
 
-/// What became of a device once the drivers had their say.
-///
-/// One vocabulary, so the boot table and the `devices` tool cannot describe
-/// the same binding differently. A driver that merely matched is not driving
-/// anything: the entry names the device without being able to run it.
-pub const State = enum {
-    /// A driver took it and it is running.
-    driven,
-    /// A driver matched but never attached, having none to attach with.
-    matched,
-    /// A driver tried and failed.
-    failed,
-    /// Nothing claimed it.
-    unclaimed,
 
-    /// The one-character shorthand the boot table puts beside a driver.
-    pub fn mark(self: State) []const u8 {
-        return switch (self) {
-            .driven => " ",
-            .matched => "*",
-            .failed => "!",
-            .unclaimed => " ",
-        };
-    }
-};
+/// Shared with userspace for the same reason `Confidence` is: the boot table
+/// and the `devices` tool report the same bindings and should not differ about
+/// what they are called or how they look.
+pub const State = @import("lib").driver.State;
 
 pub const Match = union(enum) {
     /// Vendor+device.
@@ -199,18 +172,13 @@ pub fn report() void {
     if (!console.isVerbose()) return;
 
     for (bindings[0..binding_count]) |b| {
-        console.setColor(.dark_grey, .black);
+        console.setColor(console.colourOf(.dim), .black);
         console.printf("  {x:0>2}:{x:0>2}.{d} {x:0>4}:{x:0>4} ", .{
             b.dev.location[0], b.dev.location[1], b.dev.location[2], b.dev.vendor, b.dev.device,
         });
 
         if (b.driver) |d| {
-            console.setColor(switch (b.confidence) {
-                .exact => .light_green,
-                .strong => .light_cyan,
-                .weak => .yellow,
-                .no => .dark_grey,
-            }, .black);
+            console.setColor(console.colourOf(b.confidence.role()), .black);
             console.printf("{s: <12}", .{d.name});
             console.setColor(.dark_grey, .black);
             // The marker states what actually happened, so a driver that

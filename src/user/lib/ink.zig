@@ -11,6 +11,7 @@
 //! them to disagree.
 
 const out = @import("out.zig");
+const style = @import("lib").style;
 
 /// The sixteen colours a text console has, in the order the escape sequences
 /// number them, which is not the order the hardware palette does.
@@ -27,6 +28,28 @@ pub const Colour = enum(u8) {
     /// Written before the colour to reach the bright half of the palette.
     pub const bright_offset = 60;
 };
+
+/// Write in the colour a role has. The scheme is `lib.style`'s, shared with
+/// the console, so a tool showing what the kernel said looks like the kernel
+/// saying it.
+pub fn use(role: style.Role) void {
+    switch (role) {
+        .key => bright(.cyan),
+        .value => plain(),
+        .good => bright(.green),
+        .warn => on(.yellow),
+        .bad => bright(.red),
+        .dim => bright(.black),
+    }
+}
+
+/// Write `text` in a role's colour and go back to plain, which is what almost
+/// every caller wants and saves each of them remembering the second half.
+pub fn write(role: style.Role, text: []const u8) void {
+    use(role);
+    out.text(text);
+    plain();
+}
 
 /// Start writing in `c`. Ends at the next `plain`.
 pub fn on(c: Colour) void {
