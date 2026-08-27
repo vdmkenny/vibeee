@@ -302,7 +302,10 @@ pub fn claimGsi(gsi: u32, handler: Handler) ?u8 {
     const vector = vectorForGsi(gsi) orelse return null;
 
     setHandler(vector, handler);
-    setGsiMask(gsi, true);
+    // No mask write: every routed entry is born masked and stays masked until
+    // the first wait arms it, so claiming touches the controller not at all.
+    // On this machine the firmware also runs the controller from system
+    // management mode, and the less it can notice the better.
     return vector;
 }
 
