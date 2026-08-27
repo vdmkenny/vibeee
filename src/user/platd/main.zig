@@ -237,6 +237,7 @@ fn bringUp() bool {
         out.text("system control interrupt live, line ");
         out.decimal(glue.sci.line);
         log.end();
+        reportGlobalLock();
         backlight.check("with the line live");
     } else {
         log.warn("platd", "no system control interrupt; the global lock cannot be waited on");

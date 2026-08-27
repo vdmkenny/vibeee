@@ -140,6 +140,7 @@ export fn uacpi_kernel_io_write8(handle: ?*anyopaque, offset: usize, value: u8) 
     const at = portOf(handle, offset);
     knock(at, value);
     ports.out8(at, value);
+    answered(at);
     return Status.ok.value();
 }
 
@@ -147,6 +148,7 @@ export fn uacpi_kernel_io_write16(handle: ?*anyopaque, offset: usize, value: u16
     const at = portOf(handle, offset);
     knock(at, value);
     ports.out16(at, value);
+    answered(at);
     return Status.ok.value();
 }
 
@@ -154,6 +156,7 @@ export fn uacpi_kernel_io_write32(handle: ?*anyopaque, offset: usize, value: u32
     const at = portOf(handle, offset);
     knock(at, value);
     ports.out32(at, value);
+    answered(at);
     return Status.ok.value();
 }
 
@@ -174,6 +177,14 @@ fn knock(at: u16, value: u32) void {
     out.text(" takes 0x");
     out.hex(value, 2);
     log.end();
+}
+
+/// The other bracket. A knock with no answer line after it is the firmware
+/// never having handed the CPU back; an answer line followed by silence moves
+/// the fault out of the firmware and into what ran next.
+fn answered(at: u16) void {
+    if (at != TRAP_PORT and at != TRAP_PORT + 1) return;
+    log.say("platd", .dim, "trap answered");
 }
 
 fn portOf(handle: ?*anyopaque, offset: usize) u16 {
