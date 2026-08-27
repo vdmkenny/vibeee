@@ -58,6 +58,12 @@ pub const Routing = struct {
     /// Where the per-CPU half of the controller lives, if there is one.
     local_address: u32 = 0,
 
+    /// The system control interrupt's number, as the FADT names it. Held
+    /// apart from the MADT's electrical description: whichever table says
+    /// what, the SCI is the SCI and its unmask is the chipset's gate, not
+    /// a controller write.
+    sci_gsi: u32 = 0,
+
     controllers: Bounded(Controller, MAX_CONTROLLERS) = .{},
 
     /// Only the lines firmware said something about. Everything else is
@@ -96,10 +102,18 @@ pub const Routing = struct {
     }
 
     pub fn isSci(self: *const Routing, gsi: u32) bool {
+        if (self.sci_gsi != 0 and self.sci_gsi == gsi) return true;
         for (self.lines.slice()) |line| {
             if (line.gsi == gsi and line.sci) return true;
         }
         return false;
+    }
+
+    /// Name the system control interrupt, whatever the MADT says about its
+    /// electrical form. One number stops its line from ever meeting a
+    /// runtime controller write.
+    pub fn markSci(self: *Routing, gsi: u32) void {
+        self.sci_gsi = gsi;
     }
 
     /// What firmware said about a line, or null if it said nothing.
