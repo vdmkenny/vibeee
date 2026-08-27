@@ -114,13 +114,18 @@ pub fn greet() void {
         return;
     }
 
+    // Evaluated before the line is begun: evaluating runs firmware code that
+    // may log for itself, and a line held open across it comes out with the
+    // firmware's lines inside it.
+    var mask: u64 = 0;
+    const answered = uacpi.uacpi_eval_simple_integer(device, "CMSG", &mask) == .ok;
+    if (answered) claimed = @bitCast(@as(u32, @truncate(mask)));
+
     // Logged because it differs per model and is otherwise only discoverable
     // by calling methods that may not exist.
-    var mask: u64 = 0;
     log.begin("platd", .key);
     out.text("vendor firmware greeted");
-    if (uacpi.uacpi_eval_simple_integer(device, "CMSG", &mask) == .ok) {
-        claimed = @bitCast(@as(u32, @truncate(mask)));
+    if (answered) {
         out.text("; control methods 0x");
         out.hex(@truncate(mask), 4);
     }

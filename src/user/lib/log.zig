@@ -56,6 +56,10 @@ pub fn failed(key: []const u8, message: []const u8, result: isize) void {
 
 /// Start a line whose message is built from several pieces. What follows is
 /// written with `out` until `end`.
+///
+/// Nothing that can log may run while a line is open: the pieces share one
+/// stream, and a logger called mid-line flushes the half-built line inside
+/// its own. Gather answers first, then say them.
 pub fn begin(key: []const u8, role: style.Role) void {
     ink.use(role);
     out.text(key);

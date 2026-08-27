@@ -206,6 +206,15 @@ pub extern fn uacpi_install_address_space_handler(
     context: ?*anyopaque,
 ) Status;
 
+/// Run `_REG(space, connected)` for every region of `space` under `device`.
+///
+/// The other half of installing a handler early: a handler installed before
+/// the namespace is initialised cannot have these run at install time, and
+/// `_REG` is how the bytecode learns its regions are answered. Firmware keeps
+/// fallback paths for an operating system that never says so, and on this
+/// machine one of them does not come back.
+pub extern fn uacpi_reg_all_opregions(device: ?*Node, space: AddressSpace) Status;
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------

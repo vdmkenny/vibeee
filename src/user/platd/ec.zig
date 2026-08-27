@@ -187,8 +187,12 @@ pub fn bind() void {
         has_gpe = true;
     }
 
+    // On the root, not on the controller's own node: a handler covers the
+    // regions beneath where it is installed, and these DSDTs declare a
+    // controller region in each consumer's own scope. One controller owns
+    // the whole space on this machine.
     if (uacpi.uacpi_install_address_space_handler(
-        found,
+        uacpi.namespace_root(),
         .embedded_controller,
         region,
         null,
@@ -320,4 +324,16 @@ fn runQuery(which: u8) void {
         out.text(" and its method failed");
         log.end();
     }
+}
+
+/// Tell every region's `_REG` that the controller is answered.
+///
+/// After the namespace is initialised, because installing the handler early
+/// cannot run these. `_REG` is how the bytecode learns its regions work:
+/// methods on this firmware test a flag `_REG` sets and take a fallback
+/// through system management mode when it is clear, and one of those
+/// fallbacks does not come back.
+pub fn connect() void {
+    if (!driven()) return;
+    _ = uacpi.uacpi_reg_all_opregions(uacpi.namespace_root(), .embedded_controller);
 }

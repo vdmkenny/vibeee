@@ -196,9 +196,11 @@ fn bringUp() bool {
 
     if (!step("devices", uacpi.uacpi_namespace_initialize())) return false;
 
-    // The vendor handshake, before any of its methods are called: it is what
-    // switches the firmware off the trap paths it keeps for a machine with no
-    // operating system.
+    // The bytecode learns its controller regions are answered, then the
+    // vendor is told a driver is present. Both switch firmware off the
+    // fallback paths it keeps for a machine with no operating system, and
+    // both must come before any of its methods are called.
+    ec.connect();
     asus.greet();
 
     // The general-purpose events, which is what the system control interrupt
