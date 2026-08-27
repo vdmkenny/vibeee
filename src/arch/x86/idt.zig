@@ -325,20 +325,18 @@ pub fn resolveIrq(number: u32) irq_mod.Line {
     return routing.resolve(@intCast(number));
 }
 
-/// Whether the firmware's override table described this legacy number.
-pub fn irqDescribed(number: u32) bool {
-    if (number >= irq_mod.MAX_LINES) return false;
-    return routing.describedLine(@intCast(number)) != null;
-}
+/// Make a PCI-used legacy line signal the way PCI signals: level, held low.
+/// Boot only, and only where the firmware's override table said nothing;
+/// where it spoke, its word stands.
+pub fn correctPciLine(number: u4) void {
+    if (!ioapic.active()) return;
+    if (routing.describedLine(number) != null) return;
 
-/// Make a line's redirection entry match `line`, touching the controller
-/// only when it disagrees: a rewrite carries no information when the entry
-/// already says this, and on this machine the firmware notices the touch.
-pub fn programGsi(line: irq_mod.Line) void {
-    if (!ioapic.active() or line.gsi >= MAX_GSI) return;
-    const vector = gsi_vector[line.gsi];
+    const gsi = routing.resolve(number).gsi;
+    if (gsi >= MAX_GSI) return;
+    const vector = gsi_vector[gsi];
     if (vector == 0) return;
-    ioapic.correct(line.gsi, vector, line.active_low, line.level, lapic.id());
+    ioapic.correct(gsi, vector, true, true, lapic.id());
 }
 
 /// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a

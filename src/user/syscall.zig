@@ -264,8 +264,8 @@ pub const IrqError = error{
 
 /// Take a device interrupt line. The handle can be passed to `waitMany`, and
 /// the line stays masked until the first wait.
-pub fn irqAttach(gsi: u32, wiring: abi.IrqWiring) IrqError!u32 {
-    const handle = syscall2(abi.number("irq_attach"), gsi, @intFromEnum(wiring));
+pub fn irqAttach(gsi: u32) IrqError!u32 {
+    const handle = syscall1(abi.number("irq_attach"), gsi);
     if (handle >= 0) return @intCast(handle);
 
     return switch (-handle) {

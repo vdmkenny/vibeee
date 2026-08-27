@@ -549,15 +549,6 @@ pub const OpenFlags = packed struct(u32) {
 /// those directly: a channel's serving end is ready when a call is waiting, a
 /// pipe's read end when there are bytes. These three are the happenings with
 /// no handle of their own.
-/// How an interrupt line signals, for the lines the firmware's override
-/// table says nothing about. A described line is routed as described either
-/// way; this decides the default for the rest, and the two buses disagree:
-/// ISA lines pulse edges high, PCI lines hold levels low.
-pub const IrqWiring = enum(u32) {
-    isa = 0,
-    pci = 1,
-};
-
 pub const Watchable = enum(u32) {
     keys = 0,
     pointer = 1,
@@ -1108,7 +1099,6 @@ pub const table = [_]Syscall{
         .summary = "Take a device interrupt line.",
         .args = &.{
             .{ .name = "gsi", .kind = .uint, .desc = "Global interrupt number, as the firmware describes it." },
-            .{ .name = "wiring", .kind = .uint, .desc = "An IrqWiring: how the line signals, when the firmware said nothing." },
         },
         .returns = "a handle",
         .errors = &.{ E.busy, E.inval, E.nomem },

@@ -12,7 +12,6 @@
 const std = @import("std");
 const ctx = @import("context.zig");
 const handles = @import("../handle.zig");
-const abi = @import("lib").syscalls;
 const console = @import("../console.zig");
 const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
@@ -78,17 +77,8 @@ pub fn sys_irq_attach(a: Args) Result {    if (ctx.require(.{ .driver = true }))
 
     // The caller's number is the firmware's: a table said 9, and where 9
     // actually arrives is this machine's business, not the driver's.
-    var wired = hal.resolveIrq(@truncate(a.a0));
+    const wired = hal.resolveIrq(@truncate(a.a0));
     if (wired.gsi != a.a0) console.debug("irq", "{d} arrives on line {d}", .{ a.a0, wired.gsi });
-
-    // The override table's word wins. Where it said nothing, the bus decides:
-    // an undescribed line defaults to the ISA pulse, and a PCI line held low
-    // through that default never fires.
-    if (a.a1 == @intFromEnum(abi.IrqWiring.pci) and !hal.irqDescribed(@truncate(a.a0))) {
-        wired.active_low = true;
-        wired.level = true;
-        hal.programGsi(wired);
-    }
 
     const line = irqevent.attach(wired.gsi) catch |err| {
         table.entries[slot] = .{};

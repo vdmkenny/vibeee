@@ -380,6 +380,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     };
     pci.enableMemoryAndMaster(loc);
     device.regs = .{ .base = @ptrCast(@volatileCast(aperture)) };
+    log.say("atl2", .dim, "registers mapped");
 
     var phys: u32 = 0;
     const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
@@ -402,7 +403,9 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     device.arena = @alignCast(@ptrCast(mapped));
     device.phys = phys;
 
+    log.say("atl2", .dim, "rings placed");
     if (!configure()) return false;
+    log.say("atl2", .dim, "engine configured");
     readMac(dev);
     dev.state = link(dev);
 

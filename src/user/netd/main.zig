@@ -150,10 +150,15 @@ fn attach(iface: *dev.NicDev) bool {
             }
         }
         if (!shared) {
-            iface.irq = sys.irqAttach(line, .pci) catch {
+            iface.irq = sys.irqAttach(line) catch {
                 log.warn("netd", "the interrupt line refused to attach");
                 return false;
             };
+            log.begin("netd", .dim);
+            out.text("line ");
+            out.decimal(line);
+            out.text(" taken");
+            log.end();
         }
     } else {
         // An adapter with no line still opens; it just never hears anything.
