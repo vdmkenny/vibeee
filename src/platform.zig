@@ -305,6 +305,60 @@ fn reportStorage() void {
     console.info("block", "{d} device(s), {d} MiB total", .{ devs.len, total / (1024 * 1024) });
 }
 
+/// Take a USB controller away from the firmware's system management code.
+///
+/// Two shapes of the same eviction. A UHCI controller keeps its trap enables
+/// in one configuration word: zeros for the enables and ones over the
+/// latched statuses end it. An EHCI controller keeps a formal semaphore in
+/// its extended capabilities: the operating system asks, the BIOS releases,
+/// and a BIOS that will not is dispossessed, which is the sequence every
+/// operating system performs before touching the controller.
+fn handOverUsb(addr: pci.Address, prog_if: u8) void {
+    switch (prog_if) {
+        0x00 => { // UHCI
+            const LEGSUP: u8 = 0xC0;
+            const RELEASED: u32 = 0x8F00; // enables zero, statuses cleared
+            const kept = pci.configRead32(addr, LEGSUP) & 0xFFFF_0000;
+            pci.configWrite32(addr, LEGSUP, kept | RELEASED);
+            console.debug("usb", "uhci at {x:0>2}:{x:0>2}.{d} handed over", .{
+                addr.bus, addr.slot, addr.func,
+            });
+        },
+        0x20 => { // EHCI
+            const bar = pci.configRead32(addr, pci.BAR0_OFFSET) & ~@as(u32, 0xF);
+            if (bar == 0) return;
+            const regs = hal.mapMmio(bar, 0x1000, .uncached) catch return;
+            const hccparams: *const volatile u32 = @ptrFromInt(regs + 0x08);
+            const eecp: u8 = @truncate((hccparams.* >> 8) & 0xFF);
+            if (eecp < 0x40) return;
+
+            // The semaphore: the OS-owned bit asked for, the BIOS-owned bit
+            // waited out, and a BIOS that keeps holding is dispossessed.
+            const OS_OWNED: u32 = 1 << 24;
+            const BIOS_OWNED: u32 = 1 << 16;
+            var legsup = pci.configRead32(addr, eecp);
+            pci.configWrite32(addr, eecp, legsup | OS_OWNED);
+            var patience: u32 = 0;
+            while (patience < 100) : (patience += 1) {
+                legsup = pci.configRead32(addr, eecp);
+                if (legsup & BIOS_OWNED == 0) break;
+                const until = clock.monotonicMicros() + 1_000;
+                while (clock.monotonicMicros() < until) {}
+            }
+            if (legsup & BIOS_OWNED != 0) {
+                pci.configWrite32(addr, eecp, OS_OWNED);
+            }
+
+            // And the trap enables behind it, off; their statuses, cleared.
+            pci.configWrite32(addr, eecp + 4, 0xE000_0000);
+            console.debug("usb", "ehci at {x:0>2}:{x:0>2}.{d} handed over", .{
+                addr.bus, addr.slot, addr.func,
+            });
+        },
+        else => {},
+    }
+}
+
 fn enumeratePci() void {
     pci.enumerate(struct {
         fn found(addr: pci.Address, vendor: u16, device: u16) void {
@@ -316,17 +370,10 @@ fn enumeratePci() void {
             // management mode, polled on a periodic trap that shares its
             // interrupt plumbing with whatever else sits on those pins:
             // unmasking such a pin with the emulation live is a machine that
-            // stops. The handover is one register: the trap enables cleared
-            // and their latched statuses written away. This machine's own
-            // keyboard is not USB, so nothing is lost but the trap.
-            if (class == 0x0C and subclass == 0x03 and (class_reg >> 8) & 0xFF == 0x00) {
-                const LEGSUP: u8 = 0xC0;
-                const RELEASED: u32 = 0x8F00;
-                const kept = pci.configRead32(addr, LEGSUP) & 0xFFFF_0000;
-                pci.configWrite32(addr, LEGSUP, kept | RELEASED);
-                console.debug("usb", "legacy emulation handed over at {x:0>2}:{x:0>2}.{d}", .{
-                    addr.bus, addr.slot, addr.func,
-                });
+            // stops. Handed over at boot; this machine's own keyboard is not
+            // USB, so nothing is lost but the trap.
+            if (class == 0x0C and subclass == 0x03) {
+                handOverUsb(addr, @truncate((class_reg >> 8) & 0xFF));
             }
 
             probe.consider(.{

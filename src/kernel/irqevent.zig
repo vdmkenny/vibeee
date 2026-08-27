@@ -70,9 +70,14 @@ pub fn attach(gsi: u32) Error!*IrqEvent {
 /// Let the line through. Called by the first wait, and by every acknowledgement
 /// after the driver has finished with the device.
 pub fn arm(self: *IrqEvent) void {
+    const first = !self.armed;
     self.armed = true;
     self.held = false;
     hal.setGsiMask(self.gsi, false);
+    // The first opening of a line is the moment a machine with a disputed
+    // pin finds out, and the service that opened it cannot say so once the
+    // console belongs to the shell.
+    if (first) console.debug("irq", "line {d} unmasked", .{self.gsi});
 }
 
 /// The driver has finished with the device, so the line may fire again.
@@ -137,6 +142,7 @@ fn onInterrupt(_: *hal.InterruptFrame) void {
         hal.setGsiMask(self.gsi, true);
         self.held = true;
         self.count += 1;
+        if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
 
         // A line delivering this often is a source nobody manages to quiet,
         // and the machine it saturates cannot run the tool that would say
