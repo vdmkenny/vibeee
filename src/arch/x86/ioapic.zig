@@ -181,6 +181,12 @@ fn readEntry(c: *Mapped, line: u32) Redirect {
 
 fn read(c: *Mapped, index: u32) u32 {
     c.regs[REGSEL / 4] = index;
+    // 82093AA-class controllers latch on the first window read: it returns
+    // the previous register's value, and only the second read is the one
+    // that was selected. QEMU answers correctly on the first, which is how
+    // a kernel developed under it ships a read that sees garbage on the
+    // machine.
+    _ = c.regs[IOWIN / 4];
     return c.regs[IOWIN / 4];
 }
 
