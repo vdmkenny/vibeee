@@ -189,6 +189,10 @@ pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
     // The USB handover inside the walk asks the firmware to stop emulating
     // input; the keyboard controller's own settings must survive that.
     kbd.reassert();
+    // The emulation's periodic trap then still fires from the power
+    // management block rather than from any controller, so it is silenced
+    // separately, once the block's base address is readable.
+    silenceUsbLegacySmi();
     // Attach before reporting, so the table shows what actually came up rather
     // than what merely matched.
     probe.attachAll();
@@ -360,6 +364,36 @@ fn handOverUsb(addr: pci.Address, prog_if: u8) void {
         },
         else => {},
     }
+}
+
+/// The chipset keeps running the firmware's USB input emulation from a
+/// periodic system management interrupt even after every controller has been
+/// handed over: the enables for it live in the power management block, not in
+/// the controllers. That handler runs above interrupts and shares the
+/// interrupt controller's index register and the keyboard controller with the
+/// kernel, and an owner that cannot be locked out makes every access a race.
+/// Off, by the two bits that are its own; the trap interface the platform
+/// service talks to stays armed.
+fn silenceUsbLegacySmi() void {
+    const lpc = pci.Address{ .bus = 0, .slot = 31, .func = 0 };
+    const id = pci.configRead32(lpc, 0);
+    if (id & 0xFFFF != 0x8086) return;
+    if (pci.configRead32(lpc, pci.CLASS_OFFSET) >> 16 != 0x0601) return;
+
+    // The power management block, from the bridge that carries it.
+    const pmbase: u16 = @truncate(pci.configRead32(lpc, 0x40) & 0xFF80);
+    if (pmbase == 0) return;
+
+    const smi_en = pmbase + 0x30;
+    const LEGACY_USB: u32 = 1 << 3;
+    const LEGACY_USB2: u32 = 1 << 17;
+    const was = hal.inl(smi_en);
+    if (was & (LEGACY_USB | LEGACY_USB2) == 0) {
+        console.debug("usb", "legacy emulation interrupts already quiet", .{});
+        return;
+    }
+    hal.outl(smi_en, was & ~(LEGACY_USB | LEGACY_USB2));
+    console.debug("usb", "legacy emulation interrupts quieted, were {x:0>8}", .{was});
 }
 
 fn enumeratePci() void {
