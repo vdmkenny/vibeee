@@ -329,6 +329,12 @@ pub fn setGsiMask(gsi: u32, masked: bool) void {
     if (ioapic.active()) ioapic.setMask(gsi, masked);
 }
 
+/// Whether a global line is the system control interrupt. Its unmask is not
+/// a controller write: the chipset gate owns that half of it.
+pub fn gsiIsSci(gsi: u32) bool {
+    return routing.isSci(gsi);
+}
+
 /// A global line's redirection entry, low word, zero without an IOAPIC.
 pub fn gsiEntryLow(gsi: u32) u32 {
     if (!ioapic.active()) return 0;
@@ -360,7 +366,10 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
 
     for (0..16) |irq| {
         const line = routing.describedLine(@intCast(irq)) orelse continue;
-        ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination, line.sci);
+        // Legacy lines stay masked here: their claims happen in the early
+        // kernel, whose writes the machine tolerates, and a stray assert on
+        // an unused line must stay silent rather than churn the boot.
+        ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination, true);
         if (line.gsi < taken.len) taken[line.gsi] = true;
         if (line.gsi < MAX_GSI) gsi_vector[line.gsi] = vectorFor(irq);
     }
@@ -368,7 +377,7 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     for (0..16) |irq| {
         if (routing.describedLine(@intCast(irq)) != null) continue;
         if (taken[irq]) continue;
-        ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination, false);
+        ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination, true);
         gsi_vector[irq] = vectorFor(irq);
     }
 

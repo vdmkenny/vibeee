@@ -80,6 +80,7 @@ pub const setGsiMask = impl.setGsiMask;
 /// firmware that co-owns the controller can have rewritten it since boot.
 pub const gsiEntryLow = impl.gsiEntryLow;
 pub const bootEntry = impl.bootEntry;
+pub const gsiIsSci = impl.gsiIsSci;
 
 /// Whether the fast syscall path is programmed and usable.
 pub const fastSyscallArmed = impl.fastSyscallArmed;

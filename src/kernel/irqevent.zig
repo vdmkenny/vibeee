@@ -86,6 +86,14 @@ pub fn arm(self: *IrqEvent) void {
     if (first) console.debug("irq", "line {d} open, boot wrote {x:0>8}, controller holds {x:0>8}", .{ self.gsi, boot, live });
     self.armed = true;
     self.held = false;
+    // The one runtime write still wanted: a line boot left masked because
+    // its class is the legacy sixteen, and nothing below owns it here. The
+    // SCI never reaches this branch; its gate is the chipset's, and a line
+    // boot left open needs no second opinion.
+    if (!hal.gsiIsSci(self.gsi) and boot != 0 and boot & (0x1 << 16) != 0) {
+        hal.setGsiMask(self.gsi, false);
+        if (first) console.debug("irq", "line {d} unmasked", .{self.gsi});
+    }
 }
 
 /// The driver has finished with the device, so the line may fire again.
