@@ -7,6 +7,7 @@
 //! static table entry, its rings are DMA segments made once at start, and a
 //! frame handed up is counted here and copied later by whoever owns it.
 
+const lib = @import("lib");
 const proto = @import("proto").net;
 const pci = @import("ulib").pci;
 
@@ -32,6 +33,8 @@ pub const Stats = struct {
     rx_dropped: u64 = 0,
     /// Attempted but refused: no descriptor free.
     tx_failed: u64 = 0,
+    /// ARP replies this interface has carried.
+    rx_arp: u64 = 0,
 };
 
 /// Receiving something the hardware said about it. A driver hands this to the
@@ -40,7 +43,9 @@ pub const Stats = struct {
 pub const RxReport = struct {
     /// The frame, inside DMA memory, valid until `rx_done` is called.
     frame: []const u8 = &.{},
-    ok: bool = true,
+    /// A frame opts in: a report that does not say a frame was received
+    /// stays a drop, never a phantom packet.
+    ok: bool = false,
 };
 
 /// What a driver must provide. Each is called from the event loop thread, so
@@ -77,11 +82,21 @@ pub const NicDev = struct {
     /// What the hardware thinks happened to the last interrupt, remembered so
     /// the service can narrate without poking registers back.
     irq_count: u64 = 0,
+
+    /// The last ARP reply this interface carried: who answered, by hardware
+    /// and by address. The traffic proof until the stack replaces the stub.
+    peer: ?Peer = null,
+};
+
+/// The far end of a wire, as an ARP reply names it.
+pub const Peer = struct {
+    mac: [6]u8 = @splat(0),
+    addr: u32 = 0,
 };
 
 /// Say a whole frame arrived and what was made of it. Until there is a stack
-/// the service counts frames and bytes and nothing else; the hook is here so
-/// that day does not change the drivers.
+/// the service counts frames and bytes, and remembers the one kind of frame
+/// that proves the traffic path: an ARP reply, parsed by the pure library.
 pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     if (!report.ok) {
         dev.stats.rx_dropped += 1;
@@ -89,6 +104,11 @@ pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     }
     dev.stats.rx_pkts += 1;
     dev.stats.rx_bytes += report.frame.len;
+
+    if (lib.eth.arpPeer(report.frame)) |peer| {
+        dev.peer = .{ .mac = peer.mac, .addr = peer.addr };
+        dev.stats.rx_arp += 1;
+    }
 }
 
 /// Say a frame went onto the wire.

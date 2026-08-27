@@ -14,12 +14,19 @@ pub const Tag = enum(u8) {
     count,
     /// One interface, at `index`.
     status,
+    /// Send one ARP request from the interface at `index`: the whole of
+    /// outbound traffic until the stack lands, and the reply is the proof
+    /// that the ring and the line carry the real thing.
+    arp_probe,
 };
 
 pub const Req = extern struct {
     tag: Tag,
     _reserved: [3]u8 = @splat(0),
+    /// Which interface, for the requests that address one.
     index: u32 = 0,
+    /// The request's number: the address to ask about, for `arp_probe`.
+    param: u32 = 0,
 };
 
 pub const Status = enum(u8) {
@@ -50,6 +57,12 @@ pub const Iface = extern struct {
     rx_bytes: u32 = 0,
     tx_pkts: u32 = 0,
     tx_bytes: u32 = 0,
+
+    /// Replies the ring has carried, and the last peer that answered: the
+    /// traffic proof until the stack replaces the ARP stub.
+    arp_replies: u32 = 0,
+    peer_ip: u32 = 0,
+    peer_mac: [6]u8 = @splat(0),
 };
 
 pub const Rep = extern struct {
@@ -68,17 +81,18 @@ comptime {
     if (@sizeOf(Rep) > sys.MAX_PAYLOAD) {
         @compileError("a network reply must fit in one channel payload");
     }
-    if (@sizeOf(Req) != 8) @compileError("a network request is eight bytes");
+    if (@sizeOf(Req) != 12) @compileError("a network request is twelve bytes");
+    if (@sizeOf(Iface) != 52) @compileError("an interface record is 52 bytes");
 }
 
 pub const Error = error{ NoService, Refused, End };
 
-pub fn call(tag: Tag, index: u32, into: *Rep) Error!void {
+pub fn call(tag: Tag, index: u32, param: u32, into: *Rep) Error!void {
     const channel = sys.svcConnect(SERVICE);
     if (channel < 0) return error.NoService;
     defer _ = sys.close(@intCast(channel));
 
-    var request = Req{ .tag = tag, .index = index };
+    var request = Req{ .tag = tag, .index = index, .param = param };
     const message = sys.Message.init(std.mem.asBytes(&request), &.{});
 
     var reply = sys.Message{};

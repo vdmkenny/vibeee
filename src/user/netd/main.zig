@@ -15,6 +15,7 @@
 //! That is the part QEMU can test, and it is what `net` shows.
 
 const atl2 = @import("atl2.zig");
+const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
 const e1000 = @import("e1000.zig");
 const log = @import("ulib").log;
@@ -39,6 +40,7 @@ const Driver = struct {
 const DRIVERS = [_]Driver{
     .{ .name = e1000.name, .vendor = e1000.vendor, .device = e1000.device_id, .ops = e1000.ops },
     .{ .name = atl2.name, .vendor = atl2.vendor, .device = atl2.device_id, .ops = atl2.ops },
+    .{ .name = rtl8139.name, .vendor = rtl8139.vendor, .device = rtl8139.device_id, .ops = rtl8139.ops },
 };
 
 /// How many interfaces a machine of this class can have behind one service.
@@ -111,7 +113,19 @@ fn probe() void {
                 .ops = driver.ops,
                 .location = loc,
             };
-            log.note("netd", "the adapter is ours to drive");
+            const iface_bus = loc.bus;
+            const iface_dev = loc.device;
+            const iface_fn = loc.function;
+            log.begin("netd", .key);
+            out.text(driver.name);
+            out.text(" at ");
+            out.hex(iface_bus, 2);
+            out.byte(':');
+            out.hex(iface_dev, 2);
+            out.byte('.');
+            out.decimal(iface_fn);
+            out.text(" is ours to drive");
+            log.end();
             count += 1;
         }
     }
@@ -120,11 +134,27 @@ fn probe() void {
 /// Map, open and interrupt-wire one interface.
 fn attach(iface: *dev.NicDev) bool {
     const line = pci.interruptLine(iface.location);
+
+    // Lines are shared on this machine's wiring, and the kernel hands a
+    // line to one holder. One process holding it once is enough: every
+    // driver on the line gets the wake, and each reads its own ISR and
+    // says "not mine" with no other cost. So a line already taken here is
+    // shared, not refused.
     if (line != 0 and line != 0xFF) {
-        iface.irq = sys.irqAttach(line) catch {
-            log.warn("netd", "the interrupt line refused to attach");
-            return false;
-        };
+        var shared = false;
+        for (ifaces[0..count]) |other| {
+            if (other.irq != 0 and pci.interruptLine(other.location) == line) {
+                iface.irq = other.irq;
+                shared = true;
+                break;
+            }
+        }
+        if (!shared) {
+            iface.irq = sys.irqAttach(line) catch {
+                log.warn("netd", "the interrupt line refused to attach");
+                return false;
+            };
+        }
     }
 
     if (!iface.ops.open(iface.location, iface)) {
@@ -160,10 +190,19 @@ fn serve(channel: u32) noreturn {
     var source_count: usize = 1;
     sources[0] = channel;
     for (ifaces[0..count]) |iface| {
-        if (iface.irq != 0) {
-            sources[source_count] = iface.irq;
-            source_count += 1;
+        if (iface.irq == 0) continue;
+        // One handle per line: shared lines are woken in one place, not
+        // waited on twice for the same event.
+        var already = false;
+        for (sources[1..source_count]) |s| {
+            if (s == iface.irq) {
+                already = true;
+                break;
+            }
         }
+        if (already) continue;
+        sources[source_count] = iface.irq;
+        source_count += 1;
     }
 
     while (true) {
@@ -219,6 +258,20 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     if (request.index >= count) return .end;
 
     const iface = &ifaces[request.index];
+
+    if (request.tag == .arp_probe) {
+        // The whole of outbound traffic until the stack lands: one ARP
+        // request, hand-built by the pure frame library, asking who holds
+        // the target and told where to answer. The reply, when it comes,
+        // proves the ring and the line from outside.
+        if (!iface.state.up) return .refused;
+
+        var frame: [lib.eth.FRAME]u8 = undefined;
+        lib.eth.arpRequest(&frame, iface.mac, PROBE_SOURCE, request.param);
+        iface.ops.transmit(iface, &frame);
+        return .ok;
+    }
+
     reply.iface = .{
         .up = @intFromBool(iface.state.up),
         .duplex = iface.state.duplex,
@@ -228,8 +281,13 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         .rx_bytes = @truncate(iface.stats.rx_bytes),
         .tx_pkts = @truncate(iface.stats.tx_pkts),
         .tx_bytes = @truncate(iface.stats.tx_bytes),
+        .arp_replies = @truncate(iface.stats.rx_arp),
     };
     @memcpy(reply.iface.driver[0..@min(iface.name.len, 8)], iface.name[0..@min(iface.name.len, 8)]);
+    if (iface.peer) |peer| {
+        reply.iface.peer_ip = peer.addr;
+        reply.iface.peer_mac = peer.mac;
+    }
 
     // Fresh link state: the adapter may have seen a change whose line
     // arrived between asks, and this is a read of it either way.
@@ -238,6 +296,10 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
 
     return .ok;
 }
+
+/// What a sent ARP request says about itself: who asks, and who is being
+/// looked for. QEMU's slirp guest address, until configuration exists.
+const PROBE_SOURCE = 0x0A00020F; // 10.0.2.15
 
 // ---------------------------------------------------------------------------
 // Small spelling helpers
