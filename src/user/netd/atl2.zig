@@ -720,7 +720,14 @@ pub fn transmit(nic: *NicDev, frame: []const u8) void {
 
     device.txd_write = (device.txd_write + needed) % TXD_BYTES;
     device.txs_fill +%= 1;
+
+    // The vendor's driver flushes every ring write with a register read
+    // before a mailbox goes out: the engine fetches the FIFO the instant
+    // the index moves, and on this silicon a still-posted write is an
+    // underrun. The read makes the FIFO's bytes visible before the bell.
+    _ = device.regs.rd32(.idle_status);
     device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write >> 2));
+    _ = device.regs.rd16(.mb_txd_wr_idx);
 
     log.begin("atl2", .dim);
     out.text("tx ");
