@@ -334,6 +334,12 @@ pub fn setGsiMask(gsi: u32, masked: bool) void {
     if (ioapic.active()) ioapic.setMask(gsi, masked);
 }
 
+/// A global line's redirection entry, low word, zero without an IOAPIC.
+pub fn gsiEntryLow(gsi: u32) u32 {
+    if (!ioapic.active()) return 0;
+    return ioapic.entryLow(gsi);
+}
+
 /// What the firmware said about the legacy lines. Empty until the MADT has
 /// been read, which is fine: nothing asks before then.
 var routing: irq_mod.Routing = .{};

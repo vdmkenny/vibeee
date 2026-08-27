@@ -248,3 +248,27 @@ pub fn init() void {
 fn onIrq(_: *idt.Frame) void {
     onKeyboardInterrupt();
 }
+
+/// Re-check the configuration after the firmware has been asked to stop
+/// emulating USB input. Firmware that proxied this controller through SMM can
+/// hand it back configured for the proxy rather than for the kernel, and a
+/// controller handed back with its interrupt off is a dead keyboard with no
+/// error anywhere.
+pub fn reassert() void {
+    const flags = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(flags);
+
+    var drained: u32 = 0;
+    while (status().output_full and drained < 32) : (drained += 1) {
+        _ = port.inb(DATA);
+    }
+
+    var cfg = config();
+    if (cfg.keyboard_interrupt) {
+        console.debug("kbd", "controller kept its interrupt enable", .{});
+        return;
+    }
+    cfg.keyboard_interrupt = true;
+    setConfig(cfg);
+    console.debug("kbd", "controller lost its interrupt enable, restored", .{});
+}

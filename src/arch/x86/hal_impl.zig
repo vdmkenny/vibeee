@@ -68,6 +68,7 @@ pub const resolveIrq = idt.resolveIrq;
 pub const claimGsi = claimGsiImpl;
 pub const releaseGsi = idt.releaseGsi;
 pub const setGsiMask = idt.setGsiMask;
+pub const gsiEntryLow = idt.gsiEntryLow;
 
 /// True when the line was taken. The vector it landed on is the kernel's
 /// business, so it is not passed back.

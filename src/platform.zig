@@ -186,6 +186,9 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
 pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
     probe.begin(&drivers.table);
     enumeratePci();
+    // The USB handover inside the walk asks the firmware to stop emulating
+    // input; the keyboard controller's own settings must survive that.
+    kbd.reassert();
     // Attach before reporting, so the table shows what actually came up rather
     // than what merely matched.
     probe.attachAll();

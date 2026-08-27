@@ -15,6 +15,7 @@
 //!
 //! See design/00-vibeee.md §6.5.
 
+const console = @import("../../kernel/console.zig");
 const cpu = @import("cpu.zig");
 const idt = @import("idt.zig");
 const port = @import("port.zig");
@@ -77,7 +78,25 @@ fn onTick(_: *idt.Frame) void {
     // Interrupts are already off inside the handler.
     if (pm_timer_port != 0) _ = samplePmTimer();
 
+    if (console.isDebug()) heartbeat();
+
     sched.onTick();
+}
+
+/// A quiet machine and a hung one look identical in a still photograph, and
+/// the target has no serial port to ask. In debug boots the corner glyph
+/// advances from the tick, so it moves exactly as long as interrupts are being
+/// taken and freezes the instant they are not.
+const HEARTBEAT = [_]u21{ '|', '/', '-', '\\' };
+var beat: u32 = 0;
+
+fn heartbeat() void {
+    beat +%= 1;
+    // A phase step every quarter second: watching the corner for one second
+    // answers whether the kernel is alive.
+    if (beat % (TICK_HZ / 4) != 0) return;
+    const glyph = HEARTBEAT[(beat / (TICK_HZ / 4)) % HEARTBEAT.len];
+    console.putAt(console.width() - 1, 0, glyph, .dark_grey, .black);
 }
 
 pub fn tickCount() u64 {

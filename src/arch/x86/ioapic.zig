@@ -128,6 +128,16 @@ pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u
     });
 }
 
+/// The low half of a line's redirection entry: vector, delivery mode,
+/// polarity, trigger and mask in one word. For the narration around a first
+/// unmask, where what the hardware would deliver is the question.
+pub fn entryLow(gsi: u32) u32 {
+    const owner = find(gsi) orelse return 0;
+    const was = hold();
+    defer release(was);
+    return read(owner, REG_REDIRECT + (gsi - owner.info.gsi_base) * 2);
+}
+
 pub fn setMask(gsi: u32, masked: bool) void {
     const owner = find(gsi) orelse return;
     const line = gsi - owner.info.gsi_base;

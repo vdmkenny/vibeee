@@ -71,12 +71,16 @@ pub fn attach(gsi: u32) Error!*IrqEvent {
 /// after the driver has finished with the device.
 pub fn arm(self: *IrqEvent) void {
     const first = !self.armed;
+    // The first opening of a line is the moment a machine with a disputed pin
+    // finds out, and the service that opened it cannot say so once the console
+    // belongs to the shell. Narrated on both sides of the write so a machine
+    // that dies here says which side it died on, with the entry as the
+    // controller holds it now: firmware that co-owns the controller can have
+    // rewritten what boot routed.
+    if (first) console.debug("irq", "line {d} opening, entry {x:0>8}", .{ self.gsi, hal.gsiEntryLow(self.gsi) });
     self.armed = true;
     self.held = false;
     hal.setGsiMask(self.gsi, false);
-    // The first opening of a line is the moment a machine with a disputed
-    // pin finds out, and the service that opened it cannot say so once the
-    // console belongs to the shell.
     if (first) console.debug("irq", "line {d} unmasked", .{self.gsi});
 }
 
