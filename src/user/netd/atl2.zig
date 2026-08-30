@@ -431,6 +431,10 @@ const ADVERTISE_ALL = packed struct(u16) {
 const TXD_BYTES = 8 * 1024;
 const TXS_COUNT = 160;
 const RX_COUNT = 64;
+
+/// Flow-control thresholds, the vendor's own arithmetic over the ring.
+const PAUSE_ON_SLOTS: u16 = (RX_COUNT / 8) * 7;
+const PAUSE_OFF_SLOTS: u16 = @max(2, RX_COUNT / 12);
 const RX_SLOT = 1536;
 const RX_STATUS_BYTES = @sizeOf(RxStatus) + 2 * @sizeOf(u16);
 
@@ -638,8 +642,16 @@ fn configure() bool {
     // Frame sizes and cut-through.
     device.regs.wr32(.mtu, MAC_FRAME_LIMIT);
     device.regs.wr32(.tx_cut_thresh, 0x177);
-    device.regs.wr16(.pause_on_th, 0);
-    device.regs.wr16(.pause_off_th, 0);
+
+    // The 802.3x pause generator's thresholds, in occupied receive slots:
+    // ask the far end to pause at seven eighths full, release it at a
+    // twelfth. The vendor's driver computes exactly these from the ring
+    // size. Zeroes here are not "off": with flow control enabled they read
+    // as pause-always and release-never, a corner the silicon never ships
+    // in, and the generator then fights the transmit path for the wire on
+    // every received frame.
+    device.regs.wr16(.pause_on_th, PAUSE_ON_SLOTS);
+    device.regs.wr16(.pause_off_th, PAUSE_OFF_SLOTS);
 
     // Mailboxes start empty, and the engine turns.
     device.regs.wr16(.mb_txd_wr_idx, 0);
@@ -1014,8 +1026,11 @@ pub fn irq(nic: *NicDev) void {
             return;
         }
 
-        if (cause.rx_status) reapRx(nic);
-        if (cause.tx_status) reapTx(nic);
+        // The vendor services on the whole event class, errors included:
+        // an overflow with no fresh status still means slots to reclaim,
+        // and reclaiming them is what ends the overflow.
+        if (cause.rx_status or cause.rxf_ov or cause.rxs_ov or cause.host_rxd_ov) reapRx(nic);
+        if (cause.tx_status or cause.txf_ur or cause.txs_ov or cause.host_txd_ur or cause.tx_early) reapTx(nic);
         if (cause.link_change or cause.phy or cause.phy_link_down) {
             dev_mod.deliverLink(nic, link(nic));
             applyLinkState(nic.state);
