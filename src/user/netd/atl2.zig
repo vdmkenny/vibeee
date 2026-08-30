@@ -898,70 +898,85 @@ fn mdioIdle(regs: Regs) bool {
 // Traffic
 // ---------------------------------------------------------------------------
 
+/// Service the adapter until its status reads quiet, the way the vendor's
+/// own handler loops. A cause that latches while one is being serviced makes
+/// no new interrupt edge, and this service runs whole milliseconds where the
+/// vendor's runs microseconds: a single pass would release the line with a
+/// latched cause nobody will ever be told about again, and the receive side
+/// falls silent until some other bit happens to edge. Frames delivered
+/// seconds late, in one clump, are exactly what that silence looks like.
+const SERVICE_ROUNDS = 8;
+
 pub fn irq(nic: *NicDev) void {
     if (!device.opened or !device.started) return;
-    const cause = @as(Isr, @bitCast(device.regs.rd32(.isr)));
-    if (cause.none()) return; // a shared line, not ours
 
-    // The everyday causes — a packet status update, the PHY answering a
-    // poll — are traffic, not news, and stay quiet. Anything left over is
-    // worth the line: errors, overruns and link events.
-    var unexpected = cause;
-    unexpected.rx_status = false;
-    unexpected.tx_status = false;
-    unexpected.phy = false;
-    unexpected.hold = false;
-    if (@as(u32, @bitCast(unexpected)) != 0) {
-        log.begin("atl2", .dim);
-        out.text("cause 0x");
-        out.hex(@as(u32, @bitCast(cause)), 8);
-        log.end();
-    }
+    var round: u32 = 0;
+    while (round < SERVICE_ROUNDS) : (round += 1) {
+        const cause = @as(Isr, @bitCast(device.regs.rd32(.isr)));
+        if (cause.none()) return; // quiet: nothing latched, or a shared line
 
-    // The PHY latches its interrupt until its status register is read, so
-    // the read comes before the acknowledgement: acknowledged the other way
-    // round, the still-latched line re-raises the cause just cleared.
-    if (cause.phy) _ = readPhy(.interrupt_clear);
+        // The everyday causes, a packet status update, the PHY answering a
+        // poll, are traffic, not news, and stay quiet. Anything left over is
+        // worth the line: errors, overruns and link events.
+        var unexpected = cause;
+        unexpected.rx_status = false;
+        unexpected.tx_status = false;
+        unexpected.phy = false;
+        unexpected.hold = false;
+        if (@as(u32, @bitCast(unexpected)) != 0) {
+            log.begin("atl2", .dim);
+            out.text("cause 0x");
+            out.hex(@as(u32, @bitCast(cause)), 8);
+            log.end();
+        }
 
-    // Acknowledge and hold the line (ISR_DIS_INT), per the manual: work on
-    // it before the next delivery on a shared level line.
-    var acknowledged = cause;
-    acknowledged.hold = true;
-    device.regs.wr32(.isr, @bitCast(acknowledged));
+        // The PHY latches its interrupt until its status register is read, so
+        // the read comes before the acknowledgement: acknowledged the other
+        // way round, the still-latched line re-raises the cause just cleared.
+        if (cause.phy) _ = readPhy(.interrupt_clear);
 
-    if (cause.phy_link_down or cause.dmar_timeout or cause.dmaw_timeout) {
-        // The manual's answer to a wedged DMA engine is a full reset. Masked
-        // and quieted first, and the link reapplied after, because configure
-        // leaves the MAC disabled until the link state says otherwise.
-        log.warn("atl2", "fatal adapter event; reseating the adapter");
-        nic.stats.tx_failed += device.txs_used;
-        device.regs.wr32(.imr, 0);
-        _ = device.regs.rd32(.imr);
-        device.regs.wr32(.isr, 0);
-        if (!configure()) {
-            device.started = false;
-            nic.state = .{};
+        // Acknowledge and hold the line (ISR_DIS_INT), per the manual: work
+        // on it before the next delivery on a shared level line.
+        var acknowledged = cause;
+        acknowledged.hold = true;
+        device.regs.wr32(.isr, @bitCast(acknowledged));
+
+        if (cause.phy_link_down or cause.dmar_timeout or cause.dmaw_timeout) {
+            // The manual's answer to a wedged DMA engine is a full reset.
+            // Masked and quieted first, and the link reapplied after, because
+            // configure leaves the MAC disabled until the link state says
+            // otherwise.
+            log.warn("atl2", "fatal adapter event; reseating the adapter");
+            nic.stats.tx_failed += device.txs_used;
+            device.regs.wr32(.imr, 0);
+            _ = device.regs.rd32(.imr);
+            device.regs.wr32(.isr, 0);
+            if (!configure()) {
+                device.started = false;
+                nic.state = .{};
+                applyLinkState(nic.state);
+                pci.disableInterruptAndMaster(nic.location);
+                log.fail("atl2", "adapter recovery failed");
+                return;
+            }
+            dev_mod.deliverLink(nic, link(nic));
             applyLinkState(nic.state);
-            pci.disableInterruptAndMaster(nic.location);
-            log.fail("atl2", "adapter recovery failed");
+            device.regs.wr32(.imr, @bitCast(UNMASKED));
+            _ = device.regs.rd32(.imr);
             return;
         }
-        dev_mod.deliverLink(nic, link(nic));
-        applyLinkState(nic.state);
-        device.regs.wr32(.imr, @bitCast(UNMASKED));
-        _ = device.regs.rd32(.imr);
-        return;
-    }
 
-    if (cause.rx_status) reapRx(nic);
-    if (cause.tx_status) reapTx(nic);
-    if (cause.link_change or cause.phy or cause.phy_link_down) {
-        dev_mod.deliverLink(nic, link(nic));
-        applyLinkState(nic.state);
-    }
+        if (cause.rx_status) reapRx(nic);
+        if (cause.tx_status) reapTx(nic);
+        if (cause.link_change or cause.phy or cause.phy_link_down) {
+            dev_mod.deliverLink(nic, link(nic));
+            applyLinkState(nic.state);
+        }
 
-    // Release the line.
-    device.regs.wr32(.isr, 0);
+        // Release the line, then look again: only a read that comes back
+        // quiet proves nothing latched while the reaps ran.
+        device.regs.wr32(.isr, 0);
+    }
 }
 
 fn reapRx(nic: *NicDev) void {
