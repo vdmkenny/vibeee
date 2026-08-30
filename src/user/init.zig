@@ -60,13 +60,9 @@ pub const Service = struct {
     /// itself is made of. A target is reached once everything belonging to
     /// it is running, and services name it in `needs` to order themselves
     /// behind it. A service in no target starts only once the boot's targets
-    /// are reached — from init's supervising loop, where the machine is
-    /// quiet — because its first hardware touch belongs there.
+    /// are reached, from init's supervising loop, because its first hardware
+    /// touch belongs after the boot's own.
     target: []const u8 = "",
-    /// Milliseconds the machine sits quiet before this service starts, after
-    /// its dependencies are met. For a driver whose first touch must follow
-    /// the firmware's own boot activity, which no interrupt announces.
-    settle_ms: u32 = 0,
     restart: Restart = .on_failure,
     /// Comma-separated capability names, from `Caps` in the syscall ABI. Empty
     /// leaves the service with everything init has, which is what a service
@@ -92,10 +88,6 @@ const State = struct {
     /// Whether it should start at all. `held` is for this boot; this is for
     /// every one after it, and is what `/etc/disabled` records.
     enabled: bool = true,
-    /// When an after-boot service may start: set once its dependencies are
-    /// met, then the settle allowance runs from there.
-    ready_at: u64 = 0,
-    deps_met: bool = false,
 };
 
 var services: [MAX_SERVICES]State = @splat(.{});
@@ -462,8 +454,8 @@ fn supervise() noreturn {
             idle();
         }
 
-        // Bounded by whichever service has the next moment: the after-boot
-        // round's settle, or the held-late service's start and grace.
+        // Bounded by the held-late service's next moment, its start or its
+        // grace, and unbounded once nothing is pending.
         _ = sys.waitMany(sources[0..count], nextDeadline());
     }
 }
@@ -510,34 +502,20 @@ fn serviceLate() void {
     }
 }
 
-/// Start the after-boot round's services once their dependencies are met
-/// and their settle allowance has run, from this quiet loop rather than
-/// from inside the boot. Marks the round done when everything belonging to
-/// it has been started, abandoned or held.
+/// Start the untargeted services once the boot's own targets have run their
+/// course, from this quiet loop rather than from inside the boot. One pass:
+/// a dependency the boot did not bring up will not arrive on its own, and a
+/// service whose dependencies are up starts here and now.
 fn serviceAfterBoot() void {
     if (after_boot_done) return;
-    const now = sys.clockMicros();
 
-    var left = false;
     for (services[0..service_count]) |*state| {
         if (state.service.target.len > 0) continue;
         if (!state.enabled or state.running or state.abandoned) continue;
 
-        if (!state.deps_met) {
-            // By now the boot's targets have run their course, so a
-            // dependency that is not met will not be met: the service is
-            // given up on, once, with why.
-            if (!dependenciesMet(state.service)) {
-                report(state.service.name, "needs a service that never came up");
-                state.abandoned = true;
-                continue;
-            }
-            state.deps_met = true;
-            state.ready_at = now + @as(u64, state.service.settle_ms) * 1000;
-        }
-
-        if (now < state.ready_at) {
-            left = true;
+        if (!dependenciesMet(state.service)) {
+            report(state.service.name, "needs a service that never came up");
+            state.abandoned = true;
             continue;
         }
         // Said on the console rather than into the ring: these lines are how
@@ -546,24 +524,15 @@ fn serviceAfterBoot() void {
         start(state);
     }
 
-    if (!left) after_boot_done = true;
+    after_boot_done = true;
 }
 
 /// How long the supervising wait may sleep until the next moment that
-/// matters: an after-boot service's settle, or a late service's start and
-/// grace. Forever once nothing is pending.
+/// matters: a late service's start and its grace. Forever once nothing is
+/// pending.
 fn nextDeadline() usize {
     const now = sys.clockMicros();
     var earliest: u64 = 0; // 0: nothing pending
-
-    if (!after_boot_done) {
-        for (services[0..service_count]) |*state| {
-            if (state.service.target.len > 0) continue;
-            if (!state.enabled or state.running or state.abandoned) continue;
-            if (!state.deps_met) continue;
-            if (earliest == 0 or state.ready_at < earliest) earliest = state.ready_at;
-        }
-    }
 
     if (late) |_| {
         const moment = if (late_grace_at == 0) late_start_at else late_grace_at;

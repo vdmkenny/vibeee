@@ -5,9 +5,10 @@
 //! here waits on `wait_many`: the service channel and the interrupt lines of
 //! the adapters it was handed. Nothing polls.
 //!
-//! Started by the device manager when an ethernet device matches; the /svc
-//! name doubles as the claim, so a second instance finds the name taken and
-//! steps aside rather than fight the first for the hardware.
+//! Started by init once the platform service has published its name, which
+//! only happens with the firmware fully settled. The /svc name doubles as
+//! the claim, so a second instance finds the name taken and steps aside
+//! rather than fight the first for the hardware.
 //!
 //! The drivers themselves live beside this file, one module each, behind one
 //! interface (`dev.zig`). What is not here yet is the stack: for now an

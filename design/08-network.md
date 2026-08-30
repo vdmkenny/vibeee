@@ -144,10 +144,10 @@ ethernet NicDev carrying ethertype frames after 802.11↔802.3 translation in th
 netd's manifest declares `needs = platd` and `provides = net`; init releases dependents
 on the provided name, so these rules are load-bearing:
 
-- Register the service name as the last act before the serve loop, once every question
-  the service will answer is already answerable. netd's first act is the PCI routing
-  question to `platd`, and `platd` registers its own name only once the firmware is
-  fully settled — the pair is the template every future service follows.
+- `platd` registers its own name only once the firmware is fully settled, and netd
+  orders itself behind that name: its routing question is asked of a service already
+  in its serve loop. netd's own name doubles as its instance claim, so it is
+  registered first; nothing downstream waits on it before the hardware is up.
 - First hardware touch only after the dependencies are up. Probe, claim, map, then
   drive; a dependency that cannot answer is a refusal, not a machine that stops.
 - The boot line can hold the service down (`nonet`) or start it late under the boot

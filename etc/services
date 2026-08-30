@@ -8,11 +8,8 @@
 #   needs       comma-separated services, or targets, that must be up first
 #   provides    the /svc name it registers, if any; init waits for it to appear
 #   target      the target this service belongs to, if any; the boot's own
-#               services belong to `boot`, everything else starts once it has
-#               settled — names a target in `needs` to order itself behind one
-#   settle_ms   how long the machine sits quiet before an after-boot service
-#               starts, after its dependencies are met; for a driver whose
-#               first touch must follow the firmware's own boot activity
+#               services belong to `boot`, everything else starts once the
+#               targets have settled; a `needs` entry may name a target too
 #   restart     never | on_failure | always
 #   caps        comma-separated capabilities, from `Caps` in the syscall ABI.
 #               Empty keeps everything init has. Capabilities are intersected
@@ -39,22 +36,6 @@ provides = platform
 target  = boot
 restart = always
 
-name    = netd
-binary  = /bin/netd
-# The network service: drives every ethernet adapter it finds, behind the
-# driver capability. One process for the wired port and later the radio, so
-# its interrupt routing question goes to the platform service and its answer
-# names one line per card. Waits for the boot target to settle, and the
-# machine to sit quiet for its settle allowance, before the first touch of
-# the adapter: DMA engines started during the boot's own activity take the
-# machine with them, and the quiet period is the state the late-start path
-# proved safe.
-caps    = driver
-needs   = boot
-provides = net
-settle_ms = 5000
-restart = always
-
 name    = cfgd
 binary  = /bin/cfgd
 # The settings store. Nothing else may write /etc, which is what makes two
@@ -69,5 +50,22 @@ binary  = /bin/vsh
 # desktop and every program either of them starts are all below this line, so
 # none of them can take an interrupt line or map a device.
 caps    = spawn,kill,power,display,mount
+target  = boot
+restart = always
+
+name    = netd
+binary  = /bin/netd
+# The network service: drives every ethernet adapter it finds, behind the
+# driver capability. One process for the wired port and later the radio, so
+# its interrupt routing question goes to the platform service and its answer
+# names one line per card. Ordered behind platd by name rather than by any
+# clock: the platform name appears only once the firmware is fully settled,
+# so the first touch of the adapter follows the firmware's own boot activity
+# by construction. Last in the file, which is last within its round: the
+# shell is on screen before the adapter is touched, so a bring-up that stops
+# does so under a working prompt with its narration readable.
+caps    = driver
+needs   = platd
+provides = net
 target  = boot
 restart = always

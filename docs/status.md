@@ -97,7 +97,7 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 | `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
 | `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Reads a manifest per driver from `/lib/drivers`, matches it against the bus with an exact part beating a family, and starts it with the capabilities the manifest asks for. Leaves alone anything the kernel already drives. |
 | `platd` | [`user/platd/`](../src/user/platd/) | The platform service: what the BIOS and the embedded controller still own. uACPI interprets the tables in a process with the driver and power capabilities and nothing else. What runs on it: the embedded controller (`ec`), the ASUS010 vendor greeting (`asus`), battery, backlight, hotkeys, sleep states, power off through the firmware's own methods, and the interrupt model: it answers PCI routing questions from `_PRT`. The EC ports, the battery mislabel and the power-management no-touch ranges come from the kernel's quirk registry through `sysinfo`, so `platd` holds no machine knowledge of its own. Registers its service name once the firmware is fully settled (see the bring-up model below). |
-| `netd` | [`user/netd/`](../src/user/netd/) | The network service. One event loop, one compile-time driver registry: `e1000`, `rtl8139`, and `atl2` for the 701's own Attansic. Rings live in DMA memory behind `dma_alloc`, interrupts are taken and acknowledged through `irqevent`, PCI routing is asked of `platd` and only then does the first packet move. Verified on the machine: 100 Mbit full duplex, real ARP traffic received; the PCIe phantom error reports are masked at the capability, and the ISR narrates only causes beyond ordinary traffic. |
+| `netd` | [`user/netd/`](../src/user/netd/) | The network service. One event loop, one compile-time driver registry: `e1000`, `rtl8139`, and `atl2` for the 701's own Attansic. Rings live in DMA memory behind `dma_alloc`, interrupts are taken and acknowledged through `irqevent`, PCI routing is asked of `platd` and only then does the first packet move. The PCIe phantom error reports are masked at the capability, and the ISR narrates only causes beyond ordinary traffic. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered streams, the heap, paths, colour by role, console shape, config parsing, line editing, completion, time formatting, sysinfo, the process table. |
 | Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over pages the kernel hands out, exposed both as raw calls and as `std.mem.Allocator`. `malloc` is a wrapper over it, not the other way round. Blocks larger than the classes get a whole segment and are recycled through a reuse list rather than let go, so a caller that churns one size pays for the segment once. |
 | Streams | [`user/lib/stream.zig`](../src/user/lib/stream.zig) | Buffered reads and writes over a handle. Standard output is one instance; a C `FILE` is another. |
@@ -164,14 +164,16 @@ shutdown's own narration returns to the screen for the last lines.
 **A service registers its name only once it is ready to answer.** `platd` loads the
 firmware, arms the SCI and finishes its transitions, then registers `/svc/platform`.
 
-**Targets order the boot.** The manifest's `target` names the group a service belongs
-to; the boot's own services belong to `boot`. Every other service starts only once the
-load-bearing targets have settled — its `needs` names the services and targets it asks
-questions of, and its first hardware touch happens only after both. `netd`, and the
-audio and DHCP services after it, declare `needs = boot`, so a driver's DMA engines
-never start during the boot's own activity. Boot-line tokens hold any service down for
-one boot (`no.<name>`) or start it late under the watchdog (`late.<name>`, short forms
-`nonet`, `nohw`, `netlate`) for diagnosis.
+**Names order the boot, not the clock.** The manifest's `needs` lists the services and
+targets a service asks questions of, and `provides` is the name init waits for before
+releasing dependants. `netd` declares `needs = platd`, and because `platd` publishes
+its name only once the firmware has settled, the adapter's DMA engines start after the
+firmware's own boot activity by construction, with no timed allowance anywhere. The
+manifest's `target` names the group a service belongs to; the boot's own services
+belong to `boot`, and a service in no target starts from the supervising loop once the
+targets have settled. Boot-line tokens hold any service down for one boot (`no.<name>`)
+or start it late under the watchdog (`late.<name>`, short forms `nonet`, `nohw`,
+`netlate`) for diagnosis.
 
 ## Milestones
 
@@ -194,7 +196,7 @@ and exercised on every boot.
 | **GMA900 native modeset** | Done and verified on the machine: gen3 reads the panel's timing from the registers firmware programmed and sets it at boot, reverting if the pipe reports an underrun |
 | **First boot on real hardware** | Done. The machine boots its image from the SD slot and comes up running; what remains below is the polish, not the bring-up |
 | Battery and backlight | Done: `_BIF`/`_BST` through the embedded controller, with this family's mislabeled-percent quirk corrected by the kernel's quirk registry and the health figure labelled as the firmware's own word. `_BIF` is read once per session, because spamming it wedged the interpreter into an out-of-memory state that took `_PTS` down with it; a derived rate covers the times the firmware's own is unusable |
-| Wired networking | Done on the machine: `netd` drives the atl2 at 100 Mbit full duplex and receives traffic; routing is answered by a fully settled `platd` per the bring-up model below |
+| Wired networking | The atl2 driver is complete and exercised in QEMU end to end; on the machine it maps, configures and reports its link, and the first interrupt delivery is the open question a hang during bring-up currently sits on. The bring-up window is bracketed by its own narration (`link state applied`, `interrupts open`) and every power-management port access is narrated, so the next boot names the dying step |
 | `eeewm` + `libeui` | Done, and past what M1 asked for |
 | eTerm | Done |
 | Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |

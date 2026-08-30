@@ -830,9 +830,14 @@ pub fn start(nic: *NicDev) bool {
     device.regs.wr32(.isr, ACK_EVERYTHING);
     device.regs.wr32(.isr, 0);
     device.started = true;
+    // The step about to be taken, then the step taken: the pin opens here,
+    // and on this machine the first assertion of a line is a moment worth
+    // bracketing on the screen.
+    log.say("atl2", .dim, "link state applied");
     pci.enableInterrupt(nic.location);
     device.regs.wr32(.imr, @bitCast(UNMASKED));
     _ = device.regs.rd32(.imr);
+    log.say("atl2", .dim, "interrupts open");
     return true;
 }
 
@@ -1071,13 +1076,13 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write / @sizeOf(u32)));
     _ = device.regs.rd16(.mb_txd_wr_idx);
 
+    // No register read for the narration: a muted line is still built, and
+    // the hot path must not pay an uncached read for a sentence nobody sees.
     log.begin("atl2", .dim);
     out.text("tx ");
     out.decimal(frame.len);
     out.text("B, write idx ");
     out.decimal(device.txd_write / @sizeOf(u32));
-    out.text(", isr 0x");
-    out.hex(device.regs.rd32(.isr), 8);
     log.end();
 
     dev_mod.deliverTx(nic, frame.len);

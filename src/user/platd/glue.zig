@@ -14,6 +14,7 @@ const heap = @import("ulib").heap;
 const ec = @import("ec.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const pm = @import("pm.zig");
 const ports = @import("ulib").ports;
 const sys = @import("sys");
 const uacpi = @import("uacpi.zig");
@@ -123,17 +124,23 @@ export fn uacpi_kernel_io_map(base: u32, len: usize, out_handle: *?*anyopaque) c
 export fn uacpi_kernel_io_unmap(_: ?*anyopaque) callconv(.c) void {}
 
 export fn uacpi_kernel_io_read8(handle: ?*anyopaque, offset: usize, value: *u8) callconv(.c) u32 {
-    value.* = ports.in8(portOf(handle, offset));
+    const at = portOf(handle, offset);
+    value.* = ports.in8(at);
+    sayPmRead(at, value.*);
     return Status.ok.value();
 }
 
 export fn uacpi_kernel_io_read16(handle: ?*anyopaque, offset: usize, value: *u16) callconv(.c) u32 {
-    value.* = ports.in16(portOf(handle, offset));
+    const at = portOf(handle, offset);
+    value.* = ports.in16(at);
+    sayPmRead(at, value.*);
     return Status.ok.value();
 }
 
 export fn uacpi_kernel_io_read32(handle: ?*anyopaque, offset: usize, value: *u32) callconv(.c) u32 {
-    value.* = ports.in32(portOf(handle, offset));
+    const at = portOf(handle, offset);
+    value.* = ports.in32(at);
+    sayPmRead(at, value.*);
     return Status.ok.value();
 }
 
@@ -153,6 +160,7 @@ export fn uacpi_kernel_io_write32(handle: ?*anyopaque, offset: usize, value: u32
 fn ioWrite(comptime T: type, handle: ?*anyopaque, offset: usize, value: T) u32 {
     const at = portOf(handle, offset);
     knock(at, value);
+    sayPmWrite(at, value);
     switch (T) {
         u8 => ports.out8(at, value),
         u16 => ports.out16(at, value),
@@ -161,6 +169,31 @@ fn ioWrite(comptime T: type, handle: ?*anyopaque, offset: usize, value: T) u32 {
     }
     answered(at);
     return Status.ok.value();
+}
+
+/// The power-management block is territory nothing should be reaching while
+/// firmware events are off, so any access to it is news. Writes are said
+/// before they happen, because a write there can end in the firmware's own
+/// handler and not return: the line on screen then names the access that
+/// did not come back. Reads answer in hand, so they are said with the value.
+fn sayPmWrite(at: u16, value: u32) void {
+    if (!pm.overlapsPm(at, 1)) return;
+    log.begin("platd", .dim);
+    out.text("pm port 0x");
+    out.hex(at, 2);
+    out.text(" <- 0x");
+    out.hex(value, 2);
+    log.end();
+}
+
+fn sayPmRead(at: u16, value: u32) void {
+    if (!pm.overlapsPm(at, 1)) return;
+    log.begin("platd", .dim);
+    out.text("pm port 0x");
+    out.hex(at, 2);
+    out.text(" -> 0x");
+    out.hex(value, 2);
+    log.end();
 }
 
 /// Where the chipset listens for the firmware's own attention. The FADT names

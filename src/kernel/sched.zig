@@ -411,9 +411,9 @@ pub fn unblock(t: *Thread) void {
     t.state = .ready;
     t.next = null;
     active.push(t, t.priority);
-    // An IRQ event can be the only runnable path to acknowledging a deferred
-    // level interrupt. Waiting for the next tick would deadlock if that vector
-    // currently raises the APIC priority floor above the old timer vector.
+    // A woken IRQ owner can be the only path to acknowledging a deferred
+    // level interrupt, and completion held at the controller should be held
+    // for the wake, not for the rest of a tick.
     need_resched = true;
 }
 
