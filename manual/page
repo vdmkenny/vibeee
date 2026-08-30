@@ -1,0 +1,10 @@
+page — read a long text a screen at a time
+
+  page /etc/services     a file
+  log | page             whatever another command says
+
+Keys: space and b page down and up, arrows move a line, enter steps,
+home and end jump, q leaves the screen as it found it.
+
+The status bar names the text, where you are in it, and whether the
+tail was cut to fit memory.

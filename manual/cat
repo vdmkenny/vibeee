@@ -1,0 +1,6 @@
+cat — print a file
+
+  cat /etc/services
+
+The whole file, to the screen or down a pipe. For anything longer than
+a screen, `page` is the reader.

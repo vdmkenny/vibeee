@@ -1,0 +1,5 @@
+devices — what is on the bus, and what drives it
+
+Every PCI device, who claimed it, and whether it is driven from the
+kernel or a service. The state column tells a device nobody drives
+from one somebody does.

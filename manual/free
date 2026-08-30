@@ -1,0 +1,4 @@
+free — show memory use
+
+What the machine has, what the kernel and every process hold, and what
+remains. Numbers come from the allocators themselves.

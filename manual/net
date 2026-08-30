@@ -1,0 +1,17 @@
+net — the network interfaces
+
+  net                    every interface: link, counters, address
+  net wired up           enable the wired role, persistently
+  net wired down         disable it
+  net wired dhcp         clear any static claim; DHCP asks
+  net wired static 192.0.2.50/24 gw 192.0.2.1 dns 192.0.2.1
+                         claim an address; gw and dns are optional
+
+Configuration goes through the settings store and applies at once: it
+outlives the command, and `cfg net` shows what is recorded.
+
+With no static claim, an enabled interface asks DHCP as soon as its
+cable carries, and prints the address when it arrives.
+
+  net -p <address>       one ARP probe beneath the stack; the next
+                         `net` shows which machine answered

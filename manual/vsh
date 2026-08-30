@@ -1,0 +1,15 @@
+vsh — the shell
+
+Runs what is named: builtins first, then /bin, then the tools binary's
+commands. `tools` lists those; `help` lists the builtins.
+
+  cd <path>              change directory; `cd` alone goes home
+  log | grep fail        pipe one command into another
+  date > /tmp/when       write output to a file; >> appends
+  kill 12                end a thread by the id `top` shows
+
+Tab completes commands and paths. Up and down walk the history. The
+prompt arrow carries the last status: green succeeded, red did not.
+
+A builtin cannot stand in a pipeline: it is the shell itself and has
+no process of its own to give the pipe to.

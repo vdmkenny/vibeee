@@ -1,0 +1,7 @@
+man — this manual
+
+  man                    list every page
+  man <name>             read one
+
+Pages are plain text under /doc, written for this system. The reading
+keys are the pager's: space, b, arrows, q. See `man page`.

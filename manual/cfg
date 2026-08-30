@@ -1,0 +1,11 @@
+cfg — read and change system settings
+
+  cfg                    every domain and key
+  cfg net                one domain
+  cfg set input.keymap be_azerty
+  cfg reset input.keymap
+
+Keys are declared by the system; a name it does not know is an error,
+not a new setting. Changes reach whoever watches the domain at once.
+The store says plainly when the root is memory and a change will not
+outlive the boot.

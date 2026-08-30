@@ -1,0 +1,10 @@
+svc — what is supposed to be running, and what is
+
+  svc                    every service and its state
+  svc stop netd          hold one down for this boot
+  svc start netd         start it again
+  svc disable netd       keep it down at every boot
+  svc enable netd        undo that
+
+Services restart on their own when they fail; one that fails too fast
+too often is given up on, and the listing says so.

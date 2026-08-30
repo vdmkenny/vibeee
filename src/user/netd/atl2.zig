@@ -1084,15 +1084,6 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write / @sizeOf(u32)));
     _ = device.regs.rd16(.mb_txd_wr_idx);
 
-    // No register read for the narration: a muted line is still built, and
-    // the hot path must not pay an uncached read for a sentence nobody sees.
-    log.begin("atl2", .dim);
-    out.text("tx ");
-    out.decimal(frame.len);
-    out.text("B, write idx ");
-    out.decimal(device.txd_write / @sizeOf(u32));
-    log.end();
-
     dev_mod.deliverTx(nic, frame.len);
     return true;
 }

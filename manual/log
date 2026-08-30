@@ -1,0 +1,8 @@
+log — what the kernel and the services have said
+
+  log                    the whole ring, oldest first
+  log -n 30              the last thirty lines
+  log fail               only lines containing the word
+
+Everything said since boot is recorded whether or not it was shown, so
+a quiet boot can still be read back. Pipe into `page` for long output.

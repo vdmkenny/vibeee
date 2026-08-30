@@ -1,0 +1,8 @@
+mount — attach a volume at a path
+
+  mount hd1p1 /media/data
+  mount -r sd1p1 /media/card     read-only
+
+The volume names come from `disk`; the path must already exist as a
+directory. Detach with `unmount <path>`, which flushes before letting
+go.

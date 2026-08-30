@@ -1,0 +1,11 @@
+ping — one echo a second, answered or timed out
+
+  ping 192.0.2.1         four rounds against an address
+  ping 192.0.2.1 -c 10   a chosen number of rounds
+
+Each round prints the answer and its round trip, or `no answer` after
+one second. A summary counts the answered rounds. Addresses are dotted
+numbers.
+
+Incoming echoes need no command: the machine answers pings whenever an
+interface holds an address.

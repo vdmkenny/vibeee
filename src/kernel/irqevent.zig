@@ -111,7 +111,6 @@ pub fn acknowledge(self: *IrqEvent) void {
     if (!self.held) return;
     self.held = false;
     hal.acknowledgeIrq(self.token);
-    console.debug("irq", "line {d} completed {d}", .{ self.gsi, self.count });
 }
 
 pub fn retain(self: *IrqEvent) void {
@@ -170,7 +169,7 @@ fn onInterrupt(frame: *hal.InterruptFrame) void {
         hal.deferIrq(self.token);
         self.held = hal.irqAwaitingAck(self.token);
         self.count += 1;
-        console.debug("irq", "line {d} delivery {d}", .{ self.gsi, self.count });
+        if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
 
         // A line delivering this often is a source nobody manages to quiet,
         // and the machine it saturates cannot run the tool that would say

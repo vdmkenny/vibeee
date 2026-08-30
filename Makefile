@@ -127,11 +127,11 @@ image: $(IMAGE)
 #
 # FAT rather than a bespoke container because the driver already exists, and
 # because it can then be inspected and edited from any other machine.
-$(ROOTFS_IMG): kernel examples | $(BUILD)
+$(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
-	@for d in bin etc lib lib/drivers tmp home media; do $(MMD) -i $@ ::/$$d; done
+	@for d in bin doc etc lib lib/drivers tmp home media; do $(MMD) -i $@ ::/$$d; done
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
@@ -149,6 +149,7 @@ $(ROOTFS_IMG): kernel examples | $(BUILD)
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
+	@for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 

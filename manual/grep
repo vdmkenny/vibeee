@@ -1,0 +1,6 @@
+grep — print lines matching a pattern
+
+  grep fail /tmp/report
+  log | grep atl2
+
+Plain substring match, one file or standard input.

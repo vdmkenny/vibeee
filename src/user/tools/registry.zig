@@ -20,6 +20,7 @@ const display_tool = @import("display.zig");
 const irq_tool = @import("irq.zig");
 const devices_tool = @import("devices.zig");
 const klog = @import("klog.zig");
+const man = @import("man.zig");
 const net = @import("net.zig");
 const ping = @import("ping.zig");
 const page = @import("page.zig");
@@ -55,6 +56,7 @@ pub const commands = [_]Command{
     .{ .name = "acpi", .summary = "what the firmware says this machine has", .run = &acpi.run },
     .{ .name = "display", .summary = "the panel, and asking it for a mode", .run = &display_tool.display },
     .{ .name = "log", .summary = "what the kernel and the services have said", .run = &klog.log },
+    .{ .name = "man", .summary = "the manual: what a command is for and how it is held", .run = &man.run },
     .{ .name = "net", .summary = "the network interfaces: status, up/down, dhcp, static", .run = &net.run },
     .{ .name = "ping", .summary = "one echo a second, answered or timed out", .run = &ping.run },
     .{ .name = "commands", .summary = "list command names, one per line", .run = &listNames },

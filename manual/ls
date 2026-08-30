@@ -1,0 +1,7 @@
+ls — list a directory
+
+  ls                     here
+  ls /etc                elsewhere
+
+Directories first, each group sorted. Sizes and times come from the
+filesystem's own records.

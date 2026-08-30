@@ -1,0 +1,35 @@
+vibeee — this machine, and how to hold it
+
+The shell runs programs, connects them with pipes, and sends output to
+files:
+
+  net                    run a command
+  log | page             read one command's output through another
+  smbios > /tmp/board    keep output in a file
+  tools                  every command, with a line on each
+  man <name>             this manual, one page per command
+
+Tab completes command names and paths. Up and down walk the history.
+The prompt arrow shows the last command's status: green succeeded, red
+did not.
+
+The filesystem:
+
+  /bin       programs
+  /etc       configuration; `cfg` reads and changes it
+  /doc       this manual
+  /home      user files
+  /media     mounted volumes appear here
+  /tmp       scratch, cleared at reboot
+
+A small kernel owns the screen, the disk, input and memory. Services
+own the rest and restart on their own if they fail: platd speaks to
+the firmware, netd drives the network, cfgd keeps settings. `svc`
+lists them; `top` shows threads; `free` shows memory.
+
+The wired network configures itself: an enabled interface asks DHCP
+when its cable carries. `net` shows the result; `man net` describes
+manual configuration.
+
+Long output reads through `page`. The boot's own messages are under
+`log`. `off` powers down; `reboot` restarts.

@@ -1,0 +1,4 @@
+top — show threads and load
+
+Every thread, its state, priority and time. The id column is what
+`kill` takes.

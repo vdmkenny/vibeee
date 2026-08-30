@@ -312,13 +312,6 @@ pub fn ping(addr: u32, timeout_ms: u32, done: PingDone, timed_out: PingTimeout) 
     _ = lwip.pbuf_free(p);
     if (sent != .ok) return false;
 
-    log.begin("netd", .dim);
-    out.text("echo ");
-    out.decimal(ping_sequence);
-    out.text(" out, ident ");
-    out.hex(ping_ident, 4);
-    log.end();
-
     ping_busy = true;
     ping_sent_at = @intCast(sys.clockMicros());
     ping_done = done;
@@ -336,7 +329,6 @@ const VersionIhl = packed struct(u8) {
 };
 
 fn pingReply(_: ?*anyopaque, _: *lwip.RawPcb, p: *lwip.Pbuf, _: *const lwip.Ip4Addr) callconv(.c) u8 {
-    sayEcho(p);
     if (!ping_busy) return 0;
 
     var packet: [lwip.IP_HEADER + 40 + icmp.MESSAGE]u8 = undefined;
@@ -378,37 +370,6 @@ fn pingExpired(_: ?*anyopaque) callconv(.c) void {
     ping_done = null;
     ping_timed_out = null;
     if (timed_out) |call| call();
-}
-
-/// Every frame the raw pcb sees, said with what the matcher will ask of it:
-/// which of the return leg's steps goes quiet is the diagnosis when an echo
-/// answers once and then stops.
-fn sayEcho(p: *const lwip.Pbuf) void {
-    var packet: [lwip.IP_HEADER + 40 + icmp.MESSAGE]u8 = undefined;
-    const have = lwip.pbuf_copy_partial(p, &packet, @min(p.tot_len, packet.len), 0);
-    if (have < 1) return;
-    const shape: VersionIhl = @bitCast(packet[0]);
-    const header: usize = @as(usize, shape.ihl) * 4;
-
-    log.begin("netd", .dim);
-    out.text("icmp in, ");
-    out.decimal(have);
-    out.text("B");
-    if (shape.version == 4 and have >= header + icmp.HEADER) {
-        const body = packet[header..have];
-        out.text(", kind ");
-        out.decimal(body[@intFromEnum(icmp.At.kind)]);
-        out.text(", ident ");
-        out.hex(std.mem.readInt(u16, body[@intFromEnum(icmp.At.ident)..][0..2], .big), 4);
-        out.text("/");
-        out.hex(ping_ident, 4);
-        out.text(", seq ");
-        out.decimal(std.mem.readInt(u16, body[@intFromEnum(icmp.At.sequence)..][0..2], .big));
-        out.text("/");
-        out.decimal(ping_sequence);
-        out.text(if (ping_busy) "" else ", nobody waiting");
-    }
-    log.end();
 }
 
 fn finishPing() void {
