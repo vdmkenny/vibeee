@@ -169,6 +169,15 @@ pub fn entryLow(gsi: u32) ?Route {
     return @bitCast(read(owner, REG_REDIRECT + (gsi - owner.info.gsi_base) * 2));
 }
 
+/// The controller's version byte, for the boot narration: which completion
+/// protocols exist at all is decided by it.
+pub fn version() u32 {
+    if (count == 0) return 0;
+    const was = hold();
+    defer release(was);
+    return read(&controllers[0], REG_VERSION) & 0xFF;
+}
+
 pub fn setMask(gsi: u32, masked: bool) void {
     const owner = find(gsi) orelse return;
     const line = gsi - owner.info.gsi_base;

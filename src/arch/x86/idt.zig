@@ -10,6 +10,7 @@
 //! and only the syscall vector is DPL 3.
 
 const std = @import("std");
+const console = @import("../../kernel/console.zig");
 const ioapic = @import("ioapic.zig");
 const lapic = @import("lapic.zig");
 const irq_mod = @import("../../kernel/irq.zig");
@@ -442,6 +443,20 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
 
     captureBootEntries();
     maskAllPic();
+
+    // The routes as the controller itself reads them back, for the lines the
+    // machine's diagnosis has turned on: what boot believes it wrote and what
+    // the silicon holds are two different facts on this firmware.
+    if (console.isDebug()) {
+        for ([_]u32{ 9, 16, 17 }) |line| {
+            if (boot_entries[line]) |entry| {
+                console.debug("irq", "line {d} reads back {x:0>8}", .{
+                    line, @as(u32, @bitCast(entry)),
+                });
+            }
+        }
+        console.debug("irq", "controller version {x}", .{ioapic.version()});
+    }
     return true;
 }
 

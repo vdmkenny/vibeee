@@ -40,9 +40,6 @@ pub const IrqEvent = struct {
     /// How many interrupts have been delivered, which is the first thing
     /// anyone asks when a device has gone quiet.
     count: u64 = 0,
-    /// Whether the first delivery has completed its interrupt at the local
-    /// controller, which is the last of a line's three firsts worth a word.
-    completed_once: bool = false,
     refs: u32 = 1,
 };
 
@@ -114,10 +111,7 @@ pub fn acknowledge(self: *IrqEvent) void {
     if (!self.held) return;
     self.held = false;
     hal.acknowledgeIrq(self.token);
-    if (!self.completed_once) {
-        self.completed_once = true;
-        console.debug("irq", "line {d} completed its first", .{self.gsi});
-    }
+    console.debug("irq", "line {d} completed {d}", .{ self.gsi, self.count });
 }
 
 pub fn retain(self: *IrqEvent) void {
@@ -176,7 +170,7 @@ fn onInterrupt(frame: *hal.InterruptFrame) void {
         hal.deferIrq(self.token);
         self.held = hal.irqAwaitingAck(self.token);
         self.count += 1;
-        if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
+        console.debug("irq", "line {d} delivery {d}", .{ self.gsi, self.count });
 
         // A line delivering this often is a source nobody manages to quiet,
         // and the machine it saturates cannot run the tool that would say
