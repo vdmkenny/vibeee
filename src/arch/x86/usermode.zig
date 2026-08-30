@@ -72,12 +72,14 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
         arg_addrs[n] = USER_STACK_TOP - paging.PAGE_SIZE + offset;
     }
 
-    // Then the pointer array and argc. Aligned to 16 rather than 4: SSE loads
-    // and stores require it, and the compiler emits them freely in user code,
-    // a 4-byte-aligned stack makes the first `movaps` fault.
+    // Then the pointer array and argc, in a frame of one fixed size: the
+    // worst case is eighty bytes of a page that arrives zeroed, and a
+    // constant shape has no arithmetic to get wrong. Aligned to 16 rather
+    // than 4: SSE loads and stores require it, and the compiler emits them
+    // freely in user code, a 4-byte-aligned stack makes the first `movaps`
+    // fault.
+    const frame_bytes = comptime std.mem.alignForward(usize, (MAX_ARGS + 2) * @sizeOf(u32), 16);
     offset = std.mem.alignBackward(usize, offset, 16);
-    const words = count + 2; // argc, argv[0..count], null terminator
-    const frame_bytes = std.mem.alignForward(usize, words * 4, 16);
     if (frame_bytes > offset) return error.OutOfMemory;
     offset -= frame_bytes;
 

@@ -61,11 +61,24 @@ fn parse(comptime T: type, value: []const u8) ?T {
         return out;
     }
 
+    // A type that spells and parses itself is its own grammar: an address,
+    // a prefix, a list. The pair of declarations is the contract, so a type
+    // with only half of it does not silently round-trip wrong.
+    if (comptime selfSpelling(T)) return T.parse(value);
+
     return switch (@typeInfo(T)) {
         .@"enum" => std.meta.stringToEnum(T, value),
         .bool => forBool(value),
         .int => forInt(T, value),
         else => null,
+    };
+}
+
+/// Whether a type carries its own config grammar: `parse` in, `spell` out.
+fn selfSpelling(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"enum", .@"union" => std.meta.hasFn(T, "parse") and std.meta.hasFn(T, "spell"),
+        else => false,
     };
 }
 
@@ -143,6 +156,7 @@ pub fn format(into: *str.Builder, value: anytype) void {
     if (@typeInfo(T) == .array and @typeInfo(T).array.child == u8) {
         return into.text(str.span(@ptrCast(&value)));
     }
+    if (comptime selfSpelling(T)) return value.spell(into);
     switch (@typeInfo(T)) {
         .@"enum" => into.text(@tagName(value)),
         .bool => into.text(if (value) "true" else "false"),

@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const config = @import("ulib").config;
+const ipv4 = @import("lib").ipv4;
 const keymaps = @import("keymaps");
 const str = @import("lib").str;
 const sys = @import("sys");
@@ -93,9 +94,51 @@ pub const Input = struct {
     keymap: Keymap = keymaps.default,
 };
 
+/// Network interface configuration, by role rather than driver name: this
+/// machine has one wired port and one radio, and the config outlives
+/// whichever driver serves them. Keys are flat because the store's grammar
+/// is `domain.key`; the role view below rebuilds the pairing. The wired
+/// defaults are the zero-configuration story: enabled, no static address,
+/// so DHCP asks.
+pub const Net = struct {
+    wired_enabled: bool = true,
+    /// Unset asks DHCP; "a.b.c.d/nn" claims the address statically.
+    wired_address: ipv4.Cidr = .{},
+    wired_gateway: ipv4.Maybe = .{},
+    /// Up to two, comma separated. Unset defers to the DHCP offer.
+    wired_dns: ipv4.Pair = .{},
+
+    wifi_enabled: bool = false,
+    wifi_address: ipv4.Cidr = .{},
+    wifi_gateway: ipv4.Maybe = .{},
+    wifi_dns: ipv4.Pair = .{},
+
+    pub const Role = enum { wired, wifi };
+
+    /// One role's fields as one value, so a reader handles both roles with
+    /// the same code and the flat schema stays a storage detail.
+    pub fn role(self: Net, comptime which: Role) NetRole {
+        const prefix = @tagName(which) ++ "_";
+        return .{
+            .enabled = @field(self, prefix ++ "enabled"),
+            .address = @field(self, prefix ++ "address"),
+            .gateway = @field(self, prefix ++ "gateway"),
+            .dns = @field(self, prefix ++ "dns"),
+        };
+    }
+};
+
+pub const NetRole = struct {
+    enabled: bool,
+    address: ipv4.Cidr,
+    gateway: ipv4.Maybe,
+    dns: ipv4.Pair,
+};
+
 pub const Domains = struct {
     input: Input = .{},
     wm: Wm = .{},
+    net: Net = .{},
 };
 
 pub const DOMAIN_NAMES = config.keys(Domains);

@@ -658,7 +658,7 @@ pub fn irq(dev: *NicDev) void {
     if (cause.rx_min or cause.rx_overrun or cause.rx_timer) reapRx(dev);
     if (cause.rx_sequence or cause.rx_overrun) dev.stats.rx_dropped += 1;
     if (cause.tx_done) reapTx(dev);
-    if (cause.link_change) dev.state = link(dev);
+    if (cause.link_change) dev_mod.deliverLink(dev, link(dev));
 }
 
 fn reapRx(dev: *NicDev) void {

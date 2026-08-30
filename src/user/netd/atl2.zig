@@ -825,7 +825,7 @@ pub fn start(nic: *NicDev) bool {
         return false;
     }
 
-    nic.state = link(nic);
+    dev_mod.deliverLink(nic, link(nic));
     applyLinkState(nic.state);
     device.regs.wr32(.isr, ACK_EVERYTHING);
     device.regs.wr32(.isr, 0);
@@ -953,7 +953,7 @@ pub fn irq(nic: *NicDev) void {
             log.fail("atl2", "adapter recovery failed");
             return;
         }
-        nic.state = link(nic);
+        dev_mod.deliverLink(nic, link(nic));
         applyLinkState(nic.state);
         device.regs.wr32(.imr, @bitCast(UNMASKED));
         _ = device.regs.rd32(.imr);
@@ -963,7 +963,7 @@ pub fn irq(nic: *NicDev) void {
     if (cause.rx_status) reapRx(nic);
     if (cause.tx_status) reapTx(nic);
     if (cause.link_change or cause.phy or cause.phy_link_down) {
-        nic.state = link(nic);
+        dev_mod.deliverLink(nic, link(nic));
         applyLinkState(nic.state);
     }
 

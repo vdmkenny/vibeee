@@ -65,7 +65,7 @@ binary  = /bin/netd
 # shell is on screen before the adapter is touched, so a bring-up that stops
 # does so under a working prompt with its narration readable.
 caps    = driver
-needs   = platd
+needs   = platd,cfgd
 provides = net
 target  = boot
 restart = always

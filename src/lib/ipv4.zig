@@ -6,6 +6,102 @@
 //! the order the wire and a person's spelling already agree on.
 
 const std = @import("std");
+const str = @import("str.zig");
+
+/// An address with its prefix length: "192.168.178.50/24", the shape
+/// interface configuration speaks. All zero means unset, which is how a
+/// config field says "no static address, ask DHCP".
+pub const Cidr = packed struct(u40) {
+    addr: u32 = 0,
+    prefix: u8 = 0,
+
+    pub fn isSet(self: Cidr) bool {
+        return self.prefix != 0 and self.addr != 0;
+    }
+
+    /// The network mask the prefix describes.
+    pub fn mask(self: Cidr) u32 {
+        if (self.prefix == 0) return 0;
+        if (self.prefix >= 32) return 0xFFFF_FFFF;
+        return ~(@as(u32, 0xFFFF_FFFF) >> @intCast(self.prefix));
+    }
+
+    pub fn parse(dotted: []const u8) ?Cidr {
+        const slash = std.mem.indexOfScalar(u8, dotted, '/') orelse return null;
+        const addr = ipv4Parse(dotted[0..slash]) orelse return null;
+        const prefix = std.fmt.parseInt(u8, dotted[slash + 1 ..], 10) catch return null;
+        if (prefix == 0 or prefix > 32) return null;
+        return .{ .addr = addr, .prefix = prefix };
+    }
+
+    pub fn spell(self: Cidr, into: *str.Builder) void {
+        if (!self.isSet()) return;
+        var field: [15]u8 = undefined;
+        into.text(text(self.addr, &field));
+        into.byte('/');
+        into.number(self.prefix);
+    }
+};
+
+/// One optional address: "192.168.178.1", or nothing at all. The gateway's
+/// shape, and each half of a name-server pair.
+pub const Maybe = packed struct(u32) {
+    addr: u32 = 0,
+
+    pub fn isSet(self: Maybe) bool {
+        return self.addr != 0;
+    }
+
+    pub fn parse(dotted: []const u8) ?Maybe {
+        if (str.trim(dotted).len == 0) return .{};
+        const addr = ipv4Parse(str.trim(dotted)) orelse return null;
+        return .{ .addr = addr };
+    }
+
+    pub fn spell(self: Maybe, into: *str.Builder) void {
+        if (!self.isSet()) return;
+        var field: [15]u8 = undefined;
+        into.text(text(self.addr, &field));
+    }
+};
+
+/// Up to two addresses, comma separated: what a name-server list is.
+pub const Pair = packed struct(u64) {
+    first: u32 = 0,
+    second: u32 = 0,
+
+    pub fn isSet(self: Pair) bool {
+        return self.first != 0;
+    }
+
+    pub fn parse(listed: []const u8) ?Pair {
+        if (str.trim(listed).len == 0) return .{};
+        var out = Pair{};
+        var at: usize = 0;
+        var parts = std.mem.splitScalar(u8, listed, ',');
+        while (parts.next()) |part| {
+            if (at == 2) return null;
+            const addr = ipv4Parse(str.trim(part)) orelse return null;
+            if (at == 0) out.first = addr else out.second = addr;
+            at += 1;
+        }
+        return if (at == 0) .{} else out;
+    }
+
+    pub fn spell(self: Pair, into: *str.Builder) void {
+        var field: [15]u8 = undefined;
+        if (self.first != 0) into.text(text(self.first, &field));
+        if (self.second != 0) {
+            into.byte(',');
+            into.text(text(self.second, &field));
+        }
+    }
+};
+
+/// `parse` under a name the container types can reach once they shadow it.
+fn ipv4Parse(dotted: []const u8) ?u32 {
+    return parse(dotted);
+}
 
 /// "10.0.2.2" as the four dotted numbers of one word.
 pub fn parse(dotted: []const u8) ?u32 {
@@ -75,4 +171,37 @@ test "private addresses are the RFC 1918 blocks, and only those" {
     try std.testing.expect(!isPrivate(0x08080808)); // 8.8.8.8
     try std.testing.expect(!isPrivate(0xA9FE0101)); // 169.254.1.1, link-local
     try std.testing.expect(!isPrivate(0x7F000001)); // 127.0.0.1
+}
+test "a cidr parses, masks and spells" {
+    const c = Cidr.parse("192.168.178.50/24").?;
+    try std.testing.expectEqual(@as(u32, 0xC0A8B232), c.addr);
+    try std.testing.expectEqual(@as(u8, 24), c.prefix);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFF00), c.mask());
+    var buf: [24]u8 = undefined;
+    var b = str.Builder{ .buf = &buf };
+    c.spell(&b);
+    try std.testing.expectEqualStrings("192.168.178.50/24", b.done());
+}
+
+test "a cidr refuses what is not one" {
+    try std.testing.expectEqual(null, Cidr.parse("192.168.178.50"));
+    try std.testing.expectEqual(null, Cidr.parse("192.168.178.50/0"));
+    try std.testing.expectEqual(null, Cidr.parse("192.168.178.50/33"));
+    try std.testing.expectEqual(null, Cidr.parse("banana/24"));
+}
+
+test "a maybe address is empty or one address" {
+    try std.testing.expect(!Maybe.parse("").?.isSet());
+    try std.testing.expectEqual(@as(u32, 0xC0A8B201), Maybe.parse("192.168.178.1").?.addr);
+    try std.testing.expectEqual(null, Maybe.parse("not an address"));
+}
+
+test "a pair holds one or two addresses" {
+    const one = Pair.parse("1.2.3.4").?;
+    try std.testing.expectEqual(@as(u32, 0x01020304), one.first);
+    try std.testing.expectEqual(@as(u32, 0), one.second);
+    const two = Pair.parse("1.2.3.4, 5.6.7.8").?;
+    try std.testing.expectEqual(@as(u32, 0x05060708), two.second);
+    try std.testing.expectEqual(null, Pair.parse("1.2.3.4,5.6.7.8,9.9.9.9"));
+    try std.testing.expect(!Pair.parse("").?.isSet());
 }

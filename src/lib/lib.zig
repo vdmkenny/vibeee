@@ -25,6 +25,7 @@ pub const driver = @import("driver.zig");
 pub const elf = @import("elf.zig");
 pub const escapes = @import("escapes.zig");
 pub const eth = @import("eth.zig");
+pub const icmp = @import("icmp.zig");
 pub const str = @import("str.zig");
 pub const style = @import("style.zig");
 pub const syscalls = @import("syscalls.zig");
@@ -43,6 +44,7 @@ test {
     _ = elf;
     _ = escapes;
     _ = eth;
+    _ = icmp;
     _ = ipv4;
     _ = str;
     _ = style;

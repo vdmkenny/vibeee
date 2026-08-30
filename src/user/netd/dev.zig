@@ -103,9 +103,17 @@ pub const Peer = struct {
     addr: u32 = 0,
 };
 
-/// Say a whole frame arrived and what was made of it. Until there is a stack
-/// the service counts frames and bytes, and remembers the one kind of frame
-/// that proves the traffic path: an ARP reply, parsed by the pure library.
+/// Where a received frame goes after the counters: the stack, once the
+/// service has one running. A hook rather than an import, so this interface
+/// module stays what it is, the shape drivers compile against.
+pub var stack_rx: ?*const fn (dev: *NicDev, frame: []const u8) void = null;
+
+/// Where a link change goes after the driver notices it, same shape.
+pub var stack_link: ?*const fn (dev: *NicDev, up: bool) void = null;
+
+/// Say a whole frame arrived and what was made of it: counted here, then
+/// handed to the stack. The ARP narration stays, because it reads the wire
+/// beneath the stack and is the debug boot's traffic proof.
 pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     if (!report.ok) {
         dev.stats.rx_dropped += 1;
@@ -113,6 +121,8 @@ pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     }
     dev.stats.rx_pkts += 1;
     dev.stats.rx_bytes += report.frame.len;
+
+    if (stack_rx) |up| up(dev, report.frame);
 
     // The wire's version of the conversation, for the debug boot: every
     // ARP frame that came up, whatever it asked. The 2s beacons tell us
@@ -139,4 +149,13 @@ pub fn deliverRx(dev: *NicDev, report: RxReport) void {
 pub fn deliverTx(dev: *NicDev, bytes: usize) void {
     dev.stats.tx_pkts += 1;
     dev.stats.tx_bytes += bytes;
+}
+
+/// Say the link changed. Drivers call this wherever they refresh `state`,
+/// and the stack follows the carrier from here.
+pub fn deliverLink(dev: *NicDev, fresh: Link) void {
+    const was = dev.state.up;
+    dev.state = fresh;
+    if (was == fresh.up) return;
+    if (stack_link) |follow| follow(dev, fresh.up);
 }

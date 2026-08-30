@@ -11,19 +11,27 @@
 //! rather than fight the first for the hardware.
 //!
 //! The drivers themselves live beside this file, one module each, behind one
-//! interface (`dev.zig`). What is not here yet is the stack: for now an
-//! interface is probed, opened, its link reported and its traffic counted.
-//! That is the part QEMU can test, and it is what `net` shows.
+//! interface (`dev.zig`). Above them, `stack.zig` runs lwIP: addresses,
+//! DHCP, ICMP and the policy the `net` settings domain declares, all inside
+//! this one loop, whose wait deadline is the stack's own next timer.
 
 const atl2 = @import("atl2.zig");
 const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
 const e1000 = @import("e1000.zig");
+
+// The routines lwIP's C calls by name, emitted into this binary from the
+// libc's own C-callable half: one implementation in the system, not two.
+comptime {
+    _ = @import("clibc");
+}
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const proto = @import("proto").net;
 const proto_platform = @import("proto").platform;
+const settings = @import("proto").settings;
+const stack = @import("stack.zig");
 const std = @import("std");
 const sys = @import("sys");
 const str = @import("lib").str;
@@ -82,6 +90,15 @@ export fn netdMain() callconv(.c) noreturn {
     if (count == 0) {
         log.warn("netd", "no adapter matched a driver");
     }
+
+    // The stack, over whatever is driven: one netif each, frames and link
+    // changes flowing through the hooks, and the configured policy applied
+    // once now and again on every watch wake.
+    stack.init();
+    dev.stack_rx = stack.rx;
+    dev.stack_link = stack.linkState;
+    for (ifaces[0..count]) |*iface| stack.attach(iface);
+    stack.applyConfig(settings.load("net"));
 
     serve(@intCast(channel));
 }
@@ -269,9 +286,9 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 // ---------------------------------------------------------------------------
 
 fn serve(channel: u32) noreturn {
-    // The channel plus one handle per interface's line. Fixed: the number of
-    // interfaces is capped above, so the sources never need to grow.
-    var sources: [MAX_IFACES + 1]u32 = undefined;
+    // The channel, one handle per interface's line, and the config domain's
+    // watch. Fixed: the counts are capped, so the sources never grow.
+    var sources: [MAX_IFACES + 2]u32 = undefined;
     var source_count: usize = 1;
     sources[0] = channel;
     for (ifaces[0..count]) |iface| {
@@ -290,27 +307,50 @@ fn serve(channel: u32) noreturn {
         source_count += 1;
     }
 
+    // The `net` tool writes configuration through cfgd; this is how the
+    // change arrives here without either side polling.
+    var cfg_watch: ?u32 = null;
+    if (settings.watch("net")) |handle| {
+        cfg_watch = handle;
+        sources[source_count] = handle;
+        source_count += 1;
+    } else |_| {
+        log.warn("netd", "no settings watch; configuration is boot-time only");
+    }
+
     while (true) {
-        const woke = sys.waitMany(sources[0..source_count], sys.FOREVER);
+        // The wait's deadline is the stack's own next timer: DHCP renewals,
+        // TCP retransmits and ARP aging all ride this one number, and an
+        // idle network parks here forever.
+        const timeout: usize = if (stack.nextDeadline()) |us|
+            @intCast(@min(us, std.math.maxInt(usize) - 1))
+        else
+            sys.FOREVER;
+        const woke = sys.waitMany(sources[0..source_count], timeout);
+        stack.tick();
         if (woke < 0) continue;
 
         const index = @as(usize, @intCast(woke));
-        if (index < source_count) {
-            const handle = sources[index];
-            if (handle == channel) {
-                drain(channel);
-                continue;
-            }
-            // An interrupt line. Which interface it belongs to is the match
-            // the attach made; the service runs its handler, then the ack.
-            for (ifaces[0..count]) |*iface| {
-                if (iface.irq == handle) {
-                    iface.irq_count += 1;
-                    iface.ops.irq(iface);
-                }
-            }
-            _ = sys.irqAck(handle);
+        if (index >= source_count) continue;
+        const handle = sources[index];
+
+        if (handle == channel) {
+            drain(channel);
+            continue;
         }
+        if (cfg_watch != null and handle == cfg_watch.?) {
+            stack.applyConfig(settings.load("net"));
+            continue;
+        }
+        // An interrupt line. Which interface it belongs to is the match
+        // the attach made; the service runs its handler, then the ack.
+        for (ifaces[0..count]) |*iface| {
+            if (iface.irq == handle) {
+                iface.irq_count += 1;
+                iface.ops.irq(iface);
+            }
+        }
+        _ = sys.irqAck(handle);
     }
 }
 
@@ -319,14 +359,67 @@ fn drain(channel: u32) void {
         var message = sys.Message{};
         const request = sys.recv(channel, &message, sys.POLL) orelse return;
 
+        // A ping is answered when the echo is, not now: the token is kept
+        // and the caller's call blocks exactly as long as the ping does.
+        const bytes = message.bytes();
+        if (bytes.len >= @sizeOf(proto.Req)) {
+            const asked: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+            if (asked.tag == .ping) {
+                startPing(channel, request.token, asked.param, asked.param2);
+                continue;
+            }
+        }
+
         var reply = proto.Rep{};
         reply.status = answer(&message, &reply);
-
-        var out_msg = sys.Message{};
-        @memcpy(out_msg.data[0..@sizeOf(proto.Rep)], std.mem.asBytes(&reply));
-        out_msg.len = @sizeOf(proto.Rep);
-        _ = sys.replyMsg(channel, request.token, &out_msg);
+        replyWith(channel, request.token, &reply);
     }
+}
+
+fn replyWith(channel: u32, token: u32, reply: *const proto.Rep) void {
+    var out_msg = sys.Message{};
+    @memcpy(out_msg.data[0..@sizeOf(proto.Rep)], std.mem.asBytes(reply));
+    out_msg.len = @sizeOf(proto.Rep);
+    _ = sys.replyMsg(channel, token, &out_msg);
+}
+
+/// The one echo in flight and who is owed its answer. The stack holds one
+/// too; refusing a second asker here keeps both honest.
+var ping_channel: u32 = 0;
+var ping_token: u32 = 0;
+var ping_pending = false;
+
+fn startPing(channel: u32, token: u32, addr: u32, timeout_ms: u32) void {
+    var reply = proto.Rep{};
+    if (ping_pending or addr == 0) {
+        reply.status = .refused;
+        replyWith(channel, token, &reply);
+        return;
+    }
+
+    const patience = if (timeout_ms == 0) 1000 else @min(timeout_ms, 10_000);
+    if (!stack.ping(addr, patience, pingCame, pingLate)) {
+        reply.status = .refused;
+        replyWith(channel, token, &reply);
+        return;
+    }
+    ping_pending = true;
+    ping_channel = channel;
+    ping_token = token;
+}
+
+fn pingCame(rtt_us: u64) void {
+    if (!ping_pending) return;
+    ping_pending = false;
+    var reply = proto.Rep{ .body = .{ .rtt_us = @truncate(rtt_us) } };
+    replyWith(ping_channel, ping_token, &reply);
+}
+
+fn pingLate() void {
+    if (!ping_pending) return;
+    ping_pending = false;
+    var reply = proto.Rep{ .status = .timed_out };
+    replyWith(ping_channel, ping_token, &reply);
 }
 
 fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
@@ -336,13 +429,27 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
 
     if (request.tag == .count) {
-        reply.count = @intCast(count);
+        reply.body = .{ .count = @intCast(count) };
         return .ok;
     }
 
     if (request.index >= count) return .end;
 
     const iface = &ifaces[request.index];
+
+    // The address story is the stack's, not the adapter's: answered without
+    // waking the hardware for a link refresh nothing here uses.
+    if (request.tag == .address) {
+        const address = stack.addressOf(iface);
+        reply.body = .{ .address = .{
+            .addr = address.addr,
+            .gateway = address.gateway,
+            .lease_remaining_s = address.lease_remaining_s,
+            .prefix = address.prefix,
+            .source = address.source,
+        } };
+        return .ok;
+    }
 
     // Fresh link state before anything uses it: what the adapter reports
     // and what its registers were told must agree.
@@ -364,7 +471,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         return if (iface.ops.transmit(iface, &frame)) .ok else .refused;
     }
 
-    reply.iface = .{
+    reply.body = .{ .iface = .{
         .up = @intFromBool(iface.state.up),
         .duplex = iface.state.duplex,
         .mbps = iface.state.mbps,
@@ -374,11 +481,11 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         .tx_pkts = @truncate(iface.stats.tx_pkts),
         .tx_bytes = @truncate(iface.stats.tx_bytes),
         .arp_replies = @truncate(iface.stats.rx_arp),
-    };
-    @memcpy(reply.iface.driver[0..@min(iface.name.len, 8)], iface.name[0..@min(iface.name.len, 8)]);
+    } };
+    @memcpy(reply.body.iface.driver[0..@min(iface.name.len, 8)], iface.name[0..@min(iface.name.len, 8)]);
     if (iface.peer) |peer| {
-        reply.iface.peer_ip = peer.addr;
-        reply.iface.peer_mac = peer.mac;
+        reply.body.iface.peer_ip = peer.addr;
+        reply.body.iface.peer_mac = peer.mac;
     }
 
     return .ok;

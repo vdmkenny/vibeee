@@ -224,6 +224,38 @@ pub fn build(b: *std.Build) void {
             "third_party/uacpi/source/utilities.c",
     };
 
+    // netd carries lwIP, which is C, vendored verbatim like uACPI and
+    // compiled into the one program that is its dependency. The port headers
+    // live beside netd; the layout proof in lwipport/layout_check.c pins the
+    // struct shapes netd's Zig mirror relies on.
+    const lwip_sources = [_][]const u8{
+        "third_party/lwip/src/core/def.c",
+        "third_party/lwip/src/core/dns.c",
+        "third_party/lwip/src/core/inet_chksum.c",
+        "third_party/lwip/src/core/init.c",
+        "third_party/lwip/src/core/ip.c",
+        "third_party/lwip/src/core/mem.c",
+        "third_party/lwip/src/core/memp.c",
+        "third_party/lwip/src/core/netif.c",
+        "third_party/lwip/src/core/pbuf.c",
+        "third_party/lwip/src/core/raw.c",
+        "third_party/lwip/src/core/stats.c",
+        "third_party/lwip/src/core/sys.c",
+        "third_party/lwip/src/core/tcp.c",
+        "third_party/lwip/src/core/tcp_in.c",
+        "third_party/lwip/src/core/tcp_out.c",
+        "third_party/lwip/src/core/timeouts.c",
+        "third_party/lwip/src/core/udp.c",
+        "third_party/lwip/src/core/ipv4/dhcp.c",
+        "third_party/lwip/src/core/ipv4/etharp.c",
+        "third_party/lwip/src/core/ipv4/icmp.c",
+        "third_party/lwip/src/core/ipv4/ip4.c",
+        "third_party/lwip/src/core/ipv4/ip4_addr.c",
+        "third_party/lwip/src/core/ipv4/ip4_frag.c",
+        "third_party/lwip/src/netif/ethernet.c",
+        "src/user/netd/lwipport/layout_check.c",
+    };
+
     var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
 
     inline for (USER_PROGRAMS, 0..) |program, i| {
@@ -240,6 +272,32 @@ pub fn build(b: *std.Build) void {
                 .imports = &user_imports,
             }),
         });
+        if (comptime std.mem.eql(u8, program.name, "netd")) {
+            exe.root_module.addIncludePath(b.path("third_party/lwip/src/include"));
+            exe.root_module.addIncludePath(b.path("src/user/netd/lwipport"));
+            exe.root_module.addIncludePath(b.path("include"));
+            exe.root_module.addCSourceFiles(.{
+                .files = &lwip_sources,
+                .flags = &.{
+                    "-std=c11",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                },
+            });
+            // For the routines lwIP's C calls by name: the libc's C-callable
+            // half, imported so its exports are emitted into this binary.
+            // Not the archive, whose start code would collide with netd's.
+            exe.root_module.addImport("clibc", b.createModule(.{
+                .root_source_file = b.path("src/user/libc/freestanding.zig"),
+                .target = user_target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "lib", .module = user_lib },
+                    .{ .name = "sys", .module = sys_mod },
+                    .{ .name = "ulib", .module = ulib_mod },
+                },
+            }));
+        }
         if (comptime std.mem.eql(u8, program.name, "platd")) {
             exe.root_module.addIncludePath(b.path("third_party/uacpi/include"));
             exe.root_module.addCSourceFiles(.{
