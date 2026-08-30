@@ -206,7 +206,9 @@ pub fn setPulse(glyph: u21) void {
 /// that freezes when interrupts do, and the vector pair beside it stays
 /// readable in the photograph of the freeze.
 fn repaintPulse() void {
-    if (trace_vector) |vector| paintTrace(vector, trace_moment);
+    if (trace_vector) |vector| paintPair(columns - 4, vector, trace_moment);
+    if (trace_syscall) |number| paintPair(columns - 7, number, syscall_moment);
+    if (trace_pid) |pid| paintPair(columns - 10, pid, .completed);
     const glyph = pulse_glyph orelse return;
     backend.putAt(columns - 1, 0, glyph, .light_grey, .black);
 }
@@ -258,23 +260,46 @@ pub fn seizeForPanic() void {
 /// dispatch completes. In a photograph of a frozen machine, a bright pair
 /// says which handler died; a dim pair says the machine died in ordinary
 /// code, and still names the last interrupt that ran.
-const TraceMoment = enum { taken, completed };
+pub const TraceMoment = enum { taken, completed };
 
 var trace_vector: ?u8 = null;
 var trace_moment: TraceMoment = .completed;
+var trace_syscall: ?u8 = null;
+var syscall_moment: TraceMoment = .completed;
+var trace_pid: ?u8 = null;
 
 fn traceIrq(vector: u8, moment: TraceMoment) void {
     trace_vector = vector;
     trace_moment = moment;
-    paintTrace(vector, moment);
+    paintPair(columns - 4, vector, moment);
 }
 
-fn paintTrace(vector: u8, moment: TraceMoment) void {
-    if (columns < 4) return;
+/// The last syscall entered, bright while its handler runs. In a frozen
+/// photograph: a bright pair is the call that never returned; a dim pair
+/// says the process was running its own code, the aperture reads a driver
+/// makes in user mode included.
+pub fn traceSyscall(number: u8, moment: TraceMoment) void {
+    if (!debug_enabled) return;
+    trace_syscall = number;
+    syscall_moment = moment;
+    paintPair(columns - 7, number, moment);
+}
+
+/// Which process the scheduler last switched to, so the frozen photograph
+/// names who was on the CPU.
+pub fn tracePid(pid: u32) void {
+    if (!debug_enabled) return;
+    const short: u8 = @truncate(pid);
+    trace_pid = short;
+    paintPair(columns - 10, short, .completed);
+}
+
+fn paintPair(at: usize, value: u8, moment: TraceMoment) void {
+    if (columns < 10) return;
     const HEX = "0123456789abcdef";
     const ink: Color = if (moment == .taken) .light_red else .dark_grey;
-    backend.putAt(columns - 4, 0, HEX[(vector >> 4) & 0xF], ink, .black);
-    backend.putAt(columns - 3, 0, HEX[vector & 0xF], ink, .black);
+    backend.putAt(at, 0, HEX[(value >> 4) & 0xF], ink, .black);
+    backend.putAt(at + 1, 0, HEX[value & 0xF], ink, .black);
 }
 
 /// Whether colour reaches the screen at all.

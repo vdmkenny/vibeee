@@ -23,6 +23,7 @@ const ports = @import("ports.zig");
 const input = @import("input.zig");
 const queue = @import("sched/queue.zig");
 const thread_mod = @import("sched/thread.zig");
+const console = @import("console.zig");
 const wait = @import("wait.zig");
 
 pub const Thread = thread_mod.Thread;
@@ -495,6 +496,7 @@ fn schedule() void {
     current = target;
 
     if (prev == target) return;
+    console.tracePid(target.id);
 
     switch_count += 1;
 

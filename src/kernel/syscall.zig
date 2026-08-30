@@ -15,6 +15,7 @@
 const std = @import("std");
 const abi = @import("lib").syscalls;
 const ctx = @import("syscall/context.zig");
+const console = @import("console.zig");
 const sched = @import("sched.zig");
 
 /// Every module that may contribute handlers. Adding a group is one line; the
@@ -81,7 +82,9 @@ comptime {
 
 pub fn dispatch(number: usize, args: Args) Result {
     if (number >= handlers.len) return Errno.nosys.value();
+    console.traceSyscall(@truncate(number), .taken);
     const result = handlers[number](args);
+    console.traceSyscall(@truncate(number), .completed);
 
     // The handler has unwound, so anything it was holding is released and this
     // is a safe place to act on a kill that arrived while it ran.
