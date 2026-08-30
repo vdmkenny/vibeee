@@ -316,7 +316,7 @@ test "hex reads both cases and stops at the first character that is not one" {
 }
 
 test "collapseSpaces trims the ends and reduces every internal run to one" {
-    // The 701's CPUID brand string, which pads a run before the clock speed.
+    // A CPUID brand string, which pads a run before the clock speed.
     var brand = "Intel(R) Celeron(R) M processor          900MHz".*;
     try std.testing.expectEqualStrings(
         "Intel(R) Celeron(R) M processor 900MHz",

@@ -228,16 +228,76 @@ per-packet ≈ 3%, IRQ amortized ≈ 3% per direction. Total ≈ **28–33% CPU 
 duplex saturation**; ~17% for one-direction bulk. Memory bandwidth ~50 MB/s of the
 ~350 MB/s practical. The lwIP copy each way is inside these numbers (§3.3).
 
-## 5. AR2425 WiFi driver (ath5k-class), honest design
+## 5. WiFi: the radio, and the vocabulary above it
 
-Unchanged from v0 and still the plan for its own milestone: probe/EEPROM/reset
-pipeline, softMAC MLME, WPA2-PSK supplicant with hardware CCMP and a software
-fallback, minstrel-lite rate control, kill-switch surprise-removal handling. Two
-integration points move with the stack decision: the driver feeds the same netif glue
-as ethernet (802.11 to 802.3 translation stays in the driver), and EAPOL (0x888E)
-frames are diverted to the supplicant before `netif.input`. Everything else in the
-v0 §5 text stands and is not repeated here; see git history for the full section
-until implementation revises it in place.
+Three layers, and only the middle one knows what silicon it is talking to.
+
+### 5.1 The vocabulary, generic by construction
+
+`lib/wifi.zig` and `lib/ieee80211.zig` are pure, host-tested, and deliberately
+wider than any single radio, because the service, the settings and the tools are
+written against them and must not be rewritten when the radio changes:
+
+- **Band** (2.4 and 5 GHz), **channel** with a number/frequency mapping both ways,
+  and **channel width** (20 and 40 MHz).
+- **Rate** as a union: a legacy rate, whose enum values *are* the 802.11
+  supported-rates encoding in units of 500 kbit, or a modulation-and-coding index
+  with stream count, width and guard interval, whose kilobit figures come from the
+  standard's own tables.
+- **Security**, **SSID** as bounded octets rather than text, and **signal** as both
+  a margin over the noise floor and an absolute figure, since not every radio can
+  answer the second.
+- 802.11 **frame parsing and translation**: frame control, the four-address rules
+  that the two distribution-system bits select between, the QoS word, the
+  high-throughput control word, and 802.11 to 802.3 translation through LLC/SNAP in
+  both directions.
+
+That covers b, g and n alike. A driver produces the values its silicon has; a
+high-throughput radio produces more of them, and nothing above the driver changes.
+This is the whole of the b/g/n readiness decision: it lives here, not in a driver.
+
+### 5.2 The driver: AR2425 (`user/netd/ar2425.zig`)
+
+Implemented: power-down exit, silicon identification (refusing any generation it
+does not know rather than programming a radio blind), the warm reset of PCU,
+baseband, MAC and PHY, and the card's own calibration store, from which come the
+station address, the regulatory domain, and whether the key cache may cipher. The
+bus-interface reset bit is deliberately unspellable in the reset word's type: on a
+card attached by PCI Express it takes the link down and the machine with it.
+
+Registers are named by an enum over a shared `lib/mmio.zig` window, which proves at
+compile time that every offset is aligned for the width it is reached at. Every
+wait is bounded; a radio that has gone away costs a bounded spin and a refusal.
+
+Not implemented, and refused honestly rather than faked: the mode initvals and
+channel-set pipeline, the descriptor rings, the MLME, the supplicant and rate
+control. `start` brings the interface up with no carrier and says so; `transmit`
+refuses and counts the refusal.
+
+Truth sources: the Linux ath5k driver and OpenBSD's ar5k, which agree on
+everything used here. No datasheet exists.
+
+### 5.3 What the rest of the milestone owes
+
+- **Reset and channel-set pipeline**: wake, PLL, PHY access, the ar5212 and RF2425
+  mode initval tables, EEPROM-derived power and antenna settings, PCU setup, RF
+  bank programming, PHY activation, then AGC and noise-floor calibration. This
+  silicon is known for calibration timeouts: a timeout is a warning that keeps the
+  last good noise floor and retries on the periodic tick, never a busy wait.
+- **Rings**: 5212-style descriptors in one DMA block, receive buffers handed
+  straight up as pbufs, one transmit queue in v1.
+- **MLME**: scan, authenticate, associate, and beacon tracking with a software
+  beacon-miss timer as the authority. Power save stays off in v1.
+- **WPA2-PSK**: PBKDF2 to a cached PMK, the four-way handshake over the data path
+  with EAPOL diverted before `netif.input`, hardware CCMP through the key cache
+  where the store permits it and a software implementation both as fallback and as
+  the test oracle for the hardware path.
+- **Rate control**: a small minstrel, per-rate success probability and throughput,
+  a multi-rate retry series, with a sampling frame in ten.
+- **Kill switch**: the radio hot-unplugs from the bus when the switch is thrown, so
+  surprise removal is the normal case, not the exception; the driver takes the
+  interface down, the stack sees a carrier loss, and a replug re-runs the whole
+  pipeline from power-on state.
 
 ## 6. The stack: lwIP module map
 

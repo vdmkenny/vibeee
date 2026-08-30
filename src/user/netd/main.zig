@@ -15,6 +15,7 @@
 //! DHCP, ICMP and the policy the `net` settings domain declares, all inside
 //! this one loop, whose wait deadline is the stack's own next timer.
 
+const ar2425 = @import("ar2425.zig");
 const atl2 = @import("atl2.zig");
 const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
@@ -46,12 +47,23 @@ const Driver = struct {
     vendor: u16,
     device: u16,
     ops: dev.NicOps,
+    /// What kind of interface the driver produces. Configuration slots
+    /// match on it, so a radio and a wired port are told apart before
+    /// either has a name.
+    class: lib.ifmatch.Class = .ether,
 };
 
 const DRIVERS = [_]Driver{
     .{ .name = e1000.name, .vendor = e1000.vendor, .device = e1000.device_id, .ops = e1000.ops },
     .{ .name = atl2.name, .vendor = atl2.vendor, .device = atl2.device_id, .ops = atl2.ops },
     .{ .name = rtl8139.name, .vendor = rtl8139.vendor, .device = rtl8139.device_id, .ops = rtl8139.ops },
+    .{
+        .name = ar2425.name,
+        .vendor = ar2425.vendor,
+        .device = ar2425.device_id,
+        .ops = ar2425.ops,
+        .class = ar2425.class,
+    },
 };
 
 /// How many interfaces a machine of this class can have behind one service.
@@ -133,6 +145,7 @@ fn probe() void {
             ifaces[count] = .{
                 .name = driver.name,
                 .label = labelFor(driver.name),
+                .class = driver.class,
                 .ops = driver.ops,
                 .location = loc,
             };

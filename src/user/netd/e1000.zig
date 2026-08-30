@@ -11,6 +11,7 @@
 //! `pause`.
 
 const dev_mod = @import("dev.zig");
+const lib = @import("lib");
 const std = @import("std");
 const dma = @import("dma.zig");
 const log = @import("ulib").log;
@@ -55,17 +56,9 @@ const R = enum(u32) {
     ra1 = 0x5404,
 };
 
-const Regs = struct {
-    base: [*]volatile u32,
-
-    fn wr(self: Regs, r: R, value: u32) void {
-        self.base[@intFromEnum(r) / 4] = value;
-    }
-
-    fn rd(self: Regs, r: R) u32 {
-        return self.base[@intFromEnum(r) / 4];
-    }
-};
+/// The card's aperture, named by `R`. The shared window proves at compile
+/// time that every offset in the set is word aligned.
+const Regs = lib.mmio.Window(R, u32);
 
 // ---------------------------------------------------------------------------
 // Register shapes: the bits, as fields
@@ -366,7 +359,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     pci.enableMemoryAndMaster(loc);
     var keep_pci_enabled = false;
     defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
-    device.regs = .{ .base = aperture };
+    device.regs = .{ .base = @ptrCast(aperture) };
 
     if (!reset()) {
         log.fail("e1000", "reset did not complete");
@@ -424,20 +417,20 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     configureLink();
 
     // Receive path: the descriptor ring and its buffers are one run.
-    device.regs.wr(.rdbal, device.phys + @offsetOf(Rings, "rx_desc"));
-    device.regs.wr(.rdbah, 0);
-    device.regs.wr(.rdlen, RingSlots * @sizeOf(RxDesc));
-    device.regs.wr(.rdh, 0);
+    device.regs.write(.rdbal, device.phys + @offsetOf(Rings, "rx_desc"));
+    device.regs.write(.rdbah, 0);
+    device.regs.write(.rdlen, RingSlots * @sizeOf(RxDesc));
+    device.regs.write(.rdh, 0);
     // Head equal to tail means empty. Descriptor 63 stays as the sentinel;
     // descriptors 0 through 62 are initially available to the receiver.
-    device.regs.wr(.rdt, RingSlots - 1);
+    device.regs.write(.rdt, RingSlots - 1);
 
     // Transmit path.
-    device.regs.wr(.tdbal, device.phys + @offsetOf(Rings, "tx_desc"));
-    device.regs.wr(.tdbah, 0);
-    device.regs.wr(.tdlen, RingSlots * @sizeOf(TxDesc));
-    device.regs.wr(.tdh, 0);
-    device.regs.wr(.tdt, 0);
+    device.regs.write(.tdbal, device.phys + @offsetOf(Rings, "tx_desc"));
+    device.regs.write(.tdbah, 0);
+    device.regs.write(.tdlen, RingSlots * @sizeOf(TxDesc));
+    device.regs.write(.tdh, 0);
+    device.regs.write(.tdt, 0);
 
     device.opened = true;
     keep_pci_enabled = true;
@@ -447,17 +440,10 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
 
 fn bar0(loc: pci.Location) ?u32 {
     const raw = pci.bar(loc, 0);
-    const bar: pci.MemoryBar = @bitCast(raw);
-    if (bar.space != .memory or bar.kind != .bits32) {
-        log.fail("e1000", "BAR0 is not a 32-bit memory BAR");
+    const base = pci.memoryBase(loc, 0) orelse {
+        log.fail("e1000", "BAR0 is not an assigned 32-bit memory window");
         return null;
-    }
-
-    const base = bar.base();
-    if (base == 0) {
-        log.fail("e1000", "BAR0 has no assigned address");
-        return null;
-    }
+    };
 
     // Size a BAR only while memory decoding is off, then restore both words
     // before interpreting the mask returned by configuration space.
@@ -487,15 +473,15 @@ fn bar0(loc: pci.Location) ?u32 {
 
 fn reset() bool {
     maskAndClearInterrupts();
-    device.regs.wr(.rctl, 0);
-    device.regs.wr(.tctl, @bitCast(TxControl{ .pad_short = true }));
-    _ = device.regs.rd(.status);
+    device.regs.write(.rctl, 0);
+    device.regs.write(.tctl, @bitCast(TxControl{ .pad_short = true }));
+    _ = device.regs.read(.status);
     sys.sleepMicros(10_000);
 
     var ctrl = readCtrl();
     ctrl.reset = true;
-    device.regs.wr(.ctrl, @bitCast(ctrl));
-    _ = device.regs.rd(.status);
+    device.regs.write(.ctrl, @bitCast(ctrl));
+    _ = device.regs.read(.status);
 
     // The bit clears itself; waiting is bounded and pausing.
     var spins: u32 = 0;
@@ -514,7 +500,7 @@ fn reset() bool {
 }
 
 fn readCtrl() Ctrl {
-    return @bitCast(device.regs.rd(.ctrl));
+    return @bitCast(device.regs.read(.ctrl));
 }
 
 fn configureLink() void {
@@ -524,7 +510,7 @@ fn configureLink() void {
     ctrl.force_speed = false;
     ctrl.force_duplex = false;
     ctrl.reset = false;
-    device.regs.wr(.ctrl, @bitCast(ctrl));
+    device.regs.write(.ctrl, @bitCast(ctrl));
 }
 
 fn readMac(dev: *NicDev) bool {
@@ -543,8 +529,8 @@ const ReceiveAddressLow = packed struct(u32) {
 };
 
 fn readRar() ?[6]u8 {
-    const low: ReceiveAddressLow = @bitCast(device.regs.rd(.ra0));
-    const high: ReceiveAddressHigh = @bitCast(device.regs.rd(.ra1));
+    const low: ReceiveAddressLow = @bitCast(device.regs.read(.ra0));
+    const high: ReceiveAddressHigh = @bitCast(device.regs.read(.ra1));
     if (!high.valid) return null;
     const mac = [6]u8{
         low.octet0, low.octet1, low.octet2, low.octet3,
@@ -563,10 +549,10 @@ fn readEepromMac() ?[6]u8 {
 }
 
 fn readEeprom(address: u8) ?u16 {
-    device.regs.wr(.eerd, @bitCast(EepromRead{ .start = true, .address = address }));
+    device.regs.write(.eerd, @bitCast(EepromRead{ .start = true, .address = address }));
     var spins: u32 = 0;
     while (spins < EepromSpins) : (spins += 1) {
-        const result = @as(EepromRead, @bitCast(device.regs.rd(.eerd)));
+        const result = @as(EepromRead, @bitCast(device.regs.read(.eerd)));
         if (result.done) return result.data;
         std.atomic.spinLoopHint();
     }
@@ -585,13 +571,13 @@ fn validMac(mac: [6]u8) bool {
 }
 
 fn writeRar(mac: [6]u8) void {
-    device.regs.wr(.ra0, @bitCast(ReceiveAddressLow{
+    device.regs.write(.ra0, @bitCast(ReceiveAddressLow{
         .octet0 = mac[0],
         .octet1 = mac[1],
         .octet2 = mac[2],
         .octet3 = mac[3],
     }));
-    device.regs.wr(.ra1, @bitCast(ReceiveAddressHigh{
+    device.regs.write(.ra1, @bitCast(ReceiveAddressHigh{
         .octet4 = mac[4],
         .octet5 = mac[5],
         .valid = true,
@@ -599,9 +585,9 @@ fn writeRar(mac: [6]u8) void {
 }
 
 fn maskAndClearInterrupts() void {
-    device.regs.wr(.imc, AllCauses);
-    _ = device.regs.rd(.status); // flush the posted mask write
-    _ = device.regs.rd(.icr); // ICR is read-to-clear
+    device.regs.write(.imc, AllCauses);
+    _ = device.regs.read(.status); // flush the posted mask write
+    _ = device.regs.read(.icr); // ICR is read-to-clear
 }
 
 pub fn start(nic: *NicDev) bool {
@@ -609,13 +595,13 @@ pub fn start(nic: *NicDev) bool {
 
     maskAndClearInterrupts();
     dma.publish();
-    device.regs.wr(.rctl, @bitCast(UpRx));
-    device.regs.wr(.tctl, @bitCast(UpTx));
-    _ = device.regs.rd(.status);
+    device.regs.write(.rctl, @bitCast(UpRx));
+    device.regs.write(.tctl, @bitCast(UpTx));
+    _ = device.regs.read(.status);
     pci.enableInterrupt(nic.location);
     device.started = true;
-    device.regs.wr(.ims, @bitCast(UpCauses));
-    _ = device.regs.rd(.ims);
+    device.regs.write(.ims, @bitCast(UpCauses));
+    _ = device.regs.read(.ims);
     return true;
 }
 
@@ -623,25 +609,25 @@ pub fn stop(nic: *NicDev) void {
     if (!device.opened) return;
     device.started = false;
 
-    device.regs.wr(.imc, AllCauses);
-    device.regs.wr(.rctl, 0);
-    device.regs.wr(.tctl, @bitCast(TxControl{ .pad_short = true }));
-    _ = device.regs.rd(.status);
+    device.regs.write(.imc, AllCauses);
+    device.regs.write(.rctl, 0);
+    device.regs.write(.tctl, @bitCast(TxControl{ .pad_short = true }));
+    _ = device.regs.read(.status);
     sys.sleepMicros(10_000);
 
     // No register may retain a pointer to memory returned below.
-    device.regs.wr(.rdlen, 0);
-    device.regs.wr(.rdh, 0);
-    device.regs.wr(.rdt, 0);
-    device.regs.wr(.rdbal, 0);
-    device.regs.wr(.rdbah, 0);
-    device.regs.wr(.tdlen, 0);
-    device.regs.wr(.tdh, 0);
-    device.regs.wr(.tdt, 0);
-    device.regs.wr(.tdbal, 0);
-    device.regs.wr(.tdbah, 0);
-    _ = device.regs.rd(.status);
-    _ = device.regs.rd(.icr);
+    device.regs.write(.rdlen, 0);
+    device.regs.write(.rdh, 0);
+    device.regs.write(.rdt, 0);
+    device.regs.write(.rdbal, 0);
+    device.regs.write(.rdbah, 0);
+    device.regs.write(.tdlen, 0);
+    device.regs.write(.tdh, 0);
+    device.regs.write(.tdt, 0);
+    device.regs.write(.tdbal, 0);
+    device.regs.write(.tdbah, 0);
+    _ = device.regs.read(.status);
+    _ = device.regs.read(.icr);
 
     pci.disableInterruptAndMaster(nic.location);
     if (device.dma_handle) |handle| _ = sys.close(handle);
@@ -656,7 +642,7 @@ pub fn stop(nic: *NicDev) void {
 
 pub fn irq(dev: *NicDev) void {
     if (!device.opened or !device.started) return;
-    const cause = @as(Causes, @bitCast(device.regs.rd(.icr)));
+    const cause = @as(Causes, @bitCast(device.regs.read(.icr)));
     if (cause.none()) return; // a shared line, not ours
 
     // Reading ICR acknowledged this snapshot. Writing it back would also
@@ -701,7 +687,7 @@ fn reapRx(dev: *NicDev) void {
         device.rx_next = (slot + 1) % RingSlots;
         // RDT names the last descriptor returned to hardware, not the next
         // descriptor software expects to consume.
-        device.regs.wr(.rdt, slot);
+        device.regs.write(.rdt, slot);
     }
 }
 
@@ -748,7 +734,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
 
     dma.publish();
     device.tx_next = next;
-    device.regs.wr(.tdt, next);
+    device.regs.write(.tdt, next);
 
     dev_mod.deliverTx(nic, frame.len);
     return true;
@@ -756,7 +742,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
 
 pub fn link(_: *NicDev) dev_mod.Link {
     if (!device.opened) return .{};
-    const status = @as(StatusReg, @bitCast(device.regs.rd(.status)));
+    const status = @as(StatusReg, @bitCast(device.regs.read(.status)));
     return .{
         .up = status.link_up,
         .mbps = if (status.link_up) status.speed.mbps() else 0,

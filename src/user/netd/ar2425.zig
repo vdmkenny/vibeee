@@ -1,0 +1,483 @@
+//! The Atheros AR2425 radio: identification, calibration store, and the
+//! shape everything above it compiles against.
+//!
+//! An 802.11 radio is a soft MAC. The silicon transmits, receives,
+//! acknowledges and decrypts; everything that decides what to say, and to
+//! whom, is software: scanning, authentication, association, key exchange
+//! and rate choice. This file is the silicon half's foundation, and it is
+//! honest about where that half currently stops. What it does today is
+//! bring the chip out of power-down, prove which silicon it is, and read
+//! the card's own store: the station address, the regulatory domain, and
+//! whether the key cache may do its own cipher.
+//!
+//! Register offsets and sequences follow the two independent free
+//! implementations of this family, the Linux ath5k driver and OpenBSD's
+//! ar5k, which agree on everything used here. No datasheet exists.
+//!
+//! Nothing in this file allocates on a packet path, and no wait is
+//! unbounded: this runs in a service whose event loop must stay
+//! answerable, and a radio that has gone away must cost a bounded spin
+//! and a refusal, never the machine.
+
+const dev_mod = @import("dev.zig");
+const lib = @import("lib");
+const log = @import("ulib").log;
+const out = @import("ulib").out;
+const pci = @import("ulib").pci;
+const std = @import("std");
+const sys = @import("sys");
+
+const NicDev = dev_mod.NicDev;
+
+pub const name = "ar2425";
+pub const vendor: u16 = 0x168C;
+pub const device_id: u16 = 0x001C;
+
+/// What kind of interface this driver produces, for configuration slots.
+pub const class = lib.ifmatch.Class.wifi;
+
+/// The register aperture is sixty-four kilobytes; everything this driver
+/// reaches lives in the first forty.
+const MMIO_BYTES: usize = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Registers
+// ---------------------------------------------------------------------------
+
+/// Every register here is a word, so one window serves the whole chip.
+const R = enum(usize) {
+    /// Which engines are held in reset.
+    reset_control = 0x4000,
+    /// The sleep state machine.
+    sleep_control = 0x4004,
+    /// Interrupt status, shadowed for reading without acknowledging.
+    interrupt_status = 0x401C,
+    /// Bus configuration, including the power-down report.
+    bus_config = 0x4010,
+    /// Silicon revision: which MAC generation this is.
+    silicon_revision = 0x4020,
+
+    /// The calibration store: address, data, command, status.
+    eeprom_address = 0x6000,
+    eeprom_data = 0x6004,
+    eeprom_command = 0x6008,
+    eeprom_status = 0x600C,
+
+    /// The station's own address, low four bytes then high two.
+    station_id_low = 0x8000,
+    station_id_high = 0x8004,
+
+    /// The baseband's identity, which names the radio attached to it.
+    phy_chip_id = 0x9818,
+};
+
+const Regs = lib.mmio.Window(R, u32);
+
+/// Which engines a reset holds down. Every bit is one block, and the bus
+/// interface is deliberately absent from the fields a caller can name: on
+/// a card attached by PCI Express, resetting the bus block wedges the link
+/// and takes the machine with it. The bit exists in the silicon; this
+/// driver has no way to spell it.
+const ResetControl = packed struct(u32) {
+    /// The protocol control unit: acknowledgement, filtering, timers.
+    pcu: bool = false,
+    /// The baseband's direct memory access engines.
+    baseband: bool = false,
+    mac: bool = false,
+    phy: bool = false,
+    _4: u28 = 0,
+
+    /// Everything this driver ever resets together.
+    const everything = ResetControl{ .pcu = true, .baseband = true, .mac = true, .phy = true };
+    const nothing = ResetControl{};
+};
+
+/// The sleep state machine's three settings.
+const SleepMode = enum(u2) {
+    /// Awake, and staying awake.
+    awake = 0,
+    /// Asleep until told otherwise.
+    asleep = 1,
+    /// The hardware may sleep when it judges it can.
+    permitted = 2,
+    _,
+};
+
+const SleepControl = packed struct(u32) {
+    duration: u16 = 0,
+    mode: SleepMode = .awake,
+    _18: u14 = 0,
+};
+
+/// The bus configuration word. Only the power-down report is read here.
+const BusConfig = packed struct(u32) {
+    _0: u16 = 0,
+    /// Set while the chip is still powered down; a wake is complete when
+    /// this clears.
+    powered_down: bool = false,
+    _17: u15 = 0,
+};
+
+/// Silicon revision: the generation in the high nibble pair, the stepping
+/// in the low one.
+const SiliconRevision = packed struct(u32) {
+    revision: u4 = 0,
+    version: u8 = 0,
+    _12: u20 = 0,
+};
+
+/// The MAC generations this driver knows how to talk to.
+const Generation = enum(u8) {
+    /// AR2425, the single-chip b/g part.
+    ar2425 = 0xE2,
+    /// AR2417, the same generation with a different radio label.
+    ar2417 = 0xE6,
+    _,
+
+    fn known(self: Generation) bool {
+        return switch (self) {
+            .ar2425, .ar2417 => true,
+            else => false,
+        };
+    }
+};
+
+const EepromCommand = packed struct(u32) {
+    read: bool = false,
+    write: bool = false,
+    reset: bool = false,
+    _3: u29 = 0,
+};
+
+const EepromStatus = packed struct(u32) {
+    read_error: bool = false,
+    read_done: bool = false,
+    write_error: bool = false,
+    write_done: bool = false,
+    _4: u28 = 0,
+};
+
+/// The station address as the two registers hold it: four bytes in the
+/// low word, two in the high one.
+const StationIdHigh = packed struct(u32) {
+    address_high: u16 = 0,
+    _16: u16 = 0,
+};
+
+comptime {
+    // The radio's own numbers, proved to be the shapes claimed for them.
+    if (@as(u32, @bitCast(ResetControl.everything)) != 0x0F) {
+        @compileError("the reset word's blocks drifted");
+    }
+    if (@as(u32, @bitCast(SleepControl{ .mode = .asleep })) != 0x0001_0000) {
+        @compileError("the sleep mode field drifted");
+    }
+    if (@as(u32, @bitCast(BusConfig{ .powered_down = true })) != 0x0001_0000) {
+        @compileError("the power-down report drifted");
+    }
+    if (@as(u32, @bitCast(EepromStatus{ .read_done = true })) != 0x02 or
+        @as(u32, @bitCast(EepromStatus{ .read_error = true })) != 0x01)
+    {
+        @compileError("the calibration store's status bits drifted");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Where the card keeps what it knows about itself
+// ---------------------------------------------------------------------------
+
+/// Word offsets into the calibration store. The station address occupies
+/// three words read from the highest down, which is the order the vendor's
+/// own layout puts them in.
+const Eeprom = struct {
+    const magic: u16 = 0x003D;
+    const magic_value: u16 = 0x5AA5;
+    const protect: u16 = 0x003F;
+    const regulatory_domain: u16 = 0x00BF;
+    /// The header word whose second bit disables the key cache's cipher.
+    const misc5: u16 = 0x00C6;
+    /// The station address, highest word first.
+    const address_top: u16 = 0x1F;
+    const address_bottom: u16 = 0x1D;
+    /// The word above the address, which the vendor's driver reads and
+    /// discards before the address itself. Its read is what settles the
+    /// store's address latch.
+    const address_prelude: u16 = 0x20;
+
+    /// How long one word may take. The vendor waits far longer; a service
+    /// that must stay answerable does not, and a store this slow is a card
+    /// worth refusing.
+    const READ_ATTEMPTS: u32 = 2000;
+    const READ_PAUSE_US: u32 = 15;
+};
+
+/// What the card says about itself, once its store has been read.
+pub const Identity = struct {
+    generation: Generation = @enumFromInt(0),
+    revision: u4 = 0,
+    /// The baseband's identity word, which names the attached radio.
+    phy_id: u32 = 0,
+    /// Which regulatory domain the card was built for. The channels a scan
+    /// visits are the intersection of this and the band's own list, never
+    /// the union.
+    regulatory_domain: u16 = 0,
+    /// Whether the key cache may perform its own cipher. A card that says
+    /// no is not a card that cannot be joined; it is one whose frames are
+    /// enciphered in software.
+    hardware_cipher: bool = false,
+};
+
+// ---------------------------------------------------------------------------
+// The device
+// ---------------------------------------------------------------------------
+
+const Device = struct {
+    regs: Regs = .{ .base = undefined },
+    location: pci.Location = .{ .bus = 0, .device = 0, .function = 0 },
+    identity: Identity = .{},
+    opened: bool = false,
+    started: bool = false,
+};
+
+var device: Device = .{};
+
+pub const ops = dev_mod.NicOps{
+    .open = open,
+    .start = start,
+    .stop = stop,
+    .irq = irq,
+    .transmit = transmit,
+    .link = link,
+};
+
+/// Bring the card out of whatever state the firmware left it in, prove
+/// which silicon it is, and read its store.
+pub fn open(loc: pci.Location, nic: *NicDev) bool {
+    device = .{ .location = loc };
+
+    const base = pci.memoryBase(loc, 0) orelse {
+        log.fail(name, "the radio exposes no register aperture");
+        return false;
+    };
+    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
+        log.fail(name, "cannot map registers");
+        return false;
+    };
+    pci.enableMemoryAndMaster(loc);
+    var keep_enabled = false;
+    defer if (!keep_enabled) pci.disableInterruptAndMaster(loc);
+
+    device.regs = .{ .base = @ptrCast(aperture) };
+
+    if (!wake()) {
+        log.fail(name, "the radio stayed powered down");
+        return false;
+    }
+    if (!identify()) return false;
+    if (!warmReset()) {
+        log.fail(name, "the radio did not come back from reset");
+        return false;
+    }
+    // The reset returns the chip to power-down, so the wake is repeated
+    // before anything reads a register that reset cleared.
+    if (!wake()) {
+        log.fail(name, "the radio stayed powered down after reset");
+        return false;
+    }
+
+    if (!readIdentity()) return false;
+    if (!readAddress(&nic.mac)) {
+        log.fail(name, "the calibration store holds no station address");
+        return false;
+    }
+    writeStationAddress(nic.mac);
+
+    device.opened = true;
+    keep_enabled = true;
+    sayIdentity(nic.mac);
+    return true;
+}
+
+/// Let traffic flow. There is none yet: a radio carries nothing until it
+/// has joined a network, and joining is the milestone above this one. The
+/// interface exists, names itself and reports honestly.
+pub fn start(_: *NicDev) bool {
+    device.started = true;
+    log.note(name, "radio identified; joining a network is not implemented");
+    return true;
+}
+
+pub fn stop(_: *NicDev) void {
+    if (!device.opened) return;
+    device.started = false;
+    // Nothing is enabled, so nothing needs quieting beyond the sleep the
+    // hardware may now take.
+    device.regs.write(.sleep_control, @bitCast(SleepControl{ .mode = .permitted }));
+    _ = device.regs.read(.sleep_control);
+}
+
+/// No interrupt is armed while nothing is enabled, so a delivery here
+/// belongs to another device sharing the line.
+pub fn irq(_: *NicDev) void {}
+
+/// A radio with no association has nowhere to send a frame, and says so
+/// rather than dropping it silently.
+pub fn transmit(nic: *NicDev, _: []const u8) bool {
+    nic.stats.tx_failed += 1;
+    return false;
+}
+
+/// The carrier of a radio is its association, which does not exist yet.
+pub fn link(_: *NicDev) dev_mod.Link {
+    return .{};
+}
+
+// ---------------------------------------------------------------------------
+// Power, reset and identity
+// ---------------------------------------------------------------------------
+
+/// Ask the chip to stay awake and wait for it to report that it is.
+fn wake() bool {
+    device.regs.write(.sleep_control, @bitCast(SleepControl{ .mode = .awake }));
+    _ = device.regs.read(.sleep_control);
+
+    var waited: u32 = 0;
+    while (waited < 200) : (waited += 1) {
+        const config: BusConfig = @bitCast(device.regs.read(.bus_config));
+        if (!config.powered_down) return true;
+        sys.sleepMicros(50);
+    }
+    return false;
+}
+
+/// Hold every engine down, then let them all go. The bus interface is
+/// never part of this: on a card attached by PCI Express, resetting it
+/// takes the link down and the machine with it.
+fn warmReset() bool {
+    device.regs.write(.reset_control, @bitCast(ResetControl.everything));
+    _ = device.regs.read(.reset_control);
+    sys.sleepMicros(15);
+
+    device.regs.write(.reset_control, @bitCast(ResetControl.nothing));
+
+    var waited: u32 = 0;
+    while (waited < 200) : (waited += 1) {
+        if (device.regs.read(.reset_control) == 0) return true;
+        sys.sleepMicros(50);
+    }
+    return false;
+}
+
+/// Which silicon this is. A part this driver does not know is refused
+/// rather than guessed at: the register sequences below are not portable
+/// across generations, and a wrong guess programs a radio blind.
+fn identify() bool {
+    const revision: SiliconRevision = @bitCast(device.regs.read(.silicon_revision));
+    device.identity.generation = @enumFromInt(revision.version);
+    device.identity.revision = revision.revision;
+
+    if (!device.identity.generation.known()) {
+        log.begin(name, .bad);
+        out.text("unfamiliar silicon, revision 0x");
+        out.hex(revision.version, 2);
+        out.text("; refusing to drive it blind");
+        log.end();
+        return false;
+    }
+
+    device.identity.phy_id = device.regs.read(.phy_chip_id);
+    return true;
+}
+
+/// Read the card's own account of itself: that the store is intelligible
+/// at all, which regulatory domain it was built for, and whether its key
+/// cache may cipher.
+fn readIdentity() bool {
+    const magic = readWord(Eeprom.magic) orelse {
+        log.fail(name, "the calibration store does not answer");
+        return false;
+    };
+    if (magic != Eeprom.magic_value) {
+        log.fail(name, "the calibration store is not one this card wrote");
+        return false;
+    }
+
+    device.identity.regulatory_domain = readWord(Eeprom.regulatory_domain) orelse 0;
+    if (readWord(Eeprom.misc5)) |misc| {
+        // The second bit disables the cipher engine, so the capability is
+        // its absence.
+        device.identity.hardware_cipher = (misc >> 1) & 1 == 0;
+    }
+    return true;
+}
+
+/// The station address, from the three words the store keeps it in,
+/// highest first, each word most significant byte first.
+fn readAddress(into: *lib.mac.Address) bool {
+    // The vendor's driver reads the word above the address first and
+    // discards it; the read is what settles the store's address latch.
+    _ = readWord(Eeprom.address_prelude);
+
+    var address: lib.mac.Address = @splat(0);
+    var total: u32 = 0;
+    var at: usize = 0;
+    var offset: u16 = Eeprom.address_top;
+    while (offset >= Eeprom.address_bottom) : (offset -= 1) {
+        const word = readWord(offset) orelse return false;
+        total += word;
+        address[at] = @truncate(word >> 8);
+        address[at + 1] = @truncate(word);
+        at += 2;
+    }
+
+    // An unwritten store reads as all zeroes or all ones, and neither is
+    // an address.
+    if (total == 0 or total == 3 * 0xFFFF) return false;
+    into.* = address;
+    return true;
+}
+
+/// One word from the calibration store: name the offset, ask for a read,
+/// and wait a bounded time for the answer.
+fn readWord(offset: u16) ?u16 {
+    device.regs.write(.eeprom_address, offset);
+    device.regs.write(.eeprom_command, @bitCast(EepromCommand{ .read = true }));
+
+    var attempts: u32 = 0;
+    while (attempts < Eeprom.READ_ATTEMPTS) : (attempts += 1) {
+        const status: EepromStatus = @bitCast(device.regs.read(.eeprom_status));
+        if (status.read_done) {
+            if (status.read_error) return null;
+            return @truncate(device.regs.read(.eeprom_data));
+        }
+        sys.sleepMicros(Eeprom.READ_PAUSE_US);
+    }
+    return null;
+}
+
+/// Tell the protocol control unit which address it answers to. Filtering
+/// and acknowledgement are the hardware's, and both are keyed on this.
+fn writeStationAddress(address: lib.mac.Address) void {
+    const low = std.mem.readInt(u32, address[0..4], .little);
+    const high = std.mem.readInt(u16, address[4..6], .little);
+    device.regs.write(.station_id_low, low);
+    device.regs.write(.station_id_high, @bitCast(StationIdHigh{ .address_high = high }));
+}
+
+fn sayIdentity(address: lib.mac.Address) void {
+    log.begin(name, .key);
+    out.text(switch (device.identity.generation) {
+        .ar2425 => "AR2425",
+        .ar2417 => "AR2417",
+        else => "unknown",
+    });
+    out.text(" rev ");
+    out.decimal(device.identity.revision);
+    out.text(", mac ");
+    const spelled = lib.mac.text(address);
+    out.text(&spelled);
+    out.text(", domain 0x");
+    out.hex(device.identity.regulatory_domain, 4);
+    if (!device.identity.hardware_cipher) out.text(", software cipher only");
+    log.end();
+}

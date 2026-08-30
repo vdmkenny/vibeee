@@ -56,6 +56,18 @@ pub fn write8(loc: Location, register: u8, value: u8) void {
 }
 
 /// A BAR at the given index, zero when the device reports none there.
+/// The physical base of a 32-bit memory window, or null when that slot
+/// holds something else: an I/O window, a 64-bit pair, or nothing the
+/// firmware assigned an address to. Every driver mapping registers asks
+/// this same question, and asking it in one place is what keeps a driver
+/// from mapping an I/O port number as if it were memory.
+pub fn memoryBase(loc: Location, index: u8) ?u32 {
+    const window: MemoryBar = @bitCast(bar(loc, index));
+    if (window.space != .memory or window.kind != .bits32) return null;
+    const base = window.base();
+    return if (base == 0) null else base;
+}
+
 pub fn bar(loc: Location, index: u8) u32 {
     return read(loc, lib.pci.BAR0_OFFSET + 4 * index);
 }
