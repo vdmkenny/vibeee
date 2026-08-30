@@ -907,6 +907,9 @@ fn mdioIdle(regs: Regs) bool {
 /// seconds late, in one clump, are exactly what that silence looks like.
 const SERVICE_ROUNDS = 8;
 
+/// The overflow story is told once; after that the counter speaks.
+var overflow_said = false;
+
 pub fn irq(nic: *NicDev) void {
     if (!device.opened or !device.started) return;
 
@@ -915,14 +918,34 @@ pub fn irq(nic: *NicDev) void {
         const cause = @as(Isr, @bitCast(device.regs.rd32(.isr)));
         if (cause.none()) return; // quiet: nothing latched, or a shared line
 
-        // The everyday causes, a packet status update, the PHY answering a
-        // poll, are traffic, not news, and stay quiet. Anything left over is
-        // worth the line: errors, overruns and link events.
+        // The everyday causes are traffic, not news, and stay quiet: the
+        // status updates, the PHY answering a poll, and the companions this
+        // MAC raises beside them, a TXD underrun with every completion and
+        // early-transmit chatter. Overflow means a burst outran the ring
+        // while the service was busy; it is counted where `net` shows it,
+        // said once, and left to the engine, which drops and recovers on
+        // its own. Narrating each one would slow the service further and
+        // deepen the very overflow being narrated.
         var unexpected = cause;
         unexpected.rx_status = false;
         unexpected.tx_status = false;
         unexpected.phy = false;
         unexpected.hold = false;
+        unexpected.host_txd_ur = false;
+        unexpected.tx_early = false;
+        unexpected.rxf_ov = false;
+        unexpected.rxs_ov = false;
+        unexpected.host_rxd_ov = false;
+        unexpected.correctable_error = false;
+
+        if (cause.rxf_ov or cause.rxs_ov or cause.host_rxd_ov) {
+            nic.stats.rx_dropped += 1;
+            if (!overflow_said) {
+                overflow_said = true;
+                log.say("atl2", .dim, "rx overflowed under a burst; drops counted from here");
+            }
+        }
+
         if (@as(u32, @bitCast(unexpected)) != 0) {
             log.begin("atl2", .dim);
             out.text("cause 0x");
@@ -941,8 +964,13 @@ pub fn irq(nic: *NicDev) void {
         acknowledged.hold = true;
         device.regs.wr32(.isr, @bitCast(acknowledged));
 
-        if (cause.phy_link_down or cause.dmar_timeout or cause.dmaw_timeout) {
+        if (cause.phy_link_down or cause.dmar_timeout or cause.dmaw_timeout or
+            cause.fatal_error)
+        {
             // The manual's answer to a wedged DMA engine is a full reset.
+            // A flagged fatal bus error joins it: reading registers against
+            // a device in that state is how a bus transaction never
+            // completes, and a load that never retires is a frozen machine.
             // Masked and quieted first, and the link reapplied after, because
             // configure leaves the MAC disabled until the link state says
             // otherwise.

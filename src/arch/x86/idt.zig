@@ -142,6 +142,7 @@ fn stub(comptime vec: u8) fn () callconv(.naked) void {
 
 export fn isrDispatch(frame: *Frame) callconv(.c) void {
     const vec: u8 = @truncate(frame.vector);
+    console.interruptEntered(vec);
     if (handlers[vec]) |h| {
         h(frame);
     } else if (vec < 32) {
@@ -164,6 +165,8 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
         if (irq >= 8) port.outb(0xA0, 0x20);
         port.outb(0x20, 0x20);
     }
+
+    console.interruptLeft(vec);
 
     // Preemption happens here rather than inside the handler: the interrupt
     // controller has been acknowledged, so switching stacks now cannot strand

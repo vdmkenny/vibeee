@@ -106,12 +106,14 @@ pub const Report = struct {
 
 /// Report a fault the architecture layer has already decoded.
 pub fn report(r: *Report) noreturn {
+    console.seizeForPanic();
     if (r.trace_len == 0) collectBacktrace(r, r.fp);
     render(r);
 }
 
 /// Zig's panic entry point. Signature is fixed by std.debug.FullPanic.
 pub fn kpanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    console.seizeForPanic();
     var r = Report{
         .message = msg,
         .pc = first_trace_addr orelse @returnAddress(),

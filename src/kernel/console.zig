@@ -208,6 +208,63 @@ fn repaintPulse() void {
     backend.putAt(columns - 1, 0, glyph, .light_grey, .black);
 }
 
+// ---------------------------------------------------------------------------
+// Interrupt context, and what it may draw
+// ---------------------------------------------------------------------------
+
+/// How many interrupt frames are live on this stack. The dispatcher keeps
+/// this current; the renderer consults it, because an interrupt that lands
+/// inside another context's half-drawn line must not tear the state that
+/// line is drawn with.
+var interrupt_depth: u32 = 0;
+
+/// Whether some context is mid-render. One writer owns the console state at
+/// a time; an interrupt arriving under it keeps the record and skips the
+/// pixels rather than interleaving with a half-drawn line.
+var render_busy: bool = false;
+
+pub fn interruptEntered(vector: u8) void {
+    interrupt_depth += 1;
+    if (debug_enabled) traceIrq(vector, .taken);
+}
+
+pub fn interruptLeft(vector: u8) void {
+    if (debug_enabled) traceIrq(vector, .completed);
+    if (interrupt_depth > 0) interrupt_depth -= 1;
+}
+
+/// What a rendering entry point may do right now: own the console state,
+/// borrow it from an outer frame on this same stack, or leave the pixels
+/// alone because someone beneath this interrupt is mid-line.
+const Render = enum { own, borrow, skip };
+
+fn renderClaim() Render {
+    if (!render_busy) return .own;
+    return if (interrupt_depth > 0) .skip else .borrow;
+}
+
+/// The panic path draws over whatever was happening, and must never be the
+/// thing a gate silences: the machine is done, the report is all there is.
+pub fn seizeForPanic() void {
+    render_busy = false;
+    interrupt_depth = 0;
+}
+
+/// The debug boots' interrupt breadcrumb: the last vector taken, painted in
+/// two corner cells the moment it is entered and dimmed the moment its
+/// dispatch completes. In a photograph of a frozen machine, a bright pair
+/// says which handler died; a dim pair says the machine died in ordinary
+/// code, and still names the last interrupt that ran.
+const TraceMoment = enum { taken, completed };
+
+fn traceIrq(vector: u8, moment: TraceMoment) void {
+    if (columns < 4) return;
+    const HEX = "0123456789abcdef";
+    const ink: Color = if (moment == .taken) .light_red else .dark_grey;
+    backend.putAt(columns - 4, 0, HEX[(vector >> 4) & 0xF], ink, .black);
+    backend.putAt(columns - 3, 0, HEX[vector & 0xF], ink, .black);
+}
+
 /// Whether colour reaches the screen at all.
 ///
 /// Turned off by `nocolor` on the kernel command line. Every caller keeps
@@ -550,6 +607,22 @@ pub fn putChar(c: u8) void {
 }
 
 pub fn writeString(s: []const u8) void {
+    switch (renderClaim()) {
+        .own => {},
+        .borrow => {
+            for (s) |c| putChar(c);
+            backend.setCursor(col, row);
+            return;
+        },
+        // Pixels belong to the interrupted writer; the serial mirror has
+        // no shared state to tear and still carries the bytes.
+        .skip => {
+            if (mirror) |sink| sink(s);
+            return;
+        },
+    }
+    render_busy = true;
+    defer render_busy = false;
     for (s) |c| putChar(c);
     backend.setCursor(col, row);
 }
@@ -606,6 +679,17 @@ fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Write
 /// (see build.zig), so a float here is a link error rather than a runtime
 /// surprise.
 pub fn printf(comptime fmt: []const u8, args: anytype) void {
+    switch (renderClaim()) {
+        .own => {},
+        .borrow => {
+            console_writer.print(fmt, args) catch {};
+            backend.setCursor(col, row);
+            return;
+        },
+        .skip => return,
+    }
+    render_busy = true;
+    defer render_busy = false;
     console_writer.print(fmt, args) catch {};
     backend.setCursor(col, row);
 }
@@ -633,6 +717,27 @@ pub fn colourOf(role: style.Role) Color {
 fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: anytype) void {
     const key_color = colourOf(role);
     recordLine(key, fmt, args);
+
+    // The record above is the line's real home. Pixels are painted only
+    // when no other context is mid-line: an interrupt narrating over a
+    // half-drawn line would tear the state both are drawn with. The serial
+    // mirror still carries the skipped line; it has no state to tear.
+    switch (renderClaim()) {
+        .own => {},
+        .borrow => {},
+        .skip => {
+            if (mirror) |sink| {
+                var scratch: [256]u8 = undefined;
+                sink(composeLine(&scratch, key, fmt, args));
+            }
+            return;
+        },
+    }
+    const owned = !render_busy;
+    render_busy = true;
+    defer if (owned) {
+        render_busy = false;
+    };
 
     const saved = fg;
     setColor(key_color, bg);
@@ -688,15 +793,19 @@ pub fn isDebug() bool {
 /// through the console's writer, which goes to the screen.
 fn recordLine(key: []const u8, comptime fmt: []const u8, args: anytype) void {
     var scratch: [256]u8 = undefined;
-    var w = std.Io.Writer.fixed(&scratch);
+    klog.append(composeLine(&scratch, key, fmt, args));
+}
 
+/// One boot-log line, formatted the way both the record and the mirror
+/// carry it: padded key, message, newline.
+fn composeLine(buf: []u8, key: []const u8, comptime fmt: []const u8, args: anytype) []const u8 {
+    var w = std.Io.Writer.fixed(buf);
     w.print("{s}", .{key}) catch {};
     var n = key.len;
     while (n < KEY_WIDTH) : (n += 1) w.print(" ", .{}) catch {};
     w.print(fmt, args) catch {};
     w.print("\n", .{}) catch {};
-
-    klog.append(scratch[0..w.end]);
+    return buf[0..w.end];
 }
 
 /// A boot-narration line: one component saying what it came to.
