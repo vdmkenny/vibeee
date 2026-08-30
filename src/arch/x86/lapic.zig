@@ -27,6 +27,8 @@ const Register = enum(usize) {
     in_service = 0x100,
     trigger_mode = 0x180,
     request = 0x200,
+    /// Where a performance-counter overflow is delivered.
+    lvt_performance = 0x340,
 };
 
 /// The MSR carrying the base address and the hardware enable.
@@ -80,6 +82,13 @@ const DeferredEoi = packed struct(u16) {
 pub const MAX_DEFERRED = 16;
 var deferred: [MAX_DEFERRED]DeferredEoi = @splat(.{});
 var deferred_len: usize = 0;
+
+/// Point the performance LVT at NMI delivery, unmasked. Also the rearm:
+/// P6 masks this entry on every delivery, and writing it fresh clears that.
+pub fn armPerformanceNmi() void {
+    // Delivery mode NMI; the vector field is ignored for it.
+    write(.lvt_performance, 0x400);
+}
 
 pub fn active() bool {
     return base != null;

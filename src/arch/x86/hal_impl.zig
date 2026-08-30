@@ -73,6 +73,9 @@ pub const resolveIrq = idt.resolveIrq;
 pub const claimGsi = idt.claimGsi;
 pub const releaseGsi = idt.releaseGsi;
 
+pub const armNmiWatchdog = @import("nmiwatch.zig").arm;
+pub const wedgeSoon = timer.wedgeSoon;
+
 pub fn deferIrq(token: IrqToken) void {
     if (token.trigger == .level) lapic.deferEoi(token.vector);
 }

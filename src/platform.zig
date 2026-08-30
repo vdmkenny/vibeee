@@ -179,6 +179,22 @@ pub fn interruptRouting() ?irq.Routing {
     return routing;
 }
 
+/// Whether the board says it is an emulator's. The NMI watchdog gates on
+/// this: emulated performance counters accept every write and count
+/// nothing, and an armed watchdog that can never fire is a lie.
+pub fn boardIsEmulated() bool {
+    const str = @import("lib").str;
+    // The system structure, not the baseboard: emulators fill the former
+    // and often omit the latter entirely.
+    if (smbios.systemManufacturer()) |made| {
+        if (str.contains(made, "QEMU")) return true;
+    }
+    if (smbios.systemProduct()) |product| {
+        if (str.contains(product, "QEMU")) return true;
+    }
+    return false;
+}
+
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     smbios.init();
     publishPlatform(bi);

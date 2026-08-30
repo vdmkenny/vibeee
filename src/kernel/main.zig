@@ -149,6 +149,16 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     platform.earlyDevices(bi);
     platform.probeHardware(bi);
 
+    // The dead man's switch, armed once the board has said who it is.
+    hal.armNmiWatchdog(platform.boardIsEmulated());
+
+    // `wedge` proves the switch on real hardware: ten seconds after boot
+    // the tick handler seizes the machine on purpose, and the only correct
+    // outcome is the watchdog's panic screen naming the seizure loop.
+    if (lib.cmdline.has(bi.cmdlineSlice(), "wedge")) {
+        hal.wedgeSoon();
+    }
+
     if (lib.cmdline.has(bi.cmdlineSlice(), "panictest")) {
         // Paging is on, but nothing unmapped is easy to name; an invalid opcode
         // is the reliable way to exercise the exception path.

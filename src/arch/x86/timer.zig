@@ -70,8 +70,30 @@ pub fn init() void {
     idt.setIrqMask(0, false);
 }
 
+/// The tick at which the deliberate seizure runs; zero means never. Set by
+/// the `wedge` boot flag to prove the NMI watchdog end to end: the machine
+/// must come back as a panic screen naming the loop below.
+var wedge_at: u32 = 0;
+
+pub fn wedgeSoon() void {
+    // Refused without the watchdog: seizing a machine nothing can rescue
+    // is not a test, it is a hang with extra steps.
+    if (!@import("nmiwatch.zig").isArmed()) {
+        console.warn("wedge asked, but no nmi watchdog is armed; refusing", .{});
+        return;
+    }
+    wedge_at = @atomicLoad(u32, &ticks, .monotonic) + 10 * TICK_HZ;
+    console.warn("wedging in ten seconds to prove the panic path", .{});
+}
+
 fn onTick(_: *idt.Frame) void {
     _ = @atomicRmw(u32, &ticks, .Add, 1, .monotonic);
+
+    if (wedge_at != 0 and @atomicLoad(u32, &ticks, .monotonic) >= wedge_at) {
+        // Interrupts are already off in the handler; never returning from
+        // it is the seizure. Only the watchdog's NMI can speak after this.
+        while (true) {}
+    }
 
     // Sample here rather than relying on something above happening to ask the
     // time: the PM timer's 24-bit counter wraps every 4.69 seconds, and a wrap

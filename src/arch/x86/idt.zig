@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const console = @import("../../kernel/console.zig");
+const nmiwatch = @import("nmiwatch.zig");
 const ioapic = @import("ioapic.zig");
 const lapic = @import("lapic.zig");
 const irq_mod = @import("../../kernel/irq.zig");
@@ -142,6 +143,12 @@ fn stub(comptime vec: u8) fn () callconv(.naked) void {
 
 export fn isrDispatch(frame: *Frame) callconv(.c) void {
     const vec: u8 = @truncate(frame.vector);
+
+    // The watchdog's NMI first, before anything that could deadlock with
+    // the very state it interrupts: no breadcrumbs, no scheduler, no EOI,
+    // because NMI delivery owes the APIC nothing.
+    if (vec == 2 and nmiwatch.onNmi(frame)) return;
+
     console.interruptEntered(vec);
     if (handlers[vec]) |h| {
         h(frame);

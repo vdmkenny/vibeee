@@ -166,6 +166,24 @@ pub const monotonicMicros = impl.monotonicMicros;
 pub const tickCount = impl.tickCount;
 /// Start the periodic tick. Must follow the interrupt controller.
 pub const initTimer = impl.initTimer;
+
+/// Arm the dead-man NMI watchdog where the architecture has one; elsewhere
+/// a quiet no-op, because a machine without the mechanism still boots.
+pub const armNmiWatchdog = if (@hasDecl(impl, "armNmiWatchdog"))
+    impl.armNmiWatchdog
+else
+    struct {
+        fn quiet(_: bool) void {}
+    }.quiet;
+
+/// Seize the machine on purpose, a few seconds from now, from interrupt
+/// context: the test that proves the watchdog's panic path on hardware.
+pub const wedgeSoon = if (@hasDecl(impl, "wedgeSoon"))
+    impl.wedgeSoon
+else
+    struct {
+        fn quiet() void {}
+    }.quiet;
 /// Which clock source won the selection ladder, for the boot log.
 pub const timerSourceName = impl.timerSourceName;
 /// Cheap relative counter, valid only within a scheduling quantum.
