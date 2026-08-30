@@ -196,7 +196,7 @@ and exercised on every boot.
 | **GMA900 native modeset** | Done and verified on the machine: gen3 reads the panel's timing from the registers firmware programmed and sets it at boot, reverting if the pipe reports an underrun |
 | **First boot on real hardware** | Done. The machine boots its image from the SD slot and comes up running; what remains below is the polish, not the bring-up |
 | Battery and backlight | Done: `_BIF`/`_BST` through the embedded controller, with this family's mislabeled-percent quirk corrected by the kernel's quirk registry and the health figure labelled as the firmware's own word. `_BIF` is read once per session, because spamming it wedged the interpreter into an out-of-memory state that took `_PTS` down with it; a derived rate covers the times the firmware's own is unusable |
-| Wired networking | Done and verified on the machine: the atl2 comes up at 100 Mbit full duplex, receives real LAN traffic and transmits, with its interrupt line armed, delivered and completed under the deferred-completion model. Arming consults the boot record and never reaches the interrupt controller, whose index register the firmware co-owns |
+| Wired networking | Done and verified on the machine: the atl2 comes up at 100 Mbit full duplex, receives real LAN traffic, and completes an ARP round trip, the probe answered and the peer recorded, with its interrupt line armed, delivered and completed under the deferred-completion model. Arming consults the boot record and never reaches the interrupt controller, whose index register the firmware co-owns |
 | `eeewm` + `libeui` | Done, and past what M1 asked for |
 | eTerm | Done |
 | Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |
