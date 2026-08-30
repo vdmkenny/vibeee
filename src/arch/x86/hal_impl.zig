@@ -70,10 +70,6 @@ pub const gsiClaimed = idt.gsiClaimed;
 pub const resolveIrq = idt.resolveIrq;
 pub const claimGsi = idt.claimGsi;
 pub const releaseGsi = idt.releaseGsi;
-pub const setGsiMask = idt.setGsiMask;
-pub const gsiEntryLow = idt.gsiEntryLow;
-pub const bootEntry = idt.bootEntry;
-pub const gsiIsSci = idt.gsiIsSci;
 
 pub fn deferIrq(token: IrqToken) void {
     if (token.trigger == .level) lapic.deferEoi(token.vector);

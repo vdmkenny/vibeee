@@ -12,6 +12,7 @@
 //! that never stops firing, and the supervisor restarts it and attaches again.
 //! `design/00-vibeee.md` §6.
 
+const console = @import("console.zig");
 const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
@@ -39,6 +40,9 @@ pub const IrqEvent = struct {
     /// How many interrupts have been delivered, which is the first thing
     /// anyone asks when a device has gone quiet.
     count: u64 = 0,
+    /// Whether the first delivery has completed its interrupt at the local
+    /// controller, which is the last of a line's three firsts worth a word.
+    completed_once: bool = false,
     refs: u32 = 1,
 };
 
@@ -76,10 +80,15 @@ pub fn arm(self: *IrqEvent) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
+    // A line's three firsts are narrated once each: armed, delivered,
+    // completed. On a machine with no serial port, which of the three is
+    // missing when a boot stops is the whole diagnosis, so each is said
+    // after its step has actually happened.
     const first = !self.armed;
     self.armed = true;
     if (first) {
         hal.armIrq(self.token);
+        console.debug("irq", "line {d} armed", .{self.gsi});
     }
 
     // A level line may have asserted before it had an owner. The unclaimed
@@ -104,6 +113,10 @@ pub fn acknowledge(self: *IrqEvent) void {
     if (!self.held) return;
     self.held = false;
     hal.acknowledgeIrq(self.token);
+    if (!self.completed_once) {
+        self.completed_once = true;
+        console.debug("irq", "line {d} completed its first", .{self.gsi});
+    }
 }
 
 pub fn retain(self: *IrqEvent) void {
@@ -162,6 +175,14 @@ fn onInterrupt(frame: *hal.InterruptFrame) void {
         hal.deferIrq(self.token);
         self.held = hal.irqAwaitingAck(self.token);
         self.count += 1;
+        if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
+
+        // A line delivering this often is a source nobody manages to quiet,
+        // and the machine it saturates cannot run the tool that would say
+        // so: the count is narrated from here, once per hundred thousand.
+        if (self.count % 100_000 == 0) {
+            console.fail("line {d} has fired {d} times", .{ self.gsi, self.count });
+        }
         self.ready.signalLocked();
         return;
     }

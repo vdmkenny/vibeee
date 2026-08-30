@@ -359,6 +359,11 @@ pub fn claimGsi(gsi: u32, handler: Handler) ?IrqToken {
 pub fn armGsi(gsi: u32) void {
     if (gsi >= MAX_GSI or routing.isSci(gsi)) return;
     const expected = boot_entries[gsi] orelse return;
+    // A line boot left open needs nothing, and the boot record answers that
+    // without the hardware: even a controller read starts by writing the
+    // shared index register, and on this machine the firmware answers a
+    // runtime touch of that pair with a trap that may never return.
+    if (!expected.masked) return;
     ioapic.unmaskIfMatches(gsi, expected);
 }
 
@@ -377,25 +382,6 @@ pub fn releaseGsi(gsi: u32) void {
 pub fn resolveIrq(number: u32) irq_mod.Line {
     if (number >= irq_mod.MAX_LINES) return .{ .irq = 0, .gsi = number };
     return routing.resolve(@intCast(number));
-}
-
-/// Mask or unmask a global line. Named apart from `setIrqMask`, which takes a
-/// legacy number and resolves it: a driver holding a global line already knows
-/// which one it has.
-pub fn setGsiMask(gsi: u32, masked: bool) void {
-    if (ioapic.active()) ioapic.setMask(gsi, masked);
-}
-
-/// Whether a global line is the system control interrupt. Its unmask is not
-/// a controller write: the chipset gate owns that half of it.
-pub fn gsiIsSci(gsi: u32) bool {
-    return routing.isSci(gsi);
-}
-
-/// A global line's redirection entry, low word, or null without an IOAPIC.
-pub fn gsiEntryLow(gsi: u32) ?ioapic.Route {
-    if (!ioapic.active()) return null;
-    return ioapic.entryLow(gsi);
 }
 
 /// What the firmware said about the legacy lines. Empty until the MADT has
@@ -470,11 +456,6 @@ fn rememberRoute(gsi: u32, vector: u8, trigger: irq_mod.Trigger) void {
 /// firmware co-owns the controller, and a line whose entry changed since
 /// boot is one nobody should write again at runtime.
 var boot_entries: [MAX_GSI]?ioapic.Route = @splat(null);
-
-pub fn bootEntry(gsi: u32) ?ioapic.Route {
-    if (gsi >= MAX_GSI) return null;
-    return boot_entries[gsi];
-}
 
 pub fn captureBootEntries() void {
     var gsi: u32 = 0;

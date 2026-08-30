@@ -78,12 +78,6 @@ pub const gsiClaimed = impl.gsiClaimed;
 pub const claimGsi = impl.claimGsi;
 pub const resolveIrq = impl.resolveIrq;
 pub const releaseGsi = impl.releaseGsi;
-pub const setGsiMask = impl.setGsiMask;
-/// A line's redirection entry as the controller holds it now, for narration:
-/// firmware that co-owns the controller can have rewritten it since boot.
-pub const gsiEntryLow = impl.gsiEntryLow;
-pub const bootEntry = impl.bootEntry;
-pub const gsiIsSci = impl.gsiIsSci;
 pub const deferIrq = impl.deferIrq;
 /// Compare an opaque architecture token with the interrupt being dispatched.
 pub const irqMatches = impl.irqMatches;
