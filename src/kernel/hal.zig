@@ -91,6 +91,13 @@ pub const irqLabel = impl.irqLabel;
 pub const armIrq = impl.armIrq;
 pub const irqAwaitingAck = impl.irqAwaitingAck;
 pub const acknowledgeIrq = impl.acknowledgeIrq;
+/// The interrupt controller's own account of itself, for diagnosis: which
+/// vectors are in service, which wait, which arrived level, and the
+/// priority deliveries are gated on right now.
+pub const interruptsInService = impl.interruptsInService;
+pub const interruptsRequested = impl.interruptsRequested;
+pub const interruptsLevel = impl.interruptsLevel;
+pub const interruptPriority = impl.interruptPriority;
 
 /// Whether the fast syscall path is programmed and usable.
 pub const fastSyscallArmed = impl.fastSyscallArmed;

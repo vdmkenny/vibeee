@@ -203,6 +203,22 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         try w.print("1", .{});
     } else if (eq(key, "irq")) {
         try writeIrqs(&w);
+    } else if (eq(key, "apic")) {
+        // The controller's own account: the gate value, then the vectors in
+        // service, requested-but-waiting, and marked level. What software
+        // state cannot substitute for when a delivery is late.
+        try w.print("ppr {x}", .{hal.interruptPriority()});
+        var vectors: [16]u8 = undefined;
+        const groups = [_]struct { name: []const u8, read: *const fn ([]u8) usize }{
+            .{ .name = " isr", .read = hal.interruptsInService },
+            .{ .name = " irr", .read = hal.interruptsRequested },
+            .{ .name = " tmr", .read = hal.interruptsLevel },
+        };
+        for (groups) |group| {
+            try w.print("{s}", .{group.name});
+            const n = group.read(&vectors);
+            for (vectors[0..n]) |vector| try w.print(" {x}", .{vector});
+        }
     } else if (eq(key, "threads.list")) {
         try writeThreads(&w);
     } else if (eq(key, "acpi")) {

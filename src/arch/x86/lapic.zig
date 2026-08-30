@@ -17,9 +17,16 @@ const Register = enum(usize) {
     id = 0x020,
     /// Task priority: which interrupts are allowed through at all.
     task_priority = 0x080,
+    /// Processor priority: what the hardware is actually gating on now.
+    processor_priority = 0x0A0,
     eoi = 0x0B0,
     /// Spurious interrupt vector, whose bit 8 is the software enable.
     spurious = 0x0F0,
+    /// Three 256-bit registers, eight dwords each, sixteen bytes apart:
+    /// which vectors are in service, which arrived level, which wait.
+    in_service = 0x100,
+    trigger_mode = 0x180,
+    request = 0x200,
 };
 
 /// The MSR carrying the base address and the hardware enable.
@@ -170,6 +177,34 @@ pub fn acknowledgeEoi(vector: u8) void {
         deferred_len -= 1;
         deferred[deferred_len] = .{};
     }
+}
+
+/// One 256-bit vector register as the set bits' vector numbers, written
+/// into `into`. The answer to "what is the controller holding right now",
+/// which no software state can substitute for.
+pub fn vectorsOf(register: enum { in_service, trigger_mode, request }, into: []u8) usize {
+    const base_reg: Register = switch (register) {
+        .in_service => .in_service,
+        .trigger_mode => .trigger_mode,
+        .request => .request,
+    };
+    var n: usize = 0;
+    for (0..8) |word| {
+        const regs = base orelse return 0;
+        const bits = regs[(@intFromEnum(base_reg) + word * 0x10) / @sizeOf(u32)];
+        for (0..32) |bit| {
+            if (bits & (@as(u32, 1) << @intCast(bit)) == 0) continue;
+            if (n == into.len) return n;
+            into[n] = @intCast(word * 32 + bit);
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// The priority the hardware is gating deliveries on right now.
+pub fn processorPriority() u32 {
+    return read(.processor_priority);
 }
 
 fn read(register: Register) u32 {

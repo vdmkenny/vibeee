@@ -97,6 +97,26 @@ pub fn acknowledgeIrq(token: IrqToken) void {
     if (token.trigger == .level) lapic.acknowledgeEoi(token.vector);
 }
 
+pub const interruptsInService = struct {
+    fn call(into: []u8) usize {
+        return lapic.vectorsOf(.in_service, into);
+    }
+}.call;
+
+pub const interruptsRequested = struct {
+    fn call(into: []u8) usize {
+        return lapic.vectorsOf(.request, into);
+    }
+}.call;
+
+pub const interruptsLevel = struct {
+    fn call(into: []u8) usize {
+        return lapic.vectorsOf(.trigger_mode, into);
+    }
+}.call;
+
+pub const interruptPriority = lapic.processorPriority;
+
 pub const initSyscalls = syscall_arch.init;
 pub const fastSyscallArmed = syscall_arch.fastPathArmed;
 pub const invokeSyscall = syscall_arch.invoke;

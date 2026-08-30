@@ -715,10 +715,11 @@ pub fn info(key: []const u8, comptime fmt: []const u8, args: anytype) void {
 
 /// A fault-chasing line: what a register held, which write was about to be
 /// made. The one kind that costs nothing when it is off: with `debug` absent
-/// from the command line the line is neither shown nor recorded.
+/// from the command line the line is neither shown nor recorded. Dim, so a
+/// screen full of chasing reads as background behind the boot's own story.
 pub fn debug(key: []const u8, comptime fmt: []const u8, args: anytype) void {
     if (!debug_enabled) return;
-    logLine(key, .key, fmt, args);
+    logLine(key, .dim, fmt, args);
 }
 
 /// A line worth showing a user regardless of verbosity.
