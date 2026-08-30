@@ -16,21 +16,15 @@ const str = @import("ulib").str;
 
 const commands = registry.commands;
 
-export fn _start() callconv(.naked) noreturn {
-    // argc and argv are already on the stack, placed there by the kernel. The
-    // stack pointer is the argument frame, so pass it straight through.
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ movl %esp, %eax
-        \\ pushl %eax
-        \\ call toolsMain
-        \\ hlt
-    );
+/// The kernel enters every program as one C call whose argument is the
+/// argc/argv frame it built, so taking it is an ordinary parameter.
+export fn _start(frame: [*]const u32) callconv(.c) noreturn {
+    toolsMain(frame);
 }
 
 var argv_storage: [sys.MAX_ARGS][]const u8 = undefined;
 
-export fn toolsMain(frame: [*]const u32) callconv(.c) noreturn {
+fn toolsMain(frame: [*]const u32) noreturn {
     const argc: usize = frame[0];
     const count = @min(argc, sys.MAX_ARGS);
 

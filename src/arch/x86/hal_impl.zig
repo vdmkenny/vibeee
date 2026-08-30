@@ -23,6 +23,8 @@ pub const outl = port.outl;
 pub const inl = port.inl;
 pub const restoreInterrupts = cpu.restoreInterrupts;
 pub const halt = cpu.halt;
+pub const raiseInvalidOpcode = cpu.raiseInvalidOpcode;
+pub const resetByTripleFault = cpu.resetByTripleFault;
 
 /// Idle with interrupts enabled, so the halt is actually wakeable.
 ///

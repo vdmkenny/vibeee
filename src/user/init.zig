@@ -98,15 +98,11 @@ var service_count: usize = 0;
 const FLAP_WINDOW_US: u64 = 1_000_000;
 const MAX_FLAPS: u32 = 5;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call initMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    initMain();
 }
 
-export fn initMain() callconv(.c) noreturn {
+fn initMain() noreturn {
     loadConfig();
     // Read before anything starts, because it decides what does.
     readDisabled();

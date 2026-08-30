@@ -1,57 +1,14 @@
-//! I/O ports, for a driver that has been granted some.
+//! Port I/O, re-exported from the architecture layer.
 //!
-//! The instructions themselves, with no check that the grant was made: the CPU
-//! does that. A process without the port in its bitmap faults on the
-//! instruction rather than getting a wrong answer, which is the whole reason
-//! the permission lives in hardware.
+//! The instructions live in `user/arch/x86/ports.zig`; this keeps the name
+//! every driver already imports while the assembly stays where assembly is
+//! allowed to be.
 
-pub fn in8(port: u16) u8 {
-    return asm volatile ("inb %[port], %[value]"
-        : [value] "={al}" (-> u8),
-        : [port] "N{dx}" (port),
-        : .{ .memory = true }
-    );
-}
+const arch = @import("sys").ports;
 
-pub fn in16(port: u16) u16 {
-    return asm volatile ("inw %[port], %[value]"
-        : [value] "={ax}" (-> u16),
-        : [port] "N{dx}" (port),
-        : .{ .memory = true }
-    );
-}
-
-pub fn in32(port: u16) u32 {
-    return asm volatile ("inl %[port], %[value]"
-        : [value] "={eax}" (-> u32),
-        : [port] "N{dx}" (port),
-        : .{ .memory = true }
-    );
-}
-
-pub fn out8(port: u16, value: u8) void {
-    asm volatile ("outb %[value], %[port]"
-        :
-        : [value] "{al}" (value),
-          [port] "N{dx}" (port),
-        : .{ .memory = true }
-    );
-}
-
-pub fn out16(port: u16, value: u16) void {
-    asm volatile ("outw %[value], %[port]"
-        :
-        : [value] "{ax}" (value),
-          [port] "N{dx}" (port),
-        : .{ .memory = true }
-    );
-}
-
-pub fn out32(port: u16, value: u32) void {
-    asm volatile ("outl %[value], %[port]"
-        :
-        : [value] "{eax}" (value),
-          [port] "N{dx}" (port),
-        : .{ .memory = true }
-    );
-}
+pub const in8 = arch.in8;
+pub const in16 = arch.in16;
+pub const in32 = arch.in32;
+pub const out8 = arch.out8;
+pub const out16 = arch.out16;
+pub const out32 = arch.out32;

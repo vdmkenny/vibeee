@@ -59,15 +59,11 @@ const MAX_IFACES = 4;
 var ifaces: [MAX_IFACES]dev.NicDev = @splat(.{ .name = "", .ops = undefined, .location = .{ .bus = 0, .device = 0, .function = 0 } });
 var count: usize = 0;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call netdMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    netdMain();
 }
 
-export fn netdMain() callconv(.c) noreturn {
+fn netdMain() noreturn {
     // The claim, before the hardware: a second instance started for a second
     // adapter must stand down cleanly, not duel the first.
     const channel = sys.svcRegister(proto.SERVICE);

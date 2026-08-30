@@ -1164,7 +1164,7 @@ fn spinUntil(budget: u32, done: *const fn (Regs) bool) bool {
     var spins: u32 = 0;
     while (spins < budget) : (spins += 1) {
         if (done(device.regs)) return true;
-        asm volatile ("pause");
+        std.atomic.spinLoopHint();
     }
     return false;
 }

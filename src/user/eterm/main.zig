@@ -50,15 +50,11 @@ var running = false;
 var line: [512]u8 = @splat(0);
 var line_len: usize = 0;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call etermMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    etermMain();
 }
 
-export fn etermMain() callconv(.c) noreturn {
+fn etermMain() noreturn {
     terminal.init();
     shadow.invalidate();
 

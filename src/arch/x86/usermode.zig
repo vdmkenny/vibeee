@@ -80,7 +80,7 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     // fault.
     const frame_bytes = comptime std.mem.alignForward(usize, (MAX_ARGS + 2) * @sizeOf(u32), 16);
     offset = std.mem.alignBackward(usize, offset, 16);
-    if (frame_bytes > offset) return error.OutOfMemory;
+    if (frame_bytes + CALL_BYTES > offset) return error.OutOfMemory;
     offset -= frame_bytes;
 
     const stack_words: [*]u32 = @alignCast(@ptrCast(page + offset));
@@ -88,10 +88,25 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     for (0..count) |k| stack_words[1 + k] = @intCast(arg_addrs[k]);
     stack_words[1 + count] = 0;
 
+    // Entry is one C call: the argument frame's address as the only
+    // parameter, above a zero return address that ends every backtrace.
+    // The parameter sits on a sixteen-byte boundary so entry lands where
+    // the convention puts it, and `_start` is then a plain function in
+    // every program rather than assembly reading the stack raw.
+    const frame_address: u32 = @intCast(USER_STACK_TOP - paging.PAGE_SIZE + offset);
+    offset -= CALL_BYTES;
+    const call_words: [*]u32 = @alignCast(@ptrCast(page + offset));
+    call_words[0] = 0;
+    call_words[1] = frame_address;
+
     return USER_STACK_TOP - paging.PAGE_SIZE + offset;
 }
 
 pub const MAX_ARGS = 16;
+
+/// The entry call's own bytes: a return address and one parameter, spaced so
+/// the parameter keeps the sixteen-byte boundary the compiler assumes.
+const CALL_BYTES = 20;
 
 /// Drop to Ring 3. Does not return: from here the only way back into the kernel
 /// is a trap.

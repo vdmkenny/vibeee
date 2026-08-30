@@ -27,6 +27,26 @@ pub fn halt() noreturn {
     }
 }
 
+/// A deliberate invalid opcode, for exercising the exception path on demand.
+pub fn raiseInvalidOpcode() void {
+    asm volatile ("ud2");
+}
+
+/// Reset by triple fault, the way that needs no chipset: an empty interrupt
+/// table makes the next trap unrecoverable, which every x86 answers with a
+/// reset.
+pub fn resetByTripleFault() noreturn {
+    const Descriptor = extern struct { limit: u16 align(1), base: u32 align(1) };
+    const empty = Descriptor{ .limit = 0, .base = 0 };
+    asm volatile (
+        \\ lidt (%[idt])
+        \\ int $3
+        :
+        : [idt] "r" (&empty),
+    );
+    halt();
+}
+
 /// Disable interrupts and return whether they were previously enabled, so
 /// critical sections can nest without a caller re-enabling them too early.
 pub inline fn saveAndDisableInterrupts() bool {

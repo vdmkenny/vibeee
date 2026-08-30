@@ -29,15 +29,11 @@ const sys = @import("sys");
 /// many waiters already means.
 var events: [settings.DOMAIN_NAMES.len]u32 = @splat(0);
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call cfgdMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    cfgdMain();
 }
 
-export fn cfgdMain() callconv(.c) noreturn {
+fn cfgdMain() noreturn {
     for (&events) |*event| {
         const handle = sys.eventCreate();
         if (handle >= 0) event.* = @intCast(handle);

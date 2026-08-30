@@ -11,6 +11,7 @@
 //! `pause`.
 
 const dev_mod = @import("dev.zig");
+const std = @import("std");
 const dma = @import("dma.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
@@ -505,7 +506,7 @@ fn reset() bool {
             maskAndClearInterrupts();
             return true;
         }
-        asm volatile ("pause");
+        std.atomic.spinLoopHint();
     }
     maskAndClearInterrupts();
     return false;
@@ -563,7 +564,7 @@ fn readEeprom(address: u8) ?u16 {
     while (spins < EepromSpins) : (spins += 1) {
         const result = @as(EepromRead, @bitCast(device.regs.rd(.eerd)));
         if (result.done) return result.data;
-        asm volatile ("pause");
+        std.atomic.spinLoopHint();
     }
     return null;
 }

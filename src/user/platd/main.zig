@@ -25,15 +25,11 @@ comptime {
     _ = glue;
 }
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call platdMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    platdMain();
 }
 
-export fn platdMain() callconv(.c) noreturn {
+fn platdMain() noreturn {
     // The firmware first, the name after. init holds the rest of the boot
     // until this name appears, which is what keeps every line of bring-up
     // above the shell rather than bleeding into it; a bring-up that wedges is

@@ -65,15 +65,11 @@ var pointer_x: i32 = 0;
 var pointer_y: i32 = 0;
 var buttons: eui.widget.Buttons = .{};
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call padMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    padMain();
 }
 
-export fn padMain() callconv(.c) noreturn {
+fn padMain() noreturn {
     document = .{ .bytes = &storage };
 
     connection = proto.client.Connection.open("pad") catch {

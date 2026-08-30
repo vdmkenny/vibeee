@@ -59,15 +59,11 @@ const builtins = [_]Builtin{
     .{ .name = "reboot", .summary = "flush everything and restart", .run = &cmdReboot },
 };
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call shellMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    shellMain();
 }
 
-export fn shellMain() callconv(.c) noreturn {
+fn shellMain() noreturn {
     // The console stops being a broadcast and becomes this conversation:
     // from here on, only the shell and what it starts render; services'
     // lines go to the ring, where `log` reads them.

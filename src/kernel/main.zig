@@ -152,7 +152,7 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     if (lib.cmdline.has(bi.cmdlineSlice(), "panictest")) {
         // Paging is on, but nothing unmapped is easy to name; an invalid opcode
         // is the reliable way to exercise the exception path.
-        asm volatile ("ud2");
+        hal.raiseInvalidOpcode();
     }
 
     startThreads();

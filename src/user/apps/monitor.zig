@@ -31,15 +31,11 @@ var buttons: eui.widget.Buttons = .{};
 /// live and slow enough that watching it is not itself the load.
 const REFRESH_US: u32 = 500_000;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call monitorMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    monitorMain();
 }
 
-export fn monitorMain() callconv(.c) noreturn {
+fn monitorMain() noreturn {
     connection = proto.client.Connection.open("monitor") catch {
         out.text("monitor: no window manager is running\n");
         out.flush();

@@ -183,8 +183,52 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    violations += try checkAssemblyConfined(gpa, io);
+
     if (violations > 0) {
         std.debug.print("\n{d} layering violation(s); see design/00-vibeee.md §3\n", .{violations});
         return error.LayeringViolation;
     }
+}
+
+/// Assembly lives in an architecture directory or not at all.
+///
+/// Everything an instruction can do that a function cannot, the syscall
+/// trap, port I/O, the entry to Ring 3, has a home under an `arch/` path,
+/// where a port replaces it wholesale. An `asm` anywhere else is a piece of
+/// one architecture hiding inside code that claims to be portable.
+fn checkAssemblyConfined(gpa: std.mem.Allocator, io: std.Io) !usize {
+    const cwd = std.Io.Dir.cwd();
+    var violations: usize = 0;
+
+    var dir = cwd.openDir(io, "src", .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
+        if (std.mem.indexOf(u8, entry.path, "arch/") != null) continue;
+
+        const source = dir.readFileAlloc(io, entry.path, gpa, .limited(4 << 20)) catch continue;
+        defer gpa.free(source);
+
+        var line_no: usize = 0;
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |line| {
+            line_no += 1;
+            if (std.mem.indexOf(u8, line, "asm volatile") == null and
+                std.mem.indexOf(u8, line, "asm (") == null) continue;
+
+            violations += 1;
+            std.debug.print(
+                "src/{s}:{d}: assembly outside an architecture directory\n" ++
+                    "    instructions live under arch/, reached through a named layer\n",
+                .{ entry.path, line_no },
+            );
+        }
+    }
+    return violations;
 }

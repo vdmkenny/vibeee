@@ -18,25 +18,12 @@ extern fn main(argc: c_int, argv: [*c][*c]u8, envp: [*c][*c]u8) c_int;
 var empty: [1]?[*:0]u8 = .{null};
 export var environ: [*c][*c]u8 = undefined;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-    // The frame pointer chain ends here: a backtrace that walked past this
-    // would be walking the kernel's stack setup.
-        \\ xorl %ebp, %ebp
-        \\ movl %esp, %eax
-        // Aligned to 16 before the call, because the compiler emits SSE
-        // against the stack freely and the first `movaps` would fault.
-        \\ andl $-16, %esp
-        \\ subl $12, %esp
-        \\ pushl %eax
-        \\ call __libc_start
-        \\ hlt
-    );
-}
-
-export fn __libc_start(stack: [*]usize) callconv(.c) noreturn {
+/// The kernel enters every program as one C call whose argument is the
+/// argc/argv frame it built: alignment, the terminating return address and
+/// the parameter are all the kernel's work, so this is a plain function.
+export fn _start(stack: [*]const usize) callconv(.c) noreturn {
     const argc: c_int = @intCast(stack[0]);
-    const argv: [*c][*c]u8 = @ptrCast(stack + 1);
+    const argv: [*c][*c]u8 = @constCast(@ptrCast(stack + 1));
 
     environ = @ptrCast(&empty);
 

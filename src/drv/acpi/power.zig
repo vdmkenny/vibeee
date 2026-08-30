@@ -1,5 +1,6 @@
 //! Power control: soft-off and reset.
 
+const std = @import("std");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
 const port = @import("../../arch/x86/port.zig");
@@ -43,7 +44,7 @@ fn enterAcpiMode(info: tables.Info) bool {
     var spins: u32 = 0;
     while (spins < 20_000_000) : (spins += 1) {
         if (pm1(info.pm1a_control).acpi_mode) return true;
-        asm volatile ("pause");
+        std.atomic.spinLoopHint();
     }
     return false;
 }
@@ -147,14 +148,5 @@ pub fn reset() void {
     // last time, to leave.
     sched.sleepMicros(10_000);
 
-    const null_idt = extern struct { limit: u16 align(1), base: u32 align(1) }{
-        .limit = 0,
-        .base = 0,
-    };
-    asm volatile (
-        \\ lidt (%[idt])
-        \\ int $3
-        :
-        : [idt] "r" (&null_idt),
-    );
+    hal.resetByTripleFault();
 }

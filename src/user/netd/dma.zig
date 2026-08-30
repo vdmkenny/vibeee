@@ -1,13 +1,10 @@
 //! Ordering between cached descriptor memory and device ownership changes.
 //!
-//! The target x86 chipset is cache coherent and already preserves the required
-//! CPU ordering. A compiler memory barrier keeps descriptor accesses on the
-//! correct side of each MMIO ownership handoff without emitting a full fence.
+//! The fence itself is the architecture's business and lives in
+//! `user/arch/x86/barrier.zig`; the names here are the ring code's
+//! vocabulary for the two directions of a handoff.
 
-pub inline fn publish() void {
-    asm volatile ("" ::: .{ .memory = true });
-}
+const barrier = @import("sys").barrier;
 
-pub inline fn consume() void {
-    asm volatile ("" ::: .{ .memory = true });
-}
+pub const publish = barrier.publish;
+pub const consume = barrier.consume;

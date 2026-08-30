@@ -51,6 +51,10 @@ pub const restoreInterrupts = impl.restoreInterrupts;
 /// Park the CPU until the next interrupt. The idle loop's entire body.
 pub const idle = impl.idle;
 pub const halt = impl.halt;
+/// A deliberate invalid opcode, for exercising the exception path on demand.
+pub const raiseInvalidOpcode = impl.raiseInvalidOpcode;
+/// Reset by triple fault, the last resort that needs no chipset.
+pub const resetByTripleFault = impl.resetByTripleFault;
 
 // ---------------------------------------------------------------------------
 // Early platform bring-up, in the order the kernel calls them

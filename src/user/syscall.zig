@@ -8,6 +8,13 @@
 
 const lib = @import("lib");
 const abi = lib.syscalls;
+const arch = @import("arch/x86/syscall.zig");
+
+/// Hardware access that is an instruction rather than a syscall, scoped to
+/// the architecture directory and reached through this layer so nothing
+/// else in userspace carries assembly.
+pub const ports = @import("arch/x86/ports.zig");
+pub const barrier = @import("arch/x86/barrier.zig");
 const keymaps = @import("keymaps");
 
 /// Re-exported so call sites say `sys.STDOUT` rather than reaching two modules
@@ -77,40 +84,12 @@ inline fn enter(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) 
 }
 
 inline fn trapIn(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
-    return asm volatile ("int $0x80"
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-          [a0] "{ebx}" (a0),
-          [a1] "{ecx}" (a1),
-          [a2] "{edx}" (a2),
-          [a3] "{esi}" (a3),
-          [a4] "{edi}" (a4),
-        : .{ .memory = true });
+    return arch.trap(nr, a0, a1, a2, a3, a4);
 }
 
-/// The fast path.
-///
-/// SYSENTER saves neither the stack pointer nor the address to come back to,
-/// so both are stashed first: the stack pointer in `ebp`, and the return
-/// address pushed just below it where the kernel reads it back. SYSEXIT is
-/// given them in `ecx` and `edx`, which is why both are clobbered on return.
+/// The fast path, SYSENTER, whose contract lives beside the instruction.
 inline fn fastIn(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize) isize {
-    return asm volatile (
-        \\ push %%ebp
-        \\ push $1f
-        \\ mov  %%esp, %%ebp
-        \\ sysenter
-        \\ 1:
-        \\ add  $4, %%esp
-        \\ pop  %%ebp
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-          [a0] "{ebx}" (a0),
-          [a1] "{ecx}" (a1),
-          [a2] "{edx}" (a2),
-          [a3] "{esi}" (a3),
-          [a4] "{edi}" (a4),
-        : .{ .memory = true, .ecx = true, .edx = true });
+    return arch.fast(nr, a0, a1, a2, a3, a4);
 }
 
 inline fn syscall0(nr: u32) isize {
@@ -185,12 +164,7 @@ pub fn realtimeMicros() ?i64 {
 }
 
 fn syscall2(nr: u32, a0: usize, a1: usize) isize {
-    return asm volatile ("int $0x80"
-        : [ret] "={eax}" (-> isize),
-        : [nr] "{eax}" (nr),
-          [a0] "{ebx}" (a0),
-          [a1] "{ecx}" (a1),
-        : .{ .memory = true });
+    return enter(nr, a0, a1, 0, 0, 0);
 }
 
 pub fn open(path: []const u8, flags: OpenFlags) isize {

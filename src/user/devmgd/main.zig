@@ -54,15 +54,11 @@ var manifest_count: usize = 0;
 var manifest_text: [4096]u8 = @splat(0);
 var manifest_used: usize = 0;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call devmgdMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    devmgdMain();
 }
 
-export fn devmgdMain() callconv(.c) noreturn {
+fn devmgdMain() noreturn {
     readManifests();
     bindDevices();
 

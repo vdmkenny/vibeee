@@ -34,15 +34,11 @@ var pointer_x: i32 = 0;
 var pointer_y: i32 = 0;
 var buttons: eui.widget.Buttons = .{};
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call settingsMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    settingsMain();
 }
 
-export fn settingsMain() callconv(.c) noreturn {
+fn settingsMain() noreturn {
     load();
 
     connection = proto.client.Connection.open("settings") catch {

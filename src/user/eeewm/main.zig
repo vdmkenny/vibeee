@@ -60,15 +60,11 @@ var buttons: sys.Buttons = .{};
 /// because working out what survived a retile costs more than repainting.
 var dirty = true;
 
-export fn _start() callconv(.naked) noreturn {
-    asm volatile (
-        \\ xorl %ebp, %ebp
-        \\ call wmMain
-        \\ hlt
-    );
+export fn _start() callconv(.c) noreturn {
+    wmMain();
 }
 
-export fn wmMain() callconv(.c) noreturn {
+fn wmMain() noreturn {
     const display = sys.displayAcquire(&info) catch |err| {
         out.text(switch (err) {
             error.NoDisplay => "eeewm: no framebuffer. The machine booted in text mode; " ++
