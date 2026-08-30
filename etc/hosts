@@ -1,0 +1,3 @@
+# Names answered before any DNS server is asked.
+# One address, then the names it carries, whitespace between.
+127.0.0.1  localhost

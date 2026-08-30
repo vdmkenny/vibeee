@@ -1,0 +1,22 @@
+nc — a conversation with the network, plainly
+
+  nc 192.0.2.7 4000      a stream to a host and port
+  nc www.example.com 80  names resolve first
+  nc -l 4000             await one stream on a port
+  nc -u 192.0.2.7 4000   datagrams instead of a stream
+  nc -u -l 4000          await datagrams; replies go to the
+                         last sender
+
+Bytes go both ways: standard input toward the peer, the peer onto
+standard output. Piped input flows as it comes, and the command ends
+when the peer finishes:
+
+  cat notes.txt | nc 192.0.2.7 4000
+  nc 192.0.2.7 4000 > incoming.txt
+
+At the console a line is sent when entered. Ctrl+C leaves, Ctrl+D
+says nothing more will be typed and waits out the peer's side.
+
+Listening takes the first connection, prints who arrived, and carries
+that one conversation. 127.0.0.1 reaches this machine itself, so two
+programs here can talk without any network at all.

@@ -39,6 +39,14 @@ pub fn init() void {
     lwip.lwip_init();
 }
 
+/// Deliver whatever the stack queued for its own addresses: the loopback
+/// interface and any netif talking to itself. The event loop runs this
+/// after every piece of work, and one call drains the queue completely,
+/// conversations included, because delivery may queue the answer.
+pub fn deliverLoopback() void {
+    lwip.netif_poll_all();
+}
+
 /// Give a driven interface its netif. The first one is the default route's.
 pub fn attach(nic: *dev.NicDev) void {
     if (count == MAX) return;

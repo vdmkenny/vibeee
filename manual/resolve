@@ -1,0 +1,18 @@
+resolve — a name to its address, and where the answer came from
+
+  resolve www.example.com
+  resolve printer.lan builder.lan
+
+Each name prints its address and its source: the hosts file, or DNS
+with the time the servers took. Anything networked asks names the
+same way, so this command is how the path is inspected when a name
+misbehaves.
+
+The file /etc/hosts answers before any server is asked. One line per
+address, names after it, `#` comments:
+
+  192.0.2.10   builder builder.lan
+
+DNS servers come from the DHCP lease, or from a `dns` entry in the
+interface's configuration, which outranks the lease. `cfg net` shows
+what is recorded.

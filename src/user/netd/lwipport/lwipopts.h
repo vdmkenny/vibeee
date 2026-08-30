@@ -21,6 +21,13 @@
 #define LWIP_RAW 1
 #define LWIP_UDP 1
 #define LWIP_TCP 1
+/* The stack's own loopback: 127.0.0.1 exists with no hardware under it,
+ * and everything queued for ourselves is delivered by netif_poll_all in
+ * the event loop, never by a thread. */
+#define LWIP_HAVE_LOOPIF 1
+#define LWIP_NETIF_LOOPBACK 1
+#define LWIP_LOOPBACK_MAX_PBUFS 8
+
 #define LWIP_DHCP 1
 #define LWIP_DNS 1
 #define LWIP_IGMP 0
@@ -33,16 +40,14 @@
 /* An interface that fails DHCP stays addressless and says so: a 169.254
  * address on a home LAN is a lie of convenience. */
 
-/* The netif: two of them one day (wired, wifi), no hostname, no loopback,
- * and both change callbacks on, because address and link changes are what
- * policy and narration hang from. */
+/* The netif: hardware ones and the loopback, no hostname, and both change
+ * callbacks on, because address and link changes are what policy and
+ * narration hang from. */
 #define LWIP_SINGLE_NETIF 0
 #define LWIP_NETIF_HOSTNAME 0
 #define LWIP_NETIF_STATUS_CALLBACK 1
 #define LWIP_NETIF_LINK_CALLBACK 1
 #define LWIP_NETIF_API 0
-#define LWIP_NETIF_LOOPBACK 0
-#define LWIP_HAVE_LOOPIF 0
 #define LWIP_NUM_NETIF_CLIENT_DATA 0
 
 /* Memory: static pools, no libc heap. Sixty-four kilobytes of heap for TCP

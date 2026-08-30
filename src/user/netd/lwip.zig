@@ -127,6 +127,12 @@ pub const Netif = extern struct {
     flags: Flags = .{},
     name: [2]u8 = @splat(0),
     num: u8 = 0,
+    /// The loopback queue: frames a netif sends to its own address wait
+    /// here for `netif_poll_all`, which the event loop runs after every
+    /// piece of work.
+    loop_first: ?*Pbuf = null,
+    loop_last: ?*Pbuf = null,
+    loop_cnt_current: u16 = 0,
 
     pub fn dhcpData(self: *const Netif) ?*const Dhcp {
         return @ptrCast(@alignCast(self.client_data[0] orelse return null));
@@ -179,9 +185,54 @@ pub const RawPcb = opaque {};
 pub const RawRecvFn = *const fn (?*anyopaque, *RawPcb, *Pbuf, *const Ip4Addr) callconv(.c) u8;
 pub const TimeoutFn = *const fn (?*anyopaque) callconv(.c) void;
 
+/// Protocol control blocks stay opaque: the bridge holds pointers and asks
+/// questions through functions. The one exception is the connection prefix
+/// below, mirrored for the peer's name because no function answers it.
+pub const TcpPcb = opaque {};
+pub const UdpPcb = opaque {};
+
+/// The head every connection pcb starts with, as far as the remote port:
+/// who a connection is with, for narration and grants. Pinned like every
+/// mirror here, on both sides.
+pub const TcpPcbPeek = extern struct {
+    local_ip: Ip4Addr,
+    remote_ip: Ip4Addr,
+    netif_idx: u8,
+    so_options: u8,
+    tos: u8,
+    ttl: u8,
+    next: ?*anyopaque,
+    callback_arg: ?*anyopaque,
+    state: c_int,
+    prio: u8,
+    local_port: u16,
+    remote_port: u16,
+};
+
+pub const TcpPeer = struct { addr: u32, port: u16 };
+
+pub fn tcpPeer(pcb: *TcpPcb) TcpPeer {
+    const peek: *const TcpPcbPeek = @ptrCast(@alignCast(pcb));
+    return .{ .addr = fromWire(peek.remote_ip), .port = peek.remote_port };
+}
+
+/// `tcp_write` copies the bytes before returning, which is what lets the
+/// caller's ring slot be consumed immediately.
+pub const TCP_WRITE_COPY: u8 = 0x01;
+
+pub const TcpConnectedFn = *const fn (?*anyopaque, *TcpPcb, Err) callconv(.c) Err;
+/// A null pbuf is the peer's FIN.
+pub const TcpRecvFn = *const fn (?*anyopaque, *TcpPcb, ?*Pbuf, Err) callconv(.c) Err;
+pub const TcpSentFn = *const fn (?*anyopaque, *TcpPcb, u16) callconv(.c) Err;
+/// The pcb is already freed when this is called.
+pub const TcpErrFn = *const fn (?*anyopaque, Err) callconv(.c) void;
+pub const TcpAcceptFn = *const fn (?*anyopaque, ?*TcpPcb, Err) callconv(.c) Err;
+pub const UdpRecvFn = *const fn (?*anyopaque, *UdpPcb, *Pbuf, *const Ip4Addr, u16) callconv(.c) void;
+pub const DnsFoundFn = *const fn ([*:0]const u8, ?*const Ip4Addr, ?*anyopaque) callconv(.c) void;
+
 comptime {
     // The Zig half of the layout proof; layout_check.c is the C half.
-    if (@sizeOf(Netif) != 60) @compileError("netif mirror size drifted");
+    if (@sizeOf(Netif) != 72) @compileError("netif mirror size drifted");
     if (@offsetOf(Netif, "input") != 16 or
         @offsetOf(Netif, "linkoutput") != 24 or
         @offsetOf(Netif, "state") != 36 or
@@ -189,7 +240,9 @@ comptime {
         @offsetOf(Netif, "mtu") != 44 or
         @offsetOf(Netif, "hwaddr") != 46 or
         @offsetOf(Netif, "flags") != 53 or
-        @offsetOf(Netif, "num") != 56)
+        @offsetOf(Netif, "num") != 56 or
+        @offsetOf(Netif, "loop_first") != 60 or
+        @offsetOf(Netif, "loop_cnt_current") != 68)
     {
         @compileError("netif mirror fields drifted");
     }
@@ -203,6 +256,12 @@ comptime {
         @offsetOf(Dhcp, "offered_t0_lease") != 40)
     {
         @compileError("dhcp mirror drifted");
+    }
+    if (@offsetOf(TcpPcbPeek, "remote_ip") != 4 or
+        @offsetOf(TcpPcbPeek, "local_port") != 26 or
+        @offsetOf(TcpPcbPeek, "remote_port") != 28)
+    {
+        @compileError("tcp pcb prefix mirror drifted");
     }
     const flag_bits: u8 = @bitCast(Flags{ .up = true });
     const broadcast_bits: u8 = @bitCast(Flags{ .broadcast = true });
@@ -249,12 +308,15 @@ pub extern fn netif_set_addr(
     gw: ?*const Ip4Addr,
 ) void;
 
+pub extern fn netif_poll_all() void;
+
 pub extern fn ethernet_input(p: *Pbuf, netif: *Netif) Err;
 pub extern fn etharp_output(netif: *Netif, q: *Pbuf, addr: *const Ip4Addr) Err;
 
 pub extern fn pbuf_alloc(layer: Layer, length: u16, kind: PbufKind) ?*Pbuf;
 pub extern fn pbuf_free(p: *Pbuf) u8;
 pub extern fn pbuf_take(p: *Pbuf, data: *const anyopaque, len: u16) Err;
+pub extern fn pbuf_take_at(p: *Pbuf, data: *const anyopaque, len: u16, offset: u16) Err;
 pub extern fn pbuf_copy_partial(p: *const Pbuf, into: *anyopaque, len: u16, offset: u16) u16;
 
 pub extern fn dhcp_start(netif: *Netif) Err;
@@ -266,6 +328,36 @@ pub extern fn raw_new(proto: u8) ?*RawPcb;
 pub extern fn raw_bind(pcb: *RawPcb, addr: *const Ip4Addr) Err;
 pub extern fn raw_recv(pcb: *RawPcb, handler: RawRecvFn, arg: ?*anyopaque) void;
 pub extern fn raw_sendto(pcb: *RawPcb, p: *Pbuf, addr: *const Ip4Addr) Err;
+
+pub extern fn tcp_new() ?*TcpPcb;
+pub extern fn tcp_arg(pcb: *TcpPcb, arg: ?*anyopaque) void;
+pub extern fn tcp_bind(pcb: *TcpPcb, addr: ?*const Ip4Addr, port: u16) Err;
+pub extern fn tcp_connect(pcb: *TcpPcb, addr: *const Ip4Addr, port: u16, connected: TcpConnectedFn) Err;
+pub extern fn tcp_listen_with_backlog(pcb: *TcpPcb, backlog: u8) ?*TcpPcb;
+pub extern fn tcp_accept(pcb: *TcpPcb, accept: TcpAcceptFn) void;
+pub extern fn tcp_recv(pcb: *TcpPcb, recv: TcpRecvFn) void;
+pub extern fn tcp_sent(pcb: *TcpPcb, sent: TcpSentFn) void;
+pub extern fn tcp_err(pcb: *TcpPcb, err: TcpErrFn) void;
+pub extern fn tcp_recved(pcb: *TcpPcb, len: u16) void;
+pub extern fn tcp_write(pcb: *TcpPcb, data: *const anyopaque, len: u16, apiflags: u8) Err;
+pub extern fn tcp_output(pcb: *TcpPcb) Err;
+pub extern fn tcp_close(pcb: *TcpPcb) Err;
+pub extern fn tcp_abort(pcb: *TcpPcb) void;
+
+pub extern fn udp_new() ?*UdpPcb;
+pub extern fn udp_remove(pcb: *UdpPcb) void;
+pub extern fn udp_bind(pcb: *UdpPcb, addr: ?*const Ip4Addr, port: u16) Err;
+pub extern fn udp_connect(pcb: *UdpPcb, addr: *const Ip4Addr, port: u16) Err;
+pub extern fn udp_recv(pcb: *UdpPcb, recv: UdpRecvFn, arg: ?*anyopaque) void;
+pub extern fn udp_send(pcb: *UdpPcb, p: *Pbuf) Err;
+pub extern fn udp_sendto(pcb: *UdpPcb, p: *Pbuf, addr: *const Ip4Addr, port: u16) Err;
+
+pub extern fn dns_gethostbyname(
+    name: [*:0]const u8,
+    addr: *Ip4Addr,
+    found: DnsFoundFn,
+    arg: ?*anyopaque,
+) Err;
 
 // ---------------------------------------------------------------------------
 // The port hooks lwIP calls back

@@ -29,6 +29,7 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const proto = @import("proto").net;
+const bridge = @import("bridge.zig");
 const proto_platform = @import("proto").platform;
 const settings = @import("proto").settings;
 const stack = @import("stack.zig");
@@ -267,10 +268,10 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
         .pin = pin,
         .device = @truncate(iface.location.device),
     };
-    if (pci.carrierOf(iface.location.bus)) |bridge| {
+    if (pci.carrierOf(iface.location.bus)) |carrier| {
         ask.behind_bridge = true;
-        ask.bridge_device = @truncate(bridge.device);
-        ask.bridge_function = @truncate(bridge.function);
+        ask.bridge_device = @truncate(carrier.device);
+        ask.bridge_function = @truncate(carrier.function);
     }
 
     // The platform service owns the routing tables and comes up in parallel
@@ -306,7 +307,7 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 fn serve(channel: u32) noreturn {
     // The channel, one handle per interface's line, and the config domain's
     // watch. Fixed: the counts are capped, so the sources never grow.
-    var sources: [MAX_IFACES + 2]u32 = undefined;
+    var sources: [MAX_IFACES + 3]u32 = undefined;
     var source_count: usize = 1;
     sources[0] = channel;
     for (ifaces[0..count]) |iface| {
@@ -323,6 +324,17 @@ fn serve(channel: u32) noreturn {
         if (already) continue;
         sources[source_count] = iface.irq;
         source_count += 1;
+    }
+
+    // Streams and datagrams ride shared rings; the doorbell is the one
+    // wake for every client's production.
+    var bell: ?u32 = null;
+    if (bridge.init(channel)) |bell_handle| {
+        bell = bell_handle;
+        sources[source_count] = bell_handle;
+        source_count += 1;
+    } else {
+        log.warn("netd", "no doorbell; sockets are off");
     }
 
     // The `net` tool writes configuration through cfgd; this is how the
@@ -346,29 +358,37 @@ fn serve(channel: u32) noreturn {
             sys.FOREVER;
         const woke = sys.waitMany(sources[0..source_count], timeout);
         stack.tick();
-        if (woke < 0) continue;
+        if (woke >= 0) dispatch: {
+            const index = @as(usize, @intCast(woke));
+            if (index >= source_count) break :dispatch;
+            const handle = sources[index];
 
-        const index = @as(usize, @intCast(woke));
-        if (index >= source_count) continue;
-        const handle = sources[index];
-
-        if (handle == channel) {
-            drain(channel);
-            continue;
-        }
-        if (cfg_watch != null and handle == cfg_watch.?) {
-            stack.applyConfig(settings.load("net"));
-            continue;
-        }
-        // An interrupt line. Which interface it belongs to is the match
-        // the attach made; the service runs its handler, then the ack.
-        for (ifaces[0..count]) |*iface| {
-            if (iface.irq == handle) {
-                iface.irq_count += 1;
-                iface.ops.irq(iface);
+            if (handle == channel) {
+                drain(channel);
+                break :dispatch;
             }
+            if (bell != null and handle == bell.?) {
+                bridge.drainRings();
+                break :dispatch;
+            }
+            if (cfg_watch != null and handle == cfg_watch.?) {
+                stack.applyConfig(settings.load("net"));
+                break :dispatch;
+            }
+            // An interrupt line. Which interface it belongs to is the match
+            // the attach made; the service runs its handler, then the ack.
+            for (ifaces[0..count]) |*iface| {
+                if (iface.irq == handle) {
+                    iface.irq_count += 1;
+                    iface.ops.irq(iface);
+                }
+            }
+            _ = sys.irqAck(handle);
         }
-        _ = sys.irqAck(handle);
+
+        // Whatever this pass queued for the machine itself is delivered
+        // before the loop sleeps: loopback never waits for a wake.
+        stack.deliverLoopback();
     }
 }
 
@@ -379,12 +399,20 @@ fn drain(channel: u32) void {
 
         // A ping is answered when the echo is, not now: the token is kept
         // and the caller's call blocks exactly as long as the ping does.
+        // Sockets and names go the same way, through the bridge.
         const bytes = message.bytes();
         if (bytes.len >= @sizeOf(proto.Req)) {
             const asked: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
-            if (asked.tag == .ping) {
-                startPing(channel, request.token, asked.param, asked.param2);
-                continue;
+            switch (asked.tag) {
+                .ping => {
+                    startPing(channel, request.token, asked.param, asked.param2);
+                    continue;
+                },
+                .tcp_connect, .tcp_listen, .tcp_accept, .udp_open, .sock_close, .resolve => {
+                    bridge.handle(&message, request.token);
+                    continue;
+                },
+                else => {},
             }
         }
 

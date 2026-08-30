@@ -21,6 +21,7 @@ pub const paths = @import("paths.zig");
 pub const pci = @import("pci.zig");
 pub const ports = @import("ports.zig");
 pub const procs = @import("procs.zig");
+pub const sock = @import("sock.zig");
 /// Strings, one layer down: they are pure computation, so the toolkit and the
 /// kernel can reach them too. Re-exported here because every program that
 /// wants `ulib` wants these.

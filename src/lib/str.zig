@@ -11,7 +11,6 @@
 
 const std = @import("std");
 
-
 pub fn eql(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| {
@@ -87,18 +86,11 @@ pub fn isSpace(c: u8) bool {
 ///
 /// No quoting: it would need escaping rules, and nothing yet passes an
 /// argument containing a space.
-pub fn splitWords(text: []const u8, words: [][]const u8) usize {
+pub fn splitWords(text: []const u8, into: [][]const u8) usize {
+    var it = words(text);
     var count: usize = 0;
-    var i: usize = 0;
-
-    while (i < text.len and count < words.len) {
-        while (i < text.len and isSpace(text[i])) i += 1;
-        if (i >= text.len) break;
-
-        const start = i;
-        while (i < text.len and !isSpace(text[i])) i += 1;
-        words[count] = text[start..i];
-        count += 1;
+    while (count < into.len) : (count += 1) {
+        into[count] = it.next() orelse break;
     }
     return count;
 }
@@ -141,6 +133,25 @@ pub fn lines(text: []const u8) Splitter {
 /// it emits the values and leaves column widths to whoever displays them.
 pub fn fields(text: []const u8) Splitter {
     return split(text, '\t');
+}
+
+/// Whitespace-separated words, for text people wrote: runs of blanks are
+/// one separator and never yield empty words, unlike a single-byte split.
+pub const WordSplitter = struct {
+    text: []const u8,
+    pos: usize = 0,
+
+    pub fn next(self: *WordSplitter) ?[]const u8 {
+        while (self.pos < self.text.len and isSpace(self.text[self.pos])) self.pos += 1;
+        if (self.pos >= self.text.len) return null;
+        const start = self.pos;
+        while (self.pos < self.text.len and !isSpace(self.text[self.pos])) self.pos += 1;
+        return self.text[start..self.pos];
+    }
+};
+
+pub fn words(text: []const u8) WordSplitter {
+    return .{ .text = text };
 }
 
 /// Drop leading and trailing whitespace.

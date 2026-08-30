@@ -11,13 +11,16 @@
 #include "lwip/dhcp.h"
 #include "lwip/err.h"
 #include "lwip/netif.h"
+#include "lwip/tcp.h"
 #include "lwip/pbuf.h"
 #include "lwip/prot/dhcp.h"
 
 #define CHECK(name, expr) _Static_assert((expr), name)
 
 /* struct netif, for the fields the glue reads and writes. */
-CHECK("netif size", sizeof(struct netif) == 60);
+CHECK("netif size", sizeof(struct netif) == 72);
+CHECK("netif loop_first", offsetof(struct netif, loop_first) == 60);
+CHECK("netif loop_cnt", offsetof(struct netif, loop_cnt_current) == 68);
 CHECK("netif ip_addr", offsetof(struct netif, ip_addr) == 4);
 CHECK("netif netmask", offsetof(struct netif, netmask) == 8);
 CHECK("netif gw", offsetof(struct netif, gw) == 12);
@@ -73,3 +76,8 @@ CHECK("dhcp offered addr", offsetof(struct dhcp, offered_ip_addr) == 28);
 CHECK("dhcp t0 lease", offsetof(struct dhcp, offered_t0_lease) == 40);
 CHECK("dhcp bound", DHCP_STATE_BOUND == 10);
 CHECK("dhcp coarse timer", DHCP_COARSE_TIMER_SECS == 60);
+
+/* The connection prefix the bridge peeks for the peer's name. */
+CHECK("tcp remote_ip", offsetof(struct tcp_pcb, remote_ip) == 4);
+CHECK("tcp local_port", offsetof(struct tcp_pcb, local_port) == 26);
+CHECK("tcp remote_port", offsetof(struct tcp_pcb, remote_port) == 28);

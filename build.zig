@@ -143,6 +143,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ulib", .module = ulib_mod },
         },
     });
+    // The socket client in ulib speaks the net protocol; the proto module's
+    // own conveniences already lean on ulib, and the cycle is fine because
+    // modules are names, not link units.
+    ulib_mod.addImport("proto", proto_mod);
 
     // eeelibc: a static archive, because the alternative is a dynamic loader
     // and on a machine with ten programs that costs more in complexity and

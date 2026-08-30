@@ -532,6 +532,7 @@ pub const MountFlags = abi.MountFlags;
 
 /// Why a syscall said no, for a tool that has to tell somebody.
 pub const reasonFor = abi.reasonFor;
+pub const Errno = abi.Errno;
 pub const KeyCode = abi.KeyCode;
 pub const Modifiers = abi.Modifiers;
 

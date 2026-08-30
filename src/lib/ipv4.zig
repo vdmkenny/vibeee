@@ -123,6 +123,20 @@ pub fn parse(dotted: []const u8) ?u32 {
         octets[3];
 }
 
+/// The address and a port, "10.0.2.2:6666", for everything that names a
+/// conversation's far end. Needs no more than twenty-one bytes.
+pub fn textWithPort(addr: u32, port: u16, field: *[21]u8) []const u8 {
+    var w = std.Io.Writer.fixed(field);
+    w.print("{d}.{d}.{d}.{d}:{d}", .{
+        @as(u8, @truncate(addr >> 24)),
+        @as(u8, @truncate(addr >> 16)),
+        @as(u8, @truncate(addr >> 8)),
+        @as(u8, @truncate(addr)),
+        port,
+    }) catch return field[0..0];
+    return w.buffered();
+}
+
 /// The address, dotted, as the slice of `field` that spells it. An address
 /// needs no more than fifteen bytes; the caller owns the field.
 pub fn text(addr: u32, field: *[15]u8) []const u8 {

@@ -3,12 +3,12 @@
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: v1 design. The layer below the stack is implemented and verified on the
-machine: netd's event loop, the atl2 driver (rx, tx and a completed ARP round trip on
-real hardware), the e1000 and rtl8139 test drivers, interrupt routing answered by
-`platd` from `_PRT`, and the deferred-completion interrupt model. The stack (§6),
-interface management (§7), the socket bridge (§8) and the tools (§9) are design ready
-to implement. WiFi (§5) is design for a later milestone.
+Status: implemented through N2, except where a line says otherwise. The driver
+layer, the lwIP stack, interface management with matcher slots, DHCP, ICMP with
+`ping`, the loopback interface, the socket bridge with `nc`, and resolution with
+the hosts table and `resolve` all run, verified in QEMU end to end and on the
+machine for everything the machine can carry. WiFi (§5) is design for a later
+milestone.
 
 Scope: lwIP-based TCP/IP stack inside netd, interface lifecycle and configuration
 through cfgd, DHCP for unconfigured interfaces, ICMP with `ping`, a stream tool `nc`,
@@ -127,7 +127,11 @@ so the flatten is the same copy). Input: the driver's rx delivery allocates a
 `PBUF_POOL` pbuf, copies the frame in, and calls `netif.input` (`ethernet_input`).
 One copy each direction beyond DMA; §4's budget already paid for it at 100 Mbit.
 Driver link changes call `netif_set_link_up/down`, which is also what makes lwIP's
-DHCP restart discovery when the cable returns. The existing ARP probe diagnostic
+DHCP restart discovery when the cable returns. Beside the hardware netifs lwIP
+carries its own loopback (`LWIP_HAVE_LOOPIF`): 127.0.0.1 exists on a machine with
+no network, `localhost` names it in `/etc/hosts`, and everything queued for the
+machine itself is delivered by `netif_poll_all` before the event loop sleeps,
+never by a thread. The existing ARP probe diagnostic
 (`net -p`) keeps its hand-built frame and its zero sender per RFC 5227: it exercises
 the driver path beneath the stack and stays useful precisely because it does not
 depend on it.
@@ -245,7 +249,7 @@ What each requirement rides on, and what is deliberately off:
 | IPv4 | `ip4` | one address per netif; no forwarding between netifs |
 | ICMP | `icmp` | echo reply is free once up; echo request via a raw pcb for `ping` |
 | DHCP client | `dhcp` | §7.4; lease events narrated; per-netif |
-| DNS | `dns` | servers from DHCP option 6 or static config; `resolve` op for tools |
+| DNS | `dns` | servers from DHCP option 6 or static config; the `/etc/hosts` table answers first, then the `resolve` op asks lwIP; `resolve` reports address and source |
 | UDP | `udp` | record rings in the bridge |
 | TCP | `tcp` | byte rings in the bridge; NewReno; MSS 1460 |
 | IPv6 | off | v1 statement, structures do not preclude it |
@@ -355,16 +359,22 @@ Per client socket: one shm segment and two events.
   table on each ring. This is what keeps netd's wait set within the eight-source
   budget at any socket count.
 
-The control page mirrors state for lock-free reads:
+The control page mirrors state for lock-free reads (`proto/socket.zig`; the
+ring arithmetic is `lib/spsc.zig`, host-tested):
 
 ```zig
-pub const SockCtrl = extern struct {
+pub const Ctrl = extern struct {
     tx_head: u32, tx_tail: u32,   // app produces at head; netd consumes at tail
     rx_head: u32, rx_tail: u32,   // netd produces; app consumes
-    state: u32,                   // syn_sent/established/fin_wait/closed/...
-    so_error: i32,                // reset/refused/net-down, valid when closed
+    state: State,                 // opening/established/peer_closed/closed
+    cause: Cause,                 // none/refused/reset/aborted/finished
 };
 ```
+
+Segments cannot be unmapped, so a bridge slot creates its segment once and
+hands the same one to each successive socket: churn allocates nothing and
+leaks nothing. One socket lives on a slot at a time. Exact sizes: 36 KB TCP,
+20 KB UDP, both under one slot's permanent TCP-sized segment.
 
 ### 8.2 Control ops (on `/svc/net`, packed structs like every proto)
 
@@ -376,7 +386,8 @@ tcp_accept{listener}         -> deferred reply on next connection:
                                 {sock, peer, shm, ev_app, doorbell}
 udp_open{laddr, lport, raddr, rport} -> {sock, shm, ev_app, doorbell}
 close{sock}                  -> errno   (graceful FIN, linger ≤ 5 s)
-resolve{name}                -> deferred reply {n, addr[2]}   (lwIP dns)
+resolve{name}                -> {addr, source: hosts | dns}; deferred while
+                                a server is asked, immediate from the table
 ping{addr, timeout_ms}       -> deferred reply {rtt_us | timed_out}
 ```
 
@@ -409,6 +420,9 @@ over `ev_app` handles. No out-of-band, no socket options beyond NODELAY.
   checking the name against the listing.
   Diagnostics stay: `net -p <ip>` (driver-level ARP probe), `net -s` (lwIP stats,
   debug builds).
+- `resolve <name>...`: the resolution path made visible: address, source, and
+  the time DNS took. `/etc/hosts` overrides servers, one `address names...`
+  line each.
 - `ping <addr|name> [-c n]`: resolves if needed, then one `ping` op per second, each
   a deferred-reply call; prints RTT per reply and a summary. Ctrl+C ends it like any
   tool. ICMP echo *reply* needs no tool: the stack answers pings the moment an

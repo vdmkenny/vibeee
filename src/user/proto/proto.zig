@@ -13,6 +13,7 @@ pub const net = @import("net.zig");
 pub const platform = @import("platform.zig");
 pub const service = @import("service.zig");
 pub const settings = @import("settings.zig");
+pub const socket = @import("socket.zig");
 pub const wm = @import("wm.zig");
 pub const client = @import("client.zig");
 

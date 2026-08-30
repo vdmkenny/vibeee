@@ -8,6 +8,7 @@
 const lib = @import("lib");
 const net = @import("proto").net;
 const out = @import("ulib").out;
+const sock = @import("ulib").sock;
 const str = @import("ulib").str;
 const sys = @import("sys");
 
@@ -23,13 +24,19 @@ pub fn run(args: []const []const u8) void {
         if (str.eql(args[at], "-c") and at + 1 < args.len) {
             at += 1;
             rounds = @max(1, str.toUnsigned(args[at]));
-        } else if (lib.ipv4.parse(args[at])) |addr| {
-            target = addr;
+        } else if (args[at].len > 0 and args[at][0] != '-') {
+            target = sock.addressOf(args[at]) catch {
+                out.text("ping: ");
+                out.text(args[at]);
+                out.text(": name not known\n");
+                out.flush();
+                return;
+            };
         }
     }
 
     const addr = target orelse {
-        say("ping: an address, dotted: ping 192.168.178.1 [-c count]\n");
+        say("ping: an address or name: ping 192.168.178.1 [-c count]\n");
         return;
     };
 

@@ -4,6 +4,7 @@
 //! neither can drift. One interface at a time, asked for by index, which is
 //! how a caller walks a list of unknown length: ask until `end`.
 
+const socket = @import("socket.zig");
 const std = @import("std");
 const sys = @import("sys");
 
@@ -24,18 +25,67 @@ pub const Tag = enum(u8) {
     ping,
     /// The stack's address story for the interface at `index`.
     address,
+    /// Open a stream to `param`:`param2`. The reply waits for the handshake
+    /// and grants the socket: `body.sock` and the three handles.
+    tcp_connect,
+    /// Listen on port `param` with backlog `param2`; `body.listener` names
+    /// the listener for `tcp_accept`.
+    tcp_listen,
+    /// The next connection on listener `index`. Deferred until one arrives;
+    /// grants a socket like `tcp_connect`.
+    tcp_accept,
+    /// A datagram socket: `param` the remote address or zero, `param2` the
+    /// two ports as `UdpPorts`. Granted at once.
+    udp_open,
+    /// Finish socket `index`: FIN for a stream, teardown for the rest.
+    sock_close,
+    /// A name to an address, `ResolveReq` shaped: the hosts table first,
+    /// then DNS. Deferred while a server is asked.
+    resolve,
+};
+
+/// The two ports of `udp_open`, packed into its second parameter.
+pub const UdpPorts = packed struct(u32) {
+    /// Who to talk to; zero with a zero remote address listens only.
+    remote: u16 = 0,
+    /// Local binding; zero lets the stack pick.
+    local: u16 = 0,
 };
 
 pub const Req = extern struct {
     tag: Tag,
     _reserved: [3]u8 = @splat(0),
-    /// Which interface, for the requests that address one.
+    /// Which interface or socket, for the requests that address one.
     index: u32 = 0,
-    /// The request's number: the address to ask about, for `arp_probe`
-    /// and `ping`.
+    /// The request's number: the address to ask about, for `arp_probe`,
+    /// `ping`, `tcp_connect` and `udp_open`; the port for `tcp_listen`.
     param: u32 = 0,
-    /// The request's second number: the deadline in milliseconds, for `ping`.
+    /// The request's second number: the deadline in milliseconds for
+    /// `ping`, the port for `tcp_connect`, the backlog for `tcp_listen`,
+    /// the `UdpPorts` for `udp_open`.
     param2: u32 = 0,
+};
+
+/// `resolve` carries a name instead of numbers; the tag stays first, which
+/// is how the service tells the two request shapes apart.
+pub const ResolveReq = extern struct {
+    tag: Tag = .resolve,
+    len: u8 = 0,
+    _reserved: [2]u8 = @splat(0),
+    name: [NAME_MAX]u8 = @splat(0),
+
+    pub const NAME_MAX = 60;
+
+    pub fn of(name: []const u8) ?ResolveReq {
+        if (name.len == 0 or name.len > NAME_MAX) return null;
+        var req = ResolveReq{ .len = @intCast(name.len) };
+        @memcpy(req.name[0..name.len], name);
+        return req;
+    }
+
+    pub fn slice(self: *const ResolveReq) []const u8 {
+        return self.name[0..@min(self.len, NAME_MAX)];
+    }
 };
 
 pub const Status = enum(u8) {
@@ -114,6 +164,37 @@ pub const Body = extern union {
     iface: Iface,
     /// For `address`: the stack's address story.
     address: AddressInfo,
+    /// For `tcp_listen`: which listener to accept on.
+    listener: u32,
+    /// For the granting ops: which socket the handles belong to.
+    sock: SockGrant,
+    /// For `resolve`: the answer and where it came from.
+    resolved: Resolved,
+};
+
+/// A granted socket. The reply's handles are, in order, the shared
+/// segment, the socket's own event, and the service's shared doorbell.
+pub const SockGrant = extern struct {
+    sock: u32 = 0,
+    peer_addr: u32 = 0,
+    peer_port: u16 = 0,
+    kind: socket.Kind = .tcp,
+    _pad: u8 = 0,
+};
+
+pub const GRANT_HANDLES = 3;
+
+pub const Resolved = extern struct {
+    addr: u32 = 0,
+    source: ResolveSource = .dns,
+    _pad: [3]u8 = @splat(0),
+};
+
+/// Who answered a name.
+pub const ResolveSource = enum(u8) {
+    /// The hosts table, before any server was asked.
+    hosts,
+    dns,
 };
 
 comptime {
@@ -121,8 +202,10 @@ comptime {
         @compileError("a network reply must fit in one channel payload");
     }
     if (@sizeOf(Req) != 16) @compileError("a network request is sixteen bytes");
+    if (@sizeOf(ResolveReq) != 64) @compileError("a resolve request fills one payload");
     if (@sizeOf(Iface) != 56) @compileError("an interface record is 56 bytes");
     if (@sizeOf(AddressInfo) != 16) @compileError("an address record is sixteen bytes");
+    if (@sizeOf(SockGrant) != 12) @compileError("a socket grant is twelve bytes");
 }
 
 pub const Error = error{ NoService, Refused, End, TimedOut };
