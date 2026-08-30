@@ -156,11 +156,23 @@ fn postRaw(e: Event) void {
     key_event.signalLocked();
 }
 
+/// Ctrl+C, when nobody has claimed the keyboard: the user asking whatever
+/// runs at the console to stop. Signalled here at delivery time rather than
+/// from the line discipline's pump, because the process it is aimed at is
+/// exactly the one too busy to be reading.
+var stop_event: event_mod.Event = .{};
+
+pub fn stopEvent() *event_mod.Event {
+    return &stop_event;
+}
+
 pub fn post(event: Event) void {
     if (key_owner != 0) {
         postRaw(event);
         return;
     }
+
+    if (event.pressed and event.codepoint == 3) stop_event.signalLocked();
 
     const next = (tail + 1) % QUEUE_SIZE;
     if (next == head) {

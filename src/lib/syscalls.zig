@@ -638,6 +638,11 @@ pub const Watchable = enum(u32) {
     pointer = 1,
     /// A child of this process exited, so `wait` has something to collect.
     children = 2,
+    /// Ctrl+C at the console: the user asking the foreground work to stop.
+    /// Watching resets the pending count, so a press from before the watch
+    /// cannot end a command that just started. A process that has claimed
+    /// the keyboard sees Ctrl+C as a key event instead.
+    stop = 3,
 };
 
 /// How a volume is attached.
@@ -1284,7 +1289,7 @@ pub const table = [_]Syscall{
         .name = "watch",
         .summary = "An event that fires when something happens.",
         .args = &.{
-            .{ .name = "what", .kind = .uint, .desc = "A Watchable: 0 keys, 1 pointer, 2 children." },
+            .{ .name = "what", .kind = .uint, .desc = "A Watchable: 0 keys, 1 pointer, 2 children, 3 stop (Ctrl+C)." },
         },
         .returns = "an event handle",
         .errors = &.{ E.inval, E.nomem },

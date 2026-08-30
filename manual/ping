@@ -5,8 +5,9 @@ ping — one echo a second, answered or timed out
   ping 192.0.2.1 -c 10   a chosen number of rounds
 
 Each round prints the answer and its round trip, or `no answer` after
-one second. A summary counts the answered rounds. A name goes through
-the hosts file and then DNS; `man resolve` describes that path.
+one second. A summary counts the answered rounds; Ctrl+C ends the
+count early, summary included. A name goes through the hosts file and
+then DNS; `man resolve` describes that path.
 
 Incoming echoes need no command: the machine answers pings whenever an
 interface holds an address, and 127.0.0.1 answers always.

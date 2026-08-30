@@ -391,22 +391,6 @@ fn pingReply(_: ?*anyopaque, _: *lwip.RawPcb, p: *lwip.Pbuf, _: *const lwip.Ip4A
 
 fn pingExpired(_: ?*anyopaque) callconv(.c) void {
     if (!ping_busy) return;
-    log.begin("netd", .dim);
-    out.text("echo ");
-    out.decimal(ping_sequence);
-    out.text(" expired unanswered");
-    log.end();
-
-    // The controller's own account at the moment of the failure, asked
-    // hands-off: pressing a key to ask would deliver the very interrupt
-    // whose absence is being diagnosed.
-    var state: [96]u8 = undefined;
-    const n = sys.sysinfo("apic", &state);
-    if (n > 0) {
-        log.begin("netd", .dim);
-        out.text(state[0..@intCast(n)]);
-        log.end();
-    }
     const timed_out = ping_timed_out;
     ping_busy = false;
     ping_done = null;

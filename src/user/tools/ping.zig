@@ -46,9 +46,16 @@ pub fn run(args: []const []const u8) void {
     out.byte('\n');
     out.flush();
 
+    // Ctrl+C ends the count early, summary included, instead of the tool
+    // running out its rounds against a silent address.
+    const stop = sys.watch(.stop);
+
     var answered: usize = 0;
     var round: usize = 0;
     while (round < rounds) : (round += 1) {
+        // A round that timed out spent its whole second inside the call,
+        // so the press is looked for here as well as in the pause.
+        if (stop >= 0 and sys.eventWait(@intCast(stop), sys.POLL) >= 0) break;
         const started = sys.clockMicros();
         var reply = net.Rep{};
         if (net.callWith(.ping, 0, addr, TIMEOUT_MS, &reply)) |_| {
@@ -74,9 +81,17 @@ pub fn run(args: []const []const u8) void {
         out.flush();
 
         // One echo a second, whatever the round trip cost of this one was.
+        // The pause is a wait on the stop event, so Ctrl+C lands in it.
         if (round + 1 < rounds) {
             const spent = sys.clockMicros() - started;
-            if (spent < 1_000_000) sys.sleepMicros(1_000_000 - @as(usize, @intCast(spent)));
+            if (spent < 1_000_000) {
+                const pause = 1_000_000 - @as(usize, @intCast(spent));
+                if (stop >= 0) {
+                    if (sys.eventWait(@intCast(stop), pause) >= 0) break;
+                } else {
+                    sys.sleepMicros(pause);
+                }
+            }
         }
     }
 

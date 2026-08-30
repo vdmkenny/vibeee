@@ -13,6 +13,7 @@
 
 const lib = @import("lib");
 const out = @import("ulib").out;
+const std = @import("std");
 const sock = @import("ulib").sock;
 const str = @import("ulib").str;
 const sys = @import("sys");
@@ -61,6 +62,14 @@ pub fn run(args: []const []const u8) void {
             return sayOpenFailure(err);
         };
         defer gate.close();
+
+        // The wait is here rather than inside accept, so Ctrl+C can end a
+        // listener nobody ever connects to.
+        const stop = sys.watch(.stop);
+        var doors: [2]u32 = .{ gate.waitHandle(), if (stop >= 0) @intCast(stop) else gate.waitHandle() };
+        const woke = sys.waitMany(doors[0 .. if (stop >= 0) 2 else 1], sys.FOREVER);
+        if (woke != 0) return;
+
         const s = gate.accept() catch |err| {
             return sayOpenFailure(err);
         };
@@ -96,9 +105,9 @@ fn addressOf(name: []const u8) ?u32 {
 /// the difference is who is waitable and how much arrives at once.
 fn converse(s: *const sock.Sock, datagrams: bool) void {
     // A pipe's read end is waitable; the interactive console is not, and
-    // its keystrokes announce themselves through the keys event instead.
-    // A ready answer consumed the pipe's pending signal, so readiness
-    // travels into the loop instead of being waited for again.
+    // its keystrokes are taken as key events instead. A ready answer
+    // consumed the pipe's pending signal, so readiness travels into the
+    // loop instead of being waited for again.
     const probe = sys.waitMany(&[_]u32{sys.STDIN}, sys.POLL);
     const console = probe == -@as(isize, @intFromEnum(sys.Errno.badf));
 
@@ -110,6 +119,7 @@ fn converse(s: *const sock.Sock, datagrams: bool) void {
 }
 
 fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
+    const stop = sys.watch(.stop);
     var fed = true;
 
     if (stdin_ready) {
@@ -118,12 +128,19 @@ fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
     }
 
     while (true) {
-        var sources: [2]u32 = .{ s.waitHandle(), sys.STDIN };
-        const n: usize = if (fed) 2 else 1;
+        var sources: [3]u32 = .{
+            s.waitHandle(),
+            if (stop >= 0) @intCast(stop) else s.waitHandle(),
+            sys.STDIN,
+        };
+        // The stop event only when it exists, standard input only while it
+        // still feeds; the fixed order keeps the indices meaningful.
+        const n: usize = if (fed) 3 else if (stop >= 0) 2 else 1;
         const woke = sys.waitMany(sources[0..n], sys.FOREVER);
         if (woke < 0) continue;
 
-        if (woke == 1) {
+        if (woke == 1 and stop >= 0) return;
+        if (woke == 2) {
             if (!feed(s, datagrams)) fed = false;
         }
         if (!pour(s, datagrams)) return;
@@ -131,25 +148,36 @@ fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
     }
 }
 
+/// The console conversation: the keyboard is claimed, keystrokes arrive as
+/// key events with the layout already applied, and this side does its own
+/// echo. Ctrl+C is a key here, not the stop event, because a claimed
+/// keyboard bypasses the line discipline entirely.
 fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
-    const was = sys.ttyMode(.raw);
-    defer _ = sys.ttyMode(was);
-
     const keys = sys.watch(.keys);
-    var sources: [2]u32 = .{ s.waitHandle(), if (keys >= 0) @intCast(keys) else return };
+    if (keys < 0) {
+        say("nc: no keyboard to read\n");
+        return;
+    }
+
+    // The first read claims the keyboard: from here every key goes to this
+    // process and wakes the keys event, instead of feeding the shell's
+    // line discipline underneath the conversation.
+    var events: [8]sys.KeyEvent = undefined;
+    _ = sys.keyRead(&events, sys.POLL);
+
     var line: [512]u8 = undefined;
     var len: usize = 0;
-    var swallow: usize = 0;
     var typing = true;
 
     while (true) {
+        var sources: [2]u32 = .{ s.waitHandle(), @intCast(keys) };
         const woke = sys.waitMany(sources[0 .. if (typing) 2 else 1], sys.FOREVER);
         if (woke < 0) continue;
 
         if (woke == 1) {
-            var byte: [1]u8 = undefined;
-            if (sys.read(sys.STDIN, &byte) > 0) {
-                switch (handleKey(s, datagrams, byte[0], &line, &len, &swallow)) {
+            for (sys.keyRead(&events, sys.POLL)) |event| {
+                if (event.pressed == 0) continue;
+                switch (handleKey(s, datagrams, event, &line, &len)) {
                     .keep_going => {},
                     .no_more_input => typing = false,
                     .leave => return,
@@ -167,43 +195,30 @@ const KeyOutcome = enum { keep_going, no_more_input, leave };
 /// which is what listening and replying means for datagrams.
 var last_sender: ?sock.Sock.Datagram = null;
 
-/// One typed byte into the line, the line to the peer when entered.
+/// One keystroke into the line, the line to the peer when entered.
 fn handleKey(
     s: *const sock.Sock,
     datagrams: bool,
-    byte: u8,
+    event: sys.KeyEvent,
     line: *[512]u8,
     len: *usize,
-    swallow: *usize,
 ) KeyOutcome {
-    const CTRL_C = 0x03;
-    const CTRL_D = 0x04;
-    const BACKSPACE = 0x08;
-    const DELETE = 0x7F;
-    const ESCAPE = 0x1B;
+    const CTRL_C = 3;
+    const CTRL_D = 4;
 
-    if (swallow.* > 0) {
-        swallow.* -= 1;
+    if (event.code == @intFromEnum(sys.KeyCode.backspace)) {
+        if (len.* > 0) {
+            len.* -= 1;
+            out.text("\x08 \x08");
+            out.flush();
+        }
         return .keep_going;
     }
 
-    switch (byte) {
+    switch (event.codepoint) {
+        0 => return .keep_going,
         CTRL_C => return .leave,
         CTRL_D => return .no_more_input,
-        ESCAPE => {
-            // An arrow or a function key: the introducer and two more
-            // bytes nothing here has a use for.
-            swallow.* = 2;
-            return .keep_going;
-        },
-        BACKSPACE, DELETE => {
-            if (len.* > 0) {
-                len.* -= 1;
-                out.text("\x08 \x08");
-                out.flush();
-            }
-            return .keep_going;
-        },
         '\n', '\r' => {
             out.byte('\n');
             out.flush();
@@ -218,29 +233,19 @@ fn handleKey(
             return .keep_going;
         },
         else => {
-            if (byte >= ' ' and len.* < line.len - 1) {
-                line[len.*] = byte;
-                len.* += 1;
-                out.byte(byte);
+            if (event.codepoint < ' ') return .keep_going;
+            var utf8: [4]u8 = undefined;
+            const cp: u21 = @intCast(event.codepoint & 0x1F_FFFF);
+            const n = std.unicode.utf8Encode(cp, &utf8) catch return .keep_going;
+            if (len.* + n < line.len - 1) {
+                @memcpy(line[len.*..][0..n], utf8[0..n]);
+                len.* += n;
+                out.text(utf8[0..n]);
                 out.flush();
             }
             return .keep_going;
         },
     }
-}
-
-/// Standard input toward the peer. False when the pipe finished.
-fn feed(s: *const sock.Sock, datagrams: bool) bool {
-    var buf: [512]u8 = undefined;
-    const n = sys.read(sys.STDIN, &buf);
-    if (n <= 0) return false;
-    const bytes = buf[0..@intCast(n)];
-    if (datagrams) {
-        sendDatagramBack(s, bytes);
-    } else {
-        sendAll(s, bytes);
-    }
-    return true;
 }
 
 /// A datagram to the peer: where the socket is connected, or back to
@@ -255,6 +260,20 @@ fn sendDatagramBack(s: *const sock.Sock, bytes: []const u8) void {
         return;
     };
     _ = s.sendDatagram(back.addr, back.port, bytes);
+}
+
+/// Standard input toward the peer. False when the pipe finished.
+fn feed(s: *const sock.Sock, datagrams: bool) bool {
+    var buf: [512]u8 = undefined;
+    const n = sys.read(sys.STDIN, &buf);
+    if (n <= 0) return false;
+    const bytes = buf[0..@intCast(n)];
+    if (datagrams) {
+        sendDatagramBack(s, bytes);
+    } else {
+        sendAll(s, bytes);
+    }
+    return true;
 }
 
 /// Every byte in, however long the ring takes: the service drains as the

@@ -167,8 +167,30 @@ fn tcpListen(req: *const proto.Req, token: u32) void {
     lwip.tcp_arg(listening, s);
     lwip.tcp_accept(listening, acceptCb);
 
+    // The grant carries the readiness event: a count per connection waiting
+    // in the backlog, so a listener can sit in wait_many beside a stop
+    // event instead of blocking inside accept.
+    if (slotEvent(s) == null) {
+        dropPcb(s);
+        s.kind = .free;
+        return refuse(token);
+    }
+    while (sys.eventWait(s.ev_app, sys.POLL) >= 0) {}
+
     var reply = proto.Rep{ .body = .{ .listener = indexOf(s) } };
-    replyPlain(token, &reply);
+    var message = sys.Message.init(std.mem.asBytes(&reply), &.{s.ev_app});
+    _ = sys.replyMsg(service, token, &message);
+}
+
+/// The slot's event, made on first use and kept for the service's lifetime
+/// like the segment.
+fn slotEvent(s: *Sock) ?u32 {
+    if (s.ev_app == 0) {
+        const ev = sys.eventCreate();
+        if (ev < 0) return null;
+        s.ev_app = @intCast(ev);
+    }
+    return s.ev_app;
 }
 
 fn tcpAccept(req: *const proto.Req, token: u32) void {
@@ -408,6 +430,7 @@ fn acceptCb(arg: ?*anyopaque, newpcb: ?*lwip.TcpPcb, err: lwip.Err) callconv(.c)
     for (&s.backlog) |*held| {
         if (held.* == null) {
             held.* = pcb;
+            _ = sys.eventSignal(s.ev_app);
             return .ok;
         }
     }
@@ -596,10 +619,8 @@ fn slotView(s: *Sock, kind: socket.Kind) ?socket.View {
             _ = sys.close(@intCast(created));
             return null;
         };
-        const ev = sys.eventCreate();
-        if (ev < 0) return null;
+        if (slotEvent(s) == null) return null;
         s.shm = @intCast(created);
-        s.ev_app = @intCast(ev);
         s.view = socket.View.of(base, kind);
     } else {
         const base: [*]u8 = @ptrCast(@volatileCast(s.view.?.ctrl));

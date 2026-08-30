@@ -116,30 +116,41 @@ pub const Sock = struct {
     }
 };
 
-/// A listening port. Accepting blocks until a connection arrives.
+/// A listening port. `ready` carries a count per connection waiting, so a
+/// caller waits in `wait_many` and accepts only what has already arrived.
 pub const Listener = struct {
     channel: u32,
     id: u32,
+    ready: u32,
 
     pub fn listen(port: u16) Error!Listener {
         const channel = try serviceChannel();
         errdefer _ = sys.close(channel);
 
         var reply = proto.Rep{};
-        try callOn(channel, .{ .tag = .tcp_listen, .param = port, .param2 = 1 }, &reply, &.{}, null);
-        return .{ .channel = channel, .id = reply.body.listener };
+        var handles: [1]u32 = undefined;
+        try callOn(channel, .{ .tag = .tcp_listen, .param = port, .param2 = 1 }, &reply, &.{}, &handles);
+        return .{ .channel = channel, .id = reply.body.listener, .ready = handles[0] };
     }
 
+    /// The handle a wait set listens on for arrivals.
+    pub fn waitHandle(self: *const Listener) u32 {
+        return self.ready;
+    }
+
+    /// The next connection. Blocks until one arrives; waiting on `ready`
+    /// first makes it return at once.
     pub fn accept(self: *const Listener) Error!Sock {
         var reply = proto.Rep{};
         var handles: [proto.GRANT_HANDLES]u32 = undefined;
         try callOn(self.channel, .{ .tag = .tcp_accept, .index = self.id }, &reply, &.{}, &handles);
-        return fromGrant(try serviceChannel(), &reply, handles);
+        return fromGrant(try serviceChannel(), &reply, handles[0..proto.GRANT_HANDLES].*);
     }
 
     pub fn close(self: *const Listener) void {
         var reply = proto.Rep{};
         callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply, &.{}, null) catch {};
+        _ = sys.close(self.ready);
         _ = sys.close(self.channel);
     }
 };
@@ -208,13 +219,14 @@ fn serviceChannel() Error!u32 {
     return @intCast(channel);
 }
 
-/// One request, one reply, the handles kept when the caller wants them.
+/// One request, one reply, the handles kept when the caller wants them:
+/// however many the caller's slice asks for, in the order the reply sent.
 fn callOn(
     channel: u32,
     request: proto.Req,
     reply: *proto.Rep,
     send_handles: []const u32,
-    take_handles: ?*[proto.GRANT_HANDLES]u32,
+    take_handles: ?[]u32,
 ) Error!void {
     const message = sys.Message.init(std.mem.asBytes(&request), send_handles);
     var answer = sys.Message{};
@@ -229,8 +241,8 @@ fn callOn(
 
     if (take_handles) |into| {
         const got = answer.handleSlice();
-        if (got.len < proto.GRANT_HANDLES) return error.Refused;
-        @memcpy(into, got[0..proto.GRANT_HANDLES]);
+        if (got.len < into.len) return error.Refused;
+        @memcpy(into, got[0..into.len]);
     }
 }
 

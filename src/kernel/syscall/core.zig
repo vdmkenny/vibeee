@@ -388,6 +388,13 @@ pub fn sys_watch(a: Args) Result {
         @intFromEnum(abi.Watchable.keys) => input.keyReady(),
         @intFromEnum(abi.Watchable.pointer) => input.pointerReady(),
         @intFromEnum(abi.Watchable.children) => childEvent() orelse return Errno.nomem.value(),
+        @intFromEnum(abi.Watchable.stop) => blk: {
+            // Presses from before anyone was listening are not this
+            // command's to answer.
+            const e = input.stopEvent();
+            e.count = 0;
+            break :blk e;
+        },
         else => return Errno.inval.value(),
     };
 

@@ -145,7 +145,9 @@ const Command = enum { quit, up, down, page_up, page_down, top, bottom, none };
 fn command() Command {
     var events: [8]sys.KeyEvent = undefined;
     while (true) {
-        for (sys.keyRead(&events, 0)) |event| {
+        // The read blocks in the kernel until a key arrives; a viewer at
+        // rest costs nothing.
+        for (sys.keyRead(&events, sys.FOREVER)) |event| {
             if (event.pressed == 0) continue;
             return switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
                 .q, .escape => .quit,

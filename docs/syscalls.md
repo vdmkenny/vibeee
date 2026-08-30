@@ -780,7 +780,7 @@ An event that fires when something happens.
 
 | arg | type | meaning |
 |---|---|---|
-| `what` | uint | A Watchable: 0 keys, 1 pointer, 2 children. |
+| `what` | uint | A Watchable: 0 keys, 1 pointer, 2 children, 3 stop (Ctrl+C). |
 
 **Returns:** an event handle
 

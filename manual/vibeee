@@ -11,7 +11,7 @@ files:
 
 Tab completes command names and paths. Up and down walk the history.
 The prompt arrow shows the last command's status: green succeeded, red
-did not.
+did not. Ctrl+C asks the running command to stop.
 
 The filesystem:
 
