@@ -23,6 +23,21 @@ pub fn build(b: *std.Build) void {
         "Optimization mode (default: ReleaseSmall, footprint is a hard requirement)",
     ) orelse .ReleaseSmall;
 
+    // Which architecture to build. x86 is the flagship and the default; arm
+    // selects the ARM926EJ-S HAL of design/12-arm-port.md, the second-arch
+    // proof aimed at the VT8500-class Windows CE netbooks. Everything below
+    // picks a side once, so no other code re-checks the architecture.
+    const arch = b.option(
+        []const u8,
+        "arch",
+        "Target architecture: x86 (default) or arm",
+    ) orelse "x86";
+    const is_arm = std.mem.eql(u8, arch, "arm");
+    if (!is_arm and !std.mem.eql(u8, arch, "x86")) {
+        std.log.err("unknown -Darch '{s}': supported values are x86 and arm", .{arch});
+        std.process.exit(1);
+    }
+
     // User programs to build with a symbol table, comma separated. A faulting
     // address reported on the target is only a number until something can match
     // it against a symbol, and the machine has no debugger and no serial port.
@@ -35,27 +50,43 @@ pub fn build(b: *std.Build) void {
     ) orelse "";
 
     // ---------------------------------------------------------------------
-    // Target: 32-bit x86, freestanding.
+    // Target, one per architecture.
     //
-    // The CPU baseline is deliberately explicit rather than `.baseline`. The
-    // Eee PC 701's Celeron M 353 is a Dothan: it has SSE2 but NOT SSE3, so
-    // pinning the model here makes the compiler reject anything the real
-    // machine cannot execute, instead of us finding out via #UD on hardware.
-    // ---------------------------------------------------------------------
+    // x86: 32-bit, freestanding, the CPU baseline deliberately explicit rather
+    // than `.baseline`. The Eee PC 701's Celeron M 353 is a Dothan: it has
+    // SSE2 but NOT SSE3, so pinning the model here makes the compiler reject
+    // anything the real machine cannot execute, instead of us finding out via
+    // #UD on hardware.
+    //
     // Kernel code must not touch the FPU or SIMD registers implicitly: we do
     // not save that state on interrupt entry, and lazy FPU handling arrives
     // with the scheduler. So SSE/MMX/x87 are subtracted and soft_float is
     // added, which makes the compiler refuse to emit them rather than
     // corrupting user FPU state at some unlucky moment. Userspace modules
     // (blitters, the mixer) get their own target with SSE2 enabled.
-    const target = b.resolveTargetQuery(.{
-        .cpu_arch = .x86,
-        .os_tag = .freestanding,
-        .abi = .none,
-        .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
-        .cpu_features_add = std.Target.x86.featureSet(&.{.soft_float}),
-        .cpu_features_sub = std.Target.x86.featureSet(&.{ .x87, .mmx, .sse, .sse2 }),
-    });
+    //
+    // arm: ARM926EJ-S, the core of the VT8500/WM8505 Windows CE netbooks, and
+    // the CPU QEMU's versatilepb presents by default. Same reasoning as x86:
+    // pinned, so the compiler rejects what the device cannot run. No VFP on
+    // this core, so the EABI soft-float convention is the only one available
+    // and the compiler emits software float calls.
+    // ---------------------------------------------------------------------
+    const target = if (is_arm)
+        b.resolveTargetQuery(.{
+            .cpu_arch = .arm,
+            .os_tag = .freestanding,
+            .abi = .eabi,
+            .cpu_model = .{ .explicit = &std.Target.arm.cpu.arm926ej_s },
+        })
+    else
+        b.resolveTargetQuery(.{
+            .cpu_arch = .x86,
+            .os_tag = .freestanding,
+            .abi = .none,
+            .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
+            .cpu_features_add = std.Target.x86.featureSet(&.{.soft_float}),
+            .cpu_features_sub = std.Target.x86.featureSet(&.{ .x87, .mmx, .sse, .sse2 }),
+        });
 
     // ---------------------------------------------------------------------
     // Userspace programs.
@@ -64,149 +95,160 @@ pub fn build(b: *std.Build) void {
     // image, so the ELF loader is exercised by a real linker's output rather
     // than by something hand-assembled to be easy to load.
     //
-    // A separate target from the kernel's: user code may use SSE2, since the
-    // kernel saves FPU state on its behalf.
+    // On x86 a separate target from the kernel's: user code may use SSE2,
+    // since the kernel saves FPU state on its behalf. On arm there is no FPU
+    // to save, so both halves share the same model.
     // ---------------------------------------------------------------------
-    const user_target = b.resolveTargetQuery(.{
-        .cpu_arch = .x86,
-        .os_tag = .freestanding,
-        .abi = .none,
-        .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
-    });
+    const user_target = if (is_arm)
+        target
+    else
+        b.resolveTargetQuery(.{
+            .cpu_arch = .x86,
+            .os_tag = .freestanding,
+            .abi = .none,
+            .cpu_model = .{ .explicit = &std.Target.x86.cpu.pentium_m },
+        });
 
-    // Shared, platform-neutral code, see src/lib. Handed to the kernel and to
-    // every user program as the same named module rather than by relative
-    // path, so both sides get one instance of it and its types compare equal
-    // across the syscall boundary.
-    const user_lib = b.createModule(.{
-        .root_source_file = b.path("src/lib/lib.zig"),
-        .target = user_target,
-        .optimize = optimize,
-    });
-
-    // Userspace is three modules, each its own domain, wired here so a
-    // program in a subdirectory can reach them: relative imports cannot climb
-    // out of a module's own root directory.
-    //
-    //   sys   the syscall layer
-    //   ulib  conveniences that assume a process (output, strings, time)
-    //   eui   the control library, which touches no syscalls at all
-    // The keyboard layouts. Userspace needs the names of them, for a setting
-    // and the control that edits it; the kernel needs the tables. Both compile
-    // the same list, so a name chosen in a settings file is one the kernel
-    // knows.
-    const keymaps_mod = b.createModule(.{
-        .root_source_file = b.path("src/keymaps/registry.zig"),
-        .target = user_target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "lib", .module = user_lib }},
-    });
-
-    const sys_mod = b.createModule(.{
-        .root_source_file = b.path("src/user/syscall.zig"),
-        .target = user_target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "lib", .module = user_lib },
-            .{ .name = "keymaps", .module = keymaps_mod },
-        },
-    });
-
-    const ulib_mod = b.createModule(.{
-        .root_source_file = b.path("src/user/lib/ulib.zig"),
-        .target = user_target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "lib", .module = user_lib },
-            .{ .name = "sys", .module = sys_mod },
-        },
-    });
-
-    const eui_mod = b.createModule(.{
-        .root_source_file = b.path("src/user/eui/eui.zig"),
-        .target = user_target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "lib", .module = user_lib }},
-    });
-
-    // The window protocol: wire types only, so client and server compile the
-    // same definitions and neither can drift.
-    const proto_mod = b.createModule(.{
-        .root_source_file = b.path("src/user/proto/proto.zig"),
-        .target = user_target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "lib", .module = user_lib },
-            .{ .name = "sys", .module = sys_mod },
-            .{ .name = "eui", .module = eui_mod },
-            .{ .name = "keymaps", .module = keymaps_mod },
-            .{ .name = "ulib", .module = ulib_mod },
-        },
-    });
-    // The socket client in ulib speaks the net protocol; the proto module's
-    // own conveniences already lean on ulib, and the cycle is fine because
-    // modules are names, not link units.
-    ulib_mod.addImport("proto", proto_mod);
-
-    // eeelibc: a static archive, because the alternative is a dynamic loader
-    // and on a machine with ten programs that costs more in complexity and
-    // per-spawn milliseconds than the duplication costs in RAM.
-    const libc = b.addLibrary(.{
-        .name = "eeelibc",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/user/libc/libc.zig"),
+    // ---------------------------------------------------------------------
+    // Userspace programs: x86 only for now. The arm skeleton
+    // (design/12-arm-port.md §4) is kernel-first; the user-side arch stub
+    // arrives in step 4.5, and until then building the programs would fail
+    // on the x86 trap stub. The gate is this region and disappears then.
+    // ---------------------------------------------------------------------
+    if (!is_arm) {
+        // Shared, platform-neutral code, see src/lib. Handed to the kernel and to
+        // every user program as the same named module rather than by relative
+        // path, so both sides get one instance of it and its types compare equal
+        // across the syscall boundary.
+        const user_lib = b.createModule(.{
+            .root_source_file = b.path("src/lib/lib.zig"),
             .target = user_target,
             .optimize = optimize,
-            .single_threaded = true,
-            .stack_check = false,
-            .stack_protector = false,
+        });
+
+        // Userspace is three modules, each its own domain, wired here so a
+        // program in a subdirectory can reach them: relative imports cannot climb
+        // out of a module's own root directory.
+        //
+        //   sys   the syscall layer
+        //   ulib  conveniences that assume a process (output, strings, time)
+        //   eui   the control library, which touches no syscalls at all
+        // The keyboard layouts. Userspace needs the names of them, for a setting
+        // and the control that edits it; the kernel needs the tables. Both compile
+        // the same list, so a name chosen in a settings file is one the kernel
+        // knows.
+        const keymaps_mod = b.createModule(.{
+            .root_source_file = b.path("src/keymaps/registry.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "lib", .module = user_lib }},
+        });
+
+        const sys_mod = b.createModule(.{
+            .root_source_file = b.path("src/user/syscall.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "lib", .module = user_lib },
+                .{ .name = "keymaps", .module = keymaps_mod },
+            },
+        });
+
+        const ulib_mod = b.createModule(.{
+            .root_source_file = b.path("src/user/lib/ulib.zig"),
+            .target = user_target,
+            .optimize = optimize,
             .imports = &.{
                 .{ .name = "lib", .module = user_lib },
                 .{ .name = "sys", .module = sys_mod },
+            },
+        });
+
+        const eui_mod = b.createModule(.{
+            .root_source_file = b.path("src/user/eui/eui.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "lib", .module = user_lib }},
+        });
+
+        // The window protocol: wire types only, so client and server compile the
+        // same definitions and neither can drift.
+        const proto_mod = b.createModule(.{
+            .root_source_file = b.path("src/user/proto/proto.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "lib", .module = user_lib },
+                .{ .name = "sys", .module = sys_mod },
+                .{ .name = "eui", .module = eui_mod },
+                .{ .name = "keymaps", .module = keymaps_mod },
                 .{ .name = "ulib", .module = ulib_mod },
             },
-        }),
-    });
-    // A C program links this and nothing else, so the archive has to carry the
-    // routines the compiler emits calls to: 64-bit division on a 32-bit target
-    // is a call to compiler-rt, not an instruction.
-    libc.bundle_compiler_rt = true;
-    b.installArtifact(libc);
+        });
+        // The socket client in ulib speaks the net protocol; the proto module's
+        // own conveniences already lean on ulib, and the cycle is fine because
+        // modules are names, not link units.
+        ulib_mod.addImport("proto", proto_mod);
 
-    const user_imports = [_]std.Build.Module.Import{
-        .{ .name = "lib", .module = user_lib },
-        .{ .name = "sys", .module = sys_mod },
-        .{ .name = "ulib", .module = ulib_mod },
-        .{ .name = "eui", .module = eui_mod },
-        .{ .name = "keymaps", .module = keymaps_mod },
-        .{ .name = "proto", .module = proto_mod },
-    };
+        // eeelibc: a static archive, because the alternative is a dynamic loader
+        // and on a machine with ten programs that costs more in complexity and
+        // per-spawn milliseconds than the duplication costs in RAM.
+        const libc = b.addLibrary(.{
+            .name = "eeelibc",
+            .linkage = .static,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/user/libc/libc.zig"),
+                .target = user_target,
+                .optimize = optimize,
+                .single_threaded = true,
+                .stack_check = false,
+                .stack_protector = false,
+                .imports = &.{
+                    .{ .name = "lib", .module = user_lib },
+                    .{ .name = "sys", .module = sys_mod },
+                    .{ .name = "ulib", .module = ulib_mod },
+                },
+            }),
+        });
+        // A C program links this and nothing else, so the archive has to carry the
+        // routines the compiler emits calls to: 64-bit division on a 32-bit target
+        // is a call to compiler-rt, not an instruction.
+        libc.bundle_compiler_rt = true;
+        b.installArtifact(libc);
 
-    // Every user program is built identically; only its root file differs.
-    // Listing them keeps adding one to a single line here.
-    const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
-        .{ .name = "init", .root = "src/user/init.zig" },
-        .{ .name = "devmgd", .root = "src/user/devmgd/main.zig" },
-        .{ .name = "netd", .root = "src/user/netd/main.zig" },
-        .{ .name = "cfgd", .root = "src/user/cfgd/main.zig" },
-        .{ .name = "platd", .root = "src/user/platd/main.zig" },
-        .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },
-        .{ .name = "tools", .root = "src/user/tools.zig" },
-        .{ .name = "vsh", .root = "src/user/vsh.zig" },
-        .{ .name = "settings", .root = "src/user/apps/settings.zig" },
-        .{ .name = "monitor", .root = "src/user/apps/monitor.zig" },
-        .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
-        .{ .name = "pad", .root = "src/user/apps/pad.zig" },
-    };
+        const user_imports = [_]std.Build.Module.Import{
+            .{ .name = "lib", .module = user_lib },
+            .{ .name = "sys", .module = sys_mod },
+            .{ .name = "ulib", .module = ulib_mod },
+            .{ .name = "eui", .module = eui_mod },
+            .{ .name = "keymaps", .module = keymaps_mod },
+            .{ .name = "proto", .module = proto_mod },
+        };
 
-    // platd carries uACPI, which is C. Compiled into the program rather than
-    // linked as an archive: it is one program's dependency, not the system's,
-    // and whole-program dead-code elimination gets to see all of it.
-    //
-    // `UACPI_PHYS_ADDR_IS_32BITS` because this machine is, and it saves
-    // 64-bit arithmetic on every address the interpreter touches.
-    const uacpi_sources = [_][]const u8{
+        // Every user program is built identically; only its root file differs.
+        // Listing them keeps adding one to a single line here.
+        const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
+            .{ .name = "init", .root = "src/user/init.zig" },
+            .{ .name = "devmgd", .root = "src/user/devmgd/main.zig" },
+            .{ .name = "netd", .root = "src/user/netd/main.zig" },
+            .{ .name = "cfgd", .root = "src/user/cfgd/main.zig" },
+            .{ .name = "platd", .root = "src/user/platd/main.zig" },
+            .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },
+            .{ .name = "tools", .root = "src/user/tools.zig" },
+            .{ .name = "vsh", .root = "src/user/vsh.zig" },
+            .{ .name = "settings", .root = "src/user/apps/settings.zig" },
+            .{ .name = "monitor", .root = "src/user/apps/monitor.zig" },
+            .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
+            .{ .name = "pad", .root = "src/user/apps/pad.zig" },
+        };
+
+        // platd carries uACPI, which is C. Compiled into the program rather than
+        // linked as an archive: it is one program's dependency, not the system's,
+        // and whole-program dead-code elimination gets to see all of it.
+        //
+        // `UACPI_PHYS_ADDR_IS_32BITS` because this machine is, and it saves
+        // 64-bit arithmetic on every address the interpreter touches.
+        const uacpi_sources = [_][]const u8{
             "third_party/uacpi/source/default_handlers.c",
             "third_party/uacpi/source/event.c",
             "third_party/uacpi/source/interpreter.c",
@@ -226,101 +268,102 @@ pub fn build(b: *std.Build) void {
             "third_party/uacpi/source/types.c",
             "third_party/uacpi/source/uacpi.c",
             "third_party/uacpi/source/utilities.c",
-    };
+        };
 
-    // netd carries lwIP, which is C, vendored verbatim like uACPI and
-    // compiled into the one program that is its dependency. The port headers
-    // live beside netd; the layout proof in lwipport/layout_check.c pins the
-    // struct shapes netd's Zig mirror relies on.
-    const lwip_sources = [_][]const u8{
-        "third_party/lwip/src/core/def.c",
-        "third_party/lwip/src/core/dns.c",
-        "third_party/lwip/src/core/inet_chksum.c",
-        "third_party/lwip/src/core/init.c",
-        "third_party/lwip/src/core/ip.c",
-        "third_party/lwip/src/core/mem.c",
-        "third_party/lwip/src/core/memp.c",
-        "third_party/lwip/src/core/netif.c",
-        "third_party/lwip/src/core/pbuf.c",
-        "third_party/lwip/src/core/raw.c",
-        "third_party/lwip/src/core/stats.c",
-        "third_party/lwip/src/core/sys.c",
-        "third_party/lwip/src/core/tcp.c",
-        "third_party/lwip/src/core/tcp_in.c",
-        "third_party/lwip/src/core/tcp_out.c",
-        "third_party/lwip/src/core/timeouts.c",
-        "third_party/lwip/src/core/udp.c",
-        "third_party/lwip/src/core/ipv4/dhcp.c",
-        "third_party/lwip/src/core/ipv4/etharp.c",
-        "third_party/lwip/src/core/ipv4/icmp.c",
-        "third_party/lwip/src/core/ipv4/ip4.c",
-        "third_party/lwip/src/core/ipv4/ip4_addr.c",
-        "third_party/lwip/src/core/ipv4/ip4_frag.c",
-        "third_party/lwip/src/netif/ethernet.c",
-        "src/user/netd/lwipport/layout_check.c",
-    };
+        // netd carries lwIP, which is C, vendored verbatim like uACPI and
+        // compiled into the one program that is its dependency. The port headers
+        // live beside netd; the layout proof in lwipport/layout_check.c pins the
+        // struct shapes netd's Zig mirror relies on.
+        const lwip_sources = [_][]const u8{
+            "third_party/lwip/src/core/def.c",
+            "third_party/lwip/src/core/dns.c",
+            "third_party/lwip/src/core/inet_chksum.c",
+            "third_party/lwip/src/core/init.c",
+            "third_party/lwip/src/core/ip.c",
+            "third_party/lwip/src/core/mem.c",
+            "third_party/lwip/src/core/memp.c",
+            "third_party/lwip/src/core/netif.c",
+            "third_party/lwip/src/core/pbuf.c",
+            "third_party/lwip/src/core/raw.c",
+            "third_party/lwip/src/core/stats.c",
+            "third_party/lwip/src/core/sys.c",
+            "third_party/lwip/src/core/tcp.c",
+            "third_party/lwip/src/core/tcp_in.c",
+            "third_party/lwip/src/core/tcp_out.c",
+            "third_party/lwip/src/core/timeouts.c",
+            "third_party/lwip/src/core/udp.c",
+            "third_party/lwip/src/core/ipv4/dhcp.c",
+            "third_party/lwip/src/core/ipv4/etharp.c",
+            "third_party/lwip/src/core/ipv4/icmp.c",
+            "third_party/lwip/src/core/ipv4/ip4.c",
+            "third_party/lwip/src/core/ipv4/ip4_addr.c",
+            "third_party/lwip/src/core/ipv4/ip4_frag.c",
+            "third_party/lwip/src/netif/ethernet.c",
+            "src/user/netd/lwipport/layout_check.c",
+        };
 
-    var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
+        var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
 
-    inline for (USER_PROGRAMS, 0..) |program, i| {
-        const exe = b.addExecutable(.{
-            .name = program.name,
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(program.root),
-                .target = user_target,
-                .optimize = optimize,
-                .single_threaded = true,
-                .strip = !named(symbols, program.name),
-                .stack_check = false,
-                .stack_protector = false,
-                .imports = &user_imports,
-            }),
-        });
-        if (comptime std.mem.eql(u8, program.name, "netd")) {
-            exe.root_module.addIncludePath(b.path("third_party/lwip/src/include"));
-            exe.root_module.addIncludePath(b.path("src/user/netd/lwipport"));
-            exe.root_module.addIncludePath(b.path("include"));
-            exe.root_module.addCSourceFiles(.{
-                .files = &lwip_sources,
-                .flags = &.{
-                    "-std=c11",
-                    "-ffreestanding",
-                    "-fno-stack-protector",
-                },
+        inline for (USER_PROGRAMS, 0..) |program, i| {
+            const exe = b.addExecutable(.{
+                .name = program.name,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(program.root),
+                    .target = user_target,
+                    .optimize = optimize,
+                    .single_threaded = true,
+                    .strip = !named(symbols, program.name),
+                    .stack_check = false,
+                    .stack_protector = false,
+                    .imports = &user_imports,
+                }),
             });
-            // For the routines lwIP's C calls by name: the libc's C-callable
-            // half, imported so its exports are emitted into this binary.
-            // Not the archive, whose start code would collide with netd's.
-            exe.root_module.addImport("clibc", b.createModule(.{
-                .root_source_file = b.path("src/user/libc/freestanding.zig"),
-                .target = user_target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "lib", .module = user_lib },
-                    .{ .name = "sys", .module = sys_mod },
-                    .{ .name = "ulib", .module = ulib_mod },
-                },
-            }));
-        }
-        if (comptime std.mem.eql(u8, program.name, "platd")) {
-            exe.root_module.addIncludePath(b.path("third_party/uacpi/include"));
-            exe.root_module.addCSourceFiles(.{
-                .files = &(uacpi_sources ++ [_][]const u8{"src/user/platd/abi.c"}),
-                .flags = &.{
-                    "-std=c11",
-                    "-ffreestanding",
-                    "-fno-stack-protector",
-                    "-DUACPI_PHYS_ADDR_IS_32BITS",
-                    "-DUACPI_SIZED_FREES=0",
-                },
-            });
-        }
+            if (comptime std.mem.eql(u8, program.name, "netd")) {
+                exe.root_module.addIncludePath(b.path("third_party/lwip/src/include"));
+                exe.root_module.addIncludePath(b.path("src/user/netd/lwipport"));
+                exe.root_module.addIncludePath(b.path("include"));
+                exe.root_module.addCSourceFiles(.{
+                    .files = &lwip_sources,
+                    .flags = &.{
+                        "-std=c11",
+                        "-ffreestanding",
+                        "-fno-stack-protector",
+                    },
+                });
+                // For the routines lwIP's C calls by name: the libc's C-callable
+                // half, imported so its exports are emitted into this binary.
+                // Not the archive, whose start code would collide with netd's.
+                exe.root_module.addImport("clibc", b.createModule(.{
+                    .root_source_file = b.path("src/user/libc/freestanding.zig"),
+                    .target = user_target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "lib", .module = user_lib },
+                        .{ .name = "sys", .module = sys_mod },
+                        .{ .name = "ulib", .module = ulib_mod },
+                    },
+                }));
+            }
+            if (comptime std.mem.eql(u8, program.name, "platd")) {
+                exe.root_module.addIncludePath(b.path("third_party/uacpi/include"));
+                exe.root_module.addCSourceFiles(.{
+                    .files = &(uacpi_sources ++ [_][]const u8{"src/user/platd/abi.c"}),
+                    .flags = &.{
+                        "-std=c11",
+                        "-ffreestanding",
+                        "-fno-stack-protector",
+                        "-DUACPI_PHYS_ADDR_IS_32BITS",
+                        "-DUACPI_SIZED_FREES=0",
+                    },
+                });
+            }
 
-        exe.setLinkerScript(b.path("src/user/linker.ld"));
-        exe.entry = .{ .symbol_name = "_start" };
-        b.installArtifact(exe);
-        user_bins[i] = exe;
-    }
+            exe.setLinkerScript(b.path("src/user/linker.ld"));
+            exe.entry = .{ .symbol_name = "_start" };
+            b.installArtifact(exe);
+            user_bins[i] = exe;
+        }
+    } // !is_arm
 
     const kernel_lib = b.createModule(.{
         .root_source_file = b.path("src/lib/lib.zig"),
@@ -350,10 +393,15 @@ pub fn build(b: *std.Build) void {
         .name = "vibeee.elf",
         .root_module = kernel_mod,
     });
-    kernel.setLinkerScript(b.path("src/arch/x86/linker.ld"));
-    // Sections must not be reordered or GC'd: the linker script places the
-    // Multiboot2 header first by name.
-    kernel.link_gc_sections = false;
+    // One script per architecture: the x86 layout places the Multiboot2 header
+    // first by name, the arm layout puts the vector table and boot text where
+    // QEMU's versatilepb expects them (design/12-arm-port.md §4.1).
+    kernel.setLinkerScript(b.path(if (is_arm) "src/arch/arm/linker.ld" else "src/arch/x86/linker.ld"));
+    if (!is_arm) {
+        // Sections must not be reordered or GC'd: the linker script places the
+        // Multiboot2 header first by name.
+        kernel.link_gc_sections = false;
+    }
     kernel.entry = .{ .symbol_name = "_start" };
 
     b.installArtifact(kernel);
@@ -461,16 +509,40 @@ pub fn build(b: *std.Build) void {
     // ---------------------------------------------------------------------
     // `zig build run`, quick QEMU boot without building an SD image.
     // ---------------------------------------------------------------------
-    const run = b.addSystemCommand(&.{
-        "qemu-system-i386",
-        "-machine",       "pc",
-        "-cpu",           "pentium2",
-        "-m",             "512M",
-        "-kernel",        "zig-out/bin/vibeee.elf",
-        "-display",       "none",
-        "-serial",        "stdio",
-        "-no-reboot",
-    });
+    const run = if (is_arm)
+        b.addSystemCommand(&.{
+            "qemu-system-arm",
+            "-machine",
+            "versatilepb",
+            "-cpu",
+            "arm926",
+            "-m",
+            "256M",
+            "-kernel",
+            "zig-out/bin/vibeee.elf",
+            "-display",
+            "none",
+            "-serial",
+            "stdio",
+            "-no-reboot",
+        })
+    else
+        b.addSystemCommand(&.{
+            "qemu-system-i386",
+            "-machine",
+            "pc",
+            "-cpu",
+            "pentium2",
+            "-m",
+            "512M",
+            "-kernel",
+            "zig-out/bin/vibeee.elf",
+            "-display",
+            "none",
+            "-serial",
+            "stdio",
+            "-no-reboot",
+        });
     run.step.dependOn(b.getInstallStep());
     b.step("run", "Boot the kernel in QEMU via -kernel").dependOn(&run.step);
 

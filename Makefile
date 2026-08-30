@@ -10,7 +10,27 @@ ZIG      ?= zig
 # program's symbol table for matching a fault address reported on the target.
 ZIG_FLAGS ?=
 NASM     ?= nasm
+
+# Target architecture, x86 by default. `arm` selects the ARM926 HAL, the
+# second-architecture proof of design/12-arm-port.md. It boots the kernel
+# directly in QEMU; the SD image pipeline below is x86-only today.
+ARCH     ?= x86
+ifeq ($(filter $(ARCH),x86 arm),)
+$(error ARCH must be "x86" or "arm", not "$(ARCH)")
+endif
+
+ifeq ($(ARCH),x86)
 QEMU     ?= qemu-system-i386
+QEMU_CPU  := pentium3,+sse2,+pae,+nx,-sse3
+QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot
+else
+# The QEMU stand-in for the VT8500-class Windows CE netbooks of design
+# design/12-arm-port.md: same ARM926EJ-S core, same RAM budget, but a serial
+# port the 701 never had, so the console is stdio rather than a panel.
+QEMU     ?= qemu-system-arm
+QEMU_CPU  := arm926
+QEMU_FLAGS := -machine versatilepb -cpu $(QEMU_CPU) -m 256M -no-reboot -display none -serial stdio
+endif
 MFORMAT  ?= mformat
 MCOPY    ?= mcopy
 MMD      ?= mmd
@@ -22,8 +42,8 @@ IMAGE_MB ?= 48
 # QEMU's -append, so they travel in the stage2 header.
 CMDLINE  ?=
 
-# The emulated machine is as close to the Eee PC 701 as QEMU gets: 512 MB and
-# the PIIX3 chipset. It is NOT an ICH6 and has no GMA900, no AR2425, no
+# The x86 emulated machine is as close to the Eee PC 701 as QEMU gets: 512 MB
+# and the PIIX3 chipset. It is NOT an ICH6 and has no GMA900, no AR2425, no
 # Attansic NIC and no EC, those are real-hardware-only. QEMU proves the boot
 # chain, memory, interrupts, storage and PCI enumeration; nothing more.
 #
@@ -32,8 +52,6 @@ CMDLINE  ?=
 # means user code compiled for the real target faults in emulation on
 # instructions the hardware would have run, so the model is pinned to match
 # the feature set rather than to a convenient preset.
-QEMU_CPU   := pentium3,+sse2,+pae,+nx,-sse3
-QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot
 
 # Partition 1 layout, mirrored from tools/mkimage.zig. mtools addresses an
 # image at a byte offset with the @@ syntax, which is how the filesystem gets
@@ -70,13 +88,14 @@ MKIMAGE    := $(BUILD)/mkimage
 all: image
 
 help:
-	@echo "vibeee build targets:"
-	@echo "  make image            build $(IMAGE)"
-	@echo "  make qemu             boot the kernel directly (fast dev loop)"
-	@echo "  make qemu-sd          boot the SD image the way real hardware does"
+	@echo "vibeee build targets (ARCH=$(ARCH)):"
+	@echo "  make image            build $(IMAGE) (x86 only)"
+	@echo "  make qemu             boot the kernel in QEMU"
+	@echo "  make ARCH=arm qemu    boot the ARM kernel via -kernel + serial stdio"
+	@echo "  make qemu-sd          boot the SD image the way real hardware does (x86)"
 	@echo "  make test             host-side unit tests + QR verification"
-	@echo "  make qemu-panic       boot into the panic screen"
-	@echo "  make sd DEV=/dev/rdiskN   flash the image to a card"
+	@echo "  make qemu-panic       boot into the panic screen (x86)"
+	@echo "  make sd DEV=/dev/rdiskN   flash the image to a card (x86)"
 	@echo "  make clean"
 
 # ---------------------------------------------------------------------------
@@ -87,7 +106,7 @@ $(BUILD):
 
 .PHONY: kernel
 kernel:
-	$(ZIG) build $(ZIG_FLAGS)
+	$(ZIG) build $(ZIG_FLAGS) -Darch=$(ARCH)
 
 # The SD path loads a flat binary, not ELF: stage2 jumps to its first byte,
 # which is the entry stub placed there by the linker script.
@@ -155,8 +174,12 @@ $(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) | $(BUILD)
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+ifeq ($(ARCH),arm)
+	$(error $(IMAGE) is x86-only today; for arm use: make qemu)
+else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$@
+endif
 
 # Create the filesystem in partition 1 and fill it. Separate from mkimage
 # because formatting FAT is exactly the kind of thing not worth reimplementing:
@@ -192,11 +215,23 @@ DEV_CMDLINE ?= verbose fb
 
 .PHONY: dev-image
 dev-image: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+ifeq ($(ARCH),arm)
+	$(error $(DEV_IMAGE) is x86-only today; for arm use: make qemu)
+else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) "$(DEV_CMDLINE)" $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$(DEV_IMAGE)
+endif
 
+ifeq ($(ARCH),arm)
+# No BIOS, no MBR, no VGA text on a CE-era ARM machine: the kernel is passed
+# straight to QEMU's firmware-less loader, and the console is the serial port
+# the 701 never had. Design/12-arm-port.md is the bring-up plan this serves.
+qemu: kernel
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+else
 qemu: dev-image
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(DEV_IMAGE)
+endif
 
 # Boot the verbose image headless and photograph the screen. `TYPE` is typed at
 # the shell first, one key at a time through the QEMU monitor, which is the only
@@ -268,9 +303,13 @@ qr-verify: $(BUILD)/qrdump
 # still scans after a change.
 .PHONY: qemu-panic
 qemu-panic: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
+ifeq ($(ARCH),arm)
+	$(error qemu-panic is x86-only today)
+else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-panic.img $(IMAGE_MB) panictest $(ROOTFS_IMG)
 	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-panic.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-panic.img
+endif
 
 # ---------------------------------------------------------------------------
 # Flashing
