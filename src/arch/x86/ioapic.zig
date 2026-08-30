@@ -17,9 +17,6 @@ const paging = @import("paging.zig");
 /// Where the index and data registers sit in the controller's page.
 const REGSEL = 0x00;
 const IOWIN = 0x10;
-/// The directed end-of-interrupt doorbell, its own register rather than a
-/// window index: present from controller version 0x20.
-const EOI = 0x40;
 
 /// Register indices.
 const REG_ID = 0x00;
@@ -30,8 +27,6 @@ const REG_REDIRECT = 0x10;
 const Mapped = struct {
     info: irq.Controller,
     regs: [*]volatile u32,
-    /// Whether the version-0x20 directed-EOI doorbell exists.
-    directed_eoi: bool = false,
 };
 
 var controllers: [irq.MAX_CONTROLLERS]Mapped = undefined;
@@ -67,10 +62,8 @@ pub fn init(info: *irq.Routing) bool {
         controllers[count] = .{ .info = entry, .regs = regs };
         // The input count is in the version register's second byte, one less
         // than the number of entries. The table does not carry it.
-        const version_word = read(&controllers[count], REG_VERSION);
-        const pin_count = ((version_word >> 16) & 0xFF) + 1;
+        const pin_count = ((read(&controllers[count], REG_VERSION) >> 16) & 0xFF) + 1;
         controllers[count].info.inputs = pin_count;
-        controllers[count].directed_eoi = (version_word & 0xFF) >= 0x20;
         info.controllers.mutable()[i].inputs = pin_count;
 
         var line: u32 = 0;
@@ -174,20 +167,6 @@ pub fn entryLow(gsi: u32) ?Route {
     const was = hold();
     defer release(was);
     return @bitCast(read(owner, REG_REDIRECT + (gsi - owner.info.gsi_base) * 2));
-}
-
-/// Tell every controller that `vector`'s level interrupt is complete, so
-/// the entries carrying it drop their remote-IRR and deliver again. The
-/// local controller broadcasts the same news on paper; on this chipset the
-/// broadcast does not land, the entry stays in service forever, and an
-/// asserted line delivers nothing until an unrelated interrupt jostles it.
-/// One write to a dedicated register: the shared index pair, whose runtime
-/// use this machine punishes, is not involved.
-pub fn directedEoi(vector: u8) void {
-    for (controllers[0..count]) |*c| {
-        if (!c.directed_eoi) continue;
-        c.regs[EOI / @sizeOf(u32)] = vector;
-    }
 }
 
 /// The controller's version byte, for the boot narration: which completion

@@ -430,15 +430,23 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     }
 
     // The lines above the legacy sixteen are the PIRQ pins the firmware's
-    // routing tables name. Route them level-low and open now, in the one
-    // window where this machine tolerates controller writes.
+    // routing tables name, routed open now, in the one window where this
+    // machine tolerates controller writes, and on the FALLING EDGE of their
+    // active-low wires rather than as level. A level entry owes the
+    // controller a completion to drop its remote-IRR, and this machine
+    // punishes every runtime word said to the controller, the completion
+    // doorbell included: the entry then believes its last interrupt is
+    // still in service and an asserted line delivers nothing more. An edge
+    // entry holds no such state. What makes edge lossless is the drivers'
+    // own discipline: each services until its status reads quiet, so the
+    // wire is released on exit and every later cause is a fresh edge.
     var gsi: u32 = irq_mod.MAX_LINES;
     const pins = @min(ioapic.inputs(), MAX_GSI);
     while (gsi < pins) : (gsi += 1) {
         if (taken[gsi]) continue;
         const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi - irq_mod.MAX_LINES));
-        ioapic.route(gsi, vector, .low, .level, destination, false);
-        rememberRoute(gsi, vector, .level);
+        ioapic.route(gsi, vector, .low, .edge, destination, false);
+        rememberRoute(gsi, vector, .edge);
     }
 
     captureBootEntries();
