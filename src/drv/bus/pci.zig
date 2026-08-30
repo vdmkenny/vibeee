@@ -5,6 +5,7 @@
 //! config space; that path lands with ACPI table parsing in M1, behind the same
 //! interface.
 
+const console = @import("../../kernel/console.zig");
 const pcicfg = @import("../../kernel/pcicfg.zig");
 const lib = @import("lib");
 
@@ -102,6 +103,56 @@ fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
         const fvendor: u16 = @truncate(fid);
         if (fvendor == 0xFFFF) continue;
         cb(a, fvendor, @truncate(fid >> 16));
+    }
+}
+
+/// Take active-state power management away from every PCI-to-PCI bridge.
+///
+/// ASPM is negotiated per link pair, and clearing it on an endpoint stops
+/// only that endpoint's transmitter: the root port's side keeps whatever
+/// the firmware left in its Link Control, and on this machine that means
+/// the root still drops into L0s toward silicon whose L0s handling is its
+/// family's best-known defect, until the link falls off the bus entirely
+/// under a sustained transfer. An operating system that owns the bus owns
+/// both ends of that negotiation; this is the root's half, done once at
+/// boot, config space only.
+pub fn quietBridgeAspm() void {
+    var slot: u8 = 0;
+    while (slot < 32) : (slot += 1) {
+        var func: u8 = 0;
+        while (func < 8) : (func += 1) {
+            const a = Address{ .bus = 0, .slot = @truncate(slot), .func = @truncate(func) };
+            const id = configRead32(a, 0x00);
+            if (@as(u16, @truncate(id)) == 0xFFFF) continue;
+
+            const class = configRead32(a, CLASS_OFFSET);
+            const is_bridge = @as(u8, @truncate(class >> 24)) == 0x06 and
+                @as(u8, @truncate(class >> 16)) == 0x04;
+            if (!is_bridge) continue;
+
+            // Walk the capability list for PCI Express (id 0x10); Link
+            // Control sits sixteen bytes in, its low two bits are ASPM.
+            var at: u8 = @truncate(configRead32(a, 0x34) & 0xFF);
+            while (at != 0) {
+                const cap = configRead32(a, at);
+                if (@as(u8, @truncate(cap)) == 0x10) {
+                    const link = configRead32(a, at + 0x10);
+                    if (link & 0x3 != 0) {
+                        configWrite32(a, at + 0x10, link & ~@as(u32, 0x3));
+                        console.debug("pci", "{x:0>2}:{x:0>2}.{d} root port aspm cleared", .{
+                            a.bus, a.slot, a.func,
+                        });
+                    }
+                    break;
+                }
+                at = @truncate(cap >> 8);
+            }
+
+            if (func == 0) {
+                const header_type = configRead8(a, HEADER_TYPE_OFFSET);
+                if (header_type & 0x80 == 0) break;
+            }
+        }
     }
 }
 

@@ -263,6 +263,9 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
 pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
     probe.begin(&drivers.table);
     enumeratePci();
+    // Both ends of every link's power negotiation are the OS's to settle;
+    // the endpoints settle theirs at driver open, the root ports here.
+    pci.quietBridgeAspm();
     // The USB handover inside the walk asks the firmware to stop emulating
     // input; the keyboard controller's own settings must survive that.
     kbd.reassert();

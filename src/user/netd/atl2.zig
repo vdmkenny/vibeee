@@ -49,6 +49,7 @@ const StationAddressHigh = packed struct(u32) {
 /// Register offsets are separated by access width, so a byte register cannot
 /// accidentally be reached through a dword operation.
 const R32 = enum(u32) {
+    pcie_phymisc = 0x1000,
     pcie_dll_tx_ctrl1 = 0x1104,
     ltssm_test_mode = 0x12FC,
     master_ctrl = 0x1400,
@@ -156,6 +157,9 @@ const PhyEnable = packed struct(u16) {
 const LtssmTestMode = enum(u32) {
     vendor_default = 0x6500,
 };
+
+/// PCIE_PHYMISC_FORCE_RCV_DET, in the PHY's misc register at 0x1000.
+const PCIE_PHYMISC_FORCE_RCV_DET: u32 = 0x4;
 
 const PcieDllTxCtrl1 = enum(u32) {
     vendor_default = 0x568,
@@ -691,6 +695,15 @@ fn initPcie() void {
     device.regs.wr32(.ltssm_test_mode, @intFromEnum(LtssmTestMode.vendor_default));
     device.regs.wr32(.pcie_dll_tx_ctrl1, @intFromEnum(PcieDllTxCtrl1.vendor_default));
 
+    // Force the PCIe PHY's receiver-detection result. Both reference
+    // drivers set this entering suspend so a sleeping link can still
+    // handshake; holding it for the whole run goes beyond them, chosen
+    // deliberately for a link that has been observed to fall off the bus
+    // mid-burst on this machine. A receiver this PHY fails to detect is a
+    // link it will drop.
+    const phymisc = device.regs.rd32(.pcie_phymisc);
+    device.regs.wr32(.pcie_phymisc, phymisc | PCIE_PHYMISC_FORCE_RCV_DET);
+
     var command = pci.readCommand(device.location);
     command.serr_enable = false;
     command.parity_response = false;
@@ -943,7 +956,6 @@ var overflow_said = false;
 
 pub fn irq(nic: *NicDev) void {
     if (!device.opened or !device.started) return;
-    if (!stillOnTheBus(nic)) return;
 
     var round: u32 = 0;
     while (round < SERVICE_ROUNDS) : (round += 1) {
@@ -1042,21 +1054,6 @@ pub fn irq(nic: *NicDev) void {
     }
 }
 
-/// Whether the device still answers configuration space. A link that has
-/// wedged makes the next register read a load that never retires, and a
-/// frozen machine cannot say why; configuration reads travel the root's
-/// own mechanism and come back all-ones from a dead device instead. One
-/// read buys the chance to stop cleanly rather than freeze.
-fn stillOnTheBus(nic: *NicDev) bool {
-    if (pci.read(device.location, 0) != 0xFFFF_FFFF) return true;
-
-    log.fail("atl2", "the adapter stopped answering the bus; driver stopped");
-    device.started = false;
-    nic.state = .{};
-    dev_mod.deliverLink(nic, nic.state);
-    return false;
-}
-
 fn reapRx(nic: *NicDev) void {
     var reaped: usize = 0;
     while (reaped < RX_COUNT) : (reaped += 1) {
@@ -1123,8 +1120,6 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     {
         return false;
     }
-    if (!stillOnTheBus(nic)) return false;
-
     // Completions are advisory interrupts; reclaim here too so coalescing
     // cannot make a free ring look full.
     reapTx(nic);
