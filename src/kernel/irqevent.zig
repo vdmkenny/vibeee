@@ -97,6 +97,7 @@ pub fn arm(self: *IrqEvent) void {
     if (!self.held and hal.irqAwaitingAck(self.token)) {
         self.held = true;
         self.count += 1;
+        if (self.count == 1) console.debug("irq", "line {d} adopted a waiting delivery", .{self.gsi});
         self.ready.signalLocked();
     }
 }

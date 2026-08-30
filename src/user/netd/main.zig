@@ -384,9 +384,10 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     return .ok;
 }
 
-/// What a sent ARP request says about itself: who asks, and who is being
-/// looked for. QEMU's slirp guest address, until configuration exists.
-const PROBE_SOURCE = 0x0A00020F; // 10.0.2.15
+/// The probe's sender protocol address: none. An address probe carries a
+/// zero sender per RFC 5227, which any host answers without an opinion on
+/// subnets; a real source address waits for configuration to exist.
+const PROBE_SOURCE: u32 = 0; // 0.0.0.0
 
 // ---------------------------------------------------------------------------
 // Small spelling helpers
