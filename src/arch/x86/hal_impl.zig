@@ -8,6 +8,7 @@ const console = @import("../../kernel/console.zig");
 const idt = @import("idt.zig");
 const irq = @import("../../kernel/irq.zig");
 const lapic = @import("lapic.zig");
+const ioapic = @import("ioapic.zig");
 const port = @import("port.zig");
 const paging = @import("paging.zig");
 const context = @import("context.zig");
@@ -94,7 +95,13 @@ pub fn irqAwaitingAck(token: IrqToken) bool {
 }
 
 pub fn acknowledgeIrq(token: IrqToken) void {
-    if (token.trigger == .level) lapic.acknowledgeEoi(token.vector);
+    if (token.trigger != .level) return;
+    var retired: [lapic.MAX_DEFERRED]u8 = undefined;
+    const n = lapic.acknowledgeEoi(token.vector, &retired);
+    // The broadcast the local EOI makes on paper does not land on this
+    // chipset's IOAPIC: each retired vector is completed there explicitly,
+    // or its entry keeps remote-IRR raised and never delivers again.
+    for (retired[0..n]) |vector| ioapic.directedEoi(vector);
 }
 
 pub const interruptsInService = struct {

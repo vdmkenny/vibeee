@@ -77,7 +77,7 @@ const DeferredEoi = packed struct(u16) {
 
 /// One entry per APIC priority class is sufficient: a vector cannot nest under
 /// another vector in the same or a lower class.
-const MAX_DEFERRED = 16;
+pub const MAX_DEFERRED = 16;
 var deferred: [MAX_DEFERRED]DeferredEoi = @splat(.{});
 var deferred_len: usize = 0;
 
@@ -159,10 +159,13 @@ pub fn eoiAwaitingAck(vector: u8) bool {
     return false;
 }
 
-/// Mark one deferred vector complete and retire every completed vector now at
-/// the top. LAPIC EOI always targets the highest-priority in-service vector,
-/// so acknowledging out of order must wait rather than EOI the wrong source.
-pub fn acknowledgeEoi(vector: u8) void {
+/// Mark one deferred vector complete and retire every completed vector now
+/// at the top, returning how many were retired and their vectors through
+/// `retired`. LAPIC EOI always targets the highest-priority in-service
+/// vector, so acknowledging out of order must wait rather than EOI the
+/// wrong source; the caller completes each retired vector wherever else
+/// completion must be said.
+pub fn acknowledgeEoi(vector: u8, retired: *[MAX_DEFERRED]u8) usize {
     const was = cpu.saveAndDisableInterrupts();
     defer cpu.restoreInterrupts(was);
 
@@ -170,13 +173,17 @@ pub fn acknowledgeEoi(vector: u8) void {
         if (entry.vector != vector) continue;
         entry.acknowledged = true;
         break;
-    } else return;
+    } else return 0;
 
+    var n: usize = 0;
     while (deferred_len > 0 and deferred[deferred_len - 1].acknowledged) {
         eoi();
         deferred_len -= 1;
+        retired[n] = deferred[deferred_len].vector;
+        n += 1;
         deferred[deferred_len] = .{};
     }
+    return n;
 }
 
 /// One 256-bit vector register as the set bits' vector numbers, written
