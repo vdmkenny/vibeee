@@ -20,7 +20,9 @@
 const Fifo = @import("lib").fifo.Fifo;
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const pm = @import("pm.zig");
 const ports = @import("ulib").ports;
+const std = @import("std");
 const sys = @import("sys");
 const uacpi = @import("uacpi.zig");
 const work = @import("work.zig");
@@ -179,6 +181,36 @@ pub fn bind() void {
         return;
     }
 
+    // A platform quirk may override where the DSDT claims the controller
+    // is. The early probe identified the machine and answered through the
+    // kernel; this driver only reads the answer, before any grant or
+    // handler, so the corrected pair is the only one the machine is ever
+    // touched through.
+    if (correctedPorts()) |fixed| {
+        log.begin("platd", .key);
+        out.text("the DSDT claims the embedded controller at 0x");
+        out.hex(data_port, 2);
+        out.text("/0x");
+        out.hex(status_port, 2);
+        out.text(", using corrected 0x");
+        out.hex(fixed[0], 2);
+        out.text("/0x");
+        out.hex(fixed[1], 2);
+        log.end();
+        data_port = fixed[0];
+        status_port = fixed[1];
+    }
+
+    // A controller still declared inside the power management block is not
+    // a controller: those ports are the chipset's power registers, and
+    // touching them on this machine does not return. Refusing costs a
+    // battery and the hotkeys; driving them costs the machine.
+    if (insidePmBlock(data_port) or insidePmBlock(status_port)) {
+        log.warn("platd", "the embedded controller is declared inside the power management block; not driving it");
+        node = null;
+        return;
+    }
+
     _ = sys.ioportGrant(data_port, 1);
     _ = sys.ioportGrant(status_port, 1);
 
@@ -230,6 +262,30 @@ fn takePorts(_: ?*anyopaque, resource: *const uacpi.Resource) callconv(.c) uacpi
     }
     status_port = port;
     return .stop;
+}
+
+/// The kernel's answer to "has the early probe corrected this machine's
+/// controller ports": two hex words when a quirk exists, nothing when this
+/// machine needs none. No machine knowledge lives here; the comparison was
+/// made upstream, where the machine was identified.
+fn correctedPorts() ?[2]u16 {
+    var buf: [16]u8 = undefined;
+    const n = sys.sysinfo("quirks.ec", &buf);
+    if (n <= 0) return null;
+    const text = buf[0..@intCast(n)];
+
+    const sep = std.mem.indexOfScalar(u8, text, ' ') orelse return null;
+    const data = std.fmt.parseUnsigned(u16, text[0..sep], 16) catch return null;
+    const status_word = std.fmt.parseUnsigned(u16, text[sep + 1 ..], 16) catch return null;
+    return .{ data, status_word };
+}
+
+/// Whether a port lies inside the ACPI power management block, as the FADT
+/// and the chipset name it. The kernel published the ranges through
+/// sysinfo, so this driver needs no idea of where any chipset keeps its
+/// registers.
+fn insidePmBlock(port: u16) bool {
+    return pm.overlapsPm(port, 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -10,13 +10,13 @@
 //! not grant it to anything that server later starts.
 
 const std = @import("std");
+const lib = @import("lib");
 const ctx = @import("context.zig");
 const handles = @import("../handle.zig");
 const console = @import("../console.zig");
 const hal = @import("../hal.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
-const irq_mod = @import("../irq.zig");
 const pmm = @import("../pmm.zig");
 const pcicfg = @import("../pcicfg.zig");
 const probe = @import("../probe.zig");
@@ -40,16 +40,19 @@ const currentHandles = ctx.currentHandles;
 /// miss on every descriptor a driver touches.
 pub fn sys_pci_read(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
-    return @intCast(pcicfg.read(pciSelector(a.a0, a.a1)));
+    const selector = pciSelector(a.a0, a.a1) orelse return Errno.inval.value();
+    return @intCast(pcicfg.read(selector));
 }
 
 pub fn sys_pci_write(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
-    pcicfg.write(pciSelector(a.a0, a.a1), @truncate(a.a2));
+    const selector = pciSelector(a.a0, a.a1) orelse return Errno.inval.value();
+    pcicfg.write(selector, @truncate(a.a2));
     return 0;
 }
 
-fn pciSelector(packed_location: usize, offset: usize) pcicfg.Selector {
+fn pciSelector(packed_location: usize, offset: usize) ?pcicfg.Selector {
+    if (packed_location > std.math.maxInt(u16) or offset > std.math.maxInt(u8)) return null;
     return .{
         .bus = @truncate(packed_location >> 8),
         .device = @truncate((packed_location >> 3) & 0x1F),
@@ -62,9 +65,20 @@ pub fn sys_claim_device(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 
     const t = sched.currentThread() orelse return Errno.perm.value();
-    const location = [3]u16{ @truncate(a.a0), @truncate(a.a1), @truncate(a.a2) };
-    if (!probe.markDriven(location, t.id)) return Errno.noent.value();
+    const location = lib.pci.Location.fromComponents(a.a0, a.a1, a.a2) orelse return Errno.inval.value();
+    probe.claimDevice(.{ location.bus, location.device, location.function }, t.id) catch |err| return switch (err) {
+        error.NotFound => Errno.noent.value(),
+        error.Busy => Errno.busy.value(),
+    };
     return 0;
+}
+
+pub fn sys_release_device(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const t = sched.currentThread() orelse return Errno.perm.value();
+    const location = lib.pci.Location.fromComponents(a.a0, a.a1, a.a2) orelse return Errno.inval.value();
+    return if (probe.releaseDevice(.{ location.bus, location.device, location.function }, t.id)) 0 else Errno.noent.value();
 }
 
 pub fn sys_dma_alloc(a: Args) Result {
@@ -92,24 +106,17 @@ pub fn sys_dma_alloc(a: Args) Result {
     return @intCast(slot);
 }
 
-/// Open or close the chipset's system-control gate. The SCI line itself is
-/// born masked and the runtime never writes the controller; this PM register
-/// bit is the switch the firmware's protocol says opens after its own
-/// handshake, once the trap-port dance is done.
-pub fn sys_sci_enable(a: Args) Result {
+pub fn sys_irq_attach(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
-    irq_mod.sciEnabled(a.a0 != 0);
-    return 0;
-}
-
-pub fn sys_irq_attach(a: Args) Result {    if (ctx.require(.{ .driver = true })) |denied| return denied;
 
     const table = currentHandles() orelse return Errno.nomem.value();
     const slot = table.alloc() orelse return Errno.nomem.value();
 
     // The caller's number is the firmware's: a table said 9, and where 9
     // actually arrives is this machine's business, not the driver's.
-    const wired = hal.resolveIrq(@truncate(a.a0));
+    if (a.a0 > std.math.maxInt(u32)) return Errno.inval.value();
+    const irq_number: u32 = @intCast(a.a0);
+    const wired = hal.resolveIrq(irq_number);
     if (wired.gsi != a.a0) console.debug("irq", "{d} arrives on line {d}", .{ a.a0, wired.gsi });
 
     const line = irqevent.attach(wired.gsi) catch |err| {

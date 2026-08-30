@@ -11,17 +11,21 @@
 
 const Bounded = @import("lib").Bounded;
 
+pub const Polarity = enum(u1) { high, low };
+pub const Trigger = enum(u1) { edge, level };
+
 /// Where a legacy interrupt really lands.
 pub const Line = struct {
-    /// The system control interrupt: boot leaves this one masked, and the
-    /// chipset's own gate opens it after the firmware handshake.
+    /// The system control interrupt: its controller route is installed at
+    /// boot, while the chipset's source gate remains closed until firmware is
+    /// ready to service it.
     sci: bool = false,
     /// The number a driver asks for.
     irq: u8,
     /// The global line it arrives on.
     gsi: u32,
-    active_low: bool = false,
-    level: bool = false,
+    polarity: Polarity = .high,
+    trigger: Trigger = .edge,
 };
 
 /// One interrupt controller and the range of global lines it owns.
@@ -36,20 +40,6 @@ pub const Controller = struct {
 
 /// More than one controller is a server part. Two costs nothing to allow.
 pub const MAX_CONTROLLERS = 2;
-
-/// The chipset's gate on the system control interrupt, filled in by the
-/// composition root: the SCI is routed and left masked at boot, and this
-/// PM-register bit, not the controller's entry, is what the runtime may
-/// write. Nothing below this point touches ACPI tables itself.
-var sci_gate: ?*const fn (bool) void = null;
-
-pub fn setSciGate(gate: ?*const fn (bool) void) void {
-    sci_gate = gate;
-}
-
-pub fn sciEnabled(on: bool) void {
-    if (sci_gate) |gate| gate(on);
-}
 
 /// The ISA range is sixteen lines, and firmware overrides at most all of them.
 pub const MAX_LINES = 16;
@@ -77,26 +67,26 @@ pub const Routing = struct {
     /// Say what firmware did not, when another table does: the electrical
     /// form of a line. Added rather than asserted over, because an override
     /// that exists outranks the default this provides.
-    pub fn describe(self: *Routing, irq_num: u8, active_low: bool, level: bool) void {
+    pub fn describe(self: *Routing, irq_num: u8, polarity: Polarity, trigger: Trigger) void {
         if (self.describedLine(irq_num) != null) return;
         self.lines.append(.{
             .irq = irq_num,
             .gsi = irq_num,
-            .active_low = active_low,
-            .level = level,
+            .polarity = polarity,
+            .trigger = trigger,
         }) catch {};
     }
 
-    /// The system control interrupt: the same describe, and the line is
-    /// marked as the SCI, which this machine keeps masked at boot and gates
-    /// through the chipset's own SCI_EN once the firmware handshake is done.
-    pub fn describeSci(self: *Routing, irq_num: u8, active_low: bool, level: bool) void {
+    /// The system control interrupt: the same description, marked so runtime
+    /// activation uses the chipset's SCI_EN source gate rather than rewriting
+    /// the interrupt controller.
+    pub fn describeSci(self: *Routing, irq_num: u8, polarity: Polarity, trigger: Trigger) void {
         if (self.describedLine(irq_num) != null) return;
         self.lines.append(.{
             .irq = irq_num,
             .gsi = irq_num,
-            .active_low = active_low,
-            .level = level,
+            .polarity = polarity,
+            .trigger = trigger,
             .sci = true,
         }) catch {};
     }

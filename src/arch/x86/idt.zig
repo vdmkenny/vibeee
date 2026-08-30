@@ -17,7 +17,28 @@ const port = @import("port.zig");
 const gdt = @import("gdt.zig");
 
 pub const SYSCALL_VECTOR: u8 = 0x80;
+/// PIC fallback keeps the conventional contiguous hardware range.
 pub const IRQ_BASE: u8 = 32;
+/// The SCI is isolated in the lowest APIC priority class. A firmware server
+/// that cannot clear it may quarantine this vector, but cannot suppress any
+/// other device interrupt while it is being restarted or diagnosed.
+const SCI_VECTOR: u8 = 0x20;
+const DEVICE_VECTOR_BASE: u8 = 0x30;
+const LEGACY_VECTOR_BASE: u8 = 0x50;
+const KEYBOARD_VECTOR: u8 = 0xD1;
+const MOUSE_VECTOR: u8 = 0xDC;
+/// Higher than every deferred userspace vector, so a held device line cannot
+/// stop preemption or timeout processing.
+pub const TIMER_VECTOR: u8 = 0xE0;
+
+/// Architecture token retained by the portable IRQ object. Keeping trigger
+/// mode with the vector makes the EOI policy data rather than a GSI heuristic.
+pub const IrqToken = packed struct(u32) {
+    vector: u8,
+    gsi: u8,
+    trigger: irq_mod.Trigger,
+    _reserved: u15 = 0,
+};
 
 /// Register state pushed by the stubs. Field order is the reverse of the push
 /// sequence, `interrupt.s`-equivalent logic lives in `stub()` below.
@@ -132,13 +153,11 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
         quietUnclaimed(vec);
     }
 
-    // Acknowledged at the controller that delivered it, whichever vector it
-    // was. An interrupt the local APIC delivers and never sees acknowledged
-    // raises its priority floor for good, and everything at or below, the
-    // timer included, is silently never delivered again. Only the spurious
-    // vector is excepted: it is the APIC's own and takes no acknowledgement.
+    // Only routed hardware vectors receive an EOI. In particular, int 0x80 is
+    // above IRQ_BASE but is a software trap; acknowledging it while a device
+    // EOI is deferred would retire the wrong interrupt.
     if (lapic.active()) {
-        if (vec >= IRQ_BASE and vec != lapic.SPURIOUS_VECTOR) lapic.eoi();
+        if (vector_triggers[vec] != null and !lapic.isEoiDeferred(vec)) lapic.eoi();
     } else if (vec >= IRQ_BASE and vec < IRQ_BASE + 16) {
         const irq = vec - IRQ_BASE;
         if (irq >= 8) port.outb(0xA0, 0x20);
@@ -154,14 +173,13 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
     @import("../../kernel/sched.zig").onInterruptExit(frame.cs & 3 == 3);
 }
 
-/// Which unclaimed vectors have already been complained about, so a storm
-/// costs one line rather than a screenful.
-var complained: [256]bool = @splat(false);
-
 fn quietUnclaimed(vec: u8) void {
-    if (complained[vec]) return;
-    complained[vec] = true;
-    @import("../../kernel/console.zig").fail("vector {x} has no handler and its line stays up", .{vec});
+    const trigger = vector_triggers[vec];
+    if (lapic.active() and trigger == .level) {
+        // No owner can lower the device pin. Keeping the vector in service is
+        // the only safe quarantine when runtime IOAPIC writes are forbidden.
+        lapic.deferEoi(vec);
+    }
 }
 
 fn setGate(vec: u8, handler: *const anyopaque, dpl: u2, gate_type: GateType) void {
@@ -253,23 +271,57 @@ pub fn setIrqMask(irq: u8, masked: bool) void {
 }
 
 fn vectorFor(irq: usize) u8 {
-    return IRQ_BASE + @as(u8, @intCast(irq));
+    if (!ioapic.active()) return IRQ_BASE + @as(u8, @intCast(irq));
+    if (irq == 0) return TIMER_VECTOR;
+    const gsi = routing.resolve(@intCast(irq)).gsi;
+    if (routing.isSci(gsi)) return SCI_VECTOR;
+    if (irq == 1) return KEYBOARD_VECTOR;
+    if (irq == 12) return MOUSE_VECTOR;
+    return LEGACY_VECTOR_BASE + @as(u8, @intCast(irq));
 }
 
-/// Which vector each global line was routed to at boot, or zero for one that
+pub fn timerVector() u8 {
+    return if (ioapic.active()) TIMER_VECTOR else IRQ_BASE;
+}
+
+/// The vector assigned to a legacy IRQ by the active controller.
+pub fn legacyVector(irq: u8) u8 {
+    return vectorFor(irq);
+}
+
+/// Which vector each global line was routed to at boot, or null for one that
 /// was not routed at all.
 ///
 /// The ISA lines are routed by their legacy number and land wherever firmware
 /// said, so the reverse lookup cannot be arithmetic. Everything above them is
 /// unrouted until a driver asks for it.
-var gsi_vector: [MAX_GSI]u8 = @splat(0);
+var gsi_vectors: [MAX_GSI]?u8 = @splat(null);
+var vector_triggers: [256]?irq_mod.Trigger = @splat(null);
 
 /// An IOAPIC has twenty-four inputs. Two of them would be a server part.
-const MAX_GSI = 48;
+pub const MAX_GSI = 48;
 
-/// Where interrupts that are not one of the sixteen legacy lines are sent.
-/// Far enough above them that the two ranges cannot be confused in a dump.
-const DEVICE_VECTOR_BASE: u8 = 0x30;
+comptime {
+    const last_legacy_vector = LEGACY_VECTOR_BASE + irq_mod.MAX_LINES - 1;
+    const device_vector_count = MAX_GSI - irq_mod.MAX_LINES;
+    const last_device_vector = DEVICE_VECTOR_BASE + device_vector_count - 1;
+    if (IRQ_BASE < 32 or SCI_VECTOR >= LEGACY_VECTOR_BASE) {
+        @compileError("the SCI must occupy the lowest hardware priority class");
+    }
+    if (last_device_vector >= LEGACY_VECTOR_BASE) {
+        @compileError("legacy and device interrupt vectors overlap");
+    }
+    if (last_legacy_vector >= SYSCALL_VECTOR or
+        KEYBOARD_VECTOR >> 4 != MOUSE_VECTOR >> 4 or
+        KEYBOARD_VECTOR >> 4 <= last_legacy_vector >> 4 or
+        TIMER_VECTOR >> 4 <= KEYBOARD_VECTOR >> 4)
+    {
+        @compileError("kernel interrupt vectors do not outrank deferred userspace vectors");
+    }
+    if (MAX_GSI > std.math.maxInt(u8) + 1) {
+        @compileError("IrqToken cannot represent every global interrupt line");
+    }
+}
 
 /// The vector a global line delivers on, routing it first if nothing has.
 ///
@@ -278,37 +330,42 @@ const DEVICE_VECTOR_BASE: u8 = 0x30;
 /// is asking for something this machine cannot do.
 pub fn vectorForGsi(gsi: u32) ?u8 {
     if (!ioapic.active() or gsi >= MAX_GSI) return null;
-    if (gsi_vector[gsi] != 0) return gsi_vector[gsi];
-
-    // Reached only for a line beyond what boot routed, which on this
-    // controller is none: every input is routed before anything runs.
-    const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
-    ioapic.route(gsi, vector, gsi >= irq_mod.MAX_LINES, true, lapic.id(), false);
-    gsi_vector[gsi] = vector;
-    return vector;
+    return gsi_vectors[gsi];
 }
 
 /// Whether something has already claimed the line.
 pub fn gsiClaimed(gsi: u32) bool {
-    const vector = if (gsi < MAX_GSI and gsi_vector[gsi] != 0) gsi_vector[gsi] else return false;
+    if (gsi >= MAX_GSI) return false;
+    const vector = gsi_vectors[gsi] orelse return false;
     return handlers[vector] != null;
 }
 
 /// Take a global line for a handler, or null if something else has it.
-pub fn claimGsi(gsi: u32, handler: Handler) ?u8 {
+pub fn claimGsi(gsi: u32, handler: Handler) ?IrqToken {
     if (gsiClaimed(gsi)) return null;
     const vector = vectorForGsi(gsi) orelse return null;
+    const trigger = vector_triggers[vector] orelse return null;
 
     setHandler(vector, handler);
-    // No mask write: every routed entry is born masked and stays masked until
-    // the first wait arms it, so claiming touches the controller not at all.
-    // On this machine the firmware also runs the controller from system
-    // management mode, and the less it can notice the better.
-    return vector;
+    // No controller write: device lines were routed at boot, and level lines
+    // are held by deferred LAPIC EOI while their userspace owner services them.
+    return .{ .vector = vector, .gsi = @intCast(gsi), .trigger = trigger };
+}
+
+/// Open a route that boot deliberately left masked, but only if firmware has
+/// not changed the entry since. PCI lines on the target are above the legacy
+/// range and are already open; this path primarily keeps emulated legacy-PIRQ
+/// machines usable without exposing controller details to portable code.
+pub fn armGsi(gsi: u32) void {
+    if (gsi >= MAX_GSI or routing.isSci(gsi)) return;
+    const expected = boot_entries[gsi] orelse return;
+    ioapic.unmaskIfMatches(gsi, expected);
 }
 
 pub fn releaseGsi(gsi: u32) void {
-    if (gsi < MAX_GSI and gsi_vector[gsi] != 0) unsetHandler(gsi_vector[gsi]);
+    if (gsi < MAX_GSI) {
+        if (gsi_vectors[gsi]) |vector| unsetHandler(vector);
+    }
 }
 
 /// Where a firmware-described interrupt number actually lands.
@@ -335,9 +392,9 @@ pub fn gsiIsSci(gsi: u32) bool {
     return routing.isSci(gsi);
 }
 
-/// A global line's redirection entry, low word, zero without an IOAPIC.
-pub fn gsiEntryLow(gsi: u32) u32 {
-    if (!ioapic.active()) return 0;
+/// A global line's redirection entry, low word, or null without an IOAPIC.
+pub fn gsiEntryLow(gsi: u32) ?ioapic.Route {
+    if (!ioapic.active()) return null;
     return ioapic.entryLow(gsi);
 }
 
@@ -362,37 +419,39 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     // device, and with an IOAPIC there is no cascade at all, so its number is
     // free for the firmware to reuse and here it does.
     const destination = lapic.id();
-    var taken: [64]bool = @splat(false);
+    var taken: [MAX_GSI]bool = @splat(false);
 
-    for (0..16) |irq| {
+    for (0..irq_mod.MAX_LINES) |irq| {
         const line = routing.describedLine(@intCast(irq)) orelse continue;
-        // Legacy lines stay masked here: their claims happen in the early
-        // kernel, whose writes the machine tolerates, and a stray assert on
-        // an unused line must stay silent rather than churn the boot.
-        ioapic.route(line.gsi, vectorFor(irq), line.active_low, line.level, destination, true);
+        // Non-SCI legacy lines stay masked until an owner first waits. The SCI
+        // route is open now while its chipset source gate remains closed, so
+        // enabling firmware events later needs no controller rewrite.
+        const vector = vectorFor(irq);
+        const masked = !routing.isSci(line.gsi);
+        ioapic.route(line.gsi, vector, line.polarity, line.trigger, destination, masked);
         if (line.gsi < taken.len) taken[line.gsi] = true;
-        if (line.gsi < MAX_GSI) gsi_vector[line.gsi] = vectorFor(irq);
+        rememberRoute(line.gsi, vector, line.trigger);
     }
 
-    for (0..16) |irq| {
+    for (0..irq_mod.MAX_LINES) |irq| {
         if (routing.describedLine(@intCast(irq)) != null) continue;
         if (taken[irq]) continue;
-        ioapic.route(@intCast(irq), vectorFor(irq), false, false, destination, true);
-        gsi_vector[irq] = vectorFor(irq);
+        const vector = vectorFor(irq);
+        const masked = !routing.isSci(@intCast(irq));
+        ioapic.route(@intCast(irq), vector, .high, .edge, destination, masked);
+        rememberRoute(@intCast(irq), vector, .edge);
     }
 
-    // The lines above the legacy sixteen, routed now and never again: these
-    // are the PIRQ pins the firmware's routing tables name, level and low as
-    // that hardware signals, masked until a driver's first wait. Routed at
-    // boot because this machine's firmware co-owns the controller from
-    // system management mode and tolerates the boot writing entries while a
-    // rewrite at runtime is followed shortly by a trap that never returns.
-    var gsi: u32 = 16;
+    // The lines above the legacy sixteen are the PIRQ pins the firmware's
+    // routing tables name. Route them level-low and open now, in the one
+    // window where this machine tolerates controller writes.
+    var gsi: u32 = irq_mod.MAX_LINES;
     const pins = @min(ioapic.inputs(), MAX_GSI);
     while (gsi < pins) : (gsi += 1) {
-        const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi));
-        ioapic.route(gsi, vector, true, true, destination, false);
-        gsi_vector[gsi] = vector;
+        if (taken[gsi]) continue;
+        const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi - irq_mod.MAX_LINES));
+        ioapic.route(gsi, vector, .low, .level, destination, false);
+        rememberRoute(gsi, vector, .level);
     }
 
     captureBootEntries();
@@ -400,14 +459,20 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     return true;
 }
 
+fn rememberRoute(gsi: u32, vector: u8, trigger: irq_mod.Trigger) void {
+    if (gsi >= MAX_GSI) return;
+    gsi_vectors[gsi] = vector;
+    vector_triggers[vector] = trigger;
+}
+
 /// What boot wrote into a line's redirection entry, remembered so a later
 /// moment can tell whether the entry it sees is still the one it wrote. The
 /// firmware co-owns the controller, and a line whose entry changed since
 /// boot is one nobody should write again at runtime.
-var boot_entries: [MAX_GSI]u32 = @splat(0);
+var boot_entries: [MAX_GSI]?ioapic.Route = @splat(null);
 
-pub fn bootEntry(gsi: u32) u32 {
-    if (gsi >= MAX_GSI or boot_entries[gsi] == 0) return 0;
+pub fn bootEntry(gsi: u32) ?ioapic.Route {
+    if (gsi >= MAX_GSI) return null;
     return boot_entries[gsi];
 }
 

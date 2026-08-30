@@ -7,6 +7,7 @@ const gdt = @import("gdt.zig");
 const console = @import("../../kernel/console.zig");
 const idt = @import("idt.zig");
 const irq = @import("../../kernel/irq.zig");
+const lapic = @import("lapic.zig");
 const port = @import("port.zig");
 const paging = @import("paging.zig");
 const context = @import("context.zig");
@@ -63,19 +64,39 @@ pub const enableIoBitmap = gdt.enableIoBitmap;
 pub const denyIoPorts = gdt.denyIoPorts;
 
 pub const InterruptFrame = idt.Frame;
+pub const IrqToken = idt.IrqToken;
+pub const IRQ_LINE_COUNT = idt.MAX_GSI;
 pub const gsiClaimed = idt.gsiClaimed;
 pub const resolveIrq = idt.resolveIrq;
-pub const claimGsi = claimGsiImpl;
+pub const claimGsi = idt.claimGsi;
 pub const releaseGsi = idt.releaseGsi;
 pub const setGsiMask = idt.setGsiMask;
 pub const gsiEntryLow = idt.gsiEntryLow;
 pub const bootEntry = idt.bootEntry;
 pub const gsiIsSci = idt.gsiIsSci;
 
-/// True when the line was taken. The vector it landed on is the kernel's
-/// business, so it is not passed back.
-fn claimGsiImpl(gsi: u32, handler: idt.Handler) bool {
-    return idt.claimGsi(gsi, handler) != null;
+pub fn deferIrq(token: IrqToken) void {
+    if (token.trigger == .level) lapic.deferEoi(token.vector);
+}
+
+pub fn irqMatches(token: IrqToken, frame: *InterruptFrame) bool {
+    return token.vector == @as(u8, @truncate(frame.vector));
+}
+
+pub fn irqLabel(token: IrqToken) u32 {
+    return token.vector;
+}
+
+pub fn armIrq(token: IrqToken) void {
+    idt.armGsi(token.gsi);
+}
+
+pub fn irqAwaitingAck(token: IrqToken) bool {
+    return token.trigger == .level and lapic.eoiAwaitingAck(token.vector);
+}
+
+pub fn acknowledgeIrq(token: IrqToken) void {
+    if (token.trigger == .level) lapic.acknowledgeEoi(token.vector);
 }
 
 pub const initSyscalls = syscall_arch.init;

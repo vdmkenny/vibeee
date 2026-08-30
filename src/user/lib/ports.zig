@@ -9,6 +9,7 @@ pub fn in8(port: u16) u8 {
     return asm volatile ("inb %[port], %[value]"
         : [value] "={al}" (-> u8),
         : [port] "N{dx}" (port),
+        : .{ .memory = true }
     );
 }
 
@@ -16,6 +17,7 @@ pub fn in16(port: u16) u16 {
     return asm volatile ("inw %[port], %[value]"
         : [value] "={ax}" (-> u16),
         : [port] "N{dx}" (port),
+        : .{ .memory = true }
     );
 }
 
@@ -23,6 +25,7 @@ pub fn in32(port: u16) u32 {
     return asm volatile ("inl %[port], %[value]"
         : [value] "={eax}" (-> u32),
         : [port] "N{dx}" (port),
+        : .{ .memory = true }
     );
 }
 
@@ -31,6 +34,7 @@ pub fn out8(port: u16, value: u8) void {
         :
         : [value] "{al}" (value),
           [port] "N{dx}" (port),
+        : .{ .memory = true }
     );
 }
 
@@ -39,6 +43,7 @@ pub fn out16(port: u16, value: u16) void {
         :
         : [value] "{ax}" (value),
           [port] "N{dx}" (port),
+        : .{ .memory = true }
     );
 }
 
@@ -47,5 +52,6 @@ pub fn out32(port: u16, value: u32) void {
         :
         : [value] "{eax}" (value),
           [port] "N{dx}" (port),
+        : .{ .memory = true }
     );
 }

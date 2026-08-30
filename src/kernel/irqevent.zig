@@ -2,17 +2,16 @@
 //!
 //! The mechanism that lets a driver live outside the kernel. The kernel's own
 //! handler does the only two things that must happen in interrupt context:
-//! it masks the line so the device cannot re-raise it, and it signals an event
-//! so whoever is waiting wakes. Everything after that, reading the device,
-//! working out what happened, deciding what to do, runs in Ring 3 with the
-//! line held down.
+//! it asks the architecture to hold interrupt completion, and it signals an
+//! event so whoever is waiting wakes. Everything after that, reading the
+//! device, working out what happened, deciding what to do, runs in Ring 3 with
+//! completion held.
 //!
 //! That is what makes a crashed driver survivable. A server that dies leaves
-//! its line masked rather than the machine livelocked in a handler that never
-//! stops firing, and the supervisor restarts it and it attaches again.
+//! its interrupt quarantined rather than the machine livelocked in a handler
+//! that never stops firing, and the supervisor restarts it and attaches again.
 //! `design/00-vibeee.md` §6.
 
-const console = @import("console.zig");
 const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
@@ -27,14 +26,15 @@ pub const Error = error{ OutOfMemory, Busy, Unsupported };
 /// half-built sharing protocol.
 pub const IrqEvent = struct {
     gsi: u32,
+    token: hal.IrqToken,
     /// What the waiter blocks on. Counting, so an interrupt that arrives
     /// between servicing and waiting again is not lost.
     ready: event_mod.Event = .{},
-    /// Armed by the first wait, not by attaching: a driver that has attached
-    /// but is not ready to service the device yet should not be handed one.
+    /// Armed by the first wait. A delivery that arrives earlier remains counted
+    /// and held until that first wait consumes it.
     armed: bool = false,
-    /// The handler masked the line and is waiting for the driver to say it has
-    /// finished with the device.
+    /// Interrupt completion is deferred until the driver says it has finished
+    /// with the device.
     held: bool = false,
     /// How many interrupts have been delivered, which is the first thing
     /// anyone asks when a device has gone quiet.
@@ -42,57 +42,53 @@ pub const IrqEvent = struct {
     refs: u32 = 1,
 };
 
-/// As many lines as an IOAPIC has inputs.
-const MAX = 24;
+const MAX = hal.IRQ_LINE_COUNT;
 
 var attached: [MAX]?*IrqEvent = @splat(null);
 
 /// Take a line for userspace.
 pub fn attach(gsi: u32) Error!*IrqEvent {
     if (gsi >= MAX) return error.Unsupported;
-    if (attached[gsi] != null) return error.Busy;
-    // Something in the kernel already answers for it. The two cannot both
-    // handle a line: whichever ran second would find it already masked.
-    if (hal.gsiClaimed(gsi)) return error.Busy;
 
     const self = heap.allocator.create(IrqEvent) catch return error.OutOfMemory;
-    self.* = .{ .gsi = gsi };
-
-    if (!hal.claimGsi(gsi, onInterrupt)) {
+    const flags = hal.saveAndDisableInterrupts();
+    if (attached[gsi] != null or hal.gsiClaimed(gsi)) {
+        hal.restoreInterrupts(flags);
         heap.allocator.destroy(self);
-        return error.Unsupported;
+        return error.Busy;
     }
 
+    const token = hal.claimGsi(gsi, onInterrupt) orelse {
+        hal.restoreInterrupts(flags);
+        heap.allocator.destroy(self);
+        return error.Unsupported;
+    };
+    self.* = .{ .gsi = gsi, .token = token };
+
     attached[gsi] = self;
+    hal.restoreInterrupts(flags);
     return self;
 }
 
-/// Let the line through. Called by the first wait, and by every acknowledgement
-/// after the driver has finished with the device.
+/// Mark the owner ready to consume deliveries. The IOAPIC route itself was
+/// established at boot and is never rewritten here.
 pub fn arm(self: *IrqEvent) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
     const first = !self.armed;
-    // The first opening of a line is the moment a machine with a disputed pin
-    // finds out, and the service that opened it cannot say so once the console
-    // belongs to the shell. Narrated on both sides of the write so a machine
-    // that dies here says which side it died on, with the entry as the
-    // controller holds it now: firmware that co-owns the controller can have
-    // rewritten what boot routed.
-    // Born unmasked at boot and never touched again: every line was let
-    // through in the one window this machine tolerates a controller write.
-    // Arming is bookkeeping only, which is what keeps the runtime a place
-    // the firmware's trap has nothing to say about.
-    const live = hal.gsiEntryLow(self.gsi);
-    const boot = hal.bootEntry(self.gsi);
-    if (first) console.debug("irq", "line {d} open, boot wrote {x:0>8}, controller holds {x:0>8}", .{ self.gsi, boot, live });
     self.armed = true;
-    self.held = false;
-    // The one runtime write still wanted: a line boot left masked because
-    // its class is the legacy sixteen, and nothing below owns it here. The
-    // SCI never reaches this branch; its gate is the chipset's, and a line
-    // boot left open needs no second opinion.
-    if (!hal.gsiIsSci(self.gsi) and boot != 0 and boot & (0x1 << 16) != 0) {
-        hal.setGsiMask(self.gsi, false);
-        if (first) console.debug("irq", "line {d} unmasked", .{self.gsi});
+    if (first) {
+        hal.armIrq(self.token);
+    }
+
+    // A level line may have asserted before it had an owner. The unclaimed
+    // handler quarantines its EOI; adopting that pending delivery here closes
+    // the attach-to-first-wait race without touching the IOAPIC at runtime.
+    if (!self.held and hal.irqAwaitingAck(self.token)) {
+        self.held = true;
+        self.count += 1;
+        self.ready.signalLocked();
     }
 }
 
@@ -102,24 +98,37 @@ pub fn arm(self: *IrqEvent) void {
 /// polled its device and found nothing to do should say so rather than having
 /// to remember whether an interrupt was outstanding.
 pub fn acknowledge(self: *IrqEvent) void {
-    arm(self);
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
+    if (!self.held) return;
+    self.held = false;
+    hal.acknowledgeIrq(self.token);
 }
 
 pub fn retain(self: *IrqEvent) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     self.refs += 1;
 }
 
 /// Give the line back.
 ///
-/// It is left masked. A line whose driver has gone is a line nothing will
-/// service, and the safe answer to that is silence rather than a handler that
-/// fires forever.
+/// A pending EOI is completed before the handler is removed. If the device is
+/// still asserting, the unclaimed-vector path quarantines the next delivery
+/// rather than allowing an interrupt storm.
 pub fn release(self: *IrqEvent) void {
+    const flags = hal.saveAndDisableInterrupts();
     self.refs -= 1;
-    if (self.refs > 0) return;
+    if (self.refs > 0) {
+        hal.restoreInterrupts(flags);
+        return;
+    }
 
-    hal.releaseGsi(self.gsi);
     if (self.gsi < MAX) attached[self.gsi] = null;
+    hal.releaseGsi(self.gsi);
+    if (self.held) hal.acknowledgeIrq(self.token);
+    hal.restoreInterrupts(flags);
     heap.allocator.destroy(self);
 }
 
@@ -145,28 +154,14 @@ pub fn forEach(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot)
 }
 
 /// What the kernel does in interrupt context, and no more.
-fn onInterrupt(_: *hal.InterruptFrame) void {
-    // The vector is not carried through, so the line is found by what it is
-    // attached to. With at most twenty-four of them and one attached at a
-    // time, a scan is cheaper than a second table to keep in step.
+fn onInterrupt(frame: *hal.InterruptFrame) void {
     for (attached) |maybe| {
         const self = maybe orelse continue;
-        if (!self.armed or self.held) continue;
+        if (!hal.irqMatches(self.token, frame)) continue;
 
-        // Held before the event is signalled: a level-triggered device still
-        // asserting re-enters the moment interrupts are on again, and the
-        // held flag makes the re-entry say so without a word to the
-        // controller, which the runtime may not write.
-        self.held = true;
+        hal.deferIrq(self.token);
+        self.held = hal.irqAwaitingAck(self.token);
         self.count += 1;
-        if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
-
-        // A line delivering this often is a source nobody manages to quiet,
-        // and the machine it saturates cannot run the tool that would say
-        // so: the count is narrated from here, once per hundred thousand.
-        if (self.count % 100_000 == 0) {
-            console.fail("line {d} has fired {d} times", .{ self.gsi, self.count });
-        }
         self.ready.signalLocked();
         return;
     }

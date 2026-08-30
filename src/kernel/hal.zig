@@ -71,6 +71,9 @@ pub const denyIoPorts = impl.denyIoPorts;
 
 /// Claiming a global interrupt line for a handler, for the driver capability.
 pub const InterruptFrame = impl.InterruptFrame;
+pub const IrqToken = impl.IrqToken;
+/// Number of architecture interrupt identifiers representable by the backend.
+pub const IRQ_LINE_COUNT = impl.IRQ_LINE_COUNT;
 pub const gsiClaimed = impl.gsiClaimed;
 pub const claimGsi = impl.claimGsi;
 pub const resolveIrq = impl.resolveIrq;
@@ -81,6 +84,15 @@ pub const setGsiMask = impl.setGsiMask;
 pub const gsiEntryLow = impl.gsiEntryLow;
 pub const bootEntry = impl.bootEntry;
 pub const gsiIsSci = impl.gsiIsSci;
+pub const deferIrq = impl.deferIrq;
+/// Compare an opaque architecture token with the interrupt being dispatched.
+pub const irqMatches = impl.irqMatches;
+/// Numeric token identity for diagnostics only.
+pub const irqLabel = impl.irqLabel;
+/// Make a claimed route deliverable when its architecture deferred that step.
+pub const armIrq = impl.armIrq;
+pub const irqAwaitingAck = impl.irqAwaitingAck;
+pub const acknowledgeIrq = impl.acknowledgeIrq;
 
 /// Whether the fast syscall path is programmed and usable.
 pub const fastSyscallArmed = impl.fastSyscallArmed;

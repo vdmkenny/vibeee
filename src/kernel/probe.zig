@@ -10,6 +10,7 @@
 //! See design/00-vibeee.md §4.
 
 const console = @import("console.zig");
+const lib = @import("lib");
 
 /// Shared with userspace, so the boot probe's table and the `devices` tool
 /// agree about what the words mean and how each is coloured.
@@ -56,6 +57,9 @@ pub const Device = struct {
     subclass: u8,
     prog_if: u8,
     description: []const u8,
+    /// Bus-owned shutdown used before resources held by a userspace driver are
+    /// reclaimed. Null for devices that cannot initiate independent transfers.
+    quiesce: ?*const fn (location: [3]u16) void = null,
 };
 
 pub const Binding = struct {
@@ -91,14 +95,34 @@ var binding_count: usize = 0;
 /// process drives deserves the same word: everything reading the table, the
 /// listing and a second service probing for unclaimed hardware alike, would
 /// otherwise read a driven device as free.
-pub fn markDriven(location: [3]u16, claimer: u32) bool {
+pub const ClaimError = error{ NotFound, Busy };
+
+pub fn claimDevice(location: [3]u16, claimer: u32) ClaimError!void {
     for (bindings[0..binding_count]) |*b| {
-        if (!@import("lib").str.eql(b.dev.bus, "pci")) continue;
+        if (!lib.str.eql(b.dev.bus, "pci")) continue;
         if (b.dev.location[0] != location[0] or
             b.dev.location[1] != location[1] or
             b.dev.location[2] != location[2]) continue;
+
+        if (b.attached and b.claimed_by != claimer) return error.Busy;
         b.attached = true;
         b.claimed_by = claimer;
+        return;
+    }
+    return error.NotFound;
+}
+
+pub fn releaseDevice(location: [3]u16, claimer: u32) bool {
+    for (bindings[0..binding_count]) |*b| {
+        if (!lib.str.eql(b.dev.bus, "pci")) continue;
+        if (b.dev.location[0] != location[0] or
+            b.dev.location[1] != location[1] or
+            b.dev.location[2] != location[2]) continue;
+        if (b.claimed_by != claimer) return false;
+
+        quiesce(b);
+        b.attached = false;
+        b.claimed_by = 0;
         return true;
     }
     return false;
@@ -109,9 +133,18 @@ pub fn dropClaims(claimer: u32) void {
     if (claimer == 0) return;
     for (bindings[0..binding_count]) |*b| {
         if (b.claimed_by != claimer) continue;
+        quiesce(b);
         b.attached = false;
         b.claimed_by = 0;
     }
+}
+
+/// Stop a dead userspace driver from issuing new DMA before its shared-memory
+/// handles return those pages to the allocator. Configuration cycles are read
+/// back so the command write has completed before teardown continues.
+fn quiesce(binding: *const Binding) void {
+    const stop = binding.dev.quiesce orelse return;
+    stop(binding.dev.location);
 }
 
 /// Drivers available to bind, supplied by the composition root.
@@ -225,5 +258,3 @@ pub fn report() void {
         console.setColor(.light_grey, .black);
     }
 }
-
-

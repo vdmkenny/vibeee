@@ -139,6 +139,21 @@ The wifi driver additionally implements `WifiOps` (channel set, scan actions, ke
 rate table, BSS filter) consumed only by the MLME module, the netstack sees wifi as an
 ethernet NicDev carrying ethertype frames after 802.11↔802.3 translation in the driver.
 
+### 3.4 Service lifecycle
+
+netd's manifest declares `needs = platd` and `provides = net`; init releases dependents
+on the provided name, so these rules are load-bearing:
+
+- Register the service name as the last act before the serve loop, once every question
+  the service will answer is already answerable. netd's first act is the PCI routing
+  question to `platd`, and `platd` registers its own name only once the firmware is
+  fully settled — the pair is the template every future service follows.
+- First hardware touch only after the dependencies are up. Probe, claim, map, then
+  drive; a dependency that cannot answer is a refusal, not a machine that stops.
+- The boot line can hold the service down (`nonet`) or start it late under the boot
+  watchdog (`netlate`) for one boot, which is how a suspect is isolated without
+  touching the image.
+
 ## 4. atl2 ethernet driver (1969:2048)
 
 Register map source: Linux atlx.h/atl2.h (offsets below verified from mainline).
@@ -169,10 +184,16 @@ contiguous per dma_alloc contract; `REG_DESC_BASE_ADDR_HI = 0`.
 1. pci_cfg: set CMD.IO|MEM|MASTER if clear.
 2. REG_MASTER_CTRL(0x1400) = MASTER_CTRL_SOFT_RST(1); wait 1 ms.
 3. Poll REG_IDLE_STATUS(0x1410) == 0, 1 ms step, ≤10 tries; else fail.
-4. Read permanent MAC: try NVM/VPD read (atl2_get_permanent_address path);
+4. Restore the PCIe block defaults: LTSSM_TEST_MODE(0x12FC)=0x6500 and
+   PCIE_DLL_TX_CTRL1(0x1104)=0x568, per `atl2_init_pcie`; then mask the four
+   error-reporting enables (URE/FEE/NFEE/CEE) in the PCIe capability's Device
+   Control, walking the capability list rather than assuming an offset: the L2
+   raises phantom unsupported-request/non-fatal reports against DMA traffic,
+   and masking them at the capability keeps every interrupt free of noise.
+5. Read permanent MAC: try NVM/VPD read (atl2_get_permanent_address path);
    fallback: current REG_MAC_STA_ADDR(0x1488/0x148C) (BIOS/OpROM-set);
    last resort: locally-administered random MAC + loud warning.
-5. PHY init: REG_PHY_ENABLE(0x140C)=1; 1 ms.
+6. PHY init: REG_PHY_ENABLE(0x140C)=1; 1 ms.
    MII dbg: write MII_DBG_ADDR(0x1D)=0, read MII_DBG_DATA(0x1E); if bit 0x1000
    (power-save) set, clear it. Write PHY reg 18 = 0x0C00 (link-change INT enable).
    MII_ADVERTISE = 10/100 HD+FD | ASM_DIR | PAUSE.
@@ -180,7 +201,7 @@ contiguous per dma_alloc contract; `REG_DESC_BASE_ADDR_HI = 0`.
    !(MDIO_START|MDIO_BUSY), ≤25×1 ms.
    (MDIO access: REG_MDIO_CTRL = data | reg<<16 | MDIO_SUP_PREAMBLE | MDIO_START
     | MDIO_RW(read) | clk_sel<<24; poll ~MDIO_BUSY.)
-6. Configure (exact order, per atl2_configure):
+7. Configure (exact order, per atl2_configure):
    ISR(0x1600)=0xFFFFFFFF; MAC_STA_ADDR; DESC_BASE_ADDR_HI(0x1540)=0;
    TXD_BASE_ADDR_LO(0x1544); TXS_BASE_ADDR_LO(0x154C); RXD_BASE_ADDR_LO(0x1554);
    TXD_MEM_SIZE(0x1548)=8192/4; TXS_MEM_SIZE(0x1550)=160; RXD_BUF_NUM(0x1558)=64;
@@ -190,7 +211,7 @@ contiguous per dma_alloc contract; `REG_DESC_BASE_ADDR_HI = 0`.
    TX_CUT_THRESH(0x1590)=0x177; PAUSE_ON_TH/OFF_TH(0x15A8/0x15AA);
    MB_TXD_WR_IDX=0; MB_RXD_RD_IDX=0; DMAR(0x1580)=1; DMAW(0x15A0)=1;
    ISR=0x3FFFFFFF; ISR=0. Read ISR: PHY_LINKDOWN set → treat as link-down, not error.
-7. IMR(0x1604) = ISR_TIMER|ISR_TS_UPDATE|ISR_RS_UPDATE|ISR_LINK_CHG|ISR_PHY
+8. IMR(0x1604) = ISR_TIMER|ISR_TS_UPDATE|ISR_RS_UPDATE|ISR_LINK_CHG|ISR_PHY
    |error bits (DMAR_TO_RST|DMAW_TO_RST|TXF_UR|RXF_OV).
 ```
 
@@ -210,6 +231,10 @@ TS_UPDATE → reap TXS entries (update==1): account, advance txd_read_ptr by
 (pkt_size+7)&~3, wrap; wake queued TX. RS_UPDATE → consume RXD slots with update==1:
 if ok && 60 ≤ size: fused memcpy+IP-checksum into a fresh pbuf → `cb.rx`; clear update.
 Then MB_RXD_RD_IDX = read ptr. Finally write ISR = 0 (re-enable).
+
+The ISR narrates only what ordinary traffic does not explain: RX/TX status updates and
+the PHY poll are traffic, and stay quiet; anything else — errors, overruns, link events
+— is worth a line.
 
 Interrupt moderation: ITIMER at 200 µs caps IRQ rate at ~5 k/s regardless of pps; with
 64 RX slots (96 KB ≈ 7.7 ms of line-rate buffering) this is safe against overrun.

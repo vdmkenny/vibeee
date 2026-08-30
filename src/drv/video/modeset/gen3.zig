@@ -21,6 +21,7 @@ const console = @import("../../../kernel/console.zig");
 const hal = @import("../../../kernel/hal.zig");
 const pci = @import("../../bus/pci.zig");
 const probe = @import("../../../kernel/probe.zig");
+const sched = @import("../../../kernel/sched.zig");
 const modeset = @import("modeset.zig");
 
 const Error = modeset.Error;
@@ -620,6 +621,13 @@ fn waitFrame() void {
 }
 
 fn waitMicros(us: u64) void {
+    // Sleep when there is something to sleep on: a mode change from userspace
+    // must not burn the core for the panel's settle time. Early boot has no
+    // scheduler yet, so the bounded spin is the only clock that exists there.
+    if (sched.running()) {
+        sched.sleepMicros(us);
+        return;
+    }
     const until = clock.monotonicMicros() + us;
     while (clock.monotonicMicros() < until) {}
 }

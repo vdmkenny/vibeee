@@ -944,8 +944,10 @@ Say a userspace driver now drives this device.
 
 - `EPERM`, the operation is not allowed on that object
 - `ENOENT`, no such file or directory
+- `EBUSY`, another process already owns it
+- `EINVAL`, an argument is out of range
 
-Requires Caps.driver. The kernel's device table says driven for a device a kernel driver attached; a userspace driver is invisible to it until it says so here, and everything reading the table, the listing and a second service probing for unclaimed hardware alike, would read a driven device as free.
+Requires Caps.driver. Claims are exclusive and must be taken before enabling MMIO, interrupts or bus mastering. A claim is released explicitly after failed bring-up or automatically when the process exits.
 
 ## `pci_read`  <sub>#52</sub>
 
@@ -961,6 +963,7 @@ Read one dword of PCI configuration space.
 **Errors:**
 
 - `EPERM`, the operation is not allowed on that object
+- `EINVAL`, an argument is out of range
 
 Requires Caps.driver. The two configuration ports are one shared index pair; every access in the system goes through the kernel so no two of them can interleave. Narrower reads are cut from the dword by the caller.
 
@@ -979,6 +982,7 @@ Write one dword of PCI configuration space.
 **Errors:**
 
 - `EPERM`, the operation is not allowed on that object
+- `EINVAL`, an argument is out of range
 
 Requires Caps.driver. Read-modify-write for narrower widths is the caller's, made safe by every access sharing the kernel's one pair.
 
@@ -990,22 +994,50 @@ Become the console's foreground.
 
 From this call on, only the claimer and its descendants render to the console; everything else's lines go to the kernel's ring alone, where the log tool reads them. The boot narrates onto the console because nothing has claimed it yet; the shell claims it when the console becomes a conversation.
 
-## `sci_enable`  <sub>#55</sub>
+## `release_device`  <sub>#55</sub>
 
-Open or close the chipset's gate on the system control interrupt.
+Release a userspace driver's PCI device claim.
 
 | arg | type | meaning |
 |---|---|---|
-| `on` | uint | One opens the gate, zero closes it. |
+| `bus` | uint | PCI bus number. |
+| `device` | uint | PCI device number. |
+| `function` | uint | PCI function number. |
 
 **Returns:** 0
 
 **Errors:**
 
 - `EPERM`, the operation is not allowed on that object
+- `ENOENT`, no such file or directory
+- `EINVAL`, an argument is out of range
 
-Requires Caps.driver. The SCI line is routed and left masked at boot; the runtime performs no controller writes, and this PM register bit is the switch the firmware's protocol says opens after its own handshake.
+Requires Caps.driver. PCI decoding, bus mastering and INTx are disabled before the claim is released. Process exit performs the same quiesce before freeing DMA memory.
+
+## `boot_ok`  <sub>#56</sub>
+
+Report that the boot has reached a usable state.
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.power, which makes it init's call. Stands the kernel's boot watchdog down: without the report, a boot that stops making progress ends in the panic screen instead of a frozen panel. Nothing else changes; the call is the milestone, not a mode.
+
+## `stop_all`  <sub>#57</sub>
+
+End every other process and wait for them to exit.
+
+**Returns:** how many threads were still exiting when the wait ended
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.power. The orderly half of a shutdown: drivers and services hold resources that only their exit releases, so they are asked to leave and seen out before anything is flushed or powered. The caller is left alone. A thread that will not unwind is left behind and reported in the return value rather than waited for forever.
 
 ---
 
-56 calls defined.
+58 calls defined.

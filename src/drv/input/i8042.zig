@@ -163,7 +163,10 @@ fn handleHotkey(code: KeyCode, mods: input.Modifiers) bool {
 pub fn onKeyboardInterrupt() void {
     // Drain, because the controller may have more than one byte buffered and a
     // single read per interrupt would fall permanently behind under fast typing.
-    while (status().output_full) {
+    // Bounded by what the controller can physically buffer: a stuck flag with
+    // nothing behind it must cost one interrupt, not the machine.
+    var drained: u8 = 0;
+    while (status().output_full and drained < 32) : (drained += 1) {
         // Both devices share one output buffer. A byte flagged as coming from
         // the second port is the pointing device's, and reading it here would
         // consume half a movement packet.
@@ -239,7 +242,7 @@ pub fn init() void {
     cfg.keyboard_interrupt = true;
     setConfig(cfg);
 
-    idt.setHandler(idt.IRQ_BASE + 1, onIrq);
+    idt.setHandler(idt.legacyVector(1), onIrq);
     idt.setIrqMask(1, false);
 
     console.info("kbd", "i8042 ready, layout {s}", .{keymap.current().name});

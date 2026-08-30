@@ -13,10 +13,16 @@ const lib = @import("lib");
 const sys = @import("sys");
 
 pub const Location = lib.pci.Location;
+pub const Command = lib.pci.Command;
+pub const InterruptPin = lib.pci.InterruptPin;
+pub const MemoryBar = lib.pci.MemoryBar;
+pub const IoBar = lib.pci.IoBar;
 pub const parse = lib.pci.parse;
+pub const COMMAND_OFFSET = lib.pci.COMMAND_OFFSET;
+pub const BAR0_OFFSET = lib.pci.BAR0_OFFSET;
 
 fn packedLocation(loc: Location) u32 {
-    return (@as(u32, loc.bus) << 8) | (@as(u32, loc.device) << 3) | loc.function;
+    return loc.encode();
 }
 
 /// A dword of configuration space. The register is dword-granular.
@@ -45,20 +51,59 @@ pub fn write8(loc: Location, register: u8, value: u8) void {
 
 /// A BAR at the given index, zero when the device reports none there.
 pub fn bar(loc: Location, index: u8) u32 {
-    return read(loc, 0x10 + 4 * index);
+    return read(loc, lib.pci.BAR0_OFFSET + 4 * index);
 }
 
 /// The interrupt line the firmware routed this device to, if any.
 pub fn interruptLine(loc: Location) u8 {
-    return read8(loc, 0x3C);
+    return read8(loc, lib.pci.INTERRUPT_LINE_OFFSET);
+}
+
+pub fn interruptPin(loc: Location) InterruptPin {
+    return @enumFromInt(read8(loc, lib.pci.INTERRUPT_PIN_OFFSET));
+}
+
+pub fn readCommand(loc: Location) Command {
+    return @bitCast(@as(u16, @truncate(read(loc, lib.pci.COMMAND_OFFSET))));
+}
+
+pub fn writeCommand(loc: Location, value: Command) void {
+    // Zero in the status half preserves every W1C diagnostic bit.
+    write(loc, lib.pci.COMMAND_OFFSET, @as(u16, @bitCast(value)));
 }
 
 /// Turn on what a driver needs from the command register: memory decoding and
 /// bus mastering. Reading first and writing the union keeps whatever the
 /// firmware already enabled.
 pub fn enableMemoryAndMaster(loc: Location) void {
-    const command = read(loc, 0x04);
-    write(loc, 0x04, command | 0x06);
+    var next = readCommand(loc);
+    next.memory_space = true;
+    next.bus_master = true;
+    writeCommand(loc, next);
+}
+
+pub fn enableIoAndMaster(loc: Location) void {
+    var next = readCommand(loc);
+    next.io_space = true;
+    next.bus_master = true;
+    writeCommand(loc, next);
+}
+
+/// Allow legacy INTx only after the driver has initialized its handler path.
+/// Kept separate from decode and bus mastering to preserve that order.
+pub fn enableInterrupt(loc: Location) void {
+    var next = readCommand(loc);
+    next.interrupt_disable = false;
+    writeCommand(loc, next);
+}
+
+/// Stop legacy interrupts and DMA before a driver releases device memory.
+pub fn disableInterruptAndMaster(loc: Location) void {
+    var next = readCommand(loc);
+    next.interrupt_disable = true;
+    next.bus_master = false;
+    writeCommand(loc, next);
+    _ = read(loc, lib.pci.COMMAND_OFFSET);
 }
 
 /// The root-bus bridge whose window contains `bus`, or null for the root

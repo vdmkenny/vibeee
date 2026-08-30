@@ -341,8 +341,10 @@ const Selector = packed struct(u32) {
 // Time
 // ---------------------------------------------------------------------------
 
-/// Busy-waiting, because that is what a stall is for: it appears in bus timing
-/// where yielding would let something else touch the device mid-sequence.
+/// A stall is a delay, not a wait for an event, and the AML contract caps it
+/// at 255 microseconds: too short to sleep on (the scheduler wakes on the
+/// millisecond tick, so sleeping would overshoot fortyfold), and short enough
+/// that the spin costs less than the overshoot would.
 export fn uacpi_kernel_stall(micros: u8) callconv(.c) void {
     const until = sys.clockMicros() + micros;
     while (sys.clockMicros() < until) {}
@@ -566,6 +568,14 @@ pub const Line = struct {
         self.poll();
         _ = sys.irqAck(self.event);
     }
+
+    /// Consume and service a pending delivery without blocking. Used between
+    /// ordinary requests so a busy client cannot hold level completion open.
+    pub fn servicePending(self: Line) bool {
+        if (sys.waitMany(&.{self.event}, sys.POLL) != 0) return false;
+        self.service();
+        return true;
+    }
 };
 
 export fn uacpi_kernel_install_interrupt_handler(
@@ -585,6 +595,10 @@ export fn uacpi_kernel_install_interrupt_handler(
 }
 
 export fn uacpi_kernel_uninstall_interrupt_handler(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) u32 {
+    if (sci.event != 0) {
+        _ = sys.irqAck(sci.event);
+        _ = sys.close(sci.event);
+    }
     sci = .{};
     return Status.ok.value();
 }

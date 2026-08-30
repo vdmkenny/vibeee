@@ -264,39 +264,117 @@ pub const KeyCode = enum(u8) {
 
     escape,
     // Number row, left to right.
-    n1, n2, n3, n4, n5, n6, n7, n8, n9, n0,
-    minus, equal, backspace,
+    n1,
+    n2,
+    n3,
+    n4,
+    n5,
+    n6,
+    n7,
+    n8,
+    n9,
+    n0,
+    minus,
+    equal,
+    backspace,
 
     tab,
-    q, w, e, r, t, y, u, i, o, p,
-    bracket_left, bracket_right, enter,
+    q,
+    w,
+    e,
+    r,
+    t,
+    y,
+    u,
+    i,
+    o,
+    p,
+    bracket_left,
+    bracket_right,
+    enter,
 
     control_left,
-    a, s, d, f, g, h, j, k, l,
-    semicolon, apostrophe, grave,
+    a,
+    s,
+    d,
+    f,
+    g,
+    h,
+    j,
+    k,
+    l,
+    semicolon,
+    apostrophe,
+    grave,
 
-    shift_left, backslash,
-    z, x, c, v, b, n, m,
-    comma, period, slash, shift_right,
+    shift_left,
+    backslash,
+    z,
+    x,
+    c,
+    v,
+    b,
+    n,
+    m,
+    comma,
+    period,
+    slash,
+    shift_right,
 
     keypad_asterisk,
-    alt_left, space, caps_lock,
+    alt_left,
+    space,
+    caps_lock,
 
-    f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
+    f11,
+    f12,
 
-    num_lock, scroll_lock,
+    num_lock,
+    scroll_lock,
 
     // Keypad.
-    kp7, kp8, kp9, kp_minus,
-    kp4, kp5, kp6, kp_plus,
-    kp1, kp2, kp3, kp0, kp_period,
-    kp_enter, kp_slash,
+    kp7,
+    kp8,
+    kp9,
+    kp_minus,
+    kp4,
+    kp5,
+    kp6,
+    kp_plus,
+    kp1,
+    kp2,
+    kp3,
+    kp0,
+    kp_period,
+    kp_enter,
+    kp_slash,
 
     // Extended (0xE0-prefixed) keys.
-    control_right, alt_right,
-    home, up, page_up, left, right, end, down, page_down,
-    insert, delete,
-    super_left, super_right, menu,
+    control_right,
+    alt_right,
+    home,
+    up,
+    page_up,
+    left,
+    right,
+    end,
+    down,
+    page_down,
+    insert,
+    delete,
+    super_left,
+    super_right,
+    menu,
 
     /// The key ISO keyboards have and ANSI ones do not: the extra one beside
     /// the left shift. AZERTY uses it, so it cannot be omitted.
@@ -304,8 +382,15 @@ pub const KeyCode = enum(u8) {
 
     pub fn isModifier(self: KeyCode) bool {
         return switch (self) {
-            .shift_left, .shift_right, .control_left, .control_right,
-            .alt_left, .alt_right, .super_left, .super_right, .caps_lock,
+            .shift_left,
+            .shift_right,
+            .control_left,
+            .control_right,
+            .alt_left,
+            .alt_right,
+            .super_left,
+            .super_right,
+            .caps_lock,
             => true,
             else => false,
         };
@@ -352,7 +437,6 @@ pub const Buttons = packed struct(u8) {
 };
 
 pub const PointerEvent = extern struct {
-
     x: i16 = 0,
     y: i16 = 0,
     dx: i16 = 0,
@@ -1316,12 +1400,10 @@ pub const table = [_]Syscall{
             .{ .name = "function", .kind = .uint, .desc = "PCI function number." },
         },
         .returns = "0",
-        .errors = &.{ E.perm, E.noent },
-        .notes = "Requires Caps.driver. The kernel's device table says driven for a " ++
-            "device a kernel driver attached; a userspace driver is invisible to it " ++
-            "until it says so here, and everything reading the table, the listing and " ++
-            "a second service probing for unclaimed hardware alike, would read a " ++
-            "driven device as free.",
+        .errors = &.{ E.perm, E.noent, E.busy, E.inval },
+        .notes = "Requires Caps.driver. Claims are exclusive and must be taken before " ++
+            "enabling MMIO, interrupts or bus mastering. A claim is released explicitly " ++
+            "after failed bring-up or automatically when the process exits.",
     },
     .{
         .number = 52,
@@ -1332,7 +1414,7 @@ pub const table = [_]Syscall{
             .{ .name = "offset", .kind = .uint, .desc = "Register offset, dword aligned." },
         },
         .returns = "the register's value",
-        .errors = &.{E.perm},
+        .errors = &.{ E.perm, E.inval },
         .notes = "Requires Caps.driver. The two configuration ports are one shared " ++
             "index pair; every access in the system goes through the kernel so no " ++
             "two of them can interleave. Narrower reads are cut from the dword by " ++
@@ -1348,7 +1430,7 @@ pub const table = [_]Syscall{
             .{ .name = "value", .kind = .uint, .desc = "The dword to write." },
         },
         .returns = "0",
-        .errors = &.{E.perm},
+        .errors = &.{ E.perm, E.inval },
         .notes = "Requires Caps.driver. Read-modify-write for narrower widths is the " ++
             "caller's, made safe by every access sharing the kernel's one pair.",
     },
@@ -1367,16 +1449,41 @@ pub const table = [_]Syscall{
     },
     .{
         .number = 55,
-        .name = "sci_enable",
-        .summary = "Open or close the chipset's gate on the system control interrupt.",
+        .name = "release_device",
+        .summary = "Release a userspace driver's PCI device claim.",
         .args = &.{
-            .{ .name = "on", .kind = .uint, .desc = "One opens the gate, zero closes it." },
+            .{ .name = "bus", .kind = .uint, .desc = "PCI bus number." },
+            .{ .name = "device", .kind = .uint, .desc = "PCI device number." },
+            .{ .name = "function", .kind = .uint, .desc = "PCI function number." },
         },
         .returns = "0",
+        .errors = &.{ E.perm, E.noent, E.inval },
+        .notes = "Requires Caps.driver. PCI decoding, bus mastering and INTx are disabled " ++
+            "before the claim is released. Process exit performs the same quiesce before " ++
+            "freeing DMA memory.",
+    },
+    .{
+        .number = 56,
+        .name = "boot_ok",
+        .summary = "Report that the boot has reached a usable state.",
+        .returns = "0 on success",
         .errors = &.{E.perm},
-        .notes = "Requires Caps.driver. The SCI line is routed and left masked at boot; " ++
-            "the runtime performs no controller writes, and this PM register bit is " ++
-            "the switch the firmware's protocol says opens after its own handshake.",
+        .notes = "Requires Caps.power, which makes it init's call. Stands the kernel's " ++
+            "boot watchdog down: without the report, a boot that stops making progress " ++
+            "ends in the panic screen instead of a frozen panel. Nothing else changes; " ++
+            "the call is the milestone, not a mode.",
+    },
+    .{
+        .number = 57,
+        .name = "stop_all",
+        .summary = "End every other process and wait for them to exit.",
+        .returns = "how many threads were still exiting when the wait ended",
+        .errors = &.{E.perm},
+        .notes = "Requires Caps.power. The orderly half of a shutdown: drivers and " ++
+            "services hold resources that only their exit releases, so they are asked " ++
+            "to leave and seen out before anything is flushed or powered. The caller " ++
+            "is left alone. A thread that will not unwind is left behind and reported " ++
+            "in the return value rather than waited for forever.",
     },
 };
 

@@ -6,16 +6,16 @@
 //!
 //! The register file is sixteen windows of bytes or words behind an I/O BAR,
 //! like the chip was designed in a later year than it was. Packed structs
-//! for every register, a 32 KiB receive ring plus its sixteen-byte overrun
-//! guard in one DMA segment, four transmit descriptors with the FIFO-era
-//! empty semantics this chip was never given, and no polling: everything
+//! for every register, a 32 KiB receive ring plus its no-wrap spill area in
+//! one DMA segment, four transmit descriptors, and no polling: everything
 //! steers from the interrupt handler.
 
 const dev_mod = @import("dev.zig");
+const dma = @import("dma.zig");
 const log = @import("ulib").log;
-const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const ports = @import("ulib").ports;
+const std = @import("std");
 const sys = @import("sys");
 
 const NicDev = dev_mod.NicDev;
@@ -36,12 +36,10 @@ const R = enum(u16) {
     cmd = 0x37,
     capr = 0x38,
     cbr = 0x3A,
-    mp_poll = 0xD2,
     imr = 0x3C,
     isr = 0x3E,
+    tcr = 0x40,
     rcr = 0x44,
-    config9346 = 0x50,
-    tp_poll = 0xD0,
 };
 
 /// A whole window lives behind one port pair; the base port is granted once
@@ -96,108 +94,216 @@ const Events = packed struct(u16) {
     rx_error: bool = false,
     tx_ok: bool = false,
     tx_error: bool = false,
-    rx_ovw: bool = false,
-    pkt_underrun: bool = false,
-    fifo_ovw: bool = false,
-    tx_empty: bool = false,
-    _8: u7 = 0,
-    serr: bool = false,
+    rx_overflow: bool = false,
+    packet_underrun: bool = false,
+    rx_fifo_overflow: bool = false,
+    _7: u1 = 0,
+    _8: u6 = 0,
+    pci_timeout: bool = false,
+    pci_error: bool = false,
 
-    fn none(self: Events) bool {
-        return @as(u16, @bitCast(self)) == 0;
+    fn hasWork(self: Events) bool {
+        return self.rx_ok or self.rx_error or self.tx_ok or self.tx_error or
+            self.rx_overflow or self.packet_underrun or self.rx_fifo_overflow or
+            self.pci_timeout or self.pci_error;
     }
+
+    fn hasRx(self: Events) bool {
+        return self.rx_ok or self.rx_error or self.rx_overflow or self.rx_fifo_overflow;
+    }
+
+    fn hasTx(self: Events) bool {
+        return self.tx_ok or self.tx_error;
+    }
+};
+
+const DmaBurst = enum(u3) {
+    bytes_16,
+    bytes_32,
+    bytes_64,
+    bytes_128,
+    bytes_256,
+    bytes_512,
+    bytes_1024,
+    maximum,
+};
+
+const RxBufferLen = enum(u2) {
+    kib_8,
+    kib_16,
+    kib_32,
+    kib_64,
+};
+
+const RxFifoThreshold = enum(u3) {
+    bytes_16,
+    bytes_32,
+    bytes_64,
+    bytes_128,
+    bytes_256,
+    bytes_512,
+    bytes_1024,
+    none,
 };
 
 /// RCR: what a receive is.
 const RxConfig = packed struct(u32) {
-    accept_physical: bool = false,
-    accept_broadcast: bool = false,
-    accept_multicast: bool = false,
+    accept_all_physical: bool = false,
     physical_match: bool = false,
+    accept_multicast: bool = false,
+    accept_broadcast: bool = false,
     accept_runt: bool = false,
-    rx_error_acos: bool = false,
-    rx_crc_error: bool = false,
-    /// WRAP: the ring wraps at the receive buffer size.
-    wrap: bool = false,
-    _8: u4 = 0,
-    /// Buffer size: 0 = 8 KiB, 1 = 16, 2 = 32, 3 = 64.
-    buffer_len: u2 = 0,
-    _14: u2 = 0,
-    /// Early receive threshold.
-    rx_thresh: u8 = 0,
-    _24: u8 = 0,
+    accept_error: bool = false,
+    _6: u1 = 0,
+    /// Keep a packet contiguous past the nominal end of a sub-64 KiB ring.
+    no_wrap: bool = false,
+    dma_burst: DmaBurst = .bytes_16,
+    buffer_len: RxBufferLen = .kib_8,
+    fifo_threshold: RxFifoThreshold = .bytes_16,
+    _16: u8 = 0,
+    early_threshold: u4 = 0,
+    _28: u4 = 0,
 };
 
-/// TSD: one transmit descriptor made of a length and an owner bit.
-/// The 8139's convention is the doc's own: OWN set means the host owns the
-/// descriptor and the hardware must not touch it, and the hardware transmits
-/// exactly when it sees the host drop OWN, then raises it again on
-/// completion.
-const TxDesc = packed struct(u16) {
+const InterframeGap = enum(u2) {
+    short_84,
+    short_88,
+    short_92,
+    ieee_96,
+};
+
+const TxConfig = packed struct(u32) {
+    clear_abort: bool = false,
+    _1: u3 = 0,
+    retry: u4 = 0,
+    dma_burst: DmaBurst = .bytes_16,
+    _11: u5 = 0,
+    disable_crc: bool = false,
+    loopback: u2 = 0,
+    _19: u5 = 0,
+    interframe_gap: InterframeGap = .short_84,
+    _26: u6 = 0,
+};
+
+/// TSD: writing a length hands a host-owned slot to the device. Completion
+/// raises OWN and one of the completion status bits before the slot is reused.
+const TxStatus = packed struct(u32) {
     size: u13 = 0,
-    own: bool = false,
-    _14: u1 = 0,
-    /// TUN: underrun, set by the hardware on failure.
+    host_owns: bool = false,
     underrun: bool = false,
+    ok: bool = false,
+    early_threshold: u6 = 0,
+    _22: u2 = 0,
+    collisions: u4 = 0,
+    carrier_heartbeat: bool = false,
+    out_of_window: bool = false,
+    aborted: bool = false,
+    carrier_lost: bool = false,
+
+    fn failed(self: TxStatus) bool {
+        return !self.ok or self.underrun or self.out_of_window or self.aborted;
+    }
 };
 
-/// The two words ahead of every received frame: status, then length.
-const RxStatus = packed struct(u16) {
+/// The status word and wire length ahead of every received frame.
+const RxHeader = packed struct(u32) {
     ok: bool = false,
     frame_align: bool = false,
     crc_error: bool = false,
     long_frame: bool = false,
     runt_frame: bool = false,
-    _5: u11 = 0,
+    bad_symbol: bool = false,
+    _6: u7 = 0,
+    broadcast: bool = false,
+    physical: bool = false,
+    multicast: bool = false,
+    length: u16 = 0,
+
+    fn good(self: RxHeader, frame_len: usize) bool {
+        return self.ok and !self.frame_align and !self.crc_error and
+            !self.long_frame and !self.runt_frame and !self.bad_symbol and
+            frame_len >= ETH_MIN_FRAME and frame_len <= ETH_MAX_FRAME;
+    }
 };
 
 const EventsUp = Events{
     .rx_ok = true,
     .rx_error = true,
-    .rx_ovw = true,
+    .rx_overflow = true,
     .tx_ok = true,
     .tx_error = true,
-    .pkt_underrun = true,
-    .fifo_ovw = true,
-    .tx_empty = true,
+    .packet_underrun = true,
+    .rx_fifo_overflow = true,
+    .pci_timeout = true,
+    .pci_error = true,
 };
 
 comptime {
-    if (@sizeOf(Events) != 2 or @sizeOf(TxDesc) != 2) @compileError("an event or descriptor word is a word");
-    if (@sizeOf(RxConfig) != 4) @compileError("the receive config is one dword");
-    if (@sizeOf(RxStatus) != 2) @compileError("a receive status is one word");
+    if (@sizeOf(Cmd) != 1) @compileError("the command register is one byte");
+    if (@sizeOf(Events) != 2) @compileError("the interrupt register is one word");
+    if (@sizeOf(RxConfig) != 4 or @sizeOf(TxConfig) != 4) @compileError("a transfer config is one dword");
+    if (@sizeOf(TxStatus) != 4 or @sizeOf(RxHeader) != 4) @compileError("a packet status is one dword");
 }
 
 // ---------------------------------------------------------------------------
 // The rings
 // ---------------------------------------------------------------------------
 
-/// The ring is the whole window the chip addresses: its CAPR and CBR fields
-/// are sixteen-bit word offsets that wrap at 64 KiB, and the buffer behind
-/// RBSTART has to be exactly that window plus the overrun guard.
-const RX_WINDOW = 64 * 1024;
-const RX_RING = RX_WINDOW;
-const RX_GUARD = 16;
+/// A 64 KiB ring is known to lock some revisions. In no-wrap mode the chip
+/// keeps a packet contiguous beyond a 32 KiB boundary, so the DMA allocation
+/// includes the documented pad and enough room for the largest spill.
+const RX_RING = 32 * 1024;
+const RX_PAD = 16;
+const RX_WRAP_PAD = 2048;
 const TX_SLOTS = 4;
+const TX_BUFFER = 2048;
+const ETH_HEADER = 14;
+const ETH_MIN_FRAME = 60;
+const ETH_MAX_FRAME = 1518;
+const ETH_FCS = 4;
+const RX_UNFINISHED = 0xFFF0;
+const IO_PORTS = 0x100;
+const PORT_SPACE: u32 = @as(u32, 1) << @bitSizeOf(u16);
+const RESET_ATTEMPTS = 1000;
+const IRQ_DRAIN_PASSES = 16;
+
+const RxUp = RxConfig{
+    .accept_all_physical = true,
+    .physical_match = true,
+    .accept_multicast = true,
+    .accept_broadcast = true,
+    .no_wrap = true,
+    .dma_burst = .maximum,
+    .buffer_len = .kib_32,
+    .fifo_threshold = .none,
+};
+
+const TxUp = TxConfig{
+    .retry = 8,
+    .dma_burst = .bytes_1024,
+    .interframe_gap = .ieee_96,
+};
 
 const Device = struct {
     window: Window = .{ .base = 0 },
     /// Receive ring + guard in one DMAR run.
-    rx: [*]u8 = undefined,
+    rx: [*]volatile u8 = undefined,
     rx_phys: u32 = 0,
     /// Transmit descriptor words are computed from these; the buffers share
     /// the receive segment's tail is not done here: each slot owns its
     /// buffer inside one shared DMA segment.
     tx_phys: [TX_SLOTS]u32 = @splat(0),
-    tx_buffer: [*][2048]u8 = undefined,
+    tx_buffer: [*][TX_BUFFER]u8 = undefined,
 
     /// Where the host reads next in the receive ring, derived from CAPR.
-    rx_at: u32 = 0,
+    rx_at: usize = 0,
     /// Which descriptor is up next, and which are still out on the wire.
     /// Tracked here rather than read back from TSD: the hardware's idea of
     /// "own" at reset is its own, and this process's is the truth it acts on.
-    tx_at: u8 = 0,
+    tx_at: usize = 0,
     pending: [TX_SLOTS]bool = @splat(false),
+    dma_handle: ?u32 = null,
+    started: bool = false,
 };
 
 var device: Device = .{};
@@ -205,83 +311,92 @@ var attached = false;
 
 /// One DMA segment for receive ring, guard and the four transmit buffers.
 const Arena = struct {
-    rx: [RX_RING + RX_GUARD]u8 = @splat(0),
-    tx: [TX_SLOTS][2048]u8 = @splat(@splat(0)),
+    rx: [RX_RING + RX_PAD + RX_WRAP_PAD]u8 align(4) = @splat(0),
+    tx: [TX_SLOTS][TX_BUFFER]u8 align(4) = @splat(@splat(0)),
 };
+
+comptime {
+    const largest_record = std.mem.alignForward(usize, @sizeOf(RxHeader) + ETH_MAX_FRAME + ETH_FCS, 4);
+    if (RX_PAD + RX_WRAP_PAD < largest_record) @compileError("the receive spill area cannot hold a frame");
+    if (@offsetOf(Arena, "tx") % 4 != 0) @compileError("transmit buffers must be dword aligned");
+}
 
 pub fn open(loc: pci.Location, dev: *NicDev) bool {
     if (attached) return false;
 
-    // The I/O BAR: the 8139 lives behind ports, and the base is the address
-    // with its type bits off.
-    const bar = pci.bar(loc, 0);
-    if (bar & 1 == 0) {
-        log.fail("rtl8139", "this card answers memory, which is not driven yet");
+    const bar: pci.IoBar = @bitCast(pci.bar(loc, 0));
+    if (!bar.io_space or bar.reserved) {
+        log.fail("rtl8139", "BAR0 is not a valid I/O BAR");
         return false;
     }
-    if (sys.ioportGrant(@truncate((bar & ~@as(u32, 3)) & 0xFFFF), 0x100) < 0) {
+    const base = bar.base();
+    if (base == 0 or base > PORT_SPACE - IO_PORTS) {
+        log.fail("rtl8139", "BAR0 is outside the x86 I/O port space");
+        return false;
+    }
+    if (sys.ioportGrant(@intCast(base), IO_PORTS) < 0) {
         log.fail("rtl8139", "cannot reach its ports");
         return false;
     }
-    pci.enableMemoryAndMaster(loc);
-    device.window = .{ .base = @truncate((bar & ~@as(u32, 3)) & 0xFFFF) };
+    pci.enableIoAndMaster(loc);
+    var keep_pci_enabled = false;
+    defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
+    device.window = .{ .base = @intCast(base) };
+
+    if (!reset()) return false;
+    readMac(dev);
 
     var phys: u32 = 0;
-    const handle = sys.dmaAlloc(@sizeOf(Arena) + 16, &phys);
+    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
     if (handle < 0) {
         log.failed("rtl8139", "cannot allocate DMA rings", handle);
         return false;
     }
+    const dma_handle: u32 = @intCast(handle);
+    if (phys % @alignOf(Arena) != 0) {
+        _ = sys.close(dma_handle);
+        log.fail("rtl8139", "DMA memory is not aligned for the adapter");
+        return false;
+    }
     const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
+        _ = sys.close(dma_handle);
         log.fail("rtl8139", "cannot map DMA rings");
         return false;
     };
-    const arena: *Arena = @alignCast(@ptrCast(mapped));
+    const arena: *Arena = @ptrCast(@alignCast(mapped));
     device.rx = @ptrCast(&arena.rx);
     // DMA memory is page-granular, which is every alignment this chip asks
     // for; adjusting the physical side alone would part it from the mapping.
     device.rx_phys = phys + @offsetOf(Arena, "rx");
     device.tx_buffer = @ptrCast(&arena.tx);
     inline for (0..TX_SLOTS) |i| {
-        device.tx_phys[i] = phys + @offsetOf(Arena, "tx") + i * 2048;
+        device.tx_phys[i] = phys + @offsetOf(Arena, "tx") + i * TX_BUFFER;
     }
 
-    // Reset the card, then let the EEPROM's auto-load put the permanent MAC
-    // into the IDR window where this driver reads it.
-    device.window.out8(.cmd, @bitCast(Cmd{ .reset = true }));
-    sys.sleepMicros(10_000);
-    device.window.out16(.config9346, 0xC0); // EEM1 | EEM0: auto-load
-    device.window.out8(.cmd, 0);
-    sys.sleepMicros(1_000);
-    readMac(dev);
-
-    // Receive: everything through, ring of 32 KiB. The buffer length bits
-    // are the chip's own 2-bit size field: 2 means 32 KiB.
-    device.window.out32(.rbstart, device.rx_phys);
-    // No overflow past the end: with WRAP off the chip splits a frame at
-    // the boundary instead of running into the guard, and the reader below
-    // already reads everything modulo the ring.
-    device.window.out32(.rcr, @bitCast(RxConfig{
-        .accept_physical = true,
-        .accept_broadcast = true,
-        .accept_multicast = true,
-        .physical_match = true,
-        .buffer_len = 3, // the 64 KiB the offsets wrap at
-    }));
-
-    // Transmit: silence the FIFO-era thresholds this chip never grew out of.
-    ports.out32(device.window.base + 0x40, 0x03000700); // TCR: IFG defaults
-    ports.out32(device.window.base + 0xD8, 0x00007000); // early TX don't
-
-    // Interrupts on, engine off until start: everything a start does is
-    // begin the two engines at once.
-    device.window.out16(.imr, @bitCast(EventsUp));
     device.rx_at = 0;
     device.tx_at = 0;
+    device.pending = @splat(false);
+    device.dma_handle = dma_handle;
+    device.started = false;
 
     attached = true;
+    keep_pci_enabled = true;
     dev.state = link(dev);
     return true;
+}
+
+/// Reset includes the EEPROM autoload. The bit self-clears; a dead device is
+/// refused after the same bounded ten milliseconds used by established 8139
+/// drivers rather than being configured through an unfinished reset.
+fn reset() bool {
+    device.window.out16(.imr, 0);
+    device.window.out8(.cmd, @bitCast(Cmd{ .reset = true }));
+    for (0..RESET_ATTEMPTS) |_| {
+        if (!@as(Cmd, @bitCast(device.window.in8(.cmd))).reset) return true;
+        sys.sleepMicros(10);
+    }
+    log.fail("rtl8139", "reset did not complete");
+    return false;
 }
 
 fn readMac(dev: *NicDev) void {
@@ -296,132 +411,222 @@ fn readMac(dev: *NicDev) void {
 }
 
 pub fn start(_: *NicDev) bool {
-    // Both engines in one byte: receive, transmit and the FIFO flag begin
-    // together.
-    device.window.out8(.cmd, @bitCast(Cmd{
-        .buffer_empty = true,
-        .tx_enable = true,
-        .rx_enable = true,
-    }));
+    if (!attached) return false;
+    if (device.started) return true;
+
+    device.window.out16(.imr, 0);
+    const stale = device.window.in16(.isr);
+    if (stale != std.math.maxInt(u16)) device.window.out16(.isr, stale);
+
+    device.rx_at = 0;
+    device.tx_at = 0;
+    device.pending = @splat(false);
+    device.window.out32(.rbstart, device.rx_phys);
+    inline for (0..TX_SLOTS) |i| {
+        device.window.out32(txAddressRegister(i), device.tx_phys[i]);
+    }
+
+    // TCR only accepts its transfer settings while the transmitter is on.
+    device.window.out8(.cmd, @bitCast(Cmd{ .tx_enable = true, .rx_enable = true }));
+    device.window.out32(.rcr, @bitCast(RxUp));
+    device.window.out32(.tcr, @bitCast(TxUp));
+
+    const running = @as(Cmd, @bitCast(device.window.in8(.cmd)));
+    if (!running.tx_enable or !running.rx_enable) {
+        device.window.out8(.cmd, 0);
+        log.fail("rtl8139", "receive/transmit engines did not start");
+        return false;
+    }
+
+    const pending = device.window.in16(.isr);
+    if (pending != std.math.maxInt(u16)) device.window.out16(.isr, pending);
+    device.started = true;
+    device.window.out16(.imr, @bitCast(EventsUp));
     return true;
 }
 
-pub fn stop(_: *NicDev) void {
+pub fn stop(nic: *NicDev) void {
+    if (!attached) return;
+
+    // Mask first, then stop both DMA directions and wait until the ownership
+    // handoff is visible before software forgets which TX buffers were live.
+    device.window.out16(.imr, 0);
     device.window.out8(.cmd, 0);
+    var stopped = false;
+    for (0..RESET_ATTEMPTS) |_| {
+        const command = @as(Cmd, @bitCast(device.window.in8(.cmd)));
+        if (!command.tx_enable and !command.rx_enable) {
+            stopped = true;
+            break;
+        }
+        sys.sleepMicros(10);
+    }
+    if (!stopped) log.warn("rtl8139", "receive/transmit engines did not stop");
+    dma.consume();
+
+    const pending = device.window.in16(.isr);
+    if (pending != std.math.maxInt(u16)) device.window.out16(.isr, pending);
+    device.started = false;
+    device.rx_at = 0;
+    device.tx_at = 0;
+    device.pending = @splat(false);
+    pci.disableInterruptAndMaster(nic.location);
+    if (device.dma_handle) |handle| _ = sys.close(handle);
+    device.dma_handle = null;
+    device.rx_phys = 0;
+    device.tx_phys = @splat(0);
+    attached = false;
+    nic.state = .{};
 }
 
 pub fn irq(nic: *NicDev) void {
-    const events = @as(Events, @bitCast(device.window.in16(.isr)));
-    if (events.none()) return; // a shared line, not ours
+    if (!device.started) return;
 
-    // Written back to clear; this chip wants its polls strobed too.
-    device.window.out16(.isr, @bitCast(events));
-    // The 8139 releases each direction through its own poll register;
-    // stroking both is what lowers the line and ends the interrupt.
-    if (events.tx_ok or events.tx_error) device.window.out16(.tp_poll, 0x0000);
-    if (events.rx_ok or events.rx_error or events.rx_ovw or events.fifo_ovw) {
-        device.window.out16(.mp_poll, 0x0000);
+    // Acknowledge each captured cause before draining it. A cause arriving
+    // during the drain then remains latched and is handled by the next pass,
+    // rather than being erased by a late write-one-to-clear acknowledgement.
+    for (0..IRQ_DRAIN_PASSES) |_| {
+        const raw = device.window.in16(.isr);
+        if (raw == 0 or raw == std.math.maxInt(u16)) return; // shared line or absent device
+        const events = @as(Events, @bitCast(raw));
+        if (!events.hasWork()) return;
+
+        device.window.out16(.isr, raw);
+        if (events.hasRx()) reapRx(nic);
+        if (events.hasTx()) reapTx(nic);
     }
-
-    if (events.rx_ok or events.rx_ovw) reapRx(nic);
-    if (events.tx_ok or events.tx_error) reapTx(nic);
 }
 
 fn reapRx(nic: *NicDev) void {
-    while (true) {
-        // The ring reads forward from where the host left off: at the read
-        // pointer sits the next frame's header, then the frame bytes, then
-        // the checksum tail. The handshake runs in bytes and in opposite
-        // directions: the write side is read back from CBR, and
-        // acknowledging is CAPR written.
-        const next_write = @as(u32, device.window.in16(.cbr));
-        if (next_write == device.rx_at) break;
+    const command = @as(Cmd, @bitCast(device.window.in8(.cmd)));
+    if (command.buffer_empty) return;
 
-        const header_at = device.rx_at % RX_RING;
-        const len = ringWord(header_at + 2);
-        const status = @as(RxStatus, @bitCast(ringWord(header_at)));
+    // CBR is only the end of the snapshot, not the next packet. Consume at
+    // most that finite snapshot so a busy wire cannot make one IRQ unbounded.
+    const write_at = @as(usize, device.window.in16(.cbr)) % RX_RING;
+    var remaining = (write_at + RX_RING - device.rx_at) % RX_RING;
+    if (remaining == 0) remaining = RX_RING; // BUFE distinguished full from empty
+    dma.consume();
 
-        // The length names frame and checksum together; the frame is the
-        // part this service keeps, so it is the part counted.
-        const frame_len = len -| 4;
-        const frame_at = (device.rx_at + 4) % RX_RING;
-        // The minimum here is what makes a frame: two addresses and an
-        // EtherType. A 42-byte ARP reply is short, and short is legal; it
-        // is the TX path that pads.
-        const good = status.ok and !status.crc_error and !status.long_frame and
-            frame_len >= 14 and frame_len <= 1518;
+    while (remaining >= @sizeOf(RxHeader)) {
+        const header_at = device.rx_at;
+        const header = readRxHeader(header_at);
+        if (header.length == RX_UNFINISHED) return;
 
-        var frame: [2048]u8 = undefined;
-        if (good) {
+        const wire_len = @as(usize, header.length);
+        if (wire_len < ETH_FCS or wire_len > ETH_MAX_FRAME + ETH_FCS) {
+            recoverRx(nic);
+            return;
+        }
+        const record_len = std.mem.alignForward(usize, @sizeOf(RxHeader) + wire_len, 4);
+        if (record_len > remaining) return; // the writer has not published the full frame yet
+
+        const frame_len = wire_len - ETH_FCS;
+        const frame_at = header_at + @sizeOf(RxHeader);
+        var frame: [ETH_MAX_FRAME]u8 = undefined;
+        if (header.good(frame_len)) {
             var got: usize = 0;
-            while (got < frame_len) : (got += 1) frame[got] = device.rx[(frame_at + got) % RX_RING];
+            while (got < frame_len) : (got += 1) frame[got] = device.rx[frame_at + got];
             dev_mod.deliverRx(nic, .{ .ok = true, .frame = frame[0..frame_len] });
         } else {
             dev_mod.deliverRx(nic, .{});
         }
 
-        device.rx_at = next_write;
-        // Sixteen back, by the chip's own convention: CAPR reads ahead of
-        // itself by the header it has already consumed, and a raw offset
-        // here tells it the host has read sixteen bytes it has not.
-        device.window.out16(.capr, @truncate(next_write -% 16));
+        device.rx_at = (device.rx_at + record_len) % RX_RING;
+        remaining -= record_len;
+        // CAPR is sixteen bytes behind the actual consumer. Publishing before
+        // the write ensures all CPU reads finish before the device may reuse it.
+        dma.publish();
+        device.window.out16(.capr, @truncate(device.rx_at -% 16));
     }
 }
 
-fn ringWord(at: u32) u16 {
-    return @as(u16, device.rx[at % RX_RING]) | (@as(u16, device.rx[(at + 1) % RX_RING]) << 8);
+fn readRxHeader(at: usize) RxHeader {
+    const low = rxWord(at);
+    const high = rxWord(at + 2);
+    return @bitCast(@as(u32, low) | (@as(u32, high) << 16));
 }
 
-/// The one way a transmit descriptor is spelled into the window: the
-/// hardware reads the low word, and the width it answers is a dword.
-fn tsdWord(size: u13, own: bool) u32 {
-    const desc = TxDesc{ .size = size, .own = own };
-    return @as(u32, @intCast(@as(u16, @bitCast(desc))));
+fn rxWord(at: usize) u16 {
+    return @as(u16, device.rx[at]) | (@as(u16, device.rx[at + 1]) << 8);
+}
+
+/// A malformed length loses packet boundaries. Reset only the receive side,
+/// preserving a live transmitter, rather than walking attacker-controlled
+/// offsets through the DMA arena.
+fn recoverRx(nic: *NicDev) void {
+    dev_mod.deliverRx(nic, .{});
+    const command = @as(Cmd, @bitCast(device.window.in8(.cmd)));
+    device.window.out8(.cmd, @bitCast(Cmd{ .tx_enable = command.tx_enable }));
+    device.rx_at = 0;
+    device.window.out32(.rbstart, device.rx_phys);
+    device.window.out8(.cmd, @bitCast(Cmd{
+        .tx_enable = command.tx_enable,
+        .rx_enable = command.rx_enable,
+    }));
+    device.window.out32(.rcr, @bitCast(RxUp));
+}
+
+fn txStatusRegister(slot: usize) R {
+    return @enumFromInt(@intFromEnum(R.tsd0) + slot * @sizeOf(u32));
+}
+
+fn txAddressRegister(slot: usize) R {
+    return @enumFromInt(@intFromEnum(R.tsad0) + slot * @sizeOf(u32));
 }
 
 fn reapTx(nic: *NicDev) void {
-    // Which descriptors came back: a pending slot the hardware took back by
-    // raising OWN again is done, and the outcome is the underrun bit.
+    // OWN is the device-to-host handoff. Once observed, acquire before the
+    // corresponding bounce buffer can be overwritten by a later transmit.
     for (0..TX_SLOTS) |i| {
         if (!device.pending[i]) continue;
-        const at: R = @enumFromInt(@intFromEnum(R.tsd0) + i * 4);
-        const desc: TxDesc = @bitCast(@as(u16, @truncate(device.window.in32(at))));
-        if (!desc.own) continue;
+        const status: TxStatus = @bitCast(device.window.in32(txStatusRegister(i)));
+        if (!status.host_owns) continue;
+        dma.consume();
         device.pending[i] = false;
-        if (desc.underrun) nic.stats.tx_failed += 1;
+        if (status.failed()) nic.stats.tx_failed += 1;
     }
 }
 
-pub fn transmit(nic: *NicDev, frame: []const u8) void {
-    if (frame.len > 2048) return;
+pub fn transmit(nic: *NicDev, frame: []const u8) bool {
+    if (!device.started or frame.len < ETH_HEADER or frame.len > ETH_MAX_FRAME) {
+        nic.stats.tx_failed += 1;
+        return false;
+    }
 
-    // A slow owner: the ring tracks its own pending, and a slot not yet back
-    // from the wire is refused rather than overwritten.
+    // Reclaim completed slots even if their interrupt was coalesced or lost.
+    reapTx(nic);
+
     const slot = device.tx_at;
     if (device.pending[slot]) {
         nic.stats.tx_failed += 1;
-        return;
+        return false;
     }
+    const status: TxStatus = @bitCast(device.window.in32(txStatusRegister(slot)));
+    if (!status.host_owns) {
+        nic.stats.tx_failed += 1;
+        return false;
+    }
+    dma.consume();
 
     // This chip pads nothing: a frame below the ethernet minimum leaves as
     // a runt and every receiver on a real wire discards it.
-    const wired = @max(frame.len, 60);
+    const wired = @max(frame.len, ETH_MIN_FRAME);
     @memcpy(device.tx_buffer[slot][0..frame.len], frame);
     if (frame.len < wired) @memset(device.tx_buffer[slot][frame.len..wired], 0);
-    const at: R = @enumFromInt(@intFromEnum(R.tsd0) + slot * 4);
-    const addr_at: R = @enumFromInt(@intFromEnum(R.tsad0) + slot * 4);
+    device.window.out32(txAddressRegister(slot), device.tx_phys[slot]);
     device.pending[slot] = true;
 
-    // The owner handshake, per the datasheet and per QEMU's reading of it:
-    // take ownership, place the frame, then drop the bit. The drop is the
-    // signal a transmit starts on. Writes are 32-bit here because the
-    // window this register lives in only answers that width.
-    device.window.out32(at, tsdWord(0, true));
-    device.window.out32(addr_at, device.tx_phys[slot]);
-    device.window.out32(at, tsdWord(@intCast(wired), false));
+    // The TSD write is the ownership handoff and transmission trigger.
+    dma.publish();
+    device.window.out32(txStatusRegister(slot), @bitCast(TxStatus{
+        .size = @intCast(wired),
+        .early_threshold = 8, // 8 * 32 bytes: the established 256-byte threshold
+    }));
     device.tx_at = (slot + 1) % TX_SLOTS;
 
     dev_mod.deliverTx(nic, frame.len);
+    return true;
 }
 
 pub fn link(_: *NicDev) dev_mod.Link {

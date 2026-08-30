@@ -23,11 +23,18 @@ const bcache = @import("bcache.zig");
 const sched = @import("sched.zig");
 const svc = @import("svc.zig");
 const syscall_abi = @import("lib").syscalls;
+const watchdog = @import("watchdog.zig");
 const platform = @import("../platform.zig");
 
 pub const panic = std.debug.FullPanic(panic_mod.kpanic);
 
 pub const VERSION = "0.1.0-M0";
+
+/// Seconds a boot has to reach `boot_ok` before the watchdog ends it with
+/// the panic screen. Generous by design: the only thing this cost buys is
+/// never confusing a slow medium with a machine that stopped, and a false
+/// alarm on real hardware is worth more than a fast one.
+const BOOT_WATCHDOG_S = 60;
 
 /// Kernel stack for the boot thread. Threads get their own once the scheduler
 /// exists; until then this is also what the TSS esp0 points at.
@@ -91,6 +98,9 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     // Everything the tick handler touches is initialised, so interrupts can be
     // taken from here on.
     hal.enableInterrupts();
+    // And the boot is now answerable: from this line on, a boot that stops
+    // making progress ends in the panic screen rather than a frozen panel.
+    watchdog.arm(BOOT_WATCHDOG_S);
 
     const cpu_info = hal.cpuInfo();
     console.info("cpu", "{s}", .{cpu_info.brand});

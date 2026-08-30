@@ -46,19 +46,34 @@ export fn platdMain() callconv(.c) noreturn {
     ready = bringUp();
     if (!ready) log.warn("platd", "carrying on without the firmware");
 
-    // The event channel stays closed by default. What it carries on this
-    // machine is a boot-time burst of AC and battery notifications whose
-    // AML, run through the same embedded controller the firmware only
-    // half-shared, hangs the machine about every second boot. On-demand
-    // reads (battery, backlight) do not pass through here. Flipped on when
-    // the burst's own firmware methods are understood.
-    if (ready and EVENTS) {
-        sys.sleepMicros(100_000);
-        _ = sys.sciEnable(true);
+    // Ownership precedes activation. uACPI installed the handler while loading
+    // the namespace, but the kernel line is claimed only after the service can
+    // accept work. Entering ACPI mode is the final transition and remains off
+    // on this machine until its unsafe boot-time event burst is understood.
+    const sci_ready = ready and glue.sci.arm();
+    if (sci_ready) {
+        log.begin("platd", .key);
+        out.text("system control interrupt ready, line ");
+        out.decimal(glue.sci.line);
+        log.end();
+    } else if (ready) {
+        log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
+    }
+
+    if (ready and EVENTS and sci_ready) {
+        ready = step("ACPI mode", uacpi.uacpi_enter_acpi_mode());
+    } else if (ready and EVENTS) {
+        ready = false;
+        log.warn("platd", "ACPI mode stays off without an SCI owner");
     } else {
         log.warn("platd", "events stay off; ac, hotkeys and panel notices wait");
     }
 
+    // The name appears only now, with the firmware fully settled. A
+    // dependent that starts the moment the name appears asks its questions
+    // of a service already in its serve loop, never of one mid-transition:
+    // on this firmware the transition is exactly when an outside touch of
+    // the buses wedges the machine.
     const channel = sys.svcRegister(proto.SERVICE);
     if (channel < 0) {
         log.failed("platd", "cannot register", channel);
@@ -83,8 +98,8 @@ fn serve(channel: u32) noreturn {
     var sources: [3]u32 = undefined;
 
     while (true) {
+        if (glue.sci.attached()) _ = glue.sci.servicePending();
         drain(channel);
-        if (glue.sci.attached()) glue.sci.service();
 
         // What the interrupt queued, and then what the firmware said. Both
         // run here and not in the handler: they are AML, and the handler runs
@@ -92,22 +107,32 @@ fn serve(channel: u32) noreturn {
         work.drain();
         hotkey.apply();
 
-        var count: usize = 1;
-        sources[0] = channel;
+        // SCI first: completion is deliberately held at the LAPIC until the
+        // firmware source has been cleared, so it outranks ordinary requests
+        // when several events are already pending.
+        var count: usize = 0;
+        var sci_index: ?usize = null;
         if (glue.sci.attached()) {
+            sci_index = count;
             sources[count] = glue.sci.event;
             count += 1;
         }
+        sources[count] = channel;
+        count += 1;
         if (work.event != 0) {
             sources[count] = work.event;
             count += 1;
         }
-        _ = sys.waitMany(sources[0..count], sys.FOREVER);
+        const woke = sys.waitMany(sources[0..count], sys.FOREVER);
+        if (sci_index) |index| {
+            if (woke == @as(isize, @intCast(index))) glue.sci.service();
+        }
     }
 }
 
 fn drain(channel: u32) void {
     while (true) {
+        if (glue.sci.attached()) _ = glue.sci.servicePending();
         var message = sys.Message{};
         const request = sys.recv(channel, &message, sys.POLL) orelse return;
 
@@ -163,6 +188,9 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
 /// once the sleep write is made it is the write that will have been the last
 /// thing said.
 fn powerOff() proto.Status {
+    log.note("platd", "power off: stopping the services");
+    if (!stopEverything()) return .refused;
+
     log.note("platd", "power off: flushing done by the kernel");
     if (sys.quiesce() < 0) return .refused;
 
@@ -179,10 +207,32 @@ fn powerOff() proto.Status {
 }
 
 fn restart() proto.Status {
+    log.note("platd", "reboot: stopping the services");
+    if (!stopEverything()) return .refused;
+
     log.note("platd", "reboot: flushing done by the kernel");
     if (sys.quiesce() < 0) return .refused;
     if (uacpi.uacpi_reboot() != .ok) return .refused;
     return .refused;
+}
+
+/// Ask the kernel to end every other process and see them out. This process
+/// is what asks the firmware to leave, so it goes last; everything else —
+/// the drivers, the shell, the supervisor — leaves first, releasing what
+/// only its exit releases.
+fn stopEverything() bool {
+    const left = sys.stopAll();
+    if (left < 0) {
+        log.failed("platd", "the kernel refused to stop the services", left);
+        return false;
+    }
+    if (left > 0) {
+        var text: [64]u8 = undefined;
+        const message = std.fmt.bufPrint(&text, "{d} thread(s) would not exit; carrying on", .{left}) catch
+            "threads would not exit; carrying on";
+        log.warn("platd", message);
+    }
+    return true;
 }
 
 const asus = @import("asus.zig");
@@ -210,7 +260,12 @@ fn bringUp() bool {
     // answering costs a refused method rather than the machine.
     uacpi.uacpi_context_set_loop_timeout(LOOP_TIMEOUT_S);
 
-    if (!step("tables", uacpi.uacpi_initialize(0))) return false;
+    // Loading tables and methods must not expose the SCI. The automatic mode
+    // transition in uACPI otherwise sets SCI_EN before an owner can wait on
+    // the line, coupling interpreter startup to interrupt-controller liveness.
+    const init_flags = uacpi.InitFlags{ .no_acpi_mode = true };
+    if (!step("tables", uacpi.uacpi_initialize(@bitCast(init_flags)))) return false;
+    if (!EVENTS and !step("legacy mode", uacpi.uacpi_leave_acpi_mode())) return false;
     reportGlobalLock();
     if (!step("namespace", uacpi.uacpi_namespace_load())) return false;
 
@@ -219,18 +274,6 @@ fn bringUp() bool {
     ec.bind();
 
     if (!step("devices", uacpi.uacpi_namespace_initialize())) return false;
-
-    // The line is claimed first, while nothing has been enabled yet: which
-    // enablement the firmware's trap handler cannot survive is only visible
-    // when the claim and the enablements happen at different times.
-    if (glue.sci.arm()) {
-        log.begin("platd", .key);
-        out.text("system control interrupt live, line ");
-        out.decimal(glue.sci.line);
-        log.end();
-    } else {
-        log.warn("platd", "no system control interrupt; the global lock cannot be waited on");
-    }
 
     // The interrupt model first: the routing tables answer for the mode the
     // operating system announces, and this system runs the one the firmware
@@ -258,7 +301,9 @@ fn bringUp() bool {
     // Left off entirely when there is a controller nobody drives: its event
     // fires with nobody able to drain the query queue behind it, and a line
     // that cannot be quieted is a machine that does nothing else.
-    if (ec.present() and !ec.driven()) {
+    if (!EVENTS) {
+        log.note("platd", "firmware event sources remain disabled");
+    } else if (ec.present() and !ec.driven()) {
         log.warn("platd", "events stay off; the embedded controller is not driven");
     } else {
         _ = step("events", uacpi.uacpi_finalize_gpe_initialization());
@@ -270,7 +315,7 @@ fn bringUp() bool {
 
     // Only now, because both of these call methods.
     backlight.report();
-    hotkey.listen();
+    if (EVENTS) hotkey.listen();
 
     log.note("platd", "firmware ready");
     return true;

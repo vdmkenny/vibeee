@@ -160,6 +160,16 @@ pub fn biosVersion() ?[]const u8 {
     return stringOf(0, fieldAt(0, 0x05) orelse return null);
 }
 
+/// Base board (type 2) fields, for quirks keyed on the board rather than the
+/// system as sold.
+pub fn boardManufacturer() ?[]const u8 {
+    return stringOf(2, fieldAt(2, 0x04) orelse return null);
+}
+
+pub fn boardProduct() ?[]const u8 {
+    return stringOf(2, fieldAt(2, 0x05) orelse return null);
+}
+
 /// Total installed memory and how it is fitted, from the Memory Device
 /// structures (type 17).
 ///

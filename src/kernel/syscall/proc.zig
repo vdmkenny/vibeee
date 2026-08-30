@@ -87,6 +87,9 @@ fn claimStdio(options: *const abi.Spawn, out: *exec.Stdio) error{BadHandle}!void
         // A caller with nothing on that number leaves the child the console it
         // was given, which is what early boot and `init` rely on.
         const h = table.get(from) orelse continue;
+        // An interrupt line has one process owner. Unlike pipes, IRQ handles
+        // are not an I/O stream and must never reach a child through stdio.
+        if (h.kind == .irq) return error.BadHandle;
         out[i] = handles.retain(h.*);
     }
 }

@@ -68,12 +68,18 @@ export fn netdMain() callconv(.c) noreturn {
     }
 
     probe();
+    const discovered = count;
+    count = 0;
+    for (0..discovered) |i| {
+        var candidate = ifaces[i];
+        if (!attach(&candidate)) continue;
+        ifaces[count] = candidate;
+        count += 1;
+        log.note("netd", "driving the hardware");
+    }
+
     if (count == 0) {
         log.warn("netd", "no adapter matched a driver");
-    } else {
-        for (ifaces[0..count]) |*iface| {
-            if (attach(iface)) log.note("netd", "driving the hardware");
-        }
     }
 
     serve(@intCast(channel));
@@ -134,6 +140,15 @@ fn probe() void {
 
 /// Map, open and interrupt-wire one interface.
 fn attach(iface: *dev.NicDev) bool {
+    if (sys.claimDevice(iface.location) < 0) {
+        log.warn("netd", "the adapter is already claimed");
+        return false;
+    }
+    var keep_claim = false;
+    defer if (!keep_claim) {
+        _ = sys.releaseDevice(iface.location);
+    };
+
     const line = routedLine(iface);
 
     // Lines are shared on this machine's wiring, and the kernel hands a
@@ -141,23 +156,25 @@ fn attach(iface: *dev.NicDev) bool {
     // driver on the line gets the wake, and each reads its own ISR and
     // says "not mine" with no other cost. So a line already taken here is
     // shared, not refused.
-    if (line != 0 and line != 0xFF) {
+    if (line) |gsi| {
+        iface.irq_gsi = gsi;
         var shared = false;
         for (ifaces[0..count]) |other| {
-            if (other.irq != 0 and pci.interruptLine(other.location) == line) {
+            if (other.irq != 0 and other.irq_gsi == gsi) {
                 iface.irq = other.irq;
                 shared = true;
                 break;
             }
         }
         if (!shared) {
-            iface.irq = sys.irqAttach(line) catch {
+            iface.irq = sys.irqAttach(gsi) catch {
                 log.warn("netd", "the interrupt line refused to attach");
                 return false;
             };
+            iface.irq_owned = true;
             log.begin("netd", .dim);
             out.text("line ");
-            out.decimal(line);
+            out.decimal(gsi);
             out.text(" taken");
             log.end();
         }
@@ -170,7 +187,7 @@ fn attach(iface: *dev.NicDev) bool {
 
     if (!iface.ops.open(iface.location, iface)) {
         log.warn("netd", "the adapter did not open");
-        if (iface.irq != 0) _ = sys.close(iface.irq);
+        releaseIrq(iface);
         return false;
     }
 
@@ -185,13 +202,20 @@ fn attach(iface: *dev.NicDev) bool {
 
     if (!iface.ops.start(iface)) {
         log.warn("netd", "the adapter did not start");
+        iface.ops.stop(iface);
+        releaseIrq(iface);
         return false;
     }
 
-    // Only now, with the adapter actually running: the kernel's table says
-    // driven for what is driven, not for what was attempted.
-    _ = sys.claimDevice(iface.location.bus, iface.location.device, iface.location.function);
+    keep_claim = true;
     return true;
+}
+
+fn releaseIrq(iface: *dev.NicDev) void {
+    if (iface.irq_owned and iface.irq != 0) _ = sys.close(iface.irq);
+    iface.irq = 0;
+    iface.irq_gsi = null;
+    iface.irq_owned = false;
 }
 
 /// Which line this adapter's interrupt arrives on.
@@ -200,9 +224,13 @@ fn attach(iface: *dev.NicDev) bool {
 /// system runs; the number in configuration space answers for the mode it
 /// does not. Where the platform service cannot say, the legacy number is
 /// what remains, alive but possibly deaf.
-fn routedLine(iface: *dev.NicDev) u8 {
+fn routedLine(iface: *dev.NicDev) ?u32 {
+    const pin = pci.interruptPin(iface.location).acpiIndex() orelse {
+        log.warn("netd", "the adapter exposes no routable interrupt pin");
+        return null;
+    };
     var ask = proto_platform.RouteAsk{
-        .pin = 0, // INTA, which every single-function adapter uses
+        .pin = pin,
         .device = @truncate(iface.location.device),
     };
     if (pci.carrierOf(iface.location.bus)) |bridge| {
@@ -223,7 +251,7 @@ fn routedLine(iface: *dev.NicDev) u8 {
             out.text("the firmware routes this interrupt to line ");
             out.decimal(gsi);
             log.end();
-            return @intCast(gsi);
+            return gsi;
         } else |err| {
             if (err != error.NoService) break;
             sys.sleepMicros(20_000);
@@ -231,7 +259,8 @@ fn routedLine(iface: *dev.NicDev) u8 {
     }
 
     log.say("netd", .dim, "no routing table answer; using the legacy line");
-    return pci.interruptLine(iface.location);
+    const legacy = pci.interruptLine(iface.location);
+    return if (legacy == 0 or legacy == 0xFF) null else legacy;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +332,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(proto.Req)) return .refused;
 
-    const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
+    const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
 
     if (request.tag == .count) {
         reply.count = @intCast(count);
@@ -316,8 +345,11 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
 
     // Fresh link state before anything uses it: what the adapter reports
     // and what its registers were told must agree.
-    iface.state = iface.ops.link(iface);
-    if (iface.ops.sync_link) |sync| sync(iface);
+    if (iface.ops.sync_link) |sync| {
+        sync(iface);
+    } else {
+        iface.state = iface.ops.link(iface);
+    }
 
     if (request.tag == .arp_probe) {
         // The whole of outbound traffic until the stack lands: one ARP
@@ -328,14 +360,8 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
 
         var frame: [lib.eth.FRAME]u8 = undefined;
         lib.eth.arpRequest(&frame, iface.mac, PROBE_SOURCE, request.param);
-        iface.ops.transmit(iface, &frame);
-        return .ok;
+        return if (iface.ops.transmit(iface, &frame)) .ok else .refused;
     }
-
-    // Fresh link state first, then the reply packed whole from it: patched
-    // afterwards, the one field patched disagrees with the rest, and a link
-    // that came up during autonegotiation reads as up at no speed.
-    iface.state = iface.ops.link(iface);
 
     reply.iface = .{
         .up = @intFromBool(iface.state.up),
@@ -379,4 +405,3 @@ fn sayLink(state: dev.Link) void {
     });
     out.text(" duplex");
 }
-

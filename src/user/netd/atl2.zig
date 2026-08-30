@@ -12,24 +12,46 @@
 //! possible and spinning is the exception.
 
 const dev_mod = @import("dev.zig");
+const dma = @import("dma.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
+const std = @import("std");
 const sys = @import("sys");
 
 const NicDev = dev_mod.NicDev;
+const MMIO_BYTES: u32 = 256 * 1024;
+const ETH_MTU = 1500;
+const ETH_HEADER = 14;
+const ETH_FCS = 4;
+const ETH_VLAN = 4;
+const ETH_MIN_WIRE = 64;
+const ETH_MAX_FRAME = ETH_MTU + ETH_HEADER + ETH_FCS;
+const MAC_FRAME_LIMIT = ETH_MAX_FRAME + ETH_VLAN;
+
+const StationAddressLow = packed struct(u32) {
+    octet5: u8,
+    octet4: u8,
+    octet3: u8,
+    octet2: u8,
+};
+
+const StationAddressHigh = packed struct(u32) {
+    octet1: u8,
+    octet0: u8,
+    _16: u16 = 0,
+};
 
 // ---------------------------------------------------------------------------
 // Register window
 // ---------------------------------------------------------------------------
 
-/// Register offsets, bytes. The word-wide registers (16-bit) are marked in
-/// their doc; everything else is a dword.
-const R = enum(u32) {
+/// Register offsets are separated by access width, so a byte register cannot
+/// accidentally be reached through a dword operation.
+const R32 = enum(u32) {
+    pcie_dll_tx_ctrl1 = 0x1104,
+    ltssm_test_mode = 0x12FC,
     master_ctrl = 0x1400,
-    irq_modu_timer = 0x1408, // 16-bit
-    phy_enable = 0x140C, // 16-bit
-    cmbdisdma_timer = 0x140E, // 16-bit
     idle_status = 0x1410,
     mdio_ctrl = 0x1414,
     mac_ctrl = 0x1480,
@@ -41,52 +63,70 @@ const R = enum(u32) {
     mtu = 0x149C,
     desc_base_hi = 0x1540,
     txd_base_lo = 0x1544,
-    txd_mem_size = 0x1548, // 16-bit, dword units
     txs_base_lo = 0x154C,
-    txs_mem_size = 0x1550, // 16-bit, dword units
     rxd_base_lo = 0x1554,
-    rxd_buf_num = 0x1558, // 16-bit
-    dmar = 0x1580,
     tx_cut_thresh = 0x1590,
-    dmaw = 0x15A0,
-    pause_on_th = 0x15A8, // 16-bit
-    pause_off_th = 0x15AA, // 16-bit
-    mb_txd_wr_idx = 0x15F0, // 16-bit
-    mb_rxd_rd_idx = 0x15F4, // 16-bit
     isr = 0x1600,
     imr = 0x1604,
+};
+
+const R16 = enum(u32) {
+    irq_modu_timer = 0x1408,
+    phy_enable = 0x140C,
+    cmbdisdma_timer = 0x140E,
+    txd_mem_size = 0x1548, // dword units
+    txs_mem_size = 0x1550, // dword units
+    rxd_buf_num = 0x1558,
+    pause_on_th = 0x15A8,
+    pause_off_th = 0x15AA,
+    mb_txd_wr_idx = 0x15F0,
+    mb_rxd_rd_idx = 0x15F4,
+};
+
+const R8 = enum(u32) {
+    dmar = 0x1580,
+    dmaw = 0x15A0,
 };
 
 /// A byte window over the aperture; each access is one volatile load or
 /// store of the register's own width. Volatile is the load-bearing word: a
 /// register read has an effect, and a compiler that merged two of them, or
 /// dropped a store because a later one hits the same address, would be right
-/// about the value and wrong about the device. The word registers sit at
-/// word-aligned offsets and the dword registers at dword-aligned ones, which
-/// the casts below check.
+/// about the value and wrong about the device.
 const Regs = struct {
     base: [*]volatile u8,
 
-    fn wr32(self: Regs, r: R, value: u32) void {
-        const at: *volatile u32 = @alignCast(@ptrCast(self.base + @intFromEnum(r)));
+    fn wr32(self: Regs, r: R32, value: u32) void {
+        const at: *volatile u32 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
         at.* = value;
     }
 
-    fn rd32(self: Regs, r: R) u32 {
-        const at: *const volatile u32 = @alignCast(@ptrCast(self.base + @intFromEnum(r)));
+    fn rd32(self: Regs, r: R32) u32 {
+        const at: *const volatile u32 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
         return at.*;
     }
 
-    fn wr16(self: Regs, r: R, value: u16) void {
-        const at: *volatile u16 = @alignCast(@ptrCast(self.base + @intFromEnum(r)));
+    fn wr16(self: Regs, r: R16, value: u16) void {
+        const at: *volatile u16 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
         at.* = value;
     }
 
-    fn rd16(self: Regs, r: R) u16 {
-        const at: *const volatile u16 = @alignCast(@ptrCast(self.base + @intFromEnum(r)));
+    fn rd16(self: Regs, r: R16) u16 {
+        const at: *const volatile u16 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
         return at.*;
+    }
+
+    fn wr8(self: Regs, r: R8, value: u8) void {
+        self.base[@intFromEnum(r)] = value;
     }
 };
+
+fn validateRegisterSet(comptime Register: type, comptime width: u32) void {
+    inline for (std.meta.fields(Register)) |field| {
+        if (field.value % width != 0) @compileError("ATL2 register is misaligned for its access width");
+        if (field.value + width > MMIO_BYTES) @compileError("ATL2 register lies outside the mapped aperture");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Register shapes: the bits, as fields
@@ -98,6 +138,27 @@ const MasterCtrl = packed struct(u32) {
     irq_moder: bool = false, // ITIMER_EN
     manual_int: bool = false,
     _4: u28 = 0,
+};
+
+const DmaControl = packed struct(u8) {
+    enabled: bool = false,
+    _1: u7 = 0,
+};
+
+const PhyEnable = packed struct(u16) {
+    enabled: bool = false,
+    _1: u15 = 0,
+};
+
+/// Complete vendor-defined register images. Their individual fields are not
+/// documented, so enums preserve the hardware type without inventing names
+/// for unknown bits.
+const LtssmTestMode = enum(u32) {
+    vendor_default = 0x6500,
+};
+
+const PcieDllTxCtrl1 = enum(u32) {
+    vendor_default = 0x568,
 };
 
 const MdioCtrl = packed struct(u32) {
@@ -158,7 +219,8 @@ const HalfDuplex = packed struct(u32) {
 };
 
 const Isr = packed struct(u32) {
-    _0: u2 = 0,
+    timer: bool = false,
+    manual: bool = false,
     rxf_ov: bool = false,
     txf_ur: bool = false,
     txs_ov: bool = false,
@@ -173,16 +235,27 @@ const Isr = packed struct(u32) {
     tx_status: bool = false, // TS_UPDATE
     rx_status: bool = false, // RS_UPDATE
     tx_early: bool = false,
-    _19: u9 = 0,
+    _19: u5 = 0,
+    unsupported_request: bool = false,
+    fatal_error: bool = false,
+    nonfatal_error: bool = false,
+    correctable_error: bool = false,
     phy_link_down: bool = false,
     _29: u2 = 0,
     /// ISR_DIS_INT: hold interrupts while servicing on a shared line.
     hold: bool = false,
 
     fn none(self: Isr) bool {
-        const v: u32 = @bitCast(self);
-        return v & ~(@as(u32, 1) << 31) == 0;
+        var causes = self;
+        causes.hold = false;
+        return @as(u32, @bitCast(causes)) == 0;
     }
+};
+
+const IsrClear = packed struct(u32) {
+    causes: u30 = std.math.maxInt(u30),
+    _30: u1 = 0,
+    hold: bool = false,
 };
 
 /// The PHY status word (MII register 17, "PSSR").
@@ -247,8 +320,20 @@ const RxStatus = packed struct(u32) {
 };
 
 comptime {
+    validateRegisterSet(R8, @sizeOf(u8));
+    validateRegisterSet(R16, @sizeOf(u16));
+    validateRegisterSet(R32, @sizeOf(u32));
     if (@sizeOf(MdioCtrl) != 4 or @sizeOf(MacCtrl) != 4 or @sizeOf(Isr) != 4) {
         @compileError("a control register shapes one dword");
+    }
+    if (@bitOffsetOf(Isr, "unsupported_request") != 24 or
+        @bitOffsetOf(Isr, "fatal_error") != 25 or
+        @bitOffsetOf(Isr, "nonfatal_error") != 26 or
+        @bitOffsetOf(Isr, "correctable_error") != 27 or
+        @bitOffsetOf(Isr, "phy_link_down") != 28 or
+        @bitOffsetOf(Isr, "hold") != 31)
+    {
+        @compileError("ATL2 interrupt status fields are in the wrong bit position");
     }
     if (@sizeOf(TxHeader) != 4 or @sizeOf(TxStatus) != 4 or @sizeOf(RxStatus) != 4) {
         @compileError("a packet status or header shapes one dword");
@@ -256,18 +341,40 @@ comptime {
     if (@sizeOf(MasterCtrl) != 4 or @sizeOf(IpgIfg) != 4 or @sizeOf(HalfDuplex) != 4) {
         @compileError("a config register shapes one dword");
     }
-    if (@sizeOf(Pssr) != 2) @compileError("the PHY status word is one word");
+    if (@sizeOf(Pssr) != 2 or @sizeOf(PhyEnable) != 2) {
+        @compileError("a PHY register shape is one word");
+    }
+    if (@sizeOf(DmaControl) != 1) @compileError("a DMA enable register is one byte");
+    if (@sizeOf(LtssmTestMode) != 4 or @sizeOf(PcieDllTxCtrl1) != 4) {
+        @compileError("a PCIe register image is one dword");
+    }
+    if (@sizeOf(StationAddressLow) != 4 or @sizeOf(StationAddressHigh) != 4) {
+        @compileError("a station-address register is one dword");
+    }
 }
 
 // ---------------------------------------------------------------------------
 // MII registers
 // ---------------------------------------------------------------------------
 
-/// The vendor power-saving bit in debug word zero; the PHY sleeps behind it.
-const PHY_POWER_SAVE: u16 = 0x1000;
+const PhyDebug = packed struct(u16) {
+    _0: u12 = 0,
+    power_save: bool = false,
+    _13: u3 = 0,
+};
+
+const PhyInterruptEnable = packed struct(u16) {
+    _0: u10 = 0,
+    link_down: bool = false,
+    link_up: bool = false,
+    _12: u4 = 0,
+};
 
 /// Link-up and link-down, the two events worth a PHY interrupt.
-const PHY_LINK_EVENTS: u16 = 0x0C00;
+const PHY_LINK_EVENTS = PhyInterruptEnable{
+    .link_down = true,
+    .link_up = true,
+};
 
 const Phy = enum(u5) {
     bmcr = 0,
@@ -300,12 +407,16 @@ const BMSR = packed struct(u16) {
 };
 
 const ADVERTISE_ALL = packed struct(u16) {
-    _0: u5 = 0,
+    selector: bool = true,
+    _1: u4 = 0,
     ten_half: bool = false, // bit 5
     ten_full: bool = false, // bit 6
     hundred_half: bool = false, // bit 7
     hundred_full: bool = false, // bit 8
-    _9: u7 = 0,
+    _9: u1 = 0,
+    pause: bool = true,
+    asymmetric_pause: bool = true,
+    _12: u4 = 0,
 }{
     .ten_half = true,
     .ten_full = true,
@@ -321,18 +432,25 @@ const TXD_BYTES = 8 * 1024;
 const TXS_COUNT = 160;
 const RX_COUNT = 64;
 const RX_SLOT = 1536;
+const RX_STATUS_BYTES = @sizeOf(RxStatus) + 2 * @sizeOf(u16);
 
 /// One receive slot: status, VLAN tag, then the frame bytes.
 const RxSlot = extern struct {
     status: RxStatus = .{},
     vtag: u16 = 0,
     _reserved: u16 = 0,
-    packet: [RX_SLOT - 8]u8 = @splat(0),
+    packet: [RX_SLOT - RX_STATUS_BYTES]u8 = @splat(0),
 };
 
 comptime {
     if (@sizeOf(RxSlot) != 1536) @compileError("a receive slot is 1536 bytes");
+    if (@offsetOf(RxSlot, "packet") != RX_STATUS_BYTES) @compileError("receive status layout drifted");
     if (@sizeOf(TxStatus) != 4) @compileError("a transmit status is one dword");
+    if (TXD_BYTES % @sizeOf(u32) != 0) @compileError("the transmit FIFO must be dword sized");
+    if (TXS_COUNT > std.math.maxInt(u16) or RX_COUNT > std.math.maxInt(u16)) {
+        @compileError("ring counts must fit their mailbox registers");
+    }
+    if (MAC_FRAME_LIMIT > std.math.maxInt(u11)) @compileError("a frame length must fit hardware");
 }
 
 /// The three regions, one physically contiguous run, in the order the
@@ -355,33 +473,51 @@ const Device = struct {
     regs: Regs = .{ .base = undefined },
     arena: *Arena = undefined,
     phys: u32 = 0,
+    dma_handle: ?u32 = null,
+    mac: [6]u8 = @splat(0),
+    /// Where it sits on the bus, kept for the PCIe capability work.
+    location: pci.Location = @bitCast(@as(u16, 0)),
 
     /// Where the host writes next in the TXD fifo, and where the host is
     /// still owed statuses in the TXS ring.
     txd_write: usize = 0,
     txd_read: usize = 0,
-    txs_fill: u16 = 0, // next slot to send
-    txs_reap: u16 = 0, // next slot expected done
-    rxd_read: u16 = 0, // next slot to consume (u16 wrap is the ring's own)
+    txs_fill: usize = 0,
+    txs_reap: usize = 0,
+    txs_used: usize = 0,
+    tx_lengths: [TXS_COUNT]u16 = @splat(0),
+    rxd_read: usize = 0,
+    opened: bool = false,
+    started: bool = false,
 };
 
 var device: Device = .{};
-var attached = false;
 
 // ---------------------------------------------------------------------------
 // Life
 // ---------------------------------------------------------------------------
 
 pub fn open(loc: pci.Location, dev: *NicDev) bool {
-    if (attached) return false;
+    if (device.opened or device.dma_handle != null) return false;
 
-    const aperture = sys.mapDevice(pci.bar(loc, 0) & ~@as(u32, 0xF), 256 * 1024) orelse {
+    device.location = loc;
+    const base = bar0(loc) orelse return false;
+    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
         log.fail("atl2", "cannot map registers");
         return false;
     };
     pci.enableMemoryAndMaster(loc);
+    var keep_pci_enabled = false;
+    defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
     device.regs = .{ .base = @ptrCast(@volatileCast(aperture)) };
+    device.regs.wr32(.imr, 0);
+    _ = device.regs.rd32(.imr);
     log.say("atl2", .dim, "registers mapped");
+
+    device.mac = readMac() orelse {
+        log.fail("atl2", "cannot read a valid MAC address");
+        return false;
+    };
 
     var phys: u32 = 0;
     const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
@@ -393,53 +529,86 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // slots demand always holds. Checked rather than adjusted: an adjusted
     // physical base without the same shift on the mapping would have the CPU
     // and the card each writing a different arena.
-    if (phys % 128 != 0) {
+    const dma_handle: u32 = @intCast(handle);
+    const last_offset: u32 = @intCast(@sizeOf(Arena) - 1);
+    if (phys % @alignOf(Arena) != 0 or phys > std.math.maxInt(u32) - last_offset) {
+        _ = sys.close(dma_handle);
         log.fail("atl2", "DMA memory is not aligned for the adapter");
         return false;
     }
-    const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
+    const mapped = sys.shmMap(dma_handle, .{ .writable = true }) orelse {
+        _ = sys.close(dma_handle);
         log.fail("atl2", "cannot map DMA rings");
         return false;
     };
-    device.arena = @alignCast(@ptrCast(mapped));
+    device.arena = @ptrCast(@alignCast(mapped));
     device.phys = phys;
+    device.dma_handle = dma_handle;
+    device.arena.* = .{};
 
     log.say("atl2", .dim, "rings placed");
-    if (!configure()) return false;
+    if (!configure()) {
+        // Configuration may already have enabled the DMA engines. Stop PCI
+        // mastering before the backing allocation can be returned.
+        pci.disableInterruptAndMaster(loc);
+        keep_pci_enabled = true;
+        _ = sys.close(dma_handle);
+        device.dma_handle = null;
+        device.phys = 0;
+        return false;
+    }
     log.say("atl2", .dim, "engine configured");
-    readMac(dev);
+    dev.mac = device.mac;
+    device.opened = true;
+    keep_pci_enabled = true;
     dev.state = link(dev);
 
-    attached = true;
     return true;
+}
+
+fn bar0(loc: pci.Location) ?u32 {
+    const raw = pci.bar(loc, 0);
+    const bar: pci.MemoryBar = @bitCast(raw);
+    if (bar.space != .memory or bar.kind == .reserved or bar.kind == .below_one_megabyte) {
+        log.fail("atl2", "BAR0 is not a usable memory BAR");
+        return null;
+    }
+    if (bar.kind == .bits64 and pci.bar(loc, 1) != 0) {
+        log.fail("atl2", "BAR0 lies above the 32-bit address space");
+        return null;
+    }
+    const base = bar.base();
+    if (base == 0 or base > std.math.maxInt(u32) - (MMIO_BYTES - 1)) {
+        log.fail("atl2", "BAR0 has no usable address");
+        return null;
+    }
+    return base;
 }
 
 /// Reset and configure, the sequence design/08 §4.2 fixes. Bounded waits
 /// only: a wedged controller costs a refused driver, never a machine.
 fn configure() bool {
-    var master = @as(MasterCtrl, @bitCast(device.regs.rd32(.master_ctrl)));
-    master.soft_reset = true;
-    device.regs.wr32(.master_ctrl, @bitCast(master));
-
-    // Idle poll, the manual's 1 ms step, at most ten.
-    var tries: u8 = 0;
-    while (tries < 10) : (tries += 1) {
-        sys.sleepMicros(1_000);
-        if (device.regs.rd32(.idle_status) == 0) break;
+    device.regs.wr32(.imr, 0);
+    _ = device.regs.rd32(.imr);
+    if (!resetController()) return false;
+    initPcie();
+    resetRings();
+    if (!phyInit()) {
+        log.fail("atl2", "PHY did not answer");
+        return false;
     }
 
-    phyInit();
-
     // Clear interrupt status, whole word.
-    device.regs.wr32(.isr, @as(u32, 0xFFFF_FFFF));
+    device.regs.wr32(.isr, ACK_EVERYTHING);
+    writeMac();
 
     // Descriptor addresses: this machine is 32-bit, the high word is zero.
     device.regs.wr32(.desc_base_hi, 0);
-    device.regs.wr32(.txd_base_lo, device.phys + @offsetOf(Arena, "txd"));
-    device.regs.wr16(.txd_mem_size, TXD_BYTES / 4);
-    device.regs.wr32(.txs_base_lo, device.phys + @offsetOf(Arena, "txs"));
+    device.regs.wr32(.txd_base_lo, device.phys + @as(u32, @intCast(@offsetOf(Arena, "txd"))));
+    device.regs.wr16(.txd_mem_size, TXD_BYTES / @sizeOf(u32));
+    device.regs.wr32(.txs_base_lo, device.phys + @as(u32, @intCast(@offsetOf(Arena, "txs"))));
     device.regs.wr16(.txs_mem_size, TXS_COUNT);
-    device.regs.wr32(.rxd_base_lo, device.phys + @offsetOf(Arena, "rxd"));
+    device.regs.wr32(.rxd_base_lo, device.phys + @as(u32, @intCast(@offsetOf(Arena, "rxd"))));
     device.regs.wr16(.rxd_buf_num, RX_COUNT);
 
     // Frame scheduling.
@@ -467,7 +636,7 @@ fn configure() bool {
     device.regs.wr16(.cmbdisdma_timer, 50000);
 
     // Frame sizes and cut-through.
-    device.regs.wr32(.mtu, 1500 + 14 + 4 + 4);
+    device.regs.wr32(.mtu, MAC_FRAME_LIMIT);
     device.regs.wr32(.tx_cut_thresh, 0x177);
     device.regs.wr16(.pause_on_th, 0);
     device.regs.wr16(.pause_off_th, 0);
@@ -475,20 +644,93 @@ fn configure() bool {
     // Mailboxes start empty, and the engine turns.
     device.regs.wr16(.mb_txd_wr_idx, 0);
     device.regs.wr16(.mb_rxd_rd_idx, 0);
-    device.regs.wr32(.dmar, 1);
-    device.regs.wr32(.dmaw, 1);
+    dma.publish();
+    device.regs.wr8(.dmar, @bitCast(DmaControl{ .enabled = true }));
+    device.regs.wr8(.dmaw, @bitCast(DmaControl{ .enabled = true }));
+
+    const status = @as(Isr, @bitCast(device.regs.rd32(.isr)));
 
     // Every cause acknowledged, then the line released; the hold bit is the
     // one bit that is not a cause.
     device.regs.wr32(.isr, ACK_EVERYTHING);
     device.regs.wr32(.isr, 0);
-    device.regs.wr32(.imr, @bitCast(UNMASKED));
+    if (status.phy_link_down) {
+        log.fail("atl2", "PCIe link dropped during configuration");
+        return false;
+    }
     return true;
 }
 
-/// Writing one to a cause clears it; all of them at once is the reset of the
-/// register. Bit 31 stays clear: it is the hold, not a cause.
-const ACK_EVERYTHING: u32 = 0x7FFF_FFFF;
+/// Restore the PCIe block's vendor defaults after a MAC reset, and mask its
+/// error reports. Without the defaults the controller raises phantom
+/// unsupported-request and non-fatal errors as soon as its DMA engines
+/// start; the mask stops those phantom reports at the capability rather
+/// than letting them fill every interrupt with noise.
+fn initPcie() void {
+    device.regs.wr32(.ltssm_test_mode, @intFromEnum(LtssmTestMode.vendor_default));
+    device.regs.wr32(.pcie_dll_tx_ctrl1, @intFromEnum(PcieDllTxCtrl1.vendor_default));
+    maskPcieErrorReporting();
+}
+
+/// Clear the four error-reporting enables in the device's PCI Express
+/// capability: unsupported requests, and the fatal, non-fatal and
+/// correctable classes. The capability list is walked, not assumed: the
+/// pointer is whatever the silicon says it is.
+fn maskPcieErrorReporting() void {
+    const caps_pointer = pci.read(device.location, 0x34) & 0xFF;
+    if (caps_pointer == 0) return;
+
+    var at: u8 = @intCast(caps_pointer);
+    while (at != 0) {
+        const header = pci.read(device.location, at);
+        const id = header & 0xFF;
+        const next = @as(u8, @truncate(header >> 8));
+
+        if (id == PCIE_CAP_ID) {
+            const devctl = pci.read(device.location, at + PCIE_DEVCTL);
+            pci.write(device.location, at + PCIE_DEVCTL, devctl & ~PCIE_ERROR_MASK);
+            return;
+        }
+        at = next;
+    }
+}
+
+/// The capability id the specification assigns to PCI Express.
+const PCIE_CAP_ID: u32 = 0x10;
+/// Device Control's offset within the capability.
+const PCIE_DEVCTL: u8 = 0x08;
+/// The four error-reporting enables: correctable, non-fatal, fatal and
+/// unsupported request.
+const PCIE_ERROR_MASK: u32 = 0xF;
+
+fn resetController() bool {
+    device.regs.wr32(.master_ctrl, @bitCast(MasterCtrl{ .soft_reset = true }));
+    _ = device.regs.rd32(.master_ctrl);
+    sys.sleepMicros(1_000);
+
+    for (0..10) |_| {
+        if (device.regs.rd32(.idle_status) == 0) return true;
+        sys.sleepMicros(1_000);
+    }
+    log.fail("atl2", "engines did not become idle after reset");
+    return false;
+}
+
+fn resetRings() void {
+    device.txd_write = 0;
+    device.txd_read = 0;
+    device.txs_fill = 0;
+    device.txs_reap = 0;
+    device.txs_used = 0;
+    device.tx_lengths = @splat(0);
+    device.rxd_read = 0;
+    for (&device.arena.txs) |*status| status.* = .{};
+    for (&device.arena.rxd) |*slot| slot.status = .{};
+}
+
+/// The vendor's all-causes acknowledgement. Bit 31 is the interrupt hold and
+/// bit 30 is reserved, so neither is written here.
+const ACK_EVERYTHING: u32 = @bitCast(IsrClear{});
 
 /// What may interrupt: the two status updates, the PHY, the PCIe link loss
 /// and the fatal DMA pair. Link-change stays off, as the vendor's own driver
@@ -504,63 +746,114 @@ const UNMASKED = Isr{
 
 /// The PHY, through the MII window: wake it, clear the vendor power-save
 /// bit, arm link interrupts, restart autonegotiation.
-fn phyInit() void {
-    device.regs.wr16(.phy_enable, 1);
+fn phyInit() bool {
+    device.regs.wr16(.phy_enable, @bitCast(PhyEnable{ .enabled = true }));
+    _ = device.regs.rd16(.phy_enable);
     sys.sleepMicros(1_000);
 
-    writePhy(.dbg_addr, 0);
-    const debug = readPhy(.dbg_data);
-    if (debug & PHY_POWER_SAVE != 0) writePhy(.dbg_data, debug & ~PHY_POWER_SAVE);
+    if (!writePhy(.dbg_addr, 0)) return false;
+    var debug: PhyDebug = @bitCast(readPhy(.dbg_data) orelse return false);
+    if (debug.power_save) {
+        debug.power_save = false;
+        if (!writePhy(.dbg_data, @bitCast(debug))) return false;
+    }
+    sys.sleepMicros(1_000);
 
-    writePhy(.interrupt, PHY_LINK_EVENTS);
-    writePhy(.advertise, @bitCast(ADVERTISE_ALL));
-    writePhy(.bmcr, @bitCast(BMCR{
+    if (!writePhy(.interrupt, @bitCast(PHY_LINK_EVENTS))) return false;
+    if (!writePhy(.advertise, @bitCast(ADVERTISE_ALL))) return false;
+    return writePhy(.bmcr, @bitCast(BMCR{
         .reset = true,
         .autoneg_enable = true,
         .restart_autoneg = true,
     }));
 }
 
-fn readMac(dev: *NicDev) void {
+fn readMac() ?[6]u8 {
     // The vendors keep the permanent address two ways this driver is not
     // being asked to parse yet (NVM/EEPROM words). Reading the working
     // registers back is where the BIOS usually leaves the right one, and on
     // the far path the fields come back all-zero and rightly look like no
     // story: nothing is invented.
-    const low = device.regs.rd32(.mac_sta_addr);
-    const high = device.regs.rd32(.mac_sta_addr_hi);
+    const low: StationAddressLow = @bitCast(device.regs.rd32(.mac_sta_addr));
+    const high: StationAddressHigh = @bitCast(device.regs.rd32(.mac_sta_addr_hi));
     // The high word holds the first two octets with the first in its upper
     // byte: the vendor's own assignment begins 00:1f:c6, and swapped halves
     // put the multicast bit in the station address.
-    dev.mac = .{
-        @truncate(high >> 8),
-        @truncate(high),
-        @truncate(low >> 24),
-        @truncate(low >> 16),
-        @truncate(low >> 8),
-        @truncate(low),
+    const mac = [6]u8{
+        high.octet0,
+        high.octet1,
+        low.octet2,
+        low.octet3,
+        low.octet4,
+        low.octet5,
     };
-    // Write what was read, so the filter matches the word on the wire.
-    device.regs.wr32(.mac_sta_addr, low);
-    device.regs.wr32(.mac_sta_addr_hi, high);
+    return if (validMac(mac)) mac else null;
+}
+
+fn validMac(mac: [6]u8) bool {
+    if (mac[0] & 1 != 0) return false;
+    var any = false;
+    var all_ff = true;
+    for (mac) |octet| {
+        any = any or octet != 0;
+        all_ff = all_ff and octet == 0xFF;
+    }
+    return any and !all_ff;
+}
+
+fn writeMac() void {
+    const mac = device.mac;
+    device.regs.wr32(.mac_sta_addr, @bitCast(StationAddressLow{
+        .octet2 = mac[2],
+        .octet3 = mac[3],
+        .octet4 = mac[4],
+        .octet5 = mac[5],
+    }));
+    device.regs.wr32(.mac_sta_addr_hi, @bitCast(StationAddressHigh{
+        .octet0 = mac[0],
+        .octet1 = mac[1],
+    }));
 }
 
 pub fn start(nic: *NicDev) bool {
+    if (!device.opened or device.started) return false;
     // The PHY has been latching events since the reset armed them; whatever
     // it holds is folded into the link read below. Cleared before the line
     // is ever unmasked, or the stale latch is the first interrupt.
-    _ = readPhy(.interrupt_clear);
+    if (readPhy(.interrupt_clear) == null) {
+        log.fail("atl2", "cannot clear the PHY interrupt latch");
+        return false;
+    }
 
     nic.state = link(nic);
     applyLinkState(nic.state);
+    device.regs.wr32(.isr, ACK_EVERYTHING);
+    device.regs.wr32(.isr, 0);
+    device.started = true;
+    pci.enableInterrupt(nic.location);
+    device.regs.wr32(.imr, @bitCast(UNMASKED));
+    _ = device.regs.rd32(.imr);
     return true;
 }
 
-pub fn stop(_: *NicDev) void {
+pub fn stop(nic: *NicDev) void {
+    if (!device.opened) return;
+    device.started = false;
+    device.regs.wr32(.imr, 0);
+    _ = device.regs.rd32(.imr);
     var ctrl = @as(MacCtrl, @bitCast(device.regs.rd32(.mac_ctrl)));
     ctrl.rx_enable = false;
     ctrl.tx_enable = false;
     device.regs.wr32(.mac_ctrl, @bitCast(ctrl));
+    _ = device.regs.rd32(.mac_ctrl);
+    _ = resetController();
+    pci.disableInterruptAndMaster(nic.location);
+    resetRings();
+    if (device.dma_handle) |handle| _ = sys.close(handle);
+    device.dma_handle = null;
+    device.phys = 0;
+    device.opened = false;
+    nic.state = .{};
 }
 
 // ---------------------------------------------------------------------------
@@ -574,34 +867,20 @@ pub fn stop(_: *NicDev) void {
 /// which real silicon spends before the frame has clocked its preamble.
 const MDIO_SPINS = 4000;
 
-fn writePhy(reg: Phy, value: u16) void {
-    if (mdioBegin(reg, false, value)) return;
-    _ = spinUntil(MDIO_SPINS, struct {
-        fn idle(r: Regs) bool {
-            return !@as(MdioCtrl, @bitCast(r.rd32(.mdio_ctrl))).busy;
-        }
-    }.idle);
+fn writePhy(reg: Phy, value: u16) bool {
+    if (!mdioBegin(reg, false, value)) return false;
+    return spinUntil(MDIO_SPINS, mdioIdle);
 }
 
-fn readPhy(reg: Phy) u16 {
-    if (mdioBegin(reg, true, 0)) return 0;
-    const done = spinUntil(MDIO_SPINS, struct {
-        fn idle(r: Regs) bool {
-            return !@as(MdioCtrl, @bitCast(r.rd32(.mdio_ctrl))).busy;
-        }
-    }.idle);
-    if (!done) return 0;
+fn readPhy(reg: Phy) ?u16 {
+    if (!mdioBegin(reg, true, 0)) return null;
+    if (!spinUntil(MDIO_SPINS, mdioIdle)) return null;
     return @as(MdioCtrl, @bitCast(device.regs.rd32(.mdio_ctrl))).data;
 }
 
-/// One MDIO transaction, returning true if the bus would not answer within
-/// the bound. Waiting for the bus first, then starting.
+/// Start one MDIO transaction after the previous one has gone idle.
 fn mdioBegin(reg: Phy, read: bool, value: u16) bool {
-    if (!spinUntil(MDIO_SPINS, struct {
-        fn idle(r: Regs) bool {
-            return !@as(MdioCtrl, @bitCast(r.rd32(.mdio_ctrl))).busy;
-        }
-    }.idle)) return true;
+    if (!spinUntil(MDIO_SPINS, mdioIdle)) return false;
 
     device.regs.wr32(.mdio_ctrl, @bitCast(MdioCtrl{
         .data = value,
@@ -609,7 +888,12 @@ fn mdioBegin(reg: Phy, read: bool, value: u16) bool {
         .read = read,
         .start = true,
     }));
-    return false;
+    return true;
+}
+
+fn mdioIdle(regs: Regs) bool {
+    const state = @as(MdioCtrl, @bitCast(regs.rd32(.mdio_ctrl)));
+    return !state.start and !state.busy;
 }
 
 // ---------------------------------------------------------------------------
@@ -617,13 +901,24 @@ fn mdioBegin(reg: Phy, read: bool, value: u16) bool {
 // ---------------------------------------------------------------------------
 
 pub fn irq(nic: *NicDev) void {
+    if (!device.opened or !device.started) return;
     const cause = @as(Isr, @bitCast(device.regs.rd32(.isr)));
     if (cause.none()) return; // a shared line, not ours
 
-    log.begin("atl2", .dim);
-    out.text("cause 0x");
-    out.hex(@as(u32, @bitCast(cause)), 8);
-    log.end();
+    // The everyday causes — a packet status update, the PHY answering a
+    // poll — are traffic, not news, and stay quiet. Anything left over is
+    // worth the line: errors, overruns and link events.
+    var unexpected = cause;
+    unexpected.rx_status = false;
+    unexpected.tx_status = false;
+    unexpected.phy = false;
+    unexpected.hold = false;
+    if (@as(u32, @bitCast(unexpected)) != 0) {
+        log.begin("atl2", .dim);
+        out.text("cause 0x");
+        out.hex(@as(u32, @bitCast(cause)), 8);
+        log.end();
+    }
 
     // The PHY latches its interrupt until its status register is read, so
     // the read comes before the acknowledgement: acknowledged the other way
@@ -632,23 +927,36 @@ pub fn irq(nic: *NicDev) void {
 
     // Acknowledge and hold the line (ISR_DIS_INT), per the manual: work on
     // it before the next delivery on a shared level line.
-    device.regs.wr32(.isr, @as(u32, @bitCast(cause)) | @as(u32, @bitCast(Isr{ .hold = true })));
+    var acknowledged = cause;
+    acknowledged.hold = true;
+    device.regs.wr32(.isr, @bitCast(acknowledged));
 
-    if (cause.dmar_timeout or cause.dmaw_timeout) {
+    if (cause.phy_link_down or cause.dmar_timeout or cause.dmaw_timeout) {
         // The manual's answer to a wedged DMA engine is a full reset. Masked
         // and quieted first, and the link reapplied after, because configure
         // leaves the MAC disabled until the link state says otherwise.
-        log.warn("atl2", "DMA timeout; reseating the adapter");
+        log.warn("atl2", "fatal adapter event; reseating the adapter");
+        nic.stats.tx_failed += device.txs_used;
         device.regs.wr32(.imr, 0);
+        _ = device.regs.rd32(.imr);
         device.regs.wr32(.isr, 0);
-        _ = configure();
+        if (!configure()) {
+            device.started = false;
+            nic.state = .{};
+            applyLinkState(nic.state);
+            pci.disableInterruptAndMaster(nic.location);
+            log.fail("atl2", "adapter recovery failed");
+            return;
+        }
         nic.state = link(nic);
         applyLinkState(nic.state);
+        device.regs.wr32(.imr, @bitCast(UNMASKED));
+        _ = device.regs.rd32(.imr);
         return;
     }
 
     if (cause.rx_status) reapRx(nic);
-    if (cause.tx_status) reapTx();
+    if (cause.tx_status) reapTx(nic);
     if (cause.link_change or cause.phy or cause.phy_link_down) {
         nic.state = link(nic);
         applyLinkState(nic.state);
@@ -659,86 +967,121 @@ pub fn irq(nic: *NicDev) void {
 }
 
 fn reapRx(nic: *NicDev) void {
-    while (true) {
-        const index = device.rxd_read % RX_COUNT;
+    var reaped: usize = 0;
+    while (reaped < RX_COUNT) : (reaped += 1) {
+        const index = device.rxd_read;
         const slot = &device.arena.rxd[index];
         // The hardware writes this word; the load must happen every lap.
+        const ownership = @as(*const volatile RxStatus, &slot.status).*;
+
+        if (!ownership.update) break;
+        dma.consume();
         const status = @as(*const volatile RxStatus, &slot.status).*;
 
-        if (!status.update) break;
-
-        // The length comes off the wire; the slot clamps whatever it says.
-        const len = @min(status.pkt_len, RX_SLOT - 8);
+        // The device reports bytes on the wire, including the FCS. Never form
+        // a slice until that value has been bounded against both the protocol
+        // and the DMA slot.
+        const wire_len = @as(usize, status.pkt_len);
         const good = status.ok and !status.crc_error and !status.code_error and
-            !status.fragment and !status.align_error and len >= 60;
+            !status.runt and !status.fragment and !status.truncated and
+            !status.align_error and wire_len >= ETH_MIN_WIRE and
+            wire_len <= ETH_MAX_FRAME and wire_len <= slot.packet.len;
 
-        dev_mod.deliverRx(nic, .{
-            .ok = good,
-            .frame = slot.packet[0..len],
-        });
+        if (good) {
+            dev_mod.deliverRx(nic, .{
+                .ok = true,
+                .frame = slot.packet[0 .. wire_len - ETH_FCS],
+            });
+        } else {
+            dev_mod.deliverRx(nic, .{});
+        }
 
         // The whole status word, update included: the slot is ours again.
         @as(*volatile RxStatus, &slot.status).* = .{};
-        device.rxd_read +%= 1;
-        device.regs.wr16(.mb_rxd_rd_idx, device.rxd_read);
+        dma.publish();
+        device.rxd_read = (index + 1) % RX_COUNT;
     }
+    if (reaped != 0) device.regs.wr16(.mb_rxd_rd_idx, @intCast(device.rxd_read));
 }
 
-fn reapTx() void {
-    while (true) {
-        const index = device.txs_reap % TXS_COUNT;
+fn reapTx(nic: *NicDev) void {
+    var reaped: usize = 0;
+    while (device.txs_used != 0 and reaped < TXS_COUNT) : (reaped += 1) {
+        const index = device.txs_reap;
+        const ownership = @as(*const volatile TxStatus, &device.arena.txs[index]).*;
+        if (!ownership.update) break;
+        dma.consume();
         const status = @as(*const volatile TxStatus, &device.arena.txs[index]).*;
-        if (!status.update) break;
 
         // The fifo bytes this frame held: header, then the payload padded to
         // a dword, which is the same rounding the write side made.
-        const held = 4 + ((@as(usize, status.pkt_len) + 3) & ~@as(usize, 3));
+        const length = device.tx_lengths[index];
+        const held = @sizeOf(TxHeader) + std.mem.alignForward(usize, length, @sizeOf(u32));
+        if (!status.ok or status.pkt_len != length) nic.stats.tx_failed += 1;
+        @as(*volatile TxStatus, &device.arena.txs[index]).* = .{};
+        device.tx_lengths[index] = 0;
         device.txd_read = (device.txd_read + held) % TXD_BYTES;
-        device.txs_reap +%= 1;
+        device.txs_reap = (index + 1) % TXS_COUNT;
+        device.txs_used -= 1;
     }
 }
 
-pub fn transmit(nic: *NicDev, frame: []const u8) void {
-    if (frame.len > RX_SLOT - 8 - 4) return;
+pub fn transmit(nic: *NicDev, frame: []const u8) bool {
+    if (!device.opened or !device.started or
+        frame.len < ETH_HEADER or frame.len > ETH_MAX_FRAME - ETH_FCS)
+    {
+        return false;
+    }
 
-    const pay = (frame.len + 3) & ~@as(usize, 3);
-    const needed = 4 + pay;
+    // Completions are advisory interrupts; reclaim here too so coalescing
+    // cannot make a free ring look full.
+    reapTx(nic);
+    if (device.txs_used >= TXS_COUNT - 1) {
+        nic.stats.tx_failed += 1;
+        return false;
+    }
+
+    const pay = std.mem.alignForward(usize, frame.len, @sizeOf(u32));
+    const needed = @sizeOf(TxHeader) + pay;
     const used = (device.txd_write - device.txd_read + TXD_BYTES) % TXD_BYTES;
     if (TXD_BYTES - used < needed + 4) {
         nic.stats.tx_failed += 1;
-        return;
+        return false;
     }
 
     // The next status slot we are handing the hardware: clear its update, so
     // a completion the hardware writes next is distinguishable from one left
     // over from the last lap of the ring.
-    @as(*volatile TxStatus, &device.arena.txs[device.txs_fill % TXS_COUNT]).* = .{};
+    const status_slot = device.txs_fill;
+    @as(*volatile TxStatus, &device.arena.txs[status_slot]).* = .{};
 
     const header = TxHeader{ .pkt_len = @intCast(frame.len) };
-    writeFifo(device.txd_write, 4, @as([*]const u8, @ptrCast(&header))[0..4]);
-    writeFifo(device.txd_write + 4, frame.len, frame);
+    writeFifo(device.txd_write, @sizeOf(TxHeader), std.mem.asBytes(&header));
+    writeFifo(device.txd_write + @sizeOf(TxHeader), frame.len, frame);
 
     device.txd_write = (device.txd_write + needed) % TXD_BYTES;
-    device.txs_fill +%= 1;
+    device.tx_lengths[status_slot] = @intCast(frame.len);
+    device.txs_fill = (status_slot + 1) % TXS_COUNT;
+    device.txs_used += 1;
 
-    // The vendor's driver flushes every ring write with a register read
-    // before a mailbox goes out: the engine fetches the FIFO the instant
-    // the index moves, and on this silicon a still-posted write is an
-    // underrun. The read makes the FIFO's bytes visible before the bell.
-    _ = device.regs.rd32(.idle_status);
-    device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write >> 2));
+    // The engine fetches the FIFO as soon as the mailbox advances. Publish
+    // every byte and the cleared status before that ownership handoff, then
+    // read the mailbox back to flush the posted MMIO write.
+    dma.publish();
+    device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write / @sizeOf(u32)));
     _ = device.regs.rd16(.mb_txd_wr_idx);
 
     log.begin("atl2", .dim);
     out.text("tx ");
     out.decimal(frame.len);
     out.text("B, write idx ");
-    out.decimal(device.txd_write >> 2);
+    out.decimal(device.txd_write / @sizeOf(u32));
     out.text(", isr 0x");
     out.hex(device.regs.rd32(.isr), 8);
     log.end();
 
     dev_mod.deliverTx(nic, frame.len);
+    return true;
 }
 
 /// Copy into the FIFO, in two pieces when it wraps. The caller hands a
@@ -757,12 +1100,14 @@ fn writeFifo(at: usize, len: usize, bytes: []const u8) void {
 // ---------------------------------------------------------------------------
 
 pub fn link(_: *NicDev) dev_mod.Link {
+    if (!device.opened) return .{};
     // Read twice, the way the vendor's driver does: the first may latch.
-    _ = readPhy(.bmsr);
-    const bmsr = @as(BMSR, @bitCast(readPhy(.bmsr)));
+    _ = readPhy(.bmsr) orelse return .{};
+    const bmsr = @as(BMSR, @bitCast(readPhy(.bmsr) orelse return .{}));
     if (!bmsr.link_status) return .{ .up = false };
 
-    const pssr = @as(Pssr, @bitCast(readPhy(.pssr)));
+    const pssr = @as(Pssr, @bitCast(readPhy(.pssr) orelse return .{}));
+    if (!pssr.resolved or (pssr.speed != .m10 and pssr.speed != .m100)) return .{};
     return .{
         .up = true,
         .mbps = pssr.speed.mbps(),
@@ -775,7 +1120,7 @@ pub fn link(_: *NicDev) dev_mod.Link {
 /// be the refresh that told the hardware so: on this adapter the two answers
 /// live in different places.
 pub fn syncLink(nic: *NicDev) void {
-    const state = link(nic);
+    const state = if (device.started) link(nic) else dev_mod.Link{};
     nic.state = state;
     applyLinkState(state);
 

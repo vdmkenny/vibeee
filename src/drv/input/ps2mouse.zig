@@ -203,7 +203,7 @@ pub fn init() Kind {
     _ = sendWith(SET_SAMPLE_RATE, 100);
     _ = send(ENABLE_REPORTING);
 
-    idt.setHandler(idt.IRQ_BASE + 12, onIrq);
+    idt.setHandler(idt.legacyVector(12), onIrq);
     idt.setIrqMask(12, false);
 
     console.info("mouse", "{s} on irq12, {d}-byte packets", .{ kind.name(), packet_len });

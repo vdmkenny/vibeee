@@ -1,7 +1,9 @@
 //! Power control: soft-off and reset.
 
 const console = @import("../../kernel/console.zig");
+const hal = @import("../../kernel/hal.zig");
 const port = @import("../../arch/x86/port.zig");
+const sched = @import("../../kernel/sched.zig");
 const tables = @import("tables.zig");
 
 /// The PM1 control register. Writing `sleep_enable` commits `sleep_type`,
@@ -17,21 +19,6 @@ const Pm1Control = packed struct(u16) {
 
 fn pm1(at: u16) Pm1Control {
     return @bitCast(port.inw(at));
-}
-
-/// Open or close the chipset's own gate on the system control interrupt.
-///
-/// Not the controller's entry: SCI_EN is a bit in PM1a_CNT, which the
-/// firmware's trap has no interest in protecting. The SCI line itself is
-/// routed and left masked at boot; this bit is the one way a write to any
-/// direction is meant to travel at runtime.
-pub fn setSciEnabled(on: bool) void {
-    const info = tables.get() orelse return;
-    if (info.pm1a_control == 0) return;
-
-    var current = port.inw(info.pm1a_control);
-    if (on) current |= 1 else current &= ~@as(u16, 1);
-    port.outw(info.pm1a_control, current);
 }
 
 /// Hand the machine from legacy mode into ACPI mode.
@@ -78,8 +65,8 @@ pub fn off() void {
             // so the last line printed is the only way to tell which write it
             // was that never came back.
             console.debug("shutdown", "pm1a {x:0>4} = {x:0>4}, s5 type {d}, smi {x:0>4}/{x:0>2}", .{
-                info.pm1a_control,  port.inw(info.pm1a_control),
-                info.slp_typ_a,     info.smi_command,
+                info.pm1a_control, port.inw(info.pm1a_control),
+                info.slp_typ_a,    info.smi_command,
                 info.acpi_enable,
             });
 
@@ -130,9 +117,9 @@ pub fn off() void {
             }
 
             // Power does not drop instantly; give the hardware time before
-            // concluding it did not work.
-            var spins: u32 = 0;
-            while (spins < 10_000_000) : (spins += 1) asm volatile ("pause");
+            // concluding it did not work. A sleep rather than a spin: the
+            // machine is going down, not computing, and the scheduler is up.
+            sched.sleepMicros(100_000);
         }
     }
 
@@ -146,12 +133,19 @@ pub fn off() void {
 /// needs no tables. The triple fault is the last resort: an empty IDT makes the
 /// next interrupt unrecoverable, which every x86 implements as a reset.
 pub fn reset() void {
-    var spins: u32 = 0;
-    while (port.inb(0x64) & 0x02 != 0 and spins < 100_000) : (spins += 1) {}
+    // The keyboard controller is polled for its input buffer: no interrupt
+    // says "empty". Polled asleep, not spun: a reset costs nothing before the
+    // line is written, and the controller answers in microseconds, so the
+    // first look usually ends the wait.
+    const deadline = sched.deadlineIn(50_000);
+    while (port.inb(0x64) & 0x02 != 0 and hal.monotonicMicros() < deadline) {
+        sched.sleepMicros(1_000);
+    }
     port.outb(0x64, 0xFE);
 
-    spins = 0;
-    while (spins < 1_000_000) : (spins += 1) asm volatile ("pause");
+    // The reset line needs a moment to take before the machine is asked, one
+    // last time, to leave.
+    sched.sleepMicros(10_000);
 
     const null_idt = extern struct { limit: u16 align(1), base: u32 align(1) }{
         .limit = 0,

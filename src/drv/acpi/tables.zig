@@ -56,6 +56,14 @@ const Fadt = extern struct {
     pm_tmr_blk: u32 align(1),
 };
 
+/// How the FADT packs a legacy PM register block: the base in the low word,
+/// the length in the next byte.
+const PmBlk = packed struct(u32) {
+    base: u16,
+    length: u8,
+    reserved: u8 = 0,
+};
+
 pub const Info = struct {
     /// The system control interrupt's number, as the FADT names it.
     sci_int: u16 = 0,
@@ -64,6 +72,12 @@ pub const Info = struct {
     pm_timer: u16 = 0,
     smi_command: u16 = 0,
     acpi_enable: u8 = 0,
+    /// The power management block's event register pair, for the safety
+    /// check that keeps a driver from ever driving something the DSDT placed
+    /// inside it. Zero length means the FADT did not say.
+    pm1a_event: u16 = 0,
+    pm1a_event_len: u8 = 0,
+    pm1a_control_len: u8 = 0,
     /// Sleep type values for S5, from the DSDT.
     slp_typ_a: u8 = 0,
     slp_typ_b: u8 = 0,
@@ -135,6 +149,13 @@ pub fn init(rsdp_phys: u32) void {
     info.smi_command = @truncate(fadt.smi_cmd);
     info.acpi_enable = fadt.acpi_enable;
     info.sci_int = fadt.sci_int;
+    // The event and control blocks, unpacked: base and length are both what
+    // the safety check needs.
+    const pm_evt: PmBlk = @bitCast(fadt.pm1a_evt_blk);
+    const pm_cnt: PmBlk = @bitCast(fadt.pm1a_cnt_blk);
+    info.pm1a_event = pm_evt.base;
+    info.pm1a_event_len = pm_evt.length;
+    info.pm1a_control_len = pm_cnt.length;
     have_info = true;
 
     findS5(fadt.dsdt);

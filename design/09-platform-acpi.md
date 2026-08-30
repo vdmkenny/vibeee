@@ -158,8 +158,9 @@ predictable opcode set.
 , any invocation returns eval-fault without executing** (research: hard-hangs the machine). On any
   eval-fault: log, mark that method poisoned (max 3 faults → permanent), and degrade that *feature* to Tier 2
   per §4.2. Interpreter never panics the kernel; all faults are contained per-eval.
-- **Execution context**: AML runs on a dedicated kernel thread ("acpid-k"), never in the SCI hard-IRQ. SCI
-  handler only acks/masks and wakes the thread. One global AML interpreter lock (single-threaded namespace).
+- **Execution context**: AML runs on platd's single userspace thread, never in the SCI hard-IRQ. The kernel
+  defers level completion and wakes platd; platd clears the firmware source before `irq_ack`. SCI is isolated
+  in the lowest APIC priority class so a failed interpreter cannot suppress unrelated devices.
 - **Size estimate**: ~7k LOC Zig ≈ 80–100 KB code (ReleaseSmall, i686); namespace for the 24 KB DSDT ≈
   1000–1500 objects ≈ 64–96 KB arena. Hard cap: 256 KB arena; exceeding = interpreter-off, Tier 2.
 
@@ -265,17 +266,28 @@ pub const GateNotice = union(enum(u16)) {   // platform → devmgr channel
 
 ## 6. Register-level programming sequences
 
-### 6.1 ACPI bring-up (kernel early, after MADT/IOAPIC init)
+### 6.1 ACPI bring-up (platd, after the kernel routes the IOAPIC)
 1. Map ACPI-data + NVS e820 regions (never reclaimed; FACS is in NVS and written at S3 time).
 2. Parse RSDP→RSDT→FADT; extract `PmRegs`; sanity-check against ICH6 defaults (log any mismatch, prefer FADT).
-3. Enable ACPI mode: if `inw(0x804) & SCI_EN == 0`: `outb(smi_cmd, acpi_enable)`; poll SCI_EN (bit0 of PM1_CNT)
-   ≤ 3 s. (AMI boots in legacy mode.)
+3. Initialize uACPI with `UACPI_FLAG_NO_ACPI_MODE`; load and initialize the namespace while SCI remains in legacy routing.
 4. Clear PM1_STS: `outw(0x800, 0xFFFF)`. Program PM1_EN (0x802): PWRBTN_EN(bit8) | SLPBTN_EN(bit9); RTC_EN off.
-5. GPE0: `outl(0x82C, 0)`, `outl(0x828, 0xFFFFFFFF)` (clear all). Load AML (§4); find EC0 (`PNP0C09`), read
+5. GPE0: `outl(0x82C, 0)`, `outl(0x828, 0xFFFFFFFF)` (clear all). Find EC0 (`PNP0C09`), read
    `_CRS` (expect 0x62/0x66) and `_GPE` → n. `outl(0x82C, 1 << n)`. Tier 2: enable-all + empirical latch (§4.2).
-6. Route GSI9: IOAPIC RTE, level-triggered, active-high (per MADT override), dest = BSP LAPIC, unmasked.
-7. Evaluate `ATKD.INIT(0x40)` then `CMSG` → supported-feature mask; log. Evaluate `WLDG`, `CAMG`, `PBLG`,
+6. Evaluate `ATKD.INIT(0x40)` then `CMSG` → supported-feature mask; log. Evaluate `WLDG`, `CAMG`, `PBLG`,
    `AC0._PSR`, `BAT0._BIF` to seed PowerStatus.
+7. Claim GSI9 and include its event in `wait_many`. The IOAPIC route was established at boot as level-triggered, active-high (per MADT override), vector 0x20.
+8. Only when events are enabled, call `uacpi_enter_acpi_mode`; it performs the FADT SMI-command handshake and waits for SCI_EN rather than writing SCI_EN directly. The default build deliberately omits this transition.
+9. Register `/svc/platform` last, as the act that releases dependents: a dependent starts the moment the name appears, so the name appears only once the firmware is fully settled and the serve loop is the next line.
+
+The quirks registry (`src/quirks/`, one module per machine family) is evaluated by the
+kernel's early probe before any driver binds, and answers through `sysinfo` (`quirks`,
+`quirks.ec`, `quirks.battery`, `acpi.pm`). Rules (`Rule`): DMI vendor, a product family
+(exact names plus prefixes, so one quirk covers a whole line), board name, ACPI HID — a
+quirk applies when all of its rules match. Today (the Eee line): EC ports 0x62/0x66 for
+DSDTs that declare the controller inside the power management block, and the battery
+tables' percent-as-capacity mislabel. The EC driver refuses, uncorrected, any port pair
+inside the published no-touch ranges (the FADT's PM1 blocks plus the chipset's own PM
+base): a running machine without battery and hotkeys beats touching the PM registers.
 
 ### 6.2 SCI / GPE / EC query flow
 ```

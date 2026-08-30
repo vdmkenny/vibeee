@@ -13,14 +13,14 @@
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 
-/// Register offsets, in bytes from the base.
-const ID = 0x020;
-const VERSION = 0x030;
-/// Task priority: which interrupts are allowed through at all.
-const TPR = 0x080;
-const EOI = 0x0B0;
-/// Spurious interrupt vector, whose bit 8 is the software enable.
-const SPURIOUS = 0x0F0;
+const Register = enum(usize) {
+    id = 0x020,
+    /// Task priority: which interrupts are allowed through at all.
+    task_priority = 0x080,
+    eoi = 0x0B0,
+    /// Spurious interrupt vector, whose bit 8 is the software enable.
+    spurious = 0x0F0,
+};
 
 /// The MSR carrying the base address and the hardware enable.
 const APIC_BASE_MSR = 0x1B;
@@ -46,7 +46,33 @@ const Spurious = packed struct(u32) {
     _reserved: u22 = 0,
 };
 
+comptime {
+    if (@sizeOf(BaseMsr) != 8 or @sizeOf(Spurious) != 4) {
+        @compileError("LAPIC register shapes have the wrong width");
+    }
+    if (@bitOffsetOf(BaseMsr, "enabled") != 11 or
+        @bitOffsetOf(Spurious, "enabled") != 8)
+    {
+        @compileError("LAPIC enable fields are in the wrong bit position");
+    }
+}
+
 var base: ?[*]volatile u32 = null;
+
+/// A level interrupt handed to userspace cannot be acknowledged at the local
+/// APIC until that process has cleared the device. The APIC EOI register is
+/// non-specific, so nested deliveries are retired in strict reverse order.
+const DeferredEoi = packed struct(u16) {
+    vector: u8 = 0,
+    acknowledged: bool = false,
+    _reserved: u7 = 0,
+};
+
+/// One entry per APIC priority class is sufficient: a vector cannot nest under
+/// another vector in the same or a lower class.
+const MAX_DEFERRED = 16;
+var deferred: [MAX_DEFERRED]DeferredEoi = @splat(.{});
+var deferred_len: usize = 0;
 
 pub fn active() bool {
     return base != null;
@@ -69,28 +95,89 @@ pub fn init(phys: u32) bool {
     }
 
     // Accept every priority. There is one core and nothing to defer to.
-    write(TPR, 0);
+    write(.task_priority, 0);
     // Separate from the enable in the MSR: that one powers the unit, this one
     // lets interrupts through.
-    write(SPURIOUS, @bitCast(Spurious{ .vector = SPURIOUS_VECTOR, .enabled = true }));
+    write(.spurious, @bitCast(Spurious{ .vector = SPURIOUS_VECTOR, .enabled = true }));
     return true;
 }
 
 pub fn id() u8 {
-    return @truncate(read(ID) >> 24);
+    return @truncate(read(.id) >> 24);
 }
 
 /// Acknowledge the interrupt being handled.
 pub fn eoi() void {
-    write(EOI, 0);
+    write(.eoi, 0);
 }
 
-fn read(offset: usize) u32 {
+/// Keep the current vector in service until its userspace owner acknowledges
+/// it. Re-entering the same vector before EOI is impossible, but treating an
+/// existing entry as idempotent keeps the invariant explicit.
+pub fn deferEoi(vector: u8) void {
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+
+    for (deferred[0..deferred_len]) |entry| {
+        if (entry.vector == vector) return;
+    }
+    if (deferred_len == deferred.len) {
+        @panic("too many nested deferred interrupts");
+    }
+
+    deferred[deferred_len] = .{ .vector = vector };
+    deferred_len += 1;
+}
+
+pub fn isEoiDeferred(vector: u8) bool {
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+
+    for (deferred[0..deferred_len]) |entry| {
+        if (entry.vector == vector) return true;
+    }
+    return false;
+}
+
+/// True only while this vector still needs an owner to clear its source. An
+/// acknowledged lower-priority vector can remain on the stack behind a higher
+/// one, but a replacement driver must not mistake that for new work.
+pub fn eoiAwaitingAck(vector: u8) bool {
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+
+    for (deferred[0..deferred_len]) |entry| {
+        if (entry.vector == vector) return !entry.acknowledged;
+    }
+    return false;
+}
+
+/// Mark one deferred vector complete and retire every completed vector now at
+/// the top. LAPIC EOI always targets the highest-priority in-service vector,
+/// so acknowledging out of order must wait rather than EOI the wrong source.
+pub fn acknowledgeEoi(vector: u8) void {
+    const was = cpu.saveAndDisableInterrupts();
+    defer cpu.restoreInterrupts(was);
+
+    for (deferred[0..deferred_len]) |*entry| {
+        if (entry.vector != vector) continue;
+        entry.acknowledged = true;
+        break;
+    } else return;
+
+    while (deferred_len > 0 and deferred[deferred_len - 1].acknowledged) {
+        eoi();
+        deferred_len -= 1;
+        deferred[deferred_len] = .{};
+    }
+}
+
+fn read(register: Register) u32 {
     const regs = base orelse return 0;
-    return regs[offset / 4];
+    return regs[@intFromEnum(register) / @sizeOf(u32)];
 }
 
-fn write(offset: usize, value: u32) void {
+fn write(register: Register, value: u32) void {
     const regs = base orelse return;
-    regs[offset / 4] = value;
+    regs[@intFromEnum(register) / @sizeOf(u32)] = value;
 }

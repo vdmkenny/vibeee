@@ -79,6 +79,13 @@ with grants {pci_cfg(00:1b.0), map_mmio(BAR0), ioport: none, dma_alloc, irq_atta
 (gsi from ACPI _PRT)}. sndd inits hardware, then registers "audio" in /svc.
 Not on the boot critical path; ready ≈150 ms after spawn.
 
+Lifecycle, per the model netd follows (design/08 §3.4): the manifest declares
+`needs = platd`, the PCI routing question is asked of `platd` before any hardware
+touch, and the "audio" name is registered as the last act before the serve loop —
+once the controller, codec and mixer state are all answerable. The boot line can
+hold any service down (`no.audio`) or start it late under the boot watchdog
+(`late.audio`) for one boot.
+
 ### 3.1 Period/format policy
 
 - Hardware runs fixed 48000 Hz, S16LE, 2ch, period 960 frames = 3840 B = 20 ms.

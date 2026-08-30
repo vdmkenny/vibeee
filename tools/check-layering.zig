@@ -106,6 +106,31 @@ const RULES = [_]Rule{
         .forbid = "user/",
         .why = "keymaps are shared; nothing there may depend on one side of the boundary",
     },
+    // Quirks are pure data: machine recognition and corrections, nothing
+    // else. The probe hands them the identity they match on, and everything
+    // downstream reads the corrections back, so a quirk that reached for the
+    // kernel, a driver or one side of the boundary would be claiming a
+    // dependency its job does not give it.
+    .{
+        .from = "src/quirks",
+        .forbid = "kernel/",
+        .why = "a quirk declares corrections; it is handed what it needs to match",
+    },
+    .{
+        .from = "src/quirks",
+        .forbid = "drv/",
+        .why = "a quirk matches on the identity passed to it, never on a driver",
+    },
+    .{
+        .from = "src/quirks",
+        .forbid = "arch/",
+        .why = "a quirk names corrections, not registers",
+    },
+    .{
+        .from = "src/quirks",
+        .forbid = "user/",
+        .why = "user processes read the corrections through sysinfo",
+    },
 };
 
 pub fn main(init: std.process.Init) !void {

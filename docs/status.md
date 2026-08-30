@@ -38,10 +38,13 @@ knows when this was last true, and the tree knows how big it is.
 | Kernel log | [`kernel/klog.zig`](../src/kernel/klog.zig) | A 16 KiB ring of everything said: kernel lines recorded whether or not they were printed, and the services' own lines teed into the same ring through the `log` syscall. `verbose` and `debug` are separate command-line gates (see below); a quiet boot can still be read back in full with `log`, and a `debug` line that was never asked for was never recorded. |
 | Capabilities | [`lib/syscalls.zig`](../src/lib/syscalls.zig) | What a process may do, intersected at every spawn so an authority only ever shrinks down the tree. Declared per service in `/etc/services`. |
 | Driver capabilities | [`kernel/irqevent.zig`](../src/kernel/irqevent.zig), [`syscall/driver.zig`](../src/kernel/syscall/driver.zig) | `irq_attach` hands a device line to userspace as something `wait_many` accepts: the kernel's handler masks and signals, the driver services the device and acknowledges. `ioport_grant` opens ports through the CPU's own permission bitmap, copied into the TSS only when the process holding it changes. `map_device` maps a register aperture uncached, marked as belonging elsewhere so teardown does not hand device memory to the page allocator. `pci_read`/`pci_write` answer configuration space with the kernel as its one owner: the two config ports are one shared index pair, and no driver server reaches them itself. All need the driver capability. |
-| Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. PCI interrupts take the firmware's `_PRT` routing rather than the legacy pin, answered by `platd` and waited for when the service is still waking up. Every redirection entry is routed and unmasked once at boot; the runtime performs no controller writes at all, because the firmware co-owns the controller from system management mode and a later write is answered by a trap that never returns. Arming a line is bookkeeping: a quiet line costs nothing before its driver claims it, and an asserted one is acknowledged by the kernel stub that answers any vector. |
+| Interrupts | [`kernel/irq.zig`](../src/kernel/irq.zig), [`arch/x86/lapic.zig`](../src/arch/x86/lapic.zig), [`arch/x86/ioapic.zig`](../src/arch/x86/ioapic.zig) | LAPIC and IOAPIC, routed from the MADT with the firmware's polarity and trigger per line. The 8259s remain the fallback for a machine that describes no controller. PCI interrupts take the firmware's `_PRT` routing rather than the legacy pin. Level completion is deferred until its userspace owner clears the source; kernel input and the timer outrank every defer-capable userspace vector, and SCI alone occupies the lowest priority class. IOAPIC entries are established at boot because the firmware co-owns the controller from system management mode. SCI activation is a separate protocol: uACPI loads without automatic mode entry, explicitly retains legacy mode by default, finalizes handlers, registers the service, claims the line, and only then may perform the FADT-defined ACPI-mode transition. There is no raw SCI_EN syscall bypass. |
 | Syscalls | [`syscall.zig`](../src/kernel/syscall.zig) + [`syscall/`](../src/kernel/syscall/) | Bound to the table at comptime in both directions. SYSENTER where the CPU has it, `int 0x80` otherwise, same register convention either way; userspace asks the kernel which was armed rather than trusting CPUID. |
 | Timekeeping | [`clock.zig`](../src/kernel/clock.zig) | Monotonic + wall clock as offset plus uptime. |
-| Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Flush, unmount, ACPI off. || Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
+| Boot watchdog | [`watchdog.zig`](../src/kernel/watchdog.zig) | Armed once interrupts are on, stood down by `boot_ok`. A boot that stops making progress ends in the panic screen, QR and all; an `init` that reports late (see `netlate` below) keeps it armed through the suspect's grace period. |
+| Platform quirks | [`quirks/`](../src/quirks/) | One module per machine family, one registry, evaluated in the early probe against the DMI identity. Rules match vendor, a whole product family (exact names plus prefixes) or a board name; corrections — the EC port pair, the battery percent mislabel — are read by kernel code directly and by `platd` through `sysinfo` (`quirks`, `quirks.ec`, `quirks.battery`, `acpi.pm`). The whole registry is data in, corrections out: no driver imports it, and the layering check enforces that. |
+| Shutdown | [`shutdown.zig`](../src/kernel/shutdown.zig) | Orderly, in one call: `stop_all` ends every other process and waits for their exits to release IRQ lines, device claims and DMA, then flush, unmount, ACPI off. `platd` runs the same sequence before `_PTS`. Busy-wait free: the keyboard-controller reset poll and the sleep-write pause sleep on the scheduler. |
+| Panic | [`panic.zig`](../src/kernel/panic.zig), [`qr.zig`](../src/kernel/qr.zig) | QR-encoded crash dump, verified against libqrencode. |
 
 ## Storage
 
@@ -88,12 +91,13 @@ diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `at
 
 | Program | File | State |
 |---|---|---|
-| `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. |
+| `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, restart policy, orphan reaping. The boot line can hold a service down (`nonet`, `nohw`) or start one late (`netlate`), which is how a suspect driver is kept off the machine, or brought up under the watchdog, from outside where only the boot line can reach. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup in `/bin`, multicall dispatch, pipelines, `>` and `>>` redirection. Line editing with history and completion; the prompt shortens home to `~` and carries the last command's status in the colour of its arrow. |
-| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mv mkdir tree hexdump file grep page free top kill log irq devices display disk mount unmount svc cfg date eeefetch smbios` |
+| Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mv mkdir tree hexdump file grep page free top kill log irq devices display disk mount unmount svc cfg date eeefetch smbios net` |
 | `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
 | `devmgd` | [`user/devmgd/`](../src/user/devmgd/) | Reads a manifest per driver from `/lib/drivers`, matches it against the bus with an exact part beating a family, and starts it with the capabilities the manifest asks for. Leaves alone anything the kernel already drives. |
-| `platd` | [`user/platd/`](../src/user/platd/) | The platform service: what the BIOS and the embedded controller still own. uACPI interprets the tables in a process with the driver and power capabilities and nothing else. What runs on it: the embedded controller (`ec`), vendor bring-up and quirks (`asus`, `quirks`), battery, backlight, hotkeys, sleep states, power off through the firmware's own methods, and the interrupt model: it announces which mode keys the firmware's tables and answers PCI routing questions from `_PRT`. |
+| `platd` | [`user/platd/`](../src/user/platd/) | The platform service: what the BIOS and the embedded controller still own. uACPI interprets the tables in a process with the driver and power capabilities and nothing else. What runs on it: the embedded controller (`ec`), the ASUS010 vendor greeting (`asus`), battery, backlight, hotkeys, sleep states, power off through the firmware's own methods, and the interrupt model: it answers PCI routing questions from `_PRT`. The EC ports, the battery mislabel and the power-management no-touch ranges come from the kernel's quirk registry through `sysinfo`, so `platd` holds no machine knowledge of its own. Registers its service name once the firmware is fully settled (see the bring-up model below). |
+| `netd` | [`user/netd/`](../src/user/netd/) | The network service. One event loop, one compile-time driver registry: `e1000`, `rtl8139`, and `atl2` for the 701's own Attansic. Rings live in DMA memory behind `dma_alloc`, interrupts are taken and acknowledged through `irqevent`, PCI routing is asked of `platd` and only then does the first packet move. Verified on the machine: 100 Mbit full duplex, real ARP traffic received; the PCIe phantom error reports are masked at the capability, and the ISR narrates only causes beyond ordinary traffic. |
 | Shared code | [`user/lib/`](../src/user/lib/) | Buffered streams, the heap, paths, colour by role, console shape, config parsing, line editing, completion, time formatting, sysinfo, the process table. |
 | Heap | [`user/lib/heap.zig`](../src/user/lib/heap.zig) | Size-class free lists over pages the kernel hands out, exposed both as raw calls and as `std.mem.Allocator`. `malloc` is a wrapper over it, not the other way round. Blocks larger than the classes get a whole segment and are recycled through a reuse list rather than let go, so a caller that churns one size pays for the segment once. |
 | Streams | [`user/lib/stream.zig`](../src/user/lib/stream.zig) | Buffered reads and writes over a handle. Standard output is one instance; a C `FILE` is another. |
@@ -134,8 +138,8 @@ build.
 
 - `make test`: host-side unit tests (bootinfo layout, keymap tables, QR encoder, run
   queues, calendar, ring buffer, battery arithmetic and its mislabeled-percent correction,
-  command-line flag matching, the terminal emulator and its key encoding, text wrapping
-  and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
+  the quirk registry's family matching, command-line flag matching, the terminal emulator
+  and its key encoding, text wrapping and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
   across all eight masks.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
@@ -150,6 +154,24 @@ beneath it, for chasing a fault, and is the one kind of line that is not recorde
 was never asked for. A quiet boot shows failures and warnings only, and the whole story,
 kernel and services alike, is still in the ring behind `log`, which keeps its own needle
 filter and a `-n` tail.
+
+Once the shell claims the console, the screen is its conversation: everything else still
+says its line, into the ring, in every boot mode. The claim dies with its owner, so the
+shutdown's own narration returns to the screen for the last lines.
+
+## The bring-up model
+
+**A service registers its name only once it is ready to answer.** `platd` loads the
+firmware, arms the SCI and finishes its transitions, then registers `/svc/platform`.
+
+**Targets order the boot.** The manifest's `target` names the group a service belongs
+to; the boot's own services belong to `boot`. Every other service starts only once the
+load-bearing targets have settled — its `needs` names the services and targets it asks
+questions of, and its first hardware touch happens only after both. `netd`, and the
+audio and DHCP services after it, declare `needs = boot`, so a driver's DMA engines
+never start during the boot's own activity. Boot-line tokens hold any service down for
+one boot (`no.<name>`) or start it late under the watchdog (`late.<name>`, short forms
+`nonet`, `nohw`, `netlate`) for diagnosis.
 
 ## Milestones
 
@@ -171,30 +193,28 @@ and exercised on every boot.
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
 | **GMA900 native modeset** | Done and verified on the machine: gen3 reads the panel's timing from the registers firmware programmed and sets it at boot, reverting if the pipe reports an underrun |
 | **First boot on real hardware** | Done. The machine boots its image from the SD slot and comes up running; what remains below is the polish, not the bring-up |
-| Battery and backlight | Done: `_BIF`/`_BST` through the embedded controller, with this family's mislabeled-percent quirk corrected by vendor in `quirks` and the health figure labelled as the firmware's own word. `_BIF` is read once per session, because spamming it wedged the interpreter into an out-of-memory state that took `_PTS` down with it; a derived rate covers the times the firmware's own is unusable |
+| Battery and backlight | Done: `_BIF`/`_BST` through the embedded controller, with this family's mislabeled-percent quirk corrected by the kernel's quirk registry and the health figure labelled as the firmware's own word. `_BIF` is read once per session, because spamming it wedged the interpreter into an out-of-memory state that took `_PTS` down with it; a derived rate covers the times the firmware's own is unusable |
+| Wired networking | Done on the machine: `netd` drives the atl2 at 100 Mbit full duplex and receives traffic; routing is answered by a fully settled `platd` per the bring-up model below |
 | `eeewm` + `libeui` | Done, and past what M1 asked for |
 | eTerm | Done |
 | Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |
 | Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
-**M1 is complete**: the machine boots the image from its SD slot and runs. What M2 still
-owes is the hardware services (USB, audio, networking) and what M3 owes includes the GUI
-apps parked there.
+**M1 is complete** and M2 is underway: wired networking is done on the machine, the boot
+bring-up model (services behind `needs`/`provides`, registered settled) is load-bearing,
+and what M2 still owes is USB and audio. M3 owes the GUI apps parked there.
 
 ## Known gaps
 
 - Nothing written survives a reboot. `/etc` and `/home` are part of the root image, which
   is rebuilt from the boot medium every time, so settings are set for one session only.
   The persistent volume they are meant to mount from does not exist yet.
-- **The final power cut.** Power off reaches `_PTS` and writes the sleep state, the panel
-  goes dark, and the power LED stays on: the transition is not finishing. The causes that
-  made it look finished are gone: the fallback path no longer writes the sleep registers a
-  second time with the raw FADT's values after the service answered, and the kernel's own
-  write preserves SCI_EN and splits SLP_TYP from SLP_EN the way ACPICA does. Every step of
-  a shutdown is now narrated, so the next try says where it stops. What the machine needs
-  after a formed `_S5_` request is still open.
+- **The final power cut.** Power off stops every service, flushes, reaches `_PTS` and
+  writes the sleep state; the panel goes dark and the power LED stays on, so the SLP_TYP
+  transition on this machine is not finished. What it needs after a formed `_S5_` request
+  is still open.
 - The pointing device runs in relative mode: no tap zones, edge scrolling or multi-finger gestures.
 - Wheel decoding is untested; QEMU's monitor cannot generate scroll events.
-- No USB, audio or networking.
+- No USB or audio; wireless is undesigned until the wired stack is proven further.
 - No environment: `getenv` answers null, and `HOME` and the program search path are
   constants in the shell.

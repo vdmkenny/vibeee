@@ -11,6 +11,7 @@
 //! `pause`.
 
 const dev_mod = @import("dev.zig");
+const dma = @import("dma.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
 const sys = @import("sys");
@@ -18,6 +19,11 @@ const sys = @import("sys");
 const NicDev = dev_mod.NicDev;
 const RingSlots = 64;
 const Slab = 2048;
+const MmioBytes: u32 = 128 * 1024;
+const MinimumFrame = 60;
+const AllCauses: u32 = 0xFFFF_FFFF;
+const ResetSpins = 10_000;
+const EepromSpins = 10_000;
 
 // ---------------------------------------------------------------------------
 // Register window
@@ -27,8 +33,10 @@ const Slab = 2048;
 const R = enum(u32) {
     ctrl = 0x0000,
     status = 0x0008,
+    eerd = 0x0014,
     icr = 0x00C0,
     ims = 0x00D0,
+    imc = 0x00D8,
     rctl = 0x0100,
     tctl = 0x0400,
     rdbal = 0x2800,
@@ -70,7 +78,10 @@ const Ctrl = packed struct(u32) {
     auto_speed: bool = false,
     /// SLU: set link up, the one-endpoint world this NIC lives in.
     force_link: bool = false,
-    _7: u19 = 0,
+    _7: u4 = 0,
+    force_speed: bool = false,
+    force_duplex: bool = false,
+    _13: u13 = 0,
     /// Device reset.
     reset: bool = false,
     _27: u5 = 0,
@@ -105,19 +116,21 @@ const Speed = enum(u2) {
 const Causes = packed struct(u32) {
     /// TXDW: a transmit descriptor was written back.
     tx_done: bool = false,
-    _1: u1 = 0,
+    tx_queue_empty: bool = false,
     /// LSC: the link state changed.
     link_change: bool = false,
-    _3: u1 = 0,
+    rx_sequence: bool = false,
     /// RXDMT0: the receive threshold was met.
     rx_min: bool = false,
-    _5: u2 = 0,
+    _5: u1 = 0,
+    rx_overrun: bool = false,
     /// RXT0: the receive timer delivered.
     rx_timer: bool = false,
     _8: u24 = 0,
 
     fn none(self: Causes) bool {
-        return !self.tx_done and !self.link_change and !self.rx_min and !self.rx_timer;
+        return !self.tx_done and !self.tx_queue_empty and !self.link_change and
+            !self.rx_sequence and !self.rx_min and !self.rx_overrun and !self.rx_timer;
     }
 };
 
@@ -149,10 +162,28 @@ const TxControl = packed struct(u32) {
     _22: u10 = 0,
 };
 
+const ReceiveAddressHigh = packed struct(u32) {
+    octet4: u8 = 0,
+    octet5: u8 = 0,
+    _16: u15 = 0,
+    valid: bool = false,
+};
+
+const EepromRead = packed struct(u32) {
+    start: bool = false,
+    _1: u3 = 0,
+    done: bool = false,
+    _5: u3 = 0,
+    address: u8 = 0,
+    data: u16 = 0,
+};
+
 const UpCauses = Causes{
     .tx_done = true,
     .link_change = true,
+    .rx_sequence = true,
     .rx_min = true,
+    .rx_overrun = true,
     .rx_timer = true,
 };
 
@@ -175,61 +206,133 @@ comptime {
     if (@sizeOf(Ctrl) != 4 or @sizeOf(StatusReg) != 4 or @sizeOf(Causes) != 4) {
         @compileError("a status or control register shapes one dword");
     }
-    if (@sizeOf(RxControl) != 4 or @sizeOf(TxControl) != 4) {
+    if (@sizeOf(RxControl) != 4 or @sizeOf(TxControl) != 4 or
+        @sizeOf(ReceiveAddressHigh) != 4 or @sizeOf(EepromRead) != 4)
+    {
         @compileError("an enable register shapes one dword");
     }
+    if (@bitOffsetOf(EepromRead, "done") != 4 or
+        @bitOffsetOf(EepromRead, "address") != 8)
+    {
+        @compileError("EEPROM control fields do not match EERD");
+    }
+    if (@intFromEnum(R.ra1) + 4 > MmioBytes) @compileError("register exceeds BAR0");
 }
 
 // ---------------------------------------------------------------------------
 // The rings, one DMA segment
 // ---------------------------------------------------------------------------
 
-/// The legacy receive descriptor, sixteen bytes, the manual's layout.
-const RxDesc = extern struct {
-    addr: u32 = 0,
-    _reserved: u32 = 0,
-    len: u16 = 0,
-    csum: u16 = 0,
-    status: u8 = 0,
-    errors: u8 = 0,
-    special: u16 = 0,
+const RxStatus = packed struct(u8) {
+    done: bool = false,
+    end_of_packet: bool = false,
+    ignore_checksum: bool = false,
+    vlan: bool = false,
+    udp_checksum: bool = false,
+    tcp_checksum: bool = false,
+    ip_checksum: bool = false,
+    passed_inexact: bool = false,
 };
 
-/// The legacy transmit descriptor: same sixteen bytes, different words. The
-/// lower word carries the length in its low half and the commands in the
-/// high; the writeback lands in the upper word, whose low byte is the
-/// status and whose low bit says done.
-const TxDesc = extern struct {
-    addr: u32 = 0,
-    _reserved: u32 = 0,
-    lower: u32 = 0,
-    upper: u32 = 0,
+const RxErrors = packed struct(u8) {
+    crc: bool = false,
+    symbol: bool = false,
+    sequence: bool = false,
+    _3: u1 = 0,
+    carrier_extension: bool = false,
+    transport_checksum: bool = false,
+    ip_checksum: bool = false,
+    data: bool = false,
 
-    /// DD, the writeback: the status byte is the upper word's low byte.
-    fn done(self: TxDesc) bool {
-        return self.upper & 0x1 != 0;
+    fn any(self: RxErrors) bool {
+        return self.crc or self.symbol or self.sequence or self.carrier_extension or
+            self.transport_checksum or self.ip_checksum or self.data;
     }
 };
 
-const DESC_DONE = 0x01;
+const TxCommand = packed struct(u8) {
+    end_of_packet: bool = false,
+    insert_fcs: bool = false,
+    insert_checksum: bool = false,
+    report_status: bool = false,
+    report_packet_sent: bool = false,
+    extended: bool = false,
+    vlan: bool = false,
+    interrupt_delay: bool = false,
+};
 
-/// The three commands one descriptor needs, in the manual's high-half bits.
-const TX_CMD = 0x01000000 | 0x02000000 | 0x08000000; // EOP | IFCS | RS
+const TxStatus = packed struct(u8) {
+    done: bool = false,
+    excessive_collisions: bool = false,
+    late_collision: bool = false,
+    underrun: bool = false,
+    _4: u4 = 0,
+
+    fn failed(self: TxStatus) bool {
+        return self.excessive_collisions or self.late_collision or self.underrun;
+    }
+};
+
+const SendCommand = TxCommand{
+    .end_of_packet = true,
+    .insert_fcs = true,
+    .report_status = true,
+};
+
+/// The legacy receive descriptor, sixteen bytes, the manual's layout.
+const RxDesc = extern struct {
+    addr_low: u32 = 0,
+    addr_high: u32 = 0,
+    length: u16 = 0,
+    checksum: u16 = 0,
+    status: RxStatus = .{},
+    errors: RxErrors = .{},
+    special: u16 = 0,
+};
+
+/// The legacy transmit descriptor, including its byte-wide command and
+/// writeback fields rather than treating them as unrelated dwords.
+const TxDesc = extern struct {
+    addr_low: u32 = 0,
+    addr_high: u32 = 0,
+    length: u16 = 0,
+    checksum_offset: u8 = 0,
+    command: TxCommand = .{},
+    status: TxStatus = .{},
+    checksum_start: u8 = 0,
+    special: u16 = 0,
+};
 
 comptime {
     if (@sizeOf(RxDesc) != 16 or @sizeOf(TxDesc) != 16) {
         @compileError("an 82540 descriptor is sixteen bytes, whichever way");
+    }
+    if (@offsetOf(RxDesc, "status") != 12 or @offsetOf(TxDesc, "status") != 12) {
+        @compileError("descriptor writeback status must begin at byte twelve");
     }
 }
 
 /// Receive descriptors, then the buffers they point at. One DMA segment, so
 /// every address in it is DMA-visible from the start.
 const Rings = struct {
-    rx_desc: [RingSlots]RxDesc = @splat(.{}),
+    rx_desc: [RingSlots]RxDesc align(128) = @splat(.{}),
     rx_buffer: [RingSlots][Slab]u8 = @splat(@splat(0)),
-    tx_desc: [RingSlots]TxDesc = @splat(.{}),
+    tx_desc: [RingSlots]TxDesc align(128) = @splat(.{}),
     tx_buffer: [RingSlots][Slab]u8 = @splat(@splat(0)),
 };
+
+comptime {
+    if (RingSlots < 8 or RingSlots * @sizeOf(RxDesc) % 128 != 0 or
+        RingSlots * @sizeOf(TxDesc) % 128 != 0)
+    {
+        @compileError("descriptor rings must be at least eight entries and a multiple of 128 bytes");
+    }
+    if (@alignOf(Rings) < 128 or @offsetOf(Rings, "rx_desc") % 128 != 0 or
+        @offsetOf(Rings, "tx_desc") % 128 != 0)
+    {
+        @compileError("descriptor rings must be 128-byte aligned");
+    }
+}
 
 /// One adapter, one static instance. No allocation on any packet path: a
 /// machine of this class has one such NIC, and a no-allocation driver wants
@@ -238,59 +341,94 @@ const Device = struct {
     regs: Regs = .{ .base = undefined },
     rings: *Rings = undefined,
     phys: u32 = 0,
-    rx_at: u16 = 0, // next slot the hardware owes us
-    tx_head: u16 = 0, // next slot we write into
-    tx_tail: u16 = 0, // next slot the hardware writes back
+    dma_handle: ?u32 = null,
+    rx_next: u16 = 0, // next completed receive descriptor
+    tx_next: u16 = 0, // next transmit descriptor to publish
+    tx_clean: u16 = 0, // oldest transmit descriptor still owned by hardware
+    opened: bool = false,
+    started: bool = false,
 };
 
 var device: Device = .{};
 
 pub fn open(loc: pci.Location, dev: *NicDev) bool {
-    const aperture = sys.mapDevice(pci.bar(loc, 0) & ~@as(u32, 0xF), 128 * 1024) orelse {
+    if (device.opened or device.dma_handle != null) {
+        log.fail("e1000", "the adapter is already open");
+        return false;
+    }
+
+    const base = bar0(loc) orelse return false;
+    const aperture = sys.mapDevice(base, MmioBytes) orelse {
         log.fail("e1000", "cannot map registers");
         return false;
     };
     pci.enableMemoryAndMaster(loc);
+    var keep_pci_enabled = false;
+    defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
     device.regs = .{ .base = aperture };
+
+    if (!reset()) {
+        log.fail("e1000", "reset did not complete");
+        return false;
+    }
+    if (!readMac(dev)) {
+        log.fail("e1000", "cannot read a valid MAC address");
+        return false;
+    }
 
     // One physically contiguous run for descriptors and buffers.
     var phys: u32 = 0;
-    const handle = sys.dmaAlloc(@sizeOf(Rings) + 128, &phys);
+    const handle = sys.dmaAlloc(@sizeOf(Rings), &phys);
     if (handle < 0) {
         log.failed("e1000", "cannot allocate DMA rings", handle);
         return false;
     }
+    const dma_handle: u32 = @intCast(handle);
+    const last_offset: u32 = @intCast(@sizeOf(Rings) - 1);
+    if (phys % @alignOf(Rings) != 0 or phys > AllCauses - last_offset) {
+        _ = sys.close(dma_handle);
+        log.fail("e1000", "DMA rings are unaligned or cross 4 GiB");
+        return false;
+    }
     const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
+        _ = sys.close(dma_handle);
         log.fail("e1000", "cannot map DMA rings");
         return false;
     };
-    device.rings = @alignCast(@ptrCast(mapped));
-    // DMA memory is page-granular, which covers the sixteen bytes a
-    // descriptor ring demands; adjusting one side without the other would
-    // have the CPU and the card each writing a different ring.
+    device.rings = @ptrCast(@alignCast(mapped));
     device.phys = phys;
+    device.dma_handle = dma_handle;
+    device.rx_next = 0;
+    device.tx_next = 0;
+    device.tx_clean = 0;
+    device.rings.* = .{};
 
     // Every receive descriptor names its buffer before the ring is handed
     // over: a descriptor left at zero is an invitation to scribble the
     // frame over the real mode vector table.
     for (&device.rings.rx_desc, 0..) |*desc, i| {
-        desc.addr = device.phys + @offsetOf(Rings, "rx_buffer") + i * Slab;
+        desc.* = .{
+            .addr_low = device.phys + @as(u32, @intCast(@offsetOf(Rings, "rx_buffer") + i * Slab)),
+        };
     }
-
-    reset();
-    readMac(dev);
+    for (&device.rings.tx_desc, 0..) |*desc, i| {
+        desc.* = .{
+            .addr_low = device.phys + @as(u32, @intCast(@offsetOf(Rings, "tx_buffer") + i * Slab)),
+            .status = .{ .done = true },
+        };
+    }
+    dma.publish();
 
     // One endpoint, and it is talking: force the link up, with auto-speed.
-    mergeCtrl(.{ .auto_speed = true, .force_link = true });
+    configureLink();
 
     // Receive path: the descriptor ring and its buffers are one run.
     device.regs.wr(.rdbal, device.phys + @offsetOf(Rings, "rx_desc"));
     device.regs.wr(.rdbah, 0);
     device.regs.wr(.rdlen, RingSlots * @sizeOf(RxDesc));
     device.regs.wr(.rdh, 0);
-    // The receive ring starts with every slot the hardware may use: RDT is
-    // the last ownable descriptor, so a value of 63 hands over all 64, and
-    // the reap below walks them back one at a time.
+    // Head equal to tail means empty. Descriptor 63 stays as the sentinel;
+    // descriptors 0 through 62 are initially available to the receiver.
     device.regs.wr(.rdt, RingSlots - 1);
 
     // Transmit path.
@@ -300,131 +438,323 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     device.regs.wr(.tdh, 0);
     device.regs.wr(.tdt, 0);
 
+    device.opened = true;
+    keep_pci_enabled = true;
     dev.state = link(dev);
     return true;
 }
 
-fn reset() void {
-    mergeCtrl(.{ .reset = true });
+fn bar0(loc: pci.Location) ?u32 {
+    const raw = pci.bar(loc, 0);
+    const bar: pci.MemoryBar = @bitCast(raw);
+    if (bar.space != .memory or bar.kind != .bits32) {
+        log.fail("e1000", "BAR0 is not a 32-bit memory BAR");
+        return null;
+    }
+
+    const base = bar.base();
+    if (base == 0) {
+        log.fail("e1000", "BAR0 has no assigned address");
+        return null;
+    }
+
+    // Size a BAR only while memory decoding is off, then restore both words
+    // before interpreting the mask returned by configuration space.
+    const saved_command = pci.readCommand(loc);
+    var probe_command = saved_command;
+    probe_command.memory_space = false;
+    pci.writeCommand(loc, probe_command);
+    pci.write(loc, pci.BAR0_OFFSET, 0xFFFF_FFFF);
+    const size_word = pci.bar(loc, 0);
+    pci.write(loc, pci.BAR0_OFFSET, raw);
+    pci.writeCommand(loc, saved_command);
+    _ = pci.read(loc, pci.COMMAND_OFFSET);
+
+    const size_mask = size_word & 0xFFFF_FFF0;
+    if (size_mask == 0) {
+        log.fail("e1000", "BAR0 has no implemented aperture");
+        return null;
+    }
+    const size = (~size_mask) +% 1;
+    if (size < MmioBytes or size & (size - 1) != 0 or base & (size - 1) != 0) {
+        log.fail("e1000", "BAR0 is too small or misaligned");
+        return null;
+    }
+    return base;
+}
+
+fn reset() bool {
+    maskAndClearInterrupts();
+    device.regs.wr(.rctl, 0);
+    device.regs.wr(.tctl, @bitCast(TxControl{ .pad_short = true }));
+    _ = device.regs.rd(.status);
+    sys.sleepMicros(10_000);
+
+    var ctrl = readCtrl();
+    ctrl.reset = true;
+    device.regs.wr(.ctrl, @bitCast(ctrl));
+    _ = device.regs.rd(.status);
+
     // The bit clears itself; waiting is bounded and pausing.
     var spins: u32 = 0;
-    while (spins < 10_000) : (spins += 1) {
-        if (!readCtrl().reset) return;
+    while (spins < ResetSpins) : (spins += 1) {
+        if (!readCtrl().reset) {
+            // The 82540 reloads its EEPROM after reset; RAR and EERD are not
+            // stable until that fixed settling interval has passed.
+            sys.sleepMicros(5_000);
+            maskAndClearInterrupts();
+            return true;
+        }
         asm volatile ("pause");
     }
+    maskAndClearInterrupts();
+    return false;
 }
 
 fn readCtrl() Ctrl {
     return @bitCast(device.regs.rd(.ctrl));
 }
 
-/// Write the fields given, on top of whatever the register holds: a field
-/// asked for is set, the rest of the word carries through unread, unjudged.
-fn mergeCtrl(wanted: Ctrl) void {
-    var next = readCtrl();
-    next.auto_speed = next.auto_speed or wanted.auto_speed;
-    next.force_link = next.force_link or wanted.force_link;
-    next.reset = wanted.reset;
-    device.regs.wr(.ctrl, @bitCast(next));
+fn configureLink() void {
+    var ctrl = readCtrl();
+    ctrl.auto_speed = true;
+    ctrl.force_link = true;
+    ctrl.force_speed = false;
+    ctrl.force_duplex = false;
+    ctrl.reset = false;
+    device.regs.wr(.ctrl, @bitCast(ctrl));
 }
 
-fn readMac(dev: *NicDev) void {
+fn readMac(dev: *NicDev) bool {
+    const mac = readRar() orelse readEepromMac() orelse return false;
+    writeRar(mac);
+    dev.mac = mac;
+    return true;
+}
+
+fn readRar() ?[6]u8 {
     const low = device.regs.rd(.ra0);
-    const high = device.regs.rd(.ra1);
-    dev.mac = .{
+    const high: ReceiveAddressHigh = @bitCast(device.regs.rd(.ra1));
+    if (!high.valid) return null;
+    const mac = [6]u8{
         @truncate(low),
         @truncate(low >> 8),
         @truncate(low >> 16),
         @truncate(low >> 24),
-        @truncate(high),
-        @truncate(high >> 8),
+        high.octet4,
+        high.octet5,
     };
+    return if (validMac(mac)) mac else null;
 }
 
-pub fn start(_: *NicDev) bool {
+fn readEepromMac() ?[6]u8 {
+    var mac: [6]u8 = @splat(0);
+    for (0..3) |i| {
+        const word = readEeprom(@intCast(i)) orelse return null;
+        mac[i * 2] = @truncate(word);
+        mac[i * 2 + 1] = @truncate(word >> 8);
+    }
+    return if (validMac(mac)) mac else null;
+}
+
+fn readEeprom(address: u8) ?u16 {
+    device.regs.wr(.eerd, @bitCast(EepromRead{ .start = true, .address = address }));
+    var spins: u32 = 0;
+    while (spins < EepromSpins) : (spins += 1) {
+        const result = @as(EepromRead, @bitCast(device.regs.rd(.eerd)));
+        if (result.done) return result.data;
+        asm volatile ("pause");
+    }
+    return null;
+}
+
+fn validMac(mac: [6]u8) bool {
+    if (mac[0] & 1 != 0) return false;
+    var any = false;
+    var all_ff = true;
+    for (mac) |octet| {
+        any = any or octet != 0;
+        all_ff = all_ff and octet == 0xFF;
+    }
+    return any and !all_ff;
+}
+
+fn writeRar(mac: [6]u8) void {
+    const low = @as(u32, mac[0]) |
+        (@as(u32, mac[1]) << 8) |
+        (@as(u32, mac[2]) << 16) |
+        (@as(u32, mac[3]) << 24);
+    device.regs.wr(.ra0, low);
+    device.regs.wr(.ra1, @bitCast(ReceiveAddressHigh{
+        .octet4 = mac[4],
+        .octet5 = mac[5],
+        .valid = true,
+    }));
+}
+
+fn maskAndClearInterrupts() void {
+    device.regs.wr(.imc, AllCauses);
+    _ = device.regs.rd(.status); // flush the posted mask write
+    _ = device.regs.rd(.icr); // ICR is read-to-clear
+}
+
+pub fn start(nic: *NicDev) bool {
+    if (!device.opened or device.started) return false;
+
+    maskAndClearInterrupts();
+    dma.publish();
     device.regs.wr(.rctl, @bitCast(UpRx));
     device.regs.wr(.tctl, @bitCast(UpTx));
+    _ = device.regs.rd(.status);
+    pci.enableInterrupt(nic.location);
+    device.started = true;
     device.regs.wr(.ims, @bitCast(UpCauses));
+    _ = device.regs.rd(.ims);
     return true;
 }
 
-pub fn stop(_: *NicDev) void {
-    device.regs.wr(.ims, 0);
-    var rx = @as(RxControl, @bitCast(device.regs.rd(.rctl)));
-    rx.enabled = false;
-    device.regs.wr(.rctl, @bitCast(rx));
-    var tx = @as(TxControl, @bitCast(device.regs.rd(.tctl)));
-    tx.enabled = false;
-    device.regs.wr(.tctl, @bitCast(tx));
+pub fn stop(nic: *NicDev) void {
+    if (!device.opened) return;
+    device.started = false;
+
+    device.regs.wr(.imc, AllCauses);
+    device.regs.wr(.rctl, 0);
+    device.regs.wr(.tctl, @bitCast(TxControl{ .pad_short = true }));
+    _ = device.regs.rd(.status);
+    sys.sleepMicros(10_000);
+
+    // No register may retain a pointer to memory returned below.
+    device.regs.wr(.rdlen, 0);
+    device.regs.wr(.rdh, 0);
+    device.regs.wr(.rdt, 0);
+    device.regs.wr(.rdbal, 0);
+    device.regs.wr(.rdbah, 0);
+    device.regs.wr(.tdlen, 0);
+    device.regs.wr(.tdh, 0);
+    device.regs.wr(.tdt, 0);
+    device.regs.wr(.tdbal, 0);
+    device.regs.wr(.tdbah, 0);
+    _ = device.regs.rd(.status);
+    _ = device.regs.rd(.icr);
+
+    pci.disableInterruptAndMaster(nic.location);
+    if (device.dma_handle) |handle| _ = sys.close(handle);
+    device.dma_handle = null;
+    device.phys = 0;
+    device.rx_next = 0;
+    device.tx_next = 0;
+    device.tx_clean = 0;
+    device.opened = false;
+    nic.state = .{};
 }
 
 pub fn irq(dev: *NicDev) void {
+    if (!device.opened or !device.started) return;
     const cause = @as(Causes, @bitCast(device.regs.rd(.icr)));
     if (cause.none()) return; // a shared line, not ours
-    device.regs.wr(.icr, @bitCast(cause)); // acknowledge what was acted on
 
-    if (cause.rx_min or cause.rx_timer) reapRx(dev);
-    if (cause.tx_done) reapTx();
+    // Reading ICR acknowledged this snapshot. Writing it back would also
+    // clear a matching cause that arrived while this handler was working.
+    if (cause.rx_min or cause.rx_overrun or cause.rx_timer) reapRx(dev);
+    if (cause.rx_sequence or cause.rx_overrun) dev.stats.rx_dropped += 1;
+    if (cause.tx_done) reapTx(dev);
     if (cause.link_change) dev.state = link(dev);
 }
 
 fn reapRx(dev: *NicDev) void {
     while (true) {
-        const desc = &device.rings.rx_desc[device.rx_at];
-        // The hardware writes these words; the loads must happen every lap.
-        const status = @as(*const volatile u8, &desc.status).*;
-        if (status & DESC_DONE == 0) break;
-        const len = @as(*const volatile u16, &desc.len).*;
-        const errors = @as(*const volatile u8, &desc.errors).*;
+        const slot = device.rx_next;
+        const desc = &device.rings.rx_desc[slot];
+        const ownership = @as(*const volatile RxStatus, &desc.status).*;
+        if (!ownership.done) break;
+        dma.consume();
 
-        dev_mod.deliverRx(dev, .{
-            .ok = errors == 0 and len >= 60 and len <= Slab,
-            .frame = device.rings.rx_buffer[device.rx_at][0..len],
-        });
-        @as(*volatile u8, &desc.status).* = 0; // the slot is ours again
-        device.rx_at = (device.rx_at + 1) % RingSlots;
-        device.regs.wr(.rdt, (device.rx_at + RingSlots - 1) % RingSlots);
+        const status = @as(*const volatile RxStatus, &desc.status).*;
+        const length = @as(*const volatile u16, &desc.length).*;
+        const errors = @as(*const volatile RxErrors, &desc.errors).*;
+        const good = status.end_of_packet and !errors.any() and
+            length >= MinimumFrame and length <= Slab;
+
+        if (good) {
+            dev_mod.deliverRx(dev, .{
+                .ok = true,
+                .frame = device.rings.rx_buffer[slot][0..length],
+            });
+        } else {
+            // Never form a slice from a device-provided length until it has
+            // been bounded against the actual DMA slab.
+            dev_mod.deliverRx(dev, .{});
+        }
+
+        desc.length = 0;
+        desc.checksum = 0;
+        desc.errors = .{};
+        desc.special = 0;
+        desc.status = .{};
+        dma.publish();
+        device.rx_next = (slot + 1) % RingSlots;
+        // RDT names the last descriptor returned to hardware, not the next
+        // descriptor software expects to consume.
+        device.regs.wr(.rdt, slot);
     }
 }
 
-fn reapTx() void {
-    while (device.tx_tail != device.tx_head) {
-        const desc = @as(*const volatile TxDesc, &device.rings.tx_desc[device.tx_tail]).*;
-        if (!desc.done()) break;
-        device.tx_tail = (device.tx_tail + 1) % RingSlots;
+fn reapTx(nic: *NicDev) void {
+    while (device.tx_clean != device.tx_next) {
+        const desc = &device.rings.tx_desc[device.tx_clean];
+        const ownership = @as(*const volatile TxStatus, &desc.status).*;
+        if (!ownership.done) break;
+        dma.consume();
+        const status = @as(*const volatile TxStatus, &desc.status).*;
+        if (status.failed()) nic.stats.tx_failed += 1;
+        device.tx_clean = (device.tx_clean + 1) % RingSlots;
     }
 }
 
-pub fn transmit(nic: *NicDev, frame: []const u8) void {
-    if (frame.len > Slab) return;
+pub fn transmit(nic: *NicDev, frame: []const u8) bool {
+    if (!device.opened or !device.started or frame.len < 14 or frame.len > Slab) return false;
 
-    // One slot is kept free: a full ring and an empty ring look the same to
-    // the hardware, and the one that hurts is not the one full.
-    const used = (device.tx_head - device.tx_tail + RingSlots) % RingSlots;
-    if (used >= RingSlots - 1) {
+    // Completion interrupts are advisory for reclaim: checking writebacks
+    // here prevents backpressure when the event is delayed or coalesced.
+    reapTx(nic);
+    const slot = device.tx_next;
+    const next = (slot + 1) % RingSlots;
+    // One slot stays unused because TDH == TDT is the hardware's empty state.
+    if (next == device.tx_clean) {
         nic.stats.tx_failed += 1;
-        return;
+        return false;
     }
 
-    const slot = device.tx_head;
     const desc = &device.rings.tx_desc[slot];
-    @memcpy(device.rings.tx_buffer[slot][0..frame.len], frame);
-    desc.addr = device.phys + @offsetOf(Rings, "tx_buffer") + slot * Slab;
-    desc.lower = frame.len | TX_CMD;
-    desc.upper = 0;
+    const ownership = @as(*const volatile TxStatus, &desc.status).*;
+    if (!ownership.done) {
+        nic.stats.tx_failed += 1;
+        return false;
+    }
 
-    device.tx_head = (slot + 1) % RingSlots;
-    device.regs.wr(.tdt, device.tx_head);
+    @memcpy(device.rings.tx_buffer[slot][0..frame.len], frame);
+    const address = desc.addr_low;
+    desc.* = .{
+        .addr_low = address,
+        .length = @intCast(frame.len),
+        .command = SendCommand,
+    };
+
+    dma.publish();
+    device.tx_next = next;
+    device.regs.wr(.tdt, next);
 
     dev_mod.deliverTx(nic, frame.len);
+    return true;
 }
 
 pub fn link(_: *NicDev) dev_mod.Link {
+    if (!device.opened) return .{};
     const status = @as(StatusReg, @bitCast(device.regs.rd(.status)));
     return .{
         .up = status.link_up,
         .mbps = if (status.link_up) status.speed.mbps() else 0,
-        .duplex = if (status.full_duplex) .full else .half,
+        .duplex = if (!status.link_up) .unknown else if (status.full_duplex) .full else .half,
     };
 }
 

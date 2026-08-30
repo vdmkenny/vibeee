@@ -65,7 +65,7 @@ pub const NicOps = struct {
     irq: *const fn (dev: *NicDev) void,
     /// Put one frame on the wire. The bytes are the service's until this
     /// returns, copied into the ring before it does.
-    transmit: *const fn (dev: *NicDev, frame: []const u8) void,
+    transmit: *const fn (dev: *NicDev, frame: []const u8) bool,
     /// The link as the hardware last reported it.
     link: *const fn (dev: *NicDev) Link,
     /// Write the link state into the adapter's own registers. Some MACs gate
@@ -82,6 +82,8 @@ pub const NicDev = struct {
     ops: NicOps,
     location: Location,
     irq: u32 = 0,
+    irq_gsi: ?u32 = null,
+    irq_owned: bool = false,
     mac: [6]u8 = @splat(0),
     state: Link = .{},
     stats: Stats = .{},
@@ -138,4 +140,3 @@ pub fn deliverTx(dev: *NicDev, bytes: usize) void {
     dev.stats.tx_pkts += 1;
     dev.stats.tx_bytes += bytes;
 }
-

@@ -11,7 +11,7 @@
 
 const proto = @import("proto").platform;
 
-const quirks = @import("quirks.zig");
+const lib = @import("lib");
 const sys = @import("sys");
 const uacpi = @import("uacpi.zig");
 
@@ -54,9 +54,10 @@ fn readInto(node: *Node, into: *proto.Battery) proto.Status {
     if (!readState(node, into)) return .refused;
 
     // What the firmware got wrong, set right before the answer leaves. The
-    // quirks funnel owns this: each vendor corrects what its own machines
-    // misreport, and a machine nobody knows about passes straight through.
-    quirks.battery(into);
+    // early probe identified the machine; this driver only asks whether that
+    // identification says the tables mislabel percentages as capacities, and
+    // a machine nobody knows about passes straight through untouched.
+    if (percentLabelsCorrected()) correctPercentLabels(into);
 
     // A second opinion on the rate. Some of this machine's readings say the
     // pack is draining and the rate is zero at once, which makes every
@@ -69,6 +70,37 @@ fn readInto(node: *Node, into: *proto.Battery) proto.Status {
     // apply twice to the same numbers.
     cached_info = into.*;
     return .ok;
+}
+
+/// Whether the early probe marked this machine's battery tables as
+/// mislabeled. Asked of the kernel, which made the identification; this
+/// driver holds no machine knowledge of its own.
+fn percentLabelsCorrected() bool {
+    var buf: [8]u8 = undefined;
+    return sys.sysinfo("quirks.battery", &buf) > 0;
+}
+
+/// Convert the fields the firmware reported as percentages into real
+/// capacities.
+///
+/// The correction scales nothing unless the firmware's own numbers say it
+/// must: capacities that look like percentages — no more than a hundred,
+/// beside a design capacity that plainly is not one — are the mislabel, and
+/// honest numbers pass through exactly as read.
+fn correctPercentLabels(into: *proto.Battery) void {
+    if (into.design == 0 or into.design == proto.Battery.UNKNOWN) return;
+    if (into.design <= 100) return;
+
+    if (into.remaining <= 100) into.remaining = lib.battery.percentToCapacity(into.remaining, into.design);
+    if (into.last_full <= 100) {
+        into.last_full = lib.battery.percentToCapacity(into.last_full, into.design);
+        // A "last full" that is a percentage is the firmware's word, and on
+        // these DSDTs a word it never revisits: the pack wears out and the
+        // number stays what it was. Callers show it as reported.
+        into.health_reported = 1;
+    }
+    if (into.warning <= 100) into.warning = lib.battery.percentToCapacity(into.warning, into.design);
+    if (into.low <= 100) into.low = lib.battery.percentToCapacity(into.low, into.design);
 }
 
 /// The static half, read once.

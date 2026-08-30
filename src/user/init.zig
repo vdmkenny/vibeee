@@ -51,11 +51,22 @@ pub const Restart = enum {
 pub const Service = struct {
     name: []const u8 = "",
     binary: []const u8 = "",
-    /// Comma-separated service names that must be up first.
+    /// Comma-separated service names, or targets, that must be up first.
     needs: []const u8 = "",
     /// The `/svc` name this service registers, if any. Declaring it lets init
     /// wait for the service to be genuinely ready rather than merely started.
     provides: []const u8 = "",
+    /// The target this service belongs to, if any: the named group the boot
+    /// itself is made of. A target is reached once everything belonging to
+    /// it is running, and services name it in `needs` to order themselves
+    /// behind it. A service in no target starts only once the boot's targets
+    /// are reached — from init's supervising loop, where the machine is
+    /// quiet — because its first hardware touch belongs there.
+    target: []const u8 = "",
+    /// Milliseconds the machine sits quiet before this service starts, after
+    /// its dependencies are met. For a driver whose first touch must follow
+    /// the firmware's own boot activity, which no interrupt announces.
+    settle_ms: u32 = 0,
     restart: Restart = .on_failure,
     /// Comma-separated capability names, from `Caps` in the syscall ABI. Empty
     /// leaves the service with everything init has, which is what a service
@@ -81,6 +92,10 @@ const State = struct {
     /// Whether it should start at all. `held` is for this boot; this is for
     /// every one after it, and is what `/etc/disabled` records.
     enabled: bool = true,
+    /// When an after-boot service may start: set once its dependencies are
+    /// met, then the settle allowance runs from there.
+    ready_at: u64 = 0,
+    deps_met: bool = false,
 };
 
 var services: [MAX_SERVICES]State = @splat(.{});
@@ -103,9 +118,90 @@ export fn initMain() callconv(.c) noreturn {
     loadConfig();
     // Read before anything starts, because it decides what does.
     readDisabled();
+    holdFromCmdline();
     startAll();
+    // The boot is reported once the after-boot round has run its course,
+    // from the supervising loop below: a machine that dies at a driver's
+    // doorstep does so inside the watchdog's window, not after it.
     supervise();
 }
+
+/// A service held for a late start: the experiment that brings a suspect up
+/// once the shell is there, so its last words are on a screen that was
+/// already known to work.
+var late: ?*State = null;
+var late_start_at: u64 = 0;
+var late_grace_at: u64 = 0;
+
+/// Whether the after-boot round has run its course and the boot may be
+/// reported done.
+var after_boot_done = false;
+
+/// The boot line can hold a service down for one boot, which is how a
+/// misbehaving driver is kept off the machine from outside, where only the
+/// boot line can reach. `no.<name>` keeps a service down, `late.<name>`
+/// starts it once the shell is up, so a hang at its doorstep is seen coming
+/// and lands inside the boot watchdog's window. `nonet`, `nohw` and
+/// `netlate` stay as short names for the services they were coined for.
+fn holdFromCmdline() void {
+    var buf: [256]u8 = @splat(0);
+    const n = sys.sysinfo("cmdline", &buf);
+    if (n <= 0) return;
+    const line = buf[0..@intCast(n)];
+
+    // Generic forms, so any service — today's, and the next driver stack's —
+    // can be held without init growing a token per service: `no.<name>` keeps
+    // it down for one boot, `late.<name>` starts it once the shell is up,
+    // under the boot watchdog. `nonet`/`nohw`/`netlate` stay as the short
+    // names for the services they were coined for.
+    const aliases = [_]struct { token: []const u8, service: []const u8 }{
+        .{ .token = "nonet", .service = "netd" },
+        .{ .token = "nohw", .service = "devmgd" },
+        .{ .token = "netlate", .service = "netd" },
+    };
+
+    applyHolds(line, "no.", false);
+    applyHolds(line, "late.", true);
+
+    for (aliases) |alias| {
+        if (!str.contains(line, alias.token)) continue;
+        if (byName(alias.service)) |state| holdOne(state, str.startsWith(alias.token, "netlate"));
+    }
+}
+
+/// Hold every service named by `prefix` tokens on the line: `no.` or `late.`.
+fn applyHolds(line: []const u8, prefix: []const u8, late_start: bool) void {
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, line, at, prefix)) |found| {
+        at = found + prefix.len;
+        if (at >= line.len) return;
+
+        var end = at;
+        while (end < line.len and !str.isSpace(line[end])) end += 1;
+        if (end == at) continue;
+
+        if (byName(line[at..end])) |state| holdOne(state, late_start);
+        at = end;
+    }
+}
+
+fn holdOne(state: *State, late_start: bool) void {
+    state.enabled = false;
+    state.held = true;
+    if (late_start) {
+        late = state;
+        late_start_at = sys.clockMicros() + LATE_START_US;
+        report(state.service.name, "held for a late start");
+    } else {
+        report(state.service.name, "held down by the kernel command line");
+    }
+}
+
+/// How long the shell has before a late service is brought up.
+const LATE_START_US: u64 = 5_000_000;
+/// How long after it starts the boot still reports ready, so a death at its
+/// doorstep lands inside the watchdog's window.
+const LATE_GRACE_US: u64 = 30_000_000;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -141,6 +237,7 @@ fn useFallback(why: []const u8) void {
         .name = "vsh",
         .binary = "/bin/vsh",
         .restart = .always,
+        .target = "boot",
     } };
     service_count = 1;
 }
@@ -193,16 +290,25 @@ fn commit(service: Service) void {
 // Starting
 // ---------------------------------------------------------------------------
 
-/// Start everything, respecting `needs`.
+/// Start the boot itself: every service that belongs to a target, in
+/// dependency order.
 ///
-/// Repeated passes rather than a topological sort: with at most eight services
-/// the passes are cheaper than the sort, and what is left unstarted at the end
-/// *is* the cycle, which makes the error message fall out for free.
+/// Repeated passes rather than a topological sort: with at most eight
+/// services the passes are cheaper than the sort, and what is left
+/// unstarted at the end *is* the cycle, which makes the error message fall
+/// out for free.
 fn startAll() void {
+    startRound(true);
+}
+
+/// Start every service of one round: the target members now, the untargeted
+/// remainder later, from the supervising loop where the machine is quiet.
+fn startRound(targeted: bool) void {
     var progress = true;
     while (progress) {
         progress = false;
         for (services[0..service_count]) |*state| {
+            if ((state.service.target.len > 0) != targeted) continue;
             if (state.running or state.abandoned or !state.enabled) continue;
             if (!dependenciesMet(state.service)) continue;
             start(state);
@@ -211,6 +317,7 @@ fn startAll() void {
     }
 
     for (services[0..service_count]) |*state| {
+        if ((state.service.target.len > 0) != targeted) continue;
         if (!state.running and !state.abandoned and state.enabled) {
             report(state.service.name, "needs a service that never came up");
             state.abandoned = true;
@@ -225,12 +332,31 @@ fn dependenciesMet(service: Service) bool {
         if (name.len == 0) continue;
 
         const dep = lookup(name) orelse {
+            // Not a service's name? Then a target's: satisfied once every
+            // service belonging to it has run its course, up or given up on.
+            if (targetSettled(name)) |settled| {
+                if (!settled) return false;
+                continue;
+            }
             report(service.name, "needs a service that is not declared");
             return false;
         };
         if (!dep.running) return false;
     }
     return true;
+}
+
+/// Whether the target called `name` exists, and whether it has settled:
+/// every service belonging to it is running, abandoned, or held down for
+/// this boot. Null when no target has that name.
+fn targetSettled(name: []const u8) ?bool {
+    var known = false;
+    for (services[0..service_count]) |*state| {
+        if (!str.eql(state.service.target, name)) continue;
+        known = true;
+        if (state.enabled and !state.running and !state.abandoned) return false;
+    }
+    return if (known) true else null;
 }
 
 fn lookup(name: []const u8) ?*State {
@@ -327,13 +453,126 @@ fn supervise() noreturn {
     while (true) {
         collect();
         if (channel >= 0) answerAll(@intCast(channel));
+        serviceAfterBoot();
+        serviceLate();
+        maybeReportBoot();
 
         if (count == 0) {
             report("init", "nothing left to supervise");
             idle();
         }
-        _ = sys.waitMany(sources[0..count], sys.FOREVER);
+
+        // Bounded by whichever service has the next moment: the after-boot
+        // round's settle, or the held-late service's start and grace.
+        _ = sys.waitMany(sources[0..count], nextDeadline());
     }
+}
+
+/// The boot's one report: once the after-boot round has run its course and
+/// no late service still owes its grace.
+fn maybeReportBoot() void {
+    if (!after_boot_done) return;
+    if (late != null) return;
+    reportBoot();
+}
+
+/// Say the boot is done, on the console rather than into the ring: on a
+/// machine with no serial port, the milestone itself is the marker of where
+/// a boot that stops has stopped.
+fn reportBoot() void {
+    if (sys.bootOk() < 0) {
+        report("init", "boot_ok refused; the boot watchdog stays armed");
+        return;
+    }
+    report("init", "boot reported done");
+}
+
+/// Start the late service when its moment comes, and end its grace once it
+/// has run its course. A service that dies at its doorstep does so inside
+/// the watchdog's window, with the boot log telling why.
+fn serviceLate() void {
+    const l = late orelse return;
+    const now = sys.clockMicros();
+
+    if (late_grace_at == 0) {
+        if (now < late_start_at) return;
+        late_grace_at = now + LATE_GRACE_US;
+        late_start_at = 0;
+        l.held = false;
+        l.enabled = true;
+        start(l);
+        return;
+    }
+
+    if (now >= late_grace_at) {
+        late = null;
+        late_grace_at = 0;
+    }
+}
+
+/// Start the after-boot round's services once their dependencies are met
+/// and their settle allowance has run, from this quiet loop rather than
+/// from inside the boot. Marks the round done when everything belonging to
+/// it has been started, abandoned or held.
+fn serviceAfterBoot() void {
+    if (after_boot_done) return;
+    const now = sys.clockMicros();
+
+    var left = false;
+    for (services[0..service_count]) |*state| {
+        if (state.service.target.len > 0) continue;
+        if (!state.enabled or state.running or state.abandoned) continue;
+
+        if (!state.deps_met) {
+            // By now the boot's targets have run their course, so a
+            // dependency that is not met will not be met: the service is
+            // given up on, once, with why.
+            if (!dependenciesMet(state.service)) {
+                report(state.service.name, "needs a service that never came up");
+                state.abandoned = true;
+                continue;
+            }
+            state.deps_met = true;
+            state.ready_at = now + @as(u64, state.service.settle_ms) * 1000;
+        }
+
+        if (now < state.ready_at) {
+            left = true;
+            continue;
+        }
+        // Said on the console rather than into the ring: these lines are how
+        // a machine that stops at a driver's doorstep names the door.
+        report(state.service.name, "starting; the boot has settled");
+        start(state);
+    }
+
+    if (!left) after_boot_done = true;
+}
+
+/// How long the supervising wait may sleep until the next moment that
+/// matters: an after-boot service's settle, or a late service's start and
+/// grace. Forever once nothing is pending.
+fn nextDeadline() usize {
+    const now = sys.clockMicros();
+    var earliest: u64 = 0; // 0: nothing pending
+
+    if (!after_boot_done) {
+        for (services[0..service_count]) |*state| {
+            if (state.service.target.len > 0) continue;
+            if (!state.enabled or state.running or state.abandoned) continue;
+            if (!state.deps_met) continue;
+            if (earliest == 0 or state.ready_at < earliest) earliest = state.ready_at;
+        }
+    }
+
+    if (late) |_| {
+        const moment = if (late_grace_at == 0) late_start_at else late_grace_at;
+        if (earliest == 0 or moment < earliest) earliest = moment;
+    }
+
+    if (earliest == 0) return sys.FOREVER;
+    if (earliest <= now) return 0;
+    return @intCast(@min(earliest - now, @as(u64, sys.FOREVER) - 1));
 }
 
 /// Reap whatever has died, restarting what should come back.

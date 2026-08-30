@@ -54,6 +54,13 @@ Every service gets, at spawn: a **supervision channel** to init (watchdog pings,
 
 ## 4. init (PID 1)
 
+**As built** (`src/user/init.zig`): one service table, `/etc/services`; `needs` and
+`provides` gate starts; the boot line holds services (`no.<name>`, `late.<name>`) and
+the boot watchdog waits on init's `boot_ok`. The load-bearing rule is in
+`docs/status.md` ("The bring-up model"): a service registers its name only once it is
+ready to answer, and touches hardware only after its `needs` are up. The sections
+below design the fuller manifest system on the same lines.
+
 ### 4.1 Boot sequence (from kernel handoff)
 
 1. Kernel has unpacked rootfs→ramfs, mounted `/` (RO), `/tmp` `/dev` `/svc` namespaces per contract, spawned `/sbin/init` with `BootInfo`-derived environment: `boot.flags` (verbose/recovery/backup), `boot.disk_sig` (hex), `boot.from_ssd`.

@@ -85,7 +85,7 @@ fn readOverride(out: *irq.Routing, payload: []const u8) void {
         .gsi = std.mem.readInt(u32, payload[2..6], .little),
         // Two bits each, where 0 means "whatever the bus does" and the ISA bus
         // is active high and edge triggered.
-        .active_low = flags & 0b11 == 0b11,
-        .level = (flags >> 2) & 0b11 == 0b11,
+        .polarity = if (flags & 0b11 == 0b11) .low else .high,
+        .trigger = if ((flags >> 2) & 0b11 == 0b11) .level else .edge,
     }) catch {};
 }

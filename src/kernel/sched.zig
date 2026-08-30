@@ -63,6 +63,13 @@ var thread_count: usize = 0;
 var switch_count: u64 = 0;
 var started = false;
 
+/// Whether the scheduler is running. The answer decides how a delay is made:
+/// before `start` there is nothing to sleep on, so the only wait is a bounded
+/// spin; after it, a wait sleeps and costs no CPU.
+pub fn running() bool {
+    return started;
+}
+
 /// Set by the timer tick; acted on at interrupt exit, once the interrupt
 /// controller has been acknowledged and it is safe to switch stacks.
 var need_resched: bool = false;
@@ -170,6 +177,11 @@ pub fn exitWith(status: i32) noreturn {
         // shell no input at all.
         if (input.keyOwner() == t.id) input.releaseKeys();
 
+        // Stop claimed PCI functions before DMA handles can return their
+        // frames to the allocator. Without an IOMMU, reversing this order lets
+        // a dead device write into memory already handed to another process.
+        @import("probe.zig").dropClaims(t.id);
+
         // Handles are a claim of the same kind, and they go here rather than
         // with the rest of the corpse. A pipe ends when its last writer closes,
         // and a writer that has exited has closed: leaving its handles open
@@ -177,9 +189,6 @@ pub fn exitWith(status: i32) noreturn {
         // writer to finish but for a third party to notice that it did, which
         // is a wait that need never end.
         t.handles.closeAll();
-        // Device claims are a claim of the same kind: a dead driver's device
-        // must read as free, or its own restart finds it taken.
-        @import("probe.zig").dropClaims(t.id);
         if (find(t.parent_id)) |p| {
             _ = p.child_exit.wakeAll();
             // Interrupts are already off here, which is what `signalLocked`
@@ -402,6 +411,10 @@ pub fn unblock(t: *Thread) void {
     t.state = .ready;
     t.next = null;
     active.push(t, t.priority);
+    // An IRQ event can be the only runnable path to acknowledging a deferred
+    // level interrupt. Waiting for the next tick would deadlock if that vector
+    // currently raises the APIC priority floor above the old timer vector.
+    need_resched = true;
 }
 
 fn removeSleeper(t: *Thread) void {
@@ -663,6 +676,86 @@ pub fn kill(id: u32) error{ NotFound, Refused }!void {
 pub fn currentKilled() bool {
     const t = current orelse return false;
     return t.killed;
+}
+
+/// Whether a thread with this id still exists and has not exited.
+///
+/// A dead thread stays findable until its corpse is collected, which is why
+/// "exists" alone would not do: the whole point of the question is usually
+/// to let go of something that was released by an exit.
+pub fn threadAlive(id: u32) bool {
+    const t = find(id) orelse return false;
+    return t.state != .dead;
+}
+
+/// End every userspace thread except `self`, and wait for them to go.
+///
+/// The shutdown sequence: services and driver processes hold resources that
+/// only exit releases — interrupt lines, device claims, DMA memory, the
+/// display — so the machine is stopped by stopping them, one tidy exit at a
+/// time, rather than by pulling the floor out from under them. Killing is one
+/// pass and exiting is another: a blocked thread only learns it is dead once
+/// it is woken, and only acts on it at its next return to userspace.
+///
+/// Waiting sleeps rather than spins, and is bounded: a thread that will not
+/// unwind must not become a shutdown that never ends.
+///
+/// Returns how many were left behind when the deadline ran out, which is
+/// worth saying rather than assuming zero.
+pub fn stopAllBut(self_id: u32) usize {
+    const deadline = deadlineIn(STOP_DEADLINE_US);
+    var left = killSweep(self_id);
+    while (left > 0 and hal.monotonicMicros() < deadline) {
+        sleepMicros(5_000);
+        // A thread that had not yet noticed its end could have started one
+        // last child in the meantime; swept again so nothing slips out of
+        // the shutdown.
+        left = killSweep(self_id);
+    }
+    return left;
+}
+
+/// Mark every remaining userspace thread except `self_id`, and say how many
+/// are still waiting to unwind. Idempotent: the sweep may run again while
+/// the first round is still exiting.
+fn killSweep(self_id: u32) usize {
+    var left: usize = 0;
+    var node = thread_mod.first();
+    while (node) |t| : (node = t.all_next) {
+        if (t.state == .dead or t.id == self_id) continue;
+        // Kernel threads have no return to userspace, which is the only
+        // place the flag is acted on; the idle thread must live.
+        if (t.space.pd_phys == 0) continue;
+        if (idle_thread) |idle| {
+            if (t == idle) continue;
+        }
+        left += 1;
+        if (!t.killed) {
+            t.killed = true;
+            unblock(t);
+        }
+    }
+    return left;
+}
+
+/// How long a shutdown waits for the last services to exit.
+const STOP_DEADLINE_US = 2_000_000;
+
+/// The names of the userspace threads still with us, excluding `self_id`,
+/// which is who a shutdown names when some would not leave.
+pub fn liveThreadNames(self_id: u32, into: [][]const u8) usize {
+    var n: usize = 0;
+    var node = thread_mod.first();
+    while (node) |t| : (node = t.all_next) {
+        if (t.state == .dead or t.id == self_id) continue;
+        if (t.space.pd_phys == 0) continue;
+        if (idle_thread) |idle| {
+            if (t == idle) continue;
+        }
+        if (n < into.len) into[n] = t.name();
+        n += 1;
+    }
+    return n;
 }
 
 /// Called from the timer interrupt. Only accounting here, the actual switch

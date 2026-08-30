@@ -6,7 +6,8 @@
 //! to keep in sync. `abi.number` resolves a call number at compile time and
 //! fails the build on a name that does not exist.
 
-const abi = @import("lib").syscalls;
+const lib = @import("lib");
+const abi = lib.syscalls;
 const keymaps = @import("keymaps");
 
 /// Re-exported so call sites say `sys.STDOUT` rather than reaching two modules
@@ -148,6 +149,18 @@ pub fn getpid() isize {
     return syscall0(abi.number("getpid"));
 }
 
+/// Report that the boot reached a usable state. Init's call: it stands the
+/// kernel's boot watchdog down before it ends the boot with a panic screen.
+pub fn bootOk() isize {
+    return syscall0(abi.number("boot_ok"));
+}
+
+/// End every other process and wait for them to exit. Returns how many
+/// threads were still exiting when the wait ended, or a negative errno.
+pub fn stopAll() isize {
+    return syscall0(abi.number("stop_all"));
+}
+
 pub fn yield() void {
     _ = syscall0(abi.number("yield"));
 }
@@ -179,8 +192,6 @@ fn syscall2(nr: u32, a0: usize, a1: usize) isize {
           [a1] "{ecx}" (a1),
         : .{ .memory = true });
 }
-
-
 
 pub fn open(path: []const u8, flags: OpenFlags) isize {
     return syscall3(
@@ -303,8 +314,12 @@ pub fn pciWrite(location: u32, offset: u8, value: u32) void {
 
 /// Tell the kernel this process now drives the PCI device, so its table says
 /// driven rather than matched and nothing else probes it as free.
-pub fn claimDevice(bus: u16, device: u16, function: u16) isize {
-    return syscall3(abi.number("claim_device"), bus, device, function);
+pub fn claimDevice(location: lib.pci.Location) isize {
+    return syscall3(abi.number("claim_device"), location.bus, location.device, location.function);
+}
+
+pub fn releaseDevice(location: lib.pci.Location) isize {
+    return syscall3(abi.number("release_device"), location.bus, location.device, location.function);
 }
 
 pub fn dmaAlloc(size: usize, physOut: *u32) isize {
@@ -320,13 +335,6 @@ pub fn ioportGrant(base: u16, count: usize) isize {
 /// Say the device has been serviced, so its line may fire again.
 pub fn irqAck(handle: u32) isize {
     return syscall1(abi.number("irq_ack"), handle);
-}
-
-/// Open or close the chipset's gate on the system control interrupt, the
-/// switch the firmware's protocol says opens after its own handshake.
-/// Needs the driver capability.
-pub fn sciEnable(on: bool) isize {
-    return syscall1(abi.number("sci_enable"), @intFromBool(on));
 }
 
 pub const Pipe = struct { read: u32, write: u32 };

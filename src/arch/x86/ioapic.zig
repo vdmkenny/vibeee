@@ -83,26 +83,43 @@ pub fn init(info: *irq.Routing) bool {
 /// declaration, the compiler checks the whole thing adds up to sixty-four
 /// bits, and reading one back gives named fields rather than a word to mask
 /// apart. C's bitfields cannot be relied on for this; Zig's can.
-const Redirect = packed struct(u64) {
+pub const Delivery = enum(u3) { fixed = 0, lowest = 1, smi = 2, nmi = 4, init = 5, external = 7, _ };
+
+pub const Route = packed struct(u32) {
     vector: u8 = 0,
     delivery: Delivery = .fixed,
     /// Address a set of CPUs rather than one by its APIC id.
     logical: bool = false,
     /// Hardware sets it while a previous one is still on its way. Read only.
     pending: bool = false,
-    active_low: bool = false,
+    polarity: irq.Polarity = .high,
     /// Hardware sets it between accepting a level interrupt and being told the
     /// device is done. Read only.
     servicing: bool = false,
-    level: bool = false,
+    trigger: irq.Trigger = .edge,
     /// Nothing is delivered while this is set.
     masked: bool = true,
-    _reserved: u39 = 0,
+    _reserved: u15 = 0,
+};
+
+const Redirect = packed struct(u64) {
+    route: Route = .{},
+    _reserved: u24 = 0,
     /// Which CPU, by APIC id.
     destination: u8 = 0,
-
-    const Delivery = enum(u3) { fixed = 0, lowest = 1, smi = 2, nmi = 4, init = 5, external = 7 };
 };
+
+comptime {
+    if (@bitSizeOf(Route) != 32 or @bitSizeOf(Redirect) != 64) {
+        @compileError("an IOAPIC redirection entry must be one qword");
+    }
+    if (@bitOffsetOf(Route, "polarity") != 13 or
+        @bitOffsetOf(Route, "trigger") != 15 or
+        @bitOffsetOf(Route, "masked") != 16)
+    {
+        @compileError("IOAPIC route fields do not match the redirection table");
+    }
+}
 
 /// The index and data registers are one shared pair. An interrupt landing
 /// between selecting and accessing runs a handler that selects for itself,
@@ -115,7 +132,14 @@ fn hold() bool {
 const release = cpu.restoreInterrupts;
 
 /// Send a global interrupt to `vector` on `destination`, masked to begin with.
-pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u8, masked: bool) void {
+pub fn route(
+    gsi: u32,
+    vector: u8,
+    polarity: irq.Polarity,
+    trigger: irq.Trigger,
+    destination: u8,
+    masked: bool,
+) void {
     const owner = find(gsi) orelse return;
     const was = hold();
     defer release(was);
@@ -125,22 +149,24 @@ pub fn route(gsi: u32, vector: u8, active_low: bool, level: bool, destination: u
     // the exception and arrives masked, because its gate belongs to the
     // chipset, which opens it only once the firmware handshake is over.
     writeEntry(owner, gsi - owner.info.gsi_base, .{
-        .vector = vector,
-        .active_low = active_low,
-        .level = level,
+        .route = .{
+            .vector = vector,
+            .polarity = polarity,
+            .trigger = trigger,
+            .masked = masked,
+        },
         .destination = destination,
-        .masked = masked,
     });
 }
 
 /// The low half of a line's redirection entry: vector, delivery mode,
 /// polarity, trigger and mask in one word. For the narration around a first
 /// unmask, where what the hardware would deliver is the question.
-pub fn entryLow(gsi: u32) u32 {
-    const owner = find(gsi) orelse return 0;
+pub fn entryLow(gsi: u32) ?Route {
+    const owner = find(gsi) orelse return null;
     const was = hold();
     defer release(was);
-    return read(owner, REG_REDIRECT + (gsi - owner.info.gsi_base) * 2);
+    return @bitCast(read(owner, REG_REDIRECT + (gsi - owner.info.gsi_base) * 2));
 }
 
 pub fn setMask(gsi: u32, masked: bool) void {
@@ -150,12 +176,28 @@ pub fn setMask(gsi: u32, masked: bool) void {
     const was = hold();
     defer release(was);
     var entry = readEntry(owner, line);
-    if (entry.masked == masked) return;
+    if (entry.route.masked == masked) return;
 
     // A mask already in the wanted state is left alone. The write is the one
     // thing a shared controller notices, and firmware that also owns this
     // machine notices more than the value.
-    entry.masked = masked;
+    entry.route.masked = masked;
+    writeEntry(owner, line, entry);
+}
+
+/// Unmask only the exact route boot installed. Firmware co-owns this register
+/// file; if it has rewritten an entry, preserving its value is safer than
+/// asserting ownership with another runtime write.
+pub fn unmaskIfMatches(gsi: u32, expected: Route) void {
+    const owner = find(gsi) orelse return;
+    const line = gsi - owner.info.gsi_base;
+
+    const was = hold();
+    defer release(was);
+    var entry = readEntry(owner, line);
+    if (@as(u32, @bitCast(entry.route)) != @as(u32, @bitCast(expected)) or
+        !entry.route.masked) return;
+    entry.route.masked = false;
     writeEntry(owner, line, entry);
 }
 

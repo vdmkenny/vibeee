@@ -36,6 +36,10 @@ const heap = @import("kernel/heap.zig");
 const vfs = @import("kernel/vfs.zig");
 const hal = @import("kernel/hal.zig");
 
+/// Platform quirks: corrections for firmware bugs, evaluated by the early
+/// probe and read by everything that comes up afterwards. See src/quirks.
+const quirks = @import("quirks/quirks.zig");
+
 /// Bring up devices that need no bus enumeration to find.
 ///
 /// Serial comes first and unconditionally: if the machine has a port, every
@@ -56,8 +60,10 @@ pub fn earlyConsole() void {
 ///
 /// Done here because it is the one place allowed to know about both the
 /// firmware tables and the kernel at once.
-fn publishPlatform() void {
+fn publishPlatform(bi: *const bootinfo.BootInfo) void {
     const ram = smbios.memoryHardware();
+    const fadt = acpi.get();
+    const pm_block = lpcPmBase();
 
     sysinfo.setPlatform(.{
         .acpi_rsdp = acpi_root,
@@ -66,6 +72,14 @@ fn publishPlatform() void {
         .bios_vendor = smbios.biosVendor(),
         .bios_version = smbios.biosVersion(),
         .smbios_table = if (smbios.get()) |i| i.table else null,
+        .cmdline = bi.cmdlineSlice(),
+
+        .pm1a_event = if (fadt) |f| f.pm1a_event else 0,
+        .pm1a_event_len = if (fadt) |f| f.pm1a_event_len else 0,
+        .pm1a_control = if (fadt) |f| f.pm1a_control else 0,
+        .pm1a_control_len = if (fadt) |f| f.pm1a_control_len else 0,
+        .pm_block = pm_block orelse 0,
+        .pm_block_len = if (pm_block != null) 0x80 else 0,
 
         .ram_total_mb = if (ram) |r| r.total_mb else 0,
         .ram_devices = if (ram) |r| r.devices else 0,
@@ -74,8 +88,39 @@ fn publishPlatform() void {
 
     });
 
-    if (smbios.systemProduct()) |product| {
-        console.info("board", "{s} {s}", .{ smbios.systemManufacturer() orelse "", product });
+    // Always said, whatever the firmware answered: it is the machine's own
+    // account of itself, which the quirk registry was just matched against.
+    // A machine whose DMI is missing or odd boots with this line saying so,
+    // instead of silently failing every platform quirk it should have had.
+    if (smbios.systemManufacturer() orelse smbios.systemProduct()) |_| {
+        console.info("board", "{s} {s}", .{
+            smbios.systemManufacturer() orelse "unknown",
+            smbios.systemProduct() orelse "",
+        });
+    } else {
+        console.warn("board: no DMI system information; platform quirks will not match", .{});
+    }
+}
+
+/// Match the machine against the quirk registry and record the corrections.
+///
+/// Part of the early probe, straight after the firmware tables are read and
+/// before any driver binds: everything that comes up afterwards — kernel
+/// drivers directly, user processes through `sysinfo` — sees the answers.
+/// Nothing here touches hardware, so nothing here can wait on a device that
+/// has not come up yet.
+fn evaluateQuirks() void {
+    quirks.evaluate(.{ .dmi = .{
+        .system_vendor = smbios.systemManufacturer() orelse "",
+        .system_product = smbios.systemProduct() orelse "",
+        .board_vendor = smbios.boardManufacturer() orelse "",
+        .board_name = smbios.boardProduct() orelse "",
+        .bios_vendor = smbios.biosVendor() orelse "",
+        .bios_version = smbios.biosVersion() orelse "",
+    }});
+
+    for (quirks.appliedQuirks()) |quirk| {
+        console.info("quirks", "{s}: {s}", .{ quirk.name, quirk.why });
     }
 }
 
@@ -122,11 +167,12 @@ pub fn interruptRouting() ?irq.Routing {
     // form can come from either table, but the identity of the line is the
     // FADT's, and an unmarked line is one the runtime may write.
     if (acpi.get()) |fadt| {
-        if (fadt.sci_int != 0) routing.markSci(fadt.sci_int);
-        if (fadt.sci_int != 0 and fadt.sci_int < irq.MAX_LINES and
-            routing.describedLine(@intCast(fadt.sci_int)) == null)
-        {
-            routing.describeSci(@intCast(fadt.sci_int), true, true);
+        if (fadt.sci_int != 0 and fadt.sci_int < irq.MAX_LINES) {
+            const sci_irq: u8 = @intCast(fadt.sci_int);
+            routing.markSci(routing.resolve(sci_irq).gsi);
+            if (routing.describedLine(sci_irq) == null) {
+                routing.describeSci(sci_irq, .low, .level);
+            }
         }
     }
 
@@ -135,10 +181,10 @@ pub fn interruptRouting() ?irq.Routing {
 
 pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
     smbios.init();
-    publishPlatform();
+    publishPlatform(bi);
+    evaluateQuirks();
 
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
-    irq.setSciGate(acpi_power.setSciEnabled);
 
     if (acpi.get()) |a| {
         if (a.s5_found) {
@@ -381,6 +427,20 @@ fn handOverUsb(addr: pci.Address, prog_if: u8) void {
     }
 }
 
+/// The chipset's power management block base, from the LPC bridge, or null
+/// when this is not a machine with one. The block's registers are the last
+/// thing a driver should ever be handed, so its range is published next to
+/// the FADT's account of the same territory.
+fn lpcPmBase() ?u16 {
+    const lpc = pci.Address{ .bus = 0, .slot = 31, .func = 0 };
+    const id = pci.configRead32(lpc, 0);
+    if (id & 0xFFFF != 0x8086) return null;
+    if (pci.configRead32(lpc, pci.CLASS_OFFSET) >> 16 != 0x0601) return null;
+
+    const pmbase: u16 = @truncate(pci.configRead32(lpc, 0x40) & 0xFF80);
+    return if (pmbase == 0) null else pmbase;
+}
+
 /// The chipset keeps running the firmware's USB input emulation from a
 /// periodic system management interrupt even after every controller has been
 /// handed over: the enables for it live in the power management block, not in
@@ -390,14 +450,7 @@ fn handOverUsb(addr: pci.Address, prog_if: u8) void {
 /// Off, by the two bits that are its own; the trap interface the platform
 /// service talks to stays armed.
 fn silenceUsbLegacySmi() void {
-    const lpc = pci.Address{ .bus = 0, .slot = 31, .func = 0 };
-    const id = pci.configRead32(lpc, 0);
-    if (id & 0xFFFF != 0x8086) return;
-    if (pci.configRead32(lpc, pci.CLASS_OFFSET) >> 16 != 0x0601) return;
-
-    // The power management block, from the bridge that carries it.
-    const pmbase: u16 = @truncate(pci.configRead32(lpc, 0x40) & 0xFF80);
-    if (pmbase == 0) return;
+    const pmbase = lpcPmBase() orelse return;
 
     const smi_en = pmbase + 0x30;
     const LEGACY_USB: u32 = 1 << 3;
@@ -437,11 +490,11 @@ fn enumeratePci() void {
                 .subclass = subclass,
                 .prog_if = @truncate(class_reg >> 8),
                 .description = pci.describe(class, subclass),
+                .quiesce = pci.quiesce,
             });
         }
     }.found);
 }
-
 
 /// Load the built-in user program into a fresh address space and drop to
 /// Ring 3.

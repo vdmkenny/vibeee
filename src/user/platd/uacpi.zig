@@ -41,7 +41,26 @@ pub const Walk = enum(u32) { proceed = 0, stop = 1 };
 // Bring-up and power
 // ---------------------------------------------------------------------------
 
+/// Initialization policy is a typed image of uACPI's public flag word.
+pub const InitFlags = packed struct(u64) {
+    bad_checksum_fatal: bool = false,
+    bad_signature_fatal: bool = false,
+    force_rsdt: bool = false,
+    no_acpi_mode: bool = false,
+    no_osi: bool = false,
+    proactive_checksum: bool = false,
+    _reserved: u58 = 0,
+};
+
+comptime {
+    if (@sizeOf(InitFlags) != @sizeOf(u64) or @bitOffsetOf(InitFlags, "no_acpi_mode") != 3) {
+        @compileError("uACPI initialization flags do not match the C ABI");
+    }
+}
+
 pub extern fn uacpi_initialize(flags: u64) Status;
+pub extern fn uacpi_enter_acpi_mode() Status;
+pub extern fn uacpi_leave_acpi_mode() Status;
 pub extern fn uacpi_namespace_load() Status;
 pub extern fn uacpi_namespace_initialize() Status;
 pub extern fn uacpi_finalize_gpe_initialization() Status;

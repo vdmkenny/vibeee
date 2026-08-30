@@ -13,6 +13,8 @@
 //! every context switch so an interrupt taken in Ring 3 lands on the incoming
 //! thread's kernel stack.
 
+const std = @import("std");
+
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
@@ -184,13 +186,13 @@ pub fn setKernelStack(esp0: u32) void {
 /// away from and back to constantly, and eight kilobytes on every one of those
 /// would cost more than the ports save.
 pub fn loadIoBitmap(shadow: *const [IOPB_BYTES]u8) void {
-    @memcpy(&tss.iopb, shadow);
-    tss.iomap_base = IOPB_OFFSET;
+    std.mem.copyForwards(u8, &tss.iopb, shadow);
+    @atomicStore(u16, &tss.iomap_base, IOPB_OFFSET, .release);
 }
 
 /// Let the bitmap through again, its contents already being this process's.
 pub fn enableIoBitmap() void {
-    tss.iomap_base = IOPB_OFFSET;
+    @atomicStore(u16, &tss.iomap_base, IOPB_OFFSET, .release);
 }
 
 /// Deny every port. Costs a store: the bitmap is put out of reach rather than

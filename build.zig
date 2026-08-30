@@ -439,4 +439,16 @@ pub fn build(b: *std.Build) void {
     // runner or they are silently skipped, which is worse than having none.
     const lib_tests = b.addTest(.{ .root_module = host_lib });
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+
+    // The quirk registry is pure data and pure functions, so its recognition
+    // and correction rules are testable on the host, where a machine's whole
+    // identity is a few strings.
+    const quirks_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/quirks/tests.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(quirks_tests).step);
 }

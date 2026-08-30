@@ -3,15 +3,21 @@
 # One stanza per service, separated by blank lines. Keys are the field names of
 # `Service` in src/user/init.zig, so this file and the parser cannot drift.
 #
-#   name      what other services call this one in `needs`
-#   binary    absolute path to the program
-#   needs     comma-separated services that must be up first
-#   provides  the /svc name it registers, if any; init waits for it to appear
-#   restart   never | on_failure | always
-#   caps      comma-separated capabilities, from `Caps` in the syscall ABI.
-#             Empty keeps everything init has. Capabilities are intersected at
-#             every spawn, so what is listed here bounds the whole tree below
-#             the service, not just the service itself.
+#   name        what other services call this one in `needs`
+#   binary      absolute path to the program
+#   needs       comma-separated services, or targets, that must be up first
+#   provides    the /svc name it registers, if any; init waits for it to appear
+#   target      the target this service belongs to, if any; the boot's own
+#               services belong to `boot`, everything else starts once it has
+#               settled — names a target in `needs` to order itself behind one
+#   settle_ms   how long the machine sits quiet before an after-boot service
+#               starts, after its dependencies are met; for a driver whose
+#               first touch must follow the firmware's own boot activity
+#   restart     never | on_failure | always
+#   caps        comma-separated capabilities, from `Caps` in the syscall ABI.
+#               Empty keeps everything init has. Capabilities are intersected
+#               at every spawn, so what is listed here bounds the whole tree
+#               below the service, not just the service itself.
 
 name    = devmgd
 binary  = /bin/devmgd
@@ -19,6 +25,7 @@ binary  = /bin/devmgd
 # It is the only thing in the tree with `driver`, which is what stops anything
 # else from reaching hardware.
 caps    = spawn,driver
+target  = boot
 restart = never
 
 name    = platd
@@ -29,6 +36,7 @@ binary  = /bin/platd
 # server with it and not the machine.
 caps    = driver,power
 provides = platform
+target  = boot
 restart = always
 
 name    = netd
@@ -36,12 +44,15 @@ binary  = /bin/netd
 # The network service: drives every ethernet adapter it finds, behind the
 # driver capability. One process for the wired port and later the radio, so
 # its interrupt routing question goes to the platform service and its answer
-# names one line per card. Raised after the platform service, rather than
-# racing it: the routing tables are the firmware's, and asking before the
-# interpreter is up invites a fallback answer and a busy config bus.
+# names one line per card. Waits for the boot target to settle, and the
+# machine to sit quiet for its settle allowance, before the first touch of
+# the adapter: DMA engines started during the boot's own activity take the
+# machine with them, and the quiet period is the state the late-start path
+# proved safe.
 caps    = driver
-needs   = platd
+needs   = boot
 provides = net
+settle_ms = 5000
 restart = always
 
 name    = cfgd
@@ -49,12 +60,14 @@ binary  = /bin/cfgd
 # The settings store. Nothing else may write /etc, which is what makes two
 # programs saving at once safe.
 provides = cfg
+target  = boot
 restart = always
 
 name    = vsh
 binary  = /bin/vsh
-restart = always
 # Everything a session needs and nothing a driver needs: the shell, the
 # desktop and every program either of them starts are all below this line, so
 # none of them can take an interrupt line or map a device.
 caps    = spawn,kill,power,display,mount
+target  = boot
+restart = always

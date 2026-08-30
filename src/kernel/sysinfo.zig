@@ -25,6 +25,7 @@ const probe = @import("probe.zig");
 const sched = @import("sched.zig");
 const svc = @import("svc.zig");
 const vfs = @import("vfs.zig");
+const quirks = @import("../quirks/quirks.zig");
 
 pub const VERSION = "0.1.0-M0";
 
@@ -37,10 +38,24 @@ pub const Platform = struct {
     bios_version: ?[]const u8 = null,
     /// Raw SMBIOS structure table, for a userspace decoder.
     smbios_table: ?[]const u8 = null,
+    /// The kernel command line, kept for init, which reads it to decide what
+    /// comes up this boot: the SD path has no equivalent of GRUB's editor,
+    /// so one baked-in line must reach further than the kernel itself.
+    cmdline: []const u8 = "",
     /// Where the firmware left the ACPI root pointer, for the userspace
     /// process that interprets the tables. A physical address and nothing
     /// more: reaching it needs the driver capability, which is the point.
     acpi_rsdp: u32 = 0,
+    /// The power management block's event and control register ranges, from
+    /// the FADT, and the chipset's own power management block, from the LPC
+    /// bridge. A driver must never drive anything the DSDT places inside
+    /// any of them, so the ranges are published for exactly that check.
+    pm1a_event: u16 = 0,
+    pm1a_event_len: u8 = 0,
+    pm1a_control: u16 = 0,
+    pm1a_control_len: u8 = 0,
+    pm_block: u16 = 0,
+    pm_block_len: u8 = 0,
 
     /// What the firmware says is physically fitted, which is not the same as
     /// what the allocator ended up with.
@@ -64,6 +79,9 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
 
     if (eq(key, "kernel")) {
         try w.print("vibeee {s}", .{VERSION});
+    } else if (eq(key, "cmdline")) {
+        if (platform.cmdline.len == 0) return error.UnknownKey;
+        try w.print("{s}", .{platform.cmdline});
     } else if (eq(key, "log.verbose")) {
         // The two gates services log under, so their lines follow the
         // kernel's own: one `verbose` on the command line decides for the
@@ -169,6 +187,20 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             platform.bios_vendor orelse "unknown",
             platform.bios_version orelse "",
         });
+    } else if (eq(key, "quirks")) {
+        const list = quirks.appliedQuirks();
+        if (list.len == 0) return error.UnknownKey;
+        for (list, 0..) |quirk, i| {
+            if (i > 0) try w.print("\n", .{});
+            try w.print("{s}: {s}", .{ quirk.name, quirk.why });
+        }
+    } else if (eq(key, "quirks.ec")) {
+        const c = quirks.get();
+        if (c.ec_data_port == null or c.ec_status_port == null) return error.UnknownKey;
+        try w.print("{x} {x}", .{ c.ec_data_port.?, c.ec_status_port.? });
+    } else if (eq(key, "quirks.battery")) {
+        if (!quirks.get().battery_percent_mislabel) return error.UnknownKey;
+        try w.print("1", .{});
     } else if (eq(key, "irq")) {
         try writeIrqs(&w);
     } else if (eq(key, "threads.list")) {
@@ -178,6 +210,17 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         // physical address rather than anything mapped: what to do with it is
         // the asker's business, and it needs the driver capability to do it.
         try w.print("{x}", .{platform.acpi_rsdp});
+    } else if (eq(key, "acpi.pm")) {
+        // The power management block's ranges, base and length pairs, in
+        // hex. What must never be driven, asked of the firmware's own table
+        // and of the chipset rather than guessed.
+        if (platform.pm1a_event_len == 0 and platform.pm1a_control_len == 0 and
+            platform.pm_block_len == 0) return error.UnknownKey;
+        try w.print("{x} {x} {x} {x} {x} {x}", .{
+            platform.pm1a_event, platform.pm1a_event_len,
+            platform.pm1a_control, platform.pm1a_control_len,
+            platform.pm_block, platform.pm_block_len,
+        });
     } else if (eq(key, "pci")) {
         try writeDevices(&w);
     } else if (eq(key, "disks")) {

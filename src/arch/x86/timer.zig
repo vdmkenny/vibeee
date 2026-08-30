@@ -20,6 +20,7 @@ const cpu = @import("cpu.zig");
 const idt = @import("idt.zig");
 const port = @import("port.zig");
 const sched = @import("../../kernel/sched.zig");
+const watchdog = @import("../../kernel/watchdog.zig");
 
 const PIT_CHANNEL0 = 0x40;
 const PIT_COMMAND = 0x43;
@@ -65,7 +66,7 @@ pub fn init() void {
     port.outb(PIT_CHANNEL0, @truncate(divisor & 0xFF));
     port.outb(PIT_CHANNEL0, @truncate(divisor >> 8));
 
-    idt.setHandler(idt.IRQ_BASE + 0, onTick);
+    idt.setHandler(idt.timerVector(), onTick);
     idt.setIrqMask(0, false);
 }
 
@@ -81,6 +82,7 @@ fn onTick(_: *idt.Frame) void {
     if (console.isDebug()) heartbeat();
 
     sched.onTick();
+    watchdog.onTick();
 }
 
 /// A quiet machine and a hung one look identical in a still photograph, and

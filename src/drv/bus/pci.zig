@@ -6,40 +6,13 @@
 //! interface.
 
 const pcicfg = @import("../../kernel/pcicfg.zig");
-const port = @import("../../arch/x86/port.zig");
-
-const CONFIG_ADDRESS: u16 = 0xCF8;
-const CONFIG_DATA: u16 = 0xCFC;
+const lib = @import("lib");
 
 pub const Address = struct {
     bus: u8,
     slot: u5,
     func: u3,
 };
-
-/// What goes in the configuration address port, laid out as the bus reads it.
-///
-/// A packed struct rather than four shifts: the field widths are the
-/// declaration, and a slot number too large to fit is a compile error rather
-/// than a quiet overlap into the bus field.
-const ConfigAddress = packed struct(u32) {
-    /// Dword aligned: the bus ignores the low two bits and so does this.
-    offset: u8,
-    func: u3,
-    slot: u5,
-    bus: u8,
-    _reserved: u7 = 0,
-    enable: bool = true,
-};
-
-fn configAddress(addr: Address, offset: u8) u32 {
-    return @bitCast(ConfigAddress{
-        .bus = addr.bus,
-        .slot = addr.slot,
-        .func = addr.func,
-        .offset = offset & 0xFC,
-    });
-}
 
 /// Through the kernel's one owner of the pair: an access split by an
 /// interrupt, or raced by another process, lands its data on whatever the
@@ -71,10 +44,28 @@ pub fn configWrite32(addr: Address, offset: u8, value: u32) void {
     pcicfg.write(selectorFor(addr, offset), value);
 }
 
+/// Stop a userspace-owned PCI function before its DMA mappings are reclaimed.
+pub fn quiesce(location: [3]u16) void {
+    const loc = lib.pci.Location.fromComponents(location[0], location[1], location[2]) orelse return;
+    const selector = pcicfg.Selector{
+        .bus = loc.bus,
+        .device = loc.device,
+        .function = loc.function,
+        .register = lib.pci.COMMAND_OFFSET / @sizeOf(u32),
+    };
+    var command: lib.pci.Command = @bitCast(@as(u16, @truncate(pcicfg.read(selector))));
+    command.io_space = false;
+    command.memory_space = false;
+    command.bus_master = false;
+    command.interrupt_disable = true;
+    pcicfg.write(selector, @as(u16, @bitCast(command)));
+    _ = pcicfg.read(selector);
+}
+
 pub const CLASS_OFFSET: u8 = 0x08;
-pub const HEADER_TYPE_OFFSET: u8 = 0x0E;
-pub const BAR0_OFFSET: u8 = 0x10;
-pub const INTERRUPT_LINE_OFFSET: u8 = 0x3C;
+pub const HEADER_TYPE_OFFSET = lib.pci.HEADER_TYPE_OFFSET;
+pub const BAR0_OFFSET = lib.pci.BAR0_OFFSET;
+pub const INTERRUPT_LINE_OFFSET = lib.pci.INTERRUPT_LINE_OFFSET;
 
 pub const Callback = *const fn (addr: Address, vendor: u16, device: u16) void;
 

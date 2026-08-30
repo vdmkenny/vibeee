@@ -172,9 +172,9 @@ Source ladder (all normalized to a 64-bit monotonic `ns` counter):
 Bring-up order: mask PIC → LAPIC → IOAPIC → calibrate → enable.
 1. **8259 remap+mask**: ICW init to vectors 0x20–0x2F (so spurious IRQ7/15 land identifiably), then OCW1 = 0xFF to both. Never used again (no virtual-wire).
 2. **LAPIC** (ioremap UC 0xFEE0_0000; confirm base/enable in IA32_APIC_BASE MSR 0x1B bit 11): SVR (0xF0) = 0x100 | 0xFF (enable, spurious vector 0xFF); TPR (0x80) = 0; LVT LINT0 masked, LVT LINT1 = NMI, LVT error = 0xFD, LVT timer = vector 0x50 one-shot, DCR (0x3E0) = divide-by-1.
-3. **IOAPIC** (0xFEC0_0000, IOREGSEL/+0x10 IOWIN): read version reg 0x01 → 24 RTEs. Program each used RTE: physical dest APIC 0, fixed delivery, vector = 0x30+GSI, trigger/polarity per table below, masked until `irq_attach`/kernel driver claims.
+3. **IOAPIC** (0xFEC0_0000, IOREGSEL/+0x10 IOWIN): read version reg 0x01 → 24 RTEs. Program each used RTE once at boot: physical dest APIC 0, fixed delivery, trigger/polarity from the MADT. Runtime avoids redirection writes because this firmware co-owns the controller from SMM.
 
-Vector map: 0x00–0x1F exceptions; 0x20–0x2F dead PIC shadow; **0x30–0x47 = GSI 0–23**; 0x50 LAPIC timer; 0x80 int80 syscall gate (DPL3); 0xFD LAPIC error; 0xFF spurious.
+Vector map with IOAPIC: 0x00–0x1F exceptions; **0x20 SCI alone**; 0x30–0x4F non-legacy GSIs; 0x50–0x5F legacy lines; 0x80 int80 syscall gate (DPL3); 0xD1/0xDC keyboard/mouse; 0xE0 timer; 0xFD LAPIC error; 0xFF spurious. SCI occupies the lowest APIC priority class, while kernel input and timekeeping outrank every deferred userspace vector. PIC fallback retains its conventional 0x20–0x2F range.
 
 GSI table for this machine (MADT overrides applied):
 
@@ -183,7 +183,7 @@ GSI table for this machine (MADT overrides applied):
 | 1 | i8042 KBD | edge/high | kernel input | HIGH |
 | 2 | PIT (ISA IRQ0 override) | edge/high | calibration only, then masked | HIGH |
 | 8 | RTC | edge/high | unused (boot-only reads) | HIGH |
-| 9 | ACPI SCI | level (polarity from MADT at runtime; research says high) | kernel ACPI/EC | HIGH |
+| 9 | ACPI SCI | level (polarity from MADT at runtime; research says high) | userspace platd | HIGH |
 | 12 | i8042 AUX | edge/high | kernel input | HIGH |
 | 14 | ata1 (no devices) | edge/high | unused | HIGH |
 | 15 | ata2: SSD | edge/high | kernel PATA | HIGH |
@@ -193,7 +193,7 @@ GSI table for this machine (MADT overrides applied):
 
 PCI IRQ resolution: ICH6 PIRQA–H map fixed to GSI16–23. Boot-time resolver: parse `_PRT` with the mini-AML interpreter (platform subsystem); cross-check against the ICH6 PIRQ route registers (LPC cfg 0x60–0x63/0x68–0x6B) and the device's Interrupt Line register; log all three. If they disagree, trust PIRQ registers. This is a named bring-up validation item.
 
-EOI protocol: edge → LAPIC EOI in the low-level handler. Level → **mask RTE, LAPIC EOI, signal consumers**; RTE unmasked when all attached level consumers have called `irq_ack` (per-GSI ack bitmap). This is the standard userspace-driver level-IRQ protocol and also protects against the wifi card vanishing mid-interrupt (Fn+F2 power gate): a level IRQ with no acker gets unmasked by a 10 ms kernel timer with a storm counter; >1k unclaimed/s → GSI quarantined + event to devmgr.
+EOI protocol: edge → LAPIC EOI in the low-level handler. Level → defer LAPIC EOI, signal the sole owner, and retire the deferred EOI only after `irq_ack`. This avoids runtime IOAPIC writes while preventing redelivery before userspace clears the device. An ownerless asserted level remains quarantined; SCI's dedicated low priority class limits that quarantine to SCI itself.
 
 ## 7. Syscalls & IPC
 

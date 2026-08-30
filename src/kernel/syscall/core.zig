@@ -17,6 +17,7 @@ const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
 const tty = @import("../tty.zig");
+const watchdog = @import("../watchdog.zig");
 
 const Args = ctx.Args;
 const Result = ctx.Result;
@@ -85,8 +86,8 @@ var console_owner: u32 = 0;
 
 pub fn sys_console_claim(_: Args) Result {
     // A debug boot is a boot being watched: the whole point of the flag is
-    // seeing everything, and a service that stops mid-bring-up after the
-    // shell starts must be able to say where. The console stays a broadcast.
+    // seeing everything, and a service that stops after the shell starts
+    // must be able to say where. The console stays a broadcast there.
     if (console.isDebug()) return 0;
 
     const t = sched.currentThread() orelse return Errno.perm.value();
@@ -98,9 +99,23 @@ fn writeConsole(number: u32, buf: []const u8) Result {
     // Once somebody owns the console, everyone else's lines stop rendering:
     // they are already in the kernel's ring by the log tee, which is where
     // the log tool reads them. Before anyone owns it, the boot narrates.
+    //
+    // A claim dies with its process, cleared lazily on the first write that
+    // would have been suppressed: the exit path is the one place that must
+    // not slow down, and after the shell is gone the console is a broadcast
+    // again.
     if (console_owner != 0) {
-        const t = sched.currentThread() orelse return @intCast(buf.len);
-        if (!sched.descendsFrom(t.id, console_owner)) return @intCast(buf.len);
+        if (!sched.threadAlive(console_owner)) console_owner = 0;
+        if (console_owner != 0) {
+            const t = sched.currentThread() orelse return @intCast(buf.len);
+            // init's supervision lines always render: they are how a machine
+            // says a service is crash-looping, and the moment they matter
+            // most is exactly when the shell can no longer be asked to run
+            // `log`.
+            if (t.id != sched.initId() and !sched.descendsFrom(t.id, console_owner)) {
+                return @intCast(buf.len);
+            }
+        }
     }
 
     // One write comes out whole. Every process shares this console, and a
@@ -239,6 +254,34 @@ pub fn sys_quiesce(_: Args) Result {
     return 0;
 }
 
+/// The boot's own report that it is done: from init, with the power to say
+/// so, and it stands the kernel's watchdog down.
+pub fn sys_boot_ok(_: Args) Result {
+    if (ctx.require(.{ .power = true })) |denied| return denied;
+
+    watchdog.disarm();
+    return 0;
+}
+
+/// End every other process and wait for them to exit.
+///
+/// The orderly half of a shutdown: drivers and services release what only
+/// their exit releases, so the kernel asks them to leave and sees them go
+/// before anything is flushed or powered. The caller is left alone to
+/// finish the ceremony.
+pub fn sys_stop_all(_: Args) Result {
+    if (ctx.require(.{ .power = true })) |denied| return denied;
+
+    const self = sched.currentThread() orelse return 0;
+    const left = sched.stopAllBut(self.id);
+    if (left > 0) {
+        var names: [8][]const u8 = @splat("");
+        const n = sched.liveThreadNames(self.id, names[0..]);
+        if (n > 0) console.info("shutdown", "still running after the stop: {s}", .{names[0]});
+    }
+    return @intCast(left);
+}
+
 pub fn sys_shutdown(a: Args) Result {
     if (ctx.require(.{ .power = true })) |denied| return denied;
 
@@ -248,6 +291,21 @@ pub fn sys_shutdown(a: Args) Result {
         2 => .halt,
         else => return Errno.inval.value(),
     };
+
+    // Services and drivers leave first, the filesystems after them, and the
+    // power switch last: what shutdown means, in one call. A thread that
+    // refuses to exit is left behind and overrun, not waited for forever.
+    if (sched.currentThread()) |self| {
+        const left = sched.stopAllBut(self.id);
+        if (left > 0) {
+            var names: [8][]const u8 = @splat("");
+            const n = sched.liveThreadNames(self.id, names[0..]);
+            if (n > 0) {
+                console.info("shutdown", "still running after the stop: {s}", .{names[0]});
+            }
+        }
+    }
+
     shutdown_mod.shutdown(action);
 }
 
