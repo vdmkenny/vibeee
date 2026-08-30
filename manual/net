@@ -1,17 +1,26 @@
 net — the network interfaces
 
   net                    every interface: link, counters, address
-  net wired up           enable the wired role, persistently
-  net wired down         disable it
-  net wired dhcp         clear any static claim; DHCP asks
-  net wired static 192.0.2.50/24 gw 192.0.2.1 dns 192.0.2.1
+  net <iface> up         enable that interface, persistently
+  net <iface> down       disable it
+  net <iface> dhcp       clear any static claim; DHCP asks
+  net <iface> static 192.0.2.50/24 gw 192.0.2.1 dns 192.0.2.1
                          claim an address; gw and dns are optional
 
-Configuration goes through the settings store and applies at once: it
-outlives the command, and `cfg net` shows what is recorded.
+An interface is named the way the listing prints it ("e1000",
+"e1000.1" for a second card of the same kind), by class ("ether",
+"wifi"), or by its bus location ("03:00.0"). Class names cover
+whichever interfaces no more specific entry claims.
+
+Configuration lives in four slots of the settings store and applies
+at once: it outlives the command, and `cfg net` shows what is
+recorded. Naming an interface edits the slot that matches it, or
+takes a free slot; an emptied match (cfg net if0_match "") frees
+its slot again.
 
 With no static claim, an enabled interface asks DHCP as soon as its
-cable carries, and prints the address when it arrives.
+cable carries, and prints the address when it arrives. An interface
+no slot covers stays down.
 
   net -p <address>       one ARP probe beneath the stack; the next
                          `net` shows which machine answered

@@ -119,6 +119,9 @@ pub fn keys(comptime T: type) []const []const u8 {
 /// set. What a completer offers and what a dropdown holds.
 pub fn choices(comptime T: type, comptime key: []const u8) []const []const u8 {
     comptime {
+        // Comparing every key of a wide schema is a lot of comptime loop
+        // iterations; the default quota is sized for less.
+        @setEvalBranchQuota(std.meta.fields(T).len * 400);
         for (std.meta.fields(T)) |field| {
             if (!str.eql(key, field.name)) continue;
             if (@typeInfo(field.type) != .@"enum") return &.{};

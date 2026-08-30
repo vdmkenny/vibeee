@@ -26,6 +26,7 @@ pub const elf = @import("elf.zig");
 pub const escapes = @import("escapes.zig");
 pub const eth = @import("eth.zig");
 pub const icmp = @import("icmp.zig");
+pub const ifmatch = @import("ifmatch.zig");
 pub const str = @import("str.zig");
 pub const style = @import("style.zig");
 pub const syscalls = @import("syscalls.zig");
@@ -45,6 +46,7 @@ test {
     _ = escapes;
     _ = eth;
     _ = icmp;
+    _ = ifmatch;
     _ = ipv4;
     _ = str;
     _ = style;

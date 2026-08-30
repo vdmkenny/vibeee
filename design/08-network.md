@@ -260,9 +260,12 @@ builder remains for the probe diagnostic and its host tests, not as a stack.
 ### 7.1 Identity and state
 
 An interface is named by its driver, with `.N` appended from the second instance of
-the same driver (`atl2`, `e1000`, `e1000.1`). Configuration binds to the **role**,
-not the name: `wired` (ethernet class) and `wifi` (802.11), because this machine has
-exactly one of each and config outlives the driver that serves it.
+the same driver (`atl2`, `e1000`, `e1000.1`). Configuration binds through a
+**matcher**, because a machine may carry several interfaces of one class and the
+config must outlive the driver that serves it. A matcher names an interface by
+class (`ether`, `wifi`), by driver label (`atl2`, `e1000.1`), or by bus location
+(`03:00.0`); the most specific claim wins, and two slots naming one class claim
+successive interfaces of it (`lib/ifmatch.zig`, host-tested).
 
 State per interface, each level gating the next:
 
@@ -277,25 +280,25 @@ the interrupt line, so up is cheap and nothing races a re-probe.
 ### 7.2 The `net` settings domain
 
 One typed struct beside the existing domains in `proto/settings.zig`, stored by cfgd
-at `/etc/net.cfg`, validated against the schema like every domain:
+at `/etc/net.cfg`, validated against the schema like every domain. The domain is
+four **slots**, each a matcher plus what it wants, generated comptime from one
+`NetSlot` shape so the slot count is a constant, not a convention:
 
 ```zig
-pub const NetRole = struct {
-    enabled: bool = true,
-    /// dhcp when empty; "a.b.c.d/nn" claims the address statically.
-    address: []const u8 = "",
-    gateway: []const u8 = "",
-    /// Up to two, comma separated. Empty defers to the DHCP offer.
-    dns: []const u8 = "",
-};
-pub const Net = struct {
-    wired: NetRole = .{},
-    wifi: NetRole = .{ .enabled = false },
+pub const NetSlot = struct {
+    match: ifmatch.Match,   // "ether", "wifi", "e1000.1", "03:00.0"; empty = unused
+    enabled: bool,
+    address: ipv4.Cidr,     // unset asks DHCP; "a.b.c.d/nn" claims statically
+    gateway: ipv4.Maybe,
+    dns: ipv4.Pair,         // up to two; unset defers to the DHCP offer
 };
 ```
 
-The defaults are the whole zero-configuration story: an untouched machine brings the
-wired port up and asks DHCP for an address.
+The typed values parse and spell themselves through the codec's self-spelling hook,
+so the file stays hand-editable and nothing dangles. Defaults are the whole
+zero-configuration story: slot 0 matches `ether` enabled, slot 1 matches `wifi`
+disabled, the rest are free. An untouched machine brings its first wired port up
+and asks DHCP; an interface no slot claims stays down.
 
 ### 7.3 Event-driven configuration
 
@@ -397,10 +400,13 @@ over `ev_app` handles. No out-of-band, no socket options beyond NODELAY.
 
 ## 9. Tools
 
-- `net`: status (per interface: driver, role, enabled, link, address and how it was
+- `net`: status (per interface: label, location, link, address and how it was
   obtained, lease remaining, counters). Verbs write config and cfgd's watch delivers
-  them (§7.3): `net wired up`, `net wired down`, `net wired dhcp`,
-  `net wired static 192.168.178.50/24 gw 192.168.178.1 [dns 192.168.178.1]`.
+  them (§7.3), addressed to an interface by label, class or location: `net atl2 up`,
+  `net ether down`, `net e1000.1 dhcp`,
+  `net 03:00.0 static 192.168.178.50/24 gw 192.168.178.1 [dns 192.168.178.1]`.
+  Naming an interface edits the slot that matches it or claims a free slot, after
+  checking the name against the listing.
   Diagnostics stay: `net -p <ip>` (driver-level ARP probe), `net -s` (lwIP stats,
   debug builds).
 - `ping <addr|name> [-c n]`: resolves if needed, then one `ping` op per second, each
@@ -434,7 +440,7 @@ over `ev_app` handles. No out-of-band, no socket options beyond NODELAY.
    glue is deliberately too thin to need a harness.
 3. **Hardware checklist**, in order: boot with defaults on the home LAN, watch the
    lease narration, `net` shows address and lease; `ping 192.168.178.1` under load;
-   `nc` chat between the 701 and another machine both directions; `net wired static`
+   `nc` chat between the 701 and another machine both directions; `net atl2 static`
    round trip through cfgd survives reboot; cable pull mid-lease renarrates link and
    re-acquires on return; `no.netd` boot line still isolates everything.
 
@@ -454,7 +460,7 @@ over `ev_app` handles. No out-of-band, no socket options beyond NODELAY.
 - **N1, the stack breathes**: vendor lwIP, port header, netif glue, cfg `net`
   domain + watch, interface lifecycle, DHCP policy, ICMP, `ping` op + tool, `net`
   verbs. Exit: on the machine, an untouched boot acquires a lease, `ping` answers
-  and is answered, `net wired static` persists across reboot.
+  and is answered, `net atl2 static` persists across reboot.
 - **N2, streams**: socket bridge, native client library, `nc` both directions,
   `resolve`. Exit: `nc` chat with another machine over the home LAN; QEMU transcript
   asserts a TCP round trip.

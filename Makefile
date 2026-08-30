@@ -207,10 +207,13 @@ qemu: dev-image
 # off the top of a 30-row display is invisible in an image and obvious here.
 #
 #   make shot OUT=/tmp/x.png TYPE="date"
+#
+# `EXTRA` appends QEMU arguments, which is how a test boots hardware the
+# default machine lacks: a second NIC, another disk.
 .PHONY: shot
 shot: dev-image
 	@QEMU_CPU="$(QEMU_CPU)" tools/qemu-shot.sh $(OUT) $(if $(TYPE),-t "$(TYPE)") -w $(or $(WAIT),5) \
-		-- -drive if=ide,format=raw,file=$(DEV_IMAGE)
+		-- -drive if=ide,format=raw,file=$(DEV_IMAGE) $(EXTRA)
 
 run: qemu
 

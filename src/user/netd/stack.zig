@@ -10,6 +10,7 @@
 
 const dev = @import("dev.zig");
 const icmp = @import("lib").icmp;
+const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
 const log = @import("ulib").log;
 const lwip = @import("lwip.zig");
@@ -129,24 +130,57 @@ fn slotOf(nic: *dev.NicDev) ?*Slot {
 // Policy: what the config domain says, applied as differences
 // ---------------------------------------------------------------------------
 
-/// Apply the wired role to every ethernet interface. Wifi joins the walk
-/// when a wifi driver exists to be walked.
+/// Bind each configuration slot to its interface and apply what it says.
+/// An interface no slot claims stays down: bringing traffic up is a choice
+/// somebody wrote down, never a side effect of having hardware.
 pub fn applyConfig(cfg: settings.Net) void {
-    const wired = cfg.role(.wired);
-    for (slots[0..count]) |*slot| applyRole(slot, wired);
+    // The comptime accessors unrolled into a runtime table, because which
+    // slot governs which interface is decided at runtime by the binder.
+    var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
+    inline for (0..settings.NET_SLOTS) |i| wants[i] = settings.netSlot(cfg, i);
 
-    // Statically named servers outrank whatever a lease suggested.
-    if (wired.dns.first != 0) {
-        const server = lwip.toWire(wired.dns.first);
-        lwip.dns_setserver(0, &server);
+    var matches: [settings.NET_SLOTS]ifmatch.Match = undefined;
+    for (&matches, wants) |*m, want| m.* = want.match;
+
+    var ifaces: [MAX]ifmatch.Iface = undefined;
+    for (slots[0..count], 0..) |slot, i| {
+        const nic = slot.nic orelse continue;
+        ifaces[i] = .{ .class = nic.class, .label = nic.label, .location = nic.location };
     }
-    if (wired.dns.second != 0) {
-        const server = lwip.toWire(wired.dns.second);
-        lwip.dns_setserver(1, &server);
+
+    var bound: [MAX]?u8 = undefined;
+    ifmatch.bind(&matches, ifaces[0..count], bound[0..count]);
+
+    const parked = settings.NetSlot{
+        .match = .none,
+        .enabled = false,
+        .address = .{},
+        .gateway = .{},
+        .dns = .{},
+    };
+    for (slots[0..count], bound[0..count]) |*slot, claim| {
+        applySlot(slot, if (claim) |s| wants[s] else parked);
+    }
+
+    // Statically named servers outrank whatever a lease suggested; the
+    // first bound slot naming any speaks for the machine, because DNS is
+    // one table however many interfaces feed it.
+    for (bound[0..count]) |claim| {
+        const want = wants[claim orelse continue];
+        if (want.dns.first == 0 and want.dns.second == 0) continue;
+        if (want.dns.first != 0) {
+            const server = lwip.toWire(want.dns.first);
+            lwip.dns_setserver(0, &server);
+        }
+        if (want.dns.second != 0) {
+            const server = lwip.toWire(want.dns.second);
+            lwip.dns_setserver(1, &server);
+        }
+        break;
     }
 }
 
-fn applyRole(slot: *Slot, role: settings.NetRole) void {
+fn applySlot(slot: *Slot, role: settings.NetSlot) void {
     const nic = slot.nic orelse return;
 
     if (!role.enabled) {

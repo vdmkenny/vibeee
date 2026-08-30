@@ -4,12 +4,16 @@
 //! event is how the service learns. The tool never asks netd to remember
 //! anything, which is what keeps one writer of configuration in the system.
 //!
+//! An interface is named the way the listing prints it ("atl2", "e1000.1"),
+//! by class ("ether", "wifi"), or by bus location ("03:00.0"). Naming one
+//! edits the configuration slot that already matches it, or claims a free
+//! slot when none does.
+//!
 //!   net                          the interfaces, their links and addresses
-//!   net wired up | down          enable or disable the role, persistently
-//!   net wired dhcp               clear the static claim; DHCP asks
-//!   net wired static 192.168.178.50/24 [gw 192.168.178.1] [dns a[,b]]
+//!   net <iface> up | down        enable or disable it, persistently
+//!   net <iface> dhcp             clear the static claim; DHCP asks
+//!   net <iface> static 192.0.2.7/24 [gw 192.0.2.1] [dns a[,b]]
 //!   net -p [address]             one ARP probe beneath the stack
-//!   net -s                       ask again after each probe reply
 
 const lib = @import("lib");
 const net = @import("proto").net;
@@ -21,8 +25,13 @@ const str = @import("ulib").str;
 const DEFAULT_ASK = 0x0A000202; // 10.0.2.2
 
 pub fn run(args: []const []const u8) void {
-    if (args.len > 0 and str.eql(args[0], "wired")) {
-        configure(args[1..]);
+    // A first word that is not a flag names an interface to configure.
+    if (args.len > 0 and args[0].len > 0 and args[0][0] != '-') {
+        const matcher = lib.ifmatch.Match.parse(args[0]) orelse {
+            say("net: that names no interface, class or location\n");
+            return;
+        };
+        configure(args[0], matcher, args[1..]);
         return;
     }
 
@@ -80,36 +89,42 @@ pub fn run(args: []const []const u8) void {
     out.flush();
 }
 
-/// The write verbs: each one is a settings change, and the service applies
-/// it when the watch fires. Said plainly when the store is volatile, the
-/// same way `cfg` says it.
-fn configure(args: []const []const u8) void {
+/// The write verbs: each one is a settings change, applied to the slot that
+/// matches the named interface, and the service applies it when the watch
+/// fires.
+fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []const u8) void {
     if (args.len == 0) {
-        say("net: wired needs a verb: up, down, dhcp, static\n");
+        say("net: an interface needs a verb: up, down, dhcp, static\n");
         return;
     }
 
     var cfg = settings.load("net");
 
+    var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
+    inline for (0..settings.NET_SLOTS) |i| wants[i] = settings.netSlot(cfg, i);
+
+    const chosen = resolveSlot(spelled, matcher, &wants) orelse return;
+    var want = &wants[chosen];
+
     if (str.eql(args[0], "up")) {
-        cfg.wired_enabled = true;
+        want.enabled = true;
     } else if (str.eql(args[0], "down")) {
-        cfg.wired_enabled = false;
+        want.enabled = false;
     } else if (str.eql(args[0], "dhcp")) {
-        cfg.wired_enabled = true;
-        cfg.wired_address = .{};
-        cfg.wired_gateway = .{};
+        want.enabled = true;
+        want.address = .{};
+        want.gateway = .{};
     } else if (str.eql(args[0], "static")) {
         if (args.len < 2) {
-            say("net: static needs an address like 192.168.178.50/24\n");
+            say("net: static needs an address like 192.0.2.7/24\n");
             return;
         }
         const claim = lib.ipv4.Cidr.parse(args[1]) orelse {
             say("net: that is not an address/prefix\n");
             return;
         };
-        cfg.wired_enabled = true;
-        cfg.wired_address = claim;
+        want.enabled = true;
+        want.address = claim;
 
         var at: usize = 2;
         while (at < args.len) : (at += 2) {
@@ -118,12 +133,12 @@ fn configure(args: []const []const u8) void {
                 return;
             }
             if (str.eql(args[at], "gw")) {
-                cfg.wired_gateway = lib.ipv4.Maybe.parse(args[at + 1]) orelse {
+                want.gateway = lib.ipv4.Maybe.parse(args[at + 1]) orelse {
                     say("net: that gateway is not an address\n");
                     return;
                 };
             } else if (str.eql(args[at], "dns")) {
-                cfg.wired_dns = lib.ipv4.Pair.parse(args[at + 1]) orelse {
+                want.dns = lib.ipv4.Pair.parse(args[at + 1]) orelse {
                     say("net: dns takes one address, or two with a comma\n");
                     return;
                 };
@@ -137,6 +152,10 @@ fn configure(args: []const []const u8) void {
         return;
     }
 
+    inline for (0..settings.NET_SLOTS) |i| {
+        if (i == chosen) settings.setNetSlot(&cfg, i, wants[i]);
+    }
+
     settings.save("net", cfg) catch {
         say("net: the settings store would not take it\n");
         return;
@@ -144,9 +163,71 @@ fn configure(args: []const []const u8) void {
     say("configured; the service applies it now\n");
 }
 
+/// Which configuration slot speaks for the named interface: the one whose
+/// matcher already says so, or a free slot claimed with this matcher. Null
+/// after its own message when neither exists.
+fn resolveSlot(
+    spelled: []const u8,
+    matcher: lib.ifmatch.Match,
+    wants: *[settings.NET_SLOTS]settings.NetSlot,
+) ?usize {
+    for (wants, 0..) |want, i| {
+        if (want.match.eql(matcher)) return i;
+    }
+
+    // A new claim on a driver or a place should name hardware that exists;
+    // a class claim may provision for hardware still in a drawer. With the
+    // service away the check cannot run, and configuration stays editable.
+    switch (matcher) {
+        .driver, .location => {
+            if (interfaceExists(matcher)) |there| {
+                if (!there) {
+                    say("net: no interface answers to ");
+                    say(spelled);
+                    say("; `net` lists them\n");
+                    return null;
+                }
+            } else {
+                say("recording unchecked: the service is not answering\n");
+            }
+        },
+        else => {},
+    }
+
+    for (wants, 0..) |want, i| {
+        if (want.match == .none) {
+            wants[i].match = matcher;
+            return i;
+        }
+    }
+
+    say("net: every configuration slot is taken; `cfg net` shows them, and\n" ++
+        "an emptied match (cfg net if0_match \"\") frees its slot\n");
+    return null;
+}
+
+/// Whether the service lists an interface this matcher covers, or null when
+/// it is not answering.
+fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
+    var i: u32 = 0;
+    while (true) : (i += 1) {
+        var reply = net.Rep{};
+        net.call(.status, i, 0, &reply) catch |err| switch (err) {
+            error.NoService => return null,
+            else => return false,
+        };
+        const iface = &reply.body.iface;
+        const covered = switch (matcher) {
+            .driver => |name| name.is(labelOf(&iface.driver)),
+            .location => |at| @as(u16, @bitCast(at)) == iface.location,
+            else => false,
+        };
+        if (covered) return true;
+    }
+}
+
 fn printInterface(iface: *const net.Iface) void {
-    const driver_name = driverOf(iface.driver);
-    ink.write(.key, driver_name);
+    ink.write(.key, labelOf(&iface.driver));
 
     out.text(if (iface.up != 0) "  up    " else "  down  ");
     if (iface.up != 0) {
@@ -163,6 +244,9 @@ fn printInterface(iface: *const net.Iface) void {
     out.text("  mac ");
     const spelled = lib.mac.text(iface.mac);
     out.text(&spelled);
+    out.text("  at ");
+    var place_field: [8]u8 = undefined;
+    out.text(lib.pci.spell(@bitCast(iface.location), &place_field));
     out.byte('\n');
 
     out.text("    rx ");
@@ -213,7 +297,7 @@ fn printAddress(info: *const net.AddressInfo) void {
     out.byte('\n');
 }
 
-fn driverOf(name: [8]u8) []const u8 {
+fn labelOf(name: *const [12]u8) []const u8 {
     var end = name.len;
     while (end > 0 and (name[end - 1] == 0 or name[end - 1] == ' ')) end -= 1;
     return name[0..end];

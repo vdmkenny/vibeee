@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const config = @import("ulib").config;
+const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
 const keymaps = @import("keymaps");
 const str = @import("lib").str;
@@ -94,46 +95,84 @@ pub const Input = struct {
     keymap: Keymap = keymaps.default,
 };
 
-/// Network interface configuration, by role rather than driver name: this
-/// machine has one wired port and one radio, and the config outlives
-/// whichever driver serves them. Keys are flat because the store's grammar
-/// is `domain.key`; the role view below rebuilds the pairing. The wired
-/// defaults are the zero-configuration story: enabled, no static address,
-/// so DHCP asks.
-pub const Net = struct {
-    wired_enabled: bool = true,
-    /// Unset asks DHCP; "a.b.c.d/nn" claims the address statically.
-    wired_address: ipv4.Cidr = .{},
-    wired_gateway: ipv4.Maybe = .{},
-    /// Up to two, comma separated. Unset defers to the DHCP offer.
-    wired_dns: ipv4.Pair = .{},
+/// Network interface configuration, as four slots rather than fixed roles:
+/// a machine may carry several wired ports, so each slot names which
+/// interface it binds through a matcher, and the most specific claim wins.
+/// `if0` matching any ethernet with DHCP is the zero-configuration story;
+/// `if1` holds the radio down until a driver exists to raise it. Keys are
+/// flat because the store's grammar is `domain.key`; the slot view below
+/// rebuilds the grouping.
+pub const NET_SLOTS = 4;
 
-    wifi_enabled: bool = false,
-    wifi_address: ipv4.Cidr = .{},
-    wifi_gateway: ipv4.Maybe = .{},
-    wifi_dns: ipv4.Pair = .{},
-
-    pub const Role = enum { wired, wifi };
-
-    /// One role's fields as one value, so a reader handles both roles with
-    /// the same code and the flat schema stays a storage detail.
-    pub fn role(self: Net, comptime which: Role) NetRole {
-        const prefix = @tagName(which) ++ "_";
-        return .{
-            .enabled = @field(self, prefix ++ "enabled"),
-            .address = @field(self, prefix ++ "address"),
-            .gateway = @field(self, prefix ++ "gateway"),
-            .dns = @field(self, prefix ++ "dns"),
-        };
-    }
-};
-
-pub const NetRole = struct {
+pub const NetSlot = struct {
+    /// Which interface: "ether", "wifi", a driver name as `net` prints it,
+    /// or a bus location like "03:00.0". Empty leaves the slot unused.
+    match: ifmatch.Match,
     enabled: bool,
+    /// Unset asks DHCP; "a.b.c.d/nn" claims the address statically.
     address: ipv4.Cidr,
     gateway: ipv4.Maybe,
+    /// Up to two, comma separated. Unset defers to the DHCP offer.
     dns: ipv4.Pair,
 };
+
+pub const Net = NetSchema();
+
+/// The flat field set, generated from the slot shape so the two cannot
+/// drift: `if0_match`, `if0_enabled` and so on, one group per slot.
+fn NetSchema() type {
+    const slot_fields = std.meta.fields(NetSlot);
+    const total = NET_SLOTS * slot_fields.len;
+    var names: [total][:0]const u8 = undefined;
+    var types: [total]type = undefined;
+    var attrs: [total]std.builtin.Type.StructField.Attributes = undefined;
+
+    for (0..NET_SLOTS) |slot| {
+        for (slot_fields, 0..) |field, i| {
+            const default: field.type = switch (@as(std.meta.FieldEnum(NetSlot), @enumFromInt(i))) {
+                .match => switch (slot) {
+                    0 => .{ .class = .ether },
+                    1 => .{ .class = .wifi },
+                    else => .none,
+                },
+                .enabled => slot == 0,
+                else => .{},
+            };
+            const at = slot * slot_fields.len + i;
+            names[at] = std.fmt.comptimePrint("if{d}_{s}", .{ slot, field.name });
+            types[at] = field.type;
+            attrs[at] = .{ .default_value_ptr = &default };
+        }
+    }
+
+    const frozen_names = names;
+    const frozen_types = types;
+    const frozen_attrs = attrs;
+    return @Struct(.auto, null, &frozen_names, &frozen_types, &frozen_attrs);
+}
+
+/// One slot's fields as one value, so a reader handles every slot with the
+/// same code and the flat schema stays a storage detail.
+pub fn netSlot(cfg: Net, comptime slot: usize) NetSlot {
+    const prefix = std.fmt.comptimePrint("if{d}_", .{slot});
+    return .{
+        .match = @field(cfg, prefix ++ "match"),
+        .enabled = @field(cfg, prefix ++ "enabled"),
+        .address = @field(cfg, prefix ++ "address"),
+        .gateway = @field(cfg, prefix ++ "gateway"),
+        .dns = @field(cfg, prefix ++ "dns"),
+    };
+}
+
+/// Write one slot's fields back into the flat schema.
+pub fn setNetSlot(cfg: *Net, comptime slot: usize, value: NetSlot) void {
+    const prefix = std.fmt.comptimePrint("if{d}_", .{slot});
+    @field(cfg, prefix ++ "match") = value.match;
+    @field(cfg, prefix ++ "enabled") = value.enabled;
+    @field(cfg, prefix ++ "address") = value.address;
+    @field(cfg, prefix ++ "gateway") = value.gateway;
+    @field(cfg, prefix ++ "dns") = value.dns;
+}
 
 pub const Domains = struct {
     input: Input = .{},

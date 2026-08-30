@@ -174,6 +174,13 @@ pub fn parse(text: []const u8) ?Location {
     return Location.fromComponents(bus, device, function);
 }
 
+/// The location, spelled the way `parse` reads it: "03:00.0".
+pub fn spell(at: Location, into: *[8]u8) []const u8 {
+    var w = std.Io.Writer.fixed(into);
+    w.print("{x:0>2}:{x:0>2}.{d}", .{ at.bus, at.device, at.function }) catch return "";
+    return into[0..w.end];
+}
+
 comptime {
     // A location is one word, so it can travel as a number.
     if (@sizeOf(Location) != 2) @compileError("a PCI location must be one word");

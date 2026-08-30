@@ -131,6 +131,7 @@ fn probe() void {
 
             ifaces[count] = .{
                 .name = driver.name,
+                .label = labelFor(driver.name),
                 .ops = driver.ops,
                 .location = loc,
             };
@@ -150,6 +151,25 @@ fn probe() void {
             count += 1;
         }
     }
+}
+
+/// The label an interface answers to: the driver's name, and an ordinal
+/// from the second interface of one driver, so two cards of one kind stay
+/// tellable apart in listings and in configuration.
+fn labelFor(driver_name: []const u8) lib.ifmatch.Name {
+    var same: usize = 0;
+    for (ifaces[0..count]) |iface| {
+        if (str.eql(iface.name, driver_name)) same += 1;
+    }
+    if (same == 0) {
+        return lib.ifmatch.Name.of(driver_name) orelse .{};
+    }
+    var buf: [lib.ifmatch.NAME_MAX]u8 = undefined;
+    var b = str.Builder{ .buf = &buf };
+    b.text(driver_name);
+    b.byte('.');
+    b.number(same);
+    return lib.ifmatch.Name.of(b.done()) orelse .{};
 }
 
 /// Map, open and interrupt-wire one interface.
@@ -480,7 +500,9 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         .tx_bytes = @truncate(iface.stats.tx_bytes),
         .arp_replies = @truncate(iface.stats.rx_arp),
     } };
-    @memcpy(reply.body.iface.driver[0..@min(iface.name.len, 8)], iface.name[0..@min(iface.name.len, 8)]);
+    const label = iface.label.slice();
+    @memcpy(reply.body.iface.driver[0..label.len], label);
+    reply.body.iface.location = @bitCast(iface.location);
     if (iface.peer) |peer| {
         reply.body.iface.peer_ip = peer.addr;
         reply.body.iface.peer_mac = peer.mac;

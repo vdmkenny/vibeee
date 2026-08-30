@@ -55,14 +55,16 @@ pub const Duplex = enum(u8) {
 };
 
 pub const Iface = extern struct {
-    /// What the driver is called, exactly as the probe table knows it.
-    driver: [8]u8 = @splat(0),
+    /// What the interface answers to: driver name plus ordinal, as
+    /// configuration matches it.
+    driver: [12]u8 = @splat(0),
+    /// Where it sits on the bus, packed as `lib.pci.Location`.
+    location: u16 = 0,
     mac: [6]u8 = @splat(0),
     /// Link up and carrying.
     up: u8 = 0,
     duplex: Duplex = .unknown,
     mbps: u16 = 0,
-    _pad: u16 = 0,
 
     rx_pkts: u32 = 0,
     rx_bytes: u32 = 0,
@@ -74,6 +76,7 @@ pub const Iface = extern struct {
     arp_replies: u32 = 0,
     peer_ip: u32 = 0,
     peer_mac: [6]u8 = @splat(0),
+    _pad: u16 = 0,
 };
 
 /// The stack's address story for one interface: what is held, where it came
@@ -118,7 +121,7 @@ comptime {
         @compileError("a network reply must fit in one channel payload");
     }
     if (@sizeOf(Req) != 16) @compileError("a network request is sixteen bytes");
-    if (@sizeOf(Iface) != 52) @compileError("an interface record is 52 bytes");
+    if (@sizeOf(Iface) != 56) @compileError("an interface record is 56 bytes");
     if (@sizeOf(AddressInfo) != 16) @compileError("an address record is sixteen bytes");
 }
 

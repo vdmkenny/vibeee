@@ -7,6 +7,7 @@
 //! static table entry, its rings are DMA segments made once at start, and a
 //! frame handed up is counted here and copied later by whoever owns it.
 
+const ifmatch = @import("lib").ifmatch;
 const lib = @import("lib");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -79,6 +80,11 @@ pub const NicOps = struct {
 pub const NicDev = struct {
     /// The driver's name in the probe table, exactly.
     name: []const u8,
+    /// What `net` prints and configuration matches: the driver's name, with
+    /// an ordinal from the second interface of one driver ("e1000.1").
+    label: ifmatch.Name = .{},
+    /// What kind of interface this is, for class matching.
+    class: ifmatch.Class = .ether,
     ops: NicOps,
     location: Location,
     irq: u32 = 0,
