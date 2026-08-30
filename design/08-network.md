@@ -1,153 +1,173 @@
 # vibeee Design 08, netd: Userspace Network Stack + NIC Drivers
 
-> **Status: design only, not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: v0 design, implementation-ready. Owner: netd subsystem.
-Scope: atl2 ethernet driver, AR2425 (ath5k-class) WiFi driver + softMAC + WPA2-PSK supplicant, minimal TCP/IP stack, POSIX-socket IPC bridge, config/status UX, restartability.
+Status: v1 design. The layer below the stack is implemented and verified on the
+machine: netd's event loop, the atl2 driver (rx, tx and a completed ARP round trip on
+real hardware), the e1000 and rtl8139 test drivers, interrupt routing answered by
+`platd` from `_PRT`, and the deferred-completion interrupt model. The stack (§6),
+interface management (§7), the socket bridge (§8) and the tools (§9) are design ready
+to implement. WiFi (§5) is design for a later milestone.
+
+Scope: lwIP-based TCP/IP stack inside netd, interface lifecycle and configuration
+through cfgd, DHCP for unconfigured interfaces, ICMP with `ping`, a stream tool `nc`,
+and the socket bridge they ride on. Everything is event driven: the one loop blocks in
+`wait_many` and the timeout it passes is the stack's own next deadline, so an idle
+network costs zero CPU.
 
 ## 1. Overview
 
-netd is ONE userspace process (single-threaded event loop) that owns both NICs and the
+netd is ONE userspace process (single-threaded event loop) that owns every NIC and the
 entire TCP/IP stack. It is a privileged driver server using the user-driver API
-(pci_cfg_*, map_mmio, dma_alloc, irq_attach). Apps never see packets; libc's BSD-socket
-shim speaks a channel + shm-ring protocol to netd. Rationale for single process / single
-thread: 630 MHz single core means threads buy zero parallelism and cost locks; an event
-loop over wait_many() gives deterministic, testable behavior and the netstack core stays
-a pure library (packets in / packets out) that compiles and fuzzes on the host.
+(`pci_read/write`, `map_device`, `dma_alloc`, `irq_attach`). Apps never see packets:
+tools speak the `/svc/net` channel protocol, and stream traffic crosses in shared
+memory rings with events for readiness. Rationale for single process / single thread:
+a 630 MHz single core means threads buy zero parallelism and cost locks; an event loop
+over `wait_many` gives deterministic, testable behavior.
+
+The stack core is **lwIP**, vendored the way uACPI is (third-party verdict in the
+master design: ADOPT). Handrolling TCP was rejected: lwIP's raw API in `NO_SYS` mode
+is exactly this architecture, a pure single-threaded library driven by explicit input
+calls and one timeout function, with two decades of deployment behind its state
+machines. What stays ours is everything lwIP does not know: the drivers, the netif
+glue, interface policy, configuration, the IPC bridge, and the tools.
 
 Internal layering (all in one binary):
 
 ```
 +------------------------------------------------------------------+
-| sockd: socket table, per-socket shm rings, /svc/net registry     |
+| bridge: socket table, per-socket shm rings, /svc/net protocol    |
 +------------------------------------------------------------------+
-| netstack: TCP | UDP | ICMP | DNS-stub | DHCP | ARP | IPv4 | ethv |
+| policy: interface lifecycle, cfg watch, DHCP/static decisions    |
 +------------------------------------------------------------------+
-| wifi ctl: MLME softMAC + supplicant (scan/auth/assoc/4-way/keys) |
+| lwIP (NO_SYS): TCP | UDP | ICMP | DHCP | DNS | ARP | IPv4 | ethv |
 +------------------------------------------------------------------+
-| NicDriver iface:  atl2  |  ath5k  |  e1000-test (QEMU only)      |
+| netif glue: one struct netif per NicDev, pbuf in/out             |
 +------------------------------------------------------------------+
-| user-driver API: map_mmio, dma_alloc, irq_attach, pci_cfg_*      |
+| NicDriver iface:  atl2  |  e1000  |  rtl8139  |  ath5k (later)   |
++------------------------------------------------------------------+
+| user-driver API: map_device, dma_alloc, irq_attach, pci_*        |
 +------------------------------------------------------------------+
 ```
 
 No IOMMU exists: netd's DMA programming can overwrite any RAM. netd is therefore a
-trusted, supervised system service; its manifest grants it exactly BDFs 03:00.0 and
-01:00.0 (+ test NIC in QEMU builds). This trust boundary is documented, not mitigated.
+trusted, supervised system service. This trust boundary is documented, not mitigated.
 
-## 2. Hardware facts used (with research confidence)
+## 2. Hardware facts used
 
-- Attansic L2 at 03:00.0, 1969:2048 rev a0, PCIe x1, 10/100, integrated PHY (HIGH,
-  research-peripherals §5). Reference implementations: Linux atl2.c/atlx.h (register map
-  verified against torvalds/linux master for this design), FreeBSD ae(4).
-- Atheros AR2425 at 01:00.0, 168c:001c rev 01, PCIe, b/g only, MAC srev 0xe2, PHY/RF
-  0x70 (RF2425, single-chip), no firmware blobs, per-board cal in card EEPROM (HIGH,
-  research-peripherals §4). Register truth source: Linux ath5k reg.h/desc.h (Atheros-
-  sanctioned), OpenBSD ar5k, MadWifi OpenHAL (HIGH that these are adequate).
-- Fn+F2 = ACPI WLDS power-gates the mini-PCIe slot: true electrical hot-unplug; state
-  persists across reboots; hotplug is ACPI Notify on \_SB.PCI0.P0P5/P0P6/P0P7, no native
-  PCIe hotplug interrupts (HIGH, research-quirks §3). Reads from a gated device return
-  0xFFFFFFFF (HIGH, eeepc-laptop detects absence exactly this way).
-- Early ath5k had AR2425 calibration bugs ("gain calibration timeout", resets in noisy
-  environments) (MEDIUM-HIGH, research-quirks §6) → calibration failures must be
-  non-fatal, retried, and rate-limited.
-- Exact GSIs for wifi/ethernet on the 4G are uncertain (research-core UNCERTAINTIES) →
-  netd reads Interrupt Line/Pin from PCI config and asks devmgr for the routed GSI; both
-  IRQs treated as shareable level-triggered IOAPIC lines. Neither driver uses MSI (atl2
-  MSI is known-flaky in Linux; ath5k legacy INTx).
-- MCFG ECAM at 0xE0000000 (HIGH), pci_cfg_* presumably backed by it; netd doesn't care.
-- Memory bandwidth possibly DDR2-140 (~1.1 GB/s peak, ~350 MB/s practical memcpy)
-  (MEDIUM, conflicting) → budget math below uses the pessimistic number.
-- QEMU emulates neither atl2 nor AR2425 → test seams in §10.
+- Attansic L2 at 03:00.0, 1969:2048 rev a0, PCIe x1, 10/100, integrated PHY.
+  Implemented and verified on the machine; register truth in §4 and in the driver.
+- Interrupt routing is the firmware's: netd asks `platd`, which answers from `_PRT`
+  (the wired port arrives on line 17). Lines are shareable level-triggered IOAPIC
+  inputs under the deferred-completion model; the controller is never touched at
+  runtime. Neither driver uses MSI (atl2 MSI is known-flaky in Linux).
+- Atheros AR2425 at 01:00.0, 168c:001c, b/g only: §5, later milestone.
+- QEMU emulates neither atl2 nor AR2425; the e1000 and rtl8139 drivers exist so every
+  layer above the driver interface is exercised in emulation (§11).
+- Memory budget math assumes the pessimistic ~350 MB/s practical memcpy.
 
 ## 3. Architecture
 
 ### 3.1 Event loop
 
-```zig
-// One wait set. No threads. Every external stimulus is an event or channel message.
-pub const WaitSource = enum { irq_atl2, irq_ath5k, timer_100ms, svc_channel,
-                              sock_doorbell, platform_notify, devmgr_notify };
+One `wait_many`, every external stimulus an event or a channel message, and the
+timeout the stack's own next deadline:
+
+```
+sources: service channel | one irq handle per taken line | cfg watch event
+         | client doorbell event
+timeout: sys_timeouts_sleeptime()   (lwIP's next timer, FOREVER when it has none)
 ```
 
-- `timer_100ms`: one kernel timer event drives a 100 ms timer wheel (TCP RTO/persist/
-  keepalive, DHCP T1/T2, ARP aging, wifi cal ticks, minstrel window, beacon-miss).
-  Sub-100ms precision is not needed anywhere in v1 (min RTO clamped to 200 ms).
-- IRQ events: `irq_attach(gsi)` → event; handler runs in netd context after wakeup.
-  Because lines may be shared, on wake we read the device ISR; if zero → spurious, done.
-  (Kernel contract: level IRQ is masked until the driver acks via irq_ack(); see OPEN.)
-- Socket doorbells: one event per socket in the app→netd direction; wait_many capacity
-  must cover ~256 sockets + fixed sources (see OPEN if wait_many has a cap).
+- After every wake, whatever the reason: `sys_check_timeouts()`. lwIP schedules its
+  own retransmits, DHCP renewals, ARP aging and DNS retries through this one call;
+  netd never ticks, polls or sleeps on its own account. An idle network parks the
+  loop in `wait_many` forever.
+- IRQ wake: read the device ISR, service, `irq_ack`. A shared line costs the other
+  driver one "not mine" ISR read.
+- Channel wake: drain requests (§7 ops, §8 ops).
+- cfg watch wake: reload the `net` domain, diff against running state, apply (§7.3).
+- Doorbell wake: walk sockets with ring work pending (§8.2).
+- `wait_many` accepts eight sources. The fixed set is channel + cfg watch + doorbell
+  + one handle per distinct interrupt line (at most two today, wired and wifi): six.
+  The single shared doorbell is what keeps client fan-in out of the wait set.
 
-### 3.2 Buffer strategy: pbuf-lite
+### 3.2 lwIP integration
 
-One dma_alloc arena at startup: **384 KB = 192 pbufs × 2048 B**, physically contiguous,
-<4 GB, mapped once. A pbuf's data area is DMA-visible; metadata lives in a parallel
-array so devices can never scribble on pointers.
+Vendored at `third_party/lwip` (git release tag, `src/core`, `src/include`,
+`src/netif/ethernet.c`), compiled into netd by the same build pattern as uACPI. The
+port surface in `NO_SYS` mode is two functions and a header:
 
-```zig
-pub const PBUF_SIZE = 2048;             // 1536 max frame + headroom + slack
-pub const PBUF_HEADROOM = 128;          // room to prepend eth/ip/tcp or 802.11+CCMP hdrs
-pub const Pbuf = struct {
-    // parallel-array metadata; index i maps to arena[i*2048]
-    off: u16,      // data start offset within the 2048 slab
-    len: u16,      // payload length
-    refcnt: u8,    // >1 while on TCP retransmit queue AND in a NIC TX ring
-    pool_next: u16,
-    pub inline fn data(self: *Pbuf) []u8 { ... }
-    pub inline fn paddr(self: *Pbuf) u32 { ... } // arena_paddr + i*2048 + off
-};
-```
+- `sys_now()`: milliseconds from `clockMicros() / 1000`.
+- `LWIP_RAND()`: from the kernel's entropy syscall if present, else a splitmix over
+  `clockMicros()`; DHCP xids and TCP ISNs are the consumers.
+- `lwipopts.h`, the decisions that matter:
+  - `NO_SYS=1`, `LWIP_NETCONN=0`, `LWIP_SOCKET=0`: raw callback API only. No OS
+    emulation layer, no threads, no mailboxes.
+  - `MEM_LIBC_MALLOC=0`, static pools. `MEM_SIZE` 64 KB, `PBUF_POOL_SIZE` 48 ×
+    `PBUF_POOL_BUFSIZE` 1536. Exhaustion drops packets, never blocks the loop.
+  - `LWIP_ARP=1, LWIP_ICMP=1, LWIP_DHCP=1, LWIP_DNS=1, LWIP_RAW=1, LWIP_UDP=1,
+    LWIP_TCP=1`. `LWIP_IPV6=0` in v1. `LWIP_AUTOIP=0`: an interface that fails DHCP
+    stays addressless and says so, a 169.254 address on a home LAN is a lie of
+    convenience.
+  - TCP: `TCP_MSS=1460`, `TCP_WND=16384`, `TCP_SND_BUF=16384`. NewReno as lwIP ships
+    it. Enough for LAN bulk at this machine's budget; window scaling can wait.
+  - All checksums in software (`CHECKSUM_GEN_*`, `CHECKSUM_CHECK_*` on): no NIC here
+    offloads any of them.
+  - `LWIP_NETIF_STATUS_CALLBACK=1`, `LWIP_NETIF_LINK_CALLBACK=1`: address and link
+    changes flow back into policy and narration.
+  - `LWIP_STATS` only in debug builds, surfaced through `net -s`.
 
-- RX zero-copy for ath5k: RX descriptors point straight at pbuf data areas; a received
-  frame enters the stack with no copy. atl2 cannot do this (its RX buffers live inside
-  its own descriptor ring, see §4), so atl2 RX pays one fused copy+checksum.
-- TX: stack builds headers in pbuf headroom; app payload is copied once from the socket
-  shm ring into the pbuf (this copy is mandatory anyway to decouple app memory from DMA).
-- Exhaustion policy: RX refill starves first (drop packets, never deadlock TX/ACKs);
-  TCP allocates from a reserved sub-pool of 32 pbufs for ACK/ctrl segments.
+### 3.3 netif glue
 
-### 3.3 NicDriver interface (compile-time registry inside netd)
+One `struct netif` per NicDev. Output: lwIP hands a pbuf chain, the glue flattens it
+into the driver's `transmit` (every driver copies into its own ring or FIFO anyway,
+so the flatten is the same copy). Input: the driver's rx delivery allocates a
+`PBUF_POOL` pbuf, copies the frame in, and calls `netif.input` (`ethernet_input`).
+One copy each direction beyond DMA; §4's budget already paid for it at 100 Mbit.
+Driver link changes call `netif_set_link_up/down`, which is also what makes lwIP's
+DHCP restart discovery when the cable returns. The existing ARP probe diagnostic
+(`net -p`) keeps its hand-built frame and its zero sender per RFC 5227: it exercises
+the driver path beneath the stack and stays useful precisely because it does not
+depend on it.
 
-```zig
-pub const LinkState = struct { up: bool, mbps: u16, duplex: enum { half, full } };
-pub const NicOps = struct {
-    probe:  *const fn (bdf: u16) bool,
-    init:   *const fn (dev: *NicDev) anyerror!void,   // full HW init from unknown state
-    start:  *const fn (dev: *NicDev) anyerror!void,   // RX/TX enable
-    stop:   *const fn (dev: *NicDev) void,            // quiesce DMA, mask IRQs
-    detach: *const fn (dev: *NicDev) void,            // surprise-removal safe teardown
-    tx:     *const fn (dev: *NicDev, p: *Pbuf) TxResult, // takes ownership on Ok
-    irq:    *const fn (dev: *NicDev) void,            // called on IRQ event wake
-    set_rx_filter: *const fn (dev: *NicDev, f: RxFilter) void,
-    link:   *const fn (dev: *NicDev) LinkState,
-    stats:  *const fn (dev: *NicDev) *const NicStats,
-};
-// Driver delivers RX upward:
-pub const NicCallbacks = struct {
-    rx: *const fn (dev: *NicDev, p: *Pbuf) void,      // stack takes ownership
-    tx_done: *const fn (dev: *NicDev) void,           // may kick queued TX
-    link_change: *const fn (dev: *NicDev) void,
-    dead: *const fn (dev: *NicDev) void,              // surprise removal detected
-};
-```
+### 3.4 NicDriver interface
 
-The wifi driver additionally implements `WifiOps` (channel set, scan actions, key cache,
-rate table, BSS filter) consumed only by the MLME module, the netstack sees wifi as an
-ethernet NicDev carrying ethertype frames after 802.11↔802.3 translation in the driver.
+As implemented in `src/user/netd/dev.zig`: `open`, `start`, `stop`, `irq`,
+`transmit`, `link`, `sync_link`, with rx delivered upward through `deliverRx`. The
+stack consumes rx via the netif glue; the `NicOps` contract does not change for the
+stack milestone. The wifi driver later adds `WifiOps` consumed only by the MLME
+module; the netstack sees wifi as an ethernet netif carrying ethertype frames.
 
-### 3.4 Service lifecycle
+### 3.5 The language boundary
 
-netd's manifest declares `needs = platd` and `provides = net`; init releases dependents
-on the provided name, so these rules are load-bearing:
+lwIP is vendored verbatim and never patched, exactly like uACPI. Everything of ours
+is Zig in this codebase's idiom, and the boundary follows platd's precedent:
+
+- A single `netd/lwip.zig` hand-mirrors the handful of C shapes and entry points the
+  glue actually touches (`netif`, `pbuf`, `err_t`, the dhcp/dns state the tools
+  report), as extern structs and `enum(uN)` with comptime `@sizeOf`/`@offsetOf`
+  assertions against the vendored headers' layouts, the way `uacpi.zig` pins the
+  FADT. No `@cImport`: what we depend on is written down and checked, not inhaled.
+- The port surface (`sys_now`, rand, the few `LWIP_PLATFORM_*` hooks) is Zig
+  exporting C-ABI functions, like platd's `glue.zig`.
+- Everything above the boundary is native: channel ops are packed structs like every
+  proto, interface and socket state machines are exhaustive enums, ring arithmetic
+  and the config schema carry comptime proofs, and shared-memory shapes (`SockCtrl`)
+  are extern structs whose size and field offsets are comptime-asserted, because a
+  cross-process ABI is a layout promise and the compiler is where promises are kept.
+
+### 3.6 Service lifecycle
+
+netd's manifest declares `needs = platd,cfgd` and `provides = net`:
 
 - `platd` registers its own name only once the firmware is fully settled, and netd
   orders itself behind that name: its routing question is asked of a service already
   in its serve loop. netd's own name doubles as its instance claim, so it is
   registered first; nothing downstream waits on it before the hardware is up.
+- `cfgd` is in the boot target already; declaring it makes the watch in §7.3 always
+  available rather than sometimes.
 - First hardware touch only after the dependencies are up. Probe, claim, map, then
   drive; a dependency that cannot answer is a refusal, not a machine that stops.
 - The boot line can hold the service down (`nonet`) or start it late under the boot
@@ -156,425 +176,287 @@ on the provided name, so these rules are load-bearing:
 
 ## 4. atl2 ethernet driver (1969:2048)
 
-Register map source: Linux atlx.h/atl2.h (offsets below verified from mainline).
+Implemented and verified on the machine: probe, MAC read, rings, PCIe fixes, link
+management, interrupts under deferred completion, rx of real LAN traffic and a
+completed ARP round trip. The register-level narrative below is the reference the
+implementation followed; `src/user/netd/atl2.zig` is the truth for current shapes.
 
 ### 4.1 Ring scheme (atl2's unusual design)
 
 atl2 has NO scatter-gather descriptor ring. Three regions in ONE dma_alloc block:
 
-- **TXD ring**: a plain byte FIFO (we pick 8 KB, dword-aligned) into which the CPU
+- **TXD ring**: a plain byte FIFO (8 KB, dword-aligned) into which the CPU
   memcpy's `{ tx_pkt_header (4 B: pkt_size:11, ins_vlan:1, vlan:16) + frame bytes }`,
-  dword-padded, wrapping at the end. Hardware consumes at its own read pointer; we tell
-  it how far we've written via mailbox `REG_MB_TXD_WR_IDX (0x15F0)` = write ptr **>> 2**
-  (dword index).
+  dword-padded, wrapping at the end. Hardware consumes at its own read pointer; we
+  tell it how far we've written via mailbox `REG_MB_TXD_WR_IDX (0x15F0)` = write ptr
+  **>> 2** (dword index).
 - **TXS ring**: 160 × 4-byte `tx_pkt_status` entries (ok/underrun/collision bits +
   `update` flag), hardware posts one per completed packet.
-- **RXD ring**: N × 1536-byte fixed slots, each = `{ rx_pkt_status (12 B incl. update,
-  ok, crc, runt, frag, trunc, vlan, pkt_size:11) + packet[1524] }`. Hardware fills
-  slots in order; we consume where `status.update == 1`, clear it, and advance mailbox
+- **RXD ring**: 64 × 1536-byte fixed slots, each = `{ rx_pkt_status (incl. update,
+  ok, crc, runt, frag, trunc, vlan, pkt_size:11) + packet }`. Hardware fills slots in
+  order; we consume where `status.update == 1`, clear it, and advance mailbox
   `REG_MB_RXD_RD_IDX (0x15F4)`.
 
-Sizing for 512 MB machine: TXD 8 KB + TXS 640 B + RXD 64×1536 = 96 KB → one 106 KB
-coherent block (+alignment pad: TXD 8-byte, RXD 128-byte aligned). All below 4 GB and
-contiguous per dma_alloc contract; `REG_DESC_BASE_ADDR_HI = 0`.
+### 4.2 Init/reset sequence
 
-### 4.2 Init/reset sequence (register-level)
-
-```
-1. pci_cfg: set CMD.IO|MEM|MASTER if clear.
-2. REG_MASTER_CTRL(0x1400) = MASTER_CTRL_SOFT_RST(1); wait 1 ms.
-3. Poll REG_IDLE_STATUS(0x1410) == 0, 1 ms step, ≤10 tries; else fail.
-4. Restore the PCIe block defaults: LTSSM_TEST_MODE(0x12FC)=0x6500 and
-   PCIE_DLL_TX_CTRL1(0x1104)=0x568, per `atl2_init_pcie`; then mask the four
-   error-reporting enables (URE/FEE/NFEE/CEE) in the PCIe capability's Device
-   Control, walking the capability list rather than assuming an offset: the L2
-   raises phantom unsupported-request/non-fatal reports against DMA traffic,
-   and masking them at the capability keeps every interrupt free of noise.
-5. Read permanent MAC: try NVM/VPD read (atl2_get_permanent_address path);
-   fallback: current REG_MAC_STA_ADDR(0x1488/0x148C) (BIOS/OpROM-set);
-   last resort: locally-administered random MAC + loud warning.
-6. PHY init: REG_PHY_ENABLE(0x140C)=1; 1 ms.
-   MII dbg: write MII_DBG_ADDR(0x1D)=0, read MII_DBG_DATA(0x1E); if bit 0x1000
-   (power-save) set, clear it. Write PHY reg 18 = 0x0C00 (link-change INT enable).
-   MII_ADVERTISE = 10/100 HD+FD | ASM_DIR | PAUSE.
-   MII_BMCR = RESET | ANENABLE | ANRESTART; poll REG_MDIO_CTRL(0x1414)
-   !(MDIO_START|MDIO_BUSY), ≤25×1 ms.
-   (MDIO access: REG_MDIO_CTRL = data | reg<<16 | MDIO_SUP_PREAMBLE | MDIO_START
-    | MDIO_RW(read) | clk_sel<<24; poll ~MDIO_BUSY.)
-7. Configure (exact order, per atl2_configure):
-   ISR(0x1600)=0xFFFFFFFF; MAC_STA_ADDR; DESC_BASE_ADDR_HI(0x1540)=0;
-   TXD_BASE_ADDR_LO(0x1544); TXS_BASE_ADDR_LO(0x154C); RXD_BASE_ADDR_LO(0x1554);
-   TXD_MEM_SIZE(0x1548)=8192/4; TXS_MEM_SIZE(0x1550)=160; RXD_BUF_NUM(0x1558)=64;
-   MAC_IPG_IFG(0x1484)=defaults; MAC_HALF_DUPLX_CTRL(0x1498)=defaults;
-   IRQ_MODU_TIMER_INIT(0x1408)=100 (~200 µs) + MASTER_CTRL.ITIMER_EN;
-   CMBDISDMA_TIMER(0x140E)≈100 ms; MTU(0x149C)=1500+14+4(+4);
-   TX_CUT_THRESH(0x1590)=0x177; PAUSE_ON_TH/OFF_TH(0x15A8/0x15AA);
-   MB_TXD_WR_IDX=0; MB_RXD_RD_IDX=0; DMAR(0x1580)=1; DMAW(0x15A0)=1;
-   ISR=0x3FFFFFFF; ISR=0. Read ISR: PHY_LINKDOWN set → treat as link-down, not error.
-8. IMR(0x1604) = ISR_TIMER|ISR_TS_UPDATE|ISR_RS_UPDATE|ISR_LINK_CHG|ISR_PHY
-   |error bits (DMAR_TO_RST|DMAW_TO_RST|TXF_UR|RXF_OV).
-```
+The implemented sequence: soft reset, idle poll, PCIe block vendor defaults
+(LTSSM_TEST_MODE 0x6500, PCIE_DLL_TX_CTRL1 0x568) with the four PCIe error-report
+enables masked at the capability, MAC address from the working registers, PHY wake
+with power-save cleared and link interrupts armed, ring bases and sizes, interrupt
+moderation (ITIMER 200 µs), MTU and thresholds, mailboxes zeroed, DMA engines on,
+status acknowledged whole. `MAC_CTRL` is written flat with the vendor's full value on
+every link refresh (preamble, CRC, pad, flow control, PHY clock, broadcast accept).
 
 ### 4.3 Hot paths
 
-TX (`atl2.tx`): check free TXS ≥1 and free TXD bytes ≥ len+4+4; else return .Busy (stack
-queues; tx_done kicks). Write 4-byte header at write ptr, memcpy frame (handles wrap in
-two memcpys), dword-align advance, clear next TXS `update`, write MB_TXD_WR_IDX = ptr>>2.
-Cost @100 Mbit: 12.5 MB/s memcpy into uncached-coherent ring ≈ 4–6% CPU on this memory.
-
-IRQ: read ISR; if 0 → spurious return. Write ISR = status | ISR_DIS_INT (ack+hold);
-on DMAR_TO_RST/DMAW_TO_RST → full reinit (§4.2); on PHY/LINK_CHG → clear PHY int (read
-PHY reg 19), re-read BMSR twice, on link-up read PHY reg 17 (PSSR) for resolved
-speed/duplex, then REG_MAC_CTRL(0x1480) = TX_EN|RX_EN|MACLP_CLK_PHY|ADD_CRC|PAD|BC_EN
-|flow-ctl bits |DUPLX(if FD)|speed-mode; on link-down clear RX_EN, flush stack routes.
-TS_UPDATE → reap TXS entries (update==1): account, advance txd_read_ptr by
-(pkt_size+7)&~3, wrap; wake queued TX. RS_UPDATE → consume RXD slots with update==1:
-if ok && 60 ≤ size: fused memcpy+IP-checksum into a fresh pbuf → `cb.rx`; clear update.
-Then MB_RXD_RD_IDX = read ptr. Finally write ISR = 0 (re-enable).
-
-The ISR narrates only what ordinary traffic does not explain: RX/TX status updates and
-the PHY poll are traffic, and stay quiet; anything else — errors, overruns, link events
-— is worth a line.
-
-Interrupt moderation: ITIMER at 200 µs caps IRQ rate at ~5 k/s regardless of pps; with
-64 RX slots (96 KB ≈ 7.7 ms of line-rate buffering) this is safe against overrun.
-
-Multicast: v1 programs REG_RX_HASH_TABLE(0x1490,0x1494)=0 and relies on broadcast +
-unicast (DHCP/ARP/DNS all work). `set_rx_filter` implements the standard CRC32-high-6-
-bits hash when IGMP/mDNS arrives (M3). Promiscuous available for debugging
-(MAC_CTRL_PROMIS_EN).
+TX: reap statuses, refuse when TXS or FIFO space is short, header + frame into the
+FIFO with wrap, dword advance, mailbox write, posted-write flush. IRQ: ISR read
+("not mine" on a shared line is a zero read), ack with the hold bit, PHY latch read
+before the ack when the PHY raised it, reap rx slots and tx statuses, link refresh on
+PHY events, release. Fatal events (DMA timeouts, PCIe link loss) take the full
+reconfigure path and relink. The ISR narrates only what ordinary traffic does not
+explain.
 
 ### 4.4 100 Mbit budget math @630 MHz
 
-Full-duplex worst case, 1518 B frames, 8.1 kpps each way:
-- RX: ring→pbuf fused copy+cksum 12.5 MB/s ≈ 5%; pbuf→socket-ring copy ≈ 5%;
-  TCP/IP per-packet ~1.5 µs ≈ 1.2%; IRQ+reap amortized ≈ 1.5%.
-- TX mirror image ≈ 11%. ACK traffic ≈ 3%.
-- Total ≈ **28–33% CPU at full duplex saturation**; ~17% for one-direction bulk.
-  Leaves headroom for GUI + disk. Memory bandwidth: ~50 MB/s of the ~350 MB/s
-  practical, acceptable.
+Full-duplex worst case, 1518 B frames, 8.1 kpps each way: ring copies ≈ 10%, stack
+per-packet ≈ 3%, IRQ amortized ≈ 3% per direction. Total ≈ **28–33% CPU at full
+duplex saturation**; ~17% for one-direction bulk. Memory bandwidth ~50 MB/s of the
+~350 MB/s practical. The lwIP copy each way is inside these numbers (§3.3).
 
 ## 5. AR2425 WiFi driver (ath5k-class), honest design
 
-This is the hardest component. Truth sources: ath5k (reg.h, desc.h, reset.c, phy.c,
-initvals.c, eeprom.c), OpenBSD ar5k. Exact bitfield encodings below marked (reg.h) are
-to be lifted verbatim from ath5k headers at implementation time, this design fixes the
-sequences and structures, not every literal.
+Unchanged from v0 and still the plan for its own milestone: probe/EEPROM/reset
+pipeline, softMAC MLME, WPA2-PSK supplicant with hardware CCMP and a software
+fallback, minstrel-lite rate control, kill-switch surprise-removal handling. Two
+integration points move with the stack decision: the driver feeds the same netif glue
+as ethernet (802.11 to 802.3 translation stays in the driver), and EAPOL (0x888E)
+frames are diverted to the supplicant before `netif.input`. Everything else in the
+v0 §5 text stands and is not repeated here; see git history for the full section
+until implementation revises it in place.
 
-### 5.1 Probe & identification
+## 6. The stack: lwIP module map
+
+What each requirement rides on, and what is deliberately off:
+
+| Concern | Module | Notes |
+|---|---|---|
+| ARP | `etharp` | replaces nothing: the hand ARP probe stays as a driver diagnostic |
+| IPv4 | `ip4` | one address per netif; no forwarding between netifs |
+| ICMP | `icmp` | echo reply is free once up; echo request via a raw pcb for `ping` |
+| DHCP client | `dhcp` | §7.4; lease events narrated; per-netif |
+| DNS | `dns` | servers from DHCP option 6 or static config; `resolve` op for tools |
+| UDP | `udp` | record rings in the bridge |
+| TCP | `tcp` | byte rings in the bridge; NewReno; MSS 1460 |
+| IPv6 | off | v1 statement, structures do not preclude it |
+| AUTOIP | off | no address is better than a pretend one |
+| IGMP/mDNS | off | with the multicast filter work, later |
+
+There is no handrolled protocol code above the drivers. The pure `lib/eth.zig` frame
+builder remains for the probe diagnostic and its host tests, not as a stack.
+
+## 7. Interfaces: lifecycle, configuration, DHCP
+
+### 7.1 Identity and state
+
+An interface is named by its driver, with `.N` appended from the second instance of
+the same driver (`atl2`, `e1000`, `e1000.1`). Configuration binds to the **role**,
+not the name: `wired` (ethernet class) and `wifi` (802.11), because this machine has
+exactly one of each and config outlives the driver that serves it.
+
+State per interface, each level gating the next:
 
 ```
-1. devmgr match 168c:001c → attach. pci_cfg: CMD.MEM|MASTER; map BAR0 (64 KB MMIO).
-2. Wake: SLEEP_CTL(0x4004) = SLE_WAKE; poll PCICFG(0x4010).SPWR_DN clear (≤200×50 µs).
-3. SREV(0x4020) → expect MAC srev 0xE2 (AR2425 "Swan"); accept 0xE6 (AR2417) too.
-4. Warm reset: RESET_CTL(0x4000) = PCU|MAC|DMA|PHY: NEVER set RESET_CTL_PCI on this
-   card: warm-resetting the PCI core on PCIe hangs it (ath5k comment, verified).
-   Wait, re-wake.
-5. PHY_CHIP_ID(0x9818) → expect 0x70; radio = RF2425, single-chip. Anything else →
-   refuse politely (log + dead state), do not guess.
+driven ──> enabled (user intent, persisted) ──> link (carrier) ──> addressed
 ```
 
-### 5.2 EEPROM
+`up` and `down` are the `enabled` bit. Down quiesces the engine (`ops.stop` level:
+DMA idle, device IMR masked, netif admin-down, DHCP released) but keeps the claim and
+the interrupt line, so up is cheap and nothing races a re-probe.
 
-Card EEPROM via EEPROM_BASE block (0x6000 addr, 0x6004 data, 0x6008 cmd=READ, 0x600C
-status poll RD_DONE, per-word). Read: version/misc words (incl. misc5 AES_DIS bit),
-MAC address, regdomain, capabilities, and the full 2.4 GHz calibration set (per-channel
-power curves, pier data, noise-floor thresholds, antenna gains) using the ath5k v3/v4/v5
-EEPROM parser logic for the version found. Cache parsed cal in RAM (~4 KB). EEPROM
-checksum failure → hard-fail attach (cal garbage would make the radio useless/illegal).
+### 7.2 The `net` settings domain
 
-### 5.3 Reset/channel-set pipeline (ath5k_hw_reset ordering, adopted)
-
-```
-reset(channel, mode=11g):
- 1. save LED/GPIO state; 2. nic_wakeup (§5.1 steps 2–4 + PLL:
-    PHY_PLL(0x987C) = 44 MHz value for 2 GHz | mode bits; 300 µs settle);
- 3. PHY access enable: write PHY(0) shift reg;
- 4. write mode initvals (ar5212 + RF2425 tables from initvals.c, ~700 register writes,
-    embedded in .rodata ≈ 12 KB);
- 5. core clock/timing regs for 11b/g; 6. tweak initvals (ADC, DCU buffering);
- 7. commit EEPROM settings (per-channel TX power tables, antenna, NF thresholds);
- 8. PCU init: STA_ID0/1(0x8000/4)=MAC, BSSID regs, RX filter, beacon timers off;
- 9. RF bank programming for target channel (RF2425 banks from rfbuffer.h; channel →
-    synth programming via ath5k_hw_channel), then PHY activation: PHY_ACT(0x981C)=ENABLE;
-10. AGC + noise-floor calibration: PHY_AGCCTL(0x9860) |= CAL|NF; poll completion.
-    ** AR2425 REALITY: early ath5k saw gain-cal timeouts and NF-cal failures on this
-    exact chip. Policy: cal timeout = WARNING, keep last-good NF, retry at next 10 s
-    periodic cal tick; 3 consecutive failures → full reset(channel). Never busy-loop
-    >20 ms total in cal polls. **
-11. IMR: RXOK|RXEOL|RXORN|TXOK|TXERR|TXURN|MIB|BMISS|FATAL (PIMR 0x00A0, IER 0x0024=1).
-```
-
-Periodic (10 s timer): I/Q cal + NF cal on current channel (short cal, non-blocking
-poll across ticks). Full gain_F recalibration only on channel change.
-
-### 5.4 DMA rings
-
-5212-style descriptors in one dma_alloc block (uncached): 64 TX + 40 RX descriptors
-× 32 B ≈ 3.3 KB. RX buffers = pbufs (zero-copy into stack).
+One typed struct beside the existing domains in `proto/settings.zig`, stored by cfgd
+at `/etc/net.cfg`, validated against the schema like every domain:
 
 ```zig
-pub const Ath5kDesc = extern struct { // AR5212 layout (desc.h)
-    ds_link: u32,  // paddr of next desc; RX last desc self-links (never runs dry;
-                   // must handle the resulting possible stale-final-frame, as ath5k does)
-    ds_data: u32,  // paddr of buffer (pbuf data)
-    ctl0: u32, ctl1: u32,          // TX: frame len, hdr len, rate series 0, flags
-    u: extern union {
-        tx: extern struct { ctl2: u32, ctl3: u32,  // multi-rate-retry series 1..3 + tries
-                            status0: u32, status1: u32 },
-        rx: extern struct { status0: u32, status1: u32 }, // len, rate, RSSI, ts, done,
-    },                                                    // crc/phy/decrypt-err bits
+pub const NetRole = struct {
+    enabled: bool = true,
+    /// dhcp when empty; "a.b.c.d/nn" claims the address statically.
+    address: []const u8 = "",
+    gateway: []const u8 = "",
+    /// Up to two, comma separated. Empty defers to the DHCP offer.
+    dns: []const u8 = "",
+};
+pub const Net = struct {
+    wired: NetRole = .{},
+    wifi: NetRole = .{ .enabled = false },
 };
 ```
 
-TX: single data queue (QCU 0) in v1; mgmt frames share it with rate forced to 1 Mb.
-Enqueue: fill desc (frame type, len, rate series from minstrel, RTS if len>RTS_THRESH,
-key-cache index if encrypted), link into chain, TXDP(0x0800)=head if idle, then
-QCU_TXE(0x0840)=1<<0. TXOK/TXERR IRQ reaps status: success/retry-count feed minstrel.
-RX: RXDP(0x000C)=ring head; CR(0x0008)=RXE. On RXOK: walk done descriptors, replace
-pbuf, translate 802.11 → 802.3 header (strip QoS/addr3 handling, LLC/SNAP), drop dups
-(seq cache), pass EAPOL (0x888E) to supplicant, rest to `cb.rx`.
+The defaults are the whole zero-configuration story: an untouched machine brings the
+wired port up and asks DHCP for an address.
 
-### 5.5 softMAC / MLME state machine
+### 7.3 Event-driven configuration
 
-Hardware does: ACK generation, per-descriptor retries (MRR), CRC, CCMP/TKIP/WEP crypto
-via key cache, dup detection assist. Software does everything else:
+cfgd is the single writer of `/etc`; netd never writes config and tools never talk
+netd into remembering anything. The `net` tool writes through cfgd; netd holds the
+domain's watch event in its wait set, and a wake reloads the domain, diffs it against
+running state and applies exactly the deltas: enable/disable, static address
+assign/release, DHCP start/stop, DNS server update. One mechanism serves boot load
+(initial read at start), the tool (every change lands as a watch wake) and any future
+writer (the GUI's network panel writes the same domain).
 
-```
-IDLE → SCAN → AUTH → ASSOC → (open? RUN : EAPOL) → RUN
-                                    ↑ 4-way handshake
-RUN --beacon-miss/deauth--> AUTH (fast rejoin, 2 attempts) → SCAN
-any --kill-switch--> DEAD;  DEAD --replug--> IDLE (auto-rejoin last)
-```
+### 7.4 DHCP
 
-- Scan: for each channel 1..13 (ETSI default; intersect with EEPROM regdomain):
-  reset-light channel switch, passive listen 60 ms collecting beacons; active scan
-  additionally sends probe-req and waits 30 ms. Full scan ≈ 1.2 s. Results table:
-  32 × {bssid, ssid[32], chan, rssi_ewma, caps, rsn_parsed}.
-- Auth: open-system (algorithm 0) 2-frame exchange, 100 ms timeout, 3 tries.
-- Assoc: assoc-req with rates + RSN IE (WPA2-PSK CCMP only in v1, no WPA1/TKIP; TKIP
-  is a config-error message, stated limitation); parse AID.
-- Beacon tracking: on beacon RX from our BSS, stamp last_beacon. Software beacon-miss:
-  no beacon for 8 × beacon-interval (checked on 100 ms tick) → count BMISS IRQ as
-  corroboration → fast-rejoin then rescan. (HW BMISS used only as a hint; software
-  timer is authoritative, simpler than programming sleep/beacon timers.)
-- Power save: OFF in v1 (STA_ID1 PWR_SV clear, sleep clock untouched). Stated.
+lwIP's DHCP client, inside netd, per netif. Policy: an interface that is enabled, has
+link, and has no static address runs DHCP; a static address stops it. Lease, renew,
+rebind and expiry all ride `sys_check_timeouts` (§3.1): no polling exists. Lease
+acquisition and loss are narrated (`lease 192.168.178.27 for 864000s from
+192.168.178.1`, `lease expired; asking again`), and `net` shows the lease and its
+remaining time.
 
-### 5.6 WPA2-PSK supplicant + CCMP
+**There is no separate dhcpd process.** The requirement, an address for any upped
+unconfigured interface, is interface configuration policy, and the actor that owns
+netif addresses is the stack. A separate process would need address-set and lease
+IPC, its own event loop and timers, and raw sockets that work before the interface
+has an address, all to arrive at the same lwIP client code netd links anyway. It
+would be a second network trust domain that isn't one: both processes would hold
+`driver` over the same DMA-capable device class. If a future deployment wants DHCP
+policy outside netd, the §7.3 watch mechanism is where it plugs in, by writing
+static addresses into the domain.
 
-- PSK → PMK: PBKDF2-HMAC-SHA1(passphrase, ssid, 4096, 32). ≈30 k SHA1 compressions →
-  ~150–300 ms at 630 MHz, done once per config change; **PMK cached in /cfg** so joins
-  skip it.
-- 4-way handshake in netd: EAPOL-Key frames over the data path; PRF-SHA1 → PTK
-  (KCK/KEK/TK); validate MIC; unwrap GTK (AES key-unwrap); msg 4; install keys.
-- Key install, hardware CCMP: AR2425 qualifies (srev 0xE2 ≥ AR5212_V4) unless EEPROM
-  misc5 AES_DIS is set (checked at attach; sets `hw_ccmp` capability). Key cache at
-  0x8800: 128 entries × 8 words {key[5 words interleaved 32/16/32/16/32], keytype
-  (TYPE_CCM per reg.h), mac0, mac1}. PTK → entry matching peer MAC (index from MAC
-  hash per 5212 rules); GTK → entry = key-idx (1..3), group flag. TX descriptors carry
-  the key index; RX status flags decrypt-ok/err.
-- Software CCMP fallback (if AES_DIS or key-cache misbehavior on this early silicon):
-  table-based AES-128 (no AES-NI on Dothan): ~60 cycles/byte for CCM's two passes →
-  at real-world 20 Mbit (2.5 MB/s) ≈ 24% CPU. Usable, ugly, shipped as fallback with a
-  status-bar indicator. Decision: implement SW CCMP anyway, it is also the unit-test
-  oracle for the HW path (RFC 3610 / IEEE test vectors).
+### 7.5 The `provides = net` moment
 
-### 5.7 Rate control: minstrel-lite (specified)
+netd registers `/svc/net` first as its instance claim (§3.6). Interfaces come up,
+addresses arrive, asynchronously after; `net` reports honestly at every stage. The
+boot does not wait for a DHCP lease: a machine on a dead cable boots at full speed
+and says `wired: up, no address` when asked.
 
-Rates: {1,2,5.5,11} CCK + {6,9,12,18,24,36,48,54} OFDM. Per rate keep
-`ewma_prob` (α=0.25, updated from TX status success/retries) and
-`tput = rate × ewma_prob / airtime`. Every 100 ms pick: best_tput, second_tput,
-best_prob, lowest(1 Mb). MRR series = [best, second, best_prob, 1 Mb] with tries
-[2,2,2,3]. 10% of frames sample a random non-best rate in series slot 0. No per-packet
-malloc; 12×16 B table. This is ~150 lines and captures most of minstrel's benefit.
+## 8. Socket bridge
 
-### 5.8 Kill-switch: surprise removal & replug
+The kernel already carries everything the bridge needs: channels transfer `event`,
+`channel` and `shm` handles inside messages (at most four per message, refcounted),
+and `wait_many` composes them. No kernel work is required.
 
-- Sources: platformd forwards ACPI ATKD events 0x10/0x11 and P0P5/6/7 Notifies; devmgr
-  rescans bus 1 (vendor-ID probe) and sends attach/detach to netd.
-- Detection without notification (belt & braces): every IRQ entry and every poll loop
-  reads a known register; 0xFFFFFFFF → `dead` path. All register poll loops are bounded
-  (≤ N iterations with budgeted delays), never wait on a gated device.
-- `dead` path: mark NicDev DEAD (all ops become no-ops), abandon in-flight descriptors
-  (device is powered off, it cannot DMA; memory is simply reclaimed), free pbufs,
-  fail wifi state machine → sockets bound to wifi addresses get ECONNRESET/ENETDOWN,
-  status event {link: down, reason: killswitch}.
-- Replug: devmgr attach → full probe→init→reset pipeline from power-on state (nothing
-  is assumed retained) → auto-rejoin last network from /cfg.
-- If the user toggles Fn+F2 OFF then reboots into another OS: not our problem; our own
-  boot always attempts WLDS(1) via platformd if wifi is configured on (documented,
-  because this bit persists and confuses other OSes).
+### 8.1 Objects
 
-## 6. TCP/IP stack
+Per client socket: one shm segment and two events.
 
-- **ARP**: 64-entry cache, 60 s reachable / 5 s probe; queue ≤3 packets per unresolved
-  entry. **IPv4**: single address per NIC, /cfg static or DHCP; no forwarding, no
-  fragmentation reassembly beyond 4 fragments/8 KB (DF set on TCP; PMTU via ICMP
-  frag-needed). **ICMP**: echo reply, echo request (ping tool), errors consumed by TCP.
-- **No IPv6 in v1** (stated; addr structures sized to allow later addition).
-- **DHCP client**: DISCOVER/OFFER/REQUEST/ACK, options 1,3,6,15,51,54; T1/T2 renew;
-  per-NIC lease state in RAM, last-good lease hint in /cfg for fast re-acquire.
-- **DNS stub**: A queries only, 2 configured servers (DHCP opt 6 or /cfg), 32-entry
-  positive cache honoring TTL (cap 1 h), 5 s timeout ×2 retries. Exposed as a `resolve`
-  op, not port 53 proxying.
-- **UDP**: trivial; per-socket record ring.
-- **TCP**: **NewReno + fast retransmit/recovery. Window scaling (wscale=2, 128 KB max
-  advertised, default rcvbuf 32 KB) and RFC 7323 timestamps (RTT sampling + PAWS) are
-  IN. SACK is DEFERRED to M3**: justification: LAN BDP ≈ 12 KB needs nothing; WAN over
-  100 ms × 20 Mbit ≈ 250 KB BDP is beyond our per-socket buffer budget anyway, so SACK's
-  benefit (loss recovery on big windows) is mostly unreachable; NewReno + timestamps is
-  ~1/3 the state-machine surface. We DO parse and ignore SACK-permitted (and advertise
-  nothing) so adding it later is a local change. Delayed ACK 40 ms/2-MSS; Nagle on by
-  default (TCP_NODELAY supported); RTO per RFC 6298, min 200 ms; keepalive opt-in.
-  MSS 1460; no ECN v1.
-- Checksums in software, always fused into the mandatory copy (copy-and-checksum loop,
-  SSE2 unrolled): the data is touched exactly once for both purposes.
-- Socket table: 256 global, 64 per process. TCB ≈ 256 B + rings.
+- `shm` (40 KB TCP: one 4 KB control page, 16 KB tx ring, 16 KB rx ring; 20 KB UDP
+  with record framing `{len:u16, addr:u32, port:u16, data..., pad to 8}`).
+- `ev_app`, netd signals: data readable, space writable, state change.
+- `doorbell`, the client signals: **one event shared by every client**, created by
+  netd, transferred to each client at socket creation. SPSC rings per socket keep
+  data private; the doorbell only says "someone produced", and netd walks its socket
+  table on each ring. This is what keeps netd's wait set within the eight-source
+  budget at any socket count.
 
-## 7. Socket IPC bridge (the libc contract)
-
-### 7.1 Objects
-
-Per process: one **control channel** to /svc/net (call/reply ≤64 B + ≤4 handles).
-Per socket: one **shm object** (default 40 KB TCP: 4 KB ctrl+slack, 16 KB tx ring,
-16 KB rx ring; 20 KB UDP) + two events: `ev_app` (netd→app: data/space/state) and
-`ev_netd` (app→netd doorbell). netd allocates all three and returns handles in the
-reply (3 handles ≤ 4 limit). **Decision: per-socket rings, not per-process**: SPSC
-matches the kernel ring contract, isolates flow control per connection, and 40 KB ×
-tens of sockets fits RAM; a shared per-process ring would need MPSC muxing and
-head-of-line blocking handling for zero measured benefit at this scale.
+The control page mirrors state for lock-free reads:
 
 ```zig
-pub const SockCtrl = extern struct { // first 64 B of socket shm
+pub const SockCtrl = extern struct {
     tx_head: u32, tx_tail: u32,   // app produces at head; netd consumes at tail
     rx_head: u32, rx_tail: u32,   // netd produces; app consumes
-    state: u32,       // ESTABLISHED/FIN_WAIT/CLOSED/... mirrored for cheap poll
-    so_error: i32,    // ECONNRESET etc.
-    flags: u32,       // NETD_WRITABLE, NETD_READABLE, OOB pending (unused v1)
-    rcv_wnd_hint: u32 // netd updates; app ignores
+    state: u32,                   // syn_sent/established/fin_wait/closed/...
+    so_error: i32,                // reset/refused/net-down, valid when closed
 };
 ```
 
-TCP rings are byte streams. UDP rx/tx rings carry records:
-`{len:u16, family:u16, addr:u32, port:u16, _pad:u16, data[len], pad to 8}`.
-
-### 7.2 Control ops (channel message, packed, op:u8 first)
+### 8.2 Control ops (on `/svc/net`, packed structs like every proto)
 
 ```
-sock_create{domain,type,proto} -> {sock_id} + handles{shm, ev_app, ev_netd}
-bind{sock_id, addr, port}                     -> errno
-connect{sock_id, addr, port}                  -> errno (async: EINPROGRESS; completion
-                                                  via ev_app + SockCtrl.state)
-listen{sock_id, backlog}                      -> errno
-accept{sock_id}            -> {new_sock_id, peer} + handles{shm, ev_app, ev_netd}
-                              (EAGAIN if none pending; readiness via listener's ev_app)
-close{sock_id} / shutdown{sock_id, how}       -> errno (graceful FIN; linger ≤ 5 s)
-set_opt/get_opt{sock_id, opt, val}            -> errno   (NODELAY, KEEPALIVE, RCVBUF≤64K)
-getsockname/getpeername{sock_id}              -> {addr, port}
-resolve{name[≤48]}                            -> {n, addr[4]}  (DNS stub)
+tcp_connect{addr, port}      -> deferred reply on establish or failure:
+                                {sock, shm, ev_app, doorbell}
+tcp_listen{port, backlog}    -> {listener}
+tcp_accept{listener}         -> deferred reply on next connection:
+                                {sock, peer, shm, ev_app, doorbell}
+udp_open{laddr, lport, raddr, rport} -> {sock, shm, ev_app, doorbell}
+close{sock}                  -> errno   (graceful FIN, linger ≤ 5 s)
+resolve{name}                -> deferred reply {n, addr[2]}   (lwIP dns)
+ping{addr, timeout_ms}       -> deferred reply {rtt_us | timed_out}
 ```
 
-Blocking recv in libc: loop { consume rx ring; empty → wait(ev_app) }. Blocking send:
-loop { produce into tx ring; full → wait(ev_app) }; after producing, signal ev_netd
-(netd batches: doorbell coalescing, it drains all ready rings per wakeup).
-poll()/select(): wait_many over the ev_app handles of member sockets + timeout; after
-wake, readiness is read lock-free from each SockCtrl (state/flags/ring counters).
-**One event per socket, not a completion ring**, decision: completion rings shine with
-thousands of sockets; at ≤64/process, wait_many over events reuses the kernel primitive
-with zero new protocol.
+Deferred replies are the channel model working for us: the server keeps the request
+token and answers when the stack calls back, so a blocking `connect`, `accept`,
+`resolve` or `ping` costs the client nothing but its own wait, and costs netd
+nothing at all. Data never crosses the channel; only establishment, teardown and
+questions do.
 
-Bulk TCP path cost: app→ring copy (app side), ring→pbuf copy+cksum (netd), DMA. Two
-copies + DMA total, the practical minimum without page-flipping games that this MMU
-budget doesn't want.
+Client death: handles die with the process, netd's next ring touch or FIN sees the
+peer gone and aborts the pcb. netd death: clients' waits return on dead handles,
+sockets read as reset, the supervisor restarts netd, and TCP state is gone, exactly
+what a router reboot looks like. No transparent resurrection.
 
-### 7.3 Death semantics (documented contract)
+### 8.3 What v1 does not do
 
-netd crash → kernel invalidates its channels/handles → app's wait returns
-HANDLE_DEAD → libc marks all sockets ECONNRESET (SIGPIPE-less; error on next op),
-reconnects lazily to /svc/net (supervisor restarts netd, which re-registers). No
-transparent socket resurrection: TCP state is gone; apps see what a router reboot
-looks like. DNS cache, DHCP leases re-form automatically.
+No POSIX/libc socket shim yet: `ping` and `nc` use the native client library
+(`user/lib/` wrapper over these ops). The shim belongs to the C-apps milestone and
+layers on this bridge without changing it. No `select` semantics beyond `wait_many`
+over `ev_app` handles. No out-of-band, no socket options beyond NODELAY.
 
-## 8. Config, UX, status
+## 9. Tools
 
-- `/cfg/net/ifcfg`, text: per-NIC `dhcp` | `static addr/mask gw dns`.
-- `/cfg/net/wifi.conf`, list of known networks: `{ssid, sec: open|wpa2, pmk(hex),
-  passphrase?, priority, autojoin}`. **Decision: NOT encrypted at rest in v1.** Honest
-  reasoning: single-user machine, no TPM/keystore, any key would live in the same flash
-  next to the data → encryption here is theater. Mitigations that are real: store
-  derived PMK instead of the passphrase where the user permits (passphrase kept only if
-  they want it visible), file readable only by netd+cfgtool (VFS perms), and the fact
-  that /cfg is on the user's own SD. Revisit if a user-passphrase-derived /cfg vault
-  ever exists (OPEN for the storage subsystem).
-- Wifi picker API (GUI): `wifi_scan` (starts async scan; completion via status event),
-  `wifi_scan_get{idx} -> {bssid,ssid,chan,rssi,sec}` (one 64 B reply per BSS, ≤32),
-  `wifi_join{ssid, cred}`, `wifi_forget{ssid}`, `wifi_status -> {state,ssid,rssi,ip}`.
-- Status events: subscriber calls `status_subscribe` passing an event handle + a small
-  shm (4 KB, 64-record ring of `{t_us, kind: link|ip|rssi|scan_done|killswitch,
-  a:u32, b:u32}`); netd is producer. Status bar shows link/SSID/RSSI/IP from this; RSSI
-  event rate-limited to 1/2 s.
+- `net`: status (per interface: driver, role, enabled, link, address and how it was
+  obtained, lease remaining, counters). Verbs write config and cfgd's watch delivers
+  them (§7.3): `net wired up`, `net wired down`, `net wired dhcp`,
+  `net wired static 192.168.178.50/24 gw 192.168.178.1 [dns 192.168.178.1]`.
+  Diagnostics stay: `net -p <ip>` (driver-level ARP probe), `net -s` (lwIP stats,
+  debug builds).
+- `ping <addr|name> [-c n]`: resolves if needed, then one `ping` op per second, each
+  a deferred-reply call; prints RTT per reply and a summary. Ctrl+C ends it like any
+  tool. ICMP echo *reply* needs no tool: the stack answers pings the moment an
+  interface is addressed.
+- `nc <host> <port>` / `nc -l <port>` / `-u`: connect or listen, then one loop over
+  `wait_many(stdin, ev_app)`: stdin to tx ring, doorbell; rx ring to stdout; closed
+  state with drained ring exits with the peer's story (`so_error`). The first
+  interactive proof that rings, events and the stack compose.
 
-## 9. RAM / disk budget
+## 10. RAM / disk budget
 
 | Item | Size |
 |---|---|
-| netd binary (rootfs, ReleaseSmall) | ≤ 900 KB target / 1.5 MB cap (ath5k code+initvals ≈ 250 KB, atl2 ≈ 30 KB, stack ≈ 150 KB, supplicant+crypto ≈ 80 KB, sockd ≈ 60 KB, rt+tables rest) |
-| pbuf arena (dma) | 384 KB |
-| atl2 rings (dma) | 106 KB |
-| ath5k descriptors (dma) | 4 KB (buffers come from pbuf arena) |
-| socket shm (64 sockets worst) | 2.5 MB cap (typical: 10 sockets ≈ 400 KB) |
-| tables (ARP/DNS/scan/TCB/minstrel) | < 96 KB |
-| **Idle RAM share** | **≈ 1.6 MB** (fits inside the 48 MB system idle budget) |
-| Busy RAM share | ≤ 4 MB (enforced by socket cap) |
+| lwIP core, ReleaseSmall | ≈ 100–130 KB code in netd |
+| lwIP pools (`MEM_SIZE` + pbufs + pcbs) | ≈ 160 KB static |
+| netd binary total | ≤ 400 KB at this milestone (wifi adds its ≈ 250 KB later) |
+| driver rings (dma, per §4) | ≈ 106 KB |
+| socket shm | 40 KB per live TCP socket; tens, not hundreds, on this machine |
+| Idle RAM share | ≈ 0.5 MB |
 
-## 10. Bring-up & test plan
+## 11. Bring-up & test plan
 
-QEMU emulates neither atl2 nor AR2425 → three seams:
+1. **QEMU is the stack's CI**: slirp answers DHCP, `ping 10.0.2.2` exercises ICMP
+   both ways, `nc` against a hostfwd port proves TCP and the bridge, and the
+   `make shot` transcript asserts the lease line and the ping RTT line. The e1000
+   and rtl8139 drivers make all of it driver-plural.
+2. **Host-native**: lwIP arrives with upstream's own test heritage; our pure code
+   (`lib/eth.zig`, ring arithmetic, config parsing) keeps its host tests. The netif
+   glue is deliberately too thin to need a harness.
+3. **Hardware checklist**, in order: boot with defaults on the home LAN, watch the
+   lease narration, `net` shows address and lease; `ping 192.168.178.1` under load;
+   `nc` chat between the 701 and another machine both directions; `net wired static`
+   round trip through cfgd survives reboot; cable pull mid-lease renarrates link and
+   re-acquires on return; `no.netd` boot line still isolates everything.
 
-1. **Host-native stack tests**: netstack + supplicant + minstrel are pure Zig libraries
-   (no syscalls; time and NIC injected). Unit/fuzz on the dev machine: TCP state
-   machine against packetdrill-style scripts, handshake against captured
-   hostapd/wpa_supplicant EAPOL pcaps, CCMP against RFC 3610 vectors, DHCP/DNS against
-   pcap fixtures. This is where correctness lives.
-2. **QEMU integration**: `e1000` test driver (~700 lines) behind NicOps, compiled only
-   with `-Dtest-nic`; boots full vibeee in QEMU, runs DHCP against QEMU's slirp,
-   iperf-lite against host. Proves the event loop, IPC bridge, IRQ path, dma_alloc
-   usage, everything except the two real drivers.
-3. **Hardware checklist** (in order): atl2 probe/MAC read → link IRQ → ping →
-   DHCP → 24 h iperf soak (watch DMAR_TO_RST resets) || ath5k: probe/srev/EEPROM dump
-   tool first (read-only milestone), → channel set + passive scan sees beacons → open
-   auth/assoc → DHCP over wifi → WPA2 join → kill-switch torture: 100 × Fn+F2 toggle
-   during iperf, zero crashes/leaks (pbuf census after each cycle) → cal-failure
-   injection (force AGCCTL timeout path).
-   Debug transport with no serial port: netlog ring is drained to on-screen console
-   overlay AND, once ethernet is up, via UDP syslog, atl2 therefore comes up first.
+## 12. Risks & open questions
 
-## 11. Risks & open questions
+- **lwIP in ReleaseSmall/32-bit**: mature territory, but the port header is ours;
+  wrong `MEM_ALIGNMENT` or a signed `sys_now` wrap would be quiet corruption. The
+  QEMU seam catches both on day one.
+- **Doorbell fairness**: one doorbell means netd walks all sockets per wake; at this
+  machine's socket counts the walk is trivial, and the design accepts it explicitly.
+- **DNS trust**: the stub resolves against whatever DHCP names; no DNSSEC, stated.
+- **Fn+F2 wired implications**: none, the kill switch gates only the mini-PCIe slot;
+  wired keeps running.
 
-- **ath5k cal on AR2425** (known-bad early silicon/driver combo): mitigated by
-  non-fatal cal policy + periodic retry; residual risk of poor sensitivity → M3 tuning
-  against ath5k fix history (commits fixing AR2425 NF/gain).
-- **Key-cache CCMP on this exact card**: capability check + SW fallback removes the
-  cliff; risk becomes performance, not function.
-- **atl2 MAC address source**: NVM read path is thinly documented; fallback chain
-  (BIOS-set register, random LAA) bounds the damage.
-- **Shared level IRQ semantics**: need kernel contract for mask/ack ordering on shared
-  GSIs (both NICs may share lines with USB): OPEN with kernel-core.
-- **wait_many fan-out**: 64+ handles per waiter must be supported or netd needs an
-  internal event-mux: OPEN with kernel-core.
-- **DMA with no IOMMU**: netd bugs can corrupt any RAM. Accepted per architecture;
-  descriptor writes are asserted-bounded in debug builds.
-- **Regdomain**: EEPROM regdomain trusted if it maps to a known set; else ETSI 1–13.
-  TX power caps from EEPROM cal always enforced.
+## 13. Phasing
 
-## 12. Phasing
-
-- **M1**: pbuf core, netstack (ARP/IPv4/ICMP/UDP/TCP-NewReno/DHCP/DNS), sockd IPC +
-  libc shim, atl2 driver, e1000 test driver, status events, host-native test rigs,
-  UDP syslog. Exit: DHCP+ping+TCP bulk on real ethernet; QEMU CI green.
-- **M2**: ath5k bring-up (probe→EEPROM→scan→open join), then WPA2-PSK (supplicant, HW
-  CCMP + SW fallback), kill-switch handling, /cfg persistence + auto-rejoin, wifi
-  picker + status APIs. Exit: WPA2 join survives 100 kill-switch cycles.
-- **M3**: minstrel-lite tuning on air, SACK, background scan while associated,
-  multicast filter/mDNS-lite, PMTU polish, cal-quality tuning, CPU profiling to hold
-  the §4.4 budget.
+- **N1, the stack breathes**: vendor lwIP, port header, netif glue, cfg `net`
+  domain + watch, interface lifecycle, DHCP policy, ICMP, `ping` op + tool, `net`
+  verbs. Exit: on the machine, an untouched boot acquires a lease, `ping` answers
+  and is answered, `net wired static` persists across reboot.
+- **N2, streams**: socket bridge, native client library, `nc` both directions,
+  `resolve`. Exit: `nc` chat with another machine over the home LAN; QEMU transcript
+  asserts a TCP round trip.
+- **N3, wifi**: §5 unchanged, feeding the same netif glue; DHCP and everything above
+  it works on day one of a joined network.
