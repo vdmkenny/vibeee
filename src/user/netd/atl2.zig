@@ -661,22 +661,36 @@ fn configure() bool {
     return true;
 }
 
-/// Restore the PCIe block's vendor defaults after a MAC reset, and mask its
-/// error reports. Without the defaults the controller raises phantom
-/// unsupported-request and non-fatal errors as soon as its DMA engines
-/// start; the mask stops those phantom reports at the capability rather
-/// than letting them fill every interrupt with noise.
+/// Restore the PCIe block's vendor defaults after a MAC reset, and take the
+/// link out of every conversation it cannot be trusted to hold. This MAC
+/// raises phantom unsupported-request and non-fatal errors as soon as its
+/// DMA engines start, so every road an error report could travel is closed:
+/// the capability's four reporting enables, and the legacy SERR# gate in
+/// the command register, which the specification says transmits the fatal
+/// and non-fatal classes on its own whatever the capability enables say.
+/// On this machine the root's error handling belongs to the firmware, and
+/// a report per phantom under a sustained transfer is a machine that
+/// vanishes into system management mode mid-download. The active-state
+/// power management states go too: this family's L0s and L1 are known to
+/// hang the link, a hung link turns the next register read into a load
+/// that never retires, and the cycle in and out of low power is exactly
+/// what a streaming transfer produces.
 fn initPcie() void {
     device.regs.wr32(.ltssm_test_mode, @intFromEnum(LtssmTestMode.vendor_default));
     device.regs.wr32(.pcie_dll_tx_ctrl1, @intFromEnum(PcieDllTxCtrl1.vendor_default));
-    maskPcieErrorReporting();
+
+    var command = pci.readCommand(device.location);
+    command.serr_enable = false;
+    command.parity_response = false;
+    pci.writeCommand(device.location, command);
+
+    quietPcieCapability();
 }
 
-/// Clear the four error-reporting enables in the device's PCI Express
-/// capability: unsupported requests, and the fatal, non-fatal and
-/// correctable classes. The capability list is walked, not assumed: the
-/// pointer is whatever the silicon says it is.
-fn maskPcieErrorReporting() void {
+/// Clear the four error-reporting enables and the ASPM states in the
+/// device's PCI Express capability. The capability list is walked, not
+/// assumed: the pointer is whatever the silicon says it is.
+fn quietPcieCapability() void {
     const head: pci.CapabilityPointer = @bitCast(pci.read(device.location, pci.CAPABILITIES_OFFSET));
 
     var at = head.pointer;
@@ -690,6 +704,11 @@ fn maskPcieErrorReporting() void {
             control.fatal_report = false;
             control.unsupported_report = false;
             pci.write(device.location, at + pci.PcieDeviceControl.OFFSET, @bitCast(control));
+
+            var wire: pci.PcieLinkControl =
+                @bitCast(pci.read(device.location, at + pci.PcieLinkControl.OFFSET));
+            wire.aspm = 0;
+            pci.write(device.location, at + pci.PcieLinkControl.OFFSET, @bitCast(wire));
             return;
         }
         at = capability.next;
@@ -912,6 +931,7 @@ var overflow_said = false;
 
 pub fn irq(nic: *NicDev) void {
     if (!device.opened or !device.started) return;
+    if (!stillOnTheBus(nic)) return;
 
     var round: u32 = 0;
     while (round < SERVICE_ROUNDS) : (round += 1) {
@@ -1007,6 +1027,21 @@ pub fn irq(nic: *NicDev) void {
     }
 }
 
+/// Whether the device still answers configuration space. A link that has
+/// wedged makes the next register read a load that never retires, and a
+/// frozen machine cannot say why; configuration reads travel the root's
+/// own mechanism and come back all-ones from a dead device instead. One
+/// read buys the chance to stop cleanly rather than freeze.
+fn stillOnTheBus(nic: *NicDev) bool {
+    if (pci.read(device.location, 0) != 0xFFFF_FFFF) return true;
+
+    log.fail("atl2", "the adapter stopped answering the bus; driver stopped");
+    device.started = false;
+    nic.state = .{};
+    dev_mod.deliverLink(nic, nic.state);
+    return false;
+}
+
 fn reapRx(nic: *NicDev) void {
     var reaped: usize = 0;
     while (reaped < RX_COUNT) : (reaped += 1) {
@@ -1073,6 +1108,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     {
         return false;
     }
+    if (!stillOnTheBus(nic)) return false;
 
     // Completions are advisory interrupts; reclaim here too so coalescing
     // cannot make a free ring look full.

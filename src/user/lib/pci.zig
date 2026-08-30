@@ -22,6 +22,7 @@ pub const CapabilityPointer = lib.pci.CapabilityPointer;
 pub const Capability = lib.pci.Capability;
 pub const CapabilityId = lib.pci.CapabilityId;
 pub const PcieDeviceControl = lib.pci.PcieDeviceControl;
+pub const PcieLinkControl = lib.pci.PcieLinkControl;
 pub const parse = lib.pci.parse;
 pub const COMMAND_OFFSET = lib.pci.COMMAND_OFFSET;
 pub const BAR0_OFFSET = lib.pci.BAR0_OFFSET;

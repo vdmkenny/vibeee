@@ -141,6 +141,19 @@ pub const PcieDeviceControl = packed struct(u32) {
     pub const OFFSET: u8 = 0x08;
 };
 
+/// The PCI Express capability's Link Control and Link Status pair, for the
+/// power-management states a driver refuses.
+pub const PcieLinkControl = packed struct(u32) {
+    /// Active-state link power management: L0s and L1 entry. Zero keeps the
+    /// link in L0, awake, for silicon whose low-power states hang.
+    aspm: u2,
+    _control: u14,
+    _status: u16,
+
+    /// Link Control's offset within the capability.
+    pub const OFFSET: u8 = 0x10;
+};
+
 pub const InterruptPin = enum(u8) {
     none = 0,
     inta = 1,

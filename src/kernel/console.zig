@@ -201,9 +201,12 @@ pub fn setPulse(glyph: u21) void {
     repaintPulse();
 }
 
-/// The corner cell, redrawn after everything this console draws. A pulse
-/// that survives every line is the one that freezes when interrupts do.
+/// The corner cells, redrawn after everything this console draws so a
+/// scroll can never bury them. A pulse that survives every line is the one
+/// that freezes when interrupts do, and the vector pair beside it stays
+/// readable in the photograph of the freeze.
 fn repaintPulse() void {
+    if (trace_vector) |vector| paintTrace(vector, trace_moment);
     const glyph = pulse_glyph orelse return;
     backend.putAt(columns - 1, 0, glyph, .light_grey, .black);
 }
@@ -257,7 +260,16 @@ pub fn seizeForPanic() void {
 /// code, and still names the last interrupt that ran.
 const TraceMoment = enum { taken, completed };
 
+var trace_vector: ?u8 = null;
+var trace_moment: TraceMoment = .completed;
+
 fn traceIrq(vector: u8, moment: TraceMoment) void {
+    trace_vector = vector;
+    trace_moment = moment;
+    paintTrace(vector, moment);
+}
+
+fn paintTrace(vector: u8, moment: TraceMoment) void {
     if (columns < 4) return;
     const HEX = "0123456789abcdef";
     const ink: Color = if (moment == .taken) .light_red else .dark_grey;
