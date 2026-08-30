@@ -273,8 +273,10 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
     }
 
     log.say("netd", .dim, "no routing table answer; using the legacy line");
+    // Zero and all-ones both mean the firmware wrote no line there.
+    const UNROUTED: u8 = 0xFF;
     const legacy = pci.interruptLine(iface.location);
-    return if (legacy == 0 or legacy == 0xFF) null else legacy;
+    return if (legacy == 0 or legacy == UNROUTED) null else legacy;
 }
 
 // ---------------------------------------------------------------------------

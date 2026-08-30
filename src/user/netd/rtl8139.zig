@@ -547,8 +547,13 @@ fn readRxHeader(at: usize) RxHeader {
     return @bitCast(@as(u32, low) | (@as(u32, high) << 16));
 }
 
+/// One little-endian word from the ring, byte by byte: the ring is DMA
+/// memory and every load must really happen, which is what keeps a plain
+/// `readInt` out of this function.
 fn rxWord(at: usize) u16 {
-    return @as(u16, device.rx[at]) | (@as(u16, device.rx[at + 1]) << 8);
+    const low: u16 = device.rx[at];
+    const high: u16 = device.rx[at + 1];
+    return low | (high << 8);
 }
 
 /// A malformed length loses packet boundaries. Reset only the receive side,

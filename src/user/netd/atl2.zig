@@ -677,31 +677,24 @@ fn initPcie() void {
 /// correctable classes. The capability list is walked, not assumed: the
 /// pointer is whatever the silicon says it is.
 fn maskPcieErrorReporting() void {
-    const caps_pointer = pci.read(device.location, 0x34) & 0xFF;
-    if (caps_pointer == 0) return;
+    const head: pci.CapabilityPointer = @bitCast(pci.read(device.location, pci.CAPABILITIES_OFFSET));
 
-    var at: u8 = @intCast(caps_pointer);
+    var at = head.pointer;
     while (at != 0) {
-        const header = pci.read(device.location, at);
-        const id = header & 0xFF;
-        const next = @as(u8, @truncate(header >> 8));
-
-        if (id == PCIE_CAP_ID) {
-            const devctl = pci.read(device.location, at + PCIE_DEVCTL);
-            pci.write(device.location, at + PCIE_DEVCTL, devctl & ~PCIE_ERROR_MASK);
+        const capability: pci.Capability = @bitCast(pci.read(device.location, at));
+        if (capability.id == .pcie) {
+            var control: pci.PcieDeviceControl =
+                @bitCast(pci.read(device.location, at + pci.PcieDeviceControl.OFFSET));
+            control.correctable_report = false;
+            control.non_fatal_report = false;
+            control.fatal_report = false;
+            control.unsupported_report = false;
+            pci.write(device.location, at + pci.PcieDeviceControl.OFFSET, @bitCast(control));
             return;
         }
-        at = next;
+        at = capability.next;
     }
 }
-
-/// The capability id the specification assigns to PCI Express.
-const PCIE_CAP_ID: u32 = 0x10;
-/// Device Control's offset within the capability.
-const PCIE_DEVCTL: u8 = 0x08;
-/// The four error-reporting enables: correctable, non-fatal, fatal and
-/// unsupported request.
-const PCIE_ERROR_MASK: u32 = 0xF;
 
 fn resetController() bool {
     device.regs.wr32(.master_ctrl, @bitCast(MasterCtrl{ .soft_reset = true }));

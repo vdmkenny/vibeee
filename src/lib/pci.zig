@@ -102,6 +102,45 @@ pub const Command = packed struct(u16) {
 
 /// PCI configuration byte 0x3d. ACPI _PRT numbers the same pins from zero,
 /// while configuration space numbers them from one.
+/// Where the capability list starts, in the register whose low byte is the
+/// pointer.
+pub const CAPABILITIES_OFFSET: u8 = 0x34;
+
+pub const CapabilityPointer = packed struct(u32) {
+    pointer: u8,
+    _rest: u24,
+};
+
+/// One capability list entry, as configuration space lays it out: what it
+/// is, where the next one starts, and the two bytes each capability defines
+/// for itself.
+pub const Capability = packed struct(u32) {
+    id: CapabilityId,
+    next: u8,
+    control: u16,
+};
+
+pub const CapabilityId = enum(u8) {
+    power_management = 0x01,
+    msi = 0x05,
+    pcie = 0x10,
+    _,
+};
+
+/// The PCI Express capability's Device Control and Device Status pair, for
+/// the error-reporting enables a driver masks.
+pub const PcieDeviceControl = packed struct(u32) {
+    correctable_report: bool,
+    non_fatal_report: bool,
+    fatal_report: bool,
+    unsupported_report: bool,
+    _control: u12,
+    _status: u16,
+
+    /// Device Control's offset within the capability.
+    pub const OFFSET: u8 = 0x08;
+};
+
 pub const InterruptPin = enum(u8) {
     none = 0,
     inta = 1,

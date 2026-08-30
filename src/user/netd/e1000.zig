@@ -471,7 +471,8 @@ fn bar0(loc: pci.Location) ?u32 {
     pci.writeCommand(loc, saved_command);
     _ = pci.read(loc, pci.COMMAND_OFFSET);
 
-    const size_mask = size_word & 0xFFFF_FFF0;
+    const probe_readback: pci.MemoryBar = @bitCast(size_word);
+    const size_mask = probe_readback.base();
     if (size_mask == 0) {
         log.fail("e1000", "BAR0 has no implemented aperture");
         return null;
@@ -533,17 +534,21 @@ fn readMac(dev: *NicDev) bool {
     return true;
 }
 
+/// The receive-address low register: the first four octets in wire order.
+const ReceiveAddressLow = packed struct(u32) {
+    octet0: u8,
+    octet1: u8,
+    octet2: u8,
+    octet3: u8,
+};
+
 fn readRar() ?[6]u8 {
-    const low = device.regs.rd(.ra0);
+    const low: ReceiveAddressLow = @bitCast(device.regs.rd(.ra0));
     const high: ReceiveAddressHigh = @bitCast(device.regs.rd(.ra1));
     if (!high.valid) return null;
     const mac = [6]u8{
-        @truncate(low),
-        @truncate(low >> 8),
-        @truncate(low >> 16),
-        @truncate(low >> 24),
-        high.octet4,
-        high.octet5,
+        low.octet0, low.octet1, low.octet2, low.octet3,
+        high.octet4, high.octet5,
     };
     return if (validMac(mac)) mac else null;
 }
@@ -552,8 +557,7 @@ fn readEepromMac() ?[6]u8 {
     var mac: [6]u8 = @splat(0);
     for (0..3) |i| {
         const word = readEeprom(@intCast(i)) orelse return null;
-        mac[i * 2] = @truncate(word);
-        mac[i * 2 + 1] = @truncate(word >> 8);
+        std.mem.writeInt(u16, mac[i * 2 ..][0..2], word, .little);
     }
     return if (validMac(mac)) mac else null;
 }
@@ -581,11 +585,12 @@ fn validMac(mac: [6]u8) bool {
 }
 
 fn writeRar(mac: [6]u8) void {
-    const low = @as(u32, mac[0]) |
-        (@as(u32, mac[1]) << 8) |
-        (@as(u32, mac[2]) << 16) |
-        (@as(u32, mac[3]) << 24);
-    device.regs.wr(.ra0, low);
+    device.regs.wr(.ra0, @bitCast(ReceiveAddressLow{
+        .octet0 = mac[0],
+        .octet1 = mac[1],
+        .octet2 = mac[2],
+        .octet3 = mac[3],
+    }));
     device.regs.wr(.ra1, @bitCast(ReceiveAddressHigh{
         .octet4 = mac[4],
         .octet5 = mac[5],
