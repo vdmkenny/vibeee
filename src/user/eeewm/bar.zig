@@ -633,14 +633,18 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
     if (power_open) paintPowerMenu(surface, width, height);
 }
 
-/// The V button. A wordmark rather than an icon: at 133 DPI a glyph from the
-/// font we already have is sharper than anything drawn by hand at this size.
+/// The launcher button, which carries the system's own mark.
 fn paintLaunch(surface: Surface, height: i32) void {
     const t = theme.current();
     const area = launchRect(height);
 
     if (launcher.open) surface.fill(area, t.accent);
-    surface.textCentred(area, "V", if (launcher.open) t.accent_text else t.bar_text);
+    surface.icon(
+        area.x + @divTrunc(area.w - Surface.iconSize(), 2),
+        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
+        .logo,
+        if (launcher.open) t.accent_text else t.bar_text,
+    );
     surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
 

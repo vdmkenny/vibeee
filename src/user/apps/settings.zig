@@ -630,15 +630,16 @@ fn describe(key: []const u8, buf: []u8) []const u8 {
 /// computer" is answered by four things and everything else is detail.
 fn drawIdentity(pane: eui.Rect) i32 {
     const t = theme.current();
-    const mark_size = eui.Surface.textLargeHeight(MARK_SCALE) + t.menu_padding;
+    const mark_size = eui.Surface.iconLargeSize(MARK_SCALE) + t.menu_padding;
     const mark = eui.Rect{ .x = pane.x, .y = pane.y, .w = mark_size, .h = mark_size };
 
     if (ctx.damaged) {
         ctx.surface.fill(mark, t.accent);
-        ctx.surface.textLarge(
-            mark.x + @divTrunc(mark.w - eui.Surface.textLargeWidth("V", MARK_SCALE), 2),
-            mark.y + @divTrunc(mark.h - eui.Surface.textLargeHeight(MARK_SCALE), 2),
-            "V",
+        const size = eui.Surface.iconLargeSize(MARK_SCALE);
+        ctx.surface.iconLarge(
+            mark.x + @divTrunc(mark.w - size, 2),
+            mark.y + @divTrunc(mark.h - size, 2),
+            .logo,
             t.accent_text,
             MARK_SCALE,
         );

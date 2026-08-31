@@ -177,6 +177,16 @@ pub const Surface = struct {
         self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
     }
 
+    /// The same picture, drawn `times` larger. For a mark that stands for the
+    /// machine rather than sitting beside a word.
+    pub fn iconLarge(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color, times: i32) void {
+        self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale() * times);
+    }
+
+    pub fn iconLargeSize(times: i32) i32 {
+        return iconSize() * times;
+    }
+
     /// How large a picture is drawn, which grows with the letters beside it.
     pub fn iconSize() i32 {
         return @as(i32, @intCast(icons.WIDTH)) * theme.textScale();

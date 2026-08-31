@@ -68,6 +68,9 @@ pub const Icon = enum {
     exit,
     /// Four squares: programs, as a group rather than any one of them.
     apps,
+    /// The system's own mark: a lowercase e with a written slant. A letter
+    /// rather than a symbol, because the machine is named after one.
+    logo,
     /// The same cell with a bolt in it. A machine on mains says so with the
     /// picture rather than with the level, because the level is going up and
     /// a number climbing on its own is not what somebody is asking.
@@ -443,6 +446,23 @@ const art = [_]Picture{
             ".####..####.",
             ".####..####.",
             ".####..####.",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .logo,
+        .rows = .{
+            "............",
+            "......####..",
+            ".....##..##.",
+            "....##....##",
+            "...########.",
+            "...##.......",
+            "..##........",
+            "..##.....##.",
+            "..##....##..",
+            "...#####....",
             "............",
             "............",
         },
