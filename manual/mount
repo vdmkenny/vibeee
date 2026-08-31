@@ -6,3 +6,8 @@ mount - attach a volume at a path
 The volume names come from `disk`; the path must already exist as a
 directory. Detach with `unmount <path>`, which flushes before letting
 go.
+
+Removable media arrive under /media by themselves, so this is for
+putting one somewhere else, or for a volume that was unmounted and is
+wanted back. Unmount before pulling a medium out: FAT has no journal,
+and the flush is the only thing that puts written data on it.

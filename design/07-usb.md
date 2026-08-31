@@ -1,11 +1,24 @@
 # vibeee Design 07: USBD: Userspace USB Stack
 
-> **Status: design only, not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: design v1. Owner: usbd. Depends on: kernel contracts v0, 05-input (event injection), 03-vfs (ublk consumer), platformd (CAMS/ACPI), devmgr (supervision/matching).
+Status: implemented through M1 on EHCI, verified end to end in QEMU. The
+controller driver, enumeration, hot-plug, the bulk-only mass storage class with
+its SCSI commands, the block-device seam to the kernel, and boot-protocol HID
+for keyboards and mice all run: a stick is enumerated, mounted under /media,
+read and written, and unplugging it takes its mount with it; a USB keyboard
+types and a USB mouse moves the pointer. The UHCI companions (§5.6), hubs, UVC
+(§4.2), and suspend and resume (§5.8) are design for later milestones. Owner:
+usbd. Depends on: kernel contracts v0, 05-input (injection), 03-vfs (volume
+consumer), platformd (CAMS/ACPI), devmgr (supervision/matching).
+
+**The block-device seam is simpler than the ring below.** §4.1 describes an
+SPSC shm ring whose shape was left open pending kernel-core; what exists is a
+shared data area with the descriptors passed through ordinary syscalls, which
+keeps the property that mattered (the transfer is copied once, and the driver's
+DMA lands straight in the kernel's buffer) without a lock-free ring a
+four-deep queue does not earn. `src/lib/volume.zig` is the contract.
 
 ## 1. Overview
 
@@ -64,7 +77,28 @@ The bootloader used INT 13h (BIOS SMM code driving EHCI) to load kernel+rootfs i
 
 ## 4. Data structures & interfaces (public)
 
-### 4.1 ublk ring (usbd ⇄ kernel VFS), one per exported block device
+### 4.1 The block-device seam (usbd ⇄ kernel VFS), one per exported volume
+
+**As built** (`src/lib/volume.zig`, `src/kernel/ublk.zig`, `src/user/usbd/volume.zig`).
+The kernel allocates one DMA-able area per volume and hands usbd a handle to map
+it, alongside an event to wait on. The area is divided into four slots of 16 KiB;
+a request names a slot, and the bytes for that request live there and nowhere
+else, so a transfer crosses the boundary once. Descriptors travel through
+`volume_attach`, `volume_next`, `volume_done` and `volume_detach` rather than a
+ring: at four deep the syscall is a rounding error beside the transfer, and there
+is no lock-free correctness argument to get wrong.
+
+The kernel's caller blocks on its own request with a deadline (5 s reads, 15 s
+writes) so a server that dies leaves its readers failing rather than waiting.
+usbd's event loop waits on the volume's doorbell alongside the controller's
+interrupt and its service channel, and drains every posted request when it rings.
+Registration runs the partition scan on a thread of its own, because the server
+is still inside `volume_attach` when the first sector is wanted and cannot answer
+it. A volume that goes takes its mounts with it and its block-layer rows are
+reused.
+
+**The original ring design follows**, kept because its flow-control and
+media-event semantics still describe what the seam has to do as it grows.
 
 Shared memory allocated by usbd from `dma_alloc` (so the data area is DMA-able → EHCI writes read-data directly into it; the kernel copy into page cache is the only copy). SPSC both directions, event-signaled per contract v0.
 
@@ -388,6 +422,6 @@ CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQ
 
 ## 9. Phasing
 
-- **M1 (boots the OS):** EHCI only (handoff, async schedule, ports), core enum, MSC+BOT, ublk export of card reader + external HS sticks (direct-attach), yank ladder, restart-with-identity-reattach, QEMU CI, debug log ring. FS/LS ports parked via PO.
-- **M2 (daily-driver):** 4× UHCI (control+interrupt), HID boot kbd/mouse → input core, external HS hubs (HS children), S3 suspend/resume, devmgr string events for GUI, retry-ladder hardening from M1 telemetry.
+- **M1 (boots the OS), done:** EHCI (handoff, async and periodic schedules, ports), core enumeration and hot-plug, MSC+BOT with SCSI, volume export of the card reader and external high-speed sticks, and boot-protocol HID for high-speed keyboards and mice. Verified in QEMU: a stick mounts under /media, is read and written, and unplugging it drops the mount; a keyboard types and a mouse moves the pointer. FS/LS ports are parked via PO. The yank ladder and restart-with-identity-reattach are M2.
+- **M2 (daily-driver):** 4× UHCI (control+interrupt), which is what a real keyboard or mouse needs since a full or low speed device on an EHCI root port belongs to a companion; external HS hubs (HS children); S3 suspend and resume; the yank ladder and identity reattach; devmgr string events for the GUI.
 - **M3 (camera + leftovers):** UVC (CAMS coordination + quirk policy, probe/commit, iTD iso engine, cam shm API), interrupt-IN splits for HID behind HS hubs, optional 128 KiB MSC transfers, optional ublk phys-scatter extension if M1 numbers demand it.

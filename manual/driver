@@ -12,5 +12,13 @@ starts, or a service that comes and claims the assignment. A driver
 belonging to a service has no process of its own, so it cannot be
 stopped here; its service owns it.
 
+A manifest's match line names a part, `pci:vendor:device` or
+`usb:vendor:product`, or a family, `pci-class:class:subclass` or
+`usb-class:class:subclass` with an optional protocol. It may name
+several, separated by commas: one driver and one program can serve
+several devices, and an exact part wins over a family wherever both
+match, which is how a quirk for one device overrides the driver written
+for its whole class.
+
 Dropping a manifest and its program into /lib/drivers and running
 `driver rescan` brings a new driver up on a running machine.

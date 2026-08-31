@@ -2,3 +2,12 @@ disk - list drives and volumes
 
 Every block device and the volumes found on it. `mount` attaches one;
 `unmount` detaches it, flushing first.
+
+A medium with a filesystem written straight onto it, which is what most
+sticks and cards are, is mounted as the whole disk rather than as a
+partition of one. The mounted column says where each went.
+
+A disk on a bus the kernel does not drive itself, such as one on USB,
+appears here like any other once its driver offers it. It arrives under
+/media on its own and takes its mount with it when it is unplugged, so
+a path that stops working is a medium that has gone rather than a fault.

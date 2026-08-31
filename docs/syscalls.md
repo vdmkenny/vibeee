@@ -1038,6 +1038,121 @@ End every other process and wait for them to exit.
 
 Requires Caps.power. The orderly half of a shutdown: drivers and services hold resources that only their exit releases, so they are asked to leave and seen out before anything is flushed or powered. The caller is left alone. A thread that will not unwind is left behind and reported in the return value rather than waited for forever.
 
+## `volume_attach`  <sub>#58</sub>
+
+Offer a volume the kernel's filesystems can mount, served by this process.
+
+| arg | type | meaning |
+|---|---|---|
+| `name` | const ptr | What the volume is called, as `disk` lists it. |
+| `name_len` | len | Length of the name. |
+| `info` | const ptr | A ublk.Attach: geometry in, handles out. |
+
+**Returns:** the volume's number, for the calls that serve it
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `ENOMEM`, no handle slots free, or the buffer is too small
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. The disk on a bus this kernel does not drive is still a disk: this is how the process driving it offers one. The reply carries an event to wait on and a shared area the bytes travel in, so a transfer is copied once rather than twice. The volume is scanned for partitions as it is registered, the way a disk found at boot is.
+
+## `volume_next`  <sub>#59</sub>
+
+Take the next request on a volume this process serves.
+
+| arg | type | meaning |
+|---|---|---|
+| `volume` | uint | A volume number from volume_attach. |
+| `request` | const ptr | Where a ublk.Request is written. |
+
+**Returns:** 1 when a request was taken, 0 when there was none
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. Never blocks: the server waits on the event volume_attach gave it and drains what is waiting, which is what keeps an idle disk free.
+
+## `volume_done`  <sub>#60</sub>
+
+Answer a request, waking whatever asked for it.
+
+| arg | type | meaning |
+|---|---|---|
+| `volume` | uint | A volume number from volume_attach. |
+| `tag` | uint | The tag the request carried. |
+| `status` | uint | A ublk.Status: zero is success. |
+| `sectors` | uint | How many sectors actually moved. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. A request answered twice, or never taken, is ignored rather than refused: the server is not the place to work out which of its own answers arrived first.
+
+## `volume_detach`  <sub>#61</sub>
+
+Withdraw a volume, failing everything still waiting on it.
+
+| arg | type | meaning |
+|---|---|---|
+| `volume` | uint | A volume number from volume_attach. |
+
+**Returns:** 0 on success
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. What a medium being taken out looks like from the other side. Callers waiting on the volume are told the disk is gone rather than left to their deadlines.
+
+## `key_post`  <sub>#62</sub>
+
+Report keys from a keyboard this process drives.
+
+| arg | type | meaning |
+|---|---|---|
+| `keys` | const ptr | An array of KeyReport: a KeyCode and whether it went down. |
+| `count` | uint | How many. |
+
+**Returns:** how many were taken
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. What a key *means* stays the kernel's: the layout, the modifiers, the composition and the layout-switch key are applied here, so a key on a keyboard reached over a bus and the same key on the built-in one mean the same thing. A driver says which key and whether it went down.
+
+## `pointer_post`  <sub>#63</sub>
+
+Report movement from a pointing device this process drives.
+
+| arg | type | meaning |
+|---|---|---|
+| `reports` | const ptr | An array of PointerReport: deltas, wheel and buttons. |
+| `count` | uint | How many. |
+
+**Returns:** how many were taken
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EINVAL`, an argument is out of range
+- `EPERM`, the operation is not allowed on that object
+
+Requires Caps.driver. Deltas rather than positions: where the pointer ends up depends on the screen, which is the kernel's to know and not a driver's.
+
 ---
 
-58 calls defined.
+64 calls defined.
