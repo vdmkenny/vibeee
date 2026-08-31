@@ -151,7 +151,7 @@ fn underline(surface: Surface, box: Rect, color: Color) void {
 
 fn foreground(cell: Cell) Color {
     const t = eui.theme.current();
-    if (!cell.style.has_fg) return t.text;
+    if (!cell.style.has_fg) return t.terminal_ink;
     // Dim is a palette choice rather than a blend: the sixteen colours already
     // come in a normal and a bright pair, and using the darker of the two is
     // what the pair is for.
@@ -162,7 +162,7 @@ fn foreground(cell: Cell) Color {
 
 fn background(cell: Cell) Color {
     const t = eui.theme.current();
-    return if (!cell.style.has_bg) t.surface else palette(cell.bg);
+    return if (!cell.style.has_bg) t.terminal_ground else palette(cell.bg);
 }
 
 /// The 256-colour palette, computed rather than tabulated.

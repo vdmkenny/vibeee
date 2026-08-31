@@ -535,6 +535,7 @@ apps
 
 logo
                           
+                          
               ########    
             ####    ####  
           ####        ####
@@ -544,7 +545,6 @@ logo
       ####          ####  
       ####        ####    
         ##########        
-                          
                           
 
 battery_charging
@@ -600,6 +600,8 @@ interface scale multiplies them.
 | `bar` | `#1F242A` | `#C8C5C0` | `#E0E0DC` | `#14171B` |
 | `bar_text` | `#D6D9DD` | `#14140F` | `#000000` | `#C8CCD2` |
 | `bar_line` | `#10141A` | `#8C8880` | `#707068` | `#2A2E35` |
+| `terminal_ground` | `#14171B` | `#14140F` | `#1A1A18` | `#101317` |
+| `terminal_ink` | `#D6D9DD` | `#D8D8D0` | `#E8E8E4` | `#C8CCD2` |
 | `warning` | `#B33A2B` | `#A02820` | `#901810` | `#C05050` |
 
 | metric | value |

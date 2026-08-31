@@ -320,10 +320,10 @@ fn redraw() void {
     const used_w = @as(i32, @intCast(grid.cols)) * render.cellWidth();
     const used_h = @as(i32, @intCast(grid.rows)) * render.cellHeight();
     if (used_w < area.w) {
-        surface.fill(.{ .x = used_w, .y = 0, .w = area.w - used_w, .h = area.h }, t.surface);
+        surface.fill(.{ .x = used_w, .y = 0, .w = area.w - used_w, .h = area.h }, t.terminal_ground);
     }
     if (used_h < area.h) {
-        surface.fill(.{ .x = 0, .y = used_h, .w = area.w, .h = area.h - used_h }, t.surface);
+        surface.fill(.{ .x = 0, .y = used_h, .w = area.w, .h = area.h - used_h }, t.terminal_ground);
     }
 
     const damage = render.paint(surface.*, area, &terminal, &shadow) orelse return;
