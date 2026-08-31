@@ -1,11 +1,43 @@
-# vibeee Design 06: SNDD: Userspace Audio Server (ICH6 HDA + ALC662)
+# vibeee Design 06: SNDD: Userspace Audio Server
 
-> **Status: design only, not implemented.**
-> Implemented code is limited to the M0 set listed in [`../README.md`](../README.md).
-> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
-> it carries later decisions this document predates.
+> Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins.
 
-Status: design v1. Owner: audio subsystem. Targets kernel contracts v0.
+Status: implemented for the AC'97 controller, verified end to end in QEMU (a tone
+reaches the wav backend at the right frequency, mixing and volume proven). The
+HDA/ALC662 path for the real machine's hardware is designed and not yet written.
+
+**The architecture is a routing graph, not a fixed mixer.** The rest of this
+document predates that decision and describes the fixed-path mixer it replaced;
+sections 1 and 4 below are rewritten to what exists, and the register-level
+sequences (§5 onward) stand as the HDA implementation guide.
+
+## 0. The graph
+
+Everything that makes or takes sound is a **node** with **ports**: a source port
+produces frames, a sink port consumes them. A **link** joins one source to one
+sink. Hardware is a node like any other, its output an `out` sink and its input an
+`in` source; a program is a node it registers. Fan-in to a sink is mixing, fan-out
+from a source is copying, both by topology rather than as pipeline stages, so a
+mixer, an effect or a recorder is one more node with ports and changes no code that
+exists. The graph lives in `lib/audiograph`, pure and host-tested; the service owns
+the buffers and the hardware.
+
+Two ports are the **defaults**: where an output goes and an input comes from when a
+program does not say. They begin pointing at the hardware `out` and `in`, and are
+designations any port can take, so an advanced workflow repoints them without the
+programs on either side knowing. `libaudio` (`user/lib/sound.zig`) makes an output
+linked to the default sink and an input linked from the default source, which is
+what a program almost always means.
+
+The frame path never touches the channel: each port is granted a shared `lib/spsc`
+ring and an event. The service's loop is paced by the hardware's period interrupt,
+does one bounded mix per wake, and parks otherwise; an idle machine takes no
+interrupts. This is the whole of the low-latency, no-polling design.
+
+## 1. Overview (as designed for the real hardware)
+
+The HDA path owns the Intel HDA controller at PCI 00:1b.0 (8086:2668) and the
+Realtek ALC662 codec behind it. It provides:
 
 ## 1. Overview
 
