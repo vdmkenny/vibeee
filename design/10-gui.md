@@ -379,6 +379,35 @@ Metrics (133 DPI): base unit 4 px; control height 24; list row 18; menu/palette 
 6h/4v; scrollbar 10 wide (touchpad target); checkbox 12×12; slider track 4; border radius 0
 (square: crisp on 1:1 pixels, cheaper). All widgets integer-pixel; no subpixel positioning.
 
+### 6.7 Icons: carried by the program, fallen back to by the shell
+
+**A program carries its own icon, in its own binary.** Not in a directory the
+shell owns, not in a manifest beside it, and not in a table the window manager
+has to be taught: an application that cannot look like itself without the
+shell being changed is one that nobody can install. The picture travels with
+the thing it depicts, so copying the binary copies the icon and deleting it
+takes the icon with it.
+
+The shape follows what `eui.icon` already draws: one-bit rows and a size, in
+the form the surface's blitter takes. What is needed on top is where to put it
+and how to find it, which is a named section in the ELF the loader already
+parses. A program with no such section has no icon, which is the ordinary case
+and not an error.
+
+**The shell falls back rather than refusing.** A program with no icon of its
+own is drawn with one of the shell's, chosen by what the program is: the
+category it was launched from, or failing that a plain one that means "a
+program". So the launcher never has a row with a hole in it, and an icon is
+something a program may have rather than something it must supply before it
+can be listed.
+
+Two things this rules out on purpose. An icon *theme*, because a set of
+pictures that overrides what programs carry is a second source of truth and
+the machine has one screen to argue about. And icons at more than one size:
+the interface scale doubles a bitmap by whole pixels, so a program supplies
+one picture and it is drawn at whatever the interface is set to, like every
+other picture in the system.
+
 ## 7. Fonts & text rendering
 
 **Decision: packed bitmap fonts ("EFNT"), no TTF rasterizer in v1.** Honest hinting argument: an

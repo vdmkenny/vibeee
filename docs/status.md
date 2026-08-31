@@ -285,6 +285,11 @@ parked there.
   transactions. The queue heads carry the hub and port for them and the arithmetic is
   written, but nothing has exercised it: the emulator will not put a full speed hub on
   an EHCI bus, and the machine's own hubs are the companions' business.
+- **A program cannot carry its own icon.** The launcher draws a picture per row
+  from a list the window manager holds, so a program the manager has never heard
+  of has no picture and adding one means editing the manager. What it wants is
+  the icon in the program's own binary, with the shell's own set as the fallback:
+  design/10-gui.md §6.7 says the shape.
 - **The radio hears nothing yet.** `ar2425` brings the chip up, proves which
   silicon it is, reads its store, and now lays its descriptor chains and sets it
   listening. What is missing between that and a network is the soft MAC: a
