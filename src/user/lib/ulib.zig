@@ -12,6 +12,7 @@ pub const device = @import("device.zig");
 pub const env = @import("env.zig");
 pub const table = @import("table.zig");
 pub const tree = @import("tree.zig");
+pub const bindings = @import("bindings.zig");
 pub const dir = @import("dir.zig");
 pub const heap = @import("heap.zig");
 pub const edit = @import("edit.zig");

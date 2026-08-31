@@ -30,6 +30,7 @@ const proto = @import("proto");
 const region = @import("eui").region;
 const ui = @import("eui").widget;
 const sys = @import("sys");
+const bindings = @import("ulib").bindings;
 const out = @import("ulib").out;
 
 const Rect = eui.Rect;
@@ -573,76 +574,53 @@ fn handleKey(event: sys.KeyEvent) void {
 
     if (!mods.super) return;
 
-    switch (code) {
-        .n1, .n2, .n3, .n4, .n5, .n6, .n7, .n8, .n9 => {
-            const tag: u8 = @intCast(@intFromEnum(code) - @intFromEnum(KeyCode.n1));
-            if (mods.shift) desktop.moveToTag(tag) else desktop.view(tag);
-        },
-        .tab => desktop.viewPrevious(),
-        .space => nextKeymap(),
+    // The numbers are a family rather than nine bindings: which desktop, and
+    // whether to take the window along.
+    if (@intFromEnum(code) >= @intFromEnum(KeyCode.n1) and @intFromEnum(code) <= @intFromEnum(KeyCode.n9)) {
+        const tag: u8 = @intCast(@intFromEnum(code) - @intFromEnum(KeyCode.n1));
+        if (mods.shift) desktop.moveToTag(tag) else desktop.view(tag);
+        dirty = true;
+        return;
+    }
 
-        // Relative movement between desktops, and taking the focused window
-        // along with shift. Bracket keys because they sit next to each other
-        // and read as "that way".
-        .bracket_left => {
-            if (mods.shift) desktop.sendRelative(-1) else desktop.viewRelative(-1);
-        },
-        .bracket_right => {
-            if (mods.shift) desktop.sendRelative(1) else desktop.viewRelative(1);
-        },
+    // Everything else comes from the table the help pane reads, so a chord
+    // that is listed is a chord that works and the other way round. The
+    // switch is exhaustive: a binding added there without a handler here does
+    // not build.
+    const action = bindings.lookup(code, mods.shift) orelse return;
+    switch (action) {
+        .terminal => _ = sys.spawnDetached("/bin/eterm", &.{"eterm"}),
+        .launcher => bar.openLauncher(),
+        .focus_bar => bar.focus(&desktop),
 
+        .focus_next => desktop.focusNext(1),
+        .focus_previous => desktop.focusNext(-1),
+        .zoom => desktop.zoom(),
+        .maximise => _ = desktop.toggleMaximised(),
+        .floating => desktop.toggleFloating(),
+        .master_smaller => desktop.nudgeMaster(-0.05),
+        .master_larger => desktop.nudgeMaster(0.05),
 
-        .j => desktop.focusNext(1),
+        .view_left => desktop.viewRelative(-1),
+        .view_right => desktop.viewRelative(1),
+        .send_left => desktop.sendRelative(-1),
+        .send_right => desktop.sendRelative(1),
+        .view_previous => desktop.viewPrevious(),
+        .new_desktop => _ = desktop.addDesktop(),
 
-        // One window at full size, and back. What the tiling is for most of
-        // the time, and what it is in the way of for the rest.
-        .m => _ = desktop.toggleMaximised(),
+        .close_window => if (desktop.focused) |index| requestClose(index),
+        // The escape hatch for a window that will not go when asked.
+        .kill_window => if (desktop.focused) |index| dropWindow(index),
+        .close_desktop => closeDesktop(desktop.tag),
 
-        .h => desktop.nudgeMaster(-0.05),
-        .l => desktop.nudgeMaster(0.05),
-
-        .f => desktop.toggleFloating(),
-
-        // The taskbar and the launcher, from the keyboard.
-        .b => bar.focus(&desktop),
-        .p => bar.openLauncher(),
-        .n => _ = desktop.addDesktop(),
-        .enter => {
-            if (mods.shift) {
-                desktop.zoom();
-            } else {
-                // What a tiling manager's Mod+Enter has always opened.
-                _ = sys.spawnDetached("/bin/eterm", &.{"eterm"});
-            }
-        },
-        // Shift+c asks the focused window to close; Shift+k takes it away
-        // whether it agrees or not; Shift+w closes the whole desktop.
-        .c => if (mods.shift) {
-            if (desktop.focused) |index| requestClose(index);
-        },
-        .k => {
-            // Shift takes a window away whether it agrees or not, which is the
-            // escape hatch for one that will not go. Without shift it is just
-            // focus movement.
-            if (mods.shift) {
-                if (desktop.focused) |index| dropWindow(index);
-            } else {
-                desktop.focusNext(-1);
-            }
-        },
-        .w => {
-            if (mods.shift) closeDesktop(desktop.tag);
-        },
-
+        .next_keymap => nextKeymap(),
         // A theme that cannot be changed on the machine it runs on is not
         // themable in any useful sense. The file decides the default; this
         // tries the others without editing it.
-        .grave => {
+        .cycle_theme => {
             _ = theme.cycle();
             broadcastTheme();
         },
-
-        else => return,
     }
 
     dirty = true;

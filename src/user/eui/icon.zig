@@ -61,6 +61,8 @@ pub const Icon = enum {
     /// A letter in a box: what this machine is, rather than a setting to
     /// change. The one row of a rail that answers instead of asking.
     about,
+    /// A question mark: where the answers are.
+    help,
     /// A lens with a handle: where typing goes.
     search,
     /// A way out of the room: the sign over a fire door, which is what
@@ -397,6 +399,23 @@ const art = [_]Picture{
             ".##......##.",
             "..########..",
             "............",
+        },
+    },
+    .{
+        .icon = .help,
+        .rows = .{
+            "............",
+            "...######...",
+            "..##....##..",
+            ".##......##.",
+            ".........##.",
+            "........##..",
+            ".....####...",
+            ".....##.....",
+            ".....##.....",
+            "............",
+            ".....##.....",
+            ".....##.....",
         },
     },
     .{

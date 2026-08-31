@@ -23,6 +23,7 @@ const hostname = @import("lib").hostname;
 const net = proto.net;
 const str = @import("lib").str;
 const info = @import("ulib").info;
+const bindings = @import("ulib").bindings;
 const keymaps = @import("keymaps");
 const palette = @import("lib").palette;
 const platform = proto.platform;
@@ -294,6 +295,7 @@ const Section = enum {
     input,
     audio,
     power,
+    help,
     about,
 
     fn parse(name: []const u8) ?Section {
@@ -309,6 +311,7 @@ const Section = enum {
             .input => "Input",
             .audio => "Audio",
             .power => "Power",
+            .help => "Help",
             .about => "About",
         };
     }
@@ -319,6 +322,7 @@ const Section = enum {
             .input => .keyboard,
             .audio => .speaker,
             .power => .battery,
+            .help => .help,
             .about => .about,
         };
     }
@@ -350,6 +354,7 @@ fn draw() void {
         .input => drawInput(pane),
         .audio => drawAudio(pane),
         .power => drawPower(pane),
+        .help => drawHelp(pane),
         .about => drawAbout(pane),
     }
 
@@ -388,7 +393,10 @@ fn drawDisplay(pane: eui.Rect) void {
             .label = candidate.name,
             .ground = candidate.desktop,
             .strip = candidate.bar,
-            .mark = candidate.accent,
+            // The highlight in use, not the theme's own: the tile is a
+            // picture of what choosing it would give you, and the highlight
+            // is chosen separately.
+            .mark = current.accent.rgb(),
         };
     }
 
@@ -594,6 +602,39 @@ fn drawPower(pane: eui.Rect) void {
     }
 }
 
+
+/// The keys that move windows around, from the table the manager dispatches
+/// from: a list here that the manager did not read would be a list that says
+/// what the machine used to do.
+fn drawHelp(pane: eui.Rect) void {
+    const t = theme.current();
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height };
+
+    y = group(&y, full, "Desktops and windows");
+
+    const chord_w = @max(theme.enlarged(120), @divTrunc(pane.w, 3));
+    for (bindings.all) |binding| {
+        if (y + t.menu_row_height > pane.bottom()) break;
+        ctx.label(.{ .x = pane.x, .y = y, .w = chord_w, .h = t.control_height }, binding.chord);
+        ctx.labelDim(
+            .{ .x = pane.x + chord_w, .y = y, .w = pane.w - chord_w, .h = t.control_height },
+            binding.says,
+        );
+        y += theme.enlarged(16);
+    }
+
+    y += t.padding;
+    for (bindings.numbers) |row| {
+        if (y + t.menu_row_height > pane.bottom()) break;
+        ctx.label(.{ .x = pane.x, .y = y, .w = chord_w, .h = t.control_height }, row.chord);
+        ctx.labelDim(
+            .{ .x = pane.x + chord_w, .y = y, .w = pane.w - chord_w, .h = t.control_height },
+            row.says,
+        );
+        y += theme.enlarged(16);
+    }
+}
 
 /// What this computer is, and nothing about what it is doing. How much
 /// memory is fitted belongs here; how much of it is in use belongs in the

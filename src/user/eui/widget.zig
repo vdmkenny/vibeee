@@ -1036,24 +1036,24 @@ fn paintSample(surface: Surface, area: Rect, item: Context.Sample, chosen: bool,
     };
 
     surface.fill(area, t.surface);
-    surface.fill(tile, item.ground);
+
+    // The border first, and everything else inside it. Painted the other way
+    // round, a bar strip the colour of the border reads as a bar wider than
+    // the desktop under it.
+    const edge: i32 = if (chosen) 2 else 1;
+    surface.fill(tile, if (chosen) t.accent else t.border);
+
+    const inner = tile.inset(edge);
+    surface.fill(inner, item.ground);
 
     const strip = theme.enlarged(7);
-    surface.fill(.{ .x = tile.x, .y = tile.y, .w = tile.w, .h = strip }, item.strip);
+    surface.fill(.{ .x = inner.x, .y = inner.y, .w = inner.w, .h = strip }, item.strip);
     surface.fill(.{
-        .x = tile.x + theme.enlarged(6),
-        .y = tile.y + strip + theme.enlarged(5),
+        .x = inner.x + theme.enlarged(5),
+        .y = inner.y + strip + theme.enlarged(4),
         .w = theme.enlarged(16),
         .h = theme.enlarged(8),
     }, item.mark);
-
-    // The chosen one takes the accent's own border, which is how the row says
-    // which look is in use without a tick nobody could read on four grounds.
-    if (chosen) {
-        surface.borderInset(tile, 2, t.accent);
-    } else {
-        surface.frame(tile, t.border);
-    }
 
     const label_y = tile.bottom() + t.padding;
     const width = Surface.textWidth(item.label);
@@ -1064,7 +1064,7 @@ fn paintSample(surface: Surface, area: Rect, item: Context.Sample, chosen: bool,
         if (chosen) t.text else t.text_dim,
     );
 
-    if (focused) paintFocusRing(surface, tile.inset(2), t.accent_text);
+    if (focused) paintFocusRing(surface, inner, t.accent_text);
 }
 
 /// One colour, and whether it is the one in use.
