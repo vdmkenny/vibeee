@@ -66,6 +66,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print(
             \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img>
             \\               [size_mb] [cmdline] [rootfs.img] [p1_mb] [cfg_mb] [home_mb]
+            \\               [WIDTHxHEIGHT]
             \\
         , .{});
         return error.Usage;
@@ -140,12 +141,15 @@ pub fn main(init: std.process.Init) !void {
     const s2_off = STAGE2_LBA * SECTOR;
     @memcpy(image[s2_off..][0..stage2.len], stage2);
     const cmdline: []const u8 = if (args.len >= 7) args[6] else "";
+    const wanted = if (args.len >= 12) parseSize(args[11]) else null;
     try patchStage2(image[s2_off..][0..stage2.len], .{
         .kernel_sectors = kernel_sectors,
         .kernel_bytes = kernel.len,
         .cmdline = cmdline,
         .rootfs_sectors = rootfs_sectors,
         .rootfs_bytes = rootfs.len,
+        .want_width = if (wanted) |v| v.w else 0,
+        .want_height = if (wanted) |v| v.h else 0,
     });
 
     @memcpy(image[KERNEL_LBA * SECTOR ..][0..kernel.len], kernel);
@@ -199,6 +203,11 @@ const Stage2Fields = struct {
     cmdline: []const u8,
     rootfs_sectors: usize,
     rootfs_bytes: usize,
+    /// The ceiling on the display mode when the panel will not say what it
+    /// is. Zero leaves the loader's own fallback, which is what an image for
+    /// an unknown machine wants: the panel is asked first either way.
+    want_width: u16 = 0,
+    want_height: u16 = 0,
 };
 
 fn patchStage2(buf: []u8, fields: Stage2Fields) !void {
@@ -231,6 +240,18 @@ fn patchStage2(buf: []u8, fields: Stage2Fields) !void {
     put.u32At(buf, &p, if (fields.rootfs_sectors == 0) 0 else ROOTFS_LBA);
     put.u32At(buf, &p, fields.rootfs_sectors);
     put.u32At(buf, &p, fields.rootfs_bytes);
+
+    std.mem.writeInt(u16, buf[p..][0..2], fields.want_width, .little);
+    std.mem.writeInt(u16, buf[p + 2 ..][0..2], fields.want_height, .little);
+}
+
+/// A "WIDTHxHEIGHT" argument, or null for the loader's own default.
+fn parseSize(text: []const u8) ?struct { w: u16, h: u16 } {
+    const x = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const w = std.fmt.parseInt(u16, text[0..x], 10) catch return null;
+    const h = std.fmt.parseInt(u16, text[x + 1 ..], 10) catch return null;
+    if (w == 0 or h == 0) return null;
+    return .{ .w = w, .h = h };
 }
 
 /// One partition table entry.

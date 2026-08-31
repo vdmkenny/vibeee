@@ -147,6 +147,7 @@ pub const spleen_12x24 = @import("fonts/spleen_12x24.zig").desc;
 /// Proportional, for interface text rather than a terminal grid.
 /// Ark Pixel by TakWolf, SIL Open Font License 1.1.
 pub const ark_ui_12 = @import("fonts/ark_ui_12.zig").desc;
+pub const ark_mono_12 = @import("fonts/ark_mono_12.zig").desc;
 
 /// Walk a string as characters rather than bytes.
 ///

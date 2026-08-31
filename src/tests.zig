@@ -19,6 +19,7 @@ test {
     _ = @import("qr_test.zig");
     _ = @import("keymap_test.zig");
     _ = @import("user/eterm/vt_test.zig");
+    _ = @import("user/eterm/render.zig");
     _ = @import("user/eui/text_test.zig");
     // The toolkit whole, rather than a list of its modules: a list is a
     // second place that has to be kept agreeing with the first, and the way

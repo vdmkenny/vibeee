@@ -51,7 +51,7 @@ PPM=$(mktemp -u /tmp/vibeee-shot.XXXXXX).ppm
 LOG="${OUT%.png}.log"
 
 qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
-    -display none -vga std -serial "file:$LOG" \
+    -display none -vga none -device VGA,edid=on,xres=800,yres=600 -serial "file:$LOG" \
     -monitor "unix:$SOCK,server,nowait" "$@" &
 QPID=$!
 trap 'kill $QPID 2>/dev/null || true; rm -f "$SOCK"' EXIT

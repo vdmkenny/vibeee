@@ -16,7 +16,10 @@ const Rect = eui.Rect;
 const Surface = eui.Surface;
 
 pub fn cellWidth() i32 {
-    return @intCast(eui.draw.mono_font.width);
+    // The advance of a letter, not the font's bounding box: this face keeps
+    // full-width East Asian glyphs in the same file, so the box is twice the
+    // cell a Latin terminal wants.
+    return @intCast(eui.draw.mono_font.advance('M'));
 }
 
 pub fn cellHeight() i32 {
@@ -130,7 +133,14 @@ fn drawCell(
         return;
     }
 
-    surface.glyphIn(eui.draw.mono_font, box.x, box.y, @intCast(cell.ch), fg);
+    // Line-drawing comes from the cell, not the font. The glyphs exist to
+    // join exactly, and a face whose box set is full-width cannot join a
+    // half-width grid; strokes from the cell's own geometry always meet.
+    if (boxStrokes(cell.ch)) |strokes| {
+        drawStrokes(surface, box, strokes, fg);
+    } else {
+        surface.glyphIn(eui.draw.mono_font, box.x, box.y, @intCast(cell.ch), fg);
+    }
 
     // Bold is drawn a second time one pixel right, which is what a bitmap face
     // with no bold cut can do. At eight pixels wide it reads as weight rather
@@ -212,4 +222,70 @@ const ANSI = [16]Color{
 
 fn rgb(r: u8, g: u8, b: u8) Color {
     return (@as(Color, r) << 16) | (@as(Color, g) << 8) | @as(Color, b);
+}
+
+/// Which arms a line-drawing character has, or null for one that is not.
+///
+/// The single-line set plus the doubles folded onto it: at one pixel a
+/// double line is a smear, and a tree drawn with either reads the same.
+pub const Strokes = packed struct(u4) {
+    left: bool = false,
+    right: bool = false,
+    up: bool = false,
+    down: bool = false,
+};
+
+pub fn boxStrokes(cp: u32) ?Strokes {
+    return switch (cp) {
+        0x2500, 0x2550 => .{ .left = true, .right = true },
+        0x2502, 0x2551 => .{ .up = true, .down = true },
+        0x250C, 0x2554 => .{ .right = true, .down = true },
+        0x2510, 0x2557 => .{ .left = true, .down = true },
+        0x2514, 0x255A => .{ .right = true, .up = true },
+        0x2518, 0x255D => .{ .left = true, .up = true },
+        0x251C, 0x2560 => .{ .right = true, .up = true, .down = true },
+        0x2524, 0x2563 => .{ .left = true, .up = true, .down = true },
+        0x252C, 0x2566 => .{ .left = true, .right = true, .down = true },
+        0x2534, 0x2569 => .{ .left = true, .right = true, .up = true },
+        0x253C, 0x256C => .{ .left = true, .right = true, .up = true, .down = true },
+        else => null,
+    };
+}
+
+/// Each arm runs from the cell's centre to its edge, so neighbouring cells'
+/// arms meet without either knowing the other is there.
+fn drawStrokes(surface: Surface, box: Rect, strokes: Strokes, color: Color) void {
+    const mid_x = box.x + @divTrunc(box.w, 2);
+    const mid_y = box.y + @divTrunc(box.h, 2);
+
+    if (strokes.left) surface.fill(.{ .x = box.x, .y = mid_y, .w = mid_x - box.x + 1, .h = 1 }, color);
+    if (strokes.right) surface.fill(.{ .x = mid_x, .y = mid_y, .w = box.right() - mid_x, .h = 1 }, color);
+    if (strokes.up) surface.fill(.{ .x = mid_x, .y = box.y, .w = 1, .h = mid_y - box.y + 1 }, color);
+    if (strokes.down) surface.fill(.{ .x = mid_x, .y = mid_y, .w = 1, .h = box.bottom() - mid_y }, color);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = @import("std").testing;
+
+test "every line character continues through the joints" {
+    // A tee is the tee of its three arms, which is what makes a tree's spine
+    // read as one line: the vertical of |- must carry both up and down.
+    const tee = boxStrokes(0x251C).?;
+    try testing.expect(tee.up and tee.down and tee.right and !tee.left);
+
+    const corner = boxStrokes(0x2514).?;
+    try testing.expect(corner.up and corner.right and !corner.down and !corner.left);
+
+    const cross = boxStrokes(0x253C).?;
+    try testing.expect(cross.up and cross.down and cross.left and cross.right);
+}
+
+test "doubles fold onto singles and letters stay the font's" {
+    try testing.expectEqual(boxStrokes(0x2500), boxStrokes(0x2550));
+    try testing.expectEqual(boxStrokes(0x255A), boxStrokes(0x2514));
+    try testing.expectEqual(@as(?Strokes, null), boxStrokes('A'));
+    try testing.expectEqual(@as(?Strokes, null), boxStrokes(0x2192));
 }

@@ -2,7 +2,7 @@
 
 A graphical operating system for low-end netbooks, written from scratch in Zig.
 
-![eTerm running eeefetch on the vibeee desktop](docs/img/desktop.png)
+![The vibeee desktop: eeefetch in a terminal, the file manager, and the launcher open over them](docs/img/desktop.png)
 
 It is its own bootloader, kernel, userspace, window manager and control library.
 It was built and tested against an **ASUS Eee PC 701 4G** (2007: 630 MHz Celeron M,
@@ -26,21 +26,24 @@ speaks, and the audio controller to the ICH6 the southbridge carries, which is t
 part QEMU models and the same driver that binds on hardware. Sound comes out of the
 host by default where there is somewhere to send it, and `QEMU_AUDIODEV=none` turns
 that off without taking the controller away. What cannot be emulated is the rest of the
-chipset: no GMA 900, no wireless radio, no embedded controller, and no panel that
-offers 800x480 as a mode, so the console settles for 640x480 under QEMU and gets the
-full panel only on the machine.
+chipset: no GMA 900, no wireless radio, and no embedded controller. The display is
+told to describe itself as a netbook panel, and the loader believes it: it asks the
+screen over DDC and takes the largest mode that fits, which is how the same image
+boots the 701's 800x480, the emulator's 800x600, and a netbook nobody had in mind.
 
 ## What is there
 
-A tiling window manager whose tabs are named after what is in them, and four
-applications sharing one control library:
+A tiling window manager whose desktops exist only while something is on them, a
+launcher you summon in the middle of the screen and type at, and five applications
+sharing one control library and one application frame:
 
 | | |
 |---|---|
-| **eTerm** | terminal, with its own VT emulator |
+| **eTerm** | terminal, with its own VT emulator, in the interface's own monospace |
+| **Files** | two panes, copy and move between them, driven by the function keys |
 | **Pad** | text editor |
 | **Monitor** | process list, CPU share, end a task |
-| **Settings** | theme, layout, bar position |
+| **Settings** | theme tiles, highlight and pointer colours, interface scale, key help |
 
 Underneath: its own bootloader, a preemptive O(1) scheduler, per-process address
 spaces, capability handles, channels and events, ATA and FAT with long names, ACPI
@@ -86,7 +89,7 @@ Expectations on the machine, day one:
 * **Works on the machine:** boot from SD, the screen at the panel's own 800x480 through
   the native GMA modeset, keyboard (US-International and Belgian AZERTY included), the
   touchpad in relative mode, battery state with remaining time, backlight levels,
-  hotkeys, the desktop with all four applications, wired networking through the whole
+  hotkeys, the desktop with all five applications, wired networking through the whole
   stack, and settings and a home directory that outlive the power being cut.
 * **Written and running, but proven in the emulator rather than on the machine:** USB
   storage, keyboards, mice and hubs, and sound over AC'97 and HDA.

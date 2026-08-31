@@ -24,9 +24,10 @@ pub const Font = fontlib.Font;
 /// better that way at this size.
 pub const ui_font: *const Font = &fontlib.ark_ui_12;
 
-/// Where columns have to line up. The console's face, so a terminal window and
-/// the console it replaces show the same shapes.
-pub const mono_font: *const Font = &fontlib.spleen_8x16;
+/// Where columns have to line up. The interface family's own fixed-advance
+/// face, so a shell and a button label speak in one voice; the console keeps
+/// Spleen, which was drawn for a framebuffer console and stays there.
+pub const mono_font: *const Font = &fontlib.ark_mono_12;
 
 /// Walking a string as characters rather than bytes. Lives in `lib` because
 /// the font's own measuring needs it and the kernel's console draws from the

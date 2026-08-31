@@ -148,10 +148,15 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             if (platform.ram_devices == 1) "" else "s",
         });
     } else if (eq(key, "display")) {
-        // Asked of the console rather than remembered from boot: a modeset
-        // changes this underneath, and a stale answer is worse than none.
+        // The display module first: once a compositor owns the screen the
+        // console is suspended and would answer nothing, but the screen is
+        // very much in a mode. The console's answer covers the boot, before
+        // anything has taken over.
+        const owned = display.describe();
         const px = console.pixelSize();
-        if (px.width != 0) {
+        if (owned.width != 0 and display.isOwned()) {
+            try w.print("{d}x{d} 32bpp, composited", .{ owned.width, owned.height });
+        } else if (px.width != 0) {
             try w.print("{d}x{d} 32bpp", .{ px.width, px.height });
         } else {
             try w.print("text mode", .{});

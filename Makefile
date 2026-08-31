@@ -37,7 +37,10 @@ QEMU_AUDIODEV ?= $(if $(filter Darwin,$(shell uname -s)),coreaudio,none)
 QEMU_SOUND := -audiodev $(QEMU_AUDIODEV),id=snd0 \
               -device intel-hda -device hda-output,audiodev=snd0
 
-QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot $(QEMU_SOUND)
+# The display advertises a netbook-sized panel over EDID, so the loader's
+# ask-the-panel path is the one QEMU exercises, exactly as on hardware.
+QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot -vga none \
+	-device VGA,edid=on,xres=800,yres=600 $(QEMU_SOUND)
 else
 # The QEMU stand-in for the VT8500-class Windows CE netbooks of design
 # design/12-arm-port.md: same ARM926EJ-S core, same RAM budget, but a serial
@@ -304,13 +307,18 @@ DEV_IMAGE := $(BUILD)/vibeee-dev.img
 # screen, the default has to be the mode already known to work.
 DEV_CMDLINE ?= verbose fb
 
+# What the emulator's display reports when asked. QEMU's BIOS answers DDC, so
+# this is only the ceiling for a machine that does not; it is set here because
+# a desktop judged at 640x480 is judged at a size no netbook in this class has.
+DEV_PANEL ?= 800x600
+
 .PHONY: dev-image
 dev-image: $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 ifeq ($(ARCH),arm)
 	$(error $(DEV_IMAGE) is x86-only today; for arm use: make qemu)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) "$(DEV_CMDLINE)" $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(HOME_MB)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB) $(DEV_PANEL)
 	@$(MAKE) --no-print-directory populate IMG=$(DEV_IMAGE)
 endif
 

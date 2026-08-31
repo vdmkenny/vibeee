@@ -630,6 +630,13 @@ pub fn build(b: *std.Build) void {
             .out = "src/lib/fonts/ark_ui_12.zig",
             .name = "Ark Pixel 12",
         },
+        // The same family with a fixed advance, for the terminal: a shell and
+        // a button label in one voice, at a weight the panel can carry.
+        .{
+            .source = "third_party/ark-pixel/ark-pixel-12px-monospaced-latin.bdf",
+            .out = "src/lib/fonts/ark_mono_12.zig",
+            .name = "Ark Pixel Mono 12",
+        },
     }) |spec| {
         const run = b.addRunArtifact(mkfont);
         run.addFileArg(b.path(spec.source));

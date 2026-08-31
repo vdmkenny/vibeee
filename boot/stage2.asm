@@ -75,11 +75,17 @@ FONT_PHYS       equ 0x5000          ; 4 KiB of 8x16 glyphs, below BootInfo
 VBE_INFO        equ 0x0500          ; scratch for the VBE controller block
 VBE_MODE_INFO   equ 0x0700          ; scratch for one mode block
 
-; Preferred display size. The target panel is 800x480, which its video BIOS
-; does not offer as a VBE mode, so the search falls back by area and this is
-; an aspiration rather than a requirement.
-WANT_WIDTH      equ 800
-WANT_HEIGHT     equ 480
+EDID_INFO       equ 0x0800          ; scratch for one 128-byte EDID block
+
+; The ceiling on the mode search when the panel will not say what it is.
+;
+; Asked of the display first: a netbook's video BIOS reports its panel through
+; DDC, and reading it is how this loader works on a machine nobody had in mind.
+; Only when that fails does the header's figure decide, and that is patched per
+; image rather than compiled in, because the machine this was written on is not
+; the only one it runs on.
+FALLBACK_WIDTH  equ 800
+FALLBACK_HEIGHT equ 480
 
 ; ---------------------------------------------------------------------------
 ; Header. mkimage locates this by signature and patches the fields.
@@ -96,6 +102,8 @@ cmdline:         times 64 db 0      ; PATCHED: boot parameters, NUL-terminated
 rootfs_lba:      dd 0               ; PATCHED: first LBA of the root filesystem
 rootfs_sectors:  dd 0               ; PATCHED: root filesystem size in sectors
 rootfs_bytes:    dd 0               ; PATCHED: exact root filesystem byte length
+want_width:      dw 0               ; PATCHED: mode ceiling when DDC says nothing
+want_height:     dw 0               ; PATCHED: zero means use the fallback
 
 main:
     cli
@@ -299,6 +307,84 @@ copy_font:
     ret
 
 ; ---------------------------------------------------------------------------
+; Decide how large a mode may be.
+;
+; The panel's own answer first, through DDC: a netbook that reports 1024x600
+; gets 1024x600, and this loader stops being written for one machine. Then the
+; header's figure, patched per image. Then the compiled-in fallback, which is
+; only ever reached on a machine whose BIOS answers neither.
+; ---------------------------------------------------------------------------
+settle_ceiling:
+    push es
+
+    mov ax, FALLBACK_WIDTH
+    mov [ceiling_width], ax
+    mov ax, FALLBACK_HEIGHT
+    mov [ceiling_height], ax
+
+    ; The image's own figure, if it was patched with one.
+    mov ax, [want_width]
+    test ax, ax
+    jz .ask_panel
+    mov bx, [want_height]
+    test bx, bx
+    jz .ask_panel
+    mov [ceiling_width], ax
+    mov [ceiling_height], bx
+
+.ask_panel:
+    ; VBE/DDC: read block zero of the panel's EDID.
+    xor ax, ax
+    mov es, ax
+    mov di, EDID_INFO
+    mov ax, 0x4F15
+    mov bl, 0x01                    ; read EDID
+    xor cx, cx                      ; controller unit zero
+    xor dx, dx                      ; block zero
+    int 0x10
+    cmp ax, 0x004F
+    jne .done
+
+    ; An EDID block starts 00 FF FF FF FF FF FF 00. Without that, whatever
+    ; the BIOS left in the buffer is not a description of a display.
+    cmp byte [EDID_INFO], 0x00
+    jne .done
+    cmp byte [EDID_INFO + 1], 0xFF
+    jne .done
+    cmp byte [EDID_INFO + 7], 0x00
+    jne .done
+
+    ; The first detailed timing descriptor is the preferred one, and its
+    ; active pixel counts are the panel's real size. Twelve bits each, split
+    ; between a low byte and a high nibble.
+    movzx ax, byte [EDID_INFO + 56]         ; horizontal active, low 8
+    movzx bx, byte [EDID_INFO + 58]         ; high nibbles
+    and bx, 0xF0
+    shl bx, 4
+    or ax, bx
+    test ax, ax
+    jz .done
+    mov cx, ax                              ; width
+
+    movzx ax, byte [EDID_INFO + 59]         ; vertical active, low 8
+    movzx bx, byte [EDID_INFO + 61]         ; vertical active, high 4 in the
+    and bx, 0xF0                            ; upper nibble; the lower nibble
+    shl bx, 4                               ; is the blanking's, not ours
+    or ax, bx
+    test ax, ax
+    jz .done
+
+    mov [ceiling_width], cx
+    mov [ceiling_height], ax
+
+.done:
+    pop es
+    ret
+
+ceiling_width:   dw 0
+ceiling_height:  dw 0
+
+; ---------------------------------------------------------------------------
 ; Set a linear-framebuffer VBE mode, if one was asked for and one exists.
 ;
 ; Gated on "fb" appearing in the command line. Switching to graphics silences
@@ -328,6 +414,8 @@ maybe_set_video:
 
 vbe_setup:
     push es
+
+    call settle_ceiling
 
     ; --- controller info ---
     xor ax, ax
@@ -378,13 +466,13 @@ vbe_setup:
     cmp byte [VBE_MODE_INFO + 25], 32
     jne .next_mode
 
-    ; Score by area, capped at the preferred size: the largest mode that is no
-    ; bigger than the panel.
+    ; Score by area, capped at the panel's own size: the largest mode that is
+    ; no bigger than what the display can actually show.
     movzx eax, word [VBE_MODE_INFO + 18]    ; width
-    cmp ax, WANT_WIDTH
+    cmp ax, [ceiling_width]
     ja .next_mode
     movzx ebp, word [VBE_MODE_INFO + 20]    ; height
-    cmp bp, WANT_HEIGHT
+    cmp bp, [ceiling_height]
     ja .next_mode
     imul eax, ebp
     cmp eax, ebx
