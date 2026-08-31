@@ -15,10 +15,8 @@
 
 const std = @import("std");
 const draw = @import("eui").draw;
-const icons = @import("eui").icon;
 const row = @import("eui").row;
 const theme = @import("eui").theme;
-const ui = @import("eui").widget;
 
 const Rect = draw.Rect;
 
@@ -38,12 +36,12 @@ pub const Indicator = enum {
     /// draws inside these rectangles, and a cell measured with one number
     /// and drawn with another is a cell with its contents off centre.
     pub fn width(self: Indicator) i32 {
-        const icon: i32 = @intCast(icons.WIDTH);
+        const icon = draw.Surface.iconSize();
         const pad = theme.current().menu_padding;
         return switch (self) {
             .network, .sound => icon + pad * 2,
             // The icon, then room for the widest the number gets.
-            .battery => icon + ui.GAP + numberWidth("100%") + pad * 2,
+            .battery => icon + theme.current().gap + numberWidth("100%") + pad * 2,
             .clock => numberWidth("00:00") + pad * 2,
         };
     }

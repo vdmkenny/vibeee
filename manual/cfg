@@ -31,6 +31,8 @@ Settings, generated from the schema: all
       top | bottom
   wm.wallpaper              unset
       #rrggbb; unset takes the theme's own
+  wm.scale                  100
+      a number
   wm.master                 58
       a number
 

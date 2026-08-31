@@ -106,6 +106,19 @@ fn checkShipped(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) !void 
 
         if (std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 * 1024))) |source| {
             defer gpa.free(source);
+
+            // A file past what the service reads in one go loses its tail
+            // without saying so, and a setting that fell off the end reads
+            // as its default.
+            if (source.len > schema.FILE_MAX) {
+                std.debug.print("{s}: {d} bytes, past the {d} a settings file is read in\n", .{
+                    path,
+                    source.len,
+                    schema.FILE_MAX,
+                });
+                missing += 1;
+            }
+
             inline for (std.meta.fields(domain.type)) |key| {
                 if (!mentions(source, key.name)) {
                     std.debug.print("{s}: no line for {s}.{s}\n", .{ path, domain.name, key.name });

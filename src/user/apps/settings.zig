@@ -351,6 +351,28 @@ fn drawDisplay(pane: eui.Rect) void {
     }
     y += row + t.padding;
 
+    // Applied as it is dragged, and this window is drawn with it: what it
+    // feels like is the only question, and the answer is on the screen.
+    y = group(&y, full, "Scale");
+    var reading: [5]u8 = @splat(0);
+    const spelled = str.decimal(&reading, current.scale);
+    ctx.label(
+        .{ .x = pane.right() - 40, .y = y + 4, .w = 40, .h = 16 },
+        reading[0..spelled],
+    );
+    const wanted_scale = ctx.slider(
+        .{ .x = pane.x, .y = y, .w = full.w - 46, .h = row },
+        .{ .min = theme.SCALE_MIN, .max = theme.SCALE_MAX },
+        current.scale,
+        .{},
+    );
+    if (wanted_scale != current.scale) {
+        current.scale = @intCast(wanted_scale);
+        theme.setScale(current.scale);
+        change();
+    }
+    y += row + t.padding;
+
     y = group(&y, full, "Bar");
     const bar = ctx.choice(.{ .x = pane.x, .y = y, .w = full.w, .h = row }, current.bar);
     if (bar != current.bar) {

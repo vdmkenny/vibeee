@@ -164,13 +164,18 @@ pub const Surface = struct {
     /// since a grid needs the monospaced face and everything else does not.
     pub fn glyphIn(self: Surface, face: *const Font, x: i32, y: i32, code: u21, color: Color) void {
         const bits = face.glyph(code) orelse face.fallback();
-        self.bitmap(x, y, bits, face.width, face.height, face.row_bytes, color);
+        self.bitmapAt(x, y, bits, face.width, face.height, face.row_bytes, color, theme.textScale());
     }
 
     /// A named picture, which is a bitmap with a name rather than a code
     /// point and goes through the same expansion a letter does.
     pub fn icon(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color) void {
-        self.bitmap(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color);
+        self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
+    }
+
+    /// How large a picture is drawn, which grows with the letters beside it.
+    pub fn iconSize() i32 {
+        return @as(i32, @intCast(icons.WIDTH)) * theme.textScale();
     }
 
     /// One-bit rows expanded onto the surface. The one place a bitmap becomes
@@ -186,6 +191,21 @@ pub const Surface = struct {
         row_bytes: usize,
         color: Color,
     ) void {
+        self.bitmapAt(x, y, bits, width, height, row_bytes, color, 1);
+    }
+
+    /// The same, drawn `times` larger in both directions.
+    pub fn bitmapAt(
+        self: Surface,
+        x: i32,
+        y: i32,
+        bits: []const u8,
+        width: usize,
+        height: usize,
+        row_bytes: usize,
+        color: Color,
+        times: i32,
+    ) void {
         var row: i32 = 0;
         while (row < @as(i32, @intCast(height))) : (row += 1) {
             const start = @as(usize, @intCast(row)) * row_bytes;
@@ -195,7 +215,20 @@ pub const Surface = struct {
                 // the leftmost pixel.
                 const byte = bits[start + @as(usize, @intCast(col)) / 8];
                 if (byte >> @intCast(7 - @as(u3, @intCast(@mod(col, 8)))) & 1 == 0) continue;
-                self.set(x + col, y + row, color);
+
+                if (times == 1) {
+                    self.set(x + col, y + row, color);
+                } else {
+                    // A pixel of the face becomes a square of them. Whole
+                    // numbers only: the face is a bitmap, and anything that
+                    // is not a whole number of pixels is a blurred letter.
+                    self.fill(.{
+                        .x = x + col * times,
+                        .y = y + row * times,
+                        .w = times,
+                        .h = times,
+                    }, color);
+                }
             }
         }
     }
@@ -210,19 +243,23 @@ pub const Surface = struct {
         while (it.next()) |cp| {
             self.glyphIn(face, pen, y, cp, color);
             // Per glyph, not per cell: the interface face is proportional, and
-            // advancing by the cell width would space it like a terminal.
-            pen += @intCast(face.advance(cp));
+            // advancing by the cell width would space it like a terminal. The
+            // advance grows with the letters, or they overlap.
+            pen += @as(i32, @intCast(face.advance(cp))) * theme.textScale();
         }
     }
 
     /// Width of `message` in pixels, for centring and for sizing a control to
     /// its label.
+    /// Measured at the size it will be drawn: every caller that centres a
+    /// label or sizes a control to one asks here, so the answer has to be
+    /// the answer for the screen rather than for the face.
     pub fn textWidth(message: []const u8) i32 {
-        return @intCast(ui_font.measure(message));
+        return @as(i32, @intCast(ui_font.measure(message))) * theme.textScale();
     }
 
     pub fn textHeight() i32 {
-        return @intCast(ui_font.height);
+        return @as(i32, @intCast(ui_font.height)) * theme.textScale();
     }
 
     pub fn textCentred(self: Surface, area: Rect, message: []const u8, color: Color) void {

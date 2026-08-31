@@ -33,6 +33,9 @@ pub fn reload() bool {
 }
 
 fn apply() void {
+    // The scale first: `use` builds the theme that is drawn with, and it
+    // builds it at whatever size was last asked for.
+    theme.setScale(active.scale);
     if (theme.byName(@tagName(active.theme))) |chosen| theme.use(chosen);
 }
 

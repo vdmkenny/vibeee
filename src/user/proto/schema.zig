@@ -33,6 +33,11 @@ pub const Wm = struct {
     /// what makes changing the theme change the wall as well until somebody
     /// says otherwise.
     wallpaper: rgb.Colour = .{},
+    /// How large the interface is drawn, as a percentage. The panel is dense
+    /// enough that what is comfortable is a matter of eyes rather than of
+    /// arithmetic, so it is a setting and the only way to choose it is to
+    /// look at the machine.
+    scale: u8 = 100,
     /// Master's share of the screen as a percentage, so the file holds a whole
     /// number rather than a decimal nobody types consistently.
     master: u7 = 58,
@@ -184,6 +189,17 @@ pub const Domains = struct {
     wm: Wm = .{},
     net: Net = .{},
 };
+
+/// The most a settings file may hold.
+///
+/// Read in one go into a buffer of this size, because a settings service on a
+/// machine with this much memory should not stream a file it can hold. What
+/// matters is that a file past it loses its tail without saying so, which is
+/// a setting that reads as its default and cannot be told from one nobody
+/// chose. The build measures the shipped files against this, so a file that
+/// grew past it is a build that stops rather than a machine that quietly
+/// forgets the end of its own configuration.
+pub const FILE_MAX = 4096;
 
 /// Every domain's name, in declaration order. Derived rather than listed,
 /// so a domain added above is one this knows about.

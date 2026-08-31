@@ -192,10 +192,10 @@ pub fn load(comptime domain: []const u8) Domain(domain) {
     // only what somebody changed is still a complete answer, and a machine
     // whose /cfg is missing or empty behaves as it did when it was built
     // rather than as if every setting had been unset.
-    var defaults: [512]u8 = @splat(0);
+    var defaults: [schema.FILE_MAX]u8 = @splat(0);
     _ = config.load(defaultsOf(domain), &value, &defaults);
 
-    var chosen: [512]u8 = @splat(0);
+    var chosen: [schema.FILE_MAX]u8 = @splat(0);
     _ = config.load(pathOf(domain), &value, &chosen);
     return value;
 }

@@ -831,15 +831,12 @@ pub const MenuItem = struct {
 
 /// The picture column's width when a menu has one: the icon and the gap
 /// after it.
-/// The space between one thing in a row and the next: a picture and its
-/// label, a slider and the number beside it. One value, so a row assembled
-/// in two places reads as one row.
-pub const GAP: i32 = 8;
-
-/// The picture column: the icon and the gap after it. Public because the
-/// same shape indents anything that puts a picture before its contents, and
-/// two of them measured separately drift.
-pub const MARK_WIDTH: i32 = @as(i32, @intCast(icons.WIDTH)) + GAP;
+/// The picture column: the icon and the gap after it. A function rather than
+/// a constant, because both halves grow with the interface, and the same
+/// shape indents anything that puts a picture before its contents.
+pub fn markWidth() i32 {
+    return Surface.iconSize() + theme.current().gap;
+}
 
 pub const Menu = struct {
     /// Which row is highlighted. Survives between passes: a menu that forgot
@@ -910,14 +907,14 @@ pub const Menu = struct {
             if (item.mark) |which| {
                 clipped.icon(
                     line.x + t.menu_padding,
-                    line.y + @divTrunc(line.h - @as(i32, @intCast(icons.HEIGHT)), 2),
+                    line.y + @divTrunc(line.h - Surface.iconSize(), 2),
                     which,
                     ink,
                 );
             }
 
             clipped.text(
-                line.x + t.menu_padding + if (indented) MARK_WIDTH else 0,
+                line.x + t.menu_padding + if (indented) markWidth() else 0,
                 baseline,
                 item.label,
                 ink,

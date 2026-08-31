@@ -67,6 +67,9 @@ pub const Theme = struct {
     /// shape.
     menu_row_height: i32 = 22,
     menu_padding: i32 = 10,
+    /// Between one thing in a row and the next: a picture and its label, a
+    /// slider and the number beside it.
+    gap: i32 = 8,
     border_width: i32 = 1,
     border_width_focused: i32 = 2,
 };
@@ -166,26 +169,92 @@ pub const all = [_]*const Theme{ &slate, &classic, &paper, &dusk };
 
 /// What everything draws with now. Assigning a different theme and repainting
 /// changes the whole interface, which is the point of it being one value.
-var active: *const Theme = &slate;
+/// What was chosen, as written. Cycling and naming work on these, not on
+/// what is drawn with.
+var chosen: *const Theme = &slate;
+
+/// What everything draws with: the chosen theme with the scale applied. A
+/// value rather than a pointer, because it is the chosen one multiplied and
+/// there is nowhere else for the result to live.
+var active: Theme = slate;
+
+/// How large the interface is drawn, as a percentage.
+///
+/// The panel is 133 DPI, which reads differently to different eyes, and the
+/// only way to know is to look at it on the machine. So it is a setting, and
+/// the range is the useful one: below a hundred nothing is hittable, and
+/// above two hundred a window holds one control.
+var magnification: u16 = 100;
+
+pub const SCALE_MIN: u16 = 100;
+pub const SCALE_MAX: u16 = 200;
+/// Where the face doubles. The letters are a bitmap, so they double or they
+/// do not: anything between is a blur, and a blurred letter on a panel this
+/// dense is worse than a small one.
+pub const SCALE_DOUBLES: u16 = 150;
 
 pub fn current() *const Theme {
-    return active;
+    return &active;
 }
 
 pub fn use(theme: *const Theme) void {
-    active = theme;
+    chosen = theme;
+    rebuild();
+}
+
+pub fn scale() u16 {
+    return magnification;
+}
+
+pub fn setScale(percent: u16) void {
+    magnification = @max(SCALE_MIN, @min(percent, SCALE_MAX));
+    rebuild();
+}
+
+/// How many pixels of screen one pixel of the face becomes.
+pub fn textScale() i32 {
+    return if (magnification >= SCALE_DOUBLES) 2 else 1;
+}
+
+/// The chosen theme, measured for the screen it is going on.
+///
+/// Colours are not scaled, and neither are the border widths: a hairline is
+/// a hairline at any size, and a two pixel focus ring drawn at four is a
+/// window that looks selected from across the room.
+fn rebuild() void {
+    active = chosen.*;
+    active.bar_height = enlarge(active.bar_height);
+    active.control_height = enlarge(active.control_height);
+    active.padding = enlarge(active.padding);
+    active.menu_row_height = enlarge(active.menu_row_height);
+    active.menu_padding = enlarge(active.menu_padding);
+    active.gap = enlarge(active.gap);
+}
+
+/// A number chosen for a hundred per cent, measured for the size the
+/// interface is actually being drawn at.
+///
+/// Public because not every measurement belongs in the theme: how wide a
+/// taskbar tab may grow is the manager's business, but it was still chosen
+/// against a twelve pixel face and has to grow with one.
+pub fn enlarged(value: i32) i32 {
+    return @divTrunc(value * @as(i32, magnification), 100);
+}
+
+fn enlarge(value: i32) i32 {
+    return enlarged(value);
 }
 
 /// Switch to the next theme, for a key binding to call.
 pub fn cycle() *const Theme {
     for (all, 0..) |candidate, i| {
-        if (candidate == active) {
-            active = all[(i + 1) % all.len];
-            return active;
+        if (candidate == chosen) {
+            use(all[(i + 1) % all.len]);
+            return chosen;
         }
     }
-    active = all[0];
-    return active;
+    use(all[0]);
+    return chosen;
 }
 
 pub fn byName(name: []const u8) ?*const Theme {

@@ -66,17 +66,30 @@ pub fn contains(y: i32, screen_h: i32) bool {
 
 /// Widest a tab gets. Narrow enough that several fit, wide enough that a name
 /// is usually legible rather than an ellipsis.
-const TAB_MAX_WIDTH: i32 = 132;
-const TAB_MIN_WIDTH: i32 = 56;
+/// Chosen against a twelve pixel face, so they are asked for at whatever
+/// size the interface is drawn: a tab that stayed a hundred and thirty-two
+/// pixels wide while its label doubled would hold half a name.
+fn tabMaxWidth() i32 {
+    return theme.enlarged(132);
+}
+fn tabMinWidth() i32 {
+    return theme.enlarged(56);
+}
 /// The stack marker's column, shown only on a tab holding more than one.
-const MARKER_WIDTH: i32 = 12;
+fn markerWidth() i32 {
+    return theme.enlarged(12);
+}
 /// The button that adds a desktop, after the last tab.
-const ADD_WIDTH: i32 = 18;
+fn addWidth() i32 {
+    return theme.enlarged(18);
+}
 
 /// The V button: the applications menu, top left. A classic start button,
 /// because a tiling manager still needs a way to start something without
 /// knowing a command name.
-pub const LAUNCH_WIDTH: i32 = 26;
+pub fn launchWidth() i32 {
+    return theme.enlarged(26);
+}
 
 /// What the V menu offers: applications first, then what to do with the
 /// session. A start menu that could only start things would leave no way to
@@ -169,21 +182,21 @@ fn tabWidth(width: i32, height: i32, count: u8) i32 {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
     const available = status.leftEdge(.{ .x = 0, .y = 0, .w = width, .h = 0 }, slots) -
-        LAUNCH_WIDTH - ADD_WIDTH;
+        launchWidth() - addWidth();
     const each = @divTrunc(available, @as(i32, count));
-    return @max(TAB_MIN_WIDTH, @min(each, TAB_MAX_WIDTH));
+    return @max(tabMinWidth(), @min(each, tabMaxWidth()));
 }
 
 fn launchRect(screen_h: i32) Rect {
     const t = theme.current();
-    return .{ .x = 0, .y = strip(screen_h).y, .w = LAUNCH_WIDTH, .h = t.bar_height - 1 };
+    return .{ .x = 0, .y = strip(screen_h).y, .w = launchWidth(), .h = t.bar_height - 1 };
 }
 
 fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
     const t = theme.current();
     const each = tabWidth(width, height, count);
     return .{
-        .x = LAUNCH_WIDTH + @as(i32, index) * each,
+        .x = launchWidth() + @as(i32, index) * each,
         .y = strip(height).y,
         .w = each,
         .h = t.bar_height - 1,
@@ -260,7 +273,7 @@ fn paintStatus(surface: Surface, width: i32, height: i32) void {
 fn addRect(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
     const t = theme.current();
     const last = tabRect(width, height, desktop.count, desktop.count - 1);
-    return .{ .x = last.right(), .y = strip(height).y, .w = ADD_WIDTH, .h = t.bar_height - 1 };
+    return .{ .x = last.right(), .y = strip(height).y, .w = addWidth(), .h = t.bar_height - 1 };
 }
 
 /// A plus, drawn rather than lettered: at this size two strokes read better
@@ -370,9 +383,9 @@ fn dropFrom(anchor: Rect, height: i32, size: Rect) Rect {
 fn launchMenuRect(height: i32) Rect {
     var rows: [items.len]ui.MenuItem = undefined;
     return dropFrom(
-        .{ .x = 0, .y = 0, .w = LAUNCH_WIDTH, .h = 0 },
+        .{ .x = 0, .y = 0, .w = launchWidth(), .h = 0 },
         height,
-        ui.Menu.sizeFor(menuItems(&rows), TAB_MAX_WIDTH),
+        ui.Menu.sizeFor(menuItems(&rows), tabMaxWidth()),
     );
 }
 
@@ -396,7 +409,7 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
     const text_area = Rect{
         .x = area.x + t.padding,
         .y = area.y,
-        .w = area.w - t.padding * 2 - (if (count > 1) MARKER_WIDTH else 0),
+        .w = area.w - t.padding * 2 - (if (count > 1) markerWidth() else 0),
         .h = area.h,
     };
 
@@ -414,8 +427,8 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
     if (count > 1) {
         if (desktop.tag == index and desktop.isMaximised()) {
             surface.icon(
-                area.right() - MARKER_WIDTH,
-                area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+                area.right() - markerWidth(),
+                area.y + @divTrunc(area.h - Surface.iconSize(), 2),
                 .maximised,
                 color,
             );
@@ -432,8 +445,8 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
 /// this". Drawn rather than taken from the font: at this size a glyph is a
 /// smudge, and three rules are three rules at any size.
 fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
-    const width = MARKER_WIDTH - 3;
-    const x = area.right() - MARKER_WIDTH + 1;
+    const width = markerWidth() - 3;
+    const x = area.right() - markerWidth() + 1;
     const spacing = 3;
     var y = area.y + @divTrunc(area.h - (spacing * 2 + 1), 2);
 
@@ -463,7 +476,9 @@ var iface_texts: [MAX_IFACES][15]u8 = undefined;
 var iface_count: usize = 0;
 
 const MAX_IFACES = 4;
-const NET_WIDTH: i32 = 216;
+fn netWidth() i32 {
+    return theme.enlarged(216);
+}
 
 fn readNetwork() void {
     iface_count = @min(net.interfaceCount(), MAX_IFACES);
@@ -525,8 +540,8 @@ fn netPanel(width: i32, height: i32) Rect {
 
     return popover.place(
         anchor,
-        NET_WIDTH,
-        ui.Menu.sizeFor(list, NET_WIDTH).h,
+        netWidth(),
+        ui.Menu.sizeFor(list, netWidth()).h,
         .{ .x = 0, .y = 0, .w = width, .h = height },
         if (settings.current().bar == .top) .below else .above,
     );
@@ -540,8 +555,8 @@ fn paintNetwork(surface: Surface, area: Rect) void {
 
     if (net_open) surface.fill(area, t.accent);
     surface.icon(
-        area.x + @divTrunc(area.w - @as(i32, @intCast(eui_icon.WIDTH)), 2),
-        area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        area.x + @divTrunc(area.w - Surface.iconSize(), 2),
+        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
         .ethernet,
         ink,
     );
@@ -577,7 +592,9 @@ var sound_port_count: usize = 0;
 /// Enough for the outputs and inputs a machine of this size has, plus the
 /// programs playing through them.
 const MAX_PORTS = 12;
-const SOUND_WIDTH: i32 = 224;
+fn soundWidth() i32 {
+    return theme.enlarged(224);
+}
 
 /// The strip above the rows: the icon, the slider and the percentage, inside
 /// the same inset the rows below it use.
@@ -612,7 +629,7 @@ fn paintBattery(surface: Surface, area: Rect) void {
     const p = pack orelse return;
 
     const icon_x = area.x + t.menu_padding;
-    const icon_y = area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2);
+    const icon_y = area.y + @divTrunc(area.h - Surface.iconSize(), 2);
 
     // Low enough that it is a thing to act on takes the warning colour, which
     // is the firmware's own threshold rather than a number chosen here.
@@ -719,11 +736,11 @@ fn soundPanel(width: i32, height: i32) Rect {
 
     var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
     const list = soundItems(&rows);
-    const rows_high = ui.Menu.sizeFor(list, SOUND_WIDTH).h;
+    const rows_high = ui.Menu.sizeFor(list, soundWidth()).h;
 
     return popover.place(
         anchor,
-        SOUND_WIDTH,
+        soundWidth(),
         soundLevelHeight() + rows_high,
         .{ .x = 0, .y = 0, .w = width, .h = height },
         if (settings.current().bar == .top) .below else .above,
@@ -739,17 +756,17 @@ fn soundMuteRect(panel: Rect) Rect {
     return .{
         .x = panel.x + t.menu_padding,
         .y = panel.y + t.menu_padding,
-        .w = ui.MARK_WIDTH,
+        .w = ui.markWidth(),
         .h = t.control_height,
     };
 }
 
 fn soundTrack(panel: Rect) Rect {
     const t = theme.current();
-    const left = panel.x + t.menu_padding + ui.MARK_WIDTH;
+    const left = panel.x + t.menu_padding + ui.markWidth();
     // Room on the right for "100%", which is the widest the number gets,
     // with the gap before it and the panel's inset after.
-    const number = ui.GAP + Surface.textWidth("100%") + t.menu_padding;
+    const number = t.gap + Surface.textWidth("100%") + t.menu_padding;
     return .{
         .x = left,
         .y = panel.y + t.menu_padding,
@@ -774,8 +791,8 @@ fn paintSound(surface: Surface, area: Rect) void {
 
     if (inside) surface.fill(area, t.accent);
     surface.icon(
-        area.x + @divTrunc(area.w - @as(i32, @intCast(eui_icon.WIDTH)), 2),
-        area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        area.x + @divTrunc(area.w - Surface.iconSize(), 2),
+        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
         which,
         if (inside) t.accent_text else t.bar_text,
     );
@@ -793,7 +810,7 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     const button = soundMuteRect(panel);
     surface.icon(
         button.x,
-        button.y + @divTrunc(button.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        button.y + @divTrunc(button.h - Surface.iconSize(), 2),
         eui_icon.volume(level.percent, level.muted != 0),
         t.text,
     );
@@ -868,7 +885,7 @@ fn menuRect(width: i32, height: i32, desktop: *const layout.Desktop, tab: u8) Re
     return dropFrom(
         anchor,
         height,
-        ui.Menu.sizeFor(rows[0..count], @max(anchor.w, TAB_MAX_WIDTH)),
+        ui.Menu.sizeFor(rows[0..count], @max(anchor.w, tabMaxWidth())),
     );
 }
 
@@ -1007,7 +1024,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         // of the tab switches to it.
         if (right) return .{ .close_desktop = i };
 
-        if (desktop.countOn(i) > 1 and x >= area.right() - MARKER_WIDTH) {
+        if (desktop.countOn(i) > 1 and x >= area.right() - markerWidth()) {
             menu_tab = i;
             window_menu.show();
         } else {
