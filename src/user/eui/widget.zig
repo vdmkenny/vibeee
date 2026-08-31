@@ -648,6 +648,101 @@ pub const Context = struct {
         return tbl.run(self, area, state, columns, rows);
     }
 
+    /// A look you can choose, drawn as a small picture of what it does: the
+    /// ground it paints the desktop with, the strip its bar takes, and a mark
+    /// in its highlight.
+    ///
+    /// A theme named in words makes somebody try each one to find out what it
+    /// is; a tile shows them.
+    pub const Sample = struct {
+        label: []const u8,
+        ground: draw.Color,
+        strip: draw.Color,
+        mark: draw.Color,
+    };
+
+    /// The design's tile, at a hundred per cent.
+    pub const SAMPLE_WIDTH: i32 = 52;
+    pub const SAMPLE_HEIGHT: i32 = 34;
+
+    pub fn sampleHeight() i32 {
+        return theme.enlarged(SAMPLE_HEIGHT) + theme.current().padding + Surface.textHeight();
+    }
+
+    /// A row of them. Returns which is chosen, which is `chosen` unless one
+    /// was pressed this pass.
+    pub fn samples(self: *Context, area: Rect, items: []const Sample, chosen: usize) usize {
+        const t = theme.current();
+        const tile_w = theme.enlarged(SAMPLE_WIDTH);
+        const step = tile_w + t.padding;
+
+        var picked = chosen;
+        for (items, 0..) |item, index| {
+            const at = Rect{
+                .x = area.x + @as(i32, @intCast(index)) * step,
+                .y = area.y,
+                .w = tile_w,
+                .h = sampleHeight(),
+            };
+            if (at.right() > area.right()) break;
+
+            const entry = self.slotFor(at) orelse continue;
+            const it = self.interact(entry, at);
+            if (it.clicked or self.activatedByKey(entry)) picked = index;
+
+            const visual: Visual = if (index == chosen)
+                hotOr(it.over, .checked_hot, .checked)
+            else
+                hotOr(it.over, .hot, .idle);
+
+            if (self.needsPaint(entry, visual)) {
+                entry.visual = visual;
+                paintSample(self.surface, at, item, index == chosen, it.focused);
+                self.addDamage(at);
+            }
+        }
+        return picked;
+    }
+
+    /// A row of colours to choose from. Returns which one is chosen, which is
+    /// `chosen` unless one was pressed this pass.
+    ///
+    /// Colours rather than names: a person picking a highlight is picking
+    /// what it looks like, and a list of words makes them try each one to
+    /// find out.
+    pub fn swatches(self: *Context, area: Rect, colours: []const draw.Color, chosen: usize) usize {
+        const t = theme.current();
+        const size = area.h;
+        const step = size + t.padding;
+
+        var picked = chosen;
+        for (colours, 0..) |colour, index| {
+            const at = Rect{
+                .x = area.x + @as(i32, @intCast(index)) * step,
+                .y = area.y,
+                .w = size,
+                .h = size,
+            };
+            if (at.right() > area.right()) break;
+
+            const entry = self.slotFor(at) orelse continue;
+            const it = self.interact(entry, at);
+            if (it.clicked or self.activatedByKey(entry)) picked = index;
+
+            const visual: Visual = if (index == chosen)
+                hotOr(it.over, .checked_hot, .checked)
+            else
+                hotOr(it.over, .hot, .idle);
+
+            if (self.needsPaint(entry, visual)) {
+                entry.visual = visual;
+                paintSwatch(self.surface, at, colour, index == chosen, it.over, it.focused);
+                self.addDamage(at);
+            }
+        }
+        return picked;
+    }
+
     /// Static text. Repainted only when something has damaged it, since a
     /// label has no state of its own to change.
     /// The column of sections down the side of a window. Returns which one
@@ -929,6 +1024,67 @@ fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, f
 
 /// A dotted rectangle marking keyboard focus. Dotted rather than solid so it
 /// reads as focus rather than as a border the control always had.
+/// The tile: the desktop's ground, the bar's strip across the top, and a
+/// block of the highlight sitting on the ground the way a window would.
+fn paintSample(surface: Surface, area: Rect, item: Context.Sample, chosen: bool, focused: bool) void {
+    const t = theme.current();
+    const tile = Rect{
+        .x = area.x,
+        .y = area.y,
+        .w = area.w,
+        .h = theme.enlarged(Context.SAMPLE_HEIGHT),
+    };
+
+    surface.fill(area, t.surface);
+    surface.fill(tile, item.ground);
+
+    const strip = theme.enlarged(7);
+    surface.fill(.{ .x = tile.x, .y = tile.y, .w = tile.w, .h = strip }, item.strip);
+    surface.fill(.{
+        .x = tile.x + theme.enlarged(6),
+        .y = tile.y + strip + theme.enlarged(5),
+        .w = theme.enlarged(16),
+        .h = theme.enlarged(8),
+    }, item.mark);
+
+    // The chosen one takes the accent's own border, which is how the row says
+    // which look is in use without a tick nobody could read on four grounds.
+    if (chosen) {
+        surface.borderInset(tile, 2, t.accent);
+    } else {
+        surface.frame(tile, t.border);
+    }
+
+    const label_y = tile.bottom() + t.padding;
+    const width = Surface.textWidth(item.label);
+    surface.text(
+        tile.x + @divTrunc(tile.w - width, 2),
+        label_y,
+        item.label,
+        if (chosen) t.text else t.text_dim,
+    );
+
+    if (focused) paintFocusRing(surface, tile.inset(2), t.accent_text);
+}
+
+/// One colour, and whether it is the one in use.
+///
+/// The mark is a ring around the chosen colour rather than a tick inside it:
+/// a tick has to be drawn in something, and on ten different colours there is
+/// no something that works on all of them.
+fn paintSwatch(surface: Surface, area: Rect, colour: draw.Color, chosen: bool, hot: bool, focused: bool) void {
+    const t = theme.current();
+    surface.fill(area, t.surface);
+
+    const inner = if (chosen) area.inset(3) else area.inset(1);
+    surface.fill(inner, colour);
+    surface.frame(inner, t.line);
+
+    if (chosen) surface.borderInset(area, 2, t.text);
+    if (!chosen and hot) surface.frame(area, t.text_dim);
+    if (focused) paintFocusRing(surface, area.inset(1), t.text);
+}
+
 fn paintFocusRing(surface: Surface, area: Rect, color: draw.Color) void {
     var x = area.x;
     while (x < area.right()) : (x += 2) {

@@ -30,6 +30,8 @@ so an image ships with the first and a machine remembers the second.
 | `wm.wallpaper` | #rrggbb; unset takes the theme's own | unset |
 | `wm.scale` | a number | `100` |
 | `wm.master` | a number | `58` |
+| `wm.accent` | blue \| indigo \| violet \| magenta \| red \| orange \| amber \| green \| teal \| cyan | `blue` |
+| `wm.pointer` | white \| black \| red \| green \| blue \| yellow | `white` |
 
 ## net
 

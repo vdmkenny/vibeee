@@ -61,6 +61,9 @@ with it this pass.
 | `checkbox` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
 | `scrollbar` | `fn (*widget.Context, draw.Rect, *scroll.State, usize, usize, usize) usize` |
 | `table` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
+| `sampleHeight` | `fn () i32` |
+| `samples` | `fn (*widget.Context, draw.Rect, Context.Sample, usize) usize` |
+| `swatches` | `fn (*widget.Context, draw.Rect, []const u32, usize) usize` |
 | `rail` | `fn (*widget.Context, draw.Rect, []const rail.Item, usize, []const u8) usize` |
 | `footer` | `fn (*widget.Context, draw.Rect, []const u8, []const []const u8, usize) ?usize` |
 | `label` | `fn (*widget.Context, draw.Rect, []const u8) void` |
@@ -600,8 +603,8 @@ interface scale multiplies them.
 | `bar` | `#1F242A` | `#C8C5C0` | `#E0E0DC` | `#14171B` |
 | `bar_text` | `#D6D9DD` | `#14140F` | `#000000` | `#C8CCD2` |
 | `bar_line` | `#10141A` | `#8C8880` | `#707068` | `#2A2E35` |
-| `terminal_ground` | `#14171B` | `#14140F` | `#1A1A18` | `#101317` |
-| `terminal_ink` | `#D6D9DD` | `#D8D8D0` | `#E8E8E4` | `#C8CCD2` |
+| `terminal_ground` | `#14140F` | `#14140F` | `#14140F` | `#14140F` |
+| `terminal_ink` | `#D8D8D0` | `#D8D8D0` | `#D8D8D0` | `#D8D8D0` |
 | `warning` | `#B33A2B` | `#A02820` | `#901810` | `#C05050` |
 
 | metric | value |

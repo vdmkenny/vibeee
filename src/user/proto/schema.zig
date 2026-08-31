@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const hostname = @import("lib").hostname;
+const palette = @import("lib").palette;
 const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
 const keymaps = @import("keymaps");
@@ -41,6 +42,13 @@ pub const Wm = struct {
     /// Master's share of the screen as a percentage, so the file holds a whole
     /// number rather than a decimal nobody types consistently.
     master: u7 = 58,
+    /// What the interface highlights with. Named colours rather than three
+    /// channels: every one of them is pitched to carry white text, which a
+    /// hand-mixed colour would not be.
+    accent: palette.Accent = .blue,
+    /// What the pointer is drawn in, for a screen where the default is hard
+    /// to follow.
+    pointer: palette.Pointer = .white,
 
     /// Master's share as the fraction a layout wants, held inside the range
     /// that leaves both sides of the screen usable.

@@ -50,8 +50,9 @@ pub const Theme = struct {
     bar_text: Color,
     bar_line: Color,
     /// The terminal's own ground and ink. A terminal is not a window with
-    /// text in it: it is a screen inside a screen, and every theme here keeps
-    /// it dark because that is what a terminal is for.
+    /// text in it: it is a screen inside a screen. The same warm near-black
+    /// in every theme, because what the terminal looks like is the
+    /// terminal's business rather than the desktop's.
     terminal_ground: Color,
     terminal_ink: Color,
 
@@ -104,8 +105,8 @@ pub const slate = Theme{
     .bar_text = 0xD6D9DD,
     .bar_line = 0x10141A,
     .warning = 0xB33A2B,
-    .terminal_ground = 0x14171B,
-    .terminal_ink = 0xD6D9DD,
+    .terminal_ground = 0x14140F,
+    .terminal_ink = 0xD8D8D0,
 };
 
 /// Warm greys and a single medium blue, the way a workstation looked before
@@ -151,8 +152,8 @@ pub const paper = Theme{
     .bar_text = 0x000000,
     .bar_line = 0x707068,
     .warning = 0x901810,
-    .terminal_ground = 0x1A1A18,
-    .terminal_ink = 0xE8E8E4,
+    .terminal_ground = 0x14140F,
+    .terminal_ink = 0xD8D8D0,
 };
 
 /// For a dark room, where a lit 7-inch panel is the brightest thing present.
@@ -174,8 +175,8 @@ pub const dusk = Theme{
     .bar_text = 0xC8CCD2,
     .bar_line = 0x2A2E35,
     .warning = 0xC05050,
-    .terminal_ground = 0x101317,
-    .terminal_ink = 0xC8CCD2,
+    .terminal_ground = 0x14140F,
+    .terminal_ink = 0xD8D8D0,
 };
 
 pub const all = [_]*const Theme{ &slate, &classic, &paper, &dusk };
@@ -234,8 +235,26 @@ pub fn textScale() i32 {
 /// Colours are not scaled, and neither are the border widths: a hairline is
 /// a hairline at any size, and a two pixel focus ring drawn at four is a
 /// window that looks selected from across the room.
+/// The highlight somebody chose, or none for the theme's own.
+var accent_choice: ?u32 = null;
+
+/// Draw the interface in a different highlight.
+///
+/// One value replaces every use of it: the selected row, the focused edge, a
+/// slider's fill and the marks in the bar are all the same colour by
+/// construction, and a theme where they drifted apart would look like four
+/// decisions rather than one.
+pub fn setAccent(colour: ?u32) void {
+    accent_choice = colour;
+    rebuild();
+}
+
 fn rebuild() void {
     active = chosen.*;
+    if (accent_choice) |colour| {
+        active.accent = colour;
+        active.border_focused = colour;
+    }
     active.bar_height = enlarge(active.bar_height);
     active.control_height = enlarge(active.control_height);
     active.padding = enlarge(active.padding);

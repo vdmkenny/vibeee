@@ -24,6 +24,7 @@ const net = proto.net;
 const str = @import("lib").str;
 const info = @import("ulib").info;
 const keymaps = @import("keymaps");
+const palette = @import("lib").palette;
 const platform = proto.platform;
 const theme = eui.theme;
 
@@ -377,15 +378,52 @@ fn drawDisplay(pane: eui.Rect) void {
     const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
 
     y = group(&y, full, "Theme");
-    // Applied on the spot rather than on save, because seeing it is the point
-    // of choosing it.
-    const wanted = ctx.choice(.{ .x = pane.x, .y = y, .w = full.w, .h = row }, current.theme);
-    if (wanted != current.theme) {
-        current.theme = wanted;
-        if (theme.byName(@tagName(wanted))) |chosen| theme.use(chosen);
+    // Drawn as what each one looks like: the desktop's ground, the bar's
+    // strip and a block of its highlight. Applied on the spot rather than on
+    // save, because seeing it is the point of choosing it.
+    var looks: [8]eui.widget.Context.Sample = undefined;
+    const shown = @min(theme.all.len, looks.len);
+    for (theme.all[0..shown], 0..) |candidate, i| {
+        looks[i] = .{
+            .label = candidate.name,
+            .ground = candidate.desktop,
+            .strip = candidate.bar,
+            .mark = candidate.accent,
+        };
+    }
+
+    const picked = ctx.samples(
+        .{ .x = pane.x, .y = y, .w = full.w, .h = eui.widget.Context.sampleHeight() },
+        looks[0..shown],
+        @intFromEnum(current.theme),
+    );
+    if (picked != @intFromEnum(current.theme)) {
+        current.theme = @enumFromInt(picked);
+        if (theme.byName(@tagName(current.theme))) |chosen| theme.use(chosen);
+        theme.setAccent(current.accent.rgb());
         change();
     }
-    y += row + t.padding;
+    y += eui.widget.Context.sampleHeight() + t.padding;
+
+    // The highlight, as colours rather than as words: what somebody is
+    // choosing is what it looks like.
+    y = group(&y, full, "Highlight");
+    y = pickColour(
+        .{ .x = pane.x, .y = y, .w = full.w, .h = theme.enlarged(18) },
+        palette.Accent,
+        &current.accent,
+        applyAccent,
+    );
+    y += t.padding;
+
+    y = group(&y, full, "Pointer");
+    y = pickColour(
+        .{ .x = pane.x, .y = y, .w = full.w, .h = theme.enlarged(18) },
+        palette.Pointer,
+        &current.pointer,
+        null,
+    );
+    y += t.padding;
 
     // Applied as it is dragged, and this window is drawn with it: what it
     // feels like is the only question, and the answer is on the screen.
@@ -665,6 +703,40 @@ fn drawIdentity(pane: eui.Rect) i32 {
         ctx.surface.fill(.{ .x = pane.x, .y = below, .w = pane.w, .h = 1 }, t.line);
     }
     return below + t.menu_padding;
+}
+
+/// A row of swatches for a named-colour setting, whichever list it comes
+/// from. Returns where the next thing goes.
+///
+/// Generic over the enum because the two lists are two lists: writing the
+/// same loop twice is how one of them ends up drawn differently.
+fn pickColour(
+    area: eui.Rect,
+    comptime Named: type,
+    value: *Named,
+    comptime live: ?fn (Named) void,
+) i32 {
+    const values = std.enums.values(Named);
+
+    var colours: [16]eui.Color = undefined;
+    const count = @min(values.len, colours.len);
+    for (values[0..count], 0..) |named, i| colours[i] = named.rgb();
+
+    const chosen = ctx.swatches(area, colours[0..count], @intFromEnum(value.*));
+    if (chosen != @intFromEnum(value.*)) {
+        value.* = @enumFromInt(chosen);
+        if (live) |apply| apply(value.*);
+        change();
+    }
+    return area.bottom() + theme.current().padding;
+}
+
+/// The highlight applies while the window is open, because the window is
+/// drawn in it: choosing a colour you cannot see until you save is choosing
+/// blind.
+fn applyAccent(accent: palette.Accent) void {
+    theme.setAccent(accent.rgb());
+    ctx.damage();
 }
 
 /// The label column: a quarter of the pane, so the values line up down the

@@ -55,9 +55,19 @@ pub fn invalidate() void {
     saved = false;
 }
 
+/// What the pointer is drawn in, and the outline that keeps it visible on a
+/// background of its own colour.
+var ink: eui.Color = 0xFFFFFF;
+var edge: eui.Color = 0x000000;
+
+pub fn setColour(fill: eui.Color, outline: eui.Color) void {
+    ink = fill;
+    edge = outline;
+}
+
 /// Draw the cursor at `x`, `y`, remembering what was there.
 ///
-/// Outlined by drawing it black one pixel down and right first, so it stays
+/// Outlined by drawing the edge one pixel down and right first, so it stays
 /// visible over any colour beneath it.
 pub fn show(screen: Surface, x: i32, y: i32) void {
     at_x = x;
@@ -74,8 +84,8 @@ pub fn show(screen: Surface, x: i32, y: i32) void {
     saved = true;
 
     for ([_]struct { dx: i32, dy: i32, color: eui.Color }{
-        .{ .dx = 1, .dy = 1, .color = 0x000000 },
-        .{ .dx = 0, .dy = 0, .color = 0xFFFFFF },
+        .{ .dx = 1, .dy = 1, .color = edge },
+        .{ .dx = 0, .dy = 0, .color = ink },
     }) |pass| {
         for (bits, 0..) |row, iy| {
             var ix: i32 = 0;

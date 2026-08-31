@@ -25,6 +25,7 @@ pub const mac = @import("mac.zig");
 pub const mmio = @import("mmio.zig");
 pub const pci = @import("pci.zig");
 pub const fifo = @import("fifo.zig");
+pub const palette = @import("palette.zig");
 pub const rgb = @import("rgb.zig");
 pub const ring = @import("ring.zig");
 pub const driver = @import("driver.zig");

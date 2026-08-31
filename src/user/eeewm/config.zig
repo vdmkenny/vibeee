@@ -6,6 +6,7 @@
 //! once at start, and putting the theme it names into effect.
 
 const settings = @import("proto").settings;
+const cursor = @import("cursor.zig");
 const theme = @import("eui").theme;
 
 pub const Config = settings.Wm;
@@ -37,6 +38,8 @@ fn apply() void {
     // builds it at whatever size was last asked for.
     theme.setScale(active.scale);
     if (theme.byName(@tagName(active.theme))) |chosen| theme.use(chosen);
+    theme.setAccent(active.accent.rgb());
+    cursor.setColour(active.pointer.rgb(), active.pointer.outline());
 }
 
 pub fn current() *const Config {

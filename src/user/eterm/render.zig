@@ -187,26 +187,27 @@ pub fn palette(index: u8) Color {
 /// makes dark colours in the cube distinguishable.
 const LEVELS = [6]u8{ 0, 95, 135, 175, 215, 255 };
 
-/// The first sixteen. Chosen to sit alongside the interface rather than to
-/// match any one terminal: the same hues, a little less saturated, which is
-/// what reads on a panel this small without glowing.
+/// The first sixteen, as the drawings set them: soft, a little desaturated,
+/// and light enough to sit on a warm near-black without glowing. The green
+/// and the blue are the two the design names, and the rest are pitched to
+/// keep them company rather than to match any one terminal.
 const ANSI = [16]Color{
-    rgb(0x1C, 0x1F, 0x26), // black
-    rgb(0xC0, 0x40, 0x40), // red
-    rgb(0x50, 0xA0, 0x50), // green
-    rgb(0xB0, 0x90, 0x30), // yellow
-    rgb(0x40, 0x70, 0xC0), // blue
-    rgb(0xA0, 0x50, 0xB0), // magenta
-    rgb(0x40, 0xA0, 0xA0), // cyan
-    rgb(0xC8, 0xC8, 0xC8), // white
-    rgb(0x50, 0x58, 0x64), // bright black
-    rgb(0xE0, 0x60, 0x60), // bright red
-    rgb(0x70, 0xC8, 0x70), // bright green
-    rgb(0xE0, 0xC0, 0x50), // bright yellow
-    rgb(0x60, 0x98, 0xE0), // bright blue
-    rgb(0xC8, 0x70, 0xD8), // bright magenta
-    rgb(0x60, 0xC8, 0xC8), // bright cyan
-    rgb(0xF0, 0xF0, 0xF0), // bright white
+    rgb(0x14, 0x14, 0x0F), // black, the ground itself
+    rgb(0xC8, 0x85, 0x85), // red
+    rgb(0x8F, 0xBF, 0x8F), // green
+    rgb(0xC8, 0xB8, 0x7F), // yellow
+    rgb(0x7F, 0xA8, 0xD8), // blue
+    rgb(0xBF, 0x8F, 0xBF), // magenta
+    rgb(0x8F, 0xBF, 0xBF), // cyan
+    rgb(0xD8, 0xD8, 0xD0), // white
+    rgb(0x60, 0x60, 0x58), // bright black
+    rgb(0xE0, 0xA0, 0xA0), // bright red
+    rgb(0xAF, 0xD8, 0xAF), // bright green
+    rgb(0xE0, 0xD0, 0x9F), // bright yellow
+    rgb(0x9F, 0xC4, 0xEC), // bright blue
+    rgb(0xD8, 0xAF, 0xD8), // bright magenta
+    rgb(0xAF, 0xD8, 0xD8), // bright cyan
+    rgb(0xF0, 0xF0, 0xE8), // bright white
 };
 
 fn rgb(r: u8, g: u8, b: u8) Color {

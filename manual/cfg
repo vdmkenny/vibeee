@@ -35,6 +35,10 @@ Settings, generated from the schema: all
       a number
   wm.master                 58
       a number
+  wm.accent                 blue
+      blue | indigo | violet | magenta | red | orange | amber | green | teal | cyan
+  wm.pointer                white
+      white | black | red | green | blue | yellow
 
   [net]
   net.hostname              unset
