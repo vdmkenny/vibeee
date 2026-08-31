@@ -20,6 +20,8 @@ test {
     _ = @import("user/eterm/vt_test.zig");
     _ = @import("user/eui/text_test.zig");
     _ = @import("user/eui/region.zig");
+    _ = @import("user/eui/icon.zig");
+    _ = @import("user/eui/row.zig");
     _ = @import("user/lib/command.zig");
     _ = @import("user/lib/env.zig");
     _ = @import("user/lib/table.zig");

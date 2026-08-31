@@ -15,6 +15,7 @@
 
 const draw = @import("eui").draw;
 const layout = @import("layout.zig");
+const status = @import("status.zig");
 const sys = @import("sys");
 const theme = @import("eui").theme;
 
@@ -60,7 +61,6 @@ pub fn contains(y: i32, screen_h: i32) bool {
 /// is usually legible rather than an ellipsis.
 const TAB_MAX_WIDTH: i32 = 132;
 const TAB_MIN_WIDTH: i32 = 56;
-const CLOCK_WIDTH: i32 = 46;
 /// The stack marker's column, shown only on a tab holding more than one.
 const MARKER_WIDTH: i32 = 12;
 /// The button that adds a desktop, after the last tab.
@@ -158,8 +158,11 @@ pub fn unfocus() void {
 // next to the one that was clicked.
 // ---------------------------------------------------------------------------
 
-fn tabWidth(width: i32, count: u8) i32 {
-    const available = width - CLOCK_WIDTH - LAUNCH_WIDTH - ADD_WIDTH;
+fn tabWidth(width: i32, height: i32, count: u8) i32 {
+    var buf: [status.MAX]status.Slot = undefined;
+    const slots = statusSlots(width, height, &buf);
+    const available = status.leftEdge(.{ .x = 0, .y = 0, .w = width, .h = 0 }, slots) -
+        LAUNCH_WIDTH - ADD_WIDTH;
     const each = @divTrunc(available, @as(i32, count));
     return @max(TAB_MIN_WIDTH, @min(each, TAB_MAX_WIDTH));
 }
@@ -171,7 +174,7 @@ fn launchRect(screen_h: i32) Rect {
 
 fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
     const t = theme.current();
-    const each = tabWidth(width, count);
+    const each = tabWidth(width, height, count);
     return .{
         .x = LAUNCH_WIDTH + @as(i32, index) * each,
         .y = strip(height).y,
@@ -207,8 +210,33 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
     }
 
     paintAdd(surface, width, height, desktop);
-    paintKeymapTag(surface, width, height);
-    paintClock(surface, width, height);
+    paintStatus(surface, width, height);
+}
+
+/// What the bar shows about the machine, and where.
+///
+/// One list, read by the painter and by the hit test, so a screen too narrow
+/// for all of them drops the same one from both.
+pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
+    const area = Rect{ .x = 0, .y = strip(height).y, .w = width, .h = theme.current().bar_height };
+    return status.place(area, &shown, into);
+}
+
+/// In the order they sit. What is furthest left goes first on a narrow
+/// screen, which is why the clock is last.
+const shown = [_]status.Indicator{ .keymap, .clock };
+
+fn paintStatus(surface: Surface, width: i32, height: i32) void {
+    var buf: [status.MAX]status.Slot = undefined;
+    for (statusSlots(width, height, &buf)) |slot| {
+        switch (slot.which) {
+            .keymap => paintKeymapTag(surface, slot.area),
+            .clock => paintClock(surface, slot.area),
+            // Drawn once they have something true to say and a menu to say
+            // it in; the row already keeps their room.
+            .network, .sound, .battery => {},
+        }
+    }
 }
 
 fn addRect(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
@@ -371,21 +399,13 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 /// Which keyboard layout the keys mean, in the two letters the layout gives
 /// for the purpose. Always shown: a machine whose keycaps disagree with its
 /// layout is one where this is the first thing worth checking.
-fn paintKeymapTag(surface: Surface, width: i32, height: i32) void {
+fn paintKeymapTag(surface: Surface, area: Rect) void {
     const t = theme.current();
-    const area = Rect{
-        .x = width - CLOCK_WIDTH - 26,
-        .y = strip(height).y,
-        .w = 22,
-        .h = t.bar_height - 1,
-    };
     surface.textCentred(area, keymaps.tags[@intFromEnum(settings.keyboard().keymap)], t.bar_text);
 }
 
-fn paintClock(surface: Surface, width: i32, height: i32) void {
+fn paintClock(surface: Surface, area: Rect) void {
     const t = theme.current();
-    const area = Rect{ .x = width - CLOCK_WIDTH, .y = strip(height).y, .w = CLOCK_WIDTH - 4, .h = t.bar_height - 1 };
-
     const us = sys.realtimeMicros() orelse return;
     const minutes = @divFloor(@divFloor(us, 1_000_000), 60);
 

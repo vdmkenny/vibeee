@@ -11,6 +11,7 @@
 //! looking (design/10-gui.md §2).
 
 const fontlib = @import("lib").font;
+const icons = @import("icon.zig");
 const theme = @import("theme.zig");
 
 pub const Color = theme.Color;
@@ -163,12 +164,33 @@ pub const Surface = struct {
     /// since a grid needs the monospaced face and everything else does not.
     pub fn glyphIn(self: Surface, face: *const Font, x: i32, y: i32, code: u21, color: Color) void {
         const bits = face.glyph(code) orelse face.fallback();
+        self.bitmap(x, y, bits, face.width, face.height, face.row_bytes, color);
+    }
 
+    /// A named picture, which is a bitmap with a name rather than a code
+    /// point and goes through the same expansion a letter does.
+    pub fn icon(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color) void {
+        self.bitmap(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color);
+    }
+
+    /// One-bit rows expanded onto the surface. The one place a bitmap becomes
+    /// pixels, so a letter and an icon cannot disagree about which bit is the
+    /// leftmost.
+    pub fn bitmap(
+        self: Surface,
+        x: i32,
+        y: i32,
+        bits: []const u8,
+        width: usize,
+        height: usize,
+        row_bytes: usize,
+        color: Color,
+    ) void {
         var row: i32 = 0;
-        while (row < @as(i32, @intCast(face.height))) : (row += 1) {
-            const start = @as(usize, @intCast(row)) * face.row_bytes;
+        while (row < @as(i32, @intCast(height))) : (row += 1) {
+            const start = @as(usize, @intCast(row)) * row_bytes;
             var col: i32 = 0;
-            while (col < @as(i32, @intCast(face.width))) : (col += 1) {
+            while (col < @as(i32, @intCast(width))) : (col += 1) {
                 // Rows are big-endian across bytes: bit 7 of the first byte is
                 // the leftmost pixel.
                 const byte = bits[start + @as(usize, @intCast(col)) / 8];
