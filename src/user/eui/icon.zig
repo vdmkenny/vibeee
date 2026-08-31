@@ -29,6 +29,9 @@ pub const Icon = enum {
     /// A wired link, for a machine that has a cable in it.
     ethernet,
     speaker,
+    /// The same cone with one wave: a machine that is on but quiet, which
+    /// looks like a machine that is off if the picture does not say so.
+    speaker_low,
     /// The same speaker with its waves struck out, because a muted machine
     /// that looks quiet and a quiet machine look identical otherwise.
     muted,
@@ -88,6 +91,21 @@ const art = [_][HEIGHT][]const u8{
         "..#####.#.#.",
         "..#####.#.#.",
         "....###..#..",
+        ".....##.....",
+        "............",
+        "............",
+    },
+    // speaker_low
+    .{
+        "............",
+        "............",
+        ".....##.....",
+        "....###.....",
+        "..#####..#..",
+        "..#####.#...",
+        "..#####.#...",
+        "..#####..#..",
+        "....###.....",
         ".....##.....",
         "............",
         "............",
@@ -255,6 +273,17 @@ comptime {
     }
 }
 
+/// The picture for a sound level.
+///
+/// Here rather than beside the sound protocol because it is a decision about
+/// pictures, and every place that shows a level wants the same one: a bar
+/// indicator and a panel that disagreed about what half volume looks like
+/// would be two different machines.
+pub fn volume(percent: u8, muted: bool) Icon {
+    if (muted or percent == 0) return .muted;
+    return if (percent < 50) .speaker_low else .speaker;
+}
+
 /// The rows of one icon, in the shape the surface's bitmap blitter takes.
 pub fn rows(which: Icon) []const u8 {
     const at = @intFromEnum(which) * BYTES;
@@ -319,6 +348,26 @@ test "sliders reads as tracks with a grip on each" {
     try testing.expect(lit(.sliders, 4, 1) and lit(.sliders, 4, 3));
     try testing.expect(!lit(.sliders, 4, 5));
     try testing.expect(lit(.sliders, 8, 5) and lit(.sliders, 8, 7));
+}
+
+test "a level picks the picture that says what it sounds like" {
+    try testing.expectEqual(Icon.muted, volume(0, false));
+    try testing.expectEqual(Icon.muted, volume(70, true));
+    try testing.expectEqual(Icon.speaker_low, volume(1, false));
+    try testing.expectEqual(Icon.speaker_low, volume(49, false));
+    try testing.expectEqual(Icon.speaker, volume(50, false));
+    try testing.expectEqual(Icon.speaker, volume(100, false));
+}
+
+test "the quiet speaker is the loud one with a wave taken off" {
+    // The cone is the same picture; only what comes out of it differs.
+    for (0..12) |y| {
+        for (0..7) |x| {
+            try testing.expectEqual(lit(.speaker, x, y), lit(.speaker_low, x, y));
+        }
+    }
+    try testing.expect(lit(.speaker, 10, 5));
+    try testing.expect(!lit(.speaker_low, 10, 5));
 }
 
 test "nothing is lit outside the twelve pixels a row holds" {

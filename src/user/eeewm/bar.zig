@@ -542,6 +542,13 @@ fn paintNetMenu(surface: Surface, width: i32, height: i32) void {
 var sound_menu: ui.Menu = .{};
 var sound_open = false;
 var level: audio.VolumeInfo = .{ .percent = 0, .muted = 0 };
+/// What to go back to. Silence is a level of zero rather than a flag beside
+/// one, so unmuting has to remember what it was before it was nothing.
+var level_before_silence: u8 = 50;
+/// Which port each row names, filled by the same walk that builds the rows.
+/// A rule names none. Kept beside the rows rather than worked out again,
+/// because a second walk that disagreed would pick the wrong output.
+var row_ports: [MAX_PORTS + 4]u16 = @splat(graph.NONE);
 var sound_ports: [MAX_PORTS]audio.PortInfo = undefined;
 var sound_port_count: usize = 0;
 
@@ -571,22 +578,41 @@ pub fn soundOpen() bool {
     return sound_open;
 }
 
-/// The rows: mute, then what can be played out of, then what can be recorded
-/// from. A port is marked when it is the one in use.
+/// Whether the machine is making no sound, whichever way it was silenced.
+fn silent() bool {
+    return level.muted != 0 or level.percent == 0;
+}
+
+/// Silence it, or put it back to what it was. Mute is a level of zero here
+/// rather than a flag beside a level, because a slider reading seventy on a
+/// machine making no noise is a slider that is lying.
+fn toggleSilence() void {
+    const ok = if (silent()) blk: {
+        const back = if (level_before_silence == 0) 50 else level_before_silence;
+        break :blk audio.setMaster(back, false);
+    } else blk: {
+        level_before_silence = level.percent;
+        break :blk audio.setMaster(0, true);
+    };
+    if (ok) readSound();
+}
+
+/// The rows: what can be played out of, then what can be recorded from. A
+/// port is marked when it is the one in use. Silencing is the picture beside
+/// the slider rather than a row of its own, because it is a thing done to
+/// the level and it belongs where the level is.
 fn soundItems(into: []ui.MenuItem) []ui.MenuItem {
     var count: usize = 0;
+    row_ports = @splat(graph.NONE);
+
     const put = struct {
-        fn one(list: []ui.MenuItem, at: *usize, item: ui.MenuItem) void {
+        fn one(list: []ui.MenuItem, at: *usize, item: ui.MenuItem, port: u16) void {
             if (at.* == list.len) return;
             list[at.*] = item;
+            if (at.* < row_ports.len) row_ports[at.*] = port;
             at.* += 1;
         }
     }.one;
-
-    put(into, &count, .{
-        .label = if (level.muted != 0) "Unmute" else "Mute",
-        .mark = if (level.muted != 0) .muted else .speaker,
-    });
 
     for ([_]graph.Direction{ .sink, .source }) |want| {
         var any = false;
@@ -594,16 +620,16 @@ fn soundItems(into: []ui.MenuItem) []ui.MenuItem {
         // copy that goes out of scope with the loop is a row with no label.
         for (sound_ports[0..sound_port_count]) |*port| {
             if (port.direction != want) continue;
-            if (!any) {
-                put(into, &count, .{ .kind = .separator });
-                any = true;
-            }
+            // A rule between the groups, never above the first: the strip
+            // above them is already a boundary.
+            if (!any and count > 0) put(into, &count, .{ .kind = .separator }, graph.NONE);
+            any = true;
             put(into, &count, .{
                 .label = audio.nameOf(port),
                 // The tick says which one the machine is using; the others
                 // carry nothing, and the column keeps them lined up.
                 .mark = if (port.default != 0) .check else null,
-            });
+            }, port.id);
         }
     }
 
@@ -633,6 +659,19 @@ fn soundPanel(width: i32, height: i32) Rect {
 }
 
 /// The groove, inside the panel's level strip.
+/// The picture left of the slider, which is what silences it. Sized to the
+/// picture column rather than to the picture, so it is a target a touchpad
+/// can hit.
+fn soundMuteRect(panel: Rect) Rect {
+    const t = theme.current();
+    return .{
+        .x = panel.x + t.menu_padding,
+        .y = panel.y + t.menu_padding,
+        .w = ui.MARK_WIDTH,
+        .h = t.control_height,
+    };
+}
+
 fn soundTrack(panel: Rect) Rect {
     const t = theme.current();
     const left = panel.x + t.menu_padding + ui.MARK_WIDTH;
@@ -658,7 +697,7 @@ fn soundRows(panel: Rect) Rect {
 
 fn paintSound(surface: Surface, area: Rect) void {
     const t = theme.current();
-    const which: eui_icon.Icon = if (level.muted != 0) .muted else .speaker;
+    const which = eui_icon.volume(level.percent, level.muted != 0);
     const inside = sound_open;
 
     if (inside) surface.fill(area, t.accent);
@@ -679,10 +718,11 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     surface.fill(strip_area, t.surface);
     surface.frame(strip_area, t.line);
 
+    const button = soundMuteRect(panel);
     surface.icon(
-        panel.x + t.menu_padding,
-        panel.y + @divTrunc(soundLevelHeight() - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
-        if (level.muted != 0) .muted else .speaker,
+        button.x,
+        button.y + @divTrunc(button.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        eui_icon.volume(level.percent, level.muted != 0),
         t.text,
     );
 
@@ -702,36 +742,16 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     sound_menu.paint(surface, soundRows(panel), soundItems(&rows));
 }
 
-/// What a row of the sound menu does. The first is mute; the rest name a
-/// port, and choosing one makes it the default in its own direction.
+/// What a row of the sound menu does. Every row names a port, and choosing
+/// one makes it the default in its own direction.
+///
+/// Reads what the walk that built the rows left in `row_ports`, which the
+/// hit test has just done.
 fn chooseSound(row: usize) void {
-    var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
-    const list = soundItems(&rows);
-    if (row >= list.len) return;
-
-    if (row == 0) {
-        if (audio.setMaster(level.percent, level.muted == 0)) readSound();
-        return;
-    }
-
-    // The rows after the first are the ports, in the order they were listed,
-    // with the separators that were put between them skipped.
-    var seen: usize = 0;
-    for (list[1..], 1..) |item, index| {
-        if (item.kind == .separator) continue;
-        seen += 1;
-        if (index != row) continue;
-
-        var at: usize = 0;
-        for (sound_ports[0..sound_port_count]) |port| {
-            if (port.direction != .sink and port.direction != .source) continue;
-            at += 1;
-            if (at == seen) {
-                if (audio.makeDefault(port.id)) readSound();
-                return;
-            }
-        }
-    }
+    if (row >= row_ports.len) return;
+    const port = row_ports[row];
+    if (port == graph.NONE) return;
+    if (audio.makeDefault(port)) readSound();
 }
 
 fn percentText(buf: []u8, value: u8) []const u8 {
@@ -849,12 +869,19 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     if (sound_open) {
         const panel = soundPanel(width, height);
 
-        // The groove first: dragging the level is the thing this menu is
-        // opened for most often, and it stays open while it is done.
+        if (soundMuteRect(panel).contains(x, y)) {
+            toggleSilence();
+            return .consumed;
+        }
+
+        // The groove: dragging the level is the thing this menu is opened
+        // for most often, and it stays open while it is done. Setting a
+        // level on a silenced machine is asking to hear that level, so it
+        // stops being silent and keeps where the pointer put it.
         const groove = soundTrack(panel);
         if (groove.contains(x, y)) {
             const wanted = slider.valueAt(groove, .{ .min = 0, .max = 100 }, x);
-            if (audio.setMaster(@intCast(wanted), level.muted != 0)) readSound();
+            if (audio.setMaster(@intCast(wanted), false)) readSound();
             return .consumed;
         }
 
