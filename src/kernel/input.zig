@@ -14,6 +14,9 @@ const event_mod = @import("event.zig");
 /// Layout-independent key identity. Defined in the ABI because a shortcut is
 /// bound to a physical key, and the program binding it is on the far side of a
 /// syscall from the driver reporting it.
+const console = @import("console.zig");
+const keymap = @import("keymap.zig");
+
 pub const KeyCode = @import("lib").syscalls.KeyCode;
 
 /// One definition, shared with userspace through the ABI.
@@ -164,6 +167,49 @@ var stop_event: event_mod.Event = .{};
 
 pub fn stopEvent() *event_mod.Event {
     return &stop_event;
+}
+
+/// One key, from whichever keyboard: modifiers applied, layout switch
+/// honoured, characters produced, and the event posted.
+///
+/// Every keyboard does exactly this and must do it identically. A key
+/// arriving over USB and the same key on the built-in keyboard have to
+/// mean the same thing, so what a key *means* is decided here and a
+/// driver's only job is to say which key and whether it went down.
+pub fn postKey(code: KeyCode, pressed: bool) void {
+    if (code == .none) return;
+
+    applyModifier(code, pressed);
+    const held = modifiers();
+
+    // Super and space together cycles layouts. Bound by position rather
+    // than by symbol, so it stays in the same physical place when the
+    // layout changes, which is the whole point of a layout-switch key.
+    if (pressed and code == .space and held.super) {
+        const layout = keymap.cycleLayout();
+        keymap.resetCompose();
+        console.field("layout", "{s}", .{layout.name});
+        return;
+    }
+
+    var event = Event{ .code = code, .pressed = pressed, .mods = held };
+
+    // Only presses produce characters; a release that generated one would
+    // double every keystroke.
+    if (!pressed or code.isModifier()) {
+        post(event);
+        return;
+    }
+
+    const out = keymap.translate(code, held);
+    event.codepoint = out.codepoint;
+    post(event);
+
+    // A failed composition yields two characters: the accent that could
+    // not combine, then the key that followed it.
+    if (out.extra != 0) {
+        post(.{ .code = code, .pressed = true, .mods = held, .codepoint = out.extra });
+    }
 }
 
 pub fn post(event: Event) void {

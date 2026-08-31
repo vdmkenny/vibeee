@@ -15,6 +15,7 @@ const ctx = @import("context.zig");
 const handles = @import("../handle.zig");
 const console = @import("../console.zig");
 const hal = @import("../hal.zig");
+const input = @import("../input.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
 const pmm = @import("../pmm.zig");
@@ -294,3 +295,55 @@ pub fn sys_volume_detach(a: Args) Result {
     ublk.detach(a.a0);
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Input from a device this process drives
+// ---------------------------------------------------------------------------
+
+/// Report keys from a keyboard reached over a bus the kernel does not drive.
+///
+/// What a key means stays here: the layout, the modifiers, the composition
+/// and the layout-switch key are the same for every keyboard, and a driver
+/// that worked them out itself would be a second opinion on what the machine
+/// is typing.
+pub fn sys_key_post(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    if (a.a1 > MAX_REPORTS) return Errno.inval.value();
+
+    const bytes = ctx.userSlice(a, a.a0, a.a1 * @sizeOf(lib.syscalls.KeyReport)) orelse
+        return Errno.fault.value();
+
+    for (0..a.a1) |i| {
+        var report: lib.syscalls.KeyReport = undefined;
+        @memcpy(std.mem.asBytes(&report), bytes[i * @sizeOf(lib.syscalls.KeyReport) ..][0..@sizeOf(lib.syscalls.KeyReport)]);
+        input.postKey(report.code, report.pressed != 0);
+    }
+    return @intCast(a.a1);
+}
+
+/// Report movement from a pointing device reached the same way.
+pub fn sys_pointer_post(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    if (a.a1 > MAX_REPORTS) return Errno.inval.value();
+
+    const bytes = ctx.userSlice(a, a.a0, a.a1 * @sizeOf(lib.syscalls.PointerReport)) orelse
+        return Errno.fault.value();
+
+    for (0..a.a1) |i| {
+        var report: lib.syscalls.PointerReport = undefined;
+        @memcpy(std.mem.asBytes(&report), bytes[i * @sizeOf(lib.syscalls.PointerReport) ..][0..@sizeOf(lib.syscalls.PointerReport)]);
+        input.postPointer(.{
+            .dx = report.dx,
+            .dy = report.dy,
+            .wheel = report.wheel,
+            .buttons = report.buttons,
+            .buttons_changed = report.buttons_changed != 0,
+        });
+    }
+    return @intCast(a.a1);
+}
+
+/// How many reports one call may carry. A keyboard produces at most a
+/// handful per interrupt, and a bound is what keeps a bad count from
+/// walking a caller's address space.
+const MAX_REPORTS = 64;

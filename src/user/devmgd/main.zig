@@ -216,7 +216,24 @@ fn matchFor(entry: pciscan.Entry) ?usize {
 
 /// Whether a match string covers a device, and whether it does so exactly.
 /// Null means it does not cover it at all.
-fn fits(spec: []const u8, entry: pciscan.Entry) ?bool {
+/// Whether a manifest fits a device on the PCI bus, and whether it does
+/// so exactly. The line may list several, separated by commas, for the
+/// same reason the USB one may: one driver can serve several devices.
+fn fits(match: []const u8, entry: pciscan.Entry) ?bool {
+    var best: ?bool = null;
+    var specs = str.split(match, ',');
+    while (specs.next()) |spec| {
+        const trimmed = str.trim(spec);
+        if (trimmed.len == 0) continue;
+        const verdict = fitsOne(trimmed, entry) orelse continue;
+        // An exact match wins over a family one wherever both are named.
+        if (verdict) return true;
+        best = false;
+    }
+    return best;
+}
+
+fn fitsOne(spec: []const u8, entry: pciscan.Entry) ?bool {
     var it = str.split(spec, ':');
     const kind = str.trim(it.next() orelse return null);
 

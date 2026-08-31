@@ -34,6 +34,11 @@ pub const Target = struct {
     pub fn control(self: Target, setup: usb.Setup, data: []u8) hc.Error!usize {
         return self.ops.control(self.address, self.speed, self.descriptor.max_packet_zero, setup, data);
     }
+
+    /// The same, for a request that carries nothing.
+    pub fn command(self: Target, setup: usb.Setup) hc.Error!void {
+        return hc.command(self.ops, self.address, self.speed, self.descriptor.max_packet_zero, setup);
+    }
 };
 
 /// What a class driver must provide.
@@ -44,6 +49,9 @@ pub const ClassOps = struct {
     attach: *const fn (target: Target) bool,
     /// Give it up: it was unplugged, or the driver is being stopped.
     detach: *const fn (address: u7) void,
+    /// The controller interrupted. A driver with endpoints being watched
+    /// looks at them here; one without does not need this at all.
+    woke: ?*const fn () void = null,
 };
 
 pub const ClassDriver = struct {

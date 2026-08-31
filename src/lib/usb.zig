@@ -499,8 +499,33 @@ pub const Signature = struct {
     pub const Packed = struct { kind: u32, part: u32 };
 
     /// Whether a manifest's `match` line names this exact device:
-    /// `usb:vendor:product`, in hex.
-    pub fn matchesPart(self: Signature, spec: []const u8) bool {
+    /// `usb:vendor:product`, in hex. The line may list several, separated
+    /// by commas: one driver and one program can serve several devices,
+    /// and saying so once beats a manifest each.
+    pub fn matchesPart(self: Signature, match: []const u8) bool {
+        return anySpec(self, match, part);
+    }
+
+    /// Whether it names this device's class: `usb-class:class:subclass`,
+    /// with an optional protocol, and again a comma-separated list.
+    pub fn matchesClass(self: Signature, match: []const u8) bool {
+        return anySpec(self, match, class_);
+    }
+
+    fn anySpec(
+        self: Signature,
+        match: []const u8,
+        comptime one: fn (Signature, []const u8) bool,
+    ) bool {
+        var specs = str.split(match, ',');
+        while (specs.next()) |spec| {
+            const trimmed = str.trim(spec);
+            if (trimmed.len != 0 and one(self, trimmed)) return true;
+        }
+        return false;
+    }
+
+    fn part(self: Signature, spec: []const u8) bool {
         var it = str.split(spec, ':');
         if (!str.eql(str.trim(it.next() orelse return false), "usb")) return false;
         const vendor = str.fromHex(str.trim(it.next() orelse return false));
@@ -508,11 +533,10 @@ pub const Signature = struct {
         return vendor == self.vendor and product == self.product;
     }
 
-    /// Whether it names this device's class: `usb-class:class:subclass`,
-    /// with an optional protocol. A manifest that names no protocol fits
-    /// every protocol of that subclass, which is how one driver serves a
-    /// whole family without listing its members.
-    pub fn matchesClass(self: Signature, spec: []const u8) bool {
+    /// A manifest that names no protocol fits every protocol of that
+    /// subclass, which is how one driver serves a whole family without
+    /// listing its members.
+    fn class_(self: Signature, spec: []const u8) bool {
         var it = str.split(spec, ':');
         if (!str.eql(str.trim(it.next() orelse return false), "usb-class")) return false;
         if (str.fromHex(str.trim(it.next() orelse return false)) != @intFromEnum(self.class)) return false;
@@ -1009,4 +1033,31 @@ test "the control requests a class driver sends are shaped as the wire wants" {
     const reset = Setup.classRequest(.out, 0xFF, 0, 0, 0);
     try std.testing.expectEqual(@as(u8, 0x21), @as(u8, @bitCast(reset.request_type)));
     try std.testing.expectEqual(Direction.in, reset.statusDirection());
+}
+
+test "a manifest may name several things one driver fits" {
+    const keyboard = Signature{ .class = .human_interface, .subclass = 0x01, .protocol = 0x01 };
+    const mouse = Signature{ .class = .human_interface, .subclass = 0x01, .protocol = 0x02 };
+    const disk = Signature{ .class = .mass_storage, .subclass = 0x06, .protocol = 0x50 };
+
+    const both = "usb-class:03:01:01, usb-class:03:01:02";
+    try std.testing.expect(keyboard.matchesClass(both));
+    try std.testing.expect(mouse.matchesClass(both));
+    try std.testing.expect(!disk.matchesClass(both));
+
+    // A list of parts, and a list mixing spacing and empty entries.
+    const quirks = "usb:0951:1666,usb:0930:6545";
+    const first = Signature{ .vendor = 0x0951, .product = 0x1666 };
+    const second = Signature{ .vendor = 0x0930, .product = 0x6545 };
+    const neither = Signature{ .vendor = 0x0951, .product = 0x1667 };
+    try std.testing.expect(first.matchesPart(quirks));
+    try std.testing.expect(second.matchesPart(quirks));
+    try std.testing.expect(!neither.matchesPart(quirks));
+    try std.testing.expect(first.matchesPart(" usb:0951:1666 , , usb:0000:0000 "));
+
+    // A single entry is a list of one, which is what every manifest that
+    // names one thing already was.
+    try std.testing.expect(disk.matchesClass("usb-class:08:06:50"));
+    try std.testing.expect(!disk.matchesClass(""));
+    try std.testing.expect(!disk.matchesClass(",,"));
 }

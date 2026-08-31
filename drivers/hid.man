@@ -1,0 +1,5 @@
+# Keyboards and mice, in the boot protocol every one of them speaks. One
+# driver, so one manifest: the match line names both.
+name    = hid
+service = usb
+match   = usb-class:03:01:01, usb-class:03:01:02

@@ -146,19 +146,6 @@ var expecting_extended = false;
 
 /// Called for a key event that no text consumer should see, e.g. the layout
 /// switch. Returning true swallows the event.
-fn handleHotkey(code: KeyCode, mods: input.Modifiers) bool {
-    // Super+Space cycles layouts. Bound by *position* rather than by symbol, so
-    // it stays in the same physical place when the layout changes, which is
-    // the whole point of a layout-switch key.
-    if (code == .space and mods.super) {
-        const layout = keymap.cycleLayout();
-        keymap.resetCompose();
-        console.field("layout", "{s}", .{layout.name});
-        return true;
-    }
-    return false;
-}
-
 /// Interrupt handler for IRQ1.
 pub fn onKeyboardInterrupt() void {
     // Drain, because the controller may have more than one byte buffered and a
@@ -190,31 +177,9 @@ pub fn onKeyboardInterrupt() void {
         const code = if (expecting_extended) SET1_EXTENDED[make] else SET1[make];
         expecting_extended = false;
 
-        if (code == .none) continue;
-
-        input.applyModifier(code, !released);
-        const mods = input.modifiers();
-
-        if (!released and handleHotkey(code, mods)) continue;
-
-        var event = input.Event{ .code = code, .pressed = !released, .mods = mods };
-
-        // Only presses produce characters; a release that generated one would
-        // double every keystroke.
-        if (!released and !code.isModifier()) {
-            const out = keymap.translate(code, mods);
-            event.codepoint = out.codepoint;
-            input.post(event);
-
-            // A failed composition yields two characters: the accent that could
-            // not combine, then the key that followed it.
-            if (out.extra != 0) {
-                input.post(.{ .code = code, .pressed = true, .mods = mods, .codepoint = out.extra });
-            }
-            continue;
-        }
-
-        input.post(event);
+        // What a key means is the input core's decision, not this
+        // controller's: this file knows scancodes and nothing else.
+        input.postKey(code, !released);
     }
 }
 

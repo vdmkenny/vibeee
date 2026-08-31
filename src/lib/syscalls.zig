@@ -259,6 +259,14 @@ pub const DisplayInfo = extern struct {
 /// should not have to accumulate one, and a consumer that wants motion should
 /// not have to difference one. `buttons_changed` distinguishes a click from a
 /// drag without comparing against the previous event.
+/// One key, as a driver reports it. What it means is worked out where
+/// every keyboard's keys are worked out, which is not in the driver.
+pub const KeyReport = extern struct {
+    code: KeyCode,
+    pressed: u8 = 0,
+    _pad: [2]u8 = @splat(0),
+};
+
 pub const KeyCode = enum(u8) {
     none = 0,
 
@@ -434,6 +442,20 @@ pub const Buttons = packed struct(u8) {
     pub fn any(self: Buttons) bool {
         return self.left or self.right or self.middle;
     }
+};
+
+/// One movement, as a driver reports it: what changed, not where the
+/// pointer ended up. Where it ends up depends on the screen, which is the
+/// kernel's to know.
+pub const PointerReport = extern struct {
+    dx: i16 = 0,
+    dy: i16 = 0,
+    /// Positive scrolls up. Zero on a device with no wheel.
+    wheel: i8 = 0,
+    buttons: Buttons = .{},
+    /// Whether this report changed a button, as opposed to only moving.
+    buttons_changed: u8 = 0,
+    _pad: u8 = 0,
 };
 
 pub const PointerEvent = extern struct {
@@ -1549,6 +1571,35 @@ pub const table = [_]Syscall{
         .notes = "Requires Caps.driver. What a medium being taken out looks like from " ++
             "the other side. Callers waiting on the volume are told the disk is gone " ++
             "rather than left to their deadlines.",
+    },
+    .{
+        .number = 62,
+        .name = "key_post",
+        .summary = "Report keys from a keyboard this process drives.",
+        .args = &.{
+            .{ .name = "keys", .kind = .cptr, .desc = "An array of KeyReport: a KeyCode and whether it went down." },
+            .{ .name = "count", .kind = .uint, .desc = "How many." },
+        },
+        .returns = "how many were taken",
+        .errors = &.{ E.fault, E.inval, E.perm },
+        .notes = "Requires Caps.driver. What a key *means* stays the kernel's: the layout, " ++
+            "the modifiers, the composition and the layout-switch key are applied here, so " ++
+            "a key on a keyboard reached over a bus and the same key on the built-in one " ++
+            "mean the same thing. A driver says which key and whether it went down.",
+    },
+    .{
+        .number = 63,
+        .name = "pointer_post",
+        .summary = "Report movement from a pointing device this process drives.",
+        .args = &.{
+            .{ .name = "reports", .kind = .cptr, .desc = "An array of PointerReport: deltas, wheel and buttons." },
+            .{ .name = "count", .kind = .uint, .desc = "How many." },
+        },
+        .returns = "how many were taken",
+        .errors = &.{ E.fault, E.inval, E.perm },
+        .notes = "Requires Caps.driver. Deltas rather than positions: where the pointer " ++
+            "ends up depends on the screen, which is the kernel's to know and not a " ++
+            "driver's.",
     },
 };
 

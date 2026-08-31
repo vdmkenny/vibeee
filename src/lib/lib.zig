@@ -34,6 +34,7 @@ pub const ieee80211 = @import("ieee80211.zig");
 pub const ifmatch = @import("ifmatch.zig");
 pub const spsc = @import("spsc.zig");
 pub const str = @import("str.zig");
+pub const hid = @import("hid.zig");
 pub const scsi = @import("scsi.zig");
 pub const usb = @import("usb.zig");
 pub const volume = @import("volume.zig");

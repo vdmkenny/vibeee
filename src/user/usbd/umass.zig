@@ -18,6 +18,7 @@ const out = @import("ulib").out;
 const scsi = @import("lib").scsi;
 const str = @import("ulib").str;
 const sys = @import("sys");
+const table = @import("ulib").table;
 const usb = @import("lib").usb;
 
 pub const name = "umass";
@@ -77,10 +78,7 @@ pub fn at(index: usize) ?*Disk {
 /// The disk on a given device address, which is how the bus finds the one
 /// that was unplugged.
 pub fn forAddress(address: u7) ?*Disk {
-    for (&disks) |*disk| {
-        if (disk.live and disk.address == address) return disk;
-    }
-    return null;
+    return table.by(&disks, "address", address);
 }
 
 pub const ops = class.ClassOps{ .attach = attach, .detach = detach };
@@ -98,7 +96,7 @@ fn attach(target: class.Target) bool {
     const reading = view.find(.bulk, .in) orelse return complain("no pipe to read from");
     const writing = view.find(.bulk, .out) orelse return complain("no pipe to write to");
 
-    const slot = free() orelse return complain("no room for another disk");
+    const slot = table.free(&disks) orelse return complain("no room for another disk");
     slot.* = .{
         .live = true,
         .address = target.address,
@@ -131,13 +129,6 @@ fn attach(target: class.Target) bool {
 fn detach(address: u7) void {
     const disk = forAddress(address) orelse return;
     disk.* = .{};
-}
-
-fn free() ?*Disk {
-    for (&disks) |*disk| {
-        if (!disk.live) return disk;
-    }
-    return null;
 }
 
 fn complain(what: []const u8) bool {
@@ -327,31 +318,27 @@ fn status(disk: *Disk, tag: u32) hc.Error!scsi.Verdict {
 /// has just put its own.
 fn clearHalt(disk: *Disk, pipe: *usb.Pipe) void {
     const address = @as(u8, pipe.number) | (@as(u8, @intFromEnum(pipe.direction)) << 7);
-    var nothing: [0]u8 = .{};
-    _ = disk.ops.control(
-        disk.address,
-        pipe.speed,
-        64,
-        usb.Setup.clearHalt(address),
-        &nothing,
-    ) catch {};
+    hc.command(disk.ops, disk.address, pipe.speed, PACKET_ZERO, usb.Setup.clearHalt(address)) catch {};
     pipe.resetToggle();
 }
 
 /// The class's own reset, which puts both pipes and the device back to
 /// where a command can be sent again.
 fn recover(disk: *Disk) void {
-    var nothing: [0]u8 = .{};
-    _ = disk.ops.control(
+    hc.command(
+        disk.ops,
         disk.address,
         disk.reading.speed,
-        64,
+        PACKET_ZERO,
         usb.Setup.classRequest(.out, RESET, 0, disk.interface, 0),
-        &nothing,
     ) catch {};
     clearHalt(disk, &disk.reading);
     clearHalt(disk, &disk.writing);
 }
+
+/// Every high speed device's control endpoint takes sixty-four byte
+/// packets, and the requests sent here carry no data anyway.
+const PACKET_ZERO: u16 = 64;
 
 fn say(disk: *const Disk) void {
     log.begin(name, .key);

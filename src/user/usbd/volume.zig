@@ -15,6 +15,7 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const str = @import("ulib").str;
 const sys = @import("sys");
+const table = @import("ulib").table;
 const umass = @import("umass.zig");
 
 /// One offered disk: which volume the kernel calls it, and where its
@@ -44,8 +45,8 @@ pub fn all() []const Offer {
 /// Offer a disk. Answering false leaves it driven but unmounted, which is
 /// a disk that can still be read by whatever asks this service directly.
 pub fn offer(disk: *umass.Disk) bool {
-    const slot = free() orelse return false;
-    const which = index(slot);
+    const slot = table.free(&offers) orelse return false;
+    const which = table.indexOf(&offers, slot);
 
     slot.name_len = nameFor(&slot.name, which);
 
@@ -110,10 +111,7 @@ pub fn doorbells(into: []u32) usize {
 
 /// The offer a woken doorbell belongs to.
 pub fn forDoorbell(handle: u32) ?*Offer {
-    for (&offers) |*slot| {
-        if (slot.live and slot.doorbell == handle) return slot;
-    }
-    return null;
+    return table.by(&offers, "doorbell", handle);
 }
 
 /// Do everything the kernel has posted on this volume, and answer each.
@@ -166,17 +164,6 @@ fn carry(slot: *Offer, disk: *umass.Disk, request: abi.Request) Answer {
         .sectors = 0,
     };
     return .{ .status = .ok, .sectors = request.sectors };
-}
-
-fn free() ?*Offer {
-    for (&offers) |*slot| {
-        if (!slot.live) return slot;
-    }
-    return null;
-}
-
-fn index(slot: *const Offer) usize {
-    return (@intFromPtr(slot) - @intFromPtr(&offers[0])) / @sizeOf(Offer);
 }
 
 /// What a volume is called: the same shape as every other disk on the

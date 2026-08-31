@@ -13,6 +13,7 @@
 //! than by a change to this file.
 
 const core = @import("core.zig");
+const hid = @import("hid.zig");
 const umass = @import("umass.zig");
 const volume = @import("volume.zig");
 const ehci = @import("ehci.zig");
@@ -47,6 +48,7 @@ const DRIVERS = [_]Driver{
 /// class nobody here drives is a manifest and a program away.
 const CLASSES = [_]@import("class.zig").ClassDriver{
     umass.driver,
+    hid.driver,
 };
 
 /// One controller each for the machine's high-speed bus and whatever a
@@ -170,6 +172,11 @@ fn serve() noreturn {
             if (controller.ops.serviceIrq()) {
                 core.scan(@intCast(which), controller.ops);
                 settle();
+            }
+            // A transfer finished, and one of the class drivers is
+            // probably why. Which one is their own business.
+            for (CLASSES) |driver| {
+                if (driver.ops.woke) |look| look();
             }
             _ = sys.irqAck(controller.irq);
             out.flush();

@@ -66,7 +66,25 @@ pub const HcOps = struct {
     /// The largest bulk transfer this controller will carry in one go.
     /// A driver moving more than this splits it and keeps its own place.
     bulkLimit: *const fn () usize,
+    /// Watch an interrupt endpoint. The controller polls it in hardware
+    /// at the endpoint's own rate and interrupts only when the device
+    /// answers, so a keyboard nobody is typing on costs nothing.
+    watch: *const fn (pipe: usb.Pipe, report_bytes: u8) Error!u8,
+    /// Whatever arrived on a watched endpoint since last asked. The watch
+    /// is re-armed by the asking, so a caller that stops asking stops
+    /// receiving.
+    collect: *const fn (watch: u8, into: []u8) ?usize,
+    /// Stop watching, because the device is gone.
+    unwatch: *const fn (watch: u8) void,
 };
+
+/// A control transfer that carries no data: a request goes out and only
+/// its status comes back. Most of what a class driver sends is this, so
+/// it is written once rather than once per driver.
+pub fn command(ops: HcOps, address: u7, speed: usb.Speed, max_packet: u16, setup: usb.Setup) Error!void {
+    var nothing: [0]u8 = .{};
+    _ = try ops.control(address, speed, max_packet, setup, &nothing);
+}
 
 /// One driven controller and what the bus knows about it.
 pub const Controller = struct {

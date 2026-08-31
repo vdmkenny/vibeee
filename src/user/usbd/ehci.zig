@@ -16,6 +16,7 @@
 //! gone away costs a wait rather than the machine.
 
 const device = @import("ulib").device;
+const table = @import("ulib").table;
 const hc = @import("hc.zig");
 const lib = @import("lib");
 const log = @import("ulib").log;
@@ -361,6 +362,15 @@ comptime {
 /// How many stages one control transfer needs: setup, data, status.
 const STAGES = 3;
 
+/// How many interrupt endpoints may be watched at once: a keyboard, a
+/// mouse, and room for the pair on a device that is both.
+const WATCHES = 4;
+
+/// The largest report a watched endpoint may carry. Boot protocol
+/// reports are eight bytes; this covers those and the ones that add a
+/// wheel or a few more bits.
+const REPORT_BYTES = 16;
+
 /// The largest bulk transfer carried in one go. A transfer descriptor
 /// addresses five pages, so one descriptor covers this whole buffer and
 /// a bulk transfer is always a single descriptor.
@@ -386,6 +396,11 @@ const Arena = extern struct {
     payload: Transfer align(32) = .{},
     buffer: [BUFFER_BYTES]u8 align(4096) = @splat(0),
     bulk_buffer: [BULK_BYTES]u8 align(4096) = @splat(0),
+    /// One head and one descriptor per watched endpoint, chained into
+    /// every frame so the controller visits them once a millisecond.
+    watches: [WATCHES]QueueHead align(64) = @splat(.{}),
+    watch_tds: [WATCHES]Transfer align(32) = @splat(.{}),
+    reports: [WATCHES][REPORT_BYTES]u8 align(32) = @splat(@splat(0)),
     /// Every entry empty: the periodic schedule stays off, but the
     /// controller wants a valid base address regardless.
     frames: [1024]Link align(4096) = @splat(Link.none),
@@ -410,6 +425,167 @@ fn bulkLimit() usize {
     return BULK_BYTES;
 }
 
+// ---------------------------------------------------------------------------
+// Watched endpoints
+// ---------------------------------------------------------------------------
+
+/// What is known about one interrupt endpoint being polled.
+const Watch = struct {
+    live: bool = false,
+    pipe: usb.Pipe = .{},
+    /// How many bytes the device's reports are, which is how much is
+    /// asked for each time round.
+    report_bytes: u8 = 0,
+};
+
+var watches: [WATCHES]Watch = @splat(.{});
+
+/// Start polling an interrupt endpoint.
+///
+/// The work is the controller's: the head goes in the periodic schedule
+/// and is visited once a millisecond, the device answers with a report or
+/// with nothing, and only a report ends the transfer and raises the
+/// interrupt. A keyboard nobody is typing on produces no wakes at all.
+fn watch(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
+    if (!controller.opened) return hc.Error.Refused;
+    if (report_bytes == 0 or report_bytes > REPORT_BYTES) return hc.Error.Refused;
+
+    const entry = table.free(&watches) orelse return hc.Error.Refused;
+    const index = table.indexOf(&watches, entry);
+    watches[index] = .{ .live = true, .pipe = pipe, .report_bytes = report_bytes };
+
+    const arena = controller.arena.at;
+    scheduleRunning(.periodic, false);
+
+    arena.watches[index] = .{
+        .link = Link.none,
+        .info = .{
+            .address = pipe.address,
+            .endpoint = pipe.number,
+            .speed = switch (pipe.speed) {
+                .high => .high,
+                .full => .full,
+                .low => .low,
+            },
+            .toggle_from_descriptor = true,
+            .max_packet = @intCast(@min(pipe.max_packet, REPORT_BYTES)),
+        },
+        .capabilities = .{
+            // One transaction, in the first microframe of each frame.
+            // The endpoint's own interval would poll less often; a
+            // millisecond costs the controller a token and nobody else
+            // anything, and it is what a keyboard wants anyway.
+            .start_mask = 0x01,
+            .multiplier = 1,
+        },
+    };
+
+    arena.watches[index].current = 0;
+    arena.watches[index].overlay = .{};
+    arm(index);
+    chain();
+    scheduleRunning(.periodic, true);
+    return @intCast(index);
+}
+
+/// Make a watch's descriptor ready for the next report, and hand it back
+/// to the head.
+///
+/// The head consumes the pointer as it works: a finished transfer leaves
+/// the overlay's next pointer terminating, so re-arming is two writes and
+/// not one. Both are allowed while the schedule runs, because a head with
+/// nothing active is a head the controller is only looking at.
+///
+/// The order is the order the controller reads them: the descriptor is
+/// complete before anything points at it, so a controller looking between
+/// the two writes finds an empty queue rather than half a transfer.
+fn arm(index: usize) void {
+    const arena = controller.arena.at;
+    const entry = &watches[index];
+
+    arena.watch_tds[index] = describe(
+        .in,
+        entry.pipe.toggle,
+        controller.arena.physOfIndex("reports", index),
+        entry.report_bytes,
+        true,
+    );
+    arena.watch_tds[index].next = Link.none;
+
+    arena.watches[index].current = 0;
+    arena.watches[index].overlay.token = .{};
+    arena.watches[index].overlay.alternate = Link.none;
+    arena.watches[index].overlay.next =
+        Link.to(controller.arena.physOfIndex("watch_tds", index), .isochronous);
+}
+
+/// Link every live watch into one chain, and point every frame at it. A
+/// frame list of a thousand identical pointers is what "visit these once
+/// a millisecond" looks like to the controller.
+fn chain() void {
+    const arena = controller.arena.at;
+
+    var first: ?usize = null;
+    var previous: ?usize = null;
+    for (&watches, 0..) |*entry, i| {
+        if (!entry.live) continue;
+        if (previous) |before| {
+            arena.watches[before].link = Link.to(controller.arena.physOfIndex("watches", i), .queue_head);
+        } else {
+            first = i;
+        }
+        arena.watches[i].link = Link.none;
+        previous = i;
+    }
+
+    const head = if (first) |i|
+        Link.to(controller.arena.physOfIndex("watches", i), .queue_head)
+    else
+        Link.none;
+    for (&arena.frames) |*frame| frame.* = head;
+}
+
+/// Whatever a watched endpoint answered with since it was last asked. The
+/// watch is re-armed here, so a caller that stops asking stops receiving
+/// rather than being asked to remember a second call.
+fn collect(index: u8, into: []u8) ?usize {
+    if (index >= watches.len or !watches[index].live) return null;
+    const arena = controller.arena.at;
+    const token = arena.watch_tds[index].token;
+
+    if (token.status.active) return null;
+
+    // A halted endpoint has stopped answering and will keep not
+    // answering: re-arming it would poll a dead pipe forever, so it is
+    // left alone until whoever owns it clears the halt.
+    if (token.status.failed()) return null;
+
+    const moved = @as(usize, watches[index].report_bytes) - @as(usize, token.bytes);
+    const wanted = @min(moved, into.len);
+    if (wanted != 0) {
+        const from: [*]const u8 = @ptrCast(@volatileCast(&arena.reports[index]));
+        @memcpy(into[0..wanted], from[0..wanted]);
+    }
+
+    // The queue head advances itself: its overlay goes inactive when the
+    // transfer ends, and the descriptor it already points at is picked up
+    // again as soon as it is made active. Nothing here stops a schedule
+    // to say so.
+    watches[index].pipe.advance(moved);
+    arm(index);
+    return wanted;
+}
+
+fn unwatch(index: u8) void {
+    if (index >= watches.len or !watches[index].live) return;
+    scheduleRunning(.periodic, false);
+    watches[index] = .{};
+    chain();
+    scheduleRunning(.periodic, true);
+}
+
+
+
 /// One bulk transfer: a single descriptor, because the buffer it points
 /// at is contiguous and no larger than the five pages one descriptor
 /// addresses. The pipe carries the toggle in and takes it out advanced
@@ -433,7 +609,7 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     );
     arena.payload.next = Link.none;
 
-    scheduleRunning(false);
+    scheduleRunning(.asynchronous, false);
     arena.bulk.info = .{
         .address = pipe.address,
         .endpoint = pipe.number,
@@ -449,7 +625,7 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     arena.bulk.capabilities = .{ .multiplier = 1 };
     arena.bulk.current = 0;
     arena.bulk.overlay = .{ .next = Link.to(controller.arena.physOf("payload"), .isochronous) };
-    scheduleRunning(true);
+    scheduleRunning(.asynchronous, true);
 
     const moved = try awaitPayload(data.len);
     pipe.advance(moved);
@@ -493,6 +669,9 @@ pub const ops = hc.HcOps{
     .control = control,
     .bulk = bulk,
     .bulkLimit = bulkLimit,
+    .watch = watch,
+    .collect = collect,
+    .unwatch = unwatch,
 };
 
 /// The interrupt handle is given after the controller opens, because the
@@ -814,26 +993,40 @@ fn serviceIrq() bool {
 /// memory again when it starts. Control transfers happen while a device
 /// is being enumerated and at no other time, so a bus at rest never pays
 /// for this.
-fn scheduleRunning(wanted: bool) void {
+const Schedule = enum { asynchronous, periodic };
+
+fn scheduleRunning(which: Schedule, wanted: bool) void {
     var command: Command = @bitCast(opRead(.command));
-    if (command.async_enable == wanted) {
+    const enabled = switch (which) {
+        .asynchronous => command.async_enable,
+        .periodic => command.periodic_enable,
+    };
+    if (enabled == wanted) {
         // Still worth waiting for the controller to agree: the enable
         // bit is a request, and the running bit is the answer.
-        _ = awaitSchedule(wanted);
+        _ = awaitSchedule(which, wanted);
         return;
     }
-    command.async_enable = wanted;
+    switch (which) {
+        .asynchronous => command.async_enable = wanted,
+        .periodic => command.periodic_enable = wanted,
+    }
     opWrite(.command, @bitCast(command));
-    if (!awaitSchedule(wanted)) {
-        log.warn(name, "the asynchronous schedule would not change state");
+    if (!awaitSchedule(which, wanted)) {
+        log.warn(name, "a schedule would not change state");
     }
 }
 
-fn awaitSchedule(wanted: bool) bool {
-    return device.settles(200, 50, wanted, struct {
-        fn ready(want: bool) bool {
+fn awaitSchedule(which: Schedule, wanted: bool) bool {
+    const Want = struct { which: Schedule, wanted: bool };
+    return device.settles(200, 50, Want{ .which = which, .wanted = wanted }, struct {
+        fn ready(want: Want) bool {
             const status: Status = @bitCast(opRead(.status));
-            return status.async_running == want;
+            const running = switch (want.which) {
+                .asynchronous => status.async_running,
+                .periodic => status.periodic_running,
+            };
+            return running == want.wanted;
         }
     }.ready);
 }
@@ -903,7 +1096,7 @@ fn control(
     // Point the head at this device and hand it the chain. The overlay
     // is cleared rather than edited: whatever the controller left there
     // from the last transfer describes the last transfer.
-    scheduleRunning(false);
+    scheduleRunning(.asynchronous, false);
     arena.control.info = .{
         .address = address,
         .endpoint = 0,
@@ -920,7 +1113,7 @@ fn control(
     arena.control.capabilities = .{ .multiplier = 1 };
     arena.control.current = 0;
     arena.control.overlay = .{ .next = Link.to(controller.arena.physOf("stages"), .isochronous) };
-    scheduleRunning(true);
+    scheduleRunning(.asynchronous, true);
 
     return try awaitStages(stages, data, reading, wants_data);
 }

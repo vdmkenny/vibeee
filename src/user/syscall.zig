@@ -327,6 +327,20 @@ pub fn volumeDetach(volume: usize) void {
     _ = syscall1(abi.number("volume_detach"), volume);
 }
 
+pub const KeyReport = abi.KeyReport;
+pub const PointerReport = abi.PointerReport;
+
+/// Report keys from a keyboard this process drives. What they mean is
+/// worked out where every keyboard's keys are.
+pub fn keyPost(keys: []const abi.KeyReport) isize {
+    return syscall2(abi.number("key_post"), @intFromPtr(keys.ptr), keys.len);
+}
+
+/// Report movement from a pointing device this process drives.
+pub fn pointerPost(reports: []const abi.PointerReport) isize {
+    return syscall2(abi.number("pointer_post"), @intFromPtr(reports.ptr), reports.len);
+}
+
 /// Allow this process to use a range of I/O ports directly. Needs the driver
 /// capability; grants last until the process exits.
 pub fn ioportGrant(base: u16, count: usize) isize {

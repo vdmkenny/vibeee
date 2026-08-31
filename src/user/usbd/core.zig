@@ -13,6 +13,7 @@ const class = @import("class.zig");
 const hc = @import("hc.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const table = @import("ulib").table;
 const proto_devices = @import("proto").devices;
 const usb = @import("lib").usb;
 
@@ -193,7 +194,7 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
         }
     } else |_| {}
 
-    const slot = free() orelse {
+    const slot = table.free(&devices) orelse {
         addresses.release(address);
         log.warn("usbd", "the device table is full");
         return;
@@ -249,13 +250,6 @@ fn strEql(a: []const u8, b: []const u8) bool {
         if (x != y) return false;
     }
     return true;
-}
-
-fn free() ?*Device {
-    for (&devices) |*entry| {
-        if (!entry.live) return entry;
-    }
-    return null;
 }
 
 /// Ask the device manager which driver fits, by the signature the device
