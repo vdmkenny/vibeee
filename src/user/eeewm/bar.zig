@@ -1582,13 +1582,18 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
             return .handled;
         }
 
-        // Left and right walk the categories, the way tab does in the
-        // drawings: the rail is a list too, and a launcher reachable only by
-        // pointer is one that stops working when the touchpad does.
-        if (launcher_query.slice().len == 0 and (code == .left or code == .right)) {
+        // Left and right walk the categories, and so does tab, which is
+        // what the drawings show: the rail is a list too, and a launcher
+        // reachable only by pointer stops working when the touchpad does.
+        //
+        // The list itself needs no left and right. Its rows are dealt down
+        // one column before the next, so the down arrow that reaches the
+        // bottom of the first column reaches the top of the second.
+        const forward = code == .right or code == .tab;
+        if (launcher_query.slice().len == 0 and (forward or code == .left)) {
             const all = std.enums.values(Category);
             const at = @intFromEnum(launcher_category);
-            const step: usize = if (code == .right) 1 else all.len - 1;
+            const step: usize = if (forward) 1 else all.len - 1;
             launcher_category = all[(at + step) % all.len];
             launcher_rail.selected = @intFromEnum(launcher_category);
             launcher.selected = 0;

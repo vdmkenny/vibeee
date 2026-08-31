@@ -331,9 +331,6 @@ fn draw() void {
     const area = eui.Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
     ctx.begin(pointer_x, pointer_y, buttons);
-    // Inside the pass, so it sees the damage this pass was given rather than
-    // what the last one finished with.
-    if (ctx.damaged) surface.fill(area, t.surface);
 
     const body = eui.footer.above(area);
     const rail = eui.rail.column(body, 0);

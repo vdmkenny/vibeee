@@ -70,7 +70,9 @@ What a program calls around its controls, once each way.
 | call | signature |
 |---|---|
 | `init` | `fn (draw.Surface) widget.Context` |
+| `initOn` | `fn (draw.Surface, Context.Ground) widget.Context` |
 | `begin` | `fn (*widget.Context, i32, i32, syscalls.Buttons) void` |
+| `bounds` | `fn (*const widget.Context) draw.Rect` |
 | `postKey` | `fn (*widget.Context, u8, syscalls.Modifiers) void` |
 | `postScroll` | `fn (*widget.Context, i8) void` |
 | `postText` | `fn (*widget.Context, u32) void` |

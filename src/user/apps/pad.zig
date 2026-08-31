@@ -328,7 +328,6 @@ fn draw() void {
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
     ctx.begin(pointer_x, pointer_y, buttons);
-    if (ctx.damaged) surface.fill(area, t.surface);
 
     const row = t.control_height;
 

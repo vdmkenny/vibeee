@@ -117,7 +117,10 @@ fn wmMain() noreturn {
     listenTo(.wm_settings, @intCast(settings_event));
     listenTo(.keyboard_settings, @intCast(keyboard_event));
 
-    ctx = ui.Context.init(screen);
+    // The desktop paints its own ground, and only the parts of it that show:
+    // filling the screen and then covering most of it again is the flash this
+    // whole path exists to avoid.
+    ctx = ui.Context.initOn(screen, .none);
     bar.refresh();
 
     pointer_x = @divTrunc(info.width, 2);

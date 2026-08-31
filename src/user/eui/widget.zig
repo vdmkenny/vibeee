@@ -125,9 +125,25 @@ pub const Context = struct {
     damage_overflowed: bool = false,
 
     entries: [MAX_WIDGETS]Entry = @splat(.{}),
+    /// What this window's ground is painted with on a full redraw.
+    ground: Ground = .surface,
 
     pub fn init(surface: Surface) Context {
         return .{ .surface = surface };
+    }
+
+    /// What a window's own ground is painted with when the whole of it has to
+    /// be redrawn.
+    ///
+    /// Here rather than in every program, because every program had the same
+    /// line and the way it fails is silent: a window that forgets it shows
+    /// whatever the last thing to own those pixels drew, and one that paints
+    /// it twice flickers. `.none` is for a program that paints every pixel
+    /// itself, which a terminal does.
+    pub const Ground = enum { surface, desktop, none };
+
+    pub fn initOn(surface: Surface, ground: Ground) Context {
+        return .{ .surface = surface, .ground = ground };
     }
 
     /// Start a pass. `x`, `y` and `buttons` are the pointer as it is now.
@@ -135,6 +151,18 @@ pub const Context = struct {
         if (self.pending) {
             self.damaged = true;
             self.pending = false;
+        }
+
+        // The ground first, before anything is drawn on it. Inside the pass
+        // so it sees the damage this pass was given rather than what the
+        // last one finished with.
+        if (self.damaged) {
+            const t = theme.current();
+            switch (self.ground) {
+                .surface => self.surface.fill(self.bounds(), t.surface),
+                .desktop => self.surface.fill(self.bounds(), t.desktop),
+                .none => {},
+            }
         }
         self.previous = self.buttons;
         self.buttons = buttons;
@@ -146,6 +174,11 @@ pub const Context = struct {
         self.focus_moved = false;
 
         for (&self.entries) |*e| e.seen = false;
+    }
+
+    /// The whole of what this context draws on.
+    pub fn bounds(self: *const Context) Rect {
+        return .{ .x = 0, .y = 0, .w = self.surface.width, .h = self.surface.height };
     }
 
     /// Offer a key to this pass. Tab and Shift+Tab move focus; anything else
