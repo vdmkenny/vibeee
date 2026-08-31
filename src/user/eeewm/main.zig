@@ -27,6 +27,7 @@ const cursor = @import("cursor.zig");
 const config = @import("config.zig");
 const keymaps = @import("keymaps");
 const proto = @import("proto");
+const region = @import("eui").region;
 const ui = @import("eui").widget;
 const sys = @import("sys");
 const out = @import("ulib").out;
@@ -91,7 +92,6 @@ fn wmMain() noreturn {
 
     const wanted = config.load();
     desktop.bounds = bar.contentArea(info.width, info.height);
-    desktop.layouts = @splat(wanted.layout);
     desktop.mfact = @splat(wanted.masterFraction());
 
     // Signalled by cfgd when anything in the wm domain changes, so a theme
@@ -134,11 +134,27 @@ fn paint() void {
     // pixels are stale and putting them back later would paint a hole.
     cursor.invalidate();
 
-    screen.fill(.{ .x = 0, .y = 0, .w = info.width, .h = info.height }, t.desktop);
+    var buf: [layout.MAX_WINDOWS]usize = undefined;
+    const visible = desktop.visible(&buf);
+
+    // The desktop, only where it is still visible once everything else has
+    // been drawn. Filling the screen and then covering most of it again is a
+    // flash of the desktop colour, every repaint, on a display with one
+    // buffer. What the windows do not cover is arithmetic, so it is done
+    // before anything is painted rather than paid for in pixels.
+    var bare = region.Region.of(.{ .x = 0, .y = 0, .w = info.width, .h = info.height });
+    bare.subtract(bar.strip(info.height));
+    for (visible) |index| {
+        const w = &desktop.windows[index];
+        // A translucent window blends with what is behind it, so what is
+        // behind it has to be there.
+        if (w.transparency == 0) bare.subtract(w.area);
+    }
+    for (bare.items()) |piece| screen.fill(piece, t.desktop);
+
     bar.paint(screen, info.width, info.height, &desktop);
 
-    var buf: [layout.MAX_WINDOWS]usize = undefined;
-    for (desktop.visible(&buf)) |index| {
+    for (visible) |index| {
         paintWindow(index, desktop.focused == index);
     }
 
@@ -538,8 +554,6 @@ fn handleKey(event: sys.KeyEvent) void {
             if (mods.shift) desktop.sendRelative(1) else desktop.viewRelative(1);
         },
 
-        .t => desktop.setLayout(.tall),
-        .m => desktop.setLayout(.monocle),
 
         .j => desktop.focusNext(1),
 
@@ -576,7 +590,7 @@ fn handleKey(event: sys.KeyEvent) void {
             }
         },
         .w => {
-            if (mods.shift) closeDesktop(desktop.tag) else desktop.setLayout(.wide);
+            if (mods.shift) closeDesktop(desktop.tag);
         },
 
         // A theme that cannot be changed on the machine it runs on is not
@@ -839,7 +853,6 @@ fn settingsChanged() bool {
     if (!config.reload()) return false;
 
     const wanted = config.current();
-    desktop.layouts = @splat(wanted.layout);
     desktop.mfact = @splat(wanted.masterFraction());
     desktop.bounds = bar.contentArea(info.width, info.height);
 

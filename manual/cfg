@@ -25,12 +25,10 @@ Settings, generated from the schema: all
       us_intl | be_azerty
 
   [wm]
-  wm.theme                  classic
-      classic | paper | dusk
+  wm.theme                  slate
+      slate | classic | paper | dusk
   wm.bar                    top
       top | bottom
-  wm.layout                 tall
-      tall | wide | monocle
   wm.master                 58
       a number
 

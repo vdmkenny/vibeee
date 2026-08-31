@@ -38,29 +38,6 @@ pub const SPLIT_LIMIT_H: i32 = 140;
 pub const MIN_TILE_W: i32 = 200;
 pub const MIN_TILE_H: i32 = 100;
 
-/// The schema's, so the manager, the Settings app and `cfg set wm.layout` all
-/// mean the same three things by the same three names.
-pub const Layout = @import("proto").settings.Layout;
-
-/// One letter for the bar, which has no room for a word. Beside the enum
-/// rather than on it because how a layout is drawn is the manager's business
-/// and the enum is everyone's.
-pub fn glyphOf(which: Layout) []const u8 {
-    return switch (which) {
-        .tall => "T",
-        .wide => "W",
-        .monocle => "M",
-    };
-}
-
-pub fn after(which: Layout) Layout {
-    return switch (which) {
-        .tall => .wide,
-        .wide => .monocle,
-        .monocle => .tall,
-    };
-}
-
 pub const Window = struct {
     id: u32 = 0,
     /// The client that owns it, or 0 for one the manager made itself.
@@ -112,7 +89,6 @@ pub const Desktop = struct {
     count: u8 = 1,
 
     /// Per desktop, because each wants its own shape.
-    layouts: [MAX_DESKTOPS]Layout = @splat(.tall),
     /// Master's share, per desktop. Bounded well away from zero and one: a
     /// master column of twelve pixels helps nobody.
     mfact: [MAX_DESKTOPS]f32 = @splat(0.58),
@@ -124,10 +100,6 @@ pub const Desktop = struct {
 
     /// The whole area windows may occupy, below the bar.
     bounds: Rect = .{},
-
-    pub fn layout(self: *const Desktop) Layout {
-        return self.layouts[self.tag];
-    }
 
     // -----------------------------------------------------------------------
     // Windows
@@ -239,13 +211,7 @@ pub const Desktop = struct {
         const list = self.tiled(&buf);
         if (list.len == 0) return;
 
-        switch (self.layout()) {
-            .monocle => for (list) |i| {
-                self.windows[i].area = self.bounds;
-            },
-            .tall => self.split(list, .vertical),
-            .wide => self.split(list, .horizontal),
-        }
+        self.split(list, .vertical);
     }
 
     const Axis = enum { vertical, horizontal };
@@ -417,7 +383,6 @@ pub const Desktop = struct {
 
         var i: u8 = tag;
         while (i + 1 < self.count) : (i += 1) {
-            self.layouts[i] = self.layouts[i + 1];
             self.mfact[i] = self.mfact[i + 1];
             self.last_focused[i] = self.last_focused[i + 1];
         }
@@ -494,12 +459,7 @@ pub const Desktop = struct {
         if (here == 0) return self.tag;
 
         const area = self.bounds;
-        const fits = switch (self.layouts[self.tag]) {
-            // Monocle stacks rather than splits, so it never runs out of room.
-            .monocle => true,
-            .tall => @divTrunc(area.w, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_W,
-            .wide => @divTrunc(area.h, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_H,
-        };
+        const fits = @divTrunc(area.w, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_W;
         if (fits) return self.tag;
 
         // Full: the first empty desktop, or a new one.
@@ -557,15 +517,6 @@ pub const Desktop = struct {
         self.focused = null;
         self.focusFirst();
         self.arrange();
-    }
-
-    pub fn setLayout(self: *Desktop, value: Layout) void {
-        self.layouts[self.tag] = value;
-        self.arrange();
-    }
-
-    pub fn cycleLayout(self: *Desktop) void {
-        self.setLayout(after(self.layout()));
     }
 
     /// Adjust master's share. Steps of 0.05 within 0.20 to 0.80, so it cannot

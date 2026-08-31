@@ -207,7 +207,6 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
     }
 
     paintAdd(surface, width, height, desktop);
-    paintLayoutGlyph(surface, width, height, desktop);
     paintKeymapTag(surface, width, height);
     paintClock(surface, width, height);
 }
@@ -369,24 +368,13 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
     }
 }
 
-fn paintLayoutGlyph(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
-    const t = theme.current();
-    const area = Rect{
-        .x = width - CLOCK_WIDTH - 16,
-        .y = strip(height).y,
-        .w = 14,
-        .h = t.bar_height - 1,
-    };
-    surface.textCentred(area, layout.glyphOf(desktop.layout()), t.bar_text);
-}
-
 /// Which keyboard layout the keys mean, in the two letters the layout gives
 /// for the purpose. Always shown: a machine whose keycaps disagree with its
 /// layout is one where this is the first thing worth checking.
 fn paintKeymapTag(surface: Surface, width: i32, height: i32) void {
     const t = theme.current();
     const area = Rect{
-        .x = width - CLOCK_WIDTH - 42,
+        .x = width - CLOCK_WIDTH - 26,
         .y = strip(height).y,
         .w = 22,
         .h = t.bar_height - 1,
@@ -502,17 +490,6 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         } else {
             desktop.view(i);
         }
-        return .consumed;
-    }
-
-    const glyph = Rect{
-        .x = width - CLOCK_WIDTH - 16,
-        .y = strip(height).y,
-        .w = 14,
-        .h = theme.current().bar_height,
-    };
-    if (glyph.contains(x, y)) {
-        desktop.cycleLayout();
         return .consumed;
     }
 

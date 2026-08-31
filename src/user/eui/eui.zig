@@ -23,6 +23,7 @@ pub const scroll = @import("scroll.zig");
 pub const statusbar = @import("statusbar.zig");
 pub const table = @import("table.zig");
 pub const text = @import("text.zig");
+pub const region = @import("region.zig");
 pub const theme = @import("theme.zig");
 pub const widget = @import("widget.zig");
 

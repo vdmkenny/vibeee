@@ -25,9 +25,8 @@ so an image ships with the first and a machine remembers the second.
 
 | key | accepts | default |
 |---|---|---|
-| `wm.theme` | classic \| paper \| dusk | `classic` |
+| `wm.theme` | slate \| classic \| paper \| dusk | `slate` |
 | `wm.bar` | top \| bottom | `top` |
-| `wm.layout` | tall \| wide \| monocle | `tall` |
 | `wm.master` | a number | `58` |
 
 ## net

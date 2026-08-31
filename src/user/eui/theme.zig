@@ -64,8 +64,35 @@ pub const Theme = struct {
     border_width_focused: i32 = 2,
 };
 
-/// The default. Warm greys and a single medium blue, the way a workstation
-/// looked before anyone had a gradient to spare.
+/// The default. Cool neutrals under dark system chrome: the bar is the
+/// machine and the surfaces are the work, and the tonal jump between them
+/// separates the two without spending a rule on it.
+///
+/// Solid fills and hairlines like the rest, for the same reason: the panel is
+/// six bits plus frame-rate control, so a gradient shimmers rather than
+/// blends.
+pub const slate = Theme{
+    .name = "slate",
+    .desktop = 0x2B3138,
+    .surface = 0xE9EAEC,
+    .surface_hot = 0xF5F6F7,
+    .surface_pressed = 0xD8DADD,
+    .text = 0x1A1D21,
+    .text_dim = 0x5C636B,
+    .text_inverted = 0xF7F8F9,
+    .accent = 0x2F6FE0,
+    .accent_text = 0xFFFFFF,
+    .line = 0xC6C9CD,
+    .border = 0xC6C9CD,
+    .border_focused = 0x2F6FE0,
+    .bar = 0x1F242A,
+    .bar_text = 0xD6D9DD,
+    .bar_line = 0x10141A,
+    .warning = 0xB33A2B,
+};
+
+/// Warm greys and a single medium blue, the way a workstation looked before
+/// anyone had a gradient to spare.
 pub const classic = Theme{
     .name = "classic",
     .desktop = 0x5C6670,
@@ -128,11 +155,11 @@ pub const dusk = Theme{
     .warning = 0xC05050,
 };
 
-pub const all = [_]*const Theme{ &classic, &paper, &dusk };
+pub const all = [_]*const Theme{ &slate, &classic, &paper, &dusk };
 
 /// What everything draws with now. Assigning a different theme and repainting
 /// changes the whole interface, which is the point of it being one value.
-var active: *const Theme = &classic;
+var active: *const Theme = &slate;
 
 pub fn current() *const Theme {
     return active;

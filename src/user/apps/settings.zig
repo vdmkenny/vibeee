@@ -186,14 +186,6 @@ fn draw() void {
     }
     y += row + pad;
 
-    y = group(&y, full, "Layout");
-    const chosen_layout = ctx.choice(.{ .x = pad, .y = y, .w = full.w, .h = row }, current.layout);
-    if (chosen_layout != current.layout) {
-        current.layout = chosen_layout;
-        change();
-    }
-    y += row + pad;
-
     // Saved settings take effect when the manager next starts, except the
     // theme, which is live. Saying so beats a person wondering why the bar did
     // not move.

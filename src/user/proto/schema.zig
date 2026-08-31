@@ -21,24 +21,13 @@ const wifi = @import("lib").wifi;
 /// The desktop's look, which `eui` owns the definitions of. Named here as an
 /// enum so the set is closed: a completer can offer it and a dropdown can hold
 /// it, neither of which works against an open string.
-pub const Theme = enum { classic, paper, dusk };
+pub const Theme = enum { slate, classic, paper, dusk };
 
 pub const Bar = enum { top, bottom };
 
-pub const Layout = enum {
-    /// Master left, stack right. The default: one thing being worked on and a
-    /// column of context.
-    tall,
-    /// Master top, stack bottom. For a terminal under a document.
-    wide,
-    /// The focused window fills the area, the rest hidden behind it.
-    monocle,
-};
-
 pub const Wm = struct {
-    theme: Theme = .classic,
+    theme: Theme = .slate,
     bar: Bar = .top,
-    layout: Layout = .tall,
     /// Master's share of the screen as a percentage, so the file holds a whole
     /// number rather than a decimal nobody types consistently.
     master: u7 = 58,
