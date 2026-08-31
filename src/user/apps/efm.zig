@@ -469,7 +469,7 @@ fn drawKeys(area: Rect) void {
     // guessed at.
     ctx.addDamage(area);
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    const x = eui.keys.paint(ctx.surface, area, &KEYS, area.right());
+    const x = eui.keys.paint(ctx.surface, area, &KEYS, area.right(), .chip);
 
     var counted: [24]u8 = @splat(0);
     var line = str.Builder{ .buf = &counted };

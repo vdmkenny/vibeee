@@ -26,6 +26,7 @@ const slider = @import("eui").slider;
 const strip = @import("eui").strip;
 const audio = @import("proto").audio;
 const eui_icon = @import("eui").icon;
+const eui_keys = @import("eui").keys;
 const graph = @import("lib").audiograph;
 const ipv4 = @import("lib").ipv4;
 const net = @import("proto").net;
@@ -624,37 +625,28 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
         line.text(" match");
     }
 
-    const hints = if (launcher_query.slice().len == 0) &BROWSE_KEYS else &FIND_KEYS;
+    const hints: []const eui_keys.Key = if (launcher_query.slice().len == 0) &BROWSE_KEYS else &FIND_KEYS;
+
     surface.fill(area, t.bar);
     surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
 
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
     surface.text(area.x + t.menu_padding, baseline, line.done(), t.bar_text);
 
-    // The hints pack against the right edge, in the order they are written,
-    // so the last thing read is the way out.
-    var x = area.right() - t.menu_padding;
-    var at = hints.len;
-    while (at > 0) {
-        at -= 1;
-        const one = hints[at];
-        const w = Surface.textWidth(one.key) + t.gap + Surface.textWidth(one.label);
-        x -= w;
-        surface.text(x, baseline, one.key, t.accent);
-        surface.text(x + Surface.textWidth(one.key) + t.gap, baseline, one.label, t.bar_text);
-        x -= t.menu_padding;
-    }
+    // Against the right edge, in the order they are written, so the last
+    // thing read is the way out. The same row the file manager draws along
+    // its bottom, in the quieter of the two ways of saying it.
+    var placed: [eui_keys.MAX]eui_keys.Placed = undefined;
+    eui_keys.drawPlaced(surface, eui_keys.placeRight(area, hints, .plain, &placed), area, .plain);
 }
 
-const Hint = struct { key: []const u8, label: []const u8 };
-
-const BROWSE_KEYS = [_]Hint{
+const BROWSE_KEYS = [_]eui_keys.Key{
     .{ .key = "tab", .label = "category" },
     .{ .key = "enter", .label = "run" },
     .{ .key = "esc", .label = "close" },
 };
 
-const FIND_KEYS = [_]Hint{
+const FIND_KEYS = [_]eui_keys.Key{
     .{ .key = "enter", .label = "run" },
     .{ .key = "esc", .label = "close" },
 };

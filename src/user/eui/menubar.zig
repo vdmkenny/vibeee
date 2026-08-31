@@ -12,6 +12,7 @@
 
 const draw = @import("draw.zig");
 const abi = @import("lib").syscalls;
+const str = @import("lib").str;
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -48,12 +49,10 @@ pub const Menu = struct {
 /// their keyboard is in.
 fn mnemonicIs(label: []const u8, at: usize, c: u21) bool {
     if (at >= label.len or c > 0x7F) return false;
-    return fold(label[at]) == fold(@intCast(c));
+    return str.lower(label[at]) == str.lower(@intCast(c));
 }
 
-fn fold(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
-}
+
 
 /// Most items one menu may hold, which bounds the row array built per pass.
 pub const MAX_ITEMS = 16;
@@ -196,30 +195,16 @@ fn chordOf(code: KeyCode, mods: widget.Modifiers, menus: []const Menu) ?u16 {
 /// is the key and what comes before it is what has to be held.
 fn matchesChord(shortcut: []const u8, letter: u8, mods: widget.Modifiers) bool {
     if (shortcut.len == 0) return false;
-    if (fold(shortcut[shortcut.len - 1]) != letter) return false;
+    if (str.lower(shortcut[shortcut.len - 1]) != letter) return false;
 
-    const wants_shift = contains(shortcut, "Shift");
-    const wants_ctrl = contains(shortcut, "Ctrl");
-    const wants_alt = contains(shortcut, "Alt");
+    const wants_shift = str.contains(shortcut, "Shift");
+    const wants_ctrl = str.contains(shortcut, "Ctrl");
+    const wants_alt = str.contains(shortcut, "Alt");
 
     return wants_ctrl == mods.control and wants_shift == mods.shift and wants_alt == mods.alt;
 }
 
-fn contains(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len > haystack.len) return false;
-    var at: usize = 0;
-    while (at + needle.len <= haystack.len) : (at += 1) {
-        var same = true;
-        for (needle, 0..) |c, i| {
-            if (haystack[at + i] != c) {
-                same = false;
-                break;
-            }
-        }
-        if (same) return true;
-    }
-    return false;
-}
+
 
 /// The modifier and a letter: open the menu that letter names.
 ///

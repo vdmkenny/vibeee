@@ -384,6 +384,13 @@ fn run() noreturn {
                 if (event.isPress()) handleKey(event);
             } else if (event.mods().super) {
                 if (event.isPress()) handleKey(event);
+            } else if (event.code == @intFromEnum(KeyCode.f1) and desktop.focused == null) {
+                // Help, where every desktop has put it. Only with nothing
+                // focused: a window on screen owns the key, and a program
+                // with its own help would never see it otherwise.
+                if (event.isPress()) {
+                    _ = sys.spawnDetached("/bin/settings", &.{ "settings", "help" });
+                }
             } else {
                 postToFocused(.{
                     .tag = .key,

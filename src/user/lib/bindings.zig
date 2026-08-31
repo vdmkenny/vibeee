@@ -38,6 +38,27 @@ pub const Action = enum {
     cycle_theme,
 };
 
+/// What a binding is about, so a page listing them can group them the way
+/// somebody looking for one would: by what they are trying to do rather than
+/// by which letter it happens to be.
+pub const Group = enum {
+    starting,
+    windows,
+    desktops,
+    closing,
+    machine,
+
+    pub fn title(self: Group) []const u8 {
+        return switch (self) {
+            .starting => "Starting things",
+            .windows => "Windows",
+            .desktops => "Desktops",
+            .closing => "Closing",
+            .machine => "The machine",
+        };
+    }
+};
+
 pub const Binding = struct {
     code: KeyCode,
     /// Whether shift is part of the chord. Every binding here is held with
@@ -49,37 +70,38 @@ pub const Binding = struct {
     chord: []const u8,
     /// What it does, in the words a person would use.
     says: []const u8,
+    group: Group,
 };
 
 /// Held with Super, always. The number keys are a family of their own and
 /// are handled before this table is consulted: nine rows saying the same
 /// thing would be a list nobody reads.
 pub const all = [_]Binding{
-    .{ .code = .enter, .action = .terminal, .chord = "Super+Enter", .says = "a terminal" },
-    .{ .code = .p, .action = .launcher, .chord = "Super+P", .says = "the launcher" },
-    .{ .code = .b, .action = .focus_bar, .chord = "Super+B", .says = "the keyboard goes to the bar" },
+    .{ .code = .enter, .action = .terminal, .chord = "Super+Enter", .says = "a terminal", .group = .starting },
+    .{ .code = .p, .action = .launcher, .chord = "Super+P", .says = "the launcher", .group = .starting },
+    .{ .code = .b, .action = .focus_bar, .chord = "Super+B", .says = "the keyboard goes to the bar", .group = .starting },
 
-    .{ .code = .j, .action = .focus_next, .chord = "Super+J", .says = "focus the next window" },
-    .{ .code = .k, .action = .focus_previous, .chord = "Super+K", .says = "focus the one before" },
-    .{ .code = .enter, .shift = true, .action = .zoom, .chord = "Super+Shift+Enter", .says = "make this window the master" },
-    .{ .code = .m, .action = .maximise, .chord = "Super+M", .says = "one window at full size, and back" },
-    .{ .code = .f, .action = .floating, .chord = "Super+F", .says = "let this window float free of the tiling" },
-    .{ .code = .h, .action = .master_smaller, .chord = "Super+H", .says = "give the master less room" },
-    .{ .code = .l, .action = .master_larger, .chord = "Super+L", .says = "give the master more" },
+    .{ .code = .j, .action = .focus_next, .chord = "Super+J", .says = "focus the next window", .group = .windows },
+    .{ .code = .k, .action = .focus_previous, .chord = "Super+K", .says = "focus the one before", .group = .windows },
+    .{ .code = .enter, .shift = true, .action = .zoom, .chord = "Super+Shift+Enter", .says = "make this window the master", .group = .windows },
+    .{ .code = .m, .action = .maximise, .chord = "Super+M", .says = "one window at full size, and back", .group = .windows },
+    .{ .code = .f, .action = .floating, .chord = "Super+F", .says = "let this window float free of the tiling", .group = .windows },
+    .{ .code = .h, .action = .master_smaller, .chord = "Super+H", .says = "give the master less room", .group = .windows },
+    .{ .code = .l, .action = .master_larger, .chord = "Super+L", .says = "give the master more", .group = .windows },
 
-    .{ .code = .bracket_left, .action = .view_left, .chord = "Super+[", .says = "the desktop to the left" },
-    .{ .code = .bracket_right, .action = .view_right, .chord = "Super+]", .says = "the desktop to the right" },
-    .{ .code = .bracket_left, .shift = true, .action = .send_left, .chord = "Super+Shift+[", .says = "take this window there" },
-    .{ .code = .bracket_right, .shift = true, .action = .send_right, .chord = "Super+Shift+]", .says = "take this window there" },
-    .{ .code = .tab, .action = .view_previous, .chord = "Super+Tab", .says = "back to the last desktop" },
-    .{ .code = .n, .action = .new_desktop, .chord = "Super+N", .says = "another desktop" },
+    .{ .code = .bracket_left, .action = .view_left, .chord = "Super+[", .says = "the desktop to the left", .group = .desktops },
+    .{ .code = .bracket_right, .action = .view_right, .chord = "Super+]", .says = "the desktop to the right", .group = .desktops },
+    .{ .code = .bracket_left, .shift = true, .action = .send_left, .chord = "Super+Shift+[", .says = "take this window there", .group = .desktops },
+    .{ .code = .bracket_right, .shift = true, .action = .send_right, .chord = "Super+Shift+]", .says = "take this window there", .group = .desktops },
+    .{ .code = .tab, .action = .view_previous, .chord = "Super+Tab", .says = "back to the last desktop", .group = .desktops },
+    .{ .code = .n, .action = .new_desktop, .chord = "Super+N", .says = "another desktop", .group = .desktops },
 
-    .{ .code = .c, .shift = true, .action = .close_window, .chord = "Super+Shift+C", .says = "ask this window to close" },
-    .{ .code = .k, .shift = true, .action = .kill_window, .chord = "Super+Shift+K", .says = "take it away if it will not" },
-    .{ .code = .w, .shift = true, .action = .close_desktop, .chord = "Super+Shift+W", .says = "close the whole desktop" },
+    .{ .code = .c, .shift = true, .action = .close_window, .chord = "Super+Shift+C", .says = "ask this window to close", .group = .closing },
+    .{ .code = .k, .shift = true, .action = .kill_window, .chord = "Super+Shift+K", .says = "take it away if it will not", .group = .closing },
+    .{ .code = .w, .shift = true, .action = .close_desktop, .chord = "Super+Shift+W", .says = "close the whole desktop", .group = .closing },
 
-    .{ .code = .space, .action = .next_keymap, .chord = "Super+Space", .says = "the next keyboard layout" },
-    .{ .code = .grave, .action = .cycle_theme, .chord = "Super+`", .says = "the next theme" },
+    .{ .code = .space, .action = .next_keymap, .chord = "Super+Space", .says = "the next keyboard layout", .group = .machine },
+    .{ .code = .grave, .action = .cycle_theme, .chord = "Super+`", .says = "the next theme", .group = .machine },
 };
 
 /// What the numbers do, said once rather than nine times.

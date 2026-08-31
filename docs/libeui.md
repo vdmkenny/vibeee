@@ -80,6 +80,7 @@ with it this pass.
 | `label` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelDim` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelIn` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
+| `rowText` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
 | `progress` | `fn (*widget.Context, draw.Rect, u8) void` |
 
 ## The pass

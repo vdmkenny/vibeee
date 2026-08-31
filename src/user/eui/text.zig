@@ -18,6 +18,7 @@ const std = @import("std");
 const draw = @import("draw.zig");
 const scroll = @import("scroll.zig");
 const eui_context_menu = @import("context_menu.zig");
+const str = @import("lib").str;
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -294,38 +295,6 @@ pub const Editor = struct {
 /// document is read, and a grid is for a program that draws one.
 pub const face: *const draw.Font = draw.ui_font;
 
-/// Whether a byte is part of a word, for the movement that steps over one.
-///
-/// Letters, digits and the punctuation that holds an identifier together. A
-/// word is what somebody means by "the next word", which is not the same as
-/// what a dictionary means.
-pub fn inWord(byte: u8) bool {
-    return switch (byte) {
-        'a'...'z', 'A'...'Z', '0'...'9', '_' => true,
-        // Anything above ASCII is part of a word: the alternative is stopping
-        // in the middle of one written in a language that needs those bytes.
-        else => byte >= 0x80,
-    };
-}
-
-/// The start of the word at or before `at`. Runs of separators are crossed
-/// first, so a cursor after a space lands on the word before it rather than
-/// on the space.
-pub fn wordBefore(text: []const u8, at: usize) usize {
-    var i = @min(at, text.len);
-    while (i > 0 and !inWord(text[i - 1])) i -= 1;
-    while (i > 0 and inWord(text[i - 1])) i -= 1;
-    return i;
-}
-
-/// The end of the word at or after `at`.
-pub fn wordAfter(text: []const u8, at: usize) usize {
-    var i = @min(at, text.len);
-    while (i < text.len and !inWord(text[i])) i += 1;
-    while (i < text.len and inWord(text[i])) i += 1;
-    return i;
-}
-
 /// Which line and column an offset is at, counted from one because that is
 /// how every other thing that says "line 9" counts.
 pub const Place = struct { line: usize, column: usize };
@@ -542,6 +511,42 @@ pub fn run(state: *Editor, buffer: *Buffer, what: Command, clip: widget.Clipboar
     }
 }
 
+/// A paragraph of text that is read, wrapped into `area` and nothing more.
+///
+/// Returns the height it took, so whatever comes under it knows where to
+/// start: a page whose prose is one line longer in another language should
+/// push what follows down rather than draw over it.
+pub fn paragraph(surface: Surface, area: Rect, words: []const u8, ink: draw.Color) i32 {
+    const line_height: i32 = @intCast(face.height);
+    const clipped = surface.clipped(area);
+
+    var y = area.y;
+    var it = lines(words, face, area.w);
+    while (it.next()) |line| {
+        clipped.text(area.x, y, words[line.start..line.end], ink);
+        y += line_height;
+    }
+    return y - area.y;
+}
+
+/// Every chord a text field or a document answers, and what it does.
+///
+/// Here rather than in whatever draws a help page: these belong to the
+/// toolkit, work in every window without any program asking for them, and a
+/// list kept somewhere else is a list that says the old ones.
+pub const CHORDS = [_]struct { chord: []const u8, says: []const u8 }{
+    .{ .chord = "Ctrl+X", .says = "cut what is selected" },
+    .{ .chord = "Ctrl+C", .says = "copy it" },
+    .{ .chord = "Ctrl+V", .says = "paste" },
+    .{ .chord = "Ctrl+A", .says = "select everything" },
+    .{ .chord = "Ctrl+W", .says = "delete the word before the cursor" },
+    .{ .chord = "Ctrl+U", .says = "delete to the start of the line" },
+    .{ .chord = "Ctrl+Left, Ctrl+Right", .says = "move a word at a time" },
+    .{ .chord = "Ctrl+Home, Ctrl+End", .says = "the start and end of the document" },
+    .{ .chord = "Shift+any of these", .says = "select while moving" },
+    .{ .chord = "Menu, Shift+F10", .says = "the menu the other mouse button opens" },
+};
+
 /// The rows the other mouse button opens, in the order every system puts
 /// them, each with the chord that does the same thing.
 const MENU_ROWS = [_]widget.MenuItem{
@@ -610,7 +615,7 @@ fn key(
         switch (code) {
             .w => {
                 if (!state.deleteSelection(buffer)) {
-                    const from = wordBefore(text, state.cursor);
+                    const from = str.wordBefore(text, state.cursor);
                     if (from < state.cursor) {
                         buffer.remove(from, state.cursor);
                         state.cursor = from;
@@ -638,12 +643,12 @@ fn key(
 
     switch (code) {
         .left => {
-            const to = if (mods.control) wordBefore(text, state.cursor) else buffer.before(state.cursor);
+            const to = if (mods.control) str.wordBefore(text, state.cursor) else buffer.before(state.cursor);
             state.moveTo(to, extend);
             state.goal = null;
         },
         .right => {
-            const to = if (mods.control) wordAfter(text, state.cursor) else buffer.after(state.cursor);
+            const to = if (mods.control) str.wordAfter(text, state.cursor) else buffer.after(state.cursor);
             state.moveTo(to, extend);
             state.goal = null;
         },

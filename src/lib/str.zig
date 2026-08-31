@@ -78,6 +78,49 @@ pub fn contains(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+/// Whether a byte is part of a word, for the movement and the deletion that
+/// step over one. Letters, digits, and the underscore that holds an
+/// identifier together; anything above ASCII counts, because the alternative
+/// is stopping in the middle of a word written in a language that needs
+/// those bytes.
+pub fn inWord(c: u8) bool {
+    return switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_' => true,
+        else => c >= 0x80,
+    };
+}
+
+/// The start of the word at or before `at`. Runs of separators are crossed
+/// first, so a cursor sitting after a space takes the word before it rather
+/// than the space.
+pub fn wordBefore(text: []const u8, at: usize) usize {
+    var i = @min(at, text.len);
+    while (i > 0 and !inWord(text[i - 1])) i -= 1;
+    while (i > 0 and inWord(text[i - 1])) i -= 1;
+    return i;
+}
+
+/// The end of the word at or after `at`.
+pub fn wordAfter(text: []const u8, at: usize) usize {
+    var i = @min(at, text.len);
+    while (i < text.len and !inWord(text[i])) i += 1;
+    while (i < text.len and inWord(text[i])) i += 1;
+    return i;
+}
+
+/// The start of the field at or before `at`: the same walk with whitespace
+/// as the only separator.
+///
+/// What a command line means by a word. A path is one thing to somebody
+/// typing it, and a deletion that stopped at every slash would take four
+/// presses to undo one argument.
+pub fn fieldBefore(text: []const u8, at: usize) usize {
+    var i = @min(at, text.len);
+    while (i > 0 and isSpace(text[i - 1])) i -= 1;
+    while (i > 0 and !isSpace(text[i - 1])) i -= 1;
+    return i;
+}
+
 pub fn isSpace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\r';
 }

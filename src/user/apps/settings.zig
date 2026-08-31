@@ -303,17 +303,37 @@ fn draw() void {
 
     drawRail(rail);
 
-    switch (section) {
-        .display => drawDisplay(pane),
-        .input => drawInput(pane),
-        .audio => drawAudio(pane),
-        .power => drawPower(pane),
-        .help => drawHelp(pane),
-        .about => drawAbout(pane),
-    }
+    // Whatever a section holds, it scrolls when it does not fit: a larger
+    // interface, a longer list of devices or a translation with longer words
+    // are all things that make a pane taller than the window it is in, and
+    // none of them should put a row out of reach.
+    const scrolled = &pane_scroll[@intFromEnum(section)];
+    const view = eui.scrollpane.begin(ctx, pane, scrolled);
+    const inner = eui.Rect{
+        .x = view.area.x,
+        .y = view.top(),
+        .w = view.area.w,
+        .h = pane.h + view.offset,
+    };
+
+    help_view = view;
+    const drawn = switch (section) {
+        .display => drawDisplay(inner),
+        .input => drawInput(inner),
+        .audio => drawAudio(inner),
+        .power => drawPower(inner),
+        .help => drawHelp(inner),
+        .about => drawAbout(inner),
+    };
+    eui.scrollpane.end(ctx, scrolled, view, drawn - view.top());
 
     drawFooter(area);
 }
+
+/// Where each section has been scrolled to. One each, because a section
+/// scrolled halfway and then left should be where it was when it comes back,
+/// and because a short pane must not inherit a tall one's offset.
+var pane_scroll: [std.enums.values(Section).len]eui.scrollpane.State = @splat(.{});
 
 fn drawRail(rail: eui.Rect) void {
     var rows: [std.enums.values(Section).len]eui.rail.Item = undefined;
@@ -331,7 +351,7 @@ fn drawRail(rail: eui.Rect) void {
     }
 }
 
-fn drawDisplay(pane: eui.Rect) void {
+fn drawDisplay(pane: eui.Rect) i32 {
     const t = theme.current();
     const row = t.control_height;
     var y = pane.y;
@@ -422,10 +442,12 @@ fn drawDisplay(pane: eui.Rect) void {
     // colours: the panel is one flat colour and which one is a matter of
     // taste that a list of six would only get near.
     y = group(&y, full, "Wallpaper");
-    _ = wallpaper(.{ .x = pane.x, .y = y, .w = full.w, .h = row * 3 + t.padding * 2 });
+    const wall = eui.Rect{ .x = pane.x, .y = y, .w = full.w, .h = row * 3 + t.padding * 2 };
+    _ = wallpaper(wall);
+    return wall.bottom();
 }
 
-fn drawAudio(pane: eui.Rect) void {
+fn drawAudio(pane: eui.Rect) i32 {
     const t = theme.current();
     const row = t.control_height;
     var y = pane.y;
@@ -434,7 +456,7 @@ fn drawAudio(pane: eui.Rect) void {
     y = group(&y, full, "Volume");
     if (!has_sound) {
         ctx.label(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "Nothing is serving sound.");
-        return;
+        return y;
     }
 
     const level = ctx.slider(
@@ -467,7 +489,7 @@ fn drawAudio(pane: eui.Rect) void {
     y = group(&y, full, "Input");
     y = drawMeterRow(pane, y, "Mic", meter_capture, meter_capture);
     y += t.padding;
-    y = drawPorts(pane, y, .source, "Inputs");
+    return drawPorts(pane, y, .source, "Inputs");
 }
 
 /// One meter with its letter, at the design's own thinness.
@@ -529,7 +551,7 @@ fn drawPorts(pane: eui.Rect, from: i32, direction: sound.graph.Direction, title:
 /// the two letters in the status area stopped earning their width. The chord
 /// that cycles it still works, and this and the chord write the same key, so
 /// whichever one is used the other agrees.
-fn drawInput(pane: eui.Rect) void {
+fn drawInput(pane: eui.Rect) i32 {
     const t = theme.current();
     const row = t.control_height;
     var y = pane.y;
@@ -548,39 +570,132 @@ fn drawInput(pane: eui.Rect) void {
         .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
         "Applies at once, everywhere. Super+Space cycles it too.",
     );
+    return y + t.control_height;
 }
 
 /// The keys that move windows around, from the table the manager dispatches
 /// from: a list here that the manager did not read would be a list that says
 /// what the machine used to do.
-fn drawHelp(pane: eui.Rect) void {
-    const t = theme.current();
-    var y = pane.y;
-    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height };
+/// Every key the system answers, grouped by what somebody would be trying to
+/// do, and scrolled because there are more of them than fit.
+///
+/// Both lists are read from where the keys actually live: the manager's table
+/// and the toolkit's. A page that kept its own copy would describe the keys
+/// as they were when somebody last remembered to edit it.
+const HelpRow = struct {
+    chord: []const u8,
+    says: []const u8,
+    /// A heading rather than a key, drawn as one and not selectable.
+    heading: bool = false,
+};
 
-    y = group(&y, full, "Desktops and windows");
+/// How many rows the page can hold. Bounded like everything here: the two
+/// tables are known at build time, and this is checked against them.
+const HELP_ROWS = bindings.all.len + bindings.numbers.len + eui.text.CHORDS.len +
+    @typeInfo(bindings.Group).@"enum".fields.len + 2;
 
-    const chord_w = @max(theme.enlarged(120), @divTrunc(pane.w, 3));
-    for (bindings.all) |binding| {
-        if (y + t.menu_row_height > pane.bottom()) break;
-        ctx.label(.{ .x = pane.x, .y = y, .w = chord_w, .h = t.control_height }, binding.chord);
-        ctx.labelDim(
-            .{ .x = pane.x + chord_w, .y = y, .w = pane.w - chord_w, .h = t.control_height },
-            binding.says,
-        );
-        y += theme.enlarged(16);
+fn helpRows(into: []HelpRow) []HelpRow {
+    var n: usize = 0;
+
+    for (std.enums.values(bindings.Group)) |group_of| {
+        var any = false;
+        for (bindings.all) |binding| {
+            if (binding.group != group_of) continue;
+            if (!any) {
+                into[n] = .{ .chord = group_of.title(), .says = "", .heading = true };
+                n += 1;
+                any = true;
+            }
+            into[n] = .{ .chord = binding.chord, .says = binding.says };
+            n += 1;
+        }
     }
 
-    y += t.padding;
+    into[n] = .{ .chord = "Desktops by number", .says = "", .heading = true };
+    n += 1;
     for (bindings.numbers) |row| {
-        if (y + t.menu_row_height > pane.bottom()) break;
-        ctx.label(.{ .x = pane.x, .y = y, .w = chord_w, .h = t.control_height }, row.chord);
-        ctx.labelDim(
-            .{ .x = pane.x + chord_w, .y = y, .w = pane.w - chord_w, .h = t.control_height },
-            row.says,
-        );
-        y += theme.enlarged(16);
+        into[n] = .{ .chord = row.chord, .says = row.says };
+        n += 1;
     }
+
+    into[n] = .{ .chord = "Text, anywhere", .says = "", .heading = true };
+    n += 1;
+    for (eui.text.CHORDS) |row| {
+        into[n] = .{ .chord = row.chord, .says = row.says };
+        n += 1;
+    }
+
+    return into[0..n];
+}
+
+/// What the help pane can see of itself this pass, so it draws only that.
+var help_view: eui.scrollpane.View = undefined;
+
+/// How tall the intro is when it is scrolled past: the rows below it have to
+/// start in the same place whether or not it was drawn.
+fn paragraphHeight(width: i32) i32 {
+    const wrapped = eui.text.count(HELP_INTRO, eui.text.face, width);
+    return @intCast(wrapped * @as(usize, eui.text.face.height));
+}
+
+/// What somebody opening this page needs to know before the table means
+/// anything: which key the desktop belongs to, and that the rest of it works
+/// in every window.
+const HELP_INTRO =
+    "The desktop is driven from the keyboard. Super is the key the manager " ++
+    "answers to: held with the keys below it moves between windows and " ++
+    "desktops without ever reaching the program you are in. The text keys " ++
+    "at the end work in every field and every document on the system.";
+
+fn drawHelp(pane: eui.Rect) i32 {
+    const t = theme.current();
+    const line = theme.enlarged(16);
+    const chord_w = @max(theme.enlarged(120), @divTrunc(pane.w, 3));
+
+    var storage: [HELP_ROWS]HelpRow = undefined;
+    var y = pane.y;
+
+    if (help_view.shows(y, t.control_height * 3)) {
+        y += eui.text.paragraph(
+            ctx.surface,
+            .{ .x = pane.x, .y = y, .w = pane.w, .h = pane.h },
+            HELP_INTRO,
+            t.text_dim,
+        );
+    } else {
+        y += paragraphHeight(pane.w);
+    }
+    y += t.control_height;
+
+    for (helpRows(&storage)) |row| {
+        // Only what is on screen. The rest is scrolled past, and drawing it
+        // would spend a control's worth of the pass on a row nobody sees.
+        if (!help_view.shows(y, line)) {
+            y += line;
+            continue;
+        }
+
+        if (row.heading) {
+            ctx.rowText(
+                .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height },
+                row.chord,
+                t.text_dim,
+            );
+        } else {
+            ctx.rowText(
+                .{ .x = pane.x, .y = y, .w = chord_w, .h = t.control_height },
+                row.chord,
+                t.text,
+            );
+            ctx.rowText(
+                .{ .x = pane.x + chord_w, .y = y, .w = pane.w - chord_w, .h = t.control_height },
+                row.says,
+                t.text_dim,
+            );
+        }
+        y += line;
+    }
+    return y;
 }
 
 /// What the battery is doing, what it is made of, and what the panel is set
@@ -589,7 +704,7 @@ fn drawHelp(pane: eui.Rect) void {
 /// Everything the firmware reports, because this is the page somebody opens
 /// when the machine is not lasting: charge without wear, rate or voltage says
 /// nothing about why.
-fn drawPower(pane: eui.Rect) void {
+fn drawPower(pane: eui.Rect) i32 {
     const t = theme.current();
     const row = t.control_height;
     var y = pane.y;
@@ -677,7 +792,9 @@ fn drawPower(pane: eui.Rect) void {
             .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
             "This machine offers no way to set the backlight.",
         );
+        y += t.control_height;
     }
+    return y;
 }
 
 /// Every thermal zone, each drawn against its own critical point.
@@ -815,7 +932,7 @@ const hardware = [_]Fact{
     .{ .label = "Firmware", .key = "bios" },
 };
 
-fn drawAbout(pane: eui.Rect) void {
+fn drawAbout(pane: eui.Rect) i32 {
     const t = theme.current();
     var y = drawIdentity(pane);
 
@@ -824,7 +941,7 @@ fn drawAbout(pane: eui.Rect) void {
     y += t.padding;
 
     y = group(&y, pane, "Hardware");
-    y = drawFacts(pane, y, &hardware);
+    return drawFacts(pane, y, &hardware);
 }
 
 fn drawFacts(pane: eui.Rect, from: i32, facts: []const Fact) i32 {

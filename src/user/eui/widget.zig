@@ -964,6 +964,17 @@ pub const Context = struct {
         }
     }
 
+    /// A row of a list: text that is read and never touched.
+    ///
+    /// Drawn straight onto the surface rather than kept as a control. A
+    /// control is a thing with state worth remembering between passes, and a
+    /// list of forty rows has none: keeping them would spend the pass's whole
+    /// table on rows that only ever say the same thing, and the rows past the
+    /// end of it would silently not be drawn at all.
+    pub fn rowText(self: *Context, area: Rect, text: []const u8, ink: draw.Color) void {
+        self.surface.clipped(area).text(area.x, area.y, text, ink);
+    }
+
     /// A filled bar, for anything with a proportion to show.
     pub fn progress(self: *Context, area: Rect, fraction: u8) void {
         const entry = self.slotFor(area) orelse return;

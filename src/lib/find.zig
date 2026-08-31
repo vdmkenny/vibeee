@@ -19,6 +19,7 @@
 //! Pure, so it is host-tested rather than judged by typing at it.
 
 const std = @import("std");
+const str = @import("str.zig");
 
 /// Which run of the name matched, and how strongly.
 pub const Match = struct {
@@ -109,26 +110,9 @@ fn startsWord(name: []const u8, at: usize) bool {
 fn eqlFold(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| {
-        if (lower(x) != lower(y)) return false;
+        if (str.lower(x) != str.lower(y)) return false;
     }
     return true;
-}
-
-fn lower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
-}
-
-/// Whether `a` should be listed before `b`.
-///
-/// Score first, then the earlier run, then the shorter name, and finally the
-/// order the caller offered them in, which is how two equally good answers
-/// stay in the order the source listed them rather than swapping about as
-/// letters arrive.
-pub fn before(a: Match, a_len: usize, a_seq: usize, b: Match, b_len: usize, b_seq: usize) bool {
-    if (a.score != b.score) return a.score > b.score;
-    if (a.at != b.at) return a.at < b.at;
-    if (a_len != b_len) return a_len < b_len;
-    return a_seq < b_seq;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,16 +177,11 @@ test "a name that is long is still ranked above one matched in the middle" {
     try testing.expect(long_start.score > short_middle.score);
 }
 
-test "ordering falls back to the order the source offered" {
+test "names of the same shape score the same, so the caller breaks the tie" {
+    // Which is why ordering is the caller's: two equally good answers should
+    // stay in the order their source listed them rather than swap about as
+    // letters arrive, and only the caller knows what that order was.
     const a = match("Files", "f").?;
     const b = match("Fonts", "f").?;
     try testing.expectEqual(a.score, b.score);
-    try testing.expect(before(a, 5, 0, b, 5, 1));
-    try testing.expect(!before(b, 5, 1, a, 5, 0));
-}
-
-test "a better score wins whatever else is true" {
-    const early = match("Editor", "edi").?;
-    const late = match("edit", "dit").?;
-    try testing.expect(before(early, 6, 9, late, 4, 0));
 }

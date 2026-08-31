@@ -6,9 +6,11 @@
 //! viewer and the launcher all want the same row, which is why the shape is
 //! here and not in any of them.
 //!
-//! A key is a chip in the accent with the label beside it, so the chord and
-//! what it does read as one thing and the eye can skip along the row. What
-//! does not fit is dropped rather than squeezed: half a word is worse than no
+//! A key and what it does read as one thing, so the eye can skip along the
+//! row. Two ways of saying it: a chip in the accent where the row is the
+//! interface, as in a file manager driven entirely from these keys, and plain
+//! coloured text where the row is a footnote under something else. What does
+//! not fit is dropped rather than squeezed: half a word is worse than no
 //! word, and the keys are ordered so the first ones are the ones worth
 //! keeping.
 //!
@@ -31,6 +33,18 @@ pub const Key = struct {
     label: []const u8,
 };
 
+/// How the chord is drawn.
+pub const Style = enum {
+    /// A filled chip in the accent. For a row that is the interface.
+    chip,
+    /// The accent as ink, on the bar's own ground. For a row that sits under
+    /// something else and should not compete with it.
+    plain,
+};
+
+/// Which end the row packs against.
+pub const Align = enum { left, right };
+
 /// Where one named key sits, once it is known to fit.
 pub const Placed = struct {
     chip: Rect,
@@ -40,14 +54,18 @@ pub const Placed = struct {
     label: []const u8,
 };
 
-/// How wide a named key needs, chip and label and the air after it.
-pub fn width(entry: Key) i32 {
+/// How wide a named key needs, chord and label and the air after it.
+pub fn width(entry: Key, style: Style) i32 {
     const t = theme.current();
-    return chipWidth(entry.key) + t.padding + Surface.textWidth(entry.label) + t.menu_padding;
+    return chipWidth(entry.key, style) + t.padding + Surface.textWidth(entry.label) + t.menu_padding;
 }
 
-fn chipWidth(key: []const u8) i32 {
-    return Surface.textWidth(key) + theme.current().padding;
+fn chipWidth(key: []const u8, style: Style) i32 {
+    // Plain text needs no room around it; a chip is a shape and does.
+    return Surface.textWidth(key) + switch (style) {
+        .chip => theme.current().padding,
+        .plain => 0,
+    };
 }
 
 /// Place as many keys as fit in `area`, left to right, stopping at the first
@@ -56,7 +74,7 @@ fn chipWidth(key: []const u8) i32 {
 /// `limit` is where the row must stop, which is not always its right edge: a
 /// count or a message often sits at the other end, and a key drawn under it
 /// is two things in one place.
-pub fn place(area: Rect, limit: i32, entries: []const Key, into: []Placed) []Placed {
+pub fn place(area: Rect, limit: i32, entries: []const Key, style: Style, into: []Placed) []Placed {
     const t = theme.current();
     var n: usize = 0;
     var x = area.x + t.padding;
@@ -67,7 +85,7 @@ pub fn place(area: Rect, limit: i32, entries: []const Key, into: []Placed) []Pla
         const chip = Rect{
             .x = x,
             .y = area.y + t.padding,
-            .w = chipWidth(entry.key),
+            .w = chipWidth(entry.key, style),
             .h = @max(0, area.h - t.padding * 2),
         };
         const label_x = chip.right() + t.padding;
@@ -81,27 +99,60 @@ pub fn place(area: Rect, limit: i32, entries: []const Key, into: []Placed) []Pla
     return into[0..n];
 }
 
+/// The same, packed against the right edge instead: the whole row measured
+/// first, then laid out from where it has to start to end where it should.
+pub fn placeRight(area: Rect, entries: []const Key, style: Style, into: []Placed) []Placed {
+    const t = theme.current();
+
+    var total: i32 = 0;
+    for (entries) |entry| total += width(entry, style);
+
+    const from = Rect{
+        .x = @max(area.x, area.right() - t.padding - total),
+        .y = area.y,
+        .w = area.w,
+        .h = area.h,
+    };
+    return place(from, area.right(), entries, style, into);
+}
+
 /// The whole row: the ground, the rule above it, and the keys that fit.
 ///
 /// Returns where the row stopped, so a caller with something to say on the
 /// same line knows what is left.
-pub fn paint(surface: Surface, area: Rect, entries: []const Key, limit: i32) i32 {
+pub fn paint(surface: Surface, area: Rect, entries: []const Key, limit: i32, style: Style) i32 {
     const t = theme.current();
 
     surface.fill(area, t.bar);
     surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
 
     var buf: [MAX]Placed = undefined;
-    const shown = place(area, limit, entries, &buf);
+    return render(surface, place(area, limit, entries, style, &buf), area, style) orelse
+        area.x + t.padding;
+}
 
+/// Draw an already placed row, without touching the ground under it: what a
+/// caller with something else on the same strip wants.
+pub fn drawPlaced(surface: Surface, shown: []const Placed, area: Rect, style: Style) void {
+    _ = render(surface, shown, area, style);
+}
+
+fn render(surface: Surface, shown: []const Placed, area: Rect, style: Style) ?i32 {
+    const t = theme.current();
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
+
     for (shown) |one| {
-        surface.fill(one.chip, t.accent);
-        surface.textCentred(one.chip, one.key, t.accent_text);
+        switch (style) {
+            .chip => {
+                surface.fill(one.chip, t.accent);
+                surface.textCentred(one.chip, one.key, t.accent_text);
+            },
+            .plain => surface.text(one.chip.x, baseline, one.key, t.accent),
+        }
         surface.text(one.label_x, baseline, one.label, t.bar_text);
     }
 
-    if (shown.len == 0) return area.x + t.padding;
+    if (shown.len == 0) return null;
     const last = shown[shown.len - 1];
     return last.label_x + Surface.textWidth(last.label) + t.menu_padding;
 }
@@ -121,7 +172,7 @@ test "keys are placed left to right, each after the last" {
     };
 
     var buf: [MAX]Placed = undefined;
-    const shown = place(area, area.right(), &entries, &buf);
+    const shown = place(area, area.right(), &entries, .chip, &buf);
     try testing.expectEqual(@as(usize, 3), shown.len);
 
     for (shown, 0..) |one, i| {
@@ -142,7 +193,7 @@ test "what does not fit is dropped, not squeezed" {
 
     const narrow = Rect{ .x = 0, .y = 0, .w = 90, .h = 22 };
     var buf: [MAX]Placed = undefined;
-    const shown = place(narrow, narrow.right(), &entries, &buf);
+    const shown = place(narrow, narrow.right(), &entries, .chip, &buf);
 
     try testing.expect(shown.len < entries.len);
     for (shown) |one| {
@@ -160,8 +211,8 @@ test "the limit is where the row stops, not the edge" {
 
     var wide: [MAX]Placed = undefined;
     var tight: [MAX]Placed = undefined;
-    const all = place(area, area.right(), &entries, &wide);
-    const some = place(area, 100, &entries, &tight);
+    const all = place(area, area.right(), &entries, .chip, &wide);
+    const some = place(area, 100, &entries, .chip, &tight);
 
     try testing.expect(some.len < all.len);
 }
@@ -171,7 +222,7 @@ test "a row with nowhere to put anything places nothing" {
     var buf: [MAX]Placed = undefined;
     try testing.expectEqual(@as(usize, 0), place(none, none.right(), &.{
         .{ .key = "Tab", .label = "pane" },
-    }, &buf).len);
+    }, .chip, &buf).len);
 }
 
 test "no more keys are placed than the caller has room for" {
@@ -182,5 +233,5 @@ test "no more keys are placed than the caller has room for" {
         .{ .key = "c", .label = "three" },
     };
     var two: [2]Placed = undefined;
-    try testing.expectEqual(@as(usize, 2), place(area, area.right(), &entries, &two).len);
+    try testing.expectEqual(@as(usize, 2), place(area, area.right(), &entries, .chip, &two).len);
 }
