@@ -3,15 +3,16 @@
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins:
 > it carries later decisions this document predates.
 
-Status: implemented through M1 on EHCI, verified end to end in QEMU. The
-controller driver, enumeration, hot-plug, the bulk-only mass storage class with
-its SCSI commands, the block-device seam to the kernel, and boot-protocol HID
-for keyboards and mice all run: a stick is enumerated, mounted under /media,
-read and written, and unplugging it takes its mount with it; a USB keyboard
-types and a USB mouse moves the pointer. The UHCI companions (§5.6), hubs, UVC
-(§4.2), and suspend and resume (§5.8) are design for later milestones. Owner:
-usbd. Depends on: kernel contracts v0, 05-input (injection), 03-vfs (volume
-consumer), platformd (CAMS/ACPI), devmgr (supervision/matching).
+Status: implemented through M1, verified end to end in QEMU. Both controllers
+run behind one seam: EHCI for high speed, and the UHCI companions that a full or
+low speed root port belongs to. On top of them: enumeration, hot-plug, the
+bulk-only mass storage class with its SCSI commands, the block-device seam to
+the kernel, and boot-protocol HID. A stick is enumerated, mounted under /media,
+read and written, and unplugging it takes its mount with it; a keyboard types
+and a mouse moves the pointer, on either controller. Hubs, UVC (§4.2), and
+suspend and resume (§5.8) are design for later milestones. Owner: usbd. Depends
+on: kernel contracts v0, 05-input (injection), 03-vfs (volume consumer),
+platformd (CAMS/ACPI), devmgr (supervision/matching).
 
 **The block-device seam is simpler than the ring below.** §4.1 describes an
 SPSC shm ring whose shape was left open pending kernel-core; what exists is a
@@ -423,5 +424,5 @@ CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQ
 ## 9. Phasing
 
 - **M1 (boots the OS), done:** EHCI (handoff, async and periodic schedules, ports), core enumeration and hot-plug, MSC+BOT with SCSI, volume export of the card reader and external high-speed sticks, and boot-protocol HID for high-speed keyboards and mice. Verified in QEMU: a stick mounts under /media, is read and written, and unplugging it drops the mount; a keyboard types and a mouse moves the pointer. FS/LS ports are parked via PO. The yank ladder and restart-with-identity-reattach are M2.
-- **M2 (daily-driver):** 4× UHCI (control+interrupt), which is what a real keyboard or mouse needs since a full or low speed device on an EHCI root port belongs to a companion; external HS hubs (HS children); S3 suspend and resume; the yank ladder and identity reattach; devmgr string events for the GUI.
+- **M2 (daily-driver):** external HS hubs (HS children); S3 suspend and resume; the yank ladder and identity reattach; devmgr string events for the GUI. The UHCI companions are done, with control, bulk and interrupt transfers, which is what a keyboard or mouse on a root port needs.
 - **M3 (camera + leftovers):** UVC (CAMS coordination + quirk policy, probe/commit, iTD iso engine, cam shm API), interrupt-IN splits for HID behind HS hubs, optional 128 KiB MSC transfers, optional ublk phys-scatter extension if M1 numbers demand it.
