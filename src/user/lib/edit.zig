@@ -25,6 +25,22 @@ const HISTORY_MAX = 32;
 /// sense at its own prompt.
 pub const Sources = []const complete_mod.Source;
 
+/// The start of the word at or before `at`: separators crossed first, so a
+/// cursor after a space takes the word before it rather than the space.
+fn wordBefore(text: []const u8, at: usize) usize {
+    var i = @min(at, text.len);
+    while (i > 0 and !inWord(text[i - 1])) i -= 1;
+    while (i > 0 and inWord(text[i - 1])) i -= 1;
+    return i;
+}
+
+fn inWord(byte: u8) bool {
+    return switch (byte) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_', '-', '.', '/' => true,
+        else => byte >= 0x80,
+    };
+}
+
 /// A line as it was typed, kept to be typed again.
 const Remembered = struct {
     text: [LINE_MAX]u8 = @splat(0),
@@ -85,6 +101,24 @@ pub const Editor = struct {
                     self.redraw(prompt);
                 },
                 '\t' => self.finishWord(prompt),
+                // Back over a word, and away with the line. The two
+                // corrections every shell has answered since terminals had
+                // no arrow keys, and the same two the toolkit's fields take.
+                0x17 => {
+                    const to = wordBefore(self.line[0..self.len], self.cursor);
+                    while (self.cursor > to) {
+                        self.cursor -= 1;
+                        self.removeAtCursor();
+                    }
+                    self.redraw(prompt);
+                },
+                0x15 => {
+                    while (self.cursor > 0) {
+                        self.cursor -= 1;
+                        self.removeAtCursor();
+                    }
+                    self.redraw(prompt);
+                },
                 // Ctrl+C abandons the line, as everywhere else.
                 0x03 => {
                     out.text("^C\n");

@@ -101,6 +101,7 @@ What a program calls around its controls, once each way.
 | `damageNow` | `fn (*widget.Context) void` |
 | `pressedThisPass` | `fn (*const widget.Context) bool` |
 | `releasedThisPass` | `fn (*const widget.Context) bool` |
+| `rightPressedThisPass` | `fn (*const widget.Context) bool` |
 
 ## For control authors
 
@@ -616,6 +617,62 @@ clock
     ####            ####  
       ####        ####    
         ############      
+
+cut
+    ####              ####
+    ####              ####
+      ####          ####  
+        ####      ####    
+          ####  ####      
+            ######        
+          ####  ####      
+        ####      ####    
+      ######      ######  
+      ##  ##      ##  ##  
+      ######      ######  
+                          
+
+copy
+                          
+    ############          
+    ##        ##          
+    ##    ############    
+    ##    ##        ##    
+    ########        ##    
+          ##        ##    
+          ##        ##    
+          ##        ##    
+          ############    
+                          
+                          
+
+paste
+          ########        
+        ##        ##      
+    ####################  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ##                ##  
+    ####################  
+                          
+
+select_all
+                          
+    ####################  
+    ##                ##  
+    ##  ############  ##  
+    ##  ############  ##  
+    ##  ############  ##  
+    ##  ############  ##  
+    ##  ############  ##  
+    ##                ##  
+    ####################  
+                          
+                          
 
 ```
 

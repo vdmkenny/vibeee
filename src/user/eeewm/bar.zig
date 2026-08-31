@@ -1658,7 +1658,7 @@ var clock_date: [40]u8 = @splat(0);
 var clock_time: [16]u8 = @splat(0);
 var clock_date_len: usize = 0;
 var clock_time_len: usize = 0;
-var clock_source: [24]u8 = @splat(0);
+var clock_source: [40]u8 = @splat(0);
 var clock_source_len: usize = 0;
 
 pub fn clockOpen() bool {
@@ -1704,10 +1704,29 @@ fn twoDigits(into: *str.Builder, value: u8) void {
 ///
 /// It changes when the time service lands an answer, not while somebody is
 /// looking at a menu, and it costs a call to another process.
+///
+/// Said as a sentence rather than as the token the kernel keeps. "ntp" is
+/// what the clock calls its source; "from a time server" is what it means,
+/// and this is the one place a person reads it.
 fn readClockSource() void {
     clock_source_len = 0;
-    const said = info.ask("clock", &clock_source);
-    clock_source_len = said.len;
+
+    var raw: [16]u8 = @splat(0);
+    const said = info.ask("clock", &raw);
+    if (said.len == 0) return;
+
+    var line = str.Builder{ .buf = &clock_source };
+    if (str.eql(said, "ntp")) {
+        line.text("Set from a time server");
+    } else if (str.eql(said, "rtc")) {
+        line.text("Set from the hardware clock");
+    } else if (str.eql(said, "userspace")) {
+        line.text("Set by hand");
+    } else {
+        line.text("Set from ");
+        line.text(said);
+    }
+    clock_source_len = line.done().len;
 }
 
 fn clockItems(into: []ui.MenuItem) []ui.MenuItem {
@@ -1726,7 +1745,7 @@ fn clockItems(into: []ui.MenuItem) []ui.MenuItem {
     if (clock_source_len > 0 and n < into.len) {
         into[n] = .{ .kind = .separator };
         n += 1;
-        into[n] = .{ .label = "Set from", .kind = .disabled, .detail = clock_source[0..clock_source_len] };
+        into[n] = .{ .label = clock_source[0..clock_source_len], .kind = .disabled };
         n += 1;
     }
     return into[0..n];

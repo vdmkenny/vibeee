@@ -63,6 +63,13 @@ pub const ReqTag = enum(u8) {
     map,
     unmap,
     destroy_win,
+    /// Map the one clipboard every window shares. The reply carries its
+    /// segment; reading it afterwards costs no syscall at all.
+    clipboard,
+    /// Publish what was written into the clipboard. The server is what makes
+    /// the length official, so a client cannot make the others read past the
+    /// end of it.
+    clipboard_put,
     bye,
 };
 
@@ -101,6 +108,9 @@ pub const Req = extern struct {
         title: extern struct {
             len: u8,
             text: [47]u8,
+        },
+        clip: extern struct {
+            len: u16,
         },
         raw: [56]u8,
     } = .{ .raw = @splat(0) },
@@ -142,9 +152,41 @@ pub const Rep = extern struct {
         create: extern struct {
             win: u8,
         },
+        clip: extern struct {
+            /// How much is on the clipboard now.
+            len: u16,
+            /// How much it can ever hold.
+            capacity: u16,
+        },
         raw: [8]u8,
     } = .{ .raw = @splat(0) },
 };
+
+// ---------------------------------------------------------------------------
+// The clipboard
+// ---------------------------------------------------------------------------
+
+/// The shared segment's first bytes, written by the server and read by
+/// everyone. A client that has mapped it can paste without asking anybody,
+/// which is what makes a clipboard feel like one.
+pub const ClipHead = extern struct {
+    len: u32 = 0,
+    /// Bumped on every put, so a client can tell "the same text again" from
+    /// "nobody has copied since".
+    generation: u32 = 0,
+};
+
+/// How much the clipboard holds. A paragraph, not a file: what crosses
+/// between windows here is a path, a line of text or a command, and a
+/// clipboard sized for a document is a page of memory nobody uses.
+pub const CLIPBOARD_BYTES: usize = 4096;
+
+pub fn clipboardText(mapped: []const u8) []const u8 {
+    if (mapped.len < @sizeOf(ClipHead)) return "";
+    const head: *const ClipHead = @ptrCast(@alignCast(mapped.ptr));
+    const room = mapped.len - @sizeOf(ClipHead);
+    return mapped[@sizeOf(ClipHead) ..][0..@min(head.len, room)];
+}
 
 // ---------------------------------------------------------------------------
 // Events

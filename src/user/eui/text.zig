@@ -17,6 +17,7 @@
 const std = @import("std");
 const draw = @import("draw.zig");
 const scroll = @import("scroll.zig");
+const eui_context_menu = @import("context_menu.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -293,6 +294,67 @@ pub const Editor = struct {
 /// document is read, and a grid is for a program that draws one.
 pub const face: *const draw.Font = draw.ui_font;
 
+/// Whether a byte is part of a word, for the movement that steps over one.
+///
+/// Letters, digits and the punctuation that holds an identifier together. A
+/// word is what somebody means by "the next word", which is not the same as
+/// what a dictionary means.
+pub fn inWord(byte: u8) bool {
+    return switch (byte) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_' => true,
+        // Anything above ASCII is part of a word: the alternative is stopping
+        // in the middle of one written in a language that needs those bytes.
+        else => byte >= 0x80,
+    };
+}
+
+/// The start of the word at or before `at`. Runs of separators are crossed
+/// first, so a cursor after a space lands on the word before it rather than
+/// on the space.
+pub fn wordBefore(text: []const u8, at: usize) usize {
+    var i = @min(at, text.len);
+    while (i > 0 and !inWord(text[i - 1])) i -= 1;
+    while (i > 0 and inWord(text[i - 1])) i -= 1;
+    return i;
+}
+
+/// The end of the word at or after `at`.
+pub fn wordAfter(text: []const u8, at: usize) usize {
+    var i = @min(at, text.len);
+    while (i < text.len and !inWord(text[i])) i += 1;
+    while (i < text.len and inWord(text[i])) i += 1;
+    return i;
+}
+
+/// Which line and column an offset is at, counted from one because that is
+/// how every other thing that says "line 9" counts.
+pub const Place = struct { line: usize, column: usize };
+
+pub fn placeOf(text: []const u8, offset: usize) Place {
+    var at = Place{ .line = 1, .column = 1 };
+    var i: usize = 0;
+    while (i < offset and i < text.len) : (i += 1) {
+        if (text[i] == '\n') {
+            at.line += 1;
+            at.column = 1;
+        } else if (text[i] & 0xC0 != 0x80) {
+            // Continuation bytes are the same character as the byte before
+            // them, so a column is characters rather than bytes.
+            at.column += 1;
+        }
+    }
+    return at;
+}
+
+/// How many lines the document has.
+pub fn lineCount(text: []const u8) usize {
+    var n: usize = 1;
+    for (text) |byte| {
+        if (byte == '\n') n += 1;
+    }
+    return n;
+}
+
 /// The inside of a text area: its frame and padding taken off.
 pub fn inner(area: Rect) Rect {
     return area.inset(2);
@@ -314,6 +376,7 @@ pub fn rowsIn(area: Rect) usize {
 pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) void {
     const entry = ctx.slotFor(area) orelse return;
     const act = ctx.interact(entry, area);
+    const entry_index = act.index;
 
     const rows = rowsIn(area);
     const line_height: i32 = @intCast(face.height);
@@ -327,14 +390,44 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
 
     var changed = false;
 
+    // Where the pointer is, in the text. One conversion, used by the click
+    // that puts the cursor somewhere and by the drag that selects.
+    const under = struct {
+        fn at(state_in: *const Editor, buffer_in: *const Buffer, box_in: Rect, ctx_in: *const widget.Context, height: i32) usize {
+            const text = buffer_in.slice();
+            const line_index = state_in.scroll +
+                @as(usize, @intCast(@max(@divTrunc(ctx_in.pointer_y - box_in.y, height), 0)));
+            const line = lineAt(text, face, box_in.w, line_index);
+            return offsetAt(text, face, line, ctx_in.pointer_x - box_in.x);
+        }
+    }.at;
+
     if (act.over and ctx.pressedThisPass()) {
-        const text = buffer.slice();
-        const line_index = state.scroll +
-            @as(usize, @intCast(@max(@divTrunc(ctx.pointer_y - box.y, line_height), 0)));
-        const line = lineAt(text, face, box.w, line_index);
-        state.moveTo(offsetAt(text, face, line, ctx.pointer_x - box.x), false);
+        // Held with shift, a click extends what is selected rather than
+        // starting again, which is how a long selection is made without
+        // dragging across a screen this size.
+        state.moveTo(under(state, buffer, box, ctx, line_height), ctx.key_mods.shift);
         state.goal = null;
         changed = true;
+    }
+
+    // Dragging selects. The press already put the cursor where it started,
+    // so every move after it extends from there.
+    if (act.holding and !ctx.pressedThisPass()) {
+        const to = under(state, buffer, box, ctx, line_height);
+        if (to != state.cursor) {
+            state.moveTo(to, true);
+            state.goal = null;
+            changed = true;
+        }
+    }
+
+    // The other button offers what can be done to the text, wherever the
+    // pointer is: over a selection or not, the rows are the same and the ones
+    // that do not apply do nothing.
+    if (act.over and ctx.rightPressedThisPass()) {
+        eui_context_menu.open(ctx, entry_index, &MENU_ROWS);
+        ctx.damage();
     }
 
     if (act.over) {
@@ -346,8 +439,22 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
         }
     }
 
+    // The keyboard's way to the same menu: the key next to the space bar
+    // that has this picture on it, and the chord for a keyboard without one.
+    // A menu reachable only by pointer is a menu that stops working when the
+    // touchpad does.
+    const asked_for_menu = ctx.pending_key == @intFromEnum(KeyCode.menu) or
+        (ctx.pending_key == @intFromEnum(KeyCode.f10) and ctx.key_mods.shift);
+    if (ctx.focus == entry_index and asked_for_menu) {
+        ctx.pending_key = 0;
+        const here = positionOf(buffer.slice(), face, box.w, state.cursor);
+        const row: i32 = @intCast(here.line -| state.scroll);
+        eui_context_menu.openAt(box.x + here.x, box.y + (row + 1) * line_height, entry_index, &MENU_ROWS);
+        ctx.damage();
+    }
+
     if (ctx.takeKeyFor(entry)) |code| {
-        if (key(state, buffer, @enumFromInt(code), ctx.key_mods, box.w, rows)) changed = true;
+        if (key(state, buffer, @enumFromInt(code), ctx.key_mods, box.w, rows, ctx.clipboard)) changed = true;
     }
     if (ctx.takeTextFor(entry)) |codepoint| {
         if (insert(state, buffer, codepoint)) changed = true;
@@ -371,6 +478,15 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
         ctx.addDamage(area);
     }
 
+    // Last, so it stands over the text it belongs to.
+    if (eui_context_menu.openedBy(entry_index)) {
+        if (eui_context_menu.run(ctx)) |row| {
+            if (commandOf(row)) |command| {
+                if (run(state, buffer, command, ctx.clipboard)) ctx.damage();
+            }
+        }
+    }
+
     // After the text, so it draws over the frame rather than under it.
     if (scrollable) {
         const bar = Rect{
@@ -385,6 +501,65 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
             ctx.damage();
         }
     }
+}
+
+/// What cut, copy and paste do, and what the other mouse button offers.
+///
+/// Held here rather than in each program: every text field on the system
+/// should answer the same three chords, and a program that had to implement
+/// them is a program that will implement two of them.
+pub const Command = enum { cut, copy, paste, select_all };
+
+pub fn run(state: *Editor, buffer: *Buffer, what: Command, clip: widget.Clipboard) bool {
+    switch (what) {
+        .copy => {
+            const span = state.selection() orelse return false;
+            clip.put(buffer.slice()[span.from..span.to]);
+            return false;
+        },
+        .cut => {
+            const span = state.selection() orelse return false;
+            clip.put(buffer.slice()[span.from..span.to]);
+            return state.deleteSelection(buffer);
+        },
+        .paste => {
+            const text = clip.get();
+            if (text.len == 0) return false;
+            _ = state.deleteSelection(buffer);
+            if (!buffer.insert(state.cursor, text)) return false;
+            state.cursor += text.len;
+            state.goal = null;
+            state.edited = true;
+            return true;
+        },
+        .select_all => {
+            if (buffer.len == 0) return false;
+            state.anchor = 0;
+            state.cursor = buffer.len;
+            state.goal = null;
+            return true;
+        },
+    }
+}
+
+/// The rows the other mouse button opens, in the order every system puts
+/// them, each with the chord that does the same thing.
+const MENU_ROWS = [_]widget.MenuItem{
+    .{ .label = "Cut", .mark = .cut, .detail = "Ctrl+X" },
+    .{ .label = "Copy", .mark = .copy, .detail = "Ctrl+C" },
+    .{ .label = "Paste", .mark = .paste, .detail = "Ctrl+V" },
+    .{ .kind = .separator },
+    .{ .label = "Select all", .mark = .select_all, .detail = "Ctrl+A" },
+};
+
+fn commandOf(row: usize) ?Command {
+    return switch (row) {
+        0 => .cut,
+        1 => .copy,
+        2 => .paste,
+        4 => .select_all,
+        else => null,
+    };
 }
 
 fn insert(state: *Editor, buffer: *Buffer, codepoint: u32) bool {
@@ -409,31 +584,91 @@ fn key(
     mods: widget.Modifiers,
     width: i32,
     rows: usize,
+    clip: widget.Clipboard,
 ) bool {
     const text = buffer.slice();
     const extend = mods.shift;
 
+    // The three chords, before the keys they are held with mean anything
+    // else: Ctrl+C is not a C, and a field that typed one would be a field
+    // nobody could copy out of.
+    if (mods.control) {
+        const what: ?Command = switch (code) {
+            .x => .cut,
+            .c => .copy,
+            .v => .paste,
+            .a => .select_all,
+            else => null,
+        };
+        if (what) |command| {
+            _ = run(state, buffer, command, clip);
+            return true;
+        }
+
+        // The two the shell answers, so a field and a prompt take the same
+        // corrections: back over a word, and away with the line.
+        switch (code) {
+            .w => {
+                if (!state.deleteSelection(buffer)) {
+                    const from = wordBefore(text, state.cursor);
+                    if (from < state.cursor) {
+                        buffer.remove(from, state.cursor);
+                        state.cursor = from;
+                        state.edited = true;
+                    }
+                }
+                state.goal = null;
+                return true;
+            },
+            .u => {
+                const here = positionOf(text, face, width, state.cursor);
+                const from = lineAt(text, face, width, here.line).start;
+                state.anchor = null;
+                if (from < state.cursor) {
+                    buffer.remove(from, state.cursor);
+                    state.cursor = from;
+                    state.edited = true;
+                }
+                state.goal = null;
+                return true;
+            },
+            else => {},
+        }
+    }
+
     switch (code) {
         .left => {
-            state.moveTo(buffer.before(state.cursor), extend);
+            const to = if (mods.control) wordBefore(text, state.cursor) else buffer.before(state.cursor);
+            state.moveTo(to, extend);
             state.goal = null;
         },
         .right => {
-            state.moveTo(buffer.after(state.cursor), extend);
+            const to = if (mods.control) wordAfter(text, state.cursor) else buffer.after(state.cursor);
+            state.moveTo(to, extend);
             state.goal = null;
         },
         .up => vertical(state, text, width, -1, extend),
         .down => vertical(state, text, width, 1, extend),
         .page_up => vertical(state, text, width, -@as(i32, @intCast(rows)), extend),
         .page_down => vertical(state, text, width, @intCast(rows), extend),
+        // Held with the modifier the two ends are the document's, which is
+        // what every editor has meant by it for thirty years.
         .home => {
-            const here = positionOf(text, face, width, state.cursor);
-            state.moveTo(lineAt(text, face, width, here.line).start, extend);
+            if (mods.control) {
+                state.moveTo(0, extend);
+            } else {
+                const here = positionOf(text, face, width, state.cursor);
+                state.moveTo(lineAt(text, face, width, here.line).start, extend);
+            }
             state.goal = null;
         },
         .end => {
-            const here = positionOf(text, face, width, state.cursor);
-            state.moveTo(lineAt(text, face, width, here.line).end, extend);
+            if (mods.control) {
+                state.moveTo(text.len, extend);
+            } else {
+                const here = positionOf(text, face, width, state.cursor);
+                state.moveTo(lineAt(text, face, width, here.line).end, extend);
+            }
             state.goal = null;
         },
         .enter, .kp_enter => {

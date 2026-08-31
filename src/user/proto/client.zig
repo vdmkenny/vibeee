@@ -124,6 +124,47 @@ pub const Connection = struct {
     /// Called on creation and again whenever a `configure` changes the size.
     /// The old segment is released after the new one is attached, so the
     /// server never has a moment with no surface to read.
+    /// Map the one clipboard every window shares.
+    ///
+    /// Mapped once and kept: pasting is then a read of memory the manager
+    /// wrote, with no syscall and nobody to wait for. Copying still goes
+    /// through the manager, because the length everyone else reads has to be
+    /// somebody's word rather than every client's.
+    pub fn clipboard(self: *Connection) Error![]u8 {
+        if (clip.len > 0) return clip;
+
+        var req = wm.Req{ .tag = .clipboard };
+        req.body = .{ .clip = .{ .len = 0 } };
+
+        var handles: [1]u32 = undefined;
+        const rep = try self.requestWithHandles(&req, &.{}, &handles);
+        if (rep.status != .ok) return error.Refused;
+
+        const mapped = sys.shmMap(handles[0], .{ .writable = true }) orelse
+            return error.OutOfMemory;
+
+        clip = @as([*]u8, @ptrCast(mapped))[0..wm.CLIPBOARD_BYTES];
+        return clip;
+    }
+
+    /// What is on the clipboard now. Empty until something copies.
+    pub fn clipboardText(self: *Connection) []const u8 {
+        const mapped = self.clipboard() catch return "";
+        return wm.clipboardText(mapped);
+    }
+
+    /// Put `text` on the clipboard, as much of it as fits.
+    pub fn clipboardPut(self: *Connection, text: []const u8) void {
+        const mapped = self.clipboard() catch return;
+        const room = mapped.len - @sizeOf(wm.ClipHead);
+        const n = @min(text.len, room);
+        @memcpy(mapped[@sizeOf(wm.ClipHead)..][0..n], text[0..n]);
+
+        var req = wm.Req{ .tag = .clipboard_put };
+        req.body = .{ .clip = .{ .len = @intCast(n) } };
+        _ = self.request(&req, &.{}) catch {};
+    }
+
     pub fn attach(self: *Connection, id: u8, w: u16, h: u16) Error!void {
         const window = self.find(id) orelse return error.Refused;
 
@@ -230,14 +271,34 @@ pub const Connection = struct {
     }
 
     fn request(self: *Connection, req: *const wm.Req, handles: []const u32) Error!wm.Rep {
+        return self.requestWithHandles(req, handles, &.{});
+    }
+
+    /// The same, keeping whatever handles came back. `into` bounds how many
+    /// are taken; the rest of the reply is the same either way.
+    fn requestWithHandles(
+        self: *Connection,
+        req: *const wm.Req,
+        handles: []const u32,
+        into: []u32,
+    ) Error!wm.Rep {
         var reply: sys.Message = .{};
         const message = sys.Message.init(std.mem.asBytes(req), handles);
         if (sys.callMsg(self.channel, &message, &reply) < 0) return error.Refused;
+
+        const got = reply.handleSlice();
+        if (got.len < into.len) return error.Refused;
+        @memcpy(into, got[0..into.len]);
 
         const rep: *const wm.Rep = @ptrCast(@alignCast(&reply.data));
         return rep.*;
     }
 };
+
+/// The clipboard segment, mapped once per process and kept for the life of
+/// it: it is one page, every window wants it, and mapping it per paste would
+/// be a syscall for something that never moves.
+var clip: []u8 = &.{};
 
 /// Adopt the manager's theme. A desktop where every window picked its own
 /// palette would look like several desktops.

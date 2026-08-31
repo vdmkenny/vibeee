@@ -11,6 +11,7 @@
 //! turning a choice back into something the application named.
 
 const draw = @import("draw.zig");
+const abi = @import("lib").syscalls;
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -35,7 +36,24 @@ pub const Item = struct {
 pub const Menu = struct {
     label: []const u8,
     items: []const Item,
+
+    /// Which letter of the label opens it while the modifier is held. The
+    /// first by default, which is what File, Edit and View all want and what
+    /// anybody looking at a menu bar assumes.
+    mnemonic: usize = 0,
 };
+
+/// Whether the letter `c` is the mnemonic of `label`, folded for case: a
+/// person holding the key presses the letter they see, in whichever case
+/// their keyboard is in.
+fn mnemonicIs(label: []const u8, at: usize, c: u21) bool {
+    if (at >= label.len or c > 0x7F) return false;
+    return fold(label[at]) == fold(@intCast(c));
+}
+
+fn fold(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
 
 /// Most items one menu may hold, which bounds the row array built per pass.
 pub const MAX_ITEMS = 16;
@@ -61,13 +79,17 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
     var chosen: ?u16 = null;
     var x = area.x + t.padding;
     var storage: [MAX_ITEMS]widget.MenuItem = undefined;
+    // The letters show while the key that uses them is held, and not
+    // otherwise: an underline that is always there is decoration, and one
+    // that appears when it becomes useful is an answer.
+    const marked = ctx.key_mods.alt;
 
     for (menus, 0..) |menu, index| {
         const width = Surface.textWidth(menu.label) + t.padding * 3;
         const title = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
         const is_open = state.open == index;
 
-        if (titleClicked(ctx, title, menu.label, is_open)) {
+        if (titleClicked(ctx, title, menu.label, is_open, if (marked) menu.mnemonic else null)) {
             if (is_open) {
                 close(state);
             } else {
@@ -88,11 +110,39 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
     return chosen;
 }
 
-/// Offer a key to the bar. True when it was taken, so the caller knows not to
-/// pass it on.
-pub fn key(state: *State, code: KeyCode, menus: []const Menu) bool {
-    const index = state.open orelse return false;
-    if (index >= menus.len) return false;
+/// What a key did to the bar.
+pub const KeyResult = union(enum) {
+    /// Nothing here wanted it; the caller should pass it on.
+    ignored,
+    /// The bar acted on it: a menu opened, closed, or the selection moved.
+    taken,
+    /// An item was chosen, by pressing Enter on it or by its own chord.
+    chosen: u16,
+};
+
+/// Offer a key to the bar, whether or not a menu is open.
+///
+/// This is where a program's shortcuts live, because the shortcut is already
+/// written next to the command it runs: an item saying `Ctrl+S` is matched
+/// from that string rather than from a second table of keycodes in the
+/// program, which is the table that goes stale. Nothing above here has to
+/// know what a keycode is.
+pub fn key(state: *State, code: KeyCode, mods: widget.Modifiers, menus: []const Menu) KeyResult {
+    if (state.open == null) {
+        // The modifier and a letter open the menu that letter names.
+        if (mods.alt) {
+            if (abi.letterOf(code)) |letter| {
+                if (altKey(state, letter, menus)) return .taken;
+            }
+        }
+        if (mods.control) {
+            if (chordOf(code, mods, menus)) |id| return .{ .chosen = id };
+        }
+        return .ignored;
+    }
+
+    const index = state.open.?;
+    if (index >= menus.len) return .ignored;
 
     var storage: [MAX_ITEMS]widget.MenuItem = undefined;
     const rows = rowsOf(menus[index].items, &storage);
@@ -100,9 +150,15 @@ pub fn key(state: *State, code: KeyCode, menus: []const Menu) bool {
     switch (state.list.key(code, rows)) {
         .cancelled => {
             close(state);
-            return true;
+            return .taken;
         },
-        .moved, .chosen => return true,
+        .chosen => {
+            const at = @min(state.list.selected, menus[index].items.len - 1);
+            const id = menus[index].items[at].id;
+            close(state);
+            return .{ .chosen = id };
+        },
+        .moved => return .taken,
         .ignored => {},
     }
 
@@ -111,15 +167,75 @@ pub fn key(state: *State, code: KeyCode, menus: []const Menu) bool {
         .left => {
             state.open = if (index == 0) menus.len - 1 else index - 1;
             state.list.showAt(rowsOf(menus[state.open.?].items, &storage));
-            return true;
+            return .taken;
         },
         .right => {
             state.open = if (index + 1 == menus.len) 0 else index + 1;
             state.list.showAt(rowsOf(menus[state.open.?].items, &storage));
-            return true;
+            return .taken;
         },
-        else => return false,
+        else => return .ignored,
     }
+}
+
+/// Which item, if any, declares this chord as its shortcut.
+fn chordOf(code: KeyCode, mods: widget.Modifiers, menus: []const Menu) ?u16 {
+    const letter = abi.letterOf(code) orelse return null;
+    for (menus) |menu| {
+        for (menu.items) |item| {
+            if (item.shortcut.len == 0 or item.kind != .item) continue;
+            if (matchesChord(item.shortcut, letter, mods)) return item.id;
+        }
+    }
+    return null;
+}
+
+/// Whether a shortcut as written names the key that was pressed.
+///
+/// Spelled the way it is shown: "Ctrl+S", "Ctrl+Shift+S". The last character
+/// is the key and what comes before it is what has to be held.
+fn matchesChord(shortcut: []const u8, letter: u8, mods: widget.Modifiers) bool {
+    if (shortcut.len == 0) return false;
+    if (fold(shortcut[shortcut.len - 1]) != letter) return false;
+
+    const wants_shift = contains(shortcut, "Shift");
+    const wants_ctrl = contains(shortcut, "Ctrl");
+    const wants_alt = contains(shortcut, "Alt");
+
+    return wants_ctrl == mods.control and wants_shift == mods.shift and wants_alt == mods.alt;
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var at: usize = 0;
+    while (at + needle.len <= haystack.len) : (at += 1) {
+        var same = true;
+        for (needle, 0..) |c, i| {
+            if (haystack[at + i] != c) {
+                same = false;
+                break;
+            }
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
+/// The modifier and a letter: open the menu that letter names.
+///
+/// Offered before anything else sees the key, since a window whose document
+/// takes every character would otherwise take these too. True when a menu was
+/// opened, which is the caller's cue to stop passing the key on.
+pub fn altKey(state: *State, letter: u21, menus: []const Menu) bool {
+    for (menus, 0..) |menu, index| {
+        if (!mnemonicIs(menu.label, menu.mnemonic, letter)) continue;
+
+        var storage: [MAX_ITEMS]widget.MenuItem = undefined;
+        state.open = index;
+        state.list.showAt(rowsOf(menu.items, &storage));
+        return true;
+    }
+    return false;
 }
 
 /// Open the first menu, for the key that summons the bar.
@@ -159,13 +275,39 @@ fn hovering(ctx: *const widget.Context, area: Rect) bool {
 
 /// A menu title in the strip. Drawn directly rather than as a button: it
 /// stays down while its menu is open, and a button has no such state.
-fn titleClicked(ctx: *widget.Context, area: Rect, label: []const u8, open: bool) bool {
+///
+/// While the modifier is held the letter that opens it is underlined, which
+/// is how a menu bar has always answered the question of which letter that
+/// is: shown when it matters and out of the way when it does not.
+fn titleClicked(
+    ctx: *widget.Context,
+    area: Rect,
+    label: []const u8,
+    open: bool,
+    mnemonic: ?usize,
+) bool {
     const t = theme.current();
     const over = hovering(ctx, area);
 
     const face = if (open) t.accent else if (over) t.surface_hot else t.surface;
+    const ink = if (open) t.accent_text else t.text;
     ctx.surface.fill(area, face);
-    ctx.surface.textCentred(area, label, if (open) t.accent_text else t.text);
+    ctx.surface.textCentred(area, label, ink);
+
+    if (mnemonic) |at| {
+        if (at < label.len) {
+            const text_x = area.x + @divTrunc(area.w - Surface.textWidth(label), 2);
+            const before = Surface.textWidth(label[0..at]);
+            const letter = Surface.textWidth(label[at .. at + 1]);
+            ctx.surface.fill(.{
+                .x = text_x + before,
+                .y = area.y + @divTrunc(area.h - Surface.textHeight(), 2) + Surface.textHeight(),
+                .w = letter,
+                .h = 1,
+            }, ink);
+        }
+    }
+
     ctx.addDamage(area);
 
     return over and ctx.pressedThisPass();

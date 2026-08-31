@@ -69,8 +69,38 @@ const MAX_WIDGETS = 64;
 /// Sixteen matches what the compositor caps a frame at (design §10.3).
 const MAX_DAMAGE = 16;
 
+/// Where cut, copy and paste go.
+///
+/// A toolkit cannot know what a clipboard is: on this system it is a page the
+/// window manager holds, and in a program with no manager it is this process
+/// and nothing more. So the two operations are handed in, and the fallback
+/// below is a buffer of our own, which makes cut and paste work inside one
+/// window before anything else exists.
+pub const Clipboard = struct {
+    get: *const fn () []const u8 = ownGet,
+    put: *const fn (text: []const u8) void = ownPut,
+
+    /// What one window can hold on its own. The manager's is larger; this is
+    /// what a program keeps when nobody is arbitrating.
+    var own: [1024]u8 = @splat(0);
+    var own_len: usize = 0;
+
+    fn ownGet() []const u8 {
+        return own[0..own_len];
+    }
+
+    fn ownPut(text: []const u8) void {
+        own_len = @min(text.len, own.len);
+        @memcpy(own[0..own_len], text[0..own_len]);
+    }
+};
+
 pub const Context = struct {
     surface: Surface,
+
+    /// Cut, copy and paste. Set by whatever connects this program to the
+    /// system; on its own it is a buffer inside this process.
+    clipboard: Clipboard = .{},
 
     /// Where the pointer is and what is held, as of this pass.
     pointer_x: i32 = 0,
@@ -267,6 +297,14 @@ pub const Context = struct {
         for (&self.entries) |*e| {
             if (e.used and !e.seen) e.* = .{};
         }
+
+        // A window with nothing focused gives the keyboard to whatever comes
+        // first in its reading order. Otherwise a program whose only control
+        // is a document opens with the cursor in it and every keystroke
+        // going nowhere, and the way out is to click on the thing that was
+        // obviously already waiting to be typed into.
+        if (self.focus == null) self.moveFocus(.forward);
+
         self.damaged = false;
         self.pending_key = 0;
         self.pending_wheel = 0;
@@ -295,6 +333,11 @@ pub const Context = struct {
 
     pub fn releasedThisPass(self: *const Context) bool {
         return !self.buttons.left and self.previous.left;
+    }
+
+    /// The other button, which opens things rather than choosing them.
+    pub fn rightPressedThisPass(self: *const Context) bool {
+        return self.buttons.right and !self.previous.right;
     }
 
     // -----------------------------------------------------------------------

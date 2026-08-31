@@ -72,6 +72,14 @@ var pointer_y: i32 = 0;
 ///
 /// `name` is what the manager knows the program as; `title` is what a person
 /// reads on its tab.
+fn clipboardGet() []const u8 {
+    return connection.clipboardText();
+}
+
+fn clipboardPut(text: []const u8) void {
+    connection.clipboardPut(text);
+}
+
 pub fn run(
     name: []const u8,
     title: []const u8,
@@ -90,6 +98,11 @@ pub fn run(
 
     window = connection.createWindow(.{}, width, height) catch sys.exit(1);
     connection.setTitle(window, title) catch {};
+
+    // Cut, copy and paste reach the manager's one clipboard, so text crosses
+    // between windows rather than only within one. Without a manager the
+    // toolkit keeps its own, which is what a program run on its own gets.
+    ctx.clipboard = .{ .get = clipboardGet, .put = clipboardPut };
 
     while (true) {
         const event = connection.next(hooks.tick_us) orelse {

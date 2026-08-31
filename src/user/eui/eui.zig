@@ -18,6 +18,7 @@
 
 pub const draw = @import("draw.zig");
 pub const chooser = @import("chooser.zig");
+pub const context_menu = @import("context_menu.zig");
 pub const menubar = @import("menubar.zig");
 pub const scroll = @import("scroll.zig");
 pub const statusbar = @import("statusbar.zig");

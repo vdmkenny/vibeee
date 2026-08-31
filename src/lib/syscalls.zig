@@ -415,6 +415,25 @@ pub const KeyCode = enum(u8) {
 /// Shared for the same reason `Buttons` is: the driver sets these bits, the
 /// keymap reads them, and the toolkit branches on them, with a syscall in
 /// between.
+/// The letter a key carries where it sits on a US keyboard, or null for a key
+/// that carries none.
+///
+/// Position rather than layout, because that is all a keycode knows: what the
+/// key produces depends on the keymap, and a caller that needs the character
+/// wants the text event instead. What this is for is the handful of places
+/// that name a key by its letter, such as a menu's mnemonic.
+pub fn letterOf(code: KeyCode) ?u8 {
+    return switch (code) {
+        .a => 'a', .b => 'b', .c => 'c', .d => 'd', .e => 'e',
+        .f => 'f', .g => 'g', .h => 'h', .i => 'i', .j => 'j',
+        .k => 'k', .l => 'l', .m => 'm', .n => 'n', .o => 'o',
+        .p => 'p', .q => 'q', .r => 'r', .s => 's', .t => 't',
+        .u => 'u', .v => 'v', .w => 'w', .x => 'x', .y => 'y',
+        .z => 'z',
+        else => null,
+    };
+}
+
 pub const Modifiers = packed struct(u8) {
     shift: bool = false,
     control: bool = false,

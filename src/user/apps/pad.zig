@@ -35,21 +35,55 @@ var editor: text.Editor = .{};
 var file_path: [128]u8 = @splat(0);
 var file_len: usize = 0;
 
-/// What the File menu offers. The application names its commands; the bar
-/// draws them and says which one was chosen.
-const Command = enum(u16) { new, open, save, save_as, close };
+/// What the menus offer. The application names its commands; the bar draws
+/// them and says which one was chosen.
+///
+/// The editing half is the toolkit's: the menu names the same operations
+/// every text field on the system already answers by chord and by the other
+/// mouse button, so choosing Copy here and pressing Ctrl+C go to one
+/// implementation.
+const Command = enum(u16) {
+    new,
+    open,
+    save,
+    save_as,
+    close,
+    cut,
+    copy,
+    paste,
+    select_all,
+    status_bar,
+};
 
 const MENUS = [_]eui.menubar.Menu{
     .{ .label = "File", .items = &.{
-        .{ .label = "New", .id = @intFromEnum(Command.new) },
-        .{ .label = "Open...", .id = @intFromEnum(Command.open) },
+        .{ .label = "New", .id = @intFromEnum(Command.new), .shortcut = "Ctrl+N" },
+        .{ .label = "Open...", .id = @intFromEnum(Command.open), .shortcut = "Ctrl+O" },
         eui.menubar.Item.separator,
-        .{ .label = "Save", .id = @intFromEnum(Command.save) },
-        .{ .label = "Save as...", .id = @intFromEnum(Command.save_as) },
+        .{ .label = "Save", .id = @intFromEnum(Command.save), .shortcut = "Ctrl+S" },
+        .{ .label = "Save as...", .id = @intFromEnum(Command.save_as), .shortcut = "Ctrl+Shift+S" },
         eui.menubar.Item.separator,
-        .{ .label = "Close", .id = @intFromEnum(Command.close) },
+        .{ .label = "Close", .id = @intFromEnum(Command.close), .shortcut = "Ctrl+Q" },
+    } },
+    .{ .label = "Edit", .items = &.{
+        .{ .label = "Cut", .id = @intFromEnum(Command.cut), .shortcut = "Ctrl+X" },
+        .{ .label = "Copy", .id = @intFromEnum(Command.copy), .shortcut = "Ctrl+C" },
+        .{ .label = "Paste", .id = @intFromEnum(Command.paste), .shortcut = "Ctrl+V" },
+        eui.menubar.Item.separator,
+        .{ .label = "Select all", .id = @intFromEnum(Command.select_all), .shortcut = "Ctrl+A" },
+    } },
+    .{ .label = "View", .items = &.{
+        .{ .label = "Status bar", .id = @intFromEnum(Command.status_bar) },
     } },
 };
+
+/// What View turns off. On to start with, which is what a plain editor looks
+/// like before anybody changes anything.
+///
+/// Lines are always wrapped. On a screen this narrow the alternative is a
+/// document that runs off the right edge, and a person who wanted the line
+/// whole would have to scroll to read a sentence.
+var show_status = true;
 
 var menus: eui.menubar.State = .{};
 
@@ -77,12 +111,21 @@ fn own(event: proto.wm.Ev) bool {
     return true;
 }
 
-/// An open menu is modal: arrows walk it rather than moving the cursor in
-/// the document behind it.
+/// Everything the menus answer: the chords written beside their commands, the
+/// modifier and a letter, and the keys that walk an open one.
+///
+/// One call, because the menu table already says what each command is called
+/// and which chord runs it. A second table of keycodes here is the one that
+/// would go stale.
 fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
-    _ = mods;
-    if (!eui.menubar.isOpen(&menus)) return false;
-    return eui.menubar.key(&menus, code, &MENUS);
+    return switch (eui.menubar.key(&menus, code, mods, &MENUS)) {
+        .ignored => false,
+        .taken => true,
+        .chosen => |id| blk: {
+            run_command(@enumFromInt(id));
+            break :blk true;
+        },
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +279,23 @@ fn run_command(command: Command) void {
         .save => save(),
         .save_as => ask(.save),
         .close => sys.exit(0),
+
+        .cut => edited(text.run(&editor, &document, .cut, ctx.clipboard)),
+        .copy => edited(text.run(&editor, &document, .copy, ctx.clipboard)),
+        .paste => edited(text.run(&editor, &document, .paste, ctx.clipboard)),
+        .select_all => edited(text.run(&editor, &document, .select_all, ctx.clipboard)),
+
+        .status_bar => {
+            show_status = !show_status;
+            ctx.damage();
+        },
     }
+}
+
+/// Redraw when a command changed the document. The toolkit says whether it
+/// did, so a copy that changed nothing does not repaint the window.
+fn edited(changed: bool) void {
+    if (changed) ctx.damage();
 }
 
 fn draw() void {
@@ -253,18 +312,21 @@ fn draw() void {
     // Everything between the menu and the status bar. The window frame is
     // already a border, and a second one inset from it is a margin around a
     // document that wanted the room.
+    const body_h = (if (show_status) bottom.body.h else area.h) - strip.h;
     text.edit(ctx, .{
         .x = 0,
         .y = strip.h,
         .w = area.w,
-        .h = bottom.body.h - strip.h,
+        .h = body_h,
     }, &editor, &document);
 
-    eui.statusbar.run(ctx, bottom.bar, &.{
-        .{ .text = if (file_len > 0) path() else "untitled" },
-        .{ .text = sizeText(), .width = 78, .right = true },
-        .{ .text = stateText(), .width = 96 },
-    });
+    if (show_status) {
+        eui.statusbar.run(ctx, bottom.bar, &.{
+            .{ .text = if (file_len > 0) path() else "untitled" },
+            .{ .text = placeText(), .width = 96 },
+            .{ .text = stateText(), .width = 96 },
+        });
+    }
 
     if (editor.edited and !modified) {
         modified = true;
@@ -280,11 +342,17 @@ fn draw() void {
 
 }
 
-var size_buffer: [24]u8 = @splat(0);
+var place_buffer: [32]u8 = @splat(0);
 
-fn sizeText() []const u8 {
-    var line = str.Builder{ .buf = &size_buffer };
-    line.quantity(document.len, if (document.len == 1) "byte" else "bytes");
+/// Where the cursor is, which is the one thing a person writing wants from a
+/// status bar and the one thing a byte count cannot say.
+fn placeText() []const u8 {
+    const at = text.placeOf(document.slice(), editor.cursor);
+    var line = str.Builder{ .buf = &place_buffer };
+    line.text("Ln ");
+    line.number(at.line);
+    line.text(", Col ");
+    line.number(at.column);
     return line.done();
 }
 

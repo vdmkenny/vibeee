@@ -102,6 +102,8 @@ fn wmMain() noreturn {
         info.stride_px,
     );
 
+    openClipboard();
+
     const wanted = config.load();
     desktop.bounds = bar.contentArea(info.width, info.height);
     desktop.mfact = @splat(wanted.masterFraction());
@@ -391,7 +393,13 @@ fn run() noreturn {
                         .mods = event.modifiers,
                     } },
                 });
-                if (event.codepoint != 0 and event.isPress()) {
+                // A chord is not typing. Alt and Control held mean the key
+                // names a command, and a window that received the character
+                // as well would insert it into whatever the command just
+                // did. AltGr is not one of these: on a Belgian keyboard it
+                // is how @ and the brackets are typed at all.
+                const chord = event.mods().alt or event.mods().control;
+                if (event.codepoint != 0 and event.isPress() and !chord) {
                     postToFocused(.{
                         .tag = .text,
                         .body = .{ .text = .{ .cp = event.codepoint } },
@@ -698,6 +706,8 @@ fn dispatch(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
         .attach => onAttach(pid, req, message),
         .commit => onCommit(pid, req),
         .set_title => onTitle(pid, req),
+        .clipboard => onClipboard(),
+        .clipboard_put => onClipboardPut(req),
         .map => onMap(pid, req),
         .unmap, .destroy_win => onDestroy(pid, req),
         .bye => blk: {
@@ -705,6 +715,72 @@ fn dispatch(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
             break :blk .{ .rep = .{ .gen = table.generation } };
         },
     };
+}
+
+// ---------------------------------------------------------------------------
+// The clipboard
+//
+// One buffer for the whole session, held here because the manager is the one
+// process every window already talks to and the only one that outlives them
+// all. Copying is a request, so the length written here is the manager's word
+// rather than a client's; pasting is a read of mapped memory and costs
+// nothing at all.
+// ---------------------------------------------------------------------------
+
+var clipboard_handle: u32 = 0;
+var clipboard: []u8 = &.{};
+var clipboard_out: [1]u32 = @splat(0);
+
+fn clipboardHead() ?*wire.ClipHead {
+    if (clipboard.len < @sizeOf(wire.ClipHead)) return null;
+    return @ptrCast(@alignCast(clipboard.ptr));
+}
+
+fn openClipboard() void {
+    const handle = sys.shmCreate(wire.CLIPBOARD_BYTES);
+    if (handle < 0) return;
+    const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse return;
+
+    clipboard_handle = @intCast(handle);
+    clipboard = @as([*]u8, @ptrCast(mapped))[0..wire.CLIPBOARD_BYTES];
+    if (clipboardHead()) |head| head.* = .{};
+}
+
+fn onClipboard() Answer {
+    if (clipboard_handle == 0) {
+        return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+    }
+
+    const head = clipboardHead() orelse
+        return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+
+    clipboard_out = .{clipboard_handle};
+    return .{
+        .rep = .{
+            .gen = table.generation,
+            .body = .{ .clip = .{
+                .len = @intCast(head.len),
+                .capacity = @intCast(clipboard.len - @sizeOf(wire.ClipHead)),
+            } },
+        },
+        .handles = &clipboard_out,
+    };
+}
+
+/// A client says how much it wrote. Clamped here, because every other window
+/// reads this length to decide how far into the segment to look.
+fn onClipboardPut(req: *const wire.Req) Answer {
+    const head = clipboardHead() orelse
+        return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+
+    const room = clipboard.len - @sizeOf(wire.ClipHead);
+    head.len = @min(req.body.clip.len, room);
+    head.generation +%= 1;
+
+    return .{ .rep = .{
+        .gen = table.generation,
+        .body = .{ .clip = .{ .len = @intCast(head.len), .capacity = @intCast(room) } },
+    } };
 }
 
 var hello_handles: [2]u32 = @splat(0);

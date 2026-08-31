@@ -8,6 +8,10 @@
 //! Deliberately short. On a panel 480 pixels tall a status bar that cost a
 //! control's height would be a control's height taken from the document, so
 //! it is sized to its text and nothing more.
+//!
+//! Drawn in the bar's colours, the same strip the desktop's own bar uses: a
+//! window's readout is part of the system's furniture rather than part of the
+//! document above it.
 
 const draw = @import("draw.zig");
 const theme = @import("theme.zig");
@@ -62,8 +66,12 @@ pub fn run(ctx: *widget.Context, area: Rect, panels: []const Panel) void {
     if (!ctx.damaged and entry.detail == signature) return;
     entry.detail = signature;
 
-    ctx.surface.fill(area, t.surface);
-    ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
+    // The bar's own colours, the same dark strip the desktop's bar is drawn
+    // in: what a window says about itself belongs to the system's furniture
+    // rather than to the document, and a light strip under a light document
+    // is a line nobody finds.
+    ctx.surface.fill(area, t.bar);
+    ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.bar_line);
 
     const baseline = area.y + 3;
     var x = area.x;
@@ -74,7 +82,7 @@ pub fn run(ctx: *widget.Context, area: Rect, panels: []const Panel) void {
 
         // A hairline between fields rather than a sunken box around each: at
         // this height a border would leave two pixels for the text.
-        if (i > 0) ctx.surface.fill(.{ .x = x, .y = field.y + 1, .w = 1, .h = field.h - 2 }, t.line);
+        if (i > 0) ctx.surface.fill(.{ .x = x, .y = field.y + 1, .w = 1, .h = field.h - 2 }, t.bar_line);
 
         const clipped = ctx.surface.clipped(field);
         const text_x = if (panel.right)
@@ -82,7 +90,7 @@ pub fn run(ctx: *widget.Context, area: Rect, panels: []const Panel) void {
         else
             field.x + t.padding;
 
-        clipped.text(text_x, baseline, panel.text, t.text_dim);
+        clipped.text(text_x, baseline, panel.text, t.bar_text);
         x += w;
     }
 
