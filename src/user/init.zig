@@ -137,7 +137,7 @@ fn holdFromCmdline() void {
     if (n <= 0) return;
     const line = buf[0..@intCast(n)];
 
-    // Generic forms, so any service — today's, and the next driver stack's —
+    // Generic forms, so any service, today's and the next driver stack's,
     // can be held without init growing a token per service: `no.<name>` keeps
     // it down for one boot, `late.<name>` starts it once the shell is up,
     // under the boot watchdog. `nonet`/`nohw`/`netlate` stay as the short

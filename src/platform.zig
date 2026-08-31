@@ -105,8 +105,8 @@ fn publishPlatform(bi: *const bootinfo.BootInfo) void {
 /// Match the machine against the quirk registry and record the corrections.
 ///
 /// Part of the early probe, straight after the firmware tables are read and
-/// before any driver binds: everything that comes up afterwards — kernel
-/// drivers directly, user processes through `sysinfo` — sees the answers.
+/// before any driver binds: everything that comes up afterwards (kernel
+/// drivers directly, user processes through `sysinfo`) sees the answers.
 /// Nothing here touches hardware, so nothing here can wait on a device that
 /// has not come up yet.
 fn evaluateQuirks() void {

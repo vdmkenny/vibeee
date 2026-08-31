@@ -1,4 +1,4 @@
-off — power the machine down
+off - power the machine down
 
 Stops every service in order, flushes what is open, and asks the
 firmware to cut power. `reboot` does the same and starts over.

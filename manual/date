@@ -1,0 +1,8 @@
+date - the wall-clock time
+
+  date                   the date and time
+  date epoch             seconds since 1970
+  date -e                the same
+
+The clock comes from the machine's own battery-backed clock at boot and
+advances from there.

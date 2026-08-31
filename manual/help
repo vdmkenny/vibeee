@@ -1,0 +1,7 @@
+help - the shell's own commands
+
+  help                   the builtins, with a line each
+
+Builtins run inside the shell: they change its directory, its screen or
+its life, which a separate program could not. Everything else is a
+program under /bin: `tools` lists those, and `man <name>` describes one.

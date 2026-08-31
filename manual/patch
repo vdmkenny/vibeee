@@ -1,4 +1,4 @@
-patch — the sound graph
+patch - the sound graph
 
   patch                        every node, its ports, and the links
   patch tone:out hda:out       link a source into a sink

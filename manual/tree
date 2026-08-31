@@ -1,0 +1,6 @@
+tree - a directory and everything under it
+
+  tree                   from here
+  tree /                 from the root
+
+Long output is worth `tree | page`.

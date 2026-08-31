@@ -1,4 +1,4 @@
-mount — attach a volume at a path
+mount - attach a volume at a path
 
   mount hd1p1 /media/data
   mount -r sd1p1 /media/card     read-only

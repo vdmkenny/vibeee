@@ -1,5 +1,12 @@
-devices — what is on the bus, and what drives it
+devices - what is on the bus
 
-Every PCI device, who claimed it, and whether it is driven from the
-kernel or a service. The state column tells a device nobody drives
-from one somebody does.
+  devices                every PCI device and its state
+
+Vendor and device numbers, what claimed each one, and whether it is
+driven from the kernel or from a service. A device nobody drives is
+shown as unclaimed, which is the first thing to look at when hardware
+does nothing.
+
+What drives what is the device manager's decision, not this listing's:
+`driver` shows its bindings and `/lib/drivers` holds the manifests it
+reads.

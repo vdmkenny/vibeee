@@ -1,0 +1,8 @@
+cd - change the current directory
+
+  cd /home               go somewhere
+  cd                     go home
+  cd ..                  go up
+
+A shell builtin, because a directory changed by a program would change
+back the moment it exited.

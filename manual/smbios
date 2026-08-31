@@ -1,0 +1,7 @@
+smbios - the firmware's own description of the board
+
+  smbios                 the decoded tables
+
+Vendor, product, board, and the memory actually fitted. What a machine
+says about itself before any driver has run, and the first thing worth
+reading on unfamiliar hardware.

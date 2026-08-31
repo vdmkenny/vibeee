@@ -1,4 +1,4 @@
-grep — print lines matching a pattern
+grep - print lines matching a pattern
 
   grep fail /tmp/report
   log | grep atl2

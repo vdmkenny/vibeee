@@ -1,0 +1,7 @@
+kill - end a process by id
+
+  kill 12                by the number `top` shows
+
+Ends it outright, with nothing to clean up after itself. Ctrl+C is the
+gentler way: a foreground command that watches for it stops of its own
+accord and leaves what it holds in order.

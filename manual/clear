@@ -1,0 +1,5 @@
+clear - empty the screen
+
+  clear
+
+A shell builtin. What scrolled away is still in `log`.

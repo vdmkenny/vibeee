@@ -1,0 +1,6 @@
+hexdump - dump a file in hex
+
+  hexdump /etc/hosts
+
+Offset, sixteen bytes, then those bytes as characters where they are
+printable. What `cat` cannot show honestly: a file that is not text.

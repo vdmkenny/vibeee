@@ -1,0 +1,7 @@
+unmount - detach a volume
+
+  unmount /media/hd0p1
+
+Flushes what is written before detaching. A volume still in use is
+refused rather than pulled away. `mount` attaches one; `disk` lists what
+there is to attach.

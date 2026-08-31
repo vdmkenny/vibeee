@@ -1,0 +1,7 @@
+mv - move or rename
+
+  mv old new             rename
+  mv a b /home           move several into a directory
+
+Within one volume: a move across volumes would be a copy and a delete,
+which is a different thing and should be asked for as one.

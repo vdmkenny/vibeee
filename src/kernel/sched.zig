@@ -693,8 +693,8 @@ pub fn threadAlive(id: u32) bool {
 /// End every userspace thread except `self`, and wait for them to go.
 ///
 /// The shutdown sequence: services and driver processes hold resources that
-/// only exit releases — interrupt lines, device claims, DMA memory, the
-/// display — so the machine is stopped by stopping them, one tidy exit at a
+/// only exit releases: interrupt lines, device claims, DMA memory, the
+/// display, so the machine is stopped by stopping them, one tidy exit at a
 /// time, rather than by pulling the floor out from under them. Killing is one
 /// pass and exiting is another: a blocked thread only learns it is dead once
 /// it is woken, and only acts on it at its next return to userspace.

@@ -8,7 +8,7 @@
 //!
 //! The rules the port lives by (design/12-arm-port.md §3), stated where they
 //! bite: the device is a packed struct, the vector copy is `@memcpy`, and the
-//! only assembly is what no Zig function exists for — the exception vectors,
+//! only assembly is what no Zig function exists for: the exception vectors,
 //! and the first stack and bss setup that must happen before any Zig can run.
 
 const std = @import("std");

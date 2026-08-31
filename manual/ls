@@ -1,7 +1,7 @@
-ls — list a directory
+ls - what is in a directory
 
-  ls                     here
-  ls /etc                elsewhere
+  ls                     the current directory
+  ls /bin                a named one
 
-Directories first, each group sorted. Sizes and times come from the
-filesystem's own records.
+Directories are marked; sizes are shown for files. `tree` shows a
+directory and everything under it at once.

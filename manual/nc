@@ -1,4 +1,4 @@
-nc — a conversation with the network, plainly
+nc - a conversation with the network, plainly
 
   nc 192.0.2.7 4000      a stream to a host and port
   nc www.example.com 80  names resolve first

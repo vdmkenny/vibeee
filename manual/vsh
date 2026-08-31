@@ -1,4 +1,4 @@
-vsh — the shell
+vsh - the shell
 
 Runs what is named: builtins first, then /bin, then the tools binary's
 commands. `tools` lists those; `help` lists the builtins.

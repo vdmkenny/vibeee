@@ -84,8 +84,8 @@ fn percentLabelsCorrected() bool {
 /// capacities.
 ///
 /// The correction scales nothing unless the firmware's own numbers say it
-/// must: capacities that look like percentages — no more than a hundred,
-/// beside a design capacity that plainly is not one — are the mislabel, and
+/// must: capacities that look like percentages (no more than a hundred,
+/// beside a design capacity that plainly is not one) are the mislabel, and
 /// honest numbers pass through exactly as read.
 fn correctPercentLabels(into: *proto.Battery) void {
     if (into.design == 0 or into.design == proto.Battery.UNKNOWN) return;

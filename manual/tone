@@ -1,4 +1,4 @@
-tone — a sine through the sound graph
+tone - a sine through the sound graph
 
   tone                   one second of concert pitch
   tone 1000              a chosen frequency, in hertz

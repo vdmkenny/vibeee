@@ -72,10 +72,11 @@ pub fn free(_: []const []const u8) void {
 }
 
 pub fn top(args: []const []const u8) void {
-    // Refreshes a fixed number of times rather than until interrupted: there is
-    // no signal to interrupt it with yet, and a program that could not be
-    // stopped would be worse than one that stops on its own.
+    // A fixed number of refreshes, and Ctrl+C to end them early: the wait
+    // between rounds is a wait on the stop event, so a reading nobody
+    // wants any more costs the rest of one second and no more.
     const rounds = if (args.len > 0) @max(str.toUnsigned(args[0]), 1) else 1;
+    const stop = sys.watch(.stop);
 
     var buf: [1024]u8 = [_]u8{0} ** 1024;
 
@@ -105,7 +106,13 @@ pub fn top(args: []const []const u8) void {
         if (round + 1 < rounds) {
             out.byte('\n');
             out.flush();
-            sys.sleepMicros(1_000_000);
+            // The pause is a wait on the stop event, so Ctrl+C lands in it
+            // rather than being noticed a second later.
+            if (stop >= 0) {
+                if (sys.eventWait(@intCast(stop), 1_000_000) >= 0) break;
+            } else {
+                sys.sleepMicros(1_000_000);
+            }
         }
     }
 

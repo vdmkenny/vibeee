@@ -19,7 +19,7 @@ shape as the 701's era, same budgets:
 | Boot | BIOS + USB-SD | vendor IPL, NAND/SD `[MED]` |
 
 The one fact the whole plan hangs on: **QEMU's `versatilepb` presents an
-ARM926EJ-S** — the same core, same MMU (ARMv5TEJ short-descriptor VMSA), same
+ARM926EJ-S**: the same core, same MMU (ARMv5TEJ short-descriptor VMSA), same
 instruction set. QEMU also carries `imx25-pdk` (another ARM926 board) as a second
 opinion, and `collie` (SA-1110, ARMv4) as the purity check that no ARMv5-only
 instructions leaked into the portable core. Verified against QEMU 11.1.0 on this
@@ -34,7 +34,7 @@ QEMU is the sanity target, not the product.
   image pipeline (`image`, `dev-image`, `sd`, `qemu-panic`) is x86-only and
   refuses with a message rather than building a useless MBR.
 - `build.zig`: `-Darch` selects the target once, everywhere. arm = `arm926ej_s`,
-  freestanding, `.eabi` (soft float — the core has no VFP). Both kernel and
+  freestanding, `.eabi` (soft float, the core has no VFP). Both kernel and
   userspace share the model on arm, since there is no FPU state to save.
 - The arm build currently fails exactly where it should: `start.zig`'s
   architecture switch and the x86 user stub. That is the honest state until §4.
@@ -76,7 +76,7 @@ where the 701 forced the QR-and-ring apparatus.
 - `src/start.zig`: add the arm branch to the existing switch.
 - `src/kernel/hal.zig`: add the arm branch; also make `inl`/`outl` conditional on
   the port-IO capability rather than unconditional, and have `pcicfg.zig` refuse
-  on a machine with no port I/O — arm has no PCI config ports at all.
+  on a machine with no port I/O: arm has no PCI config ports at all.
 - `src/kernel/elf.zig`: accept `.arm` machine tags in the loader check.
 - `src/user/syscall.zig`: switch on arch for the trap stub, like `start.zig` does.
 - A new `src/board/` for the machine data (UART base, RAM layout), because a CE
@@ -84,8 +84,8 @@ where the 701 forced the QR-and-ring apparatus.
   on x86. This is the `board/` directory design/00-vibeee.md §3 promised; the
   port is what forces it to exist.
 
-Everything else — sched, wait, channel, event, shm, handle, vfs, fat, bcache,
-console grammar — must compile untouched. That is the definition of the proof.
+Everything else (sched, wait, channel, event, shm, handle, vfs, fat, bcache,
+console grammar) must compile untouched. That is the definition of the proof.
 
 ## 6. Non-goals
 

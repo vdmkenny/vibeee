@@ -1,4 +1,7 @@
-top — show threads and load
+top - threads, and what they are spending
+
+  top                    one reading
+  top 20                 twenty, a second apart
 
 Every thread, its state, priority and time. The id column is what
-`kill` takes.
+`kill` takes. Ctrl+C ends a run early.

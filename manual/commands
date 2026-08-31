@@ -1,0 +1,7 @@
+commands - every command name, one per line
+
+  commands               the list
+  commands | grep net    the ones that match
+
+For completion and for scripts. `tools` prints the same names with a
+line describing each.

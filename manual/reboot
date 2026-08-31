@@ -1,0 +1,7 @@
+reboot - restart the machine
+
+  reboot
+
+Stops every service, flushes what is written, unmounts, and asks the
+firmware to restart. A shell builtin so it works when nothing else does.
+`off` powers down instead.

@@ -8,7 +8,7 @@
 const quirks = @import("quirks.zig");
 
 /// The family itself: an ASUS machine whose DMI product is one of the Eee
-/// line. `exact` names the models, `prefixes` the series whose names vary —
+/// line. `exact` names the models, `prefixes` the series whose names vary,
 /// the 900 line ships as 900A and 901, the 1000 line as 1000H and 1005HA.
 const family = [_]quirks.Rule{
     .{ .dmi_vendor = "ASUSTeK Computer INC." },

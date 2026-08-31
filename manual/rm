@@ -1,0 +1,6 @@
+rm - remove a file
+
+  rm /tmp/note           one
+  rm a b c               several
+
+Files only, and no undo. A directory is refused rather than emptied.

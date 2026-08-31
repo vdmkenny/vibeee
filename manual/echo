@@ -1,0 +1,7 @@
+echo - print arguments
+
+  echo hello             say something
+  echo hello > /tmp/note  keep it in a file
+
+A shell builtin, so it writes through the shell's own output. It does
+not interpret escapes: what is typed is what is printed.

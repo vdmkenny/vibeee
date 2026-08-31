@@ -213,8 +213,8 @@ fn restart() proto.Status {
 }
 
 /// Ask the kernel to end every other process and see them out. This process
-/// is what asks the firmware to leave, so it goes last; everything else —
-/// the drivers, the shell, the supervisor — leaves first, releasing what
+/// is what asks the firmware to leave, so it goes last; everything else,
+/// the drivers, the shell, the supervisor, leaves first, releasing what
 /// only its exit releases.
 fn stopEverything() bool {
     const left = sys.stopAll();

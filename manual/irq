@@ -1,4 +1,4 @@
-irq — interrupt lines held outside the kernel
+irq - interrupt lines held outside the kernel
 
 Each line a service holds, whether it is armed, and how many times it
 has delivered. The first question when a device has gone quiet.

@@ -1,4 +1,4 @@
-page — read a long text a screen at a time
+page - read a long text a screen at a time
 
   page /etc/services     a file
   log | page             whatever another command says

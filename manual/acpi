@@ -1,0 +1,7 @@
+acpi - what the firmware says this machine has
+
+  acpi                   the devices the firmware describes
+  acpi <name>            the methods one of them offers
+
+A vendor's methods are called whatever the vendor called them, so the
+only way to learn what a machine offers is to read its own list.

@@ -1,0 +1,8 @@
+hotkeys - the keys that do not arrive as keys
+
+  hotkeys                what the firmware has reported
+  hotkeys watch          keep listening and print each as it comes
+
+Volume, brightness and the radio switch are not scancodes: the embedded
+controller reports them to the firmware and the firmware to the platform
+service. `hotkeys watch` is how to find out what a key actually sends.

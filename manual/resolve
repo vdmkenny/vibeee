@@ -1,4 +1,4 @@
-resolve — a name to its address, and where the answer came from
+resolve - a name to its address, and where the answer came from
 
   resolve www.example.com
   resolve printer.lan builder.lan

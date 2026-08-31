@@ -1,4 +1,4 @@
-net — the network interfaces
+net - the network interfaces
 
   net                    every interface: link, counters, address
   net <iface> up         enable that interface, persistently

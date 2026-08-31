@@ -1,0 +1,6 @@
+exit - leave the shell
+
+  exit
+
+A shell builtin. The shell is what the machine starts with, so leaving
+it on the console starts another; `off` powers down instead.

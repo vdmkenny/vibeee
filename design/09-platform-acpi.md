@@ -282,7 +282,7 @@ pub const GateNotice = union(enum(u16)) {   // platform → devmgr channel
 The quirks registry (`src/quirks/`, one module per machine family) is evaluated by the
 kernel's early probe before any driver binds, and answers through `sysinfo` (`quirks`,
 `quirks.ec`, `quirks.battery`, `acpi.pm`). Rules (`Rule`): DMI vendor, a product family
-(exact names plus prefixes, so one quirk covers a whole line), board name, ACPI HID — a
+(exact names plus prefixes, so one quirk covers a whole line), board name, ACPI HID: a
 quirk applies when all of its rules match. Today (the Eee line): EC ports 0x62/0x66 for
 DSDTs that declare the controller inside the power management block, and the battery
 tables' percent-as-capacity mislabel. The EC driver refuses, uncorrected, any port pair

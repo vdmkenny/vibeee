@@ -1,0 +1,6 @@
+mkdir - create a directory
+
+  mkdir /home/notes      one
+  mkdir a b c            several
+
+The parent must exist already.

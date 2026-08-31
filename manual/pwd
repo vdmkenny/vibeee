@@ -1,0 +1,5 @@
+pwd - the directory this shell is in
+
+  pwd
+
+A shell builtin. `cd` moves it.

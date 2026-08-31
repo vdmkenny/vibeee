@@ -1,4 +1,4 @@
-battery — charge, rate, and time remaining
+battery - charge, rate, and time remaining
 
 Read through the firmware. On hardware whose tables mislabel the
 figures, the correction is applied before anything is shown.

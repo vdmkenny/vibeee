@@ -1,0 +1,8 @@
+display - the panel, and asking it for a mode
+
+  display                what the panel is doing now
+  display 800x600        ask for a mode
+  display native         ask for the panel's own
+  display regs           the controller's registers
+
+A mode the hardware refuses is reported rather than forced.

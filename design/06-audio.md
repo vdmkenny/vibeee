@@ -113,7 +113,7 @@ Not on the boot critical path; ready ≈150 ms after spawn.
 
 Lifecycle, per the model netd follows (design/08 §3.4): the manifest declares
 `needs = platd`, the PCI routing question is asked of `platd` before any hardware
-touch, and the "audio" name is registered as the last act before the serve loop —
+touch, and the "audio" name is registered as the last act before the serve loop,
 once the controller, codec and mixer state are all answerable. The boot line can
 hold any service down (`no.audio`) or start it late under the boot watchdog
 (`late.audio`) for one boot.

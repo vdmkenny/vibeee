@@ -1,4 +1,4 @@
-driver — what drives what
+driver - what drives what
 
   driver                 the bindings
   driver stop <name>     stop a standalone driver process

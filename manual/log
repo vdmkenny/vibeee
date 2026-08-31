@@ -1,4 +1,4 @@
-log — what the kernel and the services have said
+log - what the kernel and the services have said
 
   log                    the whole ring, oldest first
   log -n 30              the last thirty lines

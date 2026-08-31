@@ -1,4 +1,4 @@
-ping — one echo a second, answered or timed out
+ping - one echo a second, answered or timed out
 
   ping 192.0.2.1         four rounds against an address
   ping gateway.lan       a name; the resolver finds the address

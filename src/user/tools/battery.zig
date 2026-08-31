@@ -1,8 +1,8 @@
 //! battery: what the pack is doing, and what it has come to.
 //!
 //! Three answers, of which two are only asked here. How full it is now is a
-//! number anybody can watch; what it is doing — charging, draining, in
-//! trouble — and how much longer it will drain for is the pair a person
+//! number anybody can watch; what it is doing (charging, draining, in
+//! trouble) and how much longer it will drain for is the pair a person
 //! actually wants, and how much it can still hold against what it was built
 //! to hold is what says whether a netbook of this age has a battery or an
 //! ornament.

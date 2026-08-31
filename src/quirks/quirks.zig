@@ -38,7 +38,7 @@ pub const Dmi = struct {
 
 /// A family of product names one rule matches: any exact name, or any name
 /// beginning with one of the prefixes. The split is what lets one quirk
-/// cover a whole line — "1000H" and "1005HA" both begin with "100" — without
+/// cover a whole line ("1000H" and "1005HA" both begin with "100") without
 /// enumerating every variant a marketing department ever produced.
 pub const Family = struct {
     exact: []const []const u8 = &.{},
@@ -56,7 +56,7 @@ pub const Rule = union(enum) {
 };
 
 /// What a quirk may change. Everything is optional: a quirk sets only what
-/// it corrects, and a reader sees null — or false — for the rest.
+/// it corrects, and a reader sees null, or false, for the rest.
 pub const Corrections = struct {
     /// The embedded controller's true port pair, for boards whose DSDT
     /// declares the controller somewhere it is not.

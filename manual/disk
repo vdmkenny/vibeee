@@ -1,4 +1,4 @@
-disk — list drives and volumes
+disk - list drives and volumes
 
 Every block device and the volumes found on it. `mount` attaches one;
 `unmount` detaches it, flushing first.
