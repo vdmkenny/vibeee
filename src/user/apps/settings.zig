@@ -10,6 +10,7 @@
 //! visible before the file is saved, because the point of choosing one is
 //! seeing it.
 
+const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
@@ -259,6 +260,31 @@ fn redraw() void {
     if (ctx.pending) draw();
 }
 
+/// Which part of the machine is being changed.
+///
+/// Listed as they gain something to hold: a heading over an empty pane is a
+/// promise the machine has not kept, so a section appears here when there is
+/// a setting under it and not before.
+const Section = enum {
+    display,
+    audio,
+    about,
+
+    fn title(self: Section) []const u8 {
+        return switch (self) {
+            .display => "Display",
+            .audio => "Audio",
+            .about => "About",
+        };
+    }
+};
+
+var section: Section = .display;
+
+/// The column of sections. As wide as the longest name and no wider: on a
+/// screen this size the rail is room the pane does not get.
+const RAIL_WIDTH: i32 = 96;
+
 fn draw() void {
     const t = theme.current();
     const surface = ctx.surface;
@@ -269,70 +295,131 @@ fn draw() void {
     // what the last one finished with.
     if (ctx.damaged) surface.fill(area, t.surface);
 
-    const pad = t.padding;
-    const row = t.control_height;
-    var y: i32 = pad;
+    const foot = t.control_height + t.padding * 2;
+    const rail = eui.Rect{ .x = 0, .y = 0, .w = RAIL_WIDTH, .h = area.h - foot };
+    const pane = eui.Rect{
+        .x = rail.right() + t.menu_padding,
+        .y = t.menu_padding,
+        .w = area.w - rail.w - t.menu_padding * 2,
+        .h = rail.h - t.menu_padding,
+    };
 
-    // Every group is an enum field, so every group is one call: the tags are
-    // the buttons, and a value added to the schema appears here untouched.
-    const full = eui.Rect{ .x = pad, .y = y, .w = area.w - pad * 2, .h = row };
+    drawRail(rail);
+    surface.fill(.{ .x = rail.right(), .y = 0, .w = 1, .h = rail.h }, t.line);
+
+    switch (section) {
+        .display => drawDisplay(pane),
+        .audio => drawAudio(pane),
+        .about => drawAbout(pane),
+    }
+
+    drawFooter(area, foot);
+
+}
+
+fn drawRail(rail: eui.Rect) void {
+    const t = theme.current();
+    if (ctx.damaged) ctx.surface.fill(rail, t.surface_pressed);
+
+    var y = rail.y + t.padding;
+    for (std.enums.values(Section)) |which| {
+        const at = eui.Rect{ .x = rail.x, .y = y, .w = rail.w, .h = t.menu_row_height };
+        if (ctx.toggle(at, which.title(), which == section) and which != section) {
+            section = which;
+            // A different pane entirely, so the whole window is repainted
+            // rather than the row that was pressed.
+            ctx.damage();
+        }
+        y += t.menu_row_height;
+    }
+}
+
+fn drawDisplay(pane: eui.Rect) void {
+    const t = theme.current();
+    const row = t.control_height;
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
 
     y = group(&y, full, "Theme");
     // Applied on the spot rather than on save, because seeing it is the point
     // of choosing it.
-    const wanted = ctx.choice(.{ .x = pad, .y = y, .w = full.w, .h = row }, current.theme);
+    const wanted = ctx.choice(.{ .x = pane.x, .y = y, .w = full.w, .h = row }, current.theme);
     if (wanted != current.theme) {
         current.theme = wanted;
         if (theme.byName(@tagName(wanted))) |chosen| theme.use(chosen);
         change();
     }
-    y += row + pad;
+    y += row + t.padding;
 
     y = group(&y, full, "Bar");
-    const bar = ctx.choice(.{ .x = pad, .y = y, .w = full.w, .h = row }, current.bar);
+    const bar = ctx.choice(.{ .x = pane.x, .y = y, .w = full.w, .h = row }, current.bar);
     if (bar != current.bar) {
         current.bar = bar;
         change();
     }
-    y += row + pad;
-
-    // Volume, which is the machine's rather than the file's: it goes to the
-    // sound service now and is not one of the settings Save writes.
-    y = group(&y, full, "Volume");
-    const level = ctx.slider(
-        .{ .x = pad, .y = y, .w = full.w - 84, .h = row },
-        .{ .min = 0, .max = 100 },
-        volume.percent,
-        .{},
-    );
-    if (ctx.toggle(.{ .x = pad + full.w - 78, .y = y, .w = 78, .h = row }, "Mute", volume.muted != 0)) {
-        setVolume(volume.percent, volume.muted == 0);
-    } else if (level != volume.percent) {
-        setVolume(@intCast(level), volume.muted != 0);
-    }
-    y += row + pad;
+    y += row + t.padding;
 
     // The wall behind everything. Three channels rather than a list of
     // colours: the panel is one flat colour and which one is a matter of
     // taste that a list of six would only get near.
     y = group(&y, full, "Wallpaper");
-    y = wallpaper(.{ .x = pad, .y = y, .w = full.w, .h = row * 3 + pad * 2 });
-    y += pad;
+    _ = wallpaper(.{ .x = pane.x, .y = y, .w = full.w, .h = row * 3 + t.padding * 2 });
+}
+
+fn drawAudio(pane: eui.Rect) void {
+    const t = theme.current();
+    const row = t.control_height;
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
+
+    y = group(&y, full, "Volume");
+    if (!has_sound) {
+        ctx.label(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "Nothing is serving sound.");
+        return;
+    }
+
+    const level = ctx.slider(
+        .{ .x = pane.x, .y = y, .w = full.w - 84, .h = row },
+        .{ .min = 0, .max = 100 },
+        volume.percent,
+        .{},
+    );
+    if (ctx.toggle(.{ .x = pane.x + full.w - 78, .y = y, .w = 78, .h = row }, "Mute", volume.muted != 0)) {
+        setVolume(volume.percent, volume.muted == 0);
+    } else if (level != volume.percent) {
+        setVolume(@intCast(level), volume.muted != 0);
+    }
+}
+
+fn drawAbout(pane: eui.Rect) void {
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = 16 };
+
+    y = group(&y, full, "vibeee");
+    ctx.label(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "0.1.0");
+}
+
+fn drawFooter(area: eui.Rect, foot: i32) void {
+    const t = theme.current();
+    const row = t.control_height;
+    const top = area.h - foot;
+
+    ctx.surface.fill(.{ .x = 0, .y = top, .w = area.w, .h = 1 }, t.line);
 
     // Saved settings take effect when the manager next starts, except the
-    // theme, which is live. Saying so beats a person wondering why the bar did
-    // not move.
+    // theme and the wall, which are live. Saying so beats a person wondering
+    // why the bar did not move.
     ctx.label(
-        .{ .x = pad, .y = area.h - row - pad - 18, .w = area.w - pad * 2, .h = 16 },
-        if (saved) "Bar and layout apply on restart." else "Unsaved changes.",
+        .{ .x = t.menu_padding, .y = top + t.padding + 4, .w = area.w - 180, .h = 16 },
+        if (saved) "The bar moves when the manager next starts." else "Unsaved changes.",
     );
 
-    if (ctx.button(.{ .x = pad, .y = area.h - row - pad, .w = 76, .h = row }, "Save")) {
+    if (ctx.button(.{ .x = area.w - 168, .y = top + t.padding, .w = 76, .h = row }, "Save")) {
         save();
         ctx.damage();
     }
 
-    if (ctx.button(.{ .x = pad + 80, .y = area.h - row - pad, .w = 76, .h = row }, "Close")) {
+    if (ctx.button(.{ .x = area.w - 86, .y = top + t.padding, .w = 76, .h = row }, "Close")) {
         sys.exit(0);
     }
 
