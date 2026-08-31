@@ -20,6 +20,16 @@ make vnc     # the same, over VNC (vnc://localhost:5901 on macOS)
 You need Zig 0.16, nasm, mtools and QEMU. It boots to a shell in about a second.
 Type `eeewm` for the desktop.
 
+The emulated machine is built to resemble the target: the CPU is pinned to the Celeron
+M's feature set, memory to 512 MB, storage to the parallel ATA the machine's own SSD
+speaks, and the audio controller to the ICH6 the southbridge carries, which is the same
+part QEMU models and the same driver that binds on hardware. Sound comes out of the
+host by default where there is somewhere to send it, and `QEMU_AUDIODEV=none` turns
+that off without taking the controller away. What cannot be emulated is the rest of the
+chipset: no GMA 900, no wireless radio, no embedded controller, and no panel that
+offers 800x480 as a mode, so the console settles for 640x480 under QEMU and gets the
+full panel only on the machine.
+
 ## What is there
 
 A tiling window manager whose tabs are named after what is in them, and four
@@ -35,9 +45,30 @@ applications sharing one control library:
 Underneath: its own bootloader, a preemptive O(1) scheduler, per-process address
 spaces, capability handles, channels and events, ATA and FAT with long names, ACPI
 interpreted in a userspace service (uACPI), and a native modeset for the GMA 900/950.
+Alongside those, three services the device manager starts when it finds the hardware:
+USB over EHCI and its UHCI companions, carrying disks, keyboards, mice and hubs; sound
+as a routing graph over AC'97 and HDA; and a wired network stack that takes a lease and
+holds a conversation. Settings and home are volumes of their own, so what is changed
+outlives the power being cut.
 The window manager is an ordinary userspace program that was handed the display:
 clients talk to it over a channel, draw into their own shared-memory surface, and
 have it composited.
+
+## Programs that are not the system
+
+The image carries what a machine needs to start and be used. Anything else is built
+apart from it and installed into `/home`, beside the files it works on:
+
+```bash
+make apps               # build every recipe in apps/
+make app APP=doom       # build just one
+```
+
+A recipe says where a program's source comes from and how to build it, and third-party
+source is never committed here. Doom is the first one: it builds, runs, takes input and
+saves. Its data is not fetched for you, because what a program may be passed around with
+is not a build's decision to make; the recipe names the WAD it wants and where to get
+it, and stops there.
 
 ## Running on real hardware
 
@@ -52,13 +83,16 @@ read a screen, that is the whole skill set.
 
 Expectations on the machine, day one:
 
-* **Works:** boot from SD, the screen at the panel's own 800x480 through the native
-  GMA modeset, keyboard (US-International and Belgian AZERTY included), the
+* **Works on the machine:** boot from SD, the screen at the panel's own 800x480 through
+  the native GMA modeset, keyboard (US-International and Belgian AZERTY included), the
   touchpad in relative mode, battery state with remaining time, backlight levels,
-  hotkeys, the desktop with all four applications.
-* **Does not work yet:** nothing written survives a reboot (settings are per-session),
-  powering off does not cut the last power (the LED stays on; see below), and there
-  is no USB, audio or networking support at all.
+  hotkeys, the desktop with all four applications, wired networking through the whole
+  stack, and settings and a home directory that outlive the power being cut.
+* **Written and running, but proven in the emulator rather than on the machine:** USB
+  storage, keyboards, mice and hubs, and sound over AC'97 and HDA.
+* **Does not work yet:** powering off does not cut the last power (the LED stays on; see
+  below), the wireless radio is identified but not driven, and a machine that sleeps
+  comes back with its USB devices unenumerated.
 * The safest first run is with a card you can overwrite, and a machine you can pull
   the battery out of: this is a toy operating system, not audited software.
 

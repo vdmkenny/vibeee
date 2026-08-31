@@ -74,8 +74,8 @@ knows when this was last true, and the tree knows how big it is.
 | UART 16550 | [`drv/serial/uart16550.zig`](../src/drv/serial/uart16550.zig) | For machines that have one; the 701 does not. |
 
 Probed but **not implemented**, the table reports them so an unfamiliar machine is
-diagnosable: `gma900`, `vesafb` (probe only), `ehci`, `uhci`, `hda`, `atl2`, `ath5k`,
-`e1000`, `i801smb`, `lpc_ich`.
+diagnosable: `gma900` as a driver of its own, the kernel holding the modeset instead,
+`vesafb` (probe only), `i801smb` and `lpc_ich`.
 
 ## Graphics and the GUI
 
@@ -124,6 +124,17 @@ before it forced into place.
 | Pad | [`user/apps/pad.zig`](../src/user/apps/pad.zig) | Text editor: soft-wrapped editing in the interface face, a File menu, open and save through the floating file dialog, live byte count. |
 | kilo | [`third_party/kilo/`](../third_party/kilo/), [`user/ports/kilo.c`](../src/user/ports/kilo.c) | antirez's editor, unmodified, built with `eeecc` against eeelibc. A wrapper renames its `main` at compile time to give it the alternate screen, so an update is a re-fetch rather than a merge. |
 | eTerm | [`user/eterm/`](../src/user/eterm/) | Terminal window running `vsh` over a pipe pair. Extended VT100 per [design §16](../design/10-gui.md): cursor movement, erase, insert and delete, scrolling regions, alternate screen, SGR with 256 colours, DECCKM, OSC titles. Line editing is the terminal's, until `vsh` does its own. |
+
+## Programs that are not the system
+
+The image carries what a machine needs to start and be used. Anything else is built
+apart from it and installed into `/home`, where it sits beside the files it works on.
+
+| Component | File | State |
+|---|---|---|
+| Recipes | [`apps/`](../apps/) | One directory per program: an `app.mk` saying where its source comes from and how to build it, and whatever platform half this system needs that the upstream project has no reason to carry. Third-party source is never committed, and is fetched into `build/apps/`. `make apps` builds all of them, `make app APP=<name>` one. |
+| Staging | `home/` | What an app build writes into, and what the image seeds `/home` from. The host side is the source of truth, so rebuilding the image puts an installed program back rather than losing it with the old one. Untracked. |
+| Doom | [`apps/doom/`](../apps/doom/) | The portable engine, whose platform half is six calls: this one answers them with the framebuffer, the key stream and the clock. Its source list is read out of the engine's own makefile rather than copied, so a file added upstream arrives without anyone noticing it should have. It builds, runs at the size the screen comes up at, takes input, and writes a save into `/home` through the FAT driver. Sound has no backend yet. Data is not fetched: the recipe names the WAD it wants and where to get it, and stops there. |
 
 ## Shared between kernel and userspace
 
@@ -206,7 +217,7 @@ and exercised on every boot.
 |---|---|
 | PATA + FAT32 | Done, reading and writing |
 | `init` | Done: manifests, dependency order, restart policy, orphan reaping |
-| `devmgd` | Done. Matches `/drivers/*.manifest` against the bus and starts each driver with the capabilities its manifest asks for. No userspace driver is written yet, so it matches and reports |
+| `devmgd` | Done. Matches `/drivers/*.manifest` against the bus and starts each driver with the capabilities its manifest asks for. `usbd`, `sndd` and `netd` come up this way, so what a build drives is a manifest and a program rather than a branch anybody has to edit |
 | `eeelibc` | Done enough to build and run a POSIX program that draws its own pixels. `math.h` is a shim: Zig's compiler_rt already carries `sin`, `cos`, `exp`, `log`, `sqrt`, `floor`, `fmod` and the rest under their C names, and `std.math` the inverse angles, hyperbolics, `pow` and `hypot`, so what is written here is the second list wearing its C name. `printf` does the float conversions through `std.fmt.float`, with C's exponent form and `%g`'s trimming. `vibeee.h` covers what POSIX has no word for: taking the screen, reading keys, and joining the sound graph as a node with one output, with the key numbers and modifier bits generated from the enum and packed struct that define them. Parity is checked rather than claimed: `examples/conform.c` is eighty-eight facts with one right answer each, built with the host's compiler and with ours; eighty-five match. A process carries an environment, handed down from init and passed on by the shell, so `getenv` answers what it was told and `setenv` changes it. `strtod`, `rand`, `assert`, `stat`, `access`, `opendir`, `getopt` and the set-walking string functions are there, which is most of what a program reaches for before it reaches for anything unusual. No `fork`, no asynchronous signals, no sockets. Rounding a printed decimal differs from C: `printf` rounds the shortest decimal that reads back as the value, and C rounds the value itself. So exact halves go away from zero rather than to the even neighbour, and a value stored just under a half, such as `0.15`, rounds up where C rounds down. `lib/decimal.zig` writes a double out exactly and rounds it C's way, host-tested; wiring it into `printf` on the target produced truncated output and then a fault that is not yet understood, so `printf` still uses the shorter path. The three cases are in `conform.c` and fail there, which is where they should be until it is fixed. The raw-terminal path (`tcgetattr`/`tcsetattr`, `VMIN`) is implemented and has no program exercising it |
 | Multicall utilities | Done |
 | Touchpad | Works in relative mode; no tap zones, edge scrolling or gestures |
@@ -243,9 +254,11 @@ over the socket bridge, `resolve` answers names from the hosts table and DNS, `p
 takes names, and 127.0.0.1 works with no hardware under it. Audio runs as a routing
 graph over AC'97 and HDA. USB runs on EHCI: a stick enumerates, mounts under /media,
 is read and written, and takes its mount with it when it is pulled; a USB keyboard
-types and a USB mouse moves the pointer. The boot bring-up model (services behind
-`needs`/`provides`, registered settled) is load-bearing. What M2 still owes on USB is hubs and
-suspend. M3 owes the GUI apps parked there.
+types and a USB mouse moves the pointer. A hub is a device with a driver like any
+other, and what hangs off one enumerates the way a root port's device does. The boot
+bring-up model (services behind `needs`/`provides`, registered settled) is
+load-bearing. What M2 still owes on USB is suspend and resume. M3 owes the GUI apps
+parked there.
 
 ## Known gaps
 

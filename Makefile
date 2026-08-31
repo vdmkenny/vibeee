@@ -22,7 +22,22 @@ endif
 ifeq ($(ARCH),x86)
 QEMU     ?= qemu-system-i386
 QEMU_CPU  := pentium3,+sse2,+pae,+nx,-sse3
-QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot
+
+# Sound, on by default because the machine has it. The 701's southbridge is
+# an ICH6, and QEMU's `intel-hda` is a model of that same controller down to
+# the PCI id, so the driver that binds here is the one that binds there.
+#
+# Output only, because capture is not implemented and a codec with a
+# recording end asks the host for a microphone in order to attach at all.
+#
+# Where the samples go afterwards is the one part that belongs to the host
+# rather than to the emulated machine, so it is a variable: `none` keeps the
+# controller present and silent, which is all a build machine needs.
+QEMU_AUDIODEV ?= $(if $(filter Darwin,$(shell uname -s)),coreaudio,none)
+QEMU_SOUND := -audiodev $(QEMU_AUDIODEV),id=snd0 \
+              -device intel-hda -device hda-output,audiodev=snd0
+
+QEMU_FLAGS := -machine pc -cpu $(QEMU_CPU) -m 512M -no-reboot $(QEMU_SOUND)
 else
 # The QEMU stand-in for the VT8500-class Windows CE netbooks of design
 # design/12-arm-port.md: same ARM926EJ-S core, same RAM budget, but a serial
@@ -126,6 +141,9 @@ help:
 	@echo "  make qemu             boot the kernel in QEMU"
 	@echo "  make ARCH=arm qemu    boot the ARM kernel via -kernel + serial stdio"
 	@echo "  make qemu-sd          boot the SD image the way real hardware does (x86)"
+	@echo "  make vnc              boot over VNC instead of a local window"
+	@echo "  make apps             build the programs in apps/ into home/"
+	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make qemu-panic       boot into the panic screen (x86)"
 	@echo "  make sd DEV=/dev/rdiskN   flash the image to a card (x86)"
