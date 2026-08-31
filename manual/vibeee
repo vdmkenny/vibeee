@@ -25,9 +25,13 @@ The filesystem:
 A small kernel owns the screen, the disk, input and memory. Services
 own the rest and restart on their own if they fail: platd speaks to
 the firmware, devmgd decides which driver drives which device, netd
-drives the network, sndd carries sound, cfgd keeps settings. `svc`
-lists them; `top` shows threads; `free` shows memory; `driver` shows
-what the device manager matched.
+drives the network, sndd carries sound, usbd carries the USB bus, cfgd
+keeps settings. `svc` lists them; `top` shows threads; `free` shows
+memory; `driver` shows what the device manager matched.
+
+What is plugged in arrives on its own. A USB disk appears in `disk`
+and is mounted under /media; a USB keyboard types and a USB mouse
+moves the pointer. `usb` lists the bus.
 
 The wired network configures itself: an enabled interface asks DHCP
 when its cable carries. `net` shows the result; `man net` describes
@@ -37,6 +41,16 @@ Sound is a graph rather than a pipeline: programs and hardware are
 nodes with ports, and links decide who hears whom. `tone` makes a
 sound, `vol` sets the volume, and `patch` shows and changes the
 wiring.
+
+The boot carries a line of flags, set where the image is written:
+
+  verbose                the boot's narration on screen as well as in
+                         the log, which `log` reads either way
+  debug                  the tier beneath it, for chasing a fault
+  nocolor                plain text, for a screen or a capture that
+                         cannot carry it
+  noautomount            leave media where they are found; `mount`
+                         still attaches anything by hand
 
 Long output reads through `page`. The boot's own messages are under
 `log`. `off` powers down; `reboot` restarts.

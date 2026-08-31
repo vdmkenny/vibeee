@@ -1,0 +1,5 @@
+# The companion controller, by class: full and low speed devices, which
+# is what a keyboard or a mouse on a root port turns out to be.
+name    = uhci
+service = usb
+match   = pci-class:0C:03:00

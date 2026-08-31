@@ -17,6 +17,7 @@ const logo = lib.logo;
 const panic_mod = @import("panic.zig");
 const panicring = @import("panicring.zig");
 const pipe = @import("pipe.zig");
+const vfs = @import("vfs.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
 const bcache = @import("bcache.zig");
@@ -72,6 +73,8 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     console.setVerbose(lib.cmdline.has(bi.cmdlineSlice(), "verbose"));
     console.setDebug(lib.cmdline.has(bi.cmdlineSlice(), "debug"));
     console.setColorEnabled(!lib.cmdline.has(bi.cmdlineSlice(), "nocolor"));
+    // A medium found is a medium mounted, unless the boot said not to.
+    vfs.setAutomount(!lib.cmdline.has(bi.cmdlineSlice(), "noautomount"));
     platform.earlyConsole();
 
     // The backend is chosen before anything is drawn: in graphics mode the text

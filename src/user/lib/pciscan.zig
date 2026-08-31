@@ -15,9 +15,24 @@ pub const Entry = struct {
     device: u16,
     class: u8,
     subclass: u8,
+    /// Which of the class's several interfaces this is, which on some
+    /// buses is the only thing separating two quite different devices.
+    interface: u8,
     /// Whether the kernel already drives it. A userspace driver leaves
     /// those alone: two drivers on one device is worse than the wrong one.
     driven: bool,
+
+    /// What a manifest matches against, which is the same shape on every
+    /// bus so a manifest reads alike whichever one its device is on.
+    pub fn signature(self: Entry) lib.pci.Signature {
+        return .{
+            .vendor = self.vendor,
+            .device = self.device,
+            .class = self.class,
+            .subclass = self.subclass,
+            .interface = self.interface,
+        };
+    }
 };
 
 pub const Scan = struct {
@@ -42,6 +57,7 @@ pub const Scan = struct {
             const device = str.fromHex(fields.next() orelse continue);
             const class = str.fromHex(fields.next() orelse continue);
             const subclass = str.fromHex(fields.next() orelse continue);
+            const interface = str.fromHex(fields.next() orelse continue);
             _ = fields.next() orelse continue; // what the kernel bound
             const state = fields.next() orelse continue;
 
@@ -51,6 +67,7 @@ pub const Scan = struct {
                 .device = @truncate(device),
                 .class = @truncate(class),
                 .subclass = @truncate(subclass),
+                .interface = @truncate(interface),
                 .driven = str.eql(str.trim(state), "driven"),
             };
         }

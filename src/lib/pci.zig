@@ -11,6 +11,7 @@
 //! or a channel and be reconstituted without string parsing at the far end.
 
 const std = @import("std");
+const str = @import("str.zig");
 
 pub const Location = packed struct(u16) {
     /// 0..7. The PCI way of saying there are eight "functions" behind a device.
@@ -253,4 +254,97 @@ test "PCI interrupt pins translate to ACPI indices" {
     try std.testing.expectEqual(@as(?u2, 0), InterruptPin.inta.acpiIndex());
     try std.testing.expectEqual(@as(?u2, 3), InterruptPin.intd.acpiIndex());
     try std.testing.expectEqual(@as(?u2, null), InterruptPin.none.acpiIndex());
+}
+
+
+// ---------------------------------------------------------------------------
+// Matching a device against what a manifest says it fits
+// ---------------------------------------------------------------------------
+
+/// What a device on this bus is, as a driver manifest names it.
+///
+/// The same shape the USB bus uses, and matched the same way, so a
+/// manifest reads alike whichever bus its device is on: an exact part, or
+/// a family with an optional third number narrowing it.
+pub const Signature = struct {
+    vendor: u16 = 0,
+    device: u16 = 0,
+    class: u8 = 0,
+    subclass: u8 = 0,
+    /// Which of a class's several interfaces this is. A USB controller's
+    /// class and subclass say only "USB"; this is what separates the fast
+    /// controller from its companions.
+    interface: u8 = 0,
+
+    /// Whether a match line names this exact part: `pci:vendor:device`,
+    /// in hex. The line may list several, separated by commas.
+    pub fn matchesPart(self: Signature, match: []const u8) bool {
+        return anySpec(self, match, part);
+    }
+
+    /// Whether it names this device's family: `pci-class:class:subclass`,
+    /// with an optional interface. A line that names no interface fits
+    /// every interface of that subclass.
+    pub fn matchesClass(self: Signature, match: []const u8) bool {
+        return anySpec(self, match, class_);
+    }
+
+    fn anySpec(
+        self: Signature,
+        match: []const u8,
+        comptime one: fn (Signature, []const u8) bool,
+    ) bool {
+        var specs = str.split(match, ',');
+        while (specs.next()) |spec| {
+            const trimmed = str.trim(spec);
+            if (trimmed.len != 0 and one(self, trimmed)) return true;
+        }
+        return false;
+    }
+
+    fn part(self: Signature, spec: []const u8) bool {
+        var it = str.split(spec, ':');
+        if (!str.eql(str.trim(it.next() orelse return false), "pci")) return false;
+        const vendor = str.fromHex(str.trim(it.next() orelse return false));
+        const device = str.fromHex(str.trim(it.next() orelse return false));
+        return vendor == self.vendor and device == self.device;
+    }
+
+    fn class_(self: Signature, spec: []const u8) bool {
+        var it = str.split(spec, ':');
+        if (!str.eql(str.trim(it.next() orelse return false), "pci-class")) return false;
+        if (str.fromHex(str.trim(it.next() orelse return false)) != self.class) return false;
+        if (str.fromHex(str.trim(it.next() orelse return false)) != self.subclass) return false;
+        const rest = str.trim(it.next() orelse return true);
+        if (rest.len == 0) return true;
+        return str.fromHex(rest) == self.interface;
+    }
+};
+
+test "a manifest names a pci part exactly, or a family" {
+    const ehci = Signature{ .vendor = 0x8086, .device = 0x265C, .class = 0x0C, .subclass = 0x03, .interface = 0x20 };
+    const uhci = Signature{ .vendor = 0x8086, .device = 0x2658, .class = 0x0C, .subclass = 0x03, .interface = 0x00 };
+
+    try std.testing.expect(ehci.matchesPart("pci:8086:265c"));
+    try std.testing.expect(!uhci.matchesPart("pci:8086:265c"));
+    try std.testing.expect(!ehci.matchesPart("pci-class:0C:03"));
+
+    // The interface is what separates the fast controller from its
+    // companions: both are USB, and only one of them is either driver's.
+    try std.testing.expect(ehci.matchesClass("pci-class:0C:03:20"));
+    try std.testing.expect(!uhci.matchesClass("pci-class:0C:03:20"));
+    try std.testing.expect(uhci.matchesClass("pci-class:0C:03:00"));
+    try std.testing.expect(!ehci.matchesClass("pci-class:0C:03:00"));
+
+    // A line naming no interface fits every one of them.
+    try std.testing.expect(ehci.matchesClass("pci-class:0C:03"));
+    try std.testing.expect(uhci.matchesClass("pci-class:0C:03"));
+    try std.testing.expect(!ehci.matchesClass("pci-class:0C:04"));
+    try std.testing.expect(!ehci.matchesClass("pci-class:02:00"));
+
+    // And a line may name several.
+    const either = "pci-class:0C:03:20, pci-class:0C:03:00";
+    try std.testing.expect(ehci.matchesClass(either));
+    try std.testing.expect(uhci.matchesClass(either));
+    try std.testing.expect(!ehci.matchesClass(""));
 }

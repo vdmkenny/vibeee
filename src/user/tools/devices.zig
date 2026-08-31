@@ -15,6 +15,7 @@ const str = @import("ulib").str;
 const ADDRESS = 10;
 const ID = 12;
 const CLASS = 8;
+const INTERFACE = 4;
 const DRIVER = 13;
 const STATE = 10;
 
@@ -62,6 +63,7 @@ pub fn devices(_: []const []const u8) void {
     out.pad("address", ADDRESS);
     out.pad("id", ID);
     out.pad("class", CLASS);
+    out.pad("if", INTERFACE);
     out.pad("driver", DRIVER);
     out.pad("state", STATE);
     out.text("what\n");
@@ -78,6 +80,9 @@ pub fn devices(_: []const []const u8) void {
         out.pad(it.next() orelse "", ADDRESS);
         pair(it.next() orelse "", it.next() orelse "", ID);
         pair(it.next() orelse "", it.next() orelse "", CLASS);
+        // The programming interface, which on some classes is the only
+        // thing separating two quite different devices.
+        out.pad(it.next() orelse "", INTERFACE);
         ink.plain();
 
         // The driver is named whatever became of it, and the state beside it

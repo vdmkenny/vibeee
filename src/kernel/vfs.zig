@@ -92,12 +92,29 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
 var media_names: [MAX_MOUNTS][MAX_PATH]u8 = undefined;
 var media_used: usize = 0;
 
+/// Whether a volume found is a volume mounted.
+///
+/// On, because a medium plugged in is meant to be read. Off is for a
+/// machine being worked on: a filesystem this kernel would mount and
+/// write to is one it cannot be asked to leave alone otherwise, and
+/// `mount` still attaches anything by hand.
+var automount = true;
+
+pub fn setAutomount(on: bool) void {
+    automount = on;
+}
+
+pub fn automounts() bool {
+    return automount;
+}
+
 /// Put a volume under /media, named after itself.
 ///
 /// One place, because a medium found at boot and a medium plugged in
 /// afterwards should arrive in the same spot: the only difference between
 /// them is when they turned up.
 pub fn mountMedia(dev: *const block.Device) ?[]const u8 {
+    if (!automount) return null;
     if (media_used >= media_names.len) return null;
     const path = std.fmt.bufPrint(&media_names[media_used], "/media/{s}", .{dev.name}) catch return null;
 

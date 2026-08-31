@@ -323,7 +323,7 @@ fn writeDevices(w: *Writer) Error!void {
             // beside it saying which. A caller that only wants what is running
             // filters on the state; one that wants the whole picture, as the
             // boot table shows it, has the same facts to draw it from.
-            self.w.print("{x:0>2}:{x:0>2}.{d}\t{x:0>4}\t{x:0>4}\t{x:0>2}\t{x:0>2}\t{s}\t{s}\t{s}\n", .{
+            self.w.print("{x:0>2}:{x:0>2}.{d}\t{x:0>4}\t{x:0>4}\t{x:0>2}\t{x:0>2}\t{x:0>2}\t{s}\t{s}\t{s}\n", .{
                 b.dev.location[0],
                 b.dev.location[1],
                 b.dev.location[2],
@@ -331,6 +331,7 @@ fn writeDevices(w: *Writer) Error!void {
                 b.dev.device,
                 b.dev.class,
                 b.dev.subclass,
+                b.dev.prog_if,
                 if (b.driver == null) "-" else b.driverName(),
                 @tagName(b.state()),
                 b.dev.description,

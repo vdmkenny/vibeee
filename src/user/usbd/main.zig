@@ -14,6 +14,7 @@
 
 const core = @import("core.zig");
 const hid = @import("hid.zig");
+const uhci = @import("uhci.zig");
 const umass = @import("umass.zig");
 const volume = @import("volume.zig");
 const ehci = @import("ehci.zig");
@@ -41,6 +42,7 @@ const Driver = struct {
 
 const DRIVERS = [_]Driver{
     .{ .name = ehci.name, .ops = ehci.ops, .listen = ehci.listenOn },
+    .{ .name = uhci.name, .ops = uhci.ops, .listen = uhci.listenOn },
 };
 
 /// The class drivers this build carries. Which device each fits is again
@@ -51,9 +53,9 @@ const CLASSES = [_]@import("class.zig").ClassDriver{
     hid.driver,
 };
 
-/// One controller each for the machine's high-speed bus and whatever a
-/// second one turns out to be.
-const MAX_CONTROLLERS = 2;
+/// This family of chipset puts one high speed controller and four
+/// companions on the bus, and a machine may carry a card of its own.
+const MAX_CONTROLLERS = 6;
 
 var controllers: [MAX_CONTROLLERS]hc.Controller = undefined;
 var controller_count: usize = 0;
