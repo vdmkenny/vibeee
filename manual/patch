@@ -1,0 +1,22 @@
+patch — the sound graph
+
+  patch                        every node, its ports, and the links
+  patch tone:out hda:out       link a source into a sink
+  patch -u tone:out hda:out    part them again
+  patch default hda:out        where sound goes when nobody says
+  patch vol music:out 50       one port's own volume
+  patch mute music:out         toggle one port's silence
+
+Everything that makes or takes sound is a node with ports. A source
+port produces frames, a sink port consumes them, and a link joins one
+of each. The hardware is a node like any other: its `out` is the way
+out of the machine and its `in` is the microphone.
+
+Ports are named `node:port`, or just the node when it has one port in
+the direction wanted. Two sources into one sink are mixed; one source
+into two sinks is copied to both. Neither is a setting, both are what
+the shape of the graph means.
+
+The defaults point at the hardware until something points them
+elsewhere, which is what lets a program play without naming anything
+and a workflow rearrange everything without the program knowing.

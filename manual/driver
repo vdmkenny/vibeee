@@ -1,0 +1,16 @@
+driver — what drives what
+
+  driver                 the bindings
+  driver stop <name>     stop a standalone driver process
+  driver start <name>    start it again
+  driver rescan          read the manifests again, bind anything new
+
+The device manager matches hardware to drivers and is the only thing
+that knows vendor numbers. A manifest in /lib/drivers names the
+hardware it fits and where its driver lives: a program the manager
+starts, or a service that comes and claims the assignment. A driver
+belonging to a service has no process of its own, so it cannot be
+stopped here; its service owns it.
+
+Dropping a manifest and its program into /lib/drivers and running
+`driver rescan` brings a new driver up on a running machine.

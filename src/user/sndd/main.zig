@@ -17,6 +17,7 @@ const ac97 = @import("ac97.zig");
 const audio = @import("lib").audio;
 const dev = @import("dev.zig");
 const graph_mod = @import("lib").audiograph;
+const hda = @import("hda.zig");
 const irqroute = @import("ulib").irqroute;
 const lib = @import("lib");
 const log = @import("ulib").log;
@@ -38,6 +39,7 @@ const Driver = struct {
 
 const DRIVERS = [_]Driver{
     .{ .name = ac97.name, .ops = ac97.ops },
+    .{ .name = hda.name, .ops = hda.ops },
 };
 
 /// One driven device is this machine's world; the array exists so a second

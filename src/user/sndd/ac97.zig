@@ -15,6 +15,7 @@ const audio = @import("lib").audio;
 const dev = @import("dev.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
+const pcm = @import("pcm.zig");
 const ports = @import("ulib").ports;
 const sys = @import("sys");
 
@@ -134,9 +135,13 @@ const Arena = extern struct {
 const Device = struct {
     mixer_base: u16 = 0,
     bus_base: u16 = 0,
-    arena: *volatile Arena = undefined,
-    phys: u32 = 0,
+    arena: pcm.Dma(Arena) = undefined,
     opened: bool = false,
+    /// One per direction, counting periods from the engine's own index.
+    progress: [2]pcm.Progress = .{
+        .{ .modulus = BDL_ENTRIES },
+        .{ .modulus = BDL_ENTRIES },
+    },
 };
 
 var device: Device = .{};
@@ -169,35 +174,24 @@ fn open(loc: pci.Location) bool {
     }
     pci.enableIoAndMaster(loc);
 
-    var phys: u32 = 0;
-    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
-    if (handle < 0) {
-        log.fail(name, "cannot allocate the descriptor arena");
-        return false;
-    }
-    const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        log.fail(name, "cannot map the descriptor arena");
-        return false;
-    };
-    device.arena = @ptrCast(@alignCast(mapped));
-    device.phys = phys;
+    device.arena = pcm.Dma(Arena).alloc(name) orelse return false;
 
     if (!resetCodec()) return false;
 
     // Fixed at open: every descriptor names the period buffer its index
     // aliases to, always interrupts, and never changes. Only the engine's
     // last-valid mark moves, walked ahead of the play position each period.
-    const out_base: u32 = phys + @offsetOf(Arena, "out_frames");
-    const in_base: u32 = phys + @offsetOf(Arena, "in_frames");
+    const out_base: u32 = device.arena.physOf("out_frames");
+    const in_base: u32 = device.arena.physOf("in_frames");
     const period_bytes: u32 = @intCast(dev.periodBytes());
     for (0..BDL_ENTRIES) |i| {
         const step: u32 = @as(u32, @intCast(i % dev.PERIODS)) * period_bytes;
-        device.arena.out_list[i] = .{
+        device.arena.at.out_list[i] = .{
             .address = out_base + step,
             .samples = dev.PERIOD_FRAMES * 2,
             .flags = .{ .interrupt = true, .underrun_pad = true },
         };
-        device.arena.in_list[i] = .{
+        device.arena.at.in_list[i] = .{
             .address = in_base + step,
             .samples = dev.PERIOD_FRAMES * 2,
             .flags = .{ .interrupt = true },
@@ -214,12 +208,12 @@ fn open(loc: pci.Location) bool {
 fn resetCodec() bool {
     ports.out32(device.bus_base + GLOBAL_CONTROL, @bitCast(GlobalControl{ .cold_reset = true }));
 
-    var waited: u32 = 0;
-    while (waited < 100) : (waited += 1) {
-        const status: GlobalStatus = @bitCast(ports.in32(device.bus_base + GLOBAL_STATUS));
-        if (status.codec_ready) break;
-        sys.sleepMicros(1000);
-    } else {
+    if (!pcm.settles(100, 1000, {}, struct {
+        fn ready(_: void) bool {
+            const status: GlobalStatus = @bitCast(ports.in32(device.bus_base + GLOBAL_STATUS));
+            return status.codec_ready;
+        }
+    }.ready)) {
         log.fail(name, "the codec never reported ready");
         return false;
     }
@@ -253,30 +247,29 @@ fn start(direction: dev.Direction) bool {
     // Reset the engine's registers, point it at its list, and mark every
     // descriptor valid: the ring wraps and the service stays ahead of it.
     engineWrite8(direction, .control, @bitCast(Control{ .reset = true }));
-    var waited: u32 = 0;
-    while (waited < 100) : (waited += 1) {
-        const control: Control = @bitCast(ports.in8(base + @intFromEnum(Engine.control)));
-        if (!control.reset) break;
-        sys.sleepMicros(100);
-    }
+    _ = pcm.settles(100, 100, base, struct {
+        fn ready(at: u16) bool {
+            const control: Control = @bitCast(ports.in8(at + @intFromEnum(Engine.control)));
+            return !control.reset;
+        }
+    }.ready);
 
     const list: u32 = switch (direction) {
-        .playback => @offsetOf(Arena, "out_list"),
-        .capture => @offsetOf(Arena, "in_list"),
+        .playback => device.arena.physOf("out_list"),
+        .capture => device.arena.physOf("in_list"),
     };
-    ports.out32(base + @intFromEnum(Engine.list_base), device.phys + list);
+    ports.out32(base + @intFromEnum(Engine.list_base), list);
 
     // Silence the buffers so a first period plays nothing rather than
     // stale memory, and mark the whole ring valid: the engine wraps its
     // thirty-two descriptors freely, and `queued` keeps the last-valid
     // mark ahead of the play position so it never catches up and halts.
-    const frames = switch (direction) {
-        .playback => &device.arena.out_frames,
-        .capture => &device.arena.in_frames,
-    };
-    @memset(@as([*]volatile i16, @ptrCast(frames))[0..frames.len], 0);
+    switch (direction) {
+        .playback => pcm.silence(&device.arena.at.out_frames),
+        .capture => pcm.silence(&device.arena.at.in_frames),
+    }
     engineWrite8(direction, .last_valid, BDL_ENTRIES - 1);
-    last_index[@intFromEnum(direction)] = 0;
+    device.progress[@intFromEnum(direction)].reset();
     engineWrite8(direction, .control, @bitCast(Control{
         .run = true,
         .completion_interrupt = true,
@@ -293,8 +286,6 @@ fn stop(direction: dev.Direction) void {
 
 /// One delivery: read each engine's status, count what completed since
 /// last time by the hardware's own index, and acknowledge.
-var last_index = [2]u8{ 0, 0 };
-
 fn irq() dev.Completions {
     if (!device.opened) return .{};
     var done = dev.Completions{};
@@ -303,13 +294,11 @@ fn irq() dev.Completions {
         const base = engineBase(direction);
         const status: EngineStatus = @bitCast(ports.in16(base + @intFromEnum(Engine.status)));
         if (status.completed or status.last_valid_done or status.fifo_error) {
-            const index = ports.in8(base + @intFromEnum(Engine.current_index)) % BDL_ENTRIES;
-            const slot = @intFromEnum(direction);
-            const advanced = (index + BDL_ENTRIES - last_index[slot]) % BDL_ENTRIES;
-            last_index[slot] = index;
+            const index = ports.in8(base + @intFromEnum(Engine.current_index));
+            const advanced = device.progress[@intFromEnum(direction)].advance(index);
             switch (direction) {
-                .playback => done.playback = @intCast(advanced),
-                .capture => done.capture = @intCast(advanced),
+                .playback => done.playback = advanced,
+                .capture => done.capture = advanced,
             }
             ports.out16(base + @intFromEnum(Engine.status), @bitCast(EngineStatus.ACK));
         }
@@ -326,13 +315,10 @@ fn queued(direction: dev.Direction, index: u32) void {
 }
 
 fn period(direction: dev.Direction, index: u32) []u8 {
-    const slot = index % dev.PERIODS;
-    const frames = switch (direction) {
-        .playback => &device.arena.out_frames,
-        .capture => &device.arena.in_frames,
+    return switch (direction) {
+        .playback => pcm.periodAt(&device.arena.at.out_frames, index),
+        .capture => pcm.periodAt(&device.arena.at.in_frames, index),
     };
-    const bytes: [*]u8 = @ptrCast(@volatileCast(frames));
-    return bytes[slot * dev.periodBytes() ..][0..dev.periodBytes()];
 }
 
 /// The codec's own attenuator: zero is loudest, each step one and a half

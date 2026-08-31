@@ -1,0 +1,4 @@
+# The Intel High Definition Audio controller.
+name    = hda
+service = audio
+match   = pci:8086:2668

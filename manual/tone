@@ -1,0 +1,14 @@
+tone — a sine through the sound graph
+
+  tone                   one second of concert pitch
+  tone 1000              a chosen frequency, in hertz
+  tone 1000 250          and a chosen length, in milliseconds
+
+The simplest thing that makes sound: one node, one output port, linked
+to whatever `patch` says the default sink is. What it proves is
+everything beneath it, so it is the first thing to run when a machine
+is silent and should not be.
+
+Silence from `tone` with no complaint means the graph carried it and
+the hardware did not: check `vol`, then `patch` for where the link
+went.

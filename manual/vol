@@ -1,0 +1,11 @@
+vol — how loud the machine is
+
+  vol                    say the volume
+  vol 80                 set it, in percent
+  vol +5                 nudge it up
+  vol -5                 and down
+  vol mute               toggle silence
+
+This is the default sink's volume, which on hardware is the codec's own
+attenuator rather than arithmetic on every sample. A port's individual
+volume belongs to `patch`.
