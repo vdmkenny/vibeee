@@ -500,6 +500,21 @@ pub fn build(b: *std.Build) void {
     // Syscall reference, generated from the same table the dispatcher is built
     // from, so the two cannot disagree.
     // ---------------------------------------------------------------------
+    // The key numbers a C program needs, written from the enum that
+    // defines them. Generated rather than mirrored: two lists agreeing
+    // today is not two lists agreeing.
+    const key_header = b.addRunArtifact(b.addExecutable(.{
+        .name = "gen-key-header",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_key_header.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    }));
+    key_header.addArg("build/include/vibeee-keys.h");
+    key_header.has_side_effects = true;
+    b.getInstallStep().dependOn(&key_header.step);
+
     const syscall_docs = b.addRunArtifact(b.addExecutable(.{
         .name = "gen-syscall-docs",
         .root_module = b.createModule(.{

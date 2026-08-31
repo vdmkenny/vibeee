@@ -28,6 +28,7 @@ pub const string = @import("string.zig");
 pub const time = @import("time.zig");
 pub const term = @import("term.zig");
 pub const unistd = @import("unistd.zig");
+pub const vibeee = @import("vibeee.zig");
 
 comptime {
     _ = errno;
@@ -41,4 +42,5 @@ comptime {
     _ = time;
     _ = term;
     _ = unistd;
+    _ = vibeee;
 }

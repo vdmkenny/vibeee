@@ -34,6 +34,7 @@ exec "$ZIG" cc \
     -fno-stack-protector \
     -fno-builtin \
     -isystem "$ROOT/include" \
+    -isystem "$ROOT/build/include" \
     -Wl,-T,"$ROOT/src/user/linker.ld" \
     -Wl,--entry=_start \
     "$@" \

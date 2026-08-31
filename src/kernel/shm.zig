@@ -35,10 +35,19 @@ pub const Error = error{
 
 pub const PAGE_SIZE = 4096;
 
-/// Largest single segment. Generous for a GUI surface at this resolution
-/// (800x480 at 32bpp is 1.5 MiB) and small enough that one runaway caller
-/// cannot take the machine's memory in a single call.
-pub const MAX_BYTES = 8 * 1024 * 1024;
+/// Largest single segment.
+///
+/// A GUI surface at this resolution is 1.5 MiB, so the ceiling is not
+/// about surfaces: it is about a program with a working set, which asks
+/// for one block and keeps it. A game's heap is the usual example, and
+/// eight megabytes is under what one wants.
+///
+/// Still a guard, and still meaningful: an eighth of this machine's
+/// memory is a bound a runaway caller runs into long before the machine
+/// does. Nothing stops a process making several, so this was never a
+/// limit on how much one program can hold; it is a limit on how much it
+/// can ask for without meaning to.
+pub const MAX_BYTES = 64 * 1024 * 1024;
 
 /// Where mapped segments live in a process. Above the program image at
 /// 0x40000000 and well below the kernel at 0xC0000000, so it collides with
