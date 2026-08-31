@@ -168,10 +168,14 @@ build.
   queues, calendar, ring buffer, battery arithmetic and its mislabeled-percent correction,
   the quirk registry's family matching, command-line flag matching, the terminal emulator
   and its key encoding, text wrapping and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
-- Every module `lib.zig` re-exports is named in a test block there. A module that is
-  only re-exported is not analysed until something reaches for it, and the runner
-  collects tests from the files it analyses, so without that it reports success having
-  run none of them
+- Every file that holds tests is reached by one of the runners, and that is checked
+  rather than assumed: the shared library through the test block in `lib.zig`, which
+  names its declarations, and everything else by being imported in `src/tests.zig` or
+  `src/quirks/tests.zig`. A file that is only re-exported is not analysed until
+  something reaches for it, and a runner collects tests from the files it analyses, so
+  a file nobody names builds cleanly, reports success, and runs nothing. The way to
+  prove a file is in the run is to make one of its tests fail on purpose and watch the
+  suite go red
   across all eight masks.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot

@@ -11,10 +11,13 @@
 //! only thing that wants to.
 
 const str = @import("lib").str;
-const sys = @import("sys");
+// How many entries there is room for is the kernel's number, not this
+// side's: it is what `exec` will accept and what the stack frame is built
+// to hold, so it is read from the one place both sides define it.
+const MAX_ENV = @import("lib").syscalls.MAX_ENV;
 
 /// The entries, as slices into the stack the kernel built.
-var entries: [sys.MAX_ENV][]const u8 = undefined;
+var entries: [MAX_ENV][]const u8 = undefined;
 var count: usize = 0;
 
 /// Take the environment out of the frame a program started on.
