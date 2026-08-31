@@ -15,6 +15,7 @@ const errno = @import("errno.zig");
 const heap = @import("ulib").heap;
 const stream_mod = @import("ulib").stream;
 const string = @import("string.zig");
+const sys = @import("sys");
 const unistd = @import("unistd.zig");
 
 const Stream = stream_mod.Stream;
@@ -96,6 +97,15 @@ fn hasPlus(mode: [*:0]const u8) bool {
         if (mode[i] == '+') return true;
     }
     return false;
+}
+
+/// Take a name away, whether it names a file or an empty directory.
+///
+/// C's own removal, and the one ported code reaches for. One call does
+/// both here, because the kernel decides whether the thing named may go
+/// rather than making the caller say which kind it expected.
+export fn remove(path: [*:0]const u8) callconv(.c) c_int {
+    return @intCast(errno.wrap(sys.unlink(string.spanOf(path))));
 }
 
 export fn fopen(path: [*:0]const u8, mode: [*:0]const u8) callconv(.c) ?*File {
@@ -317,12 +327,29 @@ export fn fread(into: [*]u8, size: usize, count: usize, file: *File) callconv(.c
 
 export fn fseek(file: *File, offset: c_long, whence: c_int) callconv(.c) c_int {
     file.stream.flush();
+
+    // A relative seek is relative to where the *caller* is, and that is
+    // not where the descriptor is: a buffered read pulled in bytes the
+    // caller has not been handed, so the descriptor sits past them. The
+    // difference has to come off before the buffer is thrown away, or the
+    // seek lands a bufferful too far.
+    var wanted = offset;
+    if (whence == unistd.SEEK_CUR) wanted -= @intCast(behind(file));
+
     file.stream.at = 0;
     file.stream.used = 0;
     file.stream.at_end = false;
     file.pushed = EOF;
 
-    return if (unistd.lseek(@intCast(file.stream.handle), offset, whence) < 0) EOF else 0;
+    return if (unistd.lseek(@intCast(file.stream.handle), wanted, whence) < 0) EOF else 0;
+}
+
+/// How far behind the descriptor the caller is: everything read into the
+/// buffer and not yet handed over, plus a character pushed back.
+fn behind(file: *File) c_long {
+    var unread: c_long = @intCast(file.stream.used - file.stream.at);
+    if (file.pushed != EOF) unread += 1;
+    return unread;
 }
 
 export fn ftell(file: *File) callconv(.c) c_long {
@@ -333,7 +360,7 @@ export fn ftell(file: *File) callconv(.c) c_long {
 
     // What is still in the buffer has been read from the descriptor but not
     // handed to the caller, so the caller is that much behind.
-    return at - @as(c_long, @intCast(file.stream.used - file.stream.at));
+    return at - behind(file);
 }
 
 export fn rewind(file: *File) callconv(.c) void {

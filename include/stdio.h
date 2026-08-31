@@ -53,6 +53,10 @@ int ferror(FILE *stream);
 void clearerr(FILE *stream);
 void perror(const char *prefix);
 
+/* Take a name away, whether it names a file or an empty directory. */
+int remove(const char *path);
+int rename(const char *from, const char *to);
+
 int printf(const char *format, ...);
 int fprintf(FILE *stream, const char *format, ...);
 int sprintf(char *into, const char *format, ...);
