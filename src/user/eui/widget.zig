@@ -21,6 +21,7 @@
 
 const draw = @import("draw.zig");
 
+const bar = @import("slider.zig");
 const theme = @import("theme.zig");
 const scroll_mod = @import("scroll.zig");
 const tbl = @import("table.zig");
@@ -463,6 +464,48 @@ pub const Context = struct {
         return picked;
     }
 
+    /// A value along a range: dragged with the pointer, nudged with the
+    /// arrows when focused.
+    ///
+    /// The geometry is `eui.slider`'s, so where the knob is drawn and what a
+    /// press at a point asks for are the same arithmetic and the knob never
+    /// jumps when it is grabbed.
+    ///
+    /// Returns what the value is after this pass, so a caller stores what it
+    /// gets back the way it does with `choice`.
+    pub fn slider(self: *Context, area: Rect, range: bar.Range, value: i32) i32 {
+        const entry = self.slotFor(area) orelse return range.clamp(value);
+        const it = self.interact(entry, area);
+
+        var next = range.clamp(value);
+        // Held anywhere along it, the knob comes to the pointer: on a screen
+        // this size, hunting for a nine pixel grip is worse than moving it.
+        if (it.holding) next = bar.valueAt(area, range, self.pointer_x);
+
+        if (it.focused and self.pending_key != 0) {
+            const code = self.pending_key;
+            if (code == @intFromEnum(KeyCode.left)) {
+                next = range.clamp(next - bar.step(range));
+                self.pending_key = 0;
+            } else if (code == @intFromEnum(KeyCode.right)) {
+                next = range.clamp(next + bar.step(range));
+                self.pending_key = 0;
+            }
+        }
+
+        const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
+        // The value is what the picture is of, so a change to it repaints
+        // even when nothing about the pointer moved.
+        if (self.needsPaint(entry, visual) or entry.detail != next) {
+            entry.visual = visual;
+            entry.detail = next;
+            paintSlider(self.surface, area, range, next, visual, it.focused);
+            self.addDamage(area);
+        }
+
+        return next;
+    }
+
     pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
         const entry = self.slotFor(area) orelse return false;
         const it = self.interact(entry, area);
@@ -574,6 +617,25 @@ pub const Context = struct {
 // Separate from the control functions so the look lives in one place: changing
 // how a button is drawn should not mean touching how it behaves.
 // ---------------------------------------------------------------------------
+
+fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, visual: Visual, focused: bool) void {
+    const t = theme.current();
+
+    // The groove, then what is behind the knob, then the knob. Nothing is
+    // painted twice: the fill stops where the grip starts.
+    const groove = bar.track(area);
+    surface.fill(groove, t.surface_pressed);
+    surface.frame(groove, t.line);
+    surface.fill(bar.filled(area, range, value), t.accent);
+
+    const grip = bar.knob(area, range, value);
+    surface.fill(grip, switch (visual) {
+        .active => t.surface_pressed,
+        .hot => t.surface_hot,
+        else => t.surface,
+    });
+    surface.frame(grip, if (focused or visual == .active) t.accent else t.border);
+}
 
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {
     const t = theme.current();

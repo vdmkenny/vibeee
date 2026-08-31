@@ -26,6 +26,7 @@ pub const text = @import("text.zig");
 pub const icon = @import("icon.zig");
 pub const region = @import("region.zig");
 pub const row = @import("row.zig");
+pub const slider = @import("slider.zig");
 pub const theme = @import("theme.zig");
 pub const widget = @import("widget.zig");
 

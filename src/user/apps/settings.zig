@@ -16,6 +16,7 @@ const sys = @import("sys");
 const out = @import("ulib").out;
 
 const wm = proto.wm;
+const sound = proto.audio;
 const theme = eui.theme;
 
 const store = proto.settings;
@@ -59,6 +60,37 @@ fn settingsMain() noreturn {
 
 fn load() void {
     current = store.load("wm");
+    readVolume();
+}
+
+/// What the sound service says the default output is at.
+///
+/// Kept here rather than asked for on every pass: a paint happens whenever
+/// the pointer moves, and a call into another process per motion is a cost
+/// nothing about the picture justifies.
+var volume: sound.VolumeInfo = .{ .percent = 0, .muted = 0 };
+var has_sound = false;
+
+fn readVolume() void {
+    var reply = sound.Rep{};
+    sound.call(.{ .tag = .get_master }, &reply) catch {
+        has_sound = false;
+        return;
+    };
+    has_sound = reply.status == .ok;
+    if (has_sound) volume = reply.body.volume;
+}
+
+fn setVolume(percent: u8, muted: bool) void {
+    if (!has_sound) return;
+    var reply = sound.Rep{};
+    sound.call(.{
+        .tag = .set_volume,
+        .b = percent,
+        .dir = @intFromBool(muted),
+    }, &reply) catch return;
+    readVolume();
+    ctx.damage();
 }
 
 /// Hand the changes to `cfgd`, which is the only thing that writes them.
@@ -183,6 +215,21 @@ fn draw() void {
     if (bar != current.bar) {
         current.bar = bar;
         change();
+    }
+    y += row + pad;
+
+    // Volume, which is the machine's rather than the file's: it goes to the
+    // sound service now and is not one of the settings Save writes.
+    y = group(&y, full, "Volume");
+    const level = ctx.slider(
+        .{ .x = pad, .y = y, .w = full.w - 84, .h = row },
+        .{ .min = 0, .max = 100 },
+        volume.percent,
+    );
+    if (ctx.toggle(.{ .x = pad + full.w - 78, .y = y, .w = 78, .h = row }, "Mute", volume.muted != 0)) {
+        setVolume(volume.percent, volume.muted == 0);
+    } else if (level != volume.percent) {
+        setVolume(@intCast(level), volume.muted != 0);
     }
     y += row + pad;
 
