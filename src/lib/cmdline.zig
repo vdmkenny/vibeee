@@ -24,7 +24,41 @@ pub fn has(line: []const u8, name: []const u8) bool {
     return false;
 }
 
+/// What `line` gives as the value of `name`, when a word spells
+/// `name=value`.
+///
+/// The same word rule as `has`: `wifi.txpower` is not found in
+/// `nowifi.txpower=20`, and a word carrying no separator is a flag rather
+/// than a setting, so it answers nothing. An empty value is a value, since
+/// `name=` is how a caller says the setting is present and says nothing,
+/// which is different from not naming it at all.
+///
+/// The result borrows from `line` and cannot outlive it.
+pub fn value(line: []const u8, name: []const u8) ?[]const u8 {
+    var words = std.mem.splitScalar(u8, line, ' ');
+    while (words.next()) |word| {
+        const at = std.mem.indexOfScalar(u8, word, '=') orelse continue;
+        if (std.mem.eql(u8, word[0..at], name)) return word[at + 1 ..];
+    }
+    return null;
+}
+
 const testing = std.testing;
+
+test "a setting gives up its value" {
+    try testing.expectEqualStrings("31", value("verbose wifi.txpower=31 fb", "wifi.txpower").?);
+    try testing.expectEqualStrings("fcc", value("wifi.regdomain=fcc", "wifi.regdomain").?);
+    // Present and saying nothing is not the same as absent.
+    try testing.expectEqualStrings("", value("wifi.regdomain=", "wifi.regdomain").?);
+}
+
+test "a setting is a whole word, and a flag is not a setting" {
+    try testing.expectEqual(@as(?[]const u8, null), value("nowifi.txpower=20", "wifi.txpower"));
+    try testing.expectEqual(@as(?[]const u8, null), value("verbose debug", "verbose"));
+    try testing.expectEqual(@as(?[]const u8, null), value("", "verbose"));
+    // A value may itself carry the separator; only the first one divides.
+    try testing.expectEqualStrings("a=b", value("k=a=b", "k").?);
+}
 
 test "a flag is found among others" {
     try testing.expect(has("verbose debug fb", "debug"));

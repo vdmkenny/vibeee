@@ -9,6 +9,7 @@
 //! so kernel and userspace share one instance and its types are the same type
 //! on both sides of a syscall.
 
+pub const ath5k = @import("ath5k.zig");
 pub const audio = @import("audio.zig");
 pub const audiograph = @import("audiograph.zig");
 pub const battery = @import("battery.zig");
@@ -29,6 +30,7 @@ pub const driver = @import("driver.zig");
 pub const elf = @import("elf.zig");
 pub const escapes = @import("escapes.zig");
 pub const eth = @import("eth.zig");
+pub const hostname = @import("hostname.zig");
 pub const hosts = @import("hosts.zig");
 pub const icmp = @import("icmp.zig");
 pub const ieee80211 = @import("ieee80211.zig");

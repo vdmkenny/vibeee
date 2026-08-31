@@ -8,6 +8,7 @@
 //! tools are written against.
 
 const std = @import("std");
+const str = @import("str.zig");
 
 pub const Band = enum(u8) {
     /// 802.11b/g/n.
@@ -255,6 +256,111 @@ pub const Ssid = struct {
     pub fn isHidden(self: Ssid) bool {
         return self.len == 0;
     }
+
+    /// Nothing written is no network named, which is how a slot says it
+    /// has nothing to join rather than that it wants a hidden one.
+    pub fn parse(text: []const u8) ?Ssid {
+        const trimmed = str.trim(text);
+        if (trimmed.len == 0) return Ssid{};
+        return of(trimmed);
+    }
+
+    pub fn spell(self: Ssid, into: *str.Builder) void {
+        into.text(self.slice());
+    }
+};
+
+/// The eight to sixty-three characters a protected network is joined with.
+pub const Passphrase = struct {
+    bytes: [MAX]u8 = @splat(0),
+    len: u8 = 0,
+
+    pub const MIN = 8;
+    pub const MAX = 63;
+
+    pub fn of(text: []const u8) ?Passphrase {
+        if (text.len < MIN or text.len > MAX) return null;
+        var out = Passphrase{ .len = @intCast(text.len) };
+        @memcpy(out.bytes[0..text.len], text);
+        return out;
+    }
+
+    pub fn slice(self: *const Passphrase) []const u8 {
+        return self.bytes[0..@min(self.len, MAX)];
+    }
+};
+
+/// The secret a protected network is joined with, as configuration holds
+/// it.
+///
+/// Two spellings, and the second is the better one to write down. A
+/// passphrase becomes a key only once the network's name is known,
+/// because the derivation is salted with it: the same words are a
+/// different key on a different network. The derived key can therefore be
+/// stored in place of the words, and it is worth doing, because an image
+/// built for a machine that sits in a cupboard is a file somebody may
+/// read, and a key opens the one network while a passphrase is often the
+/// words its owner uses elsewhere.
+pub const Psk = union(enum) {
+    /// No secret, which is what an open network needs and what a slot
+    /// that joins nothing has.
+    none,
+    /// The words, to be derived against the network's name when joining.
+    passphrase: Passphrase,
+    /// The derived key itself.
+    key: [KEY_BYTES]u8,
+
+    pub const KEY_BYTES = 32;
+    const HEX_DIGITS = KEY_BYTES * 2;
+
+    pub fn parse(text: []const u8) ?Psk {
+        const trimmed = str.trim(text);
+        if (trimmed.len == 0) return .none;
+
+        // A key is unambiguous: nothing else is exactly that many hex
+        // digits, and a passphrase of that length would be unusual enough
+        // that reading it as a key is the safer guess.
+        if (trimmed.len == HEX_DIGITS) {
+            if (decodeKey(trimmed)) |key| return .{ .key = key };
+        }
+        return .{ .passphrase = Passphrase.of(trimmed) orelse return null };
+    }
+
+    pub fn spell(self: Psk, into: *str.Builder) void {
+        switch (self) {
+            .none => {},
+            .passphrase => |p| into.text(p.slice()),
+            .key => |k| {
+                for (k) |octet| {
+                    into.byte(hexDigit(octet >> 4));
+                    into.byte(hexDigit(octet & 0xF));
+                }
+            },
+        }
+    }
+
+    fn decodeKey(text: []const u8) ?[KEY_BYTES]u8 {
+        var out: [KEY_BYTES]u8 = @splat(0);
+        for (&out, 0..) |*octet, i| {
+            const high = hexValue(text[i * 2]) orelse return null;
+            const low = hexValue(text[i * 2 + 1]) orelse return null;
+            octet.* = (high << 4) | low;
+        }
+        return out;
+    }
+
+    fn hexValue(c: u8) ?u8 {
+        return switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => null,
+        };
+    }
+
+    fn hexDigit(nibble: u8) u8 {
+        return if (nibble < 10) '0' + nibble else 'a' + (nibble - 10);
+    }
 };
 
 /// Signal strength as a scan reports it: the radio's own margin over its
@@ -363,4 +469,278 @@ test "signal strength becomes bars" {
     // With no absolute figure the margin answers instead.
     try std.testing.expectEqual(@as(u2, 3), (Signal{ .snr_db = 35 }).bars());
     try std.testing.expectEqual(@as(u2, 1), (Signal{ .snr_db = 15 }).bars());
+}
+
+// ---------------------------------------------------------------------------
+// What a radio may do, and how loudly
+// ---------------------------------------------------------------------------
+
+/// Transmit power as this family of silicon spells it: half decibel
+/// milliwatts in six bits, so a little over thirty-one dBm at the top of
+/// the range.
+pub const Power = struct {
+    half_dbm: u6 = 0,
+
+    /// The highest the field can hold, which is the highest the hardware
+    /// will accept being told.
+    pub const maximum = Power{ .half_dbm = std.math.maxInt(u6) };
+
+    pub fn ofDbm(value: u8) Power {
+        const halved: u16 = @as(u16, value) * 2;
+        return .{ .half_dbm = @intCast(@min(halved, @as(u16, std.math.maxInt(u6)))) };
+    }
+
+    pub fn dbm(self: Power) u8 {
+        return self.half_dbm / 2;
+    }
+
+    pub fn atMost(self: Power, limit: Power) Power {
+        return .{ .half_dbm = @min(self.half_dbm, limit.half_dbm) };
+    }
+};
+
+/// Whose channel plan a radio is following.
+pub const Domain = enum {
+    /// The Americas: eleven channels in this band.
+    fcc,
+    /// Europe and most elsewhere: thirteen.
+    etsi,
+    /// Japan, which has the fourteenth.
+    mkk,
+
+    pub fn highestChannel(self: Domain) u8 {
+        return switch (self) {
+            .fcc => 11,
+            .etsi => 13,
+            .mkk => 14,
+        };
+    }
+
+    /// The conducted power the plan permits. All three agree in this band
+    /// at a hundred milliwatts; what separates them is how many channels
+    /// there are, and the figure is named here so a plan that later
+    /// disagrees has somewhere to say so.
+    pub fn limit(self: Domain) Power {
+        return switch (self) {
+            .fcc, .etsi, .mkk => Power.ofDbm(20),
+        };
+    }
+};
+
+/// Which plan the radio obeys.
+///
+/// A card's calibration store names the domain it was built for as a
+/// vendor code, and this system has no table turning those codes into
+/// plans. So the card's own word is read as the plan no regulator
+/// forbids rather than guessed at, and an operator who knows better says
+/// so. That is what the other two cases are for, and why neither is a
+/// default.
+pub const Regulatory = union(enum) {
+    /// The narrowest plan of the three, which every regulator permits.
+    conservative,
+    /// A plan named by whoever operates the machine.
+    domain: Domain,
+    /// No plan at all: every channel the band defines, at the highest
+    /// power the silicon accepts. For a bench, a screened room, or
+    /// spectrum the operator holds. A radio running under this says so
+    /// every time it starts, because nothing else in the system will.
+    unrestricted,
+
+    pub fn highestChannel(self: Regulatory) u8 {
+        return switch (self) {
+            .conservative => Domain.fcc.highestChannel(),
+            .domain => |d| d.highestChannel(),
+            .unrestricted => ghz2_channels[ghz2_channels.len - 1] + 1,
+        };
+    }
+
+    pub fn allows(self: Regulatory, channel: u8) bool {
+        return channel >= 1 and channel <= self.highestChannel();
+    }
+
+    /// The most this plan permits being transmitted at.
+    pub fn limit(self: Regulatory) Power {
+        return switch (self) {
+            .conservative => Domain.fcc.limit(),
+            .domain => |d| d.limit(),
+            .unrestricted => Power.maximum,
+        };
+    }
+
+    pub fn parse(text: []const u8) ?Regulatory {
+        const trimmed = str.trim(text);
+        if (trimmed.len == 0) return .conservative;
+        if (std.mem.eql(u8, trimmed, "conservative")) return .conservative;
+        if (std.mem.eql(u8, trimmed, "unrestricted")) return .unrestricted;
+        if (std.meta.stringToEnum(Domain, trimmed)) |d| return .{ .domain = d };
+        return null;
+    }
+
+    pub fn spell(self: Regulatory, into: *str.Builder) void {
+        switch (self) {
+            .conservative => into.text("conservative"),
+            .domain => |d| into.text(@tagName(d)),
+            .unrestricted => into.text("unrestricted"),
+        }
+    }
+};
+
+/// What the radio is told to transmit at.
+///
+/// Ordinarily the plan decides, and that is the first case. The second is
+/// for the times a plan's ceiling does not reach: a machine behind enough
+/// concrete that the router hears nothing, or a bench measuring what the
+/// silicon actually does. It is taken as given rather than clamped,
+/// because clamping it would make it the same setting as the first one,
+/// and a driver asked to exceed a plan says which plan it exceeded.
+pub const TxPower = union(enum) {
+    /// Whatever the regulatory plan allows.
+    regulatory,
+    /// A fixed number of decibel milliwatts.
+    fixed: u8,
+    /// The highest the silicon will accept being told, which is a case of
+    /// its own rather than a number: the field holds half decibels, so
+    /// the top of it is not a whole one and asking for it in whole ones
+    /// lands half a decibel short.
+    maximum,
+
+    pub fn resolve(self: TxPower, plan: Regulatory) Power {
+        return switch (self) {
+            .regulatory => plan.limit(),
+            .fixed => |d| Power.ofDbm(d),
+            .maximum => Power.maximum,
+        };
+    }
+
+    /// Whether this asks for more than the plan permits, which is a thing
+    /// a radio should say out loud rather than do quietly.
+    pub fn exceeds(self: TxPower, plan: Regulatory) bool {
+        return self.resolve(plan).half_dbm > plan.limit().half_dbm;
+    }
+
+    pub fn parse(text: []const u8) ?TxPower {
+        const trimmed = str.trim(text);
+        if (trimmed.len == 0) return .regulatory;
+        if (std.mem.eql(u8, trimmed, "regulatory")) return .regulatory;
+        if (std.mem.eql(u8, trimmed, "max")) return .maximum;
+        const dbm = std.fmt.parseInt(u8, trimmed, 10) catch return null;
+        return .{ .fixed = dbm };
+    }
+
+    pub fn spell(self: TxPower, into: *str.Builder) void {
+        switch (self) {
+            .regulatory => into.text("regulatory"),
+            .fixed => |d| into.number(d),
+            .maximum => into.text("max"),
+        }
+    }
+};
+
+test "power is held the way the silicon takes it, and saturates there" {
+    try std.testing.expectEqual(@as(u6, 40), Power.ofDbm(20).half_dbm);
+    try std.testing.expectEqual(@as(u8, 20), Power.ofDbm(20).dbm());
+    // Above what six bits hold, the answer is what six bits hold.
+    try std.testing.expectEqual(Power.maximum.half_dbm, Power.ofDbm(200).half_dbm);
+    try std.testing.expectEqual(@as(u6, 10), Power.ofDbm(30).atMost(Power.ofDbm(5)).half_dbm);
+}
+
+test "a plan says how far up the band goes" {
+    try std.testing.expectEqual(@as(u8, 11), Domain.fcc.highestChannel());
+    try std.testing.expectEqual(@as(u8, 13), Domain.etsi.highestChannel());
+    try std.testing.expectEqual(@as(u8, 14), Domain.mkk.highestChannel());
+
+    const conservative: Regulatory = .conservative;
+    try std.testing.expect(conservative.allows(11));
+    try std.testing.expect(!conservative.allows(12));
+    try std.testing.expect(!conservative.allows(0));
+
+    const europe = Regulatory{ .domain = .etsi };
+    try std.testing.expect(europe.allows(13));
+    try std.testing.expect(!europe.allows(14));
+
+    // Nothing is out of bounds when there is no plan.
+    const none: Regulatory = .unrestricted;
+    try std.testing.expect(none.allows(14));
+    try std.testing.expectEqual(Power.maximum.half_dbm, none.limit().half_dbm);
+}
+
+test "a plan reads and writes back as what it was" {
+    var buf: [32]u8 = undefined;
+    for ([_]Regulatory{ .conservative, .{ .domain = .fcc }, .{ .domain = .mkk }, .unrestricted }) |plan| {
+        var built = str.Builder{ .buf = &buf };
+        plan.spell(&built);
+        const spelled = built.done();
+        const back = Regulatory.parse(spelled) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(std.meta.Tag(Regulatory), plan), @as(std.meta.Tag(Regulatory), back));
+        try std.testing.expectEqual(plan.highestChannel(), back.highestChannel());
+    }
+    // Nothing written is the safe plan, and a word nobody defined is refused.
+    try std.testing.expectEqual(@as(std.meta.Tag(Regulatory), .conservative), @as(std.meta.Tag(Regulatory), Regulatory.parse("").?));
+    try std.testing.expectEqual(@as(?Regulatory, null), Regulatory.parse("wherever"));
+}
+
+test "asked for more than the plan allows, the setting says so" {
+    const plan = Regulatory{ .domain = .etsi };
+
+    const ordinary: TxPower = .regulatory;
+    try std.testing.expectEqual(Power.ofDbm(20).half_dbm, ordinary.resolve(plan).half_dbm);
+    try std.testing.expect(!ordinary.exceeds(plan));
+
+    // The stairwell: more than the plan permits, taken as asked.
+    const pushed = TxPower{ .fixed = 30 };
+    try std.testing.expectEqual(Power.ofDbm(30).half_dbm, pushed.resolve(plan).half_dbm);
+    try std.testing.expect(pushed.exceeds(plan));
+
+    // Under no plan there is nothing to exceed.
+    try std.testing.expect(!pushed.exceeds(.unrestricted));
+
+    const loudest = TxPower.parse("max") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Power.maximum.half_dbm, loudest.resolve(plan).half_dbm);
+    try std.testing.expect(loudest.exceeds(plan));
+    try std.testing.expectEqual(@as(u8, 14), TxPower.parse("14").?.fixed);
+    try std.testing.expectEqual(@as(?TxPower, null), TxPower.parse("loud"));
+}
+
+test "a network name is a setting like any other" {
+    var buf: [64]u8 = undefined;
+    const named = Ssid.parse("home network") orelse return std.testing.expect(false);
+    try std.testing.expectEqualStrings("home network", named.slice());
+
+    var built = str.Builder{ .buf = &buf };
+    named.spell(&built);
+    try std.testing.expectEqualStrings("home network", built.done());
+
+    // Nothing named is not the same as a hidden network being asked for.
+    try std.testing.expect(Ssid.parse("").?.isHidden());
+    try std.testing.expectEqual(@as(?Ssid, null), Ssid.parse("x" ** 33));
+}
+
+test "a secret is read as a key when it can only be one" {
+    const key_text = "0123456789abcdef" ** 4;
+    const parsed = Psk.parse(key_text) orelse return std.testing.expect(false);
+    try std.testing.expectEqual(@as(std.meta.Tag(Psk), .key), @as(std.meta.Tag(Psk), parsed));
+    try std.testing.expectEqual(@as(u8, 0x01), parsed.key[0]);
+    try std.testing.expectEqual(@as(u8, 0xef), parsed.key[Psk.KEY_BYTES - 1]);
+
+    var buf: [128]u8 = undefined;
+    var built = str.Builder{ .buf = &buf };
+    parsed.spell(&built);
+    try std.testing.expectEqualStrings(key_text, built.done());
+}
+
+test "words are words, and too few of them are refused" {
+    const words = Psk.parse("correct horse battery") orelse return std.testing.expect(false);
+    try std.testing.expectEqual(@as(std.meta.Tag(Psk), .passphrase), @as(std.meta.Tag(Psk), words));
+    try std.testing.expectEqualStrings("correct horse battery", words.passphrase.slice());
+
+    try std.testing.expectEqual(@as(std.meta.Tag(Psk), .none), @as(std.meta.Tag(Psk), Psk.parse("").?));
+    // Below the standard's floor is not a secret this can be used with.
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse("short"));
+    // A key's length is one past what words may be, so a string that is
+    // neither is refused rather than truncated into one of them.
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse("z" ** 64));
+    // One shorter is words, whatever it looks like.
+    const hex_shaped = Psk.parse("0123456789abcdef" ** 3 ++ "0123456789abcde") orelse
+        return std.testing.expect(false);
+    try std.testing.expectEqual(@as(std.meta.Tag(Psk), .passphrase), @as(std.meta.Tag(Psk), hex_shaped));
 }

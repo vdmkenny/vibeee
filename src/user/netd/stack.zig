@@ -159,13 +159,10 @@ pub fn applyConfig(cfg: settings.Net) void {
     var bound: [MAX]?u8 = undefined;
     ifmatch.bind(&matches, ifaces[0..count], bound[0..count]);
 
-    const parked = settings.NetSlot{
-        .match = .none,
-        .enabled = false,
-        .address = .{},
-        .gateway = .{},
-        .dns = .{},
-    };
+    // A slot nothing claimed. The rest of the fields are whatever a slot
+    // starts as, so a field added to the shape does not have to be added
+    // here too.
+    const parked = settings.NetSlot{ .match = .none, .enabled = false };
     for (slots[0..count], bound[0..count]) |*slot, claim| {
         applySlot(slot, if (claim) |s| wants[s] else parked);
     }

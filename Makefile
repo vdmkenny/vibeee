@@ -238,6 +238,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
+	@$(MCOPY) -i $@ -o etc/net.cfg ::/etc/net.cfg
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
 	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
 	@if [ "$(MANUAL)" = "yes" ]; then \

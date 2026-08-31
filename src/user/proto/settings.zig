@@ -27,6 +27,8 @@ const std = @import("std");
 const config = @import("ulib").config;
 const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
+const hostname = @import("lib").hostname;
+const wifi = @import("lib").wifi;
 const keymaps = @import("keymaps");
 const str = @import("lib").str;
 const sys = @import("sys");
@@ -104,16 +106,35 @@ pub const Input = struct {
 /// rebuilds the grouping.
 pub const NET_SLOTS = 4;
 
+/// What the machine is, rather than what one interface is. These keys
+/// have no slot prefix because there is one of each per machine.
+pub const NetMachine = struct {
+    /// The name the machine answers to wherever it has to give one. Unset
+    /// takes the name derived from the first interface's own address,
+    /// which is stable across boots and different on every machine.
+    hostname: hostname.Hostname = .{},
+};
+
 pub const NetSlot = struct {
     /// Which interface: "ether", "wifi", a driver name as `net` prints it,
     /// or a bus location like "03:00.0". Empty leaves the slot unused.
-    match: ifmatch.Match,
-    enabled: bool,
+    match: ifmatch.Match = .none,
+    enabled: bool = false,
     /// Unset asks DHCP; "a.b.c.d/nn" claims the address statically.
-    address: ipv4.Cidr,
-    gateway: ipv4.Maybe,
+    address: ipv4.Cidr = .{},
+    gateway: ipv4.Maybe = .{},
     /// Up to two, comma separated. Unset defers to the DHCP offer.
-    dns: ipv4.Pair,
+    dns: ipv4.Pair = .{},
+    /// The network a radio joins. Unset leaves it idle, which is what a
+    /// wired slot always is.
+    ssid: wifi.Ssid = .{},
+    /// What it joins with: nothing, a passphrase, or the derived key,
+    /// which is the one to write into an image somebody may read.
+    psk: wifi.Psk = .none,
+    /// Which channel plan the radio obeys.
+    regdomain: wifi.Regulatory = .conservative,
+    /// What it transmits at, when the plan's own ceiling does not reach.
+    txpower: wifi.TxPower = .regulatory,
 };
 
 pub const Net = NetSchema();
@@ -121,11 +142,22 @@ pub const Net = NetSchema();
 /// The flat field set, generated from the slot shape so the two cannot
 /// drift: `if0_match`, `if0_enabled` and so on, one group per slot.
 fn NetSchema() type {
+    // Every field's name is built at compile time, and there are enough of
+    // them now that the default allowance runs out partway through.
+    @setEvalBranchQuota(40_000);
+    const machine_fields = std.meta.fields(NetMachine);
     const slot_fields = std.meta.fields(NetSlot);
-    const total = NET_SLOTS * slot_fields.len;
+    const total = machine_fields.len + NET_SLOTS * slot_fields.len;
     var names: [total][:0]const u8 = undefined;
     var types: [total]type = undefined;
     var attrs: [total]std.builtin.Type.StructField.Attributes = undefined;
+
+    for (machine_fields, 0..) |field, i| {
+        const default: field.type = .{};
+        names[i] = field.name;
+        types[i] = field.type;
+        attrs[i] = .{ .default_value_ptr = &default };
+    }
 
     for (0..NET_SLOTS) |slot| {
         for (slot_fields, 0..) |field, i| {
@@ -136,9 +168,14 @@ fn NetSchema() type {
                     else => .none,
                 },
                 .enabled => slot == 0,
+                // A union has no empty literal, so the cases that are one
+                // name the state they start in.
+                .psk => .none,
+                .regdomain => .conservative,
+                .txpower => .regulatory,
                 else => .{},
             };
-            const at = slot * slot_fields.len + i;
+            const at = machine_fields.len + slot * slot_fields.len + i;
             names[at] = std.fmt.comptimePrint("if{d}_{s}", .{ slot, field.name });
             types[at] = field.type;
             attrs[at] = .{ .default_value_ptr = &default };
@@ -154,24 +191,31 @@ fn NetSchema() type {
 /// One slot's fields as one value, so a reader handles every slot with the
 /// same code and the flat schema stays a storage detail.
 pub fn netSlot(cfg: Net, comptime slot: usize) NetSlot {
+    @setEvalBranchQuota(40_000);
     const prefix = std.fmt.comptimePrint("if{d}_", .{slot});
-    return .{
-        .match = @field(cfg, prefix ++ "match"),
-        .enabled = @field(cfg, prefix ++ "enabled"),
-        .address = @field(cfg, prefix ++ "address"),
-        .gateway = @field(cfg, prefix ++ "gateway"),
-        .dns = @field(cfg, prefix ++ "dns"),
-    };
+    var out: NetSlot = undefined;
+    inline for (std.meta.fields(NetSlot)) |field| {
+        @field(out, field.name) = @field(cfg, prefix ++ field.name);
+    }
+    return out;
+}
+
+/// The machine's own keys, which belong to no slot.
+pub fn netMachine(cfg: Net) NetMachine {
+    var out: NetMachine = undefined;
+    inline for (std.meta.fields(NetMachine)) |field| {
+        @field(out, field.name) = @field(cfg, field.name);
+    }
+    return out;
 }
 
 /// Write one slot's fields back into the flat schema.
 pub fn setNetSlot(cfg: *Net, comptime slot: usize, value: NetSlot) void {
+    @setEvalBranchQuota(40_000);
     const prefix = std.fmt.comptimePrint("if{d}_", .{slot});
-    @field(cfg, prefix ++ "match") = value.match;
-    @field(cfg, prefix ++ "enabled") = value.enabled;
-    @field(cfg, prefix ++ "address") = value.address;
-    @field(cfg, prefix ++ "gateway") = value.gateway;
-    @field(cfg, prefix ++ "dns") = value.dns;
+    inline for (std.meta.fields(NetSlot)) |field| {
+        @field(cfg, prefix ++ field.name) = @field(value, field.name);
+    }
 }
 
 pub const Domains = struct {
