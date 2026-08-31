@@ -81,6 +81,9 @@ pub const Icon = enum {
     /// well as colour: a picture that says "act now" only by being red says
     /// nothing to somebody who cannot tell it from the other one.
     battery_critical,
+    /// A face with two hands. What the bar's clock opens, and the one picture
+    /// nobody has to be taught.
+    clock,
 };
 
 /// A picture and the name it belongs to.
@@ -518,6 +521,23 @@ const art = [_]Picture{
             "............",
             "............",
             "............",
+        },
+    },
+    .{
+        .icon = .clock,
+        .rows = .{
+            "............",
+            "...######...",
+            "..##....##..",
+            ".##..##..##.",
+            "##...##...##",
+            "##...##...##",
+            "##...#####.#",
+            "##........##",
+            "##........##",
+            ".##......##.",
+            "..##....##..",
+            "...######...",
         },
     },
 };

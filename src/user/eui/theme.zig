@@ -50,9 +50,11 @@ pub const Theme = struct {
     bar_text: Color,
     bar_line: Color,
     /// The terminal's own ground and ink. A terminal is not a window with
-    /// text in it: it is a screen inside a screen. The same warm near-black
-    /// in every theme, because what the terminal looks like is the
-    /// terminal's business rather than the desktop's.
+    /// text in it: it is a screen inside a screen. The same neutral
+    /// near-black in every theme, because what the terminal looks like is
+    /// the terminal's business rather than the desktop's, and because a
+    /// tinted black fills the screen with that tint the moment a terminal is
+    /// the only window on a desktop.
     terminal_ground: Color,
     terminal_ink: Color,
 
@@ -105,8 +107,8 @@ pub const slate = Theme{
     .bar_text = 0xD6D9DD,
     .bar_line = 0x10141A,
     .warning = 0xB33A2B,
-    .terminal_ground = 0x14140F,
-    .terminal_ink = 0xD8D8D0,
+    .terminal_ground = 0x141414,
+    .terminal_ink = 0xD8D8D8,
 };
 
 /// Warm greys and a single medium blue, the way a workstation looked before
@@ -129,8 +131,8 @@ pub const classic = Theme{
     .bar_text = 0x14140F,
     .bar_line = 0x8C8880,
     .warning = 0xA02820,
-    .terminal_ground = 0x14140F,
-    .terminal_ink = 0xD8D8D0,
+    .terminal_ground = 0x141414,
+    .terminal_ink = 0xD8D8D8,
 };
 
 /// Higher contrast, for sunlight. Same shapes, harder edges.
@@ -152,8 +154,8 @@ pub const paper = Theme{
     .bar_text = 0x000000,
     .bar_line = 0x707068,
     .warning = 0x901810,
-    .terminal_ground = 0x14140F,
-    .terminal_ink = 0xD8D8D0,
+    .terminal_ground = 0x141414,
+    .terminal_ink = 0xD8D8D8,
 };
 
 /// For a dark room, where a lit 7-inch panel is the brightest thing present.
@@ -175,8 +177,8 @@ pub const dusk = Theme{
     .bar_text = 0xC8CCD2,
     .bar_line = 0x2A2E35,
     .warning = 0xC05050,
-    .terminal_ground = 0x14140F,
-    .terminal_ink = 0xD8D8D0,
+    .terminal_ground = 0x141414,
+    .terminal_ink = 0xD8D8D8,
 };
 
 pub const all = [_]*const Theme{ &slate, &classic, &paper, &dusk };

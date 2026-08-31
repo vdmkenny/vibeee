@@ -46,11 +46,12 @@ pub const Indicator = enum {
         };
     }
 
-    /// Whether pressing it opens something. The two that only report do not.
+    /// Whether pressing it opens something. All of them do: the bar has room
+    /// for an icon and a number, and everything else each of these has to say
+    /// is in the panel behind it.
     pub fn opensMenu(self: Indicator) bool {
         return switch (self) {
-            .network, .sound => true,
-            .battery, .clock => false,
+            .network, .sound, .battery, .clock => true,
         };
     }
 };

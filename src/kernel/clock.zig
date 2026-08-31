@@ -28,7 +28,13 @@ const hal = @import("hal.zig");
 var epoch_offset_us: ?i64 = null;
 
 /// Where the current offset came from, for the boot log and `date`.
-var source: []const u8 = "none";
+///
+/// Copied rather than borrowed. A name arriving through a syscall is the
+/// caller's memory, and a slice kept into it says whatever happens to be at
+/// that address by the time somebody reads it, which is a use of memory the
+/// caller may have freed and a way to read out what replaced it.
+var source_buf: [16]u8 = ("none" ++ [_]u8{0} ** 12).*;
+var source_len: usize = "none".len;
 
 /// Microseconds since boot. Monotonic: never steps, never runs backwards.
 pub fn monotonicMicros() u64 {
@@ -41,7 +47,8 @@ pub fn monotonicMicros() u64 {
 /// afterwards at the monotonic clock's rate.
 pub fn set(epoch_us: i64, from: []const u8) void {
     epoch_offset_us = epoch_us - @as(i64, @intCast(monotonicMicros()));
-    source = from;
+    source_len = @min(from.len, source_buf.len);
+    @memcpy(source_buf[0..source_len], from[0..source_len]);
 }
 
 pub fn setCivil(c: civil.Civil, from: []const u8) void {
@@ -54,7 +61,7 @@ pub fn valid() bool {
 }
 
 pub fn sourceName() []const u8 {
-    return source;
+    return source_buf[0..source_len];
 }
 
 /// Microseconds since the Unix epoch, or 0 if the clock was never set.

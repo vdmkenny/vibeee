@@ -1133,7 +1133,11 @@ fn paintSwatch(surface: Surface, area: Rect, colour: draw.Color, chosen: bool, h
     if (focused) paintFocusRing(surface, area.inset(1), t.text);
 }
 
-fn paintFocusRing(surface: Surface, area: Rect, color: draw.Color) void {
+/// The dotted ring that says where the keyboard is.
+///
+/// Used by the controls in here and by anything else that can be walked to,
+/// so a focused thing looks focused wherever it lives.
+pub fn paintFocusRing(surface: Surface, area: Rect, color: draw.Color) void {
     var x = area.x;
     while (x < area.right()) : (x += 2) {
         surface.set(x, area.y, color);

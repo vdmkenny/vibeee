@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const bindings = @import("ulib").bindings;
+const info = @import("ulib").info;
 const lib = @import("lib");
 const str = @import("lib").str;
 const draw = @import("eui").draw;
@@ -441,13 +442,23 @@ var window_menu: ui.Menu = .{};
 /// reaching whatever window is focused.
 var keyboard_focus = false;
 var focus_tab: u8 = 0;
+/// Which reading at the right end the keyboard is on, if it has walked past
+/// the last tab. The bar is one traversal from the button at one end to the
+/// clock at the other: a reading reachable only by pointer is a reading that
+/// stops working when the touchpad does.
+var focus_status: ?usize = null;
 
 pub fn hasFocus() bool {
     return keyboard_focus;
 }
 
+/// Whether anything is open over the bar. Every panel it can put on the
+/// screen counts: the caller uses this to decide whether the overlay has to
+/// be drawn again, and one left out is one that disappears on the next
+/// repaint.
 pub fn menuOpen() bool {
-    return menu_tab != null or launcher.open;
+    return menu_tab != null or launcher.open or sound_open or net_open or
+        power_open or clock_open;
 }
 
 /// Open the applications menu, from the V button or a key.
@@ -692,11 +703,13 @@ fn neighbourTab(desktop: *const layout.Desktop, tag: u8, step: i32) u8 {
 pub fn focus(desktop: *const layout.Desktop) void {
     keyboard_focus = true;
     focus_tab = desktop.tag;
+    focus_status = null;
     menu_tab = null;
 }
 
 pub fn unfocus() void {
     keyboard_focus = false;
+    focus_status = null;
     menu_tab = null;
 }
 
@@ -798,13 +811,23 @@ fn shownNow(into: []status.Indicator) []status.Indicator {
 }
 
 fn paintStatus(surface: Surface, width: i32, height: i32) void {
+    const t = theme.current();
     var buf: [status.MAX]status.Slot = undefined;
     for (statusSlots(width, height, &buf)) |slot| {
         switch (slot.which) {
-            .clock => paintClock(surface, slot.area),
+            .clock => {
+                if (clock_open) surface.fill(slot.area, t.accent);
+                paintClock(surface, slot.area, clock_open);
+            },
             .network => paintNetwork(surface, slot.area),
             .sound => paintSound(surface, slot.area),
             .battery => paintBattery(surface, slot.area),
+        }
+
+        // Where the keyboard is, said the way every other control says it.
+        if (keyboard_focus and focus_status != null) {
+            const at = std.enums.values(status.Indicator)[focus_status.?];
+            if (at == slot.which) ui.paintFocusRing(surface, slot.area.inset(1), t.accent);
         }
     }
 }
@@ -931,6 +954,7 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
     if (sound_open) paintSoundMenu(surface, width, height);
     if (net_open) paintNetMenu(surface, width, height);
     if (power_open) paintPowerMenu(surface, width, height);
+    if (clock_open) paintClockMenu(surface, width, height);
 }
 
 /// The launcher button, which carries the system's own mark.
@@ -1293,10 +1317,6 @@ var lamp: ?platform.Backlight = null;
 /// The level to come back to when the lamp is pressed a second time.
 var lamp_was: u32 = 0;
 
-pub fn powerOpen() bool {
-    return power_open;
-}
-
 fn readPower() void {
     readBattery();
     lamp = platform.backlight();
@@ -1465,10 +1485,6 @@ fn readSound() void {
     sound_port_count = audio.ports(&sound_ports).len;
 }
 
-pub fn soundOpen() bool {
-    return sound_open;
-}
-
 /// Whether the machine is making no sound, whichever way it was silenced.
 fn silent() bool {
     return level.muted != 0 or level.percent == 0;
@@ -1624,7 +1640,141 @@ fn percentText(buf: []u8, value: u8) []const u8 {
     return buf[0 .. n + 2];
 }
 
-fn paintClock(surface: Surface, area: Rect) void {
+// ---------------------------------------------------------------------------
+// The clock's menu
+//
+// The bar has room for five characters, and five characters cannot say which
+// day it is or whether the clock has ever been set. On a machine whose
+// backup battery died years ago, both of those are things somebody looking at
+// the clock actually wants to know.
+// ---------------------------------------------------------------------------
+
+var clock_open = false;
+var clock_menu: ui.Menu = .{};
+
+/// The lines, held rather than built into the rows: a menu item borrows the
+/// text it is given, so the text has to outlive the call that draws it.
+var clock_date: [40]u8 = @splat(0);
+var clock_time: [16]u8 = @splat(0);
+var clock_date_len: usize = 0;
+var clock_time_len: usize = 0;
+var clock_source: [24]u8 = @splat(0);
+var clock_source_len: usize = 0;
+
+pub fn clockOpen() bool {
+    return clock_open;
+}
+
+/// Read the clock and spell it out. Called whenever the menu is drawn, since
+/// the whole point of it is a reading that moves.
+fn readClock() void {
+    clock_date_len = 0;
+    clock_time_len = 0;
+
+    const us = sys.realtimeMicros() orelse return;
+    const seconds = @divFloor(us, 1_000_000);
+    const when = lib.civil.fromEpoch(seconds);
+
+    var date = str.Builder{ .buf = &clock_date };
+    date.text(lib.civil.dayNameFull(seconds));
+    date.text(" ");
+    date.number(when.day);
+    date.text(" ");
+    date.text(lib.civil.monthNameFull(when.month));
+    date.text(" ");
+    date.number(@intCast(when.year));
+    clock_date_len = date.done().len;
+
+    var clock = str.Builder{ .buf = &clock_time };
+    twoDigits(&clock, when.hour);
+    clock.byte(':');
+    twoDigits(&clock, when.minute);
+    clock.byte(':');
+    twoDigits(&clock, when.second);
+    clock.text(" UTC");
+    clock_time_len = clock.done().len;
+}
+
+fn twoDigits(into: *str.Builder, value: u8) void {
+    into.byte('0' + value / 10);
+    into.byte('0' + value % 10);
+}
+
+/// Where the reading came from, asked once when the menu opens.
+///
+/// It changes when the time service lands an answer, not while somebody is
+/// looking at a menu, and it costs a call to another process.
+fn readClockSource() void {
+    clock_source_len = 0;
+    const said = info.ask("clock", &clock_source);
+    clock_source_len = said.len;
+}
+
+fn clockItems(into: []ui.MenuItem) []ui.MenuItem {
+    var n: usize = 0;
+
+    if (clock_date_len == 0) {
+        into[n] = .{ .label = "The clock has not been set", .kind = .disabled, .mark = .clock };
+        return into[0 .. n + 1];
+    }
+
+    into[n] = .{ .label = clock_date[0..clock_date_len], .kind = .disabled, .mark = .clock };
+    n += 1;
+    into[n] = .{ .label = clock_time[0..clock_time_len], .kind = .disabled };
+    n += 1;
+
+    if (clock_source_len > 0 and n < into.len) {
+        into[n] = .{ .kind = .separator };
+        n += 1;
+        into[n] = .{ .label = "Set from", .kind = .disabled, .detail = clock_source[0..clock_source_len] };
+        n += 1;
+    }
+    return into[0..n];
+}
+
+fn clockPanel(width: i32, height: i32) Rect {
+    var buf: [status.MAX]status.Slot = undefined;
+    const slots = statusSlots(width, height, &buf);
+
+    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
+    for (slots) |slot| {
+        if (slot.which == .clock) anchor = slot.area;
+    }
+
+    var rows: [4]ui.MenuItem = undefined;
+    const shown = clockItems(&rows);
+    const size = ui.Menu.sizeFor(shown, clockWidth(shown));
+
+    return popover.place(
+        anchor,
+        size.w,
+        size.h,
+        .{ .x = 0, .y = 0, .w = width, .h = height },
+        if (settings.current().bar == .top) .below else .above,
+    );
+}
+
+/// As wide as the longest line it holds. A date is as long as its month's
+/// name, so a fixed width would be too wide in May and too narrow in
+/// September.
+fn clockWidth(rows: []const ui.MenuItem) i32 {
+    const t = theme.current();
+    var widest: i32 = 0;
+    for (rows) |row| {
+        var w = Surface.textWidth(row.label) + ui.markWidth();
+        if (row.detail.len > 0) w += t.menu_padding + Surface.textWidth(row.detail);
+        widest = @max(widest, w);
+    }
+    return widest + t.menu_padding * 2;
+}
+
+fn paintClockMenu(surface: Surface, width: i32, height: i32) void {
+    readClock();
+    var rows: [4]ui.MenuItem = undefined;
+    clock_menu.paint(surface, clockPanel(width, height), clockItems(&rows));
+}
+
+fn paintClock(surface: Surface, area: Rect, open: bool) void {
     const t = theme.current();
     const us = sys.realtimeMicros() orelse return;
     const minutes = @divFloor(@divFloor(us, 1_000_000), 60);
@@ -1639,7 +1789,7 @@ fn paintClock(surface: Surface, area: Rect) void {
     buf[3] = '0' + @as(u8, @intCast(minute / 10));
     buf[4] = '0' + @as(u8, @intCast(minute % 10));
 
-    surface.textCentred(area, buf[0..5], t.bar_text);
+    surface.textCentred(area, buf[0..5], if (open) t.accent_text else t.bar_text);
 }
 
 fn menuRect(width: i32, height: i32, desktop: *const layout.Desktop, tab: u8) Rect {
@@ -1734,6 +1884,13 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         return .consumed;
     }
 
+    // Nothing in the clock's menu acts. It is a reading, and any click puts
+    // it away.
+    if (clock_open) {
+        clock_open = false;
+        return .consumed;
+    }
+
     if (power_open) {
         const panel = powerPanel(width, height);
 
@@ -1818,7 +1975,12 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
                 power_open = true;
                 power_menu.show();
             },
-            else => {},
+            .clock => {
+                readClock();
+                readClockSource();
+                clock_open = true;
+                clock_menu.show();
+            },
         }
         return .consumed;
     }
@@ -1967,6 +2129,8 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
     }
 
     if (menu_tab) |tab| return menuKey(code, desktop, tab);
+    if (statusMenuOpen()) return statusMenuKey(code);
+    if (focus_status) |which| return statusKey(code, desktop, which);
 
     switch (code) {
         .left => {
@@ -1978,7 +2142,15 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
                 focus_tab = neighbourTab(desktop, focus_tab, -1);
             }
         },
-        .right => focus_tab = neighbourTab(desktop, focus_tab, 1),
+        // Right from the last tab reaches the readings, which is the other
+        // end of the same traversal.
+        .right => {
+            if (onLastTab(desktop)) {
+                focus_status = 0;
+            } else {
+                focus_tab = neighbourTab(desktop, focus_tab, 1);
+            }
+        },
         .down => {
             if (desktop.countOn(focus_tab) > 1) {
                 menu_tab = focus_tab;
@@ -1997,6 +2169,97 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
         else => return .ignored,
     }
     return .handled;
+}
+
+fn onLastTab(desktop: *const layout.Desktop) bool {
+    var buf: [layout.MAX_DESKTOPS]u8 = undefined;
+    const list = desktop.activeList(&buf);
+    if (list.len == 0) return true;
+    return (desktop.positionOf(focus_tab) orelse 0) == list.len - 1;
+}
+
+/// The keyboard is on one of the readings at the right end.
+fn statusKey(code: sys.KeyCode, desktop: *layout.Desktop, which: usize) KeyResult {
+    switch (code) {
+        .left => {
+            if (which == 0) {
+                focus_status = null;
+                focus_tab = desktop.tag;
+            } else {
+                focus_status = which - 1;
+            }
+        },
+        .right => focus_status = @min(which + 1, status.MAX - 1),
+        .enter, .space, .down => openStatus(std.enums.values(status.Indicator)[which]),
+        .escape => {
+            unfocus();
+            return .released;
+        },
+        else => return .ignored,
+    }
+    return .handled;
+}
+
+/// Open whatever a reading has to say, whichever way it was asked.
+fn openStatus(which: status.Indicator) void {
+    switch (which) {
+        .sound => {
+            readSound();
+            sound_open = true;
+            sound_menu.show();
+        },
+        .network => {
+            readNetwork();
+            net_open = true;
+            net_menu.show();
+        },
+        .battery => {
+            readPower();
+            power_open = true;
+            power_menu.show();
+        },
+        .clock => {
+            readClock();
+            readClockSource();
+            clock_open = true;
+            clock_menu.show();
+        },
+    }
+}
+
+fn statusMenuOpen() bool {
+    return sound_open or net_open or power_open or clock_open;
+}
+
+/// Every one of these panels reads rather than acts, bar the one row that
+/// leads to the settings, so the keys they take are the ones that put them
+/// away and the one that follows that row.
+fn statusMenuKey(code: sys.KeyCode) KeyResult {
+    switch (code) {
+        .escape, .left => {
+            closeStatusMenus();
+            return .handled;
+        },
+        .enter, .space => {
+            const to = if (power_open) "power" else if (sound_open) "audio" else "";
+            closeStatusMenus();
+            if (to.len == 0) {
+                _ = sys.spawnDetached("/bin/settings", &.{"settings"});
+            } else {
+                _ = sys.spawnDetached("/bin/settings", &.{ "settings", to });
+            }
+            unfocus();
+            return .released;
+        },
+        else => return .ignored,
+    }
+}
+
+fn closeStatusMenus() void {
+    sound_open = false;
+    net_open = false;
+    power_open = false;
+    clock_open = false;
 }
 
 fn menuKey(code: sys.KeyCode, desktop: *layout.Desktop, tab: u8) KeyResult {

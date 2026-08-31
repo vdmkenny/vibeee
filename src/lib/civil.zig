@@ -103,8 +103,28 @@ pub const MONTH_NAMES = [12][]const u8{
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 };
 
+/// The names written out. A listing column has three letters to spend and a
+/// panel with room for the word should use it: "Tue 1 Sep" is what a table
+/// says, "Tuesday 1 September" is what a person reading one line says.
+pub const DAY_NAMES_FULL = [7][]const u8{
+    "Sunday",   "Monday", "Tuesday",  "Wednesday",
+    "Thursday", "Friday", "Saturday",
+};
+pub const MONTH_NAMES_FULL = [12][]const u8{
+    "January", "February", "March",     "April",   "May",      "June",
+    "July",    "August",   "September", "October", "November", "December",
+};
+
 pub fn monthName(month: u8) []const u8 {
     return if (month >= 1 and month <= 12) MONTH_NAMES[month - 1] else "???";
+}
+
+pub fn monthNameFull(month: u8) []const u8 {
+    return if (month >= 1 and month <= 12) MONTH_NAMES_FULL[month - 1] else "unknown";
+}
+
+pub fn dayNameFull(seconds: i64) []const u8 {
+    return DAY_NAMES_FULL[weekday(seconds)];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +168,26 @@ test "weekday" {
     try std.testing.expectEqual(@as(u3, 3), weekday(toEpoch(.{
         .year = 2026, .month = 8, .day = 26, .hour = 0, .minute = 0, .second = 0,
     })));
+}
+
+test "the names written out say the same day as the short ones" {
+    // 2026-08-26 is a Wednesday.
+    const when = toEpoch(.{ .year = 2026, .month = 8, .day = 26, .hour = 0, .minute = 0, .second = 0 });
+    try std.testing.expectEqualStrings("Wednesday", dayNameFull(when));
+    try std.testing.expectEqualStrings("Wed", DAY_NAMES[weekday(when)]);
+
+    try std.testing.expectEqualStrings("August", monthNameFull(8));
+    try std.testing.expectEqualStrings("Aug", monthName(8));
+
+    // Every month has both spellings, and they agree on which month it is.
+    for (1..13) |month| {
+        const m: u8 = @intCast(month);
+        try std.testing.expect(std.mem.startsWith(u8, monthNameFull(m), monthName(m)[0..1]));
+    }
+
+    // Out of range says so rather than indexing past the table.
+    try std.testing.expectEqualStrings("unknown", monthNameFull(0));
+    try std.testing.expectEqualStrings("unknown", monthNameFull(13));
 }
 
 test "before the epoch" {

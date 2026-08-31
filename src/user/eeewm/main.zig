@@ -233,12 +233,10 @@ fn paintCommitted() void {
 
 /// Bring the parts of a window that changed up to date, and nothing else.
 fn refreshWindow(index: usize, damage: []const Rect) void {
-    const t = theme.current();
     const w = &desktop.windows[index];
     if (!w.mapped or !desktop.windows[index].surface.valid()) return;
 
-    const border = if (desktop.focused == index) t.border_width_focused else t.border_width;
-    const content = w.area.inset(border);
+    const content = w.area.inset(borderWidth());
 
     for (damage) |r| {
         // The client counts from its own top left, which sits at the content
@@ -264,26 +262,30 @@ fn paintWindow(index: usize, focused: bool) void {
     const area = w.area;
     if (area.isEmpty()) return;
 
-    // A focus border is a comparison, and one window has nothing to be
-    // compared with: the highlight then says only that the desktop is doing
-    // what it always does, in the accent, around the whole screen.
+    // A border is a comparison, and one window has nothing to be compared
+    // with. Alone on its tag it is drawn in the colour of what would be
+    // behind it, so there is nothing to see: a ring around the whole screen
+    // says only that the desktop is doing what it always does.
+    //
+    // The focused ring is thicker and is drawn over the client's outermost
+    // row rather than pushing it in. What the client was told its size was
+    // cannot depend on whether it has focus or on how many windows share the
+    // desktop, or the pixels it hands over stop lining up with the hole they
+    // go in.
     const alone = desktop.aloneOnTag();
-    const marked = focused and !alone;
-    const width = if (marked) t.border_width_focused else t.border_width;
-
-    // Drawn inside the tile, so focusing a window never changes its size and
-    // never disturbs its neighbours.
-    screen.borderInset(area, width, if (marked) t.border_focused else t.border);
+    const width = if (focused and !alone) t.border_width_focused else t.border_width;
+    const content = area.inset(borderWidth());
 
     // A client that has given us a surface gets composited from it. One that
     // has not draws the manager's own placeholder, which is what the desktop
     // looks like before anything has connected.
-    const content = area.inset(width);
     if (w.mapped and desktop.windows[index].surface.valid()) {
         clients.blit(screen, desktop.windows[index].surface, content, content);
+        screen.borderInset(area, width, borderColour(focused, alone));
         return;
     }
 
+    screen.borderInset(area, width, borderColour(focused, alone));
     screen.fill(content, t.surface);
 
     const inner = content.inset(t.padding);
@@ -491,7 +493,7 @@ fn idle() void {
     // Only the bar is repainted for it. Setting `dirty` here redrew the
     // desktop and every window to move a five character clock, which on the
     // panel was a visible full-screen wipe once a minute.
-    if (sys.waitMany(waiting[0..count], untilTheMinuteTurns()) < 0) {
+    if (sys.waitMany(waiting[0..count], untilTheClockTurns()) < 0) {
         bar.refresh();
         paintBar();
     }
@@ -508,11 +510,15 @@ fn paintBar() void {
     if (covered) cursor.show(screen, pointer_x, pointer_y);
 }
 
-/// Microseconds until the bar's clock reads differently.
-fn untilTheMinuteTurns() usize {
-    const MINUTE = 60 * 1_000_000;
-    const now = sys.realtimeMicros() orelse return MINUTE;
-    return MINUTE - @as(usize, @intCast(@mod(now, MINUTE)));
+/// Microseconds until the clock on show reads differently.
+///
+/// The bar says minutes and its menu says seconds, so what the machine has to
+/// wake for depends on which of them somebody is looking at. Nothing polls
+/// either way: this is the deadline on the one wait.
+fn untilTheClockTurns() usize {
+    const step: i64 = if (bar.clockOpen()) 1_000_000 else 60 * 1_000_000;
+    const now = sys.realtimeMicros() orelse return @intCast(step);
+    return @intCast(step - @mod(now, step));
 }
 
 /// Bindings are by keycode, not by symbol: a shortcut lives at a place on the
@@ -1024,12 +1030,26 @@ fn tellSize(index: usize) void {
     });
 }
 
+/// How far a window's content sits inside its tile.
+///
+/// One number for every window, whatever its state. The compositor, the size
+/// the client was told, and the coordinates a pointer event arrives in all
+/// measure from this edge, and an edge that moved when a window took focus
+/// would move it under three things that had not been told.
+fn borderWidth() i32 {
+    return theme.current().border_width;
+}
+
+/// What the ring around a window is drawn in.
+fn borderColour(focused: bool, alone: bool) eui.Color {
+    const t = theme.current();
+    if (alone) return wallpaper();
+    return if (focused) t.border_focused else t.border;
+}
+
 /// Where a window's client content goes: the tile, less its border.
 fn contentRect(index: usize) Rect {
-    const t = theme.current();
-    const w = &desktop.windows[index];
-    const width = if (desktop.focused == index) t.border_width_focused else t.border_width;
-    return w.area.inset(width);
+    return desktop.windows[index].area.inset(borderWidth());
 }
 
 /// Send pointer input to whichever window is under the pointer.
