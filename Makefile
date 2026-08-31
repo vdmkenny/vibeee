@@ -182,7 +182,11 @@ manual-stamp: | $(BUILD)
 
 $(MANUAL_STAMP): manual-stamp
 
-$(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) | $(BUILD)
+# `wildcard` is evaluated when the makefile is read, so a C example built
+# after that would not be seen. Listed explicitly for the ones that exist,
+# which is what makes rebuilding one of them rebuild the image it goes in:
+# without this the old binary ships and the new one is never run.
+$(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::

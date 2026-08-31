@@ -152,6 +152,38 @@ static void numbers(void)
     sayn("isspace.tab", isspace('\t') ? 1 : 0);
 }
 
+/* ---- the environment ------------------------------------------------- */
+
+/* What is *in* it differs between machines, so nothing here reads a name
+ * the system set. What is checked is the behaviour: a name that is not
+ * there, one that is, whether a longer name beginning the same way is a
+ * different name, and what overwriting does and does not do. */
+static void environment(void)
+{
+    say("getenv.absent", getenv("VIBEEE_NOT_SET_ANYWHERE") ? "found" : "absent");
+
+    setenv("VIBEEE_T", "one", 1);
+    say("setenv.then.get", getenv("VIBEEE_T"));
+
+    setenv("VIBEEE_T", "two", 0);
+    say("setenv.no.overwrite", getenv("VIBEEE_T"));
+
+    setenv("VIBEEE_T", "two", 1);
+    say("setenv.overwrite", getenv("VIBEEE_T"));
+
+    /* A longer name that begins the same way is a different name. */
+    setenv("VIBEEE_TT", "other", 1);
+    say("getenv.whole.name", getenv("VIBEEE_T"));
+
+    unsetenv("VIBEEE_T");
+    say("unsetenv", getenv("VIBEEE_T") ? "still there" : "gone");
+    say("unsetenv.leaves.rest", getenv("VIBEEE_TT"));
+
+    unsetenv("VIBEEE_TT");
+    sayn("unsetenv.absent", unsetenv("VIBEEE_NOT_SET_ANYWHERE"));
+    sayn("setenv.refuses.sign", setenv("BAD=NAME", "x", 1));
+}
+
 /* ---- sorting --------------------------------------------------------- */
 
 static int by_value(const void *a, const void *b)
@@ -288,6 +320,7 @@ int main(int argc, char **argv)
     formatting();
     strings();
     numbers();
+    environment();
     sorting();
     allocation();
     files(scratch);

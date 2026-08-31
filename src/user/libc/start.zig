@@ -1,22 +1,19 @@
 //! Getting from the kernel's idea of a new process to C's.
 //!
-//! The kernel hands over a stack holding argc, the argv pointers and a null,
-//! and jumps to `_start`. C wants those as arguments to `main` and wants
-//! whatever `main` returns to become the exit status. This is that, and
+//! The kernel hands over a stack holding argc, the argv pointers and a
+//! null, then the environment and its null, and jumps to `_start`. C
+//! wants those as arguments to `main` and wants whatever `main` returns to
+//! become the exit status. This is that, and
 //! nothing else: everything a program can see is set up by the time `main`
 //! runs, and torn down after it returns.
 
+const env = @import("env.zig");
 const sys = @import("sys");
 const stdio = @import("stdio.zig");
 
 /// Provided by the program being linked. The one symbol this library expects
 /// rather than provides.
 extern fn main(argc: c_int, argv: [*c][*c]u8, envp: [*c][*c]u8) c_int;
-
-/// No environment is handed over yet, so every program sees an empty one
-/// rather than a null nothing can walk.
-var empty: [1]?[*:0]u8 = .{null};
-export var environ: [*c][*c]u8 = undefined;
 
 /// The kernel enters every program as one C call whose argument is the
 /// argc/argv frame it built: alignment, the terminating return address and
@@ -25,9 +22,11 @@ export fn _start(stack: [*]const usize) callconv(.c) noreturn {
     const argc: c_int = @intCast(stack[0]);
     const argv: [*c][*c]u8 = @constCast(@ptrCast(stack + 1));
 
-    environ = @ptrCast(&empty);
+    // The environment sits after the arguments and the null that ends
+    // them, which is where C's own layout puts it.
+    env.adopt(@constCast(@ptrCast(stack + 1 + @as(usize, @intCast(argc)) + 1)));
 
-    exit(main(argc, argv, environ));
+    exit(main(argc, argv, env.environ));
 }
 
 /// What `atexit` remembers. Bounded because the alternative is an allocation

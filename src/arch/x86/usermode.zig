@@ -35,7 +35,18 @@ pub const Error = error{OutOfMemory};
 ///
 /// Written through the linear map while the process is not yet running, so the
 /// address space never has to be switched to populate it.
-pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!usize {
+/// Build the frame a program starts on: its arguments, then what it has
+/// been told about where it is.
+///
+/// The shape is C's, because C's `main` is what receives it: a count, the
+/// argument pointers, a null, the environment pointers, and another null.
+/// A program that ignores the second half sees exactly what it saw before
+/// there was one.
+pub fn setupStack(
+    space: *paging.AddressSpace,
+    args: []const []const u8,
+    env: []const []const u8,
+) Error!usize {
     // Track each page's kernel-visible address, so the stack can be written
     // before it is mapped anywhere the process can see.
     var frames: [USER_STACK_PAGES]usize = undefined;
@@ -58,17 +69,23 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     var offset: usize = paging.PAGE_SIZE;
 
     var arg_addrs: [MAX_ARGS]usize = undefined;
+    var env_addrs: [MAX_ENV]usize = undefined;
     const count = @min(args.len, MAX_ARGS);
+    const env_count = @min(env.len, MAX_ENV);
 
-    // Strings first, downward from the top.
+    // Strings first, downward from the top: the environment above the
+    // arguments, though nothing depends on the order.
+    var e: usize = env_count;
+    while (e > 0) {
+        e -= 1;
+        offset = writeString(page, offset, env[e]) orelse return error.OutOfMemory;
+        env_addrs[e] = USER_STACK_TOP - paging.PAGE_SIZE + offset;
+    }
+
     var n: usize = count;
     while (n > 0) {
         n -= 1;
-        const arg = args[n];
-        if (arg.len + 1 > offset) return error.OutOfMemory;
-        offset -= arg.len + 1;
-        @memcpy(page[offset..][0..arg.len], arg);
-        page[offset + arg.len] = 0;
+        offset = writeString(page, offset, args[n]) orelse return error.OutOfMemory;
         arg_addrs[n] = USER_STACK_TOP - paging.PAGE_SIZE + offset;
     }
 
@@ -78,7 +95,13 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     // than 4: SSE loads and stores require it, and the compiler emits them
     // freely in user code, a 4-byte-aligned stack makes the first `movaps`
     // fault.
-    const frame_bytes = comptime std.mem.alignForward(usize, (MAX_ARGS + 2) * @sizeOf(u32), 16);
+    // A count, the arguments and their null, then the environment and
+    // its null.
+    const frame_bytes = comptime std.mem.alignForward(
+        usize,
+        (MAX_ARGS + MAX_ENV + 3) * @sizeOf(u32),
+        16,
+    );
     offset = std.mem.alignBackward(usize, offset, 16);
     if (frame_bytes + CALL_BYTES > offset) return error.OutOfMemory;
     offset -= frame_bytes;
@@ -87,6 +110,10 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     stack_words[0] = @intCast(count);
     for (0..count) |k| stack_words[1 + k] = @intCast(arg_addrs[k]);
     stack_words[1 + count] = 0;
+
+    const env_at = 2 + count;
+    for (0..env_count) |k| stack_words[env_at + k] = @intCast(env_addrs[k]);
+    stack_words[env_at + env_count] = 0;
 
     // Entry is one C call: the argument frame's address as the only
     // parameter, above a zero return address that ends every backtrace.
@@ -102,7 +129,8 @@ pub fn setupStack(space: *paging.AddressSpace, args: []const []const u8) Error!u
     return USER_STACK_TOP - paging.PAGE_SIZE + offset;
 }
 
-pub const MAX_ARGS = 16;
+pub const MAX_ENV = @import("lib").syscalls.MAX_ENV;
+const MAX_ARGS = 16;
 
 /// The entry call's own bytes: a return address and one parameter, spaced so
 /// the parameter keeps the sixteen-byte boundary the compiler assumes.
@@ -113,6 +141,15 @@ const CALL_BYTES = 20;
 ///
 /// `kernel_stack_top` is what the CPU loads into ESP on the next privilege
 /// transition, so it must be a stack this code is no longer using.
+/// One string onto the stack, NUL-terminated, and where it now begins.
+fn writeString(page: [*]u8, offset: usize, text: []const u8) ?usize {
+    if (text.len + 1 > offset) return null;
+    const at = offset - (text.len + 1);
+    @memcpy(page[at..][0..text.len], text);
+    page[at + text.len] = 0;
+    return at;
+}
+
 pub fn enter(entry: usize, stack_top: usize, kernel_stack_top: usize) noreturn {
     gdt.setKernelStack(@intCast(kernel_stack_top));
 

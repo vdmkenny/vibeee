@@ -29,6 +29,8 @@ pub const Error = error{
 /// can take, so the limit lives with the rest of the ABI.
 pub const MAX_ARGS = @import("lib").syscalls.MAX_ARGS;
 pub const MAX_ARG_BYTES = 512;
+pub const MAX_ENV = @import("lib").syscalls.MAX_ENV;
+pub const MAX_ENV_BYTES = 512;
 
 /// What a child needs to start, held while the parent waits.
 const Request = struct {
@@ -44,19 +46,37 @@ pub const Stdio = [3]?handle.Handle;
 
 pub const INHERIT: Stdio = .{ null, null, null };
 
-pub fn spawn(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Caps) Error!i32 {
-    const child = try start(path, args, stdio, caps);
+pub fn spawn(
+    path: []const u8,
+    args: []const []const u8,
+    env: []const []const u8,
+    stdio: Stdio,
+    caps: abi.Caps,
+) Error!i32 {
+    const child = try start(path, args, env, stdio, caps);
     return sched.waitFor(child);
 }
 
 /// Start `path` and return its id without waiting.
-pub fn spawnAsync(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Caps) Error!u32 {
-    const child = try start(path, args, stdio, caps);
+pub fn spawnAsync(
+    path: []const u8,
+    args: []const []const u8,
+    env: []const []const u8,
+    stdio: Stdio,
+    caps: abi.Caps,
+) Error!u32 {
+    const child = try start(path, args, env, stdio, caps);
     return child.id;
 }
 
 /// Load a program and put it on the run queue.
-fn start(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Caps) Error!*sched.Thread {
+fn start(
+    path: []const u8,
+    args: []const []const u8,
+    env: []const []const u8,
+    stdio: Stdio,
+    caps: abi.Caps,
+) Error!*sched.Thread {
     const entry = vfs.stat(path) catch return error.NotFound;
     if (entry.is_dir or entry.size == 0) return error.BadImage;
 
@@ -69,7 +89,7 @@ fn start(path: []const u8, args: []const []const u8, stdio: Stdio, caps: abi.Cap
     errdefer space.destroy();
 
     const loaded = elf.load(&space, image[0..n]) catch return error.BadImage;
-    const stack_top = hal.setupUserStack(&space, args) catch return error.OutOfMemory;
+    const stack_top = hal.setupUserStack(&space, args, env) catch return error.OutOfMemory;
 
     const request = heap.allocator.create(Request) catch return error.OutOfMemory;
     request.* = .{ .entry = loaded.entry, .stack_top = stack_top, .space = space };

@@ -376,8 +376,20 @@ fn capsFrom(list: []const u8) u32 {
     return @bitCast(granted);
 }
 
+/// What every program on this machine is told about where it is.
+///
+/// Set here because init is the first thing that can say: the kernel
+/// starts it with nothing, and everything else is started by something
+/// that was started by init. A program is free to ignore all of it and
+/// use its own defaults, which is what one written before there was an
+/// environment does.
+const ENVIRONMENT = [_][]const u8{
+    "HOME=/home",
+    "PATH=/bin",
+};
+
 fn start(state: *State) void {
-    const pid = sys.spawnStreams(state.service.binary, &.{state.service.name}, .{
+    const pid = sys.spawnEnv(state.service.binary, &.{state.service.name}, &ENVIRONMENT, .{
         .flags = @bitCast(sys.SpawnFlags{ .detached = true }),
         .caps = capsFrom(state.service.caps),
     });

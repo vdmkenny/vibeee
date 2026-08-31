@@ -39,6 +39,19 @@ pub fn sys_spawn(a: Args) Result {
         options = std.mem.bytesToValue(abi.Spawn, raw[0..@sizeOf(abi.Spawn)]);
     }
 
+    // The environment travels the way the arguments do, because it is the
+    // same thing: a list of strings, packed by the same code and copied
+    // out of user memory for the same reason.
+    var env_storage: [exec.MAX_ENV_BYTES]u8 = undefined;
+    var env_slices: [exec.MAX_ENV][]const u8 = undefined;
+    var env_count: usize = 0;
+    if (options.env != 0 and options.env_len != 0) {
+        const packed_env = userSlice(a, options.env, options.env_len) orelse
+            return Errno.fault.value();
+        env_count = abi.Argv.unpack(packed_env, &env_storage, &env_slices) catch
+            return Errno.inval.value();
+    }
+
     var stdio = exec.INHERIT;
     claimStdio(&options, &stdio) catch return Errno.badf.value();
     errdefer releaseStdio(&stdio);
@@ -51,13 +64,13 @@ pub fn sys_spawn(a: Args) Result {
     const flags: abi.SpawnFlags = @bitCast(options.flags);
 
     if (flags.detached) {
-        const id = exec.spawnAsync(path, slices[0..count], stdio, caps) catch |err| {
+        const id = exec.spawnAsync(path, slices[0..count], env_slices[0..env_count], stdio, caps) catch |err| {
             releaseStdio(&stdio);
             return spawnErrno(err);
         };
         return @intCast(id);
     }
-    return exec.spawn(path, slices[0..count], stdio, caps) catch |err| {
+    return exec.spawn(path, slices[0..count], env_slices[0..env_count], stdio, caps) catch |err| {
         releaseStdio(&stdio);
         return spawnErrno(err);
     };

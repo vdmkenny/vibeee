@@ -584,7 +584,9 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
         sched.exit();
     };
 
-    const stack_top = usermode.setupStack(&space, args) catch {
+    // The first program is started with nothing told to it: init is what
+    // decides what the environment says, and it has not run yet.
+    const stack_top = usermode.setupStack(&space, args, &.{}) catch {
         console.fail("user: cannot set up stack", .{});
         sched.exit();
     };

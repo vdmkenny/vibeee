@@ -9,6 +9,7 @@ pub const complete = @import("complete.zig");
 pub const config = @import("config.zig");
 pub const console = @import("console.zig");
 pub const device = @import("device.zig");
+pub const env = @import("env.zig");
 pub const table = @import("table.zig");
 pub const tree = @import("tree.zig");
 pub const dir = @import("dir.zig");

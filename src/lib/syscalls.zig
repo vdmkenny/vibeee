@@ -236,6 +236,11 @@ pub const Argv = struct {
 /// copies them onto the new stack before the process exists to own them.
 pub const MAX_ARGS = 16;
 
+/// How many names a process may carry in its environment. Small on
+/// purpose: an environment is what a program is told about where it is,
+/// not a place to keep things.
+pub const MAX_ENV = 16;
+
 /// Largest inline channel payload. Small on purpose: anything that does not fit
 /// is bulk data and belongs in a shared ring.
 pub const MAX_PAYLOAD = 64;
@@ -621,6 +626,11 @@ pub const Spawn = extern struct {
     /// What the child may do, intersected with what the caller may do. All
     /// bits set, the default, means the child keeps whatever the parent had.
     caps: u32 = 0xFFFF_FFFF,
+    /// The environment, packed the same way arguments are, because it is
+    /// the same thing: a list of strings. Zero for none, which is what a
+    /// caller that has nothing to say passes.
+    env: u32 = 0,
+    env_len: u32 = 0,
 };
 
 pub const STDIN: u32 = 0;
@@ -915,7 +925,7 @@ pub const table = [_]Syscall{
             .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
             .{ .name = "argv", .kind = .cptr, .desc = "Packed arguments: u16 count, then each as u16 length followed by bytes." },
             .{ .name = "argv_len", .kind = .len, .desc = "Length of the packed block." },
-            .{ .name = "options", .kind = .cptr, .desc = "A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting." },
+            .{ .name = "options", .kind = .cptr, .desc = "A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. Its `env` and `env_len` name a packed block of NAME=value strings, in the same shape as `argv`." },
         },
         .returns = "the program's exit status",
         .errors = &.{ E.fault, E.noent, E.inval, E.nomem },

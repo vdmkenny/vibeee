@@ -15,6 +15,7 @@
 //! machine with only one shell.
 
 const manual = @import("manual");
+const env = @import("ulib").env;
 const sys = @import("sys");
 const cfg = @import("tools/cfg.zig");
 const complete = @import("ulib").complete;
@@ -60,7 +61,10 @@ const builtins = [_]Builtin{
     .{ .name = "reboot", .summary = manual.summaryOf("reboot"), .run = &cmdReboot },
 };
 
-export fn _start() callconv(.c) noreturn {
+export fn _start(frame: [*]const u32) callconv(.c) noreturn {
+    // What init told this shell, which is what it tells everything it
+    // starts. Taken here because the frame is only in hand here.
+    env.adopt(frame);
     shellMain();
 }
 
@@ -472,13 +476,16 @@ fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
     var path_buf: [MAX_LINE]u8 = undefined;
     const path = resolvePath(words[0], &path_buf);
 
-    const direct = sys.spawnStreams(path, words, streams);
+    // A child is told what this shell was told. Nothing here adds to it:
+    // the shell has no way to set a variable yet, so passing it on is the
+    // whole of what it does with one.
+    const direct = sys.spawnEnv(path, words, env.all(), streams);
     if (direct >= 0) return direct;
 
     var argv: [MAX_WORDS + 1][]const u8 = undefined;
     argv[0] = "tools";
     for (words, 0..) |w, i| argv[1 + i] = w;
-    return sys.spawnStreams(TOOLS_PATH, argv[0 .. words.len + 1], streams);
+    return sys.spawnEnv(TOOLS_PATH, argv[0 .. words.len + 1], env.all(), streams);
 }
 
 /// The working directory as a prompt should show it: `~` where the path

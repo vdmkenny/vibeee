@@ -29,6 +29,7 @@ pub const FOREVER = abi.Timeout.forever;
 
 pub const MAX_PAYLOAD = abi.MAX_PAYLOAD;
 pub const MAX_ARGS = abi.MAX_ARGS;
+pub const MAX_ENV = abi.MAX_ENV;
 
 pub const Dirent = abi.Dirent;
 pub const OpenFlags = abi.OpenFlags;
@@ -220,6 +221,27 @@ pub fn wait(pid: u32, timeout_us: usize) ?Exited {
 
 /// Start a program with its standard streams bound to handles of the caller's
 /// choosing. What a terminal emulator uses; everything else wants `spawn`.
+/// Start a program, telling it what its parent knows.
+///
+/// The environment is packed the way the arguments are, because it is the
+/// same thing: a list of strings.
+pub fn spawnEnv(
+    path: []const u8,
+    args: []const []const u8,
+    environment: []const []const u8,
+    options: abi.Spawn,
+) isize {
+    var carried = options;
+    if (environment.len != 0) {
+        const packed_bytes = abi.Argv.pack(environment, &env_buf) catch return -22;
+        carried.env = @intFromPtr(&env_buf);
+        carried.env_len = @intCast(packed_bytes);
+    }
+    return spawnStreams(path, args, carried);
+}
+
+var env_buf: [1024]u8 = undefined;
+
 pub fn spawnStreams(path: []const u8, args: []const []const u8, options: abi.Spawn) isize {
     const n = abi.Argv.pack(args, &spawn_buf) catch return -22;
     return syscall5(

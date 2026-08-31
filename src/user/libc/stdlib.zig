@@ -142,13 +142,6 @@ export fn bsearch(
     return null;
 }
 
-/// Nothing is handed over yet, so every name is absent rather than empty: a
-/// program asking for `HOME` should take its own default, not the empty string.
-export fn getenv(name: [*:0]const u8) callconv(.c) ?[*:0]u8 {
-    _ = name;
-    return null;
-}
-
 export fn rmdir(path: [*:0]const u8) callconv(.c) c_int {
     // Directories are removed by the same call as files; the kernel decides
     // whether the thing named may go.

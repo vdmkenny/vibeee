@@ -17,6 +17,7 @@
 //! This file exists to name every part, because an `export fn` in a module
 //! nothing imports is an `export fn` that is not in the archive.
 
+pub const env = @import("env.zig");
 pub const errno = @import("errno.zig");
 pub const format = @import("format.zig");
 pub const math = @import("math.zig");
@@ -31,6 +32,7 @@ pub const unistd = @import("unistd.zig");
 pub const vibeee = @import("vibeee.zig");
 
 comptime {
+    _ = env;
     _ = errno;
     _ = format;
     _ = math;
