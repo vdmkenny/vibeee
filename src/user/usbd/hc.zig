@@ -59,6 +59,13 @@ pub const HcOps = struct {
         setup: usb.Setup,
         data: []u8,
     ) Error!usize,
+    /// One bulk transfer on an open pipe, in whichever direction the pipe
+    /// runs. The pipe's toggle is advanced by what actually moved, so a
+    /// short answer leaves it where the device thinks it is.
+    bulk: *const fn (pipe: *usb.Pipe, data: []u8) Error!usize,
+    /// The largest bulk transfer this controller will carry in one go.
+    /// A driver moving more than this splits it and keeps its own place.
+    bulkLimit: *const fn () usize,
 };
 
 /// One driven controller and what the bus knows about it.

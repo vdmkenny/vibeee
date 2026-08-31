@@ -9,6 +9,7 @@
 //!
 //! Nothing here knows what a controller is beyond the seam in `hc.zig`.
 
+const class = @import("class.zig");
 const hc = @import("hc.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -31,10 +32,31 @@ pub const Device = struct {
     signature: usb.Signature = .{},
     /// The driver the device manager named, empty when nobody claimed it.
     driver: proto_devices.Assignment = .{},
+    /// The configuration as the device wrote it, kept so a class driver
+    /// can find its own endpoints without asking the device twice.
+    configuration: [CONFIGURATION_MAX]u8 = @splat(0),
+    described: u16 = 0,
+    /// Whether the driver named above took it. A device nobody could
+    /// drive stays listed, which is the answer `usb` shows.
+    attached: bool = false,
+
+    pub fn configurationSlice(self: *const Device) []const u8 {
+        return self.configuration[0..@min(self.described, self.configuration.len)];
+    }
 };
+
+/// A configuration with every interface and endpoint a device of this
+/// kind carries. Anything longer belongs to a device asking for more than
+/// this bus offers, and is read as far as it fits.
+pub const CONFIGURATION_MAX = 256;
 
 var devices: [MAX_DEVICES]Device = @splat(.{});
 var addresses = usb.Addresses{};
+
+/// The class drivers this build carries, named the way their manifests
+/// name them. Set once at start, so this file holds no list of classes
+/// and a driver is added by adding a driver.
+pub var drivers: []const class.ClassDriver = &.{};
 
 pub fn all() []const Device {
     return &devices;
@@ -96,6 +118,11 @@ fn known(controller: u8, port: u8) bool {
 fn forget(controller: u8, port: u8) void {
     for (&devices) |*entry| {
         if (!entry.live or entry.controller != controller or entry.port != port) continue;
+        if (entry.attached) {
+            for (drivers) |candidate| {
+                if (strEql(candidate.name, entry.driver.driverSlice())) candidate.ops.detach(entry.address);
+            }
+        }
         addresses.release(entry.address);
         log.begin("usbd", .key);
         out.text("port ");
@@ -150,7 +177,7 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
     // The configuration is read twice: once for its header, which says
     // how long the whole of it is, and once for all of it.
     var header: [usb.Configuration.BYTES]u8 = @splat(0);
-    var configuration: [256]u8 = @splat(0);
+    var configuration: [CONFIGURATION_MAX]u8 = @splat(0);
     var described: usize = 0;
 
     if (ops.control(address, speed, packet_zero, usb.Setup.getDescriptor(.configuration, 0, header.len), &header)) |_| {
@@ -180,6 +207,8 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
         .speed = speed,
         .descriptor = descriptor,
         .signature = usb.signatureOf(descriptor, configuration[0..described]),
+        .configuration = configuration,
+        .described = @intCast(described),
     };
 
     // Which driver wants it is not this file's decision. The manager
@@ -187,7 +216,39 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
     // matched, and a device with no driver is still a device the
     // listing shows.
     askForDriver(slot);
+    hand(slot, ops);
     say(slot);
+}
+
+/// Give the device to whichever driver the manager named. A name nobody
+/// here answers to leaves the device listed and undriven, which is what a
+/// manifest naming a driver this build does not carry should look like.
+fn hand(entry: *Device, ops: hc.HcOps) void {
+    const wanted = entry.driver.driverSlice();
+    if (wanted.len == 0) return;
+
+    for (drivers) |candidate| {
+        if (!strEql(candidate.name, wanted)) continue;
+        entry.attached = candidate.ops.attach(.{
+            .address = entry.address,
+            .speed = entry.speed,
+            .controller = entry.controller,
+            .port = entry.port,
+            .descriptor = entry.descriptor,
+            .signature = entry.signature,
+            .configuration = entry.configurationSlice(),
+            .ops = ops,
+        });
+        return;
+    }
+}
+
+fn strEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (x != y) return false;
+    }
+    return true;
 }
 
 fn free() ?*Device {

@@ -361,6 +361,11 @@ comptime {
 /// How many stages one control transfer needs: setup, data, status.
 const STAGES = 3;
 
+/// The largest bulk transfer carried in one go. A transfer descriptor
+/// addresses five pages, so one descriptor covers this whole buffer and
+/// a bulk transfer is always a single descriptor.
+const BULK_BYTES = 16 * 1024;
+
 /// The largest answer a device gives during enumeration. A configuration
 /// with every descriptor it carries fits comfortably; anything longer is
 /// read in pieces by whoever wants it.
@@ -373,8 +378,14 @@ const Arena = extern struct {
     /// transfers are one at a time by construction here: enumeration is
     /// sequential and nothing else has an endpoint yet.
     control: QueueHead align(64) = .{},
+    /// One head for whichever endpoint is moving data. Bulk transfers
+    /// are one at a time by construction: the class drivers above are
+    /// request-and-answer, and a second request waits for the first.
+    bulk: QueueHead align(64) = .{},
     stages: [STAGES]Transfer align(32) = @splat(.{}),
+    payload: Transfer align(32) = .{},
     buffer: [BUFFER_BYTES]u8 align(4096) = @splat(0),
+    bulk_buffer: [BULK_BYTES]u8 align(4096) = @splat(0),
     /// Every entry empty: the periodic schedule stays off, but the
     /// controller wants a valid base address regardless.
     frames: [1024]Link align(4096) = @splat(Link.none),
@@ -395,6 +406,84 @@ const Device = struct {
 
 var controller: Device = .{};
 
+fn bulkLimit() usize {
+    return BULK_BYTES;
+}
+
+/// One bulk transfer: a single descriptor, because the buffer it points
+/// at is contiguous and no larger than the five pages one descriptor
+/// addresses. The pipe carries the toggle in and takes it out advanced
+/// by what moved, so a short answer does not desynchronise the endpoint.
+fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+    if (!controller.opened) return hc.Error.Refused;
+    if (data.len > BULK_BYTES) return hc.Error.Refused;
+
+    const arena = controller.arena.at;
+    const writing = pipe.direction == .out;
+    if (writing and data.len != 0) {
+        @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.bulk_buffer)))[0..data.len], data);
+    }
+
+    arena.payload = describe(
+        if (writing) .out else .in,
+        pipe.toggle,
+        controller.arena.physOf("bulk_buffer"),
+        @intCast(data.len),
+        true,
+    );
+    arena.payload.next = Link.none;
+
+    scheduleRunning(false);
+    arena.bulk.info = .{
+        .address = pipe.address,
+        .endpoint = pipe.number,
+        .speed = switch (pipe.speed) {
+            .high => .high,
+            .full => .full,
+            .low => .low,
+        },
+        .toggle_from_descriptor = true,
+        .max_packet = @intCast(pipe.max_packet),
+        .reload = 4,
+    };
+    arena.bulk.capabilities = .{ .multiplier = 1 };
+    arena.bulk.current = 0;
+    arena.bulk.overlay = .{ .next = Link.to(controller.arena.physOf("payload"), .isochronous) };
+    scheduleRunning(true);
+
+    const moved = try awaitPayload(data.len);
+    pipe.advance(moved);
+
+    if (!writing and moved != 0) {
+        const from: [*]const u8 = @ptrCast(@volatileCast(&arena.bulk_buffer));
+        @memcpy(data[0..moved], from[0..moved]);
+    }
+    return moved;
+}
+
+/// Wait for the one descriptor a bulk transfer uses, on the controller's
+/// interrupt rather than on the clock.
+fn awaitPayload(asked: usize) hc.Error!usize {
+    const arena = controller.arena.at;
+
+    var waited_us: u32 = 0;
+    const DEADLINE_US: u32 = 5_000_000;
+    while (waited_us < DEADLINE_US) {
+        rest();
+        waited_us += REST_US;
+
+        const token = arena.payload.token;
+        if (!token.status.active or token.status.failed()) break;
+    }
+
+    const token = arena.payload.token;
+    if (token.status.failed()) return hc.Error.Stalled;
+    if (token.status.active) return hc.Error.Timeout;
+    // The controller counts down what it did not carry, so a short
+    // answer shows up as bytes left over.
+    return asked - @as(usize, token.bytes);
+}
+
 pub const ops = hc.HcOps{
     .open = open,
     .ports = portCount,
@@ -402,6 +491,8 @@ pub const ops = hc.HcOps{
     .resetPort = resetPort,
     .serviceIrq = serviceIrq,
     .control = control,
+    .bulk = bulk,
+    .bulkLimit = bulkLimit,
 };
 
 /// The interrupt handle is given after the controller opens, because the
@@ -568,8 +659,13 @@ fn startSchedule() void {
         .overlay = .{ .token = .{ .status = .{ .halted = true } } },
     };
     controller.arena.at.control = .{
-        .link = Link.to(anchor_physical, .queue_head),
+        .link = Link.to(controller.arena.physOf("bulk"), .queue_head),
         .info = .{ .toggle_from_descriptor = true, .speed = .high, .max_packet = 64 },
+        .overlay = .{ .token = .{ .status = .{ .halted = true } } },
+    };
+    controller.arena.at.bulk = .{
+        .link = Link.to(anchor_physical, .queue_head),
+        .info = .{ .toggle_from_descriptor = true, .speed = .high, .max_packet = 512 },
         .overlay = .{ .token = .{ .status = .{ .halted = true } } },
     };
 
@@ -854,6 +950,25 @@ fn describe(pid: Pid, toggle: bool, page: u32, bytes: u15, interrupt: bool) Tran
 
 /// Wait for the controller to finish, on its own interrupt, and read
 /// what happened out of the descriptors.
+/// How long one wait step lasts. Long enough that a transfer nobody
+/// answers costs a handful of wakes, short enough that a deadline is
+/// still measured in the units it is written in.
+const REST_US: u32 = 50_000;
+
+/// One step of waiting for the controller. The wait is on its interrupt,
+/// so a machine with nothing to carry does nothing; before the line is
+/// routed, during the first moments of bring-up, there is nothing to
+/// wait on but the clock.
+fn rest() void {
+    if (controller.irq != 0) {
+        _ = sys.eventWait(controller.irq, REST_US);
+        _ = serviceIrq();
+        _ = sys.irqAck(controller.irq);
+    } else {
+        sys.sleepMicros(REST_US);
+    }
+}
+
 fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Error!usize {
     const arena = controller.arena.at;
 
@@ -864,16 +979,8 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
     var waited_us: u32 = 0;
     const DEADLINE_US: u32 = 1_000_000;
     while (waited_us < DEADLINE_US) {
-        if (controller.irq != 0) {
-            _ = sys.eventWait(controller.irq, 50_000);
-            _ = serviceIrq();
-            _ = sys.irqAck(controller.irq);
-        } else {
-            // Before the line is routed, during the first moments of
-            // bring-up, there is nothing to wait on but the clock.
-            sys.sleepMicros(50_000);
-        }
-        waited_us += 50_000;
+        rest();
+        waited_us += REST_US;
 
         const last = arena.stages[stages - 1].token;
         if (!last.status.active) break;

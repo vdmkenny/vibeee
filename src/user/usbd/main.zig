@@ -13,6 +13,7 @@
 //! than by a change to this file.
 
 const core = @import("core.zig");
+const umass = @import("umass.zig");
 const ehci = @import("ehci.zig");
 const hc = @import("hc.zig");
 const irqroute = @import("ulib").irqroute;
@@ -40,6 +41,13 @@ const DRIVERS = [_]Driver{
     .{ .name = ehci.name, .ops = ehci.ops, .listen = ehci.listenOn },
 };
 
+/// The class drivers this build carries. Which device each fits is again
+/// the device manager's knowledge: a manifest names one of these, and a
+/// class nobody here drives is a manifest and a program away.
+const CLASSES = [_]@import("class.zig").ClassDriver{
+    umass.driver,
+};
+
 /// One controller each for the machine's high-speed bus and whatever a
 /// second one turns out to be.
 const MAX_CONTROLLERS = 2;
@@ -60,6 +68,7 @@ fn usbdMain() noreturn {
     }
     service = @intCast(channel);
 
+    core.drivers = &CLASSES;
     claim();
     if (controller_count == 0) {
         log.warn("usbd", "no host controller matched a driver");

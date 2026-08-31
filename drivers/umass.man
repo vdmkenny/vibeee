@@ -1,0 +1,5 @@
+# A disk behind two bulk pipes: the transparent-SCSI, bulk-only variant
+# every stick and card reader uses.
+name    = umass
+service = usb
+match   = usb-class:08:06:50

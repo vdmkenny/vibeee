@@ -141,7 +141,41 @@ pub const Setup = extern struct {
             .value = value,
         };
     }
+
+    /// Take an endpoint out of the halt a failed transfer left it in.
+    /// Until this is done the endpoint answers nothing but a stall, and
+    /// the device's own toggle goes back to zero with it.
+    pub fn clearHalt(endpoint_address: u8) Setup {
+        return .{
+            .request_type = .{ .direction = .out, .recipient = .endpoint },
+            .request = .clear_feature,
+            .value = FEATURE_ENDPOINT_HALT,
+            .index = endpoint_address,
+        };
+    }
+
+    /// A request a class defines rather than the specification, aimed at
+    /// one interface. Every class control request has this shape.
+    pub fn classRequest(
+        direction: Direction,
+        request: u8,
+        value: u16,
+        interface: u8,
+        length: u16,
+    ) Setup {
+        return .{
+            .request_type = .{ .direction = direction, .kind = .class, .recipient = .interface },
+            .request = @enumFromInt(request),
+            .value = value,
+            .index = interface,
+            .length = length,
+        };
+    }
 };
+
+/// The one standard endpoint feature, and the only one anything here sets
+/// or clears.
+pub const FEATURE_ENDPOINT_HALT: u16 = 0;
 
 comptime {
     if (@sizeOf(Setup) != Setup.BYTES) @compileError("a setup packet is eight bytes");
@@ -341,6 +375,18 @@ pub const Endpoint = struct {
     pub fn address(self: Endpoint) u8 {
         return @as(u8, self.number) | (@as(u8, @intFromEnum(self.direction)) << 7);
     }
+
+    /// The pipe this endpoint becomes once a device owns it, which is
+    /// the only form a driver transfers through.
+    pub fn open(self: Endpoint, address_of_device: u7, speed: Speed) Pipe {
+        return .{
+            .address = address_of_device,
+            .number = self.number,
+            .direction = self.direction,
+            .speed = speed,
+            .max_packet = self.max_packet,
+        };
+    }
 };
 
 /// A walk over the descriptors a configuration read returns.
@@ -381,6 +427,47 @@ pub fn walk(bytes: []const u8) Walk {
 
 /// What a driver is matched against: a device says what it is, or says
 /// nothing and leaves its interfaces to say it.
+/// One open endpoint on one device, and the toggle it is up to.
+///
+/// The descriptor `Endpoint` says what an endpoint is; this says who it
+/// belongs to and where its conversation has got to, which is what a
+/// driver actually holds.
+///
+/// The data toggle belongs to the endpoint rather than to any one
+/// transfer: a device that receives DATA0 when it expected DATA1 drops
+/// the packet and the transfer stalls, so whoever holds the pipe holds
+/// the toggle and tells the controller what it currently is. A control
+/// endpoint is the exception and resets to zero every setup, which is
+/// why only the pipes opened this way carry one.
+pub const Pipe = struct {
+    address: u7 = 0,
+    number: u4 = 0,
+    direction: Direction = .in,
+    speed: Speed = .high,
+    max_packet: u16 = 512,
+    toggle: bool = false,
+
+    /// How many packets a transfer of this many bytes takes. A transfer
+    /// of nothing is still one packet: a zero-length packet is how a
+    /// device says a short answer is finished.
+    pub fn packetsFor(self: Pipe, bytes: usize) usize {
+        if (bytes == 0) return 1;
+        const size = @max(self.max_packet, 1);
+        return (bytes + size - 1) / size;
+    }
+
+    /// The toggle after moving this many bytes: it flips once per packet,
+    /// so an odd number of packets leaves it the other way round.
+    pub fn advance(self: *Pipe, moved: usize) void {
+        if (self.packetsFor(moved) % 2 == 1) self.toggle = !self.toggle;
+    }
+
+    /// What a reset or a `clear feature halt` leaves behind.
+    pub fn resetToggle(self: *Pipe) void {
+        self.toggle = false;
+    }
+};
+
 pub const Signature = struct {
     class: Class = .per_interface,
     subclass: u8 = 0,
@@ -435,6 +522,68 @@ pub const Signature = struct {
         return str.fromHex(rest) == self.protocol;
     }
 };
+
+/// One interface and the endpoints that belong to it, picked out of a
+/// configuration. A class driver needs its own interface's number and its
+/// pipes and nothing else, and finding them is the same walk every time.
+pub const InterfaceView = struct {
+    interface: Interface = .{},
+    /// The endpoints listed under it, in the order the device wrote them.
+    endpoints: [ENDPOINTS_MAX]Endpoint = @splat(.{}),
+    endpoint_count: u8 = 0,
+
+    pub const ENDPOINTS_MAX = 8;
+
+    pub fn endpointSlice(self: *const InterfaceView) []const Endpoint {
+        return self.endpoints[0..@min(self.endpoint_count, self.endpoints.len)];
+    }
+
+    /// The first endpoint of a kind going a given way, which is how a
+    /// class driver names the pipes it needs: "the bulk one that reads".
+    pub fn find(self: *const InterfaceView, kind: TransferKind, direction: Direction) ?Endpoint {
+        for (self.endpointSlice()) |endpoint| {
+            if (endpoint.kind == kind and endpoint.direction == direction) return endpoint;
+        }
+        return null;
+    }
+};
+
+/// The interface in a configuration that matches a class, and its
+/// endpoints. Alternate settings other than the first are skipped: a
+/// device offering a faster alternate is asking to be configured, which
+/// is more than a driver needs to start.
+pub fn interfaceFor(
+    configuration: []const u8,
+    class: Class,
+    subclass: u8,
+    protocol: u8,
+) ?InterfaceView {
+    var records = walk(configuration);
+    var found: ?InterfaceView = null;
+
+    while (records.next()) |record| {
+        switch (record.kind) {
+            .interface => {
+                if (found != null) return found;
+                const interface = Interface.parse(record.bytes) orelse continue;
+                if (interface.alternate != 0) continue;
+                if (interface.class != class) continue;
+                if (interface.subclass != subclass) continue;
+                if (interface.protocol != protocol) continue;
+                found = .{ .interface = interface };
+            },
+            .endpoint => {
+                var view = &(found orelse continue);
+                const endpoint = Endpoint.parse(record.bytes) orelse continue;
+                if (view.endpoint_count >= InterfaceView.ENDPOINTS_MAX) continue;
+                view.endpoints[view.endpoint_count] = endpoint;
+                view.endpoint_count += 1;
+            },
+            else => {},
+        }
+    }
+    return found;
+}
 
 /// The signature to look a driver up by. A device that declares its own
 /// class is taken at its word; one that declares none is described by its
@@ -725,4 +874,139 @@ test "the status stage runs against the data stage, and in when there is none" {
     try std.testing.expectEqual(Direction.in, write.statusDirection());
     write.length = 0;
     try std.testing.expectEqual(Direction.in, write.statusDirection());
+}
+
+test "a pipe counts packets and flips its toggle once per packet" {
+    var endpoint = Pipe{ .max_packet = 512 };
+
+    // A transfer of nothing is one packet, so it flips.
+    try std.testing.expectEqual(@as(usize, 1), endpoint.packetsFor(0));
+    endpoint.advance(0);
+    try std.testing.expect(endpoint.toggle);
+
+    // A short transfer is one packet.
+    try std.testing.expectEqual(@as(usize, 1), endpoint.packetsFor(31));
+    endpoint.advance(31);
+    try std.testing.expect(!endpoint.toggle);
+
+    // Exactly one packet, then exactly two.
+    try std.testing.expectEqual(@as(usize, 1), endpoint.packetsFor(512));
+    try std.testing.expectEqual(@as(usize, 2), endpoint.packetsFor(513));
+    try std.testing.expectEqual(@as(usize, 2), endpoint.packetsFor(1024));
+    try std.testing.expectEqual(@as(usize, 3), endpoint.packetsFor(1025));
+
+    // An even number of packets leaves the toggle where it was.
+    endpoint.advance(1024);
+    try std.testing.expect(!endpoint.toggle);
+    endpoint.advance(1025);
+    try std.testing.expect(endpoint.toggle);
+
+    endpoint.resetToggle();
+    try std.testing.expect(!endpoint.toggle);
+}
+
+test "a full speed pipe counts by its own packet size" {
+    var endpoint = Pipe{ .speed = .full, .max_packet = 64 };
+    try std.testing.expectEqual(@as(usize, 8), endpoint.packetsFor(512));
+    endpoint.advance(512);
+    try std.testing.expect(!endpoint.toggle);
+    try std.testing.expectEqual(@as(usize, 9), endpoint.packetsFor(513));
+    endpoint.advance(513);
+    try std.testing.expect(endpoint.toggle);
+}
+
+test "a descriptor's endpoint opens into a pipe on a device" {
+    const descriptor = Endpoint.parse(&[_]u8{ 7, 0x05, 0x81, 0x02, 0x00, 0x02, 0 }) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u4, 1), descriptor.number);
+    try std.testing.expectEqual(Direction.in, descriptor.direction);
+    try std.testing.expectEqual(TransferKind.bulk, descriptor.kind);
+    try std.testing.expectEqual(@as(u16, 512), descriptor.max_packet);
+    try std.testing.expectEqual(@as(u8, 0x81), descriptor.address());
+
+    const pipe = descriptor.open(3, .high);
+    try std.testing.expectEqual(@as(u7, 3), pipe.address);
+    try std.testing.expectEqual(@as(u4, 1), pipe.number);
+    try std.testing.expectEqual(Direction.in, pipe.direction);
+    try std.testing.expectEqual(@as(u16, 512), pipe.max_packet);
+    try std.testing.expect(!pipe.toggle);
+}
+
+/// A configuration as a mass storage stick writes it: one interface of
+/// class eight, subclass six, protocol eighty, with two bulk endpoints.
+const STICK_CONFIGURATION = [_]u8{
+    9,    0x02, 32,   0,    1,    1,    0,    0x80, 50,
+    9,    0x04, 0,    0,    2,    0x08, 0x06, 0x50, 0,
+    7,    0x05, 0x81, 0x02, 0x00, 0x02, 0,
+    7,    0x05, 0x02, 0x02, 0x00, 0x02, 0,
+};
+
+test "an interface is found by class, with the endpoints under it" {
+    const view = interfaceFor(&STICK_CONFIGURATION, .mass_storage, 0x06, 0x50) orelse
+        return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(@as(u8, 0), view.interface.number);
+    try std.testing.expectEqual(@as(u8, 2), view.endpoint_count);
+
+    const reading = view.find(.bulk, .in) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u4, 1), reading.number);
+    try std.testing.expectEqual(@as(u16, 512), reading.max_packet);
+
+    const writing = view.find(.bulk, .out) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u4, 2), writing.number);
+
+    // Nothing of a kind the interface does not carry.
+    try std.testing.expect(view.find(.interrupt, .in) == null);
+
+    // And nothing at all for a class this configuration does not offer.
+    try std.testing.expect(interfaceFor(&STICK_CONFIGURATION, .human_interface, 1, 1) == null);
+    try std.testing.expect(interfaceFor(&STICK_CONFIGURATION, .mass_storage, 0x06, 0x62) == null);
+    try std.testing.expect(interfaceFor(&.{}, .mass_storage, 0x06, 0x50) == null);
+}
+
+test "endpoints after the next interface belong to that interface" {
+    // A composite device: the wanted interface first, then another whose
+    // endpoints must not be gathered into it.
+    const composite = [_]u8{
+        9, 0x02, 46,   0,    2,    1,    0,    0x80, 50,
+        9, 0x04, 0,    0,    1,    0x08, 0x06, 0x50, 0,
+        7, 0x05, 0x81, 0x02, 0x00, 0x02, 0,
+        9, 0x04, 1,    0,    1,    0x03, 0x01, 0x01, 0,
+        7, 0x05, 0x83, 0x03, 0x08, 0x00, 10,
+    };
+
+    const disk = interfaceFor(&composite, .mass_storage, 0x06, 0x50) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 1), disk.endpoint_count);
+    try std.testing.expectEqual(@as(u4, 1), (disk.find(.bulk, .in) orelse unreachable).number);
+
+    const keyboard = interfaceFor(&composite, .human_interface, 0x01, 0x01) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 1), keyboard.interface.number);
+    try std.testing.expectEqual(@as(u8, 1), keyboard.endpoint_count);
+    const polled = keyboard.find(.interrupt, .in) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u4, 3), polled.number);
+    try std.testing.expectEqual(@as(u16, 8), polled.max_packet);
+    try std.testing.expectEqual(@as(u8, 10), polled.interval);
+}
+
+test "the control requests a class driver sends are shaped as the wire wants" {
+    const halt = Setup.clearHalt(0x81);
+    try std.testing.expectEqual(@as(u8, 0x02), @as(u8, @bitCast(halt.request_type)));
+    try std.testing.expectEqual(Request.clear_feature, halt.request);
+    try std.testing.expectEqual(@as(u16, 0), halt.value);
+    try std.testing.expectEqual(@as(u16, 0x81), halt.index);
+    try std.testing.expectEqual(Direction.in, halt.statusDirection());
+
+    // Get max lun: in, class, interface.
+    const lun = Setup.classRequest(.in, 0xFE, 0, 0, 1);
+    try std.testing.expectEqual(@as(u8, 0xA1), @as(u8, @bitCast(lun.request_type)));
+    try std.testing.expectEqual(@as(u8, 0xFE), @intFromEnum(lun.request));
+    try std.testing.expectEqual(@as(u16, 1), lun.length);
+    try std.testing.expectEqual(Direction.out, lun.statusDirection());
+
+    // Reset: out, class, interface, no data.
+    const reset = Setup.classRequest(.out, 0xFF, 0, 0, 0);
+    try std.testing.expectEqual(@as(u8, 0x21), @as(u8, @bitCast(reset.request_type)));
+    try std.testing.expectEqual(Direction.in, reset.statusDirection());
 }
