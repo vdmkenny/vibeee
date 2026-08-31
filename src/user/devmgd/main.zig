@@ -82,6 +82,13 @@ export fn _start() callconv(.c) noreturn {
 }
 
 fn devmgdMain() noreturn {
+    // The bus is walked before the service exists, so the moment anything can
+    // ask what it has been assigned, there is an answer. A manager that
+    // registered first would answer "nothing" to every service that started
+    // while it was still looking, and those services only ask once.
+    readManifests();
+    bindDevices();
+
     const channel = sys.svcRegister(proto.SERVICE);
     if (channel < 0) {
         log.note("devmgd", "already serving; letting this instance stand down");
@@ -89,11 +96,24 @@ fn devmgdMain() noreturn {
     }
     service = @intCast(channel);
 
-    readManifests();
-    bindDevices();
+    // Driver processes start after registration, because a driver's first act
+    // is to ask this service what it is driving.
+    startAssigned();
     out.flush();
 
     serve();
+}
+
+/// Start a process for every binding that wants one. Separate from binding
+/// so the walk can happen before the service is registered and the spawning
+/// after it.
+fn startAssigned() void {
+    for (&bound) |*slot| {
+        if (!slot.live or slot.pid != 0) continue;
+        const manifest = &manifests[slot.manifest];
+        if (manifest.binary.len == 0) continue;
+        if (startProcess(slot)) sayBinding(manifest.name, slot.location, "");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -236,17 +256,11 @@ fn bind(manifest_index: usize, location: lib.pci.Location) void {
         .location = location,
     };
 
-    if (manifest.service.len != 0) {
-        // A service's driver: recorded, claimed later, narrated now so the
-        // boot log says who was given what.
-        slot.state = .assigned;
-        sayBinding(manifest.name, location, manifest.service);
-        return;
-    }
-
-    if (startProcess(slot)) {
-        sayBinding(manifest.name, location, "");
-    }
+    // Recorded either way. A service's assignment is claimed later, and a
+    // standalone driver's process is started once this manager can answer
+    // the questions it will ask.
+    slot.state = .assigned;
+    if (manifest.service.len != 0) sayBinding(manifest.name, location, manifest.service);
 }
 
 fn freeSlot() ?*Bound {

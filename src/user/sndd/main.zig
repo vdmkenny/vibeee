@@ -89,8 +89,8 @@ fn snddMain() noreturn {
     service = @intCast(channel);
 
     probe();
-    if (device_count == 0) {
-        log.warn("sndd", "no sound hardware matched a driver");
+    if (device_count == 0 and assigned == 0) {
+        log.warn("sndd", "the device manager assigned no sound hardware");
     }
 
     const bell = sys.eventCreate();
@@ -109,12 +109,30 @@ fn probe() void {
         var assignment = proto_devices.Assignment{};
         proto_devices.claimNext(proto.SERVICE, index, &assignment) catch break;
 
+        assigned += 1;
+        var known = false;
         for (DRIVERS) |driver| {
             if (!str.eql(driver.name, assignment.driverSlice())) continue;
+            known = true;
             attach(driver, @bitCast(assignment.location));
+        }
+
+        // An assignment this build cannot drive is worth naming. "No sound
+        // hardware" and "sound hardware nobody here can drive" are different
+        // problems with the same silence, and the second one names the
+        // driver that would have to exist.
+        if (!known) {
+            log.begin("sndd", .bad);
+            out.text("assigned ");
+            out.text(assignment.driverSlice());
+            out.text(", which this build has no driver for");
+            log.end();
         }
     }
 }
+
+/// How many devices the manager offered, whether or not any could be driven.
+var assigned: usize = 0;
 
 fn attach(driver: Driver, location: pci.Location) void {
     if (sys.claimDevice(location) < 0) {

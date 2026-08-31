@@ -16,6 +16,7 @@ const out = @import("ulib").out;
 const str = @import("ulib").str;
 const table = @import("ulib").table;
 const proto_devices = @import("proto").devices;
+const sys = @import("sys");
 const usb = @import("lib").usb;
 
 /// How many devices one machine of this class plausibly carries. The
@@ -217,15 +218,35 @@ fn forgetBehind(hub: u7) void {
     }
 }
 
+/// What a device is owed between the end of its reset and the first thing
+/// said to it. The specification's TRSTRCY is ten milliseconds; this is
+/// generous because the cost is paid once per device and the failure it
+/// prevents is a device that never appears at all.
+const RESET_RECOVERY_US: u32 = 20_000;
+
 /// The conversation every device has when it arrives.
 fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
     const zero = usb.Pipe{ .speed = speed, .max_packet = 8, .route = route };
+
+    // A device that has just been reset is not listening yet. An emulator
+    // answers anyway; real silicon does not, and what that looks like from
+    // here is a device that will not describe itself.
+    sys.sleepMicros(RESET_RECOVERY_US);
+
     // The first question is how big an answer the device can give: until
     // that is known every read has to be short enough for the smallest
     // packet any device may use.
+    //
+    // Asked twice if the first attempt times out. A device that misses the
+    // first setup packet after a reset is common enough that the second try
+    // is part of the conversation rather than a workaround.
     var first: [8]u8 = @splat(0);
-    _ = ops.control(zero, usb.Setup.getDescriptor(.device, 0, first.len), &first) catch |err| {
-        return sayFailure(port, "would not describe itself", err);
+    const question = usb.Setup.getDescriptor(.device, 0, first.len);
+    _ = ops.control(zero, question, &first) catch {
+        sys.sleepMicros(RESET_RECOVERY_US);
+        _ = ops.control(zero, question, &first) catch |err| {
+            return sayFailure(port, "would not describe itself", err);
+        };
     };
 
     const packet_zero = usb.Device.packetZeroOf(&first) orelse {
@@ -247,7 +268,7 @@ fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: 
     };
     // The device switches address after the status stage, and is
     // entitled to two milliseconds to do it.
-    @import("sys").sleepMicros(2_000);
+    sys.sleepMicros(2_000);
 
     var full: [usb.Device.BYTES]u8 = @splat(0);
     const named = usb.Pipe{
