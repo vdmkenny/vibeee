@@ -7,6 +7,22 @@
 
 const std = @import("std");
 
+/// Hand every manual page to the index generator as a tracked input.
+fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
+    const io = b.graph.io;
+    var dir = b.build_root.handle.openDir(io, "manual", .{ .iterate = true }) catch {
+        std.log.err("no manual directory: every command's summary lives there", .{});
+        std.process.exit(1);
+    };
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        run.addFileArg(b.path(b.fmt("manual/{s}", .{entry.name})));
+    }
+}
+
 /// True when `name` appears in a comma-separated list.
 fn named(list: []const u8, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, list, ',');
@@ -216,6 +232,31 @@ pub fn build(b: *std.Build) void {
         libc.bundle_compiler_rt = true;
         b.installArtifact(libc);
 
+        // The manual is the source of every command's one-line summary.
+        // A generator reads the pages' title lines into a comptime table,
+        // so `tools` and `help` print what the manual says and a command
+        // with no page fails the build rather than shipping unlookupable.
+        const manual_index = b.addRunArtifact(b.addExecutable(.{
+            .name = "gen-manual-index",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/gen-manual-index.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+            }),
+        }));
+        const manual_table = manual_index.addOutputFileArg("manual.zig");
+        // Each page named as its own input, so the build hashes their
+        // contents and re-reads the manual exactly when one changes,
+        // arrives or leaves. A directory argument would hash only its
+        // name, and a page removed behind the build's back would ship as
+        // a summary for a command nobody can look up.
+        addManualPages(b, manual_index);
+        const manual_mod = b.createModule(.{
+            .root_source_file = manual_table,
+            .target = user_target,
+            .optimize = optimize,
+        });
+
         const user_imports = [_]std.Build.Module.Import{
             .{ .name = "lib", .module = user_lib },
             .{ .name = "sys", .module = sys_mod },
@@ -223,6 +264,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "eui", .module = eui_mod },
             .{ .name = "keymaps", .module = keymaps_mod },
             .{ .name = "proto", .module = proto_mod },
+            .{ .name = "manual", .module = manual_mod },
         };
 
         // Every user program is built identically; only its root file differs.

@@ -1,6 +1,8 @@
-exit - leave the shell
+exit - leave this shell, and get a fresh one
 
   exit
 
-A shell builtin. The shell is what the machine starts with, so leaving
-it on the console starts another; `off` powers down instead.
+There is nothing to exit to: this is the only shell. What makes the
+command useful is that init supervises it and starts another, so
+`exit` is how a shell that has got itself into a state is recovered.
+`off` powers down; `reboot` restarts.

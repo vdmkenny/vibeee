@@ -14,6 +14,7 @@
 //! it and restarts it when it exits. That is what makes `exit` meaningful on a
 //! machine with only one shell.
 
+const manual = @import("manual");
 const sys = @import("sys");
 const cfg = @import("tools/cfg.zig");
 const complete = @import("ulib").complete;
@@ -49,14 +50,14 @@ const Builtin = struct {
 };
 
 const builtins = [_]Builtin{
-    .{ .name = "help", .summary = "list builtins", .run = &cmdHelp },
-    .{ .name = "cd", .summary = "change directory", .run = &cmdCd },
-    .{ .name = "pwd", .summary = "print working directory", .run = &cmdPwd },
-    .{ .name = "echo", .summary = "print arguments", .run = &cmdEcho },
-    .{ .name = "clear", .summary = "clear the screen", .run = &cmdClear },
-    .{ .name = "exit", .summary = "restart the shell", .run = &cmdExit },
-    .{ .name = "off", .summary = "flush everything and power down", .run = &cmdPowerOff },
-    .{ .name = "reboot", .summary = "flush everything and restart", .run = &cmdReboot },
+    .{ .name = "help", .summary = manual.summaryOf("help"), .run = &cmdHelp },
+    .{ .name = "cd", .summary = manual.summaryOf("cd"), .run = &cmdCd },
+    .{ .name = "pwd", .summary = manual.summaryOf("pwd"), .run = &cmdPwd },
+    .{ .name = "echo", .summary = manual.summaryOf("echo"), .run = &cmdEcho },
+    .{ .name = "clear", .summary = manual.summaryOf("clear"), .run = &cmdClear },
+    .{ .name = "exit", .summary = manual.summaryOf("exit"), .run = &cmdExit },
+    .{ .name = "off", .summary = manual.summaryOf("off"), .run = &cmdPowerOff },
+    .{ .name = "reboot", .summary = manual.summaryOf("reboot"), .run = &cmdReboot },
 };
 
 export fn _start() callconv(.c) noreturn {
