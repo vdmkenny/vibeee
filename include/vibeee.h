@@ -62,4 +62,42 @@ int vb_key_read(vb_key *into, int count, unsigned int timeout_us);
 /* Key numbers, written from the enum that defines them. */
 #include <vibeee-keys.h>
 
+/* ---- sound ---------------------------------------------------------- */
+
+/* What a stream is. Fixed by the system rather than chosen per program,
+ * so a caller reads it rather than asking for it: samples are signed and
+ * little endian at the width given here. */
+typedef struct {
+    unsigned int  rate;      /* frames a second */
+    unsigned char channels;  /* samples a frame */
+    unsigned char bits;      /* bits a sample */
+    unsigned char _pad[2];
+} vb_sound;
+
+/* Join the sound graph as a node with one output, connected to wherever
+ * sound goes. Returns 0, or -1 when there is no sound service. One output
+ * per program: a program wanting two wants the graph itself, which is a
+ * richer thing than a header should pretend to be. */
+int vb_sound_open(const char *name, vb_sound *shape);
+
+/* Hand over frames; returns how many were taken. Fewer than asked means
+ * the ring is full, and the rest should be offered again rather than
+ * waited on: a sound loop that blocks is a picture that stops. */
+int vb_sound_write(const void *frames, int count);
+
+/* How many frames would be taken right now, which is what to mix. */
+int vb_sound_room(void);
+
+/* Wait until the ring wants more, or until the timeout passes. The one
+ * call a sound loop cannot do without: a full ring waits for the engine
+ * and never spins, because a program that polls instead takes the
+ * processor the service needs to drain it, and on one core that is how a
+ * tone comes out full of holes. */
+int vb_sound_wait(unsigned int timeout_us);
+
+/* Whether everything handed over has been played. */
+int vb_sound_drained(void);
+
+void vb_sound_close(void);
+
 #endif /* _VIBEEE_H */

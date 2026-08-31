@@ -6,12 +6,20 @@
 //! shared-memory object a process owns exclusively, and keys arrive as
 //! events rather than as bytes on a terminal.
 //!
+//! Nor can it make a sound. Audio here is a graph a program joins as a
+//! node, which is a better arrangement than a device to open and a worse
+//! one to express in a header, so the binding offers the ordinary case:
+//! one output, connected to wherever sound goes.
+//!
 //! So there is one header of our own, and this is what stands behind it.
-//! Deliberately small: two things to do with the screen and one with the
-//! keyboard, which is the whole of what a program drawing its own pixels
-//! needs from a system.
+//! Deliberately small: the screen, the keyboard, and a way to be heard,
+//! which is the whole of what a program drawing its own pixels and making
+//! its own noise needs from a system.
 
+const std = @import("std");
+const audio = @import("lib").audio;
 const sys = @import("sys");
+const ulib = @import("ulib");
 
 /// What the screen is. Laid out to match `syscalls.DisplayInfo` exactly,
 /// because the kernel writes one of those into it.
@@ -108,3 +116,88 @@ export fn vb_key_read(into: ?[*]Key, count: c_int, timeout_us: c_uint) c_int {
 // The key numbers a C program uses are generated from `KeyCode` into
 // <vibeee-keys.h>, so there is no second list here to keep in step with
 // the first.
+
+// ---------------------------------------------------------------------------
+// Sound
+// ---------------------------------------------------------------------------
+
+/// What a stream is: how fast, how many samples make a frame, and how
+/// wide a sample is. Fixed by the system rather than chosen per program,
+/// so a caller reads it rather than asking for it.
+pub const Sound = extern struct {
+    rate: u32 = 0,
+    channels: u8 = 0,
+    bits: u8 = 0,
+    _pad: [2]u8 = @splat(0),
+};
+
+var speaking: ?ulib.sound.Port = null;
+
+/// Join the graph as a node with one output, connected to wherever sound
+/// goes. Answers 0, or -1 when there is no sound service.
+///
+/// One output per program, because a program that wants two wants the
+/// graph itself, and that is a richer thing than a header should pretend
+/// to be.
+export fn vb_sound_open(name: ?[*:0]const u8, shape: ?*Sound) c_int {
+    if (speaking != null) return 0;
+
+    const called = if (name) |given| std.mem.span(given) else "program";
+    speaking = ulib.sound.Port.output(called, "out") catch return -1;
+
+    if (shape) |out| {
+        const wanted = audio.Shape{};
+        out.* = .{
+            .rate = wanted.rate.hertz(),
+            .channels = wanted.channels,
+            .bits = @intCast(wanted.format.bytesPerSample() * 8),
+        };
+    }
+    return 0;
+}
+
+/// Hand over frames. Answers how many were taken, which is fewer than
+/// asked when the ring is full: a program keeps the rest and offers them
+/// again rather than waiting, because a sound loop that blocks is a
+/// picture that stops.
+export fn vb_sound_write(frames: ?*const anyopaque, count: c_int) c_int {
+    const port = &(speaking orelse return -1);
+    if (count <= 0) return 0;
+
+    const bytes: [*]const u8 = @ptrCast(frames orelse return -1);
+    const width = audio.Shape{};
+    const wanted = @as(usize, @intCast(count)) * width.bytesPerFrame();
+
+    const taken = port.write(bytes[0..wanted]);
+    return @intCast(taken / width.bytesPerFrame());
+}
+
+/// How many frames would be taken right now. What a program mixes to,
+/// so it produces exactly what there is room for.
+export fn vb_sound_room() c_int {
+    const port = &(speaking orelse return -1);
+    const width = audio.Shape{};
+    return @intCast(port.view.frames.writable() / width.bytesPerFrame());
+}
+
+/// Wait until the ring wants more, or until `timeout_us` has passed.
+///
+/// The one call a sound loop cannot do without. A full ring waits for the
+/// engine and never spins: the service signals as each period drains, and
+/// a program that polls instead takes the processor the service needs to
+/// drain it, which on one core is how a tone comes out full of holes.
+export fn vb_sound_wait(timeout_us: c_uint) c_int {
+    const port = &(speaking orelse return -1);
+    return if (sys.eventWait(port.waitHandle(), timeout_us) < 0) -1 else 0;
+}
+
+/// Whether everything handed over has been played.
+export fn vb_sound_drained() c_int {
+    const port = &(speaking orelse return 1);
+    return @intFromBool(port.drained());
+}
+
+export fn vb_sound_close() void {
+    if (speaking) |port| port.close();
+    speaking = null;
+}
