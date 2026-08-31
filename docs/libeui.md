@@ -50,6 +50,7 @@ with it this pass.
 |---|---|
 | `button` | `fn (*widget.Context, draw.Rect, []const u8) bool` |
 | `choice` | `fn (*widget.Context, draw.Rect, anytype) anytype` |
+| `choiceOf` | `fn (*widget.Context, draw.Rect, anytype, []const []const u8) anytype` |
 | `slider` | `fn (*widget.Context, draw.Rect, slider.Range, i32, Context.SliderStyle) i32` |
 | `toggle` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
 | `checkbox` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |

@@ -149,7 +149,7 @@ fn paint() void {
     // buffer. What the windows do not cover is arithmetic, so it is done
     // before anything is painted rather than paid for in pixels.
     var bare = region.Region.of(.{ .x = 0, .y = 0, .w = info.width, .h = info.height });
-    bare.subtract(bar.strip(info.height));
+    bare.subtract(bar.band(info.height));
     for (visible) |index| {
         const w = &desktop.windows[index];
         // A translucent window blends with what is behind it, so what is

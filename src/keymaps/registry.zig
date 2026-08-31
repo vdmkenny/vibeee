@@ -25,9 +25,9 @@ const shipped = .{
 /// A tag's value is its layout's index in `all`, which is what lets a choice
 /// cross the syscall boundary as a number and arrive meaning the same layout.
 pub const Name = blk: {
-    var names: [shipped.len][:0]const u8 = undefined;
-    for (shipped, 0..) |entry, i| names[i] = entry[0];
-    const frozen = names;
+    var tag_names: [shipped.len][:0]const u8 = undefined;
+    for (shipped, 0..) |entry, i| tag_names[i] = entry[0];
+    const frozen = tag_names;
     break :blk @Enum(u32, .exhaustive, &frozen, &std.simd.iota(u32, shipped.len));
 };
 
@@ -48,6 +48,15 @@ pub const count = shipped.len;
 pub const tags = blk: {
     var built: [count][]const u8 = undefined;
     for (all, 0..) |layout, i| built[i] = layout.tag;
+    const frozen = built;
+    break :blk frozen;
+};
+
+/// The full names, for a list somebody chooses from. Held here for the same
+/// reason the tags are: naming a layout should not cost a program the tables.
+pub const names = blk: {
+    var built: [count][]const u8 = undefined;
+    for (all, 0..) |layout, i| built[i] = layout.name;
     const frozen = built;
     break :blk frozen;
 };

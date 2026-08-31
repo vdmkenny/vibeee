@@ -457,16 +457,27 @@ pub const Context = struct {
     /// Each toggle is as wide as its own name needs: one fixed width either
     /// truncates the longest name or wastes the room the shortest does not use.
     pub fn choice(self: *Context, area: Rect, chosen: anytype) @TypeOf(chosen) {
+        return self.choiceOf(area, chosen, &.{});
+    }
+
+    /// The same, with the words a person reads rather than the names the
+    /// code uses. `labels` is indexed by the enum's own numbering; an empty
+    /// list, or one too short, falls back to the tag.
+    ///
+    /// Two spellings of one list would drift, so the labels come from wherever
+    /// the values are declared rather than being written out again here.
+    pub fn choiceOf(self: *Context, area: Rect, chosen: anytype, labels: []const []const u8) @TypeOf(chosen) {
         const T = @TypeOf(chosen);
         const gap = theme.current().padding;
 
         var picked = chosen;
         var x = area.x;
 
-        inline for (@typeInfo(T).@"enum".fields) |field| {
-            const width = Surface.textWidth(field.name) + gap * 3;
+        inline for (@typeInfo(T).@"enum".fields, 0..) |field, i| {
+            const text = if (i < labels.len) labels[i] else field.name;
+            const width = Surface.textWidth(text) + gap * 3;
             const value: T = @enumFromInt(field.value);
-            if (self.toggle(.{ .x = x, .y = area.y, .w = width, .h = area.h }, field.name, chosen == value)) {
+            if (self.toggle(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value)) {
                 picked = value;
             }
             x += width + gap;

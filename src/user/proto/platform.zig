@@ -493,6 +493,28 @@ pub fn battery() ?Battery {
     return if (pack.present != 0) pack else null;
 }
 
+/// The panel's brightness, or null when this machine offers no way to ask.
+pub fn backlight() ?Backlight {
+    var reply = Rep{};
+    call(.backlight, &reply) catch return null;
+    if (reply.status != .ok) return null;
+
+    const panel = reply.body.backlight;
+    return if (panel.isPresent()) panel else null;
+}
+
+/// Set it, and answer with what the firmware settled on rather than what was
+/// asked for: a level it clamped is one the caller has to see clamped, or a
+/// slider snaps back on the next pass and looks broken.
+pub fn setBacklight(level: u32) ?Backlight {
+    var reply = Rep{};
+    callAt(.backlight_set, @truncate(level), &reply) catch return null;
+    if (reply.status != .ok) return null;
+
+    const panel = reply.body.backlight;
+    return if (panel.isPresent()) panel else null;
+}
+
 /// How full it is, against what it last managed to hold rather than what it
 /// was built to: a worn pack at its own full is full, and showing it as
 /// eighty per cent for the rest of its life is a number nobody can act on.

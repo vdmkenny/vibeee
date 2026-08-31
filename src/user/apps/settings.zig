@@ -23,6 +23,8 @@ const hostname = @import("lib").hostname;
 const net = proto.net;
 const str = @import("lib").str;
 const info = @import("ulib").info;
+const keymaps = @import("keymaps");
+const platform = proto.platform;
 const theme = eui.theme;
 
 const store = proto.settings;
@@ -35,6 +37,8 @@ var ctx: eui.Context = undefined;
 /// change the same settings and a second field list is a second thing to keep
 /// in step.
 var current: store.Wm = .{};
+/// The keyboard's own domain, which the bar and this app both write.
+var input: store.Input = .{};
 var saved = true;
 
 /// What the machine calls itself, asked once. The rail says it under the
@@ -81,6 +85,7 @@ fn settingsMain() noreturn {
 
 fn load() void {
     current = store.load("wm");
+    input = store.load("input");
     readVolume();
 }
 
@@ -285,7 +290,9 @@ fn redraw() void {
 /// a setting under it and not before.
 const Section = enum {
     display,
+    input,
     audio,
+    power,
     about,
 
     fn parse(name: []const u8) ?Section {
@@ -298,7 +305,9 @@ const Section = enum {
     fn title(self: Section) []const u8 {
         return switch (self) {
             .display => "Display",
+            .input => "Input",
             .audio => "Audio",
+            .power => "Power",
             .about => "About",
         };
     }
@@ -306,7 +315,9 @@ const Section = enum {
     fn icon(self: Section) eui.icon.Icon {
         return switch (self) {
             .display => .display,
+            .input => .keyboard,
             .audio => .speaker,
+            .power => .power,
             .about => .about,
         };
     }
@@ -338,7 +349,9 @@ fn draw() void {
 
     switch (section) {
         .display => drawDisplay(pane),
+        .input => drawInput(pane),
         .audio => drawAudio(pane),
+        .power => drawPower(pane),
         .about => drawAbout(pane),
     }
 
@@ -444,6 +457,109 @@ fn drawAudio(pane: eui.Rect) void {
 /// The same questions `eeefetch` asks, because there is one answer to each
 /// and two lists of them would disagree the first time one gained a line.
 /// Anything the kernel cannot answer is left out rather than shown empty.
+/// What the keyboard is.
+///
+/// One setting, and the one the bar used to carry: the layout moved here when
+/// the two letters in the status area stopped earning their width. The chord
+/// that cycles it still works, and this and the chord write the same key, so
+/// whichever one is used the other agrees.
+fn drawInput(pane: eui.Rect) void {
+    const t = theme.current();
+    const row = t.control_height;
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
+
+    y = group(&y, full, "Keyboard layout");
+    const wanted = ctx.choiceOf(.{ .x = pane.x, .y = y, .w = full.w, .h = row }, input.keymap, &keymaps.names);
+    if (wanted != input.keymap) {
+        input.keymap = wanted;
+        store.set("input.keymap", @tagName(wanted)) catch {};
+        ctx.damage();
+    }
+    y += row + t.padding;
+
+    ctx.labelDim(
+        .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
+        "Applies at once, everywhere. Super+Space cycles it too.",
+    );
+}
+
+/// What the battery is doing, and what the panel is set to.
+///
+/// The same two things the bar's power menu carries, because they are the
+/// same two things: this is where they are read at length, and the menu is
+/// where they are changed in passing.
+fn drawPower(pane: eui.Rect) void {
+    const t = theme.current();
+    const row = t.control_height;
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
+
+    y = group(&y, full, "Battery");
+    if (platform.battery()) |cell| {
+        const bar_w = @divTrunc(pane.w - factColumn(pane), 3);
+        const percent = platform.charge(cell) orelse 0;
+
+        var reading: [24]u8 = @splat(0);
+        var line = str.Builder{ .buf = &reading };
+        line.number(percent);
+        line.text("%, ");
+        line.text(cell.stateLabel());
+
+        ctx.progress(.{ .x = pane.x, .y = y + 6, .w = bar_w, .h = 10 }, @intCast(@min(percent, 100)));
+        ctx.label(.{ .x = pane.x + bar_w + t.gap, .y = y + 4, .w = pane.w - bar_w, .h = row }, line.done());
+        y += row;
+
+        if (cell.runtimeLeft()) |left| {
+            var buf: [24]u8 = @splat(0);
+            var spelled = str.Builder{ .buf = &buf };
+            spelled.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
+            y = drawFact(pane, y, "Time left", spelled.done());
+        }
+        if (cell.health()) |health| {
+            var buf: [8]u8 = @splat(0);
+            var spelled = str.Builder{ .buf = &buf };
+            spelled.number(@min(health, 100));
+            spelled.byte('%');
+            y = drawFact(pane, y, "Health", spelled.done());
+        }
+    } else {
+        ctx.labelDim(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "This machine has no battery.");
+        y += row;
+    }
+
+    y += t.padding;
+    y = group(&y, full, "Backlight");
+
+    if (platform.backlight()) |panel_light| {
+        var reading: [16]u8 = @splat(0);
+        var line = str.Builder{ .buf = &reading };
+        line.number(panel_light.level);
+        line.text(" of ");
+        line.number(panel_light.max);
+
+        // Levels rather than a percentage: the steps belong to the panel, and
+        // a percentage rounded onto them makes some of them unreachable.
+        const wanted = ctx.slider(
+            .{ .x = pane.x, .y = y, .w = full.w - theme.enlarged(84), .h = row },
+            .{ .min = 1, .max = @intCast(panel_light.max) },
+            @intCast(panel_light.level),
+            .{},
+        );
+        ctx.label(
+            .{ .x = pane.right() - theme.enlarged(78), .y = y + 4, .w = theme.enlarged(78), .h = row },
+            line.done(),
+        );
+        if (wanted != @as(i32, @intCast(panel_light.level))) _ = platform.setBacklight(@intCast(wanted));
+    } else {
+        ctx.labelDim(
+            .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
+            "This machine offers no way to set the backlight.",
+        );
+    }
+}
+
+
 /// What this computer is, and nothing about what it is doing. How much
 /// memory is fitted belongs here; how much of it is in use belongs in the
 /// monitor, and a page that answered both would be a monitor with a
@@ -562,7 +678,7 @@ fn factColumn(pane: eui.Rect) i32 {
 fn drawFact(pane: eui.Rect, y: i32, label: []const u8, value: []const u8) i32 {
     const t = theme.current();
     const label_w = factColumn(pane);
-    ctx.label(.{ .x = pane.x, .y = y + 2, .w = label_w, .h = t.control_height }, label);
+    ctx.labelDim(.{ .x = pane.x, .y = y + 2, .w = label_w, .h = t.control_height }, label);
     ctx.label(.{ .x = pane.x + label_w, .y = y + 2, .w = pane.w - label_w, .h = t.control_height }, value);
     return y + t.menu_row_height;
 }

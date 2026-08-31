@@ -20,6 +20,7 @@ const layout = @import("layout.zig");
 const status = @import("status.zig");
 const popover = @import("eui").popover;
 const slider = @import("eui").slider;
+const strip = @import("eui").strip;
 const audio = @import("proto").audio;
 const eui_icon = @import("eui").icon;
 const graph = @import("lib").audiograph;
@@ -36,11 +37,11 @@ const settings = @import("config.zig");
 const Rect = draw.Rect;
 const Surface = draw.Surface;
 
-/// Where the strip sits. One function answers it and everything else asks,
+/// Where the band sits. One function answers it and everything else asks,
 /// because the bar's position appears in painting, in hit testing, in where a
 /// menu drops and in how much room the tiles get, and four copies of that
 /// arithmetic is four chances to disagree.
-pub fn strip(screen_h: i32) Rect {
+pub fn band(screen_h: i32) Rect {
     const height = theme.current().bar_height;
     return switch (settings.current().bar) {
         .top => .{ .x = 0, .y = 0, .w = 0, .h = height },
@@ -62,7 +63,7 @@ pub fn contentArea(screen_w: i32, screen_h: i32) Rect {
 
 /// Whether a point is on the bar. Vertical only: the strip spans the width.
 pub fn contains(y: i32, screen_h: i32) bool {
-    const area = strip(screen_h);
+    const area = band(screen_h);
     return y >= area.y and y < area.y + area.h;
 }
 
@@ -260,7 +261,7 @@ fn launcherPanel(height: i32) Launcher {
     );
 
     const panel = popover.place(
-        .{ .x = 0, .y = strip(height).y, .w = launchWidth(), .h = theme.current().bar_height },
+        .{ .x = 0, .y = band(height).y, .w = launchWidth(), .h = theme.current().bar_height },
         rail_w + list_w,
         tall,
         .{ .x = 0, .y = 0, .w = rail_w + list_w, .h = height },
@@ -305,7 +306,7 @@ fn tabWidth(width: i32, height: i32, count: u8) i32 {
 
 fn launchRect(screen_h: i32) Rect {
     const t = theme.current();
-    return .{ .x = 0, .y = strip(screen_h).y, .w = launchWidth(), .h = t.bar_height - 1 };
+    return .{ .x = 0, .y = band(screen_h).y, .w = launchWidth(), .h = t.bar_height - 1 };
 }
 
 fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
@@ -313,7 +314,7 @@ fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
     const each = tabWidth(width, height, count);
     return .{
         .x = launchWidth() + @as(i32, index) * each,
-        .y = strip(height).y,
+        .y = band(height).y,
         .w = each,
         .h = t.bar_height - 1,
     };
@@ -325,7 +326,7 @@ fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
 
 pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     const t = theme.current();
-    const area = strip(height);
+    const area = band(height);
     const top = settings.current().bar == .top;
 
     surface.fill(.{ .x = 0, .y = area.y, .w = width, .h = t.bar_height }, t.bar);
@@ -354,7 +355,7 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
 /// One list, read by the painter and by the hit test, so a screen too narrow
 /// for all of them drops the same one from both.
 pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
-    const area = Rect{ .x = 0, .y = strip(height).y, .w = width, .h = theme.current().bar_height };
+    const area = Rect{ .x = 0, .y = band(height).y, .w = width, .h = theme.current().bar_height };
     var wanted: [status.MAX]status.Indicator = undefined;
     return status.place(area, shownNow(&wanted), into);
 }
@@ -367,7 +368,10 @@ fn shownNow(into: []status.Indicator) []status.Indicator {
     var count: usize = 0;
     for ([_]status.Indicator{ .network, .sound, .battery, .clock }) |which| {
         if (count == into.len) break;
-        if (which == .battery and pack == null) continue;
+        // The power indicator stands for the pack and for the panel's lamp.
+        // A machine with no battery but a backlight still has something to
+        // change behind it, and hiding it would hide the brightness.
+        if (which == .battery and pack == null and lamp == null) continue;
         into[count] = which;
         count += 1;
     }
@@ -389,7 +393,7 @@ fn paintStatus(surface: Surface, width: i32, height: i32) void {
 fn addRect(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
     const t = theme.current();
     const last = tabRect(width, height, desktop.count, desktop.count - 1);
-    return .{ .x = last.right(), .y = strip(height).y, .w = addWidth(), .h = t.bar_height - 1 };
+    return .{ .x = last.right(), .y = band(height).y, .w = addWidth(), .h = t.bar_height - 1 };
 }
 
 /// A plus, drawn rather than lettered: at this size two strokes read better
@@ -463,7 +467,7 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
     if (sound_open) {
         var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
         const before = sound_menu.selected;
-        sound_menu.hover(soundRows(soundPanel(width, height)), soundItems(&rows), x, y);
+        sound_menu.hover(strip.below(soundPanel(width, height)), soundItems(&rows), x, y);
         return sound_menu.selected != before;
     }
 
@@ -493,6 +497,7 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
 
     if (sound_open) paintSoundMenu(surface, width, height);
     if (net_open) paintNetMenu(surface, width, height);
+    if (power_open) paintPowerMenu(surface, width, height);
 }
 
 /// The V button. A wordmark rather than an icon: at 133 DPI a glyph from the
@@ -550,7 +555,10 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
         text_area.x,
         area.y + @divTrunc(area.h - Surface.textHeight(), 2),
         if (label.len == 0) "untitled" else label,
-        if (count == 0) t.text_dim else color,
+        // A desktop with nothing on it reads quieter, but only where quieter
+        // is still legible: on the accent ground the dim ink is grey on blue,
+        // and the tab you are looking at is the one that has to be readable.
+        if (count == 0 and !current) t.text_dim else color,
     );
 
     // A desktop showing one window at full size says so, because otherwise
@@ -569,8 +577,10 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
         }
     }
 
-    // A hairline between tabs, so two adjacent ones do not read as one.
-    surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
+    // A hairline between tabs, so two adjacent ones do not read as one. Full
+    // height, because an inset one draws a notch into the accent rather than
+    // an edge between two tabs.
+    surface.fill(.{ .x = area.right() - 1, .y = area.y, .w = 1, .h = area.h }, t.bar_line);
 }
 
 /// Three short rules, the mark everything uses for "there is a list behind
@@ -662,7 +672,7 @@ fn netPanel(width: i32, height: i32) Rect {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
 
-    var anchor = Rect{ .x = width, .y = strip(height).y, .w = 0, .h = theme.current().bar_height };
+    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
     for (slots) |slot| {
         if (slot.which == .network) anchor = slot.area;
     }
@@ -730,22 +740,19 @@ fn soundWidth() i32 {
 
 /// The strip above the rows: the icon, the slider and the percentage, inside
 /// the same inset the rows below it use.
-fn soundLevelHeight() i32 {
-    const t = theme.current();
-    return t.control_height + t.menu_padding * 2;
-}
 
 pub fn refresh() void {
     readSound();
     readNetwork();
-    readBattery();
+    readPower();
 }
 
 // ---------------------------------------------------------------------------
 // Battery
 //
-// What is left, and whether it is filling or emptying. No menu: there is
-// nothing here to change, and the thresholds that matter are the firmware's.
+// What is left, and whether it is filling or emptying. The menu behind it
+// carries the backlight, which is the one power setting a person changes
+// often enough to want it in the bar.
 // ---------------------------------------------------------------------------
 
 var pack: ?platform.Battery = null;
@@ -758,7 +765,21 @@ fn readBattery() void {
 
 fn paintBattery(surface: Surface, area: Rect) void {
     const t = theme.current();
-    const p = pack orelse return;
+
+    if (power_open) surface.fill(area, t.accent);
+
+    // No pack, but a lamp: the picture says what the menu is about rather
+    // than drawing an empty battery on a machine that has none.
+    const p = pack orelse {
+        if (lamp == null) return;
+        surface.icon(
+            area.x + @divTrunc(area.w - Surface.iconSize(), 2),
+            area.y + @divTrunc(area.h - Surface.iconSize(), 2),
+            .display,
+            if (power_open) t.accent_text else t.bar_text,
+        );
+        return;
+    };
 
     const icon_x = area.x + t.menu_padding;
     const icon_y = area.y + @divTrunc(area.h - Surface.iconSize(), 2);
@@ -766,7 +787,12 @@ fn paintBattery(surface: Surface, area: Rect) void {
     // Low enough that it is a thing to act on takes the warning colour, which
     // is the firmware's own threshold rather than a number chosen here.
     const low = p.low != 0 and p.remaining != platform.Battery.UNKNOWN and p.remaining <= p.low;
-    const ink = if (p.critical != 0 or low) t.warning else t.bar_text;
+    const ink = if (power_open)
+        t.accent_text
+    else if (p.critical != 0 or low)
+        t.warning
+    else
+        t.bar_text;
 
     surface.icon(icon_x, icon_y, .battery, ink);
 
@@ -788,6 +814,187 @@ fn paintBattery(surface: Surface, area: Rect) void {
         spelled,
         ink,
     );
+}
+
+// ---------------------------------------------------------------------------
+// The power menu
+//
+// What the pack is doing, and the one thing about power a person changes
+// often enough to want it two clicks away: how bright the panel is.
+// ---------------------------------------------------------------------------
+
+var power_open = false;
+var power_menu: ui.Menu = .{};
+var lamp: ?platform.Backlight = null;
+
+/// The level to come back to when the lamp is pressed a second time.
+var lamp_was: u32 = 0;
+
+pub fn powerOpen() bool {
+    return power_open;
+}
+
+fn readPower() void {
+    readBattery();
+    lamp = platform.backlight();
+}
+
+/// The level as the panel counts them. Not a percentage: the steps are the
+/// panel's, and a percentage rounded onto sixteen of them makes some of them
+/// unreachable.
+fn lampText(buf: []u8) []const u8 {
+    const panel = lamp orelse return "";
+    var line = str.Builder{ .buf = buf };
+    line.number(panel.level);
+    line.text(" of ");
+    line.number(panel.max);
+    return line.done();
+}
+
+fn setLamp(step: u32) void {
+    lamp = platform.setBacklight(step) orelse lamp;
+}
+
+/// Down to the dimmest the panel still shows something, and back again.
+///
+/// The dimmest is one rather than zero: a backlight at zero is a black screen,
+/// and a control that can turn the screen off from the bar is a control that
+/// will turn the screen off by accident.
+fn toggleDim() void {
+    const panel = lamp orelse return;
+    if (panel.level > 1) {
+        lamp_was = panel.level;
+        setLamp(1);
+    } else {
+        setLamp(if (lamp_was > 1) lamp_was else panel.max);
+    }
+}
+
+fn powerItems(into: []ui.MenuItem) []ui.MenuItem {
+    var count: usize = 0;
+
+    if (pack) |p| {
+        if (count < into.len) {
+            into[count] = .{
+                .label = p.stateLabel(),
+                .kind = .disabled,
+                .mark = .battery,
+                .detail = chargeText(),
+            };
+            count += 1;
+        }
+        if (p.runtimeLeft()) |left| {
+            if (count < into.len) {
+                into[count] = .{ .label = "Time left", .kind = .disabled, .detail = leftText(left) };
+                count += 1;
+            }
+        }
+        if (p.health()) |percent| {
+            if (count < into.len) {
+                into[count] = .{ .label = "Health", .kind = .disabled, .detail = healthText(percent) };
+                count += 1;
+            }
+        }
+    } else if (count < into.len) {
+        into[count] = .{ .label = "No battery", .kind = .disabled, .mark = .battery };
+        count += 1;
+    }
+
+    if (count + 2 <= into.len) {
+        into[count] = .{ .kind = .separator };
+        into[count + 1] = .{ .label = "Power settings", .mark = .sliders };
+        count += 2;
+    }
+    return into[0..count];
+}
+
+var charge_text: [8]u8 = @splat(0);
+var left_text: [16]u8 = @splat(0);
+var health_text: [8]u8 = @splat(0);
+
+fn chargeText() []const u8 {
+    return percentText(&charge_text, @intCast(@min(charge, 100)));
+}
+
+fn leftText(left: platform.Battery.Left) []const u8 {
+    var line = str.Builder{ .buf = &left_text };
+    line.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
+    return line.done();
+}
+
+fn healthText(percent: u32) []const u8 {
+    return percentText(&health_text, @intCast(@min(percent, 100)));
+}
+
+fn powerWidth() i32 {
+    return theme.enlarged(210);
+}
+
+fn powerPanel(width: i32, height: i32) Rect {
+    var buf: [status.MAX]status.Slot = undefined;
+    const slots = statusSlots(width, height, &buf);
+
+    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
+    for (slots) |slot| {
+        if (slot.which == .battery) anchor = slot.area;
+    }
+
+    var rows: [8]ui.MenuItem = undefined;
+    const rows_high = ui.Menu.sizeFor(powerItems(&rows), powerWidth()).h;
+
+    return popover.place(
+        anchor,
+        powerWidth(),
+        (if (lamp != null) strip.height() else 0) + rows_high,
+        .{ .x = 0, .y = 0, .w = width, .h = height },
+        if (settings.current().bar == .top) .below else .above,
+    );
+}
+
+/// Where the rows start: under the strip when there is a panel to dim, and at
+/// the top when there is not. A machine with no backlight gets no groove for
+/// a level it cannot set.
+fn powerRows(panel: Rect) Rect {
+    return if (lamp == null) panel else strip.below(panel);
+}
+
+fn paintPowerMenu(surface: Surface, width: i32, height: i32) void {
+    const t = theme.current();
+    const panel = powerPanel(width, height);
+
+    if (lamp) |panel_light| {
+        const bar_area = strip.of(panel);
+        var buf: [16]u8 = @splat(0);
+        const spelled = lampText(&buf);
+
+        surface.fill(bar_area, t.surface);
+        surface.frame(bar_area, t.line);
+
+        const button = strip.button(bar_area);
+        surface.icon(
+            button.x,
+            button.y + @divTrunc(button.h - Surface.iconSize(), 2),
+            .display,
+            t.text,
+        );
+
+        const groove = strip.track(bar_area, spelled);
+        ui.paintSlider(
+            surface,
+            groove,
+            .{ .min = 1, .max = @intCast(panel_light.max) },
+            @intCast(panel_light.level),
+            .idle,
+            false,
+            .{},
+        );
+
+        const number = strip.reading(bar_area, spelled);
+        surface.text(number.x, number.y, spelled, t.text);
+    }
+
+    var rows: [8]ui.MenuItem = undefined;
+    power_menu.paint(surface, powerRows(panel), powerItems(&rows));
 }
 
 fn readSound() void {
@@ -861,7 +1068,7 @@ fn soundPanel(width: i32, height: i32) Rect {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
 
-    var anchor = Rect{ .x = width, .y = strip(height).y, .w = 0, .h = theme.current().bar_height };
+    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
     for (slots) |slot| {
         if (slot.which == .sound) anchor = slot.area;
     }
@@ -873,48 +1080,14 @@ fn soundPanel(width: i32, height: i32) Rect {
     return popover.place(
         anchor,
         soundWidth(),
-        soundLevelHeight() + rows_high,
+        strip.height() + rows_high,
         .{ .x = 0, .y = 0, .w = width, .h = height },
         if (settings.current().bar == .top) .below else .above,
     );
 }
 
-/// The groove, inside the panel's level strip.
-/// The picture left of the slider, which is what silences it. Sized to the
-/// picture column rather than to the picture, so it is a target a touchpad
-/// can hit.
-fn soundMuteRect(panel: Rect) Rect {
-    const t = theme.current();
-    return .{
-        .x = panel.x + t.menu_padding,
-        .y = panel.y + t.menu_padding,
-        .w = ui.markWidth(),
-        .h = t.control_height,
-    };
-}
 
-fn soundTrack(panel: Rect) Rect {
-    const t = theme.current();
-    const left = panel.x + t.menu_padding + ui.markWidth();
-    // Room on the right for "100%", which is the widest the number gets,
-    // with the gap before it and the panel's inset after.
-    const number = t.gap + Surface.textWidth("100%") + t.menu_padding;
-    return .{
-        .x = left,
-        .y = panel.y + t.menu_padding,
-        .w = panel.right() - number - left,
-        .h = t.control_height,
-    };
-}
 
-fn soundRows(panel: Rect) Rect {
-    return .{
-        .x = panel.x,
-        .y = panel.y + soundLevelHeight(),
-        .w = panel.w,
-        .h = panel.h - soundLevelHeight(),
-    };
-}
 
 fn paintSound(surface: Surface, area: Rect) void {
     const t = theme.current();
@@ -933,13 +1106,17 @@ fn paintSound(surface: Surface, area: Rect) void {
 fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     const t = theme.current();
     const panel = soundPanel(width, height);
+    const bar_area = strip.of(panel);
 
-    // The strip: the panel's own ground, the icon, the slider and the number.
-    const strip_area = Rect{ .x = panel.x, .y = panel.y, .w = panel.w, .h = soundLevelHeight() };
-    surface.fill(strip_area, t.surface);
-    surface.frame(strip_area, t.line);
+    var text: [5]u8 = @splat(0);
+    const spelled = percentText(&text, level.percent);
 
-    const button = soundMuteRect(panel);
+    surface.fill(bar_area, t.surface);
+    surface.frame(bar_area, t.line);
+
+    // The picture is the mute: pressing what says how loud it is is how a
+    // person silences it.
+    const button = strip.button(bar_area);
     surface.icon(
         button.x,
         button.y + @divTrunc(button.h - Surface.iconSize(), 2),
@@ -947,20 +1124,14 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
         t.text,
     );
 
-    const groove = soundTrack(panel);
+    const groove = strip.track(bar_area, spelled);
     ui.paintSlider(surface, groove, .{ .min = 0, .max = 100 }, level.percent, .idle, false, .{});
 
-    var text: [5]u8 = @splat(0);
-    const spelled = percentText(&text, level.percent);
-    surface.text(
-        panel.right() - t.menu_padding - Surface.textWidth(spelled),
-        panel.y + @divTrunc(soundLevelHeight() - Surface.textHeight(), 2),
-        spelled,
-        t.text,
-    );
+    const number = strip.reading(bar_area, spelled);
+    surface.text(number.x, number.y, spelled, t.text);
 
     var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
-    sound_menu.paint(surface, soundRows(panel), soundItems(&rows));
+    sound_menu.paint(surface, strip.below(panel), soundItems(&rows));
 }
 
 /// What a row of the sound menu does. Every row names a port, and choosing
@@ -1093,10 +1264,43 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         return .consumed;
     }
 
+    if (power_open) {
+        const panel = powerPanel(width, height);
+
+        if (lamp) |panel_light| {
+            const bar_area = strip.of(panel);
+            if (strip.button(bar_area).contains(x, y)) {
+                toggleDim();
+                return .consumed;
+            }
+
+            var buf: [16]u8 = @splat(0);
+            const groove = strip.track(bar_area, lampText(&buf));
+            if (groove.contains(x, y)) {
+                const range = slider.Range{ .min = 1, .max = @intCast(panel_light.max) };
+                setLamp(@intCast(slider.valueAt(groove, range, x)));
+                return .consumed;
+            }
+        }
+
+        var rows: [8]ui.MenuItem = undefined;
+        const list = powerItems(&rows);
+        const chosen = ui.Menu.rowAt(powerRows(panel), list, x, y);
+        power_open = false;
+        // The one row that acts is the last: where the settings are.
+        if (chosen) |row| {
+            if (list[row].kind == .item) {
+                _ = sys.spawnDetached("/bin/settings", &.{ "settings", "power" });
+            }
+        }
+        return .consumed;
+    }
+
     if (sound_open) {
         const panel = soundPanel(width, height);
 
-        if (soundMuteRect(panel).contains(x, y)) {
+        const bar_area = strip.of(panel);
+        if (strip.button(bar_area).contains(x, y)) {
             toggleSilence();
             return .consumed;
         }
@@ -1105,7 +1309,8 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         // for most often, and it stays open while it is done. Setting a
         // level on a silenced machine is asking to hear that level, so it
         // stops being silent and keeps where the pointer put it.
-        const groove = soundTrack(panel);
+        var text: [5]u8 = @splat(0);
+        const groove = strip.track(bar_area, percentText(&text, level.percent));
         if (groove.contains(x, y)) {
             const wanted = slider.valueAt(groove, .{ .min = 0, .max = 100 }, x);
             if (audio.setMaster(@intCast(wanted), false)) readSound();
@@ -1114,7 +1319,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
 
         var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
         const list = soundItems(&rows);
-        if (ui.Menu.rowAt(soundRows(panel), list, x, y)) |row| {
+        if (ui.Menu.rowAt(strip.below(panel), list, x, y)) |row| {
             chooseSound(row);
             return .consumed;
         }
@@ -1137,6 +1342,11 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
                 readNetwork();
                 net_open = true;
                 net_menu.show();
+            },
+            .battery => {
+                readPower();
+                power_open = true;
+                power_menu.show();
             },
             else => {},
         }
