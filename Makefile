@@ -240,6 +240,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
 	@$(MCOPY) -i $@ -o etc/net.cfg ::/etc/net.cfg
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
+	@$(MCOPY) -i $@ -o etc/disabled ::/etc/disabled
 	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
 	@if [ "$(MANUAL)" = "yes" ]; then \
 		for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done; \

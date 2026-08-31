@@ -70,7 +70,9 @@ pub const Service = struct {
     caps: []const u8 = "",
 };
 
-const MAX_SERVICES = 8;
+/// Room for the shipped set and a few more: the file is the source of truth
+/// and running out of slots silently is the one way it could lie.
+const MAX_SERVICES = 12;
 
 const State = struct {
     service: Service = .{},
@@ -85,6 +87,11 @@ const State = struct {
     /// Somebody asked for it to stop. Distinct from `abandoned`, which is init
     /// giving up: this one is a decision and is not reconsidered on its own.
     held: bool = false,
+    /// Somebody asked for it to be stopped and started again. The death
+    /// arrives through the same loop as any other, so the wish is recorded
+    /// here and read when it does: the alternative is starting a second
+    /// copy beside a process that has not gone yet.
+    restarting: bool = false,
     /// Whether it should start at all. `held` is for this boot; this is for
     /// every one after it, and is what `/etc/disabled` records.
     enabled: bool = true,
@@ -563,6 +570,17 @@ fn collect() void {
         state.running = false;
         state.pid = 0;
 
+        if (state.restarting) {
+            // Asked for, so the policy does not get a say: a service with
+            // `restart = never` is exactly the one somebody restarts by hand.
+            state.restarting = false;
+            state.held = false;
+            state.abandoned = false;
+            state.flapping = 0;
+            start(state);
+            continue;
+        }
+
         if (state.held) continue;
 
         if (shouldRestart(state, exited.status)) {
@@ -596,6 +614,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) void {
         .list => describe(request.index, reply),
         .start => reply.result = resume_(request.named()),
         .stop => reply.result = halt(request.named()),
+        .restart => reply.result = restartOne(request.named()),
         .enable => reply.result = setEnabled(request.named(), true),
         .disable => reply.result = setEnabled(request.named(), false),
     }
@@ -615,6 +634,8 @@ fn describe(index: u8, reply: *proto.Rep) void {
     reply.entry = .{
         .state = if (state.running)
             .up
+        else if (!state.enabled)
+            .disabled
         else if (state.held)
             .stopped
         else if (state.abandoned)
@@ -639,6 +660,21 @@ fn resume_(name: []const u8) proto.Result {
 
     start(state);
     return if (state.running) .ok else .failed;
+}
+
+/// Stop it and start it again, which is what a person means by restarting.
+///
+/// A service that is not running is simply started: somebody asking for a
+/// restart wants it running afterwards either way.
+fn restartOne(name: []const u8) proto.Result {
+    const state = byName(name) orelse return .unknown;
+    if (!state.running) return resume_(name);
+
+    state.restarting = true;
+    if (sys.kill(state.pid) >= 0) return .ok;
+
+    state.restarting = false;
+    return .failed;
 }
 
 fn halt(name: []const u8) proto.Result {

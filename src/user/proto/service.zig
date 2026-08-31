@@ -24,6 +24,11 @@ pub const Tag = enum(u8) {
     enable,
     /// Do not, and do not start it now either.
     disable,
+    /// Stop it and start it again. One verb rather than two, because a
+    /// service stopped by hand is one somebody has to remember to start:
+    /// the pair is what a person means by restarting, and doing it here
+    /// means the supervisor never sees the machine without it on purpose.
+    restart,
 };
 
 pub const Req = extern struct {
@@ -59,6 +64,10 @@ pub const State = enum(u8) {
     stopped,
     /// Started too many times and kept dying. `init` will not try again.
     failed,
+    /// Declared, and deliberately not started at this or any boot until
+    /// somebody says otherwise. Different from stopped, which lasts until
+    /// the next boot, and different from failed, which nobody chose.
+    disabled,
 
     pub fn word(self: State) []const u8 {
         return switch (self) {
@@ -66,6 +75,7 @@ pub const State = enum(u8) {
             .down => "down",
             .stopped => "stopped",
             .failed => "failed",
+            .disabled => "disabled",
         };
     }
 };

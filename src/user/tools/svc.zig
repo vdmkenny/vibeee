@@ -21,6 +21,7 @@ pub fn run(args: []const []const u8) void {
 
     if (str.eql(verb, "start")) return act(.start, args[1], "started");
     if (str.eql(verb, "stop")) return act(.stop, args[1], "stopped");
+    if (str.eql(verb, "restart")) return act(.restart, args[1], "restarted");
     if (str.eql(verb, "enable")) return act(.enable, args[1], "enabled");
     if (str.eql(verb, "disable")) return act(.disable, args[1], "disabled");
     usage();
@@ -114,6 +115,7 @@ fn roleOf(state: service.State) @import("lib").style.Role {
         .up => .good,
         .down => .dim,
         .stopped => .warn,
+        .disabled => .dim,
         .failed => .bad,
     };
 }
@@ -137,6 +139,7 @@ fn usage() void {
     out.text("usage: svc                 what is declared, and what became of it\n");
     out.text("       svc start <name>    now\n");
     out.text("       svc stop <name>     now\n");
+    out.text("       svc restart <name>  stop it and start it again\n");
     out.text("       svc enable <name>   at every boot\n");
     out.text("       svc disable <name>  at none\n");
     out.flush();

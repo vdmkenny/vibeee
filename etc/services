@@ -96,3 +96,16 @@ needs   = platd,devmgd
 provides = usb
 target  = boot
 restart = always
+
+name    = eeewm
+binary  = /bin/eeewm
+# The desktop. Disabled in the shipped image, because a machine that boots
+# to a shell is a machine you can always get into: `svc enable eeewm` starts
+# it at boot from then on, and `svc disable eeewm` puts it back.
+#
+# Never restarted. Leaving the desktop for the shell is something a person
+# asks for from its own menu, and a supervisor that started it again would
+# make that impossible.
+caps    = spawn,kill,power,display,mount
+needs   = cfgd,devmgd,platd
+restart = never
