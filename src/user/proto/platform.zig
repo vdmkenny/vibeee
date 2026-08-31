@@ -473,3 +473,37 @@ pub fn callUnder(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
         else => error.Refused,
     };
 }
+
+// ---------------------------------------------------------------------------
+// What a caller asks about the pack
+//
+// Spelled out once, beside the sound graph's and the interfaces'. Anything
+// that draws a battery needs the same two answers, and a second copy of the
+// call is a second thing to keep in step with the service.
+// ---------------------------------------------------------------------------
+
+/// What the pack is doing, or null when there is no platform service, no
+/// firmware answer, or no battery in the machine.
+pub fn battery() ?Battery {
+    var reply = Rep{};
+    call(.battery, &reply) catch return null;
+    if (reply.status != .ok) return null;
+
+    const pack = reply.body.battery;
+    return if (pack.present != 0) pack else null;
+}
+
+/// How full it is, against what it last managed to hold rather than what it
+/// was built to: a worn pack at its own full is full, and showing it as
+/// eighty per cent for the rest of its life is a number nobody can act on.
+///
+/// Null when the firmware has not said, which is not the same as empty.
+pub fn charge(pack: Battery) ?u32 {
+    const whole = if (pack.last_full != 0 and pack.last_full != Battery.UNKNOWN)
+        pack.last_full
+    else
+        pack.design;
+    if (whole == 0 or whole == Battery.UNKNOWN) return null;
+    if (pack.remaining == Battery.UNKNOWN) return null;
+    return lib.battery.percent(pack.remaining, whole);
+}

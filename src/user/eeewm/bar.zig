@@ -23,6 +23,7 @@ const eui_icon = @import("eui").icon;
 const graph = @import("lib").audiograph;
 const ipv4 = @import("lib").ipv4;
 const net = @import("proto").net;
+const platform = @import("proto").platform;
 const sys = @import("sys");
 const theme = @import("eui").theme;
 
@@ -225,12 +226,24 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
 /// for all of them drops the same one from both.
 pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
     const area = Rect{ .x = 0, .y = strip(height).y, .w = width, .h = theme.current().bar_height };
-    return status.place(area, &shown, into);
+    var wanted: [status.MAX]status.Indicator = undefined;
+    return status.place(area, shownNow(&wanted), into);
 }
 
-/// In the order they sit. What is furthest left goes first on a narrow
-/// screen, which is why the clock is last.
-const shown = [_]status.Indicator{ .network, .sound, .clock };
+/// In the order they sit, and only what this machine has: a desktop with no
+/// pack should not carry an empty battery, and the row is the same list the
+/// hit test reads. What is furthest left goes first on a narrow screen,
+/// which is why the clock is last.
+fn shownNow(into: []status.Indicator) []status.Indicator {
+    var count: usize = 0;
+    for ([_]status.Indicator{ .network, .sound, .battery, .clock }) |which| {
+        if (count == into.len) break;
+        if (which == .battery and pack == null) continue;
+        into[count] = which;
+        count += 1;
+    }
+    return into[0..count];
+}
 
 fn paintStatus(surface: Surface, width: i32, height: i32) void {
     var buf: [status.MAX]status.Slot = undefined;
@@ -239,9 +252,7 @@ fn paintStatus(surface: Surface, width: i32, height: i32) void {
             .clock => paintClock(surface, slot.area),
             .network => paintNetwork(surface, slot.area),
             .sound => paintSound(surface, slot.area),
-            // Drawn once it has something true to say and a menu to say it
-            // in; the row already keeps its room.
-            .battery => {},
+            .battery => paintBattery(surface, slot.area),
         }
     }
 }
@@ -578,6 +589,56 @@ fn soundLevelHeight() i32 {
 pub fn refresh() void {
     readSound();
     readNetwork();
+    readBattery();
+}
+
+// ---------------------------------------------------------------------------
+// Battery
+//
+// What is left, and whether it is filling or emptying. No menu: there is
+// nothing here to change, and the thresholds that matter are the firmware's.
+// ---------------------------------------------------------------------------
+
+var pack: ?platform.Battery = null;
+var charge: u32 = 0;
+
+fn readBattery() void {
+    pack = platform.battery();
+    charge = if (pack) |p| platform.charge(p) orelse 0 else 0;
+}
+
+fn paintBattery(surface: Surface, area: Rect) void {
+    const t = theme.current();
+    const p = pack orelse return;
+
+    const icon_x = area.x + t.menu_padding;
+    const icon_y = area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2);
+
+    // Low enough that it is a thing to act on takes the warning colour, which
+    // is the firmware's own threshold rather than a number chosen here.
+    const low = p.low != 0 and p.remaining != platform.Battery.UNKNOWN and p.remaining <= p.low;
+    const ink = if (p.critical != 0 or low) t.warning else t.bar_text;
+
+    surface.icon(icon_x, icon_y, .battery, ink);
+
+    // The charge inside the outline the picture leaves hollow.
+    const inside = eui_icon.battery_inside;
+    const filled = @divTrunc(@as(i32, inside.w) * @as(i32, @intCast(@min(charge, 100))), 100);
+    if (filled > 0) surface.fill(.{
+        .x = icon_x + inside.x,
+        .y = icon_y + inside.y,
+        .w = filled,
+        .h = inside.h,
+    }, ink);
+
+    var text: [5]u8 = @splat(0);
+    const spelled = percentText(&text, @intCast(@min(charge, 100)));
+    surface.text(
+        area.right() - t.menu_padding - Surface.textWidth(spelled),
+        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+        spelled,
+        ink,
+    );
 }
 
 fn readSound() void {

@@ -348,6 +348,14 @@ pub fn volume(percent: u8, muted: bool) Icon {
     return if (percent < 50) .speaker_low else .speaker;
 }
 
+/// The hollow of the battery picture, where the charge is drawn.
+///
+/// Given as numbers rather than measured off the art by whoever fills it: the
+/// picture and the rectangle inside it have to agree, and the test below is
+/// what makes them. Plain integers because this file cannot reach for a
+/// rectangle: the surface that has one already imports this.
+pub const battery_inside = .{ .x = 2, .y = 4, .w = 7, .h = 4 };
+
 /// The rows of one icon, in the shape the surface's bitmap blitter takes.
 pub fn rows(which: Icon) []const u8 {
     const at = @intFromEnum(which) * BYTES;
@@ -412,6 +420,23 @@ test "sliders reads as tracks with a grip on each" {
     try testing.expect(lit(.sliders, 4, 1) and lit(.sliders, 4, 3));
     try testing.expect(!lit(.sliders, 4, 5));
     try testing.expect(lit(.sliders, 8, 5) and lit(.sliders, 8, 7));
+}
+
+test "the battery is hollow exactly where the charge goes" {
+    const inside = battery_inside;
+    var y: usize = @intCast(inside.y);
+    while (y < inside.y + inside.h) : (y += 1) {
+        var x: usize = @intCast(inside.x);
+        while (x < inside.x + inside.w) : (x += 1) {
+            try testing.expect(!lit(.battery, x, y));
+        }
+    }
+
+    // And drawn all the way around it, so a full charge does not leak out.
+    try testing.expect(lit(.battery, @intCast(inside.x - 1), @intCast(inside.y)));
+    try testing.expect(lit(.battery, @intCast(inside.x + inside.w), @intCast(inside.y)));
+    try testing.expect(lit(.battery, @intCast(inside.x), @intCast(inside.y - 1)));
+    try testing.expect(lit(.battery, @intCast(inside.x), @intCast(inside.y + inside.h)));
 }
 
 test "a level picks the picture that says what it sounds like" {

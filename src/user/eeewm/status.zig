@@ -17,6 +17,8 @@ const std = @import("std");
 const draw = @import("eui").draw;
 const icons = @import("eui").icon;
 const row = @import("eui").row;
+const theme = @import("eui").theme;
+const ui = @import("eui").widget;
 
 const Rect = draw.Rect;
 
@@ -31,13 +33,18 @@ pub const Indicator = enum {
 
     /// How wide this one sits. An icon on its own is the icon plus the space
     /// either side of it; one that carries a number is that much wider.
+    ///
+    /// The spacing is the toolkit's rather than this file's: the painter
+    /// draws inside these rectangles, and a cell measured with one number
+    /// and drawn with another is a cell with its contents off centre.
     pub fn width(self: Indicator) i32 {
         const icon: i32 = @intCast(icons.WIDTH);
+        const pad = theme.current().menu_padding;
         return switch (self) {
-            .network, .sound => icon + PAD * 2,
-            // The icon, then room for "100%" beside it.
-            .battery => icon + GAP + 30 + PAD * 2,
-            .clock => 40 + PAD * 2,
+            .network, .sound => icon + pad * 2,
+            // The icon, then room for the widest the number gets.
+            .battery => icon + ui.GAP + numberWidth("100%") + pad * 2,
+            .clock => numberWidth("00:00") + pad * 2,
         };
     }
 
@@ -50,10 +57,12 @@ pub const Indicator = enum {
     }
 };
 
-/// Space either side of an indicator's contents, and between an icon and the
-/// number beside it.
-pub const PAD: i32 = 6;
-pub const GAP: i32 = 4;
+/// How wide a reading is, measured in the face it is drawn in rather than
+/// guessed at: a clock that outgrew its cell would sit under the edge of the
+/// screen rather than beside it.
+fn numberWidth(sample: []const u8) i32 {
+    return draw.Surface.textWidth(sample);
+}
 
 pub const Slot = struct {
     which: Indicator,
