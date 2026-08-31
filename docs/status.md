@@ -285,4 +285,13 @@ parked there.
   transactions. The queue heads carry the hub and port for them and the arithmetic is
   written, but nothing has exercised it: the emulator will not put a full speed hub on
   an EHCI bus, and the machine's own hubs are the companions' business.
-- Wireless is undesigned until the wired stack is proven further.
+- **The radio hears nothing yet.** `ar2425` brings the chip up, proves which
+  silicon it is, reads its store, and now lays its descriptor chains and sets it
+  listening. What is missing between that and a network is the soft MAC: a
+  channel to sit on, a scan, authentication and association, and the four-way
+  handshake behind them. The chains being laid is what makes those the only
+  missing pieces, and transmission refuses until there is an association whose
+  address a frame's header can name. The descriptor container is pinned at
+  compile time; the field positions inside the control and status words follow
+  ath5k and ar5k, which no datasheet backs, and are the part to doubt first on
+  hardware.

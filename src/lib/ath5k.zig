@@ -125,14 +125,19 @@ pub const Desc = extern struct {
 
     /// Hand a receive descriptor to the radio: no length, no status, and
     /// the ownership bit clear.
-    pub fn armReceive(self: *Desc, buffer_physical: u32, next_physical: u32) void {
+    ///
+    /// Volatile, because a descriptor is shared with something that reads
+    /// and writes it without being asked. A plain pointer coerces, so a
+    /// caller holding ordinary memory needs no cast and gets the ordering
+    /// it would want anyway.
+    pub fn armReceive(self: *volatile Desc, buffer_physical: u32, next_physical: u32) void {
         self.link = next_physical;
         self.buffer = buffer_physical;
         self.body = .{ .rx = .{} };
     }
 
     /// What a completed reception reports.
-    pub fn received(self: *const Desc) struct { status: RxStatus1, length: u12 } {
+    pub fn received(self: *const volatile Desc) struct { status: RxStatus1, length: u12 } {
         return .{
             .status = @bitCast(self.body.rx.status1),
             .length = @as(RxStatus0, @bitCast(self.body.rx.status0)).data_length,

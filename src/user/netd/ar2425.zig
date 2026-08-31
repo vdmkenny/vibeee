@@ -19,7 +19,9 @@
 //! answerable, and a radio that has gone away must cost a bounded spin
 //! and a refusal, never the machine.
 
+const ath5k = @import("lib").ath5k;
 const dev_mod = @import("dev.zig");
+const dma = @import("dma.zig");
 const lib = @import("lib");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -69,6 +71,25 @@ const R = enum(usize) {
 
     /// The baseband's identity, which names the radio attached to it.
     phy_chip_id = 0x9818,
+
+    /// Which engines are running. Transmission is a per-queue affair on
+    /// this generation and is not in here.
+    command = 0x0008,
+    /// Where the receive chain begins.
+    rx_chain = 0x000C,
+    /// The master switch: whether any interrupt reaches the pin.
+    interrupt_enable = 0x0024,
+    /// What has happened. Reading it acknowledges.
+    interrupt_pending = 0x0080,
+    /// Which of those may be reported.
+    interrupt_mask = 0x00A0,
+    /// Queue zero's transmit chain. The queues are consecutive words.
+    tx_chain = 0x0800,
+    /// Start a queue transmitting, and stop one. Both are bit per queue.
+    queue_start = 0x0840,
+    queue_stop = 0x0880,
+    /// Which frames the protocol unit keeps rather than discards.
+    rx_filter = 0x803C,
 };
 
 const Regs = lib.mmio.Window(R, u32);
@@ -157,6 +178,72 @@ const EepromStatus = packed struct(u32) {
     _4: u28 = 0,
 };
 
+/// Which engines are running.
+const Command = packed struct(u32) {
+    _0: u2 = 0,
+    receive: bool = false,
+    _3: u2 = 0,
+    stop_receive: bool = false,
+    software_interrupt: bool = false,
+    _7: u25 = 0,
+};
+
+/// Whether anything at all reaches the interrupt pin. Held apart from the
+/// mask so a handler can silence the card without forgetting which causes
+/// it wanted.
+const InterruptEnable = packed struct(u32) {
+    enabled: bool = false,
+    _1: u31 = 0,
+};
+
+/// What the radio reports, and what it may be asked to report. One shape
+/// for both, because a mask and a status are the same set of causes read
+/// in the two directions.
+const Interrupts = packed struct(u32) {
+    rx_ok: bool = false,
+    rx_descriptor: bool = false,
+    rx_error: bool = false,
+    rx_no_frame: bool = false,
+    rx_end_of_list: bool = false,
+    rx_overrun: bool = false,
+    tx_ok: bool = false,
+    tx_descriptor: bool = false,
+    tx_error: bool = false,
+    tx_no_frame: bool = false,
+    tx_end_of_list: bool = false,
+    tx_underrun: bool = false,
+    _12: u20 = 0,
+
+    /// The causes this driver acts on. Anything else the hardware can
+    /// raise is left masked, because an interrupt nobody handles is a
+    /// line that never goes quiet.
+    const wanted = Interrupts{
+        .rx_ok = true,
+        .rx_descriptor = true,
+        .rx_error = true,
+        .rx_overrun = true,
+        .rx_end_of_list = true,
+        .tx_ok = true,
+        .tx_descriptor = true,
+        .tx_error = true,
+        .tx_underrun = true,
+    };
+    const none = Interrupts{};
+
+    fn any(self: Interrupts) bool {
+        return @as(u32, @bitCast(self)) != 0;
+    }
+};
+
+/// Which queues a write starts or stops: one bit each.
+const Queues = packed struct(u32) {
+    mask: u10 = 0,
+    _10: u22 = 0,
+
+    const first = Queues{ .mask = 1 };
+    const all = Queues{ .mask = std.math.maxInt(u10) };
+};
+
 /// The station address as the two registers hold it: four bytes in the
 /// low word, two in the high one.
 const StationIdHigh = packed struct(u32) {
@@ -166,6 +253,19 @@ const StationIdHigh = packed struct(u32) {
 
 comptime {
     // The radio's own numbers, proved to be the shapes claimed for them.
+    if (@as(u32, @bitCast(Command{ .receive = true })) != 0x04 or
+        @as(u32, @bitCast(Command{ .stop_receive = true })) != 0x20)
+    {
+        @compileError("the command register's engine bits drifted");
+    }
+    if (@as(u32, @bitCast(Interrupts{ .rx_ok = true })) != 0x01 or
+        @as(u32, @bitCast(Interrupts{ .tx_ok = true })) != 0x40)
+    {
+        @compileError("the interrupt causes drifted");
+    }
+    if (@as(u32, @bitCast(Queues.first)) != 0x01) {
+        @compileError("a queue is one bit, and the first is the lowest");
+    }
     if (@as(u32, @bitCast(ResetControl.everything)) != 0x0F) {
         @compileError("the reset word's blocks drifted");
     }
@@ -231,12 +331,49 @@ pub const Identity = struct {
 // The device
 // ---------------------------------------------------------------------------
 
+/// How many descriptors each chain holds, and how much one frame may be.
+///
+/// A radio hears more than it is spoken to, so the receive chain is the
+/// one that has to be long enough to survive a burst the service has not
+/// drained yet. Both are powers of two, which is what makes the wrap a
+/// mask.
+const RING_SLOTS = 32;
+const SLAB = 2048;
+const Chain = ath5k.Ring(RING_SLOTS);
+
+/// The descriptors and the buffers they name, in one physically
+/// contiguous run so every address in it is one the radio can reach.
+const Rings = struct {
+    rx_desc: [RING_SLOTS]ath5k.Desc align(64) = @splat(.{}),
+    tx_desc: [RING_SLOTS]ath5k.Desc align(64) = @splat(.{}),
+    rx_buffer: [RING_SLOTS][SLAB]u8 = @splat(@splat(0)),
+    tx_buffer: [RING_SLOTS][SLAB]u8 = @splat(@splat(0)),
+};
+
+comptime {
+    if (@alignOf(Rings) < 4 or @offsetOf(Rings, "rx_desc") % 4 != 0 or
+        @offsetOf(Rings, "tx_desc") % 4 != 0)
+    {
+        @compileError("the radio reads descriptors word-aligned");
+    }
+}
+
+/// One radio, one static instance. Nothing on a frame's path allocates:
+/// the chains are as long as they will ever be from the moment they are
+/// made.
 const Device = struct {
     regs: Regs = .{ .base = undefined },
     location: pci.Location = .{ .bus = 0, .device = 0, .function = 0 },
     identity: Identity = .{},
     opened: bool = false,
     started: bool = false,
+
+    rings: ?*Rings = null,
+    /// Where the run begins, as the radio addresses it.
+    phys: u32 = 0,
+    dma_handle: ?u32 = null,
+    /// The next descriptor the service expects to find finished.
+    rx_next: usize = 0,
 };
 
 var device: Device = .{};
@@ -298,33 +435,196 @@ pub fn open(loc: pci.Location, nic: *NicDev) bool {
     return true;
 }
 
-/// Let traffic flow. There is none yet: a radio carries nothing until it
-/// has joined a network, and joining is the milestone above this one. The
-/// interface exists, names itself and reports honestly.
-pub fn start(_: *NicDev) bool {
+/// Give the radio its chains and let it listen.
+///
+/// What this does not do is tune it. A radio with no channel set and no
+/// association hears nothing, so the chains run empty until the joining
+/// above this makes there be something to hear. Having them running is
+/// what makes that the only missing piece.
+pub fn start(nic: *NicDev) bool {
+    if (!device.opened or device.started) return false;
+
+    if (!buildRings()) {
+        log.fail(name, "cannot lay out the descriptor chains");
+        return false;
+    }
+
+    quiet();
+
+    // The chain is a circle, so the hardware is given one address and
+    // follows links from there for as long as it is fed.
+    device.regs.write(.rx_chain, Chain.addressOf(chainBase("rx_desc"), 0));
+    device.regs.write(.tx_chain, Chain.addressOf(chainBase("tx_desc"), 0));
+    dma.publish();
+
+    device.regs.write(.command, @bitCast(Command{ .receive = true }));
+    _ = device.regs.read(.command);
+
+    pci.enableInterrupt(nic.location);
+    device.regs.write(.interrupt_mask, @bitCast(Interrupts.wanted));
+    device.regs.write(.interrupt_enable, @bitCast(InterruptEnable{ .enabled = true }));
+    _ = device.regs.read(.interrupt_enable);
+
     device.started = true;
-    log.note(name, "radio identified; joining a network is not implemented");
     return true;
 }
 
 pub fn stop(_: *NicDev) void {
     if (!device.opened) return;
     device.started = false;
-    // Nothing is enabled, so nothing needs quieting beyond the sleep the
-    // hardware may now take.
+
+    quiet();
+    releaseRings();
+
     device.regs.write(.sleep_control, @bitCast(SleepControl{ .mode = .permitted }));
     _ = device.regs.read(.sleep_control);
 }
 
-/// No interrupt is armed while nothing is enabled, so a delivery here
-/// belongs to another device sharing the line.
-pub fn irq(_: *NicDev) void {}
+/// Silence the radio and let go of every address it holds.
+///
+/// Ordered so no register still names memory that is about to be handed
+/// back: the causes are masked, the engines stopped, and only then are the
+/// chain pointers cleared.
+fn quiet() void {
+    device.regs.write(.interrupt_enable, @bitCast(InterruptEnable{}));
+    device.regs.write(.interrupt_mask, @bitCast(Interrupts.none));
+    _ = device.regs.read(.interrupt_pending);
+
+    device.regs.write(.queue_stop, @bitCast(Queues.all));
+    device.regs.write(.command, @bitCast(Command{ .stop_receive = true }));
+    _ = device.regs.read(.command);
+    sys.sleepMicros(3000);
+
+    device.regs.write(.rx_chain, 0);
+    device.regs.write(.tx_chain, 0);
+    _ = device.regs.read(.rx_chain);
+}
+
+/// What the radio has to say. Reading the register acknowledges it, so it
+/// is read once and every cause in it acted on.
+pub fn irq(nic: *NicDev) void {
+    if (!device.started) return;
+
+    const cause: Interrupts = @bitCast(device.regs.read(.interrupt_pending));
+    if (!cause.any()) return;
+
+    if (cause.rx_ok or cause.rx_descriptor or cause.rx_end_of_list) reapRx(nic);
+    if (cause.rx_error or cause.rx_overrun) nic.stats.rx_dropped += 1;
+    if (cause.tx_error or cause.tx_underrun) nic.stats.tx_failed += 1;
+
+    // A chain that ran to its end was starved rather than broken: it is
+    // circular, so pointing the radio back at the slot the service is
+    // waiting on is all the repair there is.
+    if (cause.rx_end_of_list) {
+        device.regs.write(.rx_chain, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
+        device.regs.write(.command, @bitCast(Command{ .receive = true }));
+    }
+}
+
+/// Take every finished receive descriptor, in the order the radio filled
+/// them, and give each one back as soon as its frame has been handed over.
+fn reapRx(nic: *NicDev) void {
+    const rings = device.rings orelse return;
+
+    while (true) {
+        const slot = device.rx_next;
+        const desc = &rings.rx_desc[slot];
+
+        const report = @as(*const volatile ath5k.Desc, desc).received();
+        if (!report.status.done) break;
+        dma.consume();
+
+        // A length is the radio's word until it has been measured against
+        // the buffer that holds it.
+        const length: usize = report.length;
+        if (report.status.intact() and length > 0 and length <= SLAB) {
+            dev_mod.deliverRx(nic, .{ .ok = true, .frame = rings.rx_buffer[slot][0..length] });
+        } else {
+            dev_mod.deliverRx(nic, .{});
+        }
+
+        armReceive(rings, slot);
+        dma.publish();
+        device.rx_next = Chain.next(slot);
+    }
+}
 
 /// A radio with no association has nowhere to send a frame, and says so
-/// rather than dropping it silently.
+/// rather than dropping it silently. The chain is laid and running; what
+/// is missing is a network to name in a frame's header.
 pub fn transmit(nic: *NicDev, _: []const u8) bool {
     nic.stats.tx_failed += 1;
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// The chains
+// ---------------------------------------------------------------------------
+
+/// Where one chain begins, as the radio addresses it.
+fn chainBase(comptime field: []const u8) u32 {
+    return device.phys + @offsetOf(Rings, field);
+}
+
+/// Hand one receive descriptor back to the radio: its buffer, its
+/// successor, and no status at all.
+fn armReceive(rings: *Rings, slot: usize) void {
+    const buffers = chainBase("rx_buffer");
+    rings.rx_desc[slot].armReceive(
+        buffers + @as(u32, @intCast(slot * SLAB)),
+        Chain.linkFor(chainBase("rx_desc"), slot),
+    );
+}
+
+/// One contiguous run for both chains and their buffers, chained into
+/// circles and handed to the radio.
+fn buildRings() bool {
+    if (device.rings != null) return true;
+
+    var phys: u32 = 0;
+    const handle = sys.dmaAlloc(@sizeOf(Rings), &phys);
+    if (handle < 0) {
+        log.failed(name, "cannot allocate the descriptor chains", handle);
+        return false;
+    }
+    const owned: u32 = @intCast(handle);
+
+    if (!Chain.addressable(phys) or phys % @alignOf(Rings) != 0) {
+        _ = sys.close(owned);
+        log.fail(name, "the descriptor chains are unaligned or out of reach");
+        return false;
+    }
+
+    const mapped = sys.shmMap(owned, .{ .writable = true }) orelse {
+        _ = sys.close(owned);
+        log.fail(name, "cannot map the descriptor chains");
+        return false;
+    };
+
+    const rings: *Rings = @ptrCast(@alignCast(mapped));
+    rings.* = .{};
+    device.rings = rings;
+    device.phys = phys;
+    device.dma_handle = owned;
+    device.rx_next = 0;
+
+    // Receive descriptors are the radio's from the start; transmit ones
+    // are the service's until it has something to put in them, so they
+    // carry their links and nothing else.
+    for (0..RING_SLOTS) |slot| {
+        armReceive(rings, slot);
+        rings.tx_desc[slot].link = Chain.linkFor(chainBase("tx_desc"), slot);
+    }
+    dma.publish();
+    return true;
+}
+
+fn releaseRings() void {
+    const handle = device.dma_handle orelse return;
+    _ = sys.close(handle);
+    device.dma_handle = null;
+    device.rings = null;
+    device.phys = 0;
 }
 
 /// The carrier of a radio is its association, which does not exist yet.
