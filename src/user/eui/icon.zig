@@ -42,6 +42,9 @@ pub const Icon = enum {
     document,
     picture,
     folder,
+    /// Bars of different heights: what is running and how much of the
+    /// machine it is using.
+    chart,
     /// Settings. Sliders rather than a cog: a cog at this size is a blob.
     sliders,
     power,
@@ -229,6 +232,23 @@ const art = [_]Picture{
             "..#.......#.",
             "..#.......#.",
             "..#########.",
+            "............",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .chart,
+        .rows = .{
+            "............",
+            "............",
+            "............",
+            ".##......##.",
+            ".##......##.",
+            ".##..##..##.",
+            ".##..##..##.",
+            ".##..##..##.",
+            ".##..##..##.",
             "............",
             "............",
             "............",

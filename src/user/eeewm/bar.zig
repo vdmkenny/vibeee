@@ -13,6 +13,8 @@
 //! while a client is wedged, and giving it a surface of its own would cost a
 //! megabyte and a half to save nothing. design/10-gui.md §4.4.
 
+const std = @import("std");
+const str = @import("lib").str;
 const draw = @import("eui").draw;
 const layout = @import("layout.zig");
 const status = @import("status.zig");
@@ -94,8 +96,39 @@ pub fn launchWidth() i32 {
 /// What the V menu offers: applications first, then what to do with the
 /// session. A start menu that could only start things would leave no way to
 /// stop, and on a machine with one screen there is nowhere else to go.
+/// What a thing in the launcher is for.
+///
+/// Listed as they gain something, like the settings sections: a category
+/// with nothing under it is a heading the machine cannot fill. The list is
+/// what makes a growing set of programs stay findable, because the answer to
+/// "where is it" stops being "somewhere in this column".
+pub const Category = enum {
+    tools,
+    system,
+    session,
+
+    pub fn parse(name: []const u8) ?Category {
+        for (std.enums.values(Category)) |which| {
+            if (str.eql(which.title(), name)) return which;
+        }
+        return null;
+    }
+
+    pub fn title(self: Category) []const u8 {
+        return switch (self) {
+            .tools => "Tools",
+            .system => "System",
+            .session => "Session",
+        };
+    }
+};
+
 pub const Item = struct {
     label: []const u8,
+    category: Category,
+    /// The picture beside it. Null where nothing says it better than the
+    /// name does.
+    mark: ?eui_icon.Icon = null,
     action: Kind,
 
     pub const Kind = union(enum) {
@@ -111,15 +144,53 @@ pub const Item = struct {
 };
 
 pub const items = [_]Item{
-    .{ .label = "eTerm", .action = .{ .run = .{ .path = "/bin/eterm", .name = "eterm" } } },
-    .{ .label = "Pad", .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
-    .{ .label = "Monitor", .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
-    .{ .label = "Settings", .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
-    .{ .label = "", .action = .separator },
-    .{ .label = "Exit to shell", .action = .quit },
-    .{ .label = "Restart", .action = .reboot },
-    .{ .label = "Shut down", .action = .power_off },
+    .{ .label = "eTerm", .category = .tools, .mark = .terminal, .action = .{ .run = .{ .path = "/bin/eterm", .name = "eterm" } } },
+    .{ .label = "Pad", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
+    .{ .label = "Monitor", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
+    .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
+    .{ .label = "Exit to shell", .category = .session, .action = .quit },
+    .{ .label = "Restart", .category = .session, .mark = .power, .action = .reboot },
+    .{ .label = "Shut down", .category = .session, .mark = .power, .action = .power_off },
 };
+
+/// Which category the launcher is showing.
+var launcher_category: Category = .tools;
+/// The categories themselves are a list like any other, so they are one.
+var launcher_rail: ui.Menu = .{};
+
+/// How many things are under a category, which is what makes the rail worth
+/// reading rather than just worth clicking.
+fn countIn(which: Category) usize {
+    var n: usize = 0;
+    for (items) |item| {
+        if (item.category == which) n += 1;
+    }
+    return n;
+}
+
+/// The rail's rows: every category, with how much is behind it.
+fn categoryItems(into: []ui.MenuItem, counts: [][4]u8) []ui.MenuItem {
+    var n: usize = 0;
+    for (std.enums.values(Category)) |which| {
+        if (n == into.len or countIn(which) == 0) continue;
+        const digits = str.decimal(&counts[n], countIn(which));
+        into[n] = .{ .label = which.title(), .detail = counts[n][0..digits] };
+        n += 1;
+    }
+    return into[0..n];
+}
+
+/// What the launcher's own indices mean: the nth row of the shown category
+/// is which entry of `items`.
+fn itemAt(which: Category, row: usize) ?usize {
+    var n: usize = 0;
+    for (items, 0..) |item, i| {
+        if (item.category != which) continue;
+        if (n == row) return i;
+        n += 1;
+    }
+    return null;
+}
 
 var launcher: ui.Menu = .{};
 
@@ -148,14 +219,56 @@ pub fn openLauncher() void {
     keyboard_focus = true;
 }
 
+/// The rows of the category being shown.
 fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
-    for (items, 0..) |item, i| {
-        out[i] = .{
-            .label = item.label,
-            .kind = if (item.action == .separator) .separator else .item,
-        };
+    var n: usize = 0;
+    for (items) |item| {
+        if (item.category != launcher_category or n == out.len) continue;
+        out[n] = .{ .label = item.label, .mark = item.mark };
+        n += 1;
     }
-    return out[0..items.len];
+    return out[0..n];
+}
+
+/// The two halves of the launcher: the categories, and what is in the one
+/// being shown. One rectangle each, worked out together so the panel is as
+/// wide as both and the hit test reads the same two.
+const Launcher = struct {
+    panel: Rect,
+    rail: Rect,
+    list: Rect,
+};
+
+fn launcherPanel(height: i32) Launcher {
+    var rows: [items.len]ui.MenuItem = undefined;
+    var counts: [items.len][4]u8 = undefined;
+    const cats = categoryItems(&rows, &counts);
+
+    var listing: [items.len]ui.MenuItem = undefined;
+    const shown_items = menuItems(&listing);
+
+    const rail_w = theme.enlarged(96);
+    const list_w = tabMaxWidth();
+    // As tall as the longer of the two, so neither is cut off by the other
+    // being shorter.
+    const tall = @max(
+        ui.Menu.sizeFor(cats, rail_w).h,
+        ui.Menu.sizeFor(shown_items, list_w).h,
+    );
+
+    const panel = popover.place(
+        .{ .x = 0, .y = strip(height).y, .w = launchWidth(), .h = theme.current().bar_height },
+        rail_w + list_w,
+        tall,
+        .{ .x = 0, .y = 0, .w = rail_w + list_w, .h = height },
+        if (settings.current().bar == .top) .below else .above,
+    );
+
+    return .{
+        .panel = panel,
+        .rail = .{ .x = panel.x, .y = panel.y, .w = rail_w, .h = panel.h },
+        .list = .{ .x = panel.x + rail_w, .y = panel.y, .w = list_w, .h = panel.h },
+    };
 }
 
 /// Take keyboard control of the bar, starting on the current desktop's tab.
@@ -315,7 +428,25 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
         const before = launcher.selected;
-        launcher.hover(launchMenuRect(height), menuItems(&rows), x, y);
+        const at = launcherPanel(height);
+
+        var cat_rows: [items.len]ui.MenuItem = undefined;
+        var counts: [items.len][4]u8 = undefined;
+        const cats = categoryItems(&cat_rows, &counts);
+
+        // Moving over a category shows it, which is what makes the rail
+        // browsable rather than something to click through.
+        if (ui.Menu.rowAt(at.rail, cats, x, y)) |row| {
+            launcher_rail.selected = row;
+            if (Category.parse(cats[row].label)) |which| {
+                if (which != launcher_category) {
+                    launcher_category = which;
+                    launcher.selected = 0;
+                }
+            }
+            return true;
+        }
+        launcher.hover(at.list, menuItems(&rows), x, y);
         return launcher.selected != before;
     }
 
@@ -349,7 +480,12 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
 
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
-        launcher.paint(surface, launchMenuRect(height), menuItems(&rows));
+        const at = launcherPanel(height);
+
+        var cat_rows: [items.len]ui.MenuItem = undefined;
+        var counts: [items.len][4]u8 = undefined;
+        launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows, &counts));
+        launcher.paint(surface, at.list, menuItems(&rows));
     }
 
     if (sound_open) paintSoundMenu(surface, width, height);
@@ -380,14 +516,7 @@ fn dropFrom(anchor: Rect, height: i32, size: Rect) Rect {
     return area;
 }
 
-fn launchMenuRect(height: i32) Rect {
-    var rows: [items.len]ui.MenuItem = undefined;
-    return dropFrom(
-        .{ .x = 0, .y = 0, .w = launchWidth(), .h = 0 },
-        height,
-        ui.Menu.sizeFor(menuItems(&rows), tabMaxWidth()),
-    );
-}
+
 
 fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index: u8) void {
     const t = theme.current();
@@ -914,10 +1043,16 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     // doing two things at once.
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
-        const chosen = ui.Menu.rowAt(launchMenuRect(height), menuItems(&rows), x, y);
+        const at = launcherPanel(height);
+        if (at.rail.contains(x, y)) return .consumed;
+        const chosen = ui.Menu.rowAt(at.list, menuItems(&rows), x, y);
         launcher.hide();
         keyboard_focus = false;
-        if (chosen) |row| return activate(row);
+        // The row is the nth of the category being shown, not the nth of
+        // everything: the mapping is the one the list was built with.
+        if (chosen) |row| {
+            if (itemAt(launcher_category, row)) |index| return activate(index);
+        }
         return .consumed;
     }
 
@@ -1073,12 +1208,26 @@ pub fn key(code: sys.KeyCode, desktop: *layout.Desktop) KeyResult {
 
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
+
+        // Left and right walk the categories, the way tab does in the
+        // drawings: the rail is a list too, and a launcher reachable only by
+        // pointer is one that stops working when the touchpad does.
+        if (code == .left or code == .right) {
+            const all = std.enums.values(Category);
+            const at = @intFromEnum(launcher_category);
+            const step: usize = if (code == .right) 1 else all.len - 1;
+            launcher_category = all[(at + step) % all.len];
+            launcher_rail.selected = @intFromEnum(launcher_category);
+            launcher.selected = 0;
+            return .handled;
+        }
+
         switch (launcher.key(code, menuItems(&rows))) {
             .chosen => {
                 const chosen = launcher.selected;
                 launcher.hide();
                 keyboard_focus = false;
-                pending = activate(chosen);
+                if (itemAt(launcher_category, chosen)) |index| pending = activate(index);
                 return .released;
             },
             .cancelled => {
