@@ -116,6 +116,18 @@ Settings, generated from the schema: all
   net.if3_txpower           regulatory
       regulatory | max | a number of dBm
 
+  [power]
+  power.dim_after           1m
+      never | 30s | 1m | 5m | 10m | 30m
+  power.blank_after         10m
+      never | 30s | 1m | 5m | 10m | 30m
+  power.dim_to              30
+      a number
+  power.low_action          shut_down
+      warn | sleep | shut_down
+  power.low_at              5
+      a number
+
   [time]
   time.ntp                  true
       true | false

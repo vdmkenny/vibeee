@@ -581,6 +581,35 @@ pub const Context = struct {
         return picked;
     }
 
+    /// The same, offering only some of the values.
+    ///
+    /// A closed set does not mean every one of it belongs in every row: the
+    /// intervals a screen may dim after and the ones it may switch off after
+    /// are the same set, and neither row wants all of it. What is not offered
+    /// stays a legal value in the file, which is what keeps the set closed.
+    pub fn choiceAmong(
+        self: *Context,
+        area: Rect,
+        chosen: anytype,
+        values: []const @TypeOf(chosen),
+        labels: []const []const u8,
+    ) @TypeOf(chosen) {
+        const gap = theme.current().padding;
+
+        var picked = chosen;
+        var x = area.x;
+
+        for (values, 0..) |value, i| {
+            const text = if (i < labels.len) labels[i] else @tagName(value);
+            const width = Surface.textWidth(text) + gap * 3;
+            if (self.toggle(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value)) {
+                picked = value;
+            }
+            x += width + gap;
+        }
+        return picked;
+    }
+
     /// How a slider is drawn, beyond where it is.
     pub const SliderStyle = struct {
         /// What the filled part takes. The accent unless a caller has a
@@ -1334,11 +1363,6 @@ pub const MenuItem = struct {
     /// it, so rows without a picture still line up with the rows that have
     /// one.
     mark: ?icons.Icon = null,
-    /// A short word before the label, dim, in a column as wide as the widest
-    /// of them: what kind of thing the row is, where a list holds more than
-    /// one kind. A picture would have to be invented for each kind and read
-    /// as a guess; three letters are read as three letters.
-    lead: []const u8 = "",
     /// The run of `label` that matched what was typed, drawn in the accent.
     /// A list that reorders itself as letters arrive is only trustworthy if
     /// each row can say what in it was matched.
@@ -1442,7 +1466,6 @@ pub const Menu = struct {
         // One row with a picture indents them all, so the labels line up
         // whether or not the row beside them has one.
         const indented = marked(items);
-        const lead_width = leadWidth(items);
 
         surface.fill(area, switch (self.ground) {
             .surface => t.surface,
@@ -1482,12 +1505,7 @@ pub const Menu = struct {
                 );
             }
 
-            var text_x = line.x + t.menu_padding + if (indented) markWidth() else 0;
-            if (lead_width > 0) {
-                clipped.text(text_x, baseline, item.lead, if (highlighted) t.accent_text else t.text_dim);
-                text_x += lead_width;
-            }
-
+            const text_x = line.x + t.menu_padding + if (indented) markWidth() else 0;
             paintLabel(clipped, text_x, baseline, item, ink, highlighted);
 
             if (item.detail.len > 0) {
@@ -1528,18 +1546,6 @@ pub const Menu = struct {
         surface.text(at_x, baseline, hit, hit_ink);
         at_x += Surface.textWidth(hit);
         surface.text(at_x, baseline, item.label[at + len ..], ink);
-    }
-
-    /// How wide the kind column is: the widest word in it, or nothing at all
-    /// when no row has one.
-    fn leadWidth(items: []const MenuItem) i32 {
-        var widest: i32 = 0;
-        for (items) |item| {
-            if (item.lead.len == 0) continue;
-            widest = @max(widest, Surface.textWidth(item.lead));
-        }
-        if (widest == 0) return 0;
-        return widest + theme.current().gap;
     }
 
     /// Whether any row carries a picture. A menu of plain rows is not

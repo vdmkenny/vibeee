@@ -24,6 +24,7 @@ const net = proto.net;
 const str = @import("lib").str;
 const info = @import("ulib").info;
 const bindings = @import("ulib").bindings;
+const Section = proto.panes.Section;
 const keymaps = @import("keymaps");
 const palette = @import("lib").palette;
 const platform = proto.platform;
@@ -40,6 +41,8 @@ const ctx = &proto.app.ctx;
 var current: store.Wm = .{};
 /// The keyboard's own domain, which the bar and this app both write.
 var input: store.Input = .{};
+/// What the machine does when it is left alone, and when the pack runs out.
+var power: store.Power = .{};
 var saved = true;
 
 /// What the machine calls itself, asked once. The rail says it under the
@@ -71,6 +74,7 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
 fn load() void {
     current = store.load("wm");
     input = store.load("input");
+    power = store.load("power");
     readVolume();
 }
 
@@ -138,6 +142,7 @@ fn setVolume(percent: u8, muted: bool) void {
 /// desktop finds out the same way a shell would.
 fn save() void {
     store.save("wm", current) catch return;
+    store.save("power", power) catch return;
     saved = true;
 }
 
@@ -246,43 +251,6 @@ fn wallpaper(area: eui.Rect) i32 {
 /// Listed as they gain something to hold: a heading over an empty pane is a
 /// promise the machine has not kept, so a section appears here when there is
 /// a setting under it and not before.
-const Section = enum {
-    display,
-    input,
-    audio,
-    power,
-    help,
-    about,
-
-    fn parse(name: []const u8) ?Section {
-        for (std.enums.values(Section)) |which| {
-            if (str.eql(which.title(), name) or str.eql(@tagName(which), name)) return which;
-        }
-        return null;
-    }
-
-    fn title(self: Section) []const u8 {
-        return switch (self) {
-            .display => "Display",
-            .input => "Input",
-            .audio => "Audio",
-            .power => "Power",
-            .help => "Help",
-            .about => "About",
-        };
-    }
-
-    fn icon(self: Section) eui.icon.Icon {
-        return switch (self) {
-            .display => .display,
-            .input => .keyboard,
-            .audio => .speaker,
-            .power => .battery,
-            .help => .help,
-            .about => .about,
-        };
-    }
-};
 
 var section: Section = .display;
 
@@ -706,103 +674,220 @@ fn drawHelp(pane: eui.Rect) i32 {
 /// nothing about why.
 fn drawPower(pane: eui.Rect) i32 {
     const t = theme.current();
-    const row = t.control_height;
     var y = pane.y;
-    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
 
-    y = group(&y, full, "Battery");
-    if (platform.battery()) |cell| {
-        const bar_w = @divTrunc(pane.w - factColumn(pane), 3);
-        const percent = platform.charge(cell) orelse 0;
+    y = drawPack(pane, y);
+    y = drawThermal(pane, y);
+    y = drawBacklight(pane, y);
 
-        var reading: [32]u8 = @splat(0);
-        var line = str.Builder{ .buf = &reading };
-        line.number(percent);
-        line.text("%, ");
-        line.text(cell.stateLabel());
+    // What the machine does when it is left alone, and what it does when the
+    // pack runs out. Both are decisions that have to be made before they
+    // happen: a machine at three per cent has no time to ask.
+    y += t.padding;
+    y = group(&y, .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "When it is left alone");
 
-        ctx.progress(.{ .x = pane.x, .y = y + 6, .w = bar_w, .h = 10 }, @intCast(@min(percent, 100)));
-        ctx.label(.{ .x = pane.x + bar_w + t.gap, .y = y + 4, .w = pane.w - bar_w, .h = row }, line.done());
-        y += row;
-
-        if (cell.runtimeLeft()) |left| {
-            var buf: [24]u8 = @splat(0);
-            var spelled = str.Builder{ .buf = &buf };
-            spelled.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
-            y = drawFact(pane, y, "Time left", spelled.done());
-        }
-
-        y += t.padding;
-        y = group(&y, full, "The pack");
-
-        const unit = cell.capacityUnit();
-        y = drawAmount(pane, y, "Charge", cell.remaining, unit);
-        y = drawAmount(pane, y, "Full", cell.last_full, unit);
-        y = drawAmount(pane, y, "Design", cell.design, unit);
-
-        // Wear is the pair of capacities and nothing else, so it is said as
-        // the pair says it, and marked when the firmware's own figure is
-        // what a machine reports rather than something derived here.
-        if (cell.health()) |worn| {
-            var buf: [40]u8 = @splat(0);
-            var spelled = str.Builder{ .buf = &buf };
-            spelled.number(@min(worn, 100));
-            spelled.byte('%');
-            if (cell.health_reported != 0) spelled.text(", the firmware's word");
-            y = drawFact(pane, y, "Health", spelled.done());
-        }
-
-        y = drawAmount(pane, y, "Voltage", cell.voltage_mv, "mV");
-        y = drawAmount(pane, y, "By design", cell.design_voltage_mv, "mV");
-        y = drawAmount(pane, y, "Rate", cell.rate, cell.currentUnit());
-        y = drawAmount(pane, y, "Warn below", cell.warning, unit);
-        y = drawAmount(pane, y, "Low below", cell.low, unit);
-    } else {
-        ctx.labelDim(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "This machine has no battery.");
-        y += row;
-    }
+    // Not every interval in both rows: a screen that dims after half an hour
+    // has not dimmed, and one that switches off after thirty seconds is a
+    // screen nobody can read.
+    y = drawIdleRow(pane, y, "Dim after", &power.dim_after, &.{ .never, .@"30s", .@"1m", .@"5m" });
+    y = drawIdleRow(pane, y, "Screen off after", &power.blank_after, &.{ .never, .@"5m", .@"10m", .@"30m" });
 
     y += t.padding;
-    y = drawThermal(pane, y);
+    var when: [40]u8 = @splat(0);
+    var line = str.Builder{ .buf = &when };
+    line.text("When the battery reaches ");
+    line.number(power.low_at);
+    line.byte('%');
+    y = group(&y, .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, line.done());
 
-    y = group(&y, full, "Backlight");
-
-    if (platform.backlight()) |panel_light| {
-        var reading: [16]u8 = @splat(0);
-        var line = str.Builder{ .buf = &reading };
-        line.number(panel_light.level);
-        line.text(" of ");
-        line.number(panel_light.max);
-
-        // Levels rather than a percentage: the steps belong to the panel, and
-        // a percentage rounded onto them makes some of them unreachable.
-        const wanted = ctx.slider(
-            .{ .x = pane.x, .y = y, .w = full.w - theme.enlarged(84), .h = row },
-            .{ .min = 1, .max = @intCast(panel_light.max) },
-            @intCast(panel_light.level),
-            .{},
-        );
-        ctx.label(
-            .{ .x = pane.right() - theme.enlarged(78), .y = y + 4, .w = theme.enlarged(78), .h = row },
-            line.done(),
-        );
-        if (wanted != @as(i32, @intCast(panel_light.level))) _ = platform.setBacklight(@intCast(wanted));
-    } else {
-        ctx.labelDim(
-            .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
-            "This machine offers no way to set the backlight.",
-        );
-        y += t.control_height;
+    const picked = ctx.choiceOf(
+        .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height },
+        power.low_action,
+        &.{ "warn only", "sleep", "shut down" },
+    );
+    if (picked != power.low_action) {
+        power.low_action = picked;
+        change();
     }
-    return y;
+    y += t.control_height + t.padding;
+
+    ctx.labelDim(
+        .{ .x = pane.x, .y = y, .w = pane.w, .h = 16 },
+        "Read from the embedded controller once a second.",
+    );
+    return y + t.control_height;
 }
 
-/// Every thermal zone, each drawn against its own critical point.
+/// The battery, at the size a number people actually look for deserves.
 ///
-/// The scale runs to where the firmware cuts the power, so a reading is
-/// legible as how much room is left rather than as a bar somewhere along an
-/// unnamed range, and the passive point is marked because that is where the
-/// machine starts slowing itself down.
+/// Four things: how full, how long that leaves, how big the pack is and how
+/// worn. The rest of what the firmware reports is arithmetic on those, and a
+/// column of it is a page nobody reads.
+fn drawPack(pane: eui.Rect, from: i32) i32 {
+    const t = theme.current();
+    var y = from;
+
+    const cell = platform.battery() orelse {
+        ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = 16 }, "This machine has no battery.");
+        return y + t.control_height + t.padding;
+    };
+
+    const percent = platform.charge(cell) orelse 0;
+    const glyph = eui.Rect{
+        .x = pane.x,
+        .y = y + t.padding,
+        .w = theme.enlarged(46),
+        .h = theme.enlarged(26),
+    };
+    paintBatteryGlyph(glyph, @intCast(@min(percent, 100)), cell.state() == .charging);
+
+    var reading: [12]u8 = @splat(0);
+    var said = str.Builder{ .buf = &reading };
+    said.number(percent);
+    said.byte('%');
+    ctx.surface.textLarge(glyph.right() + t.menu_padding, y + t.padding, said.done(), t.text, 2);
+
+    // What it is doing, and how long that leaves. The time only exists while
+    // it is discharging, which is the only time anybody wants it.
+    var state: [40]u8 = @splat(0);
+    var says = str.Builder{ .buf = &state };
+    if (cell.runtimeLeft()) |left| {
+        says.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
+        says.text(" left, ");
+    }
+    says.text(cell.stateLabel());
+    ctx.labelDim(
+        .{ .x = glyph.right() + t.menu_padding, .y = y + t.padding + theme.enlarged(18), .w = pane.w, .h = 16 },
+        says.done(),
+    );
+
+    // The pack itself, on the right, where a second column reads as a second
+    // subject rather than as more of the first.
+    var pack: [32]u8 = @splat(0);
+    var built = str.Builder{ .buf = &pack };
+    built.number(cell.last_full);
+    built.byte(' ');
+    built.text(cell.capacityUnit());
+    rightLabel(pane, y + t.padding, built.done(), t.text_dim);
+
+    if (cell.health()) |worn| {
+        var health: [40]u8 = @splat(0);
+        var spelled = str.Builder{ .buf = &health };
+        spelled.text("health ");
+        spelled.number(@min(worn, 100));
+        spelled.byte('%');
+        if (cell.health_reported != 0) spelled.text(", the firmware's word");
+        rightLabel(pane, y + t.padding + theme.enlarged(18), spelled.done(), t.text_dim);
+    }
+
+    y = glyph.bottom() + t.padding;
+    ctx.surface.fill(.{ .x = pane.x, .y = y, .w = pane.w, .h = 1 }, t.line);
+    return y + t.padding;
+}
+
+fn rightLabel(pane: eui.Rect, y: i32, text: []const u8, ink: eui.draw.Color) void {
+    const width = eui.Surface.textWidth(text);
+    ctx.rowText(.{ .x = pane.right() - width, .y = y, .w = width, .h = 16 }, text, ink);
+}
+
+/// A battery, drawn rather than lettered: the one picture nobody has to be
+/// taught, at a size that says this is the subject of the page.
+fn paintBatteryGlyph(area: eui.Rect, percent: u8, charging: bool) void {
+    const t = theme.current();
+    const cap_w = @max(theme.enlarged(4), 2);
+    const body = eui.Rect{ .x = area.x, .y = area.y, .w = area.w - cap_w, .h = area.h };
+
+    ctx.surface.fill(body, t.surface);
+    ctx.surface.borderInset(body, 2, t.text_dim);
+    ctx.surface.fill(.{
+        .x = body.right(),
+        .y = area.y + @divTrunc(area.h, 3),
+        .w = cap_w,
+        .h = @divTrunc(area.h, 3),
+    }, t.text_dim);
+
+    const inside = body.inset(4);
+    ctx.surface.fill(.{
+        .x = inside.x,
+        .y = inside.y,
+        .w = eui.widget.filledWidth(inside, percent),
+        .h = inside.h,
+    }, if (charging)
+        t.accent
+    else if (eui.gauge.alarming(percent, .when_empty))
+        t.warning
+    else
+        t.accent);
+
+    ctx.addDamage(area);
+}
+
+/// The panel's own level, which on this machine is most of what it draws.
+fn drawBacklight(pane: eui.Rect, from: i32) i32 {
+    const t = theme.current();
+    const y = from;
+
+    const lamp = platform.backlight() orelse {
+        ctx.labelDim(
+            .{ .x = pane.x, .y = y, .w = pane.w, .h = 16 },
+            "This machine offers no way to set the backlight.",
+        );
+        return y + t.control_height;
+    };
+
+    const label_w = factColumn(pane);
+    var reading: [16]u8 = @splat(0);
+    var said = str.Builder{ .buf = &reading };
+    said.number(lamp.level);
+    said.text(" of ");
+    said.number(lamp.max);
+
+    const value_w = theme.enlarged(56);
+    const bar = eui.Rect{
+        .x = pane.x + label_w,
+        .y = y,
+        .w = pane.w - label_w - value_w - t.gap,
+        .h = t.control_height,
+    };
+
+    ctx.labelDim(.{ .x = pane.x, .y = y + 4, .w = label_w, .h = t.control_height }, "Backlight");
+    const chosen = ctx.slider(bar, .{ .min = 1, .max = @intCast(lamp.max) }, @intCast(lamp.level), .{});
+    if (chosen != lamp.level) _ = platform.setBacklight(@intCast(chosen));
+    ctx.label(
+        .{ .x = bar.right() + t.gap, .y = y + 4, .w = value_w, .h = t.control_height },
+        said.done(),
+    );
+
+    return y + t.control_height + t.padding;
+}
+
+/// One interval, from the answers that make sense for it.
+fn drawIdleRow(
+    pane: eui.Rect,
+    from: i32,
+    label: []const u8,
+    value: *store.Idle,
+    offered: []const store.Idle,
+) i32 {
+    const t = theme.current();
+    const label_w = factColumn(pane);
+
+    // The words are the values' own names, which are already what a person
+    // would write: "30s", "never".
+    ctx.labelDim(.{ .x = pane.x, .y = from + 4, .w = label_w, .h = t.control_height }, label);
+    const picked = ctx.choiceAmong(
+        .{ .x = pane.x + label_w, .y = from, .w = pane.w - label_w, .h = t.control_height },
+        value.*,
+        offered,
+        &.{},
+    );
+    if (picked != value.*) {
+        value.* = picked;
+        change();
+    }
+    return from + t.control_height + t.padding;
+}
+
 fn drawThermal(pane: eui.Rect, from: i32) i32 {
     const t = theme.current();
     var y = from;

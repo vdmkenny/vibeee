@@ -28,6 +28,52 @@ pub const Theme = enum { slate, classic, paper, dusk };
 
 pub const Bar = enum { top, bottom };
 
+/// How long the machine waits before it acts on being left alone.
+///
+/// A closed set of intervals rather than a number of seconds: what somebody
+/// chooses here is "soon" or "not for a while", and offering a free number
+/// invites a value nobody meant and a machine that sleeps mid-sentence.
+pub const Idle = enum {
+    never,
+    @"30s",
+    @"1m",
+    @"5m",
+    @"10m",
+    @"30m",
+
+    /// The interval in seconds, or null for never.
+    pub fn seconds(self: Idle) ?u32 {
+        return switch (self) {
+            .never => null,
+            .@"30s" => 30,
+            .@"1m" => 60,
+            .@"5m" => 5 * 60,
+            .@"10m" => 10 * 60,
+            .@"30m" => 30 * 60,
+        };
+    }
+};
+
+/// What to do when the pack is nearly empty.
+///
+/// A choice made before it happens, which is the only time it can be made:
+/// a machine at three per cent has no time to ask.
+pub const LowAction = enum { warn, sleep, shut_down };
+
+/// What keeps the machine going, and what it does when that runs out.
+pub const Power = struct {
+    /// How long before the panel dims, and how long before the screen goes
+    /// off. The two things that decide how long a charge lasts on a machine
+    /// whose backlight is most of its draw.
+    dim_after: Idle = .@"1m",
+    blank_after: Idle = .@"10m",
+    /// How dim "dim" is, as a share of the level in use.
+    dim_to: u8 = 30,
+    /// What to do when the battery reaches `low_at`.
+    low_action: LowAction = .shut_down,
+    low_at: u8 = 5,
+};
+
 pub const Wm = struct {
     theme: Theme = .slate,
     bar: Bar = .top,
@@ -257,6 +303,7 @@ pub const Domains = struct {
     input: Input = .{},
     wm: Wm = .{},
     net: Net = .{},
+    power: Power = .{},
     time: Time = .{},
 };
 

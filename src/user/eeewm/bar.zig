@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const bindings = @import("ulib").bindings;
+const anchors = @import("proto").anchors;
 const info = @import("ulib").info;
 const lib = @import("lib");
 const str = @import("lib").str;
@@ -246,16 +247,20 @@ const Found = struct {
 
     const Kind = enum {
         app,
+        /// A place inside a program, which is drawn with that program's own
+        /// picture: what a result is inside is as much of the answer as what
+        /// it is called.
+        tab,
         win,
         run,
 
-        /// The word in the kind column. Three letters, because they are read
-        /// as three letters and a picture per kind would be read as a guess.
-        fn lead(self: Kind) []const u8 {
+        /// The picture for a row that has none of its own. A window is a
+        /// window whatever is in it, and something the keys can do is a key.
+        fn mark(self: Kind) eui_icon.Icon {
             return switch (self) {
-                .app => "app",
-                .win => "win",
-                .run => "run",
+                .app, .tab => .apps,
+                .win => .maximised,
+                .run => .keyboard,
             };
         }
     };
@@ -264,6 +269,8 @@ const Found = struct {
     const What = union(enum) {
         /// The nth entry of `items`.
         entry: usize,
+        /// A place inside a program: which program, and which of its places.
+        place: struct { program: usize, anchor: usize },
         /// The nth window, which is focused and brought into view.
         window: usize,
         /// Something the manager can do, named by the same table the keys
@@ -347,6 +354,27 @@ fn refreshFound(desktop: *const layout.Desktop) void {
         });
     }
 
+    // The places inside programs, which the programs themselves declare.
+    // Somebody looking for the wallpaper is looking for a thing with a name,
+    // not for the program that happens to contain it.
+    for (anchors.all, 0..) |program, program_index| {
+        for (program.anchors, 0..) |anchor, anchor_index| {
+            found_sources += 1;
+            seq += 1;
+            const hit = lib.find.match(anchor.says, typed) orelse continue;
+            offer(.{
+                .kind = .tab,
+                .label = anchor.says,
+                .note = program.name,
+                .hit = runOf(hit),
+                .mark = program.mark,
+                .score = hit.score,
+                .at = seq,
+                .what = .{ .place = .{ .program = program_index, .anchor = anchor_index } },
+            });
+        }
+    }
+
     for (desktop.windows, 0..) |window, index| {
         if (!window.used) continue;
         found_sources += 1;
@@ -358,7 +386,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
             .label = name,
             .note = desktopSaid(window.tag),
             .hit = runOf(hit),
-            .mark = null,
+            .mark = Found.Kind.win.mark(),
             .score = hit.score,
             .at = seq,
             .what = .{ .window = index },
@@ -377,7 +405,7 @@ fn refreshFound(desktop: *const layout.Desktop) void {
             .label = binding.says,
             .note = binding.chord,
             .hit = runOf(hit),
-            .mark = null,
+            .mark = Found.Kind.run.mark(),
             .score = hit.score,
             .at = seq,
             .what = .{ .verb = binding.action },
@@ -497,7 +525,7 @@ fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
         if (n == out.len) break;
         out[n] = .{
             .label = one.label,
-            .lead = one.kind.lead(),
+            .mark = one.mark orelse one.kind.mark(),
             .hit = one.hit,
             .detail = one.note,
         };
@@ -2039,6 +2067,14 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
 fn activate(choice: Found.What) Action {
     return switch (choice) {
         .entry => |index| activateEntry(index),
+        .place => |where| blk: {
+            const program = anchors.all[where.program];
+            _ = sys.spawnDetached(
+                program.path,
+                &.{ program.name, program.anchors[where.anchor].arg },
+            );
+            break :blk .consumed;
+        },
         .window => |index| .{ .focus_window = index },
         .verb => |what| .{ .verb = what },
     };

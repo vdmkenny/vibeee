@@ -75,6 +75,16 @@ so an image ships with the first and a machine remembers the second.
 | `net.if3_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if3_txpower` | regulatory \| max \| a number of dBm | `regulatory` |
 
+## power
+
+| key | accepts | default |
+|---|---|---|
+| `power.dim_after` | never \| 30s \| 1m \| 5m \| 10m \| 30m | `1m` |
+| `power.blank_after` | never \| 30s \| 1m \| 5m \| 10m \| 30m | `10m` |
+| `power.dim_to` | a number | `30` |
+| `power.low_action` | warn \| sleep \| shut_down | `shut_down` |
+| `power.low_at` | a number | `5` |
+
 ## time
 
 | key | accepts | default |
