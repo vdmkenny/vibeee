@@ -19,6 +19,7 @@
 
 pub const errno = @import("errno.zig");
 pub const format = @import("format.zig");
+pub const math = @import("math.zig");
 pub const mem = @import("mem.zig");
 pub const start = @import("start.zig");
 pub const stdio = @import("stdio.zig");
@@ -31,6 +32,7 @@ pub const unistd = @import("unistd.zig");
 comptime {
     _ = errno;
     _ = format;
+    _ = math;
     _ = mem;
     _ = start;
     _ = stdio;

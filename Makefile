@@ -191,6 +191,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
+	@if [ -f $(BUILD)/ctest ]; then $(MCOPY) -i $@ -o $(BUILD)/ctest ::/bin/ctest; fi
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_NETD) ::/bin/netd
