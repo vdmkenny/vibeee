@@ -15,6 +15,7 @@ pub const service = @import("service.zig");
 pub const audio = @import("audio.zig");
 pub const devices = @import("devices.zig");
 pub const settings = @import("settings.zig");
+pub const usb = @import("usb.zig");
 pub const socket = @import("socket.zig");
 pub const wm = @import("wm.zig");
 pub const client = @import("client.zig");

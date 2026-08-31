@@ -34,6 +34,7 @@ const page = @import("page.zig");
 const status = @import("status.zig");
 const svc = @import("svc.zig");
 const tree = @import("tree.zig");
+const usb_tool = @import("usb.zig");
 const volumes = @import("volumes.zig");
 const out = @import("ulib").out;
 const str = @import("ulib").str;
@@ -70,6 +71,7 @@ pub const commands = [_]Command{
     .{ .name = "resolve", .summary = manual.summaryOf("resolve"), .run = &resolve_tool.run },
     .{ .name = "tone", .summary = manual.summaryOf("tone"), .run = &tone.run },
     .{ .name = "vol", .summary = manual.summaryOf("vol"), .run = &vol.run },
+    .{ .name = "usb", .summary = manual.summaryOf("usb"), .run = &usb_tool.run },
     .{ .name = "patch", .summary = manual.summaryOf("patch"), .run = &patch.run },
     .{ .name = "driver", .summary = manual.summaryOf("driver"), .run = &driver_tool.run },
     .{ .name = "commands", .summary = manual.summaryOf("commands"), .run = &listNames },

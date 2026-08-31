@@ -8,6 +8,7 @@
 pub const complete = @import("complete.zig");
 pub const config = @import("config.zig");
 pub const console = @import("console.zig");
+pub const device = @import("device.zig");
 pub const dir = @import("dir.zig");
 pub const heap = @import("heap.zig");
 pub const edit = @import("edit.zig");

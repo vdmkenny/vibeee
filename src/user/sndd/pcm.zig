@@ -1,70 +1,20 @@
 //! What every PCM controller needs and none of them should write twice.
 //!
 //! A sound controller is a DMA engine walking a list of period buffers and
-//! interrupting as it finishes each. The parts that differ between them are
-//! register names and bring-up sequences; the parts that do not are here:
-//! getting the DMA memory, waiting a bounded time for a bit to settle,
-//! slicing a buffer into periods, and turning the hardware's own position
-//! into "how many periods finished since you last asked".
+//! interrupting as it finishes each. What is true of every DMA engine,
+//! getting the memory and waiting for a bit to settle, belongs to
+//! `ulib.device` and is re-exported here so a driver reaches for one
+//! vocabulary. What is true only of sound stays: slicing a buffer into
+//! periods, and turning the hardware's own position into "how many
+//! periods finished since you last asked".
 
 const dev = @import("dev.zig");
-const log = @import("ulib").log;
-const sys = @import("sys");
+const device = @import("ulib").device;
 
-/// A block of DMA memory, mapped for this process and addressable by the
-/// device. One call rather than the four every driver would otherwise
-/// write: allocate, check, map, cast.
-pub fn Dma(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        at: *volatile T,
-        phys: u32,
-
-        /// `tag` names the driver in any failure line, because a driver
-        /// that cannot get its rings has to say which driver it was.
-        pub fn alloc(tag: []const u8) ?Self {
-            var phys: u32 = 0;
-            const handle = sys.dmaAlloc(@sizeOf(T), &phys);
-            if (handle < 0) {
-                log.fail(tag, "cannot allocate DMA memory");
-                return null;
-            }
-            const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-                log.fail(tag, "cannot map DMA memory");
-                return null;
-            };
-
-            // Every descriptor this system hands a device is a physical
-            // address the device reads directly, so an arena the hardware
-            // cannot address at all is refused here rather than discovered
-            // as silence later.
-            if (phys % @alignOf(T) != 0) {
-                log.fail(tag, "DMA memory is not aligned for the device");
-                return null;
-            }
-            return .{ .at = @ptrCast(@alignCast(mapped)), .phys = phys };
-        }
-
-        /// The physical address of one field, which is what a descriptor
-        /// base register wants.
-        pub fn physOf(self: Self, comptime field: []const u8) u32 {
-            return self.phys + @offsetOf(T, field);
-        }
-    };
-}
-
-/// Wait a bounded time for the hardware to agree. Never unbounded: this
-/// runs in a service whose event loop must stay answerable, and a device
-/// that has gone away must cost a bounded wait and a refusal.
-pub fn settles(attempts: u32, pause_us: u32, context: anytype, comptime ready: fn (@TypeOf(context)) bool) bool {
-    var tries: u32 = 0;
-    while (tries < attempts) : (tries += 1) {
-        if (ready(context)) return true;
-        sys.sleepMicros(pause_us);
-    }
-    return false;
-}
+/// Where a driver's rings live, and how it waits for hardware: the same
+/// two things every device server needs, so the same two implementations.
+pub const Dma = device.Dma;
+pub const settles = device.settles;
 
 /// One period's bytes inside a buffer of them, indexed by a free-running
 /// counter the caller keeps.

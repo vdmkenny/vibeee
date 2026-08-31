@@ -82,3 +82,15 @@ needs   = platd,devmgd
 provides = audio
 target  = boot
 restart = always
+
+name    = usbd
+binary  = /bin/usbd
+# The USB bus: the host controllers the device manager assigns it, and the
+# devices it finds on their ports. It asks the manager which driver fits
+# each device it enumerates, so a class this build has never met is served
+# by a manifest rather than by a change to the bus.
+caps    = driver
+needs   = platd,devmgd
+provides = usb
+target  = boot
+restart = always

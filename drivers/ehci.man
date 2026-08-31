@@ -1,0 +1,5 @@
+# The high-speed USB host controller, by class rather than by part
+# number: every EHCI controller answers the same register interface.
+name    = ehci
+service = usb
+match   = pci-class:0C:03:20

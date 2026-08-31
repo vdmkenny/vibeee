@@ -294,6 +294,17 @@ pub const Builder = struct {
         self.len += decimal(self.buf[self.len..], value);
     }
 
+    /// A fixed width of hexadecimal digits, zero-padded. What every
+    /// hardware identifier is written as, so it is written once.
+    pub fn hex(self: *Builder, value: usize, digits: usize) void {
+        var i = digits;
+        while (i > 0) {
+            i -= 1;
+            const nibble: u8 = @intCast((value >> @intCast(i * 4)) & 0xF);
+            self.byte(ALPHABET[nibble]);
+        }
+    }
+
     /// A number and its unit, the pair that always travels together.
     pub fn quantity(self: *Builder, value: usize, unit: []const u8) void {
         self.number(value);
@@ -334,4 +345,18 @@ test "collapseSpaces trims the ends and reduces every internal run to one" {
 
     var single = "x".*;
     try std.testing.expectEqualStrings("x", collapseSpaces(&single));
+}
+
+test "the builder writes hardware identifiers at a fixed width" {
+    var buf: [16]u8 = @splat(0);
+    var text = Builder{ .buf = &buf };
+    text.hex(0x8086, 4);
+    text.byte(':');
+    text.hex(0x2668, 4);
+    try std.testing.expectEqualStrings("8086:2668", text.done());
+
+    var short: [8]u8 = @splat(0);
+    var padded = Builder{ .buf = &short };
+    padded.hex(0x0C, 2);
+    try std.testing.expectEqualStrings("0c", padded.done());
 }

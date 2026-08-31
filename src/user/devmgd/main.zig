@@ -25,6 +25,7 @@ const pciscan = @import("ulib").pciscan;
 const proto = @import("proto").devices;
 const std = @import("std");
 const str = @import("ulib").str;
+const usb = @import("lib").usb;
 
 /// Where drivers live: each one's manifest, and the program beside it when
 /// the driver is a standalone process. Not in /bin because nothing here is
@@ -334,7 +335,34 @@ fn handle(message: *const sys.Message, token: u32) void {
         .start => control(req, token, .running),
         .stop => control(req, token, .stopped),
         .rescan => rescan(token),
+        .lookup => lookup(req, token),
     }
+}
+
+/// The driver for a device on a bus of its own. The manifests are the
+/// same ones the PCI walk reads, and the match grammar simply gains two
+/// more kinds, so a USB class driver is declared exactly like a PCI one
+/// and nothing in the asking service knows a vendor number.
+fn lookup(req: *const proto.Req, token: u32) void {
+    const signature = usb.Signature.unpack(.{ .kind = req.index, .part = req.a });
+
+    // The exact part first, so a quirk written for one device wins over
+    // the driver written for its whole class.
+    for (manifests[0..manifest_count]) |m| {
+        if (signature.matchesPart(m.match)) return replyDriver(token, m.name);
+    }
+    for (manifests[0..manifest_count]) |m| {
+        if (signature.matchesClass(m.match)) return replyDriver(token, m.name);
+    }
+    replyEnd(token);
+}
+
+
+
+fn replyDriver(token: u32, driver_name: []const u8) void {
+    var assignment = proto.Assignment{ .driver_len = @intCast(driver_name.len) };
+    @memcpy(assignment.driver[0..driver_name.len], driver_name);
+    replyBody(token, .{ .assignment = assignment });
 }
 
 /// The `index`th assignment recorded for the asking service.

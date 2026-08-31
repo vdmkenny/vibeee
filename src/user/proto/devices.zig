@@ -28,6 +28,12 @@ pub const Tag = enum(u8) {
     stop,
     /// Read the manifest directory again and bind anything new.
     rescan,
+    /// Which driver fits a device that is not on the PCI bus: `index`
+    /// carries a class, subclass and protocol, `a` a vendor and product.
+    /// `body.assignment` names the driver, or `end` when none matches.
+    /// How a bus of its own asks the one authority the same question the
+    /// PCI walk asks.
+    lookup,
 };
 
 pub const Status = enum(u8) {
@@ -41,6 +47,9 @@ pub const Req = extern struct {
     name_len: u8 = 0,
     _pad: [2]u8 = @splat(0),
     index: u32 = 0,
+    /// A second number, for the verbs that carry two: `lookup` puts a
+    /// vendor and product here.
+    a: u32 = 0,
     name: [NAME_MAX]u8 = @splat(0),
 
     pub fn named(tag: Tag, text: []const u8) ?Req {

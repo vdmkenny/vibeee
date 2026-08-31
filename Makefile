@@ -88,6 +88,7 @@ USER_PAD := zig-out/bin/pad
 USER_DEVMGD := zig-out/bin/devmgd
 USER_NETD    := zig-out/bin/netd
 USER_SNDD    := zig-out/bin/sndd
+USER_USBD    := zig-out/bin/usbd
 USER_CFGD := zig-out/bin/cfgd
 USER_PLATD := zig-out/bin/platd
 USER_TOOLS := zig-out/bin/tools
@@ -181,6 +182,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_NETD) ::/bin/netd
 	@$(MCOPY) -i $@ -o $(USER_SNDD) ::/bin/sndd
+	@$(MCOPY) -i $@ -o $(USER_USBD) ::/bin/usbd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
 	@$(MCOPY) -i $@ -o $(USER_PLATD) ::/bin/platd
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
