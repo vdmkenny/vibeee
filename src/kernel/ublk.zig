@@ -18,12 +18,14 @@
 
 const std = @import("std");
 const abi = @import("lib").volume;
+const console = @import("console.zig");
 const bcache = @import("bcache.zig");
 const block = @import("block.zig");
 const event = @import("event.zig");
 const hal = @import("hal.zig");
 const sched = @import("sched.zig");
 const shm = @import("shm.zig");
+const vfs = @import("vfs.zig");
 const wait = @import("wait.zig");
 
 /// How many volumes one machine plausibly carries: a card reader with a
@@ -214,6 +216,15 @@ fn survey(index: usize) callconv(.c) void {
         // right, which is how most sticks and cards arrive.
         const found = block.scanPartitions(&volume.published);
         if (found == 0) block.markWholeDiskUsable(&volume.published);
+
+        // Then put it where media go. A disk plugged in should arrive in
+        // the same place as one that was there at boot.
+        for (block.list(), 0..) |*dev, i| {
+            if (dev.ctx != volume.published.ctx or !block.isMountCandidate(i)) continue;
+            if (vfs.mountMedia(dev)) |where| {
+                console.info("mount", "{s} on {s}", .{ where, dev.name });
+            }
+        }
     }
     sched.exit();
 }
@@ -265,12 +276,22 @@ pub fn detach(index: usize) void {
 
     for (&volume.slots) |*slot| {
         if (!slot.busy or slot.done) continue;
-        slot.status = .aborted;
+        slot.status = .no_medium;
         slot.done = true;
         _ = slot.queue.wakeOne();
     }
     volume.live = false;
     _ = volume.room.wakeAll();
+
+    // The mounts go before the rows do: a mount pointing at a device that
+    // answers nothing is worse than no mount at all.
+    _ = vfs.abandon(volume.published.ctx);
+    block.retire(volume.published.ctx);
+
+    if (volume.doorbell) |bell| event.release(bell);
+    if (volume.data) |seg| shm.release(seg);
+    volume.doorbell = null;
+    volume.data = null;
 }
 
 // ---------------------------------------------------------------------------

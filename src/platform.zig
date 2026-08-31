@@ -7,7 +7,6 @@
 //! enumeration and of driver binding; the bus drivers know how to find devices;
 //! neither imports the other, and this file introduces them.
 
-const std = @import("std");
 const console = @import("kernel/console.zig");
 const display = @import("kernel/display.zig");
 const input = @import("kernel/input.zig");
@@ -282,11 +281,6 @@ pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
     mountFilesystems(bi);
 }
 
-/// Names for auto-mounted media, e.g. "/media/hd1p1". Static storage because a
-/// Mount keeps the path and there is nowhere else for it to live.
-var media_names: [vfs.MAX_MOUNTS][vfs.MAX_PATH]u8 = undefined;
-var media_used: usize = 0;
-
 /// Mount every filesystem found.
 ///
 /// The first mountable partition becomes the root; the rest appear under
@@ -331,18 +325,7 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
             } else |_| {}
         }
 
-        if (media_used >= media_names.len) continue;
-        const path = std.fmt.bufPrint(&media_names[media_used], "/media/{s}", .{dev.name}) catch continue;
-        media_used += 1;
-
-        // Anything that is not the boot volume is treated as removable: it is
-        // the safe assumption, and it only affects unmount expectations.
-        if (vfs.mount(path, dev, true)) |_| {
-            reportMount(path, dev);
-        } else |err| switch (err) {
-            error.NotFat, error.Unsupported => {},
-            else => console.warn("vfs: cannot mount {s}: {s}", .{ dev.name, @errorName(err) }),
-        }
+        if (vfs.mountMedia(dev)) |path| reportMount(path, dev);
     }
 
     if (!mounted_root) console.warn("vfs: no root filesystem", .{});

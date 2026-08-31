@@ -370,32 +370,36 @@ fn writeIrqs(w: *Writer) Error!void {
 /// Storage described the way a person would ask about it, not the way the
 /// block layer stores it: each whole disk, then the volumes on it.
 fn writeDisks(w: *Writer) Error!void {
-    for (block.list(), 0..) |*dev, i| {
-        if (dev.offset != 0) continue;
+    for (block.list()) |*dev| {
+        if (dev.offset != 0 or dev.retired) continue;
 
+        // A medium with a filesystem written straight onto it is mounted
+        // as the whole disk, which is how most sticks and cards arrive.
+        // Saying where it went beats saying whether it could be written.
         try w.print("{s}\t{d}\t{s}\n", .{
             dev.name,
             dev.bytes(),
-            if (dev.read_only) "read-only" else "read-write",
+            mountOf(dev.name) orelse if (dev.read_only) "read-only" else "read-write",
         });
 
         // Partitions carry their parent's context pointer, so they are matched
         // by name prefix rather than by identity.
         for (block.list()) |*part| {
-            if (part.offset == 0) continue;
+            if (part.offset == 0 or part.retired) continue;
             if (!std.mem.startsWith(u8, part.name, dev.name)) continue;
 
-            var mounted_at: []const u8 = "";
-            for (vfs.list()) |*m| {
-                if (m.in_use and std.mem.eql(u8, m.device.name, part.name)) {
-                    mounted_at = m.path();
-                }
-            }
-
-            try w.print("  {s}\t{d}\t{s}\n", .{ part.name, part.bytes(), mounted_at });
+            try w.print("  {s}\t{d}\t{s}\n", .{ part.name, part.bytes(), mountOf(part.name) orelse "" });
         }
-        _ = i;
     }
+}
+
+/// Where a volume is mounted, if it is. One lookup, because a whole disk
+/// and a partition are asked the same question.
+fn mountOf(name: []const u8) ?[]const u8 {
+    for (vfs.list()) |*m| {
+        if (m.in_use and std.mem.eql(u8, m.device.name, name)) return m.path();
+    }
+    return null;
 }
 
 fn writeStorage(w: *Writer) Error!void {

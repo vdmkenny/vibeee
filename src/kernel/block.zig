@@ -40,6 +40,10 @@ pub const Device = struct {
     /// until the machine is switched off, and should be able to say so rather
     /// than appear to have done what was asked.
     is_volatile: bool = false,
+    /// The medium is gone and the entry is only still here because the
+    /// table does not move: a device that was unplugged answers nothing
+    /// and is skipped by every walk.
+    retired: bool = false,
     /// Whether anything has been written since the device was registered.
     /// Nothing to commit means nothing to flush, and a drive asked to flush a
     /// cache it never filled can only answer with an error it does not owe.
@@ -90,12 +94,37 @@ var devices: [16]Device = undefined;
 var device_count: usize = 0;
 
 pub fn register(dev: Device) void {
+    // A retired entry is reused before the table grows: a machine where
+    // something is plugged and unplugged all day must not run out of
+    // rows for doing so.
+    for (devices[0..device_count], 0..) |*d, i| {
+        if (!d.retired) continue;
+        d.* = dev;
+        whole_disk_usable[i] = false;
+        return;
+    }
+
     if (device_count >= devices.len) {
         console.warn("block: device table full, dropping {s}", .{dev.name});
         return;
     }
     devices[device_count] = dev;
+    whole_disk_usable[device_count] = false;
     device_count += 1;
+}
+
+/// The medium behind these devices is gone. Everything sharing the
+/// context goes: a whole disk and the partitions cut from it are one
+/// medium, and half of one is no use to anybody.
+///
+/// The caller unmounts first. Retiring a device something still reads
+/// would leave that reader holding a row that answers nothing.
+pub fn retire(ctx: *anyopaque) void {
+    for (devices[0..device_count], 0..) |*d, i| {
+        if (d.retired or d.ctx != ctx) continue;
+        d.retired = true;
+        whole_disk_usable[i] = false;
+    }
 }
 
 pub fn list() []const Device {
@@ -104,7 +133,7 @@ pub fn list() []const Device {
 
 pub fn find(name: []const u8) ?*const Device {
     for (devices[0..device_count]) |*d| {
-        if (std.mem.eql(u8, d.name, name)) return d;
+        if (!d.retired and std.mem.eql(u8, d.name, name)) return d;
     }
     return null;
 }
@@ -281,7 +310,7 @@ pub fn markWholeDiskUsable(disk: *const Device) void {
 }
 
 pub fn isMountCandidate(index: usize) bool {
-    if (index >= device_count) return false;
+    if (index >= device_count or devices[index].retired) return false;
     // Partitions always; whole disks only when they hold a filesystem directly.
     return devices[index].offset != 0 or whole_disk_usable[index];
 }

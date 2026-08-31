@@ -86,6 +86,51 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
     return error.TableFull;
 }
 
+/// Names for auto-mounted media, e.g. "/media/hd1p1". Static storage
+/// because a mount keeps its path and there is nowhere else for it to
+/// live.
+var media_names: [MAX_MOUNTS][MAX_PATH]u8 = undefined;
+var media_used: usize = 0;
+
+/// Put a volume under /media, named after itself.
+///
+/// One place, because a medium found at boot and a medium plugged in
+/// afterwards should arrive in the same spot: the only difference between
+/// them is when they turned up.
+pub fn mountMedia(dev: *const block.Device) ?[]const u8 {
+    if (media_used >= media_names.len) return null;
+    const path = std.fmt.bufPrint(&media_names[media_used], "/media/{s}", .{dev.name}) catch return null;
+
+    // Anything reached this way is treated as removable: it is the safe
+    // assumption, and it only affects unmount expectations.
+    _ = mount(path, dev, true) catch |err| switch (err) {
+        error.NotFat, error.Unsupported => return null,
+        else => {
+            console.warn("vfs: cannot mount {s}: {s}", .{ dev.name, @errorName(err) });
+            return null;
+        },
+    };
+    media_used += 1;
+    return path;
+}
+
+/// Detach every mount on a device whose medium has gone.
+///
+/// Not the same as unmounting: there is nothing left to flush to, and a
+/// mount pointing at a device that answers nothing is worse than no mount
+/// at all. Reported so the reason a path stopped working is in the log.
+pub fn abandon(dev_ctx: *anyopaque) usize {
+    var dropped: usize = 0;
+    for (&mounts) |*m| {
+        if (!m.in_use or m.device.ctx != dev_ctx) continue;
+        console.info("mount", "{s} is gone", .{m.path()});
+        m.in_use = false;
+        m.path_len = 0;
+        dropped += 1;
+    }
+    return dropped;
+}
+
 /// Unmount whatever is at `path`.
 ///
 /// Flushing before detaching is the point: FAT has no journal, so anything the
