@@ -44,7 +44,7 @@ var left: usize = 0;
 /// Wrapped or not, numbered or not. The same two choices the reader offers,
 /// meaning the same thing, because they are the same setting drawn by the
 /// same code.
-var layout = pager.Layout{};
+var layout = pager.Layout{ .controls = .mark };
 /// What the bar says until the next key, for the answers to saving and to
 /// quitting with unsaved work.
 var notice: []const u8 = "";
@@ -274,7 +274,10 @@ fn ask(what: Asking, label: []const u8) void {
         return;
     }
     asking = what;
-    prompt = pager.Prompt.over(label, &prompt_buf, &prompt_marks, if (what == .save_as) "" else path);
+    // Empty, not the current name. Without a way to select what is already
+    // there, a name offered is a name to be deleted before the wanted one
+    // can be typed, and typing over it silently makes one path out of two.
+    prompt = pager.Prompt.over(label, &prompt_buf, &prompt_marks, "");
 }
 
 /// A key while a question is up.

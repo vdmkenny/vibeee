@@ -138,14 +138,26 @@ pub const Lines = struct {
     }
 };
 
-/// How a text is laid out: the two choices a reader and an editor both
-/// offer, held in one place so they mean the same thing in both.
+/// What to do with a byte the console would act on rather than draw.
+pub const Controls = enum {
+    /// Pass it through. What a reader wants: a coloured log stays
+    /// coloured, and nothing in it is being pointed at.
+    render,
+    /// Draw a mark in its place. What an editor needs: a byte that took no
+    /// cell, or several, would put every column after it somewhere the
+    /// text is not, and the cursor with them.
+    mark,
+};
+
+/// How a text is laid out: the choices a reader and an editor both offer,
+/// held in one place so they mean the same thing in both.
 pub const Layout = struct {
     /// A line wider than the screen is folded onto the next row rather than
     /// running off the side.
     wrap: bool = false,
     /// Each line is numbered in a column down the left.
     numbers: bool = false,
+    controls: Controls = .render,
 };
 
 /// One cell of the text, for marking where a cursor is.
@@ -227,15 +239,16 @@ pub fn body(
             const carries_back = !layout.wrap and from > 0 and text.characters(line) > 0;
             if (carries_back and here != @as(?usize, 0)) {
                 ink.mark(.dim, font.glyphs.arrow_left);
+                const rest = text.window(shown, 1, width);
                 if (here) |column| {
-                    withCursor(text.window(shown, 1, width), column - 1);
+                    withCursor(rest, column - 1, layout.controls);
                 } else {
-                    out.text(text.window(shown, 1, width));
+                    plain(rest, layout.controls);
                 }
             } else if (here) |column| {
-                withCursor(shown, column);
+                withCursor(shown, column, layout.controls);
             } else {
-                out.text(shown);
+                plain(shown, layout.controls);
             }
 
             if (carries_on) {
@@ -278,17 +291,39 @@ fn number(n: usize, margin: usize) void {
 /// A reversed cell rather than the console's own: the screen is redrawn
 /// whole every keystroke, so a cursor drawn into the text lands in the
 /// right place by construction and needs nothing kept in step with it.
-fn withCursor(line: []const u8, at: usize) void {
-    out.text(text.window(line, 0, at));
+fn withCursor(line: []const u8, at: usize, controls: Controls) void {
+    plain(text.window(line, 0, at), controls);
 
     const on = text.window(line, at, 1);
     ink.reverse();
     // Past the end of the text the cursor has no character to sit on, so
     // it sits on a space.
-    if (on.len == 0) out.byte(' ') else out.text(on);
+    if (on.len == 0) out.byte(' ') else plain(on, controls);
     ink.plain();
 
-    out.text(text.window(line, at + 1, line.len));
+    plain(text.window(line, at + 1, line.len), controls);
+}
+
+/// Text, with whatever the caller wants done about the bytes a console
+/// would act on rather than draw.
+fn plain(line: []const u8, controls: Controls) void {
+    if (controls == .render) {
+        out.text(line);
+        return;
+    }
+
+    var at: usize = 0;
+    while (at < line.len) {
+        const width = text.charWidth(line, at);
+        const byte = line[at];
+        if (byte < 0x20 or byte == 0x7F) {
+            // One mark, one cell, whatever the byte would have done.
+            ink.mark(.dim, font.glyphs.bullet);
+        } else {
+            out.text(line[at..][0..width]);
+        }
+        at += width;
+    }
 }
 
 /// Move `top` so the cursor is on screen, counting folded rows when they
