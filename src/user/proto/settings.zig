@@ -182,9 +182,21 @@ pub const Domains = struct {
 
 pub const DOMAIN_NAMES = config.keys(Domains);
 
-/// Where a domain is kept. Comptime, because the name is a field name.
-pub fn pathOf(comptime domain: []const u8) []const u8 {
+/// What a domain is when nobody has said otherwise. In the root
+/// filesystem, which is rebuilt from the boot medium at every boot, so it
+/// is read-only in the only sense that matters: writing there changes
+/// nothing past the next start.
+pub fn defaultsOf(comptime domain: []const u8) []const u8 {
     return "/etc/" ++ domain ++ ".cfg";
+}
+
+/// Where a domain's choices are kept. A volume of its own on the boot
+/// medium, mounted at /cfg, which is what makes a choice outlive the
+/// machine being switched off.
+///
+/// Comptime, because the name is a field name.
+pub fn pathOf(comptime domain: []const u8) []const u8 {
+    return "/cfg/" ++ domain ++ ".cfg";
 }
 
 /// The type behind a domain's name, or null for a name that is not one.
@@ -290,9 +302,17 @@ pub const Error = error{ NoService, NoSuchKey, BadValue, Failed };
 /// before answering, so reading it is reading the current state, and a program
 /// that runs before the service does gets the same answer by the same means.
 pub fn load(comptime domain: []const u8) Domain(domain) {
-    var storage: [512]u8 = @splat(0);
     var value: Domain(domain) = .{};
-    _ = config.load(pathOf(domain), &value, &storage);
+
+    // The defaults first, then whatever was chosen on top. A store holding
+    // only what somebody changed is still a complete answer, and a machine
+    // whose /cfg is missing or empty behaves as it did when it was built
+    // rather than as if every setting had been unset.
+    var defaults: [512]u8 = @splat(0);
+    _ = config.load(defaultsOf(domain), &value, &defaults);
+
+    var chosen: [512]u8 = @splat(0);
+    _ = config.load(pathOf(domain), &value, &chosen);
     return value;
 }
 

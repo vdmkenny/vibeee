@@ -10,7 +10,18 @@
 //!   LBA 0            MBR: stage1 + partition table
 //!   LBA 1..63        stage2
 //!   LBA 64..8191     kernel flat binary (~4 MiB of room)
-//!   LBA 8192+        partition 1, 4 MiB-aligned for SD erase blocks
+//!   LBA 8192..32767  the root filesystem, read flat by stage2
+//!   LBA 32768+       the partitions, 4 MiB-aligned for SD erase blocks
+//!
+//! Three partitions, because a machine that forgets everything at every
+//! boot is a demonstration rather than a computer:
+//!
+//!   P1  boot and system   what an updater writes a new kernel into
+//!   P2  /cfg              settings, which is what makes a choice stick
+//!   P3  /data             files, which is what makes work stick
+//!
+//! Their sizes come from the caller, so the build has one place that says
+//! how big anything is and this has none.
 
 const std = @import("std");
 
@@ -28,8 +39,14 @@ const KERNEL_MAX_SECTORS = 8192 - KERNEL_LBA;
 const ROOTFS_LBA = 8192; // 4 MiB
 const ROOTFS_MAX_SECTORS = 32768 - ROOTFS_LBA; // up to 12 MiB
 
+/// Where the partitions begin: everything below is read by sector number
+/// alone, because at that point in the boot there is no filesystem driver.
 const PART1_LBA = 32768; // 16 MiB
-const DEFAULT_IMAGE_MB = 48;
+
+const DEFAULT_IMAGE_MB = 64;
+/// What each partition gets when the caller does not say. Mirrored by the
+/// build, which is where the sizes are actually decided.
+const DEFAULT_PART_MB = [_]usize{ 16, 16, 16 };
 
 const STAGE2_SIGNATURE = "VIBEEE2!";
 
@@ -47,10 +64,16 @@ pub fn main(init: std.process.Init) !void {
 
     if (args.len < 5) {
         std.debug.print(
-            \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img> [size_mb] [cmdline] [rootfs.img]
+            \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img>
+            \\               [size_mb] [cmdline] [rootfs.img] [p1_mb] [cfg_mb] [data_mb]
             \\
         , .{});
         return error.Usage;
+    }
+
+    var part_mb = DEFAULT_PART_MB;
+    for (&part_mb, 0..) |*mb, i| {
+        if (args.len >= 9 + i) mb.* = try std.fmt.parseInt(usize, args[8 + i], 10);
     }
 
     const size_mb: usize = if (args.len >= 6)
@@ -111,7 +134,7 @@ pub fn main(init: std.process.Init) !void {
 
     // MBR: stage1 code, then partition table, then the boot signature.
     @memcpy(image[0..stage1.len], stage1);
-    writeMbr(image[0..SECTOR], total_sectors);
+    writeMbr(image[0..SECTOR], total_sectors, part_mb);
 
     // stage2, with its header patched to say where the kernel lives.
     const s2_off = STAGE2_LBA * SECTOR;
@@ -135,7 +158,9 @@ pub fn main(init: std.process.Init) !void {
         \\  stage1  {d:>7} B  (LBA 0)
         \\  stage2  {d:>7} B  ({d} sectors at LBA {d})
         \\  kernel  {d:>7} B  ({d} sectors at LBA {d})
-        \\  part 1  FAT32 at LBA {d}, {d} MiB
+        \\  part 1  FAT32 at LBA {d}, {d} MiB   boot and system
+        \\  part 2  FAT32 at LBA {d}, {d} MiB   /cfg
+        \\  part 3  FAT32 at LBA {d}, {d} MiB   /data
         \\  total   {d} MiB
         \\  rootfs  {d:>7} B  ({d} sectors at LBA {d})
         \\  cmdline "{s}"
@@ -150,7 +175,11 @@ pub fn main(init: std.process.Init) !void {
         kernel_sectors,
         KERNEL_LBA,
         PART1_LBA,
-        (total_sectors - PART1_LBA) * SECTOR / (1024 * 1024),
+        part_mb[0],
+        PART1_LBA + part_mb[0] * 1024 * 1024 / SECTOR,
+        part_mb[1],
+        PART1_LBA + (part_mb[0] + part_mb[1]) * 1024 * 1024 / SECTOR,
+        part_mb[2],
         size_mb,
         rootfs.len,
         rootfs_sectors,
@@ -204,27 +233,47 @@ fn patchStage2(buf: []u8, fields: Stage2Fields) !void {
     put.u32At(buf, &p, fields.rootfs_bytes);
 }
 
-fn writeMbr(mbr: []u8, total_sectors: usize) void {
-    // Disk signature at 0x1B8. Fixed rather than random so an image build is
-    // reproducible; the installer rewrites it per-medium.
-    std.mem.writeInt(u32, mbr[0x1B8..][0..4], 0x0EEE_0001, .little);
+/// One partition table entry.
+fn writeEntry(entry: []u8, kind: u8, bootable: bool, lba: usize, sectors: usize) void {
+    @memset(entry, 0);
+    if (sectors == 0) return;
 
-    const part = mbr[0x1BE..][0..16];
-    @memset(part, 0);
-    part[0] = 0x80; // bootable
+    entry[0] = if (bootable) 0x80 else 0x00;
     // CHS fields are left as the "use LBA" sentinel (0xFE FF FF). Nothing in
     // our boot path reads CHS, and inventing plausible geometry for a medium
     // the BIOS translates arbitrarily would be worse than admitting we do not
     // know it.
-    part[1] = 0xFE;
-    part[2] = 0xFF;
-    part[3] = 0xFF;
-    part[4] = PART_TYPE_FAT32_LBA;
-    part[5] = 0xFE;
-    part[6] = 0xFF;
-    part[7] = 0xFF;
-    std.mem.writeInt(u32, part[8..][0..4], PART1_LBA, .little);
-    std.mem.writeInt(u32, part[12..][0..4], @intCast(total_sectors - PART1_LBA), .little);
+    entry[1] = 0xFE;
+    entry[2] = 0xFF;
+    entry[3] = 0xFF;
+    entry[4] = kind;
+    entry[5] = 0xFE;
+    entry[6] = 0xFF;
+    entry[7] = 0xFF;
+    std.mem.writeInt(u32, entry[8..][0..4], @intCast(lba), .little);
+    std.mem.writeInt(u32, entry[12..][0..4], @intCast(sectors), .little);
+}
+
+fn writeMbr(mbr: []u8, total_sectors: usize, part_mb: [3]usize) void {
+    // Disk signature at 0x1B8. Fixed rather than random so an image build is
+    // reproducible; the installer rewrites it per-medium.
+    std.mem.writeInt(u32, mbr[0x1B8..][0..4], 0x0EEE_0001, .little);
+
+    // The first partition is the bootable one; the rest carry what has to
+    // survive a reboot. A size of zero leaves its entry empty rather than
+    // writing a partition of nothing.
+    var lba: usize = PART1_LBA;
+    for (part_mb, 0..) |mb, i| {
+        var sectors = mb * 1024 * 1024 / SECTOR;
+        if (lba >= total_sectors) sectors = 0;
+        // The last one takes whatever is left rather than running past the
+        // end of a medium that turned out smaller than the layout.
+        if (sectors != 0 and lba + sectors > total_sectors) sectors = total_sectors - lba;
+
+        writeEntry(mbr[0x1BE + i * 16 ..][0..16], PART_TYPE_FAT32_LBA, i == 0, lba, sectors);
+        lba += sectors;
+    }
+    @memset(mbr[0x1BE + 3 * 16 ..][0..16], 0);
 
     mbr[510] = 0x55;
     mbr[511] = 0xAA;

@@ -218,6 +218,14 @@ and exercised on every boot.
 | Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |
 | Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
+**A machine that remembers.** The boot medium carries three volumes: the system,
+`/cfg` and `/data`. The loader records the medium's own partition signature, so the
+kernel attaches the disk it actually booted from rather than whichever one it found
+first, and settings are read from `/etc` and then from `/cfg` on top: a value nobody
+changed is what the system was built with, and one that was changed outlives the power
+being cut. Verified across a clean shutdown and two reboots, and read back off the
+image from outside.
+
 **M1 is complete** and M2 is underway: wired networking is done on the machine through
 the whole stack, streams and datagrams included: `nc` carries conversations both ways
 over the socket bridge, `resolve` answers names from the hosts table and DNS, `ping`
@@ -230,9 +238,9 @@ suspend. M3 owes the GUI apps parked there.
 
 ## Known gaps
 
-- Nothing written survives a reboot. `/etc` and `/home` are part of the root image, which
-  is rebuilt from the boot medium every time, so settings are set for one session only.
-  The persistent volume they are meant to mount from does not exist yet.
+- `/home` and `/tmp` are part of the root image, which is rebuilt from the boot medium
+  every time, so files put there are gone at the next boot. `/cfg` and `/data` persist;
+  a home directory that does is still owed.
 - **The final power cut.** Power off stops every service, flushes, reaches `_PTS` and
   writes the sleep state; the panel goes dark and the power LED stays on, so the SLP_TYP
   transition on this machine is not finished. What it needs after a formed `_S5_` request

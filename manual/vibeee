@@ -16,11 +16,18 @@ did not. Ctrl+C asks the running command to stop.
 The filesystem:
 
   /bin       programs
-  /etc       configuration; `cfg` reads and changes it
+  /etc       what the settings are when nobody has said otherwise
+  /cfg       what was said otherwise; this is what outlives a reboot
+  /data      files kept between sessions
   /doc       this manual
-  /home      user files
+  /home      user files, in the root image and gone at reboot
   /media     mounted volumes appear here
   /tmp       scratch, cleared at reboot
+
+The root filesystem is rebuilt from the boot medium every time, so /etc,
+/home and /tmp are set for one session. /cfg and /data are volumes of
+their own on that medium: `cfg` writes to the first, and anything put in
+the second is still there next time. `disk` says where each one is.
 
 A small kernel owns the screen, the disk, input and memory. Services
 own the rest and restart on their own if they fail: platd speaks to
@@ -49,8 +56,9 @@ The boot carries a line of flags, set where the image is written:
   debug                  the tier beneath it, for chasing a fault
   nocolor                plain text, for a screen or a capture that
                          cannot carry it
-  noautomount            leave media where they are found; `mount`
-                         still attaches anything by hand
+  noautomount            mount nothing that is found, /cfg and /data
+                         included; `mount` still attaches by hand, and
+                         settings changed without /cfg are refused
 
 `edit` changes a file and writes it back; `man edit` describes it. Long
 output reads through `page`. The boot's own messages are under

@@ -309,6 +309,16 @@ pub fn markWholeDiskUsable(disk: *const Device) void {
     }
 }
 
+/// The signature the partition table carries, which is how a medium is
+/// told apart from another of the same size and shape. The boot loader
+/// records the one it read from, so this is what matches a disk to it.
+pub fn signatureOf(disk: *const Device) ?u32 {
+    var sector: [SECTOR_SIZE]u8 = undefined;
+    disk.read(0, &sector) catch return null;
+    if (std.mem.readInt(u16, sector[510..512], .little) != MBR_SIGNATURE) return null;
+    return std.mem.readInt(u32, sector[0x1B8..][0..4], .little);
+}
+
 pub fn isMountCandidate(index: usize) bool {
     if (index >= device_count or devices[index].retired) return false;
     // Partitions always; whole disks only when they hold a filesystem directly.

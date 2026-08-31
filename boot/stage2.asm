@@ -241,6 +241,15 @@ finish_bootinfo:
     pop es
     pop ds
 
+    ; The medium's own signature, taken from the partition table stage1 was
+    ; read from. That sector is still at 0x7C00: stage2 loaded above it and
+    ; its stack grows down away from it, so nothing has touched it. This is
+    ; what lets the kernel tell the disk it booted from apart from any other
+    ; disk of the same size and shape, which is how the volumes that have to
+    ; survive a reboot are found again.
+    mov eax, [0x7C00 + 0x1B8]
+    mov [BOOTINFO_ADDR + BI_DISK_SIG], eax
+
     mov dword [BOOTINFO_ADDR + BI_KERNEL_PHYS], KERNEL_PHYS
     mov eax, [kernel_bytes]
     mov [BOOTINFO_ADDR + BI_KERNEL_LEN], eax
@@ -251,9 +260,6 @@ finish_bootinfo:
     mov dword [BOOTINFO_ADDR + BI_ROOTFS_PHYS], ROOTFS_PHYS
     mov [BOOTINFO_ADDR + BI_ROOTFS_LEN], eax
 .no_rootfs:
-    xor eax, eax
-    mov al, [boot_drive]
-    mov [BOOTINFO_ADDR + BI_DISK_SIG], eax          ; refined once we read the MBR
     ret
 
 ; ---------------------------------------------------------------------------

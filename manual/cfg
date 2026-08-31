@@ -9,3 +9,11 @@ Keys are declared by the system; a name it does not know is an error,
 not a new setting. Changes reach whoever watches the domain at once.
 The store says plainly when the root is memory and a change will not
 outlive the boot.
+
+Settings are read from /etc first and then from /cfg on top, so a value
+nobody has changed is the one the system was built with and a value
+changed is the one that was chosen. Writing goes to /cfg alone, which is
+a volume on the boot medium rather than part of the root filesystem: it
+is what makes a choice outlive the machine being switched off. On a
+machine whose /cfg is not mounted, a change is refused rather than kept
+for a session and quietly lost.
