@@ -706,12 +706,12 @@ fn readMachineName() void {
 }
 
 fn drawFooter(area: eui.Rect) void {
-    // Saved settings take effect when the manager next starts, except the
-    // theme and the wall, which are live. Saying so beats a person wondering
-    // why the bar did not move.
+    // Everything here applies as soon as it is saved, the bar's position
+    // included. Saying so is worth a line: a person who has just moved the
+    // bar wants to know whether to expect it to move.
     const pressed = ctx.footer(
         area,
-        if (saved) "The bar moves when the manager next starts." else "Unsaved changes.",
+        if (saved) "Saved settings apply at once." else "Unsaved changes.",
         &.{ "Save", "Close" },
         0,
     );

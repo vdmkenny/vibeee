@@ -901,7 +901,7 @@ fn settingsChanged() bool {
 
     const wanted = config.current();
     desktop.mfact = @splat(wanted.masterFraction());
-    desktop.bounds = bar.contentArea(info.width, info.height);
+    desktop.setBounds(bar.contentArea(info.width, info.height));
 
     // The theme is the desktop's, not this process's: a client draws its own
     // window and has to be told what changed under it.

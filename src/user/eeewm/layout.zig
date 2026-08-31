@@ -214,6 +214,16 @@ pub const Desktop = struct {
     // Arrangement
     // -----------------------------------------------------------------------
 
+    /// Take a new area to tile in, and lay the windows out in it.
+    ///
+    /// One call rather than two, because the two have to happen together: a
+    /// bar that moves to the bottom while the windows keep the rectangles
+    /// they had at the top is a bar drawn underneath them.
+    pub fn setBounds(self: *Desktop, area: Rect) void {
+        self.bounds = area;
+        self.arrange();
+    }
+
     /// Give every tiled window on the current tag its rectangle.
     pub fn arrange(self: *Desktop) void {
         var buf: [MAX_WINDOWS]usize = undefined;
