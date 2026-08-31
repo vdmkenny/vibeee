@@ -65,7 +65,32 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     // What init told this shell, which is what it tells everything it
     // starts. Taken here because the frame is only in hand here.
     env.adopt(frame);
+
+    // `vsh -c "..."` runs one line and leaves, which is what a program
+    // asking a system to run something needs, and what a script needs to
+    // be a script. Anything else is a session.
+    const argc: usize = frame[0];
+    if (argc >= 3) {
+        const flag = str.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
+        if (str.eql(flag, "-c")) once(@ptrFromInt(frame[3]));
+    }
+
     shellMain();
+}
+
+/// Run one line, and leave with what it made of itself.
+///
+/// No prompt, no history, no claim on the console: this shell is not
+/// having a conversation, it is carrying out one instruction on behalf of
+/// something that could not take a line apart itself.
+fn once(line: [*:0]const u8) noreturn {
+    var words: [MAX_WORDS][]const u8 = undefined;
+    const count = str.splitWords(str.span(line), &words);
+    if (count == 0) sys.exit(0);
+
+    runLine(words[0..count]);
+    out.flush();
+    sys.exit(last_status);
 }
 
 fn shellMain() noreturn {

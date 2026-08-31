@@ -43,6 +43,10 @@ void *bsearch(const void *key, const void *base, size_t count, size_t size,
               int (*compare)(const void *, const void *));
 
 char *getenv(const char *name);
+
+/* Runs the line through the shell, which carries it out and leaves.
+ * system(NULL) answers nonzero: there is a command processor. */
+int system(const char *command);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 int putenv(char *entry);

@@ -96,6 +96,20 @@ export fn strcasecmp(a: [*:0]const u8, b: [*:0]const u8) callconv(.c) c_int {
     return @as(c_int, lower(a[i])) - @as(c_int, lower(b[i]));
 }
 
+/// The same, over at most `limit` characters. A prefix comparison that
+/// ignores case, which is how a file extension is checked.
+export fn strncasecmp(a: [*:0]const u8, b: [*:0]const u8, limit: usize) callconv(.c) c_int {
+    var i: usize = 0;
+    while (i < limit) : (i += 1) {
+        const left = lower(a[i]);
+        const right = lower(b[i]);
+        if (left != right) return @as(c_int, left) - @as(c_int, right);
+        // Both ended together, so everything asked about matched.
+        if (left == 0) return 0;
+    }
+    return 0;
+}
+
 export fn strchr(s: [*:0]const u8, value: c_int) callconv(.c) ?*const u8 {
     const wanted: u8 = @truncate(@as(c_uint, @bitCast(value)));
     var i: usize = 0;

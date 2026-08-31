@@ -27,6 +27,7 @@ char *strncat(char *dest, const char *src, size_t n);
 int strcmp(const char *a, const char *b);
 int strncmp(const char *a, const char *b, size_t n);
 int strcasecmp(const char *a, const char *b);
+int strncasecmp(const char *a, const char *b, size_t limit);
 char *strchr(const char *s, int value);
 char *strrchr(const char *s, int value);
 char *strstr(const char *haystack, const char *needle);

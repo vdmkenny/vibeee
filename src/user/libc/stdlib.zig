@@ -6,6 +6,7 @@
 //! declare all three.
 
 const std = @import("std");
+const sys = @import("sys");
 const errno = @import("errno.zig");
 const string = @import("string.zig");
 const str = @import("lib").str;
@@ -305,3 +306,17 @@ fn indexOf(text: []const u8, byte: u8) ?usize {
     return null;
 }
 
+
+/// Run a command through a command processor.
+///
+/// There is one: the shell, asked to carry out a single line and leave.
+/// A null command is the question "is there one at all", and this system
+/// can answer yes.
+export fn system(command: ?[*:0]const u8) callconv(.c) c_int {
+    const line = command orelse return 1;
+
+    const status = sys.spawn(SHELL, &.{ "vsh", "-c", string.spanOf(line) });
+    return if (status < 0) -1 else @intCast(status);
+}
+
+const SHELL = "/bin/vsh";
