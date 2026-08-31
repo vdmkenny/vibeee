@@ -10,6 +10,7 @@
 
 const dev = @import("dev.zig");
 const icmp = @import("lib").icmp;
+const hostname = @import("lib").hostname;
 const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
 const log = @import("ulib").log;
@@ -34,6 +35,45 @@ const Slot = struct {
 
 var slots: [MAX]Slot = @splat(.{});
 var count: usize = 0;
+
+/// The machine's name, and the bytes lwIP hands to a DHCP server.
+///
+/// One of each, because there is one machine: every interface gives the
+/// same answer to the same question, and lwIP keeps the pointer rather
+/// than the bytes, so what it points at has to outlive the interface.
+var chosen_name: hostname.Hostname = .{};
+var current_name: hostname.Hostname = .{};
+var name_bytes: [hostname.MAX + 1]u8 = @splat(0);
+
+/// Settle the name and point every interface at it.
+///
+/// Called both when configuration arrives and when an interface does,
+/// because the derived name comes from the first interface's own address
+/// and neither event is reliably first.
+fn refreshName() void {
+    const address: [6]u8 = if (count > 0)
+        if (slots[0].nic) |nic| nic.mac else @splat(0)
+    else
+        @splat(0);
+
+    const settled = chosen_name.resolve(address);
+    if (settled.eql(current_name)) return;
+
+    current_name = settled;
+    const text = settled.cString(&name_bytes);
+    for (slots[0..count]) |*slot| slot.netif.hostname = text.ptr;
+
+    log.begin("netd", .key);
+    out.text("this machine is ");
+    out.text(text);
+    if (settled.isDerived()) out.text(", from its own address");
+    log.end();
+}
+
+/// What the machine currently answers to, for whoever has to say it.
+pub fn name() []const u8 {
+    return std.mem.sliceTo(&name_bytes, 0);
+}
 
 pub fn init() void {
     lwip.lwip_init();
@@ -62,6 +102,7 @@ pub fn attach(nic: *dev.NicDev) void {
     if (count == 0) lwip.netif_set_default(&slot.netif);
     count += 1;
 
+    refreshName();
     if (nic.state.up) lwip.netif_set_link_up(&slot.netif);
 }
 
@@ -142,6 +183,9 @@ fn slotOf(nic: *dev.NicDev) ?*Slot {
 /// An interface no slot claims stays down: bringing traffic up is a choice
 /// somebody wrote down, never a side effect of having hardware.
 pub fn applyConfig(cfg: settings.Net) void {
+    chosen_name = settings.netMachine(cfg).hostname;
+    refreshName();
+
     // The comptime accessors unrolled into a runtime table, because which
     // slot governs which interface is decided at runtime by the binder.
     var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;

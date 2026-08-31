@@ -76,6 +76,25 @@ pub const Hostname = struct {
         return str.startsWith(self.slice(), PREFIX);
     }
 
+    /// The name to answer to: the one somebody chose, or the one derived
+    /// from the machine's own address when nobody did. One decision, in
+    /// one place, because every caller that needs a name needs the same
+    /// answer to the same question.
+    pub fn resolve(configured: Hostname, address: [6]u8) Hostname {
+        return if (configured.isEmpty()) derived(address) else configured;
+    }
+
+    /// The name as C wants it, written into the caller's buffer with its
+    /// terminator. Kept out of the struct because the pointer has to
+    /// outlive the call that hands it over, and the caller is the only one
+    /// who knows for how long.
+    pub fn cString(self: *const Hostname, buf: *[MAX + 1]u8) [:0]const u8 {
+        const text = self.slice();
+        @memcpy(buf[0..text.len], text);
+        buf[text.len] = 0;
+        return buf[0..text.len :0];
+    }
+
     pub fn eql(self: Hostname, other: Hostname) bool {
         return std.mem.eql(u8, self.slice(), other.slice());
     }
@@ -168,4 +187,27 @@ test "a name reads back as what it was written as" {
         try testing.expectEqualStrings(text, built.done());
         try testing.expect(name.eql(Hostname.parse(built.done()).?));
     }
+}
+
+test "the name to answer to is the chosen one, or the derived one" {
+    const card = [_]u8{ 0x00, 0x1B, 0x77, 0xA1, 0xB2, 0xC3 };
+
+    const nothing_chosen = Hostname.parse("") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("vibeee-a1b2c3", nothing_chosen.resolve(card).slice());
+
+    const chosen = Hostname.of("stairwell").?;
+    try testing.expectEqualStrings("stairwell", chosen.resolve(card).slice());
+}
+
+test "a name hands over to C with its terminator" {
+    var buf: [MAX + 1]u8 = undefined;
+    const name = Hostname.of("kitchen").?;
+    const text = name.cString(&buf);
+    try testing.expectEqualStrings("kitchen", text);
+    try testing.expectEqual(@as(u8, 0), buf[text.len]);
+
+    // A name with nothing in it is still a valid C string.
+    const empty = Hostname{};
+    try testing.expectEqualStrings("", empty.cString(&buf));
+    try testing.expectEqual(@as(u8, 0), buf[0]);
 }

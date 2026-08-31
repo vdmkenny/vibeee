@@ -44,7 +44,7 @@
  * callbacks on, because address and link changes are what policy and
  * narration hang from. */
 #define LWIP_SINGLE_NETIF 0
-#define LWIP_NETIF_HOSTNAME 0
+#define LWIP_NETIF_HOSTNAME 1
 #define LWIP_NETIF_STATUS_CALLBACK 1
 #define LWIP_NETIF_LINK_CALLBACK 1
 #define LWIP_NETIF_API 0

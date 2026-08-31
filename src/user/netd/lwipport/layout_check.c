@@ -18,9 +18,9 @@
 #define CHECK(name, expr) _Static_assert((expr), name)
 
 /* struct netif, for the fields the glue reads and writes. */
-CHECK("netif size", sizeof(struct netif) == 72);
-CHECK("netif loop_first", offsetof(struct netif, loop_first) == 60);
-CHECK("netif loop_cnt", offsetof(struct netif, loop_cnt_current) == 68);
+CHECK("netif size", sizeof(struct netif) == 76);
+CHECK("netif loop_first", offsetof(struct netif, loop_first) == 64);
+CHECK("netif loop_cnt", offsetof(struct netif, loop_cnt_current) == 72);
 CHECK("netif ip_addr", offsetof(struct netif, ip_addr) == 4);
 CHECK("netif netmask", offsetof(struct netif, netmask) == 8);
 CHECK("netif gw", offsetof(struct netif, gw) == 12);
@@ -31,12 +31,13 @@ CHECK("netif status_callback", offsetof(struct netif, status_callback) == 28);
 CHECK("netif link_callback", offsetof(struct netif, link_callback) == 32);
 CHECK("netif state", offsetof(struct netif, state) == 36);
 CHECK("netif client_data", offsetof(struct netif, client_data) == 40);
-CHECK("netif mtu", offsetof(struct netif, mtu) == 44);
-CHECK("netif hwaddr", offsetof(struct netif, hwaddr) == 46);
-CHECK("netif hwaddr_len", offsetof(struct netif, hwaddr_len) == 52);
-CHECK("netif flags", offsetof(struct netif, flags) == 53);
-CHECK("netif name", offsetof(struct netif, name) == 54);
-CHECK("netif num", offsetof(struct netif, num) == 56);
+CHECK("netif hostname", offsetof(struct netif, hostname) == 44);
+CHECK("netif mtu", offsetof(struct netif, mtu) == 48);
+CHECK("netif hwaddr", offsetof(struct netif, hwaddr) == 50);
+CHECK("netif hwaddr_len", offsetof(struct netif, hwaddr_len) == 56);
+CHECK("netif flags", offsetof(struct netif, flags) == 57);
+CHECK("netif name", offsetof(struct netif, name) == 58);
+CHECK("netif num", offsetof(struct netif, num) == 60);
 CHECK("one dhcp client slot", LWIP_NETIF_CLIENT_DATA_INDEX_DHCP == 0);
 CHECK("client slots", LWIP_NETIF_CLIENT_DATA_INDEX_MAX == 1);
 

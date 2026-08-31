@@ -121,6 +121,10 @@ pub const Netif = extern struct {
     state: ?*anyopaque = null,
     /// One client slot: the DHCP state, when the client runs on this netif.
     client_data: [1]?*anyopaque = @splat(null),
+    /// The name this machine gives in a lease request. lwIP keeps the
+    /// pointer rather than the bytes, so whatever it names has to outlive
+    /// the interface.
+    hostname: ?[*:0]const u8 = null,
     mtu: u16 = 0,
     hwaddr: [6]u8 = @splat(0),
     hwaddr_len: u8 = 0,
@@ -232,17 +236,18 @@ pub const DnsFoundFn = *const fn ([*:0]const u8, ?*const Ip4Addr, ?*anyopaque) c
 
 comptime {
     // The Zig half of the layout proof; layout_check.c is the C half.
-    if (@sizeOf(Netif) != 72) @compileError("netif mirror size drifted");
+    if (@sizeOf(Netif) != 76) @compileError("netif mirror size drifted");
     if (@offsetOf(Netif, "input") != 16 or
         @offsetOf(Netif, "linkoutput") != 24 or
         @offsetOf(Netif, "state") != 36 or
         @offsetOf(Netif, "client_data") != 40 or
-        @offsetOf(Netif, "mtu") != 44 or
-        @offsetOf(Netif, "hwaddr") != 46 or
-        @offsetOf(Netif, "flags") != 53 or
-        @offsetOf(Netif, "num") != 56 or
-        @offsetOf(Netif, "loop_first") != 60 or
-        @offsetOf(Netif, "loop_cnt_current") != 68)
+        @offsetOf(Netif, "hostname") != 44 or
+        @offsetOf(Netif, "mtu") != 48 or
+        @offsetOf(Netif, "hwaddr") != 50 or
+        @offsetOf(Netif, "flags") != 57 or
+        @offsetOf(Netif, "num") != 60 or
+        @offsetOf(Netif, "loop_first") != 64 or
+        @offsetOf(Netif, "loop_cnt_current") != 72)
     {
         @compileError("netif mirror fields drifted");
     }
