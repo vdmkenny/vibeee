@@ -16,6 +16,7 @@ pub const bounded = @import("bounded.zig");
 pub const Bounded = bounded.Bounded;
 pub const civil = @import("civil.zig");
 pub const cmdline = @import("cmdline.zig");
+pub const decimal = @import("decimal.zig");
 pub const font = @import("font.zig");
 pub const logo = @import("logo.zig");
 pub const ipv4 = @import("ipv4.zig");

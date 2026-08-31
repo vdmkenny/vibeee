@@ -69,6 +69,19 @@ static void formatting(void)
     snprintf(b, sizeof b, "%e|%g|%g", 1234.5, 0.0001, 100000.0);
     say("printf.float.form", b);
 
+    /* Exact halves, which are the cases the two rounding rules disagree
+     * about. All of these are representable, so the tie is real rather
+     * than an artefact of the nearest double: the answer C gives is the
+     * even neighbour, not the far one. */
+    snprintf(b, sizeof b, "%.0f|%.0f|%.0f|%.0f|%.0f", 0.5, 1.5, 2.5, 3.5, 4.5);
+    say("printf.float.ties", b);
+
+    snprintf(b, sizeof b, "%.0f|%.0f|%.0f", -0.5, -1.5, -2.5);
+    say("printf.float.ties.neg", b);
+
+    snprintf(b, sizeof b, "%.2f|%.2f|%.1f|%.1f", 0.125, 0.375, 0.25, 0.75);
+    say("printf.float.ties.frac", b);
+
     /* snprintf answers what it would have written, not what it did. */
     char small[4];
     int wanted = snprintf(small, sizeof small, "%s", "abcdefgh");
