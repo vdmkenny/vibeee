@@ -23,7 +23,7 @@ const font = @import("lib").font;
 const platform = @import("proto").platform;
 const ink = @import("ulib").ink;
 const registry = @import("tools/registry.zig");
-const pathFor = @import("ulib").command.pathFor;
+const cmdword = @import("ulib").command;
 const dir_mod = @import("ulib").dir;
 const edit = @import("ulib").edit;
 const out = @import("ulib").out;
@@ -179,8 +179,12 @@ const subcommands = [_]Subcommands{
 /// `/bin` rather than the working directory, because that is where programs
 /// live and a bare name is resolved there. A program installed today completes
 /// because it is in the directory, not because anybody listed it.
+///
+/// A word that says where a program is completes against that place instead,
+/// so what is offered and what would run stay the same answer.
 fn offerCommands(ctx: complete.Context, into: *complete.Collector) void {
-    _ = ctx;
+    if (cmdword.isPath(ctx.word)) return offerEntries(ctx, into, .any);
+
     for (builtins) |b| into.offer(b.name);
     for (registry.names) |name| into.offer(name);
     listInto(BIN_DIR, "", into, .any);
@@ -532,7 +536,7 @@ var short_buf: [256]u8 = @splat(0);
 /// Turn a bare command name into a path. A name with a slash in it is already
 /// one and is left alone; see `ulib.command`.
 fn resolvePath(name: []const u8, buf: []u8) []const u8 {
-    return pathFor(name, BIN_DIR, buf) orelse name;
+    return cmdword.pathFor(name, BIN_DIR, buf) orelse name;
 }
 
 

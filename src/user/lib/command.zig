@@ -8,6 +8,14 @@
 
 const std = @import("std");
 
+/// Whether `name` says where a program is rather than just naming one.
+///
+/// The same question decides what a word runs and what a half-typed word
+/// completes against, so both ask it here.
+pub fn isPath(name: []const u8) bool {
+    return std.mem.indexOfScalar(u8, name, '/') != null;
+}
+
 /// The path `name` should be run from, or null if it does not fit in `buf`.
 ///
 /// A path is returned as typed, whether absolute or relative: the kernel
@@ -15,7 +23,7 @@ const std = @import("std");
 /// there, in the one place that every syscall agrees on.
 pub fn pathFor(name: []const u8, bin_dir: []const u8, buf: []u8) ?[]const u8 {
     if (name.len == 0) return null;
-    if (std.mem.indexOfScalar(u8, name, '/') != null) return name;
+    if (isPath(name)) return name;
 
     if (bin_dir.len + name.len > buf.len) return null;
     @memcpy(buf[0..bin_dir.len], bin_dir);
@@ -25,6 +33,14 @@ pub fn pathFor(name: []const u8, bin_dir: []const u8, buf: []u8) ?[]const u8 {
 
 const testing = std.testing;
 const BIN = "/bin/";
+
+test "a word says where a program is only if it has a separator" {
+    try testing.expect(!isPath("doom"));
+    try testing.expect(!isPath(""));
+    try testing.expect(isPath("./doom"));
+    try testing.expect(isPath("/home/doom"));
+    try testing.expect(isPath("sub/prog"));
+}
 
 test "a bare name comes from the bin directory" {
     var buf: [64]u8 = undefined;
