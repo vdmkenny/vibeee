@@ -172,6 +172,9 @@ fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void 
             if (spec.precision) |limit| n = @min(n, limit);
             padded(out, text[0..n], spec, "", .text);
         },
+        'f', 'F' => real(out, @cVaArg(args, f64), spec, .decimal),
+        'e', 'E' => real(out, @cVaArg(args, f64), spec, .scientific),
+        'g', 'G' => general(out, @cVaArg(args, f64), spec),
         'p' => {
             const value = @intFromPtr(@cVaArg(args, ?*anyopaque));
             spec.alt = true;
@@ -184,6 +187,137 @@ fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void 
             out.put(verb);
         },
     }
+}
+
+/// Room for the longest thing a float becomes: the full decimal
+/// expansion of a double, plus a sign and a point.
+const FLOAT_MAX = std.fmt.float.bufferSize(.decimal, f64) + 2;
+
+/// A float, written the way C writes one. The digits themselves are
+/// `std.fmt.float`'s; what is here is C's defaults and C's padding.
+fn real(out: anytype, value: f64, spec: *Spec, mode: std.fmt.float.Mode) void {
+    var buf: [FLOAT_MAX]u8 = undefined;
+    padded(out, render(&buf, value, spec, mode), spec, signOf(value, spec), .text);
+}
+
+fn render(buf: []u8, value: f64, spec: *const Spec, mode: std.fmt.float.Mode) []const u8 {
+    // Six places unless asked otherwise, which is what C promises when a
+    // format says nothing.
+    return spell(buf, @abs(value), spec.precision orelse 6, mode);
+}
+
+/// The digits themselves, at a given precision.
+///
+/// Zig writes an exponent as short as it can, and C writes one with a
+/// sign and at least two figures. Rewriting the tail is cheaper and
+/// clearer than a second formatter.
+fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []const u8 {
+    var scratch: [FLOAT_MAX]u8 = undefined;
+    const written = std.fmt.float.render(&scratch, magnitude, .{
+        .mode = mode,
+        .precision = places,
+    }) catch
+    // Nothing a double holds overruns the buffer, but a caller asking
+    // for a hundred decimal places can. Saying so beats printing a
+    // number that is not the one asked about.
+        return "?";
+
+    if (mode == .decimal) {
+        @memcpy(buf[0..written.len], written);
+        return buf[0..written.len];
+    }
+
+    const at = std.mem.indexOfScalar(u8, written, 'e') orelse {
+        @memcpy(buf[0..written.len], written);
+        return buf[0..written.len];
+    };
+
+    const mantissa = written[0..at];
+    const exponent = std.fmt.parseInt(i32, written[at + 1 ..], 10) catch 0;
+
+    var built = str.Builder{ .buf = buf };
+    built.text(mantissa);
+    built.byte('e');
+    built.byte(if (exponent < 0) '-' else '+');
+    const size: u32 = @intCast(@abs(exponent));
+    if (size < 10) built.byte('0');
+    built.number(size);
+    return built.done();
+}
+
+/// `%g`: as many significant figures as asked for, in whichever notation
+/// is the tidier, with the trailing zeroes taken off.
+///
+/// The rule is the standard's rather than a guess: scientific when the
+/// exponent is below minus four or has reached the precision, decimal
+/// otherwise, and the precision counts significant figures rather than
+/// places after the point.
+fn general(out: anytype, value: f64, spec: *Spec) void {
+    const figures = @max(spec.precision orelse 6, 1);
+    const magnitude = @abs(value);
+
+    var buf: [FLOAT_MAX]u8 = undefined;
+    const exponent = exponentOf(magnitude);
+
+    const text = if (exponent < -4 or exponent >= @as(i32, @intCast(figures)))
+        spell(&buf, magnitude, figures - 1, .scientific)
+    else
+        spell(&buf, magnitude, @intCast(@as(i32, @intCast(figures)) - 1 - exponent), .decimal);
+
+    padded(out, trimmed(text), spec, signOf(value, spec), .text);
+}
+
+/// The power of ten a number sits at, taken from the notation that names
+/// it rather than from a logarithm, which rounds differently at the ends.
+fn exponentOf(magnitude: f64) i32 {
+    if (magnitude == 0) return 0;
+
+    var buf: [FLOAT_MAX]u8 = undefined;
+    const written = std.fmt.float.render(&buf, magnitude, .{
+        .mode = .scientific,
+        .precision = 0,
+    }) catch return 0;
+
+    const at = std.mem.indexOfScalar(u8, written, 'e') orelse return 0;
+    return std.fmt.parseInt(i32, written[at + 1 ..], 10) catch 0;
+}
+
+/// Trailing zeroes after a decimal point, and the point if nothing is
+/// left after it. What `%g` promises and `%f` does not.
+fn trimmed(text: []const u8) []const u8 {
+    const stop = std.mem.indexOfScalar(u8, text, 'e') orelse text.len;
+    const head = text[0..stop];
+    if (std.mem.indexOfScalar(u8, head, '.') == null) return text;
+
+    var end = head.len;
+    while (end > 0 and head[end - 1] == '0') end -= 1;
+    if (end > 0 and head[end - 1] == '.') end -= 1;
+
+    // The exponent, if there was one, comes back after the trimming.
+    if (stop == text.len) return text[0..end];
+    var joined: [FLOAT_MAX]u8 = undefined;
+    var built = str.Builder{ .buf = &joined };
+    built.text(text[0..end]);
+    built.text(text[stop..]);
+    return kept(built.done());
+}
+
+/// Somewhere for a trimmed number to live that outlives the builder.
+var trimmed_buf: [FLOAT_MAX]u8 = undefined;
+
+fn kept(text: []const u8) []const u8 {
+    const n = @min(text.len, trimmed_buf.len);
+    @memcpy(trimmed_buf[0..n], text[0..n]);
+    return trimmed_buf[0..n];
+}
+
+/// The sign is written by the padding rather than by the digits, so that
+/// zero-filling puts it before the zeroes and not after them.
+fn signOf(value: f64, spec: *const Spec) []const u8 {
+    if (std.math.signbit(value)) return "-";
+    if (spec.plus) return "+";
+    if (spec.space) return " ";
+    return "";
 }
 
 fn signed(out: anytype, value: c_long, spec: *Spec) void {
