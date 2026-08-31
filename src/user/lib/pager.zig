@@ -1,19 +1,22 @@
-//! The full-screen text viewer, shared by everything that shows a text a
-//! screen at a time: the pager, the manual, and one day the editor's
-//! reading half.
+//! The full-screen console: what every program that takes the whole screen
+//! needs, and the read-only viewer built on it.
 //!
-//! The caller owns the bytes and hands them over whole; this owns the
-//! screen, the line index, the keys and the status bar. Keys come from the
-//! keyboard directly rather than through standard input, because standard
-//! input is a line at a time and a viewer wants single keys. The claim is
-//! released when the process exits, so the shell gets the keyboard back on
-//! its own.
+//! Two layers. The lower one is the screen itself, which the pager, the
+//! manual and the editor all use the same way: take the screen, draw a band
+//! of rows, put a status bar on the last one, read a key. The upper one is
+//! `view`, a reader that shows a text and lets somebody move around in it.
+//!
+//! Keys come from the keyboard directly rather than through standard input,
+//! because standard input is a line at a time and a full-screen program
+//! wants single keys. The claim is released when the process exits, so the
+//! shell gets the keyboard back on its own.
 
 const sys = @import("sys");
 const console = @import("console.zig");
 const ink = @import("ink.zig");
 const out = @import("out.zig");
 const str = @import("lib").str;
+const text = @import("lib").text;
 
 /// What a viewer shows: whose text it is, the text itself, and whether the
 /// tail was dropped on the way in, which the bar then says rather than
@@ -31,13 +34,88 @@ var line_at: [4096]u32 = @splat(0);
 var lines: usize = 0;
 var shown: Content = undefined;
 
+/// Where the lines are is `lib.text`'s arithmetic, not this file's: a
+/// reader and an editor have to agree about what a line is, and the rule
+/// for the last one is exactly the sort that drifts when it is written
+/// twice.
+
 /// Form feed clears the console, which is the whole of the screen control
 /// needed here.
 const CLEAR = 0x0C;
 
 /// Widest console the status bar has to fill. The grid the kernel keeps is
 /// bounded too, and this is that bound.
-const MAX_COLUMNS = 128;
+pub const MAX_COLUMNS = 128;
+
+// ---------------------------------------------------------------------------
+// The screen
+// ---------------------------------------------------------------------------
+
+/// The screen a full-screen program draws on: how big it is, and how much of
+/// it is text once the status bar has its row.
+pub const Frame = struct {
+    columns: usize,
+    rows: usize,
+    /// Text rows, which is every row but the bar's.
+    window: usize,
+
+    pub fn of(size: console.Size) Frame {
+        return .{
+            .columns = size.columns,
+            .rows = size.rows,
+            .window = if (size.rows > 1) size.rows - 1 else 1,
+        };
+    }
+};
+
+pub fn frame() Frame {
+    return Frame.of(console.size());
+}
+
+/// Take the screen for drawing on, putting aside what was there.
+pub fn takeScreen() void {
+    console.takeScreen();
+}
+
+/// Give it back, and with it what was there before.
+pub fn giveBackScreen() void {
+    console.giveBackScreen();
+}
+
+/// Begin a frame: everything drawn after this replaces what was on screen.
+pub fn begin() void {
+    out.byte(CLEAR);
+}
+
+/// End it, with `text` on the status row.
+///
+/// The bar sits on the last row whether or not the text reached it, so it is
+/// always in the same place to look at, and it is set apart by reversing the
+/// colours rather than by picking one, which reads the same on any palette.
+pub fn end(bar_text: []const u8) void {
+    // Whatever the content was written in ends here. A line that set a
+    // colour and did not clear it would otherwise colour the bar, and
+    // reversing an inherited colour gives a bar in a different shade every
+    // screen.
+    ink.plain();
+    ink.reverse();
+    // Padded to one short of the width: filling the last cell would wrap the
+    // console onto another row and the bar would be two cells tall.
+    out.pad(bar_text, console.size().columns - 1);
+    ink.plain();
+    out.flush();
+}
+
+/// Wait for one key press, which is what a full-screen program's loop turns
+/// on. The read blocks in the kernel, so a program at rest costs nothing.
+pub fn key() sys.KeyEvent {
+    var events: [8]sys.KeyEvent = undefined;
+    while (true) {
+        for (sys.keyRead(&events, sys.FOREVER)) |event| {
+            if (event.pressed != 0) return event;
+        }
+    }
+}
 
 /// Show the content and hold the screen until the reader quits.
 ///
@@ -47,13 +125,10 @@ pub fn view(content: Content) void {
     shown = content;
     index();
 
-    console.takeScreen();
-    defer console.giveBackScreen();
+    takeScreen();
+    defer giveBackScreen();
 
-    const size = console.size();
-    // One row goes to the status line, which is what tells a reader whether
-    // there is more below.
-    const window = if (size.rows > 1) size.rows - 1 else 1;
+    const window = frame().window;
 
     var top: usize = 0;
     while (true) {
@@ -71,53 +146,24 @@ pub fn view(content: Content) void {
     }
 }
 
-/// Record where every line starts.
 fn index() void {
-    lines = 0;
-    var at: usize = 0;
-    while (at < shown.text.len and lines < line_at.len - 1) {
-        line_at[lines] = @intCast(at);
-        lines += 1;
-        while (at < shown.text.len and shown.text[at] != '\n') at += 1;
-        at += 1;
-    }
-    line_at[lines] = @intCast(shown.text.len);
+    lines = text.indexLines(shown.text, &line_at);
 }
 
 fn line(n: usize) []const u8 {
-    if (n >= lines) return "";
-    const from = line_at[n];
-    var to = line_at[n + 1];
-    // The index points at the next line's first byte, so step back over the
-    // separator rather than printing it.
-    if (to > from and shown.text[to - 1] == '\n') to -= 1;
-    return shown.text[from..to];
+    return text.lineAt(shown.text, &line_at, lines, n);
 }
 
 fn draw(top: usize, window: usize) void {
-    out.byte(CLEAR);
+    begin();
 
     var n: usize = 0;
     while (n < window and top + n < lines) : (n += 1) {
         out.text(line(top + n));
         out.byte('\n');
     }
-
-    // The status line sits on the last row whether or not the text reached
-    // it, so it is always in the same place to look at.
     while (n < window) : (n += 1) out.byte('\n');
 
-    // Whatever the text was written in ends here. A line that set a colour
-    // and did not clear it would otherwise colour the bar, and reversing an
-    // inherited colour gives a bar in a different shade every screen.
-    ink.plain();
-    status(top, window);
-    out.flush();
-}
-
-/// Where in the text the reader is, set apart by reversing the colours
-/// rather than by picking one, which reads the same on any palette.
-fn status(top: usize, window: usize) void {
     var buf: [MAX_COLUMNS]u8 = undefined;
     var bar = str.Builder{ .buf = &buf };
 
@@ -132,34 +178,26 @@ fn status(top: usize, window: usize) void {
     bar.text(if (top + window >= lines) "  end" else "  more");
     bar.text("   q to quit");
 
-    // Padded to one short of the width: filling the last cell would wrap the
-    // console onto another row and the bar would be two cells tall.
-    ink.reverse();
-    out.pad(bar.done(), console.size().columns - 1);
-    ink.plain();
+    end(bar.done());
 }
 
 const Command = enum { quit, up, down, page_up, page_down, top, bottom, none };
 
-/// Wait for a key and say what it means.
+/// Wait for a key and say what it means to a reader.
 fn command() Command {
-    var events: [8]sys.KeyEvent = undefined;
     while (true) {
-        // The read blocks in the kernel until a key arrives; a viewer at
-        // rest costs nothing.
-        for (sys.keyRead(&events, sys.FOREVER)) |event| {
-            if (event.pressed == 0) continue;
-            return switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
-                .q, .escape => .quit,
-                .down, .enter => .down,
-                .up => .up,
-                .space, .page_down => .page_down,
-                .b, .page_up => .page_up,
-                .home => .top,
-                .end => .bottom,
-                else => .none,
-            };
-        }
+        const event = key();
+        const meant: Command = switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
+            .q, .escape => .quit,
+            .down, .enter => .down,
+            .up => .up,
+            .space, .page_down => .page_down,
+            .b, .page_up => .page_up,
+            .home => .top,
+            .end => .bottom,
+            else => .none,
+        };
+        if (meant != .none) return meant;
     }
 }
 

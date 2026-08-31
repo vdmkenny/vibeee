@@ -1,0 +1,24 @@
+edit - change a file and write it back
+
+  edit <file>            open it, or start it if it is not there
+
+  arrows, Home, End      move; Ctrl+Home and Ctrl+End for the whole file
+  Page Up, Page Down     a screen at a time
+  Enter, Backspace, Del  the usual
+  Ctrl+S                 save
+  Ctrl+Q, Esc            leave
+
+Nothing is written until asked, so a file opened and looked at is a file
+left alone. The bar says which file, where the cursor is, and marks the
+name with a star while there is unsaved work; leaving with work unsaved
+asks once before it does.
+
+A file longer than the editor holds is opened read-only in effect: it
+says so, and saving is refused rather than writing back the head of a
+file and losing its tail.
+
+Tabs are typed as spaces. The console draws a tab as one cell, and a
+cursor counting it as several would sit somewhere the text is not.
+
+Accented characters arrive as whatever the current layout makes of the
+key, the same as everywhere else; `man vibeee` describes switching it.

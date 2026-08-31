@@ -52,5 +52,6 @@ The boot carries a line of flags, set where the image is written:
   noautomount            leave media where they are found; `mount`
                          still attaches anything by hand
 
-Long output reads through `page`. The boot's own messages are under
+`edit` changes a file and writes it back; `man edit` describes it. Long
+output reads through `page`. The boot's own messages are under
 `log`. `off` powers down; `reboot` restarts.

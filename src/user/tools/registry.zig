@@ -18,6 +18,7 @@ const files = @import("files.zig");
 const grep = @import("grep.zig");
 const hotkeys = @import("hotkeys.zig");
 const display_tool = @import("display.zig");
+const edit_tool = @import("edit.zig");
 const irq_tool = @import("irq.zig");
 const devices_tool = @import("devices.zig");
 const klog = @import("klog.zig");
@@ -76,6 +77,7 @@ pub const commands = [_]Command{
     .{ .name = "driver", .summary = manual.summaryOf("driver"), .run = &driver_tool.run },
     .{ .name = "commands", .summary = manual.summaryOf("commands"), .run = &listNames },
     .{ .name = "page", .summary = manual.summaryOf("page"), .run = &page.run },
+    .{ .name = "edit", .summary = manual.summaryOf("edit"), .run = &edit_tool.run },
     .{ .name = "mkdir", .summary = manual.summaryOf("mkdir"), .run = &files.mkdir },
     .{ .name = "tree", .summary = manual.summaryOf("tree"), .run = &tree.run },
     .{ .name = "cfg", .summary = manual.summaryOf("cfg"), .run = &cfg.run },
