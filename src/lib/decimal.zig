@@ -136,11 +136,14 @@ pub fn expand(value: f64) *const Expansion {
         out.digits[out.len] = '0';
         out.len += 1;
     }
-    for (frac_digits.slice()) |d| {
-        if (out.len >= MAX_DIGITS) break;
-        out.digits[out.len] = d;
-        out.len += 1;
-    }
+    frac_digits.textInto(out, frac_digits.len);
+
+    // Every binary fraction ends in a run of zeroes, because it is a
+    // multiple of a power of five written at a power of ten. They say
+    // nothing the value does not, and dropping them here means every
+    // later question about the fraction is asked of the digits that
+    // matter rather than of a tail of nothing.
+    while (out.len > out.point and out.digits[out.len - 1] == '0') out.len -= 1;
     return out;
 }
 
@@ -180,28 +183,29 @@ const Number = struct {
         }
     }
 
-    /// The digits most significant first, as characters.
-    fn slice(self: *const Number) []const u8 {
-        return self.digits[0..self.len];
-    }
-
-    fn copyInto(self: *const Number, out: *Expansion, count: usize) void {
-        var i = count;
+    /// Append `count` digits as characters, most significant first.
+    ///
+    /// A number is built least significant first, because that is the end
+    /// both the conversion and the multiplication work from, and it is
+    /// read from the other one. The digits are values while they are being
+    /// worked on and characters once they are written down, and this is
+    /// the one place that turns the first into the second.
+    fn textInto(self: *const Number, out: *Expansion, count: usize) void {
+        var i = @min(count, self.digits.len);
         while (i > 0) {
             i -= 1;
             if (out.len >= MAX_DIGITS) break;
             out.digits[out.len] = '0' + self.digits[i];
             out.len += 1;
         }
+    }
+
+    /// The same, for the whole part, which is what the point comes after.
+    fn copyInto(self: *const Number, out: *Expansion, count: usize) void {
+        self.textInto(out, count);
         out.point = out.len;
     }
 };
-
-comptime {
-    // `slice` hands back raw values, not characters; only `copyInto`
-    // turns them into text. Named so the difference is not a surprise.
-    _ = Number.slice;
-}
 
 /// Write a magnitude to `places` decimals, rounded the way C rounds:
 /// to the nearer, and a tie to whichever neighbour is even.
@@ -210,7 +214,7 @@ comptime {
 /// the value and not a shorter decimal that happens to read back as it.
 /// That is the whole difference between `0.1` and `0.2` for `%.1f` of a
 /// fifteen hundredths written in source.
-pub fn round(into: []u8, value: f64, places: usize) []const u8 {
+pub fn round(into: []u8, value: f64, places: usize) ?[]const u8 {
     const exact = expand(value);
     const whole = exact.whole();
     const frac = exact.fraction();
@@ -236,7 +240,11 @@ pub fn round(into: []u8, value: f64, places: usize) []const u8 {
 
     if (roundsUp(frac, places, built[0..used]) and carryOne(built[0..used])) {
         // Every digit was a nine, so the number is one longer than it
-        // was and the extra digit belongs to the whole part.
+        // was and the extra digit belongs to the whole part. There has to
+        // be somewhere to put it: a value that filled the working space
+        // exactly has no room to grow, and saying so beats writing past
+        // the end of it.
+        if (used == built.len) return null;
         var i = used;
         while (i > 0) : (i -= 1) built[i] = built[i - 1];
         built[0] = '1';
@@ -281,30 +289,36 @@ fn carryOne(digits: []u8) bool {
     return true;
 }
 
-/// The digits with a point put back into them.
-fn place(into: []u8, digits: []const u8, whole_len: usize, places: usize) []const u8 {
-    var n: usize = 0;
+/// The digits with a point put back into them, or null when `into` is not
+/// big enough to hold the answer.
+///
+/// Refused rather than truncated: a number cut short is still a number and
+/// reads as a different one, so a caller given "3." in place of "3.14" has
+/// no way to know it was shortchanged.
+fn place(into: []u8, digits: []const u8, whole_len: usize, places: usize) ?[]const u8 {
     const head = @min(whole_len, digits.len);
 
-    if (head == 0 and n < into.len) {
+    // A leading zero stands in when there is no whole part, and the point
+    // only exists when something comes after it.
+    const lead = if (head == 0) 1 else head;
+    const tail = if (places == 0) 0 else places + 1;
+    if (lead + tail > into.len) return null;
+
+    var n: usize = 0;
+    if (head == 0) {
         into[n] = '0';
         n += 1;
     }
     for (digits[0..head]) |d| {
-        if (n < into.len) {
-            into[n] = d;
-            n += 1;
-        }
+        into[n] = d;
+        n += 1;
     }
 
     if (places == 0) return into[0..n];
 
-    if (n < into.len) {
-        into[n] = '.';
-        n += 1;
-    }
-    var written: usize = 0;
-    while (written < places and n < into.len) : (written += 1) {
+    into[n] = '.';
+    n += 1;
+    for (0..places) |written| {
         into[n] = if (head + written < digits.len) digits[head + written] else '0';
         n += 1;
     }
@@ -317,7 +331,7 @@ fn rounded(value: f64, places: usize) []const u8 {
     const held = struct {
         var buf: [MAX_DIGITS + 2]u8 = undefined;
     };
-    return round(&held.buf, value, places);
+    return round(&held.buf, value, places) orelse "?";
 }
 
 test "a double is written out exactly, not as the shortest thing that reads back" {

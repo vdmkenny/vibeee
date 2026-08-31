@@ -11,6 +11,7 @@
 
 const stdio = @import("stdio.zig");
 const str = @import("lib").str;
+const exact = @import("lib").decimal;
 
 /// A stream. Counts what it hands over so the two destinations answer the
 /// same question.
@@ -212,6 +213,18 @@ fn render(buf: []u8, value: f64, spec: *const Spec, mode: std.fmt.float.Mode) []
 /// sign and at least two figures. Rewriting the tail is cheaper and
 /// clearer than a second formatter.
 fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []const u8 {
+    // Neither notation describes a value that is not a number. C spells
+    // these two out, and the digits below would otherwise expand the bit
+    // pattern as though it stood for an ordinary very large number.
+    if (std.math.isNan(magnitude)) return "nan";
+    if (std.math.isInf(magnitude)) return "inf";
+
+    // Fixed notation rounds the value itself, which is what C does. The
+    // shortest decimal that reads back as a double is a different number,
+    // and at a half it goes the other way, so the digits come from the
+    // exact expansion rather than from a shorter spelling of it.
+    if (mode == .decimal) return exact.round(buf, magnitude, places) orelse "?";
+
     var scratch: [FLOAT_MAX]u8 = undefined;
     const written = std.fmt.float.render(&scratch, magnitude, .{
         .mode = mode,
@@ -221,11 +234,6 @@ fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []c
     // for a hundred decimal places can. Saying so beats printing a
     // number that is not the one asked about.
         return "?";
-
-    if (mode == .decimal) {
-        @memcpy(buf[0..written.len], written);
-        return buf[0..written.len];
-    }
 
     const at = std.mem.indexOfScalar(u8, written, 'e') orelse {
         @memcpy(buf[0..written.len], written);

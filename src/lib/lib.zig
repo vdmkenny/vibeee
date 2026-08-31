@@ -73,3 +73,13 @@ test {
     _ = style;
     _ = syscalls;
 }
+
+test {
+    // A module that is only re-exported here is not analysed until
+    // something reaches for it, and `zig test` collects tests from the
+    // files it analyses. Without this the runner builds cleanly, reports
+    // success, and has run none of them: naming every declaration is the
+    // difference between a library that is tested and one that merely
+    // contains tests.
+    @import("std").testing.refAllDecls(@This());
+}
