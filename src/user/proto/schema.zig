@@ -12,6 +12,7 @@ const hostname = @import("lib").hostname;
 const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
 const keymaps = @import("keymaps");
+const rgb = @import("lib").rgb;
 const wifi = @import("lib").wifi;
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,10 @@ pub const Bar = enum { top, bottom };
 pub const Wm = struct {
     theme: Theme = .slate,
     bar: Bar = .top,
+    /// The desktop behind everything. Unset takes the theme's own, which is
+    /// what makes changing the theme change the wall as well until somebody
+    /// says otherwise.
+    wallpaper: rgb.Colour = .{},
     /// Master's share of the screen as a percentage, so the file holds a whole
     /// number rather than a decimal nobody types consistently.
     master: u7 = 58,

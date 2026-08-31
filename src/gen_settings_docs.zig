@@ -24,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const doc_path = if (args.len > 1) args[1] else "docs/settings.md";
     const manual_dir = if (args.len > 2) args[2] else "manual";
+    const etc_dir = if (args.len > 3) args[3] else "etc";
 
     var doc: std.ArrayList(u8) = .empty;
     defer doc.deinit(gpa);
@@ -31,6 +32,7 @@ pub fn main(init: std.process.Init) !void {
     var changed: usize = 0;
     if (try replaceFile(gpa, init.io, doc_path, doc.items)) changed += 1;
     changed += try updateManual(gpa, init.io, manual_dir);
+    try checkShipped(gpa, init.io, etc_dir);
     if (changed > 0) std.debug.print("settings docs: {d} file(s) rewritten\n", .{changed});
 }
 
@@ -83,6 +85,55 @@ fn writeReference(gpa: std.mem.Allocator, doc: *std.ArrayList(u8)) !void {
         }
         try doc.append(gpa, '\n');
     }
+}
+
+// ---------------------------------------------------------------------------
+// What the image ships with
+//
+// The files in `etc` are hand written, because the prose in them is worth
+// more than anything generated would be. What is not left to a person is
+// remembering to add a line when a key is added: a key with no entry there
+// is a setting nobody discovers, so the build says so rather than waiting
+// for somebody to notice.
+// ---------------------------------------------------------------------------
+
+fn checkShipped(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) !void {
+    var missing: usize = 0;
+
+    inline for (std.meta.fields(schema.Domains)) |domain| {
+        const path = try std.fs.path.join(gpa, &.{ dir_path, domain.name ++ ".cfg" });
+        defer gpa.free(path);
+
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 * 1024))) |source| {
+            defer gpa.free(source);
+            inline for (std.meta.fields(domain.type)) |key| {
+                if (!mentions(source, key.name)) {
+                    std.debug.print("{s}: no line for {s}.{s}\n", .{ path, domain.name, key.name });
+                    missing += 1;
+                }
+            }
+        } else |_| {
+            std.debug.print("{s}: the {s} settings ship without a file\n", .{ path, domain.name });
+            missing += 1;
+        }
+    }
+
+    if (missing > 0) return error.SettingNotShipped;
+}
+
+/// Whether a file has a line for `key`, set or left empty. A commented line
+/// does not count: the point is that somebody opening the file finds the
+/// setting, and a key hidden behind a hash is one they will not.
+fn mentions(source: []const u8, key: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line| {
+        const trimmed = str.trim(line);
+        if (!std.mem.startsWith(u8, trimmed, key)) continue;
+
+        const rest = str.trim(trimmed[key.len..]);
+        if (rest.len > 0 and rest[0] == '=') return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------

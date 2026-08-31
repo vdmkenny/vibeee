@@ -727,7 +727,7 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     );
 
     const groove = soundTrack(panel);
-    ui.paintSlider(surface, groove, .{ .min = 0, .max = 100 }, level.percent, .idle, false);
+    ui.paintSlider(surface, groove, .{ .min = 0, .max = 100 }, level.percent, .idle, false, .{});
 
     var text: [5]u8 = @splat(0);
     const spelled = percentText(&text, level.percent);

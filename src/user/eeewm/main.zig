@@ -127,10 +127,15 @@ fn wmMain() noreturn {
 // Painting
 // ---------------------------------------------------------------------------
 
+/// What the desktop is painted with: the wallpaper somebody chose, or the
+/// theme's own when nobody has. One question, asked wherever the ground
+/// behind the windows is drawn.
+fn wallpaper() u32 {
+    return config.current().wallpaper.orElse(theme.current().desktop);
+}
+
 /// Repaint everything.
 fn paint() void {
-    const t = theme.current();
-
     // Whatever the cursor was covering is about to be drawn over, so the saved
     // pixels are stale and putting them back later would paint a hole.
     cursor.invalidate();
@@ -151,7 +156,8 @@ fn paint() void {
         // behind it has to be there.
         if (w.transparency == 0) bare.subtract(w.area);
     }
-    for (bare.items()) |piece| screen.fill(piece, t.desktop);
+    const wall = wallpaper();
+    for (bare.items()) |piece| screen.fill(piece, wall);
 
     bar.paint(screen, info.width, info.height, &desktop);
 
@@ -238,7 +244,7 @@ fn refreshWindow(index: usize, damage: []const Rect) void {
         // A translucent window blends with what is behind it, so what is
         // behind has to be put back first. Blending onto the last frame of the
         // window itself would darken it a little more every time.
-        if (w.transparency != 0) screen.fill(on_screen, t.desktop);
+        if (w.transparency != 0) screen.fill(on_screen, wallpaper());
         clients.blit(screen, surfaces[index], content, on_screen, w.transparency);
     }
 }
@@ -312,7 +318,7 @@ fn paintWindow(index: usize, focused: bool) void {
         // Filled first only when the window is translucent, where the blend
         // needs a backdrop. An opaque one covers every pixel it is about to
         // write, and filling it grey first is a flash of grey.
-        if (w.transparency != 0) screen.fill(content, t.desktop);
+        if (w.transparency != 0) screen.fill(content, wallpaper());
         clients.blit(screen, surfaces[index], content, content, w.transparency);
         return;
     }

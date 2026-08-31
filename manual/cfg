@@ -29,6 +29,8 @@ Settings, generated from the schema: all
       slate | classic | paper | dusk
   wm.bar                    top
       top | bottom
+  wm.wallpaper              unset
+      #rrggbb; unset takes the theme's own
   wm.master                 58
       a number
 

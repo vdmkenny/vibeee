@@ -17,6 +17,8 @@ const out = @import("ulib").out;
 
 const wm = proto.wm;
 const sound = proto.audio;
+const rgb = @import("lib").rgb;
+const str = @import("lib").str;
 const theme = eui.theme;
 
 const store = proto.settings;
@@ -147,6 +149,88 @@ fn change() void {
     ctx.damage();
 }
 
+/// Three channels, a reading of what they make, and a square of it.
+///
+/// Returns where the next thing goes. The colour applies as it is dragged,
+/// because a wallpaper picker that showed the answer only after saving would
+/// be a picker nobody could use.
+fn wallpaper(area: eui.Rect) i32 {
+    const t = theme.current();
+    const row = t.control_height;
+    const pad = t.padding;
+
+    const swatch = eui.Rect{ .x = area.x, .y = area.y, .w = 72, .h = area.h };
+    const chosen = current.wallpaper.orElse(t.desktop);
+    ctx.surface.fill(swatch, chosen);
+    ctx.surface.frame(swatch, t.border);
+
+    var text: [8]u8 = undefined;
+    var spelled = str.Builder{ .buf = &text };
+    current.wallpaper.spell(&spelled);
+    ctx.label(
+        .{ .x = swatch.x, .y = swatch.bottom() + 2, .w = swatch.w, .h = 16 },
+        if (current.wallpaper.set) spelled.done() else "theme",
+    );
+
+    const left = swatch.right() + pad * 2;
+    const width = area.right() - left;
+
+    // Read out of the colour rather than kept beside it, so what the sliders
+    // show and what the wall is cannot come apart.
+    var channels = [_]u8{ current.wallpaper.r, current.wallpaper.g, current.wallpaper.b };
+    if (!current.wallpaper.set) {
+        channels = .{
+            @truncate(chosen >> 16),
+            @truncate(chosen >> 8),
+            @truncate(chosen),
+        };
+    }
+
+    // A label, the slider, and what it reads. The number is there because
+    // a colour is often copied from somewhere rather than found by eye.
+    const label_w: i32 = 14;
+    const value_w: i32 = 34;
+    const names = [_][]const u8{ "R", "G", "B" };
+    // Each channel in its own, muted to the palette rather than the pure
+    // primary: three identical bars are three bars nobody can tell apart at
+    // a glance, and a saturated red beside this accent is a different
+    // interface.
+    const tints = [_]u32{ 0xC04A3A, 0x3E9450, 0x3A6FD0 };
+
+    var moved = false;
+    for (&channels, 0..) |*channel, i| {
+        const top = area.y + @as(i32, @intCast(i)) * (row + pad);
+        ctx.label(.{ .x = left, .y = top + 4, .w = label_w, .h = 16 }, names[i]);
+
+        const at = eui.Rect{
+            .x = left + label_w,
+            .y = top,
+            .w = width - label_w - value_w - pad,
+            .h = row,
+        };
+
+        var reading: [4]u8 = undefined;
+        const digits = str.decimal(&reading, channel.*);
+        ctx.label(
+            .{ .x = at.right() + pad, .y = top + 4, .w = value_w, .h = 16 },
+            reading[0..digits],
+        );
+
+        const wanted = ctx.slider(at, .{ .min = 0, .max = 255 }, channel.*, .{ .fill = tints[i] });
+        if (wanted != channel.*) {
+            channel.* = @intCast(wanted);
+            moved = true;
+        }
+    }
+
+    if (moved) {
+        current.wallpaper = rgb.Colour.of(channels[0], channels[1], channels[2]);
+        change();
+    }
+
+    return area.bottom() + 18;
+}
+
 fn setButton(index: u8, down: bool) void {
     switch (index) {
         0 => buttons.left = down,
@@ -219,6 +303,7 @@ fn draw() void {
         .{ .x = pad, .y = y, .w = full.w - 84, .h = row },
         .{ .min = 0, .max = 100 },
         volume.percent,
+        .{},
     );
     if (ctx.toggle(.{ .x = pad + full.w - 78, .y = y, .w = 78, .h = row }, "Mute", volume.muted != 0)) {
         setVolume(volume.percent, volume.muted == 0);
@@ -226,6 +311,13 @@ fn draw() void {
         setVolume(@intCast(level), volume.muted != 0);
     }
     y += row + pad;
+
+    // The wall behind everything. Three channels rather than a list of
+    // colours: the panel is one flat colour and which one is a matter of
+    // taste that a list of six would only get near.
+    y = group(&y, full, "Wallpaper");
+    y = wallpaper(.{ .x = pad, .y = y, .w = full.w, .h = row * 3 + pad * 2 });
+    y += pad;
 
     // Saved settings take effect when the manager next starts, except the
     // theme, which is live. Saying so beats a person wondering why the bar did

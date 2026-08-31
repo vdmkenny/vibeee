@@ -27,6 +27,7 @@ so an image ships with the first and a machine remembers the second.
 |---|---|---|
 | `wm.theme` | slate \| classic \| paper \| dusk | `slate` |
 | `wm.bar` | top \| bottom | `top` |
+| `wm.wallpaper` | #rrggbb; unset takes the theme's own | unset |
 | `wm.master` | a number | `58` |
 
 ## net

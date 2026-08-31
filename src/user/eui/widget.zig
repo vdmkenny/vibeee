@@ -22,6 +22,7 @@
 const draw = @import("draw.zig");
 
 const bar = @import("slider.zig");
+const gauge = @import("meter.zig");
 const icons = @import("icon.zig");
 const theme = @import("theme.zig");
 const scroll_mod = @import("scroll.zig");
@@ -465,6 +466,14 @@ pub const Context = struct {
         return picked;
     }
 
+    /// How a slider is drawn, beyond where it is.
+    pub const SliderStyle = struct {
+        /// What the filled part takes. The accent unless a caller has a
+        /// reason to differ: three channels of a colour read apart when each
+        /// is drawn in its own, and read as one control when they are not.
+        fill: ?theme.Color = null,
+    };
+
     /// A value along a range: dragged with the pointer, nudged with the
     /// arrows when focused.
     ///
@@ -474,7 +483,7 @@ pub const Context = struct {
     ///
     /// Returns what the value is after this pass, so a caller stores what it
     /// gets back the way it does with `choice`.
-    pub fn slider(self: *Context, area: Rect, range: bar.Range, value: i32) i32 {
+    pub fn slider(self: *Context, area: Rect, range: bar.Range, value: i32, style: SliderStyle) i32 {
         const entry = self.slotFor(area) orelse return range.clamp(value);
         const it = self.interact(entry, area);
 
@@ -500,7 +509,7 @@ pub const Context = struct {
         if (self.needsPaint(entry, visual) or entry.detail != next) {
             entry.visual = visual;
             entry.detail = next;
-            paintSlider(self.surface, area, range, next, visual, it.focused);
+            paintSlider(self.surface, area, range, next, visual, it.focused, style);
             self.addDamage(area);
         }
 
@@ -619,10 +628,28 @@ pub const Context = struct {
 // how a button is drawn should not mean touching how it behaves.
 // ---------------------------------------------------------------------------
 
+/// A level read rather than set: the fill, the peak it has recently
+/// touched, and the mark where it stops being loud.
+///
+/// Painted rather than run through a pass, because nothing about it answers
+/// the pointer. Public for the same reason `paintSlider` is: the bar draws
+/// them too and they must be the same picture.
+pub fn paintMeter(surface: Surface, area: Rect, level: u8, peak: u8) void {
+    const t = theme.current();
+
+    surface.fill(area, t.surface_pressed);
+    surface.frame(area, t.line);
+    surface.fill(gauge.fill(area, level), if (gauge.over(level)) t.warning else t.accent);
+    // The scale mark under the peak, so a peak sitting on the limit is still
+    // legible as a peak.
+    surface.fill(gauge.limit(area), t.warning);
+    surface.fill(gauge.peak(area, peak), if (gauge.over(peak)) t.warning else t.text);
+}
+
 /// Public because a slider is wanted in places that have no widget pass to
 /// run it: the window manager draws one in a bar menu and reads the pointer
 /// itself, and it must be the same picture as the one an application gets.
-pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, visual: Visual, focused: bool) void {
+pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, visual: Visual, focused: bool, style: Context.SliderStyle) void {
     const t = theme.current();
 
     // The groove, then what is behind the knob, then the knob. Nothing is
@@ -630,7 +657,7 @@ pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, v
     const groove = bar.track(area);
     surface.fill(groove, t.surface_pressed);
     surface.frame(groove, t.line);
-    surface.fill(bar.filled(area, range, value), t.accent);
+    surface.fill(bar.filled(area, range, value), style.fill orelse t.accent);
 
     const grip = bar.knob(area, range, value);
     surface.fill(grip, switch (visual) {
