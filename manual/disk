@@ -8,10 +8,10 @@ sticks and cards are, is mounted as the whole disk rather than as a
 partition of one. The mounted column says where each went.
 
 The boot medium carries three volumes: the first holds the system, the
-second is mounted at /cfg and keeps the settings, and the third at /data
-keeps files. They are found by the signature in the medium's own
-partition table, so a machine with several disks attaches the one it
-actually booted from.
+second is mounted at /cfg and keeps the settings, and the third is /home
+itself. They are found by the signature in the medium's own partition
+table, so a machine with several disks attaches the one it actually
+booted from.
 
 A disk on a bus the kernel does not drive itself, such as one on USB,
 appears here like any other once its driver offers it. It arrives under

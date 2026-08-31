@@ -302,8 +302,12 @@ fn registerRootfs(bi: *const bootinfo.BootInfo) ?*const block.Device {
 
 /// Where the boot medium's own volumes go, in partition order after the
 /// first. The first carries the loader and the system; these two are what
-/// a machine remembers by.
-const SYSTEM_MOUNTS = [_][]const u8{ "/cfg", "/data" };
+/// a machine remembers by: what it was told, and what was left in it.
+///
+/// Home is the volume rather than a directory in the root filesystem,
+/// because the root filesystem is rebuilt from the medium at every boot
+/// and a home that empties itself overnight is not one.
+const SYSTEM_MOUNTS = [_][]const u8{ "/cfg", "/home" };
 
 /// The names of the boot medium's second and third partitions, if it has
 /// them. Found by the signature the loader read, so a machine with several

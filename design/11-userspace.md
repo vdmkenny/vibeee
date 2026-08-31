@@ -25,7 +25,7 @@ Budget shares claimed here: userspace (excl. GUI subsystem, incl. rootfs skeleto
 
 ## 2. Hardware facts used (confidence per research reports)
 
-- Boot medium is the internal USB SD reader (ENE UB6225, 0951:1606, USB MSC) → **/cfg and /data arrive only after usbd is up**; init must gate mounts on a ublk provider, and usbd crash must not permanently unmount them [HIGH, peripherals §9]. *Built*: the medium carries P2 `/cfg` and P3 `/data`, found by the disk signature the loader records and mounted by the kernel's boot pass. On a PATA or emulated medium they are there immediately; on the SD reader they will arrive with the volume usbd offers, which is the same block-layer path.
+- Boot medium is the internal USB SD reader (ENE UB6225, 0951:1606, USB MSC) → **/cfg and /data arrive only after usbd is up**; init must gate mounts on a ublk provider, and usbd crash must not permanently unmount them [HIGH, peripherals §9]. *Built*: the medium carries P2 `/cfg` and P3 `/home`, found by the disk signature the loader records and mounted by the kernel's boot pass. Home is the volume itself rather than a directory in the root filesystem, so the shell starts in something that outlives a boot. On a PATA or emulated medium they are there immediately; on the SD reader they will arrive with the volume usbd offers, which is the same block-layer path.
 - SSD variant: PATA secondary master 0x170/IRQ15, 28-bit LBA, small random writes 1–3 MB/s → config writes are rare, small, atomic (tmp+fsync+rename); no swap; /tmp is RAM [HIGH, core §4].
 - Fn+F2 **power-gates the wifi PCIe slot**, device hot-unplugs; state persists across reboots [HIGH, quirks §3]. devmgd must treat PCI as (rarely) hot-pluggable and re-attach to a *running* netd.
 - Camera eb1a:2761 is BIOS-default-disabled + ACPI CAMS-gated [HIGH, quirks §3] → devmgd/policyd expose an enable path; absence of the device is normal.
@@ -44,7 +44,7 @@ kernel ── spawns /sbin/init (PID 1, only pre-granted handles: klog, vfs-root
         ├─ spawns devmgd ──┬ sys_pci_table() → match /drivers/*.drv → "spawn netd/usbd/sndd" → init
         │                  └ /svc/usb.events (from usbd) → USB matches / uif delegation
         ├─ spawns policyd  (power button→shutdown, lid→sleep policy, battery warnings, camera toggle)
-        ├─ mounts /cfg /data  (VFS mount-by-tag; blocks until ublk or PATA provider appears)
+        ├─ mounts /cfg /home  (VFS mount-by-tag; blocks until ublk or PATA provider appears)
         ├─ spawns gui (last; gated on display+input only, config applied late)
         └─ supervises all: restart/backoff/crash-loop/watchdog; shutdown = reverse topo order
 apps/CLI ── eeelibc (static) ── SYSENTER syscalls + channels to netd/sndd/init

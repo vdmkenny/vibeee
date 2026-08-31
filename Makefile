@@ -55,8 +55,8 @@ IMAGE    := $(BUILD)/vibeee.img
 RESERVED_MB   ?= 16
 PART1_MB      ?= 16
 CFG_MB        ?= 16
-DATA_MB       ?= 16
-IMAGE_MB      ?= $(shell expr $(RESERVED_MB) + $(PART1_MB) + $(CFG_MB) + $(DATA_MB))
+HOME_MB       ?= 16
+IMAGE_MB      ?= $(shell expr $(RESERVED_MB) + $(PART1_MB) + $(CFG_MB) + $(HOME_MB))
 # Boot parameters baked into the image; the SD path has no equivalent of
 # QEMU's -append, so they travel in the stage2 header.
 CMDLINE  ?=
@@ -92,9 +92,9 @@ PART1_SECTORS := $(shell expr $(PART1_MB) \* 2048)
 CFG_LBA       := $(shell expr $(PART1_LBA) + $(PART1_SECTORS))
 CFG_OFFSET    := $(shell expr $(CFG_LBA) \* 512)
 CFG_SECTORS   := $(shell expr $(CFG_MB) \* 2048)
-DATA_LBA      := $(shell expr $(CFG_LBA) + $(CFG_SECTORS))
-DATA_OFFSET   := $(shell expr $(DATA_LBA) \* 512)
-DATA_SECTORS  := $(shell expr $(DATA_MB) \* 2048)
+HOME_LBA      := $(shell expr $(CFG_LBA) + $(CFG_SECTORS))
+HOME_OFFSET   := $(shell expr $(HOME_LBA) \* 512)
+HOME_SECTORS  := $(shell expr $(HOME_MB) \* 2048)
 
 KERNEL_ELF := zig-out/bin/vibeee.elf
 USER_INIT  := zig-out/bin/init
@@ -186,7 +186,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
-	@for d in bin etc lib lib/drivers tmp home media cfg data; do $(MMD) -i $@ ::/$$d; done
+	@for d in bin etc lib lib/drivers tmp home media cfg; do $(MMD) -i $@ ::/$$d; done
 	@if [ "$(MANUAL)" = "yes" ]; then $(MMD) -i $@ ::/doc; fi
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
@@ -211,15 +211,13 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@if [ "$(MANUAL)" = "yes" ]; then \
 		for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done; \
 	fi
-	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
-	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 
 $(IMAGE): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(MKIMAGE) $(ROOTFS_IMG)
 ifeq ($(ARCH),arm)
 	$(error $(IMAGE) is x86-only today; for arm use: make qemu)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(DATA_MB)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB)
 	@$(MAKE) --no-print-directory populate IMG=$@
 endif
 
@@ -231,10 +229,14 @@ populate: kernel
 	@$(MFORMAT) -i $(IMG)@@$(PART1_OFFSET) -F -T $(PART1_SECTORS) -v VIBEEE ::
 	@echo "vibeee $(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/version.txt
 	@$(MCOPY) -i $(IMG)@@$(PART1_OFFSET) -o $(BUILD)/version.txt ::/version.txt
-	@# The two that outlive a boot. Formatted empty: what goes in them is
-	@# written by the machine, not by the build.
+	@# The two that outlive a boot: what the machine was told, and what was
+	@# left in it. The settings volume starts empty, because everything in it
+	@# is a choice somebody made. Home gets the one file a new card should
+	@# have in it.
 	@$(MFORMAT) -i $(IMG)@@$(CFG_OFFSET) -F -T $(CFG_SECTORS) -v VIBEEECFG ::
-	@$(MFORMAT) -i $(IMG)@@$(DATA_OFFSET) -F -T $(DATA_SECTORS) -v VIBEEEDATA ::
+	@$(MFORMAT) -i $(IMG)@@$(HOME_OFFSET) -F -T $(HOME_SECTORS) -v VIBEEEHOME ::
+	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
+	@$(MCOPY) -i $(IMG)@@$(HOME_OFFSET) -o $(BUILD)/readme.txt ::/readme.txt
 
 # ---------------------------------------------------------------------------
 # Running
@@ -265,7 +267,7 @@ ifeq ($(ARCH),arm)
 	$(error $(DEV_IMAGE) is x86-only today; for arm use: make qemu)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) "$(DEV_CMDLINE)" $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(DATA_MB)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB)
 	@$(MAKE) --no-print-directory populate IMG=$(DEV_IMAGE)
 endif
 
@@ -354,7 +356,7 @@ ifeq ($(ARCH),arm)
 	$(error qemu-panic is x86-only today)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-panic.img $(IMAGE_MB) panictest $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(DATA_MB)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB)
 	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-panic.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-panic.img
 endif

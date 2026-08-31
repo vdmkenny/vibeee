@@ -18,7 +18,7 @@
 //!
 //!   P1  boot and system   what an updater writes a new kernel into
 //!   P2  /cfg              settings, which is what makes a choice stick
-//!   P3  /data             files, which is what makes work stick
+//!   P3  /home             files, which is what makes work stick
 //!
 //! Their sizes come from the caller, so the build has one place that says
 //! how big anything is and this has none.
@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 5) {
         std.debug.print(
             \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img>
-            \\               [size_mb] [cmdline] [rootfs.img] [p1_mb] [cfg_mb] [data_mb]
+            \\               [size_mb] [cmdline] [rootfs.img] [p1_mb] [cfg_mb] [home_mb]
             \\
         , .{});
         return error.Usage;
@@ -160,7 +160,7 @@ pub fn main(init: std.process.Init) !void {
         \\  kernel  {d:>7} B  ({d} sectors at LBA {d})
         \\  part 1  FAT32 at LBA {d}, {d} MiB   boot and system
         \\  part 2  FAT32 at LBA {d}, {d} MiB   /cfg
-        \\  part 3  FAT32 at LBA {d}, {d} MiB   /data
+        \\  part 3  FAT32 at LBA {d}, {d} MiB   /home
         \\  total   {d} MiB
         \\  rootfs  {d:>7} B  ({d} sectors at LBA {d})
         \\  cmdline "{s}"

@@ -219,11 +219,13 @@ and exercised on every boot.
 | Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
 **A machine that remembers.** The boot medium carries three volumes: the system,
-`/cfg` and `/data`. The loader records the medium's own partition signature, so the
-kernel attaches the disk it actually booted from rather than whichever one it found
-first, and settings are read from `/etc` and then from `/cfg` on top: a value nobody
-changed is what the system was built with, and one that was changed outlives the power
-being cut. Verified across a clean shutdown and two reboots, and read back off the
+`/cfg`, and `/home` itself. The loader records the medium's own partition signature, so
+the kernel attaches the disk it actually booted from rather than whichever one it found
+first. Settings are read from `/etc` and then from `/cfg` on top: a value nobody changed
+is what the system was built with, and one that was changed outlives the power being
+cut. Home is a volume rather than a directory in the root filesystem, because that
+filesystem is rebuilt from the medium at every boot and a home that empties itself
+overnight is not one. Verified across clean shutdowns and reboots, and read back off the
 image from outside.
 
 **M1 is complete** and M2 is underway: wired networking is done on the machine through
@@ -238,9 +240,9 @@ suspend. M3 owes the GUI apps parked there.
 
 ## Known gaps
 
-- `/home` and `/tmp` are part of the root image, which is rebuilt from the boot medium
-  every time, so files put there are gone at the next boot. `/cfg` and `/data` persist;
-  a home directory that does is still owed.
+- `/etc` and `/tmp` are part of the root image, which is rebuilt from the boot medium
+  every time. That is what `/etc` is for; `/tmp` is named for it. Everything a person
+  writes goes to `/home`, which persists.
 - **The final power cut.** Power off stops every service, flushes, reaches `_PTS` and
   writes the sleep state; the panel goes dark and the power LED stays on, so the SLP_TYP
   transition on this machine is not finished. What it needs after a formed `_S5_` request
