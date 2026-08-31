@@ -17,3 +17,95 @@ a volume on the boot medium rather than part of the root filesystem: it
 is what makes a choice outlive the machine being switched off. On a
 machine whose /cfg is not mounted, a change is refused rather than kept
 for a session and quietly lost.
+
+Settings, generated from the schema: all
+
+  [input]
+  input.keymap              us_intl
+      us_intl | be_azerty
+
+  [wm]
+  wm.theme                  classic
+      classic | paper | dusk
+  wm.bar                    top
+      top | bottom
+  wm.layout                 tall
+      tall | wide | monocle
+  wm.master                 58
+      a number
+
+  [net]
+  net.hostname              unset
+      letters, digits and hyphens; unset takes vibeee-<address>
+  net.if0_match             ether
+      a class (ether, wifi), a driver name, a bus location, or unset
+  net.if0_enabled           true
+      true | false
+  net.if0_address           unset
+      an address and prefix, a.b.c.d/nn; unset asks DHCP
+  net.if0_gateway           unset
+      an address, a.b.c.d; unset takes what the lease offers
+  net.if0_dns               unset
+      up to two addresses, comma separated
+  net.if0_ssid              unset
+      a network name, up to 32 characters
+  net.if0_psk               unset
+      a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if0_regdomain         conservative
+      conservative | fcc | etsi | mkk | unrestricted
+  net.if0_txpower           regulatory
+      regulatory | max | a number of dBm
+  net.if1_match             wifi
+      a class (ether, wifi), a driver name, a bus location, or unset
+  net.if1_enabled           false
+      true | false
+  net.if1_address           unset
+      an address and prefix, a.b.c.d/nn; unset asks DHCP
+  net.if1_gateway           unset
+      an address, a.b.c.d; unset takes what the lease offers
+  net.if1_dns               unset
+      up to two addresses, comma separated
+  net.if1_ssid              unset
+      a network name, up to 32 characters
+  net.if1_psk               unset
+      a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if1_regdomain         conservative
+      conservative | fcc | etsi | mkk | unrestricted
+  net.if1_txpower           regulatory
+      regulatory | max | a number of dBm
+  net.if2_match             unset
+      a class (ether, wifi), a driver name, a bus location, or unset
+  net.if2_enabled           false
+      true | false
+  net.if2_address           unset
+      an address and prefix, a.b.c.d/nn; unset asks DHCP
+  net.if2_gateway           unset
+      an address, a.b.c.d; unset takes what the lease offers
+  net.if2_dns               unset
+      up to two addresses, comma separated
+  net.if2_ssid              unset
+      a network name, up to 32 characters
+  net.if2_psk               unset
+      a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if2_regdomain         conservative
+      conservative | fcc | etsi | mkk | unrestricted
+  net.if2_txpower           regulatory
+      regulatory | max | a number of dBm
+  net.if3_match             unset
+      a class (ether, wifi), a driver name, a bus location, or unset
+  net.if3_enabled           false
+      true | false
+  net.if3_address           unset
+      an address and prefix, a.b.c.d/nn; unset asks DHCP
+  net.if3_gateway           unset
+      an address, a.b.c.d; unset takes what the lease offers
+  net.if3_dns               unset
+      up to two addresses, comma separated
+  net.if3_ssid              unset
+      a network name, up to 32 characters
+  net.if3_psk               unset
+      a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if3_regdomain         conservative
+      conservative | fcc | etsi | mkk | unrestricted
+  net.if3_txpower           regulatory
+      regulatory | max | a number of dBm

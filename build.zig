@@ -515,6 +515,43 @@ pub fn build(b: *std.Build) void {
     key_header.has_side_effects = true;
     b.getInstallStep().dependOn(&key_header.step);
 
+    // The settings reference, projected from the schema onto docs/settings.md
+    // and onto every manual page that asks for a domain. The schema imports
+    // nothing that talks to the kernel, which is what lets it be read here.
+    const docs_lib = b.createModule(.{
+        .root_source_file = b.path("src/lib/lib.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const host_keymaps = b.createModule(.{
+        .root_source_file = b.path("src/keymaps/registry.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{.{ .name = "lib", .module = docs_lib }},
+    });
+    const settings_docs = b.addRunArtifact(b.addExecutable(.{
+        .name = "gen-settings-docs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_settings_docs.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .imports = &.{
+                .{ .name = "lib", .module = docs_lib },
+                .{ .name = "keymaps", .module = host_keymaps },
+            },
+        }),
+    }));
+    settings_docs.addArg("docs/settings.md");
+    settings_docs.addArg("manual");
+    settings_docs.has_side_effects = true;
+    // On every build, like the layering check and for the same reason: a
+    // reference that has to be remembered is one that goes stale. It
+    // writes only what changed, so a build that alters nothing leaves the
+    // tree alone.
+    b.getInstallStep().dependOn(&settings_docs.step);
+    b.step("settings-docs", "Regenerate docs/settings.md and the manual's key lists")
+        .dependOn(&settings_docs.step);
+
     const syscall_docs = b.addRunArtifact(b.addExecutable(.{
         .name = "gen-syscall-docs",
         .root_module = b.createModule(.{

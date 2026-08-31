@@ -80,6 +80,8 @@ pub const Hostname = struct {
         return std.mem.eql(u8, self.slice(), other.slice());
     }
 
+    pub const accepts = "letters, digits and hyphens; unset takes " ++ PREFIX ++ "<address>";
+
     /// Nothing written means no name of one's own, which the caller reads
     /// as the derived one. A name that breaks the rules is refused rather
     /// than repaired: a machine quietly answering to something other than

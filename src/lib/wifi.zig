@@ -257,6 +257,8 @@ pub const Ssid = struct {
         return self.len == 0;
     }
 
+    pub const accepts = "a network name, up to 32 characters";
+
     /// Nothing written is no network named, which is how a slot says it
     /// has nothing to join rather than that it wants a hidden one.
     pub fn parse(text: []const u8) ?Ssid {
@@ -312,6 +314,8 @@ pub const Psk = union(enum) {
 
     pub const KEY_BYTES = 32;
     const HEX_DIGITS = KEY_BYTES * 2;
+
+    pub const accepts = "a passphrase of 8 to 63 characters, or 64 hex digits";
 
     pub fn parse(text: []const u8) ?Psk {
         const trimmed = str.trim(text);
@@ -567,6 +571,8 @@ pub const Regulatory = union(enum) {
         };
     }
 
+    pub const accepts = "conservative | fcc | etsi | mkk | unrestricted";
+
     pub fn parse(text: []const u8) ?Regulatory {
         const trimmed = str.trim(text);
         if (trimmed.len == 0) return .conservative;
@@ -617,6 +623,8 @@ pub const TxPower = union(enum) {
     pub fn exceeds(self: TxPower, plan: Regulatory) bool {
         return self.resolve(plan).half_dbm > plan.limit().half_dbm;
     }
+
+    pub const accepts = "regulatory | max | a number of dBm";
 
     pub fn parse(text: []const u8) ?TxPower {
         const trimmed = str.trim(text);

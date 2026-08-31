@@ -56,6 +56,8 @@ pub const Match = union(enum) {
         };
     }
 
+    pub const accepts = "a class (ether, wifi), a driver name, a bus location, or unset";
+
     pub fn parse(text: []const u8) ?Match {
         const trimmed = str.trim(text);
         if (trimmed.len == 0) return .none;

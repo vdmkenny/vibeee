@@ -26,6 +26,8 @@ pub const Cidr = packed struct(u40) {
         return ~(@as(u32, 0xFFFF_FFFF) >> @intCast(self.prefix));
     }
 
+    pub const accepts = "an address and prefix, a.b.c.d/nn; unset asks DHCP";
+
     pub fn parse(dotted: []const u8) ?Cidr {
         const slash = std.mem.indexOfScalar(u8, dotted, '/') orelse return null;
         const addr = ipv4Parse(dotted[0..slash]) orelse return null;
@@ -52,6 +54,8 @@ pub const Maybe = packed struct(u32) {
         return self.addr != 0;
     }
 
+    pub const accepts = "an address, a.b.c.d; unset takes what the lease offers";
+
     pub fn parse(dotted: []const u8) ?Maybe {
         if (str.trim(dotted).len == 0) return .{};
         const addr = ipv4Parse(str.trim(dotted)) orelse return null;
@@ -73,6 +77,8 @@ pub const Pair = packed struct(u64) {
     pub fn isSet(self: Pair) bool {
         return self.first != 0;
     }
+
+    pub const accepts = "up to two addresses, comma separated";
 
     pub fn parse(listed: []const u8) ?Pair {
         if (str.trim(listed).len == 0) return .{};
