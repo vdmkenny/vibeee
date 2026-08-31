@@ -763,7 +763,12 @@ pub fn fingerprint(bytes: []const u8) i32 {
     return h.done();
 }
 
-pub const ROW_HEIGHT: i32 = 19;
+/// How tall one row of a menu is. A theme value rather than a constant,
+/// because it is a decision about how the interface feels rather than about
+/// what fits.
+pub fn rowHeight() i32 {
+    return theme.current().menu_row_height;
+}
 
 /// One row. A separator is a row that cannot be chosen rather than a special
 /// case in the caller: the keyboard has to skip it, the pointer has to ignore
@@ -789,7 +794,15 @@ pub const MenuItem = struct {
 
 /// The picture column's width when a menu has one: the icon and the gap
 /// after it.
-const MARK_WIDTH: i32 = @as(i32, @intCast(icons.WIDTH)) + 6;
+/// The space between one thing in a row and the next: a picture and its
+/// label, a slider and the number beside it. One value, so a row assembled
+/// in two places reads as one row.
+pub const GAP: i32 = 8;
+
+/// The picture column: the icon and the gap after it. Public because the
+/// same shape indents anything that puts a picture before its contents, and
+/// two of them measured separately drift.
+pub const MARK_WIDTH: i32 = @as(i32, @intCast(icons.WIDTH)) + GAP;
 
 pub const Menu = struct {
     /// Which row is highlighted. Survives between passes: a menu that forgot
@@ -813,7 +826,7 @@ pub const Menu = struct {
             .x = 0,
             .y = 0,
             .w = width,
-            .h = @as(i32, @intCast(count)) * ROW_HEIGHT + 2,
+            .h = @as(i32, @intCast(count)) * rowHeight() + 2,
         };
     }
 
@@ -843,9 +856,9 @@ pub const Menu = struct {
                 // characters: it is a rule, not text, and it should not look
                 // like something that could be chosen.
                 surface.fill(.{
-                    .x = line.x + t.padding,
+                    .x = line.x + t.menu_padding,
                     .y = line.y + @divTrunc(line.h, 2),
-                    .w = line.w - t.padding * 2,
+                    .w = line.w - t.menu_padding * 2,
                     .h = 1,
                 }, t.line);
                 continue;
@@ -860,7 +873,7 @@ pub const Menu = struct {
 
             if (item.mark) |which| {
                 clipped.icon(
-                    line.x + t.padding,
+                    line.x + t.menu_padding,
                     line.y + @divTrunc(line.h - @as(i32, @intCast(icons.HEIGHT)), 2),
                     which,
                     ink,
@@ -868,7 +881,7 @@ pub const Menu = struct {
             }
 
             clipped.text(
-                line.x + t.padding + if (indented) MARK_WIDTH else 0,
+                line.x + t.menu_padding + if (indented) MARK_WIDTH else 0,
                 baseline,
                 item.label,
                 ink,
@@ -876,7 +889,7 @@ pub const Menu = struct {
 
             if (item.detail.len > 0) {
                 clipped.text(
-                    line.right() - t.padding - Surface.textWidth(item.detail),
+                    line.right() - t.menu_padding - Surface.textWidth(item.detail),
                     baseline,
                     item.detail,
                     if (highlighted) t.accent_text else t.text_dim,
@@ -898,7 +911,7 @@ pub const Menu = struct {
     /// something that cannot be chosen.
     pub fn rowAt(area: Rect, items: []const MenuItem, x: i32, y: i32) ?usize {
         if (!area.contains(x, y)) return null;
-        const row: usize = @intCast(@max(@divTrunc(y - area.y - 1, ROW_HEIGHT), 0));
+        const row: usize = @intCast(@max(@divTrunc(y - area.y - 1, rowHeight()), 0));
         if (row >= items.len or !items[row].selectable()) return null;
         return row;
     }
@@ -963,9 +976,9 @@ pub const Menu = struct {
     fn rowRect(area: Rect, row: usize) Rect {
         return .{
             .x = area.x + 1,
-            .y = area.y + 1 + @as(i32, @intCast(row)) * ROW_HEIGHT,
+            .y = area.y + 1 + @as(i32, @intCast(row)) * rowHeight(),
             .w = area.w - 2,
-            .h = ROW_HEIGHT,
+            .h = rowHeight(),
         };
     }
 };

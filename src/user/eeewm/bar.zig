@@ -431,8 +431,13 @@ var sound_port_count: usize = 0;
 /// programs playing through them.
 const MAX_PORTS = 12;
 const SOUND_WIDTH: i32 = 224;
-/// The strip above the rows: the icon, the slider and the percentage.
-const SOUND_LEVEL_HEIGHT: i32 = 41;
+
+/// The strip above the rows: the icon, the slider and the percentage, inside
+/// the same inset the rows below it use.
+fn soundLevelHeight() i32 {
+    const t = theme.current();
+    return t.control_height + t.menu_padding * 2;
+}
 
 fn readSound() void {
     level = audio.master() orelse .{ .percent = 0, .muted = 0 };
@@ -498,7 +503,7 @@ fn soundPanel(width: i32, height: i32) Rect {
     return popover.place(
         anchor,
         SOUND_WIDTH,
-        SOUND_LEVEL_HEIGHT + rows_high,
+        soundLevelHeight() + rows_high,
         .{ .x = 0, .y = 0, .w = width, .h = height },
         if (settings.current().bar == .top) .below else .above,
     );
@@ -507,12 +512,14 @@ fn soundPanel(width: i32, height: i32) Rect {
 /// The groove, inside the panel's level strip.
 fn soundTrack(panel: Rect) Rect {
     const t = theme.current();
-    const icon: i32 = @intCast(eui_icon.WIDTH);
-    const left = panel.x + t.padding + icon + t.padding;
+    const left = panel.x + t.menu_padding + ui.MARK_WIDTH;
+    // Room on the right for "100%", which is the widest the number gets,
+    // with the gap before it and the panel's inset after.
+    const number = ui.GAP + Surface.textWidth("100%") + t.menu_padding;
     return .{
         .x = left,
-        .y = panel.y + 9,
-        .w = panel.right() - t.padding - 34 - left,
+        .y = panel.y + t.menu_padding,
+        .w = panel.right() - number - left,
         .h = t.control_height,
     };
 }
@@ -520,9 +527,9 @@ fn soundTrack(panel: Rect) Rect {
 fn soundRows(panel: Rect) Rect {
     return .{
         .x = panel.x,
-        .y = panel.y + SOUND_LEVEL_HEIGHT,
+        .y = panel.y + soundLevelHeight(),
         .w = panel.w,
-        .h = panel.h - SOUND_LEVEL_HEIGHT,
+        .h = panel.h - soundLevelHeight(),
     };
 }
 
@@ -545,13 +552,13 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     const panel = soundPanel(width, height);
 
     // The strip: the panel's own ground, the icon, the slider and the number.
-    const strip_area = Rect{ .x = panel.x, .y = panel.y, .w = panel.w, .h = SOUND_LEVEL_HEIGHT };
+    const strip_area = Rect{ .x = panel.x, .y = panel.y, .w = panel.w, .h = soundLevelHeight() };
     surface.fill(strip_area, t.surface);
     surface.frame(strip_area, t.line);
 
     surface.icon(
-        panel.x + t.padding,
-        panel.y + @divTrunc(SOUND_LEVEL_HEIGHT - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        panel.x + t.menu_padding,
+        panel.y + @divTrunc(soundLevelHeight() - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
         if (level.muted != 0) .muted else .speaker,
         t.text,
     );
@@ -562,8 +569,8 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     var text: [5]u8 = @splat(0);
     const spelled = percentText(&text, level.percent);
     surface.text(
-        panel.right() - t.padding - Surface.textWidth(spelled),
-        panel.y + @divTrunc(SOUND_LEVEL_HEIGHT - Surface.textHeight(), 2),
+        panel.right() - t.menu_padding - Surface.textWidth(spelled),
+        panel.y + @divTrunc(soundLevelHeight() - Surface.textHeight(), 2),
         spelled,
         t.text,
     );

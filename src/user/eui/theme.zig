@@ -60,6 +60,13 @@ pub const Theme = struct {
     /// Tight on purpose: at 800x480 padding is the first thing to spend and
     /// the last thing worth spending.
     padding: i32 = 6,
+    /// Menus and the panels that hold them. A row of a list is not a button:
+    /// it has no edge of its own to be bounded by, so it wants the room a
+    /// control gets from its border. Every menu in the system reads these,
+    /// which is what keeps a bar menu and an application's menu the same
+    /// shape.
+    menu_row_height: i32 = 22,
+    menu_padding: i32 = 10,
     border_width: i32 = 1,
     border_width_focused: i32 = 2,
 };
