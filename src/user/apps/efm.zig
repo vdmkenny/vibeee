@@ -449,9 +449,7 @@ fn spellSize(bytes: u32, buf: []u8) []const u8 {
     return line.done();
 }
 
-const Key = struct { key: []const u8, label: []const u8 };
-
-const KEYS = [_]Key{
+const KEYS = [_]eui.keys.Key{
     .{ .key = "Tab", .label = "pane" },
     .{ .key = "Ret", .label = "open" },
     .{ .key = "F5", .label = "copy" },
@@ -470,28 +468,8 @@ fn drawKeys(area: Rect) void {
     // both change often enough that it is drawn every pass rather than being
     // guessed at.
     ctx.addDamage(area);
-    ctx.surface.fill(area, t.bar);
-    ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
-
-    var x = area.x + t.padding;
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-
-    for (KEYS) |entry| {
-        const chip = Rect{
-            .x = x,
-            .y = area.y + t.padding,
-            .w = Surface.textWidth(entry.key) + t.padding,
-            .h = area.h - t.padding * 2,
-        };
-        const label_w = Surface.textWidth(entry.label);
-        if (chip.right() + t.padding + label_w > area.right()) break;
-
-        ctx.surface.fill(chip, t.accent);
-        ctx.surface.textCentred(chip, entry.key, t.accent_text);
-        ctx.surface.text(chip.right() + t.padding, baseline, entry.label, t.bar_text);
-
-        x = chip.right() + t.padding + label_w + t.menu_padding;
-    }
+    const x = eui.keys.paint(ctx.surface, area, &KEYS, area.right());
 
     var counted: [24]u8 = @splat(0);
     var line = str.Builder{ .buf = &counted };

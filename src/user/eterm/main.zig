@@ -25,9 +25,6 @@ const Rect = eui.Rect;
 
 const SHELL = "/bin/vsh";
 
-/// 15 percent, which is enough to see through and not enough to read through.
-const TRANSPARENCY: u8 = 38;
-
 var connection: proto.Connection = undefined;
 var window: u8 = 0;
 
@@ -65,10 +62,7 @@ fn etermMain() noreturn {
         sys.exit(1);
     };
 
-    // Slightly translucent, so what is behind a terminal is still legible
-    // through it. The one window that wants it: everything else is a document
-    // or a control panel, where anything showing through is noise.
-    window = connection.createTranslucent(.{}, 480, 320, TRANSPARENCY) catch sys.exit(1);
+    window = connection.createWindow(.{}, 480, 320) catch sys.exit(1);
     connection.setTitle(window, "eTerm") catch {};
 
     startShell();

@@ -14,6 +14,8 @@
 //! megabyte and a half to save nothing. design/10-gui.md §4.4.
 
 const std = @import("std");
+const bindings = @import("ulib").bindings;
+const lib = @import("lib");
 const str = @import("lib").str;
 const draw = @import("eui").draw;
 const layout = @import("layout.zig");
@@ -208,6 +210,195 @@ const Query = struct {
 
 var launcher_query: Query = .{};
 
+// ---------------------------------------------------------------------------
+// Finding
+//
+// What somebody is looking for is as often a window they left open, or
+// something the manager can already do, as it is a program. So typing looks
+// in all three and ranks what comes back together, and each row says which
+// source it came from. Browsing by category is what a growing list of
+// programs is for; it is not what a search is for.
+// ---------------------------------------------------------------------------
+
+/// How many results are shown at once. The panel holds about this many rows,
+/// and a ranked list whose tail nobody reads is a list that ranked for
+/// nothing.
+const MAX_FOUND = 12;
+
+/// How many rows the panel ever holds: one category's worth, or a page of
+/// results, whichever is more. One number, so every scratch array in here is
+/// the same size and none of them can be the short one.
+const MAX_LAUNCHER_ROWS = @max(MAX_FOUND, items.len);
+
+const Found = struct {
+    kind: Kind,
+    label: []const u8,
+    /// Where the row came from, in the words that place it: the category, the
+    /// desktop, or the chord that does the same thing.
+    note: []const u8,
+    hit: ui.MenuItem.Run,
+    mark: ?eui_icon.Icon,
+    score: i32,
+    at: usize,
+    what: What,
+
+    const Kind = enum {
+        app,
+        win,
+        run,
+
+        /// The word in the kind column. Three letters, because they are read
+        /// as three letters and a picture per kind would be read as a guess.
+        fn lead(self: Kind) []const u8 {
+            return switch (self) {
+                .app => "app",
+                .win => "win",
+                .run => "run",
+            };
+        }
+    };
+
+    /// What choosing the row does.
+    const What = union(enum) {
+        /// The nth entry of `items`.
+        entry: usize,
+        /// The nth window, which is focused and brought into view.
+        window: usize,
+        /// Something the manager can do, named by the same table the keys
+        /// and the help pane read.
+        verb: bindings.Action,
+    };
+};
+
+var found: [MAX_FOUND]Found = undefined;
+var found_count: usize = 0;
+/// How many matched in all, which is not how many are shown: the footer says
+/// both, so a list that stops at twelve says that it did.
+var found_total: usize = 0;
+/// How many things were looked at, so the footer can say what the search was
+/// out of rather than just what it found.
+var found_sources: usize = 0;
+
+/// Offer one candidate to the list of results.
+///
+/// Insertion into a fixed row of the best so far, rather than a sort of
+/// everything: the panel shows twelve, the sources hold a few dozen, and a
+/// scratch array of every match would be the largest thing on this stack for
+/// the sake of rows nobody sees.
+fn offer(candidate: Found) void {
+    found_total += 1;
+
+    var at = found_count;
+    while (at > 0) : (at -= 1) {
+        const above = found[at - 1];
+        if (!lessThan(candidate, above)) break;
+        if (at < MAX_FOUND) found[at] = above;
+    }
+
+    if (at >= MAX_FOUND) return;
+    found[at] = candidate;
+    if (found_count < MAX_FOUND) found_count += 1;
+}
+
+fn lessThan(a: Found, b: Found) bool {
+    if (a.score != b.score) return a.score > b.score;
+    if (a.hit.at != b.hit.at) return a.hit.at < b.hit.at;
+    if (a.label.len != b.label.len) return a.label.len < b.label.len;
+    return a.at < b.at;
+}
+
+/// Look through everything for what has been typed.
+///
+/// Called when the query changes rather than when the panel is drawn: the
+/// answer is the same until somebody types, and a search that runs every pass
+/// is a search that runs sixty times a second for nothing.
+fn refreshFound(desktop: *const layout.Desktop) void {
+    found_count = 0;
+    found_total = 0;
+    found_sources = 0;
+
+    const typed = launcher_query.slice();
+
+    // Two columns is what a category of short names wants and what a ranked
+    // list cannot have: a result carries where it came from as well as its
+    // name, and half a panel is not wide enough for both.
+    launcher.columns = if (typed.len == 0) LAUNCHER_COLUMNS else 1;
+
+    if (typed.len == 0) return;
+
+    var seq: usize = 0;
+
+    for (items, 0..) |item, index| {
+        if (item.action == .separator) continue;
+        found_sources += 1;
+        seq += 1;
+        const hit = lib.find.match(item.label, typed) orelse continue;
+        offer(.{
+            .kind = .app,
+            .label = item.label,
+            .note = item.category.title(),
+            .hit = runOf(hit),
+            .mark = item.mark,
+            .score = hit.score,
+            .at = seq,
+            .what = .{ .entry = index },
+        });
+    }
+
+    for (desktop.windows, 0..) |window, index| {
+        if (!window.used) continue;
+        found_sources += 1;
+        seq += 1;
+        const name = desktop.windows[index].name();
+        const hit = lib.find.match(name, typed) orelse continue;
+        offer(.{
+            .kind = .win,
+            .label = name,
+            .note = desktopSaid(window.tag),
+            .hit = runOf(hit),
+            .mark = null,
+            .score = hit.score,
+            .at = seq,
+            .what = .{ .window = index },
+        });
+    }
+
+    // Everything the keyboard can do, findable by name. The chord comes with
+    // it, so the launcher is also where somebody learns there was a key for
+    // what they just went looking for.
+    for (bindings.all) |binding| {
+        found_sources += 1;
+        seq += 1;
+        const hit = lib.find.match(binding.says, typed) orelse continue;
+        offer(.{
+            .kind = .run,
+            .label = binding.says,
+            .note = binding.chord,
+            .hit = runOf(hit),
+            .mark = null,
+            .score = hit.score,
+            .at = seq,
+            .what = .{ .verb = binding.action },
+        });
+    }
+}
+
+fn runOf(hit: lib.find.Match) ui.MenuItem.Run {
+    return .{ .at = @intCast(hit.at), .len = @intCast(hit.len) };
+}
+
+/// Which desktop a window is on, in the words and the numbers the tabs use.
+fn desktopSaid(tag: u8) []const u8 {
+    const names = comptime blk: {
+        var out: [layout.MAX_DESKTOPS][]const u8 = undefined;
+        for (&out, 0..) |*name, i| {
+            name.* = std.fmt.comptimePrint("desktop {d}", .{layout.numberOf(@as(u8, @intCast(i)))});
+        }
+        break :blk out;
+    };
+    return names[@min(tag, names.len - 1)];
+}
+
 /// Which category the launcher is showing.
 var launcher_category: Category = .tools;
 /// The categories themselves are a list like any other, so they are one.
@@ -260,9 +451,10 @@ pub fn menuOpen() bool {
 }
 
 /// Open the applications menu, from the V button or a key.
-pub fn openLauncher() void {
+pub fn openLauncher(desktop: *const layout.Desktop) void {
     _ = launcher_query.clear();
-    var rows: [items.len]ui.MenuItem = undefined;
+    refreshFound(desktop);
+    var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
     launcher.showAt(menuItems(&rows));
     menu_tab = null;
     keyboard_focus = true;
@@ -275,16 +467,31 @@ pub fn openLauncher() void {
 /// saying which drawer to look in, and a search that only looked in the
 /// drawer already open would be a search that finds nothing most of the time.
 fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
-    const typed = launcher_query.slice();
     var n: usize = 0;
-    for (items) |item| {
-        if (n == out.len) continue;
-        if (typed.len == 0) {
+
+    if (launcher_query.slice().len == 0) {
+        for (items) |item| {
+            if (n == out.len) break;
             if (item.category != launcher_category) continue;
-        } else if (!str.containsFold(item.label, typed)) continue;
-        out[n] = .{ .label = item.label, .mark = item.mark };
+            out[n] = .{ .label = item.label, .mark = item.mark };
+            n += 1;
+        }
+        return out[0..n];
+    }
+
+    // Ranked across every source, each row saying which it came from and
+    // what in it matched.
+    for (found[0..found_count]) |one| {
+        if (n == out.len) break;
+        out[n] = .{
+            .label = one.label,
+            .lead = one.kind.lead(),
+            .hit = one.hit,
+            .detail = one.note,
+        };
         n += 1;
     }
+
     if (n == 0 and out.len > 0) {
         out[0] = .{ .label = "Nothing matches", .kind = .disabled };
         n = 1;
@@ -292,16 +499,21 @@ fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
     return out[0..n];
 }
 
-/// Which item a row of the launcher stands for, which typing makes a
-/// question worth asking: the rows are no longer one category in order.
-fn launcherItemAt(row: usize) ?usize {
-    const typed = launcher_query.slice();
+/// What a row of the launcher does when it is chosen.
+///
+/// Two lists wear the same rows: one category in order, or what the query
+/// found across every source. Which of them is on show decides what a row
+/// number means, and nothing else in here has to know that.
+fn launcherChoice(row: usize) ?Found.What {
+    if (launcher_query.slice().len != 0) {
+        if (row >= found_count) return null;
+        return found[row].what;
+    }
+
     var n: usize = 0;
     for (items, 0..) |item, index| {
-        if (typed.len == 0) {
-            if (item.category != launcher_category) continue;
-        } else if (!str.containsFold(item.label, typed)) continue;
-        if (n == row) return index;
+        if (item.category != launcher_category) continue;
+        if (n == row) return .{ .entry = index };
         n += 1;
     }
     return null;
@@ -320,6 +532,8 @@ const Launcher = struct {
     field: Rect,
     rail: Rect,
     list: Rect,
+    /// What is on show and what the keys do, along the bottom.
+    footer: Rect,
 };
 
 /// The size the design fixes, at a hundred per cent. Small enough that the
@@ -347,17 +561,25 @@ fn launcherPanel(width: i32, height: i32) Launcher {
 
     const field = Rect{ .x = panel.x, .y = panel.y, .w = panel.w, .h = t.control_height + t.padding };
     const rail_w = @min(theme.enlarged(LAUNCHER_RAIL), @divTrunc(panel.w, 3));
+    const footer_h = Surface.textHeight() + t.padding * 2;
+    const footer = Rect{
+        .x = panel.x,
+        .y = panel.bottom() - footer_h,
+        .w = panel.w,
+        .h = footer_h,
+    };
 
     return .{
         .panel = panel,
         .field = field,
-        .rail = .{ .x = panel.x, .y = field.bottom(), .w = rail_w, .h = panel.bottom() - field.bottom() },
+        .rail = .{ .x = panel.x, .y = field.bottom(), .w = rail_w, .h = footer.y - field.bottom() },
         .list = .{
             .x = panel.x + rail_w,
             .y = field.bottom(),
             .w = panel.w - rail_w,
-            .h = panel.bottom() - field.bottom(),
+            .h = footer.y - field.bottom(),
         },
+        .footer = footer,
     };
 }
 
@@ -367,6 +589,64 @@ fn launcherList(at: Launcher) Rect {
     if (launcher_query.slice().len == 0) return at.list;
     return .{ .x = at.rail.x, .y = at.rail.y, .w = at.panel.w, .h = at.rail.h };
 }
+
+/// The strip along the bottom: what is on show, and what the keys do.
+///
+/// The count is the honest one. A ranked list that stops at twelve says so,
+/// because a search that quietly dropped the thing being looked for is worse
+/// than one that says there was more.
+fn paintLauncherFooter(surface: Surface, area: Rect) void {
+    const t = theme.current();
+    var said: [40]u8 = @splat(0);
+    var line = str.Builder{ .buf = &said };
+
+    if (launcher_query.slice().len == 0) {
+        line.text(launcher_category.title());
+        line.text(", ");
+        line.number(countIn(launcher_category));
+        line.text(" of ");
+        line.number(items.len);
+    } else {
+        line.number(found_total);
+        line.text(" of ");
+        line.number(found_sources);
+        line.text(" match");
+    }
+
+    const hints = if (launcher_query.slice().len == 0) &BROWSE_KEYS else &FIND_KEYS;
+    surface.fill(area, t.bar);
+    surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
+
+    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
+    surface.text(area.x + t.menu_padding, baseline, line.done(), t.bar_text);
+
+    // The hints pack against the right edge, in the order they are written,
+    // so the last thing read is the way out.
+    var x = area.right() - t.menu_padding;
+    var at = hints.len;
+    while (at > 0) {
+        at -= 1;
+        const one = hints[at];
+        const w = Surface.textWidth(one.key) + t.gap + Surface.textWidth(one.label);
+        x -= w;
+        surface.text(x, baseline, one.key, t.accent);
+        surface.text(x + Surface.textWidth(one.key) + t.gap, baseline, one.label, t.bar_text);
+        x -= t.menu_padding;
+    }
+}
+
+const Hint = struct { key: []const u8, label: []const u8 };
+
+const BROWSE_KEYS = [_]Hint{
+    .{ .key = "tab", .label = "category" },
+    .{ .key = "enter", .label = "run" },
+    .{ .key = "esc", .label = "close" },
+};
+
+const FIND_KEYS = [_]Hint{
+    .{ .key = "enter", .label = "run" },
+    .{ .key = "esc", .label = "close" },
+};
 
 /// The strip along the top: what typing would do, and what has been typed.
 fn paintLauncherField(surface: Surface, area: Rect) void {
@@ -382,7 +662,7 @@ fn paintLauncherField(surface: Surface, area: Rect) void {
 
     const typed = launcher_query.slice();
     if (typed.len == 0) {
-        surface.text(x, text_y, "type to find a program", t.text_dim);
+        surface.text(x, text_y, "type to find an app, a window or a command", t.text_dim);
         return;
     }
 
@@ -574,11 +854,11 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
     }
 
     if (launcher.open) {
-        var rows: [items.len]ui.MenuItem = undefined;
+        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
         const before = launcher.selected;
         const at = launcherPanel(width, height);
 
-        var cat_rows: [items.len]ui.MenuItem = undefined;
+        var cat_rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
         const cats = categoryItems(&cat_rows);
 
         // Moving over a category shows it, which is what makes the rail
@@ -628,12 +908,12 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
 
     if (launcher.open) {
         const t = theme.current();
-        var rows: [items.len]ui.MenuItem = undefined;
+        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
         const at = launcherPanel(width, height);
 
         paintLauncherField(surface, at.field);
 
-        var cat_rows: [items.len]ui.MenuItem = undefined;
+        var cat_rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
         // The rail goes when a query does the choosing: what is on show is
         // then everything that matches, and a category highlighted beside it
         // would be pointing at the wrong thing.
@@ -641,6 +921,7 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
             launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows));
         }
         launcher.paint(surface, launcherList(at), menuItems(&rows));
+        paintLauncherFooter(surface, at.footer);
 
         // One edge around the whole panel, drawn last so the parts inside it
         // cannot paint over it.
@@ -730,7 +1011,7 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, tag: u
     );
 
     if (super_held) {
-        var digit: [1]u8 = .{'1' + tag};
+        var digit: [1]u8 = .{'0' + layout.numberOf(tag)};
         surface.clipped(area).text(
             area.right() - markerWidth(),
             area.y + @divTrunc(area.h - Surface.textHeight(), 2),
@@ -1390,6 +1671,10 @@ pub const Action = union(enum) {
     close_window: usize,
     /// Close this desktop and everything on it.
     close_desktop: u8,
+    /// Show this window: the launcher found it by name, wherever it is.
+    focus_window: usize,
+    /// Something the keys can already do, named in the launcher instead.
+    verb: bindings.Action,
     /// End the session and hand the display back.
     quit,
     reboot,
@@ -1401,7 +1686,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     // A menu is modal while open: a click outside dismisses it rather than
     // doing two things at once.
     if (launcher.open) {
-        var rows: [items.len]ui.MenuItem = undefined;
+        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
         const at = launcherPanel(width, height);
         if (launcher_query.slice().len == 0 and at.rail.contains(x, y)) return .consumed;
         const chosen = launcher.itemAt(launcherList(at), menuItems(&rows), x, y);
@@ -1410,7 +1695,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         // The row is the nth of the category being shown, not the nth of
         // everything: the mapping is the one the list was built with.
         if (chosen) |row| {
-            if (launcherItemAt(row)) |index| return activate(index);
+            if (launcherChoice(row)) |choice| return activate(choice);
         }
         return .consumed;
     }
@@ -1539,7 +1824,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     }
 
     if (launchRect(height).contains(x, y)) {
-        openLauncher();
+        openLauncher(desktop);
         return .consumed;
     }
 
@@ -1572,7 +1857,15 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
 
 /// Carry out a menu choice. Spawning happens here; anything that ends the
 /// session is returned so the manager can put the display back first.
-fn activate(index: usize) Action {
+fn activate(choice: Found.What) Action {
+    return switch (choice) {
+        .entry => |index| activateEntry(index),
+        .window => |index| .{ .focus_window = index },
+        .verb => |what| .{ .verb = what },
+    };
+}
+
+fn activateEntry(index: usize) Action {
     if (index >= items.len) return .consumed;
 
     return switch (items[index].action) {
@@ -1610,17 +1903,23 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
     if (!keyboard_focus) return .ignored;
 
     if (launcher.open) {
-        var rows: [items.len]ui.MenuItem = undefined;
+        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
 
         // Typing narrows the list. This is what the panel is for: reaching a
         // program by naming it rather than by finding it, which is the whole
         // difference between a launcher and a menu.
         if (code == .backspace) {
-            if (launcher_query.backspace()) launcher.selected = 0;
+            if (launcher_query.backspace()) {
+                launcher.selected = 0;
+                refreshFound(desktop);
+            }
             return .handled;
         }
         if (printable(codepoint)) {
-            if (launcher_query.push(@intCast(codepoint))) launcher.selected = 0;
+            if (launcher_query.push(@intCast(codepoint))) {
+                launcher.selected = 0;
+                refreshFound(desktop);
+            }
             return .handled;
         }
         // Escape clears a query before it closes the panel: one keystroke to
@@ -1628,6 +1927,7 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
         // press throws away the panel as well.
         if (code == .escape and launcher_query.clear()) {
             launcher.selected = 0;
+            refreshFound(desktop);
             return .handled;
         }
 
@@ -1654,7 +1954,7 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
                 const chosen = launcher.selected;
                 launcher.hide();
                 keyboard_focus = false;
-                if (launcherItemAt(chosen)) |index| pending = activate(index);
+                if (launcherChoice(chosen)) |choice| pending = activate(choice);
                 return .released;
             },
             .cancelled => {
@@ -1673,7 +1973,7 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
             // Left from the first tab reaches the V button, so the whole bar
             // is one traversal rather than two islands.
             if (desktop.positionOf(focus_tab) orelse 0 == 0) {
-                openLauncher();
+                openLauncher(desktop);
             } else {
                 focus_tab = neighbourTab(desktop, focus_tab, -1);
             }

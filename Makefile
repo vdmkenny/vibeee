@@ -347,11 +347,17 @@ endif
 #
 #   make shot OUT=/tmp/x.png TYPE="date"
 #
+# `MONITOR` sends raw QEMU monitor commands after the typing, one per line,
+# which is how a chord and the pointer are exercised: `sendkey meta_l-p`,
+# `mouse_move dx dy`, `mouse_button 1`. `SETTLE` is how long to leave the
+# machine alone before the shot.
+#
 # `EXTRA` appends QEMU arguments, which is how a test boots hardware the
 # default machine lacks: a second NIC, another disk.
 .PHONY: shot
 shot: dev-image
-	@QEMU_CPU="$(QEMU_CPU)" tools/qemu-shot.sh $(OUT) $(if $(TYPE),-t "$(TYPE)") -w $(or $(WAIT),5) \
+	@QEMU_CPU="$(QEMU_CPU)" tools/qemu-shot.sh $(OUT) $(if $(TYPE),-t "$(TYPE)") \
+		$(if $(MONITOR),-m "$(MONITOR)") $(if $(SETTLE),-s $(SETTLE)) -w $(or $(WAIT),5) \
 		-- -drive if=ide,format=raw,file=$(DEV_IMAGE) $(EXTRA)
 
 run: qemu

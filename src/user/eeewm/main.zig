@@ -165,12 +165,7 @@ fn paint() void {
     // before anything is painted rather than paid for in pixels.
     var bare = region.Region.of(.{ .x = 0, .y = 0, .w = info.width, .h = info.height });
     bare.subtract(bar.band(info.height));
-    for (visible) |index| {
-        const w = &desktop.windows[index];
-        // A translucent window blends with what is behind it, so what is
-        // behind it has to be there.
-        if (w.transparency == 0) bare.subtract(w.area);
-    }
+    for (visible) |index| bare.subtract(desktop.windows[index].area);
     const wall = wallpaper();
     for (bare.items()) |piece| screen.fill(piece, wall);
 
@@ -256,11 +251,7 @@ fn refreshWindow(index: usize, damage: []const Rect) void {
         }).intersect(content);
         if (on_screen.isEmpty()) continue;
 
-        // A translucent window blends with what is behind it, so what is
-        // behind has to be put back first. Blending onto the last frame of the
-        // window itself would darken it a little more every time.
-        if (w.transparency != 0) screen.fill(on_screen, wallpaper());
-        clients.blit(screen, desktop.windows[index].surface, content, on_screen, w.transparency);
+        clients.blit(screen, desktop.windows[index].surface, content, on_screen);
     }
 }
 
@@ -289,11 +280,7 @@ fn paintWindow(index: usize, focused: bool) void {
     // looks like before anything has connected.
     const content = area.inset(width);
     if (w.mapped and desktop.windows[index].surface.valid()) {
-        // Filled first only when the window is translucent, where the blend
-        // needs a backdrop. An opaque one covers every pixel it is about to
-        // write, and filling it grey first is a flash of grey.
-        if (w.transparency != 0) screen.fill(content, wallpaper());
-        clients.blit(screen, desktop.windows[index].surface, content, content, w.transparency);
+        clients.blit(screen, desktop.windows[index].surface, content, content);
         return;
     }
 
@@ -565,9 +552,18 @@ fn handleKey(event: sys.KeyEvent) void {
     // switch is exhaustive: a binding added there without a handler here does
     // not build.
     const action = bindings.lookup(code, mods.shift) orelse return;
+    perform(action);
+}
+
+/// Do one of the things the manager can do.
+///
+/// Reached from a chord and from the launcher, which finds these by name: a
+/// list of what the keys do and a list of what can be asked for are the same
+/// list, and two of them would drift the first time one grew a row.
+fn perform(action: bindings.Action) void {
     switch (action) {
         .terminal => _ = sys.spawnDetached("/bin/eterm", &.{"eterm"}),
-        .launcher => bar.openLauncher(),
+        .launcher => bar.openLauncher(&desktop),
         .focus_bar => bar.focus(&desktop),
 
         .focus_next => desktop.focusNext(1),
@@ -743,7 +739,6 @@ fn onCreate(pid: u32, req: *const wire.Req) Answer {
         return refuse(.no_room);
 
     const w = &desktop.windows[index];
-    w.transparency = req.body.create.transparency;
     w.client_pid = pid;
     // The client's id for the window, which is per client rather than global:
     // the slot index is ours and would collide across clients.
@@ -903,6 +898,10 @@ fn apply(action: bar.Action) void {
         .quit => quit(),
         .reboot => sys.shutdown(sys.REBOOT),
         .power_off => sys.shutdown(sys.POWER_OFF),
+        // Wherever it is: the launcher finds a window by name, and a window
+        // found on another desktop is no use until that desktop is in view.
+        .focus_window => |index| desktop.viewWindow(index),
+        .verb => |what| perform(what),
     }
 }
 

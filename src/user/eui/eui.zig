@@ -24,6 +24,7 @@ pub const statusbar = @import("statusbar.zig");
 pub const table = @import("table.zig");
 pub const text = @import("text.zig");
 pub const icon = @import("icon.zig");
+pub const keys = @import("keys.zig");
 pub const meter = @import("meter.zig");
 pub const footer = @import("footer.zig");
 pub const popover = @import("popover.zig");

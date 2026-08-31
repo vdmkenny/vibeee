@@ -79,13 +79,6 @@ pub const Req = extern struct {
         },
         create: extern struct {
             flags: WinFlags,
-            /// How much of what is behind shows through, 0 opaque and 255
-            /// invisible.
-            ///
-            /// Expressed as transparency rather than opacity so that zero, the
-            /// value every caller gets by not thinking about it, is the one
-            /// every window but a terminal wants.
-            transparency: u8 = 0,
             min_w: u16,
             min_h: u16,
             tag_hint: u8,

@@ -158,24 +158,11 @@ pub fn adoptSurface(handle: u32, w: u16, h: u16, stride: u16) ?Surface {
 ///
 /// The row-wise copy is the surface's own: the one place that knows how to
 /// move pixels moves them for the compositor too, so making it faster makes
-/// everything faster. `transparency` is how much of what is behind shows
-/// through; zero copies, which is what almost every window wants and the
-/// only path with nothing to read back from a framebuffer that is slow to
+/// everything faster. Windows are opaque, so every pixel written here is
+/// written once and nothing is read back from a framebuffer that is slow to
 /// read.
-pub fn blit(
-    screen: eui.Surface,
-    surface: Surface,
-    at: eui.Rect,
-    damage: eui.Rect,
-    transparency: u8,
-) void {
+pub fn blit(screen: eui.Surface, surface: Surface, at: eui.Rect, damage: eui.Rect) void {
     const pixels = surface.pixels orelse return;
     const source = eui.Surface.init(pixels, surface.width, surface.height, surface.stride);
-    const limit = at.intersect(damage);
-
-    if (transparency == 0) {
-        screen.copyFrom(source, at.x, at.y, limit);
-    } else {
-        screen.blendFrom(source, at.x, at.y, limit, 256 - @as(u32, transparency));
-    }
+    screen.copyFrom(source, at.x, at.y, at.intersect(damage));
 }

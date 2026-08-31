@@ -56,19 +56,16 @@ pub const Window = struct {
     title: [32]u8 = @splat(0),
     title_len: usize = 0,
 
-    /// The pixels the client shares and what part of them changed. The
-    /// window's own, so anything that reorders windows carries them along:
-    /// they were once arrays beside the window table, and promoting a window
-    /// to master swapped the windows but not the arrays, after which two
-    /// windows drew each other's pixels.
+    /// The pixels the client shares and what part of them changed.
+    ///
+    /// The window's own rather than an array beside the table, so anything
+    /// that reorders windows carries them along and no window can end up
+    /// drawing with another's pixels.
     surface: compose.Surface = .{},
     damage: compose.Damage = .{},
     tag: u8 = 0,
     /// Above the tiles, positioned by hand rather than by the layout.
     floating: bool = false,
-    /// How much of what is behind shows through. Zero is opaque, which is what
-    /// every window but a terminal asks for.
-    transparency: u8 = 0,
     /// Where it is now. Set by `arrange` for tiled windows and by dragging for
     /// floating ones.
     area: Rect = .{},
@@ -88,6 +85,15 @@ pub const Window = struct {
         self.title_len = n;
     }
 };
+
+/// What a desktop is called where a person sees it.
+///
+/// Tags are counted from zero and keyboards are not: Super+1 is the first
+/// desktop, so the tab, the launcher and anything else that says which one it
+/// means says the same number.
+pub fn numberOf(tag: u8) u8 {
+    return tag + 1;
+}
 
 pub const Desktop = struct {
     windows: [MAX_WINDOWS]Window = @splat(.{}),

@@ -1260,8 +1260,27 @@ pub const MenuItem = struct {
     /// it, so rows without a picture still line up with the rows that have
     /// one.
     mark: ?icons.Icon = null,
+    /// A short word before the label, dim, in a column as wide as the widest
+    /// of them: what kind of thing the row is, where a list holds more than
+    /// one kind. A picture would have to be invented for each kind and read
+    /// as a guess; three letters are read as three letters.
+    lead: []const u8 = "",
+    /// The run of `label` that matched what was typed, drawn in the accent.
+    /// A list that reorders itself as letters arrive is only trustworthy if
+    /// each row can say what in it was matched.
+    hit: Run = .{},
 
     pub const Kind = enum { item, separator, disabled };
+
+    /// A span of the label, as a byte offset and a length.
+    pub const Run = struct {
+        at: u16 = 0,
+        len: u16 = 0,
+
+        pub fn isEmpty(self: Run) bool {
+            return self.len == 0;
+        }
+    };
 
     pub fn selectable(self: MenuItem) bool {
         return self.kind == .item;
@@ -1349,6 +1368,7 @@ pub const Menu = struct {
         // One row with a picture indents them all, so the labels line up
         // whether or not the row beside them has one.
         const indented = marked(items);
+        const lead_width = leadWidth(items);
 
         surface.fill(area, switch (self.ground) {
             .surface => t.surface,
@@ -1388,12 +1408,13 @@ pub const Menu = struct {
                 );
             }
 
-            clipped.text(
-                line.x + t.menu_padding + if (indented) markWidth() else 0,
-                baseline,
-                item.label,
-                ink,
-            );
+            var text_x = line.x + t.menu_padding + if (indented) markWidth() else 0;
+            if (lead_width > 0) {
+                clipped.text(text_x, baseline, item.lead, if (highlighted) t.accent_text else t.text_dim);
+                text_x += lead_width;
+            }
+
+            paintLabel(clipped, text_x, baseline, item, ink, highlighted);
 
             if (item.detail.len > 0) {
                 clipped.text(
@@ -1404,6 +1425,47 @@ pub const Menu = struct {
                 );
             }
         }
+    }
+
+    /// The label, with whatever in it matched drawn in the accent.
+    ///
+    /// Three pieces rather than one, and one piece when nothing matched: a
+    /// row on a list nobody has typed at should cost exactly what it did
+    /// before this existed.
+    fn paintLabel(surface: Surface, x: i32, baseline: i32, item: MenuItem, ink: draw.Color, highlighted: bool) void {
+        const t = theme.current();
+        const at: usize = item.hit.at;
+        const len: usize = item.hit.len;
+        if (item.hit.isEmpty() or at + len > item.label.len) {
+            surface.text(x, baseline, item.label, ink);
+            return;
+        }
+
+        // On a highlighted row the accent is already the ground, so what
+        // matched is told apart by weight of colour rather than by hue.
+        const hit_ink = if (highlighted) t.accent_text else t.accent;
+
+        const lead = item.label[0..at];
+        const hit = item.label[at .. at + len];
+
+        var at_x = x;
+        surface.text(at_x, baseline, lead, ink);
+        at_x += Surface.textWidth(lead);
+        surface.text(at_x, baseline, hit, hit_ink);
+        at_x += Surface.textWidth(hit);
+        surface.text(at_x, baseline, item.label[at + len ..], ink);
+    }
+
+    /// How wide the kind column is: the widest word in it, or nothing at all
+    /// when no row has one.
+    fn leadWidth(items: []const MenuItem) i32 {
+        var widest: i32 = 0;
+        for (items) |item| {
+            if (item.lead.len == 0) continue;
+            widest = @max(widest, Surface.textWidth(item.lead));
+        }
+        if (widest == 0) return 0;
+        return widest + theme.current().gap;
     }
 
     /// Whether any row carries a picture. A menu of plain rows is not

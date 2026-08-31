@@ -160,28 +160,6 @@ pub const Surface = struct {
         }
     }
 
-    /// The same, blended: `weight` of the source shows, 0 to 256.
-    pub fn blendFrom(self: Surface, source: Surface, at_x: i32, at_y: i32, limit: Rect, weight: u32) void {
-        const target = copyTarget(self, source, at_x, at_y, limit) orelse return;
-        const rest = 256 - weight;
-
-        var y = target.y;
-        while (y < target.bottom()) : (y += 1) {
-            const from = source.pixels + @as(usize, @intCast((y - at_y) * source.stride + (target.x - at_x)));
-            const to = self.pixels + @as(usize, @intCast(y * self.stride + target.x));
-
-            for (to[0..@intCast(target.w)], from[0..@intCast(target.w)]) |*dst, src| {
-                // Red and blue share one multiply by living in alternate
-                // sixteen-bit halves; three multiplies a pixel instead of
-                // six, which without a vector unit is what makes a
-                // translucent window affordable.
-                const rb = ((src & 0x00FF00FF) * weight + (dst.* & 0x00FF00FF) * rest) >> 8;
-                const g = ((src & 0x0000FF00) * weight + (dst.* & 0x0000FF00) * rest) >> 8;
-                dst.* = (rb & 0x00FF00FF) | (g & 0x0000FF00);
-            }
-        }
-    }
-
     /// Where a copy actually lands: the placement clipped by the limit, this
     /// surface's clip, and what the source actually has. Null when nothing
     /// survives. Settling every bound here is what leaves the loops above
@@ -453,23 +431,3 @@ test "a copy hanging off every edge keeps to the surface" {
     try testing.expectEqual(@as(u32, 0x999999), dst_pixels[7 * SIDE + 7]);
 }
 
-test "a blend at full weight is the source and at none the destination" {
-    var dst_pixels: [SIDE * SIDE]u32 = undefined;
-    var src_pixels: [SIDE * SIDE]u32 = undefined;
-    const dst = flat(&dst_pixels, 0x204060);
-    const src = flat(&src_pixels, 0x80A0C0);
-    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
-
-    dst.blendFrom(src, 0, 0, whole, 256);
-    try testing.expectEqual(@as(u32, 0x80A0C0), dst_pixels[0]);
-
-    dst.blendFrom(src, 0, 0, whole, 0);
-    // Weight zero leaves what was there, which is now the source.
-    try testing.expectEqual(@as(u32, 0x80A0C0), dst_pixels[0]);
-
-    // Halfway is halfway, channel by channel.
-    var again: [SIDE * SIDE]u32 = undefined;
-    const half = flat(&again, 0x204060);
-    half.blendFrom(src, 0, 0, whole, 128);
-    try testing.expectEqual(@as(u32, 0x507090), again[0]);
-}
