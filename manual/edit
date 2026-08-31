@@ -1,11 +1,16 @@
-edit - change a file and write it back
+edit - change a text and write it to a file
 
   edit <file>            open it, or start it if it is not there
+  edit                   a blank sheet
+  log | edit             whatever is piped in, in a sheet of its own
 
   arrows, Home, End      move; Ctrl+Home and Ctrl+End for the whole file
   Page Up, Page Down     a screen at a time
   Enter, Backspace, Del  the usual
-  Ctrl+S                 save
+  Ctrl+S                 save, asking for a name if there is none yet
+  Ctrl+O                 open another file
+  Ctrl+W                 fold long lines instead of scrolling sideways
+  Ctrl+N                 number the lines
   Ctrl+Q, Esc            leave
 
 Nothing is written until asked, so a file opened and looked at is a file
@@ -13,9 +18,23 @@ left alone. The bar says which file, where the cursor is, and marks the
 name with a star while there is unsaved work; leaving with work unsaved
 asks once before it does.
 
+A text with no file behind it reads as `(unnamed)` and is otherwise an
+ordinary document: it is what a blank sheet and a pipe both give, and
+saving one asks where it should go. Opening another file over unsaved
+work is refused rather than silently losing it.
+
 A file longer than the editor holds is opened read-only in effect: it
 says so, and saving is refused rather than writing back the head of a
 file and losing its tail.
+
+Lines wider than the console scroll sideways rather than wrapping, so a
+row on screen is always a line in the file. `Ctrl+W` folds them instead,
+and then a line may take several rows; the number column marks only the
+row a line starts on, so what is numbered is still what is in the file.
+
+A line running off the edge ends in a dim arrow, and one scrolled past
+on the left begins with one, so a cut line and a line that happens to
+end there are never the same picture.
 
 Tabs are typed as spaces. The console draws a tab as one cell, and a
 cursor counting it as several would sit somewhere the text is not.

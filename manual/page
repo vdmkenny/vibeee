@@ -6,5 +6,15 @@ page - read a long text a screen at a time
 Keys: space and b page down and up, arrows move a line, enter steps,
 home and end jump, q leaves the screen as it found it.
 
+  w                      fold long lines instead of cutting them
+  n                      number the lines
+
+Folded and numbered are the same two choices `edit` offers, drawn by the
+same code, so a text looks the same in both.
+
+A line too wide for the screen ends in a dim arrow, and one scrolled
+past on the left begins with one, so a cut line and a line that happens
+to end there are never the same picture.
+
 The status bar names the text, where you are in it, and whether the
 tail was cut to fit memory.

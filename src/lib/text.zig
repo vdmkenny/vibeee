@@ -393,6 +393,32 @@ pub fn window(text: []const u8, from: usize, count: usize) []const u8 {
     return text[start..end];
 }
 
+/// How many digits a number is written in, which is how wide a column of
+/// them has to be.
+pub fn digits(n: usize) usize {
+    var width: usize = 1;
+    var left = n / 10;
+    while (left > 0) : (left /= 10) width += 1;
+    return width;
+}
+
+/// How many screen rows a line of `width` characters takes when it is
+/// wrapped into a screen `columns` wide.
+///
+/// Never zero: an empty line is still a row, because there has to be
+/// somewhere to put the cursor and somewhere for the blank to show.
+pub fn rowsFor(width: usize, columns: usize) usize {
+    if (columns == 0) return 1;
+    if (width == 0) return 1;
+    return (width + columns - 1) / columns;
+}
+
+/// The `row`th wrapped piece of a line, empty past the last.
+pub fn rowAt(line: []const u8, columns: usize, row: usize) []const u8 {
+    if (columns == 0) return line;
+    return window(line, row * columns, columns);
+}
+
 /// Move a window so that `at` is inside it, and no further.
 ///
 /// Scrolling, in one line: a cursor one row below the screen moves the
@@ -774,4 +800,40 @@ test "a window follows a position without jumping further than it must" {
 
     // A window of nothing is wherever it is asked to be.
     try testing.expectEqual(@as(usize, 7), follow(0, 0, 7));
+}
+
+test "wrapping counts the rows a line takes and cuts it into them" {
+    // An empty line is still a row: the cursor has to go somewhere.
+    try testing.expectEqual(@as(usize, 1), rowsFor(0, 10));
+    try testing.expectEqual(@as(usize, 1), rowsFor(1, 10));
+    try testing.expectEqual(@as(usize, 1), rowsFor(10, 10));
+    try testing.expectEqual(@as(usize, 2), rowsFor(11, 10));
+    try testing.expectEqual(@as(usize, 2), rowsFor(20, 10));
+    try testing.expectEqual(@as(usize, 3), rowsFor(21, 10));
+
+    // A screen of no width is one row, rather than a division by nothing.
+    try testing.expectEqual(@as(usize, 1), rowsFor(50, 0));
+
+    const line = "abcdefghij" ++ "klmno";
+    try testing.expectEqualStrings("abcdefghij", rowAt(line, 10, 0));
+    try testing.expectEqualStrings("klmno", rowAt(line, 10, 1));
+    try testing.expectEqualStrings("", rowAt(line, 10, 2));
+
+    // The pieces put back together are the line, and none of them cuts a
+    // character in half.
+    const accented = "ééééé";
+    try testing.expectEqual(@as(usize, 3), rowsFor(characters(accented), 2));
+    try testing.expectEqualStrings("éé", rowAt(accented, 2, 0));
+    try testing.expectEqualStrings("éé", rowAt(accented, 2, 1));
+    try testing.expectEqualStrings("é", rowAt(accented, 2, 2));
+}
+
+test "a column of numbers is as wide as its widest number" {
+    try testing.expectEqual(@as(usize, 1), digits(0));
+    try testing.expectEqual(@as(usize, 1), digits(9));
+    try testing.expectEqual(@as(usize, 2), digits(10));
+    try testing.expectEqual(@as(usize, 2), digits(99));
+    try testing.expectEqual(@as(usize, 3), digits(100));
+    try testing.expectEqual(@as(usize, 4), digits(9999));
+    try testing.expectEqual(@as(usize, 5), digits(10000));
 }
