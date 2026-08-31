@@ -132,8 +132,10 @@ pub const Item = struct {
     action: Kind,
 
     pub const Kind = union(enum) {
-        /// Spawn a program: path, then argv[0].
-        run: struct { path: []const u8, name: []const u8 },
+        /// Spawn a program: path, then argv[0], then what to tell it. The
+        /// argument is how one entry opens a program somewhere particular
+        /// rather than wherever it opens by default.
+        run: struct { path: []const u8, name: []const u8, arg: []const u8 = "" },
         /// A drawn rule, not selectable.
         separator,
         /// Give the display back and return to the shell that started us.
@@ -148,6 +150,7 @@ pub const items = [_]Item{
     .{ .label = "Pad", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
     .{ .label = "Monitor", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
     .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
+    .{ .label = "About this computer", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },
     .{ .label = "Exit to shell", .category = .session, .action = .quit },
     .{ .label = "Restart", .category = .session, .mark = .power, .action = .reboot },
     .{ .label = "Shut down", .category = .session, .mark = .power, .action = .power_off },
@@ -1179,7 +1182,11 @@ fn activate(index: usize) Action {
     return switch (items[index].action) {
         .separator => .consumed,
         .run => |program| blk: {
-            _ = sys.spawnDetached(program.path, &.{program.name});
+            if (program.arg.len == 0) {
+                _ = sys.spawnDetached(program.path, &.{program.name});
+            } else {
+                _ = sys.spawnDetached(program.path, &.{ program.name, program.arg });
+            }
             break :blk .consumed;
         },
         .quit => .quit,

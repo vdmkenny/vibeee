@@ -163,8 +163,12 @@ pub const Surface = struct {
     /// One glyph from a face of the caller's choosing. What a terminal uses,
     /// since a grid needs the monospaced face and everything else does not.
     pub fn glyphIn(self: Surface, face: *const Font, x: i32, y: i32, code: u21, color: Color) void {
+        self.glyphScaled(face, x, y, code, color, theme.textScale());
+    }
+
+    fn glyphScaled(self: Surface, face: *const Font, x: i32, y: i32, code: u21, color: Color, scale: i32) void {
         const bits = face.glyph(code) orelse face.fallback();
-        self.bitmapAt(x, y, bits, face.width, face.height, face.row_bytes, color, theme.textScale());
+        self.bitmapAt(x, y, bits, face.width, face.height, face.row_bytes, color, scale);
     }
 
     /// A named picture, which is a bitmap with a name rather than a code
@@ -238,14 +242,37 @@ pub const Surface = struct {
     }
 
     pub fn textIn(self: Surface, face: *const Font, x: i32, y: i32, message: []const u8, color: Color) void {
+        self.textScaled(face, x, y, message, color, theme.textScale());
+    }
+
+    /// The one word a window is about, drawn `times` the size of everything
+    /// else. There is one face, so a heading is that face magnified by a
+    /// whole number: the alternative is a second font in memory to say one
+    /// word slightly larger.
+    ///
+    /// A multiple of the interface's own size rather than an absolute one,
+    /// so a heading stays a heading when the whole interface is scaled up.
+    pub fn textLarge(self: Surface, x: i32, y: i32, message: []const u8, color: Color, times: i32) void {
+        self.textScaled(ui_font, x, y, message, color, theme.textScale() * times);
+    }
+
+    pub fn textLargeWidth(message: []const u8, times: i32) i32 {
+        return textWidth(message) * times;
+    }
+
+    pub fn textLargeHeight(times: i32) i32 {
+        return textHeight() * times;
+    }
+
+    fn textScaled(self: Surface, face: *const Font, x: i32, y: i32, message: []const u8, color: Color, scale: i32) void {
         var pen = x;
         var it = codepoints(message);
         while (it.next()) |cp| {
-            self.glyphIn(face, pen, y, cp, color);
+            self.glyphScaled(face, pen, y, cp, color, scale);
             // Per glyph, not per cell: the interface face is proportional, and
             // advancing by the cell width would space it like a terminal. The
             // advance grows with the letters, or they overlap.
-            pen += @as(i32, @intCast(face.advance(cp))) * theme.textScale();
+            pen += @as(i32, @intCast(face.advance(cp))) * scale;
         }
     }
 

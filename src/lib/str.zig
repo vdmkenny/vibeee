@@ -312,6 +312,28 @@ pub const Builder = struct {
         self.text(unit);
     }
 
+    /// A span of time as a person says it: the largest unit that applies
+    /// and the ones below it, and never a leading "0h".
+    ///
+    /// Here rather than in each caller because uptime is shown by the shell,
+    /// by the monitor and by a command, and three spellings of the same
+    /// number is three chances for two of them to disagree.
+    pub fn duration(self: *Builder, seconds: usize) void {
+        const hours = seconds / 3600;
+        const minutes = (seconds % 3600) / 60;
+
+        if (hours > 0) {
+            self.number(hours);
+            self.text("h ");
+        }
+        if (hours > 0 or minutes > 0) {
+            self.number(minutes);
+            self.text("m ");
+        }
+        self.number(seconds % 60);
+        self.byte('s');
+    }
+
     pub fn done(self: *const Builder) []const u8 {
         return self.buf[0..self.len];
     }
@@ -469,4 +491,22 @@ test "the leading number is measured in the shape C accepts" {
     try std.testing.expectEqual(@as(usize, 0), numberSpan("-"));
     try std.testing.expectEqual(@as(usize, 0), numberSpan("."));
     try std.testing.expectEqual(@as(usize, 0), numberSpan("+.e5"));
+}
+
+test "a duration reads as a person says it" {
+    var buf: [32]u8 = undefined;
+    const cases = [_]struct { seconds: usize, text: []const u8 }{
+        .{ .seconds = 0, .text = "0s" },
+        .{ .seconds = 31, .text = "31s" },
+        .{ .seconds = 60, .text = "1m 0s" },
+        .{ .seconds = 3599, .text = "59m 59s" },
+        .{ .seconds = 3600, .text = "1h 0m 0s" },
+        .{ .seconds = 3661, .text = "1h 1m 1s" },
+        .{ .seconds = 90061, .text = "25h 1m 1s" },
+    };
+    for (cases) |case| {
+        var built = Builder{ .buf = &buf };
+        built.duration(case.seconds);
+        try @import("std").testing.expectEqualStrings(case.text, built.done());
+    }
 }

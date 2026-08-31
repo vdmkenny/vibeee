@@ -273,3 +273,87 @@ test "a tone fills every channel of every frame" {
     }
     try std.testing.expect(@abs(loudest) > 10000);
 }
+
+// ---------------------------------------------------------------------------
+// How loud it actually is
+//
+// A volume is what was asked for; a level is what came out. Only the second
+// tells you the machine is making a sound, which is the question somebody
+// opens a meter to answer.
+// ---------------------------------------------------------------------------
+
+/// How far a sample is from silence, whichever side of it.
+///
+/// The most negative sample has no positive twin, so it is held at the
+/// largest positive one rather than wrapping to itself: a meter that read
+/// zero at full scale would be worse than one a count out.
+pub fn magnitude(sample: i16) u16 {
+    if (sample == std.math.minInt(i16)) return std.math.maxInt(i16);
+    return @intCast(@abs(sample));
+}
+
+/// The loudest of one channel of an interleaved block, as a percentage of
+/// full scale.
+///
+/// Peak rather than average: an average over a period is a number that
+/// barely moves, and what a meter is watched for is the moment something
+/// got loud.
+pub fn level(samples: []const i16, channels: usize, channel: usize) u8 {
+    if (channels == 0 or channel >= channels) return 0;
+
+    var loudest: u16 = 0;
+    var at = channel;
+    while (at < samples.len) : (at += channels) {
+        loudest = @max(loudest, magnitude(samples[at]));
+    }
+    return @intCast(@as(u32, loudest) * 100 / std.math.maxInt(i16));
+}
+
+/// A peak that falls back rather than sticking.
+///
+/// It rises to whatever it just heard and comes down a step at a time, so it
+/// marks the loudest of the last moment rather than the loudest since the
+/// machine was switched on.
+pub fn falling(peak: u8, now: u8, step: u8) u8 {
+    if (now >= peak) return now;
+    return if (peak > step) peak - step else 0;
+}
+
+test "magnitude is the distance from silence, either way" {
+    try std.testing.expectEqual(@as(u16, 0), magnitude(0));
+    try std.testing.expectEqual(@as(u16, 1000), magnitude(1000));
+    try std.testing.expectEqual(@as(u16, 1000), magnitude(-1000));
+    // The one sample with no positive twin is held rather than wrapped.
+    try std.testing.expectEqual(@as(u16, 32767), magnitude(-32768));
+    try std.testing.expectEqual(@as(u16, 32767), magnitude(32767));
+}
+
+test "a level is the loudest of its own channel and no other" {
+    // Interleaved: left quiet, right loud.
+    const frames = [_]i16{ 0, 32767, 100, 20000, -50, 30000 };
+    try std.testing.expectEqual(@as(u8, 0), level(&frames, 2, 0));
+    try std.testing.expectEqual(@as(u8, 100), level(&frames, 2, 1));
+
+    const silence = [_]i16{ 0, 0, 0, 0 };
+    try std.testing.expectEqual(@as(u8, 0), level(&silence, 2, 0));
+
+    // A channel that is not there, and a block that is not interleaved.
+    try std.testing.expectEqual(@as(u8, 0), level(&frames, 2, 2));
+    try std.testing.expectEqual(@as(u8, 0), level(&frames, 0, 0));
+    try std.testing.expectEqual(@as(u8, 100), level(&frames, 1, 0));
+}
+
+test "half scale reads as about half" {
+    const half = [_]i16{ 16383, 16383 };
+    const reading = level(&half, 2, 0);
+    try std.testing.expect(reading >= 48 and reading <= 51);
+}
+
+test "a peak rises at once and comes down a step at a time" {
+    try std.testing.expectEqual(@as(u8, 80), falling(20, 80, 5));
+    try std.testing.expectEqual(@as(u8, 75), falling(80, 10, 5));
+    try std.testing.expectEqual(@as(u8, 70), falling(75, 10, 5));
+    // And settles at silence rather than under it.
+    try std.testing.expectEqual(@as(u8, 0), falling(3, 0, 5));
+    try std.testing.expectEqual(@as(u8, 0), falling(0, 0, 5));
+}

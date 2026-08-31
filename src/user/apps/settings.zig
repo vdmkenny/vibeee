@@ -19,7 +19,10 @@ const out = @import("ulib").out;
 const wm = proto.wm;
 const sound = proto.audio;
 const rgb = @import("lib").rgb;
+const hostname = @import("lib").hostname;
+const net = proto.net;
 const str = @import("lib").str;
+const info = @import("ulib").info;
 const theme = eui.theme;
 
 const store = proto.settings;
@@ -34,16 +37,31 @@ var ctx: eui.Context = undefined;
 var current: store.Wm = .{};
 var saved = true;
 
+/// What the machine calls itself, asked once. The rail says it under the
+/// sections and the About pane says it at the top: one fact, one reading of
+/// it, and no chance of the two disagreeing after a version bump.
+var version_buf: [64]u8 = @splat(0);
+var version: []const u8 = "";
+
 var pointer_x: i32 = 0;
 var pointer_y: i32 = 0;
 var buttons: eui.widget.Buttons = .{};
 
-export fn _start() callconv(.c) noreturn {
+export fn _start(frame: [*]const u32) callconv(.c) noreturn {
+    // A section named on the command line opens there. One entry in the
+    // launcher can then be about this computer rather than about settings.
+    const argc: usize = frame[0];
+    if (argc >= 2) {
+        const wanted = str.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
+        if (Section.parse(wanted)) |which| section = which;
+    }
     settingsMain();
 }
 
 fn settingsMain() noreturn {
     load();
+    version = info.ask("kernel", &version_buf);
+    readMachineName();
 
     connection = proto.client.Connection.open("settings") catch {
         out.text("settings: no window manager is running\n");
@@ -138,7 +156,7 @@ fn run() noreturn {
 
 /// A heading over a row of controls, and where the row starts.
 fn group(y: *i32, area: eui.Rect, title: []const u8) i32 {
-    ctx.label(.{ .x = area.x, .y = y.*, .w = area.w, .h = 16 }, title);
+    ctx.labelDim(.{ .x = area.x, .y = y.*, .w = area.w, .h = 16 }, title);
     y.* += 18;
     return y.*;
 }
@@ -270,6 +288,13 @@ const Section = enum {
     audio,
     about,
 
+    fn parse(name: []const u8) ?Section {
+        for (std.enums.values(Section)) |which| {
+            if (str.eql(which.title(), name) or str.eql(@tagName(which), name)) return which;
+        }
+        return null;
+    }
+
     fn title(self: Section) []const u8 {
         return switch (self) {
             .display => "Display",
@@ -277,13 +302,17 @@ const Section = enum {
             .about => "About",
         };
     }
+
+    fn icon(self: Section) eui.icon.Icon {
+        return switch (self) {
+            .display => .display,
+            .audio => .speaker,
+            .about => .about,
+        };
+    }
 };
 
 var section: Section = .display;
-
-/// The column of sections. As wide as the longest name and no wider: on a
-/// screen this size the rail is room the pane does not get.
-const RAIL_WIDTH: i32 = 96;
 
 fn draw() void {
     const t = theme.current();
@@ -295,17 +324,17 @@ fn draw() void {
     // what the last one finished with.
     if (ctx.damaged) surface.fill(area, t.surface);
 
-    const foot = t.control_height + t.padding * 2;
-    const rail = eui.Rect{ .x = 0, .y = 0, .w = RAIL_WIDTH, .h = area.h - foot };
+    const body = eui.footer.above(area);
+    const rail = eui.rail.column(body, 0);
+    const beside = eui.rail.beside(body, rail);
     const pane = eui.Rect{
-        .x = rail.right() + t.menu_padding,
-        .y = t.menu_padding,
-        .w = area.w - rail.w - t.menu_padding * 2,
-        .h = rail.h - t.menu_padding,
+        .x = beside.x + t.menu_padding,
+        .y = beside.y + t.menu_padding,
+        .w = beside.w - t.menu_padding * 2,
+        .h = beside.h - t.menu_padding,
     };
 
     drawRail(rail);
-    surface.fill(.{ .x = rail.right(), .y = 0, .w = 1, .h = rail.h }, t.line);
 
     switch (section) {
         .display => drawDisplay(pane),
@@ -313,24 +342,21 @@ fn draw() void {
         .about => drawAbout(pane),
     }
 
-    drawFooter(area, foot);
-
+    drawFooter(area);
 }
 
 fn drawRail(rail: eui.Rect) void {
-    const t = theme.current();
-    if (ctx.damaged) ctx.surface.fill(rail, t.surface_pressed);
+    var rows: [std.enums.values(Section).len]eui.rail.Item = undefined;
+    for (std.enums.values(Section), 0..) |which, i| {
+        rows[i] = .{ .label = which.title(), .icon = which.icon() };
+    }
 
-    var y = rail.y + t.padding;
-    for (std.enums.values(Section)) |which| {
-        const at = eui.Rect{ .x = rail.x, .y = y, .w = rail.w, .h = t.menu_row_height };
-        if (ctx.toggle(at, which.title(), which == section) and which != section) {
-            section = which;
-            // A different pane entirely, so the whole window is repainted
-            // rather than the row that was pressed.
-            ctx.damage();
-        }
-        y += t.menu_row_height;
+    const chosen = ctx.rail(rail, &rows, @intFromEnum(section), version);
+    if (chosen != @intFromEnum(section)) {
+        section = @enumFromInt(chosen);
+        // A different pane entirely, so the whole window is repainted rather
+        // than the row that was pressed.
+        ctx.damage();
     }
 }
 
@@ -413,37 +439,174 @@ fn drawAudio(pane: eui.Rect) void {
     }
 }
 
-fn drawAbout(pane: eui.Rect) void {
-    var y = pane.y;
-    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = 16 };
+/// What this computer is, as the kernel describes it.
+///
+/// The same questions `eeefetch` asks, because there is one answer to each
+/// and two lists of them would disagree the first time one gained a line.
+/// Anything the kernel cannot answer is left out rather than shown empty.
+/// What this computer is, and nothing about what it is doing. How much
+/// memory is fitted belongs here; how much of it is in use belongs in the
+/// monitor, and a page that answered both would be a monitor with a
+/// letterhead.
+///
+/// Falls through to a second key when the first is unknown: a machine whose
+/// firmware never described its memory can still say how much of it the
+/// kernel found.
+const Fact = struct { label: []const u8, key: []const u8, then: []const u8 = "" };
 
-    y = group(&y, full, "vibeee");
-    ctx.label(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "0.1.0");
+/// How large the monogram is drawn, in multiples of the interface face.
+const MARK_SCALE: i32 = 3;
+
+/// What it is running.
+const software = [_]Fact{
+    .{ .label = "System", .key = "kernel" },
+    .{ .label = "Architecture", .key = "arch" },
+    .{ .label = "Booted with", .key = "cmdline" },
+};
+
+/// What it is.
+const hardware = [_]Fact{
+    .{ .label = "Processor", .key = "cpu" },
+    .{ .label = "Memory", .key = "mem.hardware", .then = "mem.total" },
+    .{ .label = "Graphics", .key = "display.adapter" },
+    .{ .label = "Screen", .key = "display.panel", .then = "display" },
+    .{ .label = "Storage", .key = "storage" },
+    .{ .label = "Firmware", .key = "bios" },
+};
+
+fn drawAbout(pane: eui.Rect) void {
+    const t = theme.current();
+    var y = drawIdentity(pane);
+
+    y = group(&y, pane, "Software");
+    y = drawFacts(pane, y, &software);
+    y += t.padding;
+
+    y = group(&y, pane, "Hardware");
+    y = drawFacts(pane, y, &hardware);
 }
 
-fn drawFooter(area: eui.Rect, foot: i32) void {
+fn drawFacts(pane: eui.Rect, from: i32, facts: []const Fact) i32 {
+    var y = from;
+    for (facts) |fact| {
+        var buf: [128]u8 = undefined;
+        var value = info.ask(fact.key, &buf);
+        if (value.len == 0 and fact.then.len > 0) value = describe(fact.then, &buf);
+        if (value.len == 0) continue;
+        y = drawFact(pane, y, fact.label, value);
+    }
+    return y;
+}
+
+/// A fallback key's answer, in the words the row wants. `mem.total` is a
+/// count of bytes, which is a number for a program rather than an answer for
+/// a person.
+fn describe(key: []const u8, buf: []u8) []const u8 {
+    if (str.eql(key, "mem.total")) {
+        const bytes = info.askNumber("mem.total");
+        if (bytes == 0) return "";
+        var line = str.Builder{ .buf = buf };
+        line.quantity(bytes / (1024 * 1024), "MiB");
+        return line.done();
+    }
+    return info.ask(key, buf);
+}
+
+/// The head of the page: what this machine is called, what it is, and what it
+/// is running. Three lines and a mark, because the question "about this
+/// computer" is answered by four things and everything else is detail.
+fn drawIdentity(pane: eui.Rect) i32 {
     const t = theme.current();
-    const row = t.control_height;
-    const top = area.h - foot;
+    const mark_size = eui.Surface.textLargeHeight(MARK_SCALE) + t.menu_padding;
+    const mark = eui.Rect{ .x = pane.x, .y = pane.y, .w = mark_size, .h = mark_size };
 
-    ctx.surface.fill(.{ .x = 0, .y = top, .w = area.w, .h = 1 }, t.line);
+    if (ctx.damaged) {
+        ctx.surface.fill(mark, t.accent);
+        ctx.surface.textLarge(
+            mark.x + @divTrunc(mark.w - eui.Surface.textLargeWidth("V", MARK_SCALE), 2),
+            mark.y + @divTrunc(mark.h - eui.Surface.textLargeHeight(MARK_SCALE), 2),
+            "V",
+            t.accent_text,
+            MARK_SCALE,
+        );
+    }
 
+    const left = mark.right() + t.menu_padding;
+    const wide = pane.right() - left;
+    var y = pane.y;
+
+    if (ctx.damaged) {
+        ctx.surface.textLarge(left, y, machine(), t.text, 2);
+    }
+    y += eui.Surface.textLargeHeight(2) + t.padding;
+
+    var buf: [128]u8 = undefined;
+    const board = info.ask("board", &buf);
+    ctx.label(.{ .x = left, .y = y, .w = wide, .h = t.control_height }, if (board.len > 0) board else "unknown board");
+
+    // A rule under the head, which is what separates what the machine is from
+    // what is in it.
+    const below = @max(mark.bottom(), y + eui.Surface.textHeight()) + t.menu_padding;
+    if (ctx.damaged) {
+        ctx.surface.fill(.{ .x = pane.x, .y = below, .w = pane.w, .h = 1 }, t.line);
+    }
+    return below + t.menu_padding;
+}
+
+/// The label column: a quarter of the pane, so the values line up down the
+/// page whatever they say.
+fn factColumn(pane: eui.Rect) i32 {
+    return @max(theme.enlarged(80), @divTrunc(pane.w, 5));
+}
+
+fn drawFact(pane: eui.Rect, y: i32, label: []const u8, value: []const u8) i32 {
+    const t = theme.current();
+    const label_w = factColumn(pane);
+    ctx.label(.{ .x = pane.x, .y = y + 2, .w = label_w, .h = t.control_height }, label);
+    ctx.label(.{ .x = pane.x + label_w, .y = y + 2, .w = pane.w - label_w, .h = t.control_height }, value);
+    return y + t.menu_row_height;
+}
+
+/// What this machine answers to. The configured name if there is one, and
+/// otherwise the one derived from its own address, which is the same rule
+/// the network service applies: two answers to "what is this machine called"
+/// would be one too many.
+var machine_buf: [hostname.MAX]u8 = @splat(0);
+var machine_len: usize = 0;
+
+fn machine() []const u8 {
+    return machine_buf[0..machine_len];
+}
+
+fn readMachineName() void {
+    const configured = store.netMachine(store.load("net")).hostname;
+    var address: [6]u8 = @splat(0);
+    if (net.interfaceAt(0)) |iface| address = iface.mac;
+
+    const name = hostname.Hostname.resolve(configured, address);
+    const text = name.slice();
+    @memcpy(machine_buf[0..text.len], text);
+    machine_len = text.len;
+}
+
+fn drawFooter(area: eui.Rect) void {
     // Saved settings take effect when the manager next starts, except the
     // theme and the wall, which are live. Saying so beats a person wondering
     // why the bar did not move.
-    ctx.label(
-        .{ .x = t.menu_padding, .y = top + t.padding + 4, .w = area.w - 180, .h = 16 },
+    const pressed = ctx.footer(
+        area,
         if (saved) "The bar moves when the manager next starts." else "Unsaved changes.",
+        &.{ "Save", "Close" },
+        0,
     );
 
-    if (ctx.button(.{ .x = area.w - 168, .y = top + t.padding, .w = 76, .h = row }, "Save")) {
-        save();
-        ctx.damage();
-    }
-
-    if (ctx.button(.{ .x = area.w - 86, .y = top + t.padding, .w = 76, .h = row }, "Close")) {
-        sys.exit(0);
-    }
+    if (pressed) |which| switch (which) {
+        0 => {
+            save();
+            ctx.damage();
+        },
+        else => sys.exit(0),
+    };
 
     ctx.end();
     connection.commit(window, ctx.damageList()) catch {};

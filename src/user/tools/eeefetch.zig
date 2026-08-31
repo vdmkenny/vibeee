@@ -97,19 +97,9 @@ fn emit(label: []const u8, value: []const u8) void {
 const LABEL = 9;
 
 fn writeDuration(total: usize) void {
-    const hours = total / 3600;
-    const minutes = (total % 3600) / 60;
-    const seconds = total % 60;
-
-    if (hours > 0) {
-        out.decimal(hours);
-        out.text("h ");
-    }
-    if (hours > 0 or minutes > 0) {
-        out.decimal(minutes);
-        out.text("m ");
-    }
-    out.decimal(seconds);
-    out.text("s");
+    var buf: [32]u8 = undefined;
+    var built = str.Builder{ .buf = &buf };
+    built.duration(total);
+    out.text(built.done());
 }
 

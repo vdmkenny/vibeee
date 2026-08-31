@@ -25,7 +25,9 @@ pub const table = @import("table.zig");
 pub const text = @import("text.zig");
 pub const icon = @import("icon.zig");
 pub const meter = @import("meter.zig");
+pub const footer = @import("footer.zig");
 pub const popover = @import("popover.zig");
+pub const rail = @import("rail.zig");
 pub const region = @import("region.zig");
 pub const row = @import("row.zig");
 pub const slider = @import("slider.zig");
@@ -38,3 +40,9 @@ pub const Surface = draw.Surface;
 pub const Color = draw.Color;
 pub const Context = widget.Context;
 pub const Theme = theme.Theme;
+
+// The toolkit's modules are only analysed when something reaches them, so
+// without this the tests inside them are not skipped but never seen.
+test {
+    @import("std").testing.refAllDecls(@This());
+}

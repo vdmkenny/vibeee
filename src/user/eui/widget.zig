@@ -24,6 +24,8 @@ const draw = @import("draw.zig");
 const bar = @import("slider.zig");
 const gauge = @import("meter.zig");
 const icons = @import("icon.zig");
+const foot = @import("footer.zig");
+const rails = @import("rail.zig");
 const theme = @import("theme.zig");
 const scroll_mod = @import("scroll.zig");
 const tbl = @import("table.zig");
@@ -584,7 +586,133 @@ pub const Context = struct {
 
     /// Static text. Repainted only when something has damaged it, since a
     /// label has no state of its own to change.
+    /// The column of sections down the side of a window. Returns which one
+    /// is chosen, which is `chosen` unless a row was clicked this pass.
+    ///
+    /// The whole column is drawn here rather than row by row by the caller,
+    /// because the ground behind the rows, the hairline down its edge and
+    /// the strip at its foot are one thing: a caller that had to remember to
+    /// draw the hairline is a caller that will one day forget.
+    pub fn rail(self: *Context, area: Rect, items: []const rails.Item, chosen: usize, caption: []const u8) usize {
+        const t = theme.current();
+
+        if (self.damaged) {
+            self.surface.fill(area, t.surface_pressed);
+            self.surface.fill(.{ .x = area.right(), .y = area.y, .w = 1, .h = area.h }, t.line);
+            self.paintRailFooter(area, caption);
+        }
+
+        var picked = chosen;
+        const indented = rails.marked(items);
+        for (items, 0..) |item, index| {
+            const at = rails.rowRect(area, index);
+            const entry = self.slotFor(at) orelse continue;
+            const it = self.interact(entry, at);
+
+            if ((it.clicked or self.activatedByKey(entry)) and index != chosen) picked = index;
+
+            const visual: Visual = if (index == chosen)
+                hotOr(it.over, .checked_hot, .checked)
+            else
+                hotOr(it.over, .hot, .idle);
+
+            if (self.needsPaint(entry, visual)) {
+                entry.visual = visual;
+                paintRailRow(self.surface, at, item, visual, indented, index + 1 < items.len);
+                self.addDamage(at);
+            }
+        }
+        return picked;
+    }
+
+    /// The strip along the bottom of a window. Returns which action was
+    /// pressed, if any.
+    ///
+    /// `primary` is the one that does the thing the window is for, drawn
+    /// filled so it is findable without reading: on a strip of two buttons,
+    /// which one is Save should not be a sentence you have to parse.
+    pub fn footer(
+        self: *Context,
+        area: Rect,
+        message: []const u8,
+        labels: []const []const u8,
+        primary: usize,
+    ) ?usize {
+        const t = theme.current();
+        const bar_rect = foot.strip(area);
+
+        if (self.damaged) {
+            self.surface.fill(bar_rect, t.bar);
+            self.surface.fill(.{ .x = bar_rect.x, .y = bar_rect.y, .w = bar_rect.w, .h = 1 }, t.line);
+        }
+
+        var cells: [8]Rect = undefined;
+        const buttons = foot.place(bar_rect, labels, &cells);
+
+        self.footerMessage(foot.messageRect(bar_rect, buttons), message);
+
+        var pressed: ?usize = null;
+        for (buttons, 0..) |at, index| {
+            const entry = self.slotFor(at) orelse continue;
+            const it = self.interact(entry, at);
+            if (it.clicked or self.activatedByKey(entry)) pressed = index;
+
+            const visual: Visual = if (index == primary)
+                hotOr(it.over, .checked_hot, .checked)
+            else if (it.holding)
+                .active
+            else
+                hotOr(it.over, .hot, .idle);
+
+            if (self.needsPaint(entry, visual)) {
+                entry.visual = visual;
+                paintButton(self.surface, at, labels[index], visual, it.focused);
+                self.addDamage(at);
+            }
+        }
+        return pressed;
+    }
+
+    /// What the window has to say, on the bar's own ground rather than the
+    /// window's: the strip is part of the chrome, not part of the pane.
+    fn footerMessage(self: *Context, area: Rect, text: []const u8) void {
+        const entry = self.slotFor(area) orelse return;
+        entry.seen = true;
+
+        const signature = fingerprint(text);
+        if (self.damaged or entry.detail != signature) {
+            entry.detail = signature;
+            const t = theme.current();
+            self.surface.fill(area, t.bar);
+            self.surface.clipped(area).text(area.x, area.y, text, t.bar_text);
+            self.addDamage(area);
+        }
+    }
+
+    fn paintRailFooter(self: *Context, area: Rect, text: []const u8) void {
+        if (text.len == 0) return;
+        const t = theme.current();
+        const strip = rails.footer(area);
+        self.surface.fill(.{ .x = strip.x, .y = strip.y, .w = strip.w, .h = 1 }, t.line);
+        self.surface.clipped(strip).text(
+            strip.x + t.menu_padding,
+            strip.y + t.padding + 1,
+            text,
+            t.text_dim,
+        );
+    }
+
     pub fn label(self: *Context, area: Rect, text: []const u8) void {
+        self.labelIn(area, text, theme.current().text);
+    }
+
+    /// The same, in the quieter ink: a caption, a unit, the line under a
+    /// heading that says what the heading is.
+    pub fn labelDim(self: *Context, area: Rect, text: []const u8) void {
+        self.labelIn(area, text, theme.current().text_dim);
+    }
+
+    pub fn labelIn(self: *Context, area: Rect, text: []const u8, ink: draw.Color) void {
         const entry = self.slotFor(area) orelse return;
         entry.seen = true;
 
@@ -595,7 +723,7 @@ pub const Context = struct {
             entry.detail = signature;
             const t = theme.current();
             self.surface.fill(area, t.surface);
-            self.surface.text(area.x, area.y, text, t.text);
+            self.surface.clipped(area).text(area.x, area.y, text, ink);
             self.addDamage(area);
         }
     }
@@ -615,6 +743,8 @@ pub const Context = struct {
             const t = theme.current();
             self.surface.fill(area, t.surface_pressed);
             self.surface.fill(.{ .x = area.x, .y = area.y, .w = filled, .h = area.h }, t.accent);
+            // An edge, or an empty bar on a pale surface reads as a smudge
+            // rather than as a bar with nothing in it.
             self.surface.frame(area, t.line);
             self.addDamage(area);
         }
@@ -666,6 +796,47 @@ pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, v
         else => t.surface,
     });
     surface.frame(grip, if (focused or visual == .active) t.accent else t.border);
+}
+
+/// A rail row: a band of colour and a label, with no edge of its own.
+///
+/// Selection is the strong state and hover is the weak one, so a hovered row
+/// that is not selected is only a lighter ground: a rail where hovering looked
+/// like choosing would tell you that you had already clicked.
+fn paintRailRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, indented: bool, divider: bool) void {
+    const t = theme.current();
+    const selected = visual == .checked or visual == .checked_hot;
+    const ground = switch (visual) {
+        // Already the chosen row: hovering it has nothing left to say.
+        .checked, .checked_hot => t.accent,
+        .hot => t.surface_hot,
+        else => t.surface_pressed,
+    };
+    const ink = if (selected) t.accent_text else t.text;
+    surface.fill(area, ground);
+
+    const clipped = surface.clipped(area);
+    if (item.icon) |which| {
+        clipped.icon(
+            area.x + t.menu_padding,
+            area.y + @divTrunc(area.h - Surface.iconSize(), 2),
+            which,
+            ink,
+        );
+    }
+    clipped.text(
+        area.x + t.menu_padding + if (indented) markWidth() else 0,
+        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+        item.label,
+        ink,
+    );
+
+    // A hairline between one section and the next, drawn by the row above it
+    // so it is repainted whenever that row is: a divider left behind by a
+    // highlight moving away is a line that slowly rubs out.
+    if (divider) {
+        surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+    }
 }
 
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {

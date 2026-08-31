@@ -297,7 +297,7 @@ var memory_buffer: [40]u8 = @splat(0);
 fn uptimeText() []const u8 {
     var line = str.Builder{ .buf = &uptime_buffer };
     line.text("up ");
-    line.quantity(uptime, "s");
+    line.duration(uptime);
     return line.done();
 }
 

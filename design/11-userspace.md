@@ -283,6 +283,25 @@ One static binary, applet dispatch on argv[0]/first arg; ≈ 450 KB total vs ≈
 - **No Ctrl+Alt+F1 VT switching**: display contract has ONE owner; live console/GUI switching would punch a hole in it for marginal benefit.
 - **Emergency shell: KEEP, as fallback not as VT**: init runs `econ` (kernel text console + esh) when (a) `recovery=1`, (b) GUI crash-loop breaker trips, (c) `gui.enabled=false` in /cfg. Kernel fb/text console for panic already exists; econ reuses the kernel console write syscall + input core stream. You are never stranded, and the display owner invariant holds (console owner ⇔ GUI absent).
 
+### 7.4 Parity with the graphical shell
+
+Anything the GUI can do, a command can do, and anything a command can do, the
+GUI may show. This is a rule about capability, not about layout: the Settings
+app's Audio pane and `mixer` change the same value, `wifi join` and the WiFi
+pane run the same join, `brightness` and the Power pane move the same lamp.
+
+Two reasons it is worth the discipline. A machine that is only configurable
+through pictures cannot be scripted, recovered from `econ`, or driven over a
+serial line, which are exactly the situations where configuration matters
+most. And a pane with no command behind it is a pane holding its own logic:
+the parity forces the work down into a service where both callers reach it,
+which is where it belongs anyway.
+
+The practical test, applied when either side gains a feature: name the command
+that does the same thing. If there is not one, the feature is not finished.
+Settings that both sides share live in cfgd (§8), which is what makes them see
+each other's changes.
+
 ## 8. Settings
 
 Two programs must be able to change the same setting and see each other do it:

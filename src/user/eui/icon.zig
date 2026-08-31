@@ -53,6 +53,14 @@ pub const Icon = enum {
     /// One window filling its frame: a desktop showing one of its windows at
     /// full size rather than the tiling it would otherwise have.
     maximised,
+    /// A panel on a stand. What the screen settings are about, and the only
+    /// picture here that is a drawing of the thing you are looking at.
+    display,
+    /// Keys in rows, with the space bar under them.
+    keyboard,
+    /// A letter in a box: what this machine is, rather than a setting to
+    /// change. The one row of a rail that answers instead of asking.
+    about,
 };
 
 /// A picture and the name it belongs to.
@@ -319,6 +327,57 @@ const art = [_]Picture{
             ".#........#.",
             ".##########.",
             "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .display,
+        .rows = .{
+            "............",
+            "############",
+            "#..........#",
+            "#..........#",
+            "#..........#",
+            "#..........#",
+            "#..........#",
+            "############",
+            "....####....",
+            "....####....",
+            "..########..",
+            "............",
+        },
+    },
+    .{
+        .icon = .keyboard,
+        .rows = .{
+            "............",
+            "............",
+            "############",
+            "#.#.#.#.#..#",
+            "#..........#",
+            "#.#.#.#.#..#",
+            "#..........#",
+            "#..######..#",
+            "#..........#",
+            "############",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .about,
+        .rows = .{
+            "............",
+            "..########..",
+            ".##......##.",
+            "##...##...##",
+            "##...##...##",
+            "##........##",
+            "##...##...##",
+            "##...##...##",
+            "##...##...##",
+            ".##......##.",
+            "..########..",
             "............",
         },
     },

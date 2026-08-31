@@ -23,11 +23,17 @@ const klog = @import("klog.zig");
 const pmm = @import("pmm.zig");
 const probe = @import("probe.zig");
 const sched = @import("sched.zig");
+const builtin = @import("builtin");
 const svc = @import("svc.zig");
 const vfs = @import("vfs.zig");
 const quirks = @import("../quirks/quirks.zig");
 
-pub const VERSION = "0.1.0-M0";
+/// What this kernel is, and what it was built for.
+///
+/// The architecture comes from the compiler rather than from a build flag,
+/// so it is what the binary actually is: a kernel that says x86 while
+/// running on ARM would be a kernel nobody could report a fault against.
+pub const VERSION = "0.1.0-" ++ @tagName(builtin.cpu.arch);
 
 /// Filled in by the composition root, which is the only place that may know
 /// about firmware tables and drivers at once.

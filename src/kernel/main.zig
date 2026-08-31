@@ -23,13 +23,15 @@ const heap = @import("heap.zig");
 const bcache = @import("bcache.zig");
 const sched = @import("sched.zig");
 const svc = @import("svc.zig");
+const sysinfo = @import("sysinfo.zig");
 const syscall_abi = @import("lib").syscalls;
 const watchdog = @import("watchdog.zig");
 const platform = @import("../platform.zig");
 
 pub const panic = std.debug.FullPanic(panic_mod.kpanic);
 
-pub const VERSION = "0.1.0-M0";
+/// Named once, in the place that answers questions about the machine.
+pub const VERSION = sysinfo.VERSION;
 
 /// Seconds a boot has to reach `boot_ok` before the watchdog ends it with
 /// the panic screen. Generous by design: the only thing this cost buys is

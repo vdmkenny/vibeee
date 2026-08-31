@@ -19,12 +19,10 @@ test {
     _ = @import("keymap_test.zig");
     _ = @import("user/eterm/vt_test.zig");
     _ = @import("user/eui/text_test.zig");
-    _ = @import("user/eui/region.zig");
-    _ = @import("user/eui/icon.zig");
-    _ = @import("user/eui/row.zig");
-    _ = @import("user/eui/slider.zig");
-    _ = @import("user/eui/popover.zig");
-    _ = @import("user/eui/meter.zig");
+    // The toolkit whole, rather than a list of its modules: a list is a
+    // second place that has to be kept agreeing with the first, and the way
+    // it fails is a module whose tests quietly stop running.
+    _ = @import("user/eui/eui.zig");
     _ = @import("user/lib/command.zig");
     _ = @import("user/lib/env.zig");
     _ = @import("user/lib/table.zig");
