@@ -117,18 +117,10 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
     pixel_width = bi.fb_width;
     pixel_height = bi.fb_height;
 
-    // Pick the largest font that still leaves a usable console. Below roughly
-    // 60 columns, wrapping makes the boot log and the panic screen unreadable,
-    // so legibility gives way to fitting the text.
-    font = &FONTS[0];
-    for (&FONTS) |*candidate| {
-        if (pixel_width / candidate.width >= 60 and pixel_height / candidate.height >= 20) {
-            font = candidate;
-        }
-    }
-
-    columns = @min(pixel_width / font.width, MAX_COLUMNS);
-    rows = @min(pixel_height / font.height, MAX_ROWS);
+    // The same choice a modeset makes later, from the same rule: this once
+    // had a rule of its own that allowed twenty rows, so a panel picked the
+    // large face at boot and the small one the moment anything set a mode.
+    fitConsole();
     ready = true;
 
     setAll(Cell.of(' ', 0, 0));
@@ -154,11 +146,16 @@ pub fn layout() Layout {
     return .{ .addr = phys, .pitch = pitch };
 }
 
-/// The shape the boot log and the panic screen are written for. A font that
-/// leaves less than this wraps them, which costs more legibility than the
-/// larger glyphs gain.
+/// The shape the boot log and the panic screen are written for.
+///
+/// Eighty columns because that is what everything printed here is composed
+/// against, and thirty rows because a panic that scrolls its own cause off
+/// the top is a panic nobody can act on. A font that leaves less than this
+/// costs more legibility in wrapping than its larger glyphs gain, so a
+/// netbook panel keeps the small face and the large one waits for a screen
+/// with the room.
 const MIN_COLUMNS = 80;
-const MIN_ROWS = 24;
+const MIN_ROWS = 30;
 
 /// Choose a font for the current geometry and derive the character grid.
 ///

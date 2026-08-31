@@ -551,7 +551,6 @@ fn serviceAfterBoot() void {
         }
         // Said on the console rather than into the ring: these lines are how
         // a machine that stops at a driver's doorstep names the door.
-        report(state.service.name, "starting; the boot has settled");
         start(state);
     }
 
