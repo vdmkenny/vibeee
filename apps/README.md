@@ -30,6 +30,14 @@ anything in `home/` is on the machine at the next boot, and rebuilding
 the image does not lose it: `home/` on this side is the source of truth,
 not the copy inside the image.
 
+Nothing that boots the machine depends on this: `make qemu` and `make vnc`
+use whatever is already staged. Building an app is a compiler run over
+somebody else's whole source tree, and a fetch on a clone that has not
+done one, which is not a thing to put in front of every boot. So after
+changing an app, build it before booting:
+
+    make apps && make vnc
+
 Data files go in `home/` too, and you put them there yourself. An app
 recipe says what it needs and where to get it, and stops short of
 fetching it: what a program may be redistributed with is not something a

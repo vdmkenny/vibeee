@@ -635,7 +635,7 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 |---|---|---|---|
 | **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU | **Done** |
 | **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm, keymaps | **First real-hardware boot** | **Done** |
-| **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Partial**: platd, Pad, Monitor, Settings done; usbd/sndd/netd left |
+| **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Done**, less USB suspend and resume: `netd` is verified on the machine through the whole stack, `sndd` runs the routing graph over both controllers, and `usbd` carries disks, keyboards, mice and hubs |
 | **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, install-to-SSD, A/B updater, turbo mode, and the GUI apps parked from M1/M2: Files/Edit, Calc, Mines, Draw/View | Hardware | Not started |
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware | Not started |
 | **M5** | Browser experiment (litehtml + quickjs + Zig TLS), explicitly exploratory | Hardware | Not started |
