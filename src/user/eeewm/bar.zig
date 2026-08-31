@@ -16,6 +16,11 @@
 const draw = @import("eui").draw;
 const layout = @import("layout.zig");
 const status = @import("status.zig");
+const popover = @import("eui").popover;
+const slider = @import("eui").slider;
+const audio = @import("proto").audio;
+const eui_icon = @import("eui").icon;
+const graph = @import("lib").audiograph;
 const sys = @import("sys");
 const theme = @import("eui").theme;
 
@@ -223,16 +228,17 @@ pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
 
 /// In the order they sit. What is furthest left goes first on a narrow
 /// screen, which is why the clock is last.
-const shown = [_]status.Indicator{ .clock };
+const shown = [_]status.Indicator{ .sound, .clock };
 
 fn paintStatus(surface: Surface, width: i32, height: i32) void {
     var buf: [status.MAX]status.Slot = undefined;
     for (statusSlots(width, height, &buf)) |slot| {
         switch (slot.which) {
             .clock => paintClock(surface, slot.area),
+            .sound => paintSound(surface, slot.area),
             // Drawn once they have something true to say and a menu to say
             // it in; the row already keeps their room.
-            .network, .sound, .battery => {},
+            .network, .battery => {},
         }
     }
 }
@@ -286,6 +292,13 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
         return launcher.selected != before;
     }
 
+    if (sound_open) {
+        var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+        const before = sound_menu.selected;
+        sound_menu.hover(soundRows(soundPanel(width, height)), soundItems(&rows), x, y);
+        return sound_menu.selected != before;
+    }
+
     return false;
 }
 
@@ -304,6 +317,8 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
         var rows: [items.len]ui.MenuItem = undefined;
         launcher.paint(surface, launchMenuRect(height), menuItems(&rows));
     }
+
+    if (sound_open) paintSoundMenu(surface, width, height);
 }
 
 /// The V button. A wordmark rather than an icon: at 133 DPI a glyph from the
@@ -397,6 +412,213 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 /// Which keyboard layout the keys mean, in the two letters the layout gives
 /// for the purpose. Always shown: a machine whose keycaps disagree with its
 /// layout is one where this is the first thing worth checking.
+// ---------------------------------------------------------------------------
+// Sound
+//
+// The level and the outputs, behind the one icon in the bar that says whether
+// the machine can be heard. What is asked of the service is cached, because a
+// paint happens whenever the pointer moves and the answers change only when
+// somebody changes them.
+// ---------------------------------------------------------------------------
+
+var sound_menu: ui.Menu = .{};
+var sound_open = false;
+var level: audio.VolumeInfo = .{ .percent = 0, .muted = 0 };
+var sound_ports: [MAX_PORTS]audio.PortInfo = undefined;
+var sound_port_count: usize = 0;
+
+/// Enough for the outputs and inputs a machine of this size has, plus the
+/// programs playing through them.
+const MAX_PORTS = 12;
+const SOUND_WIDTH: i32 = 224;
+/// The strip above the rows: the icon, the slider and the percentage.
+const SOUND_LEVEL_HEIGHT: i32 = 41;
+
+fn readSound() void {
+    level = audio.master() orelse .{ .percent = 0, .muted = 0 };
+    sound_port_count = audio.ports(&sound_ports).len;
+}
+
+pub fn soundOpen() bool {
+    return sound_open;
+}
+
+/// The rows: mute, then what can be played out of, then what can be recorded
+/// from. A port is marked when it is the one in use.
+fn soundItems(into: []ui.MenuItem) []ui.MenuItem {
+    var count: usize = 0;
+    const put = struct {
+        fn one(list: []ui.MenuItem, at: *usize, item: ui.MenuItem) void {
+            if (at.* == list.len) return;
+            list[at.*] = item;
+            at.* += 1;
+        }
+    }.one;
+
+    put(into, &count, .{
+        .label = if (level.muted != 0) "Unmute" else "Mute",
+        .mark = if (level.muted != 0) .muted else .speaker,
+    });
+
+    for ([_]graph.Direction{ .sink, .source }) |want| {
+        var any = false;
+        // By pointer: the name is a slice into the table, and a slice into a
+        // copy that goes out of scope with the loop is a row with no label.
+        for (sound_ports[0..sound_port_count]) |*port| {
+            if (port.direction != want) continue;
+            if (!any) {
+                put(into, &count, .{ .kind = .separator });
+                any = true;
+            }
+            put(into, &count, .{
+                .label = audio.nameOf(port),
+                // The tick says which one the machine is using; the others
+                // carry nothing, and the column keeps them lined up.
+                .mark = if (port.default != 0) .check else null,
+            });
+        }
+    }
+
+    return into[0..count];
+}
+
+fn soundPanel(width: i32, height: i32) Rect {
+    var buf: [status.MAX]status.Slot = undefined;
+    const slots = statusSlots(width, height, &buf);
+
+    var anchor = Rect{ .x = width, .y = strip(height).y, .w = 0, .h = theme.current().bar_height };
+    for (slots) |slot| {
+        if (slot.which == .sound) anchor = slot.area;
+    }
+
+    var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+    const list = soundItems(&rows);
+    const rows_high = ui.Menu.sizeFor(list.len, SOUND_WIDTH).h;
+
+    return popover.place(
+        anchor,
+        SOUND_WIDTH,
+        SOUND_LEVEL_HEIGHT + rows_high,
+        .{ .x = 0, .y = 0, .w = width, .h = height },
+        if (settings.current().bar == .top) .below else .above,
+    );
+}
+
+/// The groove, inside the panel's level strip.
+fn soundTrack(panel: Rect) Rect {
+    const t = theme.current();
+    const icon: i32 = @intCast(eui_icon.WIDTH);
+    const left = panel.x + t.padding + icon + t.padding;
+    return .{
+        .x = left,
+        .y = panel.y + 9,
+        .w = panel.right() - t.padding - 34 - left,
+        .h = t.control_height,
+    };
+}
+
+fn soundRows(panel: Rect) Rect {
+    return .{
+        .x = panel.x,
+        .y = panel.y + SOUND_LEVEL_HEIGHT,
+        .w = panel.w,
+        .h = panel.h - SOUND_LEVEL_HEIGHT,
+    };
+}
+
+fn paintSound(surface: Surface, area: Rect) void {
+    const t = theme.current();
+    const which: eui_icon.Icon = if (level.muted != 0) .muted else .speaker;
+    const inside = sound_open;
+
+    if (inside) surface.fill(area, t.accent);
+    surface.icon(
+        area.x + @divTrunc(area.w - @as(i32, @intCast(eui_icon.WIDTH)), 2),
+        area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        which,
+        if (inside) t.accent_text else t.bar_text,
+    );
+}
+
+fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
+    const t = theme.current();
+    const panel = soundPanel(width, height);
+
+    // The strip: the panel's own ground, the icon, the slider and the number.
+    const strip_area = Rect{ .x = panel.x, .y = panel.y, .w = panel.w, .h = SOUND_LEVEL_HEIGHT };
+    surface.fill(strip_area, t.surface);
+    surface.frame(strip_area, t.line);
+
+    surface.icon(
+        panel.x + t.padding,
+        panel.y + @divTrunc(SOUND_LEVEL_HEIGHT - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        if (level.muted != 0) .muted else .speaker,
+        t.text,
+    );
+
+    const groove = soundTrack(panel);
+    ui.paintSlider(surface, groove, .{ .min = 0, .max = 100 }, level.percent, .idle, false);
+
+    var text: [5]u8 = @splat(0);
+    const spelled = percentText(&text, level.percent);
+    surface.text(
+        panel.right() - t.padding - Surface.textWidth(spelled),
+        panel.y + @divTrunc(SOUND_LEVEL_HEIGHT - Surface.textHeight(), 2),
+        spelled,
+        t.text,
+    );
+
+    var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+    sound_menu.paint(surface, soundRows(panel), soundItems(&rows));
+}
+
+/// What a row of the sound menu does. The first is mute; the rest name a
+/// port, and choosing one makes it the default in its own direction.
+fn chooseSound(row: usize) void {
+    var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+    const list = soundItems(&rows);
+    if (row >= list.len) return;
+
+    if (row == 0) {
+        if (audio.setMaster(level.percent, level.muted == 0)) readSound();
+        return;
+    }
+
+    // The rows after the first are the ports, in the order they were listed,
+    // with the separators that were put between them skipped.
+    var seen: usize = 0;
+    for (list[1..], 1..) |item, index| {
+        if (item.kind == .separator) continue;
+        seen += 1;
+        if (index != row) continue;
+
+        var at: usize = 0;
+        for (sound_ports[0..sound_port_count]) |port| {
+            if (port.direction != .sink and port.direction != .source) continue;
+            at += 1;
+            if (at == seen) {
+                if (audio.makeDefault(port.id)) readSound();
+                return;
+            }
+        }
+    }
+}
+
+fn percentText(buf: []u8, value: u8) []const u8 {
+    var n: usize = 0;
+    if (value >= 100) {
+        buf[n] = '1';
+        n += 1;
+    }
+    if (value >= 10) {
+        buf[n] = '0' + @as(u8, @intCast(value / 10 % 10));
+        n += 1;
+    }
+    buf[n] = '0' + @as(u8, @intCast(value % 10));
+    buf[n + 1] = '%';
+    return buf[0 .. n + 2];
+}
+
 fn paintClock(surface: Surface, area: Rect) void {
     const t = theme.current();
     const us = sys.realtimeMicros() orelse return;
@@ -476,7 +698,40 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         return .consumed;
     }
 
+    if (sound_open) {
+        const panel = soundPanel(width, height);
+
+        // The groove first: dragging the level is the thing this menu is
+        // opened for most often, and it stays open while it is done.
+        const groove = soundTrack(panel);
+        if (groove.contains(x, y)) {
+            const wanted = slider.valueAt(groove, .{ .min = 0, .max = 100 }, x);
+            if (audio.setMaster(@intCast(wanted), level.muted != 0)) readSound();
+            return .consumed;
+        }
+
+        var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+        const list = soundItems(&rows);
+        if (ui.Menu.rowAt(soundRows(panel), list, x, y)) |row| {
+            chooseSound(row);
+            return .consumed;
+        }
+
+        sound_open = false;
+        return .consumed;
+    }
+
     if (!contains(y, height)) return .none;
+
+    var status_buf: [status.MAX]status.Slot = undefined;
+    if (status.at(statusSlots(width, height, &status_buf), x, y)) |which| {
+        if (which == .sound) {
+            readSound();
+            sound_open = true;
+            sound_menu.show();
+        }
+        return .consumed;
+    }
 
     if (launchRect(height).contains(x, y)) {
         openLauncher();

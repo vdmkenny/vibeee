@@ -215,3 +215,69 @@ comptime {
     if (@sizeOf(Rep) > sys.MAX_PAYLOAD) @compileError("an audio reply must fit one payload");
     if (RING_FRAMES & (RING_FRAMES - 1) != 0) @compileError("the ring must be a power of two");
 }
+
+// ---------------------------------------------------------------------------
+// What a caller asks about the sound graph
+//
+// The requests spelled out once. Every program that shows a level or a list
+// of outputs needs the same four questions answered, and a second copy of
+// them is a second thing to keep in step with the protocol above.
+// ---------------------------------------------------------------------------
+
+/// What the default output is at, or null when nothing is serving sound.
+pub fn master() ?VolumeInfo {
+    var reply = Rep{};
+    call(.{ .tag = .get_master }, &reply) catch return null;
+    if (reply.status != .ok) return null;
+    return reply.body.volume;
+}
+
+/// Set the default output's level and whether it is muted. Answers whether
+/// the service took it.
+pub fn setMaster(percent: u8, muted: bool) bool {
+    var reply = Rep{};
+    call(.{
+        .tag = .set_volume,
+        .b = percent,
+        .dir = @intFromBool(muted),
+    }, &reply) catch return false;
+    return reply.status == .ok;
+}
+
+/// Every port the graph holds, in table order, as far as `into` has room.
+///
+/// The listing walks by index until the service says there are no more, which
+/// is how a table with holes in it is read without the caller knowing there
+/// are holes.
+pub fn ports(into: []PortInfo) []PortInfo {
+    var count: usize = 0;
+    var index: u32 = 0;
+    while (count < into.len and index < graph.MAX_PORTS) : (index += 1) {
+        var reply = Rep{};
+        call(.{ .tag = .get_port, .a = index }, &reply) catch break;
+        // Past the last slot the service says so; a slot inside the table
+        // that nothing is using answers with no identity, and is skipped
+        // rather than listed as a port with no name.
+        if (reply.status != .ok) break;
+
+        const info = reply.body.port_info;
+        if (info.id == graph.NONE) continue;
+
+        into[count] = info;
+        count += 1;
+    }
+    return into[0..count];
+}
+
+/// Make a port the default in its own direction, which is what picking an
+/// output or an input from a list means.
+pub fn makeDefault(port: u16) bool {
+    var reply = Rep{};
+    call(.{ .tag = .set_default, .a = port }, &reply) catch return false;
+    return reply.status == .ok;
+}
+
+/// A port's name, which the protocol carries as bytes and a length.
+pub fn nameOf(port: *const PortInfo) []const u8 {
+    return port.name[0..@min(port.name_len, graph.Name.MAX)];
+}

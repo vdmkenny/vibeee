@@ -22,6 +22,7 @@
 const draw = @import("draw.zig");
 
 const bar = @import("slider.zig");
+const icons = @import("icon.zig");
 const theme = @import("theme.zig");
 const scroll_mod = @import("scroll.zig");
 const tbl = @import("table.zig");
@@ -618,7 +619,10 @@ pub const Context = struct {
 // how a button is drawn should not mean touching how it behaves.
 // ---------------------------------------------------------------------------
 
-fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, visual: Visual, focused: bool) void {
+/// Public because a slider is wanted in places that have no widget pass to
+/// run it: the window manager draws one in a bar menu and reads the pointer
+/// itself, and it must be the same picture as the one an application gets.
+pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, visual: Visual, focused: bool) void {
     const t = theme.current();
 
     // The groove, then what is behind the knob, then the knob. Nothing is
@@ -770,6 +774,11 @@ pub const MenuItem = struct {
     /// Drawn right-aligned and dim: the chord that does the same thing. A menu
     /// is where people find out a command has a shortcut.
     detail: []const u8 = "",
+    /// A picture before the label: what the row is, or a tick saying it is
+    /// the one in use. The column exists for the whole menu or for none of
+    /// it, so rows without a picture still line up with the rows that have
+    /// one.
+    mark: ?icons.Icon = null,
 
     pub const Kind = enum { item, separator, disabled };
 
@@ -777,6 +786,10 @@ pub const MenuItem = struct {
         return self.kind == .item;
     }
 };
+
+/// The picture column's width when a menu has one: the icon and the gap
+/// after it.
+const MARK_WIDTH: i32 = @as(i32, @intCast(icons.WIDTH)) + 6;
 
 pub const Menu = struct {
     /// Which row is highlighted. Survives between passes: a menu that forgot
@@ -815,6 +828,9 @@ pub const Menu = struct {
 
     pub fn paint(self: *const Menu, surface: Surface, area: Rect, items: []const MenuItem) void {
         const t = theme.current();
+        // One row with a picture indents them all, so the labels line up
+        // whether or not the row beside them has one.
+        const indented = marked(items);
 
         surface.fill(area, t.surface);
         surface.frame(area, t.line);
@@ -840,11 +856,22 @@ pub const Menu = struct {
 
             const baseline = line.y + @divTrunc(line.h - Surface.textHeight(), 2);
             const clipped = surface.clipped(line);
+            const ink = if (highlighted) t.accent_text else if (item.kind == .disabled) t.text_dim else t.text;
+
+            if (item.mark) |which| {
+                clipped.icon(
+                    line.x + t.padding,
+                    line.y + @divTrunc(line.h - @as(i32, @intCast(icons.HEIGHT)), 2),
+                    which,
+                    ink,
+                );
+            }
+
             clipped.text(
-                line.x + t.padding,
+                line.x + t.padding + if (indented) MARK_WIDTH else 0,
                 baseline,
                 item.label,
-                if (highlighted) t.accent_text else if (item.kind == .disabled) t.text_dim else t.text,
+                ink,
             );
 
             if (item.detail.len > 0) {
@@ -856,6 +883,15 @@ pub const Menu = struct {
                 );
             }
         }
+    }
+
+    /// Whether any row carries a picture. A menu of plain rows is not
+    /// indented for a column nothing uses.
+    fn marked(items: []const MenuItem) bool {
+        for (items) |item| {
+            if (item.mark != null) return true;
+        }
+        return false;
     }
 
     /// Which row a point falls on, or null if it misses the menu or lands on

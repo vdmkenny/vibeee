@@ -72,23 +72,17 @@ var volume: sound.VolumeInfo = .{ .percent = 0, .muted = 0 };
 var has_sound = false;
 
 fn readVolume() void {
-    var reply = sound.Rep{};
-    sound.call(.{ .tag = .get_master }, &reply) catch {
+    if (sound.master()) |level| {
+        volume = level;
+        has_sound = true;
+    } else {
         has_sound = false;
-        return;
-    };
-    has_sound = reply.status == .ok;
-    if (has_sound) volume = reply.body.volume;
+    }
 }
 
 fn setVolume(percent: u8, muted: bool) void {
     if (!has_sound) return;
-    var reply = sound.Rep{};
-    sound.call(.{
-        .tag = .set_volume,
-        .b = percent,
-        .dir = @intFromBool(muted),
-    }, &reply) catch return;
+    if (!sound.setMaster(percent, muted)) return;
     readVolume();
     ctx.damage();
 }
