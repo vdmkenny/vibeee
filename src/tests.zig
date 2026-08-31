@@ -23,6 +23,7 @@ test {
     _ = @import("user/eui/icon.zig");
     _ = @import("user/eui/row.zig");
     _ = @import("user/eui/slider.zig");
+    _ = @import("user/eui/popover.zig");
     _ = @import("user/lib/command.zig");
     _ = @import("user/lib/env.zig");
     _ = @import("user/lib/table.zig");

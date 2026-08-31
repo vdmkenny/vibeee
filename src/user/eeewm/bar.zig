@@ -21,7 +21,6 @@ const theme = @import("eui").theme;
 
 const ui = @import("eui").widget;
 
-const keymaps = @import("keymaps");
 const settings = @import("config.zig");
 
 const Rect = draw.Rect;
@@ -224,13 +223,12 @@ pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
 
 /// In the order they sit. What is furthest left goes first on a narrow
 /// screen, which is why the clock is last.
-const shown = [_]status.Indicator{ .keymap, .clock };
+const shown = [_]status.Indicator{ .clock };
 
 fn paintStatus(surface: Surface, width: i32, height: i32) void {
     var buf: [status.MAX]status.Slot = undefined;
     for (statusSlots(width, height, &buf)) |slot| {
         switch (slot.which) {
-            .keymap => paintKeymapTag(surface, slot.area),
             .clock => paintClock(surface, slot.area),
             // Drawn once they have something true to say and a menu to say
             // it in; the row already keeps their room.
@@ -399,11 +397,6 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 /// Which keyboard layout the keys mean, in the two letters the layout gives
 /// for the purpose. Always shown: a machine whose keycaps disagree with its
 /// layout is one where this is the first thing worth checking.
-fn paintKeymapTag(surface: Surface, area: Rect) void {
-    const t = theme.current();
-    surface.textCentred(area, keymaps.tags[@intFromEnum(settings.keyboard().keymap)], t.bar_text);
-}
-
 fn paintClock(surface: Surface, area: Rect) void {
     const t = theme.current();
     const us = sys.realtimeMicros() orelse return;

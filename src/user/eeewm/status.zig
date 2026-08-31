@@ -27,7 +27,6 @@ pub const Indicator = enum {
     network,
     sound,
     battery,
-    keymap,
     clock,
 
     /// How wide this one sits. An icon on its own is the icon plus the space
@@ -38,8 +37,6 @@ pub const Indicator = enum {
             .network, .sound => icon + PAD * 2,
             // The icon, then room for "100%" beside it.
             .battery => icon + GAP + 30 + PAD * 2,
-            // Two letters, which is what a keymap is named by.
-            .keymap => 18 + PAD * 2,
             .clock => 40 + PAD * 2,
         };
     }
@@ -48,7 +45,7 @@ pub const Indicator = enum {
     pub fn opensMenu(self: Indicator) bool {
         return switch (self) {
             .network, .sound => true,
-            .battery, .keymap, .clock => false,
+            .battery, .clock => false,
         };
     }
 };
