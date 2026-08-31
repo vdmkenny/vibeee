@@ -58,6 +58,11 @@ pub fn main(init: std.process.Init) !void {
         \\pass lives in the caller, and the context keeps only what it needs to
         \\know whether a control has to be repainted.
         \\
+        \\A program that paints by hand rather than through controls has to
+        \\say what it painted: `ctx.addDamage(rect)`. Controls do it for
+        \\themselves, and a window that draws its own pixels and reports
+        \\nothing is a window the manager never puts on the screen.
+        \\
         \\Nothing repaints unless it changed. `ctx.damaged` is true when the
         \\whole window has to be redrawn; otherwise each control decides for
         \\itself, and `ctx.damageList()` is the set of rectangles the manager is

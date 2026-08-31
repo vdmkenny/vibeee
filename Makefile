@@ -118,6 +118,7 @@ USER_SETTINGS := zig-out/bin/settings
 USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
+USER_EFM := zig-out/bin/efm
 USER_DEVMGD := zig-out/bin/devmgd
 USER_NETD    := zig-out/bin/netd
 USER_SNDD    := zig-out/bin/sndd
@@ -233,6 +234,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
+	@$(MCOPY) -i $@ -o $(USER_EFM) ::/bin/efm
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
