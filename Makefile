@@ -116,7 +116,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd help
+.PHONY: all clean image qemu qemu-sd run test tools sd help apps app
 
 all: image
 
@@ -169,6 +169,15 @@ $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 .PHONY: examples
 examples: kernel
 	@tools/eeecc -o $(BUILD)/greet examples/greet.c
+
+# Things that are not part of the system, built separately and installed
+# into `home/`. See apps/README.md.
+apps:
+	@$(MAKE) --no-print-directory -C apps
+
+app:
+	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
+	@$(MAKE) --no-print-directory -C apps APP=$(APP) build
 
 image: $(IMAGE)
 
@@ -242,6 +251,13 @@ populate: kernel
 	@$(MFORMAT) -i $(IMG)@@$(HOME_OFFSET) -F -T $(HOME_SECTORS) -v VIBEEEHOME ::
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $(IMG)@@$(HOME_OFFSET) -o $(BUILD)/readme.txt ::/readme.txt
+	@# And whatever is staged for it. `home/` on this side is what /home
+	@# holds on the machine, so an app installed there is there again
+	@# after a rebuild rather than lost with the old image.
+	@for f in home/*; do \
+		[ -e "$$f" ] || continue; \
+		$(MCOPY) -s -i $(IMG)@@$(HOME_OFFSET) -o "$$f" ::/ ; \
+	done
 
 # ---------------------------------------------------------------------------
 # Running

@@ -3,6 +3,12 @@ build/
 zig-out/
 .zig-cache/
 
+# What is staged for the machine's home directory: built apps and the
+# data they work on. The recipes are tracked; what they produce is not,
+# and neither is anything somebody put there by hand.
+home/*
+!home/.gitkeep
+
 # Editor / OS noise
 .DS_Store
 *.swp
