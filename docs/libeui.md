@@ -128,6 +128,180 @@ that means it has to be painted again.
 Geometry lives apart from painting, so where a thing goes can be
 tested without drawing it.
 
+### `eui.chooser`
+
+Choosing a file: the panel, not the window.
+
+| call | signature |
+|---|---|
+| `run` | `fn (*widget.Context, draw.Rect, *chooser.Chooser, []const u8, []const chooser.Entry) chooser.Outcome` |
+
+### `eui.context_menu`
+
+The menu the other mouse button opens.
+
+| call | signature |
+|---|---|
+| `isOpen` | `fn () bool` |
+| `openedBy` | `fn (usize) bool` |
+| `open` | `fn (*widget.Context, usize, []const widget.MenuItem) void` |
+| `openAt` | `fn (i32, i32, usize, []const widget.MenuItem) void` |
+| `close` | `fn () void` |
+| `area` | `fn (draw.Surface) draw.Rect` |
+| `run` | `fn (*widget.Context) ?usize` |
+
+### `eui.menubar`
+
+A menu bar: named menus along a strip, each dropping a list of commands.
+
+| call | signature |
+|---|---|
+| `run` | `fn (*widget.Context, draw.Rect, *menubar.State, []const menubar.Menu) ?u16` |
+| `key` | `fn (*menubar.State, syscalls.KeyCode, syscalls.Modifiers, []const menubar.Menu) menubar.KeyResult` |
+| `altKey` | `fn (*menubar.State, u21, []const menubar.Menu) bool` |
+| `focus` | `fn (*menubar.State, []const menubar.Menu) void` |
+| `isOpen` | `fn (*const menubar.State) bool` |
+
+### `eui.scroll`
+
+Scrollbars.
+
+| call | signature |
+|---|---|
+| `vertical` | `fn (*widget.Context, draw.Rect, *scroll.State, usize, usize, usize) usize` |
+
+Numbers it owns:
+
+- `WIDTH` = 9
+
+### `eui.scrollpane`
+
+A pane that scrolls when what is in it does not fit.
+
+| call | signature |
+|---|---|
+| `begin` | `fn (*widget.Context, draw.Rect, *scrollpane.State) scrollpane.View` |
+| `end` | `fn (*widget.Context, *scrollpane.State, scrollpane.View, i32) void` |
+
+### `eui.statusbar`
+
+The strip along the bottom of a window.
+
+| call | signature |
+|---|---|
+| `height` | `fn () i32` |
+| `split` | `fn (draw.Rect) statusbar.Split` |
+| `run` | `fn (*widget.Context, draw.Rect, []const statusbar.Panel) void` |
+
+### `eui.table`
+
+A scrolling table of rows.
+
+| call | signature |
+|---|---|
+| `rowHeight` | `fn () i32` |
+| `run` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
+
+### `eui.text`
+
+Editable text: a buffer, the lines it breaks into, and a control that edits it.
+
+| call | signature |
+|---|---|
+| `sequenceLength` | `fn (u8) usize` |
+| `lines` | `fn ([]const u8, *const font.Font, i32) text.Lines` |
+| `count` | `fn ([]const u8, *const font.Font, i32) usize` |
+| `positionOf` | `fn ([]const u8, *const font.Font, i32, usize) text.Position` |
+| `lineAt` | `fn ([]const u8, *const font.Font, i32, usize) text.Line` |
+| `offsetAt` | `fn ([]const u8, *const font.Font, text.Line, i32) usize` |
+| `placeOf` | `fn ([]const u8, usize) text.Place` |
+| `lineCount` | `fn ([]const u8) usize` |
+| `inner` | `fn (draw.Rect) draw.Rect` |
+| `rowsIn` | `fn (draw.Rect) usize` |
+| `edit` | `fn (*widget.Context, draw.Rect, *text.Editor, *text.Buffer) void` |
+| `run` | `fn (*text.Editor, *text.Buffer, text.Command, widget.Clipboard) bool` |
+| `paragraph` | `fn (draw.Surface, draw.Rect, []const u8, u32) i32` |
+| `field` | `fn (*widget.Context, draw.Rect, *text.Editor, *text.Buffer) bool` |
+
+### `eui.keys`
+
+The keys, named, along the bottom of a window.
+
+| call | signature |
+|---|---|
+| `width` | `fn (keys.Key, keys.Style) i32` |
+| `place` | `fn (draw.Rect, i32, []const keys.Key, keys.Style, []keys.Placed) []keys.Placed` |
+| `placeRight` | `fn (draw.Rect, []const keys.Key, keys.Style, []keys.Placed) []keys.Placed` |
+| `paint` | `fn (draw.Surface, draw.Rect, []const keys.Key, i32, keys.Style) i32` |
+| `drawPlaced` | `fn (draw.Surface, []const keys.Placed, draw.Rect, keys.Style, u32) void` |
+
+### `eui.meter`
+
+A level that is read rather than set.
+
+| call | signature |
+|---|---|
+| `clamp` | `fn (u8) u8` |
+| `fill` | `fn (draw.Rect, u8) draw.Rect` |
+| `peak` | `fn (draw.Rect, u8) draw.Rect` |
+| `limit` | `fn (draw.Rect) draw.Rect` |
+| `over` | `fn (u8) bool` |
+
+Numbers it owns:
+
+- `HEIGHT` = 7
+- `LIMIT` = 90
+- `PEAK_WIDTH` = 2
+- `LIMIT_OVERHANG` = 2
+
+### `eui.footer`
+
+The strip along the bottom of a window: what just happened on the left, what to do about it on the right.
+
+| call | signature |
+|---|---|
+| `height` | `fn () i32` |
+| `strip` | `fn (draw.Rect) draw.Rect` |
+| `above` | `fn (draw.Rect) draw.Rect` |
+| `buttonWidth` | `fn ([]const u8) i32` |
+| `place` | `fn (draw.Rect, []const []const u8, []draw.Rect) []draw.Rect` |
+| `messageRect` | `fn (draw.Rect, []const draw.Rect) draw.Rect` |
+
+Numbers it owns:
+
+- `BUTTON_PADDING` = 14
+
+### `eui.gauge`
+
+A reading with a proportion to it: what it is, what it says, how full it is, and what that means.
+
+| call | signature |
+|---|---|
+| `alarming` | `fn (u8, gauge.Alarm) bool` |
+| `inkFor` | `fn (u8, gauge.Alarm) u32` |
+| `height` | `fn () i32` |
+| `cellRect` | `fn (draw.Rect, usize, usize) draw.Rect` |
+| `barRect` | `fn (draw.Rect) draw.Rect` |
+| `paint` | `fn (draw.Surface, draw.Rect, []const gauge.Reading) void` |
+
+Numbers it owns:
+
+- `FULL` = 90
+- `EMPTY` = 10
+- `BAR_HEIGHT` = 8
+
+### `eui.popover`
+
+Where a panel anchored to something goes.
+
+| call | signature |
+|---|---|
+| `place` | `fn (draw.Rect, i32, i32, draw.Rect, popover.Side) draw.Rect` |
+
+Numbers it owns:
+
+- `INSET` = 6
+
 ### `eui.rail`
 
 The column of sections down the side of a window.
@@ -148,26 +322,13 @@ Numbers it owns:
 - `WIDTH` = 124
 - `ROW_HEIGHT` = 26
 
-### `eui.footer`
+### `eui.region`
 
-The strip along its bottom: a message and the buttons.
-
-| call | signature |
-|---|---|
-| `height` | `fn () i32` |
-| `strip` | `fn (draw.Rect) draw.Rect` |
-| `above` | `fn (draw.Rect) draw.Rect` |
-| `buttonWidth` | `fn ([]const u8) i32` |
-| `place` | `fn (draw.Rect, []const []const u8, []draw.Rect) []draw.Rect` |
-| `messageRect` | `fn (draw.Rect, []const draw.Rect) draw.Rect` |
-
-Numbers it owns:
-
-- `BUTTON_PADDING` = 14
+What is left of an area once other rectangles are taken out of it.
 
 ### `eui.row`
 
-Fixed cells packed against one end, dropping what will not fit.
+A row of fixed-width cells, laid out from one end.
 
 | call | signature |
 |---|---|
@@ -177,7 +338,7 @@ Fixed cells packed against one end, dropping what will not fit.
 
 ### `eui.slider`
 
-A value you drag, and where its parts land.
+Where a slider's parts are, and what a position along it means.
 
 | call | signature |
 |---|---|
@@ -192,61 +353,18 @@ Numbers it owns:
 - `TRACK_HEIGHT` = 6
 - `KNOB_WIDTH` = 9
 
-### `eui.meter`
+### `eui.strip`
 
-A level you read, with a peak that trails it.
-
-| call | signature |
-|---|---|
-| `clamp` | `fn (u8) u8` |
-| `fill` | `fn (draw.Rect, u8) draw.Rect` |
-| `peak` | `fn (draw.Rect, u8) draw.Rect` |
-| `limit` | `fn (draw.Rect) draw.Rect` |
-| `over` | `fn (u8) bool` |
-
-Numbers it owns:
-
-- `HEIGHT` = 7
-- `LIMIT` = 90
-- `PEAK_WIDTH` = 2
-- `LIMIT_OVERHANG` = 2
-
-### `eui.popover`
-
-A panel beside the thing that opened it, kept on screen.
+A control strip: a picture you can press, a slider, and the number it is at.
 
 | call | signature |
 |---|---|
-| `place` | `fn (draw.Rect, i32, i32, draw.Rect, popover.Side) draw.Rect` |
-
-Numbers it owns:
-
-- `INSET` = 6
-
-### `eui.region`
-
-What is left of a rectangle once others cover it.
-
-### `eui.scroll`
-
-How far down a list is, and the bar that says so.
-
-| call | signature |
-|---|---|
-| `vertical` | `fn (*widget.Context, draw.Rect, *scroll.State, usize, usize, usize) usize` |
-
-Numbers it owns:
-
-- `WIDTH` = 9
-
-### `eui.table`
-
-Columns, and which one a press landed in.
-
-| call | signature |
-|---|---|
-| `rowHeight` | `fn () i32` |
-| `run` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
+| `height` | `fn () i32` |
+| `of` | `fn (draw.Rect) draw.Rect` |
+| `below` | `fn (draw.Rect) draw.Rect` |
+| `button` | `fn (draw.Rect) draw.Rect` |
+| `track` | `fn (draw.Rect, []const u8) draw.Rect` |
+| `reading` | `fn (draw.Rect, []const u8) draw.Rect` |
 
 ## Pictures
 
@@ -672,6 +790,34 @@ select_all
     ##  ############  ##  
     ##                ##  
     ####################  
+                          
+                          
+
+sort_up
+                          
+                          
+                          
+            ####          
+          ########        
+        ####    ####      
+      ####        ####    
+    ####            ####  
+                          
+                          
+                          
+                          
+
+sort_down
+                          
+                          
+                          
+    ####            ####  
+      ####        ####    
+        ####    ####      
+          ########        
+            ####          
+                          
+                          
                           
                           
 

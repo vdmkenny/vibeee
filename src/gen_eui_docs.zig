@@ -97,7 +97,7 @@ pub fn main(init: std.process.Init) !void {
     const grouping = readGrouping(source);
 
     try controls(gpa, w, &grouping);
-    try modules(gpa, w);
+    try modules(gpa, w, init.io, std.fs.path.dirname(widget_path) orelse "src/user/eui");
     try iconTable(gpa, w);
     try themeTable(gpa, w);
 
@@ -221,7 +221,50 @@ fn shortName(comptime T: type) []const u8 {
 }
 
 /// The parts a window is laid out with, and the numbers each one owns.
-fn modules(gpa: std.mem.Allocator, w: *std.ArrayList(u8)) !void {
+/// The modules already described somewhere else in this guide, so they are
+/// not listed twice: the controls come from `widget`, which draws through
+/// `draw`, and the icons and the palettes have sections of their own.
+const ELSEWHERE = [_][]const u8{ "widget", "draw", "theme", "icon" };
+
+fn documentedElsewhere(name: []const u8) bool {
+    for (ELSEWHERE) |skip| {
+        if (std.mem.eql(u8, skip, name)) return true;
+    }
+    return false;
+}
+
+/// The line under a module's own `//!` heading, which is where it says what
+/// it is. Taken from the source rather than kept here: a description in this
+/// generator is a second place to edit and the one nobody remembers.
+fn describe(gpa: std.mem.Allocator, io: anytype, dir: []const u8, name: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(gpa, "{s}/{s}.zig", .{ dir, name });
+    defer gpa.free(path);
+
+    const source = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch return "";
+    defer gpa.free(source);
+
+    // The whole first paragraph, not its first line: a sentence broken where
+    // the source wrapped it is a sentence that stops mid-clause.
+    var said: std.ArrayList(u8) = .empty;
+    errdefer said.deinit(gpa);
+
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line| {
+        const text = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, text, "//!")) break;
+
+        const rest = std.mem.trim(u8, text[3..], " ");
+        if (rest.len == 0) {
+            if (said.items.len > 0) break;
+            continue;
+        }
+        if (said.items.len > 0) try said.append(gpa, ' ');
+        try said.appendSlice(gpa, rest);
+    }
+    return said.toOwnedSlice(gpa);
+}
+
+fn modules(gpa: std.mem.Allocator, w: *std.ArrayList(u8), io: anytype, dir: []const u8) !void {
     try w.appendSlice(gpa,
         \\## Parts
         \\
@@ -231,47 +274,47 @@ fn modules(gpa: std.mem.Allocator, w: *std.ArrayList(u8)) !void {
         \\
     );
 
-    const parts = .{
-        .{ "rail", eui.rail, "The column of sections down the side of a window." },
-        .{ "footer", eui.footer, "The strip along its bottom: a message and the buttons." },
-        .{ "row", eui.row, "Fixed cells packed against one end, dropping what will not fit." },
-        .{ "slider", eui.slider, "A value you drag, and where its parts land." },
-        .{ "meter", eui.meter, "A level you read, with a peak that trails it." },
-        .{ "popover", eui.popover, "A panel beside the thing that opened it, kept on screen." },
-        .{ "region", eui.region, "What is left of a rectangle once others cover it." },
-        .{ "scroll", eui.scroll, "How far down a list is, and the bar that says so." },
-        .{ "table", eui.table, "Columns, and which one a press landed in." },
-    };
+    // Every module the toolkit exports, rather than a list kept here: one
+    // added to `eui.zig` and forgotten here would be a part of the toolkit
+    // this guide says does not exist. A module is a namespace, which is a
+    // struct with no fields; the aliases beside them are types with fields.
+    inline for (@typeInfo(eui).@"struct".decls) |module| {
+        const part = @field(eui, module.name);
+        if (@TypeOf(part) == type and @typeInfo(part) == .@"struct" and
+            @typeInfo(part).@"struct".fields.len == 0 and
+            !comptime documentedElsewhere(module.name))
+        {
+            const said = try describe(gpa, io, dir, module.name);
+            defer gpa.free(said);
+            try w.print(gpa, "### `eui.{s}`\n\n{s}\n\n", .{ module.name, said });
 
-    inline for (parts) |part| {
-        try w.print(gpa, "### `eui.{s}`\n\n{s}\n\n", .{ part[0], part[2] });
-
-        var listed = false;
-        inline for (@typeInfo(part[1]).@"struct".decls) |decl| {
-            const field = @field(part[1], decl.name);
-            const kind = @typeInfo(@TypeOf(field));
-            if (kind == .@"fn") {
-                if (!listed) {
-                    try w.appendSlice(gpa, "| call | signature |\n|---|---|\n");
-                    listed = true;
+            var listed = false;
+            inline for (@typeInfo(part).@"struct".decls) |decl| {
+                const field = @field(part, decl.name);
+                const kind = @typeInfo(@TypeOf(field));
+                if (kind == .@"fn") {
+                    if (!listed) {
+                        try w.appendSlice(gpa, "| call | signature |\n|---|---|\n");
+                        listed = true;
+                    }
+                    try w.print(gpa, "| `{s}` | `{s}` |\n", .{ decl.name, comptime signature(@TypeOf(field)) });
                 }
-                try w.print(gpa, "| `{s}` | `{s}` |\n", .{ decl.name, comptime signature(@TypeOf(field)) });
             }
-        }
-        if (listed) try w.appendSlice(gpa, "\n");
+            if (listed) try w.appendSlice(gpa, "\n");
 
-        var numbered = false;
-        inline for (@typeInfo(part[1]).@"struct".decls) |decl| {
-            const field = @field(part[1], decl.name);
-            if (@TypeOf(field) == i32 or @TypeOf(field) == u8 or @TypeOf(field) == usize) {
-                if (!numbered) {
-                    try w.appendSlice(gpa, "Numbers it owns:\n\n");
-                    numbered = true;
+            var numbered = false;
+            inline for (@typeInfo(part).@"struct".decls) |decl| {
+                const field = @field(part, decl.name);
+                if (@TypeOf(field) == i32 or @TypeOf(field) == u8 or @TypeOf(field) == usize) {
+                    if (!numbered) {
+                        try w.appendSlice(gpa, "Numbers it owns:\n\n");
+                        numbered = true;
+                    }
+                    try w.print(gpa, "- `{s}` = {d}\n", .{ decl.name, field });
                 }
-                try w.print(gpa, "- `{s}` = {d}\n", .{ decl.name, field });
             }
+            if (numbered) try w.appendSlice(gpa, "\n");
         }
-        if (numbered) try w.appendSlice(gpa, "\n");
     }
 }
 

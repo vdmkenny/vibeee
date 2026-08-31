@@ -983,16 +983,11 @@ pub const Context = struct {
         // Compared on the filled width rather than the percentage: what shows
         // is pixels, and two percentages that round to the same width need no
         // repaint.
-        const filled = @divTrunc(area.w * @as(i32, @min(fraction, 100)), 100);
+        const filled = filledWidth(area, fraction);
 
         if (self.damaged or entry.detail != filled) {
             entry.detail = filled;
-            const t = theme.current();
-            self.surface.fill(area, t.surface_pressed);
-            self.surface.fill(.{ .x = area.x, .y = area.y, .w = filled, .h = area.h }, t.accent);
-            // An edge, or an empty bar on a pale surface reads as a smudge
-            // rather than as a bar with nothing in it.
-            self.surface.frame(area, t.line);
+            paintBar(self.surface, area, fraction, theme.current().accent);
             self.addDamage(area);
         }
     }
@@ -1098,6 +1093,27 @@ fn paintRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, styl
     if (style.divider) {
         surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
     }
+}
+
+/// How much of a bar a percentage fills.
+pub fn filledWidth(area: Rect, fraction: u8) i32 {
+    return @divTrunc(area.w * @as(i32, @min(fraction, 100)), 100);
+}
+
+/// A bar with a proportion of it filled.
+///
+/// One painting for every bar that is not a control: the progress a window
+/// shows, the readings across the top of a monitor. An edge around it, or an
+/// empty bar on a pale surface reads as a smudge rather than as a bar with
+/// nothing in it.
+pub fn paintBar(surface: Surface, area: Rect, fraction: u8, colour: draw.Color) void {
+    const t = theme.current();
+    surface.fill(area, t.surface_pressed);
+    surface.fill(
+        .{ .x = area.x, .y = area.y, .w = filledWidth(area, fraction), .h = area.h },
+        colour,
+    );
+    surface.frame(area, t.line);
 }
 
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {

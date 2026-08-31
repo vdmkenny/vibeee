@@ -20,6 +20,20 @@ pub fn eql(a: []const u8, b: []const u8) bool {
 }
 
 /// Whether `text` begins with `prefix`. Shorter than the prefix is not.
+/// Whether `a` sorts before `b`, folded for case.
+///
+/// What a list of names ordered by name means: somebody looking for "Files"
+/// does not care that it was written with a capital.
+pub fn before(a: []const u8, b: []const u8) bool {
+    const shared = @min(a.len, b.len);
+    for (a[0..shared], b[0..shared]) |x, y| {
+        const l = lower(x);
+        const r = lower(y);
+        if (l != r) return l < r;
+    }
+    return a.len < b.len;
+}
+
 pub fn startsWith(text: []const u8, prefix: []const u8) bool {
     return text.len >= prefix.len and eql(text[0..prefix.len], prefix);
 }
@@ -369,6 +383,34 @@ pub const Builder = struct {
     }
 
     /// A number and its unit, the pair that always travels together.
+    /// A size as a person reads it: three figures and a unit.
+    ///
+    /// Under a kilobyte it is a plain count, because "34" is a number of
+    /// bytes and a unit after it says nothing. Above that, one decimal while
+    /// the figure is small enough for it to mean something: the difference
+    /// between 4.0M and 4.9M is a decision somebody might make, and the one
+    /// between 379K and 380K is not.
+    pub fn bytes(self: *Builder, value: usize) void {
+        const K = 1024;
+        if (value < K) return self.number(value);
+
+        const unit: u8 = if (value < K * K) 'K' else if (value < K * K * K) 'M' else 'G';
+        const scale: usize = switch (unit) {
+            'K' => K,
+            'M' => K * K,
+            else => K * K * K,
+        };
+
+        // Tenths, so the rounding happens once and in one place.
+        const tenths = value * 10 / scale;
+        self.number(tenths / 10);
+        if (tenths < 1000) {
+            self.byte('.');
+            self.number(tenths % 10);
+        }
+        self.byte(unit);
+    }
+
     pub fn quantity(self: *Builder, value: usize, unit: []const u8) void {
         self.number(value);
         self.byte(' ');
@@ -586,4 +628,109 @@ test "a search matches whatever case it was typed in" {
     try expect(!containsFold("Files", "x"));
     try expect(!containsFold("Files", "filesystem"));
     try expect(!containsFold("", "a"));
+}
+
+test "a size reads as three digits and a unit" {
+    var buf: [16]u8 = undefined;
+
+    const cases = [_]struct { value: usize, said: []const u8 }{
+        // Bytes are a count, not a measurement with a unit.
+        .{ .value = 0, .said = "0" },
+        .{ .value = 34, .said = "34" },
+        .{ .value = 999, .said = "999" },
+        // Small figures carry a decimal, because it says something.
+        .{ .value = 1024, .said = "1.0K" },
+        .{ .value = 1024 * 34, .said = "34.0K" },
+        .{ .value = 1024 * 1024, .said = "1.0M" },
+        .{ .value = 1024 * 1024 * 1024 * 3, .said = "3.0G" },
+        // Three figures do not.
+        .{ .value = 1024 * 379, .said = "379K" },
+        .{ .value = 1024 * 1024 * 511, .said = "511M" },
+    };
+
+    for (cases) |case| {
+        var line = Builder{ .buf = &buf };
+        line.bytes(case.value);
+        try std.testing.expectEqualStrings(case.said, line.done());
+    }
+
+    // Rounded down rather than up: a file said to be 2M that is not yet 2M is
+    // a listing that cannot be trusted about the ones that are.
+    var line = Builder{ .buf = &buf };
+    line.bytes(1024 * 1024 * 2 - 1);
+    try std.testing.expectEqualStrings("1.9M", line.done());
+}
+
+test "names sort by what they say, not by their capitals" {
+    try std.testing.expect(before("apple", "banana"));
+    try std.testing.expect(!before("banana", "apple"));
+
+    // Case is not part of the order.
+    try std.testing.expect(before("Apple", "banana"));
+    try std.testing.expect(before("apple", "Banana"));
+    try std.testing.expect(!before("Banana", "apple"));
+
+    // A prefix comes before what extends it, and nothing comes before itself.
+    try std.testing.expect(before("file", "files"));
+    try std.testing.expect(!before("files", "file"));
+    try std.testing.expect(!before("file", "file"));
+    try std.testing.expect(!before("File", "file"));
+
+    // Nothing sorts before something.
+    try std.testing.expect(before("", "a"));
+    try std.testing.expect(!before("a", ""));
+}
+
+test "a word is what somebody means by one" {
+    try std.testing.expect(inWord('a'));
+    try std.testing.expect(inWord('Z'));
+    try std.testing.expect(inWord('7'));
+    try std.testing.expect(inWord('_'));
+    // Anything above ASCII is part of a word, or a deletion would stop in the
+    // middle of one written in a language that needs those bytes.
+    try std.testing.expect(inWord(0xC3));
+
+    try std.testing.expect(!inWord(' '));
+    try std.testing.expect(!inWord('-'));
+    try std.testing.expect(!inWord('/'));
+    try std.testing.expect(!inWord('.'));
+}
+
+test "the word before the cursor crosses what is between them first" {
+    const line = "the quick brown fox";
+
+    // From the end of a word: back to the start of that word.
+    try std.testing.expectEqual(@as(usize, 16), wordBefore(line, line.len));
+    // From just after a space: past the space, to the word before it.
+    try std.testing.expectEqual(@as(usize, 10), wordBefore(line, 16));
+    // From the very start there is nowhere to go.
+    try std.testing.expectEqual(@as(usize, 0), wordBefore(line, 0));
+    // From the middle of a word: to that word's start.
+    try std.testing.expectEqual(@as(usize, 4), wordBefore(line, 7));
+
+    // Trailing separators are crossed before the word is.
+    try std.testing.expectEqual(@as(usize, 0), wordBefore("one   ", 6));
+}
+
+test "the word after the cursor runs to the end of it" {
+    const line = "the quick brown";
+    try std.testing.expectEqual(@as(usize, 3), wordAfter(line, 0));
+    // From the space: over it and through the word after.
+    try std.testing.expectEqual(@as(usize, 9), wordAfter(line, 3));
+    try std.testing.expectEqual(line.len, wordAfter(line, line.len));
+    try std.testing.expectEqual(line.len, wordAfter(line, 10));
+}
+
+test "a field is what a command line means by a word" {
+    // A path is one thing to somebody typing it, so the whole of it goes.
+    const line = "cat /home/user/notes.txt";
+    try std.testing.expectEqual(@as(usize, 4), fieldBefore(line, line.len));
+    try std.testing.expectEqual(@as(usize, 0), fieldBefore(line, 3));
+
+    // Which is where it differs from the prose rule, that stops at the dot.
+    try std.testing.expect(wordBefore(line, line.len) > fieldBefore(line, line.len));
+
+    // Trailing spaces are crossed first, like the other one.
+    try std.testing.expectEqual(@as(usize, 0), fieldBefore("one   ", 6));
+    try std.testing.expectEqual(@as(usize, 0), fieldBefore("", 0));
 }

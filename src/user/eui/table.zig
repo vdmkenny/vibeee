@@ -30,6 +30,11 @@ pub const Column = struct {
     /// This column carries `Row.depth` as indentation. The tree is drawn on
     /// whichever column names the thing, which is rarely the first.
     tree: bool = false,
+    /// This column takes whatever width is left over. The one that holds a
+    /// name, usually: the numbers beside it are as wide as numbers get, and
+    /// stretching one of those would leave a column of figures adrift from
+    /// its heading. Without one, the last column stretches.
+    flex: bool = false,
 };
 
 pub const Row = struct {
@@ -54,6 +59,31 @@ pub const State = struct {
     selected: usize = 0,
     scroll: usize = 0,
     bar: scroll.State = .{},
+    /// Every other row on a quieter ground. What a wide table of short rows
+    /// needs to be read across: the eye follows the stripe rather than
+    /// counting down from the top.
+    striped: bool = false,
+    /// The heading drawn in the accent, for a table that is the focus of a
+    /// window holding more than one.
+    head_accent: bool = false,
+    /// Which column the rows are ordered by, and which way. The table does
+    /// not sort: it says what was asked for, and the caller sorts, because
+    /// only the caller knows whether a column of text is a number, a size or
+    /// a name.
+    sort: ?Sort = null,
+};
+
+pub const Sort = struct {
+    column: usize,
+    /// Descending is what a column of numbers is asked for first: somebody
+    /// clicking "cpu" wants the busy one, not the idle one.
+    descending: bool = true,
+
+    /// The mark drawn beside the heading, which is the only thing that says
+    /// which way a list is ordered.
+    pub fn mark(self: Sort) icons.Icon {
+        return if (self.descending) .sort_down else .sort_up;
+    }
 };
 
 pub fn rowHeight() i32 {
@@ -88,6 +118,24 @@ pub fn run(
     } else null;
 
     var activated: ?usize = null;
+
+    // The headings are what a table is sorted by. Clicking one orders by it,
+    // and clicking it again turns it round: the first click on a new column
+    // is descending, because a column of numbers is asked for largest first.
+    const header = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = row_h };
+    if (act.over and ctx.pressedThisPass() and header.contains(ctx.pointer_x, ctx.pointer_y)) {
+        if (columnAt(columns, area, ctx.pointer_x)) |index| {
+            if (state.sort) |current| {
+                state.sort = if (current.column == index)
+                    .{ .column = index, .descending = !current.descending }
+                else
+                    .{ .column = index };
+            } else {
+                state.sort = .{ .column = index };
+            }
+            ctx.damage();
+        }
+    }
 
     if (hovered) |index| {
         if (ctx.pressedThisPass()) {
@@ -156,6 +204,17 @@ pub fn run(
     return activated;
 }
 
+/// Which heading a point falls on.
+fn columnAt(columns: []const Column, area: Rect, x: i32) ?usize {
+    var at = area.x + 2;
+    for (columns, 0..) |_, i| {
+        const w = columnWidth(columns, i, area.w);
+        if (x >= at and x < at + w) return i;
+        at += w;
+    }
+    return null;
+}
+
 fn wheeled(at: usize, wheel: i8, count: usize, visible: usize) usize {
     const step: usize = 3;
     const limit = count -| visible;
@@ -174,6 +233,12 @@ fn fingerprint(
     var h = widget.Fingerprint{};
     h.number(state.scroll);
     h.number(state.selected);
+    h.flag(state.striped);
+    h.flag(state.head_accent);
+    if (state.sort) |by| {
+        h.number(by.column);
+        h.flag(by.descending);
+    }
     h.number(hovered orelse ~@as(usize, 0));
     h.flag(focused);
     h.number(rows.len);
@@ -210,10 +275,33 @@ fn paint(
 
     // Headings, then a rule. A heading that scrolled with the rows would be
     // worse than none.
+    const head = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = row_h };
+    surface.fill(head, if (state.head_accent) t.accent else t.surface_pressed);
+
     var x = area.x + 2;
     for (columns, 0..) |column, i| {
         const w = columnWidth(columns, i, area.w);
-        surface.text(x, area.y + 2, column.title, t.text_dim);
+        const ordered = if (state.sort) |by| by.column == i else false;
+        const head_ink = if (state.head_accent)
+            t.accent_text
+        else if (ordered)
+            t.text
+        else
+            t.text_dim;
+
+        const title_x = if (column.right)
+            x + columnWidth(columns, i, area.w) - 2 - Surface.textWidth(column.title)
+        else
+            x;
+        surface.text(title_x, area.y + 2, column.title, head_ink);
+        if (ordered) {
+            surface.icon(
+                title_x + Surface.textWidth(column.title) + 2,
+                area.y + 2,
+                state.sort.?.mark(),
+                head_ink,
+            );
+        }
         x += w;
     }
     surface.fill(.{ .x = area.x, .y = area.y + row_h, .w = area.w, .h = 1 }, t.line);
@@ -234,6 +322,8 @@ fn paint(
         if (selected) {
             surface.fill(line, if (focused) t.accent else t.surface_pressed);
         } else if (hovered == index) {
+            surface.fill(line, t.surface_hot);
+        } else if (state.striped and index % 2 == 1) {
             surface.fill(line, t.surface_hot);
         }
 
@@ -273,10 +363,21 @@ fn paint(
 /// The last column absorbs the leftover width, so a table always fills its area
 /// however the caller sized the ones before it.
 fn columnWidth(columns: []const Column, index: usize, total: i32) i32 {
-    if (index + 1 < columns.len) return columns[index].width;
+    const stretched = flexColumn(columns);
+    if (index != stretched) return columns[index].width;
 
     var used: i32 = 0;
-    for (columns[0 .. columns.len - 1]) |c| used += c.width;
+    for (columns, 0..) |c, i| {
+        if (i != stretched) used += c.width;
+    }
     return @max(total - used - 4, columns[index].width);
+}
+
+/// Which column takes the leftover width.
+fn flexColumn(columns: []const Column) usize {
+    for (columns, 0..) |c, i| {
+        if (c.flex) return i;
+    }
+    return columns.len -| 1;
 }
 

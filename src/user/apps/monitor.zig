@@ -55,7 +55,8 @@ var list: eui.table.State = .{};
 const Cells = struct {
     pid: [8]u8 = @splat(0),
     cpu: [8]u8 = @splat(0),
-    ticks: [12]u8 = @splat(0),
+    memory: [12]u8 = @splat(0),
+    uptime: [12]u8 = @splat(0),
     /// Lower-cased when it came off a FAT short name, which is stored in caps
     /// because the format has nowhere to record case.
     name: [16]u8 = @splat(0),
@@ -72,19 +73,45 @@ var previous_ticks: [procs.MAX]usize = @splat(0);
 var previous_pids: [procs.MAX]usize = @splat(0);
 var previous_count: usize = 0;
 
+/// What each row's share worked out to, kept because sorting by cpu has to
+/// compare the numbers rather than the text: "9%" sorts above "10%".
+var shares: [procs.MAX]usize = @splat(0);
+
+/// The numbers behind the columns that hold numbers. A table sorted on the
+/// text of its cells would put 9% above 10% and 998B above 4M.
+const Numbers = struct { pid: usize = 0, cpu: usize = 0, bytes: usize = 0, uptime: usize = 0 };
+var numbers: [procs.MAX]Numbers = @splat(.{});
+
 var uptime: usize = 0;
 var mem_total: usize = 0;
 var mem_free: usize = 0;
 
+/// What the processor calls itself, asked once: it does not change, and it is
+/// the note under the reading that says what is busy.
+var cpu_name_buffer: [40]u8 = @splat(0);
+var cpu_name: []const u8 = "";
+
+/// The order the design puts them in: what it is, then what it is doing,
+/// then what it costs. Sorting is by clicking the heading, which is why the
+/// order matters less than it did and the meaning of each column matters
+/// more.
 const COLUMNS = [_]eui.table.Column{
-    .{ .title = "pid", .width = 42, .right = true },
-    .{ .title = "state", .width = 66 },
-    .{ .title = "cpu", .width = 44, .right = true },
-    .{ .title = "ticks", .width = 56, .right = true },
-    .{ .title = "name", .width = 90, .tree = true },
+    .{ .title = "pid", .width = 46 },
+    .{ .title = "name", .width = 120, .tree = true, .flex = true },
+    .{ .title = "state", .width = 76 },
+    .{ .title = "cpu", .width = 52, .right = true },
+    .{ .title = "memory", .width = 64, .right = true },
+    .{ .title = "uptime", .width = 62, .right = true },
 };
 
+/// Which column each field is, for the sort. Named rather than numbered: a
+/// column moved in the table above should not silently sort by something
+/// else.
+const Column = enum(usize) { pid = 0, name = 1, state = 2, cpu = 3, memory = 4, uptime = 5 };
+
 fn sample() void {
+    if (cpu_name.len == 0) cpu_name = info.ask("cpu", &cpu_name_buffer);
+
     table = procs.read(&text_buffer);
     uptime = info.askNumber("uptime");
     mem_total = info.askNumber("mem.total");
@@ -100,27 +127,44 @@ fn sample() void {
     for (table.items()) |p| {
         if (row_count >= rows.len) break;
 
+        // In tenths of a per cent: at half-second samples on one core, whole
+        // per cent puts almost every process at zero and says nothing about
+        // which of them is the busy one.
         const delta = p.ticks -| ticksBefore(p.pid);
-        const share = if (spent == 0) 0 else delta * 100 / spent;
+        const share = if (spent == 0) 0 else delta * 1000 / spent;
 
         var c = &cells[row_count];
         var pid = str.Builder{ .buf = &c.pid };
         pid.number(p.pid);
 
         var cpu = str.Builder{ .buf = &c.cpu };
-        cpu.number(share);
+        cpu.number(share / 10);
+        cpu.byte('.');
+        cpu.number(share % 10);
         cpu.byte('%');
 
-        var ticks = str.Builder{ .buf = &c.ticks };
-        ticks.number(p.ticks);
+        var memory = str.Builder{ .buf = &c.memory };
+        memory.bytes(p.bytes);
+
+        var uptime_cell = str.Builder{ .buf = &c.uptime };
+        uptime_cell.duration(p.uptime_s);
 
         rows[row_count] = .{
-            .cells = .{ pid.done(), p.state, cpu.done(), ticks.done(), p.name, "" },
+            .cells = .{ pid.done(), p.name, p.state, cpu.done(), memory.done(), uptime_cell.done() },
             .depth = p.depth,
             .marked = p.current,
         };
+        shares[row_count] = share;
+        numbers[row_count] = .{
+            .pid = p.pid,
+            .cpu = share,
+            .bytes = p.bytes,
+            .uptime = p.uptime_s,
+        };
         row_count += 1;
     }
+
+    order();
 
     previous_count = 0;
     for (table.items()) |p| {
@@ -128,6 +172,63 @@ fn sample() void {
         previous_ticks[previous_count] = p.ticks;
         previous_count += 1;
     }
+}
+
+/// Put the rows in the order the headings ask for.
+///
+/// Tree order until somebody asks for something else: the tree says which
+/// process started which, and that is the more useful default. Sorting flattens
+/// it, because a hierarchy ordered by memory is not a hierarchy.
+fn order() void {
+    const by = list.sort orelse return;
+
+    // Insertion sort: the list is a few dozen rows, it is nearly sorted
+    // between refreshes, and it costs nothing but the comparisons.
+    var i: usize = 1;
+    while (i < row_count) : (i += 1) {
+        var j = i;
+        while (j > 0 and after(j - 1, j, by)) : (j -= 1) {
+            swap(j - 1, j);
+        }
+    }
+
+    for (rows[0..row_count]) |*row| row.depth = 0;
+}
+
+/// Whether row `a` should be listed after row `b`.
+fn after(a: usize, b: usize, by: eui.table.Sort) bool {
+    const column: Column = @enumFromInt(@min(by.column, @typeInfo(Column).@"enum".fields.len - 1));
+
+    const ordered = switch (column) {
+        .pid => numbers[a].pid < numbers[b].pid,
+        .cpu => numbers[a].cpu < numbers[b].cpu,
+        .memory => numbers[a].bytes < numbers[b].bytes,
+        .uptime => numbers[a].uptime < numbers[b].uptime,
+        .name, .state => str.before(
+            rows[a].cells[@intFromEnum(column)],
+            rows[b].cells[@intFromEnum(column)],
+        ),
+    };
+
+    return if (by.descending) ordered else !ordered and !same(a, b, column);
+}
+
+fn same(a: usize, b: usize, column: Column) bool {
+    return str.eql(rows[a].cells[@intFromEnum(column)], rows[b].cells[@intFromEnum(column)]);
+}
+
+fn swap(a: usize, b: usize) void {
+    const row = rows[a];
+    rows[a] = rows[b];
+    rows[b] = row;
+
+    const n = numbers[a];
+    numbers[a] = numbers[b];
+    numbers[b] = n;
+
+    const share = shares[a];
+    shares[a] = shares[b];
+    shares[b] = share;
 }
 
 fn ticksBefore(pid: usize) usize {
@@ -176,33 +277,191 @@ fn draw() void {
     const row = t.control_height;
     const bottom = eui.statusbar.split(area);
 
+    // What the machine is doing, across the top: the four things somebody
+    // opens this window to find out, before the list of what is doing them.
+    const gauges = eui.Rect{ .x = 0, .y = 0, .w = area.w, .h = eui.gauge.height() };
+    eui.gauge.paint(surface, gauges, readings());
+    ctx.addDamage(gauges);
+
     const buttons_y = bottom.body.h - row - pad;
+    list.striped = true;
     _ = ctx.table(.{
         .x = pad,
-        .y = pad,
+        .y = gauges.bottom() + pad,
         .w = area.w - pad * 2,
-        .h = buttons_y - pad * 2,
+        .h = buttons_y - gauges.bottom() - pad * 2,
     }, &list, &COLUMNS, rows[0..row_count]);
 
-    if (ctx.button(.{ .x = pad, .y = buttons_y, .w = 90, .h = row }, "End task")) end();
-    if (ctx.button(.{ .x = pad + 94, .y = buttons_y, .w = 76, .h = row }, "Close")) sys.exit(0);
-
-    // The memory bar sits beside the buttons rather than above the table: it
-    // is the one number here that reads better as a length than as a figure.
-    const bar_x = pad + 178;
-    ctx.progress(
-        .{ .x = bar_x, .y = buttons_y + @divTrunc(row - 8, 2), .w = area.w - bar_x - pad, .h = 8 },
-        memoryPercent(),
-    );
+    // One button, at the end where a window's actions go. Closing is the
+    // manager's business and every window is closed the same way.
+    const end_w = eui.footer.buttonWidth("End task");
+    if (ctx.button(.{ .x = area.w - pad - end_w, .y = buttons_y, .w = end_w, .h = row }, "End task")) end();
 
     eui.statusbar.run(ctx, bottom.bar, &.{
-        .{ .text = status },
-        .{ .text = processText(), .width = 92 },
-        .{ .text = temperatureText(), .width = 62, .right = true },
-        .{ .text = memoryText(), .width = 118, .right = true },
-        .{ .text = uptimeText(), .width = 62, .right = true },
+        .{ .text = if (status.len > 0) status else processText() },
+        .{ .text = temperatureText(), .width = 70, .right = true },
+        .{ .text = uptimeText(), .width = 78, .right = true },
     });
+}
 
+/// The four readings across the top. Held between passes because the strings
+/// they point at have to outlive the call that built them.
+var gauge_values: [4][16]u8 = @splat(@splat(0));
+var gauge_notes: [4][32]u8 = @splat(@splat(0));
+var gauge_rows: [4]eui.gauge.Reading = undefined;
+
+fn readings() []const eui.gauge.Reading {
+    var n: usize = 0;
+
+    n += cpuReading(n);
+    n += memoryReading(n);
+    n += batteryReading(n);
+    n += storageReading(n);
+
+    return gauge_rows[0..n];
+}
+
+fn cpuReading(at: usize) usize {
+    // What is not idle. The idle thread's share is what the scheduler had
+    // nothing to do with, so the rest is the load.
+    var busy: usize = 100;
+    for (rows[0..row_count], shares[0..row_count]) |r, share| {
+        if (str.eql(r.cells[@intFromEnum(Column.name)], "idle")) busy = 100 -| (share / 10);
+    }
+
+    var value = str.Builder{ .buf = &gauge_values[at] };
+    value.number(busy);
+    value.byte('%');
+
+    var note = str.Builder{ .buf = &gauge_notes[at] };
+    note.text(cpu_name);
+
+    gauge_rows[at] = .{
+        .label = "cpu",
+        .value = value.done(),
+        .percent = @intCast(@min(busy, 100)),
+        .note = note.done(),
+    };
+    return 1;
+}
+
+fn memoryReading(at: usize) usize {
+    var value = str.Builder{ .buf = &gauge_values[at] };
+    value.bytes(mem_total -| mem_free);
+
+    var note = str.Builder{ .buf = &gauge_notes[at] };
+    note.text("of ");
+    note.bytes(mem_total);
+
+    gauge_rows[at] = .{
+        .label = "memory",
+        .value = value.done(),
+        .percent = memoryPercent(),
+        .note = note.done(),
+    };
+    return 1;
+}
+
+fn batteryReading(at: usize) usize {
+    const pack = proto.platform.battery() orelse return 0;
+    if (!pack.isPresent()) return 0;
+    const charge = pack.charge() orelse return 0;
+
+    var value = str.Builder{ .buf = &gauge_values[at] };
+    value.number(charge);
+    value.byte('%');
+
+    // What it is doing, or how long it has left doing it. The time is the
+    // more useful of the two and only exists while it is discharging.
+    var note = str.Builder{ .buf = &gauge_notes[at] };
+    if (pack.runtimeLeft()) |left| {
+        note.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
+        note.text(" left");
+    } else {
+        note.text(pack.stateLabel());
+    }
+
+    gauge_rows[at] = .{
+        .label = "battery",
+        .value = value.done(),
+        .percent = @intCast(@min(charge, 100)),
+        .note = note.done(),
+        .alarm = .when_empty,
+    };
+    return 1;
+}
+
+/// How full the volume home is on. The one a person fills up: the root is
+/// the system's and a machine of this size has nowhere else to put anything.
+fn storageReading(at: usize) usize {
+    var buf: [512]u8 = @splat(0);
+    const mounted = info.ask("mounts", &buf);
+
+    var lines = str.lines(mounted);
+    while (lines.next()) |line| {
+        const text = str.trim(line);
+        if (!str.startsWith(text, HOME ++ " ")) continue;
+
+        var words: [8][]const u8 = undefined;
+        const words_n = str.splitWords(text, &words);
+
+        var free: usize = 0;
+        var size: usize = 0;
+        for (words[0..words_n]) |word| {
+            if (str.startsWith(word, "free=")) free = str.toUnsigned(word["free=".len..]);
+            if (str.startsWith(word, "size=")) size = str.toUnsigned(word["size=".len..]);
+        }
+        if (size == 0) return 0;
+
+        var value = str.Builder{ .buf = &gauge_values[at] };
+        value.number((size -| free) * 100 / size);
+        value.byte('%');
+
+        var note = str.Builder{ .buf = &gauge_notes[at] };
+        note.text(HOME);
+        note.text(", ");
+        note.bytes(free);
+        note.text(" free");
+
+        gauge_rows[at] = .{
+            .label = "storage",
+            .value = value.done(),
+            .percent = @intCast(@min((size -| free) * 100 / size, 100)),
+            .note = note.done(),
+        };
+        return 1;
+    }
+    return 0;
+}
+
+const HOME = "/home";
+
+fn thermalReading(at: usize) usize {
+    const zone = proto.platform.hottest() orelse return 0;
+    const degrees = proto.platform.Thermal.degrees(zone.now);
+
+    var value = str.Builder{ .buf = &gauge_values[at] };
+    value.number(@intCast(degrees));
+    value.text(" C");
+
+    var note = str.Builder{ .buf = &gauge_notes[at] };
+    note.text(zone.named());
+
+    // Against the zone's own critical point rather than a number picked
+    // here: what is hot depends on the machine, and the firmware says.
+    const critical = proto.platform.Thermal.degrees(zone.critical);
+    const share = if (critical > 0) @divTrunc(degrees * 100, critical) else 0;
+
+    gauge_rows[at] = .{
+        .label = "temperature",
+        .value = value.done(),
+        .percent = @intCast(@max(@min(share, 100), 0)),
+        .note = note.done(),
+        // Against the firmware's own critical point, which is what the
+        // percentage above is a share of.
+        .alarm = .when_full,
+    };
+    return 1;
 }
 
 fn memoryPercent() u8 {
@@ -212,7 +471,6 @@ fn memoryPercent() u8 {
 
 var uptime_buffer: [24]u8 = @splat(0);
 var process_buffer: [24]u8 = @splat(0);
-var memory_buffer: [40]u8 = @splat(0);
 
 var temperature_buffer: [16]u8 = @splat(0);
 
@@ -241,10 +499,3 @@ fn processText() []const u8 {
     return line.done();
 }
 
-fn memoryText() []const u8 {
-    var line = str.Builder{ .buf = &memory_buffer };
-    line.number((mem_total -| mem_free) / (1024 * 1024));
-    line.text(" of ");
-    line.quantity(mem_total / (1024 * 1024), "MiB");
-    return line.done();
-}

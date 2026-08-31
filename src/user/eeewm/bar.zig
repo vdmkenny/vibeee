@@ -637,7 +637,13 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
     // thing read is the way out. The same row the file manager draws along
     // its bottom, in the quieter of the two ways of saying it.
     var placed: [eui_keys.MAX]eui_keys.Placed = undefined;
-    eui_keys.drawPlaced(surface, eui_keys.placeRight(area, hints, .plain, &placed), area, .plain);
+    eui_keys.drawPlaced(
+        surface,
+        eui_keys.placeRight(area, hints, .plain, &placed),
+        area,
+        .plain,
+        t.bar_text,
+    );
 }
 
 const BROWSE_KEYS = [_]eui_keys.Key{

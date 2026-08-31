@@ -120,6 +120,8 @@ pub fn placeRight(area: Rect, entries: []const Key, style: Style, into: []Placed
 ///
 /// Returns where the row stopped, so a caller with something to say on the
 /// same line knows what is left.
+/// The whole row on the bar's own ground, which is what a window's bottom
+/// edge is.
 pub fn paint(surface: Surface, area: Rect, entries: []const Key, limit: i32, style: Style) i32 {
     const t = theme.current();
 
@@ -127,17 +129,21 @@ pub fn paint(surface: Surface, area: Rect, entries: []const Key, limit: i32, sty
     surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
 
     var buf: [MAX]Placed = undefined;
-    return render(surface, place(area, limit, entries, style, &buf), area, style) orelse
+    return render(surface, place(area, limit, entries, style, &buf), area, style, t.bar_text) orelse
         area.x + t.padding;
 }
 
 /// Draw an already placed row, without touching the ground under it: what a
 /// caller with something else on the same strip wants.
-pub fn drawPlaced(surface: Surface, shown: []const Placed, area: Rect, style: Style) void {
-    _ = render(surface, shown, area, style);
+///
+/// The ink is the caller's, because only the caller knows what the row is
+/// sitting on: the same words in the bar's ink would be invisible on a pale
+/// strip, and in the page's ink invisible on a dark one.
+pub fn drawPlaced(surface: Surface, shown: []const Placed, area: Rect, style: Style, ink: draw.Color) void {
+    _ = render(surface, shown, area, style, ink);
 }
 
-fn render(surface: Surface, shown: []const Placed, area: Rect, style: Style) ?i32 {
+fn render(surface: Surface, shown: []const Placed, area: Rect, style: Style, ink: draw.Color) ?i32 {
     const t = theme.current();
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
 
@@ -149,7 +155,7 @@ fn render(surface: Surface, shown: []const Placed, area: Rect, style: Style) ?i3
             },
             .plain => surface.text(one.chip.x, baseline, one.key, t.accent),
         }
-        surface.text(one.label_x, baseline, one.label, t.bar_text);
+        surface.text(one.label_x, baseline, one.label, ink);
     }
 
     if (shown.len == 0) return null;

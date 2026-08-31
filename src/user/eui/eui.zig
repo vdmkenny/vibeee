@@ -29,6 +29,7 @@ pub const icon = @import("icon.zig");
 pub const keys = @import("keys.zig");
 pub const meter = @import("meter.zig");
 pub const footer = @import("footer.zig");
+pub const gauge = @import("gauge.zig");
 pub const popover = @import("popover.zig");
 pub const rail = @import("rail.zig");
 pub const region = @import("region.zig");

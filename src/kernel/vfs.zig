@@ -213,6 +213,24 @@ pub fn list() []const Mount {
     return &mounts;
 }
 
+/// How full the nth mounted volume is.
+///
+/// Here rather than at the caller: reading the allocation table needs the
+/// volume mutable, and the mount table is handed out read-only on purpose. A
+/// volume that will not answer reads as empty rather than failing the whole
+/// listing.
+pub const Usage = struct { free: u64 = 0, total: u64 = 0 };
+
+pub fn usageAt(index: usize) Usage {
+    if (index >= mounts.len or !mounts[index].in_use) return .{};
+    const volume = &mounts[index].volume;
+    const clusters = fat.freeClusters(volume) catch return .{ .total = volume.totalBytes() };
+    return .{
+        .free = @as(u64, clusters) * volume.clusterSize(),
+        .total = volume.totalBytes(),
+    };
+}
+
 pub fn mountCount() usize {
     var n: usize = 0;
     for (mounts) |m| {

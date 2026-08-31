@@ -214,6 +214,13 @@ pub const Volume = struct {
         return self.bytes_per_sector * self.sectors_per_cluster;
     }
 
+    /// What the volume holds when it is empty: the data area, which is what
+    /// free space is measured against. The reserved sectors and the tables
+    /// are not space anybody can write a file into.
+    pub fn totalBytes(self: *const Volume) u64 {
+        return @as(u64, self.cluster_count) * self.clusterSize();
+    }
+
     fn firstSectorOfCluster(self: *const Volume, cluster: u32) u32 {
         return self.first_data_sector + (cluster - 2) * self.sectors_per_cluster;
     }

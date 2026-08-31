@@ -245,7 +245,22 @@ pub const AddressSpace = struct {
     /// Physical address of the page directory.
     pd_phys: usize,
 
+    /// How many pages are mapped into it, which is what a process costs in
+    /// memory. Counted here because this is the one place a page enters an
+    /// address space: a total kept anywhere else would be a total somebody
+    /// forgets to adjust.
+    ///
+    /// Shared frames are counted too. A segment mapped into two processes is
+    /// memory both of them can reach, and a reading that hid it would say a
+    /// window manager holding the screen costs nothing.
+    mapped_pages: u32 = 0,
+
     pub const Error = error{OutOfMemory};
+
+    /// How much memory is mapped into it.
+    pub fn mappedBytes(self: AddressSpace) usize {
+        return @as(usize, self.mapped_pages) * PAGE_SIZE;
+    }
 
     pub fn create() Error!AddressSpace {
         const pmm = @import("../../kernel/pmm.zig");
@@ -322,6 +337,11 @@ pub const AddressSpace = struct {
         entry.shared = options.shared;
         entry.cache_disable = options.uncached;
         entry.write_through = options.uncached;
+
+        // Only a page that was not there before adds to the total: mapping
+        // over an existing one moves what is behind an address rather than
+        // costing another page.
+        if (!table[pt_index].present) self.mapped_pages += 1;
         table[pt_index] = entry;
 
         if (isActive(self.*)) invalidatePage(virt);

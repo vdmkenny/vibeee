@@ -315,7 +315,7 @@ fn writeThreads(w: *Writer) Error!void {
 
         fn visit(self: *@This(), t: sched.Snapshot) void {
             if (self.failed) return;
-            self.w.print("{d}\t{d}\t{s}\t{d}\t{d}\t{s}\t{d}\n", .{
+            self.w.print("{d}\t{d}\t{s}\t{d}\t{d}\t{s}\t{d}\t{d}\t{d}\n", .{
                 t.id,
                 t.parent_id,
                 @tagName(t.state),
@@ -323,6 +323,8 @@ fn writeThreads(w: *Writer) Error!void {
                 t.cpu_ticks,
                 t.name,
                 @intFromBool(t.is_current),
+                t.bytes,
+                t.uptime_s,
             }) catch {
                 // Truncate rather than fail: a partial list is more use than
                 // none, and the caller can ask for a bigger buffer.
@@ -442,7 +444,7 @@ fn writeStorage(w: *Writer) Error!void {
 
 fn writeMounts(w: *Writer) Error!void {
     var first = true;
-    for (vfs.list()) |*m| {
+    for (vfs.list(), 0..) |*m, index| {
         if (!m.in_use) continue;
         if (!first) try w.print("\n", .{});
         first = false;
@@ -450,6 +452,13 @@ fn writeMounts(w: *Writer) Error!void {
         // Said plainly, because a caller deciding whether a write is worth
         // making has no other way to find out.
         if (m.device.is_volatile) try w.print(" volatile", .{});
+
+        // How full it is, in bytes, named so a reader takes them by name
+        // rather than by position: this line is read by a shell command and
+        // by a file manager, and the two must not disagree about which number
+        // is which.
+        const usage = vfs.usageAt(index);
+        try w.print(" free={d} size={d}", .{ usage.free, usage.total });
     }
     if (first) try w.print("none", .{});
 }

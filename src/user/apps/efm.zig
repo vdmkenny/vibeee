@@ -330,12 +330,12 @@ fn draw() void {
 
 }
 
-/// Where you can go: one button per mounted volume, which sends the pane you
-/// are in to that place.
+/// The volumes across the top: what is mounted, how full, and how much is
+/// left, with the one you are in filled in the accent.
 ///
-/// The alternative was a row of mount lines, which said what is mounted
-/// without saying what to do about it. A place you can press is a place you
-/// can go, and it needs no legend.
+/// Pressing one sends the pane you are in there. A row of mount lines said
+/// what is mounted without saying what to do about it, and a name on its own
+/// says nothing about whether there is room for what you are about to copy.
 fn drawPlaces(area: Rect) void {
     const t = theme.current();
     if (ctx.damaged) {
@@ -344,28 +344,157 @@ fn drawPlaces(area: Rect) void {
         ctx.addDamage(area);
     }
 
-    var buf: [256]u8 = undefined;
+    var buf: [512]u8 = undefined;
     const mounted = info.ask("mounts", &buf);
 
-    var x = area.x + t.padding;
+    var x = area.x;
     var lines = str.lines(mounted);
-    while (lines.next()) |line| {
+    var index: usize = 0;
+    while (lines.next()) |line| : (index += 1) {
         const text = str.trim(line);
-        if (text.len == 0) continue;
-        // "<path> on <device>": the path is the part somebody presses.
-        var words: [4][]const u8 = undefined;
+        if (text.len == 0 or index >= volume_store.len) continue;
+
+        // "<path> on <device> free=<n> size=<n>": the path is what pressing
+        // it goes to, and the numbers are how full it is.
+        var words: [8][]const u8 = undefined;
         const n = str.splitWords(text, &words);
         const where = if (n > 0) words[0] else "";
         if (where.len == 0) continue;
 
-        const width = eui.Surface.textWidth(where) + t.menu_padding * 2;
+        const volume = readVolume(words[0..n], &volume_store[index]);
+        const width = volumeWidth(volume);
         if (x + width > area.right()) break;
 
-        const at = Rect{ .x = x, .y = area.y + 2, .w = width, .h = area.h - 5 };
-        if (ctx.toggle(at, where, str.eql(here().path(), where))) goTo(where);
-        x += width + t.padding;
+        const cell = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
+        const current = str.eql(here().path(), where);
+        if (pressed(cell)) goTo(where);
+        paintVolume(cell, volume, current);
+
+        x += width;
+        ctx.surface.fill(.{ .x = x - 1, .y = cell.y, .w = 1, .h = cell.h }, t.line);
     }
+
+    // What the key does to whatever is under the cursor, at the far end where
+    // the row stops being a list of places.
+    const hint = [_]eui.keys.Key{.{ .key = "e", .label = "eject" }};
+    var placed: [eui.keys.MAX]eui.keys.Placed = undefined;
+    eui.keys.drawPlaced(
+        ctx.surface,
+        eui.keys.placeRight(area, &hint, .plain, &placed),
+        area,
+        .plain,
+        t.text_dim,
+    );
 }
+
+/// What a volume says about itself. The name is the last part of where it is
+/// mounted, because that is what somebody calls it: "home", not "/home".
+const Volume = struct {
+    name: []const u8 = "",
+    free: []const u8 = "",
+    percent: u8 = 0,
+    known: bool = false,
+};
+
+var volume_store: [8][16]u8 = @splat(@splat(0));
+
+fn readVolume(words: []const []const u8, store: *[16]u8) Volume {
+    var out = Volume{ .name = shortName(words[0]) };
+
+    var free: ?usize = null;
+    var size: ?usize = null;
+    for (words) |word| {
+        if (str.startsWith(word, "free=")) free = str.toUnsigned(word["free=".len..]);
+        if (str.startsWith(word, "size=")) size = str.toUnsigned(word["size=".len..]);
+    }
+
+    const total = size orelse return out;
+    const left = free orelse return out;
+    if (total == 0) return out;
+
+    var line = str.Builder{ .buf = store };
+    line.bytes(left);
+    out.free = line.done();
+    out.percent = @intCast(@min((total -| left) * 100 / total, 100));
+    out.known = true;
+    return out;
+}
+
+/// The last part of a path, which is what a volume is called. The root has no
+/// last part and is the machine itself.
+fn shortName(path: []const u8) []const u8 {
+    if (str.eql(path, "/")) return "system";
+    var at = path.len;
+    while (at > 0) : (at -= 1) {
+        if (path[at - 1] == '/') return path[at..];
+    }
+    return path;
+}
+
+fn volumeWidth(volume: Volume) i32 {
+    const t = theme.current();
+    var w = eui.Surface.textWidth(volume.name) + t.menu_padding * 2;
+    if (volume.known) {
+        w += t.gap + GAUGE_WIDTH + t.gap + eui.Surface.textWidth(volume.free);
+    }
+    return w;
+}
+
+/// One volume: its name, how full it is, and what is left.
+///
+/// The gauge is the same width whatever the volume is called, so two of them
+/// can be compared at a glance; a bar as wide as its cell would give every
+/// volume a scale of its own.
+fn paintVolume(cell: Rect, volume: Volume, current: bool) void {
+    const t = theme.current();
+    const ink = if (current) t.accent_text else t.text;
+
+    ctx.surface.fill(cell, if (current) t.accent else t.surface_pressed);
+
+    const baseline = cell.y + @divTrunc(cell.h - eui.Surface.textHeight(), 2);
+    var x = cell.x + t.menu_padding;
+    ctx.surface.text(x, baseline, volume.name, ink);
+    x += eui.Surface.textWidth(volume.name) + t.gap;
+
+    if (volume.known) {
+        const gauge = Rect{
+            .x = x,
+            .y = cell.y + @divTrunc(cell.h - GAUGE_HEIGHT, 2),
+            .w = GAUGE_WIDTH,
+            .h = GAUGE_HEIGHT,
+        };
+
+        // On the chosen volume the ground is already the accent, so the bar
+        // is drawn in the ink that reads on it.
+        const fill = if (current)
+            t.accent_text
+        else if (eui.gauge.alarming(volume.percent, .when_full))
+            t.warning
+        else
+            t.accent;
+
+        ctx.surface.fill(gauge, if (current) t.accent else t.surface);
+        ctx.surface.fill(
+            .{ .x = gauge.x, .y = gauge.y, .w = eui.widget.filledWidth(gauge, volume.percent), .h = gauge.h },
+            fill,
+        );
+        ctx.surface.frame(gauge, if (current) t.accent_text else t.border);
+
+        x += GAUGE_WIDTH + t.gap;
+        ctx.surface.text(x, baseline, volume.free, if (current) ink else t.text_dim);
+    }
+
+    ctx.addDamage(cell);
+}
+
+/// Whether a press landed in `area` this pass.
+fn pressed(area: Rect) bool {
+    return ctx.pressedThisPass() and area.contains(ctx.pointer_x, ctx.pointer_y);
+}
+
+/// The gauge beside a volume's name, the same size for every one of them.
+const GAUGE_WIDTH: i32 = 38;
+const GAUGE_HEIGHT: i32 = 7;
 
 fn goTo(where: []const u8) void {
     const pane = here();
@@ -384,19 +513,29 @@ fn drawPane(index: usize, area: Rect) void {
     const pane = &panes[index];
     const items = pane.listing.items();
 
-    // The path is the first column's heading, and the size column's heading
-    // is what the column holds. A pane says where it is once, and the
-    // table's own header row is where a heading goes.
+    // The head says where the pane is and how much is in it. A pane says
+    // where it is once, and the table's own header row is where that goes;
+    // the count belongs beside it rather than in a status bar shared with
+    // the other pane, which could only ever say one of them.
+    var counted: [16]u8 = @splat(0);
+    var count = str.Builder{ .buf = &counted };
+    count.quantity(items.len, "items");
+
     const columns = [_]eui.table.Column{
-        .{ .title = pane.path(), .width = area.w - theme.enlarged(64) },
-        .{ .title = "size", .width = theme.enlarged(60), .right = true },
+        .{ .title = pane.path(), .width = theme.enlarged(80), .flex = true },
+        .{ .title = count.done(), .width = theme.enlarged(72), .right = true },
     };
+
+    // Which pane you are in is the one thing this window is always saying, so
+    // the head of the one you are in is filled rather than merely outlined.
+    pane.view.head_accent = index == active;
+    pane.view.striped = true;
 
     var rows: [dir.MAX]eui.table.Row = undefined;
     for (items, 0..) |entry, i| {
         rows[i] = .{
             .cells = .{ entry.name, "", "", "", "", "" },
-            .icon = if (entry.is_dir) .folder else .document,
+            .icon = if (entry.is_dir) .folder else null,
         };
         // Spelled into a store that outlives this loop, because a cell is a
         // slice and the table reads it after the row is built.
@@ -436,22 +575,13 @@ fn sizeStore(pane: usize, row: usize) []u8 {
 /// A size as a person reads it, which is three digits and a unit.
 fn spellSize(bytes: u32, buf: []u8) []const u8 {
     var line = str.Builder{ .buf = buf };
-    if (bytes < 1024) {
-        line.number(bytes);
-        line.byte('B');
-    } else if (bytes < 1024 * 1024) {
-        line.number(bytes / 1024);
-        line.byte('K');
-    } else {
-        line.number(bytes / (1024 * 1024));
-        line.byte('M');
-    }
+    line.bytes(bytes);
     return line.done();
 }
 
 const KEYS = [_]eui.keys.Key{
-    .{ .key = "Tab", .label = "pane" },
-    .{ .key = "Ret", .label = "open" },
+    .{ .key = "\u{21C6}", .label = "pane" },
+    .{ .key = "\u{21B5}", .label = "open" },
     .{ .key = "F5", .label = "copy" },
     .{ .key = "F6", .label = "move" },
     .{ .key = "F7", .label = "folder" },
@@ -471,15 +601,12 @@ fn drawKeys(area: Rect) void {
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
     const x = eui.keys.paint(ctx.surface, area, &KEYS, area.right(), .chip);
 
-    var counted: [24]u8 = @splat(0);
-    var line = str.Builder{ .buf = &counted };
-    line.quantity(here().listing.items().len, "items");
-    const said = if (status.len > 0) status else line.done();
-
-    {
-        const width = Surface.textWidth(said);
+    // What just happened, if anything did. How much is in a pane is said in
+    // that pane's own head, where it belongs to the pane it counts.
+    if (status.len > 0) {
+        const width = Surface.textWidth(status);
         if (x + width < area.right()) {
-            ctx.surface.text(area.right() - t.menu_padding - width, baseline, said, t.bar_text);
+            ctx.surface.text(area.right() - t.menu_padding - width, baseline, status, t.bar_text);
         }
     }
 }

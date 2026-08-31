@@ -133,6 +133,7 @@ fn create(
         .slice_left = sliceFor(@intFromEnum(priority)),
         .stack = stack,
         .sp = hal.initThreadStack(stack, entry, arg, &threadExit),
+        .started_us = hal.monotonicMicros(),
     };
     t.setName(name);
     t.handles.init();
@@ -877,6 +878,12 @@ pub const Snapshot = struct {
     state: State,
     priority: u8,
     cpu_ticks: u64,
+    /// How much memory its address space holds. Threads of one process share
+    /// a space and so report the same figure, which is what it costs: the
+    /// process, not the thread.
+    bytes: usize,
+    /// How long it has been running, in seconds.
+    uptime_s: u32,
     is_current: bool,
 };
 
@@ -901,6 +908,8 @@ fn snapshotOf(t: *const Thread, is_current: bool) Snapshot {
         .state = t.state,
         .priority = t.priority,
         .cpu_ticks = t.cpu_ticks,
+        .bytes = t.space.mappedBytes(),
+        .uptime_s = @intCast((hal.monotonicMicros() -| t.started_us) / 1_000_000),
         .is_current = is_current,
     };
 }

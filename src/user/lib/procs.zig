@@ -25,6 +25,11 @@ pub const Process = struct {
     name: []const u8 = "",
     /// Running on the CPU at the moment the list was taken.
     current: bool = false,
+    /// How much memory its address space holds. Threads of one process share
+    /// a space and report the same figure.
+    bytes: usize = 0,
+    /// How long it has been running, in seconds.
+    uptime_s: usize = 0,
     /// Generations below its root, for indenting the tree.
     depth: u8 = 0,
 };
@@ -73,6 +78,8 @@ pub fn read(buf: []u8) Table {
             .ticks = str.toUnsigned(it.next() orelse ""),
             .name = it.next() orelse "",
             .current = str.toUnsigned(it.next() orelse "") != 0,
+            .bytes = str.toUnsigned(it.next() orelse ""),
+            .uptime_s = str.toUnsigned(it.next() orelse ""),
         };
         count += 1;
     }

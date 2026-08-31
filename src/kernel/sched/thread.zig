@@ -117,6 +117,12 @@ pub const Thread = struct {
     /// machine would cost more than it measures.
     cpu_ticks: u64 = 0,
 
+    /// When it started, on the monotonic clock. How long something has been
+    /// running is the other half of what it has cost: a process at three per
+    /// cent since boot and one at three per cent since a moment ago are not
+    /// the same thing.
+    started_us: u64 = 0,
+
     /// Working directory, always absolute and without a trailing slash except
     /// for "/" itself. Held per thread for the same reason handles are: a
     /// process is currently one thread.
