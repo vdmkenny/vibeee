@@ -14,6 +14,7 @@
 
 const core = @import("core.zig");
 const umass = @import("umass.zig");
+const volume = @import("volume.zig");
 const ehci = @import("ehci.zig");
 const hc = @import("hc.zig");
 const irqroute = @import("ulib").irqroute;
@@ -79,6 +80,7 @@ fn usbdMain() noreturn {
     for (controllers[0..controller_count], 0..) |controller, i| {
         core.scan(@intCast(i), controller.ops);
     }
+    settle();
     out.flush();
 
     serve();
@@ -141,15 +143,14 @@ fn attach(driver: Driver, location: pci.Location) void {
 // ---------------------------------------------------------------------------
 
 fn serve() noreturn {
-    var sources: [1 + MAX_CONTROLLERS]u32 = undefined;
-    sources[0] = service;
-    var source_count: usize = 1;
-    for (controllers[0..controller_count]) |controller| {
-        sources[source_count] = controller.irq;
-        source_count += 1;
-    }
+    // The channel, every controller's interrupt, and every offered
+    // volume's doorbell. The set is rebuilt whenever a disk comes or
+    // goes, which is the only time it changes.
+    var sources: [1 + MAX_CONTROLLERS + @import("lib").volume.MAX_VOLUMES]u32 = undefined;
+    var source_count: usize = 0;
 
     while (true) {
+        source_count = watchList(&sources);
         // Nothing is due at any particular time: a bus with nothing
         // being plugged into it waits here indefinitely.
         const woke = sys.waitMany(sources[0..source_count], sys.FOREVER);
@@ -161,16 +162,57 @@ fn serve() noreturn {
             continue;
         }
 
-        const which = index - 1;
-        const controller = &controllers[which];
-        // The controller says whether a port changed; only then is the
-        // bus walked, and only that controller's ports.
-        if (controller.ops.serviceIrq()) {
-            core.scan(@intCast(which), controller.ops);
+        if (index <= controller_count) {
+            const which = index - 1;
+            const controller = &controllers[which];
+            // The controller says whether a port changed; only then is
+            // the bus walked, and only that controller's ports.
+            if (controller.ops.serviceIrq()) {
+                core.scan(@intCast(which), controller.ops);
+                settle();
+            }
+            _ = sys.irqAck(controller.irq);
+            out.flush();
+            continue;
         }
-        _ = sys.irqAck(controller.irq);
-        out.flush();
+
+        // A volume's doorbell: the kernel wants blocks.
+        if (volume.forDoorbell(sources[index])) |offered| volume.serve(offered);
     }
+}
+
+/// Everything worth waking for, in one array: the service channel first,
+/// then the controllers, then the volumes.
+fn watchList(into: []u32) usize {
+    into[0] = service;
+    var count: usize = 1;
+    for (controllers[0..controller_count]) |controller| {
+        into[count] = controller.irq;
+        count += 1;
+    }
+    count += volume.doorbells(into[count..]);
+    return count;
+}
+
+/// Match the offered volumes to the disks that are actually there. Called
+/// after a scan, which is the only thing that changes either list.
+fn settle() void {
+    for (volume.all()) |offered| {
+        if (offered.live and umass.forAddress(offered.address) == null) {
+            volume.withdraw(offered.address);
+        }
+    }
+    for (umass.all(), 0..) |disk, i| {
+        if (!disk.live or offered_for(disk.address)) continue;
+        _ = volume.offer(umass.at(i).?);
+    }
+}
+
+fn offered_for(address: u7) bool {
+    for (volume.all()) |offered| {
+        if (offered.live and offered.address == address) return true;
+    }
+    return false;
 }
 
 fn drain() void {

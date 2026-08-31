@@ -1490,6 +1490,66 @@ pub const table = [_]Syscall{
             "is left alone. A thread that will not unwind is left behind and reported " ++
             "in the return value rather than waited for forever.",
     },
+    .{
+        .number = 58,
+        .name = "volume_attach",
+        .summary = "Offer a volume the kernel's filesystems can mount, served by this process.",
+        .args = &.{
+            .{ .name = "name", .kind = .cptr, .desc = "What the volume is called, as `disk` lists it." },
+            .{ .name = "name_len", .kind = .len, .desc = "Length of the name." },
+            .{ .name = "info", .kind = .cptr, .desc = "A ublk.Attach: geometry in, handles out." },
+        },
+        .returns = "the volume's number, for the calls that serve it",
+        .errors = &.{ E.fault, E.inval, E.nomem, E.perm },
+        .notes = "Requires Caps.driver. The disk on a bus this kernel does not drive is " ++
+            "still a disk: this is how the process driving it offers one. The reply " ++
+            "carries an event to wait on and a shared area the bytes travel in, so a " ++
+            "transfer is copied once rather than twice. The volume is scanned for " ++
+            "partitions as it is registered, the way a disk found at boot is.",
+    },
+    .{
+        .number = 59,
+        .name = "volume_next",
+        .summary = "Take the next request on a volume this process serves.",
+        .args = &.{
+            .{ .name = "volume", .kind = .uint, .desc = "A volume number from volume_attach." },
+            .{ .name = "request", .kind = .cptr, .desc = "Where a ublk.Request is written." },
+        },
+        .returns = "1 when a request was taken, 0 when there was none",
+        .errors = &.{ E.fault, E.inval, E.perm },
+        .notes = "Requires Caps.driver. Never blocks: the server waits on the event " ++
+            "volume_attach gave it and drains what is waiting, which is what keeps an " ++
+            "idle disk free.",
+    },
+    .{
+        .number = 60,
+        .name = "volume_done",
+        .summary = "Answer a request, waking whatever asked for it.",
+        .args = &.{
+            .{ .name = "volume", .kind = .uint, .desc = "A volume number from volume_attach." },
+            .{ .name = "tag", .kind = .uint, .desc = "The tag the request carried." },
+            .{ .name = "status", .kind = .uint, .desc = "A ublk.Status: zero is success." },
+            .{ .name = "sectors", .kind = .uint, .desc = "How many sectors actually moved." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.inval, E.perm },
+        .notes = "Requires Caps.driver. A request answered twice, or never taken, is " ++
+            "ignored rather than refused: the server is not the place to work out which " ++
+            "of its own answers arrived first.",
+    },
+    .{
+        .number = 61,
+        .name = "volume_detach",
+        .summary = "Withdraw a volume, failing everything still waiting on it.",
+        .args = &.{
+            .{ .name = "volume", .kind = .uint, .desc = "A volume number from volume_attach." },
+        },
+        .returns = "0 on success",
+        .errors = &.{ E.inval, E.perm },
+        .notes = "Requires Caps.driver. What a medium being taken out looks like from " ++
+            "the other side. Callers waiting on the volume are told the disk is gone " ++
+            "rather than left to their deadlines.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

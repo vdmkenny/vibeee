@@ -300,6 +300,33 @@ pub fn dmaAlloc(size: usize, physOut: *u32) isize {
     return syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut));
 }
 
+/// Offer a volume the kernel's filesystems can mount, served from here.
+/// `info` carries the geometry in and the handles back.
+pub fn volumeAttach(name: []const u8, info: *lib.volume.Attach) isize {
+    return syscall3(
+        abi.number("volume_attach"),
+        @intFromPtr(name.ptr),
+        name.len,
+        @intFromPtr(info),
+    );
+}
+
+/// Take the next request on a volume this process serves, or answer that
+/// there is none. Never blocks: the doorbell is what waits.
+pub fn volumeNext(volume: usize, into: *lib.volume.Request) bool {
+    return syscall2(abi.number("volume_next"), volume, @intFromPtr(into)) == 1;
+}
+
+/// Answer a request, waking whatever asked for it.
+pub fn volumeDone(volume: usize, tag: u16, status: lib.volume.Status, sectors: u32) void {
+    _ = syscall4(abi.number("volume_done"), volume, tag, @intFromEnum(status), sectors);
+}
+
+/// Withdraw a volume, failing everything still waiting on it.
+pub fn volumeDetach(volume: usize) void {
+    _ = syscall1(abi.number("volume_detach"), volume);
+}
+
 /// Allow this process to use a range of I/O ports directly. Needs the driver
 /// capability; grants last until the process exits.
 pub fn ioportGrant(base: u16, count: usize) isize {

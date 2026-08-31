@@ -36,6 +36,7 @@ pub const spsc = @import("spsc.zig");
 pub const str = @import("str.zig");
 pub const scsi = @import("scsi.zig");
 pub const usb = @import("usb.zig");
+pub const volume = @import("volume.zig");
 pub const wifi = @import("wifi.zig");
 pub const style = @import("style.zig");
 pub const syscalls = @import("syscalls.zig");

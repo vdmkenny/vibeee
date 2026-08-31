@@ -88,8 +88,10 @@ binary  = /bin/usbd
 # The USB bus: the host controllers the device manager assigns it, and the
 # devices it finds on their ports. It asks the manager which driver fits
 # each device it enumerates, so a class this build has never met is served
-# by a manifest rather than by a change to the bus.
-caps    = driver
+# by a manifest rather than by a change to the bus. It holds `mount` too:
+# a disk it finds is offered to the kernel as a volume, and putting it
+# where people can read it is the same event as finding it.
+caps    = driver,mount
 needs   = platd,devmgd
 provides = usb
 target  = boot

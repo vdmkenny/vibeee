@@ -22,6 +22,7 @@ const pcicfg = @import("../pcicfg.zig");
 const probe = @import("../probe.zig");
 const sched = @import("../sched.zig");
 const shm = @import("../shm.zig");
+const ublk = @import("../ublk.zig");
 
 const Args = ctx.Args;
 const Result = ctx.Result;
@@ -207,4 +208,89 @@ pub fn sys_map_device(a: Args) Result {
 
     // The page the aperture starts in, plus how far into it the caller asked.
     return @intCast(at + (phys - base));
+}
+
+// ---------------------------------------------------------------------------
+// Volumes served by a process
+// ---------------------------------------------------------------------------
+
+/// Offer a volume the kernel's filesystems can mount, driven from here.
+///
+/// The disk on a bus this kernel does not drive is still a disk. What comes
+/// back is an event to wait on and a shared area the bytes travel in: a
+/// transfer lands in that area once and is copied once, rather than crossing
+/// the boundary twice.
+pub fn sys_volume_attach(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const name = ctx.userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const info_bytes = ctx.userSlice(a, a.a2, @sizeOf(ublk.Attach)) orelse return Errno.fault.value();
+
+    var info: ublk.Attach = undefined;
+    @memcpy(std.mem.asBytes(&info), info_bytes);
+
+    const index = ublk.attach(name, &info) catch |err| return switch (err) {
+        error.BadGeometry => Errno.inval.value(),
+        error.TooMany => Errno.nomem.value(),
+        error.OutOfMemory => Errno.nomem.value(),
+    };
+
+    const pieces = ublk.parts(index) orelse return Errno.inval.value();
+
+    // The handles go in together or not at all: a server holding one half of
+    // a volume it cannot serve is worse than one that failed to attach.
+    const data = ctx.installHandle(.{
+        .kind = .shm,
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .shm = pieces.data },
+    }) orelse {
+        ublk.detach(index);
+        return Errno.nomem.value();
+    };
+    const doorbell = ctx.installHandle(.{
+        .kind = .event,
+        .rights = .{ .read = true, .write = true },
+        .data = .{ .event = pieces.doorbell },
+    }) orelse {
+        ublk.detach(index);
+        return Errno.nomem.value();
+    };
+
+    info.data = @intCast(data);
+    info.doorbell = @intCast(doorbell);
+    @memcpy(info_bytes, std.mem.asBytes(&info));
+
+    ublk.publish(index);
+    return @intCast(index);
+}
+
+/// Take the next request on a volume this process serves. Never blocks: the
+/// server waits on its event and drains what is there.
+pub fn sys_volume_next(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    const into = ctx.userSlice(a, a.a1, @sizeOf(ublk.Request)) orelse return Errno.fault.value();
+
+    var request: ublk.Request = .{};
+    if (!ublk.next(a.a0, &request)) return 0;
+
+    @memcpy(into, std.mem.asBytes(&request));
+    return 1;
+}
+
+/// Answer a request, waking whatever asked for it.
+pub fn sys_volume_done(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    if (a.a1 > std.math.maxInt(u16)) return Errno.inval.value();
+
+    ublk.done(a.a0, @intCast(a.a1), @enumFromInt(@as(u8, @truncate(a.a2))), @intCast(a.a3));
+    return 0;
+}
+
+/// Withdraw a volume, failing everything still waiting on it.
+pub fn sys_volume_detach(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+
+    ublk.detach(a.a0);
+    return 0;
 }
