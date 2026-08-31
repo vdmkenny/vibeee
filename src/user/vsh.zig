@@ -23,6 +23,7 @@ const font = @import("lib").font;
 const platform = @import("proto").platform;
 const ink = @import("ulib").ink;
 const registry = @import("tools/registry.zig");
+const pathFor = @import("ulib").command.pathFor;
 const dir_mod = @import("ulib").dir;
 const edit = @import("ulib").edit;
 const out = @import("ulib").out;
@@ -529,14 +530,9 @@ fn shortened(path: []const u8) []const u8 {
 var short_buf: [256]u8 = @splat(0);
 
 /// Turn a bare command name into a path. A name with a slash in it is already
-/// one and is left alone.
+/// one and is left alone; see `ulib.command`.
 fn resolvePath(name: []const u8, buf: []u8) []const u8 {
-    if (name.len > 0 and name[0] == '/') return name;
-
-    var path = str.Builder{ .buf = buf };
-    path.text(BIN_DIR);
-    path.text(name);
-    return path.done();
+    return pathFor(name, BIN_DIR, buf) orelse name;
 }
 
 

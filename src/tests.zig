@@ -19,4 +19,5 @@ test {
     _ = @import("keymap_test.zig");
     _ = @import("user/eterm/vt_test.zig");
     _ = @import("user/eui/text_test.zig");
+    _ = @import("user/lib/command.zig");
 }

@@ -5,7 +5,7 @@
 # happened on a machine with no serial port, and it should be one command.
 #
 #   tools/qemu-shot.sh <out.png> [-t "text to type"] [-m "monitor commands"]
-#                      [-w seconds] [-- qemu args]
+#                      [-w seconds] [-s seconds] [-- qemu args]
 #
 # `-m` sends raw QEMU monitor commands after the typing, one per line, which is
 # how the pointing device is exercised: `mouse_move dx dy`, `mouse_button mask`
@@ -22,6 +22,10 @@ set -e
 
 OUT="$1"; shift
 TYPE=""
+# How long to leave the machine alone before the shot. A program that reads
+# a large file has not drawn anything yet a second after being asked to run,
+# and a screenshot taken then says nothing about whether it works.
+SETTLE=1
 MONITOR=""
 BOOT_WAIT=3
 
@@ -30,6 +34,7 @@ while [ $# -gt 0 ]; do
         -t) TYPE="$2"; shift 2 ;;
         -m) MONITOR="$2"; shift 2 ;;
         -w) BOOT_WAIT="$2"; shift 2 ;;
+        -s) SETTLE="$2"; shift 2 ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -115,7 +120,6 @@ if [ -n "$TYPE" ]; then
         monitor "sendkey ret"
         sleep 0.6
     done
-    sleep 1
 fi
 
 if [ -n "$MONITOR" ]; then
@@ -124,9 +128,9 @@ if [ -n "$MONITOR" ]; then
         monitor "$line"
         sleep 0.3
     done
-    sleep 1
 fi
 
+sleep "$SETTLE"
 monitor "screendump $PPM"
 sleep 1
 [ -f "$PPM" ] || { echo "no screendump: guest may have died"; exit 1; }
