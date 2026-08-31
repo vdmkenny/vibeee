@@ -17,10 +17,15 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
     if (args.len < 2) {
-        std.debug.print("usage: gen-manual-index <out.zig> <page>...\n", .{});
+        std.debug.print("usage: gen-manual-index <out.zig> [page...]\n", .{});
         std.process.exit(2);
     }
     const out_path = args[1];
+
+    // No pages at all is a build that left the manual out, which is a
+    // choice rather than a mistake: the table is empty, summaries are
+    // empty, and nothing refuses to compile for want of a page.
+    const present = args.len > 2;
 
     // Every page arrives as its own argument rather than as a directory
     // to walk: the build system hashes what it is handed, so a page that
@@ -61,11 +66,24 @@ pub fn main(init: std.process.Init) !void {
     try text.appendSlice(arena,
         \\};
         \\
-        \\/// The summary of the page named, or a build failure saying which
-        \\/// command has no page. A command nobody documented is a command
-        \\/// nobody can look up, which is worth refusing to ship.
+    );
+    try text.print(arena,
+        \\/// Whether this build carries the manual at all. A build without
+        \\/// it lists command names and no descriptions, which is what a
+        \\/// root filesystem read over a slow bus may prefer.
+        \\pub const present = {};
+        \\
+        \\
+    , .{present});
+    try text.appendSlice(arena,
+        \\/// The summary of the page named. With the manual in, a command
+        \\/// that has no page fails the build naming the file to write: a
+        \\/// command nobody documented is one nobody can look up. With the
+        \\/// manual left out there is nothing to be missing, and every
+        \\/// summary is empty.
         \\pub fn summaryOf(comptime name: []const u8) []const u8 {
         \\    comptime {
+        \\        if (!present) return "";
         \\        // Every command walks the whole table once; the default
         \\        // quota is sized for fewer commands than a system has.
         \\        @setEvalBranchQuota(pages.len * 200);

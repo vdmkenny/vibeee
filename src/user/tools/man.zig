@@ -69,6 +69,18 @@ fn list() void {
         return;
     };
 
+    var pages: usize = 0;
+    for (listing.items()) |entry| {
+        if (!entry.is_dir) pages += 1;
+    }
+    if (pages == 0) {
+        // A directory with nothing in it means the same as no directory:
+        // this build was made without the manual.
+        out.text("man: no manual on this filesystem\n");
+        out.flush();
+        return;
+    }
+
     out.text("the manual: `man <name>` for any of\n");
     for (listing.items()) |entry| {
         if (entry.is_dir) continue;

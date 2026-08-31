@@ -35,6 +35,13 @@ MFORMAT  ?= mformat
 MCOPY    ?= mcopy
 MMD      ?= mmd
 
+# Whether the image carries the manual. Twenty kilobytes of text, read
+# over the BIOS's own USB path at boot like everything else in the root
+# filesystem, so a build that wants the smallest possible image can
+# decline it: the command listings then print names alone and `man` says
+# there is no manual on this filesystem.
+MANUAL   ?= yes
+
 BUILD    := build
 IMAGE    := $(BUILD)/vibeee.img
 IMAGE_MB ?= 48
@@ -60,6 +67,12 @@ ROOTFS_IMG    := $(BUILD)/rootfs.img
 # Small on purpose: it is read over the BIOS's slow USB path at boot, so every
 # kilobyte is time on the target machine.
 ROOTFS_MB     ?= 2
+
+# Whether the manual is in decides what the image holds and what the
+# programs were compiled against, and neither is a file whose timestamp
+# make can watch. The setting is written to a stamp only when it changes,
+# so switching it rebuilds and repeating it does not.
+MANUAL_STAMP  := $(BUILD)/manual.stamp
 
 PART1_LBA     := 32768
 PART1_OFFSET  := $(shell expr $(PART1_LBA) \* 512)
@@ -97,6 +110,7 @@ help:
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make qemu-panic       boot into the panic screen (x86)"
 	@echo "  make sd DEV=/dev/rdiskN   flash the image to a card (x86)"
+	@echo "  make MANUAL=no image   build without the manual"
 	@echo "  make clean"
 
 # ---------------------------------------------------------------------------
@@ -107,7 +121,7 @@ $(BUILD):
 
 .PHONY: kernel
 kernel:
-	$(ZIG) build $(ZIG_FLAGS) -Darch=$(ARCH)
+	$(ZIG) build $(ZIG_FLAGS) -Darch=$(ARCH) $(if $(filter yes,$(MANUAL)),,-Dmanual=false)
 
 # The SD path loads a flat binary, not ELF: stage2 jumps to its first byte,
 # which is the entry stub placed there by the linker script.
@@ -147,11 +161,18 @@ image: $(IMAGE)
 #
 # FAT rather than a bespoke container because the driver already exists, and
 # because it can then be inspected and edited from any other machine.
-$(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) | $(BUILD)
+.PHONY: manual-stamp
+manual-stamp: | $(BUILD)
+	@printf '%s' "$(MANUAL)" | cmp -s - $(MANUAL_STAMP) 2>/dev/null || printf '%s' "$(MANUAL)" > $(MANUAL_STAMP)
+
+$(MANUAL_STAMP): manual-stamp
+
+$(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
-	@for d in bin doc etc lib lib/drivers tmp home media; do $(MMD) -i $@ ::/$$d; done
+	@for d in bin etc lib lib/drivers tmp home media; do $(MMD) -i $@ ::/$$d; done
+	@if [ "$(MANUAL)" = "yes" ]; then $(MMD) -i $@ ::/doc; fi
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
@@ -172,7 +193,9 @@ $(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) $(wildcard
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
 	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
-	@for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done
+	@if [ "$(MANUAL)" = "yes" ]; then \
+		for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done; \
+	fi
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt
 

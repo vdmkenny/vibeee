@@ -54,6 +54,18 @@ pub fn build(b: *std.Build) void {
         std.process.exit(1);
     }
 
+    // Whether this build carries the manual. With it, every command's
+    // summary comes from its page and a command without one fails the
+    // build; without it, the pages are neither read nor shipped and the
+    // listings print names alone. Twenty kilobytes of text in a root
+    // filesystem read over the BIOS's own USB path is worth being able
+    // to decline.
+    const with_manual = b.option(
+        bool,
+        "manual",
+        "Read command summaries from manual/ and require a page per command (default: true)",
+    ) orelse true;
+
     // User programs to build with a symbol table, comma separated. A faulting
     // address reported on the target is only a number until something can match
     // it against a symbol, and the machine has no debugger and no serial port.
@@ -250,7 +262,7 @@ pub fn build(b: *std.Build) void {
         // arrives or leaves. A directory argument would hash only its
         // name, and a page removed behind the build's back would ship as
         // a summary for a command nobody can look up.
-        addManualPages(b, manual_index);
+        if (with_manual) addManualPages(b, manual_index);
         const manual_mod = b.createModule(.{
             .root_source_file = manual_table,
             .target = user_target,
