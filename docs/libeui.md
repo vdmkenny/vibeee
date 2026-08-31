@@ -102,6 +102,7 @@ that means it has to be painted again.
 | `slotFor` | `fn (*widget.Context, draw.Rect) ?*widget.Entry` |
 | `indexOf` | `fn (*const widget.Context, *const widget.Entry) usize` |
 | `takeKeyFor` | `fn (*widget.Context, *const widget.Entry) ?u8` |
+| `focusAt` | `fn (*widget.Context, draw.Rect) void` |
 | `interact` | `fn (*widget.Context, *widget.Entry, draw.Rect) Context.Interaction` |
 | `activatedByKey` | `fn (*widget.Context, *const widget.Entry) bool` |
 | `needsPaint` | `fn (*const widget.Context, *const widget.Entry, widget.Visual) bool` |

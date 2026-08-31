@@ -397,6 +397,20 @@ pub const Context = struct {
         clicked: bool,
     };
 
+    /// Give the keyboard to whatever control occupies `area`.
+    ///
+    /// For a window that opens with something already active: a file manager
+    /// whose listing does not answer the arrow keys until it has been clicked
+    /// is a file manager that looks broken for the first second of its life.
+    /// Takes effect on the pass that draws the control there.
+    pub fn focusAt(self: *Context, area: Rect) void {
+        const entry = self.slotFor(area) orelse return;
+        const index = self.indexOf(entry);
+        if (self.focus == index) return;
+        self.focus = index;
+        self.focus_moved = true;
+    }
+
     pub fn interact(self: *Context, entry: *Entry, area: Rect) Interaction {
         entry.seen = true;
         entry.focusable = true;

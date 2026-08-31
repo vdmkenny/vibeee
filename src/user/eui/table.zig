@@ -7,6 +7,7 @@
 //! the pass machinery.
 
 const draw = @import("draw.zig");
+const icons = @import("icon.zig");
 const scroll = @import("scroll.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
@@ -39,6 +40,9 @@ pub const Row = struct {
     /// Drawn in the accent colour. For the one row that is the subject of
     /// whatever the window is about.
     marked: bool = false,
+    /// A picture before the first cell. The column is indented for it when
+    /// any row in the table has one, so names still line up under each other.
+    icon: ?icons.Icon = null,
 };
 
 /// What the control remembers between passes.
@@ -214,6 +218,13 @@ fn paint(
     }
     surface.fill(.{ .x = area.x, .y = area.y + row_h, .w = area.w, .h = 1 }, t.line);
 
+    // One row with a picture indents them all, so the names line up whether
+    // or not the row above has one.
+    var pictured = false;
+    for (rows) |row| {
+        if (row.icon != null) pictured = true;
+    }
+
     const last = @min(state.scroll + visible, rows.len);
     var y = body.y;
     for (rows[@min(state.scroll, rows.len)..last], state.scroll..) |row, index| {
@@ -233,11 +244,16 @@ fn paint(
         else
             t.text;
 
+        if (row.icon) |which| {
+            surface.icon(line.x + 3, y + @divTrunc(row_h - Surface.iconSize(), 2), which, ink);
+        }
+
         var cx = line.x + 2;
         for (columns, 0..) |column, i| {
             const w = columnWidth(columns, i, area.w);
             const cell = row.cells[i];
-            const indent: i32 = if (column.tree) @as(i32, row.depth) * 10 else 0;
+            const indent: i32 = (if (column.tree) @as(i32, row.depth) * 10 else 0) +
+                (if (i == 0 and pictured) Surface.iconSize() + 4 else 0);
 
             if (column.right) {
                 const text_w = Surface.textWidth(cell);

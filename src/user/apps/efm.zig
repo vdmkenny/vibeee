@@ -40,9 +40,9 @@ const Pane = struct {
     path_len: usize = 0,
     names: [dir.MAX * 12]u8 = undefined,
     listing: dir.Listing = .{},
-    selected: usize = 0,
-    /// First row on show, so a long directory scrolls rather than being cut.
-    top: usize = 0,
+    /// The table's own memory: which row is selected and how far down it is.
+    /// The control keeps it, this only owns it.
+    view: eui.table.State = .{},
 
     fn path(self: *const Pane) []const u8 {
         return self.path_buf[0..self.path_len];
@@ -57,16 +57,15 @@ const Pane = struct {
     fn refresh(self: *Pane) void {
         self.listing = .{};
         dir.read(self.path(), &self.names, &self.listing) catch {};
-        if (self.selected >= self.listing.items().len) {
-            self.selected = self.listing.items().len -| 1;
+        if (self.view.selected >= self.listing.items().len) {
+            self.view.selected = self.listing.items().len -| 1;
         }
-        self.top = 0;
     }
 
     fn current(self: *const Pane) ?dir.Entry {
         const items = self.listing.items();
-        if (self.selected >= items.len) return null;
-        return items[self.selected];
+        if (self.view.selected >= items.len) return null;
+        return items[self.view.selected];
     }
 
     /// The full path of what the cursor is on.
@@ -134,17 +133,18 @@ fn run() noreturn {
                 pointer_x = event.body.button.x;
                 pointer_y = event.body.button.y;
                 setButton(event.body.button.btn, event.body.button.down != 0);
-                if (event.body.button.down != 0) pressed(pointer_x, pointer_y);
                 redraw();
             },
             .scroll => {
-                scroll(event.body.scroll.dy);
+                ctx.postScroll(event.body.scroll.dy);
                 redraw();
             },
             .key => {
                 if (event.body.key.down == 0) continue;
-                @import("ulib").log.note("efm", "key");
                 key(@enumFromInt(event.body.key.code));
+                // What this program did not take, the controls do: the
+                // table's arrows, page keys and Enter are its business.
+                ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
                 redraw();
             },
             .text => {
@@ -214,19 +214,6 @@ fn key(code: ui.KeyCode) void {
             active = 1 - active;
             ctx.damage();
         },
-        .up => move(-1),
-        .down => move(1),
-        .page_up => move(-8),
-        .page_down => move(8),
-        .home => {
-            here().selected = 0;
-            ctx.damage();
-        },
-        .end => {
-            here().selected = here().listing.items().len -| 1;
-            ctx.damage();
-        },
-        .enter => enter(),
         .backspace => leave(),
         .f5 => transfer(.copy),
         .f6 => transfer(.move),
@@ -244,20 +231,7 @@ fn typed(codepoint: u32) void {
     ctx.damage();
 }
 
-fn move(by: i32) void {
-    const pane = here();
-    const count: i32 = @intCast(pane.listing.items().len);
-    if (count == 0) return;
 
-    var at: i32 = @intCast(pane.selected);
-    at += by;
-    pane.selected = @intCast(@max(0, @min(at, count - 1)));
-    ctx.damage();
-}
-
-fn scroll(dy: i8) void {
-    move(if (dy > 0) 1 else -1);
-}
 
 /// Open what the cursor is on: a directory is walked into, and anything else
 /// is left alone. Running a program from here needs a way to say what it
@@ -274,7 +248,7 @@ fn enter() void {
     var buf: [160]u8 = undefined;
     const target = paths.join(pane.path(), entry.name, &buf);
     pane.setPath(target);
-    pane.selected = 0;
+    pane.view = .{};
     pane.refresh();
     ctx.damage();
 }
@@ -294,7 +268,7 @@ fn leave() void {
     @memcpy(buf[0..parent.len], parent);
 
     pane.setPath(buf[0..parent.len]);
-    pane.selected = 0;
+    pane.view = .{};
     pane.refresh();
     ctx.damage();
 }
@@ -415,21 +389,17 @@ fn draw() void {
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
     ctx.begin(pointer_x, pointer_y, buttons);
-    // Everything here is painted by hand rather than through controls, so
-    // nothing registers itself as changed. The manager is told the whole
-    // window when the whole window was drawn, or it puts none of it up.
-    const whole = ctx.damaged;
 
-    const volumes = Rect{ .x = 0, .y = 0, .w = area.w, .h = theme.enlarged(VOLUMES_HEIGHT) };
+    const places = Rect{ .x = 0, .y = 0, .w = area.w, .h = t.control_height + t.padding };
     const keys = eui.footer.strip(area);
     const body = Rect{
         .x = 0,
-        .y = volumes.bottom(),
+        .y = places.bottom(),
         .w = area.w,
-        .h = keys.y - volumes.bottom(),
+        .h = keys.y - places.bottom(),
     };
 
-    drawVolumes(volumes);
+    drawPlaces(places);
 
     const half = @divTrunc(body.w, 2);
     drawPane(0, .{ .x = 0, .y = body.y, .w = half, .h = body.h });
@@ -437,125 +407,111 @@ fn draw() void {
 
     drawKeys(keys);
 
-    if (whole) ctx.addDamage(area);
     ctx.end();
     connection.commit(window, ctx.damageList()) catch {};
-    _ = t;
 }
 
-fn drawVolumes(area: Rect) void {
+/// Where you can go: one button per mounted volume, which sends the pane you
+/// are in to that place.
+///
+/// The alternative was a row of mount lines, which said what is mounted
+/// without saying what to do about it. A place you can press is a place you
+/// can go, and it needs no legend.
+fn drawPlaces(area: Rect) void {
     const t = theme.current();
-    if (!ctx.damaged) return;
-
-    ctx.surface.fill(area, t.surface_pressed);
-    ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+    if (ctx.damaged) {
+        ctx.surface.fill(area, t.surface_pressed);
+        ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+        ctx.addDamage(area);
+    }
 
     var buf: [256]u8 = undefined;
     const mounted = info.ask("mounts", &buf);
 
-    var x = area.x + t.menu_padding;
+    var x = area.x + t.padding;
     var lines = str.lines(mounted);
     while (lines.next()) |line| {
         const text = str.trim(line);
         if (text.len == 0) continue;
+        // "<path> on <device>": the path is the part somebody presses.
+        var words: [4][]const u8 = undefined;
+        const n = str.splitWords(text, &words);
+        const where = if (n > 0) words[0] else "";
+        if (where.len == 0) continue;
 
-        const width = Surface.textWidth(text) + t.menu_padding * 2;
+        const width = eui.Surface.textWidth(where) + t.menu_padding * 2;
         if (x + width > area.right()) break;
 
-        ctx.surface.clipped(area).text(
-            x,
-            area.y + @divTrunc(area.h - Surface.textHeight(), 2),
-            text,
-            t.text,
-        );
-        x += width;
+        const at = Rect{ .x = x, .y = area.y + 2, .w = width, .h = area.h - 5 };
+        if (ctx.toggle(at, where, str.eql(here().path(), where))) goTo(where);
+        x += width + t.padding;
     }
 }
 
-fn rowHeight() i32 {
-    return theme.current().menu_row_height;
+fn goTo(where: []const u8) void {
+    const pane = here();
+    pane.setPath(where);
+    pane.view = .{};
+    pane.refresh();
+    ctx.damage();
 }
 
+/// One side, as a table: the control already knows how to scroll a list,
+/// keep a selection across a refresh and say which row was activated, and a
+/// program that drew its own rows would be a program keeping all of that in
+/// step by hand.
 fn drawPane(index: usize, area: Rect) void {
     const t = theme.current();
     const pane = &panes[index];
-    const focused = index == active;
-
-    const head = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = theme.enlarged(20) };
-    if (ctx.damaged) {
-        ctx.surface.fill(head, if (focused) t.accent else t.surface_pressed);
-        ctx.surface.clipped(head).text(
-            head.x + t.padding,
-            head.y + @divTrunc(head.h - Surface.textHeight(), 2),
-            pane.path(),
-            if (focused) t.accent_text else t.text_dim,
-        );
-        // A hairline between the panes, so two listings do not read as one.
-        if (index == 1) {
-            ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = 1, .h = area.h }, t.line);
-        }
-    }
-
-    const rows = Rect{
-        .x = area.x + (if (index == 1) @as(i32, 1) else 0),
-        .y = head.bottom(),
-        .w = area.w - (if (index == 1) @as(i32, 1) else 0),
-        .h = area.bottom() - head.bottom(),
-    };
-    if (ctx.damaged) ctx.surface.fill(rows, t.surface);
-
-    const height = rowHeight();
-    const visible: usize = @intCast(@max(0, @divTrunc(rows.h, height)));
-    keepInView(pane, visible);
-
     const items = pane.listing.items();
-    var y = rows.y;
-    var row = pane.top;
-    while (row < items.len and y + height <= rows.bottom()) : (row += 1) {
-        drawRow(pane, items[row], .{ .x = rows.x, .y = y, .w = rows.w, .h = height }, row == pane.selected, focused);
-        y += height;
+
+    // The path is the first column's heading, and the size column's heading
+    // is what the column holds. A pane says where it is once, and the
+    // table's own header row is where a heading goes.
+    const columns = [_]eui.table.Column{
+        .{ .title = pane.path(), .width = area.w - theme.enlarged(64) },
+        .{ .title = "size", .width = theme.enlarged(60), .right = true },
+    };
+
+    var rows: [dir.MAX]eui.table.Row = undefined;
+    for (items, 0..) |entry, i| {
+        rows[i] = .{
+            .cells = .{ entry.name, "", "", "", "", "" },
+            .icon = if (entry.is_dir) .folder else .document,
+        };
+        // Spelled into a store that outlives this loop, because a cell is a
+        // slice and the table reads it after the row is built.
+        if (!entry.is_dir) rows[i].cells[1] = spellSize(entry.size, sizeStore(index, i));
     }
+
+    // The pane you are in has the keyboard, so the arrows walk its listing
+    // without anybody having clicked it first.
+    if (index == active) ctx.focusAt(area);
+
+    if (ctx.table(area, &pane.view, &columns, rows[0..items.len])) |_| {
+        if (index != active) {
+            active = index;
+            ctx.damage();
+        }
+        enter();
+    }
+
+    // Pressing anywhere in a pane makes it the one you are in, whether or not
+    // a row was activated.
+    if (ctx.pressedThisPass() and area.contains(pointer_x, pointer_y) and index != active) {
+        active = index;
+        ctx.damage();
+    }
+    _ = t;
 }
 
-/// Scroll so the cursor is on a row that exists on the screen.
-fn keepInView(pane: *Pane, visible: usize) void {
-    if (visible == 0) return;
-    if (pane.selected < pane.top) pane.top = pane.selected;
-    if (pane.selected >= pane.top + visible) pane.top = pane.selected - visible + 1;
-}
+/// Where a row's size text lives for the length of a pass. Sizes are spelled
+/// per row and a cell is a slice, so the characters have to outlive the loop
+/// that made them.
+var size_store: [2][dir.MAX][12]u8 = undefined;
 
-fn drawRow(pane: *const Pane, entry: dir.Entry, area: Rect, selected: bool, focused: bool) void {
-    _ = pane;
-    const t = theme.current();
-
-    // The cursor in the pane you are not in is still drawn, quieter: it is
-    // where a copy would land, and a pane that forgot it would make you look.
-    const ground = if (selected and focused) t.accent else if (selected) t.surface_pressed else t.surface;
-    const ink = if (selected and focused) t.accent_text else t.text;
-
-    ctx.surface.fill(area, ground);
-    const clipped = ctx.surface.clipped(area);
-
-    clipped.icon(
-        area.x + t.padding,
-        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-        if (entry.is_dir) .folder else .document,
-        ink,
-    );
-
-    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    clipped.text(area.x + t.padding + Surface.iconSize() + t.padding, baseline, entry.name, ink);
-
-    if (!entry.is_dir) {
-        var buf: [16]u8 = undefined;
-        const size = spellSize(entry.size, &buf);
-        clipped.text(
-            area.right() - t.padding - Surface.textWidth(size),
-            baseline,
-            size,
-            if (selected and focused) t.accent_text else t.text_dim,
-        );
-    }
+fn sizeStore(pane: usize, row: usize) []u8 {
+    return &size_store[pane][row];
 }
 
 /// A size as a person reads it, which is three digits and a unit.
@@ -591,7 +547,10 @@ fn drawKeys(area: Rect) void {
 
     if (asking != .nothing) return drawQuestion(area);
 
-    if (!ctx.damaged and status.len == 0) return;
+    // The footer carries what just happened, or how much is in the pane, and
+    // both change often enough that it is drawn every pass rather than being
+    // guessed at.
+    ctx.addDamage(area);
     ctx.surface.fill(area, t.bar);
     ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
 
@@ -615,10 +574,15 @@ fn drawKeys(area: Rect) void {
         x = chip.right() + t.padding + label_w + t.menu_padding;
     }
 
-    if (status.len > 0) {
-        const width = Surface.textWidth(status);
+    var counted: [24]u8 = @splat(0);
+    var line = str.Builder{ .buf = &counted };
+    line.quantity(here().listing.items().len, "items");
+    const said = if (status.len > 0) status else line.done();
+
+    {
+        const width = Surface.textWidth(said);
         if (x + width < area.right()) {
-            ctx.surface.text(area.right() - t.menu_padding - width, baseline, status, t.bar_text);
+            ctx.surface.text(area.right() - t.menu_padding - width, baseline, said, t.bar_text);
         }
     }
 }
@@ -627,6 +591,7 @@ fn drawKeys(area: Rect) void {
 /// answer will land beats a window that covers what you were looking at.
 fn drawQuestion(area: Rect) void {
     const t = theme.current();
+    ctx.addDamage(area);
     ctx.surface.fill(area, t.bar);
     ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
 
@@ -658,31 +623,3 @@ fn drawQuestion(area: Rect) void {
     }
 }
 
-/// A press moves the cursor, and a press in the pane you are not in moves to
-/// that pane first: clicking a row and having the click land on the other
-/// side would be the alternative.
-fn pressed(x: i32, y: i32) void {
-    const surface = ctx.surface;
-    const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
-    const volumes = theme.enlarged(VOLUMES_HEIGHT);
-    const keys = eui.footer.strip(area);
-    if (y < volumes or y >= keys.y) return;
-
-    const half = @divTrunc(area.w, 2);
-    const which: usize = if (x < half) 0 else 1;
-    if (which != active) {
-        active = which;
-        ctx.damage();
-    }
-
-    const pane = &panes[which];
-    const head = theme.enlarged(20);
-    const first = volumes + head;
-    if (y < first) return;
-
-    const row = pane.top + @as(usize, @intCast(@divTrunc(y - first, rowHeight())));
-    if (row < pane.listing.items().len) {
-        pane.selected = row;
-        ctx.damage();
-    }
-}
