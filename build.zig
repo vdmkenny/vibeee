@@ -552,6 +552,30 @@ pub fn build(b: *std.Build) void {
     b.step("settings-docs", "Regenerate docs/settings.md and the manual's key lists")
         .dependOn(&settings_docs.step);
 
+    // The toolkit describes itself: controls, parts, pictures and themes are
+    // all read out of eui rather than listed by hand.
+    const host_eui = b.createModule(.{
+        .root_source_file = b.path("src/user/eui/eui.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{.{ .name = "lib", .module = docs_lib }},
+    });
+    const eui_docs = b.addRunArtifact(b.addExecutable(.{
+        .name = "gen-eui-docs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_eui_docs.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "eui", .module = host_eui }},
+        }),
+    }));
+    eui_docs.addArg("docs/libeui.md");
+    eui_docs.addArg("src/user/eui/widget.zig");
+    eui_docs.has_side_effects = true;
+    b.getInstallStep().dependOn(&eui_docs.step);
+    b.step("eui-docs", "Regenerate docs/libeui.md from the toolkit")
+        .dependOn(&eui_docs.step);
+
     const syscall_docs = b.addRunArtifact(b.addExecutable(.{
         .name = "gen-syscall-docs",
         .root_module = b.createModule(.{

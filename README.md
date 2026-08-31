@@ -111,6 +111,8 @@ toy OS for a nineteen-year-old netbook, and that is the standard it is built to.
 - [docs/status.md](docs/status.md) - what exists, component by component, including the gaps
 - [design/00-vibeee.md](design/00-vibeee.md) - the master design, the whole system as it was planned
 - [docs/syscalls.md](docs/syscalls.md) - generated from the syscall table, so it cannot drift
+- [docs/settings.md](docs/settings.md) - every configuration key, generated from the schema
+- [docs/libeui.md](docs/libeui.md) - the toolkit's controls, pictures and themes, generated from the toolkit
 
 Two details are worth knowing early. The target machine has no serial port, which
 shaped the whole project: boot time self-tests report on screen, the kernel keeps a

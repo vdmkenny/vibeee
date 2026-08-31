@@ -169,33 +169,6 @@ pub const Context = struct {
         self.pending_text = codepoint;
     }
 
-    /// Record that `area` needs sending to the screen.
-    ///
-    /// Overlapping rectangles are merged when they touch, and the whole list
-    /// collapses to one bounding rectangle once it overflows: past a certain
-    /// number of small rectangles the bookkeeping costs more than the pixels.
-    pub fn addDamage(self: *Context, area: Rect) void {
-        if (area.isEmpty()) return;
-
-        for (self.damage_rects[0..self.damage_count]) |*existing| {
-            if (!existing.intersect(area).isEmpty()) {
-                existing.* = existing.unite(area);
-                return;
-            }
-        }
-
-        if (self.damage_count == MAX_DAMAGE) {
-            self.damage_overflowed = true;
-            var all = self.damage_rects[0];
-            for (self.damage_rects[1..]) |r| all = all.unite(r);
-            self.damage_rects[0] = all.unite(area);
-            self.damage_count = 1;
-            return;
-        }
-
-        self.damage_rects[self.damage_count] = area;
-        self.damage_count += 1;
-    }
 
     /// What changed this pass.
     pub fn damageList(self: *const Context) []const Rect {
@@ -250,29 +223,6 @@ pub const Context = struct {
         return ea.x < eb.x;
     }
 
-    /// Take the pending key if this control has focus.
-    /// Take the wheel movement for this pass, if it has not been taken.
-    pub fn takeWheel(self: *Context) i8 {
-        const value = self.pending_wheel;
-        self.pending_wheel = 0;
-        return value;
-    }
-
-    /// Take the character for this pass, if `entry` has focus.
-    pub fn takeTextFor(self: *Context, entry: *const Entry) ?u32 {
-        if (self.focus != self.indexOf(entry) or self.pending_text == 0) return null;
-        const cp = self.pending_text;
-        self.pending_text = 0;
-        return cp;
-    }
-
-    fn takeKey(self: *Context, index: usize) ?u8 {
-        if (self.focus != index or self.pending_key == 0) return null;
-        const code = self.pending_key;
-        self.pending_key = 0;
-        return code;
-    }
-
     /// Finish a pass, releasing state for controls that were not drawn.
     pub fn end(self: *Context) void {
         for (&self.entries) |*e| {
@@ -308,6 +258,69 @@ pub const Context = struct {
         return !self.buttons.left and self.previous.left;
     }
 
+    // -----------------------------------------------------------------------
+    // For control authors
+    //
+    // Controls large enough to live in their own file reach the pass machinery
+    // through these. Nothing outside the toolkit should call them.
+    // -----------------------------------------------------------------------
+
+    /// Record that `area` needs sending to the screen.
+    ///
+    /// Overlapping rectangles are merged when they touch, and the whole list
+    /// collapses to one bounding rectangle once it overflows: past a certain
+    /// number of small rectangles the bookkeeping costs more than the pixels.
+    pub fn addDamage(self: *Context, area: Rect) void {
+        if (area.isEmpty()) return;
+
+        for (self.damage_rects[0..self.damage_count]) |*existing| {
+            if (!existing.intersect(area).isEmpty()) {
+                existing.* = existing.unite(area);
+                return;
+            }
+        }
+
+        if (self.damage_count == MAX_DAMAGE) {
+            self.damage_overflowed = true;
+            var all = self.damage_rects[0];
+            for (self.damage_rects[1..]) |r| all = all.unite(r);
+            self.damage_rects[0] = all.unite(area);
+            self.damage_count = 1;
+            return;
+        }
+
+        self.damage_rects[self.damage_count] = area;
+        self.damage_count += 1;
+    }
+
+    /// Take the pending key if this control has focus.
+    /// Take the wheel movement for this pass, if it has not been taken.
+    pub fn takeWheel(self: *Context) i8 {
+        const value = self.pending_wheel;
+        self.pending_wheel = 0;
+        return value;
+    }
+
+    /// Take the character for this pass, if `entry` has focus.
+    pub fn takeTextFor(self: *Context, entry: *const Entry) ?u32 {
+        if (self.focus != self.indexOf(entry) or self.pending_text == 0) return null;
+        const cp = self.pending_text;
+        self.pending_text = 0;
+        return cp;
+    }
+
+    fn takeKey(self: *Context, index: usize) ?u8 {
+        if (self.focus != index or self.pending_key == 0) return null;
+        const code = self.pending_key;
+        self.pending_key = 0;
+        return code;
+    }
+
+
+
+
+
+
     pub fn slotFor(self: *Context, area: Rect) ?*Entry {
         const x: i16 = @intCast(@max(@min(area.x, 32767), -32768));
         const y: i16 = @intCast(@max(@min(area.y, 32767), -32768));
@@ -327,20 +340,9 @@ pub const Context = struct {
         return (@intFromPtr(entry) - @intFromPtr(&self.entries)) / @sizeOf(Entry);
     }
 
-    // -----------------------------------------------------------------------
-    // For control authors
-    //
-    // Controls large enough to live in their own file reach the pass machinery
-    // through these. Nothing outside the toolkit should call them.
-    // -----------------------------------------------------------------------
-
     pub fn takeKeyFor(self: *Context, entry: *const Entry) ?u8 {
         return self.takeKey(self.indexOf(entry));
     }
-
-    // -----------------------------------------------------------------------
-    // Controls
-    // -----------------------------------------------------------------------
 
     /// What a pass did to a control.
     ///
@@ -415,6 +417,10 @@ pub const Context = struct {
     fn hotOr(over: bool, comptime on: Visual, comptime off: Visual) Visual {
         return if (over) on else off;
     }
+
+    // -----------------------------------------------------------------------
+    // Controls
+    // -----------------------------------------------------------------------
 
     /// A push button. Returns true on the pass where it is released, having
     /// been pressed on itself.
