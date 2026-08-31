@@ -570,6 +570,10 @@ fn handleKey(event: sys.KeyEvent) void {
 
         .j => desktop.focusNext(1),
 
+        // One window at full size, and back. What the tiling is for most of
+        // the time, and what it is in the way of for the rest.
+        .m => _ = desktop.toggleMaximised(),
+
         .h => desktop.nudgeMaster(-0.05),
         .l => desktop.nudgeMaster(0.05),
 

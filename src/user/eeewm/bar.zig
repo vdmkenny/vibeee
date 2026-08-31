@@ -397,15 +397,26 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
         if (count == 0) t.text_dim else color,
     );
 
-    if (count > 1) paintStackMarker(surface, area, color);
+    // A desktop showing one window at full size says so, because otherwise
+    // the tab of a stack of three and the tab of a stack of three with two
+    // of them hidden are the same tab.
+    if (count > 1) {
+        if (desktop.tag == index and desktop.isMaximised()) {
+            surface.icon(
+                area.right() - MARKER_WIDTH,
+                area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+                .maximised,
+                color,
+            );
+        } else {
+            paintStackMarker(surface, area, color);
+        }
+    }
 
     // A hairline between tabs, so two adjacent ones do not read as one.
     surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
 
-/// A downward triangle: this tab holds more than one window and will open a
-/// menu of them. The glyph rather than three drawn lines, now that the font
-/// carries one that reads correctly at this size.
 /// Three short rules, the mark everything uses for "there is a list behind
 /// this". Drawn rather than taken from the font: at this size a glyph is a
 /// smudge, and three rules are three rules at any size.

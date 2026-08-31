@@ -101,6 +101,15 @@ pub const Desktop = struct {
     /// The whole area windows may occupy, below the bar.
     bounds: Rect = .{},
 
+    /// Whether this desktop is showing one window at full size rather than
+    /// the tiling it would otherwise have.
+    ///
+    /// Per desktop rather than per window, and it follows the focus: what is
+    /// wanted is to look at one thing for a moment, and then at the next
+    /// one, without putting the tiling back between them. Moving the focus
+    /// while it is on is how you leaf through them.
+    maximised: [MAX_DESKTOPS]bool = @splat(false),
+
     // -----------------------------------------------------------------------
     // Windows
     // -----------------------------------------------------------------------
@@ -211,7 +220,35 @@ pub const Desktop = struct {
         const list = self.tiled(&buf);
         if (list.len == 0) return;
 
+        // Every window takes the whole area rather than the focused one
+        // taking it and the rest being moved: they are drawn in order and
+        // the focused one is drawn last, so what is underneath is already
+        // hidden and putting the tiling back is one flag away.
+        if (self.maximised[self.tag]) {
+            for (list) |i| self.windows[i].area = self.bounds;
+            return;
+        }
+
         self.split(list, .vertical);
+    }
+
+    /// Show one window at full size, or put the tiling back.
+    ///
+    /// A desktop holding one window is already showing it at full size, so
+    /// there is nothing to toggle and the flag is left alone: a key that
+    /// appeared to do nothing and then changed what the next window did
+    /// would be worse than one that plainly does nothing.
+    pub fn toggleMaximised(self: *Desktop) bool {
+        var buf: [MAX_WINDOWS]usize = undefined;
+        if (self.tiled(&buf).len < 2) return false;
+
+        self.maximised[self.tag] = !self.maximised[self.tag];
+        self.arrange();
+        return true;
+    }
+
+    pub fn isMaximised(self: *const Desktop) bool {
+        return self.maximised[self.tag];
     }
 
     const Axis = enum { vertical, horizontal };
@@ -383,6 +420,7 @@ pub const Desktop = struct {
 
         var i: u8 = tag;
         while (i + 1 < self.count) : (i += 1) {
+            self.maximised[i] = self.maximised[i + 1];
             self.mfact[i] = self.mfact[i + 1];
             self.last_focused[i] = self.last_focused[i + 1];
         }
@@ -459,7 +497,8 @@ pub const Desktop = struct {
         if (here == 0) return self.tag;
 
         const area = self.bounds;
-        const fits = @divTrunc(area.w, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_W;
+        const fits = self.maximised[self.tag] or
+            @divTrunc(area.w, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_W;
         if (fits) return self.tag;
 
         // Full: the first empty desktop, or a new one.
