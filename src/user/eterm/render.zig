@@ -138,6 +138,8 @@ fn drawCell(
     // half-width grid; strokes from the cell's own geometry always meet.
     if (boxStrokes(cell.ch)) |strokes| {
         drawStrokes(surface, box, strokes, fg);
+    } else if (arrowFor(cell.ch)) |which| {
+        drawArrow(surface, box, which, fg);
     } else {
         surface.glyphIn(eui.draw.mono_font, box.x, box.y, @intCast(cell.ch), fg);
     }
@@ -235,6 +237,54 @@ pub const Strokes = packed struct(u4) {
     down: bool = false,
 };
 
+/// The four arrows, drawn rather than set.
+///
+/// A monospaced subset need not carry them, and a prompt's arrow that falls
+/// back to a hyphen is a prompt that looks broken. Drawn from the cell, it is
+/// there whatever the face has.
+pub const Arrow = enum { left, right, up, down };
+
+pub fn arrowFor(cp: u32) ?Arrow {
+    return switch (cp) {
+        0x2190 => .left,
+        0x2191 => .up,
+        0x2192 => .right,
+        0x2193 => .down,
+        else => null,
+    };
+}
+
+fn drawArrow(surface: Surface, box: Rect, which: Arrow, color: Color) void {
+    const mid_x = box.x + @divTrunc(box.w, 2);
+    const mid_y = box.y + @divTrunc(box.h, 2);
+
+    // The head is a fraction of the cell rather than a fixed three pixels: at
+    // six pixels wide, three would reach halfway back along the shaft and
+    // read as a cross.
+    const head = @max(@min(@divTrunc(box.w, 3), @divTrunc(box.h, 3)), 1);
+
+    switch (which) {
+        .left, .right => {
+            surface.fill(.{ .x = box.x + 1, .y = mid_y, .w = box.w - 2, .h = 1 }, color);
+            var step: i32 = 1;
+            while (step <= head) : (step += 1) {
+                const x = if (which == .right) box.right() - 1 - step else box.x + step;
+                surface.fill(.{ .x = x, .y = mid_y - step, .w = 1, .h = 1 }, color);
+                surface.fill(.{ .x = x, .y = mid_y + step, .w = 1, .h = 1 }, color);
+            }
+        },
+        .up, .down => {
+            surface.fill(.{ .x = mid_x, .y = box.y + 1, .w = 1, .h = box.h - 2 }, color);
+            var step: i32 = 1;
+            while (step <= head) : (step += 1) {
+                const y = if (which == .down) box.bottom() - 1 - step else box.y + step;
+                surface.fill(.{ .x = mid_x - step, .y = y, .w = 1, .h = 1 }, color);
+                surface.fill(.{ .x = mid_x + step, .y = y, .w = 1, .h = 1 }, color);
+            }
+        },
+    }
+}
+
 pub fn boxStrokes(cp: u32) ?Strokes {
     return switch (cp) {
         0x2500, 0x2550 => .{ .left = true, .right = true },
@@ -288,4 +338,12 @@ test "doubles fold onto singles and letters stay the font's" {
     try testing.expectEqual(boxStrokes(0x255A), boxStrokes(0x2514));
     try testing.expectEqual(@as(?Strokes, null), boxStrokes('A'));
     try testing.expectEqual(@as(?Strokes, null), boxStrokes(0x2192));
+}
+
+test "the arrows are drawn rather than looked up" {
+    try testing.expectEqual(Arrow.right, arrowFor(0x2192).?);
+    try testing.expectEqual(Arrow.left, arrowFor(0x2190).?);
+    try testing.expectEqual(@as(?Arrow, null), arrowFor('>'));
+    // A box character is the line set's, not the arrow set's.
+    try testing.expectEqual(@as(?Arrow, null), arrowFor(0x2500));
 }

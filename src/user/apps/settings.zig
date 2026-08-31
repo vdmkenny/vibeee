@@ -61,7 +61,7 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     version = info.ask("kernel", &version_buf);
     readMachineName();
 
-    proto.app.run("settings", "Settings", 260, 200, .{ .draw = draw });
+    proto.app.run("settings", "Settings", 260, 200, .{ .draw = draw, .tick = tick });
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +72,40 @@ fn load() void {
     current = store.load("wm");
     input = store.load("input");
     readVolume();
+}
+
+/// How often the meters are read while they are on show. Off that pane the
+/// frame's default one-second wait comes back and nothing is asked at all.
+const METER_TICK_US: usize = 150_000;
+
+/// What the meters showed last, with peaks that fall rather than vanish: a
+/// peak that mattered for one read is gone before an eye lands on it.
+var meter_left: u8 = 0;
+var meter_right: u8 = 0;
+var meter_capture: u8 = 0;
+var meter_playing = false;
+var peak_left: u8 = 0;
+var peak_right: u8 = 0;
+
+/// The wait timed out. Only the Audio pane has anything that ages.
+fn tick() bool {
+    if (section != .audio or !has_sound) return false;
+
+    const fresh = sound.levels() orelse return false;
+    meter_left = fresh.left;
+    meter_right = fresh.right;
+    meter_capture = fresh.capture;
+    meter_playing = fresh.playing != 0;
+
+    const audio_lib = @import("lib").audio;
+    peak_left = @max(fresh.left, audio_lib.falling(peak_left, fresh.left, 3));
+    peak_right = @max(fresh.right, audio_lib.falling(peak_right, fresh.right, 3));
+    return true;
+}
+
+/// Meters wake the window only while they are the thing on screen.
+fn syncTick() void {
+    proto.app.retick(if (section == .audio) METER_TICK_US else 1_000_000);
 }
 
 /// What the sound service says the default output is at.
@@ -290,6 +324,7 @@ fn drawRail(rail: eui.Rect) void {
     const chosen = ctx.rail(rail, &rows, @intFromEnum(section), version);
     if (chosen != @intFromEnum(section)) {
         section = @enumFromInt(chosen);
+        syncTick();
         // A different pane entirely, so the whole window is repainted rather
         // than the row that was pressed.
         ctx.damage();
@@ -403,16 +438,84 @@ fn drawAudio(pane: eui.Rect) void {
     }
 
     const level = ctx.slider(
-        .{ .x = pane.x, .y = y, .w = full.w - 84, .h = row },
+        .{ .x = pane.x, .y = y, .w = full.w - theme.enlarged(84), .h = row },
         .{ .min = 0, .max = 100 },
         volume.percent,
         .{},
     );
-    if (ctx.toggle(.{ .x = pane.x + full.w - 78, .y = y, .w = 78, .h = row }, "Mute", volume.muted != 0)) {
+    if (ctx.toggle(.{ .x = pane.right() - theme.enlarged(78), .y = y, .w = theme.enlarged(78), .h = row }, "Mute", volume.muted != 0)) {
         setVolume(volume.percent, volume.muted == 0);
     } else if (level != volume.percent) {
         setVolume(@intCast(level), volume.muted != 0);
     }
+    y += row + t.padding;
+
+    // What is actually coming out, channel by channel. The peaks trail and
+    // fall, because a meter only read at the moment you look says nothing
+    // about the moment you did not.
+    y = group(&y, full, "Output");
+    y = drawMeterRow(pane, y, "L", meter_left, peak_left);
+    y = drawMeterRow(pane, y, "R", meter_right, peak_right);
+    if (!meter_playing) {
+        ctx.labelDim(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "Nothing is playing.");
+    }
+    y += theme.enlarged(16) + t.padding;
+
+    y = drawPorts(pane, y, .sink, "Outputs");
+    y += t.padding;
+
+    y = group(&y, full, "Input");
+    y = drawMeterRow(pane, y, "Mic", meter_capture, meter_capture);
+    y += t.padding;
+    y = drawPorts(pane, y, .source, "Inputs");
+}
+
+/// One meter with its letter, at the design's own thinness.
+fn drawMeterRow(pane: eui.Rect, y: i32, label: []const u8, level: u8, peak: u8) i32 {
+    const t = theme.current();
+    const label_w = theme.enlarged(28);
+    const bar = eui.Rect{
+        .x = pane.x + label_w,
+        .y = y + 3,
+        .w = pane.w - label_w,
+        .h = theme.enlarged(eui.meter.HEIGHT),
+    };
+
+    ctx.labelDim(.{ .x = pane.x, .y = y, .w = label_w, .h = t.control_height }, label);
+    eui.widget.paintMeter(ctx.surface, bar, level, peak);
+    ctx.addDamage(bar);
+    return y + theme.enlarged(16);
+}
+
+/// The ports of one direction, the default marked, a press making it so.
+/// The same rows the bar's sound menu offers, because they are the same
+/// question; here they sit still and carry a heading.
+fn drawPorts(pane: eui.Rect, from: i32, direction: sound.graph.Direction, title: []const u8) i32 {
+    const t = theme.current();
+    var y = from;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height };
+
+    var store_ports: [sound.graph.MAX_PORTS]sound.PortInfo = undefined;
+    const all = sound.ports(&store_ports);
+
+    var shown = false;
+    for (all) |*port| {
+        if (port.id == sound.graph.NONE or port.direction != direction) continue;
+        if (!shown) {
+            y = group(&y, full, title);
+            shown = true;
+        }
+
+        const at = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.menu_row_height };
+        if (ctx.toggle(at, sound.nameOf(port), port.default != 0) and port.default == 0) {
+            if (sound.makeDefault(port.id)) {
+                readVolume();
+                ctx.damage();
+            }
+        }
+        y += t.menu_row_height + 2;
+    }
+    return y;
 }
 
 /// What this computer is, as the kernel describes it.
@@ -447,82 +550,6 @@ fn drawInput(pane: eui.Rect) void {
     );
 }
 
-/// What the battery is doing, and what the panel is set to.
-///
-/// The same two things the bar's power menu carries, because they are the
-/// same two things: this is where they are read at length, and the menu is
-/// where they are changed in passing.
-fn drawPower(pane: eui.Rect) void {
-    const t = theme.current();
-    const row = t.control_height;
-    var y = pane.y;
-    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
-
-    y = group(&y, full, "Battery");
-    if (platform.battery()) |cell| {
-        const bar_w = @divTrunc(pane.w - factColumn(pane), 3);
-        const percent = platform.charge(cell) orelse 0;
-
-        var reading: [24]u8 = @splat(0);
-        var line = str.Builder{ .buf = &reading };
-        line.number(percent);
-        line.text("%, ");
-        line.text(cell.stateLabel());
-
-        ctx.progress(.{ .x = pane.x, .y = y + 6, .w = bar_w, .h = 10 }, @intCast(@min(percent, 100)));
-        ctx.label(.{ .x = pane.x + bar_w + t.gap, .y = y + 4, .w = pane.w - bar_w, .h = row }, line.done());
-        y += row;
-
-        if (cell.runtimeLeft()) |left| {
-            var buf: [24]u8 = @splat(0);
-            var spelled = str.Builder{ .buf = &buf };
-            spelled.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
-            y = drawFact(pane, y, "Time left", spelled.done());
-        }
-        if (cell.health()) |health| {
-            var buf: [8]u8 = @splat(0);
-            var spelled = str.Builder{ .buf = &buf };
-            spelled.number(@min(health, 100));
-            spelled.byte('%');
-            y = drawFact(pane, y, "Health", spelled.done());
-        }
-    } else {
-        ctx.labelDim(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "This machine has no battery.");
-        y += row;
-    }
-
-    y += t.padding;
-    y = group(&y, full, "Backlight");
-
-    if (platform.backlight()) |panel_light| {
-        var reading: [16]u8 = @splat(0);
-        var line = str.Builder{ .buf = &reading };
-        line.number(panel_light.level);
-        line.text(" of ");
-        line.number(panel_light.max);
-
-        // Levels rather than a percentage: the steps belong to the panel, and
-        // a percentage rounded onto them makes some of them unreachable.
-        const wanted = ctx.slider(
-            .{ .x = pane.x, .y = y, .w = full.w - theme.enlarged(84), .h = row },
-            .{ .min = 1, .max = @intCast(panel_light.max) },
-            @intCast(panel_light.level),
-            .{},
-        );
-        ctx.label(
-            .{ .x = pane.right() - theme.enlarged(78), .y = y + 4, .w = theme.enlarged(78), .h = row },
-            line.done(),
-        );
-        if (wanted != @as(i32, @intCast(panel_light.level))) _ = platform.setBacklight(@intCast(wanted));
-    } else {
-        ctx.labelDim(
-            .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
-            "This machine offers no way to set the backlight.",
-        );
-    }
-}
-
-
 /// The keys that move windows around, from the table the manager dispatches
 /// from: a list here that the manager did not read would be a list that says
 /// what the machine used to do.
@@ -554,6 +581,208 @@ fn drawHelp(pane: eui.Rect) void {
         );
         y += theme.enlarged(16);
     }
+}
+
+/// What the battery is doing, what it is made of, and what the panel is set
+/// to.
+///
+/// Everything the firmware reports, because this is the page somebody opens
+/// when the machine is not lasting: charge without wear, rate or voltage says
+/// nothing about why.
+fn drawPower(pane: eui.Rect) void {
+    const t = theme.current();
+    const row = t.control_height;
+    var y = pane.y;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
+
+    y = group(&y, full, "Battery");
+    if (platform.battery()) |cell| {
+        const bar_w = @divTrunc(pane.w - factColumn(pane), 3);
+        const percent = platform.charge(cell) orelse 0;
+
+        var reading: [32]u8 = @splat(0);
+        var line = str.Builder{ .buf = &reading };
+        line.number(percent);
+        line.text("%, ");
+        line.text(cell.stateLabel());
+
+        ctx.progress(.{ .x = pane.x, .y = y + 6, .w = bar_w, .h = 10 }, @intCast(@min(percent, 100)));
+        ctx.label(.{ .x = pane.x + bar_w + t.gap, .y = y + 4, .w = pane.w - bar_w, .h = row }, line.done());
+        y += row;
+
+        if (cell.runtimeLeft()) |left| {
+            var buf: [24]u8 = @splat(0);
+            var spelled = str.Builder{ .buf = &buf };
+            spelled.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
+            y = drawFact(pane, y, "Time left", spelled.done());
+        }
+
+        y += t.padding;
+        y = group(&y, full, "The pack");
+
+        const unit = cell.capacityUnit();
+        y = drawAmount(pane, y, "Charge", cell.remaining, unit);
+        y = drawAmount(pane, y, "Full", cell.last_full, unit);
+        y = drawAmount(pane, y, "Design", cell.design, unit);
+
+        // Wear is the pair of capacities and nothing else, so it is said as
+        // the pair says it, and marked when the firmware's own figure is
+        // what a machine reports rather than something derived here.
+        if (cell.health()) |worn| {
+            var buf: [40]u8 = @splat(0);
+            var spelled = str.Builder{ .buf = &buf };
+            spelled.number(@min(worn, 100));
+            spelled.byte('%');
+            if (cell.health_reported != 0) spelled.text(", the firmware's word");
+            y = drawFact(pane, y, "Health", spelled.done());
+        }
+
+        y = drawAmount(pane, y, "Voltage", cell.voltage_mv, "mV");
+        y = drawAmount(pane, y, "By design", cell.design_voltage_mv, "mV");
+        y = drawAmount(pane, y, "Rate", cell.rate, cell.currentUnit());
+        y = drawAmount(pane, y, "Warn below", cell.warning, unit);
+        y = drawAmount(pane, y, "Low below", cell.low, unit);
+    } else {
+        ctx.labelDim(.{ .x = pane.x, .y = y, .w = full.w, .h = 16 }, "This machine has no battery.");
+        y += row;
+    }
+
+    y += t.padding;
+    y = drawThermal(pane, y);
+
+    y = group(&y, full, "Backlight");
+
+    if (platform.backlight()) |panel_light| {
+        var reading: [16]u8 = @splat(0);
+        var line = str.Builder{ .buf = &reading };
+        line.number(panel_light.level);
+        line.text(" of ");
+        line.number(panel_light.max);
+
+        // Levels rather than a percentage: the steps belong to the panel, and
+        // a percentage rounded onto them makes some of them unreachable.
+        const wanted = ctx.slider(
+            .{ .x = pane.x, .y = y, .w = full.w - theme.enlarged(84), .h = row },
+            .{ .min = 1, .max = @intCast(panel_light.max) },
+            @intCast(panel_light.level),
+            .{},
+        );
+        ctx.label(
+            .{ .x = pane.right() - theme.enlarged(78), .y = y + 4, .w = theme.enlarged(78), .h = row },
+            line.done(),
+        );
+        if (wanted != @as(i32, @intCast(panel_light.level))) _ = platform.setBacklight(@intCast(wanted));
+    } else {
+        ctx.labelDim(
+            .{ .x = pane.x, .y = y, .w = full.w, .h = 16 },
+            "This machine offers no way to set the backlight.",
+        );
+    }
+}
+
+/// Every thermal zone, each drawn against its own critical point.
+///
+/// The scale runs to where the firmware cuts the power, so a reading is
+/// legible as how much room is left rather than as a bar somewhere along an
+/// unnamed range, and the passive point is marked because that is where the
+/// machine starts slowing itself down.
+fn drawThermal(pane: eui.Rect, from: i32) i32 {
+    const t = theme.current();
+    var y = from;
+    const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height };
+
+    var index: u8 = 0;
+    var shown = false;
+    while (index < proto.platform.Thermal.MAX_ZONES) : (index += 1) {
+        const zone = platform.thermal(index) orelse break;
+        if (!proto.platform.Thermal.known(zone.now)) continue;
+        if (!shown) {
+            y = group(&y, full, "Temperature");
+            shown = true;
+        }
+
+        const label_w = factColumn(pane);
+        const bar_w = @divTrunc(pane.w - label_w, 2);
+        const ceiling = if (proto.platform.Thermal.known(zone.critical))
+            proto.platform.Thermal.degrees(zone.critical)
+        else
+            100;
+        const now = proto.platform.Thermal.degrees(zone.now);
+        const share: u8 = @intCast(@max(0, @min(100, @divTrunc(now * 100, @max(ceiling, 1)))));
+
+        var reading: [40]u8 = @splat(0);
+        var line = str.Builder{ .buf = &reading };
+        line.number(@intCast(@max(now, 0)));
+        line.text(" C");
+        if (proto.platform.Thermal.known(zone.passive)) {
+            line.text(", slows at ");
+            line.number(@intCast(@max(proto.platform.Thermal.degrees(zone.passive), 0)));
+        }
+        if (proto.platform.Thermal.known(zone.critical)) {
+            line.text(", cuts at ");
+            line.number(@intCast(@max(ceiling, 0)));
+        }
+
+        ctx.labelDim(.{ .x = pane.x, .y = y + 2, .w = label_w, .h = t.control_height }, zone.named());
+        ctx.progress(.{ .x = pane.x + label_w, .y = y + 6, .w = bar_w, .h = 10 }, share);
+        ctx.label(
+            .{ .x = pane.x + label_w + bar_w + t.gap, .y = y + 2, .w = pane.w, .h = t.control_height },
+            line.done(),
+        );
+        y += t.menu_row_height;
+    }
+
+    if (shown) y += t.padding;
+    return y;
+}
+
+/// One measured quantity with its unit, or nothing at all: a firmware that
+/// does not know says so by saying nothing, and a row reading "unknown" for
+/// every pack on every machine teaches a person to stop reading the page.
+fn drawAmount(pane: eui.Rect, y: i32, label: []const u8, value: u32, unit: []const u8) i32 {
+    if (value == 0 or value == proto.platform.Battery.UNKNOWN) return y;
+
+    var buf: [32]u8 = @splat(0);
+    var line = str.Builder{ .buf = &buf };
+    line.number(value);
+    line.byte(' ');
+    line.text(unit);
+    return drawFact(pane, y, label, line.done());
+}
+
+
+/// A row of swatches for a named-colour setting, whichever list it comes
+/// from. Returns where the next thing goes.
+///
+/// Generic over the enum because the two lists are two lists: writing the
+/// same loop twice is how one of them ends up drawn differently.
+fn pickColour(
+    area: eui.Rect,
+    comptime Named: type,
+    value: *Named,
+    comptime live: ?fn (Named) void,
+) i32 {
+    const values = std.enums.values(Named);
+
+    var colours: [16]eui.Color = undefined;
+    const count = @min(values.len, colours.len);
+    for (values[0..count], 0..) |named, i| colours[i] = named.rgb();
+
+    const chosen = ctx.swatches(area, colours[0..count], @intFromEnum(value.*));
+    if (chosen != @intFromEnum(value.*)) {
+        value.* = @enumFromInt(chosen);
+        if (live) |apply| apply(value.*);
+        change();
+    }
+    return area.bottom() + theme.current().padding;
+}
+
+/// The highlight applies while the window is open, because the window is
+/// drawn in it: choosing a colour you cannot see until you save is choosing
+/// blind.
+fn applyAccent(accent: palette.Accent) void {
+    theme.setAccent(accent.rgb());
+    ctx.damage();
 }
 
 /// What this computer is, and nothing about what it is doing. How much
@@ -664,40 +893,6 @@ fn drawIdentity(pane: eui.Rect) i32 {
         ctx.surface.fill(.{ .x = pane.x, .y = below, .w = pane.w, .h = 1 }, t.line);
     }
     return below + t.menu_padding;
-}
-
-/// A row of swatches for a named-colour setting, whichever list it comes
-/// from. Returns where the next thing goes.
-///
-/// Generic over the enum because the two lists are two lists: writing the
-/// same loop twice is how one of them ends up drawn differently.
-fn pickColour(
-    area: eui.Rect,
-    comptime Named: type,
-    value: *Named,
-    comptime live: ?fn (Named) void,
-) i32 {
-    const values = std.enums.values(Named);
-
-    var colours: [16]eui.Color = undefined;
-    const count = @min(values.len, colours.len);
-    for (values[0..count], 0..) |named, i| colours[i] = named.rgb();
-
-    const chosen = ctx.swatches(area, colours[0..count], @intFromEnum(value.*));
-    if (chosen != @intFromEnum(value.*)) {
-        value.* = @enumFromInt(chosen);
-        if (live) |apply| apply(value.*);
-        change();
-    }
-    return area.bottom() + theme.current().padding;
-}
-
-/// The highlight applies while the window is open, because the window is
-/// drawn in it: choosing a colour you cannot see until you save is choosing
-/// blind.
-fn applyAccent(accent: palette.Accent) void {
-    theme.setAccent(accent.rgb());
-    ctx.damage();
 }
 
 /// The label column: a quarter of the pane, so the values line up down the

@@ -1,0 +1,9 @@
+thermal - how hot the machine is
+
+  thermal                every zone, and the firmware's thresholds
+
+What each sensor reads now, the temperature at which the firmware wants
+the machine slowed, and the one at which it cuts the power. A dash is a
+threshold the firmware did not name, which is not the same as zero.
+
+The same readings the monitor shows and the Power settings draw.

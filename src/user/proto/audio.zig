@@ -7,7 +7,9 @@
 //! a channel.
 
 const audio = @import("lib").audio;
-const graph = @import("lib").audiograph;
+/// The graph's shared vocabulary: directions, name bounds, the sentinel.
+/// Public because a client naming a direction is naming the graph's.
+pub const graph = @import("lib").audiograph;
 const std = @import("std");
 const sys = @import("sys");
 
@@ -39,6 +41,11 @@ pub const Tag = enum(u8) {
     /// The default sink's volume and mute: `body.volume`. What a volume
     /// key or a `vol` call reads before nudging.
     get_master,
+    /// What is actually coming out and going in, as `body.levels`: peak per
+    /// stereo channel since the last ask, and the capture side's mono peak.
+    /// Reading resets the peaks, so each answer covers exactly the interval
+    /// since the one before, whoever is asking and however often.
+    get_levels,
 };
 
 pub const Status = enum(u8) {
@@ -104,6 +111,17 @@ pub const VolumeInfo = extern struct {
     muted: u8 = 0,
 };
 
+/// What the machine sounded like since this was last asked: peaks, 0 to 100.
+pub const LevelInfo = extern struct {
+    left: u8 = 0,
+    right: u8 = 0,
+    capture: u8 = 0,
+    /// Whether anything fed the mix at all in the interval: a meter showing
+    /// zero because it is silent and one showing zero because nothing is
+    /// playing are different answers.
+    playing: u8 = 0,
+};
+
 pub const Rep = extern struct {
     status: Status = .ok,
     _pad: [3]u8 = @splat(0),
@@ -117,6 +135,7 @@ pub const Body = extern union {
     port_info: PortInfo,
     link_info: LinkInfo,
     volume: VolumeInfo,
+    levels: LevelInfo,
 };
 
 /// The handles a `port_create` grant carries, in order.
@@ -223,6 +242,15 @@ comptime {
 // of outputs needs the same four questions answered, and a second copy of
 // them is a second thing to keep in step with the protocol above.
 // ---------------------------------------------------------------------------
+
+
+/// The peaks since somebody last asked, or null when nothing serves sound.
+pub fn levels() ?LevelInfo {
+    var reply = Rep{};
+    call(.{ .tag = .get_levels }, &reply) catch return null;
+    if (reply.status != .ok) return null;
+    return reply.body.levels;
+}
 
 /// What the default output is at, or null when nothing is serving sound.
 pub fn master() ?VolumeInfo {

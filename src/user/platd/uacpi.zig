@@ -123,6 +123,9 @@ pub extern fn uacpi_namespace_node_name(node: ?*Node) Name;
 /// and a walk that reported them would report `_HID` as a device.
 pub const ObjectType = enum(u32) {
     device = 6,
+    /// A thermal zone: not a device, which is why a walk looking only for
+    /// devices never finds one.
+    thermal_zone = 13,
     _,
 };
 
@@ -502,9 +505,14 @@ pub fn trimmed(name: []const u8) []const u8 {
 
 /// Whether this node is a device rather than something belonging to one.
 pub fn isDevice(node: ?*Node) bool {
+    return isKind(node, .device);
+}
+
+/// Whether this node is of a given kind.
+pub fn isKind(node: ?*Node, wanted: ObjectType) bool {
     var kind: ObjectType = @enumFromInt(0);
     if (uacpi_namespace_node_type(node, &kind) != .ok) return false;
-    return kind == .device;
+    return kind == wanted;
 }
 
 /// Whether `node` has a child called `name`.

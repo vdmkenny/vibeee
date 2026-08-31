@@ -117,7 +117,12 @@ pub const Font = struct {
         const table = self.advances orelse return self.width;
         const slot = self.slotOf(code) orelse return self.width;
         if (slot >= table.len) return self.width;
-        return table[slot];
+
+        // A slot the face never filled advances by the face's own width. Zero
+        // would draw the next character on top of this one, and a subset that
+        // omits a codepoint should cost a blank, not a collision.
+        const value = table[slot];
+        return if (value == 0) self.width else value;
     }
 
     /// Width of a string in pixels.

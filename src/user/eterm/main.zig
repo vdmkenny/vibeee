@@ -16,6 +16,7 @@ const eui = @import("eui");
 const keys = @import("keys.zig");
 const proto = @import("proto");
 const render = @import("render.zig");
+const std = @import("std");
 const sys = @import("sys");
 const out = @import("ulib").out;
 const vt = @import("vt.zig");
@@ -122,9 +123,56 @@ fn show(text: []const u8) void {
     terminal.write(text);
 }
 
+/// Keys typed faster than the shell is reading them.
+///
+/// A pipe write blocks when the pipe is full, and the shell only reads its
+/// input at a prompt: while it is printing, its input pipe fills and stays
+/// full. A terminal that blocked there would be waiting for a shell that was
+/// itself waiting for the terminal to drain its output, which is two
+/// processes holding each other still. So nothing is ever written unless the
+/// pipe says it has room, and what does not fit waits here.
+var pending: [1024]u8 = @splat(0);
+var pending_len: usize = 0;
+
 fn toShell(bytes: []const u8) void {
     if (!running or bytes.len == 0) return;
-    if (sys.write(to_shell, bytes) < 0) running = false;
+
+    const room = pending.len - pending_len;
+    const n = @min(bytes.len, room);
+    @memcpy(pending[pending_len..][0..n], bytes[0..n]);
+    pending_len += n;
+    // Past a kilobyte of unread typing the oldest is dropped rather than the
+    // newest: what somebody is typing now is what they meant.
+    if (n < bytes.len) pending_len = pending.len;
+
+    flushToShell();
+}
+
+/// Whether the shell's input pipe has room. Asked rather than assumed,
+/// because the answer is the difference between a write and a wait.
+fn writable() bool {
+    var one: [1]u32 = .{to_shell};
+    return sys.waitMany(&one, sys.POLL) >= 0;
+}
+
+/// Push what is queued, as far as the pipe will take it.
+fn flushToShell() void {
+    while (running and pending_len > 0) {
+        if (!writable()) return;
+
+        const wrote = sys.write(to_shell, pending[0..pending_len]);
+        if (wrote < 0) {
+            running = false;
+            return;
+        }
+
+        const n: usize = @intCast(wrote);
+        if (n == 0) return;
+        if (n < pending_len) {
+            std.mem.copyForwards(u8, pending[0 .. pending_len - n], pending[n..pending_len]);
+        }
+        pending_len -= n;
+    }
 }
 
 /// Whether the terminal is assembling lines rather than passing keys straight
@@ -146,12 +194,18 @@ fn run() noreturn {
         // Both sides in one wait. The window's event ring and the shell's
         // output are each an event handle, so an idle terminal is a blocked
         // thread rather than a poll.
-        var sources: [2]u32 = .{ connection.event_signal, from_shell };
-        const count: usize = if (running) 2 else 1;
+        var sources: [3]u32 = .{ connection.event_signal, from_shell, to_shell };
+        // The third source only while something is queued: the write end is
+        // ready whenever the pipe has room, which is almost always, and
+        // waiting on it with nothing to send would be a loop that never
+        // sleeps.
+        const count: usize = if (!running) 1 else if (pending_len > 0) 3 else 2;
         _ = sys.waitMany(sources[0..count], 500_000);
 
         drain();
         while (connection.poll()) |event| handle(event);
+        // Anything the shell would not take earlier goes now, if it will.
+        flushToShell();
         redraw();
     }
 }

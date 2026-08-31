@@ -57,6 +57,13 @@ pub const Hooks = struct {
 };
 
 var hooks: Hooks = undefined;
+
+/// Change how often the wait may time out. For a program whose ticking is a
+/// mode rather than a constant: meters on show want a lively wake, and the
+/// same window on another pane should sleep until something happens.
+pub fn retick(period_us: usize) void {
+    hooks.tick_us = period_us;
+}
 var buttons: eui.widget.Buttons = .{};
 var pointer_x: i32 = 0;
 var pointer_y: i32 = 0;

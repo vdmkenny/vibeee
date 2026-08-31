@@ -35,16 +35,24 @@ fn getEvent(handle: u32) ?*event_mod.Event {
 /// The event a handle becomes ready on, for `wait_many`.
 ///
 /// An event is its own answer. A pipe's read end answers with the event that
-/// tracks whether it has anything to read, and a channel's serving end with
-/// the event that tracks whether a call is waiting. That is what lets a server
-/// with a channel, input and a settings event have one blocking call rather
-/// than a loop that asks each of them in turn.
+/// tracks whether it has anything to read, its write end with the one that
+/// tracks whether there is room, and a channel's serving end with the event
+/// that tracks whether a call is waiting. That is what lets a server with a
+/// channel, input and a settings event have one blocking call rather than a
+/// loop that asks each of them in turn.
+///
+/// Both ends of a pipe being waitable is what lets a program refuse to block
+/// on either: a terminal that blocked writing to its shell while that shell
+/// was blocked writing to it would be two processes waiting for each other.
 fn waitableEvent(handle: u32) ?*event_mod.Event {
     const table = currentHandles() orelse return null;
     const h = table.get(handle) orelse return null;
     return switch (h.kind) {
         .event => h.data.event,
-        .pipe => if (h.data.pipe.writer) null else &h.data.pipe.pipe.readable,
+        .pipe => if (h.data.pipe.writer)
+            &h.data.pipe.pipe.writable
+        else
+            &h.data.pipe.pipe.readable,
         // The serving end only: a client's readiness is its reply arriving,
         // which `call` already blocks for.
         .channel => if (h.data.channel.serving) &h.data.channel.channel.ready else null,

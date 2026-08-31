@@ -366,7 +366,28 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
         }
     }
 
+    if (heard) {
+        // Measured off the mixed output rather than any one feeder, because
+        // what a meter answers is "what is coming out", and what comes out
+        // is the mix. The walk already touched every sample; the peak is a
+        // comparison in a loop that exists.
+        const mixed: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
+        peaks.left = @max(peaks.left, audio.level(mixed, 2, 0));
+        peaks.right = @max(peaks.right, audio.level(mixed, 2, 1));
+        peaks.playing = 1;
+    }
+
     device.quiet_periods = if (heard) 0 else device.quiet_periods +| 1;
+}
+
+/// The loudest since anybody last asked. Reading takes them, so every reader
+/// sees the interval since the previous read rather than an all-time high.
+var peaks: proto.LevelInfo = .{};
+
+fn getLevels(token: u32) void {
+    const answer = peaks;
+    peaks = .{};
+    replyBody(token, .{ .levels = answer });
 }
 
 /// One capture period: the device's frames into every ring linked from
@@ -378,6 +399,11 @@ fn pourPeriod(device: *dev.PcmDev, source: graph_mod.PortId) void {
 
     const source_port = graph.portAt(source) orelse return;
     const volume = audio.Volume{ .percent = source_port.volume, .muted = source_port.muted };
+
+    {
+        const samples: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
+        peaks.capture = @max(peaks.capture, audio.level(samples, 1, 0));
+    }
 
     var listed: [graph_mod.MAX_LINKS]graph_mod.PortId = undefined;
     for (graph.sinksFrom(source, &listed)) |sink| {
@@ -423,6 +449,7 @@ fn handle(message: *const sys.Message, token: u32) void {
         .get_port => getPort(req, token),
         .get_link => getLink(req, token),
         .get_master => getMaster(token),
+        .get_levels => getLevels(token),
     }
 }
 

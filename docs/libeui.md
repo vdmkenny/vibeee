@@ -76,6 +76,7 @@ with it this pass.
 | `swatches` | `fn (*widget.Context, draw.Rect, []const u32, usize) usize` |
 | `rail` | `fn (*widget.Context, draw.Rect, []const rail.Item, usize, []const u8) usize` |
 | `footer` | `fn (*widget.Context, draw.Rect, []const u8, []const []const u8, usize) ?usize` |
+| `row` | `fn (*widget.Context, draw.Rect, rail.Item, bool) bool` |
 | `label` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelDim` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelIn` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |

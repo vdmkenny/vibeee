@@ -198,6 +198,7 @@ fn draw() void {
     eui.statusbar.run(ctx, bottom.bar, &.{
         .{ .text = status },
         .{ .text = processText(), .width = 92 },
+        .{ .text = temperatureText(), .width = 62, .right = true },
         .{ .text = memoryText(), .width = 118, .right = true },
         .{ .text = uptimeText(), .width = 62, .right = true },
     });
@@ -212,6 +213,19 @@ fn memoryPercent() u8 {
 var uptime_buffer: [24]u8 = @splat(0);
 var process_buffer: [24]u8 = @splat(0);
 var memory_buffer: [40]u8 = @splat(0);
+
+var temperature_buffer: [16]u8 = @splat(0);
+
+/// The hottest zone, in whole degrees. A machine with no sensor says nothing
+/// rather than zero: a monitor claiming absolute cold is worse than one that
+/// admits it cannot tell.
+fn temperatureText() []const u8 {
+    const zone = proto.platform.hottest() orelse return "";
+    var line = str.Builder{ .buf = &temperature_buffer };
+    line.number(@intCast(proto.platform.Thermal.degrees(zone.now)));
+    line.text(" C");
+    return line.done();
+}
 
 fn uptimeText() []const u8 {
     var line = str.Builder{ .buf = &uptime_buffer };

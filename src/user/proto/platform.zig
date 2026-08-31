@@ -37,6 +37,9 @@ pub const Tag = enum(u8) {
     /// Where a PCI device's interrupt pin goes, from the firmware's routing
     /// table. `param` carries the question, packed as `RouteAsk`.
     pci_route,
+    /// One thermal zone by position: what it reads and the two temperatures
+    /// the firmware acts on. `end` past the last.
+    thermal,
 };
 
 pub const Req = extern struct {
@@ -229,6 +232,44 @@ pub const Device = extern struct {
 };
 
 /// The panel, as whichever method this machine offers describes it.
+/// One thermal zone's reading, in tenths of a degree Celsius.
+///
+/// Tenths because the firmware answers in tenths of a kelvin and rounding on
+/// the way through would throw away the only precision there is. Signed
+/// because a machine left in a cold room is not a broken sensor.
+pub const Thermal = extern struct {
+    name: [8]u8 = @splat(0),
+    name_len: u8 = 0,
+    _pad: [3]u8 = @splat(0),
+
+    now: i32 = UNKNOWN,
+    /// Where the firmware cuts the power, and where it wants something done.
+    /// Either may be absent: a zone that names no threshold is a zone the
+    /// firmware watches by itself.
+    critical: i32 = UNKNOWN,
+    passive: i32 = UNKNOWN,
+
+    /// A temperature nobody reported. Not zero, which is a real reading.
+    pub const UNKNOWN: i32 = -32768;
+
+    /// How many a machine may have. More than this and the extra go
+    /// unreported rather than silently replacing the ones already found.
+    pub const MAX_ZONES = 4;
+
+    pub fn named(self: *const Thermal) []const u8 {
+        return self.name[0..@min(self.name_len, self.name.len)];
+    }
+
+    pub fn known(value: i32) bool {
+        return value != UNKNOWN;
+    }
+
+    /// Whole degrees, for a caller with one line to say it in.
+    pub fn degrees(value: i32) i32 {
+        return @divTrunc(value, 10);
+    }
+};
+
 pub const Backlight = extern struct {
     present: u8 = 0,
     _reserved: [3]u8 = @splat(0),
@@ -357,6 +398,7 @@ pub const Rep = extern struct {
 /// spend the payload on three empty ones, and the payload is a single message.
 pub const Body = extern union {
     battery: Battery,
+    thermal: Thermal,
     device: Device,
     backlight: Backlight,
     press: Press,
@@ -491,6 +533,27 @@ pub fn battery() ?Battery {
 
     const pack = reply.body.battery;
     return if (pack.present != 0) pack else null;
+}
+
+/// The `index`th thermal zone, or null past the last.
+pub fn thermal(index: u8) ?Thermal {
+    var reply = Rep{};
+    callAt(.thermal, index, &reply) catch return null;
+    if (reply.status != .ok) return null;
+    return reply.body.thermal;
+}
+
+/// The hottest zone this machine reports, which is the one a person means by
+/// "how hot is it". Null when nothing has a sensor.
+pub fn hottest() ?Thermal {
+    var best: ?Thermal = null;
+    var index: u8 = 0;
+    while (index < Thermal.MAX_ZONES) : (index += 1) {
+        const zone = thermal(index) orelse break;
+        if (!Thermal.known(zone.now)) continue;
+        if (best == null or zone.now > best.?.now) best = zone;
+    }
+    return best;
 }
 
 /// The panel's brightness, or null when this machine offers no way to ask.

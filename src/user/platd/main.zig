@@ -161,6 +161,7 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
         .power_off => powerOff(),
         .reboot => restart(),
         .battery => battery.read(&body.body.battery),
+        .thermal => thermal.read(request.index, &body.body.thermal),
         .device => namespace.describe(request.index, &body.body.device),
         .child => namespace.describeChild(&request.name, request.index, &body.body.device),
         .backlight => backlight.read(&body.body.backlight),
@@ -234,6 +235,7 @@ fn stopEverything() bool {
 const asus = @import("asus.zig");
 const backlight = @import("backlight.zig");
 const battery = @import("battery.zig");
+const thermal = @import("thermal.zig");
 const ec = @import("ec.zig");
 const hotkey = @import("hotkey.zig");
 const namespace = @import("namespace.zig");

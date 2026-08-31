@@ -153,17 +153,6 @@ pub const Context = struct {
             self.pending = false;
         }
 
-        // The ground first, before anything is drawn on it. Inside the pass
-        // so it sees the damage this pass was given rather than what the
-        // last one finished with.
-        if (self.damaged) {
-            const t = theme.current();
-            switch (self.ground) {
-                .surface => self.surface.fill(self.bounds(), t.surface),
-                .desktop => self.surface.fill(self.bounds(), t.desktop),
-                .none => {},
-            }
-        }
         self.previous = self.buttons;
         self.buttons = buttons;
         self.pointer_x = x;
@@ -174,7 +163,24 @@ pub const Context = struct {
         self.focus_moved = false;
 
         for (&self.entries) |*e| e.seen = false;
+
+        // The ground last of the bookkeeping and first of the drawing: after
+        // the damage list is cleared, so the rectangle it registers survives
+        // the pass, and before anything is drawn on top of it.
+        if (self.damaged) {
+            const t = theme.current();
+            switch (self.ground) {
+                .surface => self.surface.fill(self.bounds(), t.surface),
+                .desktop => self.surface.fill(self.bounds(), t.desktop),
+                .none => {},
+            }
+            // The fill is damage like any other. Without it a pass that
+            // clears the window and draws less than was there leaves the
+            // difference on screen: nothing else names those pixels.
+            if (self.ground != .none) self.addDamage(self.bounds());
+        }
     }
+
 
     /// The whole of what this context draws on.
     pub fn bounds(self: *const Context) Rect {
@@ -777,7 +783,11 @@ pub const Context = struct {
 
             if (self.needsPaint(entry, visual)) {
                 entry.visual = visual;
-                paintRailRow(self.surface, at, item, visual, indented, index + 1 < items.len);
+                paintRow(self.surface, at, item, visual, .{
+                    .indented = indented,
+                    .divider = index + 1 < items.len,
+                    .ground = t.surface_pressed,
+                });
                 self.addDamage(at);
             }
         }
@@ -846,6 +856,30 @@ pub const Context = struct {
             self.surface.clipped(area).text(area.x, area.y, text, t.bar_text);
             self.addDamage(area);
         }
+    }
+
+    /// One row of a list: a picture, a name, and whether it is the one in
+    /// use. The rail is a column of these with chrome around it; a settings
+    /// pane wants the row on its own.
+    pub fn row(self: *Context, area: Rect, item: rails.Item, selected: bool) bool {
+        const entry = self.slotFor(area) orelse return false;
+        const it = self.interact(entry, area);
+        const chosen = it.clicked or self.activatedByKey(entry);
+
+        const visual: Visual = if (selected)
+            hotOr(it.over, .checked_hot, .checked)
+        else
+            hotOr(it.over, .hot, .idle);
+
+        if (self.needsPaint(entry, visual)) {
+            entry.visual = visual;
+            paintRow(self.surface, area, item, visual, .{
+                .indented = item.icon != null,
+                .ground = theme.current().surface,
+            });
+            self.addDamage(area);
+        }
+        return chosen;
     }
 
     fn paintRailFooter(self: *Context, area: Rect, text: []const u8) void {
@@ -962,15 +996,29 @@ pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, v
 /// Selection is the strong state and hover is the weak one, so a hovered row
 /// that is not selected is only a lighter ground: a rail where hovering looked
 /// like choosing would tell you that you had already clicked.
-fn paintRailRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, indented: bool, divider: bool) void {
+/// How a row is dressed: what it sits on, whether its label is indented for a
+/// picture column, and whether it carries a hairline to the next one.
+const RowStyle = struct {
+    ground: draw.Color,
+    indented: bool = false,
+    divider: bool = false,
+};
+
+/// A row of colour and a label, with no edge of its own.
+///
+/// Selection is the strong state and hover is the weak one, so a hovered row
+/// that is not selected is only a lighter ground: a list where hovering looked
+/// like choosing would tell you that you had already clicked.
+fn paintRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, style: RowStyle) void {
     const t = theme.current();
     const selected = visual == .checked or visual == .checked_hot;
     const ground = switch (visual) {
         // Already the chosen row: hovering it has nothing left to say.
         .checked, .checked_hot => t.accent,
         .hot => t.surface_hot,
-        else => t.surface_pressed,
+        else => style.ground,
     };
+
     const ink = if (selected) t.accent_text else t.text;
     surface.fill(area, ground);
 
@@ -984,16 +1032,16 @@ fn paintRailRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, 
         );
     }
     clipped.text(
-        area.x + t.menu_padding + if (indented) markWidth() else 0,
+        area.x + t.menu_padding + if (style.indented) markWidth() else 0,
         area.y + @divTrunc(area.h - Surface.textHeight(), 2),
         item.label,
         ink,
     );
 
-    // A hairline between one section and the next, drawn by the row above it
-    // so it is repainted whenever that row is: a divider left behind by a
+    // A hairline between one row and the next, drawn by the row above it so
+    // it is repainted whenever that row is: a divider left behind by a
     // highlight moving away is a line that slowly rubs out.
-    if (divider) {
+    if (style.divider) {
         surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
     }
 }
