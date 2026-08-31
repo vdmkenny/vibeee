@@ -770,6 +770,16 @@ pub fn rowHeight() i32 {
     return theme.current().menu_row_height;
 }
 
+/// A rule is not a row. It is a hairline with a little air either side, and
+/// giving it the height of a row is what leaves the items around it looking
+/// pushed off centre.
+pub const SEPARATOR_HEIGHT: i32 = 9;
+
+/// How tall one item sits.
+pub fn heightOf(item: MenuItem) i32 {
+    return if (item.kind == .separator) SEPARATOR_HEIGHT else rowHeight();
+}
+
 /// One row. A separator is a row that cannot be chosen rather than a special
 /// case in the caller: the keyboard has to skip it, the pointer has to ignore
 /// it, and both of those are the control's business.
@@ -819,15 +829,14 @@ pub const Menu = struct {
         self.open = false;
     }
 
-    /// How large a menu of `count` rows needs to be, so a caller can place it
-    /// before drawing it.
-    pub fn sizeFor(count: usize, width: i32) Rect {
-        return .{
-            .x = 0,
-            .y = 0,
-            .w = width,
-            .h = @as(i32, @intCast(count)) * rowHeight() + 2,
-        };
+    /// How large a menu needs to be, so a caller can place it before drawing
+    /// it. Takes the items rather than a count, because a rule is shorter
+    /// than a row and a menu that assumed otherwise would be too tall by the
+    /// difference.
+    pub fn sizeFor(items: []const MenuItem, width: i32) Rect {
+        var height: i32 = 2;
+        for (items) |item| height += heightOf(item);
+        return .{ .x = 0, .y = 0, .w = width, .h = height };
     }
 
     /// Move the selection to whatever the pointer is over.
@@ -849,7 +858,7 @@ pub const Menu = struct {
         surface.frame(area, t.line);
 
         for (items, 0..) |item, row| {
-            const line = rowRect(area, row);
+            const line = rowRect(area, items, row);
 
             if (item.kind == .separator) {
                 // A hairline centred in the row, rather than a row of drawn
@@ -911,9 +920,14 @@ pub const Menu = struct {
     /// something that cannot be chosen.
     pub fn rowAt(area: Rect, items: []const MenuItem, x: i32, y: i32) ?usize {
         if (!area.contains(x, y)) return null;
-        const row: usize = @intCast(@max(@divTrunc(y - area.y - 1, rowHeight()), 0));
-        if (row >= items.len or !items[row].selectable()) return null;
-        return row;
+
+        var top = area.y + 1;
+        for (items, 0..) |item, row| {
+            const height = heightOf(item);
+            if (y < top + height) return if (item.selectable()) row else null;
+            top += height;
+        }
+        return null;
     }
 
     pub const KeyAction = enum { ignored, moved, chosen, cancelled };
@@ -973,12 +987,9 @@ pub const Menu = struct {
         }
     }
 
-    fn rowRect(area: Rect, row: usize) Rect {
-        return .{
-            .x = area.x + 1,
-            .y = area.y + 1 + @as(i32, @intCast(row)) * rowHeight(),
-            .w = area.w - 2,
-            .h = rowHeight(),
-        };
+    fn rowRect(area: Rect, items: []const MenuItem, row: usize) Rect {
+        var top = area.y + 1;
+        for (items[0..row]) |item| top += heightOf(item);
+        return .{ .x = area.x + 1, .y = top, .w = area.w - 2, .h = heightOf(items[row]) };
     }
 };

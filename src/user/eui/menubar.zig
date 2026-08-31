@@ -176,7 +176,7 @@ fn dropdown(ctx: *widget.Context, title: Rect, state: *State, menu: Menu) ?u16 {
     const rows = rowsOf(menu.items, &storage);
 
     const width = @max(widest(menu) + theme.current().padding * 6, title.w);
-    var area = widget.Menu.sizeFor(rows.len, width);
+    var area = widget.Menu.sizeFor(rows, width);
     area.x = title.x;
     area.y = title.bottom();
 

@@ -106,6 +106,7 @@ fn wmMain() noreturn {
     listenTo(.keyboard_settings, @intCast(keyboard_event));
 
     ctx = ui.Context.init(screen);
+    bar.refresh();
 
     pointer_x = @divTrunc(info.width, 2);
     pointer_y = @divTrunc(info.height, 2);
@@ -502,8 +503,14 @@ fn idle() void {
     if (count == 0) return;
 
     // A timeout rather than a signal means nothing happened and the minute
-    // turned, so the only thing on screen that is now wrong is the clock.
-    if (sys.waitMany(waiting[0..count], untilTheMinuteTurns()) < 0) dirty = true;
+    // turned, so the clock is wrong. The indicators beside it are asked at
+    // the same time: they change on their own rather than in answer to
+    // anything the manager did, and once a minute is often enough to notice
+    // a cable pulled out.
+    if (sys.waitMany(waiting[0..count], untilTheMinuteTurns()) < 0) {
+        bar.refresh();
+        dirty = true;
+    }
 }
 
 /// Microseconds until the bar's clock reads differently.

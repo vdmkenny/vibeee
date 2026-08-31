@@ -21,6 +21,8 @@ const slider = @import("eui").slider;
 const audio = @import("proto").audio;
 const eui_icon = @import("eui").icon;
 const graph = @import("lib").audiograph;
+const ipv4 = @import("lib").ipv4;
+const net = @import("proto").net;
 const sys = @import("sys");
 const theme = @import("eui").theme;
 
@@ -228,17 +230,18 @@ pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
 
 /// In the order they sit. What is furthest left goes first on a narrow
 /// screen, which is why the clock is last.
-const shown = [_]status.Indicator{ .sound, .clock };
+const shown = [_]status.Indicator{ .network, .sound, .clock };
 
 fn paintStatus(surface: Surface, width: i32, height: i32) void {
     var buf: [status.MAX]status.Slot = undefined;
     for (statusSlots(width, height, &buf)) |slot| {
         switch (slot.which) {
             .clock => paintClock(surface, slot.area),
+            .network => paintNetwork(surface, slot.area),
             .sound => paintSound(surface, slot.area),
-            // Drawn once they have something true to say and a menu to say
-            // it in; the row already keeps their room.
-            .network, .battery => {},
+            // Drawn once it has something true to say and a menu to say it
+            // in; the row already keeps its room.
+            .battery => {},
         }
     }
 }
@@ -292,6 +295,13 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
         return launcher.selected != before;
     }
 
+    if (net_open) {
+        var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+        const before = net_menu.selected;
+        net_menu.hover(netPanel(width, height), netItems(&rows), x, y);
+        return net_menu.selected != before;
+    }
+
     if (sound_open) {
         var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
         const before = sound_menu.selected;
@@ -319,6 +329,7 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
     }
 
     if (sound_open) paintSoundMenu(surface, width, height);
+    if (net_open) paintNetMenu(surface, width, height);
 }
 
 /// The V button. A wordmark rather than an icon: at 133 DPI a glyph from the
@@ -346,10 +357,11 @@ fn dropFrom(anchor: Rect, height: i32, size: Rect) Rect {
 }
 
 fn launchMenuRect(height: i32) Rect {
+    var rows: [items.len]ui.MenuItem = undefined;
     return dropFrom(
         .{ .x = 0, .y = 0, .w = LAUNCH_WIDTH, .h = 0 },
         height,
-        ui.Menu.sizeFor(items.len, TAB_MAX_WIDTH),
+        ui.Menu.sizeFor(menuItems(&rows), TAB_MAX_WIDTH),
     );
 }
 
@@ -413,6 +425,112 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 /// for the purpose. Always shown: a machine whose keycaps disagree with its
 /// layout is one where this is the first thing worth checking.
 // ---------------------------------------------------------------------------
+// Network
+//
+// What the machine is connected to, behind the one icon that says whether it
+// is connected at all. The rows report rather than act, because there is
+// nothing here to change that the settings do not own; the last row goes
+// where those are.
+// ---------------------------------------------------------------------------
+
+var net_menu: ui.Menu = .{};
+var net_open = false;
+var ifaces: [MAX_IFACES]net.Iface = undefined;
+var iface_addrs: [MAX_IFACES]net.AddressInfo = undefined;
+var iface_texts: [MAX_IFACES][15]u8 = undefined;
+var iface_count: usize = 0;
+
+const MAX_IFACES = 4;
+const NET_WIDTH: i32 = 216;
+
+fn readNetwork() void {
+    iface_count = @min(net.interfaceCount(), MAX_IFACES);
+    for (0..iface_count) |i| {
+        ifaces[i] = net.interfaceAt(i) orelse .{};
+        iface_addrs[i] = net.addressOf(i) orelse .{};
+    }
+}
+
+/// Whether anything is up and addressed, which is what the bar's icon says.
+fn networkUp() bool {
+    for (0..iface_count) |i| {
+        if (ifaces[i].up != 0 and iface_addrs[i].addr != 0) return true;
+    }
+    return false;
+}
+
+fn netItems(into: []ui.MenuItem) []ui.MenuItem {
+    var count: usize = 0;
+    for (0..iface_count) |i| {
+        if (count == into.len) break;
+        const address = iface_addrs[i].addr;
+        into[count] = .{
+            .label = net.nameOf(&ifaces[i]),
+            // The rows say what is; changing it is the settings' business.
+            .kind = .disabled,
+            .mark = .ethernet,
+            .detail = if (address != 0)
+                ipv4.text(address, &iface_texts[i])
+            else if (ifaces[i].up != 0) "no address" else "no link",
+        };
+        count += 1;
+    }
+
+    if (count == 0 and into.len > 0) {
+        into[count] = .{ .label = "No interfaces", .kind = .disabled, .mark = .ethernet };
+        count += 1;
+    }
+
+    if (count + 2 <= into.len) {
+        into[count] = .{ .kind = .separator };
+        into[count + 1] = .{ .label = "Settings", .mark = .sliders };
+        count += 2;
+    }
+    return into[0..count];
+}
+
+fn netPanel(width: i32, height: i32) Rect {
+    var buf: [status.MAX]status.Slot = undefined;
+    const slots = statusSlots(width, height, &buf);
+
+    var anchor = Rect{ .x = width, .y = strip(height).y, .w = 0, .h = theme.current().bar_height };
+    for (slots) |slot| {
+        if (slot.which == .network) anchor = slot.area;
+    }
+
+    var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+    const list = netItems(&rows);
+
+    return popover.place(
+        anchor,
+        NET_WIDTH,
+        ui.Menu.sizeFor(list, NET_WIDTH).h,
+        .{ .x = 0, .y = 0, .w = width, .h = height },
+        if (settings.current().bar == .top) .below else .above,
+    );
+}
+
+fn paintNetwork(surface: Surface, area: Rect) void {
+    const t = theme.current();
+    const ink = if (net_open)
+        t.accent_text
+    else if (networkUp()) t.bar_text else t.text_dim;
+
+    if (net_open) surface.fill(area, t.accent);
+    surface.icon(
+        area.x + @divTrunc(area.w - @as(i32, @intCast(eui_icon.WIDTH)), 2),
+        area.y + @divTrunc(area.h - @as(i32, @intCast(eui_icon.HEIGHT)), 2),
+        .ethernet,
+        ink,
+    );
+}
+
+fn paintNetMenu(surface: Surface, width: i32, height: i32) void {
+    var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+    net_menu.paint(surface, netPanel(width, height), netItems(&rows));
+}
+
+// ---------------------------------------------------------------------------
 // Sound
 //
 // The level and the outputs, behind the one icon in the bar that says whether
@@ -437,6 +555,11 @@ const SOUND_WIDTH: i32 = 224;
 fn soundLevelHeight() i32 {
     const t = theme.current();
     return t.control_height + t.menu_padding * 2;
+}
+
+pub fn refresh() void {
+    readSound();
+    readNetwork();
 }
 
 fn readSound() void {
@@ -498,7 +621,7 @@ fn soundPanel(width: i32, height: i32) Rect {
 
     var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
     const list = soundItems(&rows);
-    const rows_high = ui.Menu.sizeFor(list.len, SOUND_WIDTH).h;
+    const rows_high = ui.Menu.sizeFor(list, SOUND_WIDTH).h;
 
     return popover.place(
         anchor,
@@ -646,10 +769,14 @@ fn paintClock(surface: Surface, area: Rect) void {
 
 fn menuRect(width: i32, height: i32, desktop: *const layout.Desktop, tab: u8) Rect {
     const anchor = tabRect(width, height, desktop.count, tab);
+    // Every row is a window's name, so what the size depends on is how many
+    // there are rather than what they say.
+    var rows: [layout.MAX_WINDOWS]ui.MenuItem = @splat(.{});
+    const count = @min(@as(usize, desktop.countOn(tab)), rows.len);
     return dropFrom(
         anchor,
         height,
-        ui.Menu.sizeFor(desktop.countOn(tab), @max(anchor.w, TAB_MAX_WIDTH)),
+        ui.Menu.sizeFor(rows[0..count], @max(anchor.w, TAB_MAX_WIDTH)),
     );
 }
 
@@ -705,6 +832,20 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         return .consumed;
     }
 
+    if (net_open) {
+        var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+        const list = netItems(&rows);
+        const chosen = ui.Menu.rowAt(netPanel(width, height), list, x, y);
+        net_open = false;
+        // The one row that acts is the last: where the settings are.
+        if (chosen) |row| {
+            if (list[row].kind == .item) {
+                _ = sys.spawnDetached("/bin/settings", &.{"settings"});
+            }
+        }
+        return .consumed;
+    }
+
     if (sound_open) {
         const panel = soundPanel(width, height);
 
@@ -732,10 +873,18 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
 
     var status_buf: [status.MAX]status.Slot = undefined;
     if (status.at(statusSlots(width, height, &status_buf), x, y)) |which| {
-        if (which == .sound) {
-            readSound();
-            sound_open = true;
-            sound_menu.show();
+        switch (which) {
+            .sound => {
+                readSound();
+                sound_open = true;
+                sound_menu.show();
+            },
+            .network => {
+                readNetwork();
+                net_open = true;
+                net_menu.show();
+            },
+            else => {},
         }
         return .consumed;
     }

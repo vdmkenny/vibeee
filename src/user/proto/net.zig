@@ -238,3 +238,42 @@ pub fn callWith(tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error
     };
 }
 
+// ---------------------------------------------------------------------------
+// What a caller asks about the interfaces
+//
+// Spelled out once, like the sound graph's. Anything that shows what the
+// machine is connected to needs the same three questions answered.
+// ---------------------------------------------------------------------------
+
+/// How many interfaces there are, or zero when nothing is serving the
+/// network.
+pub fn interfaceCount() usize {
+    var reply = Rep{};
+    call(.count, 0, 0, &reply) catch return 0;
+    if (reply.status != .ok) return 0;
+    return reply.body.count;
+}
+
+/// One interface, by index.
+pub fn interfaceAt(index: usize) ?Iface {
+    var reply = Rep{};
+    call(.status, @intCast(index), 0, &reply) catch return null;
+    if (reply.status != .ok) return null;
+    return reply.body.iface;
+}
+
+/// What the stack has made of that interface's addressing.
+pub fn addressOf(index: usize) ?AddressInfo {
+    var reply = Rep{};
+    call(.address, @intCast(index), 0, &reply) catch return null;
+    if (reply.status != .ok) return null;
+    return reply.body.address;
+}
+
+/// An interface's name, which the protocol carries padded with zeroes.
+pub fn nameOf(iface: *const Iface) []const u8 {
+    for (iface.driver, 0..) |c, i| {
+        if (c == 0) return iface.driver[0..i];
+    }
+    return &iface.driver;
+}

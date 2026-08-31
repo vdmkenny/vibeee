@@ -185,17 +185,17 @@ const art = [_][HEIGHT][]const u8{
     // sliders
     .{
         "............",
+        "....##......",
+        ".##########.",
+        "....##......",
         "............",
-        "..#.....#...",
-        "..#.....#...",
-        "#####...#...",
-        "..#.....#...",
-        "..#...#####.",
-        "..#.....#...",
-        "..#.....#...",
+        "........##..",
+        ".##########.",
+        "........##..",
         "............",
-        "............",
-        "............",
+        "..##........",
+        ".##########.",
+        "..##........",
     },
     // power
     .{
@@ -306,6 +306,19 @@ test "muted is the speaker with its waves struck out" {
     try testing.expect(lit(.speaker, 8, 4));
     try testing.expect(!lit(.speaker, 11, 4));
     try testing.expect(lit(.muted, 11, 4));
+}
+
+test "sliders reads as tracks with a grip on each" {
+    // Three tracks, each with a grip that sits across it rather than beside
+    // it: a settings picture that is not three lines and two crosses.
+    for ([_]usize{ 2, 6, 10 }) |y| {
+        try testing.expect(lit(.sliders, 5, y));
+        try testing.expect(lit(.sliders, 9, y));
+    }
+    // Each grip straddles its own track and no other.
+    try testing.expect(lit(.sliders, 4, 1) and lit(.sliders, 4, 3));
+    try testing.expect(!lit(.sliders, 4, 5));
+    try testing.expect(lit(.sliders, 8, 5) and lit(.sliders, 8, 7));
 }
 
 test "nothing is lit outside the twelve pixels a row holds" {
