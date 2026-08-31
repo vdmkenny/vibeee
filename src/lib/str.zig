@@ -196,6 +196,26 @@ pub fn stripIndent(text: []const u8) struct { text: []const u8, indented: bool }
     return .{ .text = rest, .indented = rest.len != text.len };
 }
 
+/// Whether `needle` appears in `haystack`, ignoring the difference between
+/// upper and lower case.
+///
+/// What a person typing into a search field means: nobody types the capital
+/// in "Files" and expects to be told there is no such program. ASCII only,
+/// which is what the names in this system are.
+pub fn containsFold(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        var i: usize = 0;
+        while (i < needle.len) : (i += 1) {
+            if (lower(haystack[start + i]) != lower(needle[i])) break;
+        } else return true;
+    }
+    return false;
+}
+
 pub const Case = enum { lower, upper };
 
 const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -509,4 +529,18 @@ test "a duration reads as a person says it" {
         built.duration(case.seconds);
         try @import("std").testing.expectEqualStrings(case.text, built.done());
     }
+}
+
+test "a search matches whatever case it was typed in" {
+    const expect = @import("std").testing.expect;
+    try expect(containsFold("Files", "fil"));
+    try expect(containsFold("Files", "FIL"));
+    try expect(containsFold("Files", "iles"));
+    try expect(containsFold("eeefetch", "fetch"));
+    // Nothing typed matches everything, which is what an empty field means.
+    try expect(containsFold("Files", ""));
+
+    try expect(!containsFold("Files", "x"));
+    try expect(!containsFold("Files", "filesystem"));
+    try expect(!containsFold("", "a"));
 }

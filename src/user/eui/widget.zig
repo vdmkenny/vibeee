@@ -1031,6 +1031,19 @@ pub const Menu = struct {
     /// where the selection was every frame could not be driven by keyboard.
     selected: usize = 0,
     open: bool = false,
+    /// What the rows sit on. A role rather than a colour, so it follows the
+    /// theme: a column of categories beside a list reads as a separate place
+    /// when it is a shade darker, and as one long list when it is not.
+    ground: Ground = .surface,
+    /// How many columns the rows are dealt into, filling one column before
+    /// starting the next.
+    ///
+    /// One by default, because that is what a menu is. More than one is for a
+    /// panel wide enough that a single column of short rows would waste half
+    /// of it, which is the launcher's problem once there are ten programs.
+    /// Multi-column menus carry no separators: a rule across one column of
+    /// two says nothing.
+    columns: u8 = 1,
 
     pub fn show(self: *Menu) void {
         self.open = true;
@@ -1046,9 +1059,29 @@ pub const Menu = struct {
     /// than a row and a menu that assumed otherwise would be too tall by the
     /// difference.
     pub fn sizeFor(items: []const MenuItem, width: i32) Rect {
-        var height: i32 = 2;
-        for (items) |item| height += heightOf(item);
-        return .{ .x = 0, .y = 0, .w = width, .h = height };
+        return sizeForColumns(items, width, 1);
+    }
+
+    pub fn sizeForColumns(items: []const MenuItem, width: i32, columns: u8) Rect {
+        if (columns <= 1) {
+            var height: i32 = 2;
+            for (items) |item| height += heightOf(item);
+            return .{ .x = 0, .y = 0, .w = width, .h = height };
+        }
+        return .{
+            .x = 0,
+            .y = 0,
+            .w = width,
+            .h = 2 + @as(i32, @intCast(perColumn(items.len, columns))) * rowHeight(),
+        };
+    }
+
+    /// How many rows a column holds when `count` items are dealt into
+    /// `columns`. The last column is the short one.
+    fn perColumn(count: usize, columns: u8) usize {
+        if (columns <= 1) return count;
+        const cols: usize = columns;
+        return (count + cols - 1) / cols;
     }
 
     /// Move the selection to whatever the pointer is over.
@@ -1057,7 +1090,7 @@ pub const Menu = struct {
     /// the arrow keys: a menu whose highlight sat still while the pointer
     /// moved over it looks like a menu that has stopped responding.
     pub fn hover(self: *Menu, area: Rect, items: []const MenuItem, x: i32, y: i32) void {
-        if (rowAt(area, items, x, y)) |row| self.selected = row;
+        if (self.itemAt(area, items, x, y)) |row| self.selected = row;
     }
 
     pub fn paint(self: *const Menu, surface: Surface, area: Rect, items: []const MenuItem) void {
@@ -1066,11 +1099,14 @@ pub const Menu = struct {
         // whether or not the row beside them has one.
         const indented = marked(items);
 
-        surface.fill(area, t.surface);
+        surface.fill(area, switch (self.ground) {
+            .surface => t.surface,
+            .sunken => t.surface_pressed,
+        });
         surface.frame(area, t.line);
 
         for (items, 0..) |item, row| {
-            const line = rowRect(area, items, row);
+            const line = self.itemRect(area, items, row);
 
             if (item.kind == .separator) {
                 // A hairline centred in the row, rather than a row of drawn
@@ -1142,6 +1178,21 @@ pub const Menu = struct {
         return null;
     }
 
+    /// Which item a point falls on, whichever shape the menu has.
+    pub fn itemAt(self: *const Menu, area: Rect, items: []const MenuItem, x: i32, y: i32) ?usize {
+        if (self.columns <= 1) return rowAt(area, items, x, y);
+        if (!area.contains(x, y)) return null;
+
+        for (items, 0..) |item, index| {
+            if (cellRect(area, items, self.columns, index).contains(x, y)) {
+                return if (item.selectable()) index else null;
+            }
+        }
+        return null;
+    }
+
+    pub const Ground = enum { surface, sunken };
+
     pub const KeyAction = enum { ignored, moved, chosen, cancelled };
 
     /// Drive the selection. The caller acts on `chosen`, because only it knows
@@ -1203,5 +1254,30 @@ pub const Menu = struct {
         var top = area.y + 1;
         for (items[0..row]) |item| top += heightOf(item);
         return .{ .x = area.x + 1, .y = top, .w = area.w - 2, .h = heightOf(items[row]) };
+    }
+
+    /// The same, for a menu dealt into columns. Kept apart from `rowRect`
+    /// rather than folded into it: a list and a grid answer differently and
+    /// one function pretending to do both is how a hit test starts landing a
+    /// column over.
+    fn cellRect(area: Rect, items: []const MenuItem, columns: u8, index: usize) Rect {
+        const rows = perColumn(items.len, columns);
+        const width = @divTrunc(area.w - 2, @as(i32, columns));
+        const column: i32 = @intCast(if (rows == 0) 0 else index / rows);
+        const row: i32 = @intCast(if (rows == 0) 0 else index % rows);
+        return .{
+            .x = area.x + 1 + column * width,
+            .y = area.y + 1 + row * rowHeight(),
+            .w = width,
+            .h = rowHeight(),
+        };
+    }
+
+    /// Where one item is, whichever shape the menu has.
+    pub fn itemRect(self: *const Menu, area: Rect, items: []const MenuItem, index: usize) Rect {
+        return if (self.columns <= 1)
+            rowRect(area, items, index)
+        else
+            cellRect(area, items, self.columns, index);
     }
 };

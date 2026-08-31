@@ -15,6 +15,7 @@ const event_mod = @import("event.zig");
 /// bound to a physical key, and the program binding it is on the far side of a
 /// syscall from the driver reporting it.
 const console = @import("console.zig");
+const display = @import("display.zig");
 const keymap = @import("keymap.zig");
 
 pub const KeyCode = @import("lib").syscalls.KeyCode;
@@ -266,9 +267,12 @@ var pointer_y: i16 = 0;
 var pointer_max_x: i16 = 639;
 var pointer_max_y: i16 = 479;
 
-/// Tell the input core how large the screen is, so the pointer can be clamped
-/// to it. Called from the composition root, because only it knows what the
-/// display came up as.
+/// The size to bound the pointer by before anything has drawn.
+///
+/// Kept for the machine that never gets a framebuffer: in text mode the
+/// display has no geometry to give, and a pointer free to leave the screen is
+/// worse than one confined to an approximation of it. As soon as there is a
+/// mode, the display's own answer replaces this.
 pub fn setPointerBounds(width: usize, height: usize) void {
     pointer_max_x = @intCast(@min(width, 32767) -| 1);
     pointer_max_y = @intCast(@min(height, 32767) -| 1);
@@ -276,8 +280,49 @@ pub fn setPointerBounds(width: usize, height: usize) void {
     pointer_y = @divTrunc(pointer_max_y, 2);
 }
 
+/// Whether the screen has ever answered how large it is. Until it has, the
+/// pointer sits where it started rather than in the middle of a box nobody
+/// has measured.
+var bounds_known = false;
+
+/// How far the pointer may go, asked of the display rather than remembered
+/// from boot.
+///
+/// A number set once at start-up is a number that is wrong after a modeset,
+/// and the way that shows is a pointer that cannot reach the right of the
+/// screen. The display knows what it is running at; the console answers for
+/// a machine whose framebuffer nobody has taken.
+fn measureScreen() void {
+    const shown = display.describe();
+    const width: usize = if (shown.width != 0) shown.width else console.pixelSize().width;
+    const height: usize = if (shown.height != 0) shown.height else console.pixelSize().height;
+    if (width == 0 or height == 0) return;
+
+    const max_x: i16 = @intCast(@min(width, 32767) -| 1);
+    const max_y: i16 = @intCast(@min(height, 32767) -| 1);
+    if (bounds_known and max_x == pointer_max_x and max_y == pointer_max_y) return;
+
+    pointer_max_x = max_x;
+    pointer_max_y = max_y;
+
+    if (!bounds_known) {
+        // The middle of the screen is where a pointer nobody has moved yet
+        // belongs: a cursor that starts in the corner reads as a cursor that
+        // is stuck there.
+        bounds_known = true;
+        pointer_x = @divTrunc(max_x, 2);
+        pointer_y = @divTrunc(max_y, 2);
+    } else {
+        // A smaller mode leaves the pointer outside it otherwise.
+        pointer_x = clamp(pointer_x, max_x);
+        pointer_y = clamp(pointer_y, max_y);
+    }
+}
+
 /// Accumulate a report into a position and queue the event.
 pub fn postPointer(report: PointerReport) void {
+    measureScreen();
+
     pointer_x = clamp(pointer_x + report.dx, pointer_max_x);
     pointer_y = clamp(pointer_y + report.dy, pointer_max_y);
 

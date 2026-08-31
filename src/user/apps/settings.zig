@@ -317,7 +317,7 @@ const Section = enum {
             .display => .display,
             .input => .keyboard,
             .audio => .speaker,
-            .power => .power,
+            .power => .battery,
             .about => .about,
         };
     }

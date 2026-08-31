@@ -57,16 +57,28 @@ var pointer_x: i32 = 0;
 var pointer_y: i32 = 0;
 var buttons: sys.Buttons = .{};
 
+/// The display, held so the session can give it back before it says goodbye.
+var display_handle: isize = 0;
+
 /// Everything needs redrawing. Set by anything that changes the arrangement,
 /// because working out what survived a retile costs more than repainting.
 var dirty = true;
+
+/// The open menu changed and nothing underneath it did.
+///
+/// A highlight moving one row, a slider dragged, a panel appearing over
+/// pixels that are still good: none of that is a reason to redraw the
+/// desktop, every window and the bar. Doing so is what a person sees as the
+/// whole screen flashing, and on a display with one buffer they see it every
+/// time the pointer crosses a row.
+var overlay_dirty = false;
 
 export fn _start() callconv(.c) noreturn {
     wmMain();
 }
 
 fn wmMain() noreturn {
-    const display = sys.displayAcquire(&info) catch |err| {
+    display_handle = sys.displayAcquire(&info) catch |err| {
         out.text(switch (err) {
             error.NoDisplay => "eeewm: no framebuffer. The machine booted in text mode; " ++
                 "add `fb` to the kernel command line.\n",
@@ -77,7 +89,7 @@ fn wmMain() noreturn {
         sys.exit(1);
     };
 
-    const pixels = sys.shmMap(@intCast(display), .{ .writable = true }) orelse {
+    const pixels = sys.shmMap(@intCast(display_handle), .{ .writable = true }) orelse {
         out.text("eeewm: cannot map the scanout buffer\n");
         out.flush();
         sys.exit(1);
@@ -452,6 +464,15 @@ fn run() noreturn {
             continue;
         }
 
+        if (overlay_dirty) {
+            // The panel and the pointer, and nothing else on the screen.
+            cursor.hide(screen);
+            bar.paintOverlay(screen, info.width, info.height, &desktop);
+            cursor.show(screen, pointer_x, pointer_y);
+            overlay_dirty = false;
+            moved = false;
+        }
+
         if (acted) paintCommitted();
 
         // Moving the pointer redraws the pointer, and nothing else. Everything
@@ -537,7 +558,7 @@ fn handleKey(event: sys.KeyEvent) void {
     // than reaching a window. Everything it can be told by pointer it can be
     // told by keyboard, which is the point of it holding focus at all.
     if (bar.hasFocus()) {
-        switch (bar.key(code, &desktop)) {
+        switch (bar.key(code, event.codepoint, &desktop)) {
             .handled, .released => {
                 apply(bar.takePending());
                 dirty = true;
@@ -631,7 +652,7 @@ fn handlePointer(event: sys.PointerEvent) void {
     // An open menu tracks the pointer. Nothing else does: motion is otherwise
     // just the cursor moving, and repainting for it is what made the display
     // flicker.
-    if (bar.hover(event.x, event.y, info.width, info.height, &desktop)) dirty = true;
+    if (bar.hover(event.x, event.y, info.width, info.height, &desktop)) overlay_dirty = true;
     const was_down = buttons.left;
     const was_right = buttons.right;
     buttons = event.buttons;
@@ -646,6 +667,7 @@ fn handlePointer(event: sys.PointerEvent) void {
         // The bar gets first refusal: a menu it has open is modal, and it
         // reaches below its own strip.
         const was_focused = desktop.focused;
+        const menu_before = bar.menuOpen();
         const action = bar.click(event.x, event.y, info.width, info.height, pressed_right, &desktop);
         if (action == .none and pressed_left) desktop.focusAt(event.x, event.y);
         apply(action);
@@ -653,8 +675,16 @@ fn handlePointer(event: sys.PointerEvent) void {
         // Only when the desktop actually looks different. A click inside a
         // window belongs to the window, and repainting the screen for it is
         // what a person sees as the whole display flashing.
-        if (action != .none or desktop.focused != was_focused or bar.menuOpen()) {
+        //
+        // A menu that is still open after the press changed only itself: the
+        // volume was dragged, a row was chosen, a panel appeared over pixels
+        // that are still good. A menu that has just closed is the one case
+        // that needs the screen back, because what it covered is gone.
+        const menu_after = bar.menuOpen();
+        if (action != .none or desktop.focused != was_focused or (menu_before and !menu_after)) {
             dirty = true;
+        } else if (menu_before or menu_after) {
+            overlay_dirty = true;
         }
     }
 
@@ -927,6 +957,13 @@ fn quit() noreturn {
     for (0..layout.MAX_WINDOWS) |i| {
         if (desktop.windows[i].used) requestClose(i);
     }
+
+    // The display goes back before anything is said, because the console
+    // throws away whatever is written while it is suspended: a farewell
+    // printed with the desktop still up is a farewell nobody reads.
+    _ = sys.close(@intCast(display_handle));
+    out.text("eeewm: the desktop has exited. Start it again with eeewm.\n");
+    out.flush();
     sys.exit(0);
 }
 

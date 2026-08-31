@@ -61,6 +61,21 @@ pub const Icon = enum {
     /// A letter in a box: what this machine is, rather than a setting to
     /// change. The one row of a rail that answers instead of asking.
     about,
+    /// A lens with a handle: where typing goes.
+    search,
+    /// A way out of the room: the sign over a fire door, which is what
+    /// leaving the desktop for a bare shell is.
+    exit,
+    /// Four squares: programs, as a group rather than any one of them.
+    apps,
+    /// The same cell with a bolt in it. A machine on mains says so with the
+    /// picture rather than with the level, because the level is going up and
+    /// a number climbing on its own is not what somebody is asking.
+    battery_charging,
+    /// The same cell with a bang in it, drawn in the warning colour. Shape as
+    /// well as colour: a picture that says "act now" only by being red says
+    /// nothing to somebody who cannot tell it from the other one.
+    battery_critical,
 };
 
 /// A picture and the name it belongs to.
@@ -381,6 +396,91 @@ const art = [_]Picture{
             "............",
         },
     },
+    .{
+        .icon = .search,
+        .rows = .{
+            "..#####.....",
+            ".##...##....",
+            "##.....##...",
+            "#.......#...",
+            "#.......#...",
+            "#.......#...",
+            "##.....##...",
+            ".##...##....",
+            "..#####.##..",
+            ".......##.##",
+            "..........##",
+            "...........#",
+        },
+    },
+    .{
+        .icon = .exit,
+        .rows = .{
+            "............",
+            "####........",
+            "#...........",
+            "#.......#...",
+            "#........#..",
+            "#....######.",
+            "#....######.",
+            "#........#..",
+            "#.......#...",
+            "#...........",
+            "####........",
+            "............",
+        },
+    },
+    .{
+        .icon = .apps,
+        .rows = .{
+            "............",
+            ".####..####.",
+            ".####..####.",
+            ".####..####.",
+            ".####..####.",
+            "............",
+            ".####..####.",
+            ".####..####.",
+            ".####..####.",
+            ".####..####.",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .battery_charging,
+        .rows = .{
+            "............",
+            "............",
+            "............",
+            ".#########..",
+            ".#....##.#..",
+            ".#...###.###",
+            ".#..###..###",
+            ".#...##..#..",
+            ".#########..",
+            "............",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .battery_critical,
+        .rows = .{
+            "............",
+            "............",
+            "............",
+            ".#########..",
+            ".#...##..#..",
+            ".#...##..###",
+            ".#.......###",
+            ".#...##..#..",
+            ".#########..",
+            "............",
+            "............",
+            "............",
+        },
+    },
 };
 
 /// The pictures, packed the way the blitter reads them: most significant bit
@@ -425,6 +525,22 @@ comptime {
 pub fn volume(percent: u8, muted: bool) Icon {
     if (muted or percent == 0) return .muted;
     return if (percent < 50) .speaker_low else .speaker;
+}
+
+/// Which cell to draw for a pack in a given state.
+///
+/// One place decides, because the bar, the menu and a settings pane all have
+/// to agree: a machine showing a bolt in one place and a level in another is
+/// a machine telling two stories about the same battery.
+pub fn battery(charging: bool, critical: bool) Icon {
+    if (critical) return .battery_critical;
+    return if (charging) .battery_charging else .battery;
+}
+
+/// Whether a picture leaves room for the charge to be drawn inside it. The
+/// bolt and the bang fill the cell themselves.
+pub fn holdsCharge(which: Icon) bool {
+    return which == .battery;
 }
 
 /// The hollow of the battery picture, where the charge is drawn.

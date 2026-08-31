@@ -122,6 +122,16 @@ pub const Category = enum {
             .session => "Session",
         };
     }
+
+    /// The picture beside the name. What the drawer holds rather than what
+    /// one thing in it is: programs, the machine itself, and leaving.
+    pub fn icon(self: Category) eui_icon.Icon {
+        return switch (self) {
+            .tools => .apps,
+            .system => .sliders,
+            .session => .power,
+        };
+    }
 };
 
 pub const Item = struct {
@@ -151,16 +161,56 @@ pub const items = [_]Item{
     .{ .label = "Pad", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
     .{ .label = "Monitor", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
     .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
-    .{ .label = "About this computer", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },
-    .{ .label = "Exit to shell", .category = .session, .action = .quit },
+    .{ .label = "About this computer", .category = .system, .mark = .about, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },
+    .{ .label = "Exit to shell", .category = .session, .mark = .exit, .action = .quit },
     .{ .label = "Restart", .category = .session, .mark = .power, .action = .reboot },
     .{ .label = "Shut down", .category = .session, .mark = .power, .action = .power_off },
 };
 
+/// Whether a key produced a character somebody meant to type. Space counts;
+/// anything below it is a control key wearing a codepoint.
+fn printable(codepoint: u32) bool {
+    return codepoint >= ' ' and codepoint < 0x7F;
+}
+
+/// What has been typed into the launcher's field.
+///
+/// Short on purpose: this is a name being narrowed down, not a sentence, and
+/// a field that can hold more than a name invites one.
+const Query = struct {
+    buf: [24]u8 = @splat(0),
+    len: usize = 0,
+
+    fn slice(self: *const Query) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    fn clear(self: *Query) bool {
+        const had = self.len != 0;
+        self.len = 0;
+        return had;
+    }
+
+    fn push(self: *Query, c: u8) bool {
+        if (self.len == self.buf.len) return false;
+        self.buf[self.len] = c;
+        self.len += 1;
+        return true;
+    }
+
+    fn backspace(self: *Query) bool {
+        if (self.len == 0) return false;
+        self.len -= 1;
+        return true;
+    }
+};
+
+var launcher_query: Query = .{};
+
 /// Which category the launcher is showing.
 var launcher_category: Category = .tools;
 /// The categories themselves are a list like any other, so they are one.
-var launcher_rail: ui.Menu = .{};
+var launcher_rail: ui.Menu = .{ .ground = .sunken };
 
 /// How many things are under a category, which is what makes the rail worth
 /// reading rather than just worth clicking.
@@ -173,12 +223,14 @@ fn countIn(which: Category) usize {
 }
 
 /// The rail's rows: every category, with how much is behind it.
-fn categoryItems(into: []ui.MenuItem, counts: [][4]u8) []ui.MenuItem {
+fn categoryItems(into: []ui.MenuItem) []ui.MenuItem {
     var n: usize = 0;
     for (std.enums.values(Category)) |which| {
         if (n == into.len or countIn(which) == 0) continue;
-        const digits = str.decimal(&counts[n], countIn(which));
-        into[n] = .{ .label = which.title(), .detail = counts[n][0..digits] };
+        // The name and its picture, and no count. A number beside a category
+        // claims to say how much is in it, and what it would be counting is
+        // this table rather than what is installed on the machine.
+        into[n] = .{ .label = which.title(), .mark = which.icon() };
         n += 1;
     }
     return into[0..n];
@@ -186,17 +238,8 @@ fn categoryItems(into: []ui.MenuItem, counts: [][4]u8) []ui.MenuItem {
 
 /// What the launcher's own indices mean: the nth row of the shown category
 /// is which entry of `items`.
-fn itemAt(which: Category, row: usize) ?usize {
-    var n: usize = 0;
-    for (items, 0..) |item, i| {
-        if (item.category != which) continue;
-        if (n == row) return i;
-        n += 1;
-    }
-    return null;
-}
 
-var launcher: ui.Menu = .{};
+var launcher: ui.Menu = .{ .columns = LAUNCHER_COLUMNS };
 
 /// Which tab's menu is open, if any. Held here because it is the bar's own
 /// state: nothing else needs to know a menu exists.
@@ -217,62 +260,140 @@ pub fn menuOpen() bool {
 
 /// Open the applications menu, from the V button or a key.
 pub fn openLauncher() void {
+    _ = launcher_query.clear();
     var rows: [items.len]ui.MenuItem = undefined;
     launcher.showAt(menuItems(&rows));
     menu_tab = null;
     keyboard_focus = true;
 }
 
-/// The rows of the category being shown.
+/// The rows on show: everything in the chosen category, or everything the
+/// query matches whatever category it is in.
+///
+/// Typing crosses categories on purpose. Somebody who types "set" is not
+/// saying which drawer to look in, and a search that only looked in the
+/// drawer already open would be a search that finds nothing most of the time.
 fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
+    const typed = launcher_query.slice();
     var n: usize = 0;
     for (items) |item| {
-        if (item.category != launcher_category or n == out.len) continue;
+        if (n == out.len) continue;
+        if (typed.len == 0) {
+            if (item.category != launcher_category) continue;
+        } else if (!str.containsFold(item.label, typed)) continue;
         out[n] = .{ .label = item.label, .mark = item.mark };
         n += 1;
+    }
+    if (n == 0 and out.len > 0) {
+        out[0] = .{ .label = "Nothing matches", .kind = .disabled };
+        n = 1;
     }
     return out[0..n];
 }
 
-/// The two halves of the launcher: the categories, and what is in the one
-/// being shown. One rectangle each, worked out together so the panel is as
-/// wide as both and the hit test reads the same two.
+/// Which item a row of the launcher stands for, which typing makes a
+/// question worth asking: the rows are no longer one category in order.
+fn launcherItemAt(row: usize) ?usize {
+    const typed = launcher_query.slice();
+    var n: usize = 0;
+    for (items, 0..) |item, index| {
+        if (typed.len == 0) {
+            if (item.category != launcher_category) continue;
+        } else if (!str.containsFold(item.label, typed)) continue;
+        if (n == row) return index;
+        n += 1;
+    }
+    return null;
+}
+
+/// The launcher, floating over the middle of the screen.
+///
+/// Not a menu hanging off the V button: it is the one panel a person opens
+/// without pointing at anything, usually from the keyboard, and a panel that
+/// appears where the eyes already are is a panel that is read faster than one
+/// that appears in a corner. It floats over the desktop rather than replacing
+/// it, so what you were doing is still there behind it.
 const Launcher = struct {
     panel: Rect,
+    /// Where a query is typed, and what it would find.
+    field: Rect,
     rail: Rect,
     list: Rect,
 };
 
-fn launcherPanel(height: i32) Launcher {
-    var rows: [items.len]ui.MenuItem = undefined;
-    var counts: [items.len][4]u8 = undefined;
-    const cats = categoryItems(&rows, &counts);
+/// The size the design fixes, at a hundred per cent. Small enough that the
+/// desktop stays legible around it, wide enough for two columns of names.
+const LAUNCHER_WIDTH: i32 = 460;
+const LAUNCHER_HEIGHT: i32 = 300;
+const LAUNCHER_RAIL: i32 = 108;
+const LAUNCHER_COLUMNS: u8 = 2;
 
-    var listing: [items.len]ui.MenuItem = undefined;
-    const shown_items = menuItems(&listing);
+fn launcherPanel(width: i32, height: i32) Launcher {
+    const t = theme.current();
 
-    const rail_w = theme.enlarged(96);
-    const list_w = tabMaxWidth();
-    // As tall as the longer of the two, so neither is cut off by the other
-    // being shorter.
-    const tall = @max(
-        ui.Menu.sizeFor(cats, rail_w).h,
-        ui.Menu.sizeFor(shown_items, list_w).h,
-    );
+    // The design's size, or the screen's if that is smaller: a panel wider
+    // than the machine it is on is a panel with its right half missing.
+    const margin = t.menu_padding * 2;
+    const panel_w = @min(theme.enlarged(LAUNCHER_WIDTH), width - margin);
+    const panel_h = @min(theme.enlarged(LAUNCHER_HEIGHT), height - band(height).h - margin);
 
-    const panel = popover.place(
-        .{ .x = 0, .y = band(height).y, .w = launchWidth(), .h = theme.current().bar_height },
-        rail_w + list_w,
-        tall,
-        .{ .x = 0, .y = 0, .w = rail_w + list_w, .h = height },
-        if (settings.current().bar == .top) .below else .above,
-    );
+    const panel = Rect{
+        .x = @divTrunc(width - panel_w, 2),
+        .y = @divTrunc(height - panel_h, 2),
+        .w = panel_w,
+        .h = panel_h,
+    };
+
+    const field = Rect{ .x = panel.x, .y = panel.y, .w = panel.w, .h = t.control_height + t.padding };
+    const rail_w = @min(theme.enlarged(LAUNCHER_RAIL), @divTrunc(panel.w, 3));
 
     return .{
         .panel = panel,
-        .rail = .{ .x = panel.x, .y = panel.y, .w = rail_w, .h = panel.h },
-        .list = .{ .x = panel.x + rail_w, .y = panel.y, .w = list_w, .h = panel.h },
+        .field = field,
+        .rail = .{ .x = panel.x, .y = field.bottom(), .w = rail_w, .h = panel.bottom() - field.bottom() },
+        .list = .{
+            .x = panel.x + rail_w,
+            .y = field.bottom(),
+            .w = panel.w - rail_w,
+            .h = panel.bottom() - field.bottom(),
+        },
     };
+}
+
+/// Where the rows are drawn. A query takes the rail's room as well, because
+/// what is on show is then everything that matches rather than one category.
+fn launcherList(at: Launcher) Rect {
+    if (launcher_query.slice().len == 0) return at.list;
+    return .{ .x = at.rail.x, .y = at.rail.y, .w = at.panel.w, .h = at.rail.h };
+}
+
+/// The strip along the top: what typing would do, and what has been typed.
+fn paintLauncherField(surface: Surface, area: Rect) void {
+    const t = theme.current();
+    surface.fill(area, t.surface_hot);
+    surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+
+    const text_y = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
+    var x = area.x + t.menu_padding;
+
+    surface.icon(x, area.y + @divTrunc(area.h - Surface.iconSize(), 2), .search, t.text_dim);
+    x += Surface.iconSize() + t.gap;
+
+    const typed = launcher_query.slice();
+    if (typed.len == 0) {
+        surface.text(x, text_y, "type to find a program", t.text_dim);
+        return;
+    }
+
+    surface.text(x, text_y, typed, t.text);
+    // The caret after what has been typed, so a query being edited looks like
+    // a query being edited.
+    surface.fill(.{
+        .x = x + Surface.textWidth(typed) + 2,
+        .y = text_y,
+        .w = 2,
+        .h = Surface.textHeight(),
+    }, t.text);
 }
 
 /// Take keyboard control of the bar, starting on the current desktop's tab.
@@ -435,15 +556,15 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
         const before = launcher.selected;
-        const at = launcherPanel(height);
+        const at = launcherPanel(width, height);
 
         var cat_rows: [items.len]ui.MenuItem = undefined;
-        var counts: [items.len][4]u8 = undefined;
-        const cats = categoryItems(&cat_rows, &counts);
+        const cats = categoryItems(&cat_rows);
 
         // Moving over a category shows it, which is what makes the rail
         // browsable rather than something to click through.
-        if (ui.Menu.rowAt(at.rail, cats, x, y)) |row| {
+        const on_rail = if (launcher_query.slice().len == 0) ui.Menu.rowAt(at.rail, cats, x, y) else null;
+        if (on_rail) |row| {
             launcher_rail.selected = row;
             if (Category.parse(cats[row].label)) |which| {
                 if (which != launcher_category) {
@@ -453,7 +574,7 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
             }
             return true;
         }
-        launcher.hover(at.list, menuItems(&rows), x, y);
+        launcher.hover(launcherList(at), menuItems(&rows), x, y);
         return launcher.selected != before;
     }
 
@@ -486,13 +607,24 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
     }
 
     if (launcher.open) {
+        const t = theme.current();
         var rows: [items.len]ui.MenuItem = undefined;
-        const at = launcherPanel(height);
+        const at = launcherPanel(width, height);
+
+        paintLauncherField(surface, at.field);
 
         var cat_rows: [items.len]ui.MenuItem = undefined;
-        var counts: [items.len][4]u8 = undefined;
-        launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows, &counts));
-        launcher.paint(surface, at.list, menuItems(&rows));
+        // The rail goes when a query does the choosing: what is on show is
+        // then everything that matches, and a category highlighted beside it
+        // would be pointing at the wrong thing.
+        if (launcher_query.slice().len == 0) {
+            launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows));
+        }
+        launcher.paint(surface, launcherList(at), menuItems(&rows));
+
+        // One edge around the whole panel, drawn last so the parts inside it
+        // cannot paint over it.
+        surface.frame(at.panel, t.bar_line);
     }
 
     if (sound_open) paintSoundMenu(surface, width, height);
@@ -787,24 +919,29 @@ fn paintBattery(surface: Surface, area: Rect) void {
     // Low enough that it is a thing to act on takes the warning colour, which
     // is the firmware's own threshold rather than a number chosen here.
     const low = p.low != 0 and p.remaining != platform.Battery.UNKNOWN and p.remaining <= p.low;
+    const critical = p.critical != 0 or low;
     const ink = if (power_open)
         t.accent_text
-    else if (p.critical != 0 or low)
+    else if (critical)
         t.warning
     else
         t.bar_text;
 
-    surface.icon(icon_x, icon_y, .battery, ink);
+    const which = eui_icon.battery(p.state() == .charging, critical);
+    surface.icon(icon_x, icon_y, which, ink);
 
-    // The charge inside the outline the picture leaves hollow.
-    const inside = eui_icon.battery_inside;
-    const filled = @divTrunc(@as(i32, inside.w) * @as(i32, @intCast(@min(charge, 100))), 100);
-    if (filled > 0) surface.fill(.{
-        .x = icon_x + inside.x,
-        .y = icon_y + inside.y,
-        .w = filled,
-        .h = inside.h,
-    }, ink);
+    // The charge inside the outline the picture leaves hollow. The bolt and
+    // the bang fill their own cell, so neither gets a level drawn through it.
+    if (eui_icon.holdsCharge(which)) {
+        const inside = eui_icon.battery_inside;
+        const filled = @divTrunc(@as(i32, inside.w) * @as(i32, @intCast(@min(charge, 100))), 100);
+        if (filled > 0) surface.fill(.{
+            .x = icon_x + inside.x,
+            .y = icon_y + inside.y,
+            .w = filled,
+            .h = inside.h,
+        }, ink);
+    }
 
     var text: [5]u8 = @splat(0);
     const spelled = percentText(&text, @intCast(@min(charge, 100)));
@@ -1217,15 +1354,15 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     // doing two things at once.
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
-        const at = launcherPanel(height);
-        if (at.rail.contains(x, y)) return .consumed;
-        const chosen = ui.Menu.rowAt(at.list, menuItems(&rows), x, y);
+        const at = launcherPanel(width, height);
+        if (launcher_query.slice().len == 0 and at.rail.contains(x, y)) return .consumed;
+        const chosen = launcher.itemAt(launcherList(at), menuItems(&rows), x, y);
         launcher.hide();
         keyboard_focus = false;
         // The row is the nth of the category being shown, not the nth of
         // everything: the mapping is the one the list was built with.
         if (chosen) |row| {
-            if (itemAt(launcher_category, row)) |index| return activate(index);
+            if (launcherItemAt(row)) |index| return activate(index);
         }
         return .consumed;
     }
@@ -1420,16 +1557,35 @@ pub fn takePending() Action {
 /// Drive the bar from the keyboard. Everything the mouse can do here, the
 /// keyboard can: a taskbar reachable only by pointer is a taskbar that stops
 /// working the moment the touchpad does.
-pub fn key(code: sys.KeyCode, desktop: *layout.Desktop) KeyResult {
+pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResult {
     if (!keyboard_focus) return .ignored;
 
     if (launcher.open) {
         var rows: [items.len]ui.MenuItem = undefined;
 
+        // Typing narrows the list. This is what the panel is for: reaching a
+        // program by naming it rather than by finding it, which is the whole
+        // difference between a launcher and a menu.
+        if (code == .backspace) {
+            if (launcher_query.backspace()) launcher.selected = 0;
+            return .handled;
+        }
+        if (printable(codepoint)) {
+            if (launcher_query.push(@intCast(codepoint))) launcher.selected = 0;
+            return .handled;
+        }
+        // Escape clears a query before it closes the panel: one keystroke to
+        // undo a search is what a person expects, and closing on the first
+        // press throws away the panel as well.
+        if (code == .escape and launcher_query.clear()) {
+            launcher.selected = 0;
+            return .handled;
+        }
+
         // Left and right walk the categories, the way tab does in the
         // drawings: the rail is a list too, and a launcher reachable only by
         // pointer is one that stops working when the touchpad does.
-        if (code == .left or code == .right) {
+        if (launcher_query.slice().len == 0 and (code == .left or code == .right)) {
             const all = std.enums.values(Category);
             const at = @intFromEnum(launcher_category);
             const step: usize = if (code == .right) 1 else all.len - 1;
@@ -1444,7 +1600,7 @@ pub fn key(code: sys.KeyCode, desktop: *layout.Desktop) KeyResult {
                 const chosen = launcher.selected;
                 launcher.hide();
                 keyboard_focus = false;
-                if (itemAt(launcher_category, chosen)) |index| pending = activate(index);
+                if (launcherItemAt(chosen)) |index| pending = activate(index);
                 return .released;
             },
             .cancelled => {
