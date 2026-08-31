@@ -28,10 +28,11 @@ comptime {
 }
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const irqroute = @import("ulib").irqroute;
 const pci = @import("ulib").pci;
 const proto = @import("proto").net;
+const proto_devices = @import("proto").devices;
 const bridge = @import("bridge.zig");
-const proto_platform = @import("proto").platform;
 const settings = @import("proto").settings;
 const stack = @import("stack.zig");
 const std = @import("std");
@@ -44,8 +45,6 @@ const lib = @import("lib");
 /// change.
 const Driver = struct {
     name: []const u8,
-    vendor: u16,
-    device: u16,
     ops: dev.NicOps,
     /// What kind of interface the driver produces. Configuration slots
     /// match on it, so a radio and a wired port are told apart before
@@ -53,17 +52,14 @@ const Driver = struct {
     class: lib.ifmatch.Class = .ether,
 };
 
+/// Which silicon each of these fits is the device manager's knowledge,
+/// declared in `/lib/drivers/*.man`; this table only joins a name the
+/// manager assigns to the code compiled in beside this file.
 const DRIVERS = [_]Driver{
-    .{ .name = e1000.name, .vendor = e1000.vendor, .device = e1000.device_id, .ops = e1000.ops },
-    .{ .name = atl2.name, .vendor = atl2.vendor, .device = atl2.device_id, .ops = atl2.ops },
-    .{ .name = rtl8139.name, .vendor = rtl8139.vendor, .device = rtl8139.device_id, .ops = rtl8139.ops },
-    .{
-        .name = ar2425.name,
-        .vendor = ar2425.vendor,
-        .device = ar2425.device_id,
-        .ops = ar2425.ops,
-        .class = ar2425.class,
-    },
+    .{ .name = e1000.name, .ops = e1000.ops },
+    .{ .name = atl2.name, .ops = atl2.ops },
+    .{ .name = rtl8139.name, .ops = rtl8139.ops },
+    .{ .name = ar2425.name, .ops = ar2425.ops, .class = ar2425.class },
 };
 
 /// How many interfaces a machine of this class can have behind one service.
@@ -116,55 +112,40 @@ fn netdMain() noreturn {
 /// driver here knows. The kernel has already bound its built-ins; anything
 /// left undriven is offered to userspace, which is exactly this walk.
 fn probe() void {
-    var buf: [2048]u8 = @splat(0);
-    const table = sys.sysinfo("pci", buf[0..]);
-    if (table <= 0) return;
-    const text = buf[0..@intCast(table)];
+    var index: u32 = 0;
+    while (count < MAX_IFACES) : (index += 1) {
+        var assignment = proto_devices.Assignment{};
+        proto_devices.claimNext(proto.SERVICE, index, &assignment) catch break;
 
-    var lines = str.lines(text);
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
+        const driver = driverNamed(assignment.driverSlice()) orelse {
+            log.warn("netd", "assigned a driver this build does not carry");
+            continue;
+        };
 
-        var fields = str.fields(line);
-        const at = fields.next() orelse continue;
-        const vendor = str.fromHex(fields.next() orelse continue);
-        const device = str.fromHex(fields.next() orelse continue);
-        _ = str.fromHex(fields.next() orelse continue); // class
-        _ = str.fromHex(fields.next() orelse continue); // subclass
-        _ = fields.next() orelse continue; // what the kernel bound
-        const state = fields.next() orelse continue;
-
-        // Two drivers on one device is worse than the wrong one of them.
-        if (str.eql(str.trim(state), "driven")) continue;
-        if (count == MAX_IFACES) return;
-
-        for (DRIVERS) |driver| {
-            if (vendor != driver.vendor or device != driver.device) continue;
-            const loc = pci.parse(at) orelse continue;
-
-            ifaces[count] = .{
-                .name = driver.name,
-                .label = labelFor(driver.name),
-                .class = driver.class,
-                .ops = driver.ops,
-                .location = loc,
-            };
-            const iface_bus = loc.bus;
-            const iface_dev = loc.device;
-            const iface_fn = loc.function;
-            log.begin("netd", .key);
-            out.text(driver.name);
-            out.text(" at ");
-            out.hex(iface_bus, 2);
-            out.byte(':');
-            out.hex(iface_dev, 2);
-            out.byte('.');
-            out.decimal(iface_fn);
-            out.text(" is ours to drive");
-            log.end();
-            count += 1;
-        }
+        const location: lib.pci.Location = @bitCast(assignment.location);
+        ifaces[count] = .{
+            .name = driver.name,
+            .label = labelFor(driver.name),
+            .class = driver.class,
+            .ops = driver.ops,
+            .location = location,
+        };
+        log.begin("netd", .key);
+        out.text(driver.name);
+        out.text(" at ");
+        var place: [8]u8 = undefined;
+        out.text(lib.pci.spell(location, &place));
+        out.text(" is ours to drive");
+        log.end();
+        count += 1;
     }
+}
+
+fn driverNamed(wanted: []const u8) ?*const Driver {
+    for (&DRIVERS) |*driver| {
+        if (str.eql(driver.name, wanted)) return driver;
+    }
+    return null;
 }
 
 /// The label an interface answers to: the driver's name, and an ordinal
@@ -273,44 +254,7 @@ fn releaseIrq(iface: *dev.NicDev) void {
 /// does not. Where the platform service cannot say, the legacy number is
 /// what remains, alive but possibly deaf.
 fn routedLine(iface: *dev.NicDev) ?u32 {
-    const pin = pci.interruptPin(iface.location).acpiIndex() orelse {
-        log.warn("netd", "the adapter exposes no routable interrupt pin");
-        return null;
-    };
-    var ask = proto_platform.RouteAsk{
-        .pin = pin,
-        .device = @truncate(iface.location.device),
-    };
-    if (pci.carrierOf(iface.location.bus)) |carrier| {
-        ask.behind_bridge = true;
-        ask.bridge_device = @truncate(carrier.device);
-        ask.bridge_function = @truncate(carrier.function);
-    }
-
-    // The platform service owns the routing tables and comes up in parallel
-    // with this one: the device manager spawns drivers as devices match,
-    // while the firmware's own bring-up takes its hundreds of milliseconds.
-    // Waited out rather than raced, the way init waits for a name; a real
-    // refusal, as against an absent service, falls through at once.
-    var waited: u32 = 0;
-    while (waited < 2_000_000) : (waited += 20_000) {
-        if (proto_platform.routePci(ask)) |gsi| {
-            log.begin("netd", .dim);
-            out.text("the firmware routes this interrupt to line ");
-            out.decimal(gsi);
-            log.end();
-            return gsi;
-        } else |err| {
-            if (err != error.NoService) break;
-            sys.sleepMicros(20_000);
-        }
-    }
-
-    log.say("netd", .dim, "no routing table answer; using the legacy line");
-    // Zero and all-ones both mean the firmware wrote no line there.
-    const UNROUTED: u8 = 0xFF;
-    const legacy = pci.interruptLine(iface.location);
-    return if (legacy == 0 or legacy == UNROUTED) null else legacy;
+    return irqroute.routedLine("netd", iface.location);
 }
 
 // ---------------------------------------------------------------------------

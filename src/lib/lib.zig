@@ -9,6 +9,8 @@
 //! so kernel and userspace share one instance and its types are the same type
 //! on both sides of a syscall.
 
+pub const audio = @import("audio.zig");
+pub const audiograph = @import("audiograph.zig");
 pub const battery = @import("battery.zig");
 pub const bounded = @import("bounded.zig");
 pub const Bounded = bounded.Bounded;
@@ -48,6 +50,8 @@ test {
     _ = ring;
     _ = driver;
     _ = elf;
+    _ = audio;
+    _ = audiograph;
     _ = escapes;
     _ = eth;
     _ = hosts;

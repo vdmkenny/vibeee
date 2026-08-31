@@ -74,6 +74,7 @@ USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_DEVMGD := zig-out/bin/devmgd
 USER_NETD    := zig-out/bin/netd
+USER_SNDD    := zig-out/bin/sndd
 USER_CFGD := zig-out/bin/cfgd
 USER_PLATD := zig-out/bin/platd
 USER_TOOLS := zig-out/bin/tools
@@ -146,7 +147,7 @@ image: $(IMAGE)
 #
 # FAT rather than a bespoke container because the driver already exists, and
 # because it can then be inspected and edited from any other machine.
-$(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) | $(BUILD)
+$(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
@@ -158,6 +159,7 @@ $(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) | $(BUILD)
 	@$(MCOPY) -i $@ -o $(USER_TOOLS) ::/bin/tools
 	@$(MCOPY) -i $@ -o $(USER_DEVMGD) ::/bin/devmgd
 	@$(MCOPY) -i $@ -o $(USER_NETD) ::/bin/netd
+	@$(MCOPY) -i $@ -o $(USER_SNDD) ::/bin/sndd
 	@$(MCOPY) -i $@ -o $(USER_CFGD) ::/bin/cfgd
 	@$(MCOPY) -i $@ -o $(USER_PLATD) ::/bin/platd
 	@$(MCOPY) -i $@ -o $(USER_WM) ::/bin/eeewm
@@ -169,6 +171,7 @@ $(ROOTFS_IMG): kernel examples $(wildcard manual/*) $(wildcard etc/*) | $(BUILD)
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
+	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
 	@for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $@ -o $(BUILD)/readme.txt ::/home/readme.txt

@@ -45,28 +45,66 @@ pub const IrqEvent = struct {
 
 const MAX = hal.IRQ_LINE_COUNT;
 
-var attached: [MAX]?*IrqEvent = @splat(null);
+/// How many owners one line may have. The machine's wiring shares lines
+/// between devices that end up in different services, and each such
+/// service holds its own event on the shared line.
+const PER_LINE = 4;
 
-/// Take a line for userspace.
+/// One line's claim and everyone attached to it. A level line's deferred
+/// completion belongs to the line, not to any one owner: it is owed until
+/// every owner handed the delivery has acknowledged its own device.
+const Line = struct {
+    token: hal.IrqToken = undefined,
+    claimed: bool = false,
+    /// Acknowledgements outstanding for the delivery currently held.
+    owed: u8 = 0,
+    events: [PER_LINE]?*IrqEvent = @splat(null),
+
+    fn empty(self: *const Line) bool {
+        for (self.events) |slot| {
+            if (slot != null) return false;
+        }
+        return true;
+    }
+};
+
+var lines: [MAX]Line = @splat(.{});
+
+/// Take a line for userspace, or join one already taken. A shared level
+/// line's completion waits for every owner; a shared edge line owes
+/// nothing and simply wakes them all.
 pub fn attach(gsi: u32) Error!*IrqEvent {
     if (gsi >= MAX) return error.Unsupported;
 
     const self = heap.allocator.create(IrqEvent) catch return error.OutOfMemory;
     const flags = hal.saveAndDisableInterrupts();
-    if (attached[gsi] != null or hal.gsiClaimed(gsi)) {
+    const line = &lines[gsi];
+
+    if (!line.claimed) {
+        if (hal.gsiClaimed(gsi)) {
+            hal.restoreInterrupts(flags);
+            heap.allocator.destroy(self);
+            return error.Busy;
+        }
+        const token = hal.claimGsi(gsi, onInterrupt) orelse {
+            hal.restoreInterrupts(flags);
+            heap.allocator.destroy(self);
+            return error.Unsupported;
+        };
+        line.token = token;
+        line.claimed = true;
+    }
+
+    const slot = for (&line.events) |*candidate| {
+        if (candidate.* == null) break candidate;
+    } else {
         hal.restoreInterrupts(flags);
         heap.allocator.destroy(self);
         return error.Busy;
-    }
-
-    const token = hal.claimGsi(gsi, onInterrupt) orelse {
-        hal.restoreInterrupts(flags);
-        heap.allocator.destroy(self);
-        return error.Unsupported;
     };
-    self.* = .{ .gsi = gsi, .token = token };
 
-    attached[gsi] = self;
+    self.* = .{ .gsi = gsi, .token = line.token };
+    slot.* = self;
     hal.restoreInterrupts(flags);
     return self;
 }
@@ -91,12 +129,17 @@ pub fn arm(self: *IrqEvent) void {
     // A level line may have asserted before it had an owner. The unclaimed
     // handler quarantines its EOI; adopting that pending delivery here closes
     // the attach-to-first-wait race without touching the IOAPIC at runtime.
-    if (!self.held and hal.irqAwaitingAck(self.token)) {
+    if (!self.held and hal.irqAwaitingAck(self.token) and lineOf(self.gsi).owed == 0) {
         self.held = true;
+        lineOf(self.gsi).owed = 1;
         self.count += 1;
         if (self.count == 1) console.debug("irq", "line {d} adopted a waiting delivery", .{self.gsi});
         self.ready.signalLocked();
     }
+}
+
+fn lineOf(gsi: u32) *Line {
+    return &lines[gsi];
 }
 
 /// The driver has finished with the device, so the line may fire again.
@@ -110,7 +153,14 @@ pub fn acknowledge(self: *IrqEvent) void {
 
     if (!self.held) return;
     self.held = false;
-    hal.acknowledgeIrq(self.token);
+
+    // The line's completion goes to the controller only when the last
+    // owner of this delivery has spoken for its device.
+    const line = lineOf(self.gsi);
+    if (line.owed > 0) {
+        line.owed -= 1;
+        if (line.owed == 0) hal.acknowledgeIrq(self.token);
+    }
 }
 
 pub fn retain(self: *IrqEvent) void {
@@ -132,9 +182,27 @@ pub fn release(self: *IrqEvent) void {
         return;
     }
 
-    if (self.gsi < MAX) attached[self.gsi] = null;
-    hal.releaseGsi(self.gsi);
-    if (self.held) hal.acknowledgeIrq(self.token);
+    // A held delivery is acknowledged on the way out, through the same
+    // shared accounting every other acknowledgement uses.
+    if (self.held and self.gsi < MAX) {
+        self.held = false;
+        const line = lineOf(self.gsi);
+        if (line.owed > 0) {
+            line.owed -= 1;
+            if (line.owed == 0) hal.acknowledgeIrq(self.token);
+        }
+    }
+    if (self.gsi < MAX) {
+        const line = &lines[self.gsi];
+        for (&line.events) |*slot| {
+            if (slot.* == self) slot.* = null;
+        }
+        // The claim outlives every owner but not the last one.
+        if (line.empty() and line.claimed) {
+            line.claimed = false;
+            hal.releaseGsi(self.gsi);
+        }
+    }
     hal.restoreInterrupts(flags);
     heap.allocator.destroy(self);
 }
@@ -147,37 +215,45 @@ pub const Snapshot = struct {
     count: u64,
 };
 
-/// Walk the attached lines, lowest first.
+/// Walk the attached lines, lowest first, one row per owner.
 pub fn forEach(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot) void) void {
-    for (attached, 0..) |maybe, gsi| {
-        const self = maybe orelse continue;
-        visit(context, .{
-            .gsi = @intCast(gsi),
-            .armed = self.armed,
-            .held = self.held,
-            .count = self.count,
-        });
+    for (lines, 0..) |line, gsi| {
+        for (line.events) |maybe| {
+            const self = maybe orelse continue;
+            visit(context, .{
+                .gsi = @intCast(gsi),
+                .armed = self.armed,
+                .held = self.held,
+                .count = self.count,
+            });
+        }
     }
 }
 
-/// What the kernel does in interrupt context, and no more.
+/// What the kernel does in interrupt context, and no more: one deferral
+/// for the line, one wake for every owner on it. Each owner reads its own
+/// device and says "not mine" cheaply when the delivery was a neighbour's.
 fn onInterrupt(frame: *hal.InterruptFrame) void {
-    for (attached) |maybe| {
-        const self = maybe orelse continue;
-        if (!hal.irqMatches(self.token, frame)) continue;
+    for (&lines) |*line| {
+        if (!line.claimed or !hal.irqMatches(line.token, frame)) continue;
 
-        hal.deferIrq(self.token);
-        self.held = hal.irqAwaitingAck(self.token);
-        self.count += 1;
-        if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
+        hal.deferIrq(line.token);
+        const level = line.token.trigger == .level;
+        for (line.events) |maybe| {
+            const self = maybe orelse continue;
+            self.held = level;
+            if (level) line.owed += 1;
+            self.count += 1;
+            if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
 
-        // A line delivering this often is a source nobody manages to quiet,
-        // and the machine it saturates cannot run the tool that would say
-        // so: the count is narrated from here, once per hundred thousand.
-        if (self.count % 100_000 == 0) {
-            console.fail("line {d} has fired {d} times", .{ self.gsi, self.count });
+            // A line delivering this often is a source nobody manages to
+            // quiet, and the machine it saturates cannot run the tool that
+            // would say so: narrated from here, once per hundred thousand.
+            if (self.count % 100_000 == 0) {
+                console.fail("line {d} has fired {d} times", .{ self.gsi, self.count });
+            }
+            self.ready.signalLocked();
         }
-        self.ready.signalLocked();
         return;
     }
 }

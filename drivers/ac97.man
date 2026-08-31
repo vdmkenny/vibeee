@@ -1,0 +1,4 @@
+# The AC'97 controller of the Intel chipset line.
+name    = ac97
+service = audio
+match   = pci:8086:2415

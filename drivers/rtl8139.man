@@ -1,0 +1,4 @@
+# The second QEMU adapter, for driver-plural testing.
+name    = rtl8139
+service = net
+match   = pci:10ec:8139

@@ -231,6 +231,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "init", .root = "src/user/init.zig" },
             .{ .name = "devmgd", .root = "src/user/devmgd/main.zig" },
             .{ .name = "netd", .root = "src/user/netd/main.zig" },
+            .{ .name = "sndd", .root = "src/user/sndd/main.zig" },
             .{ .name = "cfgd", .root = "src/user/cfgd/main.zig" },
             .{ .name = "platd", .root = "src/user/platd/main.zig" },
             .{ .name = "eeewm", .root = "src/user/eeewm/main.zig" },

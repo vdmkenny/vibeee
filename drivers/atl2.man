@@ -1,0 +1,4 @@
+# The Attansic L2 fast ethernet.
+name    = atl2
+service = net
+match   = pci:1969:2048

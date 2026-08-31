@@ -1,0 +1,4 @@
+# The QEMU test bench's wired adapter.
+name    = e1000
+service = net
+match   = pci:8086:100e

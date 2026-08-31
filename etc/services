@@ -18,12 +18,14 @@
 
 name    = devmgd
 binary  = /bin/devmgd
-# Everything a device manager grants, so it can pass a subset to each driver.
-# It is the only thing in the tree with `driver`, which is what stops anything
-# else from reaching hardware.
-caps    = spawn,driver
+# The one authority on which driver drives which device. Resident: drivers
+# can be stopped, started and rescanned at runtime, and the driver services
+# come and ask what they have been assigned. It holds everything it may
+# grant onward, kill included, so it can stop what it starts.
+caps    = spawn,kill,driver
+provides = devices
 target  = boot
-restart = never
+restart = always
 
 name    = platd
 binary  = /bin/platd
@@ -65,7 +67,18 @@ binary  = /bin/netd
 # shell is on screen before the adapter is touched, so a bring-up that stops
 # does so under a working prompt with its narration readable.
 caps    = driver
-needs   = platd,cfgd
+needs   = platd,cfgd,devmgd
 provides = net
+target  = boot
+restart = always
+
+name    = sndd
+binary  = /bin/sndd
+# The sound service: the routing graph, the mixer arithmetic, and whatever
+# PCM hardware the device manager assigns it. Behind platd for the same
+# reason the network is: interrupt routing is the firmware's to answer.
+caps    = driver
+needs   = platd,devmgd
+provides = audio
 target  = boot
 restart = always
