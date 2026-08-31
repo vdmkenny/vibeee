@@ -5,8 +5,10 @@
 //! to look, rather than in a file named after the header that happens to
 //! declare all three.
 
+const std = @import("std");
 const errno = @import("errno.zig");
 const string = @import("string.zig");
+const str = @import("lib").str;
 
 /// Text to a number, C's way: skip the leading space, take a sign, take digits
 /// in `base`, and leave `end` pointing at the first character that was not one.
@@ -147,3 +149,159 @@ export fn rmdir(path: [*:0]const u8) callconv(.c) c_int {
     // whether the thing named may go.
     return @intCast(errno.wrap(@import("sys").unlink(string.spanOf(path))));
 }
+
+// ---------------------------------------------------------------------------
+// Numbers out of text, with a point in them
+// ---------------------------------------------------------------------------
+
+/// Text to a double, stopping where the number does.
+///
+/// Finding the end and reading the value are one question asked once:
+/// `lib.str` measures how far the number goes, and Zig's own parser turns
+/// exactly that much into a value. `end` is left pointing at the first
+/// character that was not part of it, which is what makes a caller able
+/// to tell "nothing was there" from "zero was there".
+export fn strtod(text: [*:0]const u8, end: ?*[*c]u8) callconv(.c) f64 {
+    const whole = string.spanOf(text);
+
+    var at: usize = 0;
+    while (at < whole.len and isSpace(whole[at])) at += 1;
+
+    const took = str.numberSpan(whole[at..]);
+    if (took == 0) {
+        if (end) |out| out.* = @constCast(@ptrCast(text));
+        return 0;
+    }
+
+    if (end) |out| out.* = @constCast(@ptrCast(text + at + took));
+    return std.fmt.parseFloat(f64, whole[at..][0..took]) catch 0;
+}
+
+export fn strtof(text: [*:0]const u8, end: ?*[*c]u8) callconv(.c) f32 {
+    return @floatCast(strtod(text, end));
+}
+
+export fn atof(text: [*:0]const u8) callconv(.c) f64 {
+    return strtod(text, null);
+}
+
+// ---------------------------------------------------------------------------
+// Numbers out of nowhere
+// ---------------------------------------------------------------------------
+
+/// The largest `rand` returns, which C requires to be at least this and
+/// every system sets to exactly it.
+pub const RAND_MAX: c_int = 0x7FFF_FFFF;
+
+/// Where the sequence is up to. One at the start, because C says a
+/// program that never seeds behaves as though it had seeded with one:
+/// the same run twice gives the same numbers, which is what makes a bug
+/// in a program that uses them findable.
+var seed: u32 = 1;
+
+/// A shift-register generator: three shifts and three exclusive-ors,
+/// which is as much as a machine of this size should spend on a number
+/// nobody is betting on. Good enough for a game and not for a secret,
+/// which is what `rand` has always promised.
+export fn rand() callconv(.c) c_int {
+    seed ^= seed << 13;
+    seed ^= seed >> 17;
+    seed ^= seed << 5;
+    // The top bit goes, because `rand` answers a non-negative int.
+    return @intCast(seed & @as(u32, @intCast(RAND_MAX)));
+}
+
+export fn srand(from: c_uint) callconv(.c) void {
+    // Never zero: this generator has nowhere to go from there, and a
+    // program seeding with the time at the epoch should not get silence.
+    seed = if (from == 0) 1 else from;
+}
+
+// ---------------------------------------------------------------------------
+// Arguments
+// ---------------------------------------------------------------------------
+
+/// Where the walk has got to, and what it found. C keeps these in the
+/// open because a caller reads them between calls.
+pub export var optind: c_int = 1;
+pub export var opterr: c_int = 1;
+pub export var optopt: c_int = 0;
+pub export var optarg: [*c]u8 = null;
+
+/// How far into the current argument the walk is, for the several
+/// letters that may be bundled behind one dash.
+var within: usize = 1;
+
+/// The next option letter, or -1 when there are no more.
+///
+/// The plain half of what C offers: single letters, a colon in `spec`
+/// meaning the letter takes a value, and everything after the first
+/// argument that is not an option left alone.
+export fn getopt(argc: c_int, argv: [*c][*c]u8, spec: [*:0]const u8) callconv(.c) c_int {
+    optarg = null;
+
+    if (optind >= argc) return -1;
+    const arg = argv[@intCast(optind)];
+    if (arg == null) return -1;
+
+    const text = string.spanOf(@ptrCast(arg));
+    if (text.len < 2 or text[0] != '-') return -1;
+
+    // A lone `--` ends the options and is not one itself.
+    if (text.len == 2 and text[1] == '-') {
+        optind += 1;
+        return -1;
+    }
+
+    if (within >= text.len) {
+        optind += 1;
+        within = 1;
+        return getopt(argc, argv, spec);
+    }
+
+    const letter = text[within];
+    within += 1;
+
+    const wanted = string.spanOf(spec);
+    const at = indexOf(wanted, letter) orelse {
+        optopt = letter;
+        if (within >= text.len) {
+            optind += 1;
+            within = 1;
+        }
+        return '?';
+    };
+
+    // A colon after the letter means it takes a value: the rest of this
+    // argument if there is any, and the next argument if there is not.
+    if (at + 1 < wanted.len and wanted[at + 1] == ':') {
+        if (within < text.len) {
+            optarg = @constCast(@ptrCast(arg + within));
+        } else {
+            optind += 1;
+            if (optind >= argc) {
+                optopt = letter;
+                within = 1;
+                return ':';
+            }
+            optarg = argv[@intCast(optind)];
+        }
+        optind += 1;
+        within = 1;
+        return letter;
+    }
+
+    if (within >= text.len) {
+        optind += 1;
+        within = 1;
+    }
+    return letter;
+}
+
+fn indexOf(text: []const u8, byte: u8) ?usize {
+    for (text, 0..) |c, i| {
+        if (c == byte) return i;
+    }
+    return null;
+}
+

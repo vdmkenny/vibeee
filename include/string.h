@@ -11,6 +11,15 @@ void *memchr(const void *haystack, int value, size_t n);
 
 size_t strlen(const char *s);
 size_t strnlen(const char *s, size_t limit);
+
+/* How many leading characters are in the set, and how many are not: the
+ * two halves of splitting a string by hand. */
+size_t strspn(const char *s, const char *set);
+size_t strcspn(const char *s, const char *set);
+char *strpbrk(const char *s, const char *set);
+
+/* Copy until the byte has been copied, or until count bytes have. */
+void *memccpy(void *into, const void *from, int byte, size_t count);
 char *strcpy(char *dest, const char *src);
 char *strncpy(char *dest, const char *src, size_t n);
 char *strcat(char *dest, const char *src);

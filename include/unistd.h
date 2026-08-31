@@ -18,6 +18,21 @@ int rmdir(const char *path);
 int chdir(const char *path);
 char *getcwd(char *buf, size_t size);
 int isatty(int fd);
+
+/* Whether a name can be reached. The modes are not distinguished here:
+ * everything readable is writable, so answering otherwise would answer
+ * something that was not asked. */
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+int access(const char *path, int mode);
+
+/* Options, the plain half: single letters, a colon meaning the letter
+ * takes a value, and everything after the first non-option left alone. */
+int getopt(int argc, char *const argv[], const char *spec);
+extern char *optarg;
+extern int optind, opterr, optopt;
 int fsync(int fd);
 pid_t getpid(void);
 unsigned int sleep(unsigned int seconds);

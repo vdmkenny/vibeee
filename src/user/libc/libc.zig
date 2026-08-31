@@ -19,6 +19,7 @@
 
 pub const env = @import("env.zig");
 pub const errno = @import("errno.zig");
+pub const files = @import("files.zig");
 pub const format = @import("format.zig");
 pub const math = @import("math.zig");
 pub const mem = @import("mem.zig");
@@ -34,6 +35,7 @@ pub const vibeee = @import("vibeee.zig");
 comptime {
     _ = env;
     _ = errno;
+    _ = files;
     _ = format;
     _ = math;
     _ = mem;

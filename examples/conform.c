@@ -158,6 +158,28 @@ static void numbers(void)
     sayn("atoi", atoi("42x"));
     sayn("abs", labs(-7));
 
+    /* Numbers with a point in them, and where the reading stopped. */
+    char *rest;
+    sayn("strtod.value", (long)(strtod("3.25xyz", &rest) * 100));
+    say("strtod.end", rest);
+    sayn("strtod.exponent", (long)strtod("-1.5e2", NULL));
+    sayn("strtod.leading.space", (long)(strtod("  2.75", NULL) * 100));
+    sayn("strtod.nothing", (long)strtod("abc", &rest));
+    say("strtod.nothing.end", rest);
+    sayn("atof", (long)(atof("0.5") * 100));
+
+    /* The same seed gives the same numbers, which is the whole promise. */
+    srand(7);
+    const long first = rand();
+    srand(7);
+    sayn("rand.repeats", rand() == first ? 1 : 0);
+    sayn("rand.in.range", first >= 0 && first <= RAND_MAX ? 1 : 0);
+
+    sayn("strspn", (long)strspn("aabxyz", "ab"));
+    sayn("strcspn", (long)strcspn("xyzab", "ab"));
+    say("strpbrk", strpbrk("hello world", "ow"));
+    say("strpbrk.missing", strpbrk("hello", "xyz") ? "found" : "none");
+
     sayn("toupper", toupper('a'));
     sayn("toupper.other", toupper('1'));
     sayn("isdigit", isdigit('7') ? 1 : 0);

@@ -24,6 +24,15 @@ int atexit(void (*handler)(void));
 long strtol(const char *text, char **end, int base);
 unsigned long strtoul(const char *text, char **end, int base);
 int atoi(const char *text);
+double strtod(const char *text, char **end);
+float strtof(const char *text, char **end);
+double atof(const char *text);
+
+/* The same run twice gives the same numbers unless something seeds it,
+ * which is what makes a bug in a program that uses them findable. */
+#define RAND_MAX 0x7FFFFFFF
+int rand(void);
+void srand(unsigned int seed);
 long atol(const char *text);
 int abs(int value);
 long labs(long value);

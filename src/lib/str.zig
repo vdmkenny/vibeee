@@ -360,3 +360,113 @@ test "the builder writes hardware identifiers at a fixed width" {
     padded.hex(0x0C, 2);
     try std.testing.expectEqualStrings("0c", padded.done());
 }
+
+/// How many leading characters of `text` are in `set`.
+///
+/// The first half of tokenising: a run of separators to step over. Named
+/// for what C calls it, because the callers that want it are C's.
+pub fn spanOfAny(text: []const u8, set: []const u8) usize {
+    var n: usize = 0;
+    while (n < text.len and hasByte(set, text[n])) n += 1;
+    return n;
+}
+
+/// How many leading characters of `text` are *not* in `set`, which is the
+/// other half: the token itself.
+pub fn spanUntilAny(text: []const u8, set: []const u8) usize {
+    var n: usize = 0;
+    while (n < text.len and !hasByte(set, text[n])) n += 1;
+    return n;
+}
+
+/// Where the first character of `text` that is in `set` sits.
+pub fn indexOfAny(text: []const u8, set: []const u8) ?usize {
+    const at = spanUntilAny(text, set);
+    return if (at == text.len) null else at;
+}
+
+/// Whether a set of characters holds one. Distinct from `contains`,
+/// which asks the same about a substring.
+pub fn hasByte(set: []const u8, byte: u8) bool {
+    for (set) |c| {
+        if (c == byte) return true;
+    }
+    return false;
+}
+
+/// The longest leading part of `text` that reads as a number, in the
+/// shape C accepts: a sign, digits with at most one point among them,
+/// and an exponent that must itself have digits to be part of it.
+///
+/// Length rather than a value, because the caller wants both: the number
+/// to parse and where it stopped, and finding the end twice would be two
+/// answers to one question.
+pub fn numberSpan(text: []const u8) usize {
+    var at: usize = 0;
+    if (at < text.len and (text[at] == '+' or text[at] == '-')) at += 1;
+
+    var digits: usize = 0;
+    while (at < text.len and isDigit(text[at])) : (at += 1) digits += 1;
+
+    if (at < text.len and text[at] == '.') {
+        at += 1;
+        while (at < text.len and isDigit(text[at])) : (at += 1) digits += 1;
+    }
+    // No digits at all is not a number, whatever else was there.
+    if (digits == 0) return 0;
+
+    // An exponent counts only if it has digits of its own; `1e` is the
+    // number one followed by a letter.
+    if (at < text.len and (text[at] == 'e' or text[at] == 'E')) {
+        var after = at + 1;
+        if (after < text.len and (text[after] == '+' or text[after] == '-')) after += 1;
+
+        var exponent_digits: usize = 0;
+        while (after < text.len and isDigit(text[after])) : (after += 1) exponent_digits += 1;
+        if (exponent_digits > 0) at = after;
+    }
+    return at;
+}
+
+fn isDigit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
+
+test "a run of characters is measured from a set, either way round" {
+    try std.testing.expectEqual(@as(usize, 3), spanOfAny("aabxyz", "ab"));
+    try std.testing.expectEqual(@as(usize, 0), spanOfAny("xyz", "ab"));
+    try std.testing.expectEqual(@as(usize, 0), spanOfAny("", "ab"));
+    try std.testing.expectEqual(@as(usize, 6), spanOfAny("aabbaa", "ab"));
+
+    try std.testing.expectEqual(@as(usize, 3), spanUntilAny("xyzab", "ab"));
+    try std.testing.expectEqual(@as(usize, 0), spanUntilAny("ab", "ab"));
+    try std.testing.expectEqual(@as(usize, 5), spanUntilAny("xyzuv", "ab"));
+
+    try std.testing.expectEqual(@as(usize, 3), indexOfAny("xyzab", "ab").?);
+    try std.testing.expect(indexOfAny("xyz", "ab") == null);
+    // An empty set matches nothing, so nothing is ever found in it.
+    try std.testing.expect(indexOfAny("xyz", "") == null);
+}
+
+test "the leading number is measured in the shape C accepts" {
+    try std.testing.expectEqual(@as(usize, 3), numberSpan("123"));
+    try std.testing.expectEqual(@as(usize, 4), numberSpan("-123abc"));
+    try std.testing.expectEqual(@as(usize, 5), numberSpan("3.125"));
+    try std.testing.expectEqual(@as(usize, 2), numberSpan(".5"));
+    try std.testing.expectEqual(@as(usize, 2), numberSpan("5."));
+    try std.testing.expectEqual(@as(usize, 6), numberSpan("1.5e10"));
+    try std.testing.expectEqual(@as(usize, 7), numberSpan("1.5e-10"));
+    try std.testing.expectEqual(@as(usize, 8), numberSpan("+1.5E+10x"));
+
+    // An exponent with no digits is not part of the number.
+    try std.testing.expectEqual(@as(usize, 1), numberSpan("1e"));
+    try std.testing.expectEqual(@as(usize, 1), numberSpan("1e+"));
+    try std.testing.expectEqual(@as(usize, 3), numberSpan("1.5e"));
+
+    // Nothing that is not a number is one.
+    try std.testing.expectEqual(@as(usize, 0), numberSpan(""));
+    try std.testing.expectEqual(@as(usize, 0), numberSpan("abc"));
+    try std.testing.expectEqual(@as(usize, 0), numberSpan("-"));
+    try std.testing.expectEqual(@as(usize, 0), numberSpan("."));
+    try std.testing.expectEqual(@as(usize, 0), numberSpan("+.e5"));
+}

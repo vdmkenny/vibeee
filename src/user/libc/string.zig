@@ -250,4 +250,34 @@ const heap = @import("ulib").heap;
 
 /// A terminated string as a slice, for the parts of this library that work in
 /// Zig terms once they have crossed the boundary.
-pub const spanOf = @import("lib").str.span;
+const str = @import("lib").str;
+
+pub const spanOf = str.span;
+
+/// How many leading characters are in `set`, and how many are not: the
+/// two halves of splitting a string by hand, which is what a program
+/// reading a configuration file does before it has a parser.
+export fn strspn(text: [*:0]const u8, set: [*:0]const u8) callconv(.c) usize {
+    return str.spanOfAny(spanOf(text), spanOf(set));
+}
+
+export fn strcspn(text: [*:0]const u8, set: [*:0]const u8) callconv(.c) usize {
+    return str.spanUntilAny(spanOf(text), spanOf(set));
+}
+
+/// The first character of `text` that appears in `set`, or null.
+export fn strpbrk(text: [*:0]const u8, set: [*:0]const u8) callconv(.c) ?[*:0]const u8 {
+    const at = str.indexOfAny(spanOf(text), spanOf(set)) orelse return null;
+    return text + at;
+}
+
+/// Copy until `byte` has been copied, or until `count` bytes have.
+/// Answers just past the copy of `byte`, or null when it was never seen.
+export fn memccpy(into: [*]u8, from: [*]const u8, byte: c_int, count: usize) callconv(.c) ?*anyopaque {
+    const wanted: u8 = @truncate(@as(c_uint, @bitCast(byte)));
+    for (0..count) |i| {
+        into[i] = from[i];
+        if (from[i] == wanted) return @ptrCast(into + i + 1);
+    }
+    return null;
+}
