@@ -117,11 +117,16 @@ comptime {
     }
 }
 
-/// Everything the two engines share, in one DMA allocation: descriptor
-/// lists first, then the period buffers each list points into.
+/// The engine walks a thirty-two entry descriptor list, its index wrapping
+/// at thirty-two whatever the list holds. So the list is always thirty-two
+/// long, its entries pointing round-robin at the smaller set of period
+/// buffers: four laps of the buffers per lap of the list, and the list
+/// never runs off its end.
+const BDL_ENTRIES = 32;
+
 const Arena = extern struct {
-    out_list: [dev.PERIODS]Descriptor align(8) = @splat(.{}),
-    in_list: [dev.PERIODS]Descriptor align(8) = @splat(.{}),
+    out_list: [BDL_ENTRIES]Descriptor align(8) = @splat(.{}),
+    in_list: [BDL_ENTRIES]Descriptor align(8) = @splat(.{}),
     out_frames: [dev.PERIODS * dev.PERIOD_FRAMES * 2]i16 = @splat(0),
     in_frames: [dev.PERIODS * dev.PERIOD_FRAMES * 2]i16 = @splat(0),
 };
@@ -142,6 +147,7 @@ pub const ops = dev.PcmOps{
     .stop = stop,
     .irq = irq,
     .period = period,
+    .queued = queued,
     .setMaster = setMaster,
 };
 
@@ -178,13 +184,14 @@ fn open(loc: pci.Location) bool {
 
     if (!resetCodec()) return false;
 
-    // The descriptor lists are fixed at open: every entry always names the
-    // same period slot and always interrupts. Only the engines move.
+    // Fixed at open: every descriptor names the period buffer its index
+    // aliases to, always interrupts, and never changes. Only the engine's
+    // last-valid mark moves, walked ahead of the play position each period.
     const out_base: u32 = phys + @offsetOf(Arena, "out_frames");
     const in_base: u32 = phys + @offsetOf(Arena, "in_frames");
     const period_bytes: u32 = @intCast(dev.periodBytes());
-    for (0..dev.PERIODS) |i| {
-        const step: u32 = @as(u32, @intCast(i)) * period_bytes;
+    for (0..BDL_ENTRIES) |i| {
+        const step: u32 = @as(u32, @intCast(i % dev.PERIODS)) * period_bytes;
         device.arena.out_list[i] = .{
             .address = out_base + step,
             .samples = dev.PERIOD_FRAMES * 2,
@@ -258,7 +265,18 @@ fn start(direction: dev.Direction) bool {
         .capture => @offsetOf(Arena, "in_list"),
     };
     ports.out32(base + @intFromEnum(Engine.list_base), device.phys + list);
-    engineWrite8(direction, .last_valid, dev.PERIODS - 1);
+
+    // Silence the buffers so a first period plays nothing rather than
+    // stale memory, and mark the whole ring valid: the engine wraps its
+    // thirty-two descriptors freely, and `queued` keeps the last-valid
+    // mark ahead of the play position so it never catches up and halts.
+    const frames = switch (direction) {
+        .playback => &device.arena.out_frames,
+        .capture => &device.arena.in_frames,
+    };
+    @memset(@as([*]volatile i16, @ptrCast(frames))[0..frames.len], 0);
+    engineWrite8(direction, .last_valid, BDL_ENTRIES - 1);
+    last_index[@intFromEnum(direction)] = 0;
     engineWrite8(direction, .control, @bitCast(Control{
         .run = true,
         .completion_interrupt = true,
@@ -285,9 +303,9 @@ fn irq() dev.Completions {
         const base = engineBase(direction);
         const status: EngineStatus = @bitCast(ports.in16(base + @intFromEnum(Engine.status)));
         if (status.completed or status.last_valid_done or status.fifo_error) {
-            const index = ports.in8(base + @intFromEnum(Engine.current_index)) % dev.PERIODS;
+            const index = ports.in8(base + @intFromEnum(Engine.current_index)) % BDL_ENTRIES;
             const slot = @intFromEnum(direction);
-            const advanced = (index + dev.PERIODS - last_index[slot]) % dev.PERIODS;
+            const advanced = (index + BDL_ENTRIES - last_index[slot]) % BDL_ENTRIES;
             last_index[slot] = index;
             switch (direction) {
                 .playback => done.playback = @intCast(advanced),
@@ -297,6 +315,14 @@ fn irq() dev.Completions {
         }
     }
     return done;
+}
+
+/// The engine may run up to and including this descriptor: the service's
+/// free-running fill counter, masked into the thirty-two entry ring. Kept
+/// ahead of the play position, so the engine always has somewhere to go.
+fn queued(direction: dev.Direction, index: u32) void {
+    if (!device.opened) return;
+    engineWrite8(direction, .last_valid, @intCast(index % BDL_ENTRIES));
 }
 
 fn period(direction: dev.Direction, index: u32) []u8 {

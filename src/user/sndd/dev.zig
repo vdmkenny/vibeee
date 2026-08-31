@@ -48,6 +48,10 @@ pub const PcmOps = struct {
     irq: *const fn () Completions,
     /// The bytes of one period slot in the driver's own DMA ring.
     period: *const fn (dir: Direction, index: u32) []u8,
+    /// Tell the engine how far the service has filled (playback) or made
+    /// room (capture): this hardware halts at its last valid descriptor
+    /// rather than wrapping, so the index must be walked ahead of it.
+    queued: *const fn (dir: Direction, index: u32) void,
     /// The hardware's own output volume, where it has one.
     setMaster: *const fn (volume: audio.Volume) void,
 };

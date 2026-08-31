@@ -25,6 +25,10 @@ const net = @import("net.zig");
 const nc = @import("nc.zig");
 const ping = @import("ping.zig");
 const resolve_tool = @import("resolve.zig");
+const tone = @import("tone.zig");
+const vol = @import("vol.zig");
+const patch = @import("patch.zig");
+const driver_tool = @import("driver.zig");
 const page = @import("page.zig");
 const status = @import("status.zig");
 const svc = @import("svc.zig");
@@ -63,6 +67,10 @@ pub const commands = [_]Command{
     .{ .name = "ping", .summary = "one echo a second, answered or timed out", .run = &ping.run },
     .{ .name = "nc", .summary = "a stream or datagrams to a host, or awaited on a port", .run = &nc.run },
     .{ .name = "resolve", .summary = "a name to its address, hosts file or dns", .run = &resolve_tool.run },
+    .{ .name = "tone", .summary = "a sine through the sound graph", .run = &tone.run },
+    .{ .name = "vol", .summary = "how loud the machine is", .run = &vol.run },
+    .{ .name = "patch", .summary = "the sound graph: list, link, part, defaults", .run = &patch.run },
+    .{ .name = "driver", .summary = "what drives what, and the levers over it", .run = &driver_tool.run },
     .{ .name = "commands", .summary = "list command names, one per line", .run = &listNames },
     .{ .name = "page", .summary = "read a file a screen at a time", .run = &page.run },
     .{ .name = "mkdir", .summary = "create a directory", .run = &files.mkdir },

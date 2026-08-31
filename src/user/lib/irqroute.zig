@@ -53,7 +53,10 @@ pub fn routedLine(tag: []const u8, location: pci.Location) ?u32 {
         }
     }
 
-    log.say(tag, .dim, "no routing table answer; using the legacy line");
     const legacy = pci.interruptLine(location);
+    log.begin(tag, .dim);
+    out.text("no routing answer; config-space line ");
+    out.decimal(legacy);
+    log.end();
     return if (legacy == 0 or legacy == UNROUTED) null else legacy;
 }

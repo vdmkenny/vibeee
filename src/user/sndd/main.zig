@@ -135,6 +135,9 @@ fn attach(driver: Driver, location: pci.Location) void {
         if (sys.irqAttach(gsi)) |taken| {
             candidate.irq = taken;
             candidate.irq_gsi = gsi;
+            // The quiesced INTx pin opens only once the handler path
+            // stands, the same order every driver keeps.
+            pci.enableInterrupt(location);
         } else |err| {
             log.begin("sndd", .warn);
             out.text("line ");
@@ -238,14 +241,15 @@ fn startPlaybackIfFed(device: *dev.PcmDev, dports: *const DevicePorts) void {
     if (playing.* or dports.sink == graph_mod.NONE) return;
     if (!graph.hasSource(dports.sink)) return;
 
-    // Prime the queue before the engine moves: the mix-ahead is the whole
-    // latency budget, so exactly this many and no more.
-    device.fill = 0;
+    // The driver primes the ring silent and starts with the whole ring
+    // valid; the service mixes real audio ahead of the play position from
+    // the first period interrupt on. The fill counter begins one ring
+    // ahead, which is what keeps the last-valid mark leading the engine.
     device.quiet_periods = 0;
-    for (0..dev.QUEUE_AHEAD) |_| {
-        mixPeriod(device, dports.sink);
+    if (device.ops.start(.playback)) {
+        playing.* = true;
+        device.fill = dev.PERIODS;
     }
-    if (device.ops.start(.playback)) playing.* = true;
 }
 
 fn stopPlayback(device: *dev.PcmDev) void {
@@ -277,6 +281,9 @@ fn advance(device: *dev.PcmDev, done: dev.Completions) void {
     const found = indexOf(device) orelse return;
     const dports = &device_ports[found];
 
+    // One fresh period mixed ahead for each the engine finished, its
+    // last-valid mark walked forward to match. The engine never overtakes
+    // the mark, so it never halts mid-tone.
     for (0..done.playback) |_| {
         mixPeriod(device, dports.sink);
     }
@@ -286,6 +293,8 @@ fn advance(device: *dev.PcmDev, done: dev.Completions) void {
 
     for (0..done.capture) |_| {
         pourPeriod(device, dports.source);
+        // The drained slot is the engine's again, one lap behind it.
+        device.ops.queued(.capture, (device.drain +% dev.PERIODS - 1) % dev.PERIODS);
     }
 }
 
@@ -300,7 +309,9 @@ fn indexOf(device: *dev.PcmDev) ?usize {
 /// feeder's own volume, into the device's next slot.
 fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
     const buf = device.ops.period(.playback, device.fill);
+    const filled = device.fill;
     device.fill +%= 1;
+    device.ops.queued(.playback, filled);
     @memset(buf, 0);
 
     if (sink == graph_mod.NONE) return;
@@ -489,7 +500,8 @@ fn setVolume(req: *const proto.Req, token: u32) void {
 fn getNode(req: *const proto.Req, token: u32) void {
     const id: graph_mod.NodeId = @intCast(req.a & 0xFFFF);
     if (id >= graph_mod.MAX_NODES) return replyEnd(token);
-    const node = graph.nodeAt(id) orelse return replyEnd(token);
+    // A dead slot is a row to skip, not the end: the tables are sparse.
+    const node = graph.nodeAt(id) orelse return replyBody(token, .{ .node = .{} });
 
     var info = proto.NodeInfo{ .kind = node.kind, .name_len = node.name.len };
     @memcpy(info.name[0..node.name.len], node.name.slice());
@@ -499,7 +511,8 @@ fn getNode(req: *const proto.Req, token: u32) void {
 fn getPort(req: *const proto.Req, token: u32) void {
     const id: graph_mod.PortId = @intCast(req.a & 0xFFFF);
     if (id >= graph_mod.MAX_PORTS) return replyEnd(token);
-    const port = graph.portAt(id) orelse return replyEnd(token);
+    const port = graph.portAt(id) orelse
+        return replyBody(token, .{ .port_info = .{ .id = graph_mod.NONE } });
 
     var info = proto.PortInfo{
         .node = port.node,
