@@ -13,6 +13,7 @@ const class = @import("class.zig");
 const hc = @import("hc.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const str = @import("ulib").str;
 const table = @import("ulib").table;
 const proto_devices = @import("proto").devices;
 const usb = @import("lib").usb;
@@ -24,9 +25,11 @@ pub const MAX_DEVICES = 16;
 
 pub const Device = struct {
     live: bool = false,
-    /// Which controller and which of its ports.
+    /// Which controller, and where on it: a root port, or a port of some
+    /// hub that is itself somewhere on the same controller.
     controller: u8 = 0,
     port: u8 = 0,
+    route: usb.Route = .{},
     address: u7 = 0,
     speed: usb.Speed = .high,
     descriptor: usb.Device = .{},
@@ -40,6 +43,15 @@ pub const Device = struct {
     /// Whether the driver named above took it. A device nobody could
     /// drive stays listed, which is the answer `usb` shows.
     attached: bool = false,
+    /// What the device calls itself, if it says. Read once, at
+    /// enumeration: a name does not change and asking twice would be two
+    /// more control transfers for nothing.
+    name: [NAME_MAX]u8 = @splat(0),
+    name_len: u8 = 0,
+
+    pub fn nameSlice(self: *const Device) []const u8 {
+        return self.name[0..@min(self.name_len, self.name.len)];
+    }
 
     pub fn configurationSlice(self: *const Device) []const u8 {
         return self.configuration[0..@min(self.described, self.configuration.len)];
@@ -50,6 +62,10 @@ pub const Device = struct {
 /// kind carries. Anything longer belongs to a device asking for more than
 /// this bus offers, and is read as far as it fits.
 pub const CONFIGURATION_MAX = 256;
+
+/// As much of a device's name as is kept. Longer names exist and are cut:
+/// what a listing has room for is shorter than this anyway.
+pub const NAME_MAX = 40;
 
 var devices: [MAX_DEVICES]Device = @splat(.{});
 var addresses = usb.Addresses{};
@@ -67,9 +83,48 @@ pub fn all() []const Device {
 /// nothing there enumerated.
 pub fn addressAt(controller: u8, port: u8) u8 {
     for (&devices) |*entry| {
-        if (entry.live and entry.controller == controller and entry.port == port) return entry.address;
+        if (entry.live and entry.route.hub == 0 and
+            entry.controller == controller and entry.port == port) return entry.address;
     }
     return 0;
+}
+
+/// Where a device sits, written the way a person would trace it: the
+/// controller, then every port down the chain to the device itself.
+///
+/// Walked from the device upward, because that is the direction the table
+/// records, and reversed at the end. A chain that does not terminate is a
+/// table that has been corrupted, so the walk is bounded by the table.
+pub fn pathOf(index: usize, into: []u8) []const u8 {
+    const entry = at(index) orelse return "";
+
+    var ports: [MAX_DEVICES]u8 = undefined;
+    var depth: usize = 0;
+    var walking = entry;
+
+    while (depth < ports.len) {
+        ports[depth] = walking.port + 1;
+        depth += 1;
+        if (walking.route.hub == 0) break;
+        walking = byAddress(walking.route.hub) orelse break;
+    }
+
+    var text = str.Builder{ .buf = into };
+    text.number(entry.controller);
+    var left = depth;
+    while (left > 0) {
+        left -= 1;
+        text.byte(if (left + 1 == depth) '-' else '.');
+        text.number(ports[left]);
+    }
+    return text.done();
+}
+
+fn byAddress(address: u7) ?*const Device {
+    for (&devices) |*entry| {
+        if (entry.live and entry.address == address) return entry;
+    }
+    return null;
 }
 
 pub fn at(index: usize) ?*const Device {
@@ -87,10 +142,10 @@ pub fn scan(controller: u8, ops: hc.HcOps) void {
         const state = ops.port(index);
 
         if (!state.connected) {
-            forget(controller, index);
+            forget(controller, .{}, index);
             continue;
         }
-        if (known(controller, index)) continue;
+        if (known(controller, .{}, index)) continue;
 
         const settled = ops.resetPort(index);
         if (settled.released) {
@@ -105,20 +160,40 @@ pub fn scan(controller: u8, ops: hc.HcOps) void {
         }
         if (!settled.enabled) continue;
 
-        enumerate(controller, index, settled.speed, ops);
+        arrived(controller, .{}, index, settled.speed, ops);
     }
 }
 
-fn known(controller: u8, port: u8) bool {
+/// A device has appeared: on a root port when the scan found it, or on a
+/// hub's port when the hub driver says so. Either way what happens next is
+/// the same conversation, which is why a hub needs nothing of its own here
+/// beyond saying where and how fast.
+pub fn arrived(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
+    if (known(controller, route, port)) return;
+    enumerate(controller, route, port, speed, ops);
+}
+
+/// And has gone.
+pub fn departed(controller: u8, route: usb.Route, port: u8) void {
+    forget(controller, route, port);
+}
+
+fn known(controller: u8, route: usb.Route, port: u8) bool {
     for (devices) |entry| {
-        if (entry.live and entry.controller == controller and entry.port == port) return true;
+        if (entry.live and entry.controller == controller and
+            entry.route.hub == route.hub and entry.port == port) return true;
     }
     return false;
 }
 
-fn forget(controller: u8, port: u8) void {
+fn forget(controller: u8, route: usb.Route, port: u8) void {
     for (&devices) |*entry| {
-        if (!entry.live or entry.controller != controller or entry.port != port) continue;
+        if (!entry.live or entry.controller != controller or
+            entry.route.hub != route.hub or entry.port != port) continue;
+
+        // Everything behind it goes too: a hub unplugged takes its whole
+        // branch, and none of it can be asked about any more.
+        if (entry.address != 0) forgetBehind(entry.address);
         if (entry.attached) {
             for (drivers) |candidate| {
                 if (strEql(candidate.name, entry.driver.driverSlice())) candidate.ops.detach(entry.address);
@@ -134,13 +209,22 @@ fn forget(controller: u8, port: u8) void {
     }
 }
 
+/// Everything hanging off a hub that has itself gone.
+fn forgetBehind(hub: u7) void {
+    for (&devices) |*entry| {
+        if (!entry.live or entry.route.hub != hub) continue;
+        forget(entry.controller, entry.route, entry.port);
+    }
+}
+
 /// The conversation every device has when it arrives.
-fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
+fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
+    const zero = usb.Pipe{ .speed = speed, .max_packet = 8, .route = route };
     // The first question is how big an answer the device can give: until
     // that is known every read has to be short enough for the smallest
     // packet any device may use.
     var first: [8]u8 = @splat(0);
-    _ = ops.control(0, speed, 8, usb.Setup.getDescriptor(.device, 0, first.len), &first) catch |err| {
+    _ = ops.control(zero, usb.Setup.getDescriptor(.device, 0, first.len), &first) catch |err| {
         return sayFailure(port, "would not describe itself", err);
     };
 
@@ -155,7 +239,9 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
     };
 
     var nothing: [0]u8 = .{};
-    _ = ops.control(0, speed, packet_zero, usb.Setup.setAddress(address), &nothing) catch |err| {
+    var addressing = zero;
+    addressing.max_packet = packet_zero;
+    _ = ops.control(addressing, usb.Setup.setAddress(address), &nothing) catch |err| {
         addresses.release(address);
         return sayFailure(port, "would not take an address", err);
     };
@@ -164,7 +250,13 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
     @import("sys").sleepMicros(2_000);
 
     var full: [usb.Device.BYTES]u8 = @splat(0);
-    _ = ops.control(address, speed, packet_zero, usb.Setup.getDescriptor(.device, 0, full.len), &full) catch |err| {
+    const named = usb.Pipe{
+        .address = address,
+        .speed = speed,
+        .max_packet = packet_zero,
+        .route = route,
+    };
+    _ = ops.control(named, usb.Setup.getDescriptor(.device, 0, full.len), &full) catch |err| {
         addresses.release(address);
         return sayFailure(port, "went quiet after being addressed", err);
     };
@@ -181,13 +273,11 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
     var configuration: [CONFIGURATION_MAX]u8 = @splat(0);
     var described: usize = 0;
 
-    if (ops.control(address, speed, packet_zero, usb.Setup.getDescriptor(.configuration, 0, header.len), &header)) |_| {
+    if (ops.control(named, usb.Setup.getDescriptor(.configuration, 0, header.len), &header)) |_| {
         if (usb.Configuration.parse(&header)) |config| {
             const wanted = @min(config.total_length, configuration.len);
             described = ops.control(
-                address,
-                speed,
-                packet_zero,
+                named,
                 usb.Setup.getDescriptor(.configuration, 0, @intCast(wanted)),
                 configuration[0..wanted],
             ) catch 0;
@@ -204,6 +294,7 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
         .live = true,
         .controller = controller,
         .port = port,
+        .route = route,
         .address = address,
         .speed = speed,
         .descriptor = descriptor,
@@ -211,6 +302,8 @@ fn enumerate(controller: u8, port: u8, speed: usb.Speed, ops: hc.HcOps) void {
         .configuration = configuration,
         .described = @intCast(described),
     };
+
+    name(slot, named, ops);
 
     // Which driver wants it is not this file's decision. The manager
     // holds every manifest, so a class nobody here knows is still
@@ -235,6 +328,7 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
             .speed = entry.speed,
             .controller = entry.controller,
             .port = entry.port,
+            .route = entry.route,
             .descriptor = entry.descriptor,
             .signature = entry.signature,
             .configuration = entry.configurationSlice(),
@@ -250,6 +344,30 @@ fn strEql(a: []const u8, b: []const u8) bool {
         if (x != y) return false;
     }
     return true;
+}
+
+/// Ask the device what it calls itself.
+///
+/// Two more control transfers, once, and only for a device that offers a
+/// name at all: the language list first, because a string has to be asked
+/// for in a language the device has. A device that will not say keeps the
+/// name its class and numbers give it, which is what the listing falls
+/// back to.
+fn name(entry: *Device, pipe: usb.Pipe, ops: hc.HcOps) void {
+    const which = entry.descriptor.product_name;
+    if (which == 0) return;
+
+    var languages: [8]u8 = @splat(0);
+    const offered = ops.control(pipe, usb.Setup.stringDescriptor(0, 0, languages.len), &languages) catch return;
+    const language = usb.firstLanguage(languages[0..offered]) orelse return;
+
+    // Twice the room, because the wire carries two bytes a character and
+    // what is kept is UTF-8.
+    var wire: [2 * NAME_MAX + 2]u8 = @splat(0);
+    const moved = ops.control(pipe, usb.Setup.stringDescriptor(which, language, wire.len), &wire) catch return;
+
+    const text = usb.decodeString(wire[0..moved], &entry.name);
+    entry.name_len = @intCast(text.len);
 }
 
 /// Ask the device manager which driver fits, by the signature the device

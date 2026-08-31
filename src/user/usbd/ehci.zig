@@ -425,6 +425,40 @@ fn bulkLimit() usize {
     return BULK_BYTES;
 }
 
+fn speedOf(speed: usb.Speed) EndpointSpeed {
+    return switch (speed) {
+        .high => .high,
+        .full => .full,
+        .low => .low,
+    };
+}
+
+/// How the controller reaches a device: directly, or by splitting every
+/// transaction and addressing the halves at the hub in between.
+///
+/// A high speed bus cannot slow down for a full or low speed device, so a
+/// hub does it instead: the controller sends the request to the hub at
+/// full speed and comes back later for the answer. Naming the hub and its
+/// port is the whole of what this side has to do about it.
+fn reach(pipe: usb.Pipe) EndpointCapabilities {
+    if (!pipe.route.splits(pipe.speed, .high)) return .{ .multiplier = 1 };
+    return .{
+        .hub_address = pipe.route.hub,
+        .port = pipe.route.port,
+        .multiplier = 1,
+    };
+}
+
+/// The same, for an endpoint the controller polls. A split transaction is
+/// begun in one microframe and collected in later ones, so both halves
+/// have to be asked for.
+fn periodic(pipe: usb.Pipe) EndpointCapabilities {
+    var capabilities = reach(pipe);
+    capabilities.start_mask = 0x01;
+    if (pipe.route.splits(pipe.speed, .high)) capabilities.complete_mask = 0x1C;
+    return capabilities;
+}
+
 // ---------------------------------------------------------------------------
 // Watched endpoints
 // ---------------------------------------------------------------------------
@@ -462,22 +496,17 @@ fn watch(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
         .info = .{
             .address = pipe.address,
             .endpoint = pipe.number,
-            .speed = switch (pipe.speed) {
-                .high => .high,
-                .full => .full,
-                .low => .low,
-            },
+            .speed = speedOf(pipe.speed),
             .toggle_from_descriptor = true,
             .max_packet = @intCast(@min(pipe.max_packet, REPORT_BYTES)),
         },
-        .capabilities = .{
-            // One transaction, in the first microframe of each frame.
-            // The endpoint's own interval would poll less often; a
-            // millisecond costs the controller a token and nobody else
-            // anything, and it is what a keyboard wants anyway.
-            .start_mask = 0x01,
-            .multiplier = 1,
-        },
+        // One transaction, in the first microframe of each frame. The
+        // endpoint's own interval would poll less often; a millisecond
+        // costs the controller a token and nobody else anything, and it
+        // is what a keyboard wants anyway. A slow endpoint behind a hub
+        // needs the second half of its split collected as well, which is
+        // what the complete mask asks for.
+        .capabilities = periodic(pipe),
     };
 
     arena.watches[index].current = 0;
@@ -613,16 +642,12 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     arena.bulk.info = .{
         .address = pipe.address,
         .endpoint = pipe.number,
-        .speed = switch (pipe.speed) {
-            .high => .high,
-            .full => .full,
-            .low => .low,
-        },
+        .speed = speedOf(pipe.speed),
         .toggle_from_descriptor = true,
         .max_packet = @intCast(pipe.max_packet),
         .reload = 4,
     };
-    arena.bulk.capabilities = .{ .multiplier = 1 };
+    arena.bulk.capabilities = reach(pipe.*);
     arena.bulk.current = 0;
     arena.bulk.overlay = .{ .next = Link.to(controller.arena.physOf("payload"), .isochronous) };
     scheduleRunning(.asynchronous, true);
@@ -1031,13 +1056,7 @@ fn awaitSchedule(which: Schedule, wanted: bool) bool {
     }.ready);
 }
 
-fn control(
-    address: u7,
-    speed: usb.Speed,
-    max_packet: u16,
-    setup: usb.Setup,
-    data: []u8,
-) hc.Error!usize {
+fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
     if (!controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES) return hc.Error.Refused;
 
@@ -1098,19 +1117,15 @@ fn control(
     // from the last transfer describes the last transfer.
     scheduleRunning(.asynchronous, false);
     arena.control.info = .{
-        .address = address,
+        .address = pipe.address,
         .endpoint = 0,
-        .speed = switch (speed) {
-            .high => .high,
-            .full => .full,
-            .low => .low,
-        },
+        .speed = speedOf(pipe.speed),
         .toggle_from_descriptor = true,
-        .max_packet = @intCast(max_packet),
-        .control_endpoint = speed != .high,
+        .max_packet = @intCast(pipe.max_packet),
+        .control_endpoint = pipe.speed != .high,
         .reload = 4,
     };
-    arena.control.capabilities = .{ .multiplier = 1 };
+    arena.control.capabilities = reach(pipe);
     arena.control.current = 0;
     arena.control.overlay = .{ .next = Link.to(controller.arena.physOf("stages"), .isochronous) };
     scheduleRunning(.asynchronous, true);

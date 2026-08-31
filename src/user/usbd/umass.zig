@@ -23,6 +23,10 @@ const usb = @import("lib").usb;
 
 pub const name = "umass";
 
+/// Every high speed device's control endpoint takes sixty-four byte
+/// packets, and the requests sent here carry no data anyway.
+const PACKET_ZERO: u16 = 64;
+
 /// The class this driver is for, which is also what its manifest says.
 pub const CLASS = usb.Class.mass_storage;
 pub const SUBCLASS: u8 = 0x06;
@@ -54,6 +58,17 @@ pub const Disk = struct {
     tag: u32 = 1,
     /// What the device last complained about, kept for the listing.
     sense: scsi.SenseData = .{},
+
+    /// The device's control endpoint, which the class's own requests and
+    /// every halt cleared here go to.
+    pub fn zero(self: *const Disk) usb.Pipe {
+        return .{
+            .address = self.address,
+            .speed = self.reading.speed,
+            .max_packet = PACKET_ZERO,
+            .route = self.reading.route,
+        };
+    }
 
     pub fn sectors(self: *const Disk) u64 {
         return self.capacity.blocks;
@@ -318,7 +333,7 @@ fn status(disk: *Disk, tag: u32) hc.Error!scsi.Verdict {
 /// has just put its own.
 fn clearHalt(disk: *Disk, pipe: *usb.Pipe) void {
     const address = @as(u8, pipe.number) | (@as(u8, @intFromEnum(pipe.direction)) << 7);
-    hc.command(disk.ops, disk.address, pipe.speed, PACKET_ZERO, usb.Setup.clearHalt(address)) catch {};
+    hc.command(disk.ops, disk.zero(), usb.Setup.clearHalt(address)) catch {};
     pipe.resetToggle();
 }
 
@@ -327,18 +342,13 @@ fn clearHalt(disk: *Disk, pipe: *usb.Pipe) void {
 fn recover(disk: *Disk) void {
     hc.command(
         disk.ops,
-        disk.address,
-        disk.reading.speed,
-        PACKET_ZERO,
+        disk.zero(),
         usb.Setup.classRequest(.out, RESET, 0, disk.interface, 0),
     ) catch {};
     clearHalt(disk, &disk.reading);
     clearHalt(disk, &disk.writing);
 }
 
-/// Every high speed device's control endpoint takes sixty-four byte
-/// packets, and the requests sent here carry no data anyway.
-const PACKET_ZERO: u16 = 64;
 
 fn say(disk: *const Disk) void {
     log.begin(name, .key);

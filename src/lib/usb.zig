@@ -142,6 +142,18 @@ pub const Setup = extern struct {
         };
     }
 
+    /// One of a device's strings, in a language it offers. Index zero is
+    /// the list of languages themselves, asked for with no language.
+    pub fn stringDescriptor(index: u8, language: u16, length: u16) Setup {
+        return .{
+            .request_type = .{ .direction = .in, .recipient = .device },
+            .request = .get_descriptor,
+            .value = (@as(u16, @intFromEnum(DescriptorType.string)) << 8) | index,
+            .index = language,
+            .length = length,
+        };
+    }
+
     /// Take an endpoint out of the halt a failed transfer left it in.
     /// Until this is done the endpoint answers nothing but a stall, and
     /// the device's own toggle goes back to zero with it.
@@ -378,13 +390,14 @@ pub const Endpoint = struct {
 
     /// The pipe this endpoint becomes once a device owns it, which is
     /// the only form a driver transfers through.
-    pub fn open(self: Endpoint, address_of_device: u7, speed: Speed) Pipe {
+    pub fn open(self: Endpoint, address_of_device: u7, speed: Speed, route: Route) Pipe {
         return .{
             .address = address_of_device,
             .number = self.number,
             .direction = self.direction,
             .speed = speed,
             .max_packet = self.max_packet,
+            .route = route,
         };
     }
 };
@@ -427,6 +440,27 @@ pub fn walk(bytes: []const u8) Walk {
 
 /// What a driver is matched against: a device says what it is, or says
 /// nothing and leaves its interfaces to say it.
+/// Where on the bus a device sits: which hub carries it, and on which of
+/// that hub's ports.
+///
+/// Zero means a root port, which is a device the controller reaches
+/// directly. Anything else is a device the controller reaches *through*
+/// something, and a fast controller talking to a slow device that way has
+/// to split every transaction in two and address the halves at the hub.
+/// So this travels with every transfer rather than being looked up.
+pub const Route = struct {
+    hub: u7 = 0,
+    port: u7 = 0,
+
+    /// Whether reaching this device means splitting transactions: a full
+    /// or low speed device behind a hub on a high speed bus. A high speed
+    /// device needs no such thing wherever it sits, and neither does
+    /// anything on a controller that is slow itself.
+    pub fn splits(self: Route, device_speed: Speed, bus_speed: Speed) bool {
+        return self.hub != 0 and bus_speed == .high and device_speed != .high;
+    }
+};
+
 /// One open endpoint on one device, and the toggle it is up to.
 ///
 /// The descriptor `Endpoint` says what an endpoint is; this says who it
@@ -446,6 +480,8 @@ pub const Pipe = struct {
     speed: Speed = .high,
     max_packet: u16 = 512,
     toggle: bool = false,
+    /// The hub this device hangs off, if any.
+    route: Route = .{},
 
     /// How many packets a transfer of this many bytes takes. A transfer
     /// of nothing is still one packet: a zero-length packet is how a
@@ -608,6 +644,185 @@ pub fn interfaceFor(
     }
     return found;
 }
+
+// ---------------------------------------------------------------------------
+// What a device calls itself
+// ---------------------------------------------------------------------------
+
+/// The first language a device offers, out of the list at string index
+/// zero. Devices in practice offer one, and which one is not a choice
+/// worth making: the point is to ask for a language the device has.
+pub fn firstLanguage(bytes: []const u8) ?u16 {
+    if (bytes.len < 4) return null;
+    if (bytes[1] != @intFromEnum(DescriptorType.string)) return null;
+    return std.mem.readInt(u16, bytes[2..4], .little);
+}
+
+/// A string descriptor's text, written out as UTF-8.
+///
+/// Devices store their strings as UTF-16, so this is a conversion and not
+/// a copy. Characters outside the basic plane arrive as a surrogate pair
+/// and are dropped rather than half-encoded: no device names itself with
+/// one, and half a character is worse than none.
+pub fn decodeString(bytes: []const u8, into: []u8) []const u8 {
+    if (bytes.len < 2 or bytes[1] != @intFromEnum(DescriptorType.string)) return "";
+
+    // The descriptor's own length bounds the text, and so does what
+    // actually arrived: a device that overstates itself is not followed.
+    const claimed = @min(@as(usize, bytes[0]), bytes.len);
+    if (claimed < 4) return "";
+
+    var written: usize = 0;
+    var at: usize = 2;
+    while (at + 1 < claimed) : (at += 2) {
+        const unit = std.mem.readInt(u16, bytes[at..][0..2], .little);
+        if (unit >= 0xD800 and unit <= 0xDFFF) continue;
+
+        var encoded: [4]u8 = undefined;
+        const width = std.unicode.utf8Encode(unit, &encoded) catch continue;
+        if (written + width > into.len) break;
+        @memcpy(into[written..][0..width], encoded[0..width]);
+        written += width;
+    }
+    return into[0..written];
+}
+
+// ---------------------------------------------------------------------------
+// Hubs
+// ---------------------------------------------------------------------------
+
+/// A hub's own descriptor, which is a class descriptor rather than one of
+/// the standard kinds and so has a type number of its own.
+pub const Hub = struct {
+    ports: u8 = 0,
+    /// Milliseconds between powering a port and a device on it being
+    /// usable. The specification stores half of it, so this is doubled.
+    power_on_ms: u16 = 0,
+    /// Whether the hub switches power per port or all together. A hub
+    /// that switches nothing reports ganged and ignores the request.
+    per_port_power: bool = false,
+
+    pub const DESCRIPTOR: u8 = 0x29;
+    pub const BYTES = 7;
+
+    pub fn parse(bytes: []const u8) ?Hub {
+        if (bytes.len < BYTES) return null;
+        if (bytes[1] != DESCRIPTOR) return null;
+        const characteristics = std.mem.readInt(u16, bytes[3..5], .little);
+        return .{
+            .ports = bytes[2],
+            // Two milliseconds per unit, and never less than the hundred
+            // the specification calls the settling time: a hub reporting
+            // nothing is a hub whose ports still need a moment.
+            .power_on_ms = @max(@as(u16, bytes[5]) * 2, 100),
+            .per_port_power = characteristics & 0x03 == 0x01,
+        };
+    }
+};
+
+/// What a hub says about one of its ports. The low half is how things
+/// are; the high half is what has changed since anybody last asked, and
+/// stays set until it is cleared.
+pub const PortStatus = packed struct(u32) {
+    connected: bool = false,
+    enabled: bool = false,
+    suspended: bool = false,
+    over_current: bool = false,
+    resetting: bool = false,
+    _5: u3 = 0,
+    powered: bool = false,
+    low_speed: bool = false,
+    high_speed: bool = false,
+    test_mode: bool = false,
+    indicator: bool = false,
+    _13: u3 = 0,
+
+    connection_changed: bool = false,
+    enable_changed: bool = false,
+    suspend_changed: bool = false,
+    over_current_changed: bool = false,
+    reset_changed: bool = false,
+    _21: u11 = 0,
+
+    pub const BYTES = 4;
+
+    pub fn parse(bytes: []const u8) ?PortStatus {
+        if (bytes.len < BYTES) return null;
+        return @bitCast(std.mem.readInt(u32, bytes[0..4], .little));
+    }
+
+    /// How fast whatever is on the port speaks. Two bits say it, and
+    /// neither set means full speed, which is the one nobody flags.
+    pub fn speed(self: PortStatus) Speed {
+        if (self.low_speed) return .low;
+        if (self.high_speed) return .high;
+        return .full;
+    }
+
+    pub fn changed(self: PortStatus) bool {
+        return self.connection_changed or self.enable_changed or
+            self.suspend_changed or self.over_current_changed or self.reset_changed;
+    }
+};
+
+/// What a hub feature request names. The ones below sixteen are states;
+/// the ones above are the change bits, which are cleared rather than set.
+pub const PortFeature = enum(u16) {
+    connection = 0,
+    enable = 1,
+    suspended = 2,
+    over_current = 3,
+    reset = 4,
+    power = 8,
+    low_speed = 9,
+    connection_changed = 16,
+    enable_changed = 17,
+    suspend_changed = 18,
+    over_current_changed = 19,
+    reset_changed = 20,
+    _,
+};
+
+/// The requests a hub answers about its ports. Class requests, so they
+/// share the standard numbering but mean what the hub class says.
+pub const hub_requests = struct {
+    /// A hub's own descriptor, asked for the way a class descriptor is.
+    pub fn descriptor(length: u16) Setup {
+        return .{
+            .request_type = .{ .direction = .in, .kind = .class, .recipient = .device },
+            .request = .get_descriptor,
+            .value = @as(u16, Hub.DESCRIPTOR) << 8,
+            .length = length,
+        };
+    }
+
+    pub fn portStatus(port: u8) Setup {
+        return .{
+            .request_type = .{ .direction = .in, .kind = .class, .recipient = .other },
+            .request = .get_status,
+            .index = port,
+            .length = PortStatus.BYTES,
+        };
+    }
+
+    pub fn setPort(port: u8, feature: PortFeature) Setup {
+        return .{
+            .request_type = .{ .direction = .out, .kind = .class, .recipient = .other },
+            .request = .set_feature,
+            .value = @intFromEnum(feature),
+            .index = port,
+        };
+    }
+
+    pub fn clearPort(port: u8, feature: PortFeature) Setup {
+        return .{
+            .request_type = .{ .direction = .out, .kind = .class, .recipient = .other },
+            .request = .clear_feature,
+            .value = @intFromEnum(feature),
+            .index = port,
+        };
+    }
+};
 
 /// The signature to look a driver up by. A device that declares its own
 /// class is taken at its word; one that declares none is described by its
@@ -948,7 +1163,7 @@ test "a descriptor's endpoint opens into a pipe on a device" {
     try std.testing.expectEqual(@as(u16, 512), descriptor.max_packet);
     try std.testing.expectEqual(@as(u8, 0x81), descriptor.address());
 
-    const pipe = descriptor.open(3, .high);
+    const pipe = descriptor.open(3, .high, .{});
     try std.testing.expectEqual(@as(u7, 3), pipe.address);
     try std.testing.expectEqual(@as(u4, 1), pipe.number);
     try std.testing.expectEqual(Direction.in, pipe.direction);
@@ -1060,4 +1275,157 @@ test "a manifest may name several things one driver fits" {
     try std.testing.expect(disk.matchesClass("usb-class:08:06:50"));
     try std.testing.expect(!disk.matchesClass(""));
     try std.testing.expect(!disk.matchesClass(",,"));
+}
+
+test "a hub says how many ports it has and how long they take to come up" {
+    // Four ports, per-port power, fifty units of two milliseconds.
+    const wire = [_]u8{ 9, Hub.DESCRIPTOR, 4, 0x09, 0x00, 50, 0x00, 0xFF, 0x00 };
+    const hub = Hub.parse(&wire) orelse return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(@as(u8, 4), hub.ports);
+    try std.testing.expectEqual(@as(u16, 100), hub.power_on_ms);
+    try std.testing.expect(hub.per_port_power);
+
+    // A hub switching power all together says so in the low two bits.
+    const ganged = [_]u8{ 9, Hub.DESCRIPTOR, 7, 0x00, 0x00, 1, 0x00 };
+    const all = Hub.parse(&ganged) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 7), all.ports);
+    try std.testing.expect(!all.per_port_power);
+    // Never less than the settling time, whatever the hub claims.
+    try std.testing.expectEqual(@as(u16, 100), all.power_on_ms);
+
+    // Anything that is not a hub descriptor is refused rather than read.
+    try std.testing.expect(Hub.parse(&[_]u8{ 9, 0x02, 4, 0, 0, 50, 0 }) == null);
+    try std.testing.expect(Hub.parse(wire[0..5]) == null);
+}
+
+test "a port's status says what is there and what has changed" {
+    // Connected, enabled, powered, low speed; the connection changed.
+    var wire: [4]u8 = @splat(0);
+    std.mem.writeInt(u32, &wire, 0x0001_0303, .little);
+
+    const port = PortStatus.parse(&wire) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(port.connected);
+    try std.testing.expect(port.enabled);
+    try std.testing.expect(port.powered);
+    try std.testing.expect(port.low_speed);
+    try std.testing.expectEqual(Speed.low, port.speed());
+    try std.testing.expect(port.connection_changed);
+    try std.testing.expect(!port.reset_changed);
+    try std.testing.expect(port.changed());
+
+    // Nothing set anywhere is an empty port with nothing to report.
+    const empty = PortStatus{};
+    try std.testing.expect(!empty.connected);
+    try std.testing.expect(!empty.changed());
+    // Neither speed bit is full speed, which is the one nobody flags.
+    try std.testing.expectEqual(Speed.full, empty.speed());
+
+    try std.testing.expect(PortStatus.parse(wire[0..3]) == null);
+}
+
+test "the port status bits sit where the specification puts them" {
+    try std.testing.expectEqual(@as(u32, 0x0001), @as(u32, @bitCast(PortStatus{ .connected = true })));
+    try std.testing.expectEqual(@as(u32, 0x0010), @as(u32, @bitCast(PortStatus{ .resetting = true })));
+    try std.testing.expectEqual(@as(u32, 0x0100), @as(u32, @bitCast(PortStatus{ .powered = true })));
+    try std.testing.expectEqual(@as(u32, 0x0200), @as(u32, @bitCast(PortStatus{ .low_speed = true })));
+    try std.testing.expectEqual(@as(u32, 0x0400), @as(u32, @bitCast(PortStatus{ .high_speed = true })));
+    try std.testing.expectEqual(@as(u32, 0x0001_0000), @as(u32, @bitCast(PortStatus{ .connection_changed = true })));
+    try std.testing.expectEqual(@as(u32, 0x0010_0000), @as(u32, @bitCast(PortStatus{ .reset_changed = true })));
+}
+
+test "the hub's port requests are shaped the way the wire wants" {
+    const status = hub_requests.portStatus(3);
+    try std.testing.expectEqual(@as(u8, 0xA3), @as(u8, @bitCast(status.request_type)));
+    try std.testing.expectEqual(Request.get_status, status.request);
+    try std.testing.expectEqual(@as(u16, 3), status.index);
+    try std.testing.expectEqual(@as(u16, 4), status.length);
+
+    const reset = hub_requests.setPort(2, .reset);
+    try std.testing.expectEqual(@as(u8, 0x23), @as(u8, @bitCast(reset.request_type)));
+    try std.testing.expectEqual(Request.set_feature, reset.request);
+    try std.testing.expectEqual(@as(u16, 4), reset.value);
+    try std.testing.expectEqual(@as(u16, 2), reset.index);
+    // No data stage, so the status stage runs in.
+    try std.testing.expectEqual(Direction.in, reset.statusDirection());
+
+    const clear = hub_requests.clearPort(1, .connection_changed);
+    try std.testing.expectEqual(Request.clear_feature, clear.request);
+    try std.testing.expectEqual(@as(u16, 16), clear.value);
+
+    const descriptor = hub_requests.descriptor(9);
+    try std.testing.expectEqual(@as(u8, 0xA0), @as(u8, @bitCast(descriptor.request_type)));
+    try std.testing.expectEqual(@as(u16, 0x2900), descriptor.value);
+}
+
+test "only a slow device behind a hub on a fast bus needs splitting" {
+    const root = Route{};
+    const behind = Route{ .hub = 2, .port = 3 };
+
+    // A root port never splits, whatever speed anything is.
+    try std.testing.expect(!root.splits(.low, .high));
+    try std.testing.expect(!root.splits(.full, .high));
+
+    // Behind a hub on a high speed bus, a slow device does.
+    try std.testing.expect(behind.splits(.low, .high));
+    try std.testing.expect(behind.splits(.full, .high));
+    // A high speed device talks for itself wherever it is.
+    try std.testing.expect(!behind.splits(.high, .high));
+    // And a controller that is slow itself has nothing to split.
+    try std.testing.expect(!behind.splits(.low, .full));
+    try std.testing.expect(!behind.splits(.full, .full));
+}
+
+test "a device's language list is read from its first entry" {
+    // Two languages: English, then French.
+    const wire = [_]u8{ 6, 0x03, 0x09, 0x04, 0x0C, 0x04 };
+    try std.testing.expectEqual(@as(u16, 0x0409), firstLanguage(&wire).?);
+
+    try std.testing.expect(firstLanguage(&[_]u8{ 4, 0x02, 0x09, 0x04 }) == null);
+    try std.testing.expect(firstLanguage(&[_]u8{ 2, 0x03 }) == null);
+}
+
+test "a device's name is read out of its own encoding" {
+    var into: [32]u8 = undefined;
+
+    // "USB" as the wire carries it: length, type, then two bytes a letter.
+    const wire = [_]u8{ 8, 0x03, 'U', 0, 'S', 0, 'B', 0 };
+    try std.testing.expectEqualStrings("USB", decodeString(&wire, &into));
+
+    // A character outside plain ASCII is encoded rather than truncated.
+    const accented = [_]u8{ 6, 0x03, 0xE9, 0x00, 'a', 0 };
+    try std.testing.expectEqualStrings("éa", decodeString(&accented, &into));
+
+    // The descriptor's own length is what bounds the text, so trailing
+    // bytes past it are not read as characters.
+    const short = [_]u8{ 4, 0x03, 'A', 0, 'B', 0 };
+    try std.testing.expectEqualStrings("A", decodeString(&short, &into));
+
+    // A device that overstates its length is not followed past what came.
+    const overstated = [_]u8{ 40, 0x03, 'A', 0 };
+    try std.testing.expectEqualStrings("A", decodeString(&overstated, &into));
+
+    // Half of a character outside the basic plane is worse than none.
+    const surrogate = [_]u8{ 8, 0x03, 0x3D, 0xD8, 'x', 0 };
+    try std.testing.expectEqualStrings("x", decodeString(&surrogate, &into));
+
+    // A name longer than the room for it is cut, not overrun.
+    var tiny: [2]u8 = undefined;
+    const long = [_]u8{ 10, 0x03, 'a', 0, 'b', 0, 'c', 0, 'd', 0 };
+    try std.testing.expectEqualStrings("ab", decodeString(&long, &tiny));
+
+    // Anything that is not a string descriptor is refused.
+    try std.testing.expectEqualStrings("", decodeString(&[_]u8{ 8, 0x02, 'U', 0 }, &into));
+    try std.testing.expectEqualStrings("", decodeString(&[_]u8{ 2, 0x03 }, &into));
+}
+
+test "a string request names the language it wants" {
+    const languages = Setup.stringDescriptor(0, 0, 8);
+    try std.testing.expectEqual(@as(u16, 0x0300), languages.value);
+    try std.testing.expectEqual(@as(u16, 0), languages.index);
+
+    const product = Setup.stringDescriptor(2, 0x0409, 64);
+    try std.testing.expectEqual(@as(u16, 0x0302), product.value);
+    try std.testing.expectEqual(@as(u16, 0x0409), product.index);
+    try std.testing.expectEqual(Direction.out, product.statusDirection());
 }

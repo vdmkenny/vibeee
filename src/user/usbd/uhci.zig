@@ -645,19 +645,16 @@ fn queue(count: usize) void {
     arena.queue.element = Link.toTransfer(controller.arena.physOf("chain"), true);
 }
 
-fn control(
-    address: u7,
-    speed: usb.Speed,
-    max_packet: u16,
-    setup: usb.Setup,
-    data: []u8,
-) hc.Error!usize {
+/// A controller of this kind is full speed itself, so it talks to a slow
+/// device the same way whether a hub is in between or not: the route says
+/// nothing it has to act on.
+fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
     if (!controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES - usb.Setup.BYTES) return hc.Error.Refused;
 
     const arena = controller.arena.at;
-    const low = speed == .low;
-    const endpoint = Aim{ .address = address, .low_speed = low, .max_packet = max_packet };
+    const low = pipe.speed == .low;
+    const endpoint = Aim{ .address = pipe.address, .low_speed = low, .max_packet = pipe.max_packet };
 
     const reading = setup.request_type.direction == .in;
     const wants_data = setup.length != 0 and data.len != 0;

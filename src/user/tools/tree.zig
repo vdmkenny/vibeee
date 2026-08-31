@@ -9,6 +9,7 @@
 //! since it was a hardware font.
 
 const dir = @import("ulib").dir;
+const Rung = @import("ulib").tree.Rung;
 const out = @import("ulib").out;
 const paths = @import("ulib").paths;
 const str = @import("ulib").str;
@@ -20,28 +21,6 @@ const MAX_DEPTH = 8;
 /// Whether an entry had anything after it, which is the only thing the line art
 /// depends on. Asking once and drawing from the answer keeps the two halves of
 /// a rung from disagreeing about which one this is.
-const Rung = enum {
-    more,
-    last,
-
-    /// Drawn beside the entry's own name.
-    fn stem(self: Rung) []const u8 {
-        return switch (self) {
-            .more => "\u{251C}\u{2500}\u{2500} ",
-            .last => "\u{2514}\u{2500}\u{2500} ",
-        };
-    }
-
-    /// Drawn beside everything nested below it: a rail while there is still
-    /// something further down to reach, blank once there is not.
-    fn under(self: Rung) []const u8 {
-        return switch (self) {
-            .more => "\u{2502}   ",
-            .last => "    ",
-        };
-    }
-};
-
 /// One level's listing and the names it points into. One per level, because a
 /// level's entries have to outlive the walk into its children.
 const Level = struct {

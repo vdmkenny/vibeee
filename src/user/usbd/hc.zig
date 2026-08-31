@@ -49,16 +49,11 @@ pub const HcOps = struct {
     /// Acknowledge whatever the controller interrupted about, and say
     /// whether any port changed while doing it.
     serviceIrq: *const fn () bool,
-    /// One control transfer to `address` on endpoint zero. `data` is the
-    /// buffer for the data stage, empty for none; returns how many bytes
+    /// One control transfer on a device's endpoint zero. The pipe says
+    /// who, how fast, how big a packet, and by what route; `data` is the
+    /// buffer for the data stage, empty for none. Returns how many bytes
     /// moved.
-    control: *const fn (
-        address: u7,
-        speed: usb.Speed,
-        max_packet: u16,
-        setup: usb.Setup,
-        data: []u8,
-    ) Error!usize,
+    control: *const fn (pipe: usb.Pipe, setup: usb.Setup, data: []u8) Error!usize,
     /// One bulk transfer on an open pipe, in whichever direction the pipe
     /// runs. The pipe's toggle is advanced by what actually moved, so a
     /// short answer leaves it where the device thinks it is.
@@ -81,9 +76,9 @@ pub const HcOps = struct {
 /// A control transfer that carries no data: a request goes out and only
 /// its status comes back. Most of what a class driver sends is this, so
 /// it is written once rather than once per driver.
-pub fn command(ops: HcOps, address: u7, speed: usb.Speed, max_packet: u16, setup: usb.Setup) Error!void {
+pub fn command(ops: HcOps, pipe: usb.Pipe, setup: usb.Setup) Error!void {
     var nothing: [0]u8 = .{};
-    _ = try ops.control(address, speed, max_packet, setup, &nothing);
+    _ = try ops.control(pipe, setup, &nothing);
 }
 
 /// One driven controller and what the bus knows about it.

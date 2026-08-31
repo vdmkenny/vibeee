@@ -13,6 +13,10 @@ pub const Tag = enum(u8) {
     device,
     /// How many host controllers are driven.
     controllers,
+    /// What the device at `index` calls itself: `body.text`, empty when
+    /// it does not say. Asked separately because a reply is one small
+    /// message and a name is as long as a name.
+    name,
     /// One port's own state, by `index` across every controller's ports
     /// in turn: `body.port`, or `end` past the last.
     port,
@@ -32,8 +36,11 @@ pub const DeviceInfo = extern struct {
     version: u16 = 0,
     /// The address the bus gave it; zero means an empty table slot.
     address: u8 = 0,
-    /// One based, the way a port is labelled on a machine.
-    port: u8 = 0,
+    /// Where it sits, written the way a person would trace it: the
+    /// controller, then every port down the chain. A device on a hub
+    /// looks different from one on a root port, which it is.
+    path: [12]u8 = @splat(0),
+    path_len: u8 = 0,
     controller: u8 = 0,
     speed: usb.Speed = .high,
     class: usb.Class = .per_interface,
@@ -46,6 +53,12 @@ pub const DeviceInfo = extern struct {
     pub fn driverSlice(self: *const DeviceInfo) []const u8 {
         return self.driver[0..@min(self.driver_len, self.driver.len)];
     }
+
+    pub fn pathSlice(self: *const DeviceInfo) []const u8 {
+        return self.path[0..@min(self.path_len, self.path.len)];
+    }
+
+
 };
 
 /// What a controller says about one of its ports, before anything has
@@ -66,6 +79,20 @@ pub const PortInfo = extern struct {
     _tail: u8 = 0,
 };
 
+/// Text as long as one reply can carry, which is what a device's own
+/// name comes back as.
+pub const Text = extern struct {
+    len: u8 = 0,
+    bytes: [NAME_MAX]u8 = @splat(0),
+
+    pub fn slice(self: *const Text) []const u8 {
+        return self.bytes[0..@min(self.len, self.bytes.len)];
+    }
+};
+
+/// As much of a name as one message holds.
+pub const NAME_MAX = 40;
+
 pub const Rep = extern struct {
     status: Status = .ok,
     _pad: [3]u8 = @splat(0),
@@ -76,6 +103,7 @@ pub const Body = extern union {
     count: u32,
     device: DeviceInfo,
     port: PortInfo,
+    text: Text,
 };
 
 pub const Error = error{ NoService, Refused, End };

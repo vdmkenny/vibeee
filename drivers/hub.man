@@ -1,0 +1,5 @@
+# A hub: more ports, on a port. Matched by class, because every hub
+# answers the same requests whoever made it.
+name    = hub
+service = usb
+match   = usb-class:09:00

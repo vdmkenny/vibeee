@@ -18,6 +18,10 @@ pub const Target = struct {
     /// it recognises the same device again after a restart.
     controller: u8,
     port: u8,
+    /// Which hub carries it, if any. Travels with every transfer,
+    /// because a fast controller reaching a slow device through a hub
+    /// has to address the split halves at the hub itself.
+    route: usb.Route = .{},
     descriptor: usb.Device,
     signature: usb.Signature,
     /// The configuration as the device wrote it, for finding interfaces
@@ -27,17 +31,27 @@ pub const Target = struct {
 
     /// A pipe on this device from an endpoint of its configuration.
     pub fn pipe(self: Target, endpoint: usb.Endpoint) usb.Pipe {
-        return endpoint.open(self.address, self.speed);
+        return endpoint.open(self.address, self.speed, self.route);
+    }
+
+    /// The device's own control endpoint, which every request goes to.
+    pub fn zero(self: Target) usb.Pipe {
+        return .{
+            .address = self.address,
+            .speed = self.speed,
+            .max_packet = self.descriptor.max_packet_zero,
+            .route = self.route,
+        };
     }
 
     /// A control transfer to this device's endpoint zero.
     pub fn control(self: Target, setup: usb.Setup, data: []u8) hc.Error!usize {
-        return self.ops.control(self.address, self.speed, self.descriptor.max_packet_zero, setup, data);
+        return self.ops.control(self.zero(), setup, data);
     }
 
     /// The same, for a request that carries nothing.
     pub fn command(self: Target, setup: usb.Setup) hc.Error!void {
-        return hc.command(self.ops, self.address, self.speed, self.descriptor.max_packet_zero, setup);
+        return hc.command(self.ops, self.zero(), setup);
     }
 };
 

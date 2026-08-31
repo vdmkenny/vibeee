@@ -9,8 +9,9 @@ low speed root port belongs to. On top of them: enumeration, hot-plug, the
 bulk-only mass storage class with its SCSI commands, the block-device seam to
 the kernel, and boot-protocol HID. A stick is enumerated, mounted under /media,
 read and written, and unplugging it takes its mount with it; a keyboard types
-and a mouse moves the pointer, on either controller. Hubs, UVC (§4.2), and
-suspend and resume (§5.8) are design for later milestones. Owner: usbd. Depends
+and a mouse moves the pointer, on either controller. Hubs are driven, so a keyboard or a disk behind one appears
+and disappears like anything else. UVC (§4.2) and suspend and resume (§5.8) are design
+for later milestones. Owner: usbd. Depends
 on: kernel contracts v0, 05-input (injection), 03-vfs (volume consumer),
 platformd (CAMS/ACPI), devmgr (supervision/matching).
 
@@ -424,5 +425,5 @@ CPU at 20 MB/s MSC streaming (630 MHz, low-memory-bandwidth assumption): 320 IRQ
 ## 9. Phasing
 
 - **M1 (boots the OS), done:** EHCI (handoff, async and periodic schedules, ports), core enumeration and hot-plug, MSC+BOT with SCSI, volume export of the card reader and external high-speed sticks, and boot-protocol HID for high-speed keyboards and mice. Verified in QEMU: a stick mounts under /media, is read and written, and unplugging it drops the mount; a keyboard types and a mouse moves the pointer. FS/LS ports are parked via PO. The yank ladder and restart-with-identity-reattach are M2.
-- **M2 (daily-driver):** external HS hubs (HS children); S3 suspend and resume; the yank ladder and identity reattach; devmgr string events for the GUI. The UHCI companions are done, with control, bulk and interrupt transfers, which is what a keyboard or mouse on a root port needs.
+- **M2 (daily-driver):** S3 suspend and resume; the yank ladder and identity reattach; devmgr string events for the GUI. The UHCI companions are done, with control, bulk and interrupt transfers, which is what a keyboard or mouse on a root port needs.
 - **M3 (camera + leftovers):** UVC (CAMS coordination + quirk policy, probe/commit, iTD iso engine, cam shm API), interrupt-IN splits for HID behind HS hubs, optional 128 KiB MSC transfers, optional ublk phys-scatter extension if M1 numbers demand it.

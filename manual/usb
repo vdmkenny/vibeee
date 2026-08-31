@@ -1,12 +1,17 @@
 usb - what is plugged in
 
-  usb                    the devices on the bus
-  usb ports              every port, whether or not anything came of it
+  usb                    the devices on the bus, as a tree
+  usb ports              every root port, whether or not anything came of it
   usb controllers        how many host controllers are driven
 
-Where a device is reads as controller-port.address: the port is
-numbered the way it is labelled on the machine, and the address is
-what the bus handed out when the device arrived.
+The bus is drawn the way `tree` draws a directory, because it is the
+same kind of thing: a device on a hub is shown under that hub. Where it
+sits reads as the controller and then every port down to it, so 1-1.3
+is the third port of a hub on the first port of the second controller.
+
+The last column is what the device calls itself, which is the only one
+it wrote: a device that does not say leaves it blank rather than being
+given a name here.
 
 Class is what a device says it is. A device answering `per interface`
 puts the truth in its interfaces instead, and the bus copies that up so
@@ -23,6 +28,11 @@ appears in `disk` as a volume and is mounted under /media, so a stick is
 read like any other drive. A keyboard's keys arrive as keys, meaning
 whatever the current layout says they mean, and a mouse moves the
 pointer. None of this is the bus's doing; it only found them.
+
+A hub is a device like any other and has a driver like any other; what
+is behind it is enumerated the same way a root port's device is, and
+appears and disappears the same way. A hub with nothing being plugged
+into it costs no interrupts.
 
 `usb ports` is the view for when a device is plugged in and does not
 appear: a port that reads connected with no address against it is one

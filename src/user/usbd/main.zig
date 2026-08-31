@@ -14,6 +14,7 @@
 
 const core = @import("core.zig");
 const hid = @import("hid.zig");
+const hub = @import("hub.zig");
 const uhci = @import("uhci.zig");
 const umass = @import("umass.zig");
 const volume = @import("volume.zig");
@@ -51,6 +52,7 @@ const DRIVERS = [_]Driver{
 const CLASSES = [_]@import("class.zig").ClassDriver{
     umass.driver,
     hid.driver,
+    hub.driver,
 };
 
 /// This family of chipset puts one high speed controller and four
@@ -248,6 +250,7 @@ fn handle(message: *const sys.Message, token: u32) void {
         .device => describe(req.index, token),
         .controllers => replyBody(token, .{ .count = @intCast(controller_count) }),
         .port => port(req.index, token),
+        .name => called(req.index, token),
     }
 }
 
@@ -275,6 +278,10 @@ fn port(index: u32, token: u32) void {
     replyEnd(token);
 }
 
+/// As long as a path can be written, which the reply carries as an array
+/// of exactly this size.
+const PATH_MAX = @typeInfo(@FieldType(proto.DeviceInfo, "path")).array.len;
+
 fn describe(index: u32, token: u32) void {
     if (index >= core.MAX_DEVICES) return replyEnd(token);
     const entry = core.at(index) orelse {
@@ -285,7 +292,6 @@ fn describe(index: u32, token: u32) void {
 
     var info = proto.DeviceInfo{
         .address = entry.address,
-        .port = entry.port + 1,
         .controller = entry.controller,
         .speed = entry.speed,
         .class = entry.signature.class,
@@ -297,7 +303,22 @@ fn describe(index: u32, token: u32) void {
         .driver_len = entry.driver.driver_len,
     };
     @memcpy(&info.driver, &entry.driver.driver);
+
+    var where: [PATH_MAX]u8 = undefined;
+    const path = core.pathOf(index, &where);
+    info.path_len = @intCast(path.len);
+    @memcpy(info.path[0..path.len], path);
+
     replyBody(token, .{ .device = info });
+}
+
+/// What a device calls itself, read once when it arrived.
+fn called(index: u32, token: u32) void {
+    const entry = core.at(index) orelse return replyBody(token, .{ .text = .{} });
+
+    var text = proto.Text{ .len = @intCast(@min(entry.name_len, proto.NAME_MAX)) };
+    @memcpy(text.bytes[0..text.len], entry.nameSlice()[0..text.len]);
+    replyBody(token, .{ .text = text });
 }
 
 fn refuse(token: u32) void {
