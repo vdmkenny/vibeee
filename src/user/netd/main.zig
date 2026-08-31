@@ -267,6 +267,13 @@ fn serve(channel: u32) noreturn {
     var sources: [MAX_IFACES + 3]u32 = undefined;
     var source_count: usize = 1;
     sources[0] = channel;
+
+    const event = sys.eventCreate();
+    if (event >= 0) {
+        address_event = @intCast(event);
+        stack.announce = addressChanged;
+    }
+
     for (ifaces[0..count]) |iface| {
         if (iface.irq == 0) continue;
         // One handle per line: shared lines are woken in one place, not
@@ -369,6 +376,10 @@ fn drain(channel: u32) void {
                     bridge.handle(&message, request.token);
                     continue;
                 },
+                .watch => {
+                    handWatch(channel, request.token);
+                    continue;
+                },
                 else => {},
             }
         }
@@ -377,6 +388,35 @@ fn drain(channel: u32) void {
         reply.status = answer(&message, &reply);
         replyWith(channel, request.token, &reply);
     }
+}
+
+/// The event a waiting service holds, signalled whenever an address arrives
+/// or goes away. One event for the whole system: a lease landing wakes every
+/// waiter at once, and nobody is left asking every few seconds.
+var address_event: u32 = 0;
+
+fn addressChanged() void {
+    if (address_event != 0) _ = sys.eventSignal(address_event);
+}
+
+/// Hand back the address event, so a caller learns the network arrived
+/// rather than having to ask whether it has.
+fn handWatch(channel: u32, token: u32) void {
+    var reply = proto.Rep{};
+    if (address_event == 0) {
+        reply.status = .refused;
+        replyWith(channel, token, &reply);
+        return;
+    }
+
+    var out_msg = sys.Message{};
+    @memcpy(out_msg.data[0..@sizeOf(proto.Rep)], std.mem.asBytes(&reply));
+    out_msg.len = @sizeOf(proto.Rep);
+    // Sending retains rather than consumes, so the event stays ours and
+    // every waiter ends up holding the same one.
+    out_msg.handles[0] = address_event;
+    out_msg.handle_count = 1;
+    _ = sys.replyMsg(channel, token, &out_msg);
 }
 
 fn replyWith(channel: u32, token: u32, reply: *const proto.Rep) void {
@@ -435,6 +475,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         reply.body = .{ .count = @intCast(count) };
         return .ok;
     }
+
 
     if (request.index >= count) return .end;
 

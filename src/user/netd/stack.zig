@@ -270,11 +270,17 @@ fn applySlot(slot: *Slot, role: settings.NetSlot) void {
     }
 }
 
+/// Told whenever an address arrives or goes away, so a service waiting for
+/// the network learns of it instead of asking. Set by the serve loop, which
+/// owns the event the answer travels on.
+pub var announce: ?*const fn () void = null;
+
 /// The address changed under the netif: a lease arrived or expired, or a
 /// static claim landed. Narrated here because this is the one place every
 /// path converges.
 fn statusChanged(netif: *lwip.Netif) callconv(.c) void {
     const nic: *dev.NicDev = @ptrCast(@alignCast(netif.state orelse return));
+    if (announce) |tell| tell();
     if (netif.ip_addr.addr == 0) {
         if (netif.flags.up) say(nic, "no address");
         return;

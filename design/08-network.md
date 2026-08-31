@@ -400,6 +400,12 @@ addresses arrive, asynchronously after; `net` reports honestly at every stage. T
 boot does not wait for a DHCP lease: a machine on a dead cable boots at full speed
 and says `wired: up, no address` when asked.
 
+Which is why `provides = net` is not the same as "there is a network". A service
+that needs one waits on the `watch` event (§8.2): one event for the whole system,
+signalled from the single place every address path converges on, so a lease landing
+five minutes into a session starts the work that could not run at boot. Asking every
+few seconds instead would be the one thing this design does not do.
+
 ## 8. Socket bridge
 
 The kernel already carries everything the bridge needs: channels transfer `event`,
@@ -449,6 +455,8 @@ close{sock}                  -> errno   (graceful FIN, linger ≤ 5 s)
 resolve{name}                -> {addr, source: hosts | dns}; deferred while
                                 a server is asked, immediate from the table
 ping{addr, timeout_ms}       -> deferred reply {rtt_us | timed_out}
+watch{}                      -> {event}, signalled whenever an interface gains
+                                or loses an address
 ```
 
 Deferred replies are the channel model working for us: the server keeps the request
@@ -468,6 +476,25 @@ No POSIX/libc socket shim yet: `ping` and `nc` use the native client library
 (`user/lib/` wrapper over these ops). The shim belongs to the C-apps milestone and
 layers on this bridge without changing it. No `select` semantics beyond `wait_many`
 over `ev_app` handles. No out-of-band, no socket options beyond NODELAY.
+
+### 8.4 timed: the clock from the network
+
+A netbook of this age has usually lost the battery that kept its clock, so it wakes
+not knowing the date, and **a wrong clock breaks TLS** (§00 6.6). `timed` asks one
+SNTP server at a time from a list the `time` domain holds, and hands what comes back
+to `clock_set`.
+
+Two things gate it, both events rather than polls: an address, learned from the
+`watch` event above, because a name looked up over a network that has not arrived is
+a question nobody answers; and the `time` domain's own watch, so a server list edited
+with `cfg` takes effect without a restart. The exchange itself is `udp_open`, one
+datagram out, then `wait_many` on the socket's event until the answer is there or the
+deadline passes: the event carries every piece of news about the socket, the question
+leaving among them, so waking is not the same as being answered.
+
+The wire format is pure and host-tested (`lib/ntp.zig`): a reply that is not one is
+refused by name rather than believed. Only the server that was asked, and only from
+the port it was asked on, can set the clock.
 
 ## 9. Tools
 

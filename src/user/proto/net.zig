@@ -25,6 +25,10 @@ pub const Tag = enum(u8) {
     ping,
     /// The stack's address story for the interface at `index`.
     address,
+    /// An event that fires whenever an interface gains or loses an address.
+    /// What a service waiting for the network waits on, rather than asking
+    /// every few seconds whether it has arrived.
+    watch,
     /// Open a stream to `param`:`param2`. The reply waits for the handshake
     /// and grants the socket: `body.sock` and the three handles.
     tcp_connect,
@@ -263,6 +267,36 @@ pub fn interfaceAt(index: usize) ?Iface {
 }
 
 /// What the stack has made of that interface's addressing.
+/// An event handle that fires when any interface's address changes.
+///
+/// Held by the service rather than made per caller, so every waiter ends up
+/// on the same event and a lease arriving wakes all of them at once.
+pub fn watch() Error!u32 {
+    const channel = sys.svcConnect(SERVICE);
+    if (channel < 0) return error.NoService;
+    defer _ = sys.close(@intCast(channel));
+
+    const req = Req{ .tag = .watch };
+    const message = sys.Message.init(std.mem.asBytes(&req), &.{});
+    var answer = sys.Message{};
+    if (sys.callMsg(@intCast(channel), &message, &answer) < 0) return error.NoService;
+
+    const handles = answer.handleSlice();
+    if (handles.len == 0) return error.Refused;
+    return handles[0];
+}
+
+/// Whether any interface has an address: whether there is a network to use.
+pub fn haveAddress() bool {
+    var index: usize = 0;
+    const total = interfaceCount();
+    while (index < total) : (index += 1) {
+        const info = addressOf(index) orelse continue;
+        if (info.addr != 0) return true;
+    }
+    return false;
+}
+
 pub fn addressOf(index: usize) ?AddressInfo {
     var reply = Rep{};
     call(.address, @intCast(index), 0, &reply) catch return null;
