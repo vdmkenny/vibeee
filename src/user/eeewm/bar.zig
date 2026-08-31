@@ -397,6 +397,17 @@ fn paintLauncherField(surface: Surface, area: Rect) void {
     }, t.text);
 }
 
+/// The tag one step along the row of existing desktops, wrapping.
+fn neighbourTab(desktop: *const layout.Desktop, tag: u8, step: i32) u8 {
+    var buf: [layout.MAX_DESKTOPS]u8 = undefined;
+    const list = desktop.activeList(&buf);
+    if (list.len == 0) return tag;
+
+    const at = desktop.positionOf(tag) orelse return list[0];
+    const count: i32 = @intCast(list.len);
+    return list[@intCast(@mod(@as(i32, @intCast(at)) + step + count, count))];
+}
+
 /// Take keyboard control of the bar, starting on the current desktop's tab.
 pub fn focus(desktop: *const layout.Desktop) void {
     keyboard_focus = true;
@@ -463,9 +474,15 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
 
     paintLaunch(surface, height);
 
-    var i: u8 = 0;
-    while (i < desktop.count) : (i += 1) {
-        paintTab(surface, tabRect(width, height, desktop.count, i), desktop, i);
+    var tags: [layout.MAX_DESKTOPS]u8 = undefined;
+    const shown = desktop.activeList(&tags);
+    for (shown, 0..) |tag, position| {
+        paintTab(
+            surface,
+            tabRect(width, height, @intCast(shown.len), @intCast(position)),
+            desktop,
+            tag,
+        );
     }
 
     paintAdd(surface, width, height, desktop);
@@ -514,14 +531,16 @@ fn paintStatus(surface: Surface, width: i32, height: i32) void {
 
 fn addRect(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
     const t = theme.current();
-    const last = tabRect(width, height, desktop.count, desktop.count - 1);
+    var tags: [layout.MAX_DESKTOPS]u8 = undefined;
+    const shown = desktop.activeList(&tags);
+    const last = tabRect(width, height, @intCast(shown.len), @intCast(shown.len - 1));
     return .{ .x = last.right(), .y = band(height).y, .w = addWidth(), .h = t.bar_height - 1 };
 }
 
 /// A plus, drawn rather than lettered: at this size two strokes read better
 /// than a glyph, and it is unambiguous in any font.
 fn paintAdd(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
-    if (desktop.count >= layout.MAX_DESKTOPS) return;
+    if (desktop.firstInactive() == null) return;
 
     const t = theme.current();
     const area = addRect(width, height, desktop);
@@ -663,7 +682,19 @@ fn dropFrom(anchor: Rect, height: i32, size: Rect) Rect {
 
 
 
-fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index: u8) void {
+/// Whether the manager's modifier is down, for the number chips.
+var super_held = false;
+
+/// Record the modifier's state. True when it changed, which is the caller's
+/// cue to repaint the bar.
+pub fn setSuperHeld(held: bool) bool {
+    if (super_held == held) return false;
+    super_held = held;
+    return true;
+}
+
+fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, tag: u8) void {
+    const index = tag;
     const t = theme.current();
     const current = desktop.tag == index;
     const held = keyboard_focus and focus_tab == index;
@@ -698,6 +729,15 @@ fn paintTab(surface: Surface, area: Rect, desktop: *const layout.Desktop, index:
         if (count == 0 and !current) t.text_dim else color,
     );
 
+    if (super_held) {
+        var digit: [1]u8 = .{'1' + tag};
+        surface.clipped(area).text(
+            area.right() - markerWidth(),
+            area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+            &digit,
+            if (current) t.accent_text else t.text_dim,
+        );
+    } else
     // A desktop showing one window at full size says so, because otherwise
     // the tab of a stack of three and the tab of a stack of three with two
     // of them hidden are the same tab.
@@ -1322,7 +1362,10 @@ fn paintClock(surface: Surface, area: Rect) void {
 }
 
 fn menuRect(width: i32, height: i32, desktop: *const layout.Desktop, tab: u8) Rect {
-    const anchor = tabRect(width, height, desktop.count, tab);
+    var tags: [layout.MAX_DESKTOPS]u8 = undefined;
+    const shown = desktop.activeList(&tags);
+    const position = desktop.positionOf(tab) orelse 0;
+    const anchor = tabRect(width, height, @intCast(shown.len), @intCast(position));
     // Every row is a window's name, so what the size depends on is how many
     // there are rather than what they say.
     var rows: [layout.MAX_WINDOWS]ui.MenuItem = @splat(.{});
@@ -1500,25 +1543,26 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         return .consumed;
     }
 
-    if (desktop.count < layout.MAX_DESKTOPS and addRect(width, height, desktop).contains(x, y)) {
+    if (desktop.firstInactive() != null and addRect(width, height, desktop).contains(x, y)) {
         _ = desktop.addDesktop();
         return .consumed;
     }
 
-    var i: u8 = 0;
-    while (i < desktop.count) : (i += 1) {
-        const area = tabRect(width, height, desktop.count, i);
+    var tags: [layout.MAX_DESKTOPS]u8 = undefined;
+    const shown = desktop.activeList(&tags);
+    for (shown, 0..) |tag, position| {
+        const area = tabRect(width, height, @intCast(shown.len), @intCast(position));
         if (!area.contains(x, y)) continue;
 
         // Right-click closes the desktop; the marker opens its menu; the rest
         // of the tab switches to it.
-        if (right) return .{ .close_desktop = i };
+        if (right) return .{ .close_desktop = tag };
 
-        if (desktop.countOn(i) > 1 and x >= area.right() - markerWidth()) {
-            menu_tab = i;
+        if (desktop.countOn(tag) > 1 and x >= area.right() - markerWidth()) {
+            menu_tab = tag;
             window_menu.show();
         } else {
-            desktop.view(i);
+            desktop.view(tag);
         }
         return .consumed;
     }
@@ -1628,13 +1672,13 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
         .left => {
             // Left from the first tab reaches the V button, so the whole bar
             // is one traversal rather than two islands.
-            if (focus_tab == 0) {
+            if (desktop.positionOf(focus_tab) orelse 0 == 0) {
                 openLauncher();
             } else {
-                focus_tab -= 1;
+                focus_tab = neighbourTab(desktop, focus_tab, -1);
             }
         },
-        .right => focus_tab = (focus_tab + 1) % desktop.count,
+        .right => focus_tab = neighbourTab(desktop, focus_tab, 1),
         .down => {
             if (desktop.countOn(focus_tab) > 1) {
                 menu_tab = focus_tab;

@@ -207,6 +207,21 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
     } else if (eq(key, "quirks.battery")) {
         if (!quirks.get().battery_percent_mislabel) return error.UnknownKey;
         try w.print("1", .{});
+    } else if (eq(key, "mtrr")) {
+        // The memory-type map, straight off the registers: when the boot log
+        // says the firmware already typed the framebuffer, this says with
+        // what, which is the fact a fix would be built on.
+        if (!hal.caps.write_combine) return error.UnknownKey;
+        const count = hal.impl.mtrrRangeCount();
+        if (count == 0) return error.UnknownKey;
+        var shown = false;
+        for (0..count) |slot| {
+            const range = hal.impl.mtrrRangeAt(slot) orelse continue;
+            if (shown) try w.print("\n", .{});
+            shown = true;
+            try w.print("{x:0>8} +{x:0>8} {s}", .{ range.base, range.size, range.typeName() });
+        }
+        if (!shown) try w.print("no ranges programmed", .{});
     } else if (eq(key, "irq")) {
         try writeIrqs(&w);
     } else if (eq(key, "apic")) {

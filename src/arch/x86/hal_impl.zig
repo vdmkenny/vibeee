@@ -19,6 +19,11 @@ pub const KERNEL_BASE = paging.KERNEL_VMA;
 pub const disableInterrupts = cpu.cli;
 pub const enableInterrupts = cpu.sti;
 pub const saveAndDisableInterrupts = cpu.saveAndDisableInterrupts;
+
+/// Ask the MTRRs to write-combine a physical range. See mtrr.zig.
+pub const writeCombine = @import("mtrr.zig").writeCombine;
+pub const mtrrRangeCount = @import("mtrr.zig").rangeCount;
+pub const mtrrRangeAt = @import("mtrr.zig").rangeAt;
 pub const outl = port.outl;
 pub const inl = port.inl;
 pub const restoreInterrupts = cpu.restoreInterrupts;

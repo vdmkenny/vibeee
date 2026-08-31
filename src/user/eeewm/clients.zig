@@ -20,26 +20,20 @@ const lib = @import("lib");
 const proto = @import("proto");
 const sys = @import("sys");
 
+const Rect = eui.Rect;
+
 const wm = proto.wm;
 const ring = lib.ring;
+
 
 pub const MAX_CLIENTS = 8;
 pub const MAX_WINDOWS = 16;
 
 /// A window as the server sees it: the client that owns it, the surface it
 /// draws into, and nothing about where it goes. That is the layout's business.
-pub const Surface = struct {
-    pixels: ?[*]u32 = null,
-    width: u16 = 0,
-    height: u16 = 0,
-    stride: u16 = 0,
-    /// Held so the mapping survives; released when the window goes.
-    handle: u32 = 0,
-
-    pub fn valid(self: Surface) bool {
-        return self.pixels != null and self.width > 0 and self.height > 0;
-    }
-};
+pub const compose = @import("compose.zig");
+pub const Surface = compose.Surface;
+pub const Damage = compose.Damage;
 
 pub const Client = struct {
     /// Process id, from the kernel. Zero means the slot is free.
@@ -160,17 +154,14 @@ pub fn adoptSurface(handle: u32, w: u16, h: u16, stride: u16) ?Surface {
     };
 }
 
-/// Copy a window's surface onto the screen, clipped to where it belongs.
+/// Put a window's pixels on the screen, confined to `damage`.
 ///
-/// The compositor's whole job, and deliberately dumb: a row at a time with no
-/// blending. Tiles do not overlap by construction, so there is nothing to
-/// blend with, and on this machine the memory traffic is the cost rather than
-/// the arithmetic.
-/// Copy a client's surface onto the screen.
-///
-/// `transparency` is how much of what is behind shows through: zero copies,
-/// which is both what almost every window wants and the only path fast enough
-/// to be free.
+/// The row-wise copy is the surface's own: the one place that knows how to
+/// move pixels moves them for the compositor too, so making it faster makes
+/// everything faster. `transparency` is how much of what is behind shows
+/// through; zero copies, which is what almost every window wants and the
+/// only path with nothing to read back from a framebuffer that is slow to
+/// read.
 pub fn blit(
     screen: eui.Surface,
     surface: Surface,
@@ -179,49 +170,12 @@ pub fn blit(
     transparency: u8,
 ) void {
     const pixels = surface.pixels orelse return;
+    const source = eui.Surface.init(pixels, surface.width, surface.height, surface.stride);
+    const limit = at.intersect(damage);
 
-    const target = at.intersect(damage).intersect(screen.clip);
-    if (target.isEmpty()) return;
-
-    // 0 to 256, so the blend below is a shift rather than a division. 256 is
-    // reachable and 255 is not, which matters: at 255 a fully opaque window
-    // would still lose a level per composite.
-    const weight: u32 = 256 - (@as(u32, transparency) + 1) * 256 / 256;
-
-    var y = target.y;
-    while (y < target.bottom()) : (y += 1) {
-        const source_y = y - at.y;
-        if (source_y < 0 or source_y >= surface.height) continue;
-
-        const source = pixels + @as(usize, @intCast(source_y)) * surface.stride;
-        const destination = screen.pixels + @as(usize, @intCast(y * screen.stride));
-
-        var x = target.x;
-        while (x < target.right()) : (x += 1) {
-            const source_x = x - at.x;
-            if (source_x < 0 or source_x >= surface.width) continue;
-
-            const src = source[@intCast(source_x)];
-            destination[@intCast(x)] = if (transparency == 0)
-                src
-            else
-                mix(src, destination[@intCast(x)], weight);
-        }
+    if (transparency == 0) {
+        screen.copyFrom(source, at.x, at.y, limit);
+    } else {
+        screen.blendFrom(source, at.x, at.y, limit, 256 - @as(u32, transparency));
     }
-}
-
-/// Blend two packed colours, `weight` being how much of `src` shows, 0 to 256.
-///
-/// Red and blue are blended together in one multiply by keeping them in
-/// alternate halves of the word: each sixteen-bit slot holds at most 255 times
-/// 256, so they cannot run into each other. Three multiplies a pixel instead
-/// of six, which on a core with no vector unit is the difference between a
-/// translucent window being usable and not.
-fn mix(src: u32, dst: u32, weight: u32) u32 {
-    const rest = 256 - weight;
-
-    const rb = ((src & 0x00FF00FF) * weight + (dst & 0x00FF00FF) * rest) >> 8;
-    const g = ((src & 0x0000FF00) * weight + (dst & 0x0000FF00) * rest) >> 8;
-
-    return (rb & 0x00FF00FF) | (g & 0x0000FF00);
 }

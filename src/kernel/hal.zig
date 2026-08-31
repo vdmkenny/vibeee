@@ -33,6 +33,8 @@ pub const available: bool = builtin.cpu.arch == .x86;
 /// on this rather than on the architecture name, so an architecture that grows
 /// the capability later does not need every call site edited.
 pub const caps = struct {
+    /// Whether this architecture can mark a physical range write-combining.
+    pub const write_combine: bool = @hasDecl(impl, "writeCombine");
     pub const port_io: bool = @hasDecl(impl, "inb");
     pub const has_ioapic: bool = @hasDecl(impl, "ioapicInit");
 };

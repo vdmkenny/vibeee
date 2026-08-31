@@ -16,7 +16,6 @@ const proto = @import("proto");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
 const info = @import("ulib").info;
-const out = @import("ulib").out;
 const paths = @import("ulib").paths;
 const str = @import("ulib").str;
 
@@ -25,13 +24,8 @@ const Rect = eui.Rect;
 const ui = eui.widget;
 const Surface = eui.Surface;
 
-var connection: proto.Connection = undefined;
-var window: u8 = 0;
-var ctx: eui.Context = undefined;
-
-var pointer_x: i32 = 0;
-var pointer_y: i32 = 0;
-var buttons: ui.Buttons = .{};
+/// The frame's context, which is where every control call goes.
+const ctx = &proto.app.ctx;
 
 /// One side. Each carries its own name storage, because a listing's entries
 /// point into it and two panes read two directories.
@@ -98,101 +92,24 @@ var answer_len: usize = 0;
 var status: []const u8 = "";
 
 export fn _start() callconv(.c) noreturn {
-    efmMain();
-}
-
-fn efmMain() noreturn {
     panes[0].setPath("/home");
     panes[1].setPath("/");
     for (&panes) |*pane| pane.refresh();
 
-    connection = proto.client.Connection.open("efm") catch {
-        out.text("efm: no window manager is running\n");
-        out.flush();
-        sys.exit(1);
-    };
-
-    window = connection.createWindow(.{}, 520, 360) catch sys.exit(1);
-    connection.setTitle(window, "Files") catch {};
-
-    run();
-}
-
-fn run() noreturn {
-    while (true) {
-        const event = connection.next(1_000_000) orelse continue;
-
-        switch (event.tag) {
-            .configure => resize(event.body.configure.w, event.body.configure.h),
-            .ptr_motion => {
-                pointer_x = event.body.motion.x;
-                pointer_y = event.body.motion.y;
-                redraw();
-            },
-            .ptr_button => {
-                pointer_x = event.body.button.x;
-                pointer_y = event.body.button.y;
-                setButton(event.body.button.btn, event.body.button.down != 0);
-                redraw();
-            },
-            .scroll => {
-                ctx.postScroll(event.body.scroll.dy);
-                redraw();
-            },
-            .key => {
-                if (event.body.key.down == 0) continue;
-                key(@enumFromInt(event.body.key.code));
-                // What this program did not take, the controls do: the
-                // table's arrows, page keys and Enter are its business.
-                ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
-                redraw();
-            },
-            .text => {
-                typed(event.body.text.cp);
-                redraw();
-            },
-            .theme => {
-                proto.client.applyTheme(&event.body.theme.name);
-                ctx.damageNow();
-                redraw();
-            },
-            .close_req => sys.exit(0),
-            else => {},
-        }
-    }
-}
-
-fn setButton(index: u8, down: bool) void {
-    switch (index) {
-        0 => buttons.left = down,
-        1 => buttons.right = down,
-        2 => buttons.middle = down,
-        else => {},
-    }
-}
-
-fn resize(w: u16, h: u16) void {
-    connection.attach(window, w, h) catch return;
-    const surface = connection.surfaceOf(window) orelse return;
-
-    ctx = eui.Context.init(surface.*);
-    ctx.damageNow();
-    draw();
-    connection.map(window) catch {};
-}
-
-fn redraw() void {
-    const surface = connection.surfaceOf(window) orelse return;
-    ctx.surface = surface.*;
-    draw();
-    if (ctx.pending) draw();
+    proto.app.run("efm", "Files", 520, 360, .{
+        .draw = draw,
+        .key = key,
+        .text = typed,
+    });
 }
 
 // ---------------------------------------------------------------------------
 // What the keys do
 // ---------------------------------------------------------------------------
 
-fn key(code: ui.KeyCode) void {
+fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
+    _ = mods;
+
     // A question in the footer takes the keyboard until it is answered:
     // typing a folder's name into the listing behind it would move the
     // cursor instead.
@@ -206,7 +123,7 @@ fn key(code: ui.KeyCode) void {
             },
             else => {},
         }
-        return;
+        return true;
     }
 
     switch (code) {
@@ -219,16 +136,21 @@ fn key(code: ui.KeyCode) void {
         .f6 => transfer(.move),
         .f7 => startAsking(.folder),
         .f8 => startAsking(.confirm_delete),
-        else => {},
+        // Everything else is the listing's: arrows, page keys and Enter are
+        // the table's business.
+        else => return false,
     }
+    return true;
 }
 
-fn typed(codepoint: u32) void {
-    if (asking == .nothing or codepoint < ' ' or codepoint >= 0x7F) return;
-    if (answer_len == answer.len) return;
+fn typed(codepoint: u32) bool {
+    if (asking == .nothing) return false;
+    if (codepoint < ' ' or codepoint >= 0x7F) return true;
+    if (answer_len == answer.len) return true;
     answer[answer_len] = @intCast(codepoint);
     answer_len += 1;
     ctx.damage();
+    return true;
 }
 
 
@@ -388,7 +310,6 @@ fn draw() void {
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
-    ctx.begin(pointer_x, pointer_y, buttons);
 
     const places = Rect{ .x = 0, .y = 0, .w = area.w, .h = t.control_height + t.padding };
     const keys = eui.footer.strip(area);
@@ -407,8 +328,6 @@ fn draw() void {
 
     drawKeys(keys);
 
-    ctx.end();
-    connection.commit(window, ctx.damageList()) catch {};
 }
 
 /// Where you can go: one button per mounted volume, which sends the pane you
@@ -498,7 +417,7 @@ fn drawPane(index: usize, area: Rect) void {
 
     // Pressing anywhere in a pane makes it the one you are in, whether or not
     // a row was activated.
-    if (ctx.pressedThisPass() and area.contains(pointer_x, pointer_y) and index != active) {
+    if (ctx.pressedThisPass() and area.contains(ctx.pointer_x, ctx.pointer_y) and index != active) {
         active = index;
         ctx.damage();
     }

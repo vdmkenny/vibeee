@@ -40,17 +40,27 @@ pub fn main(init: std.process.Init) !void {
         \\That is what makes the whole toolkit testable on a host with no
         \\machine under it.
         \\
-        \\## The frame a program draws
+        \\## The frame a program runs in
+        \\
+        \\A windowed program does not own an event loop: it hands `proto.app`
+        \\a draw pass and only the interceptions it wants, and the frame owns
+        \\the connection, the window, resizing, theme changes and the commit.
         \\
         \\```zig
-        \\ctx.begin(pointer_x, pointer_y, buttons);
-        \\if (ctx.damaged) surface.fill(area, theme.current().surface);
+        \\const ctx = &proto.app.ctx;
         \\
-        \\if (ctx.button(save_rect, "Save")) save();
+        \\export fn _start() callconv(.c) noreturn {
+        \\    proto.app.run("name", "Title", 460, 320, .{ .draw = draw });
+        \\}
         \\
-        \\ctx.end();
-        \\connection.commit(window, ctx.damageList()) catch {};
+        \\fn draw() void {
+        \\    if (ctx.button(save_rect, "Save")) save();
+        \\}
         \\```
+        \\
+        \\The ground is painted before `draw` runs, and what the controls
+        \\damaged is committed after it; keys and text a program does not
+        \\intercept reach the controls on their own.
         \\
         \\A control is a call that both draws and answers: `ctx.button` returns
         \\whether it was pressed this pass, so there is no separate event

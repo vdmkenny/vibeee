@@ -50,7 +50,6 @@ var ctx: ui.Context = undefined;
 
 /// Connected clients and the surfaces they have given us.
 var table: clients.Table = .{};
-var surfaces: [layout.MAX_WINDOWS]clients.Surface = @splat(.{});
 /// The channel clients call in on.
 var service: u32 = 0;
 
@@ -184,7 +183,7 @@ fn paint() void {
     // After the windows: a dropdown reaches over them.
     bar.paintOverlay(screen, info.width, info.height, &desktop);
 
-    for (&window_damage) |*d| d.clear();
+    for (&desktop.windows) |*w| w.damage.clear();
     cursor.show(screen, pointer_x, pointer_y);
 }
 
@@ -203,7 +202,7 @@ fn paintCommitted() void {
     var restore: [layout.MAX_WINDOWS]bool = @splat(false);
 
     for (visible, 0..) |index, order| {
-        const damage = &window_damage[index];
+        const damage = &desktop.windows[index].damage;
         if (damage.isEmpty()) continue;
 
         if (!lifted and cursor.covers(desktop.windows[index].area)) {
@@ -241,7 +240,7 @@ fn paintCommitted() void {
 fn refreshWindow(index: usize, damage: []const Rect) void {
     const t = theme.current();
     const w = &desktop.windows[index];
-    if (!w.mapped or !surfaces[index].valid()) return;
+    if (!w.mapped or !desktop.windows[index].surface.valid()) return;
 
     const border = if (desktop.focused == index) t.border_width_focused else t.border_width;
     const content = w.area.inset(border);
@@ -261,58 +260,12 @@ fn refreshWindow(index: usize, damage: []const Rect) void {
         // behind has to be put back first. Blending onto the last frame of the
         // window itself would darken it a little more every time.
         if (w.transparency != 0) screen.fill(on_screen, wallpaper());
-        clients.blit(screen, surfaces[index], content, on_screen, w.transparency);
+        clients.blit(screen, desktop.windows[index].surface, content, on_screen, w.transparency);
     }
 }
 
-/// What a window has committed since the last paint, in surface coordinates.
-///
-/// Kept rather than reduced to a flag because the flag was the flicker: a
-/// window that redraws when the pointer merely crosses it was repainting its
-/// whole area, and on a display with one buffer the erase is on screen before
-/// the redraw catches up.
-const Damage = struct {
-    rects: [MAX_RECTS]Rect = @splat(.{}),
-    count: usize = 0,
-    /// Everything, because the window moved or was just mapped and there is no
-    /// previous content to keep.
-    all: bool = false,
 
-    /// As many as a commit can carry.
-    const MAX_RECTS = 3;
 
-    fn isEmpty(self: Damage) bool {
-        return self.count == 0 and !self.all;
-    }
-
-    fn add(self: *Damage, area: Rect) void {
-        if (self.all or area.isEmpty()) return;
-
-        if (self.count == MAX_RECTS) {
-            // Past what a commit carries, everything merges into one box: the
-            // bookkeeping would cost more than the pixels it saved.
-            var all = self.rects[0];
-            for (self.rects[1..self.count]) |r| all = all.unite(r);
-            self.rects[0] = all.unite(area);
-            self.count = 1;
-            return;
-        }
-
-        self.rects[self.count] = area;
-        self.count += 1;
-    }
-
-    fn whole(self: *Damage) void {
-        self.all = true;
-        self.count = 0;
-    }
-
-    fn clear(self: *Damage) void {
-        self.* = .{};
-    }
-};
-
-var window_damage: [layout.MAX_WINDOWS]Damage = @splat(.{});
 
 fn paintWindow(index: usize, focused: bool) void {
     const t = theme.current();
@@ -330,12 +283,12 @@ fn paintWindow(index: usize, focused: bool) void {
     // has not draws the manager's own placeholder, which is what the desktop
     // looks like before anything has connected.
     const content = area.inset(width);
-    if (w.mapped and surfaces[index].valid()) {
+    if (w.mapped and desktop.windows[index].surface.valid()) {
         // Filled first only when the window is translucent, where the blend
         // needs a backdrop. An opaque one covers every pixel it is about to
         // write, and filling it grey first is a flash of grey.
         if (w.transparency != 0) screen.fill(content, wallpaper());
-        clients.blit(screen, surfaces[index], content, content, w.transparency);
+        clients.blit(screen, desktop.windows[index].surface, content, content, w.transparency);
         return;
     }
 
@@ -421,6 +374,10 @@ fn run() noreturn {
 
         const keys = sys.keyRead(&key_events, sys.POLL);
         for (keys) |event| {
+            // The number chips in the bar follow the modifier itself, both
+            // edges: they appear when Super goes down and leave with it.
+            if (bar.setSuperHeld(event.mods().super)) paintBar();
+
             // While the bar holds focus it takes everything, so plain arrows
             // walk tabs instead of reaching a window. Otherwise a chord with
             // the manager's modifier belongs to the manager and the rest
@@ -538,10 +495,25 @@ fn idle() void {
     // the same time: they change on their own rather than in answer to
     // anything the manager did, and once a minute is often enough to notice
     // a cable pulled out.
+    //
+    // Only the bar is repainted for it. Setting `dirty` here redrew the
+    // desktop and every window to move a five character clock, which on the
+    // panel was a visible full-screen wipe once a minute.
     if (sys.waitMany(waiting[0..count], untilTheMinuteTurns()) < 0) {
         bar.refresh();
-        dirty = true;
+        paintBar();
     }
+}
+
+/// Repaint the bar and nothing else. It fills its own band, so nothing has
+/// to be cleared first; only the cursor has to be lifted if it is in the way.
+fn paintBar() void {
+    const band = bar.band(info.height);
+    const covered = cursor.covers(.{ .x = 0, .y = band.y, .w = info.width, .h = band.h });
+    if (covered) cursor.hide(screen);
+    bar.paint(screen, info.width, info.height, &desktop);
+    if (bar.menuOpen()) bar.paintOverlay(screen, info.width, info.height, &desktop);
+    if (covered) cursor.show(screen, pointer_x, pointer_y);
 }
 
 /// Microseconds until the bar's clock reads differently.
@@ -797,8 +769,8 @@ fn onAttach(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
 
     // The previous surface is released only now, so there is never a moment
     // with nothing to composite from.
-    if (surfaces[index].handle != 0) _ = sys.close(surfaces[index].handle);
-    surfaces[index] = surface;
+    if (desktop.windows[index].surface.handle != 0) _ = sys.close(desktop.windows[index].surface.handle);
+    desktop.windows[index].surface = surface;
     dirty = true;
 
     return .{ .rep = .{ .gen = table.generation } };
@@ -816,7 +788,7 @@ fn onCommit(pid: u32, req: *const wire.Req) Answer {
     // toolkit whose controls all decided they looked the same as last pass.
     // A client that wants everything says so by naming everything.
     for (commit.rects[0..@min(commit.n, commit.rects.len)]) |r| {
-        window_damage[index].add(.{ .x = r.x, .y = r.y, .w = r.w, .h = r.h });
+        desktop.windows[index].damage.add(.{ .x = r.x, .y = r.y, .w = r.w, .h = r.h });
     }
     return .{ .rep = .{ .gen = table.generation } };
 }
@@ -839,8 +811,8 @@ fn onMap(pid: u32, req: *const wire.Req) Answer {
 fn onDestroy(pid: u32, req: *const wire.Req) Answer {
     const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
 
-    if (surfaces[index].handle != 0) _ = sys.close(surfaces[index].handle);
-    surfaces[index] = .{};
+    if (desktop.windows[index].surface.handle != 0) _ = sys.close(desktop.windows[index].surface.handle);
+    desktop.windows[index].surface = .{};
     desktop.close(index);
     dirty = true;
 
@@ -993,8 +965,8 @@ fn forgetClient(pid: u32) void {
 /// Take a window away without asking. For a client that has gone, or one that
 /// refused to.
 fn dropWindow(index: usize) void {
-    if (surfaces[index].handle != 0) _ = sys.close(surfaces[index].handle);
-    surfaces[index] = .{};
+    if (desktop.windows[index].surface.handle != 0) _ = sys.close(desktop.windows[index].surface.handle);
+    desktop.windows[index].surface = .{};
     desktop.close(index);
     dirty = true;
 }
@@ -1005,9 +977,20 @@ pub fn closeDesktop(tag: u8) void {
     const list = desktop.windowsToClose(tag, &buf);
     for (list) |index| requestClose(index);
 
-    // Removed only once it is actually empty: a client that takes a moment to
-    // exit should not have its desktop vanish from under it.
-    desktop.removeDesktop(tag);
+    // Nothing removes the desktop: it stops existing when its windows have
+    // gone and nobody is looking at it. If we are looking at it, look at the
+    // lowest desktop that still has something, or home.
+    if (tag == desktop.tag) {
+        const occupied_tags = desktop.occupied();
+        for (0..layout.MAX_DESKTOPS) |t| {
+            if (t != tag and occupied_tags[t]) {
+                desktop.view(@intCast(t));
+                dirty = true;
+                return;
+            }
+        }
+        desktop.view(0);
+    }
     dirty = true;
 }
 

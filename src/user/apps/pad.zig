@@ -11,7 +11,6 @@
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
-const out = @import("ulib").out;
 const str = @import("ulib").str;
 
 const theme = eui.theme;
@@ -23,9 +22,10 @@ const text = eui.text;
 /// anything on a four gigabyte disk here, and it is committed memory.
 const CAPACITY = 64 * 1024;
 
-var connection: proto.Connection = undefined;
-var window: u8 = 0;
-var ctx: eui.Context = undefined;
+/// The frame's context, which is where every control call goes. The frame
+/// also owns the connection, which the dialog borrows for its own window.
+const ctx = &proto.app.ctx;
+const connection = &proto.app.connection;
 
 var storage: [CAPACITY]u8 = undefined;
 var document: text.Buffer = undefined;
@@ -61,27 +61,28 @@ var asking: proto.dialog.Purpose = .open;
 var modified = false;
 var status: []const u8 = "";
 
-var pointer_x: i32 = 0;
-var pointer_y: i32 = 0;
-var buttons: eui.widget.Buttons = .{};
-
 export fn _start() callconv(.c) noreturn {
-    padMain();
+    document = .{ .bytes = &storage };
+    proto.app.run("pad", "Pad", 460, 320, .{
+        .draw = draw,
+        .key = key,
+        .event = own,
+    });
 }
 
-fn padMain() noreturn {
-    document = .{ .bytes = &storage };
+/// The dialog is a window of its own, so what belongs to it goes to it.
+fn own(event: proto.wm.Ev) bool {
+    if (!dialog.owns(event)) return false;
+    if (dialog.handle(connection, event)) finishDialog();
+    return true;
+}
 
-    connection = proto.client.Connection.open("pad") catch {
-        out.text("pad: no window manager is running\n");
-        out.flush();
-        sys.exit(1);
-    };
-
-    window = connection.createWindow(.{}, 460, 320) catch sys.exit(1);
-    connection.setTitle(window, "Pad") catch {};
-
-    run();
+/// An open menu is modal: arrows walk it rather than moving the cursor in
+/// the document behind it.
+fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
+    _ = mods;
+    if (!eui.menubar.isOpen(&menus)) return false;
+    return eui.menubar.key(&menus, code, &MENUS);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +111,7 @@ fn baseName() []const u8 {
 
 fn ask(purpose: proto.dialog.Purpose) void {
     asking = purpose;
-    dialog.show(&connection, purpose, baseName()) catch {
+    dialog.show(connection, purpose, baseName()) catch {
         status = "Cannot open the dialog.";
     };
 }
@@ -202,9 +203,10 @@ fn finishDialog() void {
         },
     }
 
-    dialog.hide(&connection);
+    dialog.hide(connection);
+    // The next pass repaints whole; the frame runs one on the event that
+    // brought us here.
     ctx.damage();
-    redraw();
 }
 
 var title_buffer: [72]u8 = @splat(0);
@@ -220,71 +222,12 @@ fn setTitle() void {
     }
     if (modified) line.text(" *");
 
-    connection.setTitle(window, line.done()) catch {};
+    connection.setTitle(proto.app.window, line.done()) catch {};
 }
 
 // ---------------------------------------------------------------------------
 // The window
 // ---------------------------------------------------------------------------
-
-fn run() noreturn {
-    while (true) {
-        const event = connection.next(1_000_000) orelse continue;
-
-        // The dialog is a window of its own, so what belongs to it goes to it.
-        if (dialog.owns(event)) {
-            if (dialog.handle(&connection, event)) finishDialog();
-            continue;
-        }
-
-        switch (event.tag) {
-            .configure => resize(event.body.configure.w, event.body.configure.h),
-            .ptr_motion => {
-                pointer_x = event.body.motion.x;
-                pointer_y = event.body.motion.y;
-                redraw();
-            },
-            .ptr_button => {
-                pointer_x = event.body.button.x;
-                pointer_y = event.body.button.y;
-                setButton(event.body.button.btn, event.body.button.down != 0);
-                redraw();
-            },
-            .scroll => {
-                ctx.postScroll(event.body.scroll.dy);
-                redraw();
-            },
-            .key => {
-                if (event.body.key.down == 0) continue;
-                const code: eui.widget.KeyCode = @enumFromInt(event.body.key.code);
-
-                // An open menu is modal: arrows walk it rather than moving the
-                // cursor in the document behind it.
-                if (eui.menubar.isOpen(&menus)) {
-                    if (eui.menubar.key(&menus, code, &MENUS)) {
-                        redraw();
-                        continue;
-                    }
-                }
-
-                ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
-                redraw();
-            },
-            .text => {
-                ctx.postText(event.body.text.cp);
-                redraw();
-            },
-            .theme => {
-                proto.client.applyTheme(&event.body.theme.name);
-                ctx.damage();
-                redraw();
-            },
-            .close_req => sys.exit(0),
-            .overflow => redraw(),
-            else => {},
-        }
-    }
-}
 
 fn run_command(command: Command) void {
     switch (command) {
@@ -296,38 +239,11 @@ fn run_command(command: Command) void {
     }
 }
 
-fn setButton(index: u8, down: bool) void {
-    switch (index) {
-        0 => buttons.left = down,
-        1 => buttons.right = down,
-        2 => buttons.middle = down,
-        else => {},
-    }
-}
-
-fn resize(w: u16, h: u16) void {
-    connection.attach(window, w, h) catch return;
-    const surface = connection.surfaceOf(window) orelse return;
-
-    ctx = eui.Context.init(surface.*);
-    ctx.damageNow();
-    draw();
-    connection.map(window) catch {};
-}
-
-fn redraw() void {
-    const surface = connection.surfaceOf(window) orelse return;
-    ctx.surface = surface.*;
-    draw();
-    if (ctx.pending) draw();
-}
-
 fn draw() void {
     const t = theme.current();
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
-    ctx.begin(pointer_x, pointer_y, buttons);
 
     const row = t.control_height;
 
@@ -337,14 +253,14 @@ fn draw() void {
     // Everything between the menu and the status bar. The window frame is
     // already a border, and a second one inset from it is a margin around a
     // document that wanted the room.
-    text.edit(&ctx, .{
+    text.edit(ctx, .{
         .x = 0,
         .y = strip.h,
         .w = area.w,
         .h = bottom.body.h - strip.h,
     }, &editor, &document);
 
-    eui.statusbar.run(&ctx, bottom.bar, &.{
+    eui.statusbar.run(ctx, bottom.bar, &.{
         .{ .text = if (file_len > 0) path() else "untitled" },
         .{ .text = sizeText(), .width = 78, .right = true },
         .{ .text = stateText(), .width = 96 },
@@ -358,12 +274,10 @@ fn draw() void {
 
     // Last in the pass: an open menu reaches over the document, and anything
     // drawn after it would draw over the menu instead.
-    if (eui.menubar.run(&ctx, strip, &menus, &MENUS)) |id| {
+    if (eui.menubar.run(ctx, strip, &menus, &MENUS)) |id| {
         run_command(@enumFromInt(id));
     }
 
-    ctx.end();
-    connection.commit(window, ctx.damageList()) catch {};
 }
 
 var size_buffer: [24]u8 = @splat(0);

@@ -132,13 +132,63 @@ pub const Surface = struct {
 
         var y = r.y;
         while (y < r.bottom()) : (y += 1) {
-            // A row at a time: the inner loop is a straight run of stores with
-            // no clipping test, which is what makes filling the desktop
-            // affordable on a 630 MHz core.
+            // A row at a time, as one splat: no clipping test inside, and the
+            // compiler is free to widen the stores, which on a
+            // write-combining framebuffer is what fills a line in one burst.
             const row = self.pixels + @as(usize, @intCast(y * self.stride + r.x));
-            var i: usize = 0;
-            while (i < @as(usize, @intCast(r.w))) : (i += 1) row[i] = color;
+            @memset(row[0..@intCast(r.w)], color);
         }
+    }
+
+    /// Copy a rectangle of `source` onto this surface, `at` being where the
+    /// source's origin lands, confined to `limit` and this surface's clip.
+    ///
+    /// The compositor's whole job, so it is the one path that must not be
+    /// written per pixel: every bound is settled before the loops, and each
+    /// row is one copy the compiler may widen. On a write-combining
+    /// framebuffer that is the difference between a repaint and a wipe you
+    /// can watch.
+    pub fn copyFrom(self: Surface, source: Surface, at_x: i32, at_y: i32, limit: Rect) void {
+        const target = copyTarget(self, source, at_x, at_y, limit) orelse return;
+
+        var y = target.y;
+        while (y < target.bottom()) : (y += 1) {
+            const from = source.pixels + @as(usize, @intCast((y - at_y) * source.stride + (target.x - at_x)));
+            const to = self.pixels + @as(usize, @intCast(y * self.stride + target.x));
+            @memcpy(to[0..@intCast(target.w)], from[0..@intCast(target.w)]);
+        }
+    }
+
+    /// The same, blended: `weight` of the source shows, 0 to 256.
+    pub fn blendFrom(self: Surface, source: Surface, at_x: i32, at_y: i32, limit: Rect, weight: u32) void {
+        const target = copyTarget(self, source, at_x, at_y, limit) orelse return;
+        const rest = 256 - weight;
+
+        var y = target.y;
+        while (y < target.bottom()) : (y += 1) {
+            const from = source.pixels + @as(usize, @intCast((y - at_y) * source.stride + (target.x - at_x)));
+            const to = self.pixels + @as(usize, @intCast(y * self.stride + target.x));
+
+            for (to[0..@intCast(target.w)], from[0..@intCast(target.w)]) |*dst, src| {
+                // Red and blue share one multiply by living in alternate
+                // sixteen-bit halves; three multiplies a pixel instead of
+                // six, which without a vector unit is what makes a
+                // translucent window affordable.
+                const rb = ((src & 0x00FF00FF) * weight + (dst.* & 0x00FF00FF) * rest) >> 8;
+                const g = ((src & 0x0000FF00) * weight + (dst.* & 0x0000FF00) * rest) >> 8;
+                dst.* = (rb & 0x00FF00FF) | (g & 0x0000FF00);
+            }
+        }
+    }
+
+    /// Where a copy actually lands: the placement clipped by the limit, this
+    /// surface's clip, and what the source actually has. Null when nothing
+    /// survives. Settling every bound here is what leaves the loops above
+    /// with no branches in them.
+    fn copyTarget(self: Surface, source: Surface, at_x: i32, at_y: i32, limit: Rect) ?Rect {
+        const placed = Rect{ .x = at_x, .y = at_y, .w = source.width, .h = source.height };
+        const target = placed.intersect(limit).intersect(self.clip);
+        return if (target.isEmpty()) null else target;
     }
 
     pub fn frame(self: Surface, area: Rect, color: Color) void {
@@ -220,22 +270,18 @@ pub const Surface = struct {
         color: Color,
         times: i32,
     ) void {
-        var row: i32 = 0;
-        while (row < @as(i32, @intCast(height))) : (row += 1) {
-            const start = @as(usize, @intCast(row)) * row_bytes;
-            var col: i32 = 0;
-            while (col < @as(i32, @intCast(width))) : (col += 1) {
-                // Rows are big-endian across bytes: bit 7 of the first byte is
-                // the leftmost pixel.
-                const byte = bits[start + @as(usize, @intCast(col)) / 8];
-                if (byte >> @intCast(7 - @as(u3, @intCast(@mod(col, 8)))) & 1 == 0) continue;
-
-                if (times == 1) {
-                    self.set(x + col, y + row, color);
-                } else {
-                    // A pixel of the face becomes a square of them. Whole
-                    // numbers only: the face is a bitmap, and anything that
-                    // is not a whole number of pixels is a blurred letter.
+        if (times != 1) {
+            // A pixel of the face becomes a square of them. Whole numbers
+            // only: the face is a bitmap, and anything that is not a whole
+            // number of pixels is a blurred letter. The squares go through
+            // `fill`, which clips them.
+            var row: i32 = 0;
+            while (row < @as(i32, @intCast(height))) : (row += 1) {
+                const start = @as(usize, @intCast(row)) * row_bytes;
+                var col: i32 = 0;
+                while (col < @as(i32, @intCast(width))) : (col += 1) {
+                    const byte = bits[start + @as(usize, @intCast(col)) / 8];
+                    if (byte >> @intCast(7 - @as(u3, @intCast(@mod(col, 8)))) & 1 == 0) continue;
                     self.fill(.{
                         .x = x + col * times,
                         .y = y + row * times,
@@ -243,6 +289,34 @@ pub const Surface = struct {
                         .h = times,
                     }, color);
                 }
+            }
+            return;
+        }
+
+        // The clip is settled once, outside the loops: a terminal paints
+        // thousands of glyphs a scroll, and a bounds test per pixel of each
+        // was a measurable share of every repaint.
+        const target = self.clip.intersect(.{
+            .x = x,
+            .y = y,
+            .w = @intCast(width),
+            .h = @intCast(height),
+        });
+        if (target.isEmpty()) return;
+
+        var row = target.y;
+        while (row < target.bottom()) : (row += 1) {
+            const start = @as(usize, @intCast(row - y)) * row_bytes;
+            const line = self.pixels + @as(usize, @intCast(row * self.stride));
+
+            var col = target.x;
+            while (col < target.right()) : (col += 1) {
+                // Rows are big-endian across bytes: bit 7 of the first byte
+                // is the leftmost pixel.
+                const bit = col - x;
+                const byte = bits[start + @as(usize, @intCast(bit)) / 8];
+                if (byte >> @intCast(7 - @as(u3, @intCast(@mod(bit, 8)))) & 1 == 0) continue;
+                line[@intCast(col)] = color;
             }
         }
     }
@@ -305,3 +379,96 @@ pub const Surface = struct {
         self.text(x, y, message, color);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Tests
+//
+// Small in-memory surfaces, checked pixel by pixel. The copy is the
+// compositor's whole job, so where a row starts and stops is exactly what
+// must not be wrong.
+// ---------------------------------------------------------------------------
+
+const testing = @import("std").testing;
+
+const SIDE = 8;
+
+fn flat(pixels: *[SIDE * SIDE]u32, value: u32) Surface {
+    @memset(pixels, value);
+    return Surface.init(pixels, SIDE, SIDE, SIDE);
+}
+
+test "a copy lands where it was placed and nowhere else" {
+    var dst_pixels: [SIDE * SIDE]u32 = undefined;
+    var src_pixels: [SIDE * SIDE]u32 = undefined;
+    const dst = flat(&dst_pixels, 0x111111);
+    var src = flat(&src_pixels, 0x999999);
+    src.width = 3;
+    src.height = 2;
+
+    dst.copyFrom(src, 2, 3, .{ .x = 0, .y = 0, .w = SIDE, .h = SIDE });
+
+    for (0..SIDE) |y| {
+        for (0..SIDE) |x| {
+            const inside = x >= 2 and x < 5 and y >= 3 and y < 5;
+            const want: u32 = if (inside) 0x999999 else 0x111111;
+            try testing.expectEqual(want, dst_pixels[y * SIDE + x]);
+        }
+    }
+}
+
+test "the limit and the clip both confine a copy" {
+    var dst_pixels: [SIDE * SIDE]u32 = undefined;
+    var src_pixels: [SIDE * SIDE]u32 = undefined;
+    var dst = flat(&dst_pixels, 0x111111);
+    const src = flat(&src_pixels, 0x999999);
+
+    dst.clip = .{ .x = 1, .y = 1, .w = 5, .h = 5 };
+    dst.copyFrom(src, 0, 0, .{ .x = 3, .y = 0, .w = SIDE, .h = 4 });
+
+    for (0..SIDE) |y| {
+        for (0..SIDE) |x| {
+            // Only where the placement, the limit and the clip all agree.
+            const inside = x >= 3 and x < 6 and y >= 1 and y < 4;
+            const want: u32 = if (inside) 0x999999 else 0x111111;
+            try testing.expectEqual(want, dst_pixels[y * SIDE + x]);
+        }
+    }
+}
+
+test "a copy hanging off every edge keeps to the surface" {
+    var dst_pixels: [SIDE * SIDE]u32 = undefined;
+    var src_pixels: [SIDE * SIDE]u32 = undefined;
+    const dst = flat(&dst_pixels, 0x111111);
+    const src = flat(&src_pixels, 0x999999);
+
+    // Off the top-left and off the bottom-right: both must clamp, and a
+    // negative placement must skip the right amount of the source.
+    dst.copyFrom(src, -3, -3, .{ .x = 0, .y = 0, .w = SIDE, .h = SIDE });
+    dst.copyFrom(src, 6, 6, .{ .x = 0, .y = 0, .w = SIDE, .h = SIDE });
+
+    try testing.expectEqual(@as(u32, 0x999999), dst_pixels[0]);
+    try testing.expectEqual(@as(u32, 0x999999), dst_pixels[4 * SIDE + 4]);
+    try testing.expectEqual(@as(u32, 0x111111), dst_pixels[5 * SIDE + 5]);
+    try testing.expectEqual(@as(u32, 0x999999), dst_pixels[7 * SIDE + 7]);
+}
+
+test "a blend at full weight is the source and at none the destination" {
+    var dst_pixels: [SIDE * SIDE]u32 = undefined;
+    var src_pixels: [SIDE * SIDE]u32 = undefined;
+    const dst = flat(&dst_pixels, 0x204060);
+    const src = flat(&src_pixels, 0x80A0C0);
+    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
+
+    dst.blendFrom(src, 0, 0, whole, 256);
+    try testing.expectEqual(@as(u32, 0x80A0C0), dst_pixels[0]);
+
+    dst.blendFrom(src, 0, 0, whole, 0);
+    // Weight zero leaves what was there, which is now the source.
+    try testing.expectEqual(@as(u32, 0x80A0C0), dst_pixels[0]);
+
+    // Halfway is halfway, channel by channel.
+    var again: [SIDE * SIDE]u32 = undefined;
+    const half = flat(&again, 0x204060);
+    half.blendFrom(src, 0, 0, whole, 128);
+    try testing.expectEqual(@as(u32, 0x507090), again[0]);
+}

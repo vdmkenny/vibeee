@@ -19,34 +19,27 @@ const str = @import("ulib").str;
 const theme = eui.theme;
 const Rect = eui.Rect;
 
-var connection: proto.Connection = undefined;
-var window: u8 = 0;
-var ctx: eui.Context = undefined;
-
-var pointer_x: i32 = 0;
-var pointer_y: i32 = 0;
-var buttons: eui.widget.Buttons = .{};
+/// The frame's context, which is where every control call goes.
+const ctx = &proto.app.ctx;
 
 /// How often the numbers are taken again. Half a second is fast enough to feel
 /// live and slow enough that watching it is not itself the load.
 const REFRESH_US: u32 = 500_000;
 
 export fn _start() callconv(.c) noreturn {
-    monitorMain();
+    sample();
+    proto.app.run("monitor", "Monitor", 420, 300, .{
+        .draw = draw,
+        .tick = tick,
+        .tick_us = REFRESH_US,
+    });
 }
 
-fn monitorMain() noreturn {
-    connection = proto.client.Connection.open("monitor") catch {
-        out.text("monitor: no window manager is running\n");
-        out.flush();
-        sys.exit(1);
-    };
-
-    window = connection.createWindow(.{}, 420, 300) catch sys.exit(1);
-    connection.setTitle(window, "Monitor") catch {};
-
+/// The wait timed out, which is the refresh: nothing happened, so the only
+/// thing that could have changed is the numbers.
+fn tick() bool {
     sample();
-    run();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,79 +146,10 @@ fn selectedPid() ?usize {
 // The window
 // ---------------------------------------------------------------------------
 
-fn run() noreturn {
-    while (true) {
-        const event = connection.next(REFRESH_US) orelse {
-            // The wait timed out, which is the refresh: nothing happened, so
-            // the only thing that could have changed is the numbers.
-            sample();
-            redraw();
-            continue;
-        };
-
-        switch (event.tag) {
-            .configure => resize(event.body.configure.w, event.body.configure.h),
-            .ptr_motion => {
-                pointer_x = event.body.motion.x;
-                pointer_y = event.body.motion.y;
-                redraw();
-            },
-            .ptr_button => {
-                pointer_x = event.body.button.x;
-                pointer_y = event.body.button.y;
-                setButton(event.body.button.btn, event.body.button.down != 0);
-                redraw();
-            },
-            .scroll => {
-                ctx.postScroll(event.body.scroll.dy);
-                redraw();
-            },
-            .key => {
-                ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
-                if (event.body.key.down != 0) redraw();
-            },
-            .theme => {
-                proto.client.applyTheme(&event.body.theme.name);
-                ctx.damage();
-                redraw();
-            },
-            .close_req => sys.exit(0),
-            .overflow => redraw(),
-            else => {},
-        }
-    }
-}
-
-fn setButton(index: u8, down: bool) void {
-    switch (index) {
-        0 => buttons.left = down,
-        1 => buttons.right = down,
-        2 => buttons.middle = down,
-        else => {},
-    }
-}
-
-fn resize(w: u16, h: u16) void {
-    connection.attach(window, w, h) catch return;
-    const surface = connection.surfaceOf(window) orelse return;
-
-    ctx = eui.Context.init(surface.*);
-    ctx.damageNow();
-    draw();
-    connection.map(window) catch {};
-}
-
-fn redraw() void {
-    const surface = connection.surfaceOf(window) orelse return;
-    ctx.surface = surface.*;
-    draw();
-    if (ctx.pending) draw();
-}
-
-/// What the last action did. A task manager that refuses silently is one that
-/// looks broken.
+/// What just happened, said in the status bar until something else does.
 var status: []const u8 = "";
 
+/// End the selected process, and say what came of it.
 fn end() void {
     const pid = selectedPid() orelse {
         status = "Nothing selected.";
@@ -247,8 +171,6 @@ fn draw() void {
     const t = theme.current();
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
-
-    ctx.begin(pointer_x, pointer_y, buttons);
 
     const pad = t.padding;
     const row = t.control_height;
@@ -273,15 +195,13 @@ fn draw() void {
         memoryPercent(),
     );
 
-    eui.statusbar.run(&ctx, bottom.bar, &.{
+    eui.statusbar.run(ctx, bottom.bar, &.{
         .{ .text = status },
         .{ .text = processText(), .width = 92 },
         .{ .text = memoryText(), .width = 118, .right = true },
         .{ .text = uptimeText(), .width = 62, .right = true },
     });
 
-    ctx.end();
-    connection.commit(window, ctx.damageList()) catch {};
 }
 
 fn memoryPercent() u8 {

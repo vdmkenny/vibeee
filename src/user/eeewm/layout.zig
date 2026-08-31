@@ -5,16 +5,19 @@
 //! without a screen. design/10-gui.md §4.
 //!
 //! **Tags, not workspaces.** A window carries a tag and the screen views one,
-//! dwm-style. Four of them, because every mapped client keeps its surface and
-//! heap alive whether or not it is visible: nine tags invites nine resident
-//! applications and blows the memory budget on a machine with 512 MB, and at
-//! 800x480 more than about eight windows is not a workflow anyone has.
+//! dwm-style. A desktop exists while something is on it or somebody is
+//! looking at it, and stops existing when neither is true: gaps are fine,
+//! desktop 5 stays desktop 5 however many others come and go, and leaving an
+//! empty one is what removes it. The cap of nine matches the number row, and
+//! the memory cost is real either way: every mapped client keeps its surface
+//! resident whether or not it is visible.
 //!
 //! **Tiled windows never overlap.** That is what makes hit testing a
 //! point-in-rectangle test and compositing a walk of disjoint spans. Floating
 //! windows are the exception, and they are exceptions on purpose: dialogs,
 //! pickers and the launcher, which are transient and want to be above.
 
+const compose = @import("compose.zig");
 const draw = @import("eui").draw;
 
 const Rect = draw.Rect;
@@ -52,6 +55,14 @@ pub const Window = struct {
     told_h: u16 = 0,
     title: [32]u8 = @splat(0),
     title_len: usize = 0,
+
+    /// The pixels the client shares and what part of them changed. The
+    /// window's own, so anything that reorders windows carries them along:
+    /// they were once arrays beside the window table, and promoting a window
+    /// to master swapped the windows but not the arrays, after which two
+    /// windows drew each other's pixels.
+    surface: compose.Surface = .{},
+    damage: compose.Damage = .{},
     tag: u8 = 0,
     /// Above the tiles, positioned by hand rather than by the layout.
     floating: bool = false,
@@ -85,8 +96,6 @@ pub const Desktop = struct {
     /// Which desktop is on screen, and which was before it.
     tag: u8 = 0,
     previous_tag: u8 = 0,
-    /// How many exist. Always at least one, and grown on demand.
-    count: u8 = 1,
 
     /// Per desktop, because each wants its own shape.
     /// Master's share, per desktop. Bounded well away from zero and one: a
@@ -120,13 +129,6 @@ pub const Desktop = struct {
             if (w.used and w.client_pid == pid and w.client_win == win) return i;
         }
         return null;
-    }
-
-    /// Drop everything a departed client owned.
-    pub fn closeClient(self: *Desktop, pid: u32) void {
-        for (&self.windows, 0..) |*w, i| {
-            if (w.used and w.client_pid == pid) self.close(i);
-        }
     }
 
     pub fn open(self: *Desktop, title: []const u8, floating: bool) ?usize {
@@ -362,7 +364,7 @@ pub const Desktop = struct {
     // -----------------------------------------------------------------------
 
     pub fn view(self: *Desktop, tag: u8) void {
-        if (tag >= self.count or tag == self.tag) return;
+        if (tag >= MAX_DESKTOPS or tag == self.tag) return;
 
         // Remembered before leaving, so coming back lands where it was left.
         self.last_focused[self.tag] = self.focused;
@@ -398,64 +400,66 @@ pub const Desktop = struct {
         return value;
     }
 
-    /// Add a desktop and switch to it. Returns false when there is no room.
+    // -----------------------------------------------------------------------
+    // Which desktops exist
+    //
+    // A desktop is not a thing that is created and destroyed: it exists while
+    // something is on it or somebody is looking at it, and stops existing
+    // when neither is true. Leaving an empty one is what removes it, and the
+    // numbers never shift, so desktop 5 is desktop 5 for as long as it is
+    // anything. Closing the last one leaves you on an empty desktop 1,
+    // because a session has to be somewhere.
+    // -----------------------------------------------------------------------
+
+    pub fn isActive(self: *const Desktop, tag: u8) bool {
+        if (tag >= MAX_DESKTOPS) return false;
+        return tag == self.tag or self.countOn(tag) != 0;
+    }
+
+    /// The desktops that exist, in number order.
+    pub fn activeList(self: *const Desktop, out: *[MAX_DESKTOPS]u8) []u8 {
+        var n: usize = 0;
+        for (0..MAX_DESKTOPS) |tag| {
+            if (self.isActive(@intCast(tag))) {
+                out[n] = @intCast(tag);
+                n += 1;
+            }
+        }
+        return out[0..n];
+    }
+
+    /// Where `tag` sits in the row of existing desktops, for whatever draws
+    /// them side by side.
+    pub fn positionOf(self: *const Desktop, tag: u8) ?usize {
+        var buf: [MAX_DESKTOPS]u8 = undefined;
+        for (self.activeList(&buf), 0..) |t, i| {
+            if (t == tag) return i;
+        }
+        return null;
+    }
+
+    /// The lowest number not in use, for making a new desktop.
+    pub fn firstInactive(self: *const Desktop) ?u8 {
+        for (0..MAX_DESKTOPS) |tag| {
+            if (!self.isActive(@intCast(tag))) return @intCast(tag);
+        }
+        return null;
+    }
+
+    /// Make a new desktop and go there. False when all nine are in use.
     pub fn addDesktop(self: *Desktop) bool {
-        if (self.count >= MAX_DESKTOPS) return false;
-        self.count += 1;
-        self.view(self.count - 1);
+        const tag = self.firstInactive() orelse return false;
+        self.view(tag);
         return true;
     }
 
-    /// Close every window on a desktop and remove it if it is not the last.
+    /// Every window on a desktop, for whoever is closing it.
     ///
     /// The windows go through the caller, which knows how to ask a client to
     /// close rather than dropping it: a client with unsaved work deserves to
     /// be told, not have its surface taken away.
     pub fn windowsToClose(self: *const Desktop, tag: u8, out: []usize) []usize {
         return self.windowsOn(tag, out);
-    }
-
-    /// Remove an empty desktop, renumbering the ones after it.
-    ///
-    /// Windows on later desktops move down with them, so a tab does not change
-    /// what it holds. The last desktop is never removed: a session with none
-    /// has nowhere to put anything.
-    pub fn removeDesktop(self: *Desktop, tag: u8) void {
-        if (self.count <= 1 or tag >= self.count) return;
-        if (self.countOn(tag) != 0) return;
-
-        for (&self.windows) |*w| {
-            if (w.used and w.tag > tag) w.tag -= 1;
-        }
-
-        var i: u8 = tag;
-        while (i + 1 < self.count) : (i += 1) {
-            self.maximised[i] = self.maximised[i + 1];
-            self.mfact[i] = self.mfact[i + 1];
-            self.last_focused[i] = self.last_focused[i + 1];
-        }
-        self.count -= 1;
-
-        if (self.tag >= self.count) self.tag = self.count - 1;
-        if (self.previous_tag >= self.count) self.previous_tag = 0;
-
-        self.focused = null;
-        self.focusFirst();
-        self.arrange();
-    }
-
-    /// Drop trailing desktops that hold nothing.
-    ///
-    /// Only from the end, and never the one being viewed: renumbering a
-    /// desktop out from under someone would move every tab they had learned
-    /// the position of.
-    pub fn pruneDesktops(self: *Desktop) void {
-        const occupied_tags = self.occupied();
-        while (self.count > 1) {
-            const last = self.count - 1;
-            if (occupied_tags[last] or self.tag == last) break;
-            self.count -= 1;
-        }
     }
 
     /// How many windows are on a desktop.
@@ -511,19 +515,18 @@ pub const Desktop = struct {
             @divTrunc(area.w, @as(i32, @intCast(here + 1))) >= SPLIT_LIMIT_W;
         if (fits) return self.tag;
 
-        // Full: the first empty desktop, or a new one.
+        // Full: the lowest desktop with nothing on it, which may be one that
+        // does not exist yet. Viewing it is what makes it exist.
         const occupied_tags = self.occupied();
-        for (0..self.count) |i| {
+        for (0..MAX_DESKTOPS) |i| {
             if (!occupied_tags[i]) return @intCast(i);
-        }
-        if (self.count < MAX_DESKTOPS) {
-            self.count += 1;
-            return self.count - 1;
         }
         return self.tag;
     }
 
     pub fn viewPrevious(self: *Desktop) void {
+        // A desktop that has evaporated since is not somewhere to go back to.
+        if (!self.isActive(self.previous_tag)) return;
         self.view(self.previous_tag);
     }
 
@@ -533,10 +536,14 @@ pub const Desktop = struct {
     /// never far from the beginning, and a key that silently does nothing at
     /// the edge reads as a key that is broken.
     pub fn viewRelative(self: *Desktop, step: i32) void {
-        if (self.count <= 1) return;
-        const count: i32 = @intCast(self.count);
-        const target = @mod(@as(i32, self.tag) + step + count, count);
-        self.view(@intCast(target));
+        var buf: [MAX_DESKTOPS]u8 = undefined;
+        const list = self.activeList(&buf);
+        if (list.len <= 1) return;
+
+        const at = self.positionOf(self.tag) orelse return;
+        const count: i32 = @intCast(list.len);
+        const target = @mod(@as(i32, @intCast(at)) + step + count, count);
+        self.view(list[@intCast(target)]);
     }
 
     /// Send the focused window `step` desktops along and follow it there.
@@ -544,11 +551,15 @@ pub const Desktop = struct {
     /// Following is deliberate: a window that moved somewhere invisible looks
     /// like a window that vanished.
     pub fn sendRelative(self: *Desktop, step: i32) void {
-        if (self.count <= 1) return;
         const index = self.focused orelse return;
 
-        const count: i32 = @intCast(self.count);
-        const target: u8 = @intCast(@mod(@as(i32, self.tag) + step + count, count));
+        var buf: [MAX_DESKTOPS]u8 = undefined;
+        const list = self.activeList(&buf);
+        if (list.len <= 1) return;
+
+        const at = self.positionOf(self.tag) orelse return;
+        const count: i32 = @intCast(list.len);
+        const target = list[@intCast(@mod(@as(i32, @intCast(at)) + step + count, count))];
 
         self.windows[index].tag = target;
         self.view(target);
@@ -560,7 +571,6 @@ pub const Desktop = struct {
     /// Send the focused window to `tag` and stop showing it here.
     pub fn moveToTag(self: *Desktop, tag: u8) void {
         if (tag >= MAX_DESKTOPS) return;
-        if (tag >= self.count) self.count = tag + 1;
         const index = self.focused orelse return;
         self.windows[index].tag = tag;
         self.focused = null;
@@ -634,6 +644,7 @@ pub const Desktop = struct {
         self.windows[target] = swap;
 
         self.focused = list[0];
+        self.last_focused[self.tag] = list[0];
         self.arrange();
     }
 

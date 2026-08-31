@@ -31,9 +31,8 @@ const theme = eui.theme;
 
 const store = proto.settings;
 
-var connection: proto.Connection = undefined;
-var window: u8 = 0;
-var ctx: eui.Context = undefined;
+/// The frame's context, which is where every control call goes.
+const ctx = &proto.app.ctx;
 
 /// What the controls edit. The schema, not a copy of it: `cfg` and this app
 /// change the same settings and a second field list is a second thing to keep
@@ -49,10 +48,6 @@ var saved = true;
 var version_buf: [64]u8 = @splat(0);
 var version: []const u8 = "";
 
-var pointer_x: i32 = 0;
-var pointer_y: i32 = 0;
-var buttons: eui.widget.Buttons = .{};
-
 export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     // A section named on the command line opens there. One entry in the
     // launcher can then be about this computer rather than about settings.
@@ -61,24 +56,12 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
         const wanted = str.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
         if (Section.parse(wanted)) |which| section = which;
     }
-    settingsMain();
-}
 
-fn settingsMain() noreturn {
     load();
     version = info.ask("kernel", &version_buf);
     readMachineName();
 
-    connection = proto.client.Connection.open("settings") catch {
-        out.text("settings: no window manager is running\n");
-        out.flush();
-        sys.exit(1);
-    };
-
-    window = connection.createWindow(.{}, 260, 200) catch sys.exit(1);
-    connection.setTitle(window, "Settings") catch {};
-
-    run();
+    proto.app.run("settings", "Settings", 260, 200, .{ .draw = draw });
 }
 
 // ---------------------------------------------------------------------------
@@ -127,39 +110,6 @@ fn save() void {
 // ---------------------------------------------------------------------------
 // The window
 // ---------------------------------------------------------------------------
-
-fn run() noreturn {
-    while (true) {
-        const event = connection.next(1_000_000) orelse continue;
-
-        switch (event.tag) {
-            .configure => resize(event.body.configure.w, event.body.configure.h),
-            .ptr_motion => {
-                pointer_x = event.body.motion.x;
-                pointer_y = event.body.motion.y;
-                redraw();
-            },
-            .ptr_button => {
-                pointer_x = event.body.button.x;
-                pointer_y = event.body.button.y;
-                setButton(event.body.button.btn, event.body.button.down != 0);
-                redraw();
-            },
-            .key => {
-                ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
-                if (event.body.key.down != 0) redraw();
-            },
-            .theme => {
-                proto.client.applyTheme(&event.body.theme.name);
-                ctx.damage();
-                redraw();
-            },
-            .close_req => sys.exit(0),
-            .overflow => redraw(),
-            else => {},
-        }
-    }
-}
 
 /// A heading over a row of controls, and where the row starts.
 fn group(y: *i32, area: eui.Rect, title: []const u8) i32 {
@@ -257,34 +207,6 @@ fn wallpaper(area: eui.Rect) i32 {
     return area.bottom() + 18;
 }
 
-fn setButton(index: u8, down: bool) void {
-    switch (index) {
-        0 => buttons.left = down,
-        1 => buttons.right = down,
-        2 => buttons.middle = down,
-        else => {},
-    }
-}
-
-fn resize(w: u16, h: u16) void {
-    connection.attach(window, w, h) catch return;
-    const surface = connection.surfaceOf(window) orelse return;
-
-    ctx = eui.Context.init(surface.*);
-    ctx.damageNow();
-    draw();
-    connection.map(window) catch {};
-}
-
-fn redraw() void {
-    const surface = connection.surfaceOf(window) orelse return;
-    ctx.surface = surface.*;
-    draw();
-    // A control that changed something asked for a clean pass; give it one now
-    // rather than leaving the window half-updated until the next event.
-    if (ctx.pending) draw();
-}
-
 /// Which part of the machine is being changed.
 ///
 /// Listed as they gain something to hold: a heading over an empty pane is a
@@ -334,8 +256,6 @@ fn draw() void {
     const t = theme.current();
     const surface = ctx.surface;
     const area = eui.Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
-
-    ctx.begin(pointer_x, pointer_y, buttons);
 
     const body = eui.footer.above(area);
     const rail = eui.rail.column(body, 0);
@@ -835,6 +755,4 @@ fn drawFooter(area: eui.Rect) void {
         else => sys.exit(0),
     };
 
-    ctx.end();
-    connection.commit(window, ctx.damageList()) catch {};
 }

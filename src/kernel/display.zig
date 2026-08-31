@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const console = @import("console.zig");
+const hal = @import("hal.zig");
 const shm = @import("shm.zig");
 
 pub const Error = error{
@@ -127,6 +128,16 @@ pub fn present(base: usize, geometry: Info) void {
     phys_base = base;
     info = geometry;
     available = true;
+
+    // The framebuffer wants write-combining: the page tables say cacheable,
+    // but the firmware routinely leaves the aperture's memory type at the
+    // uncacheable default, and uncached is a store per pixel per bus
+    // transaction. Done here because every presenter needs it and none
+    // should have to remember.
+    if (hal.caps.write_combine and geometry.bytes != 0) {
+        const outcome = hal.impl.writeCombine(base, geometry.bytes);
+        console.info("video", "write-combining {s}", .{outcome.label()});
+    }
 }
 
 pub fn isAvailable() bool {
