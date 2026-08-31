@@ -48,7 +48,20 @@ nodes with ports, and links decide who hears whom. `tone` makes a
 sound, `vol` sets the volume, and `patch` shows and changes the
 wiring.
 
-The boot carries a line of flags, set where the image is written:
+The boot carries a line of flags, set where the image is written. The
+loader shows it and waits two seconds; press a key in that time and it
+can be typed at:
+
+  boot: verbose fb
+        a key within two seconds changes it
+  boot> verbose fb debug
+
+Typing continues from the end of what is there, so the usual change is
+a word added. Backspace takes one off; enter boots with what is shown.
+A change lasts for that boot alone: the medium is not written to, so a
+line that stops the machine booting is undone by starting it again.
+
+The flags:
 
   verbose                the boot's narration on screen as well as in
                          the log, which `log` reads either way

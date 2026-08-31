@@ -5,11 +5,14 @@
 > Built and working ([`boot/stage1.asm`](../boot/stage1.asm), [`boot/stage2.asm`](../boot/stage2.asm),
 > [`tools/mkimage.zig`](../tools/mkimage.zig)): MBR stage1 loading stage2 over INT 13h EDD;
 > stage2 doing A20, E820 capture, RSDP scan, kernel load to 1 MiB through unreal mode, and
-> protected-mode handoff via the `BootInfo` struct; a dd-able partitioned image.
+> protected-mode handoff via the `BootInfo` struct; the medium's own partition signature
+> recorded so the kernel can find the disk it booted from; a two-second window in which the
+> boot line can be typed at; a dd-able image of three partitions, the second and third
+> mounted as /cfg and /home.
 >
 > Designed but not built: FAT16 boot partition, zstd rootfs container, A/B copies with the
-> boot journal and 3-strike fallback, the boot menu, and the recovery TUI. The kernel is
-> currently loaded as a flat binary from a fixed LBA run instead.
+> boot journal and 3-strike fallback, the full boot menu, and the recovery TUI. The kernel
+> is currently loaded as a flat binary from a fixed LBA run instead.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design wins.
 
@@ -17,7 +20,7 @@ Subsystem: boot (stage1 MBR, stage2 loader, boot protocol, SD/SSD image layout, 
 
 ## 1. Overview
 
-Two-stage legacy-BIOS boot. Stage1 (≤440 B NASM, lives in the MBR) uses INT 13h EDD to load stage2 from a fixed LBA run in the MBR gap. Stage2 (NASM real-mode core + Zig 32-bit code running in protected mode with real-mode trampolines for BIOS services) enables A20, captures E820 and the RSDP, mounts a read-only FAT16 boot partition, loads the kernel ELF and the zstd-compressed rootfs blob into extended memory in 32 KB bounce-buffer chunks, optionally shows a boot menu (hold SPACE), and enters the kernel in flat 32-bit protected mode with a versioned `BootInfo` handoff struct. The kernel decompresses the rootfs itself.
+Two-stage legacy-BIOS boot. Stage1 (≤440 B NASM, lives in the MBR) uses INT 13h EDD to load stage2 from a fixed LBA run in the MBR gap. Stage2 (NASM real-mode core + Zig 32-bit code running in protected mode with real-mode trampolines for BIOS services) enables A20, captures E820 and the RSDP, mounts a read-only FAT16 boot partition, loads the kernel ELF and the zstd-compressed rootfs blob into extended memory in 32 KB bounce-buffer chunks, optionally shows a boot menu (hold SPACE; what is built is the smaller half of it, a two-second window in which the kernel command line can be edited), and enters the kernel in flat 32-bit protected mode with a versioned `BootInfo` handoff struct. The kernel decompresses the rootfs itself.
 
 The system runs from RAM after handoff (boot-to-RAM per locked architecture); the SD card is not touched again until usbd remounts it. The identical loader installs to the internal PATA SSD (BIOS drive abstraction makes stage1/stage2 drive-agnostic; only the image layout tool differs). An A/B file fallback plus a boot-journal sector gives automatic recovery from bad updates; a held key gives manual recovery.
 

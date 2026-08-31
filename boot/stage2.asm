@@ -112,6 +112,8 @@ main:
     mov si, msg_banner
     call print
 
+    call ask_cmdline
+
     call enable_a20
     jc  .a20_failed
 
@@ -727,6 +729,99 @@ pm_entry:
 BITS 16
 
 ; ---------------------------------------------------------------------------
+; The boot line, and the chance to change it
+;
+; What the kernel is told is patched into this image when it is built, which
+; is the right default and the wrong thing to be stuck with: a machine that
+; will not finish booting needs `debug` to say why, and one being photographed
+; does not want the narration. So the line is shown and a moment is left to
+; interrupt, which is the only moment there is: nothing after this point can
+; still change what the kernel starts with.
+;
+; A change lasts for this boot alone. The medium is not written to, because a
+; bad line kept on it would be a machine that needs another computer to fix.
+; ---------------------------------------------------------------------------
+CMDLINE_LIMIT   equ 63              ; the header's buffer, less its terminator
+EDIT_TICKS      equ 37              ; about two seconds at the BIOS's 18.2 Hz
+BIOS_TICKS      equ 0x046C          ; ticks since midnight, kept by the BIOS
+
+ask_cmdline:
+    mov si, msg_boot
+    call print
+    mov si, cmdline
+    call print
+    mov si, msg_boot_hint
+    call print
+
+    ; Wait a moment for somebody to say otherwise. The BIOS counter is the
+    ; only clock there is here, and it is enough to measure two seconds.
+    mov ebx, [BIOS_TICKS]
+.wait:
+    mov ah, 0x01
+    int 0x16                        ; is a key waiting? zero flag says no
+    jnz .interrupted
+    mov eax, [BIOS_TICKS]
+    sub eax, ebx
+    cmp eax, EDIT_TICKS
+    jb .wait
+    mov si, msg_crlf
+    call print
+    ret
+
+.interrupted:
+    xor ah, ah
+    int 0x16                        ; take the key that interrupted us
+
+    mov si, msg_edit
+    call print
+    mov si, cmdline
+    call print
+
+    ; Typing continues from the end of what is already there, so the usual
+    ; change is a word added rather than a line retyped. The scan stops on
+    ; the terminator and leaves di one past it, which is one too far.
+    mov di, cmdline
+    mov cx, CMDLINE_LIMIT + 1
+    xor al, al
+    repne scasb
+    dec di
+
+.key:
+    xor ah, ah
+    int 0x16
+    cmp al, 13                      ; enter: take it as it stands
+    je .accept
+    cmp al, 8                       ; backspace
+    je .rub
+    cmp al, 0x20                    ; anything else unprintable is ignored
+    jb .key
+    cmp al, 0x7E
+    ja .key
+
+    ; Room for one more character, with the terminator still to follow it.
+    cmp di, cmdline + CMDLINE_LIMIT
+    jae .key
+
+    stosb                           ; es is zero, and di walks the buffer
+    mov byte [di], 0
+    call putc
+    jmp .key
+
+.rub:
+    cmp di, cmdline
+    jbe .key
+    dec di
+    mov byte [di], 0
+    mov si, msg_rub
+    call print
+    jmp .key
+
+.accept:
+    mov si, msg_crlf
+    call print
+    ret
+
+; ---------------------------------------------------------------------------
 ; Output helpers (BIOS teletype, the only output we have at this stage)
 ; ---------------------------------------------------------------------------
 print:
@@ -747,9 +842,17 @@ print:
 
 print_dot:
     push ax
+    mov al, '.'
+    call putc
+    pop ax
+    ret
+
+; One character, which is what an echoing line editor needs and what
+; `print_dot` was already doing with a fixed one.
+putc:
+    push ax
     push bx
     mov ah, 0x0E
-    mov al, '.'
     xor bx, bx
     int 0x10
     pop bx
@@ -790,6 +893,11 @@ gdt_desc:
     dd gdt
 
 msg_banner:   db "vibeee stage2", 13, 10, 0
+msg_boot:     db "boot: ", 0
+msg_boot_hint: db 13, 10, "      a key within two seconds changes it", 0
+msg_edit:     db 13, 10, "boot> ", 0
+msg_rub:      db 8, ' ', 8, 0       ; back over the character, blank it, back again
+msg_crlf:     db 13, 10, 0
 msg_entering: db " ok", 13, 10, 0
 msg_a20:      db "A20 failed", 13, 10, 0
 msg_read:     db "kernel read failed", 13, 10, 0

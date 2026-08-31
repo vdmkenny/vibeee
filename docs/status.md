@@ -218,6 +218,14 @@ and exercised on every boot.
 | Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |
 | Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
+**The boot line can be changed at the machine.** The loader shows what the kernel is
+about to be told and waits two seconds before using it: a key in that window opens the
+line for typing, which is the only moment there is, since nothing after it can change
+what the kernel starts with. The change lasts for that boot alone; the medium is never
+written to, so a line that stops the machine booting is undone by starting it again.
+Verified in the emulator for the ordinary boot, an added flag taking effect, backspace,
+an empty line, and eighty characters typed into a buffer that holds sixty-three.
+
 **A machine that remembers.** The boot medium carries three volumes: the system,
 `/cfg`, and `/home` itself. The loader records the medium's own partition signature, so
 the kernel attaches the disk it actually booted from rather than whichever one it found
