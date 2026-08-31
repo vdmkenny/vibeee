@@ -12,6 +12,7 @@
 //! puts it last and writes whatever it likes above it.
 
 const std = @import("std");
+const limits = @import("lib").limits;
 const schema = @import("user/proto/schema.zig");
 const str = @import("lib").str;
 
@@ -99,6 +100,39 @@ fn writeReference(gpa: std.mem.Allocator, doc: *std.ArrayList(u8)) !void {
 
 fn checkShipped(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) !void {
     var missing: usize = 0;
+
+    // The service table is read in one go too, and a table cut in half
+    // parses as one whose last services do not exist: indistinguishable, on
+    // a running machine, from services that failed to start.
+    {
+        const path = try std.fs.path.join(gpa, &.{ dir_path, "services" });
+        defer gpa.free(path);
+
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 * 1024))) |source| {
+            defer gpa.free(source);
+            if (source.len > limits.SERVICES_FILE_MAX) {
+                std.debug.print("{s}: {d} bytes, past the {d} init reads in\n", .{
+                    path,
+                    source.len,
+                    limits.SERVICES_FILE_MAX,
+                });
+                missing += 1;
+            }
+            var declared: usize = 0;
+            var lines = std.mem.splitScalar(u8, source, '\n');
+            while (lines.next()) |line| {
+                if (std.mem.startsWith(u8, line, "name")) declared += 1;
+            }
+            if (declared > limits.MAX_SERVICES) {
+                std.debug.print("{s}: {d} services declared, past the {d} init runs\n", .{
+                    path,
+                    declared,
+                    limits.MAX_SERVICES,
+                });
+                missing += 1;
+            }
+        } else |_| {}
+    }
 
     inline for (std.meta.fields(schema.Domains)) |domain| {
         const path = try std.fs.path.join(gpa, &.{ dir_path, domain.name ++ ".cfg" });

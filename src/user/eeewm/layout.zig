@@ -183,6 +183,14 @@ pub const Desktop = struct {
         };
     }
 
+    /// Whether the desktop being viewed holds exactly one window.
+    ///
+    /// Asked by whatever draws a focus mark: with one window there is nothing
+    /// for the mark to distinguish it from.
+    pub fn aloneOnTag(self: *const Desktop) bool {
+        return self.countOn(self.tag) == 1;
+    }
+
     /// Windows on the current tag, in order, tiled ones first.
     pub fn visible(self: *Desktop, out: []usize) []usize {
         var n: usize = 0;

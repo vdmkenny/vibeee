@@ -41,6 +41,25 @@ LOW confidence, probe at runtime.**
 
 Non-goals for v1: SMP, 64-bit, IPv6, Unicode shaping, swap, multi-user.
 
+**Limits are budgets, and hitting one is a question before it is a number.**
+Every fixed size in this system, a buffer, a table, a count of services or
+windows or clients, is set close to what is actually needed rather than
+generously. That is the point: on a machine with 512 MB and one 630 MHz core,
+a buffer sized for comfort is memory a program cannot have, and a limit nobody
+ever reaches teaches nothing about what the system actually uses.
+
+So when something reaches a limit, the first question is whether the thing
+that grew should have grown. A service table that outgrows its buffer might be
+a table carrying prose that belongs in the manual; a window count that runs
+out might be a program leaking windows. Only when the growth is real does the
+limit double, and the doubling is recorded with the wall that caused it.
+Silently cutting what does not fit is never an answer: a truncated table reads
+as services that failed to start, which is indistinguishable from a bug.
+
+The limits themselves live in `src/lib/limits.zig` where the build can measure
+the shipped files against them, so outgrowing one fails the build naming the
+file rather than surprising a running machine.
+
 ---
 
 ## 2. Target hardware → owner map

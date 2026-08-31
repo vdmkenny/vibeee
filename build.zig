@@ -297,6 +297,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
             .{ .name = "pad", .root = "src/user/apps/pad.zig" },
             .{ .name = "efm", .root = "src/user/apps/efm.zig" },
+            .{ .name = "timed", .root = "src/user/timed/main.zig" },
         };
 
         // platd carries uACPI, which is C. Compiled into the program rather than

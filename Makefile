@@ -122,6 +122,7 @@ USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_EFM := zig-out/bin/efm
+USER_TIMED := zig-out/bin/timed
 USER_DEVMGD := zig-out/bin/devmgd
 USER_NETD    := zig-out/bin/netd
 USER_SNDD    := zig-out/bin/sndd
@@ -238,12 +239,14 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
 	@$(MCOPY) -i $@ -o $(USER_EFM) ::/bin/efm
+	@$(MCOPY) -i $@ -o $(USER_TIMED) ::/bin/timed
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg
 	@$(MCOPY) -i $@ -o etc/net.cfg ::/etc/net.cfg
+	@$(MCOPY) -i $@ -o etc/time.cfg ::/etc/time.cfg
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
 	@$(MCOPY) -i $@ -o etc/disabled ::/etc/disabled
 	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done

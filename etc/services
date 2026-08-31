@@ -109,3 +109,16 @@ binary  = /bin/eeewm
 caps    = spawn,kill,power,display,mount
 needs   = cfgd,devmgd,platd
 restart = never
+
+name    = timed
+binary  = /bin/timed
+# What time it is, learned from the network. A machine of this age has
+# usually lost the battery that kept its clock, so it wakes not knowing the
+# date, and everything dated waits on this being fixed.
+#
+# Behind netd, because it has nobody to ask until there is a network, and it
+# holds `time` and nothing else: a service that could move the clock could
+# move every timestamp with it.
+caps    = time
+needs   = netd,cfgd
+restart = always

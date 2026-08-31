@@ -18,6 +18,7 @@
 //! services it knows about: most of what it reaps, it never started.
 
 const std = @import("std");
+const lib = @import("lib");
 const sys = @import("sys");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -30,7 +31,9 @@ const CONFIG_PATH = "/etc/services";
 /// Enough for the whole service table. Read once and kept, so every string in
 /// a `Service` is a slice into it rather than a copy, which is what makes the
 /// parser allocation-free.
-var config_buf: [4096]u8 = @splat(0);
+/// The whole service table, read in one go. The size is `lib.limits`', so
+/// the build can measure the shipped file against the same number.
+var config_buf: [lib.limits.SERVICES_FILE_MAX]u8 = @splat(0);
 
 pub const Restart = enum {
     /// Run once; leave it alone when it exits.
@@ -72,7 +75,7 @@ pub const Service = struct {
 
 /// Room for the shipped set and a few more: the file is the source of truth
 /// and running out of slots silently is the one way it could lie.
-const MAX_SERVICES = 12;
+const MAX_SERVICES = lib.limits.MAX_SERVICES;
 
 const State = struct {
     service: Service = .{},
@@ -216,13 +219,26 @@ fn loadConfig() void {
     }
     defer _ = sys.close(@intCast(handle));
 
-    const n = sys.read(@intCast(handle), &config_buf);
-    if (n <= 0) {
+    // Read in a loop: a short read is normal, and treating one as the whole
+    // file is how a table loses its tail.
+    var held: usize = 0;
+    while (held < config_buf.len) {
+        const n = sys.read(@intCast(handle), config_buf[held..]);
+        if (n <= 0) break;
+        held += @intCast(n);
+    }
+
+    if (held == 0) {
         useFallback("/etc/services is empty");
         return;
     }
+    if (held == config_buf.len) {
+        // Whatever is past the buffer is a service nobody would ever see
+        // fail, so it is said plainly rather than parsed and forgotten.
+        report("init", "/etc/services is larger than init can hold; the tail is ignored");
+    }
 
-    parse(config_buf[0..@intCast(n)]);
+    parse(config_buf[0..held]);
     if (service_count == 0) useFallback("/etc/services declares no services");
 }
 

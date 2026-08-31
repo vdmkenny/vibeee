@@ -10,6 +10,7 @@
 const std = @import("std");
 const hostname = @import("lib").hostname;
 const palette = @import("lib").palette;
+const str = @import("lib").str;
 const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
 const keymaps = @import("keymaps");
@@ -69,6 +70,66 @@ pub const Keymap = keymaps.Name;
 
 pub const Input = struct {
     keymap: Keymap = keymaps.default,
+};
+
+/// Where the machine learns what time it is.
+///
+/// A netbook of this age has usually lost the battery that kept its clock, so
+/// it wakes not knowing the date at all. Everything dated depends on this:
+/// a file's timestamp, a lease, and a certificate's validity, which cannot be
+/// judged by a machine that thinks it is 1970.
+pub const Time = struct {
+    /// Whether to ask the network at all. On, because a machine with no
+    /// clock and a network is better served by asking than by guessing.
+    ntp: bool = true,
+    /// Who to ask, in order, until one answers. Names rather than addresses:
+    /// the pools move, and a machine that hard-coded an address would ask a
+    /// server that has since become somebody's laptop.
+    server1: Host = Host.of("0.pool.ntp.org"),
+    server2: Host = Host.of("1.pool.ntp.org"),
+    server3: Host = Host.of("time.cloudflare.com"),
+    /// How often to ask again, in minutes. The clock here is a crystal
+    /// counted by software, so it drifts; an hour is often enough to stay
+    /// close and rare enough to be no burden on a public pool.
+    every_minutes: u16 = 60,
+};
+
+/// A server's name, as the file spells it.
+pub const Host = struct {
+    bytes: [48]u8 = @splat(0),
+    len: u8 = 0,
+
+    pub const accepts = "a host name, or empty for none";
+
+    pub fn of(comptime name: []const u8) Host {
+        var out = Host{ .len = name.len };
+        @memcpy(out.bytes[0..name.len], name);
+        return out;
+    }
+
+    pub fn slice(self: *const Host) []const u8 {
+        return self.bytes[0..@min(self.len, self.bytes.len)];
+    }
+
+    pub fn isEmpty(self: Host) bool {
+        return self.len == 0;
+    }
+
+    pub fn parse(text: []const u8) ?Host {
+        const trimmed = str.trim(text);
+        if (trimmed.len > 48) return null;
+        var out = Host{ .len = @intCast(trimmed.len) };
+        @memcpy(out.bytes[0..trimmed.len], trimmed);
+        return out;
+    }
+
+    pub fn spell(self: Host, into: *str.Builder) void {
+        into.text(self.slice());
+    }
+
+    pub fn eql(self: Host, other: Host) bool {
+        return std.mem.eql(u8, self.slice(), other.slice());
+    }
 };
 
 /// Network interface configuration, as four slots rather than fixed roles:
@@ -196,6 +257,7 @@ pub const Domains = struct {
     input: Input = .{},
     wm: Wm = .{},
     net: Net = .{},
+    time: Time = .{},
 };
 
 /// The most a settings file may hold.

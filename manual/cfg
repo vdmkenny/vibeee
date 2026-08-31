@@ -115,3 +115,15 @@ Settings, generated from the schema: all
       conservative | fcc | etsi | mkk | unrestricted
   net.if3_txpower           regulatory
       regulatory | max | a number of dBm
+
+  [time]
+  time.ntp                  true
+      true | false
+  time.server1              0.pool.ntp.org
+      a host name, or empty for none
+  time.server2              1.pool.ntp.org
+      a host name, or empty for none
+  time.server3              time.cloudflare.com
+      a host name, or empty for none
+  time.every_minutes        60
+      a number

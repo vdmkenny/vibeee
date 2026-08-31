@@ -599,7 +599,11 @@ pub const Caps = packed struct(u32) {
     /// disk and deciding what a path means are different powers: a driver
     /// serves blocks and has no business changing the namespace above it.
     mount: bool = false,
-    _reserved: u26 = 0,
+    /// May set the wall clock. Held by the one service that learns the time
+    /// from somewhere trustworthy: a program that could move the clock could
+    /// move every timestamp and every certificate lifetime with it.
+    time: bool = false,
+    _reserved: u25 = 0,
 
     /// Everything. What the first process starts with, and what a spawn asks
     /// for when it wants the child to keep whatever the parent had.
@@ -1610,6 +1614,20 @@ pub const table = [_]Syscall{
         .notes = "Requires Caps.driver. Deltas rather than positions: where the pointer " ++
             "ends up depends on the screen, which is the kernel's to know and not a " ++
             "driver's.",
+    },
+    .{
+        .number = 64,
+        .name = "realtime_set",
+        .summary = "Set the wall clock from a trustworthy source.",
+        .args = &.{
+            .{ .name = "epoch_us", .kind = .ptr, .desc = "Pointer to an i64: microseconds since 1970-01-01 UTC." },
+            .{ .name = "source", .kind = .ptr, .desc = "A short name for where the time came from, for the log." },
+            .{ .name = "source_len", .kind = .len, .desc = "Length of that name." },
+        },
+        .errors = &.{ E.fault, E.perm, E.inval },
+        .notes = "Needs the time capability. The offset is what is stored, so the clock keeps " ++
+            "running from the monotonic counter and a correction steps it rather than restarting " ++
+            "it. Measuring an interval across a call to this is what clock_us is for.",
     },
 };
 

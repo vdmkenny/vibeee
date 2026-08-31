@@ -75,3 +75,13 @@ so an image ships with the first and a machine remembers the second.
 | `net.if3_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if3_txpower` | regulatory \| max \| a number of dBm | `regulatory` |
 
+## time
+
+| key | accepts | default |
+|---|---|---|
+| `time.ntp` | true \| false | `true` |
+| `time.server1` | a host name, or empty for none | `0.pool.ntp.org` |
+| `time.server2` | a host name, or empty for none | `1.pool.ntp.org` |
+| `time.server3` | a host name, or empty for none | `time.cloudflare.com` |
+| `time.every_minutes` | a number | `60` |
+

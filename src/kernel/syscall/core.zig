@@ -230,6 +230,38 @@ pub fn sys_realtime_us(a: Args) Result {
     return 0;
 }
 
+/// Set the wall clock, for the service that learned the time from somewhere
+/// worth believing.
+///
+/// A netbook of this age has usually lost its RTC battery, so the machine
+/// wakes believing it is 1970 or nothing at all. Everything dated depends on
+/// this being fixable from userspace: a file's timestamp, a lease's lifetime,
+/// and eventually a certificate's validity, which cannot be judged at all by
+/// a machine that does not know the date.
+pub fn sys_realtime_set(a: Args) Result {
+    if (ctx.require(.{ .time = true })) |denied| return denied;
+
+    const value = userSlice(a, a.a0, @sizeOf(i64)) orelse return Errno.fault.value();
+    const epoch_us = std.mem.readInt(i64, value[0..8], .little);
+
+    // A time before this system existed is not a correction, it is a bug in
+    // whatever asked, and taking it would move every later stamp backwards.
+    if (epoch_us < EARLIEST_SANE_US) return Errno.inval.value();
+
+    var name: []const u8 = "userspace";
+    if (a.a1 != 0 and a.a2 != 0) {
+        const source = userSlice(a, a.a1, @min(a.a2, 16)) orelse return Errno.fault.value();
+        name = source;
+    }
+
+    clock.set(epoch_us, name);
+    return 0;
+}
+
+/// 2020-01-01, comfortably before anything that could run this and safely
+/// after every value a confused source produces.
+const EARLIEST_SANE_US: i64 = 1_577_836_800 * 1_000_000;
+
 pub fn sys_getpid(_: Args) Result {
     const t = sched.currentThread() orelse return 0;
     return @intCast(t.id);

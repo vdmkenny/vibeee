@@ -273,11 +273,16 @@ fn paintWindow(index: usize, focused: bool) void {
     const area = w.area;
     if (area.isEmpty()) return;
 
-    const width = if (focused) t.border_width_focused else t.border_width;
+    // A focus border is a comparison, and one window has nothing to be
+    // compared with: the highlight then says only that the desktop is doing
+    // what it always does, in the accent, around the whole screen.
+    const alone = desktop.aloneOnTag();
+    const marked = focused and !alone;
+    const width = if (marked) t.border_width_focused else t.border_width;
 
     // Drawn inside the tile, so focusing a window never changes its size and
     // never disturbs its neighbours.
-    screen.borderInset(area, width, if (focused) t.border_focused else t.border);
+    screen.borderInset(area, width, if (marked) t.border_focused else t.border);
 
     // A client that has given us a surface gets composited from it. One that
     // has not draws the manager's own placeholder, which is what the desktop

@@ -3,6 +3,8 @@ date - the wall-clock time
   date                   the date and time
   date epoch             seconds since 1970
   date -e                the same
+  date sync              ask the time servers now
 
-The clock comes from the machine's own battery-backed clock at boot and
-advances from there.
+The clock comes from the machine's own battery-backed clock at boot. Where
+that battery has died, `timed` asks the network instead; which servers and
+how often are `cfg time` settings.

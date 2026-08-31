@@ -164,6 +164,21 @@ pub fn realtimeMicros() ?i64 {
     return out;
 }
 
+/// Set the wall clock. Needs the `time` capability; answers false without it.
+///
+/// `source` is a short name for where the time came from, which the kernel
+/// puts in its log: a machine whose clock jumped should be able to say what
+/// moved it.
+pub fn setRealtimeMicros(epoch_us: i64, source: []const u8) bool {
+    var value = epoch_us;
+    return syscall3(
+        abi.number("realtime_set"),
+        @intFromPtr(&value),
+        @intFromPtr(source.ptr),
+        source.len,
+    ) >= 0;
+}
+
 fn syscall2(nr: u32, a0: usize, a1: usize) isize {
     return enter(nr, a0, a1, 0, 0, 0);
 }
