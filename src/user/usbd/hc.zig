@@ -34,6 +34,16 @@ pub const Error = error{
     Refused,
 };
 
+/// What one pass over a controller's interrupt amounted to.
+pub const Service = enum {
+    quiet,
+    ports_changed,
+    /// The controller was reset and rebuilt, or closed for good: every
+    /// device the bus knew on it describes a conversation that no longer
+    /// exists.
+    reborn,
+};
+
 /// What a controller must provide.
 pub const HcOps = struct {
     /// Map registers, take the controller from the firmware, and start
@@ -47,8 +57,9 @@ pub const HcOps = struct {
     /// Returns the state it settled in.
     resetPort: *const fn (index: u8) PortState,
     /// Acknowledge whatever the controller interrupted about, and say
-    /// whether any port changed while doing it.
-    serviceIrq: *const fn () bool,
+    /// what it amounted to: nothing, a port changing, or the controller
+    /// having been rebuilt underneath everything the bus knew about it.
+    serviceIrq: *const fn () Service,
     /// One control transfer on a device's endpoint zero. The pipe says
     /// who, how fast, how big a packet, and by what route; `data` is the
     /// buffer for the data stage, empty for none. Returns how many bytes

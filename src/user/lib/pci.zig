@@ -18,6 +18,7 @@ pub const Location = lib.pci.Location;
 pub const Command = lib.pci.Command;
 pub const InterruptPin = lib.pci.InterruptPin;
 pub const MemoryBar = lib.pci.MemoryBar;
+pub const CommandStatus = lib.pci.CommandStatus;
 pub const IoBar = lib.pci.IoBar;
 pub const CAPABILITIES_OFFSET = lib.pci.CAPABILITIES_OFFSET;
 pub const CapabilityPointer = lib.pci.CapabilityPointer;
@@ -136,6 +137,18 @@ pub fn interruptLine(loc: Location) u8 {
 
 pub fn interruptPin(loc: Location) InterruptPin {
     return @enumFromInt(read8(loc, lib.pci.INTERRUPT_PIN_OFFSET));
+}
+
+/// The command dword whole, the status half included.
+pub fn readCommandStatus(loc: Location) CommandStatus {
+    return @bitCast(read(loc, lib.pci.COMMAND_OFFSET));
+}
+
+/// Clear the device's account of bus trouble: the account bits are
+/// write-one-to-clear and the command half ignores what it already holds,
+/// so the dword goes back exactly as it came.
+pub fn clearStatus(loc: Location) void {
+    write(loc, lib.pci.COMMAND_OFFSET, read(loc, lib.pci.COMMAND_OFFSET));
 }
 
 pub fn readCommand(loc: Location) Command {

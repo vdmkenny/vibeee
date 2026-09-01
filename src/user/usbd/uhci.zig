@@ -552,8 +552,8 @@ fn acknowledge(port: Port) Port {
     return copy;
 }
 
-fn serviceIrq(self: *Unit) bool {
-    if (!self.controller.opened) return false;
+fn serviceIrq(self: *Unit) hc.Service {
+    if (!self.controller.opened) return .quiet;
 
     const status: Status = @bitCast(read16(self, .status));
     if (status.host_system_error) log.warn(name, "the controller reported a host system error");
@@ -575,7 +575,7 @@ fn serviceIrq(self: *Unit) bool {
         portWrite(self, index, acknowledge(port));
         moved = true;
     }
-    return moved;
+    return if (moved) .ports_changed else .quiet;
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +800,7 @@ const REST_US: u32 = 50_000;
 fn rest(self: *Unit) void {
     if (self.controller.irq != 0) {
         _ = sys.eventWait(self.controller.irq, REST_US);
-        _ = sys.irqAck(self.controller.irq, serviceIrq(self));
+        _ = sys.irqAck(self.controller.irq, serviceIrq(self) != .quiet);
     } else {
         sys.sleepMicros(REST_US);
     }
@@ -927,7 +927,7 @@ pub fn unitOps(comptime unit: u8) hc.HcOps {
         fn resetPort_(index: u8) hc.PortState {
             return resetPort(self, index);
         }
-        fn serviceIrq_() bool {
+        fn serviceIrq_() hc.Service {
             return serviceIrq(self);
         }
         fn control_(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {

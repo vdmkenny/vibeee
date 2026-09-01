@@ -415,6 +415,11 @@ const Device = struct {
     ports: u8 = 0,
     port_power: bool = false,
     opened: bool = false,
+    /// Whether the part addresses sixty-four bits: decides if the segment
+    /// register exists to be written.
+    wide: bool = false,
+    /// The one clean rebuild a host system error is answered with.
+    rebuilt: bool = false,
     /// The interrupt this controller's transfers wait on.
     irq: u32 = 0,
 };
@@ -761,7 +766,9 @@ fn open(loc: pci.Location) bool {
     // medium. Taking it politely, before touching an operational
     // register, is what stops its management code from fighting us for
     // the ports afterwards.
-    takeFromFirmware(@bitCast(capRead(.capabilities)));
+    const capabilities: Capabilities = @bitCast(capRead(.capabilities));
+    controller.wide = capabilities.addresses_64bit;
+    takeFromFirmware(capabilities);
 
     controller.arena = device.Dma(Arena).alloc(name) orelse return false;
     if (!reset()) return false;
@@ -867,7 +874,7 @@ fn startSchedule() void {
         .overlay = .{ .token = .{ .status = .{ .halted = true } } },
     };
 
-    opWrite(.segment, 0);
+    if (controller.wide) opWrite(.segment, 0);
     opWrite(.periodic_base, controller.arena.physOf("frames"));
     opWrite(.async_base, anchor_physical);
 
@@ -986,17 +993,60 @@ fn release(index: u8, speed: usb.Speed) hc.PortState {
 
 /// Acknowledge the controller's interrupt. Returns whether a port
 /// changed, which is the only thing the bus above needs to be told.
-fn serviceIrq() bool {
-    if (!controller.opened) return false;
+fn serviceIrq() hc.Service {
+    if (!controller.opened) return .quiet;
 
     const status: Status = @bitCast(opRead(.status));
-    if (status.host_error) log.warn(name, "the controller reported a host system error");
 
     // Write-one-to-clear, and only the bits that were actually set: a
     // blanket acknowledgement would swallow a change that arrived
     // between the read and the write.
     opWrite(.status, @bitCast(status));
-    return status.port_change;
+
+    if (status.host_error) {
+        hostError();
+        return .reborn;
+    }
+    return if (status.port_change) .ports_changed else .quiet;
+}
+
+/// A host system error is the controller saying the bus refused one of its
+/// own reads or writes. The schedules halt and the port state machines
+/// stop with them, so nothing on this controller works again until it is
+/// rebuilt. Narrate what it was holding, spend the one clean rebuild, and
+/// if the error comes back, close: a controller that cannot be trusted
+/// with the bus keeps its ports from the companions for nothing.
+fn hostError() void {
+    const account = pci.readCommandStatus(controller.location).status;
+    log.begin(name, .warn);
+    out.text("a host system error while walking ");
+    out.hex(opRead(.async_base), 8);
+    out.text("; the arena is at ");
+    out.hex(controller.arena.phys, 8);
+    if (account.received_master_abort) out.text("; the bus answered nobody");
+    if (account.received_target_abort) out.text("; the bus broke off mid-answer");
+    if (account.master_parity_error or account.parity_error) out.text("; parity failed");
+    if (account.signaled_system_error) out.text("; the part raised a system error");
+    log.end();
+    pci.clearStatus(controller.location);
+
+    if (controller.rebuilt) {
+        surrender();
+        return;
+    }
+    controller.rebuilt = true;
+    log.warn(name, "rebuilding the controller");
+    if (reset()) startSchedule() else surrender();
+}
+
+/// Close the controller and route every port to the companions, which can
+/// at least carry the same devices at full speed. The companions notice
+/// nothing on their own, so the handover finishes on the next usbd start.
+fn surrender() void {
+    _ = reset();
+    opWrite(.configured, 0);
+    controller.opened = false;
+    log.fail(name, "closed; the ports fall to the companions on the next usbd start");
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,7 +1214,7 @@ const REST_US: u32 = 50_000;
 fn rest() void {
     if (controller.irq != 0) {
         _ = sys.eventWait(controller.irq, REST_US);
-        _ = sys.irqAck(controller.irq, serviceIrq());
+        _ = sys.irqAck(controller.irq, serviceIrq() != .quiet);
     } else {
         sys.sleepMicros(REST_US);
     }

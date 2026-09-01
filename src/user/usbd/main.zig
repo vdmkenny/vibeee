@@ -192,19 +192,28 @@ fn serve() noreturn {
         if (index <= controller_count) {
             const which = index - 1;
             const controller = &controllers[which];
-            // The controller says whether a port changed; only then is
-            // the bus walked, and only that controller's ports.
-            const found = controller.ops.serviceIrq();
-            if (found) {
-                core.scan(@intCast(which), controller.ops);
-                settle();
+            // The controller says what its interrupt amounted to; the
+            // bus is walked only when something moved, and a rebuilt
+            // controller's book is swept before the walk.
+            const outcome = controller.ops.serviceIrq();
+            switch (outcome) {
+                .quiet => {},
+                .ports_changed => {
+                    core.scan(@intCast(which), controller.ops);
+                    settle();
+                },
+                .reborn => {
+                    core.forgetController(@intCast(which));
+                    core.scan(@intCast(which), controller.ops);
+                    settle();
+                },
             }
             // A transfer finished, and one of the class drivers is
             // probably why. Which one is their own business.
             for (CLASSES) |driver| {
                 if (driver.ops.woke) |look| look();
             }
-            _ = sys.irqAck(controller.irq, found);
+            _ = sys.irqAck(controller.irq, outcome != .quiet);
             out.flush();
             continue;
         }

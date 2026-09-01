@@ -146,6 +146,11 @@ pub fn scan(controller: u8, ops: hc.HcOps) void {
             forget(controller, .{}, index);
             continue;
         }
+        // A connect change on a port whose device is already known means
+        // the device was swapped between looks, or the controller was
+        // rebuilt underneath it: the entry describes a conversation that
+        // no longer exists.
+        if (state.changed) forget(controller, .{}, index);
         if (known(controller, .{}, index)) continue;
 
         const settled = ops.resetPort(index);
@@ -207,6 +212,15 @@ fn forget(controller: u8, route: usb.Route, port: u8) void {
         out.text(": device unplugged");
         log.end();
         entry.* = .{};
+    }
+}
+
+/// Everything the bus knew on one controller, root ports and what hung
+/// behind their hubs alike: the sweep a rebuilt controller earns.
+pub fn forgetController(controller: u8) void {
+    for (&devices) |*entry| {
+        if (!entry.live or entry.controller != controller) continue;
+        forget(entry.controller, entry.route, entry.port);
     }
 }
 

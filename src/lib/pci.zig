@@ -55,6 +55,31 @@ pub const INTERRUPT_LINE_OFFSET: u8 = 0x3C;
 pub const INTERRUPT_PIN_OFFSET: u8 = 0x3D;
 
 pub const BarSpace = enum(u1) { memory, io };
+/// The status half of the command dword: the device's own account of
+/// trouble on the bus. The account bits are write-one-to-clear, so writing
+/// back what was read clears them.
+pub const Status = packed struct(u16) {
+    _0: u3 = 0,
+    interrupt: bool = false,
+    capabilities: bool = false,
+    capable_66mhz: bool = false,
+    _6: u1 = 0,
+    fast_back_to_back: bool = false,
+    master_parity_error: bool = false,
+    devsel: u2 = 0,
+    signaled_target_abort: bool = false,
+    received_target_abort: bool = false,
+    received_master_abort: bool = false,
+    signaled_system_error: bool = false,
+    parity_error: bool = false,
+};
+
+/// The command dword whole: command below, status above.
+pub const CommandStatus = packed struct(u32) {
+    command: Command,
+    status: Status,
+};
+
 pub const MemoryBarKind = enum(u2) {
     bits32 = 0,
     below_one_megabyte = 1,
