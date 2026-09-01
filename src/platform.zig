@@ -365,10 +365,10 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
     // are directories in it. A machine whose boot medium is behind a bus
     // that starts later finds nothing here, and the volumes take these
     // same places when they arrive.
+    if (!vfs.automounts()) return;
     for (block.list(), 0..) |*dev, i| {
         if (!block.isMountCandidate(i)) continue;
         const where = vfs.placeOf(dev) orelse continue;
-        if (!vfs.automounts()) continue;
         if (vfs.mount(where, dev, false)) |_| {
             reportMount(where, dev);
         } else |err| switch (err) {

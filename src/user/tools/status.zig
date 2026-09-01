@@ -172,6 +172,12 @@ const MAX_DISK_ROWS = 16;
 /// How wide the name column is, rails included.
 const DISK_NAME = 13;
 
+/// One row of the listing: a disk, or a volume on the disk above it.
+const Row = struct {
+    text: []const u8 = "",
+    nested: bool = false,
+};
+
 pub fn disk(_: []const []const u8) void {
     var buf: [1024]u8 = [_]u8{0} ** 1024;
     const list = info.ask("disks", &buf);
@@ -184,16 +190,14 @@ pub fn disk(_: []const []const u8) void {
 
     // Read before drawing: a volume is drawn knowing whether it is the
     // last of its disk, which is a question about the rows after it.
-    var rows: [MAX_DISK_ROWS][]const u8 = @splat("");
-    var nested: [MAX_DISK_ROWS]bool = @splat(false);
+    var rows: [MAX_DISK_ROWS]Row = @splat(.{});
     var count: usize = 0;
     var listing = str.lines(list);
-    while (listing.next()) |row| {
-        if (row.len == 0) continue;
+    while (listing.next()) |line| {
+        if (line.len == 0) continue;
         if (count == rows.len) break;
-        const stripped = str.stripIndent(row);
-        rows[count] = stripped.text;
-        nested[count] = stripped.indented;
+        const stripped = str.stripIndent(line);
+        rows[count] = .{ .text = stripped.text, .nested = stripped.indented };
         count += 1;
     }
 
@@ -201,13 +205,14 @@ pub fn disk(_: []const []const u8) void {
     for (rows[0..count], 0..) |row, i| {
         // The volumes of a disk are the indented rows that follow it, and
         // they are drawn from their disk rather than in their own turn.
-        if (nested[i]) continue;
-        writeDiskRow(row, null);
+        if (row.nested) continue;
+        writeDiskRow(row.text, null);
 
-        var volumes: usize = 0;
-        while (i + 1 + volumes < count and nested[i + 1 + volumes]) volumes += 1;
-        for (rows[i + 1 ..][0..volumes], 0..) |volume, at| {
-            writeDiskRow(volume, tree.Rung.of(at, volumes));
+        const volumes = rows[i + 1 .. count];
+        var kept: usize = 0;
+        while (kept < volumes.len and volumes[kept].nested) kept += 1;
+        for (volumes[0..kept], 0..) |volume, at| {
+            writeDiskRow(volume.text, tree.Rung.of(at, kept));
         }
     }
     out.flush();

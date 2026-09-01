@@ -54,10 +54,10 @@ pub const Device = struct {
     fn markWritten(self: *const Device) void {
         const mutable: *Device = @constCast(self);
         mutable.written = true;
-        if (self.offset == 0) return;
-        for (devices[0..device_count]) |*d| {
-            if (d.offset == 0 and d.ctx == self.ctx) d.written = true;
-        }
+        // A partition is a window onto a drive, and the drive is what has
+        // to remember it.
+        const place = partitionOf(self) orelse return;
+        @constCast(place.disk).written = true;
     }
 
     pub fn read(self: *const Device, lba: u64, buf: []u8) Error!void {
@@ -319,26 +319,29 @@ pub fn signatureOf(disk: *const Device) ?u32 {
     return std.mem.readInt(u32, sector[0x1B8..][0..4], .little);
 }
 
-/// The whole device a partition was cut from. Partitions carry their
-/// parent's context, which is the link between them; the names only agree
-/// with it by convention.
-pub fn diskOf(part: *const Device) ?*const Device {
+/// Where a partition sits: the disk it was cut from, and which of that
+/// disk's it is.
+pub const Partition = struct {
+    disk: *const Device,
+    /// Counting the way the table does, from one.
+    number: u8,
+};
+
+/// A partition's place, or null for a whole device. Partitions carry
+/// their parent's context, which is the link between them, and the scan
+/// names a partition after the disk it came from, so the number is read
+/// back from the name that named it.
+pub fn partitionOf(part: *const Device) ?Partition {
     if (part.offset == 0) return null;
-    for (devices[0..device_count]) |*d| {
-        if (d.offset == 0 and !d.retired and d.ctx == part.ctx) return d;
+    for (devices[0..device_count]) |*disk| {
+        if (disk.offset != 0 or disk.retired or disk.ctx != part.ctx) continue;
+        if (part.name.len <= disk.name.len + 1) return null;
+        if (!std.mem.startsWith(u8, part.name, disk.name)) return null;
+        if (part.name[disk.name.len] != 'p') return null;
+        const number = std.fmt.parseInt(u8, part.name[disk.name.len + 1 ..], 10) catch return null;
+        return .{ .disk = disk, .number = number };
     }
     return null;
-}
-
-/// Which partition of its disk this is, counting the way the table does.
-/// The scan names a partition after the disk it came from, so the number
-/// is read back from the name that named it.
-pub fn partitionNumberOf(part: *const Device) ?u8 {
-    const disk = diskOf(part) orelse return null;
-    if (part.name.len <= disk.name.len + 1) return null;
-    if (!std.mem.startsWith(u8, part.name, disk.name)) return null;
-    if (part.name[disk.name.len] != 'p') return null;
-    return std.fmt.parseInt(u8, part.name[disk.name.len + 1 ..], 10) catch null;
 }
 
 pub fn isMountCandidate(index: usize) bool {

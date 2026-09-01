@@ -134,12 +134,11 @@ pub fn speakFor(signature: u32, places: []const []const u8) void {
 /// whichever copy of it the machine can reach.
 pub fn placeOf(dev: *const block.Device) ?[]const u8 {
     if (spoken_signature == 0 or spoken_places.len == 0) return null;
-    const disk = block.diskOf(dev) orelse return null;
-    const signature = block.signatureOf(disk) orelse return null;
+    const place = block.partitionOf(dev) orelse return null;
+    if (place.number < 2 or place.number - 2 >= spoken_places.len) return null;
+    const signature = block.signatureOf(place.disk) orelse return null;
     if (signature != spoken_signature) return null;
-    const which = block.partitionNumberOf(dev) orelse return null;
-    if (which < 2 or which - 2 >= spoken_places.len) return null;
-    return spoken_places[which - 2];
+    return spoken_places[place.number - 2];
 }
 
 pub fn mountMedia(dev: *const block.Device) ?[]const u8 {

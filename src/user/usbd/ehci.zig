@@ -779,7 +779,7 @@ fn awaitPayload(asked: usize) hc.Error!usize {
     const token = arena.payload.token;
     if (token.status.failed()) return hc.Error.Stalled;
     if (token.status.active) {
-        sayUnfinished("the bulk transfer", &arena.bulk, @ptrCast(&arena.payload), 1);
+        sayUnfinished("the bulk transfer", &arena.bulk, (&arena.payload)[0..1]);
         reclaim(&arena.bulk);
         return hc.Error.Timeout;
     }
@@ -1365,15 +1365,14 @@ fn rest() void {
 fn sayUnfinished(
     what: []const u8,
     head: *volatile QueueHead,
-    descriptors: [*]volatile Transfer,
-    count: usize,
+    descriptors: []volatile Transfer,
 ) void {
     log.begin(name, .dim);
     out.text(what);
     out.text(": ");
-    for (0..count) |i| {
+    for (descriptors, 0..) |*descriptor, i| {
         if (i != 0) out.text(", ");
-        const token = descriptors[i].token;
+        const token = descriptor.token;
         out.text(switch (token.pid) {
             .setup => "setup",
             .in => "in",
@@ -1434,7 +1433,7 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
     for (0..stages) |i| {
         const token = arena.stages[i].token;
         if (token.status.failed() or token.status.active) {
-            sayUnfinished("the transfer's stages", &arena.control, &arena.stages, stages);
+            sayUnfinished("the transfer's stages", &arena.control, arena.stages[0..stages]);
             if (token.status.failed()) return hc.Error.Stalled;
             // A halted head has been let go; a chain still active is
             // still the controller's, and is taken back before reuse.
