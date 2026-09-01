@@ -15,6 +15,7 @@
 //! program should say about it anyway.
 
 const std = @import("std");
+const exif = @import("lib").exif;
 const limits = @import("lib").limits;
 
 /// A decoded picture: pixels the surface can copy from, and its shape.
@@ -210,11 +211,13 @@ test "the pictures this system ships decode" {
     // vendored decoder on the machine has no console to report itself on, and
     // the same bytes through the same call are the cheapest way to find out
     // whether the decoder or the drawing is at fault.
+    // The width and height are the picture as it is stored, which for a
+    // photograph taken sideways is not the picture as it should be shown.
     const samples = [_]struct { name: []const u8, bytes: []const u8, w: u16, h: u16 }{
         .{ .name = "colours.png", .bytes = @embedFile("colours.png"), .w = 240, .h = 160 },
         .{ .name = "tall.png", .bytes = @embedFile("tall.png"), .w = 90, .h = 300 },
         .{ .name = "photo.jpg", .bytes = @embedFile("photo.jpg"), .w = 320, .h = 240 },
-        .{ .name = "sideways.jpg", .bytes = @embedFile("sideways.jpg"), .w = 240, .h = 320 },
+        .{ .name = "sideways.jpg", .bytes = @embedFile("sideways.jpg"), .w = 320, .h = 240 },
     };
 
     for (samples) |sample| {
@@ -228,6 +231,29 @@ test "the pictures this system ships decode" {
             picture.pixels.len,
         );
     }
+}
+
+test "a photograph taken sideways is stored one way round and shown the other" {
+    // The seam between the two halves of this: the decoder answers with what
+    // is stored, and what the camera wrote beside it says that is not what to
+    // show. A viewer that used the decoder's answer alone would show every
+    // portrait photograph on its side.
+    const bytes = @embedFile("sideways.jpg");
+
+    const shape = try shapeOf(bytes);
+    try testing.expectEqual(@as(u16, 320), shape.width);
+    try testing.expectEqual(@as(u16, 240), shape.height);
+
+    const said = exif.read(bytes);
+    try testing.expect(said.orientation_known);
+    try testing.expect(said.orientation.turned());
+    try testing.expectEqualStrings("ASUS", said.maker());
+
+    // Which is a picture 240 across and 320 down, the way round it was taken.
+    const upright_w = if (said.orientation.turned()) shape.height else shape.width;
+    const upright_h = if (said.orientation.turned()) shape.width else shape.height;
+    try testing.expectEqual(@as(u16, 240), upright_w);
+    try testing.expectEqual(@as(u16, 320), upright_h);
 }
 
 test "what is not a picture is refused, and says why" {
