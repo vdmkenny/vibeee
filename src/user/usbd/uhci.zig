@@ -335,6 +335,8 @@ const Device = struct {
     location: pci.Location = .{ .bus = 0, .device = 0, .function = 0 },
     arena: device.Dma(Arena) = undefined,
     opened: bool = false,
+    /// The one clean rebuild a stop is answered with.
+    rebuilt: bool = false,
     irq: u32 = 0,
 };
 
@@ -552,16 +554,45 @@ fn acknowledge(port: Port) Port {
     return copy;
 }
 
+/// The two ways this controller stops itself: the bus refused one of its
+/// reads or writes, or it found its own schedule malformed. Either way it
+/// has halted and nothing on it works again until it is rebuilt, so spend
+/// the one clean rebuild, and close if it happens again: its ports are
+/// lost until the next usbd start.
+fn stopped(self: *Unit, status: Status) void {
+    log.begin(name, .warn);
+    out.text(if (status.process_error)
+        "the controller found its own schedule malformed"
+    else
+        "a host system error");
+    pci.tellBusTrouble(self.controller.location);
+    log.end();
+
+    const first_stop = !self.controller.rebuilt;
+    self.controller.rebuilt = true;
+    if (first_stop and reset(self)) {
+        log.warn(name, "rebuilding the controller");
+        startSchedule(self);
+        return;
+    }
+    _ = reset(self);
+    self.controller.opened = false;
+    log.fail(name, "closed; its ports are lost until the next usbd start");
+}
+
 fn serviceIrq(self: *Unit) hc.Service {
     if (!self.controller.opened) return .quiet;
 
     const status: Status = @bitCast(read16(self, .status));
-    if (status.host_system_error) log.warn(name, "the controller reported a host system error");
-    if (status.process_error) log.warn(name, "the controller found its own schedule malformed");
 
     // Write back only the bits that were set: a blanket acknowledgement
     // would swallow something that arrived between the read and the write.
     write16(self, .status, @bitCast(status));
+
+    if (status.host_system_error or status.process_error) {
+        stopped(self, status);
+        return .reborn;
+    }
 
     // This controller has no interrupt of its own for a port changing, so
     // the ports are read whenever it interrupts for anything, and once

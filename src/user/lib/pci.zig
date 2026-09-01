@@ -13,6 +13,7 @@ const lib = @import("lib");
 const sys = @import("sys");
 const std = @import("std");
 const log = @import("log.zig");
+const out = @import("out.zig");
 
 pub const Location = lib.pci.Location;
 pub const Command = lib.pci.Command;
@@ -149,6 +150,18 @@ pub fn readCommandStatus(loc: Location) CommandStatus {
 /// so the dword goes back exactly as it came.
 pub fn clearStatus(loc: Location) void {
     write(loc, lib.pci.COMMAND_OFFSET, read(loc, lib.pci.COMMAND_OFFSET));
+}
+
+/// Append the device's account of bus trouble to a log line the caller
+/// holds open, and clear the account so a later error writes a fresh one.
+/// Says nothing when the account is clean.
+pub fn tellBusTrouble(loc: Location) void {
+    const account = readCommandStatus(loc).status;
+    if (account.received_master_abort) out.text("; the bus answered nobody");
+    if (account.received_target_abort) out.text("; the bus broke off mid-answer");
+    if (account.master_parity_error or account.parity_error) out.text("; parity failed");
+    if (account.signaled_system_error) out.text("; the part raised a system error");
+    clearStatus(loc);
 }
 
 pub fn readCommand(loc: Location) Command {

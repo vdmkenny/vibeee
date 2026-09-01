@@ -251,6 +251,18 @@ comptime {
 
 const testing = std.testing;
 
+test "the status half's bits sit where the specification says" {
+    try std.testing.expectEqual(@as(u16, 0x0800), @as(u16, @bitCast(Status{ .signaled_target_abort = true })));
+    try std.testing.expectEqual(@as(u16, 0x1000), @as(u16, @bitCast(Status{ .received_target_abort = true })));
+    try std.testing.expectEqual(@as(u16, 0x2000), @as(u16, @bitCast(Status{ .received_master_abort = true })));
+    try std.testing.expectEqual(@as(u16, 0x8000), @as(u16, @bitCast(Status{ .parity_error = true })));
+
+    const whole: CommandStatus = @bitCast(@as(u32, 0x2000_0006));
+    try std.testing.expect(whole.status.received_master_abort);
+    try std.testing.expect(whole.command.memory_space);
+    try std.testing.expect(whole.command.bus_master);
+}
+
 test "a memory window is reachable by its width and its placement" {
     // A 64-bit pair placed low, the shape a southbridge gives its HDA
     // aperture; the same pair placed above four gigabytes is out of reach.

@@ -42,6 +42,13 @@ const Cap = enum(usize) {
     capabilities = 0x08,
 };
 
+const Length = packed struct(u32) {
+    /// Where the operational registers begin, from the capability base.
+    operational: u8,
+    _8: u8,
+    version: u16,
+};
+
 /// The operational file, at the base plus the capability file's length.
 const Op = enum(usize) {
     command = 0x00,
@@ -752,7 +759,7 @@ fn open(loc: pci.Location) bool {
 
     controller.base = @ptrCast(aperture);
     controller.location = loc;
-    controller.op = capRead(.length) & 0xFF;
+    controller.op = @as(Length, @bitCast(capRead(.length))).operational;
 
     const structural: Structural = @bitCast(capRead(.structural));
     controller.ports = structural.ports;
@@ -1017,18 +1024,13 @@ fn serviceIrq() hc.Service {
 /// if the error comes back, close: a controller that cannot be trusted
 /// with the bus keeps its ports from the companions for nothing.
 fn hostError() void {
-    const account = pci.readCommandStatus(controller.location).status;
     log.begin(name, .warn);
     out.text("a host system error while walking ");
     out.hex(opRead(.async_base), 8);
     out.text("; the arena is at ");
     out.hex(controller.arena.phys, 8);
-    if (account.received_master_abort) out.text("; the bus answered nobody");
-    if (account.received_target_abort) out.text("; the bus broke off mid-answer");
-    if (account.master_parity_error or account.parity_error) out.text("; parity failed");
-    if (account.signaled_system_error) out.text("; the part raised a system error");
+    pci.tellBusTrouble(controller.location);
     log.end();
-    pci.clearStatus(controller.location);
 
     if (controller.rebuilt) {
         surrender();
