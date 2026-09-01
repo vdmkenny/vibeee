@@ -679,10 +679,37 @@ const Launcher = struct {
 
 /// The size the design fixes, at a hundred per cent. Small enough that the
 /// desktop stays legible around it, wide enough for two columns of names.
+/// The height is the most it may take rather than what it always takes: a
+/// panel of empty grey under five apps is a panel that looks broken.
 const LAUNCHER_WIDTH: i32 = 460;
 const LAUNCHER_HEIGHT: i32 = 300;
 const LAUNCHER_RAIL: i32 = 108;
 const LAUNCHER_COLUMNS: u8 = 2;
+
+/// How tall the panel wants to be: the field it is typed into, the rows it
+/// has to show, and the strip along the bottom.
+fn wantedHeight() i32 {
+    const t = theme.current();
+    const field_h = t.control_height + t.padding;
+    const footer_h = Surface.textHeight() + t.padding * 2;
+
+    const shown: i32 = if (launcher_query.slice().len == 0)
+        // Browsing, in columns: the rail is as long as the longest of them.
+        @intCast(@max(perColumn(countIn(launcher_category)), std.enums.values(Category).len))
+    else
+        // Ranked, one column, and at least the line that says there is
+        // nothing rather than a panel with no body at all.
+        @intCast(@max(found_count, 1));
+
+    return field_h + shown * ui.rowHeight() + 2 + footer_h;
+}
+
+/// How many rows a category takes when it is dealt into the launcher's
+/// columns, which is what decides how tall the list is.
+fn perColumn(count: usize) usize {
+    const columns: usize = LAUNCHER_COLUMNS;
+    return (count + columns - 1) / columns;
+}
 
 fn launcherPanel(width: i32, height: i32) Launcher {
     const t = theme.current();
@@ -691,11 +718,16 @@ fn launcherPanel(width: i32, height: i32) Launcher {
     // than the machine it is on is a panel with its right half missing.
     const margin = t.menu_padding * 2;
     const panel_w = @min(theme.enlarged(LAUNCHER_WIDTH), width - margin);
-    const panel_h = @min(theme.enlarged(LAUNCHER_HEIGHT), height - band(height).h - margin);
+    const most = @min(theme.enlarged(LAUNCHER_HEIGHT), height - band(height).h - margin);
 
+    // As tall as what it is showing, and never taller than the design's own
+    // size. The top stays where the tallest panel's top would be, so a list
+    // that grows and shrinks as somebody types does not move the field they
+    // are typing into.
+    const panel_h = @min(most, wantedHeight());
     const panel = Rect{
         .x = @divTrunc(width - panel_w, 2),
-        .y = @divTrunc(height - panel_h, 2),
+        .y = @divTrunc(height - most, 2),
         .w = panel_w,
         .h = panel_h,
     };

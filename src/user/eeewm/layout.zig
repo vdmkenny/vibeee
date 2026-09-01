@@ -646,6 +646,27 @@ pub const Desktop = struct {
         }
     }
 
+    /// Move a floating window by a step, keeping it on the desktop.
+    ///
+    /// A window dragged off the edge is a window nobody can drag back, so it
+    /// stops at the edge instead; one larger than the desktop is pinned to
+    /// the top left, where at least its own corner can be reached.
+    pub fn moveFloating(self: *Desktop, index: usize, dx: i32, dy: i32) void {
+        if (index >= self.windows.len) return;
+        const w = &self.windows[index];
+        if (!w.used or !w.floating) return;
+
+        w.area.x = penned(w.area.x + dx, self.bounds.x, self.bounds.right() - w.area.w);
+        w.area.y = penned(w.area.y + dy, self.bounds.y, self.bounds.bottom() - w.area.h);
+    }
+
+    /// `value` kept between the two, and at `low` when there is no room
+    /// between them at all.
+    fn penned(value: i32, low: i32, high: i32) i32 {
+        if (high <= low) return low;
+        return @min(@max(value, low), high);
+    }
+
     pub fn toggleFloating(self: *Desktop) void {
         const index = self.focused orelse return;
         const w = &self.windows[index];

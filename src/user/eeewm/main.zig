@@ -379,6 +379,7 @@ fn run() noreturn {
         for (keys) |event| {
             // The number chips in the bar follow the modifier itself, both
             // edges: they appear when Super goes down and leave with it.
+            super_held = event.mods().super;
             if (bar.setSuperHeld(event.mods().super)) paintBar();
 
             // While the bar holds focus it takes everything, so plain arrows
@@ -700,6 +701,12 @@ fn perform(action: bindings.Action) void {
         .zoom => desktop.zoom(),
         .maximise => _ = desktop.toggleMaximised(),
         .floating => desktop.toggleFloating(),
+        // A step rather than a pixel: a window is put where it is wanted by
+        // pressing a key a few times, not by holding one down.
+        .move_left => moveFocused(-MOVE_STEP, 0),
+        .move_right => moveFocused(MOVE_STEP, 0),
+        .move_up => moveFocused(0, -MOVE_STEP),
+        .move_down => moveFocused(0, MOVE_STEP),
         .master_smaller => desktop.nudgeMaster(-0.05),
         .master_larger => desktop.nudgeMaster(0.05),
 
@@ -728,10 +735,46 @@ fn perform(action: bindings.Action) void {
     dirty = true;
 }
 
+/// The floating window being dragged. Super and the left button together: a
+/// bare drag belongs to whatever is inside the window, which would otherwise
+/// never see one.
+/// Whether Super is down, which is what turns a drag into a window being
+/// moved rather than a click inside one.
+var super_held = false;
+
+var dragging: ?usize = null;
+
 fn handlePointer(event: sys.PointerEvent) void {
     stirred();
+    const moved_x = event.x - pointer_x;
+    const moved_y = event.y - pointer_y;
     pointer_x = event.x;
     pointer_y = event.y;
+
+    // A drag in progress is the whole of what the pointer means until the
+    // button comes up.
+    if (dragging) |index| {
+        if (!event.buttons.left) {
+            dragging = null;
+        } else if (moved_x != 0 or moved_y != 0) {
+            desktop.moveFloating(index, moved_x, moved_y);
+            dirty = true;
+        }
+        buttons = event.buttons;
+        return;
+    }
+
+    if (super_held and !buttons.left and event.buttons.left) {
+        if (windowAt(event.x, event.y)) |index| {
+            if (desktop.windows[index].floating) {
+                dragging = index;
+                desktop.focused = index;
+                buttons = event.buttons;
+                dirty = true;
+                return;
+            }
+        }
+    }
 
     // An open menu tracks the pointer. Nothing else does: motion is otherwise
     // just the cursor moving, and repainting for it is what made the display
@@ -1305,6 +1348,16 @@ fn postPointer(event: sys.PointerEvent, pressed: bool) void {
         .t_us = now,
         .body = .{ .motion = .{ .x = local_x, .y = local_y } },
     });
+}
+
+/// How far a floating window goes for one press. Large enough to cross the
+/// screen in a few, small enough to place a window against something.
+const MOVE_STEP: i32 = 32;
+
+fn moveFocused(dx: i32, dy: i32) void {
+    const index = desktop.focused orelse return;
+    desktop.moveFloating(index, dx, dy);
+    dirty = true;
 }
 
 /// The topmost window containing a point, floating windows first.

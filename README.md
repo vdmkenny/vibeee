@@ -2,7 +2,7 @@
 
 A graphical operating system for low-end netbooks, written from scratch in Zig.
 
-![The vibeee desktop: eeefetch in a terminal, the file manager, and the launcher open over them](docs/img/desktop.png)
+![The vibeee desktop: the file manager and the picture viewer side by side, with the launcher open over them](docs/img/desktop.png)
 
 It is its own bootloader, kernel, userspace, window manager and control library.
 It was built and tested against an **ASUS Eee PC 701 4G** (2007: 630 MHz Celeron M,
@@ -34,7 +34,7 @@ boots the 701's 800x480, the emulator's 800x600, and a netbook nobody had in min
 ## What is there
 
 A tiling window manager whose desktops exist only while something is on them, a
-launcher you summon in the middle of the screen and type at, and five applications
+launcher you summon in the middle of the screen and type at, and seven applications
 sharing one control library and one application frame:
 
 | | |
@@ -42,8 +42,16 @@ sharing one control library and one application frame:
 | **eTerm** | terminal, with its own VT emulator, in the interface's own monospace |
 | **Files** | two panes, copy and move between them, driven by the function keys |
 | **Pad** | text editor |
+| **Viewer** | one picture at a time, at fit, whole or double size, turned by hand, with what the camera wrote beside it |
+| **Calc** | arithmetic, in a window that floats above the tiling rather than taking a share of it |
 | **Monitor** | process list, CPU share, end a task |
 | **Settings** | theme tiles, highlight and pointer colours, interface scale, key help |
+
+The launcher finds files as well as programs: what is under `/home` is ranked beside
+the apps, wearing the picture its sort of file gets, and Enter opens it with whatever
+opens that sort of thing. A program says what it is willing to open rather than being
+named in a list somewhere else, so the file manager, the launcher and the shell all
+agree about what happens when you open a photograph.
 
 Underneath: its own bootloader, a preemptive O(1) scheduler, per-process address
 spaces, capability handles, channels and events, ATA and FAT with long names, ACPI
@@ -89,10 +97,12 @@ Expectations on the machine, day one:
 * **Works on the machine:** boot from SD, the screen at the panel's own 800x480 through
   the native GMA modeset, keyboard (US-International and Belgian AZERTY included), the
   touchpad in relative mode, battery state with remaining time, backlight levels,
-  hotkeys, the desktop with all five applications, wired networking through the whole
-  stack, and settings and a home directory that outlive the power being cut.
+  hotkeys, the desktop with all seven applications, wired networking through the whole
+  stack, sound out of the machine's own codec, USB storage from the controller through
+  the filesystem to a mounted volume, and settings and a home directory that outlive
+  the power being cut.
 * **Written and running, but proven in the emulator rather than on the machine:** USB
-  storage, keyboards, mice and hubs, and sound over AC'97 and HDA.
+  keyboards, mice and hubs.
 * **Does not work yet:** powering off does not cut the last power (the LED stays on; see
   below), the wireless radio is identified but not driven, and a machine that sleeps
   comes back with its USB devices unenumerated.
@@ -101,10 +111,16 @@ Expectations on the machine, day one:
 
 ## Status, honestly
 
-Everything described above is real and running, on hardware and under QEMU. The
-current work is what only the machine can answer: the final power cut, and making
-the settings survive a reboot. `docs/status.md` is the day-true inventory of what
-exists, what works and what is missing, kept without measurements that go stale.
+Everything described above is real and running, on hardware and under QEMU. Three
+things the emulator could not have caught were found by running it on the machine
+and are fixed: the audio controller hands its registers over as a sixty-four bit
+window where the emulator's part is thirty-two bit; the USB controller reads the
+extended descriptor format whether or not it is asked to, for the same reason; and
+nothing had ever told a USB device which configuration to be, which the emulator
+forgives and silicon does not. The current work is what only the machine can answer:
+the final power cut, suspend and resume, and the wireless radio. `docs/status.md` is
+the day-true inventory of what exists, what works and what is missing, kept without
+measurements that go stale.
 
 The code was written largely with AI assistance and has not been audited. It is a
 toy OS for a nineteen-year-old netbook, and that is the standard it is built to.
