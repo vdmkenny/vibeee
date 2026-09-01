@@ -115,6 +115,7 @@ fn roleOf(state: service.State) @import("lib").style.Role {
     return switch (state) {
         .up => .good,
         .down => .dim,
+        .starting => .dim,
         .stopped => .warn,
         .disabled => .dim,
         .failed => .bad,

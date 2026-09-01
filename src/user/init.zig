@@ -83,21 +83,61 @@ const State = struct {
     started_us: u64 = 0,
     /// Consecutive failures that happened too fast to be real work.
     flapping: u32 = 0,
-    running: bool = false,
-    /// Set when the service has been given up on, so the report is printed
-    /// once rather than every time round the loop.
-    abandoned: bool = false,
-    /// Somebody asked for it to stop. Distinct from `abandoned`, which is init
-    /// giving up: this one is a decision and is not reconsidered on its own.
-    held: bool = false,
-    /// Somebody asked for it to be stopped and started again. The death
-    /// arrives through the same loop as any other, so the wish is recorded
-    /// here and read when it does: the alternative is starting a second
-    /// copy beside a process that has not gone yet.
-    restarting: bool = false,
-    /// Whether it should start at all. `held` is for this boot; this is for
-    /// every one after it, and is what `/etc/disabled` records.
+    phase: Phase = .down,
+    /// Whether it should start at all. `stopped` is for this boot; this is
+    /// for every one after it, and is what `/etc/disabled` records.
     enabled: bool = true,
+};
+
+/// Where a service is in its life. One value, because the states are
+/// exclusive: a service asked to stop is not also one being given up on, and
+/// a death arriving through the supervising loop is read against exactly one
+/// of these.
+const Phase = enum {
+    /// Not running, and expected to start once its dependencies are up.
+    down,
+    /// Spawned, and yet to register the name it promised.
+    starting,
+    /// Running, and registered if it said it would.
+    up,
+    /// Never registered, and put down for it. Started again once its death
+    /// is collected, with the miss counted against it.
+    unready,
+    /// Somebody asked for it to stop and it has not died yet.
+    stopping,
+    /// Somebody asked for it to stop. A decision, not reconsidered on its own.
+    stopped,
+    /// Somebody asked for it to be stopped and started again. The death
+    /// arrives through the same loop as any other, so the wish is held here
+    /// and read when it does: the alternative is starting a second copy
+    /// beside a process that has not gone yet.
+    restarting,
+    /// Given up on. Reported once, when it happens.
+    failed,
+
+    /// Whether a process exists for it.
+    fn alive(self: Phase) bool {
+        return switch (self) {
+            .starting, .up, .unready, .stopping, .restarting => true,
+            .down, .stopped, .failed => false,
+        };
+    }
+
+    /// Whether it has run its course for this boot: up, given up on, or held
+    /// down. What a target waits on before it counts as reached.
+    fn settled(self: Phase) bool {
+        return switch (self) {
+            .up, .failed, .stopping, .stopped => true,
+            .down, .starting, .unready, .restarting => false,
+        };
+    }
+};
+
+/// Why a service is being judged for a restart: it exited, with a status, or
+/// it never registered the name it promised and was put down for it.
+const Death = union(enum) {
+    exited: i32,
+    unready,
 };
 
 var services: [MAX_SERVICES]State = @splat(.{});
@@ -185,7 +225,7 @@ fn applyHolds(line: []const u8, prefix: []const u8, late_start: bool) void {
 
 fn holdOne(state: *State, late_start: bool) void {
     state.enabled = false;
-    state.held = true;
+    state.phase = .stopped;
     if (late_start) {
         late = state;
         late_start_at = sys.clockMicros() + LATE_START_US;
@@ -320,7 +360,7 @@ fn startRound(targeted: bool) void {
         progress = false;
         for (services[0..service_count]) |*state| {
             if ((state.service.target.len > 0) != targeted) continue;
-            if (state.running or state.abandoned or !state.enabled) continue;
+            if (state.phase != .down or !state.enabled) continue;
             if (!dependenciesMet(state.service)) continue;
             start(state);
             progress = true;
@@ -329,9 +369,9 @@ fn startRound(targeted: bool) void {
 
     for (services[0..service_count]) |*state| {
         if ((state.service.target.len > 0) != targeted) continue;
-        if (!state.running and !state.abandoned and state.enabled) {
+        if (state.phase == .down and state.enabled) {
             report(state.service.name, "needs a service that never came up");
-            state.abandoned = true;
+            state.phase = .failed;
         }
     }
 }
@@ -352,7 +392,7 @@ fn dependenciesMet(service: Service) bool {
             report(service.name, "needs a service that is not declared");
             return false;
         };
-        if (!dep.running) return false;
+        if (dep.phase != .up) return false;
     }
     return true;
 }
@@ -365,7 +405,7 @@ fn targetSettled(name: []const u8) ?bool {
     for (services[0..service_count]) |*state| {
         if (!std.mem.eql(u8, state.service.target, name)) continue;
         known = true;
-        if (state.enabled and !state.running and !state.abandoned) return false;
+        if (state.enabled and !state.phase.settled()) return false;
     }
     return if (known) true else null;
 }
@@ -418,34 +458,51 @@ fn start(state: *State) void {
     });
     if (pid < 0) {
         report(state.service.name, "cannot start");
-        state.abandoned = true;
+        state.phase = .failed;
         return;
     }
 
     state.pid = @intCast(pid);
     state.started_us = sys.clockMicros();
-    state.running = true;
 
     // A service that says what it registers is only up once the name is there.
     // Starting a dependant before that would let it connect to a service that
     // exists but has not published itself yet.
-    if (state.service.provides.len > 0) waitForService(state.service.provides);
+    if (state.service.provides.len == 0) {
+        state.phase = .up;
+        return;
+    }
+    state.phase = .starting;
+    awaitReady(state);
 }
 
-/// Wait for a name to appear in `/svc`.
+/// How long a service has to register the name it promised.
+const READY_WINDOW_US: u64 = 2_000_000;
+
+/// Wait for the name a service promised to appear in `/svc`, and judge it
+/// when it does not.
 ///
 /// Polled, because the registry has no change notification yet. It is the one
 /// piece of polling in this program and it is bounded, which is the difference
-/// between a stopgap and a design decision.
-fn waitForService(name: []const u8) void {
+/// between a stopgap and a design decision. A service that lets the window
+/// pass is not up, whatever its process is doing: it is put down, and whether
+/// it comes back is the restart policy's call, with the miss counted against
+/// it like any other failure to start.
+fn awaitReady(state: *State) void {
     var buf: [512]u8 = @splat(0);
     var waited: u64 = 0;
 
-    while (waited < 2_000_000) : (waited += 20_000) {
-        if (info.listContains("svc", name, &buf)) return;
+    while (waited < READY_WINDOW_US) : (waited += 20_000) {
+        if (info.listContains("svc", state.service.provides, &buf)) {
+            state.phase = .up;
+            return;
+        }
         sys.sleepMicros(20_000);
     }
-    report(name, "did not register within two seconds");
+
+    report(state.service.name, "did not register within two seconds");
+    state.phase = if (shouldRestart(state, .unready)) .unready else .failed;
+    _ = sys.kill(state.pid);
 }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +578,7 @@ fn serviceLate() void {
         if (now < late_start_at) return;
         late_grace_at = now + LATE_GRACE_US;
         late_start_at = 0;
-        l.held = false;
+        l.phase = .down;
         l.enabled = true;
         start(l);
         return;
@@ -542,11 +599,11 @@ fn serviceAfterBoot() void {
 
     for (services[0..service_count]) |*state| {
         if (state.service.target.len > 0) continue;
-        if (!state.enabled or state.running or state.abandoned) continue;
+        if (!state.enabled or state.phase != .down) continue;
 
         if (!dependenciesMet(state.service)) {
             report(state.service.name, "needs a service that never came up");
-            state.abandoned = true;
+            state.phase = .failed;
             continue;
         }
         // Said on the console rather than into the ring: these lines are how
@@ -582,27 +639,22 @@ fn nextDeadline() usize {
 fn collect() void {
     while (sys.wait(0, sys.POLL)) |exited| {
         const state = byPid(exited.pid) orelse continue;
-        state.running = false;
         state.pid = 0;
 
-        if (state.restarting) {
+        state.phase = switch (state.phase) {
             // Asked for, so the policy does not get a say: a service with
             // `restart = never` is exactly the one somebody restarts by hand.
-            state.restarting = false;
-            state.held = false;
-            state.abandoned = false;
-            state.flapping = 0;
-            start(state);
-            continue;
-        }
-
-        if (state.held) continue;
-
-        if (shouldRestart(state, exited.status)) {
-            start(state);
-        } else if (!state.abandoned) {
-            state.abandoned = true;
-        }
+            .restarting => asked: {
+                state.flapping = 0;
+                break :asked .down;
+            },
+            // Put down for never registering, and judged then.
+            .unready => .down,
+            .stopping => .stopped,
+            .starting, .up => if (shouldRestart(state, .{ .exited = exited.status })) .down else .failed,
+            .down, .stopped, .failed => state.phase,
+        };
+        if (state.phase == .down) start(state);
     }
 }
 
@@ -647,16 +699,13 @@ fn describe(index: u8, reply: *proto.Rep) void {
     const name = state.service.name;
 
     reply.entry = .{
-        .state = if (state.running)
-            .up
-        else if (!state.enabled)
-            .disabled
-        else if (state.held)
-            .stopped
-        else if (state.abandoned)
-            .failed
-        else
-            .down,
+        .state = switch (state.phase) {
+            .up => .up,
+            .starting, .unready, .restarting => .starting,
+            .down => if (state.enabled) .down else .disabled,
+            .stopping, .stopped => if (state.enabled) .stopped else .disabled,
+            .failed => if (state.enabled) .failed else .disabled,
+        },
         .pid = state.pid,
         .name_len = @intCast(@min(name.len, proto.NAME_MAX)),
     };
@@ -665,16 +714,15 @@ fn describe(index: u8, reply: *proto.Rep) void {
 
 fn resume_(name: []const u8) proto.Result {
     const state = byName(name) orelse return .unknown;
-    if (state.running) return .ok;
+    if (state.phase.alive()) return .ok;
 
     // Asking for it clears both the hold and the giving-up: somebody has
     // decided it is worth another try, which is more than init knows.
-    state.held = false;
-    state.abandoned = false;
+    state.phase = .down;
     state.flapping = 0;
 
     start(state);
-    return if (state.running) .ok else .failed;
+    return if (state.phase == .up) .ok else .failed;
 }
 
 /// Stop it and start it again, which is what a person means by restarting.
@@ -683,12 +731,13 @@ fn resume_(name: []const u8) proto.Result {
 /// restart wants it running afterwards either way.
 fn restartOne(name: []const u8) proto.Result {
     const state = byName(name) orelse return .unknown;
-    if (!state.running) return resume_(name);
+    if (!state.phase.alive()) return resume_(name);
 
-    state.restarting = true;
+    const before = state.phase;
+    state.phase = .restarting;
     if (sys.kill(state.pid) >= 0) return .ok;
 
-    state.restarting = false;
+    state.phase = before;
     return .failed;
 }
 
@@ -697,9 +746,12 @@ fn halt(name: []const u8) proto.Result {
 
     // Marked first. The child's death arrives through the same loop, and a
     // hold set afterwards would race with the restart it is meant to prevent.
-    state.held = true;
-    if (!state.running) return .ok;
+    if (!state.phase.alive()) {
+        state.phase = .stopped;
+        return .ok;
+    }
 
+    state.phase = .stopping;
     return if (sys.kill(state.pid) >= 0) .ok else .failed;
 }
 
@@ -722,11 +774,19 @@ fn setEnabled(name: []const u8, enabled: bool) proto.Result {
 
     state.enabled = enabled;
     if (!enabled) {
-        state.held = true;
-        if (state.running) _ = sys.kill(state.pid);
+        if (state.phase.alive()) {
+            state.phase = .stopping;
+            _ = sys.kill(state.pid);
+        } else {
+            state.phase = .stopped;
+        }
     } else {
-        state.held = false;
-        state.abandoned = false;
+        // One on its way down comes back up; one already down waits its turn.
+        state.phase = switch (state.phase) {
+            .stopping => .restarting,
+            .stopped, .failed => .down,
+            else => state.phase,
+        };
         state.flapping = 0;
     }
 
@@ -772,7 +832,7 @@ fn readDisabled() void {
 
         if (byName(name)) |state| {
             state.enabled = false;
-            state.held = true;
+            state.phase = .stopped;
         }
     }
 }
@@ -804,23 +864,30 @@ fn byName(name: []const u8) ?*State {
 
 const proto = @import("proto").service;
 
-fn shouldRestart(state: *State, status: i32) bool {
+fn shouldRestart(state: *State, death: Death) bool {
     const wanted = switch (state.service.restart) {
         .never => false,
-        .on_failure => status != 0,
+        .on_failure => switch (death) {
+            .exited => |status| status != 0,
+            .unready => true,
+        },
         .always => true,
     };
     if (!wanted) return false;
 
     // Something that dies immediately, repeatedly, is not going to start no
     // matter how many times it is asked. Restarting it forever would fill the
-    // screen and starve everything else of CPU.
+    // screen and starve everything else of CPU. Never registering is the
+    // same failure to start, however long the process took not to.
     const lifetime = sys.clockMicros() -| state.started_us;
-    if (lifetime < FLAP_WINDOW_US) {
+    const fast = switch (death) {
+        .exited => lifetime < FLAP_WINDOW_US,
+        .unready => true,
+    };
+    if (fast) {
         state.flapping += 1;
         if (state.flapping >= MAX_FLAPS) {
             report(state.service.name, "keeps failing to start; giving up");
-            state.abandoned = true;
             return false;
         }
         // Back off a little so a persistent failure does not spin.
@@ -834,7 +901,7 @@ fn shouldRestart(state: *State, status: i32) bool {
 
 fn byPid(pid: u32) ?*State {
     for (services[0..service_count]) |*state| {
-        if (state.running and state.pid == pid) return state;
+        if (state.phase.alive() and state.pid == pid) return state;
     }
     return null;
 }

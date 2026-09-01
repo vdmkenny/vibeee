@@ -58,6 +58,9 @@ pub const Req = extern struct {
 pub const State = enum(u8) {
     /// Running now.
     up,
+    /// Started and yet to register the name it promised, or on its way back
+    /// up after a restart.
+    starting,
     /// Declared, not running, and expected to come back when it can.
     down,
     /// Stopped because somebody asked, and not coming back on its own.
@@ -75,6 +78,7 @@ pub const State = enum(u8) {
             .down => "down",
             .stopped => "stopped",
             .failed => "failed",
+            .starting => "starting",
             .disabled => "disabled",
         };
     }
