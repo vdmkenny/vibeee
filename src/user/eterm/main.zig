@@ -281,8 +281,8 @@ fn handle(event: proto.wm.Ev) void {
             // handles what the layout produced.
             send(keys.text(event.body.text.cp, .{}, &buf), .none, .{});
         },
-        .theme => {
-            proto.client.applyTheme(&event.body.theme.name);
+        .theme, .look => {
+            _ = connection.adoptLook(event);
             shadow.invalidate();
         },
         .close_req => sys.exit(0),

@@ -55,9 +55,11 @@ pub const Client = struct {
         // A full ring means the client is not keeping up. It is told so rather
         // than silently missing events: a client that knows it lost some can
         // redraw, and one that does not will act on a stale idea of the world.
+        // Told through the ring's own flag word, not through a record put in
+        // the ring: the ring is the thing that had no room, and a record
+        // dropped on the way to saying "a record was dropped" told nobody.
         if (self.events.writable() < bytes.len) {
-            var overflow = wm.Ev{ .tag = .overflow };
-            _ = self.events.write(std.mem.asBytes(&overflow));
+            self.events.markOverflow();
             _ = sys.eventSignal(self.signal);
             return;
         }
@@ -144,6 +146,14 @@ pub const Table = struct {
 /// drew into; mapping it is what makes compositing a copy rather than a
 /// message.
 pub fn adoptSurface(handle: u32, w: u16, h: u16, stride: u16) ?Surface {
+    // The shape is the client's word and the segment's size is the kernel's.
+    // A shape that reaches past the segment is a compositor reading off the
+    // end of a mapping on the client's say-so, which ends the desktop rather
+    // than the client.
+    const needs = eui.draw.spanBytes(w, h, stride) orelse return null;
+    const holds = sys.shmSize(handle) orelse return null;
+    if (@as(usize, needs) > holds) return null;
+
     const pixels = sys.shmMap(handle, .{}) orelse return null;
     return .{
         .pixels = @ptrCast(@alignCast(pixels)),

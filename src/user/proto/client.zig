@@ -40,6 +40,11 @@ pub const Window = struct {
 };
 
 pub const Connection = struct {
+    /// How the desktop looks, as last told. Kept here because it arrives in
+    /// two records and every window this program has draws in the whole of
+    /// it after either.
+    look: wm.Appearance = .{},
+
     channel: u32 = 0,
     generation: u16 = 0,
     screen_w: u16 = 0,
@@ -75,7 +80,8 @@ pub const Connection = struct {
         self.generation = rep.gen;
         self.screen_w = rep.body.hello.screen_w;
         self.screen_h = rep.body.hello.screen_h;
-        applyTheme(&rep.body.hello.theme);
+        self.look = rep.body.hello.look;
+        applyAppearance(self.look);
 
         // Two handles come back: the event ring's memory, and the event that
         // says there is something in it.
@@ -244,7 +250,32 @@ pub const Connection = struct {
     }
 
     /// Take the next event, or null if there are none waiting.
+    /// Take an appearance record if this is one, applying the whole
+    /// appearance as now known. True when the event was one of the two and
+    /// has been dealt with; the caller redraws.
+    ///
+    /// Here rather than in each window's loop because a program with a
+    /// dialog has two loops, and the folding of two records into one look is
+    /// exactly the kind of thing that drifts when written twice.
+    pub fn adoptLook(self: *Connection, event: wm.Ev) bool {
+        switch (event.tag) {
+            .theme => self.look.theme = event.body.theme.name,
+            .look => {
+                self.look.accent = event.body.look.accent;
+                self.look.scale = event.body.look.scale;
+            },
+            else => return false,
+        }
+        applyAppearance(self.look);
+        return true;
+    }
+
     pub fn poll(self: *Connection) ?wm.Ev {
+        // Something dropped is answered first, and as the event that says so:
+        // whatever is still in the ring was written after the loss and is
+        // only worth acting on once the program has taken stock.
+        if (self.events.takeOverflow()) return .{ .tag = .overflow };
+
         var event: wm.Ev = undefined;
         const n = self.events.read(std.mem.asBytes(&event));
         if (n != @sizeOf(wm.Ev)) return null;
@@ -300,12 +331,19 @@ pub const Connection = struct {
 /// be a syscall for something that never moves.
 var clip: []u8 = &.{};
 
-/// Adopt the manager's theme. A desktop where every window picked its own
-/// palette would look like several desktops.
-pub fn applyTheme(name: *const [16]u8) void {
+/// Adopt the manager's appearance whole: theme, highlight and size. A desktop
+/// where every window picked its own palette would look like several
+/// desktops, and one where the bar was drawn at one size and the windows at
+/// another would look like a mistake.
+///
+/// The scale first, because choosing a theme builds it at whatever size was
+/// last asked for; the highlight last, because it is applied over the theme.
+pub fn applyAppearance(look: wm.Appearance) void {
+    eui.theme.setScale(look.scale);
     var n: usize = 0;
-    while (n < name.len and name[n] != 0) n += 1;
-    if (eui.theme.byName(name[0..n])) |chosen| eui.theme.use(chosen);
+    while (n < look.theme.len and look.theme[n] != 0) n += 1;
+    if (eui.theme.byName(look.theme[0..n])) |chosen| eui.theme.use(chosen);
+    eui.theme.setAccent(look.accent);
 }
 
 fn toWire(r: eui.Rect) wm.Rect {

@@ -163,8 +163,11 @@ pub fn run(
                 if (!taken) ctx.postText(event.body.text.cp);
                 redraw();
             },
-            .theme => {
-                client.applyTheme(&event.body.theme.name);
+            // The appearance arrives as two records; the connection folds
+            // them and applies the whole each time, so either order and
+            // either one alone leave the window drawn in what it knows.
+            .theme, .look => {
+                _ = connection.adoptLook(event);
                 ctx.damageNow();
                 redraw();
             },

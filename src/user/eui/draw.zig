@@ -10,6 +10,7 @@
 //! is a shimmer; flat colour on exact levels is both cheaper and better
 //! looking (design/10-gui.md §2).
 
+const std = @import("std");
 const fontlib = @import("lib").font;
 const icons = @import("icon.zig");
 const theme = @import("theme.zig");
@@ -82,6 +83,23 @@ pub const Rect = struct {
         return .{ .x = self.x + by, .y = self.y + by, .w = self.w - 2 * by, .h = self.h - 2 * by };
     }
 };
+
+/// How many bytes a surface of this shape occupies, or null for one that
+/// cannot exist: nothing wide or tall, a stride shorter than a row, or a size
+/// past what a length can say.
+///
+/// Pure, and the whole of what a compositor checks before it reads a pixel
+/// from memory a client described: the shape is the client's word and the
+/// segment's size is the kernel's, and this is where the two are compared.
+///
+/// Thirty-two bits regardless of the host, because that is the width of a
+/// segment's size on the machine this runs on, and a check that passed on a
+/// wider host and failed on the target would be no check.
+pub fn spanBytes(width: u16, height: u16, stride: u16) ?u32 {
+    if (width == 0 or height == 0 or stride < width) return null;
+    const rows = std.math.mul(u32, stride, height) catch return null;
+    return std.math.mul(u32, rows, @sizeOf(u32)) catch null;
+}
 
 /// Somewhere to draw: pixels, geometry, and the region drawing is confined to.
 ///
@@ -455,3 +473,21 @@ test "a copy hanging off every edge keeps to the surface" {
     try testing.expectEqual(@as(u32, 0x999999), dst_pixels[7 * SIDE + 7]);
 }
 
+
+test "a surface's span is its rows by its stride in words, and only for a real shape" {
+    try std.testing.expectEqual(@as(?u32, 800 * 600 * 4), spanBytes(800, 600, 800));
+    // A stride wider than the row counts the padding, which the reader will
+    // step over and the memory must therefore hold.
+    try std.testing.expectEqual(@as(?u32, 1024 * 600 * 4), spanBytes(800, 600, 1024));
+
+    try testing_null(spanBytes(0, 600, 800));
+    try testing_null(spanBytes(800, 0, 800));
+    // A stride shorter than a row would have rows overlap.
+    try testing_null(spanBytes(800, 600, 799));
+    // Past what a segment's size can say: four gigabytes, on any host.
+    try testing_null(spanBytes(65535, 65535, 65535));
+}
+
+fn testing_null(got: ?u32) !void {
+    try std.testing.expectEqual(@as(?u32, null), got);
+}

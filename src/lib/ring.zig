@@ -37,9 +37,30 @@ pub const Header = extern struct {
     tail: u32,
     /// Bytes of payload, a power of two.
     capacity: u32,
-    /// Set by the producer when it will write no more, so a consumer that
-    /// drains the ring can tell "nothing yet" from "nothing ever again".
-    closed: u32,
+    /// What the producer has to say besides bytes, in one word so it is set
+    /// and read atomically.
+    flags: Flags,
+};
+
+/// The producer's word to the consumer, apart from the bytes.
+///
+/// A packed struct over the word rather than a bit for each meaning and a
+/// mask to find it: what is being said is a set of facts, and this is the
+/// set.
+pub const Flags = packed struct(u32) {
+    /// The producer will write no more, so a consumer that drains the ring
+    /// can tell "nothing yet" from "nothing ever again".
+    closed: bool = false,
+    /// Something did not fit and was dropped. Sticky, and out of band, because
+    /// the one place it cannot be said is inside the ring that had no room:
+    /// a consumer that finds it set knows it missed something and has to take
+    /// stock afresh rather than trust what it has seen.
+    overflowed: bool = false,
+    _unused: u30 = 0,
+
+    fn word(self: Flags) u32 {
+        return @bitCast(self);
+    }
 };
 
 pub const Error = error{
@@ -69,7 +90,7 @@ pub const Ring = struct {
         header.capacity = size;
         header.head = 0;
         header.tail = 0;
-        header.closed = 0;
+        header.flags = .{};
         return .{ .header = header, .data = data };
     }
 
@@ -97,13 +118,44 @@ pub const Ring = struct {
         return self.readable() == 0;
     }
 
+    /// The flag word as the word it is, for the atomics that work on words.
+    fn flagWord(self: Ring) *volatile u32 {
+        return @ptrCast(&self.header.flags);
+    }
+
+    fn flags(self: Ring) Flags {
+        return @bitCast(@atomicLoad(u32, self.flagWord(), .acquire));
+    }
+
+    /// Raise one fact in the word without disturbing the others, whoever else
+    /// is setting them: the word is shared, and a plain store from each side
+    /// would let one overwrite the other's.
+    fn raise(self: Ring, fact: Flags) void {
+        _ = @atomicRmw(u32, self.flagWord(), .Or, fact.word(), .release);
+    }
+
     pub fn isClosed(self: Ring) bool {
-        return @atomicLoad(u32, &self.header.closed, .acquire) != 0;
+        return self.flags().closed;
     }
 
     /// Mark the producer finished. The consumer may still drain what is left.
     pub fn close(self: Ring) void {
-        @atomicStore(u32, &self.header.closed, 1, .release);
+        self.raise(.{ .closed = true });
+    }
+
+    /// Say that something did not fit. For the producer, at the moment it had
+    /// to drop a record rather than block on a consumer that was not keeping
+    /// up.
+    pub fn markOverflow(self: Ring) void {
+        self.raise(.{ .overflowed = true });
+    }
+
+    /// Whether anything was dropped since this was last asked, taking the
+    /// fact with it so the next answer is about what happens next.
+    pub fn takeOverflow(self: Ring) bool {
+        const clear = ~(Flags{ .overflowed = true }).word();
+        const before: Flags = @bitCast(@atomicRmw(u32, self.flagWord(), .And, clear, .acq_rel));
+        return before.overflowed;
     }
 
     /// Copy in as much of `bytes` as fits, returning how much was taken.
@@ -250,4 +302,36 @@ test "rejects a capacity that is not a power of two" {
     var header: Header = undefined;
     var data: [12]u8 = undefined;
     try std.testing.expectError(error.BadCapacity, Ring.init(&header, &data));
+}
+
+test "an overflow is remembered until the consumer asks, then forgotten" {
+    var f: Fixture = undefined;
+    const r = f.ring();
+
+    try std.testing.expect(!r.takeOverflow());
+
+    // Fill it, then a record that cannot fit.
+    _ = r.write("0123456789abcdef");
+    try std.testing.expectEqual(@as(u32, 0), r.write("x"));
+    r.markOverflow();
+
+    // Set now, and only once: the taking clears it.
+    try std.testing.expect(r.takeOverflow());
+    try std.testing.expect(!r.takeOverflow());
+
+    // Neither fact disturbs the other.
+    r.markOverflow();
+    r.close();
+    try std.testing.expect(r.isClosed());
+    try std.testing.expect(r.takeOverflow());
+    try std.testing.expect(r.isClosed());
+}
+
+test "the flag word is the header's fourth word and starts clear" {
+    var f: Fixture = undefined;
+    _ = f.ring();
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(Header));
+    try std.testing.expectEqual(@as(u32, 0), (Flags{}).word());
+    try std.testing.expectEqual(@as(u32, 1), (Flags{ .closed = true }).word());
+    try std.testing.expectEqual(@as(u32, 2), (Flags{ .overflowed = true }).word());
 }

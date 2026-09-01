@@ -143,11 +143,9 @@ pub const Rep = extern struct {
             screen_w: u16,
             screen_h: u16,
             caps: u32,
-            /// The manager's theme, so a client draws in the same palette
-            /// rather than its own default. The name rather than the colours:
-            /// both sides compile the same presets, and sixteen bytes is
-            /// cheaper than a table.
-            theme: [16]u8,
+            /// How the manager looks, so a client draws the same way rather
+            /// than in its own defaults.
+            look: Appearance,
         },
         create: extern struct {
             win: u8,
@@ -210,9 +208,28 @@ pub const EvTag = enum(u8) {
     visibility,
     /// The manager's theme changed; redraw in the new one.
     theme,
+    /// Its highlight or size changed. Always sent after `theme`, and acted on
+    /// with it: the two together are the appearance.
+    look,
     /// Events were dropped. The client should redraw rather than trust its
     /// idea of what it has seen.
     overflow,
+};
+
+/// How the desktop looks, in one value, so a client adopts all of it at once
+/// and none of it drifts from the bar and the frames around it.
+///
+/// The theme by name rather than by colours: both sides compile the same
+/// presets, and sixteen bytes is cheaper than a table. The highlight and the
+/// size travel as themselves, because those are choices made over a theme
+/// rather than part of one.
+pub const Appearance = extern struct {
+    theme: [16]u8 = @splat(0),
+    /// The highlight colour, as red, green and blue in the low three bytes.
+    accent: u32 = 0,
+    /// Percent of the face's own size.
+    scale: u16 = 100,
+    _pad: u16 = 0,
 };
 
 /// Fixed at 24 bytes so the ring is an array rather than a parse.
@@ -234,6 +251,9 @@ pub const Ev = extern struct {
         configure: extern struct { w: u16, h: u16 },
         visibility: extern struct { visible: u8 },
         theme: extern struct { name: [16]u8 },
+        /// The rest of the appearance, sent with `theme`: a record is
+        /// sixteen bytes of body and the name alone fills that.
+        look: extern struct { accent: u32, scale: u16 },
         raw: [16]u8,
     } = .{ .raw = @splat(0) },
 };

@@ -223,8 +223,8 @@ pub const FileDialog = struct {
                 self.ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
             },
             .text => self.ctx.postText(event.body.text.cp),
-            .theme => {
-                client.applyTheme(&event.body.theme.name);
+            .theme, .look => {
+                _ = connection.adoptLook(event);
                 self.ctx.damage();
             },
             .close_req => {

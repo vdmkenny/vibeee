@@ -967,7 +967,7 @@ fn onHello(pid: u32, req: *const wire.Req) Answer {
                 .screen_w = @intCast(info.width),
                 .screen_h = @intCast(info.height),
                 .caps = 0,
-                .theme = themeName(),
+                .look = appearance(),
             } },
         },
         .handles = &hello_handles,
@@ -1132,16 +1132,36 @@ fn themeName() [16]u8 {
     return padded;
 }
 
-/// Tell every client the theme changed, so the desktop stays one desktop.
+/// Tell every client the appearance changed, so the desktop stays one desktop.
+///
+/// Two events, because a record's body is sixteen bytes and the theme's name
+/// alone fills it: the name, then the highlight and size, and a client acts on
+/// the pair.
 fn broadcastTheme() void {
+    const look = appearance();
     for (&table.clients) |*client| {
         if (client.pid == 0) continue;
         client.post(.{
             .tag = .theme,
             .t_us = @truncate(sys.clockMicros()),
-            .body = .{ .theme = .{ .name = themeName() } },
+            .body = .{ .theme = .{ .name = look.theme } },
+        });
+        client.post(.{
+            .tag = .look,
+            .t_us = @truncate(sys.clockMicros()),
+            .body = .{ .look = .{ .accent = look.accent, .scale = look.scale } },
         });
     }
+}
+
+/// How the desktop looks right now, as a client is told it.
+fn appearance() proto.wm.Appearance {
+    const chosen = config.current();
+    return .{
+        .theme = themeName(),
+        .accent = chosen.accent.rgb(),
+        .scale = chosen.scale,
+    };
 }
 
 /// Carry out whatever the bar decided.
