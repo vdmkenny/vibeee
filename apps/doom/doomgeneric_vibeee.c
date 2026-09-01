@@ -34,6 +34,14 @@ void DG_Init(void)
     top = ((int)screen.height - DOOMGENERIC_RESY) / 2;
     if (left < 0) left = 0;
     if (top < 0) top = 0;
+
+    /* Blacked out once, because the engine draws its own rectangle and
+     * never touches what is around it: whatever the screen was showing
+     * before would otherwise sit there for the whole game. Once is
+     * enough, since the surround does not change afterwards. */
+    for (unsigned int y = 0; y < screen.height; y++)
+        memset(pixels + (size_t)y * screen.stride_px, 0,
+               (size_t)screen.width * sizeof(unsigned int));
 }
 
 void DG_DrawFrame(void)

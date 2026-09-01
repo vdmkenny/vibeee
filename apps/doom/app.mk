@@ -29,7 +29,12 @@ DATA      := doom1.wad
 DATA_FROM := https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad
 
 # The engine renders at whatever size it is told and does not scale, so it
-# is told the size the screen actually comes up at. No video BIOS offers the
-# 701's own 800x480, so the boot search settles on 640x480 and that is what
-# there is to draw on.
-CFLAGS := -DNORMALUNIX -DLINUX -DDOOMGENERIC_RESX=640 -DDOOMGENERIC_RESY=480
+# is told the size the screen comes up at: the 701's own panel, which the
+# gen3 driver sets from the timing the firmware left in the LVDS registers.
+# No video BIOS offers that mode, so a machine falling back to what the
+# firmware left, the emulator among them, comes up smaller and gets the
+# picture centred and cropped to what fits. Override both for such a
+# machine.
+DOOM_RESX ?= 800
+DOOM_RESY ?= 480
+CFLAGS := -DNORMALUNIX -DLINUX -DDOOMGENERIC_RESX=$(DOOM_RESX) -DDOOMGENERIC_RESY=$(DOOM_RESY)
