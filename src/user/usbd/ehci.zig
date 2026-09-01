@@ -234,6 +234,22 @@ const LegacyControl = packed struct(u32) {
     ownership_changed: bool = false,
     command_written: bool = false,
     bar_written: bool = false,
+
+    /// Every bit that arms an interrupt into the firmware. The word
+    /// against this mask says whether the firmware is listening at all;
+    /// the told-about latches below record events armed or not, ours
+    /// included, and prove nothing.
+    const ARMED: u32 = @bitCast(LegacyControl{
+        .smi_enable = true,
+        .smi_on_error = true,
+        .smi_on_port_change = true,
+        .smi_on_rollover = true,
+        .smi_on_host_error = true,
+        .smi_on_async_advance = true,
+        .smi_on_ownership = true,
+        .smi_on_command_write = true,
+        .smi_on_bar_write = true,
+    });
 };
 
 comptime {
@@ -663,6 +679,40 @@ fn unwatch(index: u8) void {
 /// at is contiguous and no larger than the five pages one descriptor
 /// addresses. The pipe carries the toggle in and takes it out advanced
 /// by what moved, so a short answer does not desynchronise the endpoint.
+/// Hand a parked queue head a chain. The schedule keeps running the whole
+/// time: everything is written while the head's overlay still says there
+/// is nothing to follow, and the word that changes that is written last,
+/// whole, so the controller meets either nothing or the finished chain.
+/// The stale next is cleared first, because a head left halted by a
+/// failed transfer still points at the chain that failed it.
+fn feed(
+    head: *volatile QueueHead,
+    info: EndpointInfo,
+    capabilities: EndpointCapabilities,
+    first: u32,
+) void {
+    head.overlay.next = Link.none;
+    head.overlay.alternate = Link.none;
+    head.overlay.token = .{};
+    head.current = 0;
+    head.info = info;
+    head.capabilities = capabilities;
+    head.overlay.next = Link.to(first, .isochronous);
+}
+
+/// Take a queue head back from a chain that never finished: the one pause
+/// of the running schedule, because the controller may hold any part of
+/// the chain in hand, and the pause is what makes it let go before the
+/// head is parked again.
+fn reclaim(head: *volatile QueueHead) void {
+    scheduleRunning(.asynchronous, false);
+    head.overlay.next = Link.none;
+    head.overlay.alternate = Link.none;
+    head.overlay.token = .{};
+    head.current = 0;
+    scheduleRunning(.asynchronous, true);
+}
+
 fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     if (!controller.opened) return hc.Error.Refused;
     if (data.len > BULK_BYTES) return hc.Error.Refused;
@@ -682,19 +732,14 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     );
     arena.payload.next = Link.none;
 
-    scheduleRunning(.asynchronous, false);
-    arena.bulk.info = .{
+    feed(&arena.bulk, .{
         .address = pipe.address,
         .endpoint = pipe.number,
         .speed = speedOf(pipe.speed),
         .toggle_from_descriptor = true,
         .max_packet = @intCast(pipe.max_packet),
         .reload = 4,
-    };
-    arena.bulk.capabilities = reach(pipe.*);
-    arena.bulk.current = 0;
-    arena.bulk.overlay = .{ .next = Link.to(controller.arena.physOf("payload"), .isochronous) };
-    scheduleRunning(.asynchronous, true);
+    }, reach(pipe.*), controller.arena.physOf("payload"));
 
     const moved = try awaitPayload(data.len);
     pipe.advance(moved);
@@ -723,7 +768,10 @@ fn awaitPayload(asked: usize) hc.Error!usize {
 
     const token = arena.payload.token;
     if (token.status.failed()) return hc.Error.Stalled;
-    if (token.status.active) return hc.Error.Timeout;
+    if (token.status.active) {
+        reclaim(&arena.bulk);
+        return hc.Error.Timeout;
+    }
     // The controller counts down what it did not carry, so a short
     // answer shows up as bytes left over.
     return asked - @as(usize, token.bytes);
@@ -925,15 +973,17 @@ fn startSchedule() void {
         .info = .{ .head_of_list = true, .max_packet = 64, .speed = .high },
         .overlay = .{ .token = .{ .status = .{ .halted = true } } },
     };
+    // The working heads park passively: nothing active, nothing halted,
+    // and a next that terminates. The controller passes over them at the
+    // cost of one fetch, and a transfer is handed over by rewriting that
+    // one word, never by stopping the schedule.
     controller.arena.at.control = .{
         .link = Link.to(controller.arena.physOf("bulk"), .queue_head),
         .info = .{ .toggle_from_descriptor = true, .speed = .high, .max_packet = 64 },
-        .overlay = .{ .token = .{ .status = .{ .halted = true } } },
     };
     controller.arena.at.bulk = .{
         .link = Link.to(anchor_physical, .queue_head),
         .info = .{ .toggle_from_descriptor = true, .speed = .high, .max_packet = 512 },
-        .overlay = .{ .token = .{ .status = .{ .halted = true } } },
     };
 
     if (controller.wide) opWrite(.segment, 0);
@@ -1089,18 +1139,21 @@ fn hostError() void {
     log.end();
 
     // The one hand that can move this controller besides ours is the
-    // firmware's. Whether it has taken the part back is a fact worth a
-    // line of its own, and the rebuild reclaims it either way.
+    // firmware's. Its trap word records every base-address and command
+    // write, ours included, so recordings prove nothing: what matters is
+    // whether anything is armed to interrupt it, or ownership moved. The
+    // rebuild reclaims the part either way.
     const caps: Capabilities = @bitCast(capRead(.capabilities));
     const at = caps.extended_capabilities;
     if (at >= 0x40) {
         const legacy: LegacySupport = @bitCast(pci.read(controller.location, at));
         const traps = pci.read(controller.location, at + 4);
         if (legacy.id == LegacySupport.CAPABILITY_ID and
-            (legacy.firmware_owned or !legacy.system_owned or traps != 0))
+            (legacy.firmware_owned or !legacy.system_owned or
+                traps & LegacyControl.ARMED != 0))
         {
             log.begin(name, .warn);
-            out.text("the firmware has a hold on the controller: owner bits ");
+            out.text("the firmware is armed on the controller: owner bits ");
             out.hex(@as(u32, @bitCast(legacy)), 8);
             out.text(", traps ");
             out.hex(traps, 8);
@@ -1235,11 +1288,9 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
     }
     arena.stages[stages - 1].next = Link.none;
 
-    // Point the head at this device and hand it the chain. The overlay
-    // is cleared rather than edited: whatever the controller left there
-    // from the last transfer describes the last transfer.
-    scheduleRunning(.asynchronous, false);
-    arena.control.info = .{
+    // Point the head at this device and hand it the chain, the schedule
+    // still running: the handoff is the overlay's next word, written last.
+    feed(&arena.control, .{
         .address = pipe.address,
         .endpoint = 0,
         .speed = speedOf(pipe.speed),
@@ -1247,11 +1298,7 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
         .max_packet = @intCast(pipe.max_packet),
         .control_endpoint = pipe.speed != .high,
         .reload = 4,
-    };
-    arena.control.capabilities = reach(pipe);
-    arena.control.current = 0;
-    arena.control.overlay = .{ .next = Link.to(controller.arena.physOf("stages"), .isochronous) };
-    scheduleRunning(.asynchronous, true);
+    }, reach(pipe), controller.arena.physOf("stages"));
 
     return try awaitStages(stages, data, reading, wants_data);
 }
@@ -1356,7 +1403,11 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
         const token = arena.stages[i].token;
         if (token.status.failed() or token.status.active) {
             sayStages(arena, stages);
-            return if (token.status.failed()) hc.Error.Stalled else hc.Error.Timeout;
+            if (token.status.failed()) return hc.Error.Stalled;
+            // A halted head has been let go; a chain still active is
+            // still the controller's, and is taken back before reuse.
+            reclaim(&arena.control);
+            return hc.Error.Timeout;
         }
     }
 
