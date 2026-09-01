@@ -152,12 +152,14 @@ pub const Channel = struct {
     /// without waiting is not woken twice for nothing afterwards.
     ready: event_mod.Event = .{},
 
-    /// Received but not yet replied to, indexed by the low bits of the token.
-    inflight: [MAX_INFLIGHT]?*Call = @splat(null),
-    tokens: [MAX_INFLIGHT]u32 = @splat(0),
-    /// Generation counter, so a token is never reused while anything remembers
-    /// the old one.
-    next_generation: u32 = 1,
+    /// Received but not yet replied to, in the slot the token names.
+    ///
+    /// One array rather than a slot and its token side by side: two arrays
+    /// kept in step by hand at four places is a drift waiting to happen, and
+    /// the pair either exists together or does not exist at all.
+    inflight: [MAX_INFLIGHT]?Taken = @splat(null),
+    /// So a token is never reused while anything remembers the old one.
+    next_generation: Token.Generation = 1,
 
     refs: u32 = 1,
     /// Cleared when the serving end closes, which is what turns a client's
@@ -210,12 +212,38 @@ pub const Channel = struct {
     }
 
     fn dropInflight(self: *Channel, record: *Call) void {
-        for (&self.inflight, 0..) |*slot, i| {
-            if (slot.* == record) {
-                slot.* = null;
-                self.tokens[i] = 0;
-            }
+        for (&self.inflight) |*slot| {
+            const taken = slot.* orelse continue;
+            if (taken.call == record) slot.* = null;
         }
+    }
+};
+
+/// One call a server has taken and not yet answered.
+const Taken = struct {
+    call: *Call,
+    /// Which turn of the slot this is. A reply naming the slot has to name
+    /// the turn as well, or an answer written after a caller gave up would
+    /// land on whoever took the slot next.
+    generation: Token.Generation,
+};
+
+/// What a server is given to answer a call with.
+///
+/// A packed struct rather than a slot number shifted into a counter and
+/// masked back out: the two halves are then stated once, the compiler knows
+/// how wide each is, and the generation is the width it actually has instead
+/// of a `u32` quietly losing its top eight bits to the shift.
+pub const Token = packed struct(u32) {
+    slot: u8,
+    generation: Generation,
+
+    pub const Generation = u24;
+
+    /// Zero is not a token, so a caller that passes one it never received
+    /// names nothing rather than naming slot nought on its first turn.
+    pub fn of(slot: usize, generation: Generation) u32 {
+        return @bitCast(Token{ .slot = @intCast(slot), .generation = generation });
     }
 };
 
@@ -292,12 +320,12 @@ pub fn recv(ch: *Channel, deadline_us: ?u64) Error!Received {
                 return error.Busy;
             };
 
-            const token = (ch.next_generation << 8) | @as(u32, @intCast(slot));
+            const generation = ch.next_generation;
             ch.next_generation +%= 1;
             if (ch.next_generation == 0) ch.next_generation = 1;
 
-            ch.inflight[slot] = c;
-            ch.tokens[slot] = token;
+            ch.inflight[slot] = .{ .call = c, .generation = generation };
+            const token = Token.of(slot, generation);
 
             // The server owns the request's handles from here. The caller is
             // still blocked in the frame that holds the original, and every
@@ -320,16 +348,17 @@ pub fn reply(
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    const slot = token & 0xFF;
-    if (slot >= MAX_INFLIGHT) return error.BadToken;
-    if (ch.tokens[slot] != token) return error.BadToken;
+    const named: Token = @bitCast(token);
+    if (named.slot >= MAX_INFLIGHT) return error.BadToken;
 
-    const c = ch.inflight[slot] orelse return error.BadToken;
+    const taken = ch.inflight[named.slot] orelse return error.BadToken;
+    if (taken.generation != named.generation) return error.BadToken;
+
+    const c = taken.call;
     try c.reply.set(payload);
     try c.reply.attach(send_handles);
 
-    ch.inflight[slot] = null;
-    ch.tokens[slot] = 0;
+    ch.inflight[named.slot] = null;
 
     c.done = true;
     _ = c.queue.wakeAll();
@@ -372,14 +401,13 @@ pub fn stopServing(ch: *Channel) void {
         c.done = true;
         _ = c.queue.wakeAll();
     }
-    for (&ch.inflight, 0..) |*slot, i| {
-        if (slot.*) |c| {
-            c.failed = true;
-            c.done = true;
-            _ = c.queue.wakeAll();
+    for (&ch.inflight) |*slot| {
+        if (slot.*) |taken| {
+            taken.call.failed = true;
+            taken.call.done = true;
+            _ = taken.call.queue.wakeAll();
         }
         slot.* = null;
-        ch.tokens[i] = 0;
     }
     _ = ch.recv_queue.wakeAll();
 }

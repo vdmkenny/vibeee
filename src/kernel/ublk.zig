@@ -66,14 +66,28 @@ fn errorFor(status: Status) block.Error!void {
 }
 
 const Slot = struct {
-    /// The slot is spoken for. Not yet something the server may take:
-    /// the request in it is still being written.
-    busy: bool = false,
-    /// The request is written and the server may have it.
-    offered: bool = false,
-    /// The server has it and has not answered.
-    taken: bool = false,
-    done: bool = false,
+    /// How far along the one request a slot ever holds has got.
+    ///
+    /// One value rather than four flags. The four had sixteen spellings for
+    /// five states, every question about a slot was two or three of them read
+    /// together, and freeing one meant remembering to clear three: `offered`
+    /// without `busy` and `done` without `taken` were both writable and
+    /// neither meant anything.
+    pub const State = enum {
+        /// Nobody's.
+        free,
+        /// Spoken for, and not yet something the server may take: the request
+        /// in it is still being written.
+        claimed,
+        /// Written, and the server may have it.
+        offered,
+        /// The server has it and has not answered.
+        taken,
+        /// Answered. The caller is woken and frees it on its way out.
+        done,
+    };
+
+    state: State = .free,
     request: Request = .{},
     status: Status = .ok,
     moved: u32 = 0,
@@ -198,7 +212,7 @@ pub fn dropVolumes(server: u32) void {
 fn slotToAnswer(volume: *Volume, tag: u16) ?*Slot {
     if (tag >= volume.slots.len) return null;
     const slot = &volume.slots[tag];
-    if (!slot.busy or !slot.taken) return null;
+    if (slot.state != .taken) return null;
     return slot;
 }
 
@@ -289,8 +303,8 @@ pub fn next(index: usize, server: u32) ?Request {
     const volume = ownedBy(index, server) orelse return null;
 
     for (&volume.slots, 0..) |*slot, i| {
-        if (!slot.busy or !slot.offered or slot.taken) continue;
-        slot.taken = true;
+        if (slot.state != .offered) continue;
+        slot.state = .taken;
         var taken = slot.request;
         taken.tag = @intCast(i);
         return taken;
@@ -307,7 +321,7 @@ pub fn done(index: usize, server: u32, tag: u16, status: Status, moved: u32) voi
     const slot = slotToAnswer(volume, tag) orelse return;
     slot.status = status;
     slot.moved = moved;
-    slot.done = true;
+    slot.state = .done;
     _ = slot.queue.wakeOne();
 }
 
@@ -320,9 +334,9 @@ pub fn detach(index: usize, server: u32) void {
     const volume = ownedBy(index, server) orelse return;
 
     for (&volume.slots) |*slot| {
-        if (!slot.busy or slot.done) continue;
+        if (slot.state == .free or slot.state == .done) continue;
         slot.status = .no_medium;
-        slot.done = true;
+        slot.state = .done;
         _ = slot.queue.wakeOne();
     }
     volume.live = false;
@@ -419,8 +433,8 @@ fn claim(volume: *Volume) block.Error!usize {
 
     while (volume.live) {
         for (&volume.slots, 0..) |*slot, i| {
-            if (slot.busy) continue;
-            slot.* = .{ .busy = true, .queue = slot.queue };
+            if (slot.state != .free) continue;
+            slot.* = .{ .state = .claimed, .queue = slot.queue };
             return i;
         }
         _ = wait.blockOn(&.{&volume.room}, sched.deadlineIn(READ_PATIENCE_US)) catch
@@ -433,10 +447,7 @@ fn freeSlot(volume: *Volume, index: usize) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    volume.slots[index].busy = false;
-    volume.slots[index].offered = false;
-    volume.slots[index].taken = false;
-    volume.slots[index].done = false;
+    volume.slots[index].state = .free;
     _ = volume.room.wakeOne();
 }
 
@@ -448,13 +459,13 @@ fn run(volume: *Volume, index: usize, patience_us: u64) block.Error!void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    // The request is only offered once it is written, and the doorbell
-    // only rings once it is offered: a slot marked busy but not yet
-    // filled must never be something the server can take.
+    // The request is only offered once it is written, and the doorbell only
+    // rings once it is offered: a slot claimed but not yet filled must never
+    // be something the server can take.
     const slot = &volume.slots[index];
-    slot.offered = true;
+    slot.state = .offered;
     doorbell.signal();
-    while (!slot.done) {
+    while (slot.state != .done) {
         if (!volume.live) return block.Error.IoError;
         _ = wait.blockOn(&.{&slot.queue}, deadline) catch return block.Error.Timeout;
     }
