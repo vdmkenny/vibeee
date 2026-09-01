@@ -835,7 +835,7 @@ fn paintLauncherField(surface: Surface, area: Rect) void {
 
     const typed = launcher_query.slice();
     if (typed.len == 0) {
-        surface.text(x, text_y, "type to find an app, a window or a command", t.text_dim);
+        surface.text(x, text_y, "type to find an app, a file, a window or a command", t.text_dim);
         return;
     }
 
