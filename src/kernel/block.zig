@@ -319,6 +319,28 @@ pub fn signatureOf(disk: *const Device) ?u32 {
     return std.mem.readInt(u32, sector[0x1B8..][0..4], .little);
 }
 
+/// The whole device a partition was cut from. Partitions carry their
+/// parent's context, which is the link between them; the names only agree
+/// with it by convention.
+pub fn diskOf(part: *const Device) ?*const Device {
+    if (part.offset == 0) return null;
+    for (devices[0..device_count]) |*d| {
+        if (d.offset == 0 and !d.retired and d.ctx == part.ctx) return d;
+    }
+    return null;
+}
+
+/// Which partition of its disk this is, counting the way the table does.
+/// The scan names a partition after the disk it came from, so the number
+/// is read back from the name that named it.
+pub fn partitionNumberOf(part: *const Device) ?u8 {
+    const disk = diskOf(part) orelse return null;
+    if (part.name.len <= disk.name.len + 1) return null;
+    if (!std.mem.startsWith(u8, part.name, disk.name)) return null;
+    if (part.name[disk.name.len] != 'p') return null;
+    return std.fmt.parseInt(u8, part.name[disk.name.len + 1 ..], 10) catch null;
+}
+
 pub fn isMountCandidate(index: usize) bool {
     if (index >= device_count or devices[index].retired) return false;
     // Partitions always; whole disks only when they hold a filesystem directly.

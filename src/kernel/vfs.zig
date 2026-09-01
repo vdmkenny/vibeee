@@ -113,8 +113,57 @@ pub fn automounts() bool {
 /// One place, because a medium found at boot and a medium plugged in
 /// afterwards should arrive in the same spot: the only difference between
 /// them is when they turned up.
+/// The boot medium, and where its own volumes go after the first.
+///
+/// Held as a signature and a partition's number rather than as devices,
+/// because a machine whose boot medium is behind a bus that starts later
+/// has no such device to point at when the boot mounts are decided: the
+/// volumes that carry what it remembers turn up long after, and have to
+/// know their places when they do.
+var spoken_signature: u32 = 0;
+var spoken_places: []const []const u8 = &.{};
+
+pub fn speakFor(signature: u32, places: []const []const u8) void {
+    spoken_signature = signature;
+    spoken_places = places;
+}
+
+/// Where a volume belongs, when it is one of the boot medium's own. The
+/// first partition carries the loader and the system and has no place
+/// reserved: what it holds is the root, and the root is mounted from
+/// whichever copy of it the machine can reach.
+pub fn placeOf(dev: *const block.Device) ?[]const u8 {
+    if (spoken_signature == 0 or spoken_places.len == 0) return null;
+    const disk = block.diskOf(dev) orelse return null;
+    const signature = block.signatureOf(disk) orelse return null;
+    if (signature != spoken_signature) return null;
+    const which = block.partitionNumberOf(dev) orelse return null;
+    if (which < 2 or which - 2 >= spoken_places.len) return null;
+    return spoken_places[which - 2];
+}
+
 pub fn mountMedia(dev: *const block.Device) ?[]const u8 {
     if (!automount) return null;
+
+    // A volume the board has spoken for goes to its own place, whenever it
+    // arrives. On a machine whose boot medium is behind a bus that starts
+    // later this is the only pass that ever sees it.
+    if (placeOf(dev)) |place| {
+        if (mount(place, dev, true)) |_| {
+            return place;
+        } else |err| switch (err) {
+            // Somebody is already in that place: a second copy of the
+            // machine's own medium is still a medium worth reaching, so
+            // it goes where any other one would.
+            error.AlreadyMounted => {},
+            error.NotFat, error.Unsupported => return null,
+            else => {
+                console.warn("vfs: cannot mount {s} on {s}: {s}", .{ dev.name, place, @errorName(err) });
+                return null;
+            },
+        }
+    }
+
     if (media_used >= media_names.len) return null;
     const path = std.fmt.bufPrint(&media_names[media_used], "/media/{s}", .{dev.name}) catch return null;
 

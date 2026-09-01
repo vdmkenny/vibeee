@@ -11,7 +11,6 @@ const console = @import("kernel/console.zig");
 const display = @import("kernel/display.zig");
 const input = @import("kernel/input.zig");
 const probe = @import("kernel/probe.zig");
-const std = @import("std");
 const bootinfo = @import("kernel/bootinfo.zig");
 const drivers = @import("drivers.zig");
 const ramdisk = @import("drv/block/ramdisk.zig");
@@ -322,34 +321,14 @@ fn registerRootfs(bi: *const bootinfo.BootInfo) ?*const block.Device {
 /// and a home that empties itself overnight is not one.
 const SYSTEM_MOUNTS = [_][]const u8{ "/cfg", "/home" };
 
-/// The names of the boot medium's second and third partitions, if it has
-/// them. Found by the signature the loader read, so a machine with several
-/// disks attaches the one it actually booted from.
-fn systemVolumes(bi: *const bootinfo.BootInfo, into: *[SYSTEM_MOUNTS.len]?*const block.Device) void {
-    into.* = @splat(null);
-    if (bi.disk_sig == 0) return;
-
-    for (block.list()) |*disk| {
-        if (disk.offset != 0 or disk.retired) continue;
-        const signature = block.signatureOf(disk) orelse continue;
-        if (signature != bi.disk_sig) continue;
-
-        // Partitions are named after the disk they were cut from, so the
-        // second and third are found by the names the scan gave them.
-        for (into, 0..) |*slot, i| {
-            var wanted: [16]u8 = undefined;
-            const name = std.fmt.bufPrint(&wanted, "{s}p{d}", .{ disk.name, i + 2 }) catch continue;
-            slot.* = block.find(name);
-        }
-        return;
-    }
-}
-
 fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
     var mounted_root = false;
 
-    var system: [SYSTEM_MOUNTS.len]?*const block.Device = @splat(null);
-    systemVolumes(bi, &system);
+    // Which volumes are the boot medium's own, by the signature the loader
+    // read, so a machine with several disks attaches the one it actually
+    // booted from. Said once here and answered everywhere a volume
+    // arrives, including long after this pass.
+    vfs.speakFor(bi.disk_sig, &SYSTEM_MOUNTS);
 
     // The RAM root wins over anything on disk. On the target this is not a
     // preference but a necessity: the medium the machine booted from is behind
@@ -367,7 +346,7 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
         if (!block.isMountCandidate(i)) continue;
         // The boot medium's own volumes have places of their own below,
         // and must not also turn up under /media.
-        if (isSystemVolume(&system, dev)) continue;
+        if (vfs.placeOf(dev) != null) continue;
 
         if (!mounted_root) {
             if (vfs.mount("/", dev, false)) |_| {
@@ -383,9 +362,12 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
     if (!mounted_root) console.warn("vfs: no root filesystem", .{});
 
     // Last, because they depend on the root being there: their mount points
-    // are directories in it.
-    for (system, SYSTEM_MOUNTS) |maybe, where| {
-        const dev = maybe orelse continue;
+    // are directories in it. A machine whose boot medium is behind a bus
+    // that starts later finds nothing here, and the volumes take these
+    // same places when they arrive.
+    for (block.list(), 0..) |*dev, i| {
+        if (!block.isMountCandidate(i)) continue;
+        const where = vfs.placeOf(dev) orelse continue;
         if (!vfs.automounts()) continue;
         if (vfs.mount(where, dev, false)) |_| {
             reportMount(where, dev);
@@ -397,15 +379,6 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
             else => console.warn("vfs: cannot mount {s} on {s}: {s}", .{ dev.name, where, @errorName(err) }),
         }
     }
-}
-
-fn isSystemVolume(system: *const [SYSTEM_MOUNTS.len]?*const block.Device, dev: *const block.Device) bool {
-    for (system) |maybe| {
-        if (maybe) |one| {
-            if (one == dev) return true;
-        }
-    }
-    return false;
 }
 
 fn reportMount(path: []const u8, dev: *const block.Device) void {
