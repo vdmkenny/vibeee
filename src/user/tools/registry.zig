@@ -9,6 +9,7 @@ const std = @import("std");
 const manual = @import("manual");
 const eeefetch = @import("eeefetch.zig");
 const smbios = @import("smbios.zig");
+const probe = @import("probe.zig");
 const ask = @import("ask.zig");
 const thermal = @import("thermal.zig");
 const acpi = @import("acpi.zig");
@@ -90,6 +91,7 @@ pub const commands = [_]Command{
     .{ .name = "date", .summary = manual.summaryOf("date"), .run = &date.run },
     .{ .name = "eeefetch", .summary = manual.summaryOf("eeefetch"), .run = &eeefetch.run },
     .{ .name = "smbios", .summary = manual.summaryOf("smbios"), .run = &smbios.run },
+    .{ .name = "probe", .summary = manual.summaryOf("probe"), .run = &probe.run },
     .{ .name = "sysinfo", .summary = manual.summaryOf("sysinfo"), .run = &ask.run },
     .{ .name = "thermal", .summary = manual.summaryOf("thermal"), .run = &thermal.run },
 };

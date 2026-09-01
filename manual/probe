@@ -1,0 +1,15 @@
+probe - hand the kernel the arguments a broken program would
+
+Every case here is a call that must come back as an error rather than as a
+dead machine: a null pointer, a pointer nothing is mapped at, an address in
+the kernel's own half, a length that wraps, a buffer that runs off the end
+of its page, a read-only page offered as somewhere to write, and a handle
+nobody was given.
+
+A kernel that reads a user pointer without checking the pages behind it are
+there faults in its own context, and a fault in kernel context stops the
+machine. Any program could then stop it with a stray pointer, which is the
+difference between a bug in a program and a bug in the system.
+
+It says how many were refused as they should be. Anything other than all of
+them is a hole, and a machine that stops partway through has the worst kind.

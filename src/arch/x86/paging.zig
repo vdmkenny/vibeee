@@ -13,6 +13,7 @@
 //! User space gets ordinary 4 KiB pages across the low 3 GiB.
 
 const std = @import("std");
+const pagetable = @import("pagetable.zig");
 
 pub const PAGE_SIZE: usize = 4096;
 pub const LARGE_PAGE_SIZE: usize = 4 * 1024 * 1024;
@@ -35,53 +36,12 @@ pub const LINEAR_MAP_BYTES: usize = MMIO_BASE - KERNEL_VMA;
 /// dropped as soon as the kernel is running from its virtual addresses.
 const IDENTITY_MIB = 64;
 
-/// A directory or table entry, as the CPU reads it.
-///
-/// A packed struct rather than a word and a column of shift constants: the
-/// field positions are the declaration, the compiler checks the entry is
-/// exactly thirty-two bits, and a mapping reads as what it permits instead of
-/// as an expression to decode. Getting a bit wrong here is the difference
-/// between a working address space and one that faults on its first access,
-/// which is worth having the compiler check.
-pub const Entry = packed struct(u32) {
-    present: bool = false,
-    write: bool = false,
-    user: bool = false,
-    write_through: bool = false,
-    cache_disable: bool = false,
-    accessed: bool = false,
-    dirty: bool = false,
-    /// Four megabytes rather than four kilobytes. Only meaningful in a
-    /// directory entry.
-    large: bool = false,
-    /// Survives a CR3 reload, for the mappings every address space shares.
-    global: bool = false,
-
-    /// Bits 9 to 11 are ignored by the CPU and free for software. This one
-    /// marks a page whose frame belongs to something else, a shared-memory
-    /// segment, so tearing an address space down must unmap it without
-    /// freeing it. Without the mark, the first process to exit would hand
-    /// frames back to the allocator that another process is still reading.
-    shared: bool = false,
-    _software: u2 = 0,
-
-    /// The frame this entry points at, counted in pages. A large entry uses
-    /// only the top ten bits of it and leaves the rest clear.
-    frame: u20 = 0,
-
-    /// The physical address the frame field names.
-    pub fn address(self: Entry) usize {
-        return @as(usize, self.frame) << PAGE_SHIFT;
-    }
-
-    /// An entry pointing at `phys`, with nothing else set.
-    pub fn at(phys: usize) Entry {
-        return .{ .frame = @intCast(phys >> PAGE_SHIFT) };
-    }
-};
-
-/// A directory or a table: the CPU makes no distinction between their shapes.
-pub const Table = [1024]Entry;
+/// The format lives in `pagetable.zig`, which has no instructions in it and
+/// is therefore in the host tests: what an entry means, and whether a range of
+/// them lets the kernel touch a program's memory, is checked there.
+pub const Entry = pagetable.Entry;
+pub const Table = pagetable.Table;
+pub const Access = pagetable.Access;
 
 /// A four-megabyte directory entry covering `phys`.
 ///
@@ -347,6 +307,19 @@ pub const AddressSpace = struct {
         if (isActive(self.*)) invalidatePage(virt);
     }
 
+    /// Whether the kernel may touch `virt[0..len]` on this space's behalf.
+    ///
+    /// Every page must be there, reachable from user code, and writable where
+    /// the kernel is going to write. Asked before a syscall reads or fills a
+    /// caller's buffer: without it a stray pointer faults inside the kernel,
+    /// and a fault there stops the machine, which would make every program a
+    /// way to halt the system.
+    pub fn permits(self: AddressSpace, virt: usize, len: usize, access: Access) bool {
+        if (self.pd_phys == 0) return false;
+        const dir: *const Table = @ptrFromInt(physToVirt(self.pd_phys));
+        return pagetable.walk(linearTable, dir, virt, len, access);
+    }
+
     /// Make this the current address space.
     pub fn activate(self: AddressSpace) void {
         asm volatile ("movl %[pd], %%cr3"
@@ -355,6 +328,12 @@ pub const AddressSpace = struct {
             : .{ .memory = true });
     }
 };
+
+/// A page table read where the kernel can reach it. What `pagetable.walk` is
+/// given to follow a directory entry on a running machine.
+fn linearTable(phys: usize) *const Table {
+    return @ptrFromInt(physToVirt(phys));
+}
 
 fn isActive(space: AddressSpace) bool {
     return readCr3() == space.pd_phys;

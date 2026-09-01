@@ -117,6 +117,31 @@ pub fn write(handle: u32, bytes: []const u8) isize {
     return syscall3(abi.number("write"), handle, @intFromPtr(bytes.ptr), bytes.len);
 }
 
+/// The same three calls, taking the pointer and the length as numbers.
+///
+/// For handing the kernel an address no pointer of this language may hold: a
+/// null, one nothing is mapped at, one in the kernel's own half, or a length
+/// that wraps. Only `probe` wants these, and it wants them because the check
+/// on the other side is what is being tested.
+pub fn writeRaw(handle: u32, ptr: usize, len: usize) isize {
+    return syscall3(abi.number("write"), handle, ptr, len);
+}
+
+pub fn openRaw(ptr: usize, len: usize, flags: OpenFlags) isize {
+    return syscall3(abi.number("open"), ptr, len, @as(u32, @bitCast(flags)));
+}
+
+pub fn statRaw(path: []const u8, ptr: usize, len: usize) isize {
+    return syscall4(abi.number("stat"), @intFromPtr(path.ptr), path.len, ptr, len);
+}
+
+/// A receive whose message is an address rather than a message, for naming one
+/// no message could sit at. Polls rather than waits, so a kernel that failed to
+/// refuse the address answers instead of hanging.
+pub fn recvRaw(handle: usize, msg: usize, token: usize) isize {
+    return syscall4(abi.number("recv"), handle, msg, token, abi.Timeout.poll);
+}
+
 pub fn read(handle: u32, buf: []u8) isize {
     return syscall3(abi.number("read"), handle, @intFromPtr(buf.ptr), buf.len);
 }

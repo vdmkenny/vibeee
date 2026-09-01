@@ -13,7 +13,8 @@ const vfs = @import("../vfs.zig");
 const Args = ctx.Args;
 const Result = ctx.Result;
 const Errno = ctx.Errno;
-const userSlice = ctx.userSlice;
+const userRead = ctx.userRead;
+const userWrite = ctx.userWrite;
 const userPath = ctx.userPath;
 const currentHandles = ctx.currentHandles;
 
@@ -132,7 +133,7 @@ pub fn sys_mount(a: Args) Result {
 
     // A volume is named, not addressed: `userPath` would resolve it against the
     // working directory and turn `hd0p1` into a path nothing is called.
-    const name = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const name = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
 
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a2, a.a3, &path_buf) orelse return Errno.fault.value();
@@ -208,7 +209,7 @@ pub fn sys_readdir(a: Args) Result {
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
     if (h.kind != .directory) return Errno.badf.value();
 
-    const out = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
     const d = &h.data.directory;
     if (d.exhausted) return 0;
 
@@ -246,7 +247,7 @@ pub fn sys_readdir(a: Args) Result {
 pub fn sys_stat(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
-    const out = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a2, a.a3) orelse return Errno.fault.value();
 
     const entry = vfs.stat(path) catch return Errno.noent.value();
     const n = writeDirent(out, entry) orelse return Errno.nomem.value();

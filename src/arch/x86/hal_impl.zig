@@ -49,6 +49,7 @@ pub const virtToPhys = paging.virtToPhys;
 pub const invalidatePage = paging.invalidatePage;
 pub const dropBootIdentityMapping = paging.dropIdentityMapping;
 pub const AddressSpace = paging.AddressSpace;
+pub const Access = paging.Access;
 pub const kernelAddressSpace = paging.kernelAddressSpace;
 pub const setupUserStack = @import("usermode.zig").setupStack;
 pub const enterUserMode = @import("usermode.zig").enter;

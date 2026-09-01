@@ -86,7 +86,7 @@ pub fn sys_release_device(a: Args) Result {
 pub fn sys_dma_alloc(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 
-    const out = ctx.userSlice(a, a.a1, @sizeOf(u32)) orelse return Errno.fault.value();
+    const out = ctx.userWrite(a, a.a1, @sizeOf(u32)) orelse return Errno.fault.value();
 
     const seg = shm.createDma(a.a0) catch |err| return switch (err) {
         error.BadSize => Errno.inval.value(),
@@ -228,8 +228,10 @@ pub fn sys_map_device(a: Args) Result {
 pub fn sys_volume_attach(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 
-    const name = ctx.userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
-    const info_bytes = ctx.userSlice(a, a.a2, @sizeOf(ublk.Attach)) orelse return Errno.fault.value();
+    const name = ctx.userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
+    // Read for what the server asked for and written back with the handles it
+    // was given, so it must be somewhere the caller could have written itself.
+    const info_bytes = ctx.userWrite(a, a.a2, @sizeOf(ublk.Attach)) orelse return Errno.fault.value();
 
     var info: ublk.Attach = undefined;
     @memcpy(std.mem.asBytes(&info), info_bytes);
@@ -274,7 +276,7 @@ pub fn sys_volume_attach(a: Args) Result {
 pub fn sys_volume_next(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 
-    const into = ctx.userSlice(a, a.a1, @sizeOf(ublk.Request)) orelse return Errno.fault.value();
+    const into = ctx.userWrite(a, a.a1, @sizeOf(ublk.Request)) orelse return Errno.fault.value();
 
     var request: ublk.Request = .{};
     if (!ublk.next(a.a0, &request)) return 0;
@@ -314,7 +316,7 @@ pub fn sys_key_post(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
     if (a.a1 > MAX_REPORTS) return Errno.inval.value();
 
-    const bytes = ctx.userSlice(a, a.a0, a.a1 * @sizeOf(lib.syscalls.KeyReport)) orelse
+    const bytes = ctx.userRead(a, a.a0, a.a1 * @sizeOf(lib.syscalls.KeyReport)) orelse
         return Errno.fault.value();
 
     for (0..a.a1) |i| {
@@ -330,7 +332,7 @@ pub fn sys_pointer_post(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
     if (a.a1 > MAX_REPORTS) return Errno.inval.value();
 
-    const bytes = ctx.userSlice(a, a.a0, a.a1 * @sizeOf(lib.syscalls.PointerReport)) orelse
+    const bytes = ctx.userRead(a, a.a0, a.a1 * @sizeOf(lib.syscalls.PointerReport)) orelse
         return Errno.fault.value();
 
     for (0..a.a1) |i| {

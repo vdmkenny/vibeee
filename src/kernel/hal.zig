@@ -124,6 +124,9 @@ pub const dropBootIdentityMapping = impl.dropBootIdentityMapping;
 /// A process address space. The kernel half is shared by all of them, so a
 /// syscall needs no address-space switch.
 pub const AddressSpace = impl.AddressSpace;
+/// What the kernel is about to do to a caller's memory, which is what
+/// `AddressSpace.permits` answers about.
+pub const Access = impl.Access;
 /// The address space the kernel booted with, used by kernel-only threads.
 pub const kernelAddressSpace = impl.kernelAddressSpace;
 /// Build a process's initial stack, with arguments on it in whatever form the

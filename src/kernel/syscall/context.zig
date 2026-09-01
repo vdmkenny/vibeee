@@ -35,17 +35,45 @@ pub const Result = isize;
 /// The shape every handler has; what the dispatcher binds table entries to.
 pub const Handler = *const fn (Args) Result;
 
+/// A caller's buffer the kernel is going to read.
+pub fn userRead(a: Args, ptr: usize, len: usize) ?[]const u8 {
+    return userRange(a, ptr, len, .read);
+}
+
+/// A caller's buffer the kernel is going to write.
+///
+/// Separate from `userRead` so the direction is in the type rather than in a
+/// handler's intentions: a handler given somewhere to read cannot write there,
+/// and one that means to write has the pages checked for it.
+pub fn userWrite(a: Args, ptr: usize, len: usize) ?[]u8 {
+    return userRange(a, ptr, len, .write);
+}
+
 /// Validate a user pointer/length pair and return it as a slice.
 ///
-/// The whole range must sit below the kernel base, and the length must not
-/// wrap. The slice is produced once and used once: re-reading the pointer after
+/// The whole range must sit below the kernel base, the length must not wrap,
+/// and every page of it must be mapped and permit what the kernel is about to
+/// do. The last of those is what keeps a stray pointer a bug in one program:
+/// without it the kernel faults in its own context reaching for memory that is
+/// not there, and a fault there stops the machine.
+///
+/// The slice is produced once and used once: re-reading the pointer after
 /// checking it is how time-of-check/time-of-use bugs get in.
-pub fn userSlice(a: Args, ptr: usize, len: usize) ?[]u8 {
+fn userRange(a: Args, ptr: usize, len: usize, access: hal.Access) ?[]u8 {
     if (len == 0) return &.{};
     if (ptr == 0) return null;
 
     const end = std.math.add(usize, ptr, len) catch return null;
-    if (a.from_user and (ptr >= hal.KERNEL_BASE or end > hal.KERNEL_BASE)) return null;
+
+    if (a.from_user) {
+        if (ptr >= hal.KERNEL_BASE or end > hal.KERNEL_BASE) return null;
+
+        // Kernel-mode callers, the boot self-test and early init, pass their
+        // own memory: it is the kernel's, in the kernel half, and there is no
+        // user mapping of it to ask about.
+        const t = sched.currentThread() orelse return null;
+        if (!t.space.permits(ptr, len, access)) return null;
+    }
 
     const p: [*]u8 = @ptrFromInt(ptr);
     return p[0..len];
@@ -56,7 +84,7 @@ pub fn userSlice(a: Args, ptr: usize, len: usize) ?[]u8 {
 /// Copied first because the caller's memory must not be read twice: a path
 /// validated and then re-read is the classic time-of-check bug.
 pub fn userPath(a: Args, ptr: usize, len: usize, buf: []u8) ?[]const u8 {
-    const raw = userSlice(a, ptr, len) orelse return null;
+    const raw = userRead(a, ptr, len) orelse return null;
     if (raw.len == 0 or raw.len > path_mod.MAX) return null;
 
     var scratch: [path_mod.MAX]u8 = undefined;

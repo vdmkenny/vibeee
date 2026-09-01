@@ -20,7 +20,8 @@ const svc = @import("../svc.zig");
 const Args = ctx.Args;
 const Result = ctx.Result;
 const Errno = ctx.Errno;
-const userSlice = ctx.userSlice;
+const userRead = ctx.userRead;
+const userWrite = ctx.userWrite;
 const currentHandles = ctx.currentHandles;
 const installHandle = ctx.installHandle;
 const deadlineFrom = ctx.deadlineFrom;
@@ -99,7 +100,7 @@ pub fn sys_wait_many(a: Args) Result {
     const count = a.a1;
     if (count == 0 or count > event_mod.MAX_WAIT) return Errno.inval.value();
 
-    const raw = userSlice(a, a.a0, count * @sizeOf(u32)) orelse return Errno.fault.value();
+    const raw = userRead(a, a.a0, count * @sizeOf(u32)) orelse return Errno.fault.value();
 
     // Copied out of user memory before any of it is used: re-reading the array
     // after validating it is how a process talks the kernel into waiting on an
@@ -121,7 +122,7 @@ pub fn sys_wait_many(a: Args) Result {
 
 pub fn sys_svc_register(a: Args) Result {
     var buf: [svc.MAX_NAME]u8 = undefined;
-    const name = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const name = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
     if (name.len == 0 or name.len > buf.len) return Errno.inval.value();
     @memcpy(buf[0..name.len], name);
 
@@ -153,7 +154,7 @@ pub fn sys_svc_register(a: Args) Result {
 }
 
 pub fn sys_svc_connect(a: Args) Result {
-    const name = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const name = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
     if (name.len == 0 or name.len > svc.MAX_NAME) return Errno.inval.value();
 
     const ch = svc.lookup(name) catch return Errno.noent.value();
@@ -226,16 +227,29 @@ fn deliverHandles(msg: *channel_mod.Message, out: *abi.Message) bool {
     return true;
 }
 
-fn userMessage(a: Args, ptr: usize) ?*abi.Message {
-    const raw = userSlice(a, ptr, @sizeOf(abi.Message)) orelse return null;
+/// A message the caller is handing over, and one the kernel is filling in.
+///
+/// Two of them rather than one, so a handler given something to send cannot
+/// write back through it. Both refuse a pointer that is not aligned for the
+/// struct: a caller may name any address it likes, and treating a misaligned
+/// one as a message is undefined before it is anything else.
+fn userMessageRead(a: Args, ptr: usize) ?*const abi.Message {
+    if (!std.mem.isAligned(ptr, @alignOf(abi.Message))) return null;
+    const raw = userRead(a, ptr, @sizeOf(abi.Message)) orelse return null;
+    return @ptrCast(@alignCast(raw.ptr));
+}
+
+fn userMessageWrite(a: Args, ptr: usize) ?*abi.Message {
+    if (!std.mem.isAligned(ptr, @alignOf(abi.Message))) return null;
+    const raw = userWrite(a, ptr, @sizeOf(abi.Message)) orelse return null;
     return @ptrCast(@alignCast(raw.ptr));
 }
 
 pub fn sys_call(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), false) orelse return Errno.badf.value();
 
-    const request = userMessage(a, a.a1) orelse return Errno.fault.value();
-    const out = userMessage(a, a.a2) orelse return Errno.fault.value();
+    const request = userMessageRead(a, a.a1) orelse return Errno.fault.value();
+    const out = userMessageWrite(a, a.a2) orelse return Errno.fault.value();
 
     // Copied out of user memory before the call blocks, for the same reason
     // every other pointer argument is.
@@ -266,8 +280,8 @@ pub fn sys_call(a: Args) Result {
 
 pub fn sys_recv(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), true) orelse return Errno.badf.value();
-    const out = userMessage(a, a.a1) orelse return Errno.fault.value();
-    const token_out = userSlice(a, a.a2, @sizeOf(u32)) orelse return Errno.fault.value();
+    const out = userMessageWrite(a, a.a1) orelse return Errno.fault.value();
+    const token_out = userWrite(a, a.a2, @sizeOf(u32)) orelse return Errno.fault.value();
 
     var got = channel_mod.recv(ch, deadlineFrom(a.a3)) catch |err| {
         return switch (err) {
@@ -290,7 +304,7 @@ pub fn sys_recv(a: Args) Result {
 
 pub fn sys_reply(a: Args) Result {
     const ch = getChannel(@intCast(a.a0), true) orelse return Errno.badf.value();
-    const msg = userMessage(a, a.a2) orelse return Errno.fault.value();
+    const msg = userMessageRead(a, a.a2) orelse return Errno.fault.value();
 
     const sent = msg.*;
     if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
@@ -361,7 +375,7 @@ pub fn sys_shm_map(a: Args) Result {
 pub fn sys_display_acquire(a: Args) Result {
     if (ctx.require(.{ .display = true })) |denied| return denied;
 
-    const out = userSlice(a, a.a0, @sizeOf(abi.DisplayInfo)) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, @sizeOf(abi.DisplayInfo)) orelse return Errno.fault.value();
 
     const segment = display.acquire() catch |err| {
         return switch (err) {
@@ -397,7 +411,7 @@ pub fn sys_display_acquire(a: Args) Result {
 }
 
 pub fn sys_pipe(a: Args) Result {
-    const out = userSlice(a, a.a0, 2 * @sizeOf(u32)) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, 2 * @sizeOf(u32)) orelse return Errno.fault.value();
     const table = currentHandles() orelse return Errno.nomem.value();
 
     const read_slot = table.alloc() orelse return Errno.nomem.value();

@@ -12,7 +12,8 @@ const vfs = @import("../vfs.zig");
 const Args = ctx.Args;
 const Result = ctx.Result;
 const Errno = ctx.Errno;
-const userSlice = ctx.userSlice;
+const userRead = ctx.userRead;
+const userWrite = ctx.userWrite;
 const userPath = ctx.userPath;
 const deadlineFrom = ctx.deadlineFrom;
 const currentHandles = ctx.currentHandles;
@@ -23,7 +24,7 @@ pub fn sys_spawn(a: Args) Result {
 
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
-    const packed_args = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
+    const packed_args = userRead(a, a.a2, a.a3) orelse return Errno.fault.value();
 
     // Arguments are copied out of user memory before anything else happens.
     // Leaving them there would mean the loader reading pages that the child's
@@ -35,7 +36,7 @@ pub fn sys_spawn(a: Args) Result {
 
     var options = abi.Spawn{};
     if (a.a4 != 0) {
-        const raw = userSlice(a, a.a4, @sizeOf(abi.Spawn)) orelse return Errno.fault.value();
+        const raw = userRead(a, a.a4, @sizeOf(abi.Spawn)) orelse return Errno.fault.value();
         options = std.mem.bytesToValue(abi.Spawn, raw[0..@sizeOf(abi.Spawn)]);
     }
 
@@ -46,7 +47,7 @@ pub fn sys_spawn(a: Args) Result {
     var env_slices: [exec.MAX_ENV][]const u8 = undefined;
     var env_count: usize = 0;
     if (options.env != 0 and options.env_len != 0) {
-        const packed_env = userSlice(a, options.env, options.env_len) orelse
+        const packed_env = userRead(a, options.env, options.env_len) orelse
             return Errno.fault.value();
         env_count = abi.Argv.unpack(packed_env, &env_storage, &env_slices) catch
             return Errno.inval.value();
@@ -123,7 +124,7 @@ fn spawnErrno(err: exec.Error) Result {
 }
 
 pub fn sys_wait(a: Args) Result {
-    const status_out = userSlice(a, a.a2, @sizeOf(i32)) orelse return Errno.fault.value();
+    const status_out = userWrite(a, a.a2, @sizeOf(i32)) orelse return Errno.fault.value();
 
     const exited = sched.waitChild(@intCast(a.a0), deadlineFrom(a.a1)) catch |err| {
         return switch (err) {
@@ -157,7 +158,7 @@ pub fn sys_chdir(a: Args) Result {
 }
 
 pub fn sys_getcwd(a: Args) Result {
-    const out = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, a.a1) orelse return Errno.fault.value();
     const dir = sched.cwd();
     if (dir.len > out.len) return Errno.nomem.value();
     @memcpy(out[0..dir.len], dir);

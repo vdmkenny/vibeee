@@ -11,6 +11,10 @@ test {
     _ = @import("kernel/klog.zig");
     _ = @import("kernel/ports.zig");
     _ = @import("arch/x86/mtrr.zig");
+    // What stands between a stray user pointer and a dead machine. Split from
+    // the paging code it belongs to precisely so it can be asked here, against
+    // tables built by hand, rather than only on a machine that would stop.
+    _ = @import("arch/x86/pagetable.zig");
     _ = @import("drv/video/modeset/modeset.zig");
     // Generic over its node type precisely so it can be tested here, off the
     // hardware: the run queues are where this system's worst bug lived.

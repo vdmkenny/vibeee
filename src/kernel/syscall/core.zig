@@ -22,7 +22,8 @@ const watchdog = @import("../watchdog.zig");
 const Args = ctx.Args;
 const Result = ctx.Result;
 const Errno = ctx.Errno;
-const userSlice = ctx.userSlice;
+const userRead = ctx.userRead;
+const userWrite = ctx.userWrite;
 const currentHandles = ctx.currentHandles;
 
 pub fn sys_exit(a: Args) Result {
@@ -54,7 +55,7 @@ pub fn sys_exit(a: Args) Result {
 
 pub fn sys_write(a: Args) Result {
     const number: u32 = @truncate(a.a0);
-    const buf = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
+    const buf = userRead(a, a.a1, a.a2) orelse return Errno.fault.value();
 
     // Before the scheduler starts there is no process and so no handle table,
     // but the boot self-test and early init still write to the console. Their
@@ -152,7 +153,7 @@ fn writeFile(file: *handles.File, buf: []const u8) Result {
 }
 
 pub fn sys_read(a: Args) Result {
-    const buf = userSlice(a, a.a1, a.a2) orelse return Errno.fault.value();
+    const buf = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
     if (buf.len == 0) return 0;
 
     const id: u32 = @truncate(a.a0);
@@ -218,13 +219,13 @@ pub fn sys_sleep_us(a: Args) Result {
 }
 
 pub fn sys_clock_us(a: Args) Result {
-    const out = userSlice(a, a.a0, @sizeOf(u64)) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, @sizeOf(u64)) orelse return Errno.fault.value();
     std.mem.writeInt(u64, out[0..8], clock.monotonicMicros(), .little);
     return 0;
 }
 
 pub fn sys_realtime_us(a: Args) Result {
-    const out = userSlice(a, a.a0, @sizeOf(i64)) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, @sizeOf(i64)) orelse return Errno.fault.value();
     if (!clock.valid()) return Errno.inval.value();
     std.mem.writeInt(i64, out[0..8], clock.realtimeMicros(), .little);
     return 0;
@@ -241,7 +242,7 @@ pub fn sys_realtime_us(a: Args) Result {
 pub fn sys_realtime_set(a: Args) Result {
     if (ctx.require(.{ .time = true })) |denied| return denied;
 
-    const value = userSlice(a, a.a0, @sizeOf(i64)) orelse return Errno.fault.value();
+    const value = userRead(a, a.a0, @sizeOf(i64)) orelse return Errno.fault.value();
     const epoch_us = std.mem.readInt(i64, value[0..8], .little);
 
     // A time before this system existed is not a correction, it is a bug in
@@ -250,7 +251,7 @@ pub fn sys_realtime_set(a: Args) Result {
 
     var name: []const u8 = "userspace";
     if (a.a1 != 0 and a.a2 != 0) {
-        const source = userSlice(a, a.a1, @min(a.a2, 16)) orelse return Errno.fault.value();
+        const source = userRead(a, a.a1, @min(a.a2, 16)) orelse return Errno.fault.value();
         name = source;
     }
 
@@ -268,7 +269,7 @@ pub fn sys_getpid(_: Args) Result {
 }
 
 pub fn sys_log(a: Args) Result {
-    const buf = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const buf = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
     if (buf.len == 0 or buf.len > 256) return Errno.inval.value();
 
     // Recorded, never printed: display is write()'s business, and this is the
@@ -358,8 +359,8 @@ pub fn sys_set_mode(a: Args) Result {
 }
 
 pub fn sys_sysinfo(a: Args) Result {
-    const key = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
-    const out = userSlice(a, a.a2, a.a3) orelse return Errno.fault.value();
+    const key = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a2, a.a3) orelse return Errno.fault.value();
     if (key.len == 0 or key.len > 64) return Errno.inval.value();
 
     const n = sysinfo.query(key, out) catch |err| return switch (err) {
@@ -369,7 +370,7 @@ pub fn sys_sysinfo(a: Args) Result {
     return @intCast(n);
 }
 pub fn sys_pointer_read(a: Args) Result {
-    const out = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, a.a1) orelse return Errno.fault.value();
 
     const size = @sizeOf(abi.PointerEvent);
     const capacity = out.len / size;
@@ -452,7 +453,7 @@ fn childEvent() ?*event_mod.Event {
 }
 
 pub fn sys_key_read(a: Args) Result {
-    const out = userSlice(a, a.a0, a.a1) orelse return Errno.fault.value();
+    const out = userWrite(a, a.a0, a.a1) orelse return Errno.fault.value();
 
     const size = @sizeOf(abi.KeyEvent);
     const capacity = out.len / size;
