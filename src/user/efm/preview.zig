@@ -47,10 +47,10 @@ pub const Kind = enum {
         const suffix = entry.name[dot + 1 ..];
 
         for (PICTURES) |known| {
-            if (std.ascii.eqlIgnoreCase(suffix, known)) return .picture;
+            if (str.eqlFold(suffix, known)) return .picture;
         }
         for (TEXTS) |known| {
-            if (std.ascii.eqlIgnoreCase(suffix, known)) return .text;
+            if (str.eqlFold(suffix, known)) return .text;
         }
         return .other;
     }

@@ -4,6 +4,7 @@
 //! whoever asked. Every caller was writing the same loop, and a file dialog
 //! wants the whole listing at once rather than a callback, so it happens here.
 
+const str = @import("lib").str;
 const std = @import("std");
 const sys = @import("sys");
 const Bounded = @import("lib").Bounded;
@@ -104,10 +105,9 @@ fn before(_: void, a: Entry, b: Entry) bool {
     if (a_parent != b_parent) return a_parent;
 
     if (a.is_dir != b.is_dir) return a.is_dir;
-    // Without regard to case, because FAT stores short names upper-cased and
-    // a sort that took that literally would put every short name before
-    // every long one.
-    return std.ascii.lessThanIgnoreCase(a.name, b.name);
+    // Folded, because FAT stores short names upper-cased and a sort that
+    // took that literally would put every short name before every long one.
+    return str.before(a.name, b.name);
 }
 
 

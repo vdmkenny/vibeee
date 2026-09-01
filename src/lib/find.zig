@@ -18,6 +18,7 @@
 //!
 //! Pure, so it is host-tested rather than judged by typing at it.
 
+const str = @import("str.zig");
 const std = @import("std");
 
 /// Which run of the name matched, and how strongly.
@@ -73,7 +74,7 @@ pub fn match(name: []const u8, query: []const u8) ?Match {
 
     var at: usize = 0;
     while (at + query.len <= name.len) : (at += 1) {
-        if (!std.ascii.eqlIgnoreCase(name[at .. at + query.len], query)) continue;
+        if (!str.eqlFold(name[at .. at + query.len], query)) continue;
         return .{ .at = at, .len = query.len, .score = scoreOf(name, at) };
     }
     return null;

@@ -220,7 +220,7 @@ fn after(a: usize, b: usize, by: eui.table.Sort) bool {
         .cpu => numbers[a].cpu < numbers[b].cpu,
         .memory => numbers[a].bytes < numbers[b].bytes,
         .uptime => numbers[a].uptime < numbers[b].uptime,
-        .name, .state => std.ascii.lessThanIgnoreCase(
+        .name, .state => str.before(
             rows[a].cells[@intFromEnum(column)],
             rows[b].cells[@intFromEnum(column)],
         ),

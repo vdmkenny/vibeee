@@ -20,6 +20,23 @@ const std = @import("std");
 
 /// Leading decimal digits as a number. Stops at the first non-digit rather
 /// than failing, because every caller is reading a field it already trusts.
+/// Whether two strings say the same thing, folded for case.
+///
+/// What a suffix comparison wants, and a name from a volume written on
+/// another machine: `README.TXT` and `readme.txt` are one file's name written
+/// twice.
+pub fn eqlFold(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
+/// Whether `a` sorts before `b`, folded for case.
+///
+/// What a list of names ordered by name means: somebody looking for "Files"
+/// does not care that it was written with a capital.
+pub fn before(a: []const u8, b: []const u8) bool {
+    return std.ascii.lessThanIgnoreCase(a, b);
+}
+
 pub fn toUnsigned(text: []const u8) usize {
     var value: usize = 0;
     for (text) |c| {
