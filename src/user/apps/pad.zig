@@ -8,7 +8,7 @@
 //! Everything it does with text is `libeui`'s, which is where an editable area
 //! belongs: the next program that needs one should not write a second.
 
-const std = @import("std");
+const env = @import("ulib").env;
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
@@ -101,9 +101,8 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 
     // A path on the command line is a document to open, which is how the
     // file manager hands one over and how a shell does the same thing.
-    const argc: usize = frame[0];
-    if (argc >= 2) {
-        setPath(std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2]))));
+    if (env.argument(frame)) |wanted| {
+        setPath(wanted);
         open();
     }
 

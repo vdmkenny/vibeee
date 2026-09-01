@@ -11,6 +11,7 @@
 //! seeing it.
 
 const std = @import("std");
+const env = @import("ulib").env;
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
@@ -54,9 +55,7 @@ var version: []const u8 = "";
 export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     // A section named on the command line opens there. One entry in the
     // launcher can then be about this computer rather than about settings.
-    const argc: usize = frame[0];
-    if (argc >= 2) {
-        const wanted = std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
+    if (env.argument(frame)) |wanted| {
         if (Section.parse(wanted)) |which| section = which;
     }
 

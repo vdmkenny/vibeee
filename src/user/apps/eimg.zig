@@ -10,13 +10,13 @@
 //! soon as they have been read out of. Turning a photograph upright is the
 //! same walk `efm` uses for its thumbnails, so a picture is upright in both.
 
+const env = @import("ulib").env;
 const eui = @import("eui");
 const exif = @import("lib").exif;
 const heap = @import("ulib").heap;
 const img = @import("img");
 const kind = @import("lib").kind;
 const proto = @import("proto");
-const std = @import("std");
 const str = @import("ulib").str;
 const sys = @import("sys");
 const time = @import("ulib").time;
@@ -95,9 +95,8 @@ var file_size: usize = 0;
 var file_mtime: i64 = 0;
 
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
-    const argc: usize = frame[0];
-    if (argc >= 2) {
-        setPath(std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2]))));
+    if (env.argument(frame)) |wanted| {
+        setPath(wanted);
         load();
     }
 
@@ -354,10 +353,7 @@ fn depthSaid() []const u8 {
 
 /// The zoom, the sidebar, and what the file is, along the bottom.
 fn drawKeys(area: Rect) void {
-    const t = theme.current();
     ctx.addDamage(area);
-
-    const x = eui.keys.paint(ctx.surface, area, &KEYS, area.right(), .chip);
 
     // What is being looked at, at the far end: the zoom it is at, its size
     // and what sort of picture it is. A name is already in the bar above.
@@ -376,11 +372,7 @@ fn drawKeys(area: Rect) void {
         line.text(what.says());
     }
 
-    const width = eui.Surface.textWidth(line.done());
-    const baseline = area.y + @divTrunc(area.h - eui.Surface.textHeight(), 2);
-    if (x + width < area.right()) {
-        ctx.surface.text(area.right() - t.menu_padding - width, baseline, line.done(), t.bar_text);
-    }
+    eui.keys.bar(ctx.surface, area, &KEYS, line.done());
 }
 
 const KEYS = [_]eui.keys.Key{

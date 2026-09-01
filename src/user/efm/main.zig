@@ -15,6 +15,7 @@ const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
+const env = @import("ulib").env;
 const dir = @import("ulib").dir;
 const opening = @import("proto").opening;
 const preview = @import("preview.zig");
@@ -107,13 +108,7 @@ const MEDIA_TICK_US: usize = 2_000_000;
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     // A directory on the command line is where to start, which is how the
     // launcher says "show me where this lives".
-    const argc: usize = frame[0];
-    const opened = if (argc >= 2)
-        std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2])))
-    else
-        "/home";
-
-    panes[0].setPath(opened);
+    panes[0].setPath(env.argument(frame) orelse "/home");
     panes[1].setPath("/");
     refreshAll();
 
@@ -728,25 +723,16 @@ const KEYS = [_]eui.keys.Key{
 
 /// The keys along the bottom, or the question that has taken their place.
 fn drawKeys(area: Rect) void {
-    const t = theme.current();
-
     if (asking != .nothing) return drawQuestion(area);
 
     // The footer carries what just happened, or how much is in the pane, and
     // both change often enough that it is drawn every pass rather than being
     // guessed at.
     ctx.addDamage(area);
-    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    const x = eui.keys.paint(ctx.surface, area, &KEYS, area.right(), .chip);
 
     // What just happened, if anything did. How much is in a pane is said in
     // that pane's own head, where it belongs to the pane it counts.
-    if (status.len > 0) {
-        const width = Surface.textWidth(status);
-        if (x + width < area.right()) {
-            ctx.surface.text(area.right() - t.menu_padding - width, baseline, status, t.bar_text);
-        }
-    }
+    eui.keys.bar(ctx.surface, area, &KEYS, status);
 }
 
 /// One line of the footer, borrowed to ask something. A question where the

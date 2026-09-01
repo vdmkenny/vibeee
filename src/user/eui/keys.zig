@@ -122,6 +122,30 @@ pub fn placeRight(area: Rect, entries: []const Key, style: Style, into: []Placed
 /// same line knows what is left.
 /// The whole row on the bar's own ground, which is what a window's bottom
 /// edge is.
+/// The strip along the bottom of a window: what the keys do, as chips from
+/// the left, and one thing being said against the right edge.
+///
+/// Every window with keys along its bottom draws this, and each one drew it
+/// for itself: the same two halves, placed and coloured three times over.
+/// What is said on the right is dropped rather than overlapped when the keys
+/// have taken the room, because a count running into a chip is worse than no
+/// count.
+pub fn bar(surface: Surface, area: Rect, entries: []const Key, said: []const u8) void {
+    const t = theme.current();
+    const after = paint(surface, area, entries, area.right(), .chip);
+    if (said.len == 0) return;
+
+    const said_w = Surface.textWidth(said);
+    if (after + said_w >= area.right()) return;
+
+    surface.text(
+        area.right() - t.menu_padding - said_w,
+        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+        said,
+        t.bar_text,
+    );
+}
+
 pub fn paint(surface: Surface, area: Rect, entries: []const Key, limit: i32, style: Style) i32 {
     const t = theme.current();
 

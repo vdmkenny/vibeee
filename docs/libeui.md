@@ -234,6 +234,7 @@ The keys, named, along the bottom of a window.
 | `width` | `fn (keys.Key, keys.Style) i32` |
 | `place` | `fn (draw.Rect, i32, []const keys.Key, keys.Style, []keys.Placed) []keys.Placed` |
 | `placeRight` | `fn (draw.Rect, []const keys.Key, keys.Style, []keys.Placed) []keys.Placed` |
+| `bar` | `fn (draw.Surface, draw.Rect, []const keys.Key, []const u8) void` |
 | `paint` | `fn (draw.Surface, draw.Rect, []const keys.Key, i32, keys.Style) i32` |
 | `drawPlaced` | `fn (draw.Surface, []const keys.Placed, draw.Rect, keys.Style, u32) void` |
 

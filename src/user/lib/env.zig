@@ -24,15 +24,36 @@ var count: usize = 0;
 /// Called from `_start`, because that is the only place the frame is in
 /// hand: nothing later can find it again.
 pub fn adopt(frame: [*]const u32) void {
-    const argc: usize = frame[0];
+    const named: usize = frame[0];
 
     // Past the arguments and the null that ends them.
-    var at = 1 + argc + 1;
+    var at = 1 + named + 1;
     count = 0;
     while (count < entries.len and frame[at] != 0) : (at += 1) {
         entries[count] = std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[at])));
         count += 1;
     }
+}
+
+/// How many arguments the program was started with, its own name included.
+pub fn argc(frame: [*]const usize) usize {
+    return frame[0];
+}
+
+/// The nth argument, or null past the end. Zero is the program's own name,
+/// which is what it was invoked as rather than where it lives.
+pub fn arg(frame: [*]const usize, index: usize) ?[]const u8 {
+    if (index >= argc(frame)) return null;
+    const pointer = frame[1 + index];
+    if (pointer == 0) return null;
+    return std.mem.span(@as([*:0]const u8, @ptrFromInt(pointer)));
+}
+
+/// The first thing after the program's own name: the file to open, the place
+/// to start in, the section to show. Four windows read this out of the frame
+/// by hand before it was one call.
+pub fn argument(frame: [*]const usize) ?[]const u8 {
+    return arg(frame, 1);
 }
 
 /// Everything this program was told, for handing on to a child.
@@ -75,4 +96,30 @@ test "a name is matched whole, and its value is what follows the sign" {
 
     // A value with a sign in it belongs to the value.
     try std.testing.expectEqualStrings("a=b", valueOf("K=a=b", "K").?);
+}
+
+test "the arguments are read out of the frame the program starts on" {
+    // A start frame as the kernel lays one out: how many, then a pointer
+    // each, then the null that ends them.
+    const first = "efm\x00";
+    const second = "/home/pictures\x00";
+
+    var frame = [_]usize{
+        2,
+        @intFromPtr(first.ptr),
+        @intFromPtr(second.ptr),
+        0,
+    };
+
+    try std.testing.expectEqual(@as(usize, 2), argc(&frame));
+    try std.testing.expectEqualStrings("efm", arg(&frame, 0).?);
+    try std.testing.expectEqualStrings("/home/pictures", arg(&frame, 1).?);
+    try std.testing.expectEqualStrings("/home/pictures", argument(&frame).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), arg(&frame, 2));
+}
+
+test "a program started with nothing after its name has no argument" {
+    var frame = [_]usize{ 1, @intFromPtr("pad\x00".ptr), 0 };
+    try std.testing.expectEqual(@as(?[]const u8, null), argument(&frame));
+    try std.testing.expectEqualStrings("pad", arg(&frame, 0).?);
 }

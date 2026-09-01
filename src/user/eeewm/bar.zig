@@ -737,7 +737,6 @@ fn launcherList(at: Launcher) Rect {
 /// because a search that quietly dropped the thing being looked for is worse
 /// than one that says there was more.
 fn paintLauncherFooter(surface: Surface, area: Rect) void {
-    const t = theme.current();
     var said: [40]u8 = @splat(0);
     var line = str.Builder{ .buf = &said };
 
@@ -761,23 +760,8 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
     else
         &FIND_KEYS;
 
-    surface.fill(area, t.bar);
-    surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
-
-    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    surface.text(area.x + t.menu_padding, baseline, line.done(), t.bar_text);
-
-    // Against the right edge, in the order they are written, so the last
-    // thing read is the way out. The same row the file manager draws along
-    // its bottom, in the quieter of the two ways of saying it.
-    var placed: [eui_keys.MAX]eui_keys.Placed = undefined;
-    eui_keys.drawPlaced(
-        surface,
-        eui_keys.placeRight(area, hints, .plain, &placed),
-        area,
-        .plain,
-        t.bar_text,
-    );
+    // The same strip every window with keys along its bottom draws.
+    eui_keys.bar(surface, area, hints, line.done());
 }
 
 /// Whether the row under the cursor is a file, which is what decides
@@ -789,19 +773,19 @@ fn highlightedIsFile() bool {
 
 const BROWSE_KEYS = [_]eui_keys.Key{
     .{ .key = "tab", .label = "category" },
-    .{ .key = "enter", .label = "run" },
+    .{ .key = "\u{21B5}", .label = "run" },
     .{ .key = "esc", .label = "close" },
 };
 
 const FIND_KEYS = [_]eui_keys.Key{
-    .{ .key = "enter", .label = "run" },
+    .{ .key = "\u{21B5}", .label = "run" },
     .{ .key = "esc", .label = "close" },
 };
 
 /// What a file row can do, which is one thing more than anything else here.
 const FIND_FILE_KEYS = [_]eui_keys.Key{
-    .{ .key = "enter", .label = "open" },
-    .{ .key = "shift", .label = "folder" },
+    .{ .key = "\u{21B5}", .label = "open" },
+    .{ .key = "shift+\u{21B5}", .label = "folder" },
     .{ .key = "esc", .label = "close" },
 };
 
