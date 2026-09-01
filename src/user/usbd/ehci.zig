@@ -779,6 +779,7 @@ fn awaitPayload(asked: usize) hc.Error!usize {
     const token = arena.payload.token;
     if (token.status.failed()) return hc.Error.Stalled;
     if (token.status.active) {
+        sayUnfinished("the bulk transfer", &arena.bulk, @ptrCast(&arena.payload), 1);
         reclaim(&arena.bulk);
         return hc.Error.Timeout;
     }
@@ -1356,12 +1357,23 @@ fn rest() void {
     }
 }
 
-fn sayStages(arena: *volatile Arena, stages: usize) void {
+/// What became of a transfer that did not finish: every descriptor's
+/// state, and whether the head was ever advanced onto them. A device that
+/// answers nothing and a schedule that never reached the head look the
+/// same from outside and want opposite fixes, and this is the reading
+/// that tells them apart.
+fn sayUnfinished(
+    what: []const u8,
+    head: *volatile QueueHead,
+    descriptors: [*]volatile Transfer,
+    count: usize,
+) void {
     log.begin(name, .dim);
-    out.text("the transfer's stages: ");
-    for (0..stages) |i| {
+    out.text(what);
+    out.text(": ");
+    for (0..count) |i| {
         if (i != 0) out.text(", ");
-        const token = arena.stages[i].token;
+        const token = descriptors[i].token;
         out.text(switch (token.pid) {
             .setup => "setup",
             .in => "in",
@@ -1384,6 +1396,16 @@ fn sayStages(arena: *volatile Arena, stages: usize) void {
             out.text("done");
         }
     }
+
+    // Where the head stands. A current pointer of zero with a descriptor
+    // still active means the controller never advanced onto the chain at
+    // all, which is a different illness from a device saying nothing.
+    out.text("; the head stands at ");
+    out.hex(head.current, 8);
+    out.text(" holding ");
+    out.hex(@as(u32, @bitCast(head.overlay.token)), 8);
+    const running: Status = @bitCast(opRead(.status));
+    if (!running.async_running) out.text("; the asynchronous schedule is not running");
     log.end();
 }
 
@@ -1412,7 +1434,7 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
     for (0..stages) |i| {
         const token = arena.stages[i].token;
         if (token.status.failed() or token.status.active) {
-            sayStages(arena, stages);
+            sayUnfinished("the transfer's stages", &arena.control, &arena.stages, stages);
             if (token.status.failed()) return hc.Error.Stalled;
             // A halted head has been let go; a chain still active is
             // still the controller's, and is taken back before reuse.

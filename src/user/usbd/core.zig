@@ -329,8 +329,11 @@ fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: 
     var configuration: [CONFIGURATION_MAX]u8 = @splat(0);
     var described: usize = 0;
 
+    var chosen: u8 = 0;
+
     if (ops.control(named, usb.Setup.getDescriptor(.configuration, 0, header.len), &header)) |_| {
         if (usb.Configuration.parse(&header)) |config| {
+            chosen = config.value;
             const wanted = @min(config.total_length, configuration.len);
             described = ops.control(
                 named,
@@ -339,6 +342,21 @@ fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: 
             ) catch 0;
         }
     } else |_| {}
+
+    // An addressed device answers on endpoint zero and has no others: it
+    // describes every endpoint it would have, and has none of them until
+    // it is told which configuration to be. So the last step of arriving
+    // is choosing one, by the number the device gave it rather than by
+    // counting, because a device numbers its configurations as it likes.
+    if (chosen != 0) {
+        hc.command(ops, named, usb.Setup.setConfiguration(chosen)) catch |err| {
+            addresses.release(address);
+            return sayFailure(port, "would not take its configuration", err);
+        };
+        // The device builds its endpoints on the status stage, and is
+        // entitled to the same settling any change of state gets.
+        sys.sleepMicros(RESET_RECOVERY_US);
+    }
 
     const slot = table.free(&devices) orelse {
         addresses.release(address);
