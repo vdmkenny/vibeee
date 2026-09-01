@@ -46,9 +46,10 @@ pub const Rights = packed struct(u8) {
 pub const Kind = enum { none, console, file, directory, event, channel, shm, display, pipe, irq };
 
 pub const File = struct {
-    /// Resolved at open and kept, so a later unmount cannot leave the handle
-    /// pointing at a volume that is gone.
-    mount: *vfs.Mount,
+    /// The mount this opened on, as a lease rather than a pointer: the slot
+    /// outlives the volume, and a file must not follow the slot to whatever
+    /// is mounted there next.
+    lease: vfs.Lease,
     entry: fat.Entry,
     offset: u64 = 0,
     /// Every write goes to the end of the file, whatever the offset says.
@@ -61,7 +62,8 @@ pub const File = struct {
 };
 
 pub const Directory = struct {
-    mount: *vfs.Mount,
+    /// The mount this was opened on, as a lease: see `File`.
+    lease: vfs.Lease,
     /// A mount root, which has no parent to report.
     at_root: bool = false,
     /// The synthetic `..` has been handed out.
@@ -218,11 +220,14 @@ pub fn newIterator(it: fat.Iterator) ?*fat.Iterator {
 /// because the sender closed its copy.
 pub fn retain(h: Handle) Handle {
     switch (h.data) {
-        .file => h.data.file.mount.open_files += 1,
+        // The count is owed to the slot rather than to the volume: it is what
+        // keeps the slot from being given away while this handle names it,
+        // whether or not the volume is still there.
+        .file => h.data.file.lease.slotOf().open_files += 1,
         // A directory handle owns its iterator, so duplicating one would need
         // a copy of it. Nothing passes directories over a channel, and doing
         // so would need that decided rather than defaulted.
-        .directory => h.data.directory.mount.open_files += 1,
+        .directory => h.data.directory.lease.slotOf().open_files += 1,
         .event => event_mod.retain(h.data.event),
         .channel => channel_mod.retain(h.data.channel.channel),
         .shm => shm_mod.retain(h.data.shm),
@@ -249,13 +254,15 @@ pub fn release(h: Handle) void {
             // is that a process killed mid-write leaves a short file, which is
             // the same bargain every filesystem without a journal makes.
             const file = h.data.file;
+            // Only while the volume is still there: a size committed to a
+            // slot another volume has since taken would be written into it.
             if (file.dirty) {
-                vfs.commit(file.mount, file.entry, clock.realtimeSeconds()) catch {};
+                if (file.lease.mount()) |m| vfs.commit(m, file.entry, clock.realtimeSeconds()) catch {};
             }
-            releaseMount(file.mount);
+            releaseMount(file.lease.slotOf());
         },
         .directory => {
-            releaseMount(h.data.directory.mount);
+            releaseMount(h.data.directory.lease.slotOf());
             heap.allocator.destroy(h.data.directory.iterator);
         },
         .event => event_mod.release(h.data.event),

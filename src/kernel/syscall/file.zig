@@ -49,7 +49,7 @@ pub fn sys_open(a: Args) Result {
         h.* = .{
             .rights = .{ .read = true },
             .data = .{ .directory = .{
-                .mount = r.mount,
+                .lease = .{ .slot = r.mount, .generation = r.mount.generation },
                 .iterator = iterator,
                 // Nothing above a mount root, so nothing to report as its
                 // parent. `resolve` leaves nothing over for one.
@@ -78,7 +78,7 @@ pub fn sys_open(a: Args) Result {
     h.* = .{
         .rights = .{ .read = true, .write = flags.write, .seek = true },
         .data = .{ .file = .{
-            .mount = opened.mount,
+            .lease = .{ .slot = opened.mount, .generation = opened.mount.generation },
             .entry = opened.entry,
             .offset = if (flags.append) opened.entry.size else 0,
             .append = flags.append,
@@ -122,8 +122,9 @@ pub fn sys_ftruncate(a: Args) Result {
         .file => |*open| open,
         else => return Errno.inval.value(),
     };
-    vfs.resize(open.mount, &open.entry, @truncate(a.a1)) catch |err| return errnoFor(err);
-    vfs.commit(open.mount, open.entry, clock.realtimeSeconds()) catch {};
+    const m = open.lease.mount() orelse return Errno.nodev.value();
+    vfs.resize(m, &open.entry, @truncate(a.a1)) catch |err| return errnoFor(err);
+    vfs.commit(m, open.entry, clock.realtimeSeconds()) catch {};
     return 0;
 }
 
@@ -212,6 +213,11 @@ pub fn sys_readdir(a: Args) Result {
         else => return Errno.badf.value(),
     };
 
+    // The iterator points into the volume the directory was opened on. A
+    // medium pulled out since would leave it pointing at whatever the slot
+    // holds next, so a dead lease ends the listing rather than continuing it.
+    if (d.lease.mount() == null) return Errno.nodev.value();
+
     const out = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
     if (d.exhausted) return 0;
 
@@ -244,6 +250,12 @@ pub fn sys_readdir(a: Args) Result {
         const n = writeDirent(out, entry) orelse return Errno.nomem.value();
         return @intCast(n);
     }
+}
+
+/// Everything written so far, on its medium.
+pub fn sys_sync(_: Args) Result {
+    vfs.flushAll() catch return Errno.io.value();
+    return 0;
 }
 
 pub fn sys_stat(a: Args) Result {

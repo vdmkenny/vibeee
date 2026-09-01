@@ -45,9 +45,43 @@ pub const Mount = struct {
     /// Open file count. Unmounting with files open would leave userspace
     /// holding handles to a volume that no longer exists.
     open_files: usize = 0,
+    /// Which turn of this slot this is, bumped every time something is
+    /// mounted into it. A file remembers the turn it opened on, so a slot
+    /// that has since been given to another volume answers it "gone" rather
+    /// than the other volume's blocks.
+    generation: u32 = 0,
 
     pub fn path(self: *const Mount) []const u8 {
         return self.path_buf[0..self.path_len];
+    }
+
+    /// Whether this slot may be given to a new volume. A dead mount with files
+    /// still open keeps its slot: freeing it would let the next mount take the
+    /// place those files point at.
+    fn free(self: *const Mount) bool {
+        return !self.in_use and self.open_files == 0;
+    }
+};
+
+/// A file's claim on the mount it opened on: the slot, and which turn of it.
+///
+/// Held instead of a bare pointer because the slot outlives the volume. A
+/// medium pulled out takes its mount with it while the files on it stay open,
+/// and whatever is mounted into the slot next must not inherit them.
+pub const Lease = struct {
+    slot: *Mount,
+    generation: u32,
+
+    /// The mount, while it is still the one this was taken on.
+    pub fn mount(self: Lease) ?*Mount {
+        const m = self.slot;
+        return if (m.in_use and m.generation == self.generation) m else null;
+    }
+
+    /// The slot itself, alive or not, for the bookkeeping that has to reach
+    /// it either way: an open count is owed to the slot, not to the volume.
+    pub fn slotOf(self: Lease) *Mount {
+        return self.slot;
     }
 };
 
@@ -72,7 +106,7 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
     const volume = try fat.mount(dev);
 
     for (&mounts) |*m| {
-        if (m.in_use) continue;
+        if (!m.free()) continue;
         @memcpy(m.path_buf[0..path.len], path);
         m.path_len = path.len;
         m.volume = volume;
@@ -80,6 +114,7 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
         m.removable = removable;
         m.read_only = false;
         m.open_files = 0;
+        m.generation +%= 1;
         m.in_use = true;
         return m;
     }
@@ -189,11 +224,30 @@ pub fn abandon(dev_ctx: *anyopaque) usize {
     for (&mounts) |*m| {
         if (!m.in_use or m.device.ctx != dev_ctx) continue;
         console.info("mount", "{s} is gone", .{m.path()});
+        // The slot is not freed here. Files still open on it hold leases that
+        // name this turn, and `mount` will not reuse the slot until the last
+        // of them closes; until then every one of them is answered "gone".
         m.in_use = false;
         m.path_len = 0;
         dropped += 1;
     }
     return dropped;
+}
+
+/// Push what every volume has written through to its medium.
+///
+/// Each device's own flush, so what a drive has accepted into its cache is on
+/// the medium when this returns. The cache above the devices is write-through
+/// and holds nothing back, so this is the whole of what "on disk" costs.
+pub fn flushAll() Error!void {
+    var failed = false;
+    for (&mounts) |*m| {
+        if (!m.in_use) continue;
+        m.device.flush() catch {
+            failed = true;
+        };
+    }
+    if (failed) return error.Io;
 }
 
 /// Unmount whatever is at `path`.

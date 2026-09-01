@@ -137,7 +137,8 @@ fn writeConsole(number: u32, buf: []const u8) Result {
 fn writeFile(file: *handles.File, buf: []const u8) Result {
     const at = if (file.append) file.entry.size else file.offset;
 
-    const written = vfs.writeAt(file.mount, &file.entry, at, buf) catch |err| {
+    const m = file.lease.mount() orelse return Errno.nodev.value();
+    const written = vfs.writeAt(m, &file.entry, at, buf) catch |err| {
         return switch (err) {
             error.ReadOnly => Errno.perm.value(),
             error.NoSpace => Errno.nospace.value(),
@@ -188,7 +189,8 @@ fn readConsole(buf: []u8) Result {
 }
 
 fn readFile(f: *handles.File, buf: []u8) Result {
-    const n = vfs.readAt(f.mount, f.entry, f.offset, buf) catch return Errno.io.value();
+    const m = f.lease.mount() orelse return Errno.nodev.value();
+    const n = vfs.readAt(m, f.entry, f.offset, buf) catch return Errno.io.value();
     f.offset += n;
     return @intCast(n);
 }

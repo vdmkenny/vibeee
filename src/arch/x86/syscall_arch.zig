@@ -12,6 +12,7 @@
 //! it, which is what `SYSEXIT` is given back. That arrangement is the whole
 //! difference between the two paths.
 
+const std = @import("std");
 const cpu = @import("cpu.zig");
 const gdt = @import("gdt.zig");
 const hal = @import("../../kernel/hal.zig");
@@ -159,15 +160,21 @@ export fn sysenterEntry() callconv(.naked) noreturn {
 }
 
 export fn sysenterDispatch(frame: *Frame) callconv(.c) void {
-    // The address to come back to sits at the stashed stack pointer. Range
-    // checked like any other user pointer: a stub that trapped with a wild
-    // `ebp` would otherwise fault the kernel on every call.
-    if (frame.user_esp == 0 or frame.user_esp >= hal.KERNEL_BASE or
-        frame.user_esp + @sizeOf(u32) > hal.KERNEL_BASE)
+    // The address to come back to sits at the stashed stack pointer, which is
+    // a user pointer like any a syscall is handed and is checked like one: the
+    // word must be aligned and every byte of it must sit on a page the caller
+    // can read. Range alone was not enough. A stub that trapped with a wild
+    // `ebp` pointing at nothing mapped would have had the kernel fault in its
+    // own context here, on every such call, and a fault there stops the
+    // machine rather than the program.
+    const t = sched.currentThread() orelse sched.exitWith(MALFORMED);
+    const stack = frame.user_esp;
+    if (!std.mem.isAligned(stack, @alignOf(u32)) or
+        !t.space.permits(stack, @sizeOf(u32), .read))
     {
         sched.exitWith(MALFORMED);
     }
-    frame.return_eip = @as(*const u32, @ptrFromInt(frame.user_esp)).*;
+    frame.return_eip = @as(*const u32, @ptrFromInt(stack)).*;
 
     const result = syscall.dispatch(frame.number, .{
         .a0 = frame.a0,

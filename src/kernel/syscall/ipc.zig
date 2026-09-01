@@ -361,6 +361,11 @@ pub fn sys_reply(a: Args) Result {
 // Shared memory
 // ---------------------------------------------------------------------------
 
+pub fn sys_shm_size(a: Args) Result {
+    const seg = getSegment(@intCast(a.a0)) orelse return Errno.badf.value();
+    return @intCast(seg.size);
+}
+
 fn getSegment(handle: u32) ?*shm.Segment {
     const table = currentHandles() orelse return null;
     const h = table.get(handle) orelse return null;

@@ -177,7 +177,12 @@ fn write(to: []const u8, current: anytype) bool {
     staged.text(".new");
 
     if (!put(staged.done(), body.done())) return false;
-    return sys.rename(staged.done(), to) >= 0;
+    if (sys.rename(staged.done(), to) < 0) return false;
+    // The rename has repointed the name; the drive may still be holding the
+    // sector that says so. A setting is acknowledged only once it is on the
+    // medium, which is the whole of what makes it a setting rather than a
+    // suggestion the next power cut is free to take back.
+    return sys.sync();
 }
 
 fn put(where: []const u8, body: []const u8) bool {

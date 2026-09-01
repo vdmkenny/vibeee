@@ -196,8 +196,14 @@ pub fn sys_map_device(a: Args) Result {
 
     const t = sched.currentThread() orelse return Errno.perm.value();
 
-    const base = std.mem.alignBackward(usize, phys, hal.PAGE_SIZE);
-    const end = std.mem.alignForward(usize, phys + len, hal.PAGE_SIZE);
+    // In sixty-four bits, because both numbers are the caller's. Added in the
+    // machine's own width, an aperture near the top of addressing carries its
+    // end around past zero: the rounding then produces a span that is nowhere
+    // near the request, the allocator is asked about the wrong frames, and
+    // the mapping loop names memory the device does not own.
+    const span = pageSpan(phys, len) orelse return Errno.inval.value();
+    const base = span.base;
+    const end = span.end;
 
     // Refusing the allocator's memory, which is not the same as refusing RAM.
     // A device aperture lives above it and the firmware's tables live inside
@@ -222,6 +228,20 @@ pub fn sys_map_device(a: Args) Result {
 
     // The page the aperture starts in, plus how far into it the caller asked.
     return @intCast(at + (phys - base));
+}
+
+/// The whole pages `phys[0..len]` touches, or null when the range leaves the
+/// address space. Worked out wider than an address so that no sum in it can
+/// wrap, and handed back as addresses only once it is known they fit.
+fn pageSpan(phys: usize, len: usize) ?struct { base: usize, end: usize } {
+    const top: u64 = @as(u64, std.math.maxInt(usize)) + 1;
+    const covers = std.math.add(u64, phys, len) catch return null;
+    const end = std.mem.alignForward(u64, covers, hal.PAGE_SIZE);
+    if (end > top) return null;
+    return .{
+        .base = std.mem.alignBackward(usize, phys, hal.PAGE_SIZE),
+        .end = @intCast(end),
+    };
 }
 
 // ---------------------------------------------------------------------------

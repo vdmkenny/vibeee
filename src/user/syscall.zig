@@ -693,6 +693,19 @@ pub fn keyReadRaw(buf: []KeyEvent, timeout_us: usize) isize {
     );
 }
 
+/// How many bytes a segment holds, for whoever was handed it and told what it
+/// contains: the size is the kernel's word where the contents are the sender's.
+pub fn shmSize(handle: usize) ?usize {
+    const n = syscall1(abi.number("shm_size"), handle);
+    return if (n < 0) null else @intCast(n);
+}
+
+/// Everything written so far, on its medium. Called after replacing a file
+/// that must not be lost, not after every write.
+pub fn sync() bool {
+    return syscall0(abi.number("sync")) >= 0;
+}
+
 /// Allocate a shared-memory segment. Pass the handle over a channel to share it.
 pub fn shmCreate(size: usize) isize {
     return syscall1(abi.number("shm_create"), size);

@@ -86,6 +86,8 @@ pub const Errno = enum(i32) {
     exists = 17,
     child = 10,
     busy = 16,
+    /// The volume behind a handle has gone: its medium was removed.
+    nodev = 19,
     nospace = 28,
     pipe = 32,
     nosys = 38,
@@ -119,6 +121,7 @@ pub const Errno = enum(i32) {
             .exists => "already there",
             .child => "no such child",
             .busy => "in use",
+            .nodev => "the volume has been removed",
             .nospace => "the volume is full",
             .pipe => "the other end has closed",
             .nosys => "no such call",
@@ -144,6 +147,7 @@ const E = struct {
     const exists = Err{ .name = "EEXIST", .when = "the name is already registered" };
     const child = Err{ .name = "ECHILD", .when = "the caller has no such child to wait for" };
     const pipe = Err{ .name = "EPIPE", .when = "the far end of the channel has closed" };
+    const nodev = Err{ .name = "ENODEV", .when = "the volume behind the handle has been removed" };
     const nospace = Err{ .name = "ENOSPC", .when = "the volume is full" };
     const busy = Err{ .name = "EBUSY", .when = "another process already owns it" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
@@ -1350,7 +1354,7 @@ pub const table = [_]Syscall{
             "register that sat in the cache would never reach the device, and marked as " ++
             "belonging elsewhere so ending the process unmaps it without handing device " ++
             "memory to the page allocator. There is no unmap: a driver that has finished " ++
-            "with its device is a driver that should exit.",
+            "with its device is a driver that should exit. What it maps is any physical range the page allocator does not own, on the driver's word: an aperture above RAM, or the firmware's tables inside it. That is the contract rather than a bounded window, because a driver that could only map what the kernel had enumerated could not bring up a device the kernel does not know. The trust is the capability's, held by the first-party drivers in etc/services and nothing else.",
     },
     .{
         .number = 42,
@@ -1675,6 +1679,34 @@ pub const table = [_]Syscall{
         .notes = "Needs the time capability. The offset is what is stored, so the clock keeps " ++
             "running from the monotonic counter and a correction steps it rather than restarting " ++
             "it. Measuring an interval across a call to this is what clock_us is for.",
+    },
+    .{
+        .number = 65,
+        .name = "shm_size",
+        .summary = "How many bytes a segment holds.",
+        .args = &.{
+            .{ .name = "handle", .kind = .handle, .desc = "A segment, from shm_create or received over a channel." },
+        },
+        .returns = "the segment's size in bytes",
+        .errors = &.{E.badf},
+        .notes = "For whoever is handed a segment and told what is in it: a compositor given a " ++
+            "surface and its geometry checks the geometry against this before reading a pixel, " ++
+            "because the geometry is the client's word and the size is the kernel's.",
+    },
+    .{
+        .number = 66,
+        .name = "sync",
+        .summary = "Push everything written so far through to the media.",
+        .args = &.{},
+        .returns = "0",
+        .errors = &.{E.io},
+        .notes = "Every write already reaches the device: the block cache is write-through. " ++
+            "What this adds is the device's own flush, so that what the drive has accepted " ++
+            "into its cache is on the medium before the call returns. A program that has " ++
+            "just replaced a file it must not lose calls this after the rename; nothing " ++
+            "calls it after every write, because that would make every write as slow as a " ++
+            "flush. Best effort on a drive whose firmware says it cannot: the call still " ++
+            "returns, and the residual is the drive's, not the host's.",
     },
 };
 

@@ -320,10 +320,15 @@ still rejected, for reasons that outweigh it:
   the code that has to be correct.
 
 The real cost is FAT's absence of crash consistency. That is handled where it
-belongs, above the filesystem, with the same atomic double-buffered write the
-config store already uses: write a new copy, flush, then flip a pointer. Files
-that matter are never modified in place. The rootfs is read-only and in RAM, so
-steady-state write volume is low to begin with.
+belongs, above the filesystem: a file that matters is written whole under a new
+name, renamed over the old one, and the drive is then told to flush. Rename is
+not atomic on FAT, but it repoints the name in one sector write, so the name
+means the old file or the new one and never nothing. The flush is what makes
+"saved" mean on the medium rather than in the drive's cache, and it is asked
+for by the program that just replaced the file, not after every write. Best
+effort on a drive whose firmware cannot flush: the residual is the drive's.
+Files that matter are never modified in place. The rootfs is read-only and in
+RAM, so steady-state write volume is low to begin with.
 
 If a stronger filesystem is ever wanted, the answer is to port an existing one
 (littlefs is the natural fit for flash), not to write one.
@@ -408,7 +413,7 @@ it touches no disk at all. Either way it needs demand paging and a page-
 replacement policy first, neither of which exists yet, and neither of which is
 worth building before something actually runs out of memory.
 
-`/cfg` uses double-buffered atomic blobs (write B, fsync, flip pointer in superblock), config must never be half-written after a power cut.
+`/cfg` is written by rename: the whole domain under a new name, renamed over the old, then the drive flushed, so a setting is the old one or the new one after a power cut and never half of each.
 
 ---
 

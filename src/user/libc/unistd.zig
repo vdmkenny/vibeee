@@ -138,9 +138,11 @@ export fn ftruncate(fd: c_int, size: c_long) callconv(.c) c_int {
 
 export fn fsync(fd: c_int) callconv(.c) c_int {
     _ = fd;
-    // Every write is already through to the device: the page cache is
-    // write-through, so there is nothing held back for this to push.
-    return 0;
+    // Every write is already through to the device, the cache above it being
+    // write-through. What is left is the drive's own cache, and this is what
+    // asks the drive to empty it. Every volume rather than the one behind the
+    // handle: a machine with one drive has one cache to empty either way.
+    return if (sys.sync()) 0 else -1;
 }
 
 
