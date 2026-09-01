@@ -181,7 +181,9 @@ pub fn run(
                 ctx.damageNow();
                 redraw();
             },
-            .close_req => if (mayClose()) sys.exit(0),
+            // A window that stays has a question to show, and the pass that
+            // shows it runs now rather than on the next event.
+            .close_req => if (mayClose()) sys.exit(0) else redraw(),
             else => {},
         }
     }
