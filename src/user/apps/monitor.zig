@@ -291,7 +291,7 @@ fn draw() void {
 
     const pad = t.padding;
     const row = t.control_height;
-    const bottom = eui.statusbar.split(area);
+    const parts = eui.chrome.split(area, .{ .bottom = true });
 
     // What the machine is doing, across the top: the four things somebody
     // opens this window to find out, before the list of what is doing them.
@@ -299,7 +299,7 @@ fn draw() void {
     eui.gauge.paint(surface, gauges, readings());
     ctx.addDamage(gauges);
 
-    const buttons_y = bottom.body.h - row - pad;
+    const buttons_y = parts.body.h - row - pad;
     list.striped = true;
     _ = ctx.table(.{
         .x = pad,
@@ -313,7 +313,7 @@ fn draw() void {
     const end_w = eui.footer.buttonWidth("End task");
     if (ctx.button(.{ .x = area.w - pad - end_w, .y = buttons_y, .w = end_w, .h = row }, "End task")) end();
 
-    eui.statusbar.run(ctx, bottom.bar, &.{
+    eui.statusbar.run(ctx, parts.bottom, &.{
         .{ .text = if (status.len > 0) status else processText() },
         .{ .text = temperatureText(), .width = 70, .right = true },
         .{ .text = uptimeText(), .width = 78, .right = true },

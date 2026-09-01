@@ -309,29 +309,21 @@ fn edited(changed: bool) void {
 }
 
 fn draw() void {
-    const t = theme.current();
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
 
-    const row = t.control_height;
+    // A menu above and a status line below, with the document between them.
+    // The window frame is already a border, and a second one inset from it
+    // is a margin around a document that wanted the room.
+    const parts = eui.chrome.split(area, .{ .top = true, .bottom = show_status });
+    const strip = parts.top;
+    const bottom = parts;
 
-    const strip = Rect{ .x = 0, .y = 0, .w = area.w, .h = row };
-    const bottom = eui.statusbar.split(area);
-
-    // Everything between the menu and the status bar. The window frame is
-    // already a border, and a second one inset from it is a margin around a
-    // document that wanted the room.
-    const body_h = (if (show_status) bottom.body.h else area.h) - strip.h;
-    text.edit(ctx, .{
-        .x = 0,
-        .y = strip.h,
-        .w = area.w,
-        .h = body_h,
-    }, &editor, &document);
+    text.edit(ctx, parts.body, &editor, &document);
 
     if (show_status) {
-        eui.statusbar.run(ctx, bottom.bar, &.{
+        eui.statusbar.run(ctx, bottom.bottom, &.{
             .{ .text = if (file_len > 0) path() else "untitled" },
             .{ .text = placeText(), .width = 96 },
             .{ .text = stateText(), .width = 96 },

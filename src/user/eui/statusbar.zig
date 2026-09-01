@@ -35,20 +35,12 @@ pub const Panel = struct {
 
 /// How tall the bar is: its text plus the rule above it and a little air.
 pub fn height() i32 {
-    return Surface.textHeight() + 5;
+    return theme.stripHeight();
 }
 
 /// The rectangle a status bar occupies at the bottom of `area`, and the
 /// rectangle left for everything else.
 pub const Split = struct { body: Rect, bar: Rect };
-
-pub fn split(area: Rect) Split {
-    const h = height();
-    return .{
-        .body = .{ .x = area.x, .y = area.y, .w = area.w, .h = area.h - h },
-        .bar = .{ .x = area.x, .y = area.bottom() - h, .w = area.w, .h = h },
-    };
-}
 
 /// Draw the bar. It reads rather than responds, so there is nothing to return.
 pub fn run(ctx: *widget.Context, area: Rect, panels: []const Panel) void {
@@ -73,7 +65,7 @@ pub fn run(ctx: *widget.Context, area: Rect, panels: []const Panel) void {
     ctx.surface.fill(area, t.bar);
     ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.bar_line);
 
-    const baseline = area.y + 3;
+    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
     var x = area.x;
 
     for (panels, 0..) |panel, i| {

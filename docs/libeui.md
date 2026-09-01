@@ -193,7 +193,6 @@ The strip along the bottom of a window.
 | call | signature |
 |---|---|
 | `height` | `fn () i32` |
-| `split` | `fn (draw.Rect) statusbar.Split` |
 | `run` | `fn (*widget.Context, draw.Rect, []const statusbar.Panel) void` |
 
 ### `eui.table`
@@ -292,6 +291,14 @@ Numbers it owns:
 - `FULL` = 90
 - `EMPTY` = 10
 - `BAR_HEIGHT` = 8
+
+### `eui.chrome`
+
+What a window is made of: a strip along the top, a strip along the bottom, and the work between them.
+
+| call | signature |
+|---|---|
+| `split` | `fn (draw.Rect, chrome.Wants) chrome.Layout` |
 
 ### `eui.grid`
 

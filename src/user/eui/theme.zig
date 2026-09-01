@@ -276,6 +276,17 @@ fn rebuild() void {
 /// Public because not every measurement belongs in the theme: how wide a
 /// taskbar tab may grow is the manager's business, but it was still chosen
 /// against a twelve pixel face and has to grow with one.
+/// How tall a strip along the edge of a window is.
+///
+/// One height for all of them, whatever they hold: a menu bar, a row of
+/// places, a row of keys, a status line. Two windows side by side is the
+/// ordinary case on a screen this size, and strips that disagree by a few
+/// pixels read as two programs rather than one system.
+pub fn stripHeight() i32 {
+    const t = current();
+    return t.control_height + t.padding;
+}
+
 pub fn enlarged(value: i32) i32 {
     return @divTrunc(value * @as(i32, magnification), 100);
 }

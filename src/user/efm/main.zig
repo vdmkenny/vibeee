@@ -430,19 +430,15 @@ fn finishAsking() void {
 const VOLUMES_HEIGHT: i32 = 26;
 
 fn draw() void {
-    const t = theme.current();
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
 
-    const places = Rect{ .x = 0, .y = 0, .w = area.w, .h = t.control_height + t.padding };
-    const keys = eui.footer.strip(area);
-    const body = Rect{
-        .x = 0,
-        .y = places.bottom(),
-        .w = area.w,
-        .h = keys.y - places.bottom(),
-    };
+    // The volumes above, the keys below, the panes between.
+    const parts = eui.chrome.split(area, .{ .top = true, .bottom = true });
+    const places = parts.top;
+    const keys = parts.bottom;
+    const body = parts.body;
 
     followCursor();
     drawPlaces(places);

@@ -24,8 +24,7 @@ pub const BUTTON_PADDING: i32 = 14;
 /// The strip is a control tall plus a margin, which is where the design's
 /// thirty pixels come from and how they follow the interface's size.
 pub fn height() i32 {
-    const t = theme.current();
-    return t.control_height + t.padding;
+    return theme.stripHeight();
 }
 
 /// The strip at the bottom of a window.
