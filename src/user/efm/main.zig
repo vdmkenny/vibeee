@@ -263,7 +263,7 @@ fn transfer(what: Transfer) void {
 
     const entry = source.current().?;
     if (entry.is_dir) {
-        status = "Directories are not carried yet.";
+        status = "Directories cannot be copied yet.";
         ctx.damage();
         return;
     }
@@ -346,7 +346,7 @@ fn finishAsking() void {
             status = if (sys.unlink(target) >= 0)
                 (if (entry.is_dir) "Removed." else "Deleted.")
             else
-                (if (entry.is_dir) "It will not go; is it empty?" else "That did not work.");
+                (if (entry.is_dir) "Only an empty directory can be removed." else "That did not work.");
         },
         .nothing => {},
     }
@@ -744,7 +744,7 @@ fn drawQuestion(area: Rect) void {
 
     const question = switch (asking) {
         .folder => "New folder:",
-        .confirm_delete => "Delete, then? Enter to go on, Escape to stop:",
+        .confirm_delete => "Delete it? Enter to go on, Escape to stop:",
         .nothing => "",
     };
     ctx.surface.text(x, baseline, question, t.bar_text);

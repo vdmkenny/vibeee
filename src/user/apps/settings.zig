@@ -549,7 +549,7 @@ fn drawBarChoice(area: eui.Rect, from: i32, floor: i32) i32 {
     const after = from + eui.widget.Context.sampleHeight();
     ctx.labelDim(
         .{ .x = area.x, .y = after + t.padding, .w = area.w, .h = 16 },
-        "Moves when the manager next starts.",
+        "The bar moves when the desktop next starts.",
     );
 
     return @max(floor, after + t.padding + t.control_height);
@@ -750,10 +750,10 @@ fn paragraphHeight(width: i32) i32 {
 /// anything: which key the desktop belongs to, and that the rest of it works
 /// in every window.
 const HELP_INTRO =
-    "The desktop is driven from the keyboard. Super is the key the manager " ++
-    "answers to: held with the keys below it moves between windows and " ++
-    "desktops without ever reaching the program you are in. The text keys " ++
-    "at the end work in every field and every document on the system.";
+    "The desktop is driven from the keyboard. Hold Super with the keys " ++
+    "below to move between windows and desktops; those chords never reach " ++
+    "the program you are working in. The text keys at the end work in " ++
+    "every field and every document.";
 
 fn drawHelp(pane: eui.Rect) i32 {
     const t = theme.current();
@@ -879,10 +879,13 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
     var said = str.Builder{ .buf = &reading };
     said.number(percent);
     said.byte('%');
-    ctx.surface.textLarge(glyph.right() + t.menu_padding, y + t.padding, said.done(), t.text, 2);
+    const reading_x = glyph.right() + t.menu_padding;
+    ctx.surface.textLarge(reading_x, y + t.padding, said.done(), t.text, 2);
 
-    // What it is doing, and how long that leaves. The time only exists while
-    // it is discharging, which is the only time anybody wants it.
+    // What it is doing, and how long that leaves, under the number rather
+    // than across it: the number is drawn at twice the face's size, so what
+    // follows it clears that and not the size of an ordinary line.
+    const under = y + t.padding + eui.Surface.textLargeHeight(2);
     var state: [40]u8 = @splat(0);
     var says = str.Builder{ .buf = &state };
     if (pack.runtimeLeft()) |left| {
@@ -891,7 +894,7 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
     }
     says.text(pack.stateLabel());
     ctx.labelDim(
-        .{ .x = glyph.right() + t.menu_padding, .y = y + t.padding + theme.enlarged(18), .w = pane.w, .h = 16 },
+        .{ .x = reading_x, .y = under, .w = pane.w, .h = eui.Surface.textHeight() },
         says.done(),
     );
 
@@ -910,11 +913,14 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
         spelled.text("health ");
         spelled.number(@min(worn, 100));
         spelled.byte('%');
-        if (pack.health_reported != 0) spelled.text(", the firmware's word");
+
         rightLabel(pane, y + t.padding + theme.enlarged(18), spelled.done(), t.text_dim);
     }
 
-    return rule(pane, glyph.bottom() + t.padding);
+    // Under whichever column runs longer: the picture on the left, or the
+    // number and what it is doing beside it.
+    const bottom = @max(glyph.bottom(), under + eui.Surface.textHeight());
+    return rule(pane, bottom + t.padding);
 }
 
 fn rightLabel(pane: eui.Rect, y: i32, text: []const u8, ink: eui.draw.Color) void {
@@ -962,7 +968,7 @@ fn drawBacklight(pane: eui.Rect, from: i32) i32 {
     const level = lamp orelse {
         ctx.labelDim(
             .{ .x = pane.x, .y = y, .w = pane.w, .h = 16 },
-            "This machine offers no way to set the backlight.",
+            "The backlight cannot be set on this machine.",
         );
         return y + t.control_height;
     };
@@ -983,8 +989,18 @@ fn drawBacklight(pane: eui.Rect, from: i32) i32 {
     };
 
     ctx.labelDim(.{ .x = pane.x, .y = y + 4, .w = label_w, .h = t.control_height }, "Backlight");
-    const chosen = ctx.slider(bar, .{ .min = 1, .max = @intCast(level.max) }, @intCast(level.level), .{});
-    if (chosen != level.level) _ = platform.setBacklight(@intCast(chosen));
+    // Setting the panel is a conversation with the firmware, so the knob
+    // follows the pointer and the panel is told where it landed.
+    const chosen = ctx.slider(
+        bar,
+        .{ .min = 1, .max = @intCast(level.max) },
+        @intCast(level.level),
+        .{ .commit = .on_rest },
+    );
+    // The service answers with the level it actually set, which is what the
+    // control shows from here: reading it back on the next sample would
+    // leave the knob standing where the panel no longer is.
+    if (chosen != level.level) lamp = platform.setBacklight(@intCast(chosen)) orelse lamp;
     ctx.label(
         .{ .x = bar.right() + t.gap, .y = y + 4, .w = value_w, .h = t.control_height },
         said.done(),

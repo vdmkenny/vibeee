@@ -185,7 +185,7 @@ fn open() void {
         }
     }
 
-    if (status.len == 0) status = if (document.len == 0) "Opened, and it is empty." else "Opened.";
+    if (status.len == 0) status = if (document.len == 0) "Opened; it is empty." else "Opened.";
     editor = .{};
     modified = false;
     setTitle();

@@ -620,7 +620,23 @@ pub const Context = struct {
         /// middle means nothing: a picture of where the answers are beats a
         /// number somebody has to land on by feel.
         notches: []const i32 = &.{},
+        /// What the control sits on. The knob stands taller than the track
+        /// it runs along, so the ground it leaves behind has to be put back
+        /// as it moves; a caller drawing on anything but the ordinary
+        /// surface says so here.
+        background: ?theme.Color = null,
+        /// When the value the caller is handed actually moves.
+        commit: Commit = .live,
     };
+
+    /// A slider's value follows the pointer while it is held, which for a
+    /// value the caller can set as fast as it changes is what a person
+    /// expects. A value that costs something to set is another matter: a
+    /// drag is dozens of motions, and a setting that takes a conversation
+    /// with the firmware turns those into a queue the hand outruns. Such a
+    /// control moves the knob under the pointer and hands over the value
+    /// where the gesture rests: when it is pressed, and when it is let go.
+    pub const Commit = enum { live, on_rest };
 
     /// A value along a range: dragged with the pointer, nudged with the
     /// arrows when focused.
@@ -639,6 +655,15 @@ pub const Context = struct {
         // Held anywhere along it, the knob comes to the pointer: on a screen
         // this size, hunting for a nine pixel grip is worse than moving it.
         if (it.holding) next = bar.valueAt(area, range, self.pointer_x);
+
+        // What the caller is handed, which is the knob's own position only
+        // where this control's value is cheap to set.
+        var handed = next;
+        if (style.commit == .on_rest and it.holding and
+            !self.pressedThisPass() and !self.releasedThisPass())
+        {
+            handed = range.clamp(value);
+        }
 
         if (it.focused and self.pending_key != 0) {
             const code = self.pending_key;
@@ -661,7 +686,7 @@ pub const Context = struct {
             self.addDamage(area);
         }
 
-        return next;
+        return handed;
     }
 
     pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
@@ -1074,8 +1099,10 @@ pub fn paintMeter(surface: Surface, area: Rect, level: u8, peak: u8) void {
 pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, visual: Visual, focused: bool, style: Context.SliderStyle) void {
     const t = theme.current();
 
-    // The groove, then what is behind the knob, then the knob. Nothing is
-    // painted twice: the fill stops where the grip starts.
+    // The ground first, because the knob stands taller than the groove and
+    // the last place it stood is otherwise still drawn there.
+    surface.fill(area, style.background orelse t.surface);
+
     const groove = bar.track(area);
     surface.fill(groove, t.surface_pressed);
     surface.frame(groove, t.line);
