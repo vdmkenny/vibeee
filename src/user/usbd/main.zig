@@ -43,7 +43,16 @@ const Driver = struct {
 
 const DRIVERS = [_]Driver{
     .{ .name = ehci.name, .ops = ehci.ops, .listen = ehci.listenOn },
-    .{ .name = uhci.name, .ops = uhci.ops, .listen = uhci.listenOn },
+} ++ blk: {
+    // One row per companion unit: a chipset hands over its companions as
+    // separate functions, and each needs a controller of its own.
+    var rows: [uhci.MAX_UNITS]Driver = undefined;
+    for (&rows, 0..) |*row, unit| row.* = .{
+        .name = uhci.name,
+        .ops = uhci.unitOps(unit),
+        .listen = uhci.unitListen(unit),
+    };
+    break :blk rows;
 };
 
 /// The class drivers this build carries. Which device each fits is again
@@ -100,20 +109,22 @@ fn claim() void {
 
         for (DRIVERS) |driver| {
             if (!str.eql(driver.name, assignment.driverSlice())) continue;
-            attach(driver, @bitCast(assignment.location));
+            // Rows sharing a name are the same driver's units; the first
+            // with a free controller takes the device.
+            if (attach(driver, @bitCast(assignment.location))) break;
         }
     }
 }
 
-fn attach(driver: Driver, location: pci.Location) void {
+fn attach(driver: Driver, location: pci.Location) bool {
     if (sys.claimDevice(location) < 0) {
         log.warn("usbd", "the controller is already claimed");
-        return;
+        return true;
     }
 
     if (!driver.ops.open(location)) {
         _ = sys.releaseDevice(location);
-        return;
+        return false;
     }
 
     var controller = hc.Controller{
@@ -131,17 +142,22 @@ fn attach(driver: Driver, location: pci.Location) void {
         } else |_| {
             log.warn("usbd", "the interrupt line was refused; controller unused");
             _ = sys.releaseDevice(location);
-            return;
+            return true;
         }
     } else {
         log.warn("usbd", "no interrupt line; controller unused");
         _ = sys.releaseDevice(location);
-        return;
+        return true;
     }
 
     controllers[controller_count] = controller;
     controller_count += 1;
-    log.note("usbd", "driving the controller");
+    var where: [8]u8 = undefined;
+    log.begin("usbd", .key);
+    out.text("driving the controller at ");
+    out.text(lib.pci.spell(location, &where));
+    log.end();
+    return true;
 }
 
 // ---------------------------------------------------------------------------

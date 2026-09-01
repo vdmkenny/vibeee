@@ -741,6 +741,7 @@ fn portWrite(index: u8, value: Port) void {
 // ---------------------------------------------------------------------------
 
 fn open(loc: pci.Location) bool {
+    if (controller.opened) return false;
     const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "controller") orelse
         return false;
 
@@ -1169,6 +1170,37 @@ fn rest() void {
     }
 }
 
+fn sayStages(arena: anytype, stages: usize) void {
+    log.begin(name, .dim);
+    out.text("the transfer's stages: ");
+    for (0..stages) |i| {
+        if (i != 0) out.text(", ");
+        const token = arena.stages[i].token;
+        out.text(switch (token.pid) {
+            .setup => "setup",
+            .in => "in",
+            .out => "out",
+            _ => "?",
+        });
+        out.byte(' ');
+        const status = token.status;
+        if (status.transaction_error) {
+            out.text("unanswered on the wire");
+        } else if (status.babble) {
+            out.text("babbled over");
+        } else if (status.buffer_error) {
+            out.text("starved of memory");
+        } else if (status.halted) {
+            out.text("refused");
+        } else if (status.active) {
+            out.text("never served");
+        } else {
+            out.text("done");
+        }
+    }
+    log.end();
+}
+
 fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Error!usize {
     const arena = controller.arena.at;
 
@@ -1187,11 +1219,16 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
         if (last.status.failed()) break;
     }
 
-    // Whatever the outcome, it is the descriptors that say so.
+    // Whatever the outcome, it is the descriptors that say so. A failure
+    // is narrated stage by stage: which were served, which the controller
+    // still owes, and what the wire said, which is the difference between
+    // a schedule nobody walks and a device nobody hears.
     for (0..stages) |i| {
         const token = arena.stages[i].token;
-        if (token.status.failed()) return hc.Error.Stalled;
-        if (token.status.active) return hc.Error.Timeout;
+        if (token.status.failed() or token.status.active) {
+            sayStages(arena, stages);
+            return if (token.status.failed()) hc.Error.Stalled else hc.Error.Timeout;
+        }
     }
 
     if (!wants_data) return 0;

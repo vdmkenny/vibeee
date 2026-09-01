@@ -52,7 +52,7 @@ const Command = packed struct(u16) {
     global_resume: bool = false,
     software_debug: bool = false,
     /// The frame list is ours to schedule from, rather than the
-    /// firmware's. Set once the driver owns the controller.
+    /// firmware's. Set once the driver owns the self.controller.
     configured: bool = false,
     /// Sixty-four byte packets rather than thirty-two.
     max_packet_64: bool = false,
@@ -335,45 +335,54 @@ const Device = struct {
     irq: u32 = 0,
 };
 
-var controller: Device = .{};
-
 const Watch = struct {
     live: bool = false,
     pipe: usb.Pipe = .{},
     report_bytes: u8 = 0,
 };
 
-var watches: [WATCHES]Watch = @splat(.{});
+/// One controller and everything watched through it.
+const Unit = struct {
+    controller: Device = .{},
+    watches: [WATCHES]Watch = @splat(.{}),
+};
+
+/// The high speed controller's companions come four to the chipset, and
+/// four is the budget until silicon carries more.
+pub const MAX_UNITS = 4;
+
+var units: [MAX_UNITS]Unit = @splat(.{});
 
 // ---------------------------------------------------------------------------
 // Register access
 // ---------------------------------------------------------------------------
 
-fn read16(register: Reg) u16 {
-    return ports.in16(controller.base + @intFromEnum(register));
+fn read16(self: *Unit, register: Reg) u16 {
+    return ports.in16(self.controller.base + @intFromEnum(register));
 }
 
-fn write16(register: Reg, value: u16) void {
-    ports.out16(controller.base + @intFromEnum(register), value);
+fn write16(self: *Unit, register: Reg, value: u16) void {
+    ports.out16(self.controller.base + @intFromEnum(register), value);
 }
 
 fn portRegister(index: u8) Reg {
     return if (index == 0) .port1 else .port2;
 }
 
-fn portRead(index: u8) Port {
-    return @bitCast(read16(portRegister(index)));
+fn portRead(self: *Unit, index: u8) Port {
+    return @bitCast(read16(self, portRegister(index)));
 }
 
-fn portWrite(index: u8, value: Port) void {
-    write16(portRegister(index), @bitCast(value));
+fn portWrite(self: *Unit, index: u8, value: Port) void {
+    write16(self, portRegister(index), @bitCast(value));
 }
 
 // ---------------------------------------------------------------------------
 // Bring-up
 // ---------------------------------------------------------------------------
 
-fn open(loc: pci.Location) bool {
+fn open(self: *Unit, loc: pci.Location) bool {
+    if (self.controller.opened) return false;
     const window: pci.IoBar = @bitCast(pci.bar(loc, 4));
     if (!window.io_space) {
         log.fail(name, "the controller exposes no register ports");
@@ -385,8 +394,8 @@ fn open(loc: pci.Location) bool {
         return false;
     }
 
-    controller.base = @intCast(base);
-    controller.location = loc;
+    self.controller.base = @intCast(base);
+    self.controller.location = loc;
     pci.enableIoAndMaster(loc);
 
     // The firmware has been driving this controller to make a USB
@@ -394,11 +403,11 @@ fn open(loc: pci.Location) bool {
     // is what stops its management code from fighting us for the ports.
     takeFromFirmware(loc);
 
-    if (!reset()) return false;
+    if (!reset(self)) return false;
 
-    controller.arena = device.Dma(Arena).alloc(name) orelse return false;
-    startSchedule();
-    controller.opened = true;
+    self.controller.arena = device.Dma(Arena).alloc(name) orelse return false;
+    startSchedule(self);
+    self.controller.opened = true;
 
     log.begin(name, .key);
     out.decimal(PORTS);
@@ -416,23 +425,23 @@ fn takeFromFirmware(loc: pci.Location) void {
     pci.write(loc, LEGACY_OFFSET, written);
 }
 
-fn reset() bool {
+fn reset(self: *Unit) bool {
     // Stop first. A controller reset while it is running leaves the
     // frame list half walked and the ports in a state nothing describes.
-    write16(.command, @bitCast(Command{}));
-    write16(.interrupts, @bitCast(Interrupts{}));
+    write16(self, .command, @bitCast(Command{}));
+    write16(self, .interrupts, @bitCast(Interrupts{}));
 
-    write16(.command, @bitCast(Command{ .global_reset = true }));
+    write16(self, .command, @bitCast(Command{ .global_reset = true }));
     // The bus reset the specification asks for: ten milliseconds of it,
     // and every device on the bus is back at address zero afterwards.
     sys.sleepMicros(15_000);
-    write16(.command, @bitCast(Command{}));
+    write16(self, .command, @bitCast(Command{}));
     sys.sleepMicros(10_000);
 
-    write16(.command, @bitCast(Command{ .reset = true }));
-    if (!device.settles(200, 1_000, {}, struct {
-        fn ready(_: void) bool {
-            const now: Command = @bitCast(read16(.command));
+    write16(self, .command, @bitCast(Command{ .reset = true }));
+    if (!device.settles(200, 1_000, self, struct {
+        fn ready(unit: *Unit) bool {
+            const now: Command = @bitCast(read16(unit, .command));
             return !now.reset;
         }
     }.ready)) {
@@ -442,28 +451,28 @@ fn reset() bool {
     return true;
 }
 
-fn startSchedule() void {
-    const arena = controller.arena.at;
+fn startSchedule(self: *Unit) void {
+    const arena = self.controller.arena.at;
 
     // Everything hangs off one head, and every frame points at it: the
     // controller visits the same schedule a thousand times a second and
     // finds nothing to do in it until something is queued.
     arena.queue = .{ .link = Link.none, .element = Link.none };
     for (&arena.watches) |*head| head.* = .{};
-    chain();
+    chain(self);
 
-    write16(.frame_base, 0);
-    ports.out32(controller.base + @intFromEnum(Reg.frame_base), controller.arena.physOf("frames"));
-    write16(.frame_number, 0);
-    ports.out8(controller.base + @intFromEnum(Reg.start_of_frame), 64);
+    write16(self, .frame_base, 0);
+    ports.out32(self.controller.base + @intFromEnum(Reg.frame_base), self.controller.arena.physOf("frames"));
+    write16(self, .frame_number, 0);
+    ports.out8(self.controller.base + @intFromEnum(Reg.start_of_frame), 64);
 
-    write16(.status, @bitCast(Status.ACK));
-    write16(.interrupts, @bitCast(Interrupts{
+    write16(self, .status, @bitCast(Status.ACK));
+    write16(self, .interrupts, @bitCast(Interrupts{
         .timeout = true,
         .on_complete = true,
         .short_packet = true,
     }));
-    write16(.command, @bitCast(Command{ .running = true, .configured = true, .max_packet_64 = true }));
+    write16(self, .command, @bitCast(Command{ .running = true, .configured = true, .max_packet_64 = true }));
 
     // The ports carry power already: this controller has no switch for
     // it, which is why there is nothing here to turn on.
@@ -477,9 +486,9 @@ fn portCount() u8 {
     return PORTS;
 }
 
-fn portState(index: u8) hc.PortState {
-    if (!controller.opened or index >= PORTS) return .{};
-    const port = portRead(index);
+fn portState(self: *Unit, index: u8) hc.PortState {
+    if (!self.controller.opened or index >= PORTS) return .{};
+    const port = portRead(self, index);
     return .{
         .connected = port.connected,
         .enabled = port.enabled,
@@ -488,19 +497,19 @@ fn portState(index: u8) hc.PortState {
     };
 }
 
-fn resetPort(index: u8) hc.PortState {
-    if (!controller.opened or index >= PORTS) return .{};
+fn resetPort(self: *Unit, index: u8) hc.PortState {
+    if (!self.controller.opened or index >= PORTS) return .{};
 
-    var port = portRead(index).quiet();
+    var port = portRead(self, index).quiet();
     port.reset = true;
-    portWrite(index, port);
+    portWrite(self, index, port);
     // The specification's reset: fifty milliseconds, which is longer than
     // the ten a hub uses because a root port has no hub to repeat it.
     sys.sleepMicros(50_000);
 
-    port = portRead(index).quiet();
+    port = portRead(self, index).quiet();
     port.reset = false;
-    portWrite(index, port);
+    portWrite(self, index, port);
     sys.sleepMicros(10_000);
 
     // Enabling is a separate step here, unlike on the fast controller
@@ -508,20 +517,20 @@ fn resetPort(index: u8) hc.PortState {
     // it worth talking to.
     var attempts: u8 = 0;
     while (attempts < 10) : (attempts += 1) {
-        port = portRead(index);
+        port = portRead(self, index);
         if (!port.connected) return .{};
 
         if (port.enabled) break;
 
         var wanted = port.quiet();
         wanted.enabled = true;
-        portWrite(index, wanted);
+        portWrite(self, index, wanted);
         sys.sleepMicros(10_000);
 
         // The change bits are cleared as they appear: an enable that
         // flickered is the port settling, not a device coming and going.
-        const settling = portRead(index);
-        if (settling.changed()) portWrite(index, acknowledge(settling));
+        const settling = portRead(self, index);
+        if (settling.changed()) portWrite(self, index, acknowledge(settling));
     } else return .{ .connected = true };
 
     return .{
@@ -540,16 +549,16 @@ fn acknowledge(port: Port) Port {
     return copy;
 }
 
-fn serviceIrq() bool {
-    if (!controller.opened) return false;
+fn serviceIrq(self: *Unit) bool {
+    if (!self.controller.opened) return false;
 
-    const status: Status = @bitCast(read16(.status));
+    const status: Status = @bitCast(read16(self, .status));
     if (status.host_system_error) log.warn(name, "the controller reported a host system error");
     if (status.process_error) log.warn(name, "the controller found its own schedule malformed");
 
     // Write back only the bits that were set: a blanket acknowledgement
     // would swallow something that arrived between the read and the write.
-    write16(.status, @bitCast(status));
+    write16(self, .status, @bitCast(status));
 
     // This controller has no interrupt of its own for a port changing, so
     // the ports are read whenever it interrupts for anything, and once
@@ -558,9 +567,9 @@ fn serviceIrq() bool {
     var index: u8 = 0;
     var moved = false;
     while (index < PORTS) : (index += 1) {
-        const port = portRead(index);
+        const port = portRead(self, index);
         if (!port.changed()) continue;
-        portWrite(index, acknowledge(port));
+        portWrite(self, index, acknowledge(port));
         moved = true;
     }
     return moved;
@@ -586,7 +595,7 @@ const Aim = struct {
 /// This controller has no notion of a transfer larger than a packet: a
 /// descriptor is one packet on the wire, so anything longer is a chain of
 /// them and the toggle alternates down it.
-fn packets(
+fn packets(self: *Unit, 
     at: usize,
     pid: Pid,
     pipe: Aim,
@@ -594,9 +603,9 @@ fn packets(
     bytes: usize,
     toggle: *bool,
 ) usize {
-    const arena = controller.arena.at;
+    const arena = self.controller.arena.at;
     const size: usize = @max(@min(pipe.max_packet, 64), 1);
-    const base = controller.arena.physOf("buffer") + offset;
+    const base = self.controller.arena.physOf("buffer") + offset;
 
     var used: usize = 0;
     var done: usize = 0;
@@ -632,27 +641,27 @@ fn packets(
 
 /// Chain descriptors together and hand them to the queue head, the last
 /// one asking for an interrupt so one transfer costs one wake.
-fn queue(count: usize) void {
-    const arena = controller.arena.at;
+fn queue(self: *Unit, count: usize) void {
+    const arena = self.controller.arena.at;
     if (count == 0) return;
 
     for (0..count - 1) |i| {
-        arena.chain[i].link = Link.toTransfer(controller.arena.physOfIndex("chain", i + 1), true);
+        arena.chain[i].link = Link.toTransfer(self.controller.arena.physOfIndex("chain", i + 1), true);
     }
     arena.chain[count - 1].link = Link.none;
     arena.chain[count - 1].control.interrupt_on_complete = true;
 
-    arena.queue.element = Link.toTransfer(controller.arena.physOf("chain"), true);
+    arena.queue.element = Link.toTransfer(self.controller.arena.physOf("chain"), true);
 }
 
 /// A controller of this kind is full speed itself, so it talks to a slow
 /// device the same way whether a hub is in between or not: the route says
 /// nothing it has to act on.
-fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
-    if (!controller.opened) return hc.Error.Refused;
+fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
+    if (!self.controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES - usb.Setup.BYTES) return hc.Error.Refused;
 
-    const arena = controller.arena.at;
+    const arena = self.controller.arena.at;
     const low = pipe.speed == .low;
     const endpoint = Aim{ .address = pipe.address, .low_speed = low, .max_packet = pipe.max_packet };
 
@@ -667,17 +676,17 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
     // Setup is always DATA0, the data stage starts at DATA1 and
     // alternates, and the status stage is always DATA1.
     var toggle = false;
-    var used = packets(0, .setup, endpoint, 0, usb.Setup.BYTES, &toggle);
+    var used = packets(self, 0, .setup, endpoint, 0, usb.Setup.BYTES, &toggle);
 
     var data_at: usize = 0;
     if (wants_data) {
         toggle = true;
         data_at = used;
-        used += packets(used, if (reading) .in else .out, endpoint, usb.Setup.BYTES, data.len, &toggle);
+        used += packets(self, used, if (reading) .in else .out, endpoint, usb.Setup.BYTES, data.len, &toggle);
     }
 
     toggle = true;
-    used += packets(
+    used += packets(self, 
         used,
         switch (setup.statusDirection()) {
             .in => .in,
@@ -689,8 +698,8 @@ fn control(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
         &toggle,
     );
 
-    queue(used);
-    try settle(used, 1_000_000);
+    queue(self, used);
+    try settle(self, used, 1_000_000);
 
     if (!wants_data) return 0;
 
@@ -713,18 +722,18 @@ fn bulkLimit() usize {
     return BUFFER_BYTES;
 }
 
-fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
-    if (!controller.opened) return hc.Error.Refused;
+fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+    if (!self.controller.opened) return hc.Error.Refused;
     if (data.len > BUFFER_BYTES) return hc.Error.Refused;
 
-    const arena = controller.arena.at;
+    const arena = self.controller.arena.at;
     const writing = pipe.direction == .out;
     if (writing and data.len != 0) {
         @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.buffer)))[0..data.len], data);
     }
 
     var toggle = pipe.toggle;
-    const used = packets(0, if (writing) .out else .in, .{
+    const used = packets(self, 0, if (writing) .out else .in, .{
         .address = pipe.address,
         .endpoint = pipe.number,
         .low_speed = pipe.speed == .low,
@@ -732,8 +741,8 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     }, 0, data.len, &toggle);
 
 
-    queue(used);
-    try settle(used, 5_000_000);
+    queue(self, used);
+    try settle(self, used, 5_000_000);
 
     var moved: usize = 0;
     for (0..used) |i| moved += arena.chain[i].control.bytes();
@@ -749,15 +758,15 @@ fn bulk(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
 
 /// Wait for a queued chain, on the controller's interrupt rather than on
 /// the clock, and say what became of it.
-fn settle(count: usize, patience_us: u32) hc.Error!void {
-    const arena = controller.arena.at;
+fn settle(self: *Unit, count: usize, patience_us: u32) hc.Error!void {
+    const arena = self.controller.arena.at;
 
     var waited: u32 = 0;
     while (waited < patience_us) {
-        rest();
+        rest(self);
         waited += REST_US;
         if (!arena.chain[count - 1].control.active) break;
-        if (failedAnywhere(count)) break;
+        if (failedAnywhere(self, count)) break;
     }
 
     for (0..count) |i| {
@@ -775,8 +784,8 @@ fn settle(count: usize, patience_us: u32) hc.Error!void {
     }
 }
 
-fn failedAnywhere(count: usize) bool {
-    const arena = controller.arena.at;
+fn failedAnywhere(self: *Unit, count: usize) bool {
+    const arena = self.controller.arena.at;
     for (0..count) |i| {
         if (arena.chain[i].control.failed()) return true;
     }
@@ -785,10 +794,10 @@ fn failedAnywhere(count: usize) bool {
 
 const REST_US: u32 = 50_000;
 
-fn rest() void {
-    if (controller.irq != 0) {
-        _ = sys.eventWait(controller.irq, REST_US);
-        _ = sys.irqAck(controller.irq, serviceIrq());
+fn rest(self: *Unit) void {
+    if (self.controller.irq != 0) {
+        _ = sys.eventWait(self.controller.irq, REST_US);
+        _ = sys.irqAck(self.controller.irq, serviceIrq(self));
     } else {
         sys.sleepMicros(REST_US);
     }
@@ -798,25 +807,25 @@ fn rest() void {
 // Watched endpoints
 // ---------------------------------------------------------------------------
 
-fn watch(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
-    if (!controller.opened) return hc.Error.Refused;
+fn watch(self: *Unit, pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
+    if (!self.controller.opened) return hc.Error.Refused;
     if (report_bytes == 0 or report_bytes > REPORT_BYTES) return hc.Error.Refused;
 
-    const entry = table.free(&watches) orelse return hc.Error.Refused;
-    const index = table.indexOf(&watches, entry);
+    const entry = table.free(&self.watches) orelse return hc.Error.Refused;
+    const index = table.indexOf(&self.watches, entry);
     entry.* = .{ .live = true, .pipe = pipe, .report_bytes = report_bytes };
 
-    arm(index);
-    chain();
+    arm(self, index);
+    chain(self);
     return @intCast(index);
 }
 
 /// Put a fresh descriptor under a watch's head. The controller visits it
 /// every frame and the device answers with nothing until it has something
 /// to say, so a keyboard sitting still costs no interrupts.
-fn arm(index: usize) void {
-    const arena = controller.arena.at;
-    const entry = &watches[index];
+fn arm(self: *Unit, index: usize) void {
+    const arena = self.controller.arena.at;
+    const entry = &self.watches[index];
 
     arena.watch_tds[index] = .{
         .link = Link.none,
@@ -838,25 +847,25 @@ fn arm(index: usize) void {
             .toggle = entry.pipe.toggle,
             .length = Token.sized(entry.report_bytes),
         },
-        .buffer = controller.arena.physOfIndex("reports", index),
+        .buffer = self.controller.arena.physOfIndex("reports", index),
     };
 
-    arena.watches[index].element = Link.toTransfer(controller.arena.physOfIndex("watch_tds", index), true);
+    arena.watches[index].element = Link.toTransfer(self.controller.arena.physOfIndex("watch_tds", index), true);
 }
 
 /// Link every head into one list and point every frame at the first. The
 /// on-demand head goes last so a transfer being waited on does not sit
 /// behind a keyboard that is answering nothing.
-fn chain() void {
-    const arena = controller.arena.at;
-    const on_demand = Link.toQueue(controller.arena.physOf("queue"));
+fn chain(self: *Unit) void {
+    const arena = self.controller.arena.at;
+    const on_demand = Link.toQueue(self.controller.arena.physOf("queue"));
 
     var first: ?usize = null;
     var previous: ?usize = null;
-    for (&watches, 0..) |*entry, i| {
+    for (&self.watches, 0..) |*entry, i| {
         if (!entry.live) continue;
         if (previous) |before| {
-            arena.watches[before].link = Link.toQueue(controller.arena.physOfIndex("watches", i));
+            arena.watches[before].link = Link.toQueue(self.controller.arena.physOfIndex("watches", i));
         } else {
             first = i;
         }
@@ -865,15 +874,15 @@ fn chain() void {
     }
 
     const head = if (first) |i|
-        Link.toQueue(controller.arena.physOfIndex("watches", i))
+        Link.toQueue(self.controller.arena.physOfIndex("watches", i))
     else
         on_demand;
     for (&arena.frames) |*frame| frame.* = head;
 }
 
-fn collect(index: u8, into: []u8) ?usize {
-    if (index >= watches.len or !watches[index].live) return null;
-    const arena = controller.arena.at;
+fn collect(self: *Unit, index: u8, into: []u8) ?usize {
+    if (index >= self.watches.len or !self.watches[index].live) return null;
+    const arena = self.controller.arena.at;
     const status = arena.watch_tds[index].control;
 
     if (status.active) return null;
@@ -885,36 +894,74 @@ fn collect(index: u8, into: []u8) ?usize {
         @memcpy(into[0..moved], from[0..moved]);
     }
 
-    watches[index].pipe.advance(status.bytes());
-    arm(index);
+    self.watches[index].pipe.advance(status.bytes());
+    arm(self, index);
     return moved;
 }
 
-fn unwatch(index: u8) void {
-    if (index >= watches.len or !watches[index].live) return;
-    controller.arena.at.watches[index].element = Link.none;
-    watches[index] = .{};
-    chain();
+fn unwatch(self: *Unit, index: u8) void {
+    if (index >= self.watches.len or !self.watches[index].live) return;
+    self.controller.arena.at.watches[index].element = Link.none;
+    self.watches[index] = .{};
+    chain(self);
 }
 
 // ---------------------------------------------------------------------------
 // The seam
 // ---------------------------------------------------------------------------
 
-pub const ops = hc.HcOps{
-    .open = open,
-    .ports = portCount,
-    .port = portState,
-    .resetPort = resetPort,
-    .serviceIrq = serviceIrq,
-    .control = control,
-    .bulk = bulk,
-    .bulkLimit = bulkLimit,
-    .watch = watch,
-    .collect = collect,
-    .unwatch = unwatch,
-};
+/// One driver body, bound to one of its units at compile time: the ops
+/// table stays instance-blind and the binding costs nothing at run time.
+pub fn unitOps(comptime unit: u8) hc.HcOps {
+    const bound = struct {
+        const self = &units[unit];
+        fn open_(loc: pci.Location) bool {
+            return open(self, loc);
+        }
+        fn port_(index: u8) hc.PortState {
+            return portState(self, index);
+        }
+        fn resetPort_(index: u8) hc.PortState {
+            return resetPort(self, index);
+        }
+        fn serviceIrq_() bool {
+            return serviceIrq(self);
+        }
+        fn control_(pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!usize {
+            return control(self, pipe, setup, data);
+        }
+        fn bulk_(pipe: *usb.Pipe, data: []u8) hc.Error!usize {
+            return bulk(self, pipe, data);
+        }
+        fn watch_(pipe: usb.Pipe, report_bytes: u8) hc.Error!u8 {
+            return watch(self, pipe, report_bytes);
+        }
+        fn collect_(index: u8, into: []u8) ?usize {
+            return collect(self, index, into);
+        }
+        fn unwatch_(index: u8) void {
+            unwatch(self, index);
+        }
+    };
+    return .{
+        .open = bound.open_,
+        .ports = portCount,
+        .port = bound.port_,
+        .resetPort = bound.resetPort_,
+        .serviceIrq = bound.serviceIrq_,
+        .control = bound.control_,
+        .bulk = bound.bulk_,
+        .bulkLimit = bulkLimit,
+        .watch = bound.watch_,
+        .collect = bound.collect_,
+        .unwatch = bound.unwatch_,
+    };
+}
 
-pub fn listenOn(irq: u32) void {
-    controller.irq = irq;
+pub fn unitListen(comptime unit: u8) *const fn (u32) void {
+    return struct {
+        fn listen(irq: u32) void {
+            units[unit].controller.irq = irq;
+        }
+    }.listen;
 }

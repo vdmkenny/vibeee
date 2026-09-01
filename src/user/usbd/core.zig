@@ -245,7 +245,17 @@ fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: 
     _ = ops.control(zero, question, &first) catch {
         sys.sleepMicros(RESET_RECOVERY_US);
         _ = ops.control(zero, question, &first) catch |err| {
-            return sayFailure(port, "would not describe itself", err);
+            // A device that missed its reset is deaf to every question that
+            // follows, and only another reset revives it. A root port can be
+            // reset from here; a hub's port is the hub driver's to work.
+            if (route.hub != 0) return sayFailure(port, "would not describe itself", err);
+            const again = ops.resetPort(port);
+            if (!again.enabled or again.speed != speed)
+                return sayFailure(port, "would not describe itself", err);
+            sys.sleepMicros(RESET_RECOVERY_US);
+            _ = ops.control(zero, question, &first) catch |final| {
+                return sayFailure(port, "would not describe itself", final);
+            };
         };
     };
 
