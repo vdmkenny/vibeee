@@ -248,6 +248,7 @@ const art = [_]Picture{
         .icon = .picture,
         .rows = .{
             "............",
+            "............",
             "..########..",
             "..#......#..",
             "..#.##...#..",
@@ -256,7 +257,6 @@ const art = [_]Picture{
             "..#...##.#..",
             "..#..#####..",
             "..########..",
-            "............",
             "............",
             "............",
         },
@@ -334,7 +334,6 @@ const art = [_]Picture{
         .rows = .{
             "............",
             "............",
-            "............",
             "..........#.",
             ".........##.",
             "#.......##..",
@@ -343,6 +342,7 @@ const art = [_]Picture{
             "..##.##.....",
             "...###......",
             "....#.......",
+            "............",
             "............",
         },
     },
@@ -675,6 +675,11 @@ const packed_bits = blk: {
 };
 
 comptime {
+    // Thirty-two pictures of a hundred and forty-four cells each is more
+    // branches than the default allowance, and all of it is arithmetic the
+    // compiler does once.
+    @setEvalBranchQuota(20_000);
+
     if (art.len != std.meta.fields(Icon).len) {
         @compileError("every icon needs a picture, and every picture a name");
     }
@@ -683,6 +688,32 @@ comptime {
     for (art, 0..) |picture, index| {
         if (@intFromEnum(picture.icon) != index) {
             @compileError("the picture for " ++ @tagName(picture.icon) ++ " is out of order");
+        }
+    }
+
+    // And drawn in the middle of its own cell. A picture beside a word is
+    // placed by its cell, so one drawn high inside that cell sits high beside
+    // every label in the system, and the fault looks like a layout bug in
+    // whichever window somebody happened to notice it in.
+    for (art) |picture| {
+        var top: ?usize = null;
+        var bottom: usize = 0;
+        for (picture.rows, 0..) |row, y| {
+            for (row) |cell| {
+                if (cell != '#') continue;
+                if (top == null) top = y;
+                bottom = y;
+                break;
+            }
+        }
+
+        const first = top orelse continue;
+        // Twice the centre, so the half a row an even-height picture lands on
+        // stays a whole number: eleven is the middle of twelve rows.
+        const twice = first + bottom;
+        if (twice < 10 or twice > 12) {
+            @compileError("the picture for " ++ @tagName(picture.icon) ++
+                " is not centred in its cell");
         }
     }
 }

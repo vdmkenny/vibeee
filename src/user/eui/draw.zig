@@ -217,6 +217,30 @@ pub const Surface = struct {
     }
 
     /// How large a picture is drawn, which grows with the letters beside it.
+    /// Where a picture goes so it reads as being on the same line as text
+    /// drawn at `y`.
+    ///
+    /// Not the middle of the text's cell. A face leaves room under its
+    /// letters for the ones that hang below, so a picture centred on the cell
+    /// sits above the letters beside it, and every icon in the system reads
+    /// as floating a little.
+    ///
+    /// Centred on the body of a lowercase letter instead, which is where the
+    /// eye puts the line. Measured from the face rather than given as a
+    /// number, so a different face or a doubled one still lines up.
+    pub fn iconTopFor(y: i32) i32 {
+        return y + BODY_MIDDLE * theme.textScale() - @divTrunc(iconSize(), 2);
+    }
+
+    /// Half way down the body of a lowercase letter, in rows of the face.
+    /// Taken from an `x`, which has neither an ascender nor a descender, and
+    /// from an `o` where a face has no `x`.
+    const BODY_MIDDLE: i32 = blk: {
+        const band = ui_font.inkBand('x') orelse
+            fontlib.Band{ .top = 0, .bottom = ui_font.height - 1 };
+        break :blk @intCast(@divTrunc(band.twiceMiddle() + 1, 2));
+    };
+
     pub fn iconSize() i32 {
         return @as(i32, @intCast(icons.WIDTH)) * theme.textScale();
     }

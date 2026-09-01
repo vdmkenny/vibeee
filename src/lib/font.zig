@@ -79,6 +79,17 @@ pub const glyphs = struct {
     pub const rule_v: u21 = 0x2502;
 };
 
+/// The rows of a cell a glyph occupies.
+pub const Band = struct {
+    top: usize,
+    bottom: usize,
+
+    /// Twice the middle, so half a row stays a whole number.
+    pub fn twiceMiddle(self: Band) usize {
+        return self.top + self.bottom;
+    }
+};
+
 pub const Font = struct {
     name: []const u8,
     width: usize,
@@ -96,6 +107,32 @@ pub const Font = struct {
 
     pub fn isProportional(self: *const Font) bool {
         return self.advances != null;
+    }
+
+    /// The rows a glyph actually inks, top and bottom, or null for one that
+    /// is blank or absent.
+    ///
+    /// What a face's numbers do not say: `height` counts the whole cell and
+    /// `ascent` says where the baseline is, but neither says where the body
+    /// of a letter sits between them. Anything placing a picture beside a
+    /// word needs that, and measuring the face is more honest than a constant
+    /// somebody read off a screenshot.
+    pub fn inkBand(self: *const Font, code: u21) ?Band {
+        const rows = self.glyph(code) orelse return null;
+
+        var top: ?usize = null;
+        var bottom: usize = 0;
+        for (0..self.height) |y| {
+            var inked = false;
+            for (0..self.row_bytes) |byte| {
+                if (rows[y * self.row_bytes + byte] != 0) inked = true;
+            }
+            if (!inked) continue;
+            if (top == null) top = y;
+            bottom = y;
+        }
+
+        return .{ .top = top orelse return null, .bottom = bottom };
     }
 
     /// Bitmap rows for a code point, or null if the font does not carry it.

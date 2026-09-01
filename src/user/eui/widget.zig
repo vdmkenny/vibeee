@@ -1134,13 +1134,9 @@ fn paintRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, styl
     surface.fill(area, ground);
 
     const clipped = surface.clipped(area);
+    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
     if (item.icon) |which| {
-        clipped.icon(
-            area.x + t.menu_padding,
-            area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-            which,
-            ink,
-        );
+        clipped.icon(area.x + t.menu_padding, Surface.iconTopFor(baseline), which, ink);
     }
     clipped.text(
         area.x + t.menu_padding + if (style.indented) markWidth() else 0,
@@ -1542,12 +1538,7 @@ pub const Menu = struct {
             const ink = if (highlighted) t.accent_text else if (item.kind == .disabled) t.text_dim else t.text;
 
             if (item.mark) |which| {
-                clipped.icon(
-                    line.x + t.menu_padding,
-                    line.y + @divTrunc(line.h - Surface.iconSize(), 2),
-                    which,
-                    ink,
-                );
+                clipped.icon(line.x + t.menu_padding, Surface.iconTopFor(baseline), which, ink);
             }
 
             const text_x = line.x + t.menu_padding + if (indented) markWidth() else 0;

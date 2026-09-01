@@ -335,7 +335,7 @@ fn paint(
             t.text;
 
         if (row.icon) |which| {
-            surface.icon(line.x + 3, y + @divTrunc(row_h - Surface.iconSize(), 2), which, ink);
+            surface.icon(line.x + 3, Surface.iconTopFor(y + 2), which, ink);
         }
 
         var cx = line.x + 2;

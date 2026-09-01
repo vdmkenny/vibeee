@@ -286,20 +286,13 @@ fn drawHead(ctx: *eui.widget.Context, area: Rect, entry: dir.Entry, kind: Kind) 
     const t = theme.current();
     const at = head(area);
 
-    // Both centred on the same line rather than both starting at its top: a
-    // picture and a word are different heights, and one of them reads as
-    // sitting higher than the other.
-    const line = @max(eui.Surface.iconSize(), eui.Surface.textHeight());
-    ctx.surface.icon(
-        at.x,
-        at.y + @divTrunc(line - eui.Surface.iconSize(), 2),
-        kind.icon(),
-        t.text,
-    );
+    // The picture on the same line as the word beside it, which is the body
+    // of the letters rather than the middle of their cell.
+    ctx.surface.icon(at.x, eui.Surface.iconTopFor(at.y), kind.icon(), t.text);
     ctx.rowText(
         .{
             .x = at.x + eui.Surface.iconSize() + t.gap,
-            .y = at.y + @divTrunc(line - eui.Surface.textHeight(), 2),
+            .y = at.y,
             .w = area.w,
             .h = at.h,
         },
@@ -307,7 +300,7 @@ fn drawHead(ctx: *eui.widget.Context, area: Rect, entry: dir.Entry, kind: Kind) 
         t.text,
     );
 
-    const under = at.y + line + t.padding;
+    const under = at.y + eui.Surface.textHeight() + t.padding;
     ctx.surface.fill(.{ .x = area.x, .y = under, .w = area.w, .h = 1 }, t.line);
     return under + t.padding;
 }

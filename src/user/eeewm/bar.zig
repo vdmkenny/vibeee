@@ -694,7 +694,7 @@ fn paintLauncherField(surface: Surface, area: Rect) void {
     const text_y = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
     var x = area.x + t.menu_padding;
 
-    surface.icon(x, area.y + @divTrunc(area.h - Surface.iconSize(), 2), .search, t.text_dim);
+    surface.icon(x, Surface.iconTopFor(text_y), .search, t.text_dim);
     x += Surface.iconSize() + t.gap;
 
     const typed = launcher_query.slice();
