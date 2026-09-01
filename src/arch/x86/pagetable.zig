@@ -148,6 +148,65 @@ pub fn walk(
     return true;
 }
 
+/// Room set aside for one device aperture.
+pub const Window = struct {
+    /// Where the mapping begins, which is where the first entry goes.
+    base: usize,
+    /// Where the aperture's own first byte lands. Not the same as `base`: an
+    /// aperture is rarely at the start of a whole entry, and a caller wants
+    /// the byte it asked for rather than the entry it fell in.
+    at: usize,
+    /// The first physical address the mapping covers.
+    from: usize,
+    /// How much it covers, in whole large entries.
+    span: usize,
+    /// Where the next reservation begins.
+    next: usize,
+};
+
+/// Set aside room for `len` bytes of the aperture at `phys`, beginning at
+/// `next` and stopping before `limit`.
+///
+/// All of it in sixty-four bits, and this is the reason the function exists
+/// apart from the mapping it serves. Every quantity here comes from a device
+/// or from firmware, and on a machine whose addresses are thirty-two a sum in
+/// the machine's own width is one that an aperture near the top of the space
+/// carries around past zero. The guard then passes, the mapping loop writes
+/// entries at wrapped indices into the directory every address space copies
+/// its kernel half from, and the frames those entries name are the kernel's
+/// own memory rather than the device's.
+///
+/// Null when it will not fit, which is the only way it declines: a window is
+/// a bump forwards and there is nothing to search.
+pub fn reserve(next: usize, phys: usize, len: usize, limit: u64) ?Window {
+    if (len == 0) return null;
+
+    const from = std.mem.alignBackward(u64, phys, LARGE_PAGE_SIZE);
+    const covers = std.math.add(u64, phys, len) catch return null;
+    const to = std.mem.alignForward(u64, covers, LARGE_PAGE_SIZE);
+
+    // An aperture whose mapping would run off the top of physical addressing
+    // is one whose tail would name low memory instead.
+    if (to > ADDRESS_SPACE) return null;
+
+    const span = to - from;
+    const end = @as(u64, next) + span;
+    if (end > limit) return null;
+
+    return .{
+        .base = next,
+        .at = @intCast(next + (phys - from)),
+        .from = @intCast(from),
+        .span = @intCast(span),
+        .next = @intCast(end),
+    };
+}
+
+/// One past the highest address this machine can name. Sixty-four bits wide
+/// because the whole point of the arithmetic above is to hold a value that
+/// does not fit in an address.
+pub const ADDRESS_SPACE: u64 = 1 << 32;
+
 // ---------------------------------------------------------------------------
 // Tests
 //
@@ -345,6 +404,64 @@ test "an entry names the frame it was built from" {
     try testing.expectEqual(@as(u32, 0x80), @as(u32, @bitCast(Entry{ .large = true })));
     try testing.expectEqual(@as(u32, 0x100), @as(u32, @bitCast(Entry{ .global = true })));
     try testing.expectEqual(@as(usize, 4), @sizeOf(Entry));
+}
+
+test "a window is set aside where the last one stopped" {
+    const window = reserve(0xF000_0000, 0xFD00_0000, 0x30_0000, ADDRESS_SPACE).?;
+
+    // The aperture is not at the start of a large entry, so the mapping begins
+    // below it and the address handed back is that far in.
+    try testing.expectEqual(@as(usize, 0xFD00_0000), window.from);
+    try testing.expectEqual(@as(usize, 0xF000_0000), window.base);
+    try testing.expectEqual(@as(usize, 0xF000_0000), window.at);
+    try testing.expectEqual(@as(usize, LARGE_PAGE_SIZE), window.span);
+    try testing.expectEqual(@as(usize, 0xF040_0000), window.next);
+
+    // One that starts partway into an entry keeps its offset.
+    const inside = reserve(0xF000_0000, 0xFD01_2340, 0x100, ADDRESS_SPACE).?;
+    try testing.expectEqual(@as(usize, 0xFD00_0000), inside.from);
+    try testing.expectEqual(@as(usize, 0xF000_0000), inside.base);
+    try testing.expectEqual(@as(usize, 0xF001_2340), inside.at);
+    try testing.expectEqual(@as(usize, LARGE_PAGE_SIZE), inside.span);
+
+    // And one spanning a boundary covers both entries.
+    const across = reserve(0xF000_0000, 0xFD3F_F000, 0x2000, ADDRESS_SPACE).?;
+    try testing.expectEqual(@as(usize, 2 * LARGE_PAGE_SIZE), across.span);
+}
+
+test "an aperture that runs off the top of addressing is refused" {
+    // The case that matters. Worked out in the machine's own width the end
+    // comes back around to a small number, the check passes, and the tail of
+    // the mapping names low memory: the kernel's own image, mapped into the
+    // window as if it were the device.
+    try testing.expectEqual(@as(?Window, null), reserve(0xF000_0000, 0xFFFF_0000, 0x50_0000, ADDRESS_SPACE));
+    try testing.expectEqual(@as(?Window, null), reserve(0xF000_0000, 0xFFFF_F000, 0x2000, ADDRESS_SPACE));
+    try testing.expectEqual(@as(?Window, null), reserve(0xF000_0000, 1, std.math.maxInt(usize), ADDRESS_SPACE));
+
+    // Right up to the top is allowed: the limit is where addressing stops.
+    const last = reserve(0xF000_0000, 0xFFC0_0000, LARGE_PAGE_SIZE, ADDRESS_SPACE).?;
+    try testing.expectEqual(@as(usize, 0xFFC0_0000), last.from);
+    try testing.expectEqual(@as(usize, LARGE_PAGE_SIZE), last.span);
+}
+
+test "a window that will not fit is refused rather than wrapped" {
+    // The guard was itself a sum in the machine's own width, so a span large
+    // enough carried it past the end and the check passed for a reservation
+    // that would write entries at the bottom of the directory.
+    const limit = ADDRESS_SPACE;
+    try testing.expectEqual(@as(?Window, null), reserve(0xF000_0000, 0, 0x2000_0000, limit));
+
+    // Exactly filling what is left is not overflowing it.
+    const exact = reserve(0xF000_0000, 0, 0x1000_0000, limit).?;
+    try testing.expectEqual(@as(usize, 0x1000_0000), exact.span);
+    try testing.expectEqual(@as(usize, 0), exact.next % LARGE_PAGE_SIZE);
+
+    // And a window already at the end has nothing left to give.
+    try testing.expectEqual(@as(?Window, null), reserve(@intCast(limit - 1), 0, 1, limit));
+}
+
+test "an aperture of nothing is not an aperture" {
+    try testing.expectEqual(@as(?Window, null), reserve(0xF000_0000, 0xFD00_0000, 0, ADDRESS_SPACE));
 }
 
 test "an address falls in the entries that cover it" {

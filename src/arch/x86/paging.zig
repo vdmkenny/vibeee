@@ -12,7 +12,6 @@
 //! RAM, on a core with a small TLB that is a meaningful win over 4 KiB pages.
 //! User space gets ordinary 4 KiB pages across the low 3 GiB.
 
-const std = @import("std");
 const pagetable = @import("pagetable.zig");
 
 pub const PAGE_SIZE: usize = 4096;
@@ -42,6 +41,7 @@ const IDENTITY_MIB = 64;
 pub const Entry = pagetable.Entry;
 pub const Table = pagetable.Table;
 pub const Access = pagetable.Access;
+const directoryIndex = pagetable.directoryIndex;
 
 /// A four-megabyte directory entry covering `phys`.
 ///
@@ -374,19 +374,19 @@ pub const MmioError = error{NoAddressSpace};
 pub const Caching = enum { cached, uncached };
 
 pub fn mapMmio(phys: usize, len: usize, caching: Caching) MmioError!usize {
-    const start = std.mem.alignBackward(usize, phys, LARGE_PAGE_SIZE);
-    const end = std.mem.alignForward(usize, phys + len, LARGE_PAGE_SIZE);
-    const span = end - start;
+    // Where it goes and how much of it there is, worked out in `pagetable.zig`
+    // in sixty-four bits: an aperture near the top of the space would
+    // otherwise carry these sums past the end of addressing, and the entries
+    // written below would name the kernel's own memory.
+    const window = pagetable.reserve(mmio_next, phys, len, pagetable.ADDRESS_SPACE) orelse
+        return error.NoAddressSpace;
 
-    if (mmio_next + span > 0xFFFF_FFFF - LARGE_PAGE_SIZE) return error.NoAddressSpace;
-
-    const virt_base = mmio_next;
     const dir = pageDirectory();
 
     var offset: usize = 0;
-    while (offset < span) : (offset += LARGE_PAGE_SIZE) {
-        const pde_index = (virt_base + offset) / LARGE_PAGE_SIZE;
-        dir[pde_index] = large(start + offset, .{
+    while (offset < window.span) : (offset += LARGE_PAGE_SIZE) {
+        const pde_index = directoryIndex(window.base + offset);
+        dir[pde_index] = large(window.from + offset, .{
             .present = true,
             .write = true,
             .global = true,
@@ -397,12 +397,12 @@ pub fn mapMmio(phys: usize, len: usize, caching: Caching) MmioError!usize {
         });
     }
 
-    mmio_next += span;
+    mmio_next = window.next;
     flushAll();
 
-    // Return the address of the requested byte, not of the aligned page it
-    // happens to start in.
-    return virt_base + (phys - start);
+    // The address of the requested byte, not of the entry it happens to fall
+    // in: an aperture is rarely at the start of four megabytes.
+    return window.at;
 }
 
 /// Typed view of a physical address in the linear map.
