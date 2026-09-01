@@ -92,13 +92,26 @@ fn usbdMain() noreturn {
 
     // The first look at the ports: the machine's own devices are already
     // plugged in and will never announce themselves.
-    for (controllers[0..controller_count], 0..) |controller, i| {
-        core.scan(@intCast(i), controller.ops);
-    }
+    scanAll();
     settle();
     out.flush();
 
     serve();
+}
+
+/// Walk every controller, twice when a walk hands ports down: the fast
+/// controller releases a full or low speed device to its companion, and
+/// the companion, which announces nothing on its own, may already have
+/// been walked when the handover lands.
+fn scanAll() void {
+    var released: u8 = 0;
+    for (controllers[0..controller_count], 0..) |controller, i| {
+        released += core.scan(@intCast(i), controller.ops);
+    }
+    if (released == 0) return;
+    for (controllers[0..controller_count], 0..) |controller, i| {
+        _ = core.scan(@intCast(i), controller.ops);
+    }
 }
 
 fn claim() void {
@@ -199,7 +212,7 @@ fn serve() noreturn {
             switch (outcome) {
                 .quiet => {},
                 .ports_changed => {
-                    core.scan(@intCast(which), controller.ops);
+                    if (core.scan(@intCast(which), controller.ops) > 0) scanAll();
                     settle();
                 },
                 .reborn => {
@@ -209,9 +222,7 @@ fn serve() noreturn {
                     // companions, and only a walk of theirs picks the
                     // devices back up.
                     core.forgetController(@intCast(which));
-                    for (controllers[0..controller_count], 0..) |other, i| {
-                        core.scan(@intCast(i), other.ops);
-                    }
+                    scanAll();
                     settle();
                 },
             }

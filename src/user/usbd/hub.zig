@@ -181,8 +181,13 @@ fn settle(hub: *Hub, port: u8) void {
     }
 
     // A port with something on it that is not yet enabled needs a reset,
-    // which is what makes the device answer to address zero.
+    // which is what makes the device answer to address zero. The
+    // connection stands its debounce first, and one that does not stand
+    // it was bounce, not a device.
     if (!status.enabled) {
+        sys.sleepMicros(usb.ATTACH_DEBOUNCE_US);
+        const standing = statusOf(hub, port) orelse return;
+        if (!standing.connected) return;
         if (!reset(hub, port)) return;
     }
 

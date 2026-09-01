@@ -135,8 +135,11 @@ pub fn at(index: usize) ?*const Device {
 
 /// Walk one controller's ports and enumerate whatever is newly on them.
 /// Called at start and again on every port-change interrupt, which is
-/// the whole of the hot-plug story: nothing polls.
-pub fn scan(controller: u8, ops: hc.HcOps) void {
+/// the whole of the hot-plug story: nothing polls. Returns how many ports
+/// were handed to a companion controller, because the companion may have
+/// been walked already and its walk is now stale.
+pub fn scan(controller: u8, ops: hc.HcOps) u8 {
+    var released: u8 = 0;
     var index: u8 = 0;
     const ports = ops.ports();
     while (index < ports) : (index += 1) {
@@ -153,6 +156,11 @@ pub fn scan(controller: u8, ops: hc.HcOps) void {
         if (state.changed) forget(controller, .{}, index);
         if (known(controller, .{}, index)) continue;
 
+        // The connection must have stood its debounce before the reset,
+        // or the reset lands on a device still bouncing on its contacts.
+        sys.sleepMicros(usb.ATTACH_DEBOUNCE_US);
+        if (!ops.port(index).connected) continue;
+
         const settled = ops.resetPort(index);
         if (settled.released) {
             log.begin("usbd", .dim);
@@ -162,12 +170,14 @@ pub fn scan(controller: u8, ops: hc.HcOps) void {
             out.text(settled.speed.spell());
             out.text(" speed, left to the companion controller");
             log.end();
+            released += 1;
             continue;
         }
         if (!settled.enabled) continue;
 
         arrived(controller, .{}, index, settled.speed, ops);
     }
+    return released;
 }
 
 /// A device has appeared: on a root port when the scan found it, or on a

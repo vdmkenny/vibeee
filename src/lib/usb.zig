@@ -448,6 +448,12 @@ pub fn walk(bytes: []const u8) Walk {
 /// something, and a fast controller talking to a slow device that way has
 /// to split every transaction in two and address the halves at the hub.
 /// So this travels with every transfer rather than being looked up.
+/// How long a connection must have been seen standing before the reset
+/// that follows it. Contact bounce reads as a parade of arrivals, and the
+/// specification owes a device a hundred milliseconds of stable attach
+/// before anything is done to it.
+pub const ATTACH_DEBOUNCE_US: u32 = 100_000;
+
 pub const Route = struct {
     hub: u7 = 0,
     port: u7 = 0,

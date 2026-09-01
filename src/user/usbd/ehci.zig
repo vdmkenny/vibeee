@@ -970,9 +970,10 @@ fn startSchedule() void {
             port.powered = true;
             portWrite(index, port);
         }
-        // The specification's own settling time for power to reach a
-        // device and its pull-ups to mean anything.
-        sys.sleepMicros(20_000);
+        // The specification gives a device a hundred milliseconds from
+        // power to attach; looking sooner reads an empty port that is
+        // merely still waking.
+        sys.sleepMicros(usb.ATTACH_DEBOUNCE_US);
     }
 }
 
