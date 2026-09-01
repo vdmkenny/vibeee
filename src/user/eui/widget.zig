@@ -19,9 +19,12 @@
 //! area under it. A pass over an interface where nothing happened writes no
 //! pixels at all.
 
+const std = @import("std");
 const draw = @import("draw.zig");
 
 const bar = @import("slider.zig");
+const steps = @import("stepper.zig");
+const tally = @import("pips.zig");
 const gauge = @import("meter.zig");
 const icons = @import("icon.zig");
 const foot = @import("footer.zig");
@@ -1066,6 +1069,59 @@ pub const Context = struct {
     }
 
     /// A filled bar, for anything with a proportion to show.
+    /// A tally of `filled` of `count` pips. Returns what the tally should be
+    /// after this pass: a pip pressed fills up to itself, the last filled one
+    /// pressed again empties itself, and left and right step it when focused.
+    pub fn pips(self: *Context, area: Rect, count: usize, filled: usize) usize {
+        const entry = self.slotFor(area) orelse return @min(filled, count);
+        const it = self.interact(entry, area);
+
+        var next = @min(filled, count);
+        if (it.clicked) {
+            if (tally.at(area, count, self.pointer_x, self.pointer_y)) |index| next = tally.pressed(next, index);
+        }
+        if (it.focused and self.pending_key != 0) {
+            const code = self.pending_key;
+            if (code == @intFromEnum(KeyCode.left) and next > 0) {
+                next -= 1;
+                self.pending_key = 0;
+            } else if (code == @intFromEnum(KeyCode.right) and next < count) {
+                next += 1;
+                self.pending_key = 0;
+            }
+        }
+
+        const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
+        const shown: i32 = @intCast(next);
+        if (self.needsPaint(entry, visual) or entry.detail != shown) {
+            entry.visual = visual;
+            entry.detail = shown;
+            paintPips(self.surface, area, count, next, it.focused);
+            self.addDamage(area);
+        }
+        return next;
+    }
+
+    /// An exact number with a step down and a step up. Returns what the
+    /// value should be after this pass, kept within `range`.
+    pub fn stepper(self: *Context, area: Rect, range: bar.Range, value: i32) i32 {
+        const part = steps.parts(area);
+        var next = range.clamp(value);
+        if (self.buttonAs(part.less, "-", .quiet)) next = range.clamp(next - 1);
+        if (self.buttonAs(part.more, "+", .quiet)) next = range.clamp(next + 1);
+
+        // The number between them is a picture of the value: repainted when
+        // the value moves, or when the pass repaints everything.
+        const entry = self.slotFor(part.value) orelse return next;
+        entry.seen = true;
+        if (self.damaged or entry.detail != next) {
+            entry.detail = next;
+            paintNumber(self.surface, part.value, next);
+            self.addDamage(part.value);
+        }
+        return next;
+    }
+
     pub fn progress(self: *Context, area: Rect, fraction: u8) void {
         const entry = self.slotFor(area) orelse return;
         entry.seen = true;
@@ -1089,6 +1145,30 @@ pub const Context = struct {
 // Separate from the control functions so the look lives in one place: changing
 // how a button is drawn should not mean touching how it behaves.
 // ---------------------------------------------------------------------------
+
+/// A row of pips: the filled ones in the accent, the rest as empty wells.
+/// Squares rather than dots, because a circle at ten pixels on this panel
+/// is a blur and a square with a hairline is a shape.
+fn paintPips(surface: Surface, area: Rect, count: usize, filled: usize, focused: bool) void {
+    const t = theme.current();
+    surface.fill(area, t.surface);
+    for (0..count) |i| {
+        const well = tally.cell(area, i);
+        const on = i < filled;
+        surface.fill(well, if (on) t.accent else t.surface_hot);
+        surface.frame(well, if (on) t.accent else t.line);
+    }
+    if (focused) paintFocusRing(surface, area, t.text_dim);
+}
+
+/// The number between a stepper's buttons, centred on the surface.
+fn paintNumber(surface: Surface, area: Rect, value: i32) void {
+    const t = theme.current();
+    surface.fill(area, t.surface);
+    var digits: [12]u8 = undefined;
+    const text = std.fmt.bufPrint(&digits, "{d}", .{value}) catch "";
+    surface.textCentred(area, text, t.text);
+}
 
 /// A level read rather than set: the fill, the peak it has recently
 /// touched, and the mark where it stops being loud.

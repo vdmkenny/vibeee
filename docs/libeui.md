@@ -84,6 +84,8 @@ with it this pass.
 | `labelDim` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelIn` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
 | `rowText` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
+| `pips` | `fn (*widget.Context, draw.Rect, usize, usize) usize` |
+| `stepper` | `fn (*widget.Context, draw.Rect, slider.Range, i32) i32` |
 | `progress` | `fn (*widget.Context, draw.Rect, u8) void` |
 
 ## The pass
@@ -317,6 +319,24 @@ A label and what it says, in two columns.
 
 Equal cells in a rectangle.
 
+### `eui.pips`
+
+A tally: n of m, as a row of pips.
+
+| call | signature |
+|---|---|
+| `size` | `fn () i32` |
+| `gap` | `fn () i32` |
+| `width` | `fn (usize) i32` |
+| `cell` | `fn (draw.Rect, usize) draw.Rect` |
+| `at` | `fn (draw.Rect, usize, i32, i32) ?usize` |
+| `pressed` | `fn (usize, usize) usize` |
+
+Numbers it owns:
+
+- `SIZE` = 10
+- `GAP` = 4
+
 ### `eui.popover`
 
 Where a panel anchored to something goes.
@@ -391,6 +411,19 @@ Numbers it owns:
 
 - `TRACK_HEIGHT` = 6
 - `KNOB_WIDTH` = 9
+
+### `eui.stepper`
+
+An exact number with a step down and a step up.
+
+| call | signature |
+|---|---|
+| `parts` | `fn (draw.Rect) stepper.Parts` |
+| `width` | `fn (i32) i32` |
+
+Numbers it owns:
+
+- `VALUE_WIDTH` = 40
 
 ### `eui.strip`
 
