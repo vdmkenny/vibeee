@@ -44,6 +44,7 @@ const CASES = [_]Case{
     .{ .says = "a path that reaches into the kernel", .run = &kernelPath, .want = .fault },
     .{ .says = "a handle nobody was given", .run = &strayHandle, .want = .badf },
     .{ .says = "a message at an address it cannot sit at", .run = &misalignedMessage, .want = .fault },
+    .{ .says = "one of the system's own service names", .run = &reservedName, .want = .perm },
 };
 
 pub fn run(args: []const []const u8) void {
@@ -90,6 +91,7 @@ fn name(which: abi.Errno) []const u8 {
     return switch (which) {
         .fault => "refused (fault)",
         .badf => "refused (bad handle)",
+        .perm => "refused (not allowed)",
         else => "refused",
     };
 }
@@ -165,6 +167,13 @@ fn kernelPath() isize {
 
 fn strayHandle() isize {
     return sys.close(4095);
+}
+
+/// The name the settings store answers to. A program that took it would be
+/// asked every question about what this machine is set to, and would answer
+/// them. It is held back for whatever is actually the settings store.
+fn reservedName() isize {
+    return sys.svcRegister("cfg");
 }
 
 /// A message at an address it could never be laid out at. The kernel treats

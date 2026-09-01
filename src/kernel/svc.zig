@@ -14,6 +14,7 @@
 const std = @import("std");
 const channel = @import("channel.zig");
 const hal = @import("hal.zig");
+const names = @import("lib").services;
 
 pub const Error = error{
     TableFull,
@@ -23,7 +24,15 @@ pub const Error = error{
 };
 
 pub const MAX_SERVICES = 16;
-pub const MAX_NAME = 24;
+
+/// From `lib`, so the registry's storage and the rule about what a name may be
+/// cannot come to disagree about how long one is.
+pub const MAX_NAME = names.MAX_NAME;
+
+/// Whether taking this name needs the `service` capability. The list is in
+/// `lib` because the kernel must not learn which names are the system's own
+/// from the programs it is deciding about.
+pub const isReserved = names.isReserved;
 
 const Entry = struct {
     name_buf: [MAX_NAME]u8 = @splat(0),
@@ -36,18 +45,6 @@ const Entry = struct {
 };
 
 var table: [MAX_SERVICES]Entry = @splat(.{});
-
-fn isValidName(name: []const u8) bool {
-    if (name.len == 0 or name.len > MAX_NAME) return false;
-    for (name) |c| {
-        // Lowercase, digits, dot and dash. Restrictive because a service name
-        // appears in log lines and config files, and a name that needs quoting
-        // is a name that will eventually be quoted wrongly.
-        const ok = (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '.' or c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
 
 /// Whether an entry still has a server behind it.
 ///
@@ -74,7 +71,7 @@ fn retire(e: *Entry) void {
 /// exists to support would fail with the name already registered. Only a live
 /// server blocks a name.
 pub fn register(name: []const u8, ch: *channel.Channel) Error!void {
-    if (!isValidName(name)) return error.BadName;
+    if (!names.isValidName(name)) return error.BadName;
 
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);

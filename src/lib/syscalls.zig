@@ -622,7 +622,14 @@ pub const Caps = packed struct(u32) {
     /// from somewhere trustworthy: a program that could move the clock could
     /// move every timestamp and every certificate lifetime with it.
     time: bool = false,
-    _reserved: u25 = 0,
+    /// May register one of the system's own service names. Held by the
+    /// programs that are those services: a program that could take `cfg` or
+    /// `gui` would be answering for the settings store or the desktop, which
+    /// is to say reading every setting a machine holds or every key its owner
+    /// types. Ordinary names need nothing, so a program can still be a
+    /// service.
+    service: bool = false,
+    _reserved: u24 = 0,
 
     /// Everything. What the first process starts with, and what a spawn asks
     /// for when it wants the child to keep whatever the parent had.
@@ -635,6 +642,15 @@ pub const Caps = packed struct(u32) {
     /// What a child ends up with: never more than its parent had.
     pub fn intersect(self: Caps, requested: Caps) Caps {
         return @bitCast(@as(u32, @bitCast(self)) & @as(u32, @bitCast(requested)));
+    }
+
+    /// Everything this holds except what is named.
+    ///
+    /// What a process passes on when it starts something it is not handing its
+    /// whole authority to. A spawn asks for capabilities rather than being
+    /// given them, so a parent that means to keep one to itself has to say so.
+    pub fn without(self: Caps, unwanted: Caps) Caps {
+        return @bitCast(@as(u32, @bitCast(self)) & ~@as(u32, @bitCast(unwanted)));
     }
 };
 

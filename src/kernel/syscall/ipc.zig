@@ -126,6 +126,16 @@ pub fn sys_svc_register(a: Args) Result {
     if (name.len == 0 or name.len > buf.len) return Errno.inval.value();
     @memcpy(buf[0..name.len], name);
 
+    // The system's own names are held back. A program that took `cfg` would
+    // answer every settings question on the machine, and one that took `gui`
+    // would be handed every key its owner types: the name is the whole of what
+    // a client has to go on, so who may take one is the kernel's to say.
+    // Registration is checked before the channel exists, so a refusal costs
+    // nothing and cannot leave one behind.
+    if (svc.isReserved(buf[0..name.len])) {
+        if (ctx.require(.{ .service = true })) |denied| return denied;
+    }
+
     const ch = channel_mod.create() catch return Errno.nomem.value();
     errdefer channel_mod.release(ch);
 

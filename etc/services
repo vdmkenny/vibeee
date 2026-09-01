@@ -22,7 +22,7 @@ binary  = /bin/devmgd
 # can be stopped, started and rescanned at runtime, and the driver services
 # come and ask what they have been assigned. It holds everything it may
 # grant onward, kill included, so it can stop what it starts.
-caps    = spawn,kill,driver
+caps    = spawn,kill,driver,service
 provides = devices
 target  = boot
 restart = always
@@ -33,7 +33,7 @@ binary  = /bin/platd
 # what reaching the embedded controller and the power registers takes, and it
 # holds nothing else: if an AML method goes wrong it takes a restartable
 # server with it and not the machine.
-caps    = driver,power
+caps    = driver,power,service
 provides = platform
 target  = boot
 restart = always
@@ -51,7 +51,7 @@ binary  = /bin/vsh
 # Everything a session needs and nothing a driver needs: the shell, the
 # desktop and every program either of them starts are all below this line, so
 # none of them can take an interrupt line or map a device.
-caps    = spawn,kill,power,display,mount
+caps    = spawn,kill,power,display,mount,service
 target  = boot
 restart = always
 
@@ -66,7 +66,7 @@ binary  = /bin/netd
 # by construction. Last in the file, which is last within its round: the
 # shell is on screen before the adapter is touched, so a bring-up that stops
 # does so under a working prompt with its narration readable.
-caps    = driver
+caps    = driver,service
 needs   = platd,cfgd,devmgd
 provides = net
 target  = boot
@@ -77,7 +77,7 @@ binary  = /bin/sndd
 # The sound service: the routing graph, the mixer arithmetic, and whatever
 # PCM hardware the device manager assigns it. Behind platd for the same
 # reason the network is: interrupt routing is the firmware's to answer.
-caps    = driver
+caps    = driver,service
 needs   = platd,devmgd
 provides = audio
 target  = boot
@@ -91,7 +91,7 @@ binary  = /bin/usbd
 # by a manifest rather than by a change to the bus. It holds `mount` too:
 # a disk it finds is offered to the kernel as a volume, and putting it
 # where people can read it is the same event as finding it.
-caps    = driver,mount
+caps    = driver,mount,service
 needs   = platd,devmgd
 provides = usb
 target  = boot
@@ -106,8 +106,9 @@ binary  = /bin/eeewm
 # Never restarted. Leaving the desktop for the shell is something a person
 # asks for from its own menu, and a supervisor that started it again would
 # make that impossible.
-caps    = spawn,kill,power,display,mount
+caps    = spawn,kill,power,display,mount,service
 needs   = cfgd,devmgd,platd
+provides = gui
 restart = never
 
 name    = timed
