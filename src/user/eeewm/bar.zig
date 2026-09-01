@@ -2280,6 +2280,16 @@ fn openStatus(which: status.Indicator) void {
     }
 }
 
+/// The pack has reached the level somebody asked to be told about.
+///
+/// The warning is the reading itself, opened where the reading lives: a
+/// message that said "battery low" and nothing else would send somebody to
+/// this panel anyway.
+pub fn warnBattery() void {
+    if (power_open) return;
+    openStatus(.battery);
+}
+
 fn statusMenuOpen() bool {
     return sound_open or net_open or power_open or clock_open;
 }

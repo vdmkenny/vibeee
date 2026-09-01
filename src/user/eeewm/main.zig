@@ -26,6 +26,8 @@ const bar = @import("bar.zig");
 const cursor = @import("cursor.zig");
 const config = @import("config.zig");
 const keymaps = @import("keymaps");
+const rest = @import("idle.zig");
+const platform = @import("proto").platform;
 const proto = @import("proto");
 const region = @import("eui").region;
 const ui = @import("eui").widget;
@@ -111,13 +113,18 @@ fn wmMain() noreturn {
     // Signalled by cfgd when anything in the wm domain changes, so a theme
     // chosen from a shell reaches the desktop without a restart. Zero when the
     // service is not up, which the poll below reads as nothing to hear.
+    power_settings = proto.settings.load("power");
+    last_input_us = sys.clockMicros();
+
     settings_event = proto.settings.watch("wm") catch 0;
+    power_event = proto.settings.watch("power") catch 0;
     keyboard_event = proto.settings.watch("input") catch 0;
     listenTo(.keys, sys.watch(.keys));
     listenTo(.pointer, sys.watch(.pointer));
     listenTo(.children, sys.watch(.children));
     listenTo(.wm_settings, @intCast(settings_event));
     listenTo(.keyboard_settings, @intCast(keyboard_event));
+    listenTo(.power_settings, @intCast(power_event));
 
     // The desktop paints its own ground, and only the parts of it that show:
     // filling the screen and then covering most of it again is the flash this
@@ -380,6 +387,8 @@ fn run() noreturn {
             // belongs to whoever has focus: without that split a client would
             // swallow Mod+q and the desktop would be unnavigable from inside a
             // full-screen application.
+            stirred();
+
             if (bar.hasFocus()) {
                 if (event.isPress()) handleKey(event);
             } else if (event.mods().super) {
@@ -465,7 +474,15 @@ fn run() noreturn {
 
 /// What the manager listens to. Each is a counting event, so a thing that
 /// happens while the loop is busy is still there when it comes back round.
-const Source = enum { keys, pointer, children, channel, wm_settings, keyboard_settings };
+const Source = enum {
+    keys,
+    pointer,
+    children,
+    channel,
+    wm_settings,
+    keyboard_settings,
+    power_settings,
+};
 
 var sources: [@typeInfo(Source).@"enum".fields.len]u32 = @splat(0);
 var listening: usize = 0;
@@ -508,9 +525,89 @@ fn idle() void {
     // Only the bar is repainted for it. Setting `dirty` here redrew the
     // desktop and every window to move a five character clock, which on the
     // panel was a visible full-screen wipe once a minute.
-    if (sys.waitMany(waiting[0..count], untilTheClockTurns()) < 0) {
+    if (sys.waitMany(waiting[0..count], untilSomethingIsDue()) < 0) {
+        // A timeout means nothing happened: the clock turned, or the machine
+        // has now been alone long enough for something to be done about it.
+        settleIdle();
+        checkPack();
         bar.refresh();
         paintBar();
+    }
+}
+
+/// How long the one wait may last: whichever of the clock and the idle
+/// timers falls first.
+fn untilSomethingIsDue() usize {
+    const clock = untilTheClockTurns();
+    const step = rest.stepFor(power_settings, idleFor());
+    const due = step.due_us orelse return clock;
+    return @min(clock, @as(usize, @intCast(due)));
+}
+
+/// How long since anybody did anything.
+fn idleFor() u64 {
+    return sys.clockMicros() -| last_input_us;
+}
+
+/// Somebody is here: whatever was turned down comes back.
+fn stirred() void {
+    last_input_us = sys.clockMicros();
+    if (screen_state != .awake) settleIdle();
+}
+
+/// Put the screen into whatever being left alone this long calls for.
+///
+/// The level chosen by hand is remembered rather than read back, because what
+/// is read back while it is dimmed is the dimmed level: a machine that woke
+/// twice would end up as dark as it could go.
+fn settleIdle() void {
+    const step = rest.stepFor(power_settings, idleFor());
+    if (step.want == screen_state) return;
+
+    const lamp = platform.backlight() orelse {
+        screen_state = step.want;
+        return;
+    };
+
+    if (screen_state == .awake) chosen_level = lamp.level;
+    screen_state = step.want;
+
+    _ = platform.setBacklight(@intCast(rest.levelFor(
+        step.want,
+        chosen_level,
+        power_settings.dim_to,
+        1,
+    )));
+}
+
+/// What the pack says, and what was chosen to happen when it says it.
+///
+/// Read on the same wake as the clock, which is once a minute: a pack does
+/// not fall five per cent between two of those, and asking oftener would be
+/// asking the embedded controller for an answer nobody is waiting for.
+fn checkPack() void {
+    const cell = platform.battery() orelse return;
+    const percent = platform.charge(cell) orelse return;
+    if (!rest.packIsLow(percent, cell.state() == .discharging, power_settings.low_at)) {
+        warned_low = false;
+        return;
+    }
+
+    switch (power_settings.low_action) {
+        .warn => {
+            if (warned_low) return;
+            warned_low = true;
+            bar.warnBattery();
+            paintBar();
+        },
+        .screen_off => {
+            if (platform.backlight()) |lamp| {
+                if (screen_state == .awake) chosen_level = lamp.level;
+                screen_state = .off;
+                _ = platform.setBacklight(0);
+            }
+        },
+        .shut_down => sys.shutdown(sys.POWER_OFF),
     }
 }
 
@@ -530,6 +627,17 @@ fn paintBar() void {
 /// The bar says minutes and its menu says seconds, so what the machine has to
 /// wake for depends on which of them somebody is looking at. Nothing polls
 /// either way: this is the deadline on the one wait.
+/// When anybody last did anything, and what the screen is in because of it.
+var last_input_us: u64 = 0;
+var screen_state: rest.State = .awake;
+/// The level somebody chose, kept while it is turned down: what is read back
+/// from a dimmed panel is the dimmed level.
+var chosen_level: u32 = 0;
+var warned_low = false;
+
+/// What the machine does when it is left alone and when the pack runs out.
+var power_settings: proto.settings.Power = .{};
+
 fn untilTheClockTurns() usize {
     const step: i64 = if (bar.clockOpen()) 1_000_000 else 60 * 1_000_000;
     const now = sys.realtimeMicros() orelse return @intCast(step);
@@ -621,6 +729,7 @@ fn perform(action: bindings.Action) void {
 }
 
 fn handlePointer(event: sys.PointerEvent) void {
+    stirred();
     pointer_x = event.x;
     pointer_y = event.y;
 
@@ -924,6 +1033,7 @@ fn nextKeymap() void {
 }
 
 var settings_event: u32 = 0;
+var power_event: u32 = 0;
 var keyboard_event: u32 = 0;
 
 /// Take up a settings change somebody else made.
@@ -935,6 +1045,14 @@ fn settingsChanged() bool {
     // the two letters in the bar that say which one it is.
     if (keyboard_event != 0 and sys.waitMany(&.{keyboard_event}, sys.POLL) >= 0) {
         if (config.reloadKeyboard()) dirty = true;
+    }
+
+    // What to do when the machine is left alone. Taken up as soon as it is
+    // chosen, so somebody setting it to never does not have to wait out the
+    // old interval to find out whether it worked.
+    if (power_event != 0 and sys.waitMany(&.{power_event}, sys.POLL) >= 0) {
+        power_settings = proto.settings.load("power");
+        stirred();
     }
 
     if (settings_event == 0) return false;
