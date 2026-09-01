@@ -66,14 +66,14 @@ pub const table = [_]probe.Driver{
         // entry below; the separate match exists so the boot log says which
         // machine was recognised, and so machine-specific quirks have somewhere
         // to attach later.
-        .name = "ata_ich",
+        .name = "ata-ich6",
         .kind = .block,
         .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x2653 } }},
         .probe = &exact(0x8086, 0x2653),
         .attach = &attachAta,
     },
     .{
-        .name = "ata_generic",
+        .name = "ata",
         .kind = .block,
         .match = &.{.{ .pci_class = .{ .class = 0x01, .subclass = 0x01 } }},
         .probe = &class(0x01, 0x01),
@@ -117,8 +117,9 @@ pub const table = [_]probe.Driver{
         // Whatever firmware left on the screen. Always available, always the
         // fallback, and on a machine whose only output is that screen it is
         // what makes an unrecognised adapter a working one rather than a dead
-        // one.
-        .name = "vesafb",
+        // one. Named for what it does, which is to keep the mode already set
+        // rather than to set one.
+        .name = "firmware-set",
         .kind = .video,
         .match = &.{.{ .pci_class = .{ .class = 0x03, .subclass = 0x00 } }},
         .probe = &class(0x03, 0x00),
@@ -173,7 +174,7 @@ pub const table = [_]probe.Driver{
         .probe = &exact(0x1969, 0x2048),
     },
     .{
-        .name = "ath5k",
+        .name = "ar2425",
         .kind = .net,
         .match = &.{.{ .pci_id = .{ .vendor = 0x168C, .device = 0x001C } }},
         .probe = &exact(0x168C, 0x001C),
@@ -196,19 +197,13 @@ pub const table = [_]probe.Driver{
         .probe = &exact(0x10EC, 0x8139),
     },
 
-    // -- Platform --------------------------------------------------------
-    .{
-        .name = "i801smb",
-        .kind = .bus,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x266A } }},
-        .probe = &exact(0x8086, 0x266A),
-    },
-    .{
-        .name = "lpc_ich",
-        .kind = .platform,
-        .match = &.{.{ .pci_id = .{ .vendor = 0x8086, .device = 0x2641 } }},
-        .probe = &exact(0x8086, 0x2641),
-    },
+    // The chipset's own bridges and its SMBus controller are not here. This
+    // table is the drivers a build contains, and an entry naming one it does
+    // not have makes a device read as spoken for by something that will never
+    // come. What they are is already said by the class they report, and
+    // nothing here needs to drive them: the parts behind the LPC bridge are
+    // reached through the firmware's own methods, and nothing asks the SMBus
+    // anything the embedded controller has not already answered.
 };
 
 /// Both ATA entries share this. The controller is addressed through the legacy
