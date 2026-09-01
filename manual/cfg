@@ -124,7 +124,7 @@ Settings, generated from the schema: all
   power.dim_to              30
       a number
   power.low_action          shut_down
-      warn | sleep | shut_down
+      warn | screen_off | shut_down
   power.low_at              5
       a number
 

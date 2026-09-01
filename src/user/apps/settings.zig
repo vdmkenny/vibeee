@@ -150,6 +150,25 @@ fn save() void {
 // The window
 // ---------------------------------------------------------------------------
 
+/// A hairline across the pane, and where what follows it starts.
+///
+/// What separates one subject from the next. The design draws the pane as a
+/// grid with edges; this is that edge, drawn where a section ends rather than
+/// around a cell nothing else knows the shape of.
+fn rule(pane: eui.Rect, y: i32) i32 {
+    const t = theme.current();
+    ctx.surface.fill(.{ .x = pane.x, .y = y, .w = pane.w, .h = 1 }, t.line);
+    ctx.addDamage(.{ .x = pane.x, .y = y, .w = pane.w, .h = 1 });
+    return y + t.padding * 2;
+}
+
+/// The same, upright: what divides two subjects standing side by side.
+fn ruleDown(x: i32, from: i32, to: i32) void {
+    const t = theme.current();
+    ctx.surface.fill(.{ .x = x, .y = from, .w = 1, .h = to - from }, t.line);
+    ctx.addDamage(.{ .x = x, .y = from, .w = 1, .h = to - from });
+}
+
 /// A heading over a row of controls, and where the row starts.
 fn group(y: *i32, area: eui.Rect, title: []const u8) i32 {
     ctx.labelDim(.{ .x = area.x, .y = y.*, .w = area.w, .h = 16 }, title);
@@ -325,7 +344,20 @@ fn drawDisplay(pane: eui.Rect) i32 {
     var y = pane.y;
     const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = row };
 
-    y = group(&y, full, "Theme");
+    // The two pictures side by side: what it looks like, and where the bar
+    // goes. Both are tiles of the same size, and a column of one of them
+    // beside four hundred rows of nothing is what the pane would otherwise
+    // be.
+    const tile_row = eui.widget.Context.sampleHeight();
+    const themes_w = ctx.samplesWidth(theme.all.len);
+
+    const theme_area = eui.Rect{ .x = pane.x, .y = y, .w = themes_w, .h = row };
+    const bar_x = pane.x + themes_w + t.control_height;
+    const bar_area = eui.Rect{ .x = bar_x, .y = y, .w = pane.right() - bar_x, .h = row };
+
+    var bar_y = y;
+    _ = group(&bar_y, bar_area, "Bar");
+    y = group(&y, theme_area, "Theme");
     // Drawn as what each one looks like: the desktop's ground, the bar's
     // strip and a block of its highlight. Applied on the spot rather than on
     // save, because seeing it is the point of choosing it.
@@ -344,7 +376,7 @@ fn drawDisplay(pane: eui.Rect) i32 {
     }
 
     const picked = ctx.samples(
-        .{ .x = pane.x, .y = y, .w = full.w, .h = eui.widget.Context.sampleHeight() },
+        .{ .x = theme_area.x, .y = y, .w = themes_w, .h = tile_row },
         looks[0..shown],
         @intFromEnum(current.theme),
     );
@@ -354,7 +386,11 @@ fn drawDisplay(pane: eui.Rect) i32 {
         theme.setAccent(current.accent.rgb());
         change();
     }
-    y += eui.widget.Context.sampleHeight() + t.padding;
+
+    const tiles_top = theme_area.y;
+    y = drawBarChoice(bar_area, bar_y, y + tile_row) + t.padding;
+    ruleDown(bar_x - @divTrunc(t.control_height, 2), tiles_top, y);
+    y = rule(pane, y);
 
     // The highlight, as colours rather than as words: what somebody is
     // choosing is what it looks like.
@@ -376,20 +412,28 @@ fn drawDisplay(pane: eui.Rect) i32 {
     );
     y += t.padding;
 
+    y = rule(pane, y);
+
     // Applied as it is dragged, and this window is drawn with it: what it
     // feels like is the only question, and the answer is on the screen.
     y = group(&y, full, "Scale");
-    var reading: [5]u8 = @splat(0);
-    const spelled = str.decimal(&reading, current.scale);
+    var reading: [8]u8 = @splat(0);
+    var spelled = str.Builder{ .buf = &reading };
+    spelled.number(current.scale);
+    spelled.byte('%');
+
+    const value_w = theme.enlarged(44);
     ctx.label(
-        .{ .x = pane.right() - 40, .y = y + 4, .w = 40, .h = 16 },
-        reading[0..spelled],
+        .{ .x = pane.right() - value_w, .y = y + 4, .w = value_w, .h = 16 },
+        spelled.done(),
     );
     const wanted_scale = ctx.slider(
-        .{ .x = pane.x, .y = y, .w = full.w - 46, .h = row },
+        .{ .x = pane.x, .y = y, .w = full.w - value_w - t.gap, .h = row },
         .{ .min = theme.SCALE_MIN, .max = theme.SCALE_MAX },
         current.scale,
-        .{},
+        // Notched, because the face is a bitmap: between the notches the
+        // metrics stretch and the letters do not.
+        .{ .notches = &theme.SCALE_STEPS },
     );
     if (wanted_scale != current.scale) {
         current.scale = @intCast(wanted_scale);
@@ -398,13 +442,9 @@ fn drawDisplay(pane: eui.Rect) i32 {
     }
     y += row + t.padding;
 
-    y = group(&y, full, "Bar");
-    const bar = ctx.choice(.{ .x = pane.x, .y = y, .w = full.w, .h = row }, current.bar);
-    if (bar != current.bar) {
-        current.bar = bar;
-        change();
-    }
-    y += row + t.padding;
+    // The wall behind everything. Three channels rather than a list of
+
+    y = rule(pane, y);
 
     // The wall behind everything. Three channels rather than a list of
     // colours: the panel is one flat colour and which one is a matter of
@@ -413,6 +453,50 @@ fn drawDisplay(pane: eui.Rect) i32 {
     const wall = eui.Rect{ .x = pane.x, .y = y, .w = full.w, .h = row * 3 + t.padding * 2 };
     _ = wallpaper(wall);
     return wall.bottom();
+}
+
+/// Where the bar goes, drawn rather than named: the answer is a picture of a
+/// screen with a strip along one edge, and two words are two words.
+fn drawBarChoice(area: eui.Rect, from: i32, floor: i32) i32 {
+    const t = theme.current();
+    const at = theme.current();
+
+    // A pale tile with the strip drawn on one edge, and nothing else in it:
+    // this tile is about where the bar goes, so a window drawn under it would
+    // be the only thing anybody looked at.
+    const chosen_edge = @intFromEnum(current.bar);
+    const edges = [_]eui.widget.Context.Sample{
+        .{
+            .label = "top",
+            .ground = at.surface_hot,
+            .strip = if (chosen_edge == 0) at.accent else at.text_dim,
+            .strip_at = .top,
+        },
+        .{
+            .label = "bottom",
+            .ground = at.surface_hot,
+            .strip = if (chosen_edge == 1) at.accent else at.text_dim,
+            .strip_at = .bottom,
+        },
+    };
+
+    const where = ctx.samples(
+        .{ .x = area.x, .y = from, .w = area.w, .h = eui.widget.Context.sampleHeight() },
+        &edges,
+        @intFromEnum(current.bar),
+    );
+    if (where != @intFromEnum(current.bar)) {
+        current.bar = @enumFromInt(where);
+        change();
+    }
+
+    const after = from + eui.widget.Context.sampleHeight();
+    ctx.labelDim(
+        .{ .x = area.x, .y = after + t.padding, .w = area.w, .h = 16 },
+        "Moves when the manager next starts.",
+    );
+
+    return @max(floor, after + t.padding + t.control_height);
 }
 
 fn drawAudio(pane: eui.Rect) i32 {
@@ -677,8 +761,8 @@ fn drawPower(pane: eui.Rect) i32 {
     var y = pane.y;
 
     y = drawPack(pane, y);
-    y = drawThermal(pane, y);
-    y = drawBacklight(pane, y);
+    y = rule(pane, drawThermal(pane, y));
+    y = rule(pane, drawBacklight(pane, y));
 
     // What the machine does when it is left alone, and what it does when the
     // pack runs out. Both are decisions that have to be made before they
@@ -703,7 +787,7 @@ fn drawPower(pane: eui.Rect) i32 {
     const picked = ctx.choiceOf(
         .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height },
         power.low_action,
-        &.{ "warn only", "sleep", "shut down" },
+        &.{ "warn only", "screen off", "shut down" },
     );
     if (picked != power.low_action) {
         power.low_action = picked;
@@ -725,7 +809,7 @@ fn drawPower(pane: eui.Rect) i32 {
 /// column of it is a page nobody reads.
 fn drawPack(pane: eui.Rect, from: i32) i32 {
     const t = theme.current();
-    var y = from;
+    const y = from;
 
     const cell = platform.battery() orelse {
         ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = 16 }, "This machine has no battery.");
@@ -780,9 +864,7 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
         rightLabel(pane, y + t.padding + theme.enlarged(18), spelled.done(), t.text_dim);
     }
 
-    y = glyph.bottom() + t.padding;
-    ctx.surface.fill(.{ .x = pane.x, .y = y, .w = pane.w, .h = 1 }, t.line);
-    return y + t.padding;
+    return rule(pane, glyph.bottom() + t.padding);
 }
 
 fn rightLabel(pane: eui.Rect, y: i32, text: []const u8, ink: eui.draw.Color) void {

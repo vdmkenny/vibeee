@@ -209,6 +209,11 @@ pub const SCALE_MAX: u16 = 200;
 /// dense is worse than a small one.
 pub const SCALE_DOUBLES: u16 = 150;
 
+/// The scales worth stopping at. The face doubles at one of them and every
+/// other measure is a fraction of a whole number of pixels, so between them
+/// the metrics stretch and the letters do not.
+pub const SCALE_STEPS = [_]i32{ 100, 125, 150, 175, 200 };
+
 pub fn current() *const Theme {
     return &active;
 }

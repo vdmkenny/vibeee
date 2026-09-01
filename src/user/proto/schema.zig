@@ -57,8 +57,10 @@ pub const Idle = enum {
 /// What to do when the pack is nearly empty.
 ///
 /// A choice made before it happens, which is the only time it can be made:
-/// a machine at three per cent has no time to ask.
-pub const LowAction = enum { warn, sleep, shut_down };
+/// a machine at three per cent has no time to ask. Sleeping is not among
+/// them: this machine has no suspend yet, and an answer that did nothing
+/// would be worse than a short list.
+pub const LowAction = enum { warn, screen_off, shut_down };
 
 /// What keeps the machine going, and what it does when that runs out.
 pub const Power = struct {

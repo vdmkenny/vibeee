@@ -616,6 +616,10 @@ pub const Context = struct {
         /// reason to differ: three channels of a colour read apart when each
         /// is drawn in its own, and read as one control when they are not.
         fill: ?theme.Color = null,
+        /// Values worth stopping at, marked on the track. For a range whose
+        /// middle means nothing: a picture of where the answers are beats a
+        /// number somebody has to land on by feel.
+        notches: []const i32 = &.{},
     };
 
     /// A value along a range: dragged with the pointer, nudged with the
@@ -736,8 +740,16 @@ pub const Context = struct {
         label: []const u8,
         ground: draw.Color,
         strip: draw.Color,
-        mark: draw.Color,
+        /// A window on the desktop, or nothing where the tile is about the
+        /// strip rather than about what is under it.
+        mark: ?draw.Color = null,
+        /// Which edge the strip runs along. What makes the same tile serve
+        /// for "this is the theme" and for "this is where the bar goes":
+        /// drawn rather than named, because the answer is a picture.
+        strip_at: Edge = .top,
     };
+
+    pub const Edge = enum { top, bottom };
 
     /// The design's tile, at a hundred per cent.
     pub const SAMPLE_WIDTH: i32 = 52;
@@ -745,6 +757,15 @@ pub const Context = struct {
 
     pub fn sampleHeight() i32 {
         return theme.enlarged(SAMPLE_HEIGHT) + theme.current().padding + Surface.textHeight();
+    }
+
+    /// How wide a row of `count` tiles is, for a caller placing something
+    /// beside it.
+    pub fn samplesWidth(self: *const Context, count: usize) i32 {
+        _ = self;
+        const t = theme.current();
+        const step = theme.enlarged(SAMPLE_WIDTH) + t.padding;
+        return @as(i32, @intCast(count)) * step - t.padding;
     }
 
     /// A row of them. Returns which is chosen, which is `chosen` unless one
@@ -1060,6 +1081,18 @@ pub fn paintSlider(surface: Surface, area: Rect, range: bar.Range, value: i32, v
     surface.frame(groove, t.line);
     surface.fill(bar.filled(area, range, value), style.fill orelse t.accent);
 
+    // The values worth stopping at, marked under the track where they cannot
+    // be mistaken for part of the level.
+    for (style.notches) |at| {
+        const mark = bar.knob(area, range, at);
+        surface.fill(.{
+            .x = mark.x + @divTrunc(mark.w, 2),
+            .y = groove.bottom() + 1,
+            .w = 1,
+            .h = theme.enlarged(3),
+        }, t.text_dim);
+    }
+
     const grip = bar.knob(area, range, value);
     surface.fill(grip, switch (visual) {
         .active => t.surface_pressed,
@@ -1194,13 +1227,25 @@ fn paintSample(surface: Surface, area: Rect, item: Context.Sample, chosen: bool,
     surface.fill(inner, item.ground);
 
     const strip = theme.enlarged(7);
-    surface.fill(.{ .x = inner.x, .y = inner.y, .w = inner.w, .h = strip }, item.strip);
-    surface.fill(.{
-        .x = inner.x + theme.enlarged(5),
-        .y = inner.y + strip + theme.enlarged(4),
-        .w = theme.enlarged(16),
-        .h = theme.enlarged(8),
-    }, item.mark);
+    const strip_y = switch (item.strip_at) {
+        .top => inner.y,
+        .bottom => inner.bottom() - strip,
+    };
+    surface.fill(.{ .x = inner.x, .y = strip_y, .w = inner.w, .h = strip }, item.strip);
+
+    // The window on the desktop, on whichever side of the strip is left.
+    const mark_y = switch (item.strip_at) {
+        .top => inner.y + strip + theme.enlarged(4),
+        .bottom => inner.y + theme.enlarged(4),
+    };
+    if (item.mark) |colour| {
+        surface.fill(.{
+            .x = inner.x + theme.enlarged(5),
+            .y = mark_y,
+            .w = theme.enlarged(16),
+            .h = theme.enlarged(8),
+        }, colour);
+    }
 
     const label_y = tile.bottom() + t.padding;
     const width = Surface.textWidth(item.label);

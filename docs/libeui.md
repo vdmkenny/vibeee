@@ -73,6 +73,7 @@ with it this pass.
 | `scrollbar` | `fn (*widget.Context, draw.Rect, *scroll.State, usize, usize, usize) usize` |
 | `table` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
 | `sampleHeight` | `fn () i32` |
+| `samplesWidth` | `fn (*const widget.Context, usize) i32` |
 | `samples` | `fn (*widget.Context, draw.Rect, Context.Sample, usize) usize` |
 | `swatches` | `fn (*widget.Context, draw.Rect, []const u32, usize) usize` |
 | `rail` | `fn (*widget.Context, draw.Rect, []const rail.Item, usize, []const u8) usize` |
