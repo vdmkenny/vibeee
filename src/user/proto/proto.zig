@@ -16,6 +16,7 @@ pub const audio = @import("audio.zig");
 pub const devices = @import("devices.zig");
 pub const anchors = @import("anchors.zig");
 pub const panes = @import("panes.zig");
+pub const opening = @import("opening.zig");
 pub const settings = @import("settings.zig");
 pub const usb = @import("usb.zig");
 pub const socket = @import("socket.zig");

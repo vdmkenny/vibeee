@@ -655,7 +655,7 @@ fn handleKey(event: sys.KeyEvent) void {
     // than reaching a window. Everything it can be told by pointer it can be
     // told by keyboard, which is the point of it holding focus at all.
     if (bar.hasFocus()) {
-        switch (bar.key(code, event.codepoint, &desktop)) {
+        switch (bar.key(code, event.codepoint, mods, &desktop)) {
             .handled, .released => {
                 apply(bar.takePending());
                 dirty = true;

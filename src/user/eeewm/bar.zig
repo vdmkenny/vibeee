@@ -17,7 +17,10 @@ const std = @import("std");
 const bindings = @import("ulib").bindings;
 const anchors = @import("proto").anchors;
 const info = @import("ulib").info;
+const dir = @import("ulib").dir;
 const lib = @import("lib");
+const opening = @import("proto").opening;
+const paths = @import("ulib").paths;
 const str = @import("lib").str;
 const draw = @import("eui").draw;
 const layout = @import("layout.zig");
@@ -249,6 +252,9 @@ const Found = struct {
 
     const Kind = enum {
         app,
+        /// Something under /home, opened by whatever opens its sort of
+        /// thing rather than by being named a program.
+        file,
         /// A place inside a program, which is drawn with that program's own
         /// picture: what a result is inside is as much of the answer as what
         /// it is called.
@@ -263,6 +269,9 @@ const Found = struct {
                 .app, .tab => .apps,
                 .win => .maximised,
                 .run => .keyboard,
+                // A file's picture comes from what it is, so a row that
+                // reaches here is one whose sort was not recognised.
+                .file => .document,
             };
         }
     };
@@ -278,6 +287,8 @@ const Found = struct {
         /// Something the manager can do, named by the same table the keys
         /// and the help pane read.
         verb: bindings.Action,
+        /// The nth of the files gathered when the launcher opened.
+        file: usize,
     };
 };
 
@@ -375,6 +386,24 @@ fn refreshFound(desktop: *const layout.Desktop) void {
                 .what = .{ .place = .{ .program = program_index, .anchor = anchor_index } },
             });
         }
+    }
+
+    // What is in /home, drawn with the picture its sort of file gets and
+    // said with the words the recogniser uses for it.
+    for (files[0..file_count], 0..) |*one, index| {
+        found_sources += 1;
+        seq += 1;
+        const hit = lib.find.match(one.name(), typed) orelse continue;
+        offer(.{
+            .kind = .file,
+            .label = one.name(),
+            .note = one.what.says(),
+            .hit = runOf(hit),
+            .mark = eui_icon.forFamily(one.what.family()),
+            .score = hit.score,
+            .at = seq,
+            .what = .{ .file = index },
+        });
     }
 
     for (desktop.windows, 0..) |window, index| {
@@ -492,9 +521,79 @@ pub fn menuOpen() bool {
         power_open or clock_open;
 }
 
+/// The files a person might be looking for, gathered when the launcher
+/// opens rather than while they type: a directory read per keystroke is a
+/// seek per keystroke, and this machine's medium is behind a card reader.
+///
+/// Only under /home, and only two levels of it. Everything else on this
+/// machine is the system's own, and somebody looking for the kernel is not
+/// looking for it in a launcher.
+const FILES_MAX = 64;
+const FILE_PATH_MAX = 96;
+const HOME = "/home";
+
+const FoundFile = struct {
+    path: [FILE_PATH_MAX]u8 = @splat(0),
+    path_len: u8 = 0,
+    /// Where the name starts within the path, so a row can say the name
+    /// large and where it lives small without holding both.
+    name_at: u8 = 0,
+    what: lib.kind.Kind = .data,
+
+    fn pathSlice(self: *const FoundFile) []const u8 {
+        return self.path[0..self.path_len];
+    }
+
+    fn name(self: *const FoundFile) []const u8 {
+        return self.path[self.name_at..self.path_len];
+    }
+};
+
+var files: [FILES_MAX]FoundFile = @splat(.{});
+var file_count: usize = 0;
+
+fn gatherFiles() void {
+    file_count = 0;
+    walk(HOME, 1);
+}
+
+/// One directory, and its own directories to `depth` more.
+fn walk(where: []const u8, depth: u8) void {
+    var names: [1024]u8 = undefined;
+    var listing = dir.Listing{};
+    dir.read(where, &names, &listing) catch return;
+
+    for (listing.items()) |entry| {
+        if (file_count == files.len) return;
+        if (std.mem.eql(u8, entry.name, dir.PARENT)) continue;
+
+        var joined: [FILE_PATH_MAX]u8 = undefined;
+        const path = paths.join(where, entry.name, &joined);
+        if (path.len > FILE_PATH_MAX) continue;
+
+        if (entry.is_dir) {
+            if (depth > 0) walk(path, depth - 1);
+            continue;
+        }
+
+        var one = FoundFile{
+            .path_len = @intCast(path.len),
+            .name_at = @intCast(path.len - entry.name.len),
+            // By name rather than by bytes: this runs over every file under
+            // /home when the launcher opens, and reading each of them would
+            // be a seek apiece for an icon.
+            .what = lib.kind.fromName(entry.name) orelse .data,
+        };
+        @memcpy(one.path[0..path.len], path);
+        files[file_count] = one;
+        file_count += 1;
+    }
+}
+
 /// Open the applications menu, from the V button or a key.
 pub fn openLauncher(desktop: *const layout.Desktop) void {
     _ = launcher_query.clear();
+    gatherFiles();
     refreshFound(desktop);
     var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
     launcher.showAt(menuItems(&rows));
@@ -655,7 +754,12 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
         line.text(" match");
     }
 
-    const hints: []const eui_keys.Key = if (launcher_query.slice().len == 0) &BROWSE_KEYS else &FIND_KEYS;
+    const hints: []const eui_keys.Key = if (launcher_query.slice().len == 0)
+        &BROWSE_KEYS
+    else if (highlightedIsFile())
+        &FIND_FILE_KEYS
+    else
+        &FIND_KEYS;
 
     surface.fill(area, t.bar);
     surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
@@ -676,6 +780,13 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
     );
 }
 
+/// Whether the row under the cursor is a file, which is what decides
+/// whether the keys along the bottom mention the second thing it can do.
+fn highlightedIsFile() bool {
+    if (launcher.selected >= found_count) return false;
+    return found[launcher.selected].kind == .file;
+}
+
 const BROWSE_KEYS = [_]eui_keys.Key{
     .{ .key = "tab", .label = "category" },
     .{ .key = "enter", .label = "run" },
@@ -684,6 +795,13 @@ const BROWSE_KEYS = [_]eui_keys.Key{
 
 const FIND_KEYS = [_]eui_keys.Key{
     .{ .key = "enter", .label = "run" },
+    .{ .key = "esc", .label = "close" },
+};
+
+/// What a file row can do, which is one thing more than anything else here.
+const FIND_FILE_KEYS = [_]eui_keys.Key{
+    .{ .key = "enter", .label = "open" },
+    .{ .key = "shift", .label = "folder" },
     .{ .key = "esc", .label = "close" },
 };
 
@@ -2079,7 +2197,27 @@ fn activate(choice: Found.What) Action {
         },
         .window => |index| .{ .focus_window = index },
         .verb => |what| .{ .verb = what },
+        .file => |index| blk: {
+            if (index < file_count) _ = opening.start(files[index].pathSlice());
+            break :blk .consumed;
+        },
     };
+}
+
+/// Show where a file lives, in the file manager, at the folder holding it.
+/// Anything that is not a file is opened as it would have been: there is
+/// nowhere else to show a window or a key.
+fn reveal(choice: Found.What) Action {
+    const which = switch (choice) {
+        .file => |index| index,
+        else => return activate(choice),
+    };
+    if (which >= file_count) return .consumed;
+
+    const path = files[which].pathSlice();
+    const folder = path[0..@max(files[which].name_at -| 1, 1)];
+    _ = sys.spawnDetached("/bin/efm", &.{ "efm", folder });
+    return .consumed;
 }
 
 fn activateEntry(index: usize) Action {
@@ -2116,7 +2254,7 @@ pub fn takePending() Action {
 /// Drive the bar from the keyboard. Everything the mouse can do here, the
 /// keyboard can: a taskbar reachable only by pointer is a taskbar that stops
 /// working the moment the touchpad does.
-pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResult {
+pub fn key(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: *layout.Desktop) KeyResult {
     if (!keyboard_focus) return .ignored;
 
     if (launcher.open) {
@@ -2171,7 +2309,12 @@ pub fn key(code: sys.KeyCode, codepoint: u32, desktop: *layout.Desktop) KeyResul
                 const chosen = launcher.selected;
                 launcher.hide();
                 keyboard_focus = false;
-                if (launcherChoice(chosen)) |choice| pending = activate(choice);
+                if (launcherChoice(chosen)) |choice| {
+                    // Held with shift, a file opens where it lives rather
+                    // than in whatever opens it: the answer to "where is
+                    // that?" as often as to "show me that".
+                    pending = if (mods.shift) reveal(choice) else activate(choice);
+                }
                 return .released;
             },
             .cancelled => {

@@ -16,9 +16,7 @@ const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
-const lib_kind = @import("lib").kind;
-const openers = @import("lib").openers;
-const settings = @import("proto").settings;
+const opening = @import("proto").opening;
 const preview = @import("preview.zig");
 
 // The picture decoder is C, and calls the libc by name: the C-callable half
@@ -106,8 +104,16 @@ var status: []const u8 = "";
 /// How often the window looks for a medium that has come or gone.
 const MEDIA_TICK_US: usize = 2_000_000;
 
-export fn _start() callconv(.c) noreturn {
-    panes[0].setPath("/home");
+export fn _start(frame: [*]usize) callconv(.c) noreturn {
+    // A directory on the command line is where to start, which is how the
+    // launcher says "show me where this lives".
+    const argc: usize = frame[0];
+    const opened = if (argc >= 2)
+        std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2])))
+    else
+        "/home";
+
+    panes[0].setPath(opened);
     panes[1].setPath("/");
     refreshAll();
 
@@ -232,72 +238,21 @@ fn enter() void {
     ctx.damage();
 }
 
-/// Open a file with whatever opens its sort of thing.
-///
-/// What it is comes from its bytes rather than its name: Enter can afford
-/// the read that a listing cannot, and a picture called `.txt` should open
-/// in the viewer rather than fill an editor with a photograph. A program
-/// is opened by being run, which is what opening a program means.
+/// Open a file with whatever opens its sort of thing, which the launcher
+/// does the same way: pressing Enter on a file should do one thing on this
+/// machine, not one thing per window.
 fn open(pane: *Pane, entry: dir.Entry) void {
     var buf: [160]u8 = undefined;
     const path = paths.join(pane.path(), entry.name, &buf);
 
-    const what = readKind(path);
-    if (what.kind == .program) return launch(path);
-
-    const family = what.kind.family();
-    const preferred = chosenFor(family);
-    const opener = openers.chosen(family, preferred) orelse {
-        status = "Nothing here opens that.";
-        ctx.damage();
-        return;
+    status = switch (opening.start(path)) {
+        .opened => "",
+        .nobody_opens_it => "Nothing here opens that.",
+        .would_not_start => "That would not start.",
     };
-
-    if (sys.spawnDetached(opener.path, &.{ opener.name, path }) < 0) {
-        status = "That would not start.";
-        ctx.damage();
-    }
+    ctx.damage();
 }
 
-/// A program is run as itself, with nothing after its name: what a file
-/// manager can say about how to run something is nothing.
-fn launch(path: []const u8) void {
-    var name: [64]u8 = undefined;
-    const leaf = paths.base(path);
-    const n = @min(leaf.len, name.len);
-    @memcpy(name[0..n], leaf[0..n]);
-    if (sys.spawnDetached(path, &.{name[0..n]}) < 0) {
-        status = "That would not start.";
-        ctx.damage();
-    }
-}
-
-/// What the file is, from its first bytes.
-fn readKind(path: []const u8) lib_kind.Reading {
-    const handle = sys.open(path, .{});
-    if (handle < 0) return .{ .kind = .data };
-    defer _ = sys.close(@intCast(handle));
-
-    var head: [lib_kind.ENOUGH]u8 = undefined;
-    const n = sys.read(@intCast(handle), &head);
-    if (n <= 0) return .{ .kind = .empty };
-    return lib_kind.fromBytes(head[0..@intCast(n)]);
-}
-
-/// Whoever the settings name for this family, or nobody.
-fn chosenFor(family: lib_kind.Family) []const u8 {
-    const chosen = settings.load("open");
-    return switch (family) {
-        .picture => chosen.picture.slice(),
-        .text => chosen.text.slice(),
-        .audio => chosen.audio.slice(),
-        .video => chosen.video.slice(),
-        .archive => chosen.archive.slice(),
-        .document => chosen.document.slice(),
-        .font => chosen.font.slice(),
-        else => "",
-    };
-}
 
 /// Up one, which is what backspace means everywhere else a path is shown.
 fn leave() void {

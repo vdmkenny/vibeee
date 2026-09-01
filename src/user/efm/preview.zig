@@ -43,11 +43,7 @@ pub const Kind = struct {
     }
 
     pub fn icon(which: kind.Kind) eui.icon.Icon {
-        return switch (which.family()) {
-            .directory => .folder,
-            .picture => .picture,
-            else => .document,
-        };
+        return eui.icon.forFamily(which.family());
     }
 
     /// Capitalised, because this is a field's value in a panel rather than a

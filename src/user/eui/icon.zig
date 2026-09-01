@@ -14,6 +14,7 @@
 //! label should be the size of the label, and one that has to be measured
 //! against the text every time it moves is one that will drift.
 
+const kind = @import("lib").kind;
 const std = @import("std");
 
 pub const WIDTH: usize = 12;
@@ -21,6 +22,18 @@ pub const HEIGHT: usize = 12;
 /// Two bytes a row, because twelve pixels do not fit in one.
 pub const ROW_BYTES: usize = 2;
 const BYTES: usize = HEIGHT * ROW_BYTES;
+
+/// The picture a sort of file gets. One rule for the system: a listing, a
+/// preview pane and a launcher row draw the same file the same way, and a
+/// family this build cannot open still gets a picture that says what it is.
+pub fn forFamily(family: kind.Family) Icon {
+    return switch (family) {
+        .directory => .folder,
+        .picture => .picture,
+        .program => .apps,
+        else => .document,
+    };
+}
 
 pub const Icon = enum {
     /// Four ascending bars: signal, and the only thing in the bar that says
