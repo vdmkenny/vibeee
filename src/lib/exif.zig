@@ -56,7 +56,32 @@ pub const Orientation = enum(u8) {
         };
     }
 
-    fn of(value: u32) ?Orientation {
+    /// The one that means these quarter turns and this mirroring, which is
+    /// the inverse of reading them off.
+    pub fn of(turns: u2, flipped: bool) Orientation {
+        return switch (turns) {
+            0 => if (flipped) .mirror_x else .up,
+            1 => if (flipped) .mirror_x_then_left else .left,
+            2 => if (flipped) .mirror_y else .down,
+            3 => if (flipped) .mirror_x_then_right else .right,
+        };
+    }
+
+    /// This orientation with another quarter turn clockwise asked of it.
+    ///
+    /// What a viewer needs to turn a picture by hand: the file already says
+    /// which way up it was taken, and a hand turning it is one more quarter
+    /// on top of that rather than a second, separate idea of which way up
+    /// something is.
+    pub fn turnedRight(self: Orientation) Orientation {
+        return of(self.quarters() +% 1, self.mirrored());
+    }
+
+    pub fn turnedLeft(self: Orientation) Orientation {
+        return of(self.quarters() -% 1, self.mirrored());
+    }
+
+    fn from(value: u32) ?Orientation {
         return if (value >= 1 and value <= 8) @enumFromInt(@as(u8, @intCast(value))) else null;
     }
 };
@@ -197,7 +222,7 @@ fn walk(block: []const u8, at: u32, endian: std.builtin.Endian, info: *Info, dep
                 // A short lives in the first two bytes of the value field
                 // rather than at an offset: it fits, so there is nowhere else
                 // for it to be.
-                if (Orientation.of(readInt(u16, block, entry + 8, endian))) |which| {
+                if (Orientation.from(readInt(u16, block, entry + 8, endian))) |which| {
                     info.orientation = which;
                     info.orientation_known = true;
                 }
@@ -387,4 +412,32 @@ test "a table pointing at itself is walked once, not forever" {
 
     const flat = photograph(looped);
     _ = read(&flat);
+}
+
+test "a turn composes with the way the camera held it" {
+    const std_testing = std.testing;
+
+    // A picture already upright, turned right, is one a viewer must turn a
+    // quarter to show as it now is.
+    try std_testing.expectEqual(Orientation.left, Orientation.up.turnedRight());
+    try std_testing.expectEqual(Orientation.down, Orientation.left.turnedRight());
+    try std_testing.expectEqual(Orientation.right, Orientation.down.turnedRight());
+    try std_testing.expectEqual(Orientation.up, Orientation.right.turnedRight());
+
+    // Four of either way is where it started, whatever it started as.
+    for ([_]Orientation{ .up, .down, .left, .right, .mirror_x, .mirror_y }) |start| {
+        var turned = start;
+        for (0..4) |_| turned = turned.turnedRight();
+        try std_testing.expectEqual(start, turned);
+
+        var back = start;
+        for (0..4) |_| back = back.turnedLeft();
+        try std_testing.expectEqual(start, back);
+    }
+
+    // Turning one way and back is where it started.
+    try std_testing.expectEqual(Orientation.up, Orientation.up.turnedRight().turnedLeft());
+
+    // A mirrored picture stays mirrored however it is turned.
+    try std_testing.expect(Orientation.mirror_x.turnedRight().mirrored());
 }

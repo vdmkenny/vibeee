@@ -62,6 +62,18 @@ pub const Kind = struct {
     }
 };
 
+/// The facts sit in from the pane's edge, which the pane's own padding
+/// would otherwise have to be written into every row.
+fn inset(area: Rect) Rect {
+    const t = theme.current();
+    return .{
+        .x = area.x + t.menu_padding,
+        .y = area.y,
+        .w = area.w - t.menu_padding * 2,
+        .h = area.h,
+    };
+}
+
 /// How much of a text file is shown. A preview is for recognising a file, not
 /// for reading it: the editor is one keypress away and holds the whole thing.
 const TEXT_MAX = 4 * 1024;
@@ -315,18 +327,18 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
     const t = theme.current();
     var y = from;
 
-    y = fact(ctx, area, y, "Kind", Kind.says(what));
+    y = eui.facts.one(ctx, inset(area), y, "Kind", Kind.says(what));
 
     if (!entry.is_dir) {
         var size: [16]u8 = @splat(0);
         var said = str.Builder{ .buf = &size };
         said.bytes(entry.size);
-        y = fact(ctx, area, y, "Size", said.done());
+        y = eui.facts.one(ctx, inset(area), y, "Size", said.done());
     }
 
     if (entry.mtime != 0) {
         var when: [24]u8 = @splat(0);
-        y = fact(ctx, area, y, "Modified", time.stamp(&when, entry.mtime));
+        y = eui.facts.one(ctx, inset(area), y, "Modified", time.stamp(&when, entry.mtime));
     }
 
     if (picture) |held| {
@@ -336,8 +348,8 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
         said.number(upright.w);
         said.text(" x ");
         said.number(upright.h);
-        y = fact(ctx, area, y, "Pixels", said.done());
-        y = fact(ctx, area, y, "Colour", depthSaid());
+        y = eui.facts.one(ctx, inset(area), y, "Pixels", said.done());
+        y = eui.facts.one(ctx, inset(area), y, "Colour", depthSaid());
     }
 
     // The camera's own words, where there are any. Above the file's own
@@ -349,14 +361,14 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
         said.text(camera.maker());
         if (camera.maker().len > 0 and camera.camera().len > 0) said.byte(' ');
         said.text(camera.camera());
-        y = fact(ctx, area, y, "Camera", said.done());
+        y = eui.facts.one(ctx, inset(area), y, "Camera", said.done());
     }
-    if (camera.when().len > 0) y = fact(ctx, area, y, "Taken", camera.when());
+    if (camera.when().len > 0) y = eui.facts.one(ctx, inset(area), y, "Taken", camera.when());
     if (camera.orientation_known and facing != .up) {
-        y = fact(ctx, area, y, "Held", "sideways, shown upright");
+        y = eui.facts.one(ctx, inset(area), y, "Held", "sideways, shown upright");
     }
 
-    if (trouble.len > 0 and what.family() != .picture) y = fact(ctx, area, y, "", trouble);
+    if (trouble.len > 0 and what.family() != .picture) y = eui.facts.one(ctx, inset(area), y, "", trouble);
     return y + t.padding;
 }
 
@@ -375,27 +387,6 @@ fn depthSaid() []const u8 {
     };
 }
 
-fn fact(ctx: *eui.widget.Context, area: Rect, y: i32, label: []const u8, value: []const u8) i32 {
-    const t = theme.current();
-    const label_w = @min(theme.enlarged(72), @divTrunc(area.w, 3));
-
-    ctx.rowText(
-        .{ .x = area.x + t.menu_padding, .y = y, .w = label_w, .h = t.control_height },
-        label,
-        t.text_dim,
-    );
-    ctx.rowText(
-        .{
-            .x = area.x + t.menu_padding + label_w,
-            .y = y,
-            .w = area.w - label_w - t.menu_padding * 2,
-            .h = t.control_height,
-        },
-        value,
-        t.text,
-    );
-    return y + theme.enlarged(16);
-}
 
 /// The file itself, read-only, filling what is left of the pane.
 fn drawText(ctx: *eui.widget.Context, area: Rect, from: i32) void {

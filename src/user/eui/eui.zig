@@ -31,6 +31,7 @@ pub const meter = @import("meter.zig");
 pub const footer = @import("footer.zig");
 pub const gauge = @import("gauge.zig");
 pub const chrome = @import("chrome.zig");
+pub const facts = @import("facts.zig");
 pub const grid = @import("grid.zig");
 pub const Grid = grid.Grid;
 pub const popover = @import("popover.zig");

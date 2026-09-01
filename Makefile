@@ -122,6 +122,7 @@ USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_CALC := zig-out/bin/calc
+USER_EIMG := zig-out/bin/eimg
 USER_EFM := zig-out/bin/efm
 USER_TIMED := zig-out/bin/timed
 USER_DEVMGD := zig-out/bin/devmgd
@@ -240,6 +241,7 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o $(USER_ETERM) ::/bin/eterm
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
 	@$(MCOPY) -i $@ -o $(USER_CALC) ::/bin/calc
+	@$(MCOPY) -i $@ -o $(USER_EIMG) ::/bin/eimg
 	@$(MCOPY) -i $@ -o $(USER_EFM) ::/bin/efm
 	@$(MCOPY) -i $@ -o $(USER_TIMED) ::/bin/timed
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor

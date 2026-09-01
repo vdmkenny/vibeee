@@ -300,6 +300,18 @@ What a window is made of: a strip along the top, a strip along the bottom, and t
 |---|---|
 | `split` | `fn (draw.Rect, chrome.Wants) chrome.Layout` |
 
+### `eui.facts`
+
+A label and what it says, in two columns.
+
+| call | signature |
+|---|---|
+| `column` | `fn (draw.Rect) i32` |
+| `height` | `fn () i32` |
+| `heightIn` | `fn (draw.Rect) i32` |
+| `one` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8) i32` |
+| `all` | `fn (*widget.Context, draw.Rect, i32, []const facts.Fact) i32` |
+
 ### `eui.grid`
 
 Equal cells in a rectangle.

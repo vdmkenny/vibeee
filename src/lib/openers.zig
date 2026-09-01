@@ -64,6 +64,7 @@ pub const Opener = struct {
 /// Every program that will open something, in the order a machine with no
 /// settings should prefer them.
 pub const table = [_]Opener{
+    .{ .name = "eimg", .path = "/bin/eimg", .opens = .{ .picture = true } },
     .{ .name = "pad", .path = "/bin/pad", .opens = .{ .text = true } },
 };
 
@@ -135,6 +136,11 @@ test "the set is a bit per family and fits its word" {
     try std.testing.expectEqual(@as(u16, 1), @as(u16, @bitCast(Opens{ .picture = true })));
     try std.testing.expectEqual(@as(u16, 2), @as(u16, @bitCast(Opens{ .text = true })));
     try std.testing.expectEqual(@as(usize, 2), @sizeOf(Opens));
+}
+
+test "a picture opens in the viewer this build carries" {
+    const opener = forFamily(.picture) orelse return error.NothingOpensPictures;
+    try std.testing.expectEqualStrings("eimg", opener.name);
 }
 
 test "text opens in the editor this build carries" {

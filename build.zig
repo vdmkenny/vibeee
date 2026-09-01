@@ -324,6 +324,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
             .{ .name = "pad", .root = "src/user/apps/pad.zig" },
             .{ .name = "calc", .root = "src/user/apps/calc.zig" },
+            .{ .name = "eimg", .root = "src/user/apps/eimg.zig" },
             .{ .name = "efm", .root = "src/user/efm/main.zig" },
             .{ .name = "timed", .root = "src/user/timed/main.zig" },
         };

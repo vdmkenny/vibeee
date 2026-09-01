@@ -1265,15 +1265,11 @@ fn drawIdentity(pane: eui.Rect) i32 {
 /// The label column: a quarter of the pane, so the values line up down the
 /// page whatever they say.
 fn factColumn(pane: eui.Rect) i32 {
-    return @max(theme.enlarged(80), @divTrunc(pane.w, 5));
+    return eui.facts.column(pane);
 }
 
 fn drawFact(pane: eui.Rect, y: i32, label: []const u8, value: []const u8) i32 {
-    const t = theme.current();
-    const label_w = factColumn(pane);
-    ctx.labelDim(.{ .x = pane.x, .y = y + 2, .w = label_w, .h = t.control_height }, label);
-    ctx.label(.{ .x = pane.x + label_w, .y = y + 2, .w = pane.w - label_w, .h = t.control_height }, value);
-    return y + t.menu_row_height;
+    return eui.facts.one(ctx, pane, y + 2, label, value);
 }
 
 /// What this machine answers to. The configured name if there is one, and
