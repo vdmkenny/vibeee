@@ -6,15 +6,19 @@
 //! of rows, put a status bar on the last one, read a key. The upper one is
 //! `view`, a reader that shows a text and lets somebody move around in it.
 //!
-//! Keys come from the keyboard directly rather than through standard input,
-//! because standard input is a line at a time and a full-screen program
-//! wants single keys. The claim is released when the process exits, so the
-//! shell gets the keyboard back on its own.
+//! Keys come from the keyboard where this program can claim it, and from
+//! standard input where it cannot: on the machine's own screen the keyboard is
+//! there for the taking, and in a window on a desktop it belongs to whatever
+//! is compositing, which sends the keys down the same pipe the program's
+//! output goes up. The claim, where there is one, is released when the process
+//! exits, so the shell gets the keyboard back on its own.
 
+const std = @import("std");
 const sys = @import("sys");
 const console = @import("console.zig");
 const font = @import("lib").font;
 const ink = @import("ink.zig");
+const keys = @import("keys.zig");
 const out = @import("out.zig");
 const str = @import("lib").str;
 const text = @import("lib").text;
@@ -83,8 +87,26 @@ pub const Frame = struct {
     }
 };
 
+/// The size a page is laid out for, decided once when a viewer opens.
+///
+/// A viewer on the machine's own screen asks the kernel; one in a window asks
+/// the terminal drawing that window, because the two are different sizes and
+/// only the second knows the window's. Which applies is not a guess: a viewer
+/// whose keys arrive down a pipe rather than from the keyboard it could not
+/// claim is one in a window, and that is the one that asks the terminal.
+var measured: ?console.Size = null;
+
 pub fn frame() Frame {
-    return Frame.of(console.size());
+    return Frame.of(measured orelse console.size());
+}
+
+fn measure() void {
+    // Whether the keyboard is ours to read. Under a compositor it is not, and
+    // a viewer there is in a window whose size only the terminal knows: it is
+    // asked, and its answer arrives with the keys and lays the page out again.
+    var scratch: [1]sys.KeyEvent = undefined;
+    const windowed = sys.keyRead(&scratch, sys.POLL) == null;
+    measured = if (windowed) console.terminalSize() else null;
 }
 
 /// Take the screen for drawing on, putting aside what was there.
@@ -418,19 +440,132 @@ pub const Prompt = struct {
     }
 };
 
-/// Wait for one key press, which is what a full-screen program's loop turns
-/// on. The read blocks in the kernel, so a program at rest costs nothing.
+/// What waiting on the reader produced.
 ///
-/// Null when the keyboard belongs to another program. A reader with no keys
-/// coming has nothing to wait for, and the caller shows what it has and
-/// leaves rather than holding the screen against a press that cannot arrive.
-pub fn key() ?sys.KeyEvent {
+/// A press to act on, word that the window changed size, or the end of input.
+/// The middle one is why this is not just a key: a full-screen program has to
+/// redraw when its window resizes, and the only way it hears of one is a fresh
+/// size arriving in the same stream its keys do.
+pub const Input = union(enum) {
+    press: sys.KeyEvent,
+    resized,
+    ended,
+};
+
+/// Wait for the reader to say something. The read blocks in the kernel, so a
+/// program at rest costs nothing.
+///
+/// Two places it can come from, and which one applies is not this program's to
+/// choose. On the machine's own screen the keyboard is there to be claimed and
+/// the events arrive whole. Inside a terminal window the keyboard belongs to
+/// whatever is compositing, and what arrives is the bytes that terminal sends:
+/// the same presses spelled the way every terminal has spelled them since the
+/// VT220, and the window's size whenever it changes.
+pub fn input() Input {
     var events: [8]sys.KeyEvent = undefined;
     while (true) {
-        for (sys.keyRead(&events, sys.FOREVER) orelse return null) |event| {
-            if (event.pressed != 0) return event;
+        const raw = sys.keyRead(&events, sys.FOREVER) orelse return fromTerminal();
+        for (raw) |event| {
+            if (event.pressed != 0) return .{ .press = event };
         }
     }
+}
+
+/// The next key, for a caller that only cares about keys. A resize is folded
+/// into the size the next frame will use and otherwise passed over.
+pub fn key() ?sys.KeyEvent {
+    while (true) {
+        switch (input()) {
+            .press => |event| return event,
+            .resized => {},
+            .ended => return null,
+        }
+    }
+}
+
+/// What arrived on the standard input, decoded back into a press or a resize.
+///
+/// Held across calls because one read brings several things: a held arrow
+/// delivers a run of presses, and answering only the first would drop the rest.
+var pending: [64]u8 = undefined;
+var have: usize = 0;
+
+fn fromTerminal() Input {
+    var asked_again = false;
+
+    while (true) {
+        // What is already here, before anything is waited for: a buffer with a
+        // whole key or a whole report in it has no reason to block.
+        if (have > 0) {
+            // A size report is the terminal answering how big its window is,
+            // whether this program asked or the window just changed. It is not
+            // a key and is taken out of the stream before the keys are read.
+            switch (console.reportInFront(pending[0..have])) {
+                .size => |size| {
+                    measured = size.dimensions;
+                    take(size.length);
+                    return .resized;
+                },
+                .partial => {
+                    asked_again = false;
+                    if (fill()) |ended| return ended;
+                    continue;
+                },
+                .none => {},
+            }
+
+            const more: keys.More = if (asked_again) .thats_all else .may_follow;
+            switch (keys.read(pending[0..have], more)) {
+                .got => |press| {
+                    take(press.took);
+                    return .{ .press = .{
+                        .code = @intFromEnum(press.code),
+                        .codepoint = press.codepoint,
+                        .modifiers = @bitCast(press.mods),
+                        .pressed = 1,
+                    } };
+                },
+                .skip => |n| {
+                    take(n);
+                    continue;
+                },
+                // A sequence that has not finished. One more read settles it,
+                // and a second nothing settles it the other way: a lone escape
+                // is the Escape key, which is what a terminal's own timeout
+                // decides and for the same reason.
+                .partial => if (asked_again) {
+                    asked_again = false;
+                    continue;
+                },
+            }
+        }
+
+        if (fill()) |ended| return ended;
+        asked_again = true;
+    }
+}
+
+/// Read more into the buffer, or say the input has ended.
+///
+/// `ended` when the stream closed, and also when the buffer is full of
+/// something that is neither a key nor a report: nothing in it will ever
+/// become one, so waiting for more would be waiting forever.
+fn fill() ?Input {
+    if (have == pending.len) {
+        have = 0;
+        return .ended;
+    }
+    const n = sys.read(sys.STDIN, pending[have..]);
+    if (n <= 0) return .ended;
+    have += @intCast(n);
+    return null;
+}
+
+/// Drop what has been answered for, keeping what came after it.
+fn take(n: usize) void {
+    const used = @min(n, have);
+    std.mem.copyForwards(u8, pending[0 .. have - used], pending[used..have]);
+    have -= used;
 }
 
 /// Show the content and hold the screen until the reader quits.
@@ -443,6 +578,8 @@ pub fn view(content: Content) void {
 
     takeScreen();
     defer giveBackScreen();
+    measure();
+    defer measured = null;
 
     var top: usize = 0;
     var layout = Layout{};
@@ -460,6 +597,8 @@ pub fn view(content: Content) void {
             .bottom => top = if (reading.count > size.window) reading.count - size.window else 0,
             .wrap => layout.wrap = !layout.wrap,
             .numbers => layout.numbers = !layout.numbers,
+            // The size changed under it; the next pass draws to the new one.
+            .redraw => {},
             .none => {},
         }
     }
@@ -486,28 +625,50 @@ fn draw(top: usize, size: Frame, layout: Layout) void {
     end(bar.done());
 }
 
-const Command = enum { quit, up, down, page_up, page_down, top, bottom, wrap, numbers, none };
+const Command = enum { quit, up, down, page_up, page_down, top, bottom, wrap, numbers, redraw, none };
 
-/// Wait for a key and say what it means to a reader.
+/// Wait for something to act on and say what it means to a reader.
 fn command() Command {
     while (true) {
-        // A keyboard that is not this program's is a reader with nothing
-        // left to wait for, which is the same as being told to leave.
-        const event = key() orelse return .quit;
-        const meant: Command = switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
-            .q, .escape => .quit,
-            .down, .enter => .down,
-            .up => .up,
-            .space, .page_down => .page_down,
-            .b, .page_up => .page_up,
-            .home => .top,
-            .end => .bottom,
-            .w => .wrap,
-            .n => .numbers,
-            else => .none,
+        const meant: Command = switch (input()) {
+            // A window that changed size is a page to lay out again.
+            .resized => .redraw,
+            // Input that ended is a reader with nothing left to wait for,
+            // which is the same as being told to leave.
+            .ended => .quit,
+            .press => |event| meaning(event),
         };
         if (meant != .none) return meant;
     }
+}
+
+/// What a press means to a reader.
+///
+/// A letter is judged by what it produced, a movement key by which key it was.
+/// The two are separate because a viewer is reached two ways: on the machine's
+/// own keyboard, where a press carries both, and down a terminal's pipe, where
+/// a letter arrives as its character and a movement key as the code the
+/// terminal sends for it. Reading the letter from the character makes `q` quit
+/// whichever way it came.
+fn meaning(event: sys.KeyEvent) Command {
+    switch (event.codepoint) {
+        'q' => return .quit,
+        'w' => return .wrap,
+        'n' => return .numbers,
+        'b' => return .page_up,
+        ' ' => return .page_down,
+        else => {},
+    }
+    return switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
+        .escape => .quit,
+        .down, .enter => .down,
+        .up => .up,
+        .page_down => .page_down,
+        .page_up => .page_up,
+        .home => .top,
+        .end => .bottom,
+        else => .none,
+    };
 }
 
 fn forward(top: usize, by: usize, window: usize) usize {

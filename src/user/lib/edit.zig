@@ -15,6 +15,7 @@ const complete_mod = @import("complete.zig");
 const sys = @import("sys");
 const out = @import("out.zig");
 const str = @import("lib").str;
+const escapes = @import("lib").escapes;
 
 /// Longest line, and how many are remembered. Both bounded because this runs
 /// on a machine where a runaway buffer is the whole of memory.
@@ -61,8 +62,18 @@ pub const Editor = struct {
     /// Read one line. Null at end of input, which is how a closed pipe and a
     /// terminal that has gone away both look.
     pub fn read(self: *Editor, prompt: []const u8) ?[]const u8 {
-        const was = sys.ttyMode(.raw);
-        defer _ = sys.ttyMode(was);
+        // The editor echoes and edits, so it asks its terminal to keep its own
+        // line discipline out of the way: keys as they are pressed, nothing
+        // drawn but what is drawn here. Sent in-band rather than through
+        // `ttyMode`, so it reaches whichever terminal is on the other end,
+        // the kernel console or an emulator down a pipe, and touches neither
+        // one's global state on behalf of the other.
+        out.text(escapes.private_mode.app_line_edit_on);
+        out.flush();
+        defer {
+            out.text(escapes.private_mode.app_line_edit_off);
+            out.flush();
+        }
 
         self.len = 0;
         self.cursor = 0;

@@ -18,6 +18,29 @@
 
 const std = @import("std");
 
+/// The private modes this system's terminals answer to beyond the DEC set.
+///
+/// Both terminals honour these, because a program should not have to know
+/// which one is on the other end of its pipe.
+pub const private_mode = struct {
+    /// The program manages its own input line: it echoes and edits, so the
+    /// terminal delivers keys as they are pressed and draws none of them
+    /// itself. A shell's line editor asks for this, the same raw handling it
+    /// asks the kernel console for with `ttyMode`, carried in-band so it
+    /// reaches a terminal at the far end of a pipe just as well.
+    ///
+    /// Chosen next to bracketed paste (2004), which is the nearest thing in
+    /// spirit: both are a program telling the terminal how to treat what is
+    /// typed. Not a standard code; this system's own terminals are the only
+    /// ones that will meet it.
+    pub const app_line_edit = 2005;
+
+    /// The sequences that turn it on and off, written once so the program
+    /// that sends them and the terminals that read them cannot disagree.
+    pub const app_line_edit_on = "\x1b[?2005h";
+    pub const app_line_edit_off = "\x1b[?2005l";
+};
+
 /// Most numeric parameters a sequence may carry. The real limit is what SGR
 /// uses, and sixteen is more than anything sends in one go.
 pub const MAX_PARAMS = 16;

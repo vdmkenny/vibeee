@@ -9,6 +9,7 @@ const std = @import("std");
 const klog = @import("klog.zig");
 const bootinfo = @import("bootinfo.zig");
 const escapes = @import("lib").escapes;
+const tty = @import("tty.zig");
 const heap = @import("heap.zig");
 const style = @import("lib").style;
 const fbcon = @import("../drv/video/fbcon.zig");
@@ -430,6 +431,11 @@ const Escape = struct {
             // programs send. Both are answered, because a program that asked
             // either way meant the same thing.
             47, 1047, 1049 => if (on) Alternate.enter() else Alternate.leave(),
+            // A program managing its own input line asks for raw the same way
+            // it asks `eterm`: the terminal's display side telling its input
+            // side to step aside, which over the console is the line
+            // discipline in `tty`.
+            escapes.private_mode.app_line_edit => _ = tty.setMode(if (on) .raw else .cooked),
             else => {},
         }
     }

@@ -19,6 +19,7 @@ pub const edit = @import("edit.zig");
 pub const info = @import("info.zig");
 pub const irqroute = @import("irqroute.zig");
 pub const ink = @import("ink.zig");
+pub const keys = @import("keys.zig");
 pub const log = @import("log.zig");
 pub const out = @import("out.zig");
 pub const stream = @import("stream.zig");

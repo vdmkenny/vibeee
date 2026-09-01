@@ -32,6 +32,11 @@ test {
     _ = @import("user/lib/bindings.zig");
     _ = @import("user/lib/command.zig");
     _ = @import("user/lib/env.zig");
+    // Both halves of the terminal key codec, and the proof they are inverses:
+    // a key that can be sent and not read is one that works on the machine's
+    // own screen and does nothing inside a terminal window.
+    _ = @import("user/lib/keys.zig");
+    _ = @import("user/lib/console.zig");
     _ = @import("user/lib/table.zig");
     // Every decision about a program image, away from the frames and the
     // mappings it would otherwise take to ask one: the files worth asking

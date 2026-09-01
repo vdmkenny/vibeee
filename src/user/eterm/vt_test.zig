@@ -214,7 +214,7 @@ test "reset returns the terminal to its starting state" {
 // Key encoding
 // ---------------------------------------------------------------------------
 
-const keys = @import("keys.zig");
+const keys = @import("../lib/keys.zig");
 const abi = @import("lib").syscalls;
 
 fn pressed(code: abi.KeyCode, mods: abi.Modifiers, application: bool) []const u8 {

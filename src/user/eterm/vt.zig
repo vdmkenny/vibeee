@@ -52,6 +52,11 @@ pub const Terminal = struct {
     application_cursor: bool = false,
     /// Paste is bracketed by `CSI 200~` and `CSI 201~`.
     bracketed_paste: bool = false,
+    /// The program running here manages its own input line, so the terminal's
+    /// own line discipline steps aside: no local echo, no waiting for Enter,
+    /// keys delivered as they are pressed. Set by the private mode a shell's
+    /// editor sends, the in-band twin of the kernel console's raw `ttyMode`.
+    app_line_edit: bool = false,
     /// A line feed does not also return the carriage, LNM cleared.
     ///
     /// Off by default here, which is the opposite of a real terminal. There a
@@ -77,6 +82,9 @@ pub const Terminal = struct {
 
     reply_buf: [MAX_REPLY]u8 = @splat(0),
     reply_len: usize = 0,
+    /// Where `sizeReport` writes, so building one takes no buffer from a
+    /// caller that only wants to send it on.
+    report_scratch: [MAX_REPLY]u8 = @splat(0),
 
     state: parser.Parser = .{},
 
@@ -325,6 +333,7 @@ pub const Terminal = struct {
             'X' => self.eraseChars(seq.get(0, 1)),
             'm' => self.style(seq),
             'n' => self.report(seq),
+            't' => self.windowReport(seq),
             'r' => self.setRegion(seq),
             's' => self.saved = self.cursor,
             'u' => self.restoreCursor(),
@@ -415,6 +424,27 @@ pub const Terminal = struct {
         // Setting a region homes the cursor, which is what makes the usual
         // "set region then draw" sequence work without an explicit move.
         self.goTo(first, 0);
+    }
+
+    /// The window-manipulation reports a full-screen program asks for. Only the
+    /// one that matters here is answered: how many rows and columns it has to
+    /// draw in, which over a pipe it cannot learn any other way.
+    fn windowReport(self: *Terminal, seq: Csi) void {
+        if (seq.raw(0) != 18) return;
+        self.reply(self.sizeReport(&self.report_scratch));
+    }
+
+    /// `CSI 8 ; rows ; cols t`: the size, answering a program that asked and
+    /// telling one that did not when its window changed under it.
+    pub fn sizeReport(self: *Terminal, buf: *[MAX_REPLY]u8) []const u8 {
+        const g = self.active();
+        var w = str.Builder{ .buf = buf };
+        w.text("\x1B[8;");
+        w.number(g.rows);
+        w.byte(';');
+        w.number(g.cols);
+        w.byte('t');
+        return w.done();
     }
 
     fn report(self: *Terminal, seq: Csi) void {
@@ -552,6 +582,7 @@ pub const Terminal = struct {
                 25 => self.hidden = !on,
                 47, 1047, 1049 => self.useAlternate(on, mode == 1049),
                 2004 => self.bracketed_paste = on,
+                parser.private_mode.app_line_edit => self.app_line_edit = on,
                 else => {},
             }
         }

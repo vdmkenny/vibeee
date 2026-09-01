@@ -13,7 +13,7 @@
 
 const abi = @import("lib").syscalls;
 const eui = @import("eui");
-const keys = @import("keys.zig");
+const keys = @import("ulib").keys;
 const proto = @import("proto");
 const render = @import("render.zig");
 const std = @import("std");
@@ -173,15 +173,21 @@ fn flushToShell() void {
 /// through.
 ///
 /// Off on the alternate screen, which is what a full-window program switches
-/// to. That is the signal rather than a mode of our own because it needs no
-/// cooperation: every program that wants raw keys already sends it.
+/// to, and off when a program says it manages its own input line. Both are the
+/// program's own signal rather than a mode of the terminal's, so nothing here
+/// has to guess which program wants which: a full-window one switches screens,
+/// a shell's editor sends the private mode, and a plain reader that does
+/// neither gets the line discipline this terminal keeps for it.
 fn cooked() bool {
-    return !terminal.on_alternate;
+    return !terminal.on_alternate and !terminal.app_line_edit;
 }
 
 // ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
+
+/// Where the shell's output sits in the wait, so a wake can be known for it.
+const SHELL_OUTPUT = 1;
 
 fn run() noreturn {
     while (true) {
@@ -194,9 +200,15 @@ fn run() noreturn {
         // waiting on it with nothing to send would be a loop that never
         // sleeps.
         const count: usize = if (!running) 1 else if (pending_len > 0) 3 else 2;
-        _ = sys.waitMany(sources[0..count], 500_000);
+        const woke = sys.waitMany(sources[0..count], 500_000);
 
-        drain();
+        // Read the shell's output only when it is what woke us. The wake is
+        // the proof there is something there, and it is the only proof: the
+        // event that carried it is a count the wait has already taken, so
+        // asking it again answers no while the bytes sit in the pipe. The
+        // pipe re-signals itself while any remain, so what one wake leaves the
+        // next one brings.
+        if (woke == SHELL_OUTPUT) drain();
         while (connection.poll()) |event| handle(event);
         // Anything the shell would not take earlier goes now, if it will.
         flushToShell();
@@ -204,12 +216,13 @@ fn run() noreturn {
     }
 }
 
-/// Whether the shell has written something, or has finished.
+/// Whether the shell has more waiting after a read, without blocking on a pipe
+/// that has run dry.
 ///
-/// Asked before every read because a read of a pipe blocks: draining until it
-/// came back empty would mean never returning to the window's events, and a
-/// terminal that cannot be typed into.
-fn readable() bool {
+/// Sound only mid-drain, where every read that left something behind has
+/// re-signalled the pipe: the count it polls was last set by the pipe itself,
+/// not spent by the wait that began the drain.
+fn moreToRead() bool {
     var one: [1]u32 = .{from_shell};
     return sys.waitMany(&one, sys.POLL) >= 0;
 }
@@ -221,9 +234,12 @@ fn drain() void {
 
     // Bounded rather than until empty: a program printing without pause would
     // otherwise keep this loop from ever drawing what it had already read.
+    //
+    // The first read needs no check: this is only reached because the shell's
+    // output is what woke the loop, so there is something there.
     var rounds: usize = 0;
     while (rounds < 8) : (rounds += 1) {
-        if (!readable()) return;
+        if (rounds > 0 and !moreToRead()) return;
 
         const n = sys.read(from_shell, &chunk);
         if (n <= 0) {
@@ -347,6 +363,16 @@ fn resize(w: u16, h: u16) void {
     terminal.resize(@intCast(@max(cols, 1)), @intCast(@max(rows, 1)));
     shadow.invalidate();
 
+    // A full-screen program lays itself out to a size only this terminal
+    // knows, so a window that changes size has to say so. It goes to the
+    // program's input the way its keys do, and only to one that took the
+    // alternate screen: a shell reading a line would choke on a report it
+    // never asked for.
+    if (terminal.on_alternate) {
+        var buf: [vt.MAX_REPLY]u8 = undefined;
+        toShell(terminal.sizeReport(&buf));
+    }
+
     redraw();
     connection.map(window) catch {};
 }
@@ -376,6 +402,5 @@ fn redraw() void {
 
     const damage = render.paint(surface.*, area, &terminal, &shadow) orelse return;
     terminal.dirty = false;
-
     connection.commit(window, &.{damage}) catch {};
 }
