@@ -379,6 +379,8 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
 
     for (drivers) |candidate| {
         if (!strEql(candidate.name, wanted)) continue;
+        // The driver says whether it took the device; a refusal has
+        // already said why in its own words.
         entry.attached = candidate.ops.attach(.{
             .address = entry.address,
             .speed = entry.speed,
@@ -392,6 +394,14 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
         });
         return;
     }
+
+    // A manifest naming a driver this build does not carry: the device is
+    // listed and undriven, and the name nobody answers to is worth saying
+    // once rather than looking like a driver that failed quietly.
+    log.begin("usbd", .dim);
+    out.text("no driver here answers to ");
+    out.text(wanted);
+    log.end();
 }
 
 fn strEql(a: []const u8, b: []const u8) bool {

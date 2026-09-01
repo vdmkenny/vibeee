@@ -48,7 +48,10 @@ pub const DeviceInfo = extern struct {
     protocol: u8 = 0,
     driver_len: u8 = 0,
     driver: [15]u8 = @splat(0),
-    _tail: u8 = 0,
+    /// Whether the named driver took the device. A driver is named when
+    /// the device manager matches one, which is before the driver has
+    /// tried: a device can carry a name and be driven by nobody.
+    attached: bool = false,
 
     pub fn driverSlice(self: *const DeviceInfo) []const u8 {
         return self.driver[0..@min(self.driver_len, self.driver.len)];

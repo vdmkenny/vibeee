@@ -154,11 +154,16 @@ fn describe(device: proto.DeviceInfo, rails: []const tree.Rung, rung: tree.Rung)
     // put the truth in its interfaces, and the bus copied that up.
     out.pad(device.class.spell(), CLASS);
 
+    // A driver is named by the device manager's match, which happens
+    // before the driver has tried the device. One that named itself and
+    // then refused what it found is dimmed: the device is nobody's.
     const driver = device.driverSlice();
     if (driver.len == 0) {
         ink.write(.dim, padded("none", DRIVER));
-    } else {
+    } else if (device.attached) {
         out.pad(driver, DRIVER);
+    } else {
+        ink.write(.dim, padded(driver, DRIVER));
     }
 
     // What the device says it is, which is the only column here it wrote

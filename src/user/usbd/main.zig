@@ -350,6 +350,7 @@ fn describe(index: u32, token: u32) void {
         .product = entry.descriptor.product,
         .version = entry.descriptor.device_version,
         .driver_len = entry.driver.driver_len,
+        .attached = entry.attached,
     };
     @memcpy(&info.driver, &entry.driver.driver);
 
