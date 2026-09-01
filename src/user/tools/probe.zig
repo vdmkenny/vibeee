@@ -51,7 +51,10 @@ const CASES = [_]Case{
 };
 
 pub fn run(args: []const []const u8) void {
-    _ = args;
+    // Started with `echo` this program is the other end of its own channel:
+    // the handle cases need something to call, and a server that answers is
+    // the smallest thing that will do.
+    if (args.len > 0 and std.mem.eql(u8, args[0], "echo")) return echo();
 
     var passed: usize = 0;
     for (CASES) |case| {
@@ -69,7 +72,120 @@ pub fn run(args: []const []const u8) void {
     out.text(" of ");
     out.decimal(CASES.len);
     out.text(" refused as they should be\n");
+
+    balance();
     out.flush();
+}
+
+// ---------------------------------------------------------------------------
+// What a channel gives back
+//
+// A handle sent over a channel is counted at both ends, and the counting is
+// invisible from outside: nothing a program can ask says how many references
+// an object has. What it can ask is how much the kernel is holding, so the
+// test is arithmetic on that. A reference left behind on every call is an
+// object that is never freed, and a hundred of them is a number that shows.
+// ---------------------------------------------------------------------------
+
+/// How many calls to make. Enough that a single leaked object per call is
+/// larger than the noise of everything else the machine is doing, and small
+/// enough to be over before anybody is waiting for it.
+const ROUNDS = 200;
+
+fn balance() void {
+    // Detached: the server outlives this call rather than being waited for.
+    const server = sys.spawnDetached("/bin/tools", &.{ "tools", "probe", "echo" });
+    if (server < 0) {
+        out.text("  ..   handles over a channel: nothing to call\n");
+        return;
+    }
+
+    // The server has to have published its name before the first connect.
+    const channel = connect();
+    if (channel < 0) {
+        out.text("  ..   handles over a channel: nobody answered\n");
+        return;
+    }
+
+    const before = held();
+    for (0..ROUNDS) |_| {
+        const e = sys.eventCreate();
+        if (e < 0) break;
+        const msg = abi.Message.init("x", &.{@intCast(e)});
+        var answer: abi.Message = .{};
+        _ = sys.callMsg(@intCast(channel), &msg, &answer);
+        _ = sys.close(@intCast(e));
+    }
+    const after = held();
+
+    _ = sys.close(@intCast(channel));
+
+    // Some growth is the rest of the machine, and a leak is proportional to
+    // the number of rounds: an event is tens of bytes, so a reference kept per
+    // call is thousands and anything below that is noise.
+    const grew = if (after > before) after - before else 0;
+    const room = ROUNDS * @sizeOf(usize);
+
+    out.text(if (grew < room) "  ok   " else "  FAIL ");
+    out.pad("handles sent over a channel are given back", 44);
+    if (grew < room) {
+        out.text("nothing left behind");
+    } else {
+        out.decimal(grew);
+        out.text(" bytes held after ");
+        out.decimal(ROUNDS);
+        out.text(" calls");
+    }
+    out.byte('\n');
+}
+
+/// How many bytes the kernel is holding in objects right now.
+fn held() usize {
+    var buf: [64]u8 = undefined;
+    const n = sys.sysinfo("heap", &buf);
+    if (n <= 0) return 0;
+
+    // "<n> bytes live, <n> frames".
+    const said = buf[0..@intCast(n)];
+    const end = std.mem.indexOfScalar(u8, said, ' ') orelse return 0;
+    return std.fmt.parseInt(usize, said[0..end], 10) catch 0;
+}
+
+/// Wait for the server's name to appear. It is a program that has to be
+/// scheduled, loaded and run before it registers anything.
+fn connect() isize {
+    for (0..200) |_| {
+        const got = sys.svcConnect(ECHO);
+        if (got >= 0) return got;
+        sys.sleepMicros(1000);
+    }
+    return -1;
+}
+
+const ECHO = "probe.echo";
+
+/// The other end: take whatever arrives, close the handles that came with it,
+/// and answer. Closing them is the point, because a handle nobody closes tells
+/// nothing about whether the kernel would have let it go.
+fn echo() void {
+    const channel = sys.svcRegister(ECHO);
+    if (channel < 0) {
+        out.text("probe: echo could not publish itself\n");
+        out.flush();
+        return;
+    }
+
+    var idle: usize = 0;
+    while (idle < 500) {
+        var msg: abi.Message = .{};
+        const got = sys.recv(@intCast(channel), &msg, 10_000) orelse {
+            idle += 1;
+            continue;
+        };
+        idle = 0;
+        for (msg.handleSlice()) |number| _ = sys.close(number);
+        _ = sys.reply(@intCast(channel), got.token, "");
+    }
 }
 
 fn say(got: isize, want: abi.Errno) void {

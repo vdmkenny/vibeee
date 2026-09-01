@@ -294,6 +294,11 @@ pub fn sys_call(a: Args) Result {
         };
     };
 
+    // The message took its own references when it was sent, and the receiver
+    // now holds them; ours go back. Without this every call carrying a handle
+    // leaves one reference behind and the object is never freed.
+    defer for (taken[0..count]) |item| handles.releaseTransfer(item);
+
     out.* = .{};
     @memcpy(out.data[0..answer.len], answer.data[0..answer.len]);
     out.len = answer.len;

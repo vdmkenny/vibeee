@@ -91,6 +91,20 @@ pub const Message = struct {
         self.handle_count = @intCast(items.len);
     }
 
+    /// Hand this message on, leaving nothing owned here.
+    ///
+    /// A message owns the references it carries, so a copy of one is two
+    /// owners for a single reference: whichever gave it back first would free
+    /// an object the other still points at, and the second would free it
+    /// again. Every place a message moves from one owner to the next goes
+    /// through here, so the rule that `attach` states is the rule the code
+    /// keeps.
+    pub fn take(self: *Message) Message {
+        const moved = self.*;
+        self.handle_count = 0;
+        return moved;
+    }
+
     /// Give back anything still attached. Called when a message is dropped
     /// rather than delivered, which is the path that leaks if it is missed.
     pub fn discard(self: *Message) void {
@@ -250,7 +264,7 @@ pub fn call(
         record.reply.discard();
         return error.Disconnected;
     }
-    answer.* = record.reply;
+    answer.* = record.reply.take();
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +298,12 @@ pub fn recv(ch: *Channel, deadline_us: ?u64) Error!Received {
 
             ch.inflight[slot] = c;
             ch.tokens[slot] = token;
-            return .{ .token = token, .message = c.request };
+
+            // The server owns the request's handles from here. The caller is
+            // still blocked in the frame that holds the original, and every
+            // path it wakes on discards what it owns: leaving it owning these
+            // too would have it give back references the server is holding.
+            return .{ .token = token, .message = c.request.take() };
         }
 
         _ = wait.blockOn(&.{&ch.recv_queue}, deadline_us) catch return error.TimedOut;

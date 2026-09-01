@@ -15,5 +15,15 @@ difference between a bug in a program and a bug in the system. The rest are
 the same question about authority rather than about memory: what a program
 may take, and what it may only be given.
 
+It then sends handles over a channel a few hundred times, to itself, and
+reads how much the kernel is holding before and after. A reference kept on
+every call is an object that is never freed, which nothing else would show:
+no program can ask how many references an object has, but it can ask how
+much memory has not come back.
+
 It says how many were refused as they should be. Anything other than all of
 them is a hole, and a machine that stops partway through has the worst kind.
+
+`probe echo` is the other end of that channel and is not meant to be run by
+hand: the handle cases need something to call, and a server that answers is
+the smallest thing that will do.
