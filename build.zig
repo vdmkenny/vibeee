@@ -30,8 +30,10 @@ fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
 /// Every format costs the binary that carries it, so this is a list of what
 /// each program actually opens rather than one decoder with everything in it:
 /// a viewer opens photographs, and the desktop behind it opens a wallpaper.
-fn imageFormats(name: []const u8) ?[]const []const u8 {
-    if (std.mem.eql(u8, name, "eimg")) {
+fn imageFormats(name: []const u8) ?*const [4][]const u8 {
+    // The file manager previews what is under the cursor, which is as much a
+    // viewer as the viewer is.
+    if (std.mem.eql(u8, name, "eimg") or std.mem.eql(u8, name, "efm")) {
         return &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_BMP", "-DSTBI_ONLY_GIF" };
     }
     return null;
@@ -321,7 +323,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "monitor", .root = "src/user/apps/monitor.zig" },
             .{ .name = "eterm", .root = "src/user/eterm/main.zig" },
             .{ .name = "pad", .root = "src/user/apps/pad.zig" },
-            .{ .name = "efm", .root = "src/user/apps/efm.zig" },
+            .{ .name = "efm", .root = "src/user/efm/main.zig" },
             .{ .name = "timed", .root = "src/user/timed/main.zig" },
         };
 
@@ -434,11 +436,11 @@ pub fn build(b: *std.Build) void {
                 exe.root_module.addIncludePath(b.path("include"));
                 exe.root_module.addCSourceFiles(.{
                     .files = &.{"src/user/img/stb.c"},
-                    .flags = &(.{
+                    .flags = &([_][]const u8{
                         "-std=c11",
                         "-ffreestanding",
                         "-fno-stack-protector",
-                    } ++ formats),
+                    } ++ formats.*),
                 });
                 exe.root_module.addImport("clibc", b.createModule(.{
                     .root_source_file = b.path("src/user/libc/freestanding.zig"),
@@ -780,6 +782,13 @@ pub fn build(b: *std.Build) void {
         }),
     });
     img_tests.root_module.addIncludePath(b.path("third_party/stb"));
+    // The pictures the machine ships, so the decoder is proved against the
+    // same bytes it will meet there.
+    for ([_][]const u8{ "colours.png", "tall.png", "photo.jpg", "sideways.jpg" }) |sample| {
+        img_tests.root_module.addAnonymousImport(sample, .{
+            .root_source_file = b.path(b.fmt("home/pictures/{s}", .{sample})),
+        });
+    }
     img_tests.root_module.addCSourceFiles(.{
         .files = &.{"src/user/img/stb.c"},
         .flags = &.{

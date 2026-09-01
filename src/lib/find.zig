@@ -74,7 +74,7 @@ pub fn match(name: []const u8, query: []const u8) ?Match {
 
     var at: usize = 0;
     while (at + query.len <= name.len) : (at += 1) {
-        if (!eqlFold(name[at .. at + query.len], query)) continue;
+        if (!str.eqlFold(name[at .. at + query.len], query)) continue;
         return .{ .at = at, .len = query.len, .score = scoreOf(name, at) };
     }
     return null;
@@ -105,14 +105,6 @@ fn startsWord(name: []const u8, at: usize) bool {
         ' ', '-', '_', '.', '/', '\t' => true,
         else => false,
     };
-}
-
-fn eqlFold(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (str.lower(x) != str.lower(y)) return false;
-    }
-    return true;
 }
 
 // ---------------------------------------------------------------------------

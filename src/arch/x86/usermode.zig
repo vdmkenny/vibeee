@@ -15,14 +15,20 @@ const pmm = @import("../../kernel/pmm.zig");
 /// null page so a null dereference still faults.
 pub const USER_STACK_TOP: usize = 0x3FFF_0000;
 
-/// Thirty-two kilobytes.
+/// Sixty-four kilobytes, which is what `design/11-userspace.md` says a stack
+/// here is.
 ///
-/// Sixteen was not enough for a program that draws: a control that builds a
-/// list of rows before handing them to a table puts kilobytes in one frame,
-/// and the first one to do so overflowed. Nothing below the bottom page is
-/// mapped, so an overflow still faults at once and reports where, rather than
-/// quietly writing into whatever is under it.
-pub const USER_STACK_PAGES = 8;
+/// Sixteen kilobytes was not enough for a program that draws: a control that
+/// builds a list of rows before handing them to a table puts kilobytes in one
+/// frame. Thirty-two was not enough for one that decodes a picture: a
+/// vendored decoder builds its Huffman tables in a frame of its own, and four
+/// kilobytes of that on top of a drawing pass is over the edge.
+///
+/// The wall was real both times and the growth is what it costs to do the
+/// work, so the number doubled rather than the work being avoided. Nothing
+/// below the bottom page is mapped, so an overflow still faults at once and
+/// says where, rather than quietly writing into whatever is under it.
+pub const USER_STACK_PAGES = 16;
 
 pub const Error = error{OutOfMemory};
 

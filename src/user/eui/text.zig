@@ -263,6 +263,11 @@ pub const Editor = struct {
     goal: ?i32 = null,
     /// Set on any change to the text, for the caller's modified flag.
     edited: bool = false,
+    /// Shown but not changed. Everything that reads still works: the cursor
+    /// moves, a selection is made, a copy is taken. What a preview of a file
+    /// wants, and what a log pane wants, and neither of them wants a second
+    /// text control to get it.
+    read_only: bool = false,
     bar: scroll.State = .{},
 
     pub fn selection(self: *const Editor) ?struct { from: usize, to: usize } {
@@ -480,6 +485,10 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
 pub const Command = enum { cut, copy, paste, select_all };
 
 pub fn run(state: *Editor, buffer: *Buffer, what: Command, clip: widget.Clipboard) bool {
+    // Copying out of something that cannot be changed is the whole point of
+    // being able to select in it; the rest of these change it.
+    if (state.read_only and what != .copy and what != .select_all) return false;
+
     switch (what) {
         .copy => {
             const span = state.selection() orelse return false;
@@ -568,6 +577,7 @@ fn commandOf(row: usize) ?Command {
 }
 
 fn insert(state: *Editor, buffer: *Buffer, codepoint: u32) bool {
+    if (state.read_only) return false;
     if (codepoint < 0x20 and codepoint != '\t') return false;
 
     var utf8: [4]u8 = undefined;
@@ -614,6 +624,7 @@ fn key(
         // corrections: back over a word, and away with the line.
         switch (code) {
             .w => {
+                if (state.read_only) return true;
                 if (!state.deleteSelection(buffer)) {
                     const from = str.wordBefore(text, state.cursor);
                     if (from < state.cursor) {
@@ -626,6 +637,7 @@ fn key(
                 return true;
             },
             .u => {
+                if (state.read_only) return true;
                 const here = positionOf(text, face, width, state.cursor);
                 const from = lineAt(text, face, width, here.line).start;
                 state.anchor = null;
@@ -676,6 +688,11 @@ fn key(
             }
             state.goal = null;
         },
+        .enter, .kp_enter, .tab, .backspace, .delete => if (state.read_only) return false,
+        else => {},
+    }
+
+    switch (code) {
         .enter, .kp_enter => {
             _ = state.deleteSelection(buffer);
             if (!buffer.insert(state.cursor, "\n")) return true;

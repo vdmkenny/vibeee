@@ -368,6 +368,17 @@ A control strip: a picture you can press, a slider, and the number it is at.
 | `track` | `fn (draw.Rect, []const u8) draw.Rect` |
 | `reading` | `fn (draw.Rect, []const u8) draw.Rect` |
 
+### `eui.thumb`
+
+A picture, shrunk to fit and stood the right way up.
+
+| call | signature |
+|---|---|
+| `uprightSize` | `fn (u16, u16, exif.Orientation) thumb.Size` |
+| `fit` | `fn (draw.Rect, u16, u16) draw.Rect` |
+| `paint` | `fn (draw.Surface, draw.Rect, thumb.Source, exif.Orientation) void` |
+| `sampleAt` | `fn (u32, u32, u16, u16, exif.Orientation) thumb.Point` |
+
 ## Pictures
 
 Twelve by twelve, one bit deep, drawn through the same blitter as a

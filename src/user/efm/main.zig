@@ -15,6 +15,14 @@ const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
+const preview = @import("preview.zig");
+
+// The picture decoder is C, and calls the libc by name: the C-callable half
+// is imported so its exports are emitted into this binary. One
+// implementation in the system, not two.
+comptime {
+    _ = @import("clibc");
+}
 const info = @import("ulib").info;
 const paths = @import("ulib").paths;
 const str = @import("ulib").str;
@@ -128,9 +136,13 @@ fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
 
     switch (code) {
         .tab => {
+            // With a preview open there is only one listing, so there is
+            // nothing to switch to.
+            if (previewing) return true;
             active = 1 - active;
             ctx.damage();
         },
+        .f3 => togglePreview(),
         .backspace => leave(),
         .f5 => transfer(.copy),
         .f6 => transfer(.move),
@@ -141,6 +153,46 @@ fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
         else => return false,
     }
     return true;
+}
+
+/// Whether the right pane is showing what the cursor is on.
+var previewing = false;
+
+/// What the cursor is on, or null where the pane is empty.
+fn underCursor() ?dir.Entry {
+    const pane = here();
+    const items = pane.listing.items();
+    if (items.len == 0) return null;
+    return items[@min(pane.view.selected, items.len - 1)];
+}
+
+/// Turn the preview on and off.
+///
+/// Turning it on moves you to the left pane, because the right one has
+/// stopped being somewhere you can be. Turning it off lets the picture go: a
+/// decoded photograph is the largest thing this program holds.
+fn togglePreview() void {
+    previewing = !previewing;
+    if (previewing) {
+        active = 0;
+    } else {
+        preview.clear();
+    }
+    ctx.damage();
+}
+
+/// Keep the preview on whatever the cursor is on now.
+///
+/// Called every pass rather than on every key: the cursor moves by keyboard,
+/// by wheel and by click, and one place that notices covers all three. The
+/// preview itself does nothing when the file has not changed.
+fn followCursor() void {
+    if (!previewing) return;
+    const entry = underCursor() orelse {
+        preview.clear();
+        return;
+    };
+    preview.show(here().path(), entry);
 }
 
 fn typed(codepoint: u32) bool {
@@ -320,11 +372,24 @@ fn draw() void {
         .h = keys.y - places.bottom(),
     };
 
+    followCursor();
     drawPlaces(places);
 
     const half = @divTrunc(body.w, 2);
-    drawPane(0, .{ .x = 0, .y = body.y, .w = half, .h = body.h });
-    drawPane(1, .{ .x = half, .y = body.y, .w = body.w - half, .h = body.h });
+    const left = Rect{ .x = 0, .y = body.y, .w = half, .h = body.h };
+    const right = Rect{ .x = half, .y = body.y, .w = body.w - half, .h = body.h };
+
+    drawPane(0, left);
+
+    // The other pane is either the second listing or what the first one is
+    // pointing at. Both panes on one folder is what a preview replaces: the
+    // question a preview answers is about the file under the cursor, and the
+    // pane beside it is the only room there is to answer it in.
+    if (previewing) {
+        preview.draw(ctx, right, underCursor());
+    } else {
+        drawPane(1, right);
+    }
 
     drawKeys(keys);
 
@@ -582,6 +647,7 @@ fn spellSize(bytes: u32, buf: []u8) []const u8 {
 const KEYS = [_]eui.keys.Key{
     .{ .key = "\u{21C6}", .label = "pane" },
     .{ .key = "\u{21B5}", .label = "open" },
+    .{ .key = "F3", .label = "preview" },
     .{ .key = "F5", .label = "copy" },
     .{ .key = "F6", .label = "move" },
     .{ .key = "F7", .label = "folder" },

@@ -6,6 +6,7 @@
 //! what a date looks like.
 
 const civil = @import("lib").civil;
+const str = @import("lib").str;
 const out = @import("out.zig");
 
 pub const Civil = civil.Civil;
@@ -22,19 +23,36 @@ pub fn pair(value: u8) void {
 
 /// `2026-08-26 14:33:07`, unambiguous, sorts as text, and the shape a log or
 /// a status line wants.
-pub fn writeStamp(seconds: i64) void {
+///
+/// Built into a buffer, because the two callers want it in two places: a tool
+/// prints it and a window draws it, and a stamp spelled twice is two shapes
+/// that drift.
+pub fn stamp(buf: []u8, seconds: i64) []const u8 {
     const c = fromEpoch(seconds);
-    out.decimal(c.year);
-    out.byte('-');
-    pair(c.month);
-    out.byte('-');
-    pair(c.day);
-    out.byte(' ');
-    pair(c.hour);
-    out.byte(':');
-    pair(c.minute);
-    out.byte(':');
-    pair(c.second);
+    var line = str.Builder{ .buf = buf };
+
+    line.number(@intCast(@max(c.year, 0)));
+    line.byte('-');
+    twoDigits(&line, c.month);
+    line.byte('-');
+    twoDigits(&line, c.day);
+    line.byte(' ');
+    twoDigits(&line, c.hour);
+    line.byte(':');
+    twoDigits(&line, c.minute);
+    line.byte(':');
+    twoDigits(&line, c.second);
+    return line.done();
+}
+
+fn twoDigits(into: *str.Builder, value: u8) void {
+    into.byte('0' + @as(u8, @intCast(value / 10 % 10)));
+    into.byte('0' + @as(u8, @intCast(value % 10)));
+}
+
+pub fn writeStamp(seconds: i64) void {
+    var buf: [24]u8 = @splat(0);
+    out.text(stamp(&buf, seconds));
 }
 
 /// A fixed-width 12-character listing column: `Aug 26 14:33` for something

@@ -289,6 +289,13 @@ parked there.
   transactions. The queue heads carry the hub and port for them and the arithmetic is
   written, but nothing has exercised it: the emulator will not put a full speed hub on
   an EHCI bus, and the machine's own hubs are the companions' business.
+- **What a file is, is decided twice.** The `file` command reads a file's first
+  bytes and names what it found; the file manager's preview and its listing
+  decide by suffix instead, because reading every file the cursor passes over
+  would be a disk seek per keypress. Both answers are useful and neither is the
+  other's: what belongs in `lib` is one recogniser with both doors, a cheap one
+  from the name and a certain one from the bytes, so the icon a listing draws
+  and the kind `file` reports cannot disagree.
 - **A program cannot carry its own icon.** The launcher draws a picture per row
   from a list the window manager holds, so a program the manager has never heard
   of has no picture and adding one means editing the manager. What it wants is

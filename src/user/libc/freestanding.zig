@@ -8,8 +8,13 @@
 
 pub const string = @import("string.zig");
 pub const stdlib = @import("stdlib.zig");
+/// `malloc` and friends, onto the same heap a Zig program in this process
+/// allocates from. A vendored decoder asks for its own memory, and there is
+/// one heap here to give it.
+pub const mem = @import("mem.zig");
 
 comptime {
     _ = string;
     _ = stdlib;
+    _ = mem;
 }

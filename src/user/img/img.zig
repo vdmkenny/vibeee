@@ -205,6 +205,31 @@ test "the pixels come back as the surface holds them" {
     try testing.expectEqual(@as(u32, 0xFFFFFF), picture.pixels[3]);
 }
 
+test "the pictures this system ships decode" {
+    // The samples the machine carries, decoded here first: a fault inside a
+    // vendored decoder on the machine has no console to report itself on, and
+    // the same bytes through the same call are the cheapest way to find out
+    // whether the decoder or the drawing is at fault.
+    const samples = [_]struct { name: []const u8, bytes: []const u8, w: u16, h: u16 }{
+        .{ .name = "colours.png", .bytes = @embedFile("colours.png"), .w = 240, .h = 160 },
+        .{ .name = "tall.png", .bytes = @embedFile("tall.png"), .w = 90, .h = 300 },
+        .{ .name = "photo.jpg", .bytes = @embedFile("photo.jpg"), .w = 320, .h = 240 },
+        .{ .name = "sideways.jpg", .bytes = @embedFile("sideways.jpg"), .w = 240, .h = 320 },
+    };
+
+    for (samples) |sample| {
+        const picture = try decode(sample.bytes);
+        defer picture.deinit();
+
+        try testing.expectEqual(sample.w, picture.width);
+        try testing.expectEqual(sample.h, picture.height);
+        try testing.expectEqual(
+            @as(usize, sample.w) * @as(usize, sample.h),
+            picture.pixels.len,
+        );
+    }
+}
+
 test "what is not a picture is refused, and says why" {
     try testing.expectError(error.Unreadable, shapeOf("not a picture at all"));
     try testing.expectError(error.Unreadable, decode(&.{}));
