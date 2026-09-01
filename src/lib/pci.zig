@@ -73,6 +73,21 @@ pub const MemoryBar = packed struct(u32) {
     }
 };
 
+/// The reachable physical base of a memory window: the BAR dword, and the
+/// dword of the slot above it for a 64-bit pair. Addresses on this machine
+/// are thirty-two bits, so a pair is reachable exactly when the firmware
+/// placed it in the low four gigabytes and its upper half is zero, which is
+/// the only place firmware on such a machine has to put it.
+pub fn memoryWindowBase(window: MemoryBar, upper: u32) ?u32 {
+    if (window.space != .memory) return null;
+    switch (window.kind) {
+        .bits32 => {},
+        .bits64 => if (upper != 0) return null,
+        .below_one_megabyte, .reserved => return null,
+    }
+    return if (window.base() == 0) null else window.base();
+}
+
 pub const IoBar = packed struct(u32) {
     io_space: bool,
     reserved: bool,
@@ -210,6 +225,22 @@ comptime {
 }
 
 const testing = std.testing;
+
+test "a memory window is reachable by its width and its placement" {
+    // A 64-bit pair placed low, the shape a southbridge gives its HDA
+    // aperture; the same pair placed above four gigabytes is out of reach.
+    const pair: MemoryBar = @bitCast(@as(u32, 0xFEBF_8004));
+    try std.testing.expectEqual(@as(?u32, 0xFEBF_8000), memoryWindowBase(pair, 0));
+    try std.testing.expectEqual(@as(?u32, null), memoryWindowBase(pair, 1));
+
+    // A flat 32-bit window never consults the slot above it.
+    const flat: MemoryBar = @bitCast(@as(u32, 0xFEBF_8000));
+    try std.testing.expectEqual(@as(?u32, 0xFEBF_8000), memoryWindowBase(flat, 0xFFFF_FFFF));
+
+    // An I/O window is not memory, and an unassigned pair has no base.
+    try std.testing.expectEqual(@as(?u32, null), memoryWindowBase(@bitCast(@as(u32, 0x0000_E001)), 0));
+    try std.testing.expectEqual(@as(?u32, null), memoryWindowBase(@bitCast(@as(u32, 0x0000_0004)), 0));
+}
 
 test "the lanes of a location are the ones mechanism one expects" {
     const loc = Location{ .bus = 0x21, .device = 0x0F, .function = 5 };
