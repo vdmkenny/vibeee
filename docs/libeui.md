@@ -329,6 +329,18 @@ Numbers it owns:
 
 - `INSET` = 6
 
+### `eui.prompt`
+
+A question across the bottom of a window, with the ways to answer it.
+
+| call | signature |
+|---|---|
+| `sheet` | `fn (draw.Rect) draw.Rect` |
+| `above` | `fn (draw.Rect) draw.Rect` |
+| `run` | `fn (*widget.Context, draw.Rect, *const prompt.Prompt) ?usize` |
+| `key` | `fn (*const prompt.Prompt, syscalls.KeyCode) ?usize` |
+| `letter` | `fn (*const prompt.Prompt, u32) ?usize` |
+
 ### `eui.rail`
 
 The column of sections down the side of a window.

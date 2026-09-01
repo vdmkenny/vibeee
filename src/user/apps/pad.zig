@@ -8,6 +8,7 @@
 //! Everything it does with text is `libeui`'s, which is where an editable area
 //! belongs: the next program that needs one should not write a second.
 
+const std = @import("std");
 const env = @import("ulib").env;
 const eui = @import("eui");
 const proto = @import("proto");
@@ -94,6 +95,24 @@ var dialog: proto.FileDialog = .{};
 var asking: proto.dialog.Purpose = .open;
 
 var modified = false;
+
+/// The question put when the window is asked to close with changes unsaved.
+var prompt: eui.prompt.Prompt = .{};
+var question_buffer: [96]u8 = @splat(0);
+/// Set when Save was the answer: the close finishes once the file is
+/// written, which may be after a dialog has asked where.
+var closing = false;
+
+/// The answers, in the order the sheet shows them.
+const CloseChoice = enum(usize) { save, discard, cancel };
+const CLOSE_CHOICES = [_]eui.prompt.Choice{
+    .{ .label = "Save", .letter = 's', .weight = .strong },
+    .{ .label = "Discard", .letter = 'd' },
+    .{ .label = "Cancel" },
+};
+comptime {
+    std.debug.assert(CLOSE_CHOICES.len == @typeInfo(CloseChoice).@"enum".fields.len);
+}
 var status: []const u8 = "";
 
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
@@ -109,7 +128,9 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     proto.app.run("pad", "Pad", 460, 320, .{
         .draw = draw,
         .key = key,
+        .text = typed,
         .event = own,
+        .close = mayClose,
     });
 }
 
@@ -127,6 +148,12 @@ fn own(event: proto.wm.Ev) bool {
 /// and which chord runs it. A second table of keycodes here is the one that
 /// would go stale.
 fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
+    // A standing question takes every key: what is typed is an answer or
+    // nothing, never text into the document behind it.
+    if (prompt.isOpen()) {
+        if (eui.prompt.key(&prompt, code)) |choice| answerClose(choice);
+        return true;
+    }
     return switch (eui.menubar.key(&menus, code, mods, &MENUS)) {
         .ignored => false,
         .taken => true,
@@ -159,6 +186,52 @@ fn baseName() []const u8 {
         if (full[i - 1] == '/') return full[i..];
     }
     return full;
+}
+
+/// Whether the window may go: at once with nothing unsaved, and otherwise
+/// not yet, because the question is being put.
+fn mayClose() bool {
+    if (!modified) return true;
+
+    var line = str.Builder{ .buf = &question_buffer };
+    line.text("Save the changes to ");
+    line.text(if (file_len > 0) baseName() else "this document");
+    line.text("?");
+    prompt.ask(line.done(), &CLOSE_CHOICES);
+    ctx.damage();
+    return false;
+}
+
+fn answerClose(index: usize) void {
+    prompt.dismiss();
+    ctx.damage();
+    switch (@as(CloseChoice, @enumFromInt(index))) {
+        .save => {
+            closing = true;
+            save();
+            finishClosing();
+        },
+        .discard => sys.exit(0),
+        .cancel => closing = false,
+    }
+}
+
+/// Go, once the save that closing waited on has been made. With no name yet
+/// the dialog is asking for one and the close waits; with a name and the
+/// changes still unsaved the write failed, the status line says so, and the
+/// window stays.
+fn finishClosing() void {
+    if (!closing) return;
+    if (!modified) sys.exit(0);
+    if (path().len == 0) return;
+    closing = false;
+}
+
+/// A typed character while a question stands is an answer or nothing.
+fn typed(codepoint: u32) bool {
+    if (!prompt.isOpen()) return false;
+    if (eui.prompt.letter(&prompt, codepoint)) |choice| answerClose(choice);
+    return true;
 }
 
 fn ask(purpose: proto.dialog.Purpose) void {
@@ -244,13 +317,19 @@ fn newDocument() void {
 fn finishDialog() void {
     switch (dialog.result) {
         .pending => return,
-        .cancelled => status = "",
+        .cancelled => {
+            status = "";
+            closing = false;
+        },
         .chosen => {
             setPath(dialog.chosen());
             status = "";
             switch (asking) {
                 .open => open(),
-                .save => save(),
+                .save => {
+                    save();
+                    finishClosing();
+                },
             }
         },
     }
@@ -287,7 +366,7 @@ fn run_command(command: Command) void {
         .open => ask(.open),
         .save => save(),
         .save_as => ask(.save),
-        .close => sys.exit(0),
+        .close => if (mayClose()) sys.exit(0),
 
         .cut => edited(text.run(&editor, &document, .cut, ctx.clipboard)),
         .copy => edited(text.run(&editor, &document, .copy, ctx.clipboard)),
@@ -319,7 +398,10 @@ fn draw() void {
     const strip = parts.top;
     const bottom = parts;
 
-    text.edit(ctx, parts.body, &editor, &document);
+    // While a question stands across the bottom, the document steps back
+    // from it, so a click on an answer is not also a click into the text.
+    const body = if (prompt.isOpen()) eui.prompt.above(parts.body) else parts.body;
+    text.edit(ctx, body, &editor, &document);
 
     if (show_status) {
         eui.statusbar.run(ctx, bottom.bottom, &.{
@@ -334,6 +416,8 @@ fn draw() void {
         status = "";
         setTitle();
     }
+
+    if (eui.prompt.run(ctx, parts.body, &prompt)) |choice| answerClose(choice);
 
     // Last in the pass: an open menu reaches over the document, and anything
     // drawn after it would draw over the menu instead.

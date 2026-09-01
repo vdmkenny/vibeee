@@ -47,6 +47,11 @@ pub const Hooks = struct {
     /// dialog's traffic is nobody else's business. True consumes the event.
     event: ?*const fn (ev: wm.Ev) bool = null,
 
+    /// Asked to close, by the manager or the frame. True lets the window go;
+    /// false keeps it, for a program with something unsaved to ask about
+    /// first. Absent, the window goes. The manager's kill chord does not ask.
+    close: ?*const fn () bool = null,
+
     /// The wait timed out. For a program whose numbers age: return true to
     /// draw a fresh pass.
     tick: ?*const fn () bool = null,
@@ -176,10 +181,16 @@ pub fn run(
                 ctx.damageNow();
                 redraw();
             },
-            .close_req => sys.exit(0),
+            .close_req => if (mayClose()) sys.exit(0),
             else => {},
         }
     }
+}
+
+/// Whether the window may go now: the program's say, or yes.
+fn mayClose() bool {
+    const may = hooks.close orelse return true;
+    return may();
 }
 
 fn setButton(index: u8, down: bool) void {
