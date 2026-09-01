@@ -45,6 +45,9 @@ pub const Icon = enum {
     /// Bars of different heights: what is running and how much of the
     /// machine it is using.
     chart,
+    /// A screen over two rows of keys, which is what a calculator has looked
+    /// like for longer than this machine has existed.
+    calculator,
     /// Settings. Sliders rather than a cog: a cog at this size is a blob.
     sliders,
     power,
@@ -292,6 +295,23 @@ const art = [_]Picture{
             ".##..##..##.",
             "............",
             "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .calculator,
+        .rows = .{
+            "............",
+            "............",
+            ".##########.",
+            ".#........#.",
+            ".#.######.#.",
+            ".#........#.",
+            ".#.##..##.#.",
+            ".#........#.",
+            ".#.##..##.#.",
+            ".#........#.",
+            ".##########.",
             "............",
         },
     },

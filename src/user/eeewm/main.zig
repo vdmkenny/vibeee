@@ -933,8 +933,12 @@ fn onCreate(pid: u32, req: *const wire.Req) Answer {
     // belongs to whatever raised it, but a dialog that got tiled would split
     // the window it was asked from in half.
     const flags = req.body.create.flags;
-    const index = desktop.open("", flags.floating or flags.dialog) orelse
-        return refuse(.no_room);
+    const index = desktop.open(
+        "",
+        flags.floating or flags.dialog,
+        req.body.create.min_w,
+        req.body.create.min_h,
+    ) orelse return refuse(.no_room);
 
     const w = &desktop.windows[index];
     w.client_pid = pid;

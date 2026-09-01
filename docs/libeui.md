@@ -64,6 +64,7 @@ with it this pass.
 | call | signature |
 |---|---|
 | `button` | `fn (*widget.Context, draw.Rect, []const u8) bool` |
+| `buttonAs` | `fn (*widget.Context, draw.Rect, []const u8, widget.Emphasis) bool` |
 | `choice` | `fn (*widget.Context, draw.Rect, anytype) anytype` |
 | `choiceOf` | `fn (*widget.Context, draw.Rect, anytype, []const []const u8) anytype` |
 | `choiceAmong` | `fn (*widget.Context, draw.Rect, anytype, anytype, []const []const u8) anytype` |
@@ -291,6 +292,10 @@ Numbers it owns:
 - `FULL` = 90
 - `EMPTY` = 10
 - `BAR_HEIGHT` = 8
+
+### `eui.grid`
+
+Equal cells in a rectangle.
 
 ### `eui.popover`
 
@@ -538,6 +543,20 @@ chart
     ####    ####    ####  
                           
                           
+                          
+
+calculator
+                          
+                          
+    ####################  
+    ##                ##  
+    ##  ############  ##  
+    ##                ##  
+    ##  ####    ####  ##  
+    ##                ##  
+    ##  ####    ####  ##  
+    ##                ##  
+    ####################  
                           
 
 sliders

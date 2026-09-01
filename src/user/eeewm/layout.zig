@@ -137,7 +137,15 @@ pub const Desktop = struct {
         return null;
     }
 
-    pub fn open(self: *Desktop, title: []const u8, floating: bool) ?usize {
+    /// The size a floating window opens at when it asks for nothing: enough
+    /// to be a window, small enough not to look like a tile that escaped.
+    pub const FLOATING_DEFAULT_W: i32 = 320;
+    pub const FLOATING_DEFAULT_H: i32 = 200;
+
+    /// `want_w` and `want_h` are what the program asked for, which a tile
+    /// ignores and a floating window is given: a tool that knows how big it
+    /// needs to be is the only one who does.
+    pub fn open(self: *Desktop, title: []const u8, floating: bool, want_w: i32, want_h: i32) ?usize {
         for (&self.windows, 0..) |*w, i| {
             if (w.used) continue;
 
@@ -151,8 +159,13 @@ pub const Desktop = struct {
             self.next_id += 1;
 
             // A floating window has no tile to be given, so it is placed
-            // centred once and left where the user puts it thereafter.
-            if (floating) w.area = self.centred(320, 200);
+            // centred once, at the size it asked for, and left where the user
+            // puts it thereafter. A window larger than the screen is cut to
+            // the screen: there is nowhere else for it to go.
+            if (floating) w.area = self.centred(
+                @min(if (want_w > 0) want_w else FLOATING_DEFAULT_W, self.bounds.w),
+                @min(if (want_h > 0) want_h else FLOATING_DEFAULT_H, self.bounds.h),
+            );
 
             // Follow the window if the heuristic sent it elsewhere: a program
             // that opened somewhere invisible looks like a program that failed

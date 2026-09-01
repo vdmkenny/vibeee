@@ -165,6 +165,7 @@ pub const items = [_]Item{
     .{ .label = "eTerm", .category = .tools, .mark = .terminal, .action = .{ .run = .{ .path = "/bin/eterm", .name = "eterm" } } },
     .{ .label = "Pad", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
     .{ .label = "Files", .category = .tools, .mark = .folder, .action = .{ .run = .{ .path = "/bin/efm", .name = "efm" } } },
+    .{ .label = "Calc", .category = .tools, .mark = .calculator, .action = .{ .run = .{ .path = "/bin/calc", .name = "calc" } } },
     .{ .label = "Monitor", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
     .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },
     .{ .label = "About this computer", .category = .system, .mark = .about, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings", .arg = "about" } } },

@@ -15,6 +15,7 @@ pub const audiograph = @import("audiograph.zig");
 pub const battery = @import("battery.zig");
 pub const bounded = @import("bounded.zig");
 pub const Bounded = bounded.Bounded;
+pub const calc = @import("calc.zig");
 pub const civil = @import("civil.zig");
 pub const cmdline = @import("cmdline.zig");
 pub const decimal = @import("decimal.zig");

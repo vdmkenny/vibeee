@@ -43,6 +43,18 @@ pub const KeyCode = @import("lib").syscalls.KeyCode;
 /// anything needs redrawing.
 pub const Visual = enum { idle, hot, active, checked, checked_hot };
 
+/// How much of the eye a control asks for, which is about what it does
+/// rather than about what state it is in.
+pub const Emphasis = enum {
+    /// The ordinary control surface, which is almost everything.
+    plain,
+    /// A step back, for a control that acts on what the plain ones made.
+    quiet,
+    /// The accent, for the one control that finishes what the others began.
+    /// At most one of these belongs in a group, or none of them stands out.
+    strong,
+};
+
 /// One control's identity and remembered state.
 ///
 /// Identified by position rather than by a name or an index: a control is
@@ -521,6 +533,16 @@ pub const Context = struct {
     /// A push button. Returns true on the pass where it is released, having
     /// been pressed on itself.
     pub fn button(self: *Context, area: Rect, text: []const u8) bool {
+        return self.buttonAs(area, text, .plain);
+    }
+
+    /// A button whose ground says what kind of thing it is.
+    ///
+    /// A keypad is the case that needs it: the digits are the ordinary
+    /// surface, what is done to them stands one step back, and the single
+    /// key that finishes a sum takes the accent. Three grounds tell them
+    /// apart before a word is read.
+    pub fn buttonAs(self: *Context, area: Rect, text: []const u8, weight: Emphasis) bool {
         const entry = self.slotFor(area) orelse return false;
         const it = self.interact(entry, area);
 
@@ -529,7 +551,7 @@ pub const Context = struct {
         const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
         if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
-            paintButton(self.surface, area, text, visual, it.focused);
+            paintButtonAs(self.surface, area, text, visual, it.focused, weight);
             self.addDamage(area);
         }
 
@@ -1202,23 +1224,46 @@ pub fn paintBar(surface: Surface, area: Rect, fraction: u8, colour: draw.Color) 
 }
 
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {
-    const t = theme.current();
-    const on = visual == .checked or visual == .checked_hot;
+    paintButtonAs(surface, area, text, visual, focused, .plain);
+}
 
-    const face = switch (visual) {
-        .active => t.surface_pressed,
-        .checked, .checked_hot => t.accent,
-        .hot => t.surface_hot,
-        else => t.surface,
+fn paintButtonAs(
+    surface: Surface,
+    area: Rect,
+    text: []const u8,
+    visual: Visual,
+    focused: bool,
+    weight: Emphasis,
+) void {
+    const t = theme.current();
+    const on = visual == .checked or visual == .checked_hot or weight == .strong;
+
+    // Every weight answers the pointer the same way, a step towards the
+    // light, except the accent, which has no lighter shade to step to and
+    // answers with its edge instead.
+    const face = switch (weight) {
+        .plain => switch (visual) {
+            .active => t.surface_pressed,
+            .checked, .checked_hot => t.accent,
+            .hot => t.surface_hot,
+            else => t.surface,
+        },
+        .quiet => switch (visual) {
+            .active => t.surface_pressed,
+            .hot => t.surface,
+            else => t.surface_pressed,
+        },
+        .strong => t.accent,
     };
-    const ink = if (on) t.accent_text else t.text;
+    const ink = if (on) t.accent_text else if (weight == .quiet) t.text_dim else t.text;
 
     surface.fill(area, face);
     // A selected control under the pointer takes a stronger edge: there is no
     // lighter accent to shift to, and it still has to answer the pointer.
     surface.frame(area, switch (visual) {
         .checked_hot => t.text,
-        else => if (focused) t.accent else t.line,
+        .hot, .active => if (weight == .strong) t.text else if (focused) t.accent else t.line,
+        else => if (focused) t.accent else if (weight == .strong) t.accent else t.line,
     });
     surface.textCentred(area, text, ink);
 
