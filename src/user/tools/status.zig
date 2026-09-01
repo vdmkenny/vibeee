@@ -13,6 +13,7 @@ const out = @import("ulib").out;
 const info = @import("ulib").info;
 const procs = @import("ulib").procs;
 const str = @import("ulib").str;
+const tree = @import("ulib").tree;
 
 
 
@@ -164,6 +165,13 @@ pub fn kill(args: []const []const u8) void {
     out.flush();
 }
 
+/// The kernel's own block list is the ceiling: the listing can name no
+/// more than it holds, disks and the volumes on them together.
+const MAX_DISK_ROWS = 16;
+
+/// How wide the name column is, rails included.
+const DISK_NAME = 13;
+
 pub fn disk(_: []const []const u8) void {
     var buf: [1024]u8 = [_]u8{0} ** 1024;
     const list = info.ask("disks", &buf);
@@ -174,26 +182,51 @@ pub fn disk(_: []const []const u8) void {
         return;
     }
 
-    out.text("device       size        mounted\n");
-
+    // Read before drawing: a volume is drawn knowing whether it is the
+    // last of its disk, which is a question about the rows after it.
+    var rows: [MAX_DISK_ROWS][]const u8 = @splat("");
+    var nested: [MAX_DISK_ROWS]bool = @splat(false);
+    var count: usize = 0;
     var listing = str.lines(list);
     while (listing.next()) |row| {
-        if (row.len > 0) writeDiskRow(row);
+        if (row.len == 0) continue;
+        if (count == rows.len) break;
+        const stripped = str.stripIndent(row);
+        rows[count] = stripped.text;
+        nested[count] = stripped.indented;
+        count += 1;
+    }
+
+    out.text("device       size        mounted\n");
+    for (rows[0..count], 0..) |row, i| {
+        // The volumes of a disk are the indented rows that follow it, and
+        // they are drawn from their disk rather than in their own turn.
+        if (nested[i]) continue;
+        writeDiskRow(row, null);
+
+        var volumes: usize = 0;
+        while (i + 1 + volumes < count and nested[i + 1 + volumes]) volumes += 1;
+        for (rows[i + 1 ..][0..volumes], 0..) |volume, at| {
+            writeDiskRow(volume, tree.Rung.of(at, volumes));
+        }
     }
     out.flush();
 }
 
-fn writeDiskRow(row: []const u8) void {
-    // Indentation marks a volume within the disk above it.
-    const stripped = str.stripIndent(row);
-
-    var it = str.fields(stripped.text);
+/// One row: a disk when `rung` is null, otherwise a volume on the disk
+/// above it, drawn the way every branching thing here is drawn.
+fn writeDiskRow(row: []const u8, rung: ?tree.Rung) void {
+    var it = str.fields(row);
     const name = it.next() orelse return;
     const size = it.next() orelse "";
     const note = it.next() orelse "";
 
-    if (stripped.indented) out.text("  ");
-    out.pad(name, if (stripped.indented) 11 else 13);
+    var width: usize = DISK_NAME;
+    if (rung) |at| {
+        tree.lead(&[_]tree.Rung{}, at);
+        width -= tree.WIDTH;
+    }
+    out.pad(name, width);
     out.decimalRight(str.toUnsigned(size) / (1024 * 1024), 6);
     out.text(" MiB   ");
     out.text(note);
