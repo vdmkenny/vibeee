@@ -73,9 +73,12 @@ knows when this was last true, and the tree knows how big it is.
 | SMBIOS | [`drv/platform/smbios.zig`](../src/drv/platform/smbios.zig) | DMI decoding for `smbios` and `eeefetch`. |
 | UART 16550 | [`drv/serial/uart16550.zig`](../src/drv/serial/uart16550.zig) | For machines that have one; the 701 does not. |
 
-Probed but **not implemented**, the table reports them so an unfamiliar machine is
-diagnosable: `gma900` as a driver of its own, the kernel holding the modeset instead,
-`vesafb` (probe only), `i801smb` and `lpc_ich`.
+The table holds the drivers a build has, so a device with nothing against it reads
+as unclaimed rather than as spoken for by something that will never come: the
+chipset's bridges and its SMBus controller are named by the class they report and
+driven by nobody, which is what they want. Modesetting is the kernel's rather than a
+driver of its own, and `firmware-set` is the entry that keeps whatever mode the
+firmware left.
 
 ## Graphics and the GUI
 
