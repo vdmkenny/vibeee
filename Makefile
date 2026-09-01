@@ -138,7 +138,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd help apps app
+.PHONY: all clean image qemu qemu-sd run test tools sd help apps app fmt check check-all
 
 all: image
 
@@ -152,6 +152,8 @@ help:
 	@echo "  make apps             build the programs in apps/ into home/"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
+	@echo "  make check            module layering and import rules"
+	@echo "  make check-all        format, layering, tests, images, a headless boot and a reboot"
 	@echo "  make qemu-panic       boot into the panic screen (x86)"
 	@echo "  make sd DEV=/dev/rdiskN   flash the image to a card (x86)"
 	@echo "  make MANUAL=no image   build without the manual"
@@ -253,6 +255,8 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o etc/time.cfg ::/etc/time.cfg
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
 	@$(MCOPY) -i $@ -o etc/disabled ::/etc/disabled
+	@$(MCOPY) -i $@ -o etc/open.cfg ::/etc/open.cfg
+	@$(MCOPY) -i $@ -o etc/power.cfg ::/etc/power.cfg
 	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
 	@if [ "$(MANUAL)" = "yes" ]; then \
 		for f in manual/*; do $(MCOPY) -i $@ -o $$f ::/doc/$$(basename $$f); done; \
@@ -361,7 +365,7 @@ endif
 .PHONY: shot
 shot: dev-image
 	@QEMU_CPU="$(QEMU_CPU)" tools/qemu-shot.sh $(OUT) $(if $(TYPE),-t "$(TYPE)") \
-		$(if $(MONITOR),-m "$(MONITOR)") $(if $(SETTLE),-s $(SETTLE)) -w $(or $(WAIT),5) \
+		$(if $(MONITOR),-m "$(MONITOR)") $(if $(SETTLE),-s $(SETTLE)) $(if $(PAUSE),-p $(PAUSE)) -w $(or $(WAIT),5) \
 		-- -drive if=ide,format=raw,file=$(DEV_IMAGE) $(EXTRA)
 
 run: qemu
@@ -402,6 +406,27 @@ qemu-ide: $(IMAGE)
 
 test: qr-verify
 	$(ZIG) build test
+
+# The tree is formatted, as `zig fmt` formats it. Checked rather than
+# assumed: the one file a hand-aligned table exempts is the one that drifts.
+fmt:
+	$(ZIG) fmt --check src tools build.zig
+
+check:
+	$(ZIG) build check
+
+# Everything a change passes before it is done, in the order the cheap ones
+# come first. The last steps boot the development image headless twice and
+# read the serial transcript: the boot reports ready, the probe's refusals
+# all hold, no service failed, nothing panicked or tripped the watchdog, and
+# a setting written on the first boot is read back on the second.
+#
+# The partition offsets are passed in so that the script has no copy of the
+# image layout to fall out of step with.
+check-all: fmt check test dev-image image
+	@BUILD=$(BUILD) ROOTFS_IMG=$(ROOTFS_IMG) DEV_IMAGE=$(DEV_IMAGE) \
+		CFG_OFFSET=$(CFG_OFFSET) HOME_OFFSET=$(HOME_OFFSET) QEMU_CPU="$(QEMU_CPU)" \
+		tools/check-all.sh
 
 # Differential-test the QR encoder against libqrencode. A QR that merely looks
 # right is worthless: the failure mode is a panic screen nobody can scan.

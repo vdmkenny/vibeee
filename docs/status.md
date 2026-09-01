@@ -207,9 +207,15 @@ build.
   suite go red
   across all eight masks.
 - `zig build check`: the layering rules, and a check that no module imports something it never uses.
+- `make check-all`: the gate a change passes before it is done. The tree is formatted as
+  `zig fmt` formats it, the layering holds, the host tests pass, both images build, the root
+  filesystem and the two volumes hold what a boot needs, and the development image boots
+  headless twice: the first boot reports done, `probe` refuses everything it should and leaks
+  nothing, `svc` shows the services up, nothing panicked or tripped the boot watchdog, and a
+  setting written on the first boot is read back on the second.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
-- `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it.
+- `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it. `PAUSE` is the wait after each typed line, for a command that takes longer than a moment.
 
 ## The boot log
 

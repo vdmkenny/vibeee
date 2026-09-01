@@ -5,7 +5,10 @@
 # happened on a machine with no serial port, and it should be one command.
 #
 #   tools/qemu-shot.sh <out.png> [-t "text to type"] [-m "monitor commands"]
-#                      [-w seconds] [-s seconds] [-- qemu args]
+#                      [-w seconds] [-p seconds] [-s seconds] [-- qemu args]
+#
+# `-p` is the pause after each typed line, for a line whose command takes
+# longer than a moment: keys typed while it runs are not read by the shell.
 #
 # `-m` sends raw QEMU monitor commands after the typing, one per line, which is
 # how the pointing device is exercised: `mouse_move dx dy`, `mouse_button mask`
@@ -28,12 +31,14 @@ TYPE=""
 SETTLE=1
 MONITOR=""
 BOOT_WAIT=3
+PAUSE=0.6
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -t) TYPE="$2"; shift 2 ;;
         -m) MONITOR="$2"; shift 2 ;;
         -w) BOOT_WAIT="$2"; shift 2 ;;
+        -p) PAUSE="$2"; shift 2 ;;
         -s) SETTLE="$2"; shift 2 ;;
         --) shift; break ;;
         *) break ;;
@@ -54,7 +59,9 @@ qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
     -display none -vga none -device VGA,edid=on,xres=800,yres=600 -serial "file:$LOG" \
     -monitor "unix:$SOCK,server,nowait" "$@" &
 QPID=$!
-trap 'kill $QPID 2>/dev/null || true; rm -f "$SOCK"' EXIT
+# Waited for as well as killed: the next run opens the same disk image, and
+# QEMU holds its write lock until it has actually gone.
+trap 'kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true; rm -f "$SOCK"' EXIT
 
 # Wait for the monitor socket rather than sleeping a guessed interval.
 i=0; while [ ! -S "$SOCK" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
@@ -118,7 +125,7 @@ if [ -n "$TYPE" ]; then
             i=$((i+1))
         done
         monitor "sendkey ret"
-        sleep 0.6
+        sleep "$PAUSE"
     done
 fi
 
