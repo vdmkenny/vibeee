@@ -1170,7 +1170,7 @@ fn rest() void {
     }
 }
 
-fn sayStages(arena: anytype, stages: usize) void {
+fn sayStages(arena: *volatile Arena, stages: usize) void {
     log.begin(name, .dim);
     out.text("the transfer's stages: ");
     for (0..stages) |i| {

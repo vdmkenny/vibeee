@@ -111,20 +111,25 @@ fn claim() void {
             if (!str.eql(driver.name, assignment.driverSlice())) continue;
             // Rows sharing a name are the same driver's units; the first
             // with a free controller takes the device.
-            if (attach(driver, @bitCast(assignment.location))) break;
+            if (attach(driver, @bitCast(assignment.location)) == .settled) break;
         }
     }
 }
 
-fn attach(driver: Driver, location: pci.Location) bool {
+/// What became of one driver row's try at a device: settled means the
+/// device is driven or refused for a reason every row would repeat, and
+/// the walk stops; a busy unit sends the walk to the next row.
+const Attach = enum { settled, unit_busy };
+
+fn attach(driver: Driver, location: pci.Location) Attach {
     if (sys.claimDevice(location) < 0) {
         log.warn("usbd", "the controller is already claimed");
-        return true;
+        return .settled;
     }
 
     if (!driver.ops.open(location)) {
         _ = sys.releaseDevice(location);
-        return false;
+        return .unit_busy;
     }
 
     var controller = hc.Controller{
@@ -142,12 +147,12 @@ fn attach(driver: Driver, location: pci.Location) bool {
         } else |_| {
             log.warn("usbd", "the interrupt line was refused; controller unused");
             _ = sys.releaseDevice(location);
-            return true;
+            return .settled;
         }
     } else {
         log.warn("usbd", "no interrupt line; controller unused");
         _ = sys.releaseDevice(location);
-        return true;
+        return .settled;
     }
 
     controllers[controller_count] = controller;
@@ -157,7 +162,7 @@ fn attach(driver: Driver, location: pci.Location) bool {
     out.text("driving the controller at ");
     out.text(lib.pci.spell(location, &where));
     log.end();
-    return true;
+    return .settled;
 }
 
 // ---------------------------------------------------------------------------

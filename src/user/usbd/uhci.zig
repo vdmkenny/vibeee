@@ -9,7 +9,10 @@
 //!
 //! The seam above is the same `HcOps` the high speed controller
 //! implements, so the bus, enumeration and every class driver are
-//! unchanged by which of them a device turns out to be on.
+//! unchanged by which of them a device turns out to be on. The chipset
+//! carries four companions behind one fast controller, so the driver is
+//! one body over four units, each bound to its own ops table at compile
+//! time.
 
 const device = @import("ulib").device;
 const hc = @import("hc.zig");

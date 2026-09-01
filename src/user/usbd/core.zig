@@ -237,27 +237,28 @@ fn enumerate(controller: u8, route: usb.Route, port: u8, speed: usb.Speed, ops: 
     // that is known every read has to be short enough for the smallest
     // packet any device may use.
     //
-    // Asked twice if the first attempt times out. A device that misses the
-    // first setup packet after a reset is common enough that the second try
-    // is part of the conversation rather than a workaround.
+    // Asked twice, because a device that misses the first setup packet
+    // after a reset is common enough that the second try is part of the
+    // conversation. On a root port a device that stays deaf earns a fresh
+    // reset and one last ask: a device that missed its reset is revived by
+    // nothing else. A hub's port is the hub driver's to work.
     var first: [8]u8 = @splat(0);
     const question = usb.Setup.getDescriptor(.device, 0, first.len);
-    _ = ops.control(zero, question, &first) catch {
-        sys.sleepMicros(RESET_RECOVERY_US);
-        _ = ops.control(zero, question, &first) catch |err| {
-            // A device that missed its reset is deaf to every question that
-            // follows, and only another reset revives it. A root port can be
-            // reset from here; a hub's port is the hub driver's to work.
-            if (route.hub != 0) return sayFailure(port, "would not describe itself", err);
+    const asks: u8 = if (route.hub == 0) 3 else 2;
+    var outcome: hc.Error!void = {};
+    var ask: u8 = 0;
+    while (ask < asks) : (ask += 1) {
+        if (ask == 2) {
             const again = ops.resetPort(port);
-            if (!again.enabled or again.speed != speed)
-                return sayFailure(port, "would not describe itself", err);
-            sys.sleepMicros(RESET_RECOVERY_US);
-            _ = ops.control(zero, question, &first) catch |final| {
-                return sayFailure(port, "would not describe itself", final);
-            };
-        };
-    };
+            if (!again.enabled or again.speed != speed) break;
+        }
+        if (ask != 0) sys.sleepMicros(RESET_RECOVERY_US);
+        if (ops.control(zero, question, &first)) |_| {
+            outcome = {};
+            break;
+        } else |err| outcome = err;
+    }
+    outcome catch |err| return sayFailure(port, "would not describe itself", err);
 
     const packet_zero = usb.Device.packetZeroOf(&first) orelse {
         log.warn("usbd", "a device answered with a packet size that cannot be");
