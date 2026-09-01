@@ -309,7 +309,7 @@ pub fn mount(dev: *const block.Device) Error!Volume {
 /// A VFAT long-name entry. Occupies the same 32 bytes as a directory entry,
 /// distinguished by its attribute byte.
 const LfnEntry = extern struct {
-    sequence: u8,
+    order: Order,
     name_1: [10]u8,
     attr: Attributes,
     type: u8,
@@ -322,8 +322,22 @@ const LfnEntry = extern struct {
     name_3: [4]u8,
 };
 
-const LFN_LAST = 0x40;
-const LFN_SEQ_MASK = 0x1F;
+/// Where a fragment sits in the run, as the format packs it into one byte.
+///
+/// A packed struct rather than a byte and two constants to mask it with: the
+/// bit positions are then the declaration, and asking whether a fragment is
+/// the one that starts a name reads as asking rather than as arithmetic.
+const Order = packed struct(u8) {
+    /// Which fragment this is, counting from one towards the short entry that
+    /// follows. Zero is not a fragment.
+    index: u5 = 0,
+    _reserved: u1 = 0,
+    /// The fragment furthest from the short entry. It is met first, because
+    /// the run is written backwards, and it says how many there are.
+    last: bool = false,
+    _unused: u1 = 0,
+};
+
 /// Each long-name entry carries 13 UTF-16 code units.
 const LFN_CHARS = 13;
 const LFN_MAX_ENTRIES = 20;
@@ -361,26 +375,42 @@ fn lfnChars(e: *align(1) const LfnEntry, out: *[LFN_CHARS]u16) void {
 /// than appended.
 const LfnBuilder = struct {
     units: [LFN_MAX_ENTRIES * LFN_CHARS]u16 = undefined,
+    /// Which fragments have actually arrived.
+    ///
+    /// Fragments are written into place by sequence number rather than
+    /// appended, so a run that skips one leaves a hole, and `units` is never
+    /// cleared between names. Without this the hole reads as whatever the last
+    /// name in this directory left there, or as whatever was on the stack, and
+    /// that becomes a filename handed to whoever listed the directory. The
+    /// checksum cannot be what catches it: a medium that skips a fragment on
+    /// purpose carries its own checksum to match.
+    seen: Fragments = Fragments.initEmpty(),
     count: usize = 0,
     checksum: u8 = 0,
     valid: bool = false,
 
+    const Fragments = std.bit_set.IntegerBitSet(LFN_MAX_ENTRIES);
+
     fn reset(self: *LfnBuilder) void {
         self.count = 0;
         self.valid = false;
+        self.seen = Fragments.initEmpty();
     }
 
     fn add(self: *LfnBuilder, e: *align(1) const LfnEntry) void {
-        const seq = e.sequence & LFN_SEQ_MASK;
+        const seq: usize = e.order.index;
         if (seq == 0 or seq > LFN_MAX_ENTRIES) {
             self.reset();
             return;
         }
 
-        if (e.sequence & LFN_LAST != 0) {
+        if (e.order.last) {
             // First entry encountered is the *last* fragment, and it tells us
-            // how many there are in total.
-            self.count = @as(usize, seq) * LFN_CHARS;
+            // how many there are in total. It also begins a name, so whatever
+            // a broken run before it left behind is forgotten here rather than
+            // counted towards this one.
+            self.reset();
+            self.count = seq * LFN_CHARS;
             self.checksum = e.checksum;
             self.valid = true;
         } else if (!self.valid or e.checksum != self.checksum) {
@@ -393,12 +423,13 @@ const LfnBuilder = struct {
 
         var chars: [LFN_CHARS]u16 = undefined;
         lfnChars(e, &chars);
-        const base = (@as(usize, seq) - 1) * LFN_CHARS;
+        const base = (seq - 1) * LFN_CHARS;
         if (base + LFN_CHARS > self.units.len) {
             self.reset();
             return;
         }
         @memcpy(self.units[base..][0..LFN_CHARS], &chars);
+        self.seen.set(seq - 1);
     }
 
     /// Write the assembled name as UTF-8. Returns null if it does not belong to
@@ -406,6 +437,12 @@ const LfnBuilder = struct {
     fn finish(self: *LfnBuilder, short: *const [11]u8, out: *[MAX_NAME]u8) ?usize {
         if (!self.valid or self.count == 0) return null;
         if (self.checksum != shortNameChecksum(short)) return null;
+
+        // Every fragment the run said it had must have arrived. One that is
+        // missing is a hole holding bytes this name never wrote.
+        var wanted = Fragments.initEmpty();
+        wanted.setRangeValue(.{ .start = 0, .end = self.count / LFN_CHARS }, true);
+        if (!self.seen.supersetOf(wanted)) return null;
 
         var n: usize = 0;
         for (self.units[0..self.count]) |unit| {
@@ -1174,7 +1211,7 @@ fn buildLongRecord(name: []const u8, index: usize, last: bool, checksum: u8) Lfn
     }
 
     var e = LfnEntry{
-        .sequence = @intCast(index + 1),
+        .order = .{ .index = @intCast(index + 1), .last = last },
         .name_1 = undefined,
         .attr = Attributes.LONG_NAME,
         .type = 0,
@@ -1183,7 +1220,6 @@ fn buildLongRecord(name: []const u8, index: usize, last: bool, checksum: u8) Lfn
         .cluster_low = 0,
         .name_3 = undefined,
     };
-    if (last) e.sequence |= LFN_LAST;
 
     for (0..5) |i| std.mem.writeInt(u16, e.name_1[i * 2 ..][0..2], chars[i], .little);
     for (0..6) |i| std.mem.writeInt(u16, e.name_2[i * 2 ..][0..2], chars[5 + i], .little);
@@ -1453,4 +1489,220 @@ fn setParent(vol: *Volume, cluster: u32, parent: u32) Error!void {
 /// Free clusters on the volume, for `df`.
 pub fn freeClusters(vol: *Volume) Error!u32 {
     return table.freeCount(&vol.fat);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+//
+// The long-name assembler, which is the most exposed parser this system has:
+// it runs over bytes from whatever medium somebody puts in the machine, and
+// those bytes were not necessarily written by anything that meant well. The
+// runs worth testing are the ones no formatter would produce.
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// One long-name fragment, built the way a medium carries it.
+fn fragment(order: Order, checksum: u8, text: []const u16) LfnEntry {
+    var e = LfnEntry{
+        .order = order,
+        .name_1 = @splat(0),
+        .attr = Attributes.LONG_NAME,
+        .type = 0,
+        .checksum = checksum,
+        .name_2 = @splat(0),
+        .cluster_low = 0,
+        .name_3 = @splat(0),
+    };
+
+    var chars: [LFN_CHARS]u16 = @splat(0xFFFF);
+    for (text, 0..) |unit, i| chars[i] = unit;
+
+    for (0..5) |i| std.mem.writeInt(u16, e.name_1[i * 2 ..][0..2], chars[i], .little);
+    for (0..6) |i| std.mem.writeInt(u16, e.name_2[i * 2 ..][0..2], chars[5 + i], .little);
+    for (0..2) |i| std.mem.writeInt(u16, e.name_3[i * 2 ..][0..2], chars[11 + i], .little);
+    return e;
+}
+
+/// The thirteen units of one fragment, as a name would spell them.
+fn units(comptime text: []const u8) [text.len]u16 {
+    var out: [text.len]u16 = undefined;
+    for (text, 0..) |c, i| out[i] = c;
+    return out;
+}
+
+const SHORT: [11]u8 = "HELLO   TXT".*;
+
+test "a run in the order a medium writes it becomes the name it spells" {
+    const sum = shortNameChecksum(&SHORT);
+    var builder = LfnBuilder{};
+
+    // Backwards, which is how they are written: the fragment furthest from
+    // the short entry comes first and says how many there are.
+    const two = units("world.txt");
+    const one = units("a-long-hello-");
+    builder.add(&fragment(.{ .index = 2, .last = true }, sum, &two));
+    builder.add(&fragment(.{ .index = 1 }, sum, &one));
+
+    var name: [MAX_NAME]u8 = undefined;
+    const n = builder.finish(&SHORT, &name) orelse return error.NameNotAssembled;
+    try testing.expectEqualStrings("a-long-hello-world.txt", name[0..n]);
+}
+
+test "a run that skips a fragment assembles nothing" {
+    // The one that matters. Fragments are written into place by number, and
+    // the buffer is not cleared between names, so a hole holds whatever the
+    // last name left there. A medium can skip one on purpose, and it carries
+    // its own checksum, so the checksum cannot be what catches it.
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+
+    // First assemble a name, so there is something in the buffer to leak.
+    var builder = LfnBuilder{};
+    const b = units("bbbbbbbbbbbbb");
+    builder.add(&fragment(.{ .index = 3, .last = true }, sum, &units("ccc")));
+    builder.add(&fragment(.{ .index = 2 }, sum, &b));
+    builder.add(&fragment(.{ .index = 1 }, sum, &units("aaaaaaaaaaaaa")));
+    _ = builder.finish(&SHORT, &name);
+
+    // Then a run of three that only sends two of them.
+    builder.reset();
+    builder.add(&fragment(.{ .index = 3, .last = true }, sum, &units("zzz")));
+    builder.add(&fragment(.{ .index = 1 }, sum, &units("xxxxxxxxxxxxx")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+
+    // Including when the missing one is the first.
+    builder.reset();
+    builder.add(&fragment(.{ .index = 2, .last = true }, sum, &units("zzz")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+}
+
+test "fragments out of order still assemble, because their place is their number" {
+    const sum = shortNameChecksum(&SHORT);
+    var builder = LfnBuilder{};
+
+    const two = units("world.txt");
+    const one = units("a-long-hello-");
+    builder.add(&fragment(.{ .index = 2, .last = true }, sum, &two));
+    // A second run of the same name, sent in the wrong order: the number says
+    // where a fragment goes, so nothing depends on when it arrives.
+    builder.add(&fragment(.{ .index = 1 }, sum, &one));
+
+    var name: [MAX_NAME]u8 = undefined;
+    const n = builder.finish(&SHORT, &name) orelse return error.NameNotAssembled;
+    try testing.expectEqualStrings("a-long-hello-world.txt", name[0..n]);
+}
+
+test "a fragment numbered outside the run is refused" {
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+    var builder = LfnBuilder{};
+
+    // Zero is not a fragment.
+    builder.add(&fragment(.{ .index = 1, .last = true }, sum, &units("hello")));
+    builder.add(&fragment(.{ .index = 0 }, sum, &units("x")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+
+    // Nor is one past the longest name the format allows.
+    builder.reset();
+    builder.add(&fragment(.{ .index = 21, .last = true }, sum, &units("hello")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+
+    // The longest run whose name still fits. Nine fragments is a hundred and
+    // seventeen characters, which is what a name may be here: the format
+    // allows twenty fragments and this system's names stop before that.
+    const fits = 9;
+    builder.reset();
+    builder.add(&fragment(.{ .index = fits, .last = true }, sum, &units("zzzzzzzzzzzzz")));
+    for (1..fits) |i| {
+        builder.add(&fragment(.{ .index = @intCast(i) }, sum, &units("aaaaaaaaaaaaa")));
+    }
+    const n = builder.finish(&SHORT, &name) orelse return error.NameNotAssembled;
+    try testing.expectEqual(@as(usize, fits * LFN_CHARS), n);
+}
+
+test "a run belonging to another name is refused" {
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+    var builder = LfnBuilder{};
+
+    // Fragments left behind by another system, attached to whatever short
+    // entry happened to follow.
+    builder.add(&fragment(.{ .index = 1, .last = true }, sum +% 1, &units("hello")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+
+    // And a run whose fragments disagree among themselves.
+    builder.reset();
+    builder.add(&fragment(.{ .index = 2, .last = true }, sum, &units("world")));
+    builder.add(&fragment(.{ .index = 1 }, sum +% 7, &units("aaaaaaaaaaaaa")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+}
+
+test "a fragment with nothing to begin it is refused" {
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+    var builder = LfnBuilder{};
+
+    // A directory that starts mid-run, because the entries before it were
+    // deleted or because it was written that way.
+    builder.add(&fragment(.{ .index = 1 }, sum, &units("hello")));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+}
+
+test "a second beginning starts a new name rather than joining the last" {
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+    var builder = LfnBuilder{};
+
+    // Three fragments announced, one sent, then a run of one announced. The
+    // second beginning must not inherit what the first left in place.
+    builder.add(&fragment(.{ .index = 3, .last = true }, sum, &units("zzz")));
+    builder.add(&fragment(.{ .index = 2 }, sum, &units("yyyyyyyyyyyyy")));
+    builder.add(&fragment(.{ .index = 1, .last = true }, sum, &units("only")));
+
+    const n = builder.finish(&SHORT, &name) orelse return error.NameNotAssembled;
+    try testing.expectEqualStrings("only", name[0..n]);
+}
+
+test "a name that does not fit is left to its short entry" {
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+    var builder = LfnBuilder{};
+
+    // Every unit three bytes of UTF-8: twenty fragments of that is far past
+    // what a name may be, and the answer is no name rather than a cut one.
+    var wide: [LFN_CHARS]u16 = @splat(0x4E00);
+    builder.add(&fragment(.{ .index = LFN_MAX_ENTRIES, .last = true }, sum, &wide));
+    for (1..LFN_MAX_ENTRIES) |i| {
+        builder.add(&fragment(.{ .index = @intCast(i) }, sum, &wide));
+    }
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+}
+
+test "half a character outside the basic plane is refused rather than mangled" {
+    const sum = shortNameChecksum(&SHORT);
+    var name: [MAX_NAME]u8 = undefined;
+    var builder = LfnBuilder{};
+
+    builder.add(&fragment(.{ .index = 1, .last = true }, sum, &[_]u16{ 'a', 0xD83D, 'b' }));
+    try testing.expectEqual(@as(?usize, null), builder.finish(&SHORT, &name));
+}
+
+test "the order byte is the byte the format writes" {
+    // The bit positions are the format's, so a wrong one reads a name at the
+    // wrong place in its run.
+    try testing.expectEqual(@as(u8, 1), @as(u8, @bitCast(Order{ .index = 1 })));
+    try testing.expectEqual(@as(u8, 0x40), @as(u8, @bitCast(Order{ .last = true })));
+    try testing.expectEqual(@as(u8, 0x43), @as(u8, @bitCast(Order{ .index = 3, .last = true })));
+    try testing.expectEqual(@as(u8, 0x14), @as(u8, @bitCast(Order{ .index = 20 })));
+    try testing.expectEqual(@as(usize, 32), @sizeOf(LfnEntry));
+}
+
+test "the checksum is the one the format specifies" {
+    // Against answers worked out from the published rotate rather than from
+    // this implementation: a rewrite that quietly agreed with itself and with
+    // nothing else would make every long name on a shared medium disappear.
+    try testing.expectEqual(@as(u8, 0xF1), shortNameChecksum("HELLO   TXT"));
+    try testing.expectEqual(@as(u8, 0xD4), shortNameChecksum("LONGFI~1TXT"));
+    try testing.expectEqual(@as(u8, 0xF3), shortNameChecksum("README  MD "));
 }

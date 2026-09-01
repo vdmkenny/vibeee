@@ -37,5 +37,8 @@ test {
     // mappings it would otherwise take to ask one: the files worth asking
     // about are the ones no linker would produce.
     _ = @import("kernel/elf/plan.zig");
+    // The long-name assembler, which is the most exposed parser here: it runs
+    // over bytes from whatever medium somebody puts in the machine.
+    _ = @import("kernel/fat.zig");
     _ = @import("kernel/ublk.zig");
 }
