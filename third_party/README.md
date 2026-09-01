@@ -50,3 +50,26 @@ not a thing to have written.
 It runs in `platd` rather than in the kernel. This is bytecode from a 2007 AMI
 BIOS, interpreted at runtime, and its job is to poke hardware: that belongs in a
 restartable process holding a capability, not in ring 0.
+
+## stb_image
+
+Sean Barrett's image loader, public domain or MIT at the reader's choice. See
+`stb/LICENSE`. Pinned at `2c980bb59875b0d32144a71867fbdebb2f77cd20`, v2.30.
+
+Chosen over writing decoders, as `design/00-vibeee.md` decided. PNG alone is
+an inflate implementation and a filter pass with a decade of corner cases
+behind it, and JPEG is a Huffman decoder, a dequantiser and an inverse DCT.
+None of that is interesting work, all of it is work that has to be exactly
+right, and this is one header with no I/O in it: the caller reads the bytes
+and passes them, which is the shape a system with no standard library wants.
+
+The blocker the design recorded is gone. It needed `malloc`, `memcpy`,
+`assert` and a freestanding C toolchain, and `eeelibc` provides all of them
+for uACPI and lwIP already.
+
+Which formats a binary carries is a build decision, one `-DSTBI_ONLY_` flag
+each: the viewer opens photographs, and a program that only needs a wallpaper
+should not carry a JPEG decoder to do it.
+
+It decodes and nothing else. What a camera wrote beside the picture, the
+orientation above all, it steps over, so `src/lib/exif.zig` reads that here.

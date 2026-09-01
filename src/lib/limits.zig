@@ -26,3 +26,16 @@ pub const SERVICES_FILE_MAX = 8 * 1024;
 /// that adds its own. Each costs a process, its address space and its
 /// surfaces, so this is a budget rather than a maximum anybody should reach.
 pub const MAX_SERVICES = 12;
+
+/// How large a picture this system will decode.
+///
+/// The panel is 800 by 480 and the largest thing anybody puts on it is a
+/// photograph off a card. Four thousand a side covers a twelve megapixel
+/// camera, and the pixel count is what actually matters: at four bytes each,
+/// sixteen megapixels is sixty-four megabytes of one program's memory, which
+/// on a machine with five hundred is as much as one picture may have.
+///
+/// A real picture that hits this is a reason to ask whether it can be decoded
+/// in strips before the number is doubled.
+pub const IMAGE_SIDE_MAX = 4096;
+pub const IMAGE_PIXELS_MAX = 16 * 1024 * 1024;

@@ -34,6 +34,7 @@ pub const ring = @import("ring.zig");
 pub const driver = @import("driver.zig");
 pub const elf = @import("elf.zig");
 pub const escapes = @import("escapes.zig");
+pub const exif = @import("exif.zig");
 pub const eth = @import("eth.zig");
 pub const hostname = @import("hostname.zig");
 pub const hosts = @import("hosts.zig");

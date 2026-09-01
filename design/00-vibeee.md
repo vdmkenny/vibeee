@@ -575,7 +575,7 @@ Candidate libraries, adjudicated against the hardware research and the budgets a
 | Library | Verdict | Reasoning |
 |---|---|---|
 | **`stb_truetype`** | **ADOPT** | Single file, public domain, `@cImport` clean. No realistic alternative at this size |
-| **`stb_image`** | **ADOPT (scoped), blocked** | PNG + BMP compiled into the system; JPEG only linked into View and Draw to keep the base small. **Blocked on `eeelibc`**: stb is C and needs `malloc`/`free`/`realloc`, `memcpy`/`memset`, `assert` and a `zig cc` freestanding sysroot. The subset is small and the shape is favourable (no I/O, caller supplies the bytes), but none of it exists yet and nothing in M1 needs an image decoder. Revisit with View and Draw in M3, or sooner if a wallpaper is wanted |
+| **`stb_image`** | **ADOPT (scoped), in** | PNG + BMP compiled into the system; JPEG only linked into View and Draw to keep the base small. What it needed, `eeelibc` has: `malloc`/`free`/`realloc`, `memcpy`/`memset`, `assert` and a freestanding C toolchain, all of it already carrying uACPI and lwIP. No I/O, so the caller reads the bytes and passes them. Which formats a binary knows is one `-DSTBI_ONLY_` flag per program. It decodes and nothing else: `lib/exif.zig` reads what the camera wrote beside the picture, orientation above all |
 | **`stb_image_write`** | **ADOPT** | Draw and screenshots need PNG output |
 | **`dr_wav` / `dr_flac` / `dr_mp3`** | **ADOPT** | Exactly the right shape: no deps, PCM out, we own the sink |
 | **`miniaudio`** | **REJECT** | It's a cross-platform *backend abstraction*, its value is device enumeration across CoreAudio/WASAPI/ALSA. We are the backend. Its mixer is ~1 k lines we'd write anyway in Zig, without the porting layer |

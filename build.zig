@@ -24,6 +24,19 @@ fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
 }
 
 /// True when `name` appears in a comma-separated list.
+/// Which picture formats a program is built to read, or null for one that
+/// reads none.
+///
+/// Every format costs the binary that carries it, so this is a list of what
+/// each program actually opens rather than one decoder with everything in it:
+/// a viewer opens photographs, and the desktop behind it opens a wallpaper.
+fn imageFormats(name: []const u8) ?[]const []const u8 {
+    if (std.mem.eql(u8, name, "eimg")) {
+        return &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_BMP", "-DSTBI_ONLY_GIF" };
+    }
+    return null;
+}
+
 fn named(list: []const u8, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, list, ',');
     while (it.next()) |entry| {
@@ -269,8 +282,20 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
 
+        // Pictures. The wrapper is Zig and the decoder is C, attached to
+        // whichever program asks for it rather than to all of them: which
+        // formats a binary knows is that binary's business, and a viewer
+        // wants JPEG where the desktop behind it does not.
+        const img_mod = b.createModule(.{
+            .root_source_file = b.path("src/user/img/img.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "lib", .module = user_lib }},
+        });
+
         const user_imports = [_]std.Build.Module.Import{
             .{ .name = "lib", .module = user_lib },
+            .{ .name = "img", .module = img_mod },
             .{ .name = "sys", .module = sys_mod },
             .{ .name = "ulib", .module = ulib_mod },
             .{ .name = "eui", .module = eui_mod },
@@ -402,6 +427,31 @@ pub fn build(b: *std.Build) void {
                     },
                 }));
             }
+            // Which formats a program can open. Named per program, so what
+            // is not named is not in the binary at all.
+            if (comptime imageFormats(program.name)) |formats| {
+                exe.root_module.addIncludePath(b.path("third_party/stb"));
+                exe.root_module.addIncludePath(b.path("include"));
+                exe.root_module.addCSourceFiles(.{
+                    .files = &.{"src/user/img/stb.c"},
+                    .flags = &(.{
+                        "-std=c11",
+                        "-ffreestanding",
+                        "-fno-stack-protector",
+                    } ++ formats),
+                });
+                exe.root_module.addImport("clibc", b.createModule(.{
+                    .root_source_file = b.path("src/user/libc/freestanding.zig"),
+                    .target = user_target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "lib", .module = user_lib },
+                        .{ .name = "sys", .module = sys_mod },
+                        .{ .name = "ulib", .module = ulib_mod },
+                    },
+                }));
+            }
+
             if (comptime std.mem.eql(u8, program.name, "platd")) {
                 exe.root_module.addIncludePath(b.path("third_party/uacpi/include"));
                 exe.root_module.addCSourceFiles(.{
@@ -714,6 +764,33 @@ pub fn build(b: *std.Build) void {
     // runner or they are silently skipped, which is worse than having none.
     const lib_tests = b.addTest(.{ .root_module = host_lib });
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+
+    // The picture decoder, on the host: the wrapper is what this system
+    // wrote and the decoder is what it vendored, and the seam between them is
+    // exactly what a test should be looking at. Built against the host's own
+    // library, since what is being checked is the bytes that come back rather
+    // than which allocator found room for them.
+    const img_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/user/img/img.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .imports = &.{.{ .name = "lib", .module = host_lib }},
+        }),
+    });
+    img_tests.root_module.addIncludePath(b.path("third_party/stb"));
+    img_tests.root_module.addCSourceFiles(.{
+        .files = &.{"src/user/img/stb.c"},
+        .flags = &.{
+            "-std=c11",
+            "-DSTBI_ONLY_PNG",
+            "-DSTBI_ONLY_JPEG",
+            "-DSTBI_ONLY_BMP",
+            "-DSTBI_ONLY_GIF",
+        },
+    });
+    test_step.dependOn(&b.addRunArtifact(img_tests).step);
 
     // The quirk registry is pure data and pure functions, so its recognition
     // and correction rules are testable on the host, where a machine's whole
