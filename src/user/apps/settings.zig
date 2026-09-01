@@ -63,8 +63,13 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     load();
     version = info.ask("kernel", &version_buf);
     readMachineName();
+    readPlatform();
 
-    proto.app.run("settings", "Settings", 260, 200, .{ .draw = draw, .tick = tick });
+    proto.app.run("settings", "Settings", 260, 200, .{
+        .draw = draw,
+        .tick = tick,
+        .tick_us = tickPeriod(),
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +87,11 @@ fn load() void {
 /// frame's default one-second wait comes back and nothing is asked at all.
 const METER_TICK_US: usize = 150_000;
 
+/// How often a pane reads the platform service. The firmware answers these
+/// by talking to the embedded controller, which is slow, and nothing they
+/// show changes faster than a person can notice.
+const PLATFORM_TICK_US: usize = 2_000_000;
+
 /// What the meters showed last, with peaks that fall rather than vanish: a
 /// peak that mattered for one read is gone before an eye lands on it.
 var meter_left: u8 = 0;
@@ -91,9 +101,19 @@ var meter_playing = false;
 var peak_left: u8 = 0;
 var peak_right: u8 = 0;
 
-/// The wait timed out. Only the Audio pane has anything that ages.
+/// The wait timed out, which is when what ages is read again: the pane on
+/// screen decides what that is, and a pane showing nothing that ages reads
+/// nothing at all.
 fn tick() bool {
-    if (section != .audio or !has_sound) return false;
+    switch (section) {
+        .power, .display => {
+            readPlatform();
+            return true;
+        },
+        .audio => {},
+        else => return false,
+    }
+    if (!has_sound) return false;
 
     const fresh = sound.levels() orelse return false;
     meter_left = fresh.left;
@@ -107,9 +127,21 @@ fn tick() bool {
     return true;
 }
 
-/// Meters wake the window only while they are the thing on screen.
+/// How often the pane on screen has anything new to say. Meters move with
+/// the sound and wake the window often; a battery and a panel move slowly
+/// and are asked of a service that answers through the firmware, so they
+/// are asked seldom.
 fn syncTick() void {
-    proto.app.retick(if (section == .audio) METER_TICK_US else 1_000_000);
+    proto.app.retick(tickPeriod());
+    readPlatform();
+}
+
+fn tickPeriod() usize {
+    return switch (section) {
+        .audio => METER_TICK_US,
+        .power, .display => PLATFORM_TICK_US,
+        else => 1_000_000,
+    };
 }
 
 /// What the sound service says the default output is at.
@@ -126,6 +158,30 @@ fn readVolume() void {
         has_sound = true;
     } else {
         has_sound = false;
+    }
+}
+
+/// What the platform service says about the machine, for the same reason
+/// the volume above is kept: every one of these is a call into another
+/// process, a paint happens whenever the pointer moves, and the firmware
+/// answers some of them by talking to the embedded controller, which is
+/// slow enough to be felt as a window that lags the hand moving over it.
+/// Read when the pane is opened and while it is the pane on screen.
+var cell: ?proto.platform.Battery = null;
+var lamp: ?proto.platform.Backlight = null;
+var zones: [proto.platform.Thermal.MAX_ZONES]?proto.platform.Thermal = @splat(null);
+
+fn readPlatform() void {
+    switch (section) {
+        .power => {
+            cell = platform.battery();
+            for (&zones, 0..) |*slot, index| {
+                slot.* = platform.thermal(@intCast(index));
+            }
+        },
+        .display => lamp = platform.backlight(),
+        .about => readFacts(),
+        else => {},
     }
 }
 
@@ -793,13 +849,7 @@ fn drawPower(pane: eui.Rect) i32 {
         power.low_action = picked;
         change();
     }
-    y += t.control_height + t.padding;
-
-    ctx.labelDim(
-        .{ .x = pane.x, .y = y, .w = pane.w, .h = 16 },
-        "Read from the embedded controller once a second.",
-    );
-    return y + t.control_height;
+    return y + t.control_height + t.padding;
 }
 
 /// The battery, at the size a number people actually look for deserves.
@@ -811,19 +861,19 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
     const t = theme.current();
     const y = from;
 
-    const cell = platform.battery() orelse {
+    const pack = cell orelse {
         ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = 16 }, "This machine has no battery.");
         return y + t.control_height + t.padding;
     };
 
-    const percent = platform.charge(cell) orelse 0;
+    const percent = platform.charge(pack) orelse 0;
     const glyph = eui.Rect{
         .x = pane.x,
         .y = y + t.padding,
         .w = theme.enlarged(46),
         .h = theme.enlarged(26),
     };
-    paintBatteryGlyph(glyph, @intCast(@min(percent, 100)), cell.state() == .charging);
+    paintBatteryGlyph(glyph, @intCast(@min(percent, 100)), pack.state() == .charging);
 
     var reading: [12]u8 = @splat(0);
     var said = str.Builder{ .buf = &reading };
@@ -835,11 +885,11 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
     // it is discharging, which is the only time anybody wants it.
     var state: [40]u8 = @splat(0);
     var says = str.Builder{ .buf = &state };
-    if (cell.runtimeLeft()) |left| {
+    if (pack.runtimeLeft()) |left| {
         says.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
         says.text(" left, ");
     }
-    says.text(cell.stateLabel());
+    says.text(pack.stateLabel());
     ctx.labelDim(
         .{ .x = glyph.right() + t.menu_padding, .y = y + t.padding + theme.enlarged(18), .w = pane.w, .h = 16 },
         says.done(),
@@ -847,20 +897,20 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
 
     // The pack itself, on the right, where a second column reads as a second
     // subject rather than as more of the first.
-    var pack: [32]u8 = @splat(0);
-    var built = str.Builder{ .buf = &pack };
-    built.number(cell.last_full);
+    var capacity: [32]u8 = @splat(0);
+    var built = str.Builder{ .buf = &capacity };
+    built.number(pack.last_full);
     built.byte(' ');
-    built.text(cell.capacityUnit());
+    built.text(pack.capacityUnit());
     rightLabel(pane, y + t.padding, built.done(), t.text_dim);
 
-    if (cell.health()) |worn| {
+    if (pack.health()) |worn| {
         var health: [40]u8 = @splat(0);
         var spelled = str.Builder{ .buf = &health };
         spelled.text("health ");
         spelled.number(@min(worn, 100));
         spelled.byte('%');
-        if (cell.health_reported != 0) spelled.text(", the firmware's word");
+        if (pack.health_reported != 0) spelled.text(", the firmware's word");
         rightLabel(pane, y + t.padding + theme.enlarged(18), spelled.done(), t.text_dim);
     }
 
@@ -909,7 +959,7 @@ fn drawBacklight(pane: eui.Rect, from: i32) i32 {
     const t = theme.current();
     const y = from;
 
-    const lamp = platform.backlight() orelse {
+    const level = lamp orelse {
         ctx.labelDim(
             .{ .x = pane.x, .y = y, .w = pane.w, .h = 16 },
             "This machine offers no way to set the backlight.",
@@ -920,9 +970,9 @@ fn drawBacklight(pane: eui.Rect, from: i32) i32 {
     const label_w = factColumn(pane);
     var reading: [16]u8 = @splat(0);
     var said = str.Builder{ .buf = &reading };
-    said.number(lamp.level);
+    said.number(level.level);
     said.text(" of ");
-    said.number(lamp.max);
+    said.number(level.max);
 
     const value_w = theme.enlarged(56);
     const bar = eui.Rect{
@@ -933,8 +983,8 @@ fn drawBacklight(pane: eui.Rect, from: i32) i32 {
     };
 
     ctx.labelDim(.{ .x = pane.x, .y = y + 4, .w = label_w, .h = t.control_height }, "Backlight");
-    const chosen = ctx.slider(bar, .{ .min = 1, .max = @intCast(lamp.max) }, @intCast(lamp.level), .{});
-    if (chosen != lamp.level) _ = platform.setBacklight(@intCast(chosen));
+    const chosen = ctx.slider(bar, .{ .min = 1, .max = @intCast(level.max) }, @intCast(level.level), .{});
+    if (chosen != level.level) _ = platform.setBacklight(@intCast(chosen));
     ctx.label(
         .{ .x = bar.right() + t.gap, .y = y + 4, .w = value_w, .h = t.control_height },
         said.done(),
@@ -975,10 +1025,9 @@ fn drawThermal(pane: eui.Rect, from: i32) i32 {
     var y = from;
     const full = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height };
 
-    var index: u8 = 0;
     var shown = false;
-    while (index < proto.platform.Thermal.MAX_ZONES) : (index += 1) {
-        const zone = platform.thermal(index) orelse break;
+    for (zones) |maybe| {
+        const zone = maybe orelse break;
         if (!proto.platform.Thermal.known(zone.now)) continue;
         if (!shown) {
             y = group(&y, full, "Temperature");
@@ -1104,21 +1153,40 @@ fn drawAbout(pane: eui.Rect) i32 {
     var y = drawIdentity(pane);
 
     y = group(&y, pane, "Software");
-    y = drawFacts(pane, y, &software);
+    y = drawFacts(pane, y, &software, 0);
     y += t.padding;
 
     y = group(&y, pane, "Hardware");
-    return drawFacts(pane, y, &hardware);
+    return drawFacts(pane, y, &hardware, software.len);
 }
 
-fn drawFacts(pane: eui.Rect, from: i32, facts: []const Fact) i32 {
+/// What the kernel answers about itself and the machine under it. Read
+/// once, because none of it changes while the machine is running, and a
+/// paint happens whenever the pointer moves.
+var fact_text: [software.len + hardware.len][128]u8 = @splat(@splat(0));
+var fact_len: [software.len + hardware.len]u8 = @splat(0);
+var facts_read = false;
+var board_text: [128]u8 = @splat(0);
+var board_len: u8 = 0;
+
+fn readFacts() void {
+    if (facts_read) return;
+    facts_read = true;
+
+    for (software ++ hardware, 0..) |fact, at| {
+        var value = info.ask(fact.key, &fact_text[at]);
+        if (value.len == 0 and fact.then.len > 0) value = describe(fact.then, &fact_text[at]);
+        fact_len[at] = @intCast(@min(value.len, fact_text[at].len));
+    }
+
+    board_len = @intCast(@min(info.ask("board", &board_text).len, board_text.len));
+}
+
+fn drawFacts(pane: eui.Rect, from: i32, facts: []const Fact, at: usize) i32 {
     var y = from;
-    for (facts) |fact| {
-        var buf: [128]u8 = undefined;
-        var value = info.ask(fact.key, &buf);
-        if (value.len == 0 and fact.then.len > 0) value = describe(fact.then, &buf);
-        if (value.len == 0) continue;
-        y = drawFact(pane, y, fact.label, value);
+    for (facts, at..) |fact, index| {
+        if (fact_len[index] == 0) continue;
+        y = drawFact(pane, y, fact.label, fact_text[index][0..fact_len[index]]);
     }
     return y;
 }
@@ -1166,8 +1234,7 @@ fn drawIdentity(pane: eui.Rect) i32 {
     }
     y += eui.Surface.textLargeHeight(2) + t.padding;
 
-    var buf: [128]u8 = undefined;
-    const board = info.ask("board", &buf);
+    const board = board_text[0..board_len];
     ctx.label(.{ .x = left, .y = y, .w = wide, .h = t.control_height }, if (board.len > 0) board else "unknown board");
 
     // A rule under the head, which is what separates what the machine is from

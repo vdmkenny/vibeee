@@ -99,13 +99,18 @@ var answer_len: usize = 0;
 /// What just happened, said in the footer until the next thing happens.
 var status: []const u8 = "";
 
+/// How often the window looks for a medium that has come or gone.
+const MEDIA_TICK_US: usize = 2_000_000;
+
 export fn _start() callconv(.c) noreturn {
     panes[0].setPath("/home");
     panes[1].setPath("/");
-    for (&panes) |*pane| pane.refresh();
+    refreshAll();
 
     proto.app.run("efm", "Files", 520, 360, .{
         .draw = draw,
+        .tick = tick,
+        .tick_us = MEDIA_TICK_US,
         .key = key,
         .text = typed,
     });
@@ -279,7 +284,7 @@ fn transfer(what: Transfer) void {
     else
         "That did not work.";
 
-    for (&panes) |*pane| pane.refresh();
+    refreshAll();
     ctx.damage();
 }
 
@@ -347,7 +352,7 @@ fn finishAsking() void {
     }
 
     stopAsking();
-    for (&panes) |*pane| pane.refresh();
+    refreshAll();
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +406,68 @@ fn draw() void {
 /// Pressing one sends the pane you are in there. A row of mount lines said
 /// what is mounted without saying what to do about it, and a name on its own
 /// says nothing about whether there is room for what you are about to copy.
+/// What is mounted, read when something happens rather than while painting:
+/// a paint happens whenever the pointer moves, and the mount table changes
+/// only when a medium comes or goes, which is one of the moments the panes
+/// are read again anyway.
+var volumes: [8]Volume = @splat(.{});
+var place_path: [8][64]u8 = @splat(@splat(0));
+var place_path_len: [8]u8 = @splat(0);
+var place_count: usize = 0;
+
+/// The mount table as it last read, so a pass that changes nothing costs a
+/// comparison rather than a repaint.
+var mounts_seen: [512]u8 = @splat(0);
+var mounts_len: usize = 0;
+
+/// Read what is mounted. Says whether anything changed.
+fn readPlaces() bool {
+    var buf: [512]u8 = undefined;
+    const mounted = info.ask("mounts", &buf);
+    if (mounted.len == mounts_len and str.eql(mounted, mounts_seen[0..mounts_len])) return false;
+    mounts_len = @min(mounted.len, mounts_seen.len);
+    @memcpy(mounts_seen[0..mounts_len], mounted[0..mounts_len]);
+
+    place_count = 0;
+    var lines = str.lines(mounts_seen[0..mounts_len]);
+    while (lines.next()) |line| {
+        if (place_count == volumes.len) break;
+        const text = str.trim(line);
+        if (text.len == 0) continue;
+
+        // "<path> on <device> free=<n> size=<n>": the path is what pressing
+        // it goes to, and the numbers are how full it is.
+        var words: [8][]const u8 = undefined;
+        const n = str.splitWords(text, &words);
+        const where = if (n > 0) words[0] else "";
+        if (where.len == 0 or where.len > place_path[place_count].len) continue;
+
+        @memcpy(place_path[place_count][0..where.len], where);
+        place_path_len[place_count] = @intCast(where.len);
+        volumes[place_count] = readVolume(words[0..n], &volume_store[place_count]);
+        place_count += 1;
+    }
+    return true;
+}
+
+/// A medium can arrive while the window is open, and nothing tells a
+/// program when one does. Looked for seldom, and the window is woken only
+/// when the answer is different from last time.
+fn tick() bool {
+    return readPlaces();
+}
+
+fn placePath(index: usize) []const u8 {
+    return place_path[index][0..place_path_len[index]];
+}
+
+/// Everything the window shows that comes from outside it: both panes'
+/// listings, and the volumes they sit on.
+fn refreshAll() void {
+    for (&panes) |*pane| pane.refresh();
+    _ = readPlaces();
+}
+
 fn drawPlaces(area: Rect) void {
     const t = theme.current();
     if (ctx.damaged) {
@@ -409,27 +476,12 @@ fn drawPlaces(area: Rect) void {
         ctx.addDamage(area);
     }
 
-    var buf: [512]u8 = undefined;
-    const mounted = info.ask("mounts", &buf);
-
     var x = area.x;
-    var lines = str.lines(mounted);
-    var index: usize = 0;
-    while (lines.next()) |line| : (index += 1) {
-        const text = str.trim(line);
-        if (text.len == 0 or index >= volume_store.len) continue;
-
-        // "<path> on <device> free=<n> size=<n>": the path is what pressing
-        // it goes to, and the numbers are how full it is.
-        var words: [8][]const u8 = undefined;
-        const n = str.splitWords(text, &words);
-        const where = if (n > 0) words[0] else "";
-        if (where.len == 0) continue;
-
-        const volume = readVolume(words[0..n], &volume_store[index]);
+    for (volumes[0..place_count], 0..) |volume, index| {
         const width = volumeWidth(volume);
         if (x + width > area.right()) break;
 
+        const where = placePath(index);
         const cell = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
         const current = str.eql(here().path(), where);
         if (pressed(cell)) goTo(where);

@@ -109,6 +109,18 @@ const COLUMNS = [_]eui.table.Column{
 /// else.
 const Column = enum(usize) { pid = 0, name = 1, state = 2, cpu = 3, memory = 4, uptime = 5 };
 
+/// What other services say, read here rather than while painting. A paint
+/// happens whenever the pointer moves, and these are calls into another
+/// process, two of them answered by the firmware through the embedded
+/// controller: asking them per motion is felt as a window that lags the
+/// hand moving over it.
+var pack: ?proto.platform.Battery = null;
+var hottest: ?proto.platform.Thermal = null;
+var home_used: u8 = 0;
+var home_free: usize = 0;
+var home_known = false;
+var mounts_buffer: [512]u8 = @splat(0);
+
 fn sample() void {
     if (cpu_name.len == 0) cpu_name = info.ask("cpu", &cpu_name_buffer);
 
@@ -116,6 +128,9 @@ fn sample() void {
     uptime = info.askNumber("uptime");
     mem_total = info.askNumber("mem.total");
     mem_free = info.askNumber("mem.free");
+    pack = proto.platform.battery();
+    hottest = proto.platform.hottest();
+    readHome();
 
     // Shares are of what was spent since the last sample, not of the interval:
     // the idle thread's ticks are in the total, so the numbers add up to a
@@ -363,9 +378,9 @@ fn memoryReading(at: usize) usize {
 }
 
 fn batteryReading(at: usize) usize {
-    const pack = proto.platform.battery() orelse return 0;
-    if (!pack.isPresent()) return 0;
-    const charge = pack.charge() orelse return 0;
+    const cell = pack orelse return 0;
+    if (!cell.isPresent()) return 0;
+    const charge = cell.charge() orelse return 0;
 
     var value = str.Builder{ .buf = &gauge_values[at] };
     value.number(charge);
@@ -374,11 +389,11 @@ fn batteryReading(at: usize) usize {
     // What it is doing, or how long it has left doing it. The time is the
     // more useful of the two and only exists while it is discharging.
     var note = str.Builder{ .buf = &gauge_notes[at] };
-    if (pack.runtimeLeft()) |left| {
+    if (cell.runtimeLeft()) |left| {
         note.duration(@as(usize, left.hours) * 3600 + @as(usize, left.minutes) * 60);
         note.text(" left");
     } else {
-        note.text(pack.stateLabel());
+        note.text(cell.stateLabel());
     }
 
     gauge_rows[at] = .{
@@ -391,53 +406,64 @@ fn batteryReading(at: usize) usize {
     return 1;
 }
 
+const HOME = "/home";
+
 /// How full the volume home is on. The one a person fills up: the root is
 /// the system's and a machine of this size has nowhere else to put anything.
 fn storageReading(at: usize) usize {
-    var buf: [512]u8 = @splat(0);
-    const mounted = info.ask("mounts", &buf);
+    if (!home_known) return 0;
+    return homeGauge(at);
+}
 
-    var lines = str.lines(mounted);
+/// How full home is, asked of the kernel once a sample rather than once a
+/// paint.
+fn readHome() void {
+    home_known = false;
+    var lines = str.lines(info.ask("mounts", &mounts_buffer));
     while (lines.next()) |line| {
         const text = str.trim(line);
         if (!str.startsWith(text, HOME ++ " ")) continue;
 
         var words: [8][]const u8 = undefined;
         const words_n = str.splitWords(text, &words);
-
         var free: usize = 0;
         var size: usize = 0;
         for (words[0..words_n]) |word| {
             if (str.startsWith(word, "free=")) free = str.toUnsigned(word["free=".len..]);
             if (str.startsWith(word, "size=")) size = str.toUnsigned(word["size=".len..]);
         }
-        if (size == 0) return 0;
+        if (size == 0) return;
 
-        var value = str.Builder{ .buf = &gauge_values[at] };
-        value.number((size -| free) * 100 / size);
-        value.byte('%');
-
-        var note = str.Builder{ .buf = &gauge_notes[at] };
-        note.text(HOME);
-        note.text(", ");
-        note.bytes(free);
-        note.text(" free");
-
-        gauge_rows[at] = .{
-            .label = "storage",
-            .value = value.done(),
-            .percent = @intCast(@min((size -| free) * 100 / size, 100)),
-            .note = note.done(),
-        };
-        return 1;
+        home_free = free;
+        home_used = @intCast(@min((size -| free) * 100 / size, 100));
+        home_known = true;
+        return;
     }
-    return 0;
 }
 
-const HOME = "/home";
+/// The gauge for it, built where every other gauge is built.
+fn homeGauge(at: usize) usize {
+    var value = str.Builder{ .buf = &gauge_values[at] };
+    value.number(home_used);
+    value.byte('%');
+
+    var note = str.Builder{ .buf = &gauge_notes[at] };
+    note.text(HOME);
+    note.text(", ");
+    note.bytes(home_free);
+    note.text(" free");
+
+    gauge_rows[at] = .{
+        .label = "storage",
+        .value = value.done(),
+        .percent = home_used,
+        .note = note.done(),
+    };
+    return 1;
+}
 
 fn thermalReading(at: usize) usize {
-    const zone = proto.platform.hottest() orelse return 0;
+    const zone = hottest orelse return 0;
     const degrees = proto.platform.Thermal.degrees(zone.now);
 
     var value = str.Builder{ .buf = &gauge_values[at] };
@@ -478,7 +504,7 @@ var temperature_buffer: [16]u8 = @splat(0);
 /// rather than zero: a monitor claiming absolute cold is worse than one that
 /// admits it cannot tell.
 fn temperatureText() []const u8 {
-    const zone = proto.platform.hottest() orelse return "";
+    const zone = hottest orelse return "";
     var line = str.Builder{ .buf = &temperature_buffer };
     line.number(@intCast(proto.platform.Thermal.degrees(zone.now)));
     line.text(" C");
