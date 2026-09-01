@@ -16,7 +16,6 @@
 const glue = @import("glue.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 const sys = @import("sys");
 
 comptime {
@@ -355,7 +354,7 @@ fn step(what: []const u8, status: uacpi.Status) bool {
     log.begin("platd", .bad);
     out.text(what);
     out.text(": ");
-    out.text(str.span(uacpi.uacpi_status_to_string(status)));
+    out.text(std.mem.span(uacpi.uacpi_status_to_string(status)));
     log.end();
     return false;
 }

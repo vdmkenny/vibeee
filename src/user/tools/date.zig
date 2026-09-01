@@ -6,18 +6,18 @@
 //! trusting a file's timestamp and not, and the user is the only one who can
 //! tell which is which.
 
+const std = @import("std");
 const settings = @import("proto").settings;
 const sys = @import("sys");
 const out = @import("ulib").out;
 const info = @import("ulib").info;
-const str = @import("ulib").str;
 const time = @import("ulib").time;
 
 pub fn run(args: []const []const u8) void {
     // `date sync` asks the time service to go and find out now, rather than
     // waiting for its next hour. What the GUI's clock can be told, a command
     // can tell it.
-    if (args.len > 0 and str.eql(args[0], "sync")) return sync();
+    if (args.len > 0 and std.mem.eql(u8, args[0], "sync")) return sync();
 
 
     const seconds = blk: {
@@ -31,7 +31,7 @@ pub fn run(args: []const []const u8) void {
         break :blk @divFloor(us, 1_000_000);
     };
 
-    if (args.len > 0 and (str.eql(args[0], "epoch") or str.eql(args[0], "-e"))) {
+    if (args.len > 0 and (std.mem.eql(u8, args[0], "epoch") or std.mem.eql(u8, args[0], "-e"))) {
         // The raw number, for scripting and for checking the conversion.
         out.decimal(@intCast(seconds));
         out.byte('\n');

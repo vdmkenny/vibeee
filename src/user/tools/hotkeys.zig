@@ -8,14 +8,14 @@
 //! Waiting rather than asking again: the service hands out an event, so a key
 //! nobody pressed costs nothing.
 
+const std = @import("std");
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const platform = @import("proto").platform;
-const str = @import("ulib").str;
 const sys = @import("sys");
 
 pub fn run(args: []const []const u8) void {
-    const watching = args.len > 0 and str.eql(args[0], "watch");
+    const watching = args.len > 0 and std.mem.eql(u8, args[0], "watch");
 
     if (!watching) {
         if (drain() == 0) out.text("nothing pressed\n");

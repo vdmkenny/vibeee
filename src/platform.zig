@@ -7,6 +7,7 @@
 //! enumeration and of driver binding; the bus drivers know how to find devices;
 //! neither imports the other, and this file introduces them.
 
+const std = @import("std");
 const console = @import("kernel/console.zig");
 const display = @import("kernel/display.zig");
 const input = @import("kernel/input.zig");
@@ -188,14 +189,13 @@ pub fn interruptRouting() ?irq.Routing {
 /// this: emulated performance counters accept every write and count
 /// nothing, and an armed watchdog that can never fire is a lie.
 pub fn boardIsEmulated() bool {
-    const str = @import("lib").str;
     // The system structure, not the baseboard: emulators fill the former
     // and often omit the latter entirely.
     if (smbios.systemManufacturer()) |made| {
-        if (str.contains(made, "QEMU")) return true;
+        if (std.mem.indexOf(u8, made, "QEMU") != null) return true;
     }
     if (smbios.systemProduct()) |product| {
-        if (str.contains(product, "QEMU")) return true;
+        if (std.mem.indexOf(u8, product, "QEMU") != null) return true;
     }
     return false;
 }

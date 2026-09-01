@@ -15,7 +15,6 @@
 const std = @import("std");
 const icons = @import("eui").icon;
 const panes = @import("panes.zig");
-const str = @import("lib").str;
 
 /// One place inside a program.
 pub const Anchor = struct {
@@ -96,8 +95,8 @@ test "no two places read the same" {
     for (all) |program| {
         for (program.anchors, 0..) |a, i| {
             for (program.anchors[i + 1 ..]) |b| {
-                try testing.expect(!str.eql(a.says, b.says));
-                try testing.expect(!str.eql(a.arg, b.arg));
+                try testing.expect(!std.mem.eql(u8, a.says, b.says));
+                try testing.expect(!std.mem.eql(u8, a.arg, b.arg));
             }
         }
     }

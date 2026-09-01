@@ -11,57 +11,12 @@
 
 const std = @import("std");
 
-pub fn eql(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (x != y) return false;
-    }
-    return true;
-}
-
 /// Whether `text` begins with `prefix`. Shorter than the prefix is not.
 /// Whether two strings say the same thing, folded for case.
 ///
-/// What a suffix comparison wants, and a name from a volume written on
-/// another machine: `README.TXT` and `readme.txt` are one file's name written
-/// twice.
-pub fn eqlFold(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (lower(x) != lower(y)) return false;
-    }
-    return true;
-}
 
 /// Whether `a` sorts before `b`, folded for case.
 ///
-/// What a list of names ordered by name means: somebody looking for "Files"
-/// does not care that it was written with a capital.
-pub fn before(a: []const u8, b: []const u8) bool {
-    const shared = @min(a.len, b.len);
-    for (a[0..shared], b[0..shared]) |x, y| {
-        const l = lower(x);
-        const r = lower(y);
-        if (l != r) return l < r;
-    }
-    return a.len < b.len;
-}
-
-pub fn startsWith(text: []const u8, prefix: []const u8) bool {
-    return text.len >= prefix.len and eql(text[0..prefix.len], prefix);
-}
-
-/// Whether `text` ends with `suffix`. Shorter than the suffix is not.
-pub fn endsWith(text: []const u8, suffix: []const u8) bool {
-    return text.len >= suffix.len and eql(text[text.len - suffix.len ..], suffix);
-}
-
-/// Length of a NUL-terminated string, as a slice.
-pub fn span(ptr: [*:0]const u8) []const u8 {
-    var n: usize = 0;
-    while (ptr[n] != 0) n += 1;
-    return ptr[0..n];
-}
 
 /// Leading decimal digits as a number. Stops at the first non-digit rather
 /// than failing, because every caller is reading a field it already trusts.
@@ -90,19 +45,6 @@ pub fn fromHex(text: []const u8) usize {
         out = out *| 16 +| digit;
     }
     return out;
-}
-
-pub fn contains(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        var j: usize = 0;
-        while (j < needle.len and haystack[i + j] == needle[j]) j += 1;
-        if (j == needle.len) return true;
-    }
-    return false;
 }
 
 /// Whether a byte is part of a word, for the movement and the deletion that
@@ -280,7 +222,7 @@ pub fn containsFold(haystack: []const u8, needle: []const u8) bool {
     while (start + needle.len <= haystack.len) : (start += 1) {
         var i: usize = 0;
         while (i < needle.len) : (i += 1) {
-            if (lower(haystack[start + i]) != lower(needle[i])) break;
+            if (std.ascii.toLower(haystack[start + i]) != std.ascii.toLower(needle[i])) break;
         } else return true;
     }
     return false;
@@ -349,12 +291,7 @@ pub fn caseless(text: []const u8) bool {
 /// know the medium was ever involved.
 pub fn lowerName(name: []u8) void {
     if (!caseless(name)) return;
-    for (name) |*c| c.* = lower(c.*);
-}
-
-/// One character, lowered. ASCII only, which is all the callers speak.
-pub fn lower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+    for (name) |*c| c.* = std.ascii.toLower(c.*);
 }
 
 /// Building a short string in a fixed buffer.
@@ -675,23 +612,23 @@ test "a size reads as three digits and a unit" {
 }
 
 test "names sort by what they say, not by their capitals" {
-    try std.testing.expect(before("apple", "banana"));
-    try std.testing.expect(!before("banana", "apple"));
+    try std.testing.expect(std.ascii.lessThanIgnoreCase("apple", "banana"));
+    try std.testing.expect(!std.ascii.lessThanIgnoreCase("banana", "apple"));
 
     // Case is not part of the order.
-    try std.testing.expect(before("Apple", "banana"));
-    try std.testing.expect(before("apple", "Banana"));
-    try std.testing.expect(!before("Banana", "apple"));
+    try std.testing.expect(std.ascii.lessThanIgnoreCase("Apple", "banana"));
+    try std.testing.expect(std.ascii.lessThanIgnoreCase("apple", "Banana"));
+    try std.testing.expect(!std.ascii.lessThanIgnoreCase("Banana", "apple"));
 
     // A prefix comes before what extends it, and nothing comes before itself.
-    try std.testing.expect(before("file", "files"));
-    try std.testing.expect(!before("files", "file"));
-    try std.testing.expect(!before("file", "file"));
-    try std.testing.expect(!before("File", "file"));
+    try std.testing.expect(std.ascii.lessThanIgnoreCase("file", "files"));
+    try std.testing.expect(!std.ascii.lessThanIgnoreCase("files", "file"));
+    try std.testing.expect(!std.ascii.lessThanIgnoreCase("file", "file"));
+    try std.testing.expect(!std.ascii.lessThanIgnoreCase("File", "file"));
 
     // Nothing sorts before something.
-    try std.testing.expect(before("", "a"));
-    try std.testing.expect(!before("a", ""));
+    try std.testing.expect(std.ascii.lessThanIgnoreCase("", "a"));
+    try std.testing.expect(!std.ascii.lessThanIgnoreCase("a", ""));
 }
 
 test "a word is what somebody means by one" {

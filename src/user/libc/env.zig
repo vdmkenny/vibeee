@@ -98,7 +98,7 @@ export fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) ca
 /// has removed something from its own environment.
 export fn putenv(entry: [*c]u8) callconv(.c) c_int {
     if (entry == null) return -1;
-    const text = string.spanOf(@ptrCast(entry));
+    const text = string.spanOf(@as([*:0]const u8, @ptrCast(entry)));
     const split = indexOfByte(text, '=') orelse return -1;
 
     if (!take()) return -1;

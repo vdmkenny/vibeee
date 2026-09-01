@@ -25,9 +25,9 @@ pub fn run(args: []const []const u8) void {
     var names: usize = 0;
 
     for (args) |arg| {
-        if (str.eql(arg, "-l")) {
+        if (std.mem.eql(u8, arg, "-l")) {
             listen = true;
-        } else if (str.eql(arg, "-u")) {
+        } else if (std.mem.eql(u8, arg, "-u")) {
             datagrams = true;
         } else if (names < positional.len) {
             positional[names] = arg;

@@ -115,7 +115,7 @@ pub const Category = enum {
 
     pub fn parse(name: []const u8) ?Category {
         for (std.enums.values(Category)) |which| {
-            if (str.eql(which.title(), name)) return which;
+            if (std.mem.eql(u8, which.title(), name)) return which;
         }
         return null;
     }
@@ -1743,11 +1743,11 @@ fn readClockSource() void {
     if (said.len == 0) return;
 
     var line = str.Builder{ .buf = &clock_source };
-    if (str.eql(said, "ntp")) {
+    if (std.mem.eql(u8, said, "ntp")) {
         line.text("Set from a time server");
-    } else if (str.eql(said, "rtc")) {
+    } else if (std.mem.eql(u8, said, "rtc")) {
         line.text("Set from the hardware clock");
-    } else if (str.eql(said, "userspace")) {
+    } else if (std.mem.eql(u8, said, "userspace")) {
         line.text("Set by hand");
     } else {
         line.text("Set from ");

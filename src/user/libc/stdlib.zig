@@ -245,7 +245,7 @@ export fn getopt(argc: c_int, argv: [*c][*c]u8, spec: [*:0]const u8) callconv(.c
     const arg = argv[@intCast(optind)];
     if (arg == null) return -1;
 
-    const text = string.spanOf(@ptrCast(arg));
+    const text = string.spanOf(@as([*:0]const u8, @ptrCast(arg)));
     if (text.len < 2 or text[0] != '-') return -1;
 
     // A lone `--` ends the options and is not one itself.

@@ -100,7 +100,7 @@ fn subscribe(domain: []const u8, reply: *sys.Message) settings.Status {
 /// The event standing for a domain, by the domain's position in the schema.
 fn eventFor(domain: []const u8) ?u32 {
     inline for (settings.DOMAIN_NAMES, 0..) |name, i| {
-        if (str.eql(domain, name)) return events[i];
+        if (std.mem.eql(u8, domain, name)) return events[i];
     }
     return null;
 }
@@ -137,7 +137,7 @@ fn applyTo(comptime domain: []const u8, asked: anytype) settings.Status {
 
     // The kernel holds the keyboard layout, so a change to it is not in effect
     // until somebody says so. Everything else is applied by whoever reads it.
-    if (comptime str.eql(domain, "input")) settings.applyInput();
+    if (comptime std.mem.eql(u8, domain, "input")) settings.applyInput();
 
     announce(domain);
     return .ok;
@@ -150,7 +150,7 @@ fn reset(current: anytype, field: []const u8) config.Outcome {
     const fresh = T{};
 
     inline for (std.meta.fields(T)) |declared| {
-        if (str.eql(field, declared.name)) {
+        if (std.mem.eql(u8, field, declared.name)) {
             @field(current, declared.name) = @field(fresh, declared.name);
             return .assigned;
         }

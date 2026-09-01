@@ -336,8 +336,8 @@ pub const Psk = union(enum) {
             .passphrase => |p| into.text(p.slice()),
             .key => |k| {
                 for (k) |octet| {
-                    into.byte(hexDigit(octet >> 4));
-                    into.byte(hexDigit(octet & 0xF));
+                    into.byte(std.fmt.digitToChar(octet >> 4, .lower));
+                    into.byte(std.fmt.digitToChar(octet & 0xF, .lower));
                 }
             },
         }
@@ -346,24 +346,11 @@ pub const Psk = union(enum) {
     fn decodeKey(text: []const u8) ?[KEY_BYTES]u8 {
         var out: [KEY_BYTES]u8 = @splat(0);
         for (&out, 0..) |*octet, i| {
-            const high = hexValue(text[i * 2]) orelse return null;
-            const low = hexValue(text[i * 2 + 1]) orelse return null;
+            const high = std.fmt.charToDigit(text[i * 2], 16) catch return null;
+            const low = std.fmt.charToDigit(text[i * 2 + 1], 16) catch return null;
             octet.* = (high << 4) | low;
         }
         return out;
-    }
-
-    fn hexValue(c: u8) ?u8 {
-        return switch (c) {
-            '0'...'9' => c - '0',
-            'a'...'f' => c - 'a' + 10,
-            'A'...'F' => c - 'A' + 10,
-            else => null,
-        };
-    }
-
-    fn hexDigit(nibble: u8) u8 {
-        return if (nibble < 10) '0' + nibble else 'a' + (nibble - 10);
     }
 };
 

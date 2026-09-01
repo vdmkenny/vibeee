@@ -9,6 +9,7 @@
 //!
 //! Nothing here knows what a controller is beyond the seam in `hc.zig`.
 
+const std = @import("std");
 const class = @import("class.zig");
 const hc = @import("hc.zig");
 const log = @import("ulib").log;
@@ -212,7 +213,7 @@ fn forget(controller: u8, route: usb.Route, port: u8) void {
         if (entry.address != 0) forgetBehind(entry.address);
         if (entry.attached) {
             for (drivers) |candidate| {
-                if (strEql(candidate.name, entry.driver.driverSlice())) candidate.ops.detach(entry.address);
+                if (std.mem.eql(u8, candidate.name, entry.driver.driverSlice())) candidate.ops.detach(entry.address);
             }
         }
         addresses.release(entry.address);
@@ -396,7 +397,7 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
     if (wanted.len == 0) return;
 
     for (drivers) |candidate| {
-        if (!strEql(candidate.name, wanted)) continue;
+        if (!std.mem.eql(u8, candidate.name, wanted)) continue;
         // The driver says whether it took the device; a refusal has
         // already said why in its own words.
         entry.attached = candidate.ops.attach(.{
@@ -422,13 +423,6 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
     log.end();
 }
 
-fn strEql(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (x != y) return false;
-    }
-    return true;
-}
 
 /// Ask the device what it calls itself.
 ///

@@ -91,7 +91,7 @@ pub fn pathOf(comptime domain: []const u8) []const u8 {
 /// The type behind a domain's name, or null for a name that is not one.
 pub fn Domain(comptime domain: []const u8) type {
     for (std.meta.fields(Domains)) |field| {
-        if (str.eql(domain, field.name)) return field.type;
+        if (std.mem.eql(u8, domain, field.name)) return field.type;
     }
     @compileError("no settings domain named `" ++ domain ++ "`");
 }
@@ -105,7 +105,7 @@ pub fn Domain(comptime domain: []const u8) type {
 /// to resolve.
 pub fn onDomain(comptime T: type, name: []const u8, context: anytype, comptime body: anytype) ?T {
     inline for (DOMAIN_NAMES) |candidate| {
-        if (str.eql(name, candidate)) return body(candidate, context);
+        if (std.mem.eql(u8, name, candidate)) return body(candidate, context);
     }
     return null;
 }

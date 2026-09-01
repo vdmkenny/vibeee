@@ -9,6 +9,7 @@
 //! `log [needle]` prints the lines containing a word; `log -n N` the last N
 //! lines; with neither argument, the whole ring.
 
+const std = @import("std");
 const info = @import("ulib").info;
 const ink = @import("ulib").ink;
 const style = @import("lib").style;
@@ -57,7 +58,7 @@ pub fn log(args: []const []const u8) void {
 
     var tail: usize = 0;
     var needle: []const u8 = "";
-    if (args.len >= 2 and str.eql(args[0], "-n")) {
+    if (args.len >= 2 and std.mem.eql(u8, args[0], "-n")) {
         tail = str.toUnsigned(args[1]);
         needle = if (args.len > 2) args[2] else "";
     } else if (args.len > 0) {
@@ -68,7 +69,7 @@ pub fn log(args: []const []const u8) void {
     var lines = str.lines(text);
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        if (needle.len > 0 and !str.contains(line, needle)) continue;
+        if (needle.len > 0 and !(std.mem.indexOf(u8, line, needle) != null)) continue;
         picked.remember(text, line);
     }
 
@@ -92,8 +93,8 @@ fn writeLine(line: []const u8) void {
 
 /// What a line is: a failure, a warning, or one component reporting.
 fn roleOf(key: []const u8) style.Role {
-    if (str.eql(key, "fail")) return .bad;
-    if (str.eql(key, "warn")) return .warn;
+    if (std.mem.eql(u8, key, "fail")) return .bad;
+    if (std.mem.eql(u8, key, "warn")) return .warn;
     return .key;
 }
 

@@ -17,14 +17,14 @@ pub fn run(args: []const []const u8) void {
     if (args.len == 0) return listAll();
 
     const verb = args[0];
-    if (str.eql(verb, "get")) return get(rest(args, 1));
-    if (str.eql(verb, "set")) return set(rest(args, 1));
-    if (str.eql(verb, "reset")) return reset(rest(args, 1));
+    if (std.mem.eql(u8, verb, "get")) return get(rest(args, 1));
+    if (std.mem.eql(u8, verb, "set")) return set(rest(args, 1));
+    if (std.mem.eql(u8, verb, "reset")) return reset(rest(args, 1));
 
     // A bare domain name lists it, because `cfg wm` is what someone types
     // when they want to know what `wm` has.
     inline for (settings.DOMAIN_NAMES) |name| {
-        if (str.eql(verb, name)) return listOne(name);
+        if (std.mem.eql(u8, verb, name)) return listOne(name);
     }
 
     out.text("usage: cfg [get|set|reset] <domain.key> [value]\n");
@@ -84,7 +84,7 @@ fn getFrom(comptime domain: []const u8, field: []const u8) bool {
     const current = settings.load(domain);
 
     inline for (std.meta.fields(settings.Domain(domain))) |declared| {
-        if (str.eql(field, declared.name)) {
+        if (std.mem.eql(u8, field, declared.name)) {
             var text: [64]u8 = undefined;
             var shown = str.Builder{ .buf = &text };
             config.format(&shown, @field(current, declared.name));
@@ -138,7 +138,7 @@ fn offerChoices(key: []const u8) void {
 
 fn sayChoices(comptime domain: []const u8, field: []const u8) void {
     inline for (std.meta.fields(settings.Domain(domain))) |declared| {
-        if (str.eql(field, declared.name)) {
+        if (std.mem.eql(u8, field, declared.name)) {
             const choices = comptime config.choices(settings.Domain(domain), declared.name);
             if (choices.len == 0) return;
 
@@ -185,7 +185,7 @@ pub fn offer(ctx: complete.Context, into: *complete.Collector) void {
 
 fn offerValues(comptime domain: []const u8, ctx: anytype) void {
     inline for (std.meta.fields(settings.Domain(domain))) |declared| {
-        if (str.eql(ctx.field, declared.name)) {
+        if (std.mem.eql(u8, ctx.field, declared.name)) {
             inline for (comptime config.choices(settings.Domain(domain), declared.name)) |choice| {
                 ctx.into.offer(choice);
             }

@@ -132,7 +132,7 @@ fn readManifests() void {
 
     for (listing.items()) |entry| {
         if (entry.is_dir) continue;
-        if (!str.endsWith(entry.name, MANIFEST_SUFFIX)) continue;
+        if (!std.mem.endsWith(u8, entry.name, MANIFEST_SUFFIX)) continue;
         readOne(entry.name);
     }
 }
@@ -181,7 +181,7 @@ fn readOne(name: []const u8) void {
 
     // Reading again must not double an already-known driver.
     for (manifests[0..manifest_count]) |existing| {
-        if (str.eql(existing.name, current.name)) return;
+        if (std.mem.eql(u8, existing.name, current.name)) return;
     }
     manifests[manifest_count] = current;
     manifest_count += 1;
@@ -311,7 +311,7 @@ fn capsFrom(granted_list: []const u8) u32 {
     while (it.next()) |raw| {
         const wanted = str.trim(raw);
         inline for (@typeInfo(sys.Caps).@"struct".fields) |field| {
-            if (field.type == bool and str.eql(wanted, field.name)) {
+            if (field.type == bool and std.mem.eql(u8, wanted, field.name)) {
                 @field(granted, field.name) = true;
             }
         }
@@ -381,7 +381,7 @@ fn claim(req: *const proto.Req, token: u32) void {
     for (bound) |b| {
         if (!b.live) continue;
         const manifest = &manifests[b.manifest];
-        if (manifest.service.len == 0 or !str.eql(manifest.service, wanted)) continue;
+        if (manifest.service.len == 0 or !std.mem.eql(u8, manifest.service, wanted)) continue;
 
         if (seen == req.index) {
             var assignment = proto.Assignment{
@@ -427,7 +427,7 @@ fn control(req: *const proto.Req, token: u32, wanted: proto.DriverState) void {
     for (&bound) |*b| {
         if (!b.live) continue;
         const manifest = &manifests[b.manifest];
-        if (!str.eql(manifest.name, name)) continue;
+        if (!std.mem.eql(u8, manifest.name, name)) continue;
         if (manifest.service.len != 0) return refuse(token);
 
         switch (wanted) {

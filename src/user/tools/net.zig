@@ -15,12 +15,12 @@
 //!   net <iface> static 192.0.2.7/24 [gw 192.0.2.1] [dns a[,b]]
 //!   net -p [address]             one ARP probe beneath the stack
 
+const std = @import("std");
 const lib = @import("lib");
 const net = @import("proto").net;
 const settings = @import("proto").settings;
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 const DEFAULT_ASK = 0x0A000202; // 10.0.2.2
 
@@ -39,7 +39,7 @@ pub fn run(args: []const []const u8) void {
     var probe = false;
     var ask: u32 = DEFAULT_ASK;
     for (args) |arg| {
-        if (str.eql(arg, "-p")) {
+        if (std.mem.eql(u8, arg, "-p")) {
             probe = true;
         } else if (lib.ipv4.parse(arg)) |addr| {
             ask = addr;
@@ -106,15 +106,15 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
     const chosen = resolveSlot(spelled, matcher, &wants) orelse return;
     var want = &wants[chosen];
 
-    if (str.eql(args[0], "up")) {
+    if (std.mem.eql(u8, args[0], "up")) {
         want.enabled = true;
-    } else if (str.eql(args[0], "down")) {
+    } else if (std.mem.eql(u8, args[0], "down")) {
         want.enabled = false;
-    } else if (str.eql(args[0], "dhcp")) {
+    } else if (std.mem.eql(u8, args[0], "dhcp")) {
         want.enabled = true;
         want.address = .{};
         want.gateway = .{};
-    } else if (str.eql(args[0], "static")) {
+    } else if (std.mem.eql(u8, args[0], "static")) {
         if (args.len < 2) {
             say("net: static needs an address like 192.0.2.7/24\n");
             return;
@@ -132,12 +132,12 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
                 say("net: a keyword without its value\n");
                 return;
             }
-            if (str.eql(args[at], "gw")) {
+            if (std.mem.eql(u8, args[at], "gw")) {
                 want.gateway = lib.ipv4.Maybe.parse(args[at + 1]) orelse {
                     say("net: that gateway is not an address\n");
                     return;
                 };
-            } else if (str.eql(args[at], "dns")) {
+            } else if (std.mem.eql(u8, args[at], "dns")) {
                 want.dns = lib.ipv4.Pair.parse(args[at + 1]) orelse {
                     say("net: dns takes one address, or two with a comma\n");
                     return;

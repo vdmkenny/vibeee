@@ -28,7 +28,6 @@ const pci = @import("ulib").pci;
 const proto = @import("proto").usb;
 const proto_devices = @import("proto").devices;
 const std = @import("std");
-const str = @import("ulib").str;
 const sys = @import("sys");
 
 /// The controller drivers this build carries. Which silicon each fits is
@@ -121,7 +120,7 @@ fn claim() void {
         proto_devices.claimNext(proto.SERVICE, index, &assignment) catch break;
 
         for (DRIVERS) |driver| {
-            if (!str.eql(driver.name, assignment.driverSlice())) continue;
+            if (!std.mem.eql(u8, driver.name, assignment.driverSlice())) continue;
             // Rows sharing a name are the same driver's units; the first
             // with a free controller takes the device.
             if (attach(driver, @bitCast(assignment.location)) == .settled) break;

@@ -9,6 +9,7 @@
 //!
 //! See design/00-vibeee.md §4.
 
+const std = @import("std");
 const console = @import("console.zig");
 const lib = @import("lib");
 
@@ -99,7 +100,7 @@ pub const ClaimError = error{ NotFound, Busy };
 
 pub fn claimDevice(location: [3]u16, claimer: u32) ClaimError!void {
     for (bindings[0..binding_count]) |*b| {
-        if (!lib.str.eql(b.dev.bus, "pci")) continue;
+        if (!std.mem.eql(u8, b.dev.bus, "pci")) continue;
         if (b.dev.location[0] != location[0] or
             b.dev.location[1] != location[1] or
             b.dev.location[2] != location[2]) continue;
@@ -114,7 +115,7 @@ pub fn claimDevice(location: [3]u16, claimer: u32) ClaimError!void {
 
 pub fn releaseDevice(location: [3]u16, claimer: u32) bool {
     for (bindings[0..binding_count]) |*b| {
-        if (!lib.str.eql(b.dev.bus, "pci")) continue;
+        if (!std.mem.eql(u8, b.dev.bus, "pci")) continue;
         if (b.dev.location[0] != location[0] or
             b.dev.location[1] != location[1] or
             b.dev.location[2] != location[2]) continue;

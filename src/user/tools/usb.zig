@@ -5,6 +5,7 @@
 //! device with no driver against it is one the machine sees but cannot
 //! use, which is the usual thing to want to know.
 
+const std = @import("std");
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const proto = @import("proto").usb;
@@ -22,8 +23,8 @@ const CLASS = 9;
 const DRIVER = 7;
 
 pub fn run(args: []const []const u8) void {
-    if (args.len > 0 and str.eql(args[0], "controllers")) return controllers();
-    if (args.len > 0 and str.eql(args[0], "ports")) return ports();
+    if (args.len > 0 and std.mem.eql(u8, args[0], "controllers")) return controllers();
+    if (args.len > 0 and std.mem.eql(u8, args[0], "ports")) return ports();
     if (args.len > 0) {
         out.text("usage: usb [ports | controllers]\n");
         out.flush();
@@ -121,7 +122,7 @@ fn parentOf(path: []const u8) []const u8 {
 fn rungFor(i: usize) tree.Rung {
     const mine = parentOf(found[i].pathSlice());
     for (found[i + 1 .. count]) |later| {
-        if (str.eql(parentOf(later.pathSlice()), mine)) return .more;
+        if (std.mem.eql(u8, parentOf(later.pathSlice()), mine)) return .more;
     }
     return .last;
 }

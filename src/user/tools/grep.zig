@@ -7,9 +7,9 @@
 //! Reads a file when given one and standard input otherwise, so it already
 //! works as the receiving end of a pipeline once pipes exist.
 
+const std = @import("std");
 const sys = @import("sys");
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 pub fn run(args: []const []const u8) void {
     if (args.len == 0) {
@@ -70,7 +70,7 @@ fn grepHandle(handle: usize, pattern: []const u8, name: []const u8, show_name: b
 }
 
 fn emitIfMatch(line: []const u8, pattern: []const u8, name: []const u8, show_name: bool) void {
-    if (!str.contains(line, pattern)) return;
+    if (!(std.mem.indexOf(u8, line, pattern) != null)) return;
     if (show_name) {
         out.text(name);
         out.text(":");

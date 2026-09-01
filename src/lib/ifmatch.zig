@@ -104,7 +104,7 @@ pub const Name = struct {
     }
 
     pub fn is(self: *const Name, name: []const u8) bool {
-        return str.eql(self.slice(), name);
+        return std.mem.eql(u8, self.slice(), name);
     }
 };
 

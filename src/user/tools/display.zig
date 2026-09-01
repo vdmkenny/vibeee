@@ -3,6 +3,7 @@
 //! Named for the thing rather than after another system's tool for it. With no
 //! argument it reports; with a size it asks the adapter for that mode.
 
+const std = @import("std");
 const sys = @import("sys");
 const info = @import("ulib").info;
 const out = @import("ulib").out;
@@ -13,11 +14,11 @@ pub fn display(args: []const []const u8) void {
         report();
         return;
     }
-    if (str.eql(args[0], "regs")) {
+    if (std.mem.eql(u8, args[0], "regs")) {
         registers();
         return;
     }
-    if (str.eql(args[0], "native")) {
+    if (std.mem.eql(u8, args[0], "native")) {
         var buf: [32]u8 = @splat(0);
         const panel = info.ask("display.panel", &buf);
         if (panel.len == 0) {

@@ -5,11 +5,11 @@
 //! it, which is also the only way to tell a program built for this machine
 //! from one built for another.
 
+const std = @import("std");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
 const elf = @import("lib").elf;
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 /// Enough to reach every signature this recognises, and enough of a text file
 /// to judge it by.
@@ -68,7 +68,7 @@ fn classify(bytes: []const u8) void {
     if (elf.Header.identify(bytes)) |ident| return describeElf(ident);
 
     for (signatures) |sig| {
-        if (str.startsWith(bytes, sig.magic)) return out.text(sig.name);
+        if (std.mem.startsWith(u8, bytes, sig.magic)) return out.text(sig.name);
     }
 
     // A boot sector is a signature in the last two bytes of the first sector

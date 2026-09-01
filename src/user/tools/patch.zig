@@ -12,6 +12,7 @@
 //!   patch vol music:out 50      one port's own volume
 //!   patch mute music:out        toggle one port's silence
 
+const std = @import("std");
 const graph = @import("lib").audiograph;
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
@@ -21,16 +22,16 @@ const str = @import("ulib").str;
 pub fn run(args: []const []const u8) void {
     if (args.len == 0) return list();
 
-    if (str.eql(args[0], "-u") and args.len == 3) {
+    if (std.mem.eql(u8, args[0], "-u") and args.len == 3) {
         return join(args[1], args[2], false);
     }
-    if (str.eql(args[0], "default") and args.len == 2) {
+    if (std.mem.eql(u8, args[0], "default") and args.len == 2) {
         return setDefault(args[1]);
     }
-    if (str.eql(args[0], "vol") and args.len == 3) {
+    if (std.mem.eql(u8, args[0], "vol") and args.len == 3) {
         return setVolume(args[1], @intCast(@min(str.toUnsigned(args[2]), 100)), null);
     }
-    if (str.eql(args[0], "mute") and args.len == 2) {
+    if (std.mem.eql(u8, args[0], "mute") and args.len == 2) {
         return setVolume(args[1], null, null);
     }
     if (args.len == 2) return join(args[0], args[1], true);
@@ -204,9 +205,9 @@ fn findPort(text: []const u8, direction: graph.Direction) ?u16 {
         var node_reply = proto.Rep{};
         proto.call(.{ .tag = .get_node, .a = port.node }, &node_reply) catch continue;
         const node = node_reply.body.node;
-        if (!str.eql(node.name[0..node.name_len], node_part)) continue;
+        if (!std.mem.eql(u8, node.name[0..node.name_len], node_part)) continue;
         if (port_part) |wanted| {
-            if (!str.eql(port.name[0..port.name_len], wanted)) continue;
+            if (!std.mem.eql(u8, port.name[0..port.name_len], wanted)) continue;
         }
         return port.id;
     }

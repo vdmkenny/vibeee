@@ -94,87 +94,60 @@ pub fn apply(left: Fixed, op: Op, right: Fixed) Failure!Fixed {
 /// A number as a person reads it: no trailing zeros in the fraction, no
 /// point when there is no fraction left to write.
 pub fn write(value: Fixed, into: *[WRITTEN_MAX]u8) []const u8 {
-    var at: usize = 0;
-    var rest = value;
-    if (rest < 0) {
-        into[at] = '-';
-        at += 1;
-        rest = -rest;
-    }
+    // The places are written and then trimmed rather than counted first: the
+    // formatter already knows how to pad a fraction, and the trim is a walk
+    // backwards over what it wrote.
+    const form = std.fmt.comptimePrint("{{s}}{{d}}.{{d:0>{d}}}", .{PLACES});
+    const magnitude: u64 = @abs(value);
+    const units: u64 = @intCast(SCALE);
+    const written = std.fmt.bufPrint(into, form, .{
+        if (value < 0) "-" else "",
+        magnitude / units,
+        magnitude % units,
+    }) catch unreachable;
 
-    const whole: u64 = @intCast(@divTrunc(rest, SCALE));
-    var fraction: u64 = @intCast(@rem(rest, SCALE));
-
-    at += writeWhole(whole, into[at..]);
-
-    // Trailing zeros carry no information: a third written to six places is
-    // 0.333333, and a half is 0.5 rather than 0.500000.
-    var places = PLACES;
-    while (places > 0 and fraction % 10 == 0) : (places -= 1) fraction /= 10;
-    if (places == 0) return into[0..at];
-
-    into[at] = '.';
-    at += 1;
-
-    var scale: u64 = 1;
-    var left = places;
-    while (left > 1) : (left -= 1) scale *= 10;
-    while (scale > 0) : (scale /= 10) {
-        into[at] = '0' + @as(u8, @intCast((fraction / scale) % 10));
-        at += 1;
-    }
-    return into[0..at];
+    var end = written.len;
+    while (end > 0 and written[end - 1] == '0') end -= 1;
+    if (end > 0 and written[end - 1] == '.') end -= 1;
+    return written[0..end];
 }
 
-fn writeWhole(value: u64, into: []u8) usize {
-    if (value == 0) {
-        into[0] = '0';
-        return 1;
-    }
-    var digits: [20]u8 = undefined;
-    var count: usize = 0;
-    var rest = value;
-    while (rest > 0) : (rest /= 10) {
-        digits[count] = '0' + @as(u8, @intCast(rest % 10));
-        count += 1;
-    }
-    for (0..count) |i| into[i] = digits[count - 1 - i];
-    return count;
+comptime {
+    // What the widest number needs: the sign, every digit of the largest
+    // whole part, the point, and the places. `write` cannot fail, and this
+    // is why.
+    const widest = 1 + std.fmt.count("{d}", .{@divTrunc(std.math.maxInt(Fixed), SCALE)}) + 1 + PLACES;
+    if (WRITTEN_MAX < widest) @compileError("a written number does not fit its buffer");
 }
 
 /// A typed number read back. Everything the keys can produce parses; the
-/// error is for callers holding text from somewhere else.
+/// null is for callers holding text from somewhere else.
 pub fn read(text: []const u8) ?Fixed {
-    var whole: i64 = 0;
-    var fraction: i64 = 0;
-    var scale: i64 = SCALE;
-    var negative = false;
-    var seen_point = false;
-    var digits: usize = 0;
+    var body = text;
+    const negative = body.len > 0 and body[0] == '-';
+    if (negative) body = body[1..];
 
-    for (text, 0..) |c, i| {
-        if (c == '-' and i == 0) {
-            negative = true;
-        } else if (c == '.') {
-            if (seen_point) return null;
-            seen_point = true;
-        } else if (c >= '0' and c <= '9') {
-            digits += 1;
-            const value: i64 = c - '0';
-            if (seen_point) {
-                // Past the sixth place a typed digit changes nothing this
-                // can hold, so it is read and dropped rather than refused.
-                if (scale > 1) {
-                    scale = @divTrunc(scale, 10);
-                    fraction += value * scale;
-                }
-            } else {
-                whole = whole * 10 + value;
-                if (whole > @divTrunc(std.math.maxInt(Fixed), SCALE)) return null;
-            }
-        } else return null;
+    const point_at = std.mem.indexOfScalar(u8, body, '.');
+    const whole_text = if (point_at) |at| body[0..at] else body;
+    const places_text = if (point_at) |at| body[at + 1 ..] else "";
+    if (whole_text.len == 0 and places_text.len == 0) return null;
+
+    const whole: Fixed = if (whole_text.len == 0)
+        0
+    else
+        std.fmt.parseInt(Fixed, whole_text, 10) catch return null;
+    if (whole > @divTrunc(std.math.maxInt(Fixed), SCALE)) return null;
+
+    // Past the last place a typed digit changes nothing this can hold, so it
+    // is dropped rather than making the whole number unreadable.
+    var fraction: Fixed = 0;
+    var scale = @divTrunc(SCALE, 10);
+    for (places_text) |c| {
+        if (c < '0' or c > '9') return null;
+        if (scale == 0) continue;
+        fraction += @as(Fixed, c - '0') * scale;
+        scale = @divTrunc(scale, 10);
     }
-    if (digits == 0) return null;
 
     const total = whole * SCALE + fraction;
     return if (negative) -total else total;

@@ -162,8 +162,8 @@ fn holdFromCmdline() void {
     applyHolds(line, "late.", true);
 
     for (aliases) |alias| {
-        if (!str.contains(line, alias.token)) continue;
-        if (byName(alias.service)) |state| holdOne(state, str.startsWith(alias.token, "netlate"));
+        if (!(std.mem.indexOf(u8, line, alias.token) != null)) continue;
+        if (byName(alias.service)) |state| holdOne(state, std.mem.startsWith(u8, alias.token, "netlate"));
     }
 }
 
@@ -363,7 +363,7 @@ fn dependenciesMet(service: Service) bool {
 fn targetSettled(name: []const u8) ?bool {
     var known = false;
     for (services[0..service_count]) |*state| {
-        if (!str.eql(state.service.target, name)) continue;
+        if (!std.mem.eql(u8, state.service.target, name)) continue;
         known = true;
         if (state.enabled and !state.running and !state.abandoned) return false;
     }
@@ -372,7 +372,7 @@ fn targetSettled(name: []const u8) ?bool {
 
 fn lookup(name: []const u8) ?*State {
     for (services[0..service_count]) |*state| {
-        if (str.eql(state.service.name, name)) return state;
+        if (std.mem.eql(u8, state.service.name, name)) return state;
     }
     return null;
 }
@@ -391,7 +391,7 @@ fn capsFrom(list: []const u8) u32 {
     while (it.next()) |raw| {
         const wanted = str.trim(raw);
         inline for (@typeInfo(sys.Caps).@"struct".fields) |field| {
-            if (field.type == bool and str.eql(wanted, field.name)) {
+            if (field.type == bool and std.mem.eql(u8, wanted, field.name)) {
                 @field(granted, field.name) = true;
             }
         }
@@ -789,15 +789,15 @@ fn volatileRoot() bool {
 
     var lines = str.lines(buf[0..@intCast(n)]);
     while (lines.next()) |line| {
-        if (!str.startsWith(line, "/ on ")) continue;
-        return str.contains(line, "volatile");
+        if (!std.mem.startsWith(u8, line, "/ on ")) continue;
+        return (std.mem.indexOf(u8, line, "volatile") != null);
     }
     return true;
 }
 
 fn byName(name: []const u8) ?*State {
     for (services[0..service_count]) |*s| {
-        if (str.eql(s.service.name, name)) return s;
+        if (std.mem.eql(u8, s.service.name, name)) return s;
     }
     return null;
 }

@@ -12,7 +12,7 @@
 //! they agree and stop, so the next keystroke narrows rather than choosing,
 //! and the same collected set is what an inline suggestion would draw from.
 
-const str = @import("lib").str;
+const std = @import("std");
 
 /// Where the cursor is in what has been typed, decomposed the way a source
 /// needs to see it.
@@ -52,7 +52,7 @@ pub const Collector = struct {
 
     /// Offer a candidate. Ignored unless it extends the word.
     pub fn offer(self: *Collector, candidate: []const u8) void {
-        if (!str.startsWith(candidate, self.word)) return;
+        if (!std.mem.startsWith(u8, candidate, self.word)) return;
         if (candidate.len > self.agreed.len) return;
 
         if (self.count == 0) {
@@ -63,7 +63,7 @@ pub const Collector = struct {
         }
 
         // The same name offered by two sources is one answer, not two.
-        if (str.eql(self.settled(), candidate)) return;
+        if (std.mem.eql(u8, self.settled(), candidate)) return;
 
         var same: usize = 0;
         const limit = @min(self.agreed_len, candidate.len);
@@ -124,7 +124,7 @@ pub fn resolve(sources: []const Source, ctx: Context, into: *Collector) void {
 
     var claimed = false;
     for (sources) |source| {
-        if (source.when == .named and str.eql(source.command, ctx.command)) {
+        if (source.when == .named and std.mem.eql(u8, source.command, ctx.command)) {
             source.offer(ctx, into);
             claimed = true;
         }

@@ -35,7 +35,7 @@ fn uncommented(line: []const u8) []const u8 {
 fn sameName(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |x, y| {
-        if (str.lower(x) != str.lower(y)) return false;
+        if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
     }
     return true;
 }

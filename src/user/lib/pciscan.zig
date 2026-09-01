@@ -5,6 +5,7 @@
 //! so the services share one reading of the format, and a column added to
 //! the table is a change in one place.
 
+const std = @import("std");
 const lib = @import("lib");
 const str = lib.str;
 const sys = @import("sys");
@@ -68,7 +69,7 @@ pub const Scan = struct {
                 .class = @truncate(class),
                 .subclass = @truncate(subclass),
                 .interface = @truncate(interface),
-                .driven = str.eql(str.trim(state), "driven"),
+                .driven = std.mem.eql(u8, str.trim(state), "driven"),
             };
         }
         return null;

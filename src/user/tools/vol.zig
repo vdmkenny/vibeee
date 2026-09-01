@@ -9,6 +9,7 @@
 //!   vol +5 | -5    nudge it
 //!   vol mute       toggle silence
 
+const std = @import("std");
 const audiograph = @import("lib").audiograph;
 const out = @import("ulib").out;
 const proto = @import("proto").audio;
@@ -32,7 +33,7 @@ pub fn run(args: []const []const u8) void {
     var mute = current.muted != 0;
     const arg = args[0];
 
-    if (str.eql(arg, "mute")) {
+    if (std.mem.eql(u8, arg, "mute")) {
         mute = !mute;
     } else if (arg.len > 1 and (arg[0] == '+' or arg[0] == '-')) {
         const step: u32 = @intCast(str.toUnsigned(arg[1..]));

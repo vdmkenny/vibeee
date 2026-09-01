@@ -29,7 +29,7 @@ pub fn assign(target: anytype, key: []const u8, value: []const u8) Outcome {
     const T = @typeInfo(@TypeOf(target)).pointer.child;
 
     inline for (std.meta.fields(T)) |field| {
-        if (str.eql(key, field.name)) {
+        if (std.mem.eql(u8, key, field.name)) {
             const parsed = parse(field.type, value) orelse return .bad_value;
             @field(target, field.name) = parsed;
             return .assigned;
@@ -84,10 +84,10 @@ fn selfSpelling(comptime T: type) bool {
 
 fn forBool(value: []const u8) ?bool {
     for ([_][]const u8{ "true", "yes", "on" }) |yes| {
-        if (str.eql(value, yes)) return true;
+        if (std.mem.eql(u8, value, yes)) return true;
     }
     for ([_][]const u8{ "false", "no", "off" }) |no| {
-        if (str.eql(value, no)) return false;
+        if (std.mem.eql(u8, value, no)) return false;
     }
     return null;
 }
@@ -123,7 +123,7 @@ pub fn choices(comptime T: type, comptime key: []const u8) []const []const u8 {
         // iterations; the default quota is sized for less.
         @setEvalBranchQuota(std.meta.fields(T).len * 400);
         for (std.meta.fields(T)) |field| {
-            if (!str.eql(key, field.name)) continue;
+            if (!std.mem.eql(u8, key, field.name)) continue;
             if (@typeInfo(field.type) != .@"enum") return &.{};
 
             const tags = std.meta.fields(field.type);
@@ -157,7 +157,7 @@ pub fn render(target: anytype, into: *str.Builder) void {
 pub fn format(into: *str.Builder, value: anytype) void {
     const T = @TypeOf(value);
     if (@typeInfo(T) == .array and @typeInfo(T).array.child == u8) {
-        return into.text(str.span(@ptrCast(&value)));
+        return into.text(std.mem.span(@ptrCast(&value)));
     }
     if (comptime selfSpelling(T)) return value.spell(into);
     switch (@typeInfo(T)) {

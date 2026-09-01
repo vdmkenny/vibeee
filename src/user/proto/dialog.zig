@@ -11,6 +11,7 @@
 //! less code and the behaviour a person expects: the dialog can be moved, and
 //! what is behind it stays where it was.
 
+const std = @import("std");
 const client = @import("client.zig");
 const eui = @import("eui");
 const sys = @import("sys");
@@ -131,7 +132,7 @@ pub const FileDialog = struct {
         if (self.panel.chosen >= self.entry_count) return;
 
         const name = self.entries[self.panel.chosen].name;
-        if (ulib.str.eql(name, dir.PARENT)) {
+        if (std.mem.eql(u8, name, dir.PARENT)) {
             self.ascend();
             return;
         }

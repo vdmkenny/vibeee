@@ -12,7 +12,6 @@
 
 const std = @import("std");
 const icons = @import("eui").icon;
-const str = @import("lib").str;
 
 pub const Section = enum {
     display,
@@ -24,7 +23,7 @@ pub const Section = enum {
 
     pub fn parse(name: []const u8) ?Section {
         for (std.enums.values(Section)) |which| {
-            if (str.eql(which.title(), name) or str.eql(@tagName(which), name)) return which;
+            if (std.mem.eql(u8, which.title(), name) or std.mem.eql(u8, @tagName(which), name)) return which;
         }
         return null;
     }
@@ -91,7 +90,7 @@ test "every section says something and says it once" {
     for (std.enums.values(Section)) |a| {
         for (std.enums.values(Section)) |b| {
             if (a == b) continue;
-            try testing.expect(!str.eql(a.says(), b.says()));
+            try testing.expect(!std.mem.eql(u8, a.says(), b.says()));
         }
     }
 }

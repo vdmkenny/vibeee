@@ -60,8 +60,8 @@ pub const Colour = struct {
 
         var out: [3]u8 = undefined;
         for (&out, 0..) |*channel, i| {
-            const high = hexValue(trimmed[i * 2]) orelse return null;
-            const low = hexValue(trimmed[i * 2 + 1]) orelse return null;
+            const high = std.fmt.charToDigit(trimmed[i * 2], 16) catch return null;
+            const low = std.fmt.charToDigit(trimmed[i * 2 + 1], 16) catch return null;
             channel.* = (high << 4) | low;
         }
         return of(out[0], out[1], out[2]);
@@ -71,24 +71,13 @@ pub const Colour = struct {
         if (!self.set) return;
         into.byte('#');
         for ([_]u8{ self.r, self.g, self.b }) |channel| {
-            into.byte(hexDigit(channel >> 4));
-            into.byte(hexDigit(channel & 0xF));
+            into.byte(std.fmt.digitToChar(channel >> 4, .lower));
+            into.byte(std.fmt.digitToChar(channel & 0xF, .lower));
         }
     }
 };
 
-fn hexValue(c: u8) ?u8 {
-    return switch (c) {
-        '0'...'9' => c - '0',
-        'a'...'f' => c - 'a' + 10,
-        'A'...'F' => c - 'A' + 10,
-        else => null,
-    };
-}
 
-fn hexDigit(nibble: u8) u8 {
-    return if (nibble < 10) '0' + nibble else 'a' + (nibble - 10);
-}
 
 // ---------------------------------------------------------------------------
 // Tests

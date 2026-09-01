@@ -4,6 +4,7 @@
 //! repeating the same "negative means it failed, otherwise slice to the length"
 //! dance. One place to get it wrong is enough.
 
+const std = @import("std");
 const sys = @import("sys");
 const str = @import("lib").str;
 
@@ -27,7 +28,7 @@ pub fn askNumber(key: []const u8) usize {
 pub fn listContains(key: []const u8, name: []const u8, buf: []u8) bool {
     var it = str.lines(ask(key, buf));
     while (it.next()) |line| {
-        if (str.eql(str.trim(line), name)) return true;
+        if (std.mem.eql(u8, str.trim(line), name)) return true;
     }
     return false;
 }

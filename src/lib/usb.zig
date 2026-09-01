@@ -569,7 +569,7 @@ pub const Signature = struct {
 
     fn part(self: Signature, spec: []const u8) bool {
         var it = str.split(spec, ':');
-        if (!str.eql(str.trim(it.next() orelse return false), "usb")) return false;
+        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "usb")) return false;
         const vendor = str.fromHex(str.trim(it.next() orelse return false));
         const product = str.fromHex(str.trim(it.next() orelse return false));
         return vendor == self.vendor and product == self.product;
@@ -580,7 +580,7 @@ pub const Signature = struct {
     /// listing its members.
     fn class_(self: Signature, spec: []const u8) bool {
         var it = str.split(spec, ':');
-        if (!str.eql(str.trim(it.next() orelse return false), "usb-class")) return false;
+        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "usb-class")) return false;
         if (str.fromHex(str.trim(it.next() orelse return false)) != @intFromEnum(self.class)) return false;
         if (str.fromHex(str.trim(it.next() orelse return false)) != self.subclass) return false;
         const rest = str.trim(it.next() orelse return true);

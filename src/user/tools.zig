@@ -9,10 +9,10 @@
 //! dispatch and the help text are both generated from it, so a command cannot
 //! exist without being listed.
 
+const std = @import("std");
 const sys = @import("sys");
 const registry = @import("tools/registry.zig");
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 const commands = registry.commands;
 
@@ -30,7 +30,7 @@ fn toolsMain(frame: [*]const u32) noreturn {
 
     for (0..count) |i| {
         const ptr: [*:0]const u8 = @ptrFromInt(frame[1 + i]);
-        argv_storage[i] = str.span(ptr);
+        argv_storage[i] = std.mem.span(ptr);
     }
     const argv = argv_storage[0..count];
 
@@ -39,7 +39,7 @@ fn toolsMain(frame: [*]const u32) noreturn {
     const command = if (argv.len > 1) argv[1] else "help";
 
     for (commands) |c| {
-        if (str.eql(c.name, command)) {
+        if (std.mem.eql(u8, c.name, command)) {
             c.run(argv[@min(2, argv.len)..]);
             sys.exit(0);
         }

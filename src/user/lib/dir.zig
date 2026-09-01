@@ -7,7 +7,6 @@
 const std = @import("std");
 const sys = @import("sys");
 const Bounded = @import("lib").Bounded;
-const str = @import("lib").str;
 
 /// One name, and enough about it to show a row.
 pub const Entry = struct {
@@ -100,25 +99,15 @@ fn sort(entries: []Entry) void {
 pub const PARENT = "..";
 
 fn before(_: void, a: Entry, b: Entry) bool {
-    const a_parent = str.eql(a.name, PARENT);
-    const b_parent = str.eql(b.name, PARENT);
+    const a_parent = std.mem.eql(u8, a.name, PARENT);
+    const b_parent = std.mem.eql(u8, b.name, PARENT);
     if (a_parent != b_parent) return a_parent;
 
     if (a.is_dir != b.is_dir) return a.is_dir;
-    return lessCaseless(a.name, b.name);
-}
-
-/// Compare without regard to case, because FAT stores short names upper-cased
-/// and a sort that took that literally would put every short name before every
-/// long one.
-fn lessCaseless(a: []const u8, b: []const u8) bool {
-    const n = @min(a.len, b.len);
-    for (a[0..n], b[0..n]) |x, y| {
-        const lx = str.lower(x);
-        const ly = str.lower(y);
-        if (lx != ly) return lx < ly;
-    }
-    return a.len < b.len;
+    // Without regard to case, because FAT stores short names upper-cased and
+    // a sort that took that literally would put every short name before
+    // every long one.
+    return std.ascii.lessThanIgnoreCase(a.name, b.name);
 }
 
 

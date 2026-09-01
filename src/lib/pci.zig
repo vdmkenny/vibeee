@@ -372,7 +372,7 @@ pub const Signature = struct {
 
     fn part(self: Signature, spec: []const u8) bool {
         var it = str.split(spec, ':');
-        if (!str.eql(str.trim(it.next() orelse return false), "pci")) return false;
+        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "pci")) return false;
         const vendor = str.fromHex(str.trim(it.next() orelse return false));
         const device = str.fromHex(str.trim(it.next() orelse return false));
         return vendor == self.vendor and device == self.device;
@@ -380,7 +380,7 @@ pub const Signature = struct {
 
     fn class_(self: Signature, spec: []const u8) bool {
         var it = str.split(spec, ':');
-        if (!str.eql(str.trim(it.next() orelse return false), "pci-class")) return false;
+        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "pci-class")) return false;
         if (str.fromHex(str.trim(it.next() orelse return false)) != self.class) return false;
         if (str.fromHex(str.trim(it.next() orelse return false)) != self.subclass) return false;
         const rest = str.trim(it.next() orelse return true);

@@ -56,7 +56,7 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     // launcher can then be about this computer rather than about settings.
     const argc: usize = frame[0];
     if (argc >= 2) {
-        const wanted = str.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
+        const wanted = std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
         if (Section.parse(wanted)) |which| section = which;
     }
 
@@ -1211,7 +1211,7 @@ fn drawFacts(pane: eui.Rect, from: i32, facts: []const Fact, at: usize) i32 {
 /// count of bytes, which is a number for a program rather than an answer for
 /// a person.
 fn describe(key: []const u8, buf: []u8) []const u8 {
-    if (str.eql(key, "mem.total")) {
+    if (std.mem.eql(u8, key, "mem.total")) {
         const bytes = info.askNumber("mem.total");
         if (bytes == 0) return "";
         var line = str.Builder{ .buf = buf };

@@ -23,41 +23,67 @@ const ctx = &proto.app.ctx;
 
 var machine: calc.Machine = .{};
 
-/// The pad, in the order a hand finds it. What each key does is here rather
-/// than in the drawing, so the keyboard and the pointer reach the same list.
+/// What pressing something does. The keyboard and the pad want the same
+/// answers, and this is where they meet: a digit carries which digit it is,
+/// which is exactly what a pointer to a function could not.
+const Press = union(enum) {
+    digit: u8,
+    point,
+    negate,
+    percent,
+    clear,
+    back,
+    equals,
+    operate: calc.Op,
+};
+
+fn press(what: Press) void {
+    switch (what) {
+        .digit => |which| machine.digit(which),
+        .point => machine.point(),
+        .negate => machine.negate(),
+        .percent => machine.percent(),
+        .clear => machine.clear(),
+        .back => machine.back(),
+        .equals => machine.equals(),
+        .operate => |op| machine.operate(op),
+    }
+}
+
+/// The pad, in the order a hand finds it.
 const Key = struct {
     label: []const u8,
     /// Columns it takes. The zero is as wide as two because it is pressed
     /// more than anything else on the pad.
     across: i32 = 1,
     weight: eui.widget.Emphasis = .plain,
-    press: *const fn () void,
+    does: Press,
 };
 
 const KEYS = [_]Key{
-    .{ .label = "C", .weight = .quiet, .press = &clear },
-    .{ .label = "\u{00B1}", .weight = .quiet, .press = &negate },
-    .{ .label = "%", .weight = .quiet, .press = &percent },
-    .{ .label = "\u{00F7}", .weight = .quiet, .press = &divide },
+    .{ .label = "C", .weight = .quiet, .does = .clear },
+    .{ .label = "\u{00B1}", .weight = .quiet, .does = .negate },
+    .{ .label = "%", .weight = .quiet, .does = .percent },
+    .{ .label = "\u{00F7}", .weight = .quiet, .does = .{ .operate = .divide } },
 
-    .{ .label = "7", .press = &seven },
-    .{ .label = "8", .press = &eight },
-    .{ .label = "9", .press = &nine },
-    .{ .label = "\u{00D7}", .weight = .quiet, .press = &multiply },
+    .{ .label = "7", .does = .{ .digit = 7 } },
+    .{ .label = "8", .does = .{ .digit = 8 } },
+    .{ .label = "9", .does = .{ .digit = 9 } },
+    .{ .label = "\u{00D7}", .weight = .quiet, .does = .{ .operate = .multiply } },
 
-    .{ .label = "4", .press = &four },
-    .{ .label = "5", .press = &five },
-    .{ .label = "6", .press = &six },
-    .{ .label = "\u{2013}", .weight = .quiet, .press = &subtract },
+    .{ .label = "4", .does = .{ .digit = 4 } },
+    .{ .label = "5", .does = .{ .digit = 5 } },
+    .{ .label = "6", .does = .{ .digit = 6 } },
+    .{ .label = "\u{2013}", .weight = .quiet, .does = .{ .operate = .subtract } },
 
-    .{ .label = "1", .press = &one },
-    .{ .label = "2", .press = &two },
-    .{ .label = "3", .press = &three },
-    .{ .label = "+", .weight = .quiet, .press = &add },
+    .{ .label = "1", .does = .{ .digit = 1 } },
+    .{ .label = "2", .does = .{ .digit = 2 } },
+    .{ .label = "3", .does = .{ .digit = 3 } },
+    .{ .label = "+", .weight = .quiet, .does = .{ .operate = .add } },
 
-    .{ .label = "0", .across = 2, .press = &zero },
-    .{ .label = ".", .press = &point },
-    .{ .label = "=", .weight = .strong, .press = &equals },
+    .{ .label = "0", .across = 2, .does = .{ .digit = 0 } },
+    .{ .label = ".", .does = .point },
+    .{ .label = "=", .weight = .strong, .does = .equals },
 };
 
 const COLUMNS: i32 = 4;
@@ -119,7 +145,7 @@ fn draw() void {
     var row: i32 = 0;
     for (KEYS) |k| {
         if (ctx.buttonAs(pad.wide(column, row, k.across), k.label, k.weight)) {
-            k.press();
+            press(k.does);
             // The readout was drawn before this key was polled, so the pass
             // that presses it is not the pass that can show the answer.
             ctx.damage();
@@ -198,101 +224,35 @@ fn drawReadout(area: Rect) void {
 // ---------------------------------------------------------------------------
 
 fn typed(codepoint: u32) bool {
-    switch (codepoint) {
-        '0'...'9' => machine.digit(@intCast(codepoint - '0')),
+    press(switch (codepoint) {
+        '0'...'9' => .{ .digit = @intCast(codepoint - '0') },
         // Both, because a keypad has one and a Belgian layout has the other
         // where a decimal point belongs.
-        '.', ',' => machine.point(),
-        '+' => machine.operate(.add),
-        '-' => machine.operate(.subtract),
-        '*', 'x' => machine.operate(.multiply),
-        '/', ':' => machine.operate(.divide),
-        '%' => machine.percent(),
-        '=' => machine.equals(),
-        'c', 'C' => machine.clear(),
+        '.', ',' => .point,
+        '+' => .{ .operate = .add },
+        '-' => .{ .operate = .subtract },
+        '*', 'x' => .{ .operate = .multiply },
+        '/', ':' => .{ .operate = .divide },
+        '%' => .percent,
+        '=' => .equals,
+        'c', 'C' => .clear,
         else => return false,
-    }
+    });
     return true;
 }
 
 fn key(code: KeyCode, mods: Modifiers) bool {
     _ = mods;
-    switch (code) {
+    press(switch (code) {
         // Enter always ends the sum. Walking the pad with Tab and pressing
         // the key it landed on is the toolkit's other activation key, the
         // space bar, which a calculator has nothing else to do with: an
         // Enter that meant one thing or the other depending on whether
         // anything had been clicked would be an Enter nobody could rely on.
-        .enter => machine.equals(),
-        .escape => machine.clear(),
-        .backspace => machine.back(),
+        .enter => .equals,
+        .escape => .clear,
+        .backspace => .back,
         else => return false,
-    }
+    });
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// What the keys do
-//
-// One function each, because the pad holds pointers to them and a pointer
-// cannot carry an argument with it. They are the whole of the app's logic:
-// everything below the surface is `lib.calc`.
-// ---------------------------------------------------------------------------
-
-fn zero() void {
-    machine.digit(0);
-}
-fn one() void {
-    machine.digit(1);
-}
-fn two() void {
-    machine.digit(2);
-}
-fn three() void {
-    machine.digit(3);
-}
-fn four() void {
-    machine.digit(4);
-}
-fn five() void {
-    machine.digit(5);
-}
-fn six() void {
-    machine.digit(6);
-}
-fn seven() void {
-    machine.digit(7);
-}
-fn eight() void {
-    machine.digit(8);
-}
-fn nine() void {
-    machine.digit(9);
-}
-fn point() void {
-    machine.point();
-}
-fn negate() void {
-    machine.negate();
-}
-fn percent() void {
-    machine.percent();
-}
-fn clear() void {
-    machine.clear();
-}
-fn equals() void {
-    machine.equals();
-}
-fn add() void {
-    machine.operate(.add);
-}
-fn subtract() void {
-    machine.operate(.subtract);
-}
-fn multiply() void {
-    machine.operate(.multiply);
-}
-fn divide() void {
-    machine.operate(.divide);
 }

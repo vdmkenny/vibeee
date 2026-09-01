@@ -25,7 +25,6 @@ const out = @import("ulib").out;
 const pci = @import("ulib").pci;
 const proto = @import("proto").audio;
 const proto_devices = @import("proto").devices;
-const str = @import("ulib").str;
 const std = @import("std");
 const sys = @import("sys");
 
@@ -112,7 +111,7 @@ fn probe() void {
         assigned += 1;
         var known = false;
         for (DRIVERS) |driver| {
-            if (!str.eql(driver.name, assignment.driverSlice())) continue;
+            if (!std.mem.eql(u8, driver.name, assignment.driverSlice())) continue;
             known = true;
             attach(driver, @bitCast(assignment.location));
         }

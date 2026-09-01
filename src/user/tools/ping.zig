@@ -5,6 +5,7 @@
 //! ping, so this tool is a loop and some arithmetic. The stack answers
 //! incoming echoes on its own; this is only the asking half.
 
+const std = @import("std");
 const lib = @import("lib");
 const net = @import("proto").net;
 const out = @import("ulib").out;
@@ -21,7 +22,7 @@ pub fn run(args: []const []const u8) void {
 
     var at: usize = 0;
     while (at < args.len) : (at += 1) {
-        if (str.eql(args[at], "-c") and at + 1 < args.len) {
+        if (std.mem.eql(u8, args[at], "-c") and at + 1 < args.len) {
             at += 1;
             rounds = @max(1, str.toUnsigned(args[at]));
         } else if (args[at].len > 0 and args[at][0] != '-') {

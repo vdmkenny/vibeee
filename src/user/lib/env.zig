@@ -10,7 +10,6 @@
 //! its *children*, by handing them a different one, and the shell is the
 //! only thing that wants to.
 
-const str = @import("lib").str;
 // How many entries there is room for is the kernel's number, not this
 // side's: it is what `exec` will accept and what the stack frame is built
 // to hold, so it is read from the one place both sides define it.
@@ -31,7 +30,7 @@ pub fn adopt(frame: [*]const u32) void {
     var at = 1 + argc + 1;
     count = 0;
     while (count < entries.len and frame[at] != 0) : (at += 1) {
-        entries[count] = str.span(@as([*:0]const u8, @ptrFromInt(frame[at])));
+        entries[count] = std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[at])));
         count += 1;
     }
 }
@@ -58,7 +57,7 @@ pub fn get(name: []const u8) ?[]const u8 {
 pub fn valueOf(entry: []const u8, name: []const u8) ?[]const u8 {
     if (entry.len < name.len + 1) return null;
     if (entry[name.len] != '=') return null;
-    if (!str.eql(entry[0..name.len], name)) return null;
+    if (!std.mem.eql(u8, entry[0..name.len], name)) return null;
     return entry[name.len + 1 ..];
 }
 

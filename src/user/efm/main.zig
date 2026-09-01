@@ -11,6 +11,7 @@
 //! touchpad this small is a machine where reaching for the pointer costs more
 //! than the keystroke it saves.
 
+const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
@@ -424,7 +425,7 @@ var mounts_len: usize = 0;
 fn readPlaces() bool {
     var buf: [512]u8 = undefined;
     const mounted = info.ask("mounts", &buf);
-    if (mounted.len == mounts_len and str.eql(mounted, mounts_seen[0..mounts_len])) return false;
+    if (mounted.len == mounts_len and std.mem.eql(u8, mounted, mounts_seen[0..mounts_len])) return false;
     mounts_len = @min(mounted.len, mounts_seen.len);
     @memcpy(mounts_seen[0..mounts_len], mounted[0..mounts_len]);
 
@@ -483,7 +484,7 @@ fn drawPlaces(area: Rect) void {
 
         const where = placePath(index);
         const cell = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
-        const current = str.eql(here().path(), where);
+        const current = std.mem.eql(u8, here().path(), where);
         if (pressed(cell)) goTo(where);
         paintVolume(cell, volume, current);
 
@@ -521,8 +522,8 @@ fn readVolume(words: []const []const u8, store: *[16]u8) Volume {
     var free: ?usize = null;
     var size: ?usize = null;
     for (words) |word| {
-        if (str.startsWith(word, "free=")) free = str.toUnsigned(word["free=".len..]);
-        if (str.startsWith(word, "size=")) size = str.toUnsigned(word["size=".len..]);
+        if (std.mem.startsWith(u8, word, "free=")) free = str.toUnsigned(word["free=".len..]);
+        if (std.mem.startsWith(u8, word, "size=")) size = str.toUnsigned(word["size=".len..]);
     }
 
     const total = size orelse return out;
@@ -540,7 +541,7 @@ fn readVolume(words: []const []const u8, store: *[16]u8) Volume {
 /// The last part of a path, which is what a volume is called. The root has no
 /// last part and is the machine itself.
 fn shortName(path: []const u8) []const u8 {
-    if (str.eql(path, "/")) return "system";
+    if (std.mem.eql(u8, path, "/")) return "system";
     var at = path.len;
     while (at > 0) : (at -= 1) {
         if (path[at - 1] == '/') return path[at..];

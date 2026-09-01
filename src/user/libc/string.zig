@@ -255,18 +255,19 @@ fn isUpper(c: c_int) bool {
 fn lowerInt(c: c_int) c_int {
     return if (isUpper(c)) c + 32 else c;
 }
-const lower = @import("lib").str.lower;
+const std = @import("std");
+const lower = std.ascii.toLower;
 fn yes(condition: bool) c_int {
     return if (condition) 1 else 0;
 }
 
 const heap = @import("ulib").heap;
 
-/// A terminated string as a slice, for the parts of this library that work in
-/// Zig terms once they have crossed the boundary.
 const str = @import("lib").str;
 
-pub const spanOf = str.span;
+/// A terminated string as a slice, for the parts of this library that work in
+/// Zig terms once they have crossed the boundary.
+pub const spanOf = std.mem.span;
 
 /// How many leading characters are in `set`, and how many are not: the
 /// two halves of splitting a string by hand, which is what a program

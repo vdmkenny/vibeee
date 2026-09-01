@@ -10,22 +10,22 @@
 //!   driver start <name> start it again
 //!   driver rescan       read the manifests again, bind anything new
 
+const std = @import("std");
 const lib = @import("lib");
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const proto = @import("proto").devices;
-const str = @import("ulib").str;
 
 pub fn run(args: []const []const u8) void {
     if (args.len == 0) return list();
 
-    if (str.eql(args[0], "rescan")) {
+    if (std.mem.eql(u8, args[0], "rescan")) {
         var reply = proto.Rep{};
         proto.call(.{ .tag = .rescan }, &reply) catch return say("driver: refused\n");
         return say("rescanned\n");
     }
-    if (args.len == 2 and (str.eql(args[0], "stop") or str.eql(args[0], "start"))) {
-        const tag: proto.Tag = if (str.eql(args[0], "stop")) .stop else .start;
+    if (args.len == 2 and (std.mem.eql(u8, args[0], "stop") or std.mem.eql(u8, args[0], "start"))) {
+        const tag: proto.Tag = if (std.mem.eql(u8, args[0], "stop")) .stop else .start;
         const req = proto.Req.named(tag, args[1]) orelse return say("driver: bad name\n");
         var reply = proto.Rep{};
         proto.call(req, &reply) catch {

@@ -10,6 +10,7 @@
 //! with the terminal in raw mode and under a terminal emulator, where the keys
 //! arrive down a pipe as the sequences that stand for them.
 
+const std = @import("std");
 const complete_mod = @import("complete.zig");
 const sys = @import("sys");
 const out = @import("out.zig");
@@ -236,7 +237,7 @@ pub const Editor = struct {
         if (self.len == 0) return;
 
         const typed = self.line[0..self.len];
-        if (self.remembered > 0 and str.eql(self.history[self.remembered - 1].slice(), typed)) return;
+        if (self.remembered > 0 and std.mem.eql(u8, self.history[self.remembered - 1].slice(), typed)) return;
 
         if (self.remembered == HISTORY_MAX) {
             // Oldest out. A shift rather than a ring because the whole point

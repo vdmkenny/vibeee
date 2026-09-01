@@ -1,7 +1,7 @@
 //! Filesystem calls.
 
+const std = @import("std");
 const abi = @import("lib").syscalls;
-const str = @import("lib").str;
 const clock = @import("../clock.zig");
 const ctx = @import("context.zig");
 const fat = @import("../fat.zig");
@@ -236,7 +236,7 @@ pub fn sys_readdir(a: Args) Result {
         // The filesystem's own dot entries are dropped: `..` was answered
         // above, and `.` tells a reader nothing it did not already know.
         const name = entry.nameSlice();
-        if (str.eql(name, ".") or str.eql(name, "..")) continue;
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
 
         const n = writeDirent(out, entry) orelse return Errno.nomem.value();
         return @intCast(n);

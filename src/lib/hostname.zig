@@ -62,8 +62,8 @@ pub const Hostname = struct {
             out.len += 1;
         }
         for (address[3..6]) |octet| {
-            out.bytes[out.len] = hex(octet >> 4);
-            out.bytes[out.len + 1] = hex(octet & 0xF);
+            out.bytes[out.len] = std.fmt.digitToChar(octet >> 4, .lower);
+            out.bytes[out.len + 1] = std.fmt.digitToChar(octet & 0xF, .lower);
             out.len += 2;
         }
         return out;
@@ -73,7 +73,7 @@ pub const Hostname = struct {
     /// machine fell back to. Worth knowing when deciding whether a
     /// configured name should overwrite what is already there.
     pub fn isDerived(self: *const Hostname) bool {
-        return str.startsWith(self.slice(), PREFIX);
+        return std.mem.startsWith(u8, self.slice(), PREFIX);
     }
 
     /// The name to answer to: the one somebody chose, or the one derived
@@ -125,9 +125,6 @@ fn lower(c: u8) u8 {
     return if (c >= 'A' and c <= 'Z') c + ('a' - 'A') else c;
 }
 
-fn hex(nibble: u8) u8 {
-    return if (nibble < 10) '0' + nibble else 'a' + (nibble - 10);
-}
 
 // ---------------------------------------------------------------------------
 // Tests

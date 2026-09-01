@@ -15,6 +15,7 @@
 //! the same one twice. One, because a decoded photograph is megabytes and
 //! this machine has a budget rather than a cache.
 
+const std = @import("std");
 const eui = @import("eui");
 const img = @import("img");
 const dir = @import("ulib").dir;
@@ -46,10 +47,10 @@ pub const Kind = enum {
         const suffix = entry.name[dot + 1 ..];
 
         for (PICTURES) |known| {
-            if (str.eqlFold(suffix, known)) return .picture;
+            if (std.ascii.eqlIgnoreCase(suffix, known)) return .picture;
         }
         for (TEXTS) |known| {
-            if (str.eqlFold(suffix, known)) return .text;
+            if (std.ascii.eqlIgnoreCase(suffix, known)) return .text;
         }
         return .other;
     }
@@ -146,7 +147,7 @@ fn cachedPath() []const u8 {
 pub fn show(folder: []const u8, entry: dir.Entry) void {
     var built: [256]u8 = @splat(0);
     const full = paths.join(folder, entry.name, &built);
-    if (str.eql(full, shownPath())) return;
+    if (std.mem.eql(u8, full, shownPath())) return;
 
     path_len = @min(full.len, path_buf.len);
     @memcpy(path_buf[0..path_len], full[0..path_len]);
@@ -205,7 +206,7 @@ fn readText() void {
 
 /// Decode the picture, unless it is the one already decoded.
 fn load(entry: dir.Entry) void {
-    if (str.eql(shownPath(), cachedPath())) return;
+    if (std.mem.eql(u8, shownPath(), cachedPath())) return;
     forget();
 
     if (entry.size > PICTURE_BYTES_MAX) {

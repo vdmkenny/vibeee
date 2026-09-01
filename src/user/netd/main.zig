@@ -143,7 +143,7 @@ fn probe() void {
 
 fn driverNamed(wanted: []const u8) ?*const Driver {
     for (&DRIVERS) |*driver| {
-        if (str.eql(driver.name, wanted)) return driver;
+        if (std.mem.eql(u8, driver.name, wanted)) return driver;
     }
     return null;
 }
@@ -154,7 +154,7 @@ fn driverNamed(wanted: []const u8) ?*const Driver {
 fn labelFor(driver_name: []const u8) lib.ifmatch.Name {
     var same: usize = 0;
     for (ifaces[0..count]) |iface| {
-        if (str.eql(iface.name, driver_name)) same += 1;
+        if (std.mem.eql(u8, iface.name, driver_name)) same += 1;
     }
     if (same == 0) {
         return lib.ifmatch.Name.of(driver_name) orelse .{};

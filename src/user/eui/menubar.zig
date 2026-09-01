@@ -10,9 +10,9 @@
 //! driven by arrows. What this adds is the strip, which menu is open, and
 //! turning a choice back into something the application named.
 
+const std = @import("std");
 const draw = @import("draw.zig");
 const abi = @import("lib").syscalls;
-const str = @import("lib").str;
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -49,7 +49,7 @@ pub const Menu = struct {
 /// their keyboard is in.
 fn mnemonicIs(label: []const u8, at: usize, c: u21) bool {
     if (at >= label.len or c > 0x7F) return false;
-    return str.lower(label[at]) == str.lower(@intCast(c));
+    return std.ascii.toLower(label[at]) == std.ascii.toLower(@intCast(c));
 }
 
 
@@ -195,11 +195,11 @@ fn chordOf(code: KeyCode, mods: widget.Modifiers, menus: []const Menu) ?u16 {
 /// is the key and what comes before it is what has to be held.
 fn matchesChord(shortcut: []const u8, letter: u8, mods: widget.Modifiers) bool {
     if (shortcut.len == 0) return false;
-    if (str.lower(shortcut[shortcut.len - 1]) != letter) return false;
+    if (std.ascii.toLower(shortcut[shortcut.len - 1]) != letter) return false;
 
-    const wants_shift = str.contains(shortcut, "Shift");
-    const wants_ctrl = str.contains(shortcut, "Ctrl");
-    const wants_alt = str.contains(shortcut, "Alt");
+    const wants_shift = (std.mem.indexOf(u8, shortcut, "Shift") != null);
+    const wants_ctrl = (std.mem.indexOf(u8, shortcut, "Ctrl") != null);
+    const wants_alt = (std.mem.indexOf(u8, shortcut, "Alt") != null);
 
     return wants_ctrl == mods.control and wants_shift == mods.shift and wants_alt == mods.alt;
 }

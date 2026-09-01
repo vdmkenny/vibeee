@@ -5,6 +5,7 @@
 //! names from it, so a command added here is completable without anyone
 //! remembering to say so a second time somewhere else.
 
+const std = @import("std");
 const manual = @import("manual");
 const eeefetch = @import("eeefetch.zig");
 const smbios = @import("smbios.zig");
@@ -40,7 +41,6 @@ const tree = @import("tree.zig");
 const usb_tool = @import("usb.zig");
 const volumes = @import("volumes.zig");
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 pub const Command = struct {
     name: []const u8,
@@ -121,7 +121,7 @@ fn listNames(_: []const []const u8) void {
 /// The command of that name, or null.
 pub fn find(name: []const u8) ?Command {
     for (commands) |c| {
-        if (str.eql(c.name, name)) return c;
+        if (std.mem.eql(u8, c.name, name)) return c;
     }
     return null;
 }

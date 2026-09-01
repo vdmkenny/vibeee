@@ -8,6 +8,7 @@
 //! this and deliberately so: this window is a view, and a view that could not
 //! be reproduced by a shell command would be hiding something.
 
+const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
@@ -219,7 +220,7 @@ fn after(a: usize, b: usize, by: eui.table.Sort) bool {
         .cpu => numbers[a].cpu < numbers[b].cpu,
         .memory => numbers[a].bytes < numbers[b].bytes,
         .uptime => numbers[a].uptime < numbers[b].uptime,
-        .name, .state => str.before(
+        .name, .state => std.ascii.lessThanIgnoreCase(
             rows[a].cells[@intFromEnum(column)],
             rows[b].cells[@intFromEnum(column)],
         ),
@@ -229,7 +230,7 @@ fn after(a: usize, b: usize, by: eui.table.Sort) bool {
 }
 
 fn same(a: usize, b: usize, column: Column) bool {
-    return str.eql(rows[a].cells[@intFromEnum(column)], rows[b].cells[@intFromEnum(column)]);
+    return std.mem.eql(u8, rows[a].cells[@intFromEnum(column)], rows[b].cells[@intFromEnum(column)]);
 }
 
 fn swap(a: usize, b: usize) void {
@@ -341,7 +342,7 @@ fn cpuReading(at: usize) usize {
     // nothing to do with, so the rest is the load.
     var busy: usize = 100;
     for (rows[0..row_count], shares[0..row_count]) |r, share| {
-        if (str.eql(r.cells[@intFromEnum(Column.name)], "idle")) busy = 100 -| (share / 10);
+        if (std.mem.eql(u8, r.cells[@intFromEnum(Column.name)], "idle")) busy = 100 -| (share / 10);
     }
 
     var value = str.Builder{ .buf = &gauge_values[at] };
@@ -422,15 +423,15 @@ fn readHome() void {
     var lines = str.lines(info.ask("mounts", &mounts_buffer));
     while (lines.next()) |line| {
         const text = str.trim(line);
-        if (!str.startsWith(text, HOME ++ " ")) continue;
+        if (!std.mem.startsWith(u8, text, HOME ++ " ")) continue;
 
         var words: [8][]const u8 = undefined;
         const words_n = str.splitWords(text, &words);
         var free: usize = 0;
         var size: usize = 0;
         for (words[0..words_n]) |word| {
-            if (str.startsWith(word, "free=")) free = str.toUnsigned(word["free=".len..]);
-            if (str.startsWith(word, "size=")) size = str.toUnsigned(word["size=".len..]);
+            if (std.mem.startsWith(u8, word, "free=")) free = str.toUnsigned(word["free=".len..]);
+            if (std.mem.startsWith(u8, word, "size=")) size = str.toUnsigned(word["size=".len..]);
         }
         if (size == 0) return;
 

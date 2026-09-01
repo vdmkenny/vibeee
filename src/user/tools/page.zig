@@ -6,10 +6,10 @@
 //! is most of them. The viewing itself is the shared viewer's; this loads
 //! the bytes and knows where standard input is worth reading.
 
+const std = @import("std");
 const sys = @import("sys");
 const out = @import("ulib").out;
 const pager = @import("ulib").pager;
-const str = @import("ulib").str;
 
 /// As much of a file as this will hold. Past it the tail is dropped, and said
 /// so rather than silently shown as if it were the whole file.
@@ -77,7 +77,7 @@ fn load(from: []const u8) bool {
 }
 
 fn open(from: []const u8) ?u32 {
-    if (str.eql(from, STDIN)) return sys.STDIN;
+    if (std.mem.eql(u8, from, STDIN)) return sys.STDIN;
 
     const handle = sys.open(from, .{});
     return if (handle < 0) null else @intCast(handle);

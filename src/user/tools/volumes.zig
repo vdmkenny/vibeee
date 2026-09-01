@@ -4,18 +4,18 @@
 //! sits on are one picture and splitting it across two tools would mean
 //! reading both to answer one question.
 
+const std = @import("std");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
 const out = @import("ulib").out;
-const str = @import("ulib").str;
 
 pub fn mount(args: []const []const u8) void {
     if (args.len < 2) return usage();
 
     var flags = sys.MountFlags{};
     var rest = args;
-    while (rest.len > 0 and str.startsWith(rest[0], "-")) {
-        if (str.eql(rest[0], "-r")) flags.read_only = true;
+    while (rest.len > 0 and std.mem.startsWith(u8, rest[0], "-")) {
+        if (std.mem.eql(u8, rest[0], "-r")) flags.read_only = true;
         rest = rest[1..];
     }
 

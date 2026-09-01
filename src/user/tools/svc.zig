@@ -7,6 +7,7 @@
 //! service can be up without having registered anything, and a name can be
 //! registered by something init never started, so both are shown.
 
+const std = @import("std");
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 const service = @import("proto").service;
@@ -19,11 +20,11 @@ pub fn run(args: []const []const u8) void {
     const verb = args[0];
     if (args.len < 2) return usage();
 
-    if (str.eql(verb, "start")) return act(.start, args[1], "started");
-    if (str.eql(verb, "stop")) return act(.stop, args[1], "stopped");
-    if (str.eql(verb, "restart")) return act(.restart, args[1], "restarted");
-    if (str.eql(verb, "enable")) return act(.enable, args[1], "enabled");
-    if (str.eql(verb, "disable")) return act(.disable, args[1], "disabled");
+    if (std.mem.eql(u8, verb, "start")) return act(.start, args[1], "started");
+    if (std.mem.eql(u8, verb, "stop")) return act(.stop, args[1], "stopped");
+    if (std.mem.eql(u8, verb, "restart")) return act(.restart, args[1], "restarted");
+    if (std.mem.eql(u8, verb, "enable")) return act(.enable, args[1], "enabled");
+    if (std.mem.eql(u8, verb, "disable")) return act(.disable, args[1], "disabled");
     usage();
 }
 

@@ -14,6 +14,7 @@
 //! it and restarts it when it exits. That is what makes `exit` meaningful on a
 //! machine with only one shell.
 
+const std = @import("std");
 const manual = @import("manual");
 const env = @import("ulib").env;
 const sys = @import("sys");
@@ -72,8 +73,8 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
     // be a script. Anything else is a session.
     const argc: usize = frame[0];
     if (argc >= 3) {
-        const flag = str.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
-        if (str.eql(flag, "-c")) once(@ptrFromInt(frame[3]));
+        const flag = std.mem.span(@as([*:0]const u8, @ptrFromInt(frame[2])));
+        if (std.mem.eql(u8, flag, "-c")) once(@ptrFromInt(frame[3]));
     }
 
     shellMain();
@@ -86,7 +87,7 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
 /// something that could not take a line apart itself.
 fn once(line: [*:0]const u8) noreturn {
     var words: [MAX_WORDS][]const u8 = undefined;
-    const count = str.splitWords(str.span(line), &words);
+    const count = str.splitWords(std.mem.span(line), &words);
     if (count == 0) sys.exit(0);
 
     runLine(words[0..count]);
@@ -203,7 +204,7 @@ fn offerDirectories(ctx: complete.Context, into: *complete.Collector) void {
 /// The words a particular command takes after its name.
 fn offerSubcommands(ctx: complete.Context, into: *complete.Collector) void {
     for (subcommands) |entry| {
-        if (!str.eql(entry.command, ctx.command)) continue;
+        if (!std.mem.eql(u8, entry.command, ctx.command)) continue;
         for (entry.words) |word| into.offer(word);
     }
 }
@@ -300,8 +301,8 @@ fn takeRedirect(words: []const []const u8, into: *Redirect) []const []const u8 {
     if (words.len < 2) return words;
 
     const marker = words[words.len - 2];
-    const append = str.eql(marker, ">>");
-    if (!append and !str.eql(marker, ">")) return words;
+    const append = std.mem.eql(u8, marker, ">>");
+    if (!append and !std.mem.eql(u8, marker, ">")) return words;
 
     into.* = .{ .path = words[words.len - 1], .append = append };
     return words[0 .. words.len - 2];
@@ -319,7 +320,7 @@ fn splitStages(words: []const []const u8, stages: [][]const []const u8) usize {
 
     for (0..words.len + 1) |i| {
         const end = i == words.len;
-        if (!end and !str.eql(words[i], "|")) continue;
+        if (!end and !std.mem.eql(u8, words[i], "|")) continue;
         if (i == start or count == stages.len) return 0;
 
         stages[count] = words[start..i];
@@ -442,7 +443,7 @@ fn runPipeline(stages: []const []const []const u8, last_out: i32) void {
 /// Start one stage of a pipeline, detached so the next can start beside it.
 fn spawnStage(words: []const []const u8, from: i32, into: i32) ?u32 {
     for (builtins) |b| {
-        if (!str.eql(b.name, words[0])) continue;
+        if (!std.mem.eql(u8, b.name, words[0])) continue;
         // A builtin is the shell itself and cannot be a stage: it has no
         // process of its own to give the pipe to.
         out.text("vsh: ");
@@ -473,7 +474,7 @@ fn spawnStage(words: []const []const u8, from: i32, into: i32) ?u32 {
 /// with.
 fn run(words: []const []const u8, into: i32) void {
     for (builtins) |b| {
-        if (str.eql(b.name, words[0])) {
+        if (std.mem.eql(u8, b.name, words[0])) {
             last_status = b.run(words);
             out.flush();
             return;
@@ -522,8 +523,8 @@ fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
 /// begins at home, because that is most of them and the full path is noise
 /// in the one place there is least room for it.
 fn shortened(path: []const u8) []const u8 {
-    if (str.eql(path, HOME)) return "~";
-    if (!str.startsWith(path, HOME) or path[HOME.len] != '/') return path;
+    if (std.mem.eql(u8, path, HOME)) return "~";
+    if (!std.mem.startsWith(u8, path, HOME) or path[HOME.len] != '/') return path;
 
     var shown = str.Builder{ .buf = &short_buf };
     shown.byte('~');
