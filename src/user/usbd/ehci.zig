@@ -926,7 +926,7 @@ fn startSchedule() void {
 // ---------------------------------------------------------------------------
 
 fn portCount() u8 {
-    return controller.ports;
+    return if (controller.opened) controller.ports else 0;
 }
 
 fn portState(index: u8) hc.PortState {
@@ -1032,12 +1032,33 @@ fn hostError() void {
     pci.tellBusTrouble(controller.location);
     log.end();
 
+    // The one hand that can move this controller besides ours is the
+    // firmware's. Whether it has taken the part back is a fact worth a
+    // line of its own, and the rebuild reclaims it either way.
+    const caps: Capabilities = @bitCast(capRead(.capabilities));
+    const at = caps.extended_capabilities;
+    if (at >= 0x40) {
+        const legacy: LegacySupport = @bitCast(pci.read(controller.location, at));
+        const traps = pci.read(controller.location, at + 4);
+        if (legacy.id == LegacySupport.CAPABILITY_ID and
+            (legacy.firmware_owned or !legacy.system_owned or traps != 0))
+        {
+            log.begin(name, .warn);
+            out.text("the firmware has a hold on the controller: owner bits ");
+            out.hex(@as(u32, @bitCast(legacy)), 8);
+            out.text(", traps ");
+            out.hex(traps, 8);
+            log.end();
+        }
+    }
+
     if (controller.rebuilt) {
         surrender();
         return;
     }
     controller.rebuilt = true;
     log.warn(name, "rebuilding the controller");
+    takeFromFirmware(caps);
     if (reset()) startSchedule() else surrender();
 }
 

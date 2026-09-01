@@ -203,8 +203,15 @@ fn serve() noreturn {
                     settle();
                 },
                 .reborn => {
+                    // The reborn controller's book is swept, and every
+                    // controller is walked rather than just this one: a
+                    // surrendered controller's ports fall to the
+                    // companions, and only a walk of theirs picks the
+                    // devices back up.
                     core.forgetController(@intCast(which));
-                    core.scan(@intCast(which), controller.ops);
+                    for (controllers[0..controller_count], 0..) |other, i| {
+                        core.scan(@intCast(i), other.ops);
+                    }
                     settle();
                 },
             }
