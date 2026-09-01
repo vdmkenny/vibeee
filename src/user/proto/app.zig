@@ -54,6 +54,13 @@ pub const Hooks = struct {
     /// How long the wait may sleep before `tick`. A program without a tick
     /// leaves this alone and sleeps until something happens.
     tick_us: usize = 1_000_000,
+
+    /// Opens above the tiling rather than in it. For a program that is a
+    /// tool rather than a place to work: a calculator wants to sit over
+    /// what it is being used on, not take half the screen from it. Only
+    /// where it starts, because Super+F docks it into the tiling and lifts
+    /// it out again whatever it asked for.
+    floating: bool = false,
 };
 
 var hooks: Hooks = undefined;
@@ -96,7 +103,11 @@ pub fn run(
         sys.exit(1);
     };
 
-    window = connection.createWindow(.{}, width, height) catch sys.exit(1);
+    window = connection.createWindow(
+        .{ .floating = with.floating },
+        width,
+        height,
+    ) catch sys.exit(1);
     connection.setTitle(window, title) catch {};
 
     // Cut, copy and paste reach the manager's one clipboard, so text crosses
