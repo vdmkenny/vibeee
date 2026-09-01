@@ -1035,7 +1035,10 @@ pub const table = [_]Syscall{
         .args = &.{
             .{ .name = "handle", .kind = .handle, .desc = "The event to signal." },
         },
-        .errors = &.{E.badf},
+        .errors = &.{ E.badf, E.perm },
+        .notes = "Signalling is writing to it, and takes the write right. `watch` hands out " ++
+            "read-only handles onto events the whole system waits on, the keyboard's among " ++
+            "them: anything that could signal one would wake every other waiter at will.",
     },
     .{
         .number = 21,
@@ -1061,8 +1064,13 @@ pub const table = [_]Syscall{
             .{ .name = "name_len", .kind = .len, .desc = "Length of the name." },
         },
         .returns = "handle to the serving end of the channel",
-        .errors = &.{ E.fault, E.inval, E.nomem, E.exists },
-        .notes = "Closing the returned handle withdraws the name and fails every call still " ++
+        .errors = &.{ E.fault, E.inval, E.nomem, E.exists, E.perm },
+        .notes = "The names the system's own services answer to are held back: taking one of " ++
+            "them needs the `service` capability, because a program that answered to `cfg` or " ++
+            "`gui` would be asked every settings question on the machine or handed every key " ++
+            "its owner types. Every other name is anybody's, so an ordinary program can still " ++
+            "be a service. " ++
+            "Closing the returned handle withdraws the name and fails every call still " ++
             "waiting on a reply, which is what lets a client tell a crashed server from a slow one.",
     },
     .{
@@ -1218,8 +1226,12 @@ pub const table = [_]Syscall{
             .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
         },
         .returns = "bytes written",
-        .errors = &.{ E.fault, E.inval, E.timedout },
-        .notes = "The first call claims the keyboard: events stop reaching the line discipline " ++
+        .errors = &.{ E.fault, E.inval, E.timedout, E.busy },
+        .notes = "A keyboard another program is holding is refused rather than shared: two " ++
+            "programs cannot both take the same keystroke, and one that took the claim would " ++
+            "leave the other racing it for every key and flush what it had not read on the way " ++
+            "out. " ++
+            "The first call claims the keyboard: events stop reaching the line discipline " ++
             "and arrive here instead, because a shell reading lines and a compositor reading " ++
             "keys cannot both consume the same keystroke. The claim is released when the " ++
             "process exits. Presses and releases both arrive, with the keycode for shortcuts " ++

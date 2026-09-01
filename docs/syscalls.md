@@ -261,7 +261,7 @@ Load and run a program, and wait for it to finish.
 | `path_len` | len | Length of the path. |
 | `argv` | const ptr | Packed arguments: u16 count, then each as u16 length followed by bytes. |
 | `argv_len` | len | Length of the packed block. |
-| `options` | const ptr | A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. |
+| `options` | const ptr | A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. Its `env` and `env_len` name a packed block of NAME=value strings, in the same shape as `argv`. |
 
 **Returns:** the program's exit status
 
@@ -351,6 +351,9 @@ Signal an event, releasing one waiter.
 **Errors:**
 
 - `EBADF`, the handle is not open in this process
+- `EPERM`, the operation is not allowed on that object
+
+Signalling is writing to it, and takes the write right. `watch` hands out read-only handles onto events the whole system waits on, the keyboard's among them: anything that could signal one would wake every other waiter at will.
 
 ## `wait_many`  <sub>#21</sub>
 
@@ -390,8 +393,9 @@ Create a channel and publish it under a name.
 - `EINVAL`, an argument is out of range
 - `ENOMEM`, no handle slots free, or the buffer is too small
 - `EEXIST`, the name is already registered
+- `EPERM`, the operation is not allowed on that object
 
-Closing the returned handle withdraws the name and fails every call still waiting on a reply, which is what lets a client tell a crashed server from a slow one.
+The names the system's own services answer to are held back: taking one of them needs the `service` capability, because a program that answered to `cfg` or `gui` would be asked every settings question on the machine or handed every key its owner types. Every other name is anybody's, so an ordinary program can still be a service. Closing the returned handle withdraws the name and fails every call still waiting on a reply, which is what lets a client tell a crashed server from a slow one.
 
 ## `svc_connect`  <sub>#23</sub>
 
@@ -606,8 +610,9 @@ Read raw key events, claiming the keyboard.
 - `EFAULT`, a pointer argument is outside the caller's address space
 - `EINVAL`, an argument is out of range
 - `ETIMEDOUT`, the timeout elapsed before anything happened
+- `EBUSY`, another process already owns it
 
-The first call claims the keyboard: events stop reaching the line discipline and arrive here instead, because a shell reading lines and a compositor reading keys cannot both consume the same keystroke. The claim is released when the process exits. Presses and releases both arrive, with the keycode for shortcuts and the codepoint for text.
+A keyboard another program is holding is refused rather than shared: two programs cannot both take the same keystroke, and one that took the claim would leave the other racing it for every key and flush what it had not read on the way out. The first call claims the keyboard: events stop reaching the line discipline and arrive here instead, because a shell reading lines and a compositor reading keys cannot both consume the same keystroke. The claim is released when the process exits. Presses and releases both arrive, with the keycode for shortcuts and the codepoint for text.
 
 ## `kill`  <sub>#34</sub>
 
@@ -1153,6 +1158,26 @@ Report movement from a pointing device this process drives.
 
 Requires Caps.driver. Deltas rather than positions: where the pointer ends up depends on the screen, which is the kernel's to know and not a driver's.
 
+## `realtime_set`  <sub>#64</sub>
+
+Set the wall clock from a trustworthy source.
+
+| arg | type | meaning |
+|---|---|---|
+| `epoch_us` | ptr | Pointer to an i64: microseconds since 1970-01-01 UTC. |
+| `source` | ptr | A short name for where the time came from, for the log. |
+| `source_len` | len | Length of that name. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+- `EPERM`, the operation is not allowed on that object
+- `EINVAL`, an argument is out of range
+
+Needs the time capability. The offset is what is stored, so the clock keeps running from the monotonic counter and a correction steps it rather than restarting it. Measuring an interval across a call to this is what clock_us is for.
+
 ---
 
-64 calls defined.
+65 calls defined.
