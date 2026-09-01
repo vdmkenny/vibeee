@@ -401,12 +401,13 @@ fn open(self: *Unit, loc: pci.Location) bool {
 
     self.controller.base = @intCast(base);
     self.controller.location = loc;
-    pci.enableIoAndMaster(loc);
 
     // The firmware has been driving this controller to make a USB
-    // keyboard look like an old one. Saying so before touching a register
-    // is what stops its management code from fighting us for the ports.
+    // keyboard look like an old one. Saying so before the first trapped
+    // word, the command write included, is what stops its management code
+    // from fighting us for the ports.
     takeFromFirmware(loc);
+    pci.enableIoAndMaster(loc);
 
     if (!reset(self)) return false;
 

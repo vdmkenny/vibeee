@@ -210,6 +210,32 @@ const LegacySupport = packed struct(u32) {
     const CAPABILITY_ID: u8 = 0x01;
 };
 
+/// The firmware's trap word, one register above the ownership word: which
+/// events it asked to be told about, and which it has been told about.
+/// The told-about latches clear by writing them back set.
+const LegacyControl = packed struct(u32) {
+    smi_enable: bool = false,
+    smi_on_error: bool = false,
+    smi_on_port_change: bool = false,
+    smi_on_rollover: bool = false,
+    smi_on_host_error: bool = false,
+    smi_on_async_advance: bool = false,
+    _6: u7 = 0,
+    smi_on_ownership: bool = false,
+    smi_on_command_write: bool = false,
+    smi_on_bar_write: bool = false,
+    told_transfer: bool = false,
+    told_error: bool = false,
+    told_port_change: bool = false,
+    told_rollover: bool = false,
+    told_host_error: bool = false,
+    told_async_advance: bool = false,
+    _22: u7 = 0,
+    ownership_changed: bool = false,
+    command_written: bool = false,
+    bar_written: bool = false,
+};
+
 comptime {
     if (@as(u32, @bitCast(Command{ .running = true })) != 0x01 or
         @as(u32, @bitCast(Command{ .reset = true })) != 0x02 or
@@ -219,6 +245,12 @@ comptime {
     }
     if (@as(u32, @bitCast(Status{ .halted = true })) != 0x1000) {
         @compileError("the halted bit drifted");
+    }
+    if (@as(u32, @bitCast(LegacyControl{ .smi_on_bar_write = true })) != 0x8000 or
+        @as(u32, @bitCast(LegacyControl{ .told_host_error = true })) != 0x10_0000 or
+        @as(u32, @bitCast(LegacyControl{ .bar_written = true })) != 0x8000_0000)
+    {
+        @compileError("the trap word's bits drifted");
     }
     if (@as(u32, @bitCast(Port{ .reset = true })) != 0x100 or
         @as(u32, @bitCast(Port{ .owned_by_companion = true })) != 0x2000)
@@ -754,8 +786,24 @@ fn portWrite(index: u8, value: Port) void {
 
 fn open(loc: pci.Location) bool {
     if (controller.opened) return false;
-    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "controller") orelse
+
+    // The firmware traps writes to this part's configuration, the base
+    // address and command words included, and answers them in management
+    // mode with its hands back on the controller. So the aperture is
+    // reached with reads alone, ownership is taken, and only then are the
+    // trapped words written: the sizing probe and the enables fire no
+    // traps once nothing is armed to hear them. A firmware driving the
+    // controller always leaves it decoded; a part found undecoded has no
+    // firmware behind it and is switched on first.
+    const base = pci.memoryBase(loc, 0) orelse {
+        log.fail(name, "the controller exposes no register aperture");
         return false;
+    };
+    if (!pci.readCommand(loc).memory_space) pci.enableMemoryAndMaster(loc);
+    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
+        log.fail(name, "cannot map registers");
+        return false;
+    };
 
     controller.base = @ptrCast(aperture);
     controller.location = loc;
@@ -770,12 +818,13 @@ fn open(loc: pci.Location) bool {
     }
 
     // The firmware has been driving this controller to read the boot
-    // medium. Taking it politely, before touching an operational
-    // register, is what stops its management code from fighting us for
-    // the ports afterwards.
+    // medium. Taking it politely, before the first trapped word, is what
+    // stops its management code from fighting us for the ports afterwards.
     const capabilities: Capabilities = @bitCast(capRead(.capabilities));
     controller.wide = capabilities.addresses_64bit;
     takeFromFirmware(capabilities);
+    pci.sizeWindow(loc, 0, MMIO_BYTES, name, "controller");
+    pci.enableMemoryAndMaster(loc);
 
     controller.arena = device.Dma(Arena).alloc(name) orelse return false;
     if (!reset()) return false;
@@ -823,8 +872,14 @@ fn takeFromFirmware(caps: Capabilities) void {
         }));
     }
 
-    // Whatever it was asking to be told about, it is not told any more.
-    pci.write(controller.location, at + 4, 0);
+    // Whatever it was asking to be told about, it is not told any more,
+    // and whatever it was already told is taken back: the latches clear
+    // by being written back set.
+    pci.write(controller.location, at + 4, @bitCast(LegacyControl{
+        .ownership_changed = true,
+        .command_written = true,
+        .bar_written = true,
+    }));
 }
 
 fn reset() bool {

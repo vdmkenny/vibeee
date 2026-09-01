@@ -97,13 +97,27 @@ pub fn openAperture(
         return null;
     }
 
-    // The device's own account of the window, taken while decoding is off
-    // and restored before it matters. A window of another shape than the
-    // driver assumes is narrated rather than refused: the mapping serves
-    // the registers the driver touches, and the probe exists to name the
-    // device whose account disagrees.
+    sizeWindow(loc, index, bytes, tag, what);
+
+    const aperture = sys.mapDevice(base, bytes) orelse {
+        log.fail(tag, "cannot map registers");
+        return null;
+    };
+    enableMemoryAndMaster(loc);
+    return aperture;
+}
+
+/// The device's own account of its window at BAR `index`, taken while
+/// decoding is off and restored before it matters. A window of another
+/// shape than the driver assumes is narrated rather than refused: the
+/// mapping serves the registers the driver touches, and the probe exists
+/// to name the device whose account disagrees. Writes the BAR and the
+/// command word, so on firmware that traps those, ownership of the device
+/// comes first.
+pub fn sizeWindow(loc: Location, index: u8, bytes: u32, tag: []const u8, comptime what: []const u8) void {
     const register = lib.pci.BAR0_OFFSET + 4 * index;
     const raw = bar(loc, index);
+    const base = @as(MemoryBar, @bitCast(raw)).base();
     const saved = readCommand(loc);
     var probing = saved;
     probing.memory_space = false;
@@ -118,13 +132,6 @@ pub fn openAperture(
     if (claimed == 0 or claimed < bytes or !std.math.isPowerOfTwo(claimed) or
         !std.mem.isAligned(base, claimed))
         log.say(tag, .dim, "the " ++ what ++ "'s window is not the shape its driver assumes");
-
-    const aperture = sys.mapDevice(base, bytes) orelse {
-        log.fail(tag, "cannot map registers");
-        return null;
-    };
-    enableMemoryAndMaster(loc);
-    return aperture;
 }
 
 pub fn bar(loc: Location, index: u8) u32 {
