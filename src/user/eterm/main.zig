@@ -3,13 +3,17 @@
 //! Runs a shell over a pair of pipes and draws what it prints. There is no
 //! pseudo-terminal: a pty is a pipe plus a line discipline plus a way to
 //! signal a resize, and of those only the pipe belongs in the kernel. The line
-//! discipline is here, where a terminal's own idea of what a line is belongs,
-//! and a full-window program turns it off by switching to the alternate
-//! screen, which is the first thing every such program does.
+//! discipline is here, where a terminal's own idea of what a line is belongs.
+//! A program that manages its own input turns it off: a full-window one by
+//! switching to the alternate screen, a shell's line editor by sending the
+//! private mode that means so. What the window's size is, and that it changed,
+//! a program learns the same in-band way it learns anything from a terminal.
 //!
 //! One blocking call covers both sides. The shell's output and the window's
 //! events are each an event handle, and `wait_many` takes both, so a terminal
-//! sitting idle costs nothing.
+//! sitting idle costs nothing. It reads the shell only when that wait wakes for
+//! it: the readable event is a count the wait consumes, so a poll after it
+//! answers no while the bytes wait in the pipe.
 
 const abi = @import("lib").syscalls;
 const eui = @import("eui");
