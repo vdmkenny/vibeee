@@ -19,6 +19,7 @@ const std = @import("std");
 const eui = @import("eui");
 const img = @import("img");
 const dir = @import("ulib").dir;
+const kind = @import("lib").kind;
 const exif = @import("lib").exif;
 const heap = @import("ulib").heap;
 const paths = @import("ulib").paths;
@@ -29,67 +30,37 @@ const time = @import("ulib").time;
 const Rect = eui.Rect;
 const theme = eui.theme;
 
-/// What a file is, as far as its name says.
-pub const Kind = enum {
-    folder,
-    picture,
-    text,
-    other,
-
-    /// What the name says it is.
-    ///
-    /// By suffix, folded for case: a volume written on another machine holds
-    /// `README.TXT` as readily as `readme.txt`.
-    pub fn of(entry: dir.Entry) Kind {
-        if (entry.is_dir) return .folder;
-
-        const dot = lastDot(entry.name) orelse return .other;
-        const suffix = entry.name[dot + 1 ..];
-
-        for (PICTURES) |known| {
-            if (str.eqlFold(suffix, known)) return .picture;
-        }
-        for (TEXTS) |known| {
-            if (str.eqlFold(suffix, known)) return .text;
-        }
-        return .other;
+/// What a file is, as far as its name says, and how this window draws it.
+///
+/// The reading is `lib.kind`, which the shell's `file` uses too, so a
+/// picture is a picture in both. By name rather than by bytes: a listing
+/// asks this for every row the cursor passes over, and a seek per row is
+/// what a preview pane must not cost.
+pub const Kind = struct {
+    pub fn of(entry: dir.Entry) kind.Kind {
+        if (entry.is_dir) return .directory;
+        return kind.fromName(entry.name) orelse .data;
     }
 
-    pub fn icon(self: Kind) eui.icon.Icon {
-        return switch (self) {
-            .folder => .folder,
+    pub fn icon(which: kind.Kind) eui.icon.Icon {
+        return switch (which.family()) {
+            .directory => .folder,
             .picture => .picture,
-            .text, .other => .document,
+            else => .document,
         };
     }
 
-    pub fn says(self: Kind) []const u8 {
-        return switch (self) {
-            .folder => "Folder",
+    /// Capitalised, because this is a field's value in a panel rather than a
+    /// line of a report.
+    pub fn says(which: kind.Kind) []const u8 {
+        return switch (which.family()) {
+            .directory => "Folder",
             .picture => "Picture",
             .text => "Text",
-            .other => "File",
+            else => "File",
         };
     }
 };
-
-/// The suffixes this build can actually open, and the ones worth showing as
-/// text. Both are lists rather than rules: a file called `notes.zig` is text
-/// and a file called `notes.bin` is not, and nothing about the bytes says so
-/// without reading them.
-const PICTURES = [_][]const u8{ "png", "jpg", "jpeg", "bmp", "gif" };
-const TEXTS = [_][]const u8{
-    "txt",  "md",  "zig", "c",   "h",   "cfg", "conf", "log",
-    "json", "asm", "s",   "sh",  "man", "ini", "csv",  "html",
-};
-
-fn lastDot(name: []const u8) ?usize {
-    var at = name.len;
-    while (at > 0) : (at -= 1) {
-        if (name[at - 1] == '.') return at - 1;
-    }
-    return null;
-}
 
 /// How much of a text file is shown. A preview is for recognising a file, not
 /// for reading it: the editor is one keypress away and holds the whole thing.
@@ -157,10 +128,10 @@ pub fn show(folder: []const u8, entry: dir.Entry) void {
     text_doc.len = 0;
     text_view = .{ .read_only = true };
 
-    switch (Kind.of(entry)) {
+    switch (Kind.of(entry).family()) {
         .picture => load(entry),
         .text => readText(),
-        .folder, .other => {},
+        else => {},
     }
 }
 
@@ -264,16 +235,16 @@ pub fn draw(ctx: *eui.widget.Context, area: Rect, entry: ?dir.Entry) void {
         return;
     };
 
-    const kind = Kind.of(chosen);
-    var y = drawHead(ctx, area, chosen, kind);
+    const what = Kind.of(chosen);
+    var y = drawHead(ctx, area, chosen, what);
 
     // A picture goes on the darkest ground the theme has, so its own edges
     // are its edges and not the pane's.
-    if (kind == .picture) y = drawPicture(ctx, area, y);
+    if (what.family() == .picture) y = drawPicture(ctx, area, y);
 
-    y = drawFacts(ctx, area, y, chosen, kind);
+    y = drawFacts(ctx, area, y, chosen, what);
 
-    if (kind == .text and text_len > 0) drawText(ctx, area, y);
+    if (what.family() == .text and text_len > 0) drawText(ctx, area, y);
 }
 
 fn head(area: Rect) Rect {
@@ -283,13 +254,13 @@ fn head(area: Rect) Rect {
 
 /// The name, with the picture of what it is beside it: the same two things a
 /// row in the listing carries, at the top of what is being said about it.
-fn drawHead(ctx: *eui.widget.Context, area: Rect, entry: dir.Entry, kind: Kind) i32 {
+fn drawHead(ctx: *eui.widget.Context, area: Rect, entry: dir.Entry, what: kind.Kind) i32 {
     const t = theme.current();
     const at = head(area);
 
     // The picture on the same line as the word beside it, which is the body
     // of the letters rather than the middle of their cell.
-    ctx.surface.icon(at.x, eui.Surface.iconTopFor(at.y), kind.icon(), t.text);
+    ctx.surface.icon(at.x, eui.Surface.iconTopFor(at.y), Kind.icon(what), t.text);
     ctx.rowText(
         .{
             .x = at.x + eui.Surface.iconSize() + t.gap,
@@ -340,11 +311,11 @@ fn drawPicture(ctx: *eui.widget.Context, area: Rect, from: i32) i32 {
 
 /// What is known about it: what it is, how big, when it was last written, and
 /// for a photograph what the camera wrote beside the picture.
-fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, kind: Kind) i32 {
+fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, what: kind.Kind) i32 {
     const t = theme.current();
     var y = from;
 
-    y = fact(ctx, area, y, "Kind", kind.says());
+    y = fact(ctx, area, y, "Kind", Kind.says(what));
 
     if (!entry.is_dir) {
         var size: [16]u8 = @splat(0);
@@ -385,7 +356,7 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
         y = fact(ctx, area, y, "Held", "sideways, shown upright");
     }
 
-    if (trouble.len > 0 and kind != .picture) y = fact(ctx, area, y, "", trouble);
+    if (trouble.len > 0 and what.family() != .picture) y = fact(ctx, area, y, "", trouble);
     return y + t.padding;
 }
 

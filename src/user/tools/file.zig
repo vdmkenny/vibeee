@@ -5,15 +5,14 @@
 //! it, which is also the only way to tell a program built for this machine
 //! from one built for another.
 
-const std = @import("std");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
-const elf = @import("lib").elf;
+const kind = @import("lib").kind;
 const out = @import("ulib").out;
 
-/// Enough to reach every signature this recognises, and enough of a text file
-/// to judge it by.
-var head: [512]u8 = @splat(0);
+/// Enough to reach every signature the recogniser knows, and enough of a
+/// text file for it to judge one by.
+var head: [kind.ENOUGH]u8 = @splat(0);
 
 pub fn run(args: []const []const u8) void {
     if (args.len == 0) {
@@ -24,6 +23,9 @@ pub fn run(args: []const []const u8) void {
 
     for (args) |path| {
         out.pad(path, 14);
+        // A path longer than the column still gets its gap: two things run
+        // together read as one thing nobody can parse.
+        out.byte(' ');
         describe(path);
         out.byte('\n');
     }
@@ -31,7 +33,7 @@ pub fn run(args: []const []const u8) void {
 }
 
 fn describe(path: []const u8) void {
-    if (dir.isDirectory(path)) return out.text("directory");
+    if (dir.isDirectory(path)) return out.text(kind.Kind.directory.says());
 
     const handle = sys.open(path, .{});
     if (handle < 0) {
@@ -42,73 +44,9 @@ fn describe(path: []const u8) void {
 
     const n = sys.read(@intCast(handle), &head);
     if (n <= 0) {
-        out.text("empty");
+        out.text(kind.Kind.empty.says());
         return;
     }
-    classify(head[0..@intCast(n)]);
-}
-
-/// What a file starts with, for the kinds worth knowing on this machine.
-const Signature = struct {
-    magic: []const u8,
-    name: []const u8,
-};
-
-const signatures = [_]Signature{
-    .{ .magic = "EZI1", .name = "vibeee compressed rootfs" },
-    .{ .magic = "PANC", .name = "vibeee panic record" },
-    .{ .magic = "\x89PNG\r\n\x1a\n", .name = "png image" },
-    .{ .magic = "\xFF\xD8\xFF", .name = "jpeg image" },
-    .{ .magic = "BM", .name = "bmp image" },
-    .{ .magic = "STARTFONT", .name = "bdf font" },
-};
-
-/// The signatures first, then the shape of the bytes.
-fn classify(bytes: []const u8) void {
-    if (elf.Header.identify(bytes)) |ident| return describeElf(ident);
-
-    for (signatures) |sig| {
-        if (std.mem.startsWith(u8, bytes, sig.magic)) return out.text(sig.name);
-    }
-
-    // A boot sector is a signature in the last two bytes of the first sector
-    // rather than the first, which is why it is not one of the above.
-    if (bytes.len >= 512 and bytes[510] == 0x55 and bytes[511] == 0xAA) {
-        return out.text("boot sector");
-    }
-
-    out.text(if (looksLikeText(bytes)) "text" else "data");
-}
-
-/// Which machine an ELF file was built for, which is the part worth reporting:
-/// a program for another architecture is one this cannot run, and is otherwise
-/// indistinguishable from one it can.
-fn describeElf(ident: elf.Ident) void {
-    out.text("elf ");
-    out.text(switch (ident.class) {
-        .bits32 => "32-bit ",
-        .bits64 => "64-bit ",
-        else => "",
-    });
-    out.text(ident.machine.name());
-    out.text(" program");
-}
-
-/// Whether the bytes read as text. Tab, newline and carriage return are the
-/// only control characters a text file carries; a NUL settles it outright,
-/// and anything else that is not printable counts against it.
-fn looksLikeText(bytes: []const u8) bool {
-    var odd: usize = 0;
-    for (bytes) |b| {
-        if (b == 0) return false;
-        switch (b) {
-            '\t', '\n', '\r' => {},
-            // Printable ASCII, then anything a UTF-8 sequence is made of.
-            0x20...0x7E, 0x80...0xFF => {},
-            else => odd += 1,
-        }
-    }
-    // A stray control byte in an otherwise readable file is still a text file;
-    // a scattering of them is not.
-    return odd * 32 <= bytes.len;
+    var room: [kind.SAYS_MAX]u8 = undefined;
+    out.text(kind.fromBytes(head[0..@intCast(n)]).says(&room));
 }

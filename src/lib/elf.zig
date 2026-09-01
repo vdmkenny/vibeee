@@ -95,9 +95,12 @@ pub const Header = extern struct {
         return .{
             .class = @enumFromInt(bytes[4]),
             .data = @enumFromInt(bytes[5]),
-            // Both classes place the machine here, which is what makes it
-            // readable before knowing which of them applies.
-            .machine = @enumFromInt(@as(u16, bytes[18]) | (@as(u16, bytes[19]) << 8)),
+            // Both classes place these two here, which is what makes them
+            // readable before knowing which of them applies. Little-endian
+            // because that is what every machine this runs on speaks; a
+            // big-endian image is named by its class and machine anyway.
+            .kind = @enumFromInt(std.mem.readInt(u16, bytes[16..18], .little)),
+            .machine = @enumFromInt(std.mem.readInt(u16, bytes[18..20], .little)),
         };
     }
 };
@@ -109,6 +112,8 @@ pub const IDENT_LEN = 20;
 pub const Ident = struct {
     class: Class,
     data: Data,
+    /// What the file is for: a program to run, an object to link, a library.
+    kind: Type,
     machine: Machine,
 };
 

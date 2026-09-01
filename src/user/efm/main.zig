@@ -655,7 +655,7 @@ fn drawPane(index: usize, area: Rect) void {
             .cells = .{ entry.name, "", "", "", "", "" },
             // The same reading of what a file is that the preview uses, so
             // a row and the pane beside it cannot disagree about it.
-            .icon = preview.Kind.of(entry).icon(),
+            .icon = preview.Kind.icon(preview.Kind.of(entry)),
         };
         // Spelled into a store that outlives this loop, because a cell is a
         // slice and the table reads it after the row is built.
