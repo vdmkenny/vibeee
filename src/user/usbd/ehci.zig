@@ -344,12 +344,22 @@ const Token = packed struct(u32) {
     toggle: bool = false,
 };
 
-/// A transfer descriptor: one stage of one transfer.
+/// A transfer descriptor: one stage of one transfer, in the extended
+/// form. A controller that addresses sixty-four bits always reads the
+/// extended descriptor, whatever the segment register holds, so the upper
+/// halves of the buffer pointers must exist and must be zero; a
+/// thirty-two bit part never looks at them. Without them the controller
+/// reads the neighbouring descriptor's words as upper address halves, and
+/// every buffer lands beyond anything that answers.
 const Transfer = extern struct {
     next: Link = Link.none,
     alternate: Link = Link.none,
     token: Token = .{},
     pages: [5]u32 = @splat(0),
+    pages_high: [5]u32 = @splat(0),
+    /// Out to a whole cache line, so arrays of descriptors keep every
+    /// element on the thirty-two byte alignment the controller requires.
+    _pad: [3]u32 = @splat(0),
 };
 
 /// Where the controller keeps everything it knows about one endpoint.
@@ -392,14 +402,14 @@ const QueueHead = extern struct {
     capabilities: EndpointCapabilities = .{},
     current: u32 = 0,
     overlay: Transfer = .{},
-    /// To sixty-four bytes, which is what the controller's cache line
-    /// wants and what the alignment of the pool assumes.
+    /// Out to ninety-six bytes: a whole number of the thirty-two byte
+    /// strides the controller requires of every head in an array.
     _pad: [4]u32 = @splat(0),
 };
 
 comptime {
-    if (@sizeOf(Transfer) != 32) @compileError("a transfer descriptor is thirty-two bytes");
-    if (@sizeOf(QueueHead) != 64) @compileError("a queue head is sixty-four bytes");
+    if (@sizeOf(Transfer) != 64) @compileError("an extended transfer descriptor fills a cache line");
+    if (@sizeOf(QueueHead) != 96) @compileError("an extended queue head is ninety-six bytes");
     if (@as(u32, @bitCast(Token{ .status = .{ .active = true }, .error_limit = 0 })) != 0x80) {
         @compileError("the transfer token's status drifted");
     }
