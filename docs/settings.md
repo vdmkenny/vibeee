@@ -95,3 +95,15 @@ so an image ships with the first and a machine remembers the second.
 | `time.server3` | a host name, or empty for none | `time.cloudflare.com` |
 | `time.every_minutes` | a number | `60` |
 
+## open
+
+| key | accepts | default |
+|---|---|---|
+| `open.picture` | a program's name, or empty for whichever will take it | unset |
+| `open.text` | a program's name, or empty for whichever will take it | unset |
+| `open.audio` | a program's name, or empty for whichever will take it | unset |
+| `open.video` | a program's name, or empty for whichever will take it | unset |
+| `open.archive` | a program's name, or empty for whichever will take it | unset |
+| `open.document` | a program's name, or empty for whichever will take it | unset |
+| `open.font` | a program's name, or empty for whichever will take it | unset |
+

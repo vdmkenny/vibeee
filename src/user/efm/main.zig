@@ -16,6 +16,9 @@ const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
+const lib_kind = @import("lib").kind;
+const openers = @import("lib").openers;
+const settings = @import("proto").settings;
 const preview = @import("preview.zig");
 
 // The picture decoder is C, and calls the libc by name: the C-callable half
@@ -219,11 +222,7 @@ fn typed(codepoint: u32) bool {
 fn enter() void {
     const pane = here();
     const entry = pane.current() orelse return;
-    if (!entry.is_dir) {
-        status = "That is a file.";
-        ctx.damage();
-        return;
-    }
+    if (!entry.is_dir) return open(pane, entry);
 
     var buf: [160]u8 = undefined;
     const target = paths.join(pane.path(), entry.name, &buf);
@@ -231,6 +230,73 @@ fn enter() void {
     pane.view = .{};
     pane.refresh();
     ctx.damage();
+}
+
+/// Open a file with whatever opens its sort of thing.
+///
+/// What it is comes from its bytes rather than its name: Enter can afford
+/// the read that a listing cannot, and a picture called `.txt` should open
+/// in the viewer rather than fill an editor with a photograph. A program
+/// is opened by being run, which is what opening a program means.
+fn open(pane: *Pane, entry: dir.Entry) void {
+    var buf: [160]u8 = undefined;
+    const path = paths.join(pane.path(), entry.name, &buf);
+
+    const what = readKind(path);
+    if (what.kind == .program) return launch(path);
+
+    const family = what.kind.family();
+    const preferred = chosenFor(family);
+    const opener = openers.chosen(family, preferred) orelse {
+        status = "Nothing here opens that.";
+        ctx.damage();
+        return;
+    };
+
+    if (sys.spawnDetached(opener.path, &.{ opener.name, path }) < 0) {
+        status = "That would not start.";
+        ctx.damage();
+    }
+}
+
+/// A program is run as itself, with nothing after its name: what a file
+/// manager can say about how to run something is nothing.
+fn launch(path: []const u8) void {
+    var name: [64]u8 = undefined;
+    const leaf = paths.base(path);
+    const n = @min(leaf.len, name.len);
+    @memcpy(name[0..n], leaf[0..n]);
+    if (sys.spawnDetached(path, &.{name[0..n]}) < 0) {
+        status = "That would not start.";
+        ctx.damage();
+    }
+}
+
+/// What the file is, from its first bytes.
+fn readKind(path: []const u8) lib_kind.Reading {
+    const handle = sys.open(path, .{});
+    if (handle < 0) return .{ .kind = .data };
+    defer _ = sys.close(@intCast(handle));
+
+    var head: [lib_kind.ENOUGH]u8 = undefined;
+    const n = sys.read(@intCast(handle), &head);
+    if (n <= 0) return .{ .kind = .empty };
+    return lib_kind.fromBytes(head[0..@intCast(n)]);
+}
+
+/// Whoever the settings name for this family, or nobody.
+fn chosenFor(family: lib_kind.Family) []const u8 {
+    const chosen = settings.load("open");
+    return switch (family) {
+        .picture => chosen.picture.slice(),
+        .text => chosen.text.slice(),
+        .audio => chosen.audio.slice(),
+        .video => chosen.video.slice(),
+        .archive => chosen.archive.slice(),
+        .document => chosen.document.slice(),
+        .font => chosen.font.slice(),
+        else => "",
+    };
 }
 
 /// Up one, which is what backspace means everywhere else a path is shown.

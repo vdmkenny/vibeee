@@ -31,6 +31,7 @@ pub const fifo = @import("fifo.zig");
 pub const find = @import("find.zig");
 pub const limits = @import("limits.zig");
 pub const ntp = @import("ntp.zig");
+pub const openers = @import("openers.zig");
 pub const palette = @import("palette.zig");
 pub const rgb = @import("rgb.zig");
 pub const ring = @import("ring.zig");

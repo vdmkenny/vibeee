@@ -180,6 +180,59 @@ pub const Host = struct {
     }
 };
 
+/// The name of a program, as the openers table and the shell know it.
+/// Empty means nobody has chosen, and the first program willing to take the
+/// family opens it.
+pub const Program = struct {
+    bytes: [16]u8 = @splat(0),
+    len: u8 = 0,
+
+    pub const accepts = "a program's name, or empty for whichever will take it";
+
+    pub fn of(comptime name: []const u8) Program {
+        var out = Program{ .len = name.len };
+        @memcpy(out.bytes[0..name.len], name);
+        return out;
+    }
+
+    pub fn slice(self: *const Program) []const u8 {
+        return self.bytes[0..@min(self.len, self.bytes.len)];
+    }
+
+    pub fn isEmpty(self: Program) bool {
+        return self.len == 0;
+    }
+
+    pub fn parse(text: []const u8) ?Program {
+        const trimmed = str.trim(text);
+        if (trimmed.len > 16) return null;
+        var out = Program{ .len = @intCast(trimmed.len) };
+        @memcpy(out.bytes[0..trimmed.len], trimmed);
+        return out;
+    }
+
+    pub fn spell(self: Program, into: *str.Builder) void {
+        into.text(self.slice());
+    }
+
+    pub fn eql(self: Program, other: Program) bool {
+        return std.mem.eql(u8, self.slice(), other.slice());
+    }
+};
+
+/// Which program opens what. One key per family a program can be chosen
+/// for; unset means the first that will take it, which is what a machine
+/// carrying one viewer wants without being told.
+pub const Open = struct {
+    picture: Program = .{},
+    text: Program = .{},
+    audio: Program = .{},
+    video: Program = .{},
+    archive: Program = .{},
+    document: Program = .{},
+    font: Program = .{},
+};
+
 /// Network interface configuration, as four slots rather than fixed roles:
 /// a machine may carry several wired ports, so each slot names which
 /// interface it binds through a matcher, and the most specific claim wins.
@@ -307,6 +360,7 @@ pub const Domains = struct {
     net: Net = .{},
     power: Power = .{},
     time: Time = .{},
+    open: Open = .{},
 };
 
 /// The most a settings file may hold.

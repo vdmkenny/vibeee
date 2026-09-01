@@ -139,3 +139,19 @@ Settings, generated from the schema: all
       a host name, or empty for none
   time.every_minutes        60
       a number
+
+  [open]
+  open.picture              unset
+      a program's name, or empty for whichever will take it
+  open.text                 unset
+      a program's name, or empty for whichever will take it
+  open.audio                unset
+      a program's name, or empty for whichever will take it
+  open.video                unset
+      a program's name, or empty for whichever will take it
+  open.archive              unset
+      a program's name, or empty for whichever will take it
+  open.document             unset
+      a program's name, or empty for whichever will take it
+  open.font                 unset
+      a program's name, or empty for whichever will take it
