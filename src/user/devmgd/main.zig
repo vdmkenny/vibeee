@@ -24,6 +24,7 @@ const out = @import("ulib").out;
 const pciscan = @import("ulib").pciscan;
 const proto = @import("proto").devices;
 const std = @import("std");
+const quit = @import("ulib").quit;
 const str = @import("ulib").str;
 const usb = @import("lib").usb;
 
@@ -324,9 +325,22 @@ fn capsFrom(granted_list: []const u8) u32 {
 // ---------------------------------------------------------------------------
 
 fn serve() noreturn {
+    // A request, or the request to go. The drivers are their own processes
+    // and stay up: what goes is the matching, not the hardware.
+    var sources: [2]u32 = .{ service, 0 };
+    var count: usize = 1;
+    const quit_event = quit.event();
+    if (quit_event != 0) {
+        sources[1] = quit_event;
+        count = 2;
+    }
+
     while (true) {
+        const woke = sys.waitMany(sources[0..count], sys.FOREVER);
+        if (woke == 1) sys.exit(0);
+
         var message = sys.Message{};
-        const request = sys.recv(service, &message, sys.FOREVER) orelse continue;
+        const request = sys.recv(service, &message, sys.POLL) orelse continue;
         handle(&message, request.token);
         out.flush();
     }
@@ -435,7 +449,7 @@ fn control(req: *const proto.Req, token: u32, wanted: proto.DriverState) void {
             },
             .stopped => {
                 if (b.state != .running) return refuse(token);
-                _ = sys.kill(b.pid);
+                _ = sys.kill(b.pid, .now);
                 b.pid = 0;
                 b.state = .stopped;
             },

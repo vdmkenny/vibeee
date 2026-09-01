@@ -27,6 +27,7 @@ const proto = @import("proto").audio;
 const proto_devices = @import("proto").devices;
 const std = @import("std");
 const sys = @import("sys");
+const quit = @import("ulib").quit;
 
 /// The drivers this build knows. Which silicon each fits is the device
 /// manager's knowledge, declared in `/lib/drivers/*.man`; this table only
@@ -194,12 +195,21 @@ fn attach(driver: Driver, location: pci.Location) void {
 // ---------------------------------------------------------------------------
 
 fn serve() noreturn {
-    var sources: [2 + MAX_DEVICES]u32 = undefined;
+    var sources: [3 + MAX_DEVICES]u32 = undefined;
     sources[0] = service;
     sources[1] = doorbell;
     var source_count: usize = 2;
     for (devices[0..device_count]) |device| {
         sources[source_count] = device.irq;
+        source_count += 1;
+    }
+    // The supervisor's request to go, last so the engines keep their
+    // places. Answered by stopping what is playing, so the codec is not
+    // left fetching from memory nobody owns.
+    const quit_event = quit.event();
+    const quit_index: ?usize = if (quit_event != 0) source_count else null;
+    if (quit_event != 0) {
+        sources[source_count] = quit_event;
         source_count += 1;
     }
 
@@ -216,6 +226,12 @@ fn serve() noreturn {
         }
 
         const index: usize = @intCast(woke);
+        if (quit_index != null and index == quit_index.?) {
+            for (devices[0..device_count]) |*device| {
+                if (device.running[@intFromEnum(dev.Direction.playback)]) stopPlayback(device);
+            }
+            sys.exit(0);
+        }
         if (index == 0) {
             drain();
         } else if (index == 1) {

@@ -90,7 +90,8 @@ var ready = false;
 /// the handler uACPI installed runs here rather than in interrupt context: an
 /// AML method can take milliseconds and there is one thread to run it on.
 fn serve(channel: u32) noreturn {
-    var sources: [3]u32 = undefined;
+    var sources: [4]u32 = undefined;
+    const quit_event = quit.event();
 
     while (true) {
         if (glue.sci.attached()) _ = glue.sci.servicePending();
@@ -118,9 +119,20 @@ fn serve(channel: u32) noreturn {
             sources[count] = work.event;
             count += 1;
         }
+        // The supervisor's request to go: last, so the firmware's own
+        // source outranks it while both are pending.
+        var quit_index: ?usize = null;
+        if (quit_event != 0) {
+            quit_index = count;
+            sources[count] = quit_event;
+            count += 1;
+        }
         const woke = sys.waitMany(sources[0..count], sys.FOREVER);
         if (sci_index) |index| {
             if (woke == @as(isize, @intCast(index))) glue.sci.service();
+        }
+        if (quit_index) |index| {
+            if (woke == @as(isize, @intCast(index))) sys.exit(0);
         }
     }
 }
@@ -243,6 +255,7 @@ const uacpi = @import("uacpi.zig");
 const work = @import("work.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
+const quit = @import("ulib").quit;
 
 /// Read the tables and make the namespace usable.
 ///

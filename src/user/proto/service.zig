@@ -63,6 +63,8 @@ pub const State = enum(u8) {
     starting,
     /// Declared, not running, and expected to come back when it can.
     down,
+    /// Asked to stop, and not yet gone.
+    stopping,
     /// Stopped because somebody asked, and not coming back on its own.
     stopped,
     /// Started too many times and kept dying. `init` will not try again.
@@ -79,6 +81,7 @@ pub const State = enum(u8) {
             .stopped => "stopped",
             .failed => "failed",
             .starting => "starting",
+            .stopping => "stopping",
             .disabled => "disabled",
         };
     }

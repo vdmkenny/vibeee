@@ -29,6 +29,7 @@ const proto = @import("proto").usb;
 const proto_devices = @import("proto").devices;
 const std = @import("std");
 const sys = @import("sys");
+const quit = @import("ulib").quit;
 
 /// The controller drivers this build carries. Which silicon each fits is
 /// the device manager's knowledge, in `/lib/drivers/*.man`.
@@ -185,8 +186,9 @@ fn serve() noreturn {
     // The channel, every controller's interrupt, and every offered
     // volume's doorbell. The set is rebuilt whenever a disk comes or
     // goes, which is the only time it changes.
-    var sources: [1 + MAX_CONTROLLERS + @import("lib").volume.MAX_VOLUMES]u32 = undefined;
+    var sources: [2 + MAX_CONTROLLERS + @import("lib").volume.MAX_VOLUMES]u32 = undefined;
     var source_count: usize = 0;
+    quit_event = quit.event();
 
     while (true) {
         source_count = watchList(&sources);
@@ -196,6 +198,9 @@ fn serve() noreturn {
         if (woke < 0) continue;
 
         const index: usize = @intCast(woke);
+        // The supervisor's request to go. The volumes go with the process:
+        // the kernel withdraws what it offered when the offerer is gone.
+        if (quit_event != 0 and sources[index] == quit_event) sys.exit(0);
         if (index == 0) {
             drain();
             continue;
@@ -240,8 +245,11 @@ fn serve() noreturn {
     }
 }
 
+/// The request to go, or zero when the kernel gave none.
+var quit_event: u32 = 0;
+
 /// Everything worth waking for, in one array: the service channel first,
-/// then the controllers, then the volumes.
+/// then the controllers, then the volumes, then the request to go.
 fn watchList(into: []u32) usize {
     into[0] = service;
     var count: usize = 1;
@@ -250,6 +258,10 @@ fn watchList(into: []u32) usize {
         count += 1;
     }
     count += volume.doorbells(into[count..]);
+    if (quit_event != 0) {
+        into[count] = quit_event;
+        count += 1;
+    }
     return count;
 }
 

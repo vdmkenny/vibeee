@@ -21,6 +21,7 @@ const out = @import("ulib").out;
 const settings = @import("proto").settings;
 const str = @import("lib").str;
 const sys = @import("sys");
+const quit = @import("ulib").quit;
 
 /// One counting event per domain, handed to anyone who asks to watch it.
 ///
@@ -54,9 +55,23 @@ fn cfgdMain() noreturn {
 }
 
 fn serve(channel: u32) noreturn {
+    // A request, or the request to go. Going needs nothing written: every
+    // change is on the medium before its caller is answered, so the store
+    // is left exactly as the last answer said it was.
+    var sources: [2]u32 = .{ channel, 0 };
+    var count: usize = 1;
+    const quit_event = quit.event();
+    if (quit_event != 0) {
+        sources[1] = quit_event;
+        count = 2;
+    }
+
     while (true) {
+        const woke = sys.waitMany(sources[0..count], sys.FOREVER);
+        if (woke == 1) sys.exit(0);
+
         var message = sys.Message{};
-        const request = sys.recv(channel, &message, sys.FOREVER) orelse continue;
+        const request = sys.recv(channel, &message, sys.POLL) orelse continue;
 
         var reply = sys.Message{};
         const status = answer(&message, &reply);

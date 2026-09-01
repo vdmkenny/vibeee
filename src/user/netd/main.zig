@@ -39,6 +39,7 @@ const std = @import("std");
 const sys = @import("sys");
 const str = @import("lib").str;
 const lib = @import("lib");
+const quit = @import("ulib").quit;
 
 /// The drivers this build knows, each with the ids that recognise its card.
 /// Adding a driver is one line here and a module beside; startup does not
@@ -264,7 +265,7 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 fn serve(channel: u32) noreturn {
     // The channel, one handle per interface's line, and the config domain's
     // watch. Fixed: the counts are capped, so the sources never grow.
-    var sources: [MAX_IFACES + 3]u32 = undefined;
+    var sources: [MAX_IFACES + 4]u32 = undefined;
     var source_count: usize = 1;
     sources[0] = channel;
 
@@ -312,6 +313,14 @@ fn serve(channel: u32) noreturn {
         log.warn("netd", "no settings watch; configuration is boot-time only");
     }
 
+    // The supervisor's request to go. Answered by giving the lines back and
+    // leaving; the lease and the sockets are the kernel's to unwind.
+    const quit_event = quit.event();
+    if (quit_event != 0) {
+        sources[source_count] = quit_event;
+        source_count += 1;
+    }
+
     while (true) {
         // The wait's deadline is the stack's own next timer: DHCP renewals,
         // TCP retransmits and ARP aging all ride this one number, and an
@@ -330,6 +339,10 @@ fn serve(channel: u32) noreturn {
             if (handle == channel) {
                 drain(channel);
                 break :dispatch;
+            }
+            if (quit_event != 0 and handle == quit_event) {
+                for (ifaces[0..count]) |*iface| releaseIrq(iface);
+                sys.exit(0);
             }
             if (bell != null and handle == bell.?) {
                 bridge.drainRings();

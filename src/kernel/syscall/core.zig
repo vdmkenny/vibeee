@@ -18,6 +18,7 @@ const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
 const tty = @import("../tty.zig");
 const watchdog = @import("../watchdog.zig");
+const svc = @import("../svc.zig");
 
 const Args = ctx.Args;
 const Result = ctx.Result;
@@ -430,6 +431,8 @@ pub fn sys_watch(a: Args) Result {
             e.count = 0;
             break :blk e;
         },
+        @intFromEnum(abi.Watchable.quit) => quitEvent() orelse return Errno.nomem.value(),
+        @intFromEnum(abi.Watchable.registry) => svc.changeEvent(),
         else => return Errno.inval.value(),
     };
 
@@ -442,6 +445,17 @@ pub fn sys_watch(a: Args) Result {
         return Errno.nomem.value();
     };
     return @intCast(slot);
+}
+
+/// This thread's quit event, made on the first request for it. Kept by the
+/// thread, so what reaches it is its own supervisor's asking and nothing
+/// else's.
+fn quitEvent() ?*event_mod.Event {
+    const t = sched.currentThread() orelse return null;
+    if (t.quit_event == null) {
+        t.quit_event = event_mod.create() catch return null;
+    }
+    return t.quit_event;
 }
 
 /// This thread's child-exit event, made on the first request for it.

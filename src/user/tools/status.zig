@@ -153,7 +153,7 @@ pub fn kill(args: []const []const u8) void {
 
     for (args) |arg| {
         const pid = str.toUnsigned(arg);
-        const result = sys.kill(@intCast(pid));
+        const result = sys.kill(@intCast(pid), .now);
         if (result < 0) {
             out.text("kill: ");
             out.decimal(pid);

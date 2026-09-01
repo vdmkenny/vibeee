@@ -155,6 +155,12 @@ pub const Thread = struct {
     /// allocation each for nothing.
     child_event: ?*event_mod.Event = null,
 
+    /// The request to end, raised by whoever supervises this process and
+    /// waited on beside everything else it listens to. Made when it first
+    /// asks to watch for it: a process that never does is one that is ended
+    /// rather than asked.
+    quit_event: ?*event_mod.Event = null,
+
     pub fn name(self: *const Thread) []const u8 {
         return self.name_buf[0..self.name_len];
     }

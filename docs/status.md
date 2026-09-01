@@ -96,7 +96,7 @@ firmware left.
 
 | Program | File | State |
 |---|---|---|
-| `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, readiness, restart policy, orphan reaping. A service is in one phase of its life at a time, and a service that promised a name is up only once the name is registered: one that lets the window pass is put down, and the restart policy judges the miss like any other failure to start. `svc` shows `starting` while it is waited on. The boot line can hold a service down (`nonet`, `nohw`) or start one late (`netlate`), which is how a suspect driver is kept off the machine, or brought up under the watchdog, from outside where only the boot line can reach. |
+| `init` | [`user/init.zig`](../src/user/init.zig) | PID 1. Manifest parsing, dependency order, readiness, restart policy, orphan reaping. A service is in one phase of its life at a time, and a service that promised a name is up only once the name is registered: one that lets the window pass is put down, and the restart policy judges the miss like any other failure to start. `svc` shows `starting` while it is waited on, and `stopping` for one asked to stop that has not gone: a service is asked first, through the quit event every service watches, and ended outright only when it has not gone within three seconds. The wait for a promised name is a wait on the registry's own event rather than a poll. The boot line can hold a service down (`nonet`, `nohw`) or start one late (`netlate`), which is how a suspect driver is kept off the machine, or brought up under the watchdog, from outside where only the boot line can reach. |
 | `vsh` | [`user/vsh.zig`](../src/user/vsh.zig) | Builtins, program lookup in `/bin`, multicall dispatch, pipelines, `>` and `>>` redirection. Line editing with history and completion; the prompt shortens home to `~` and carries the last command's status in the colour of its arrow. |
 | Tools | [`user/tools/`](../src/user/tools/) | `ls cat rm mv mkdir tree hexdump file grep page free top kill log irq devices display disk mount unmount svc cfg date eeefetch smbios sysinfo net backlight battery vol` |
 | `cfgd` | [`user/cfgd/`](../src/user/cfgd/) | The one writer of the settings store. Validates against a schema fixed at build time, writes the domain's file, and signals an event per domain so a change reaches whoever is watching. |
@@ -212,7 +212,8 @@ build.
   filesystem and the two volumes hold what a boot needs, and the development image boots
   headless twice: the first boot reports done, `probe` refuses everything it should and leaks
   nothing, `svc` shows the services up, nothing panicked or tripped the boot watchdog, and a
-  setting written on the first boot is read back on the second.
+  setting written on the first boot is read back on the second, where a service asked to
+  stop also goes on its own.
 - Boot self-tests, heap, syscall ABI, clock advance, IPC. Each reports `fail` on the boot
   log rather than hanging, because the target has no serial port.
 - `make shot OUT=x.png TYPE="..."`, boot headless, type at the shell, screenshot, and a full serial transcript beside it. `PAUSE` is the wait after each typed line, for a command that takes longer than a moment.

@@ -51,12 +51,16 @@ grep -Eq '^cfgd +up' "$LOG1.txt" || fail "svc does not show cfgd up (see $LOG1)"
 ! grep -Eq '^[a-z0-9_-]+ +failed' "$LOG1.txt" || fail "a service failed (see $LOG1)"
 echo "boot done, every refusal held, nothing leaked, services up"
 
-step "second boot: the setting kept"
+step "second boot: the setting kept, a service stopped on request"
 LOG2=$BUILD/check-boot2.log
 boot "$BUILD/check-boot2.png" -w 4 -p 2 -s 1 -t "cfg get power.dim_after
-cfg reset power.dim_after"
+cfg reset power.dim_after
+svc stop cfgd
+svc"
 plain "$LOG2" > "$LOG2.txt"
 grep -q "^5m" "$LOG2.txt" || fail "power.dim_after did not survive the reboot (see $LOG2)"
-echo "a setting written before a reboot is read back after it"
+grep -Eq '^cfgd +stopped' "$LOG2.txt" || fail "cfgd did not stop when asked (see $LOG2)"
+! grep -Eq "did not stop when asked|cannot be asked to stop" "$LOG2.txt" || fail "a service had to be ended rather than asked (see $LOG2)"
+echo "a setting written before a reboot is read back after it, and a service asked to stop went"
 
 printf '\ncheck-all: everything holds\n'

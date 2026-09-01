@@ -561,6 +561,10 @@ fn reap(t: *Thread) void {
         event_mod.release(ready);
         t.child_event = null;
     }
+    if (t.quit_event) |asked| {
+        event_mod.release(asked);
+        t.quit_event = null;
+    }
 
     if (t.ports) |set| {
         heap.allocator.destroy(set);
@@ -676,6 +680,16 @@ pub fn kill(id: u32) error{ NotFound, Refused }!void {
 
     t.killed = true;
     unblock(t);
+}
+
+/// Ask a process to end, by raising the quit event it watches. One that
+/// watches nothing cannot be asked, and the caller decides what to do about
+/// that; the kernel never ends a process on a request that was only an ask.
+pub fn askToEnd(id: u32) error{ NotFound, NotListening }!void {
+    const t = find(id) orelse return error.NotFound;
+    if (t.state == .dead) return error.NotFound;
+    const asked = t.quit_event orelse return error.NotListening;
+    asked.signal();
 }
 
 /// Whether the running thread has been asked to end.

@@ -17,6 +17,7 @@
 const lib = @import("lib");
 const proto = @import("proto");
 const sys = @import("sys");
+const quit = @import("ulib").quit;
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const sock = @import("ulib").sock;
@@ -177,11 +178,22 @@ fn twoDigits(value: anytype) void {
 /// Sleep until the next ask falls due, or until something worth waking for
 /// happens: the settings changed, or an address arrived.
 fn waitAWhile(events: []const u32, micros: usize) void {
-    var sources: [2]u32 = undefined;
+    var sources: [3]u32 = undefined;
     var count: usize = 0;
     for (events) |handle| {
         if (handle == 0) continue;
         sources[count] = handle;
+        count += 1;
+    }
+    // And the supervisor's request to go, which a clock has nothing to
+    // finish before answering.
+    const asked = quit_event orelse blk: {
+        const handle = quit.event();
+        quit_event = handle;
+        break :blk handle;
+    };
+    if (asked != 0) {
+        sources[count] = asked;
         count += 1;
     }
 
@@ -189,5 +201,9 @@ fn waitAWhile(events: []const u32, micros: usize) void {
         sys.sleepMicros(@intCast(micros));
         return;
     }
-    _ = sys.waitMany(sources[0..count], micros);
+    const woke = sys.waitMany(sources[0..count], micros);
+    if (woke >= 0 and asked != 0 and sources[@intCast(woke)] == asked) sys.exit(0);
 }
+
+/// The request to go, taken once: null until asked for, zero when refused.
+var quit_event: ?u32 = null;

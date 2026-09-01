@@ -84,6 +84,9 @@ const State = struct {
     /// Consecutive failures that happened too fast to be real work.
     flapping: u32 = 0,
     phase: Phase = .down,
+    /// When one that was asked to stop is ended if it has not gone. Zero
+    /// while nothing has been asked of it.
+    stop_deadline_us: u64 = 0,
     /// Whether it should start at all. `stopped` is for this boot; this is
     /// for every one after it, and is what `/etc/disabled` records.
     enabled: bool = true,
@@ -148,6 +151,13 @@ var service_count: usize = 0;
 const FLAP_WINDOW_US: u64 = 1_000_000;
 const MAX_FLAPS: u32 = 5;
 
+/// How long a service asked to stop has to go before it is ended.
+const STOP_WINDOW_US: u64 = 3_000_000;
+
+/// The registry's own event, raised when a name comes or goes: what a wait
+/// for a name is a wait on. Null when the kernel gave none.
+var registry_event: ?u32 = null;
+
 export fn _start() callconv(.c) noreturn {
     initMain();
 }
@@ -157,6 +167,7 @@ fn initMain() noreturn {
     // Read before anything starts, because it decides what does.
     readDisabled();
     holdFromCmdline();
+    listenForNames();
     startAll();
     // The boot is reported once the after-boot round has run its course,
     // from the supervising loop below: a machine that dies at a driver's
@@ -479,30 +490,70 @@ fn start(state: *State) void {
 /// How long a service has to register the name it promised.
 const READY_WINDOW_US: u64 = 2_000_000;
 
+fn listenForNames() void {
+    const handle = sys.watch(.registry);
+    registry_event = if (handle < 0) null else @intCast(handle);
+}
+
 /// Wait for the name a service promised to appear in `/svc`, and judge it
 /// when it does not.
 ///
-/// Polled, because the registry has no change notification yet. It is the one
-/// piece of polling in this program and it is bounded, which is the difference
-/// between a stopgap and a design decision. A service that lets the window
-/// pass is not up, whatever its process is doing: it is put down, and whether
-/// it comes back is the restart policy's call, with the miss counted against
-/// it like any other failure to start.
+/// The registry says when a name comes or goes, so the name is looked for
+/// once, and again only when the answer may have changed. A service that
+/// lets the window pass is not up, whatever its process is doing: it is put
+/// down, and whether it comes back is the restart policy's call, with the
+/// miss counted against it like any other failure to start.
 fn awaitReady(state: *State) void {
     var buf: [512]u8 = @splat(0);
-    var waited: u64 = 0;
+    const started = sys.clockMicros();
 
-    while (waited < READY_WINDOW_US) : (waited += 20_000) {
+    while (true) {
         if (info.listContains("svc", state.service.provides, &buf)) {
             state.phase = .up;
             return;
         }
-        sys.sleepMicros(20_000);
+        const elapsed = sys.clockMicros() -| started;
+        if (elapsed >= READY_WINDOW_US) break;
+        const remaining: usize = @intCast(READY_WINDOW_US - elapsed);
+        if (registry_event) |event| {
+            _ = sys.waitMany(&.{event}, remaining);
+        } else {
+            sys.sleepMicros(@min(remaining, 20_000));
+        }
     }
 
     report(state.service.name, "did not register within two seconds");
     state.phase = if (shouldRestart(state, .unready)) .unready else .failed;
-    _ = sys.kill(state.pid);
+    _ = putDown(state);
+}
+
+/// Ask a running service to go, and end it outright when it cannot be asked.
+/// One that was asked has until its deadline; `enforceStops` ends it then.
+/// The caller sets the phase, which says why it is going.
+fn putDown(state: *State) bool {
+    const asked = sys.kill(state.pid, .ask);
+    if (asked >= 0) {
+        state.stop_deadline_us = sys.clockMicros() + STOP_WINDOW_US;
+        return true;
+    }
+    if (asked != lib.syscalls.Errno.notconn.value()) return false;
+    // Watching nothing, so it cannot be asked: ended, as one that does not
+    // answer would be at its deadline. Said, because a service that cannot
+    // be asked is a service to fix.
+    report(state.service.name, "cannot be asked to stop; ended");
+    return sys.kill(state.pid, .now) >= 0;
+}
+
+/// End what was asked to stop and has not gone by its deadline.
+fn enforceStops() void {
+    const now = sys.clockMicros();
+    for (services[0..service_count]) |*state| {
+        if (state.stop_deadline_us == 0 or now < state.stop_deadline_us) continue;
+        state.stop_deadline_us = 0;
+        if (!state.phase.alive()) continue;
+        report(state.service.name, "did not stop when asked; ended");
+        _ = sys.kill(state.pid, .now);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +583,7 @@ fn supervise() noreturn {
 
     while (true) {
         collect();
+        enforceStops();
         if (channel >= 0) answerAll(@intCast(channel));
         serviceAfterBoot();
         serviceLate();
@@ -542,8 +594,9 @@ fn supervise() noreturn {
             idle();
         }
 
-        // Bounded by the held-late service's next moment, its start or its
-        // grace, and unbounded once nothing is pending.
+        // Bounded by the next moment something is due: the held-late
+        // service's start or grace, or a stop deadline. Unbounded once
+        // nothing is pending.
         _ = sys.waitMany(sources[0..count], nextDeadline());
     }
 }
@@ -625,6 +678,11 @@ fn nextDeadline() usize {
         const moment = if (late_grace_at == 0) late_start_at else late_grace_at;
         if (earliest == 0 or moment < earliest) earliest = moment;
     }
+    for (services[0..service_count]) |*state| {
+        const moment = state.stop_deadline_us;
+        if (moment == 0) continue;
+        if (earliest == 0 or moment < earliest) earliest = moment;
+    }
 
     if (earliest == 0) return sys.FOREVER;
     if (earliest <= now) return 0;
@@ -640,6 +698,7 @@ fn collect() void {
     while (sys.wait(0, sys.POLL)) |exited| {
         const state = byPid(exited.pid) orelse continue;
         state.pid = 0;
+        state.stop_deadline_us = 0;
 
         state.phase = switch (state.phase) {
             // Asked for, so the policy does not get a say: a service with
@@ -703,7 +762,8 @@ fn describe(index: u8, reply: *proto.Rep) void {
             .up => .up,
             .starting, .unready, .restarting => .starting,
             .down => if (state.enabled) .down else .disabled,
-            .stopping, .stopped => if (state.enabled) .stopped else .disabled,
+            .stopping => if (state.enabled) .stopping else .disabled,
+            .stopped => if (state.enabled) .stopped else .disabled,
             .failed => if (state.enabled) .failed else .disabled,
         },
         .pid = state.pid,
@@ -735,7 +795,7 @@ fn restartOne(name: []const u8) proto.Result {
 
     const before = state.phase;
     state.phase = .restarting;
-    if (sys.kill(state.pid) >= 0) return .ok;
+    if (putDown(state)) return .ok;
 
     state.phase = before;
     return .failed;
@@ -752,7 +812,7 @@ fn halt(name: []const u8) proto.Result {
     }
 
     state.phase = .stopping;
-    return if (sys.kill(state.pid) >= 0) .ok else .failed;
+    return if (putDown(state)) .ok else .failed;
 }
 
 /// Names not to start at the next boot, one per line.
@@ -776,7 +836,7 @@ fn setEnabled(name: []const u8, enabled: bool) proto.Result {
     if (!enabled) {
         if (state.phase.alive()) {
             state.phase = .stopping;
-            _ = sys.kill(state.pid);
+            _ = putDown(state);
         } else {
             state.phase = .stopped;
         }

@@ -473,8 +473,11 @@ pub fn shutdown(action: usize) noreturn {
     unreachable;
 }
 
-pub fn kill(pid: u32) isize {
-    return syscall1(abi.number("kill"), pid);
+/// End another process now, or ask it to end by raising the quit event it
+/// watches. Asking one that watches nothing fails with ENOTCONN, which is the
+/// caller's cue to end it.
+pub fn kill(pid: u32, how: abi.Ending) isize {
+    return syscall2(abi.number("kill"), pid, @intFromEnum(how));
 }
 
 pub fn exit(status: usize) noreturn {

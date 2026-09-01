@@ -167,9 +167,17 @@ pub fn sys_getcwd(a: Args) Result {
 pub fn sys_kill(a: Args) Result {
     if (ctx.require(.{ .kill = true })) |denied| return denied;
 
-    sched.kill(@truncate(a.a0)) catch |err| return switch (err) {
-        error.NotFound => Errno.noent.value(),
-        error.Refused => Errno.perm.value(),
-    };
+    const pid: u32 = @truncate(a.a0);
+    const how = std.enums.fromInt(abi.Ending, a.a1) orelse return Errno.inval.value();
+    switch (how) {
+        .now => sched.kill(pid) catch |err| return switch (err) {
+            error.NotFound => Errno.noent.value(),
+            error.Refused => Errno.perm.value(),
+        },
+        .ask => sched.askToEnd(pid) catch |err| return switch (err) {
+            error.NotFound => Errno.noent.value(),
+            error.NotListening => Errno.notconn.value(),
+        },
+    }
     return 0;
 }

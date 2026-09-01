@@ -14,6 +14,7 @@
 const std = @import("std");
 const channel = @import("channel.zig");
 const hal = @import("hal.zig");
+const event_mod = @import("event.zig");
 const names = @import("lib").services;
 
 pub const Error = error{
@@ -64,6 +65,16 @@ fn retire(e: *Entry) void {
     e.name_len = 0;
 }
 
+/// Raised whenever a name comes or goes, for whoever waits on a name rather
+/// than asking for it again and again. One event for the table: a waiter is
+/// released per change and looks for its name again, which is cheap, and the
+/// supervisor is the one that waits.
+var changed: event_mod.Event = .{};
+
+pub fn changeEvent() *event_mod.Event {
+    return &changed;
+}
+
 /// Publish `ch` under `name`.
 ///
 /// A name whose server has exited is free to take: otherwise the entry would
@@ -71,6 +82,13 @@ fn retire(e: *Entry) void {
 /// exists to support would fail with the name already registered. Only a live
 /// server blocks a name.
 pub fn register(name: []const u8, ch: *channel.Channel) Error!void {
+    try place(name, ch);
+    // Said once the table is consistent and interrupts are back: whoever
+    // waited looks the name up, and finds it.
+    changed.signal();
+}
+
+fn place(name: []const u8, ch: *channel.Channel) Error!void {
     if (!names.isValidName(name)) return error.BadName;
 
     const flags = hal.saveAndDisableInterrupts();
@@ -95,6 +113,10 @@ pub fn register(name: []const u8, ch: *channel.Channel) Error!void {
 /// Withdraw a name, so a client that looks it up learns the server is gone
 /// rather than connecting to a channel nobody is serving.
 pub fn unregister(name: []const u8) void {
+    if (withdraw(name)) changed.signal();
+}
+
+fn withdraw(name: []const u8) bool {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
@@ -104,9 +126,10 @@ pub fn unregister(name: []const u8) void {
             e.ch = null;
             e.name_len = 0;
             channel.release(ch);
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 /// Look a name up, taking a reference on the channel for the caller to hold.

@@ -5,6 +5,7 @@
 //! Anything here that stopped needing a syscall would belong down there
 //! instead.
 
+pub const quit = @import("quit.zig");
 pub const complete = @import("complete.zig");
 pub const config = @import("config.zig");
 pub const console = @import("console.zig");

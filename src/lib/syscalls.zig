@@ -88,6 +88,8 @@ pub const Errno = enum(i32) {
     busy = 16,
     /// The volume behind a handle has gone: its medium was removed.
     nodev = 19,
+    /// The process watches no quit event, so it cannot be asked to end.
+    notconn = 107,
     nospace = 28,
     pipe = 32,
     nosys = 38,
@@ -122,6 +124,7 @@ pub const Errno = enum(i32) {
             .child => "no such child",
             .busy => "in use",
             .nodev => "the volume has been removed",
+            .notconn => "the process is not listening for the request",
             .nospace => "the volume is full",
             .pipe => "the other end has closed",
             .nosys => "no such call",
@@ -148,6 +151,7 @@ const E = struct {
     const child = Err{ .name = "ECHILD", .when = "the caller has no such child to wait for" };
     const pipe = Err{ .name = "EPIPE", .when = "the far end of the channel has closed" };
     const nodev = Err{ .name = "ENODEV", .when = "the volume behind the handle has been removed" };
+    const notconn = Err{ .name = "ENOTCONN", .when = "the process watches no quit event, so it cannot be asked" };
     const nospace = Err{ .name = "ENOSPC", .when = "the volume is full" };
     const busy = Err{ .name = "EBUSY", .when = "another process already owns it" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
@@ -738,6 +742,22 @@ pub const Watchable = enum(u32) {
     /// cannot end a command that just started. A process that has claimed
     /// the keyboard sees Ctrl+C as a key event instead.
     stop = 3,
+    /// Whoever supervises this process asked it to end. A service answers by
+    /// finishing what it holds and exiting; one that has not gone by its
+    /// supervisor's deadline is ended outright.
+    quit = 4,
+    /// A name was registered with the service registry, or a registered
+    /// server went away.
+    registry = 5,
+};
+
+/// What `kill` does to a process.
+pub const Ending = enum(u32) {
+    /// End it: it dies at its next return to userspace.
+    now = 0,
+    /// Ask it: raise the quit event it watches, and leave the ending to it.
+    /// Refused when it watches nothing, so the caller knows to end it.
+    ask = 1,
 };
 
 /// How a volume is attached.
@@ -1264,16 +1284,20 @@ pub const table = [_]Syscall{
     .{
         .number = 34,
         .name = "kill",
-        .summary = "End another process.",
+        .summary = "End another process, now or by asking it.",
         .args = &.{
             .{ .name = "pid", .kind = .uint, .desc = "Process to end." },
+            .{ .name = "how", .kind = .uint, .desc = "An Ending: 0 now, 1 ask." },
         },
         .returns = "0 on success",
-        .errors = &.{ E.noent, E.perm },
-        .notes = "There are no signals: this ends the process, it does not ask it to. " ++
-            "The process dies at its next return to userspace, so kernel state it holds is " ++
-            "unwound rather than abandoned; one blocked or sleeping is woken so that happens " ++
-            "at once. Ending `init` is refused, since nothing would collect what it adopts.",
+        .errors = &.{ E.noent, E.perm, E.notconn, E.inval },
+        .notes = "There are no signals. `now` ends the process: it dies at its next return to " ++
+            "userspace, so kernel state it holds is unwound rather than abandoned, and one " ++
+            "blocked or sleeping is woken so that happens at once. `ask` raises the quit event " ++
+            "the process watches and leaves the ending to it, which is how a service finishes " ++
+            "what it holds before it goes; a process watching nothing cannot be asked, and " ++
+            "the caller ends it. Ending `init` is refused, since nothing would collect what " ++
+            "it adopts.",
     },
     .{
         .number = 35,
@@ -1396,7 +1420,7 @@ pub const table = [_]Syscall{
         .name = "watch",
         .summary = "An event that fires when something happens.",
         .args = &.{
-            .{ .name = "what", .kind = .uint, .desc = "A Watchable: 0 keys, 1 pointer, 2 children, 3 stop (Ctrl+C)." },
+            .{ .name = "what", .kind = .uint, .desc = "A Watchable: 0 keys, 1 pointer, 2 children, 3 stop (Ctrl+C), 4 quit (asked to end), 5 registry (a name came or went)." },
         },
         .returns = "an event handle",
         .errors = &.{ E.inval, E.nomem },

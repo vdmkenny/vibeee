@@ -121,6 +121,7 @@ fn wmMain() noreturn {
     listenTo(.keys, sys.watch(.keys));
     listenTo(.pointer, sys.watch(.pointer));
     listenTo(.children, sys.watch(.children));
+    listenTo(.quit, sys.watch(.quit));
     listenTo(.wm_settings, @intCast(settings_event));
     listenTo(.keyboard_settings, @intCast(keyboard_event));
     listenTo(.power_settings, @intCast(power_event));
@@ -364,6 +365,7 @@ fn run() noreturn {
     while (true) {
         var acted = serve();
 
+        if (askedToQuit()) quit();
         if (settingsChanged()) acted = true;
 
         // Applications are this process's children, so their exits arrive
@@ -484,6 +486,9 @@ const Source = enum {
     wm_settings,
     keyboard_settings,
     power_settings,
+    /// The supervisor asking the desktop to go, answered the way its own
+    /// menu's leaving is: every window asked to close, the display given back.
+    quit,
 };
 
 var sources: [@typeInfo(Source).@"enum".fields.len]u32 = @splat(0);
@@ -1178,6 +1183,12 @@ fn apply(action: bar.Action) void {
         .focus_window => |index| desktop.viewWindow(index),
         .verb => |what| perform(what),
     }
+}
+
+/// Whether the supervisor asked the desktop to go.
+fn askedToQuit() bool {
+    const handle = sources[@intFromEnum(Source.quit)];
+    return handle != 0 and sys.waitMany(&.{handle}, sys.POLL) >= 0;
 }
 
 /// End the session: ask every client to go, give the display back, and exit.
