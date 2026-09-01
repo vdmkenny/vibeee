@@ -383,7 +383,6 @@ fn depthSaid() []const u8 {
     };
 }
 
-
 /// The file itself, read-only, filling what is left of the pane.
 fn drawText(ctx: *eui.widget.Context, area: Rect, from: i32) void {
     const t = theme.current();

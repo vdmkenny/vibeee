@@ -148,7 +148,7 @@ fn take() bool {
 
     const wanted = have + STEP;
     const block = heap.alloc(@sizeOf(usize) * (wanted + 1)) orelse return false;
-    const list: [*c][*c]u8 = @alignCast(@ptrCast(block));
+    const list: [*c][*c]u8 = @ptrCast(@alignCast(block));
 
     for (0..have) |i| list[i] = environ[i];
     list[have] = null;
@@ -167,7 +167,7 @@ fn append(entry: [*c]u8) bool {
     if (count + 1 >= room) {
         const wanted = room + STEP;
         const block = heap.alloc(@sizeOf(usize) * (wanted + 1)) orelse return false;
-        const list: [*c][*c]u8 = @alignCast(@ptrCast(block));
+        const list: [*c][*c]u8 = @ptrCast(@alignCast(block));
 
         for (0..count) |i| list[i] = entries[i];
         heap.release(@ptrCast(entries));

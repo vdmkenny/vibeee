@@ -20,11 +20,11 @@ extern fn main(argc: c_int, argv: [*c][*c]u8, envp: [*c][*c]u8) c_int;
 /// the parameter are all the kernel's work, so this is a plain function.
 export fn _start(stack: [*]const usize) callconv(.c) noreturn {
     const argc: c_int = @intCast(stack[0]);
-    const argv: [*c][*c]u8 = @constCast(@ptrCast(stack + 1));
+    const argv: [*c][*c]u8 = @ptrCast(@constCast(stack + 1));
 
     // The environment sits after the arguments and the null that ends
     // them, which is where C's own layout puts it.
-    env.adopt(@constCast(@ptrCast(stack + 1 + @as(usize, @intCast(argc)) + 1)));
+    env.adopt(@ptrCast(@constCast(stack + 1 + @as(usize, @intCast(argc)) + 1)));
 
     exit(main(argc, argv, env.environ));
 }

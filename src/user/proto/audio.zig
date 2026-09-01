@@ -214,7 +214,7 @@ pub fn callOn(
 
     const bytes = answer.bytes();
     if (bytes.len < @sizeOf(Rep)) return error.Refused;
-    into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
+    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
 
     switch (into.status) {
         .ok => {},
@@ -242,7 +242,6 @@ comptime {
 // of outputs needs the same four questions answered, and a second copy of
 // them is a second thing to keep in step with the protocol above.
 // ---------------------------------------------------------------------------
-
 
 /// The peaks since somebody last asked, or null when nothing serves sound.
 pub fn levels() ?LevelInfo {

@@ -38,7 +38,6 @@ const out = @import("ulib").out;
 const Rect = eui.Rect;
 const KeyCode = sys.KeyCode;
 
-
 var screen: eui.Surface = undefined;
 var info: sys.DisplayInfo = .{};
 var desktop: layout.Desktop = .{};
@@ -264,9 +263,6 @@ fn refreshWindow(index: usize, damage: []const Rect) void {
         clients.blit(screen, desktop.windows[index].surface, content, on_screen);
     }
 }
-
-
-
 
 fn paintWindow(index: usize, focused: bool) void {
     const t = theme.current();

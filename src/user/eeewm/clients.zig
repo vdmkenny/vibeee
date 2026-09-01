@@ -25,7 +25,6 @@ const Rect = eui.Rect;
 const wm = proto.wm;
 const ring = lib.ring;
 
-
 pub const MAX_CLIENTS = 8;
 pub const MAX_WINDOWS = 16;
 

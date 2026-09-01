@@ -22,15 +22,15 @@ comptime {
     // once the identity mapping is dropped.
         \\.section .text,"ax",@progbits
         \\
-    // ---------------------------------------------------------------
-    // void vibeeeSwitchContext(usize *save_sp, usize new_sp)
-    //
-    // cdecl, so at entry: [esp] return address, [esp+4] save_sp,
-    // [esp+8] new_sp. Arguments are read before anything is pushed.
-    //
-    // Returns in the *incoming* thread: each thread's stack holds its own
-    // return address, so `ret` lands wherever that thread last stopped.
-    // ---------------------------------------------------------------
+        // ---------------------------------------------------------------
+        // void vibeeeSwitchContext(usize *save_sp, usize new_sp)
+        //
+        // cdecl, so at entry: [esp] return address, [esp+4] save_sp,
+        // [esp+8] new_sp. Arguments are read before anything is pushed.
+        //
+        // Returns in the *incoming* thread: each thread's stack holds its own
+        // return address, so `ret` lands wherever that thread last stopped.
+        // ---------------------------------------------------------------
         \\.global vibeeeSwitchContext
         \\.type vibeeeSwitchContext,@function
         \\vibeeeSwitchContext:

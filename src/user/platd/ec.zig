@@ -301,7 +301,7 @@ fn region(op: uacpi.RegionOp, data: ?*anyopaque) callconv(.c) uacpi.Status {
         .attach, .detach => return .ok,
         .read => {
             reached();
-            const rw: *uacpi.RegionRw = @alignCast(@ptrCast(data.?));
+            const rw: *uacpi.RegionRw = @ptrCast(@alignCast(data.?));
             var value: u64 = 0;
             var i: u8 = 0;
             while (i < rw.byte_width) : (i += 1) {
@@ -313,7 +313,7 @@ fn region(op: uacpi.RegionOp, data: ?*anyopaque) callconv(.c) uacpi.Status {
         },
         .write => {
             reached();
-            const rw: *uacpi.RegionRw = @alignCast(@ptrCast(data.?));
+            const rw: *uacpi.RegionRw = @ptrCast(@alignCast(data.?));
             var i: u8 = 0;
             while (i < rw.byte_width) : (i += 1) {
                 const byte: u8 = @truncate(rw.value >> @intCast(i * 8));

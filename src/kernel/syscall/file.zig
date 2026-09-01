@@ -48,13 +48,15 @@ pub fn sys_open(a: Args) Result {
         r.mount.open_files += 1;
         h.* = .{
             .rights = .{ .read = true },
-            .data = .{ .directory = .{
-                .lease = .{ .slot = r.mount, .generation = r.mount.generation },
-                .iterator = iterator,
-                // Nothing above a mount root, so nothing to report as its
-                // parent. `resolve` leaves nothing over for one.
-                .at_root = r.rest.len == 0,
-            } },
+            .data = .{
+                .directory = .{
+                    .lease = .{ .slot = r.mount, .generation = r.mount.generation },
+                    .iterator = iterator,
+                    // Nothing above a mount root, so nothing to report as its
+                    // parent. `resolve` leaves nothing over for one.
+                    .at_root = r.rest.len == 0,
+                },
+            },
         };
         return @intCast(slot);
     }

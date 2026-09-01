@@ -423,7 +423,6 @@ fn hand(entry: *Device, ops: hc.HcOps) void {
     log.end();
 }
 
-
 /// Ask the device what it calls itself.
 ///
 /// Two more control transfers, once, and only for a device that offers a

@@ -230,9 +230,9 @@ fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []c
         .mode = mode,
         .precision = places,
     }) catch
-    // Nothing a double holds overruns the buffer, but a caller asking
-    // for a hundred decimal places can. Saying so beats printing a
-    // number that is not the one asked about.
+        // Nothing a double holds overruns the buffer, but a caller asking
+        // for a hundred decimal places can. Saying so beats printing a
+        // number that is not the one asked about.
         return "?";
 
     const at = std.mem.indexOfScalar(u8, written, 'e') orelse {

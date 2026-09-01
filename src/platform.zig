@@ -85,7 +85,6 @@ fn publishPlatform(bi: *const bootinfo.BootInfo) void {
         .ram_devices = if (ram) |r| r.devices else 0,
         .ram_speed_mhz = if (ram) |r| r.speed_mhz else 0,
         .ram_type = if (ram) |r| r.typeName() else "",
-
     });
 
     // Always said, whatever the firmware answered: it is the machine's own
@@ -117,7 +116,7 @@ fn evaluateQuirks() void {
         .board_name = smbios.boardProduct() orelse "",
         .bios_vendor = smbios.biosVendor() orelse "",
         .bios_version = smbios.biosVersion() orelse "",
-    }});
+    } });
 
     for (quirks.appliedQuirks()) |quirk| {
         console.info("quirks", "{s}: {s}", .{ quirk.name, quirk.why });

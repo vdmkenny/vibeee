@@ -52,8 +52,6 @@ fn mnemonicIs(label: []const u8, at: usize, c: u21) bool {
     return std.ascii.toLower(label[at]) == std.ascii.toLower(@intCast(c));
 }
 
-
-
 /// Most items one menu may hold, which bounds the row array built per pass.
 pub const MAX_ITEMS = 16;
 
@@ -203,8 +201,6 @@ fn matchesChord(shortcut: []const u8, letter: u8, mods: widget.Modifiers) bool {
 
     return wants_ctrl == mods.control and wants_shift == mods.shift and wants_alt == mods.alt;
 }
-
-
 
 /// The modifier and a letter: open the menu that letter names.
 ///

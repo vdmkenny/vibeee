@@ -380,4 +380,3 @@ fn flexColumn(columns: []const Column) usize {
     }
     return columns.len -| 1;
 }
-

@@ -15,8 +15,6 @@ const procs = @import("ulib").procs;
 const str = @import("ulib").str;
 const tree = @import("ulib").tree;
 
-
-
 /// A bar is worth more than a percentage at a glance, and costs nothing.
 fn bar(used: usize, total: usize, width: usize) void {
     const filled = if (total == 0) 0 else used * width / total;
@@ -237,4 +235,3 @@ fn writeDiskRow(row: []const u8, rung: ?tree.Rung) void {
     out.text(note);
     out.byte('\n');
 }
-

@@ -83,7 +83,7 @@ const Finder = struct {
 };
 
 fn matchAddress(user: ?*anyopaque, node: ?*uacpi.Node, depth: u32) callconv(.c) uacpi.Walk {
-    const finder: *Finder = @alignCast(@ptrCast(user.?));
+    const finder: *Finder = @ptrCast(@alignCast(user.?));
     if (depth > 1) return .proceed;
 
     var adr: u64 = 0;

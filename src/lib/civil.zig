@@ -148,16 +148,31 @@ test "epoch round trip" {
 
 test "known epoch values" {
     try std.testing.expectEqual(@as(i64, 0), toEpoch(.{
-        .year = 1970, .month = 1, .day = 1, .hour = 0, .minute = 0, .second = 0,
+        .year = 1970,
+        .month = 1,
+        .day = 1,
+        .hour = 0,
+        .minute = 0,
+        .second = 0,
     }));
     // 2001-09-09T01:46:40Z, the billionth second.
     try std.testing.expectEqual(@as(i64, 1_000_000_000), toEpoch(.{
-        .year = 2001, .month = 9, .day = 9, .hour = 1, .minute = 46, .second = 40,
+        .year = 2001,
+        .month = 9,
+        .day = 9,
+        .hour = 1,
+        .minute = 46,
+        .second = 40,
     }));
     // 1900 is not a leap year but 2000 is; the century rule is where naive
     // implementations diverge.
     try std.testing.expectEqual(@as(i64, 951_782_400), toEpoch(.{
-        .year = 2000, .month = 2, .day = 29, .hour = 0, .minute = 0, .second = 0,
+        .year = 2000,
+        .month = 2,
+        .day = 29,
+        .hour = 0,
+        .minute = 0,
+        .second = 0,
     }));
 }
 
@@ -166,7 +181,12 @@ test "weekday" {
     try std.testing.expectEqual(@as(u3, 4), weekday(0));
     // 2026-08-26 is a Wednesday.
     try std.testing.expectEqual(@as(u3, 3), weekday(toEpoch(.{
-        .year = 2026, .month = 8, .day = 26, .hour = 0, .minute = 0, .second = 0,
+        .year = 2026,
+        .month = 8,
+        .day = 26,
+        .hour = 0,
+        .minute = 0,
+        .second = 0,
     })));
 }
 

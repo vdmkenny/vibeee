@@ -19,7 +19,6 @@ const shm = @import("../shm.zig");
 const event_mod = @import("../event.zig");
 const wait = @import("../wait.zig");
 
-
 pub const PRIORITY_LEVELS = 32;
 
 /// Priority bands. Lower numbers win; the names exist so callers never write a
@@ -169,7 +168,6 @@ pub const Thread = struct {
         str.lowerName(self.name_buf[0..n]);
         self.name_len = n;
     }
-
 };
 // ---------------------------------------------------------------------------
 // The registry

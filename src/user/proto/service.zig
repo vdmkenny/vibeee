@@ -141,7 +141,7 @@ pub fn ask(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
     const bytes = reply.bytes();
     if (bytes.len < @sizeOf(Rep)) return error.Failed;
 
-    into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
+    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
 
     return switch (into.result) {
         .ok => {},

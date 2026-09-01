@@ -683,8 +683,6 @@ fn unwatch(index: u8) void {
     scheduleRunning(.periodic, true);
 }
 
-
-
 /// One bulk transfer: a single descriptor, because the buffer it points
 /// at is contiguous and no larger than the five pages one descriptor
 /// addresses. The pipe carries the toggle in and takes it out advanced

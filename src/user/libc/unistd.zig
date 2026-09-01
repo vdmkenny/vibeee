@@ -90,7 +90,7 @@ export fn chdir(path: [*:0]const u8) callconv(.c) c_int {
 }
 
 export fn getcwd(buf: [*]u8, size: usize) callconv(.c) [*c]u8 {
-    const n = sys.getcwd(buf[0 .. size -| 1]);
+    const n = sys.getcwd(buf[0..size -| 1]);
     if (n <= 0) {
         _ = errno.fail(errno.EINVAL);
         return null;
@@ -144,5 +144,3 @@ export fn fsync(fd: c_int) callconv(.c) c_int {
     // handle: a machine with one drive has one cache to empty either way.
     return if (sys.sync()) 0 else -1;
 }
-
-

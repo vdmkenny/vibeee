@@ -81,7 +81,6 @@ pub const Attach = extern struct {
     slot_bytes: u32 = 0,
 };
 
-
 comptime {
     if (@sizeOf(Request) != 24) @compileError("a volume request is twenty-four bytes");
     if (@sizeOf(Attach) != 32) @compileError("a volume attachment is thirty-two bytes");

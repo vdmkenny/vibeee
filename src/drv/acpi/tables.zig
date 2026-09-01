@@ -119,7 +119,7 @@ pub fn find(signature: []const u8) ?*align(1) const Header {
 /// The bytes of a table after its header.
 pub fn body(table: *align(1) const Header) []const u8 {
     const bytes: [*]const u8 = @ptrFromInt(@intFromPtr(table) + @sizeOf(Header));
-    return bytes[0 .. table.length -| @sizeOf(Header)];
+    return bytes[0..table.length -| @sizeOf(Header)];
 }
 
 fn mapTable(phys: u32) ?*align(1) const Header {

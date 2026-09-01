@@ -491,7 +491,6 @@ fn categoryItems(into: []ui.MenuItem) []ui.MenuItem {
 
 /// What the launcher's own indices mean: the nth row of the shown category
 /// is which entry of `items`.
-
 var launcher: ui.Menu = .{ .columns = LAUNCHER_COLUMNS };
 
 /// Which tab's menu is open, if any. Held here because it is the bar's own
@@ -1147,8 +1146,6 @@ fn dropFrom(anchor: Rect, height: i32, size: Rect) Rect {
     return area;
 }
 
-
-
 /// Whether the manager's modifier is down, for the number chips.
 var super_held = false;
 
@@ -1384,7 +1381,6 @@ fn soundWidth() i32 {
 
 /// The strip above the rows: the icon, the slider and the percentage, inside
 /// the same inset the rows below it use.
-
 pub fn refresh() void {
     readSound();
     readNetwork();
@@ -1726,9 +1722,6 @@ fn soundPanel(width: i32, height: i32) Rect {
         if (settings.current().bar == .top) .below else .above,
     );
 }
-
-
-
 
 fn paintSound(surface: Surface, area: Rect) void {
     const t = theme.current();

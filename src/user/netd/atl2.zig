@@ -570,7 +570,6 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     return true;
 }
 
-
 /// Reset and configure, the sequence design/08 §4.2 fixes. Bounded waits
 /// only: a wedged controller costs a refused driver, never a machine.
 fn configure() bool {

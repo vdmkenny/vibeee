@@ -270,9 +270,9 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         if (platform.pm1a_event_len == 0 and platform.pm1a_control_len == 0 and
             platform.pm_block_len == 0) return error.UnknownKey;
         try w.print("{x} {x} {x} {x} {x} {x}", .{
-            platform.pm1a_event, platform.pm1a_event_len,
+            platform.pm1a_event,   platform.pm1a_event_len,
             platform.pm1a_control, platform.pm1a_control_len,
-            platform.pm_block, platform.pm_block_len,
+            platform.pm_block,     platform.pm_block_len,
         });
     } else if (eq(key, "pci")) {
         try writeDevices(&w);

@@ -461,7 +461,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
             want.width, want.height,
         });
         console.info("video", "native: fwblc {x:0>8} dsparb {x:0>8} self {}, was {x:0>8} {x:0>8}", .{
-            read(u32, w, FW_BLC),      read(u32, w, DSPARB),
+            read(u32, w, FW_BLC),         read(u32, w, DSPARB),
             selfRefreshOn(w, dev.device), saved.fw_blc,
             saved.dsparb,
         });

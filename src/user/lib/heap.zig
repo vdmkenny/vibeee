@@ -61,7 +61,6 @@ const Header = extern struct {
     /// aligned store into anything allocated would fault. The spare half of
     /// the field is where a large block's size is written, so a freed large
     /// block can be handed back out whole.
-
     _reserved: [CLASS_MIN - 4]u8,
 
     const OWN_SEGMENT: u32 = 0xFFFF_FFFF;
@@ -126,7 +125,7 @@ pub fn alloc(size: usize) ?*anyopaque {
     const width = widthOf(class);
     const block = take(class, width) orelse return null;
 
-    const header: *Header = @alignCast(@ptrCast(block));
+    const header: *Header = @ptrCast(@alignCast(block));
     header.class = class;
     return @ptrCast(block + @sizeOf(Header));
 }
@@ -165,7 +164,7 @@ fn ownSegment(wanted: usize) ?*anyopaque {
 
     const block = fromKernel(wanted) orelse return null;
 
-    const header: *Header = @alignCast(@ptrCast(block));
+    const header: *Header = @ptrCast(@alignCast(block));
     header.class = Header.OWN_SEGMENT;
     header.setCapacity(segmentPayload(wanted));
     return @ptrCast(block + @sizeOf(Header));
@@ -175,7 +174,7 @@ fn ownSegment(wanted: usize) ?*anyopaque {
 var large_blocks: ?*Free = null;
 
 fn headerOf(node: *Free) *Header {
-    return @alignCast(@ptrCast(node));
+    return @ptrCast(@alignCast(node));
 }
 
 /// The payload of a whole segment: what was requested, minus the header at
@@ -212,14 +211,14 @@ pub fn release(pointer: ?*anyopaque) void {
     const given = pointer orelse return;
 
     const block: [*]u8 = @ptrCast(given);
-    const header: *Header = @alignCast(@ptrCast(block - @sizeOf(Header)));
+    const header: *Header = @ptrCast(@alignCast(block - @sizeOf(Header)));
 
     // Read out of the header before anything is written over it. The free list
     // threads its links through the same bytes the class was in, so a class
     // read back afterwards is a pointer being used as an index.
     const class = header.class;
 
-    const node: *Free = @alignCast(@ptrCast(block - @sizeOf(Header)));
+    const node: *Free = @ptrCast(@alignCast(block - @sizeOf(Header)));
 
     // A block with its own segment joins the large list: the pages stay
     // mapped, the handle stays open, and the next large request takes the
@@ -251,7 +250,7 @@ pub fn resize(pointer: ?*anyopaque, size: usize) ?*anyopaque {
     }
 
     const block: [*]u8 = @ptrCast(given);
-    const header: *Header = @alignCast(@ptrCast(block - @sizeOf(Header)));
+    const header: *Header = @ptrCast(@alignCast(block - @sizeOf(Header)));
 
     // Growing within the class it already has is free, and shrinking always
     // is: the block is the same size either way.
@@ -311,7 +310,7 @@ fn vtableFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void 
 
 /// How much a block can hold, read from the header it carries.
 fn widthOfBlock(pointer: [*]u8) usize {
-    const header: *Header = @alignCast(@ptrCast(pointer - @sizeOf(Header)));
+    const header: *Header = @ptrCast(@alignCast(pointer - @sizeOf(Header)));
     if (header.class == Header.OWN_SEGMENT) return header.capacity();
     return widthOf(header.class) - @sizeOf(Header);
 }

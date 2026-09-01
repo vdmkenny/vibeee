@@ -132,7 +132,7 @@ fn adopt(fd: c_int) ?*File {
         return null;
     };
 
-    const file: *File = @alignCast(@ptrCast(block));
+    const file: *File = @ptrCast(@alignCast(block));
     file.* = blank(fd, if (unistd.isatty(fd) != 0) .line else .full);
 
     for (&open_files) |*slot| {

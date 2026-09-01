@@ -430,7 +430,7 @@ const Probe = struct {
 };
 
 fn matchMethod(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
-    const probe: *Probe = @alignCast(@ptrCast(user.?));
+    const probe: *Probe = @ptrCast(@alignCast(user.?));
     if (!isDevice(node)) return .proceed;
     if (!has(node, probe.method)) return .proceed;
 
@@ -449,7 +449,7 @@ pub fn firstWithHid(hid: [*:0]const u8) ?*Node {
 }
 
 fn keepFirst(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
-    const found: *?*Node = @alignCast(@ptrCast(user.?));
+    const found: *?*Node = @ptrCast(@alignCast(user.?));
     found.* = node;
     return .stop;
 }
@@ -470,7 +470,7 @@ const ByName = struct {
 };
 
 fn matchName(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
-    const by: *ByName = @alignCast(@ptrCast(user.?));
+    const by: *ByName = @ptrCast(@alignCast(user.?));
 
     const name = namespace_node_name(node).text;
     if (!sameName(&name, by.wanted)) return .proceed;

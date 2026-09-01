@@ -532,7 +532,6 @@ fn schedule() void {
     // Execution resumes here as whichever thread was switched *to*, so the
     // state restored is its own.
     if (current) |c| hal.restoreFpu(&c.fpu);
-
 }
 
 /// Free anything queued by `exitWith`, except whatever is running right now.

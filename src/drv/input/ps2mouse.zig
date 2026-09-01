@@ -32,7 +32,6 @@ const WRITE_TO_AUX = 0xD4;
 
 /// Configuration byte bits. The clock bit is inverted: setting it *disables*
 /// the port, which is the kind of detail worth stating where it is used.
-
 /// Device commands.
 const SET_DEFAULTS = 0xF6;
 const ENABLE_REPORTING = 0xF4;

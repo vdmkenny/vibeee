@@ -324,7 +324,6 @@ test "PCI interrupt pins translate to ACPI indices" {
     try std.testing.expectEqual(@as(?u2, null), InterruptPin.none.acpiIndex());
 }
 
-
 // ---------------------------------------------------------------------------
 // Matching a device against what a manifest says it fits
 // ---------------------------------------------------------------------------

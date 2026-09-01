@@ -29,7 +29,6 @@ pub const Levels = l.Levels;
 /// src/keymaps/ plus a line in its registry, see keymaps/layout.zig.
 pub const layouts = &registry.all;
 
-
 var active: usize = @intFromEnum(registry.default);
 
 pub fn current() *const l.Compiled {
@@ -71,31 +70,25 @@ var pending: Dead = .none;
 const Composition = struct { Dead, u21, u21 };
 
 const compositions = [_]Composition{
-    .{ .acute, 'a', 0xE1 },   .{ .acute, 'e', 0xE9 },   .{ .acute, 'i', 0xED },
-    .{ .acute, 'o', 0xF3 },   .{ .acute, 'u', 0xFA },   .{ .acute, 'y', 0xFD },
-    .{ .acute, 'c', 0x107 },  .{ .acute, 'n', 0x144 },  .{ .acute, 's', 0x15B },
-    .{ .acute, 'A', 0xC1 },   .{ .acute, 'E', 0xC9 },   .{ .acute, 'I', 0xCD },
-    .{ .acute, 'O', 0xD3 },   .{ .acute, 'U', 0xDA },   .{ .acute, 'Y', 0xDD },
+    .{ .acute, 'a', 0xE1 },      .{ .acute, 'e', 0xE9 },      .{ .acute, 'i', 0xED },
+    .{ .acute, 'o', 0xF3 },      .{ .acute, 'u', 0xFA },      .{ .acute, 'y', 0xFD },
+    .{ .acute, 'c', 0x107 },     .{ .acute, 'n', 0x144 },     .{ .acute, 's', 0x15B },
+    .{ .acute, 'A', 0xC1 },      .{ .acute, 'E', 0xC9 },      .{ .acute, 'I', 0xCD },
+    .{ .acute, 'O', 0xD3 },      .{ .acute, 'U', 0xDA },      .{ .acute, 'Y', 0xDD },
 
-    .{ .grave, 'a', 0xE0 },   .{ .grave, 'e', 0xE8 },   .{ .grave, 'i', 0xEC },
-    .{ .grave, 'o', 0xF2 },   .{ .grave, 'u', 0xF9 },
-    .{ .grave, 'A', 0xC0 },   .{ .grave, 'E', 0xC8 },   .{ .grave, 'I', 0xCC },
-    .{ .grave, 'O', 0xD2 },   .{ .grave, 'U', 0xD9 },
-
-    .{ .circumflex, 'a', 0xE2 }, .{ .circumflex, 'e', 0xEA }, .{ .circumflex, 'i', 0xEE },
-    .{ .circumflex, 'o', 0xF4 }, .{ .circumflex, 'u', 0xFB },
+    .{ .grave, 'a', 0xE0 },      .{ .grave, 'e', 0xE8 },      .{ .grave, 'i', 0xEC },
+    .{ .grave, 'o', 0xF2 },      .{ .grave, 'u', 0xF9 },      .{ .grave, 'A', 0xC0 },
+    .{ .grave, 'E', 0xC8 },      .{ .grave, 'I', 0xCC },      .{ .grave, 'O', 0xD2 },
+    .{ .grave, 'U', 0xD9 },      .{ .circumflex, 'a', 0xE2 }, .{ .circumflex, 'e', 0xEA },
+    .{ .circumflex, 'i', 0xEE }, .{ .circumflex, 'o', 0xF4 }, .{ .circumflex, 'u', 0xFB },
     .{ .circumflex, 'A', 0xC2 }, .{ .circumflex, 'E', 0xCA }, .{ .circumflex, 'I', 0xCE },
-    .{ .circumflex, 'O', 0xD4 }, .{ .circumflex, 'U', 0xDB },
-
-    .{ .tilde, 'a', 0xE3 },   .{ .tilde, 'n', 0xF1 },   .{ .tilde, 'o', 0xF5 },
-    .{ .tilde, 'A', 0xC3 },   .{ .tilde, 'N', 0xD1 },   .{ .tilde, 'O', 0xD5 },
-
-    .{ .diaeresis, 'a', 0xE4 }, .{ .diaeresis, 'e', 0xEB }, .{ .diaeresis, 'i', 0xEF },
-    .{ .diaeresis, 'o', 0xF6 }, .{ .diaeresis, 'u', 0xFC }, .{ .diaeresis, 'y', 0xFF },
-    .{ .diaeresis, 'A', 0xC4 }, .{ .diaeresis, 'E', 0xCB }, .{ .diaeresis, 'I', 0xCF },
-    .{ .diaeresis, 'O', 0xD6 }, .{ .diaeresis, 'U', 0xDC },
-
-    .{ .cedilla, 'c', 0xE7 },   .{ .cedilla, 'C', 0xC7 },
+    .{ .circumflex, 'O', 0xD4 }, .{ .circumflex, 'U', 0xDB }, .{ .tilde, 'a', 0xE3 },
+    .{ .tilde, 'n', 0xF1 },      .{ .tilde, 'o', 0xF5 },      .{ .tilde, 'A', 0xC3 },
+    .{ .tilde, 'N', 0xD1 },      .{ .tilde, 'O', 0xD5 },      .{ .diaeresis, 'a', 0xE4 },
+    .{ .diaeresis, 'e', 0xEB },  .{ .diaeresis, 'i', 0xEF },  .{ .diaeresis, 'o', 0xF6 },
+    .{ .diaeresis, 'u', 0xFC },  .{ .diaeresis, 'y', 0xFF },  .{ .diaeresis, 'A', 0xC4 },
+    .{ .diaeresis, 'E', 0xCB },  .{ .diaeresis, 'I', 0xCF },  .{ .diaeresis, 'O', 0xD6 },
+    .{ .diaeresis, 'U', 0xDC },  .{ .cedilla, 'c', 0xE7 },    .{ .cedilla, 'C', 0xC7 },
 };
 
 /// The character a dead key produces when it fails to compose.

@@ -60,8 +60,6 @@ pub const DeviceInfo = extern struct {
     pub fn pathSlice(self: *const DeviceInfo) []const u8 {
         return self.path[0..@min(self.path_len, self.path.len)];
     }
-
-
 };
 
 /// What a controller says about one of its ports, before anything has
@@ -122,7 +120,7 @@ pub fn call(request: Req, into: *Rep) Error!void {
 
     const bytes = answer.bytes();
     if (bytes.len < @sizeOf(Rep)) return error.Refused;
-    into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
+    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
 
     return switch (into.status) {
         .ok => {},

@@ -47,7 +47,7 @@ fn parse(text: [*:0]const u8, end: ?*[*c]u8, base: c_int, comptime T: type) T {
 
     // Nothing was read, so nothing was consumed: `end` goes back to the start,
     // which is how a caller tells "zero" from "not a number".
-    if (end) |slot| slot.* = @constCast(@ptrCast(&text[if (any) i else 0]));
+    if (end) |slot| slot.* = @ptrCast(@constCast(&text[if (any) i else 0]));
     if (!any) return 0;
 
     return if (negative) 0 -% value else value;
@@ -170,11 +170,11 @@ export fn strtod(text: [*:0]const u8, end: ?*[*c]u8) callconv(.c) f64 {
 
     const took = str.numberSpan(whole[at..]);
     if (took == 0) {
-        if (end) |out| out.* = @constCast(@ptrCast(text));
+        if (end) |out| out.* = @ptrCast(@constCast(text));
         return 0;
     }
 
-    if (end) |out| out.* = @constCast(@ptrCast(text + at + took));
+    if (end) |out| out.* = @ptrCast(@constCast(text + at + took));
     return std.fmt.parseFloat(f64, whole[at..][0..took]) catch 0;
 }
 
@@ -277,7 +277,7 @@ export fn getopt(argc: c_int, argv: [*c][*c]u8, spec: [*:0]const u8) callconv(.c
     // argument if there is any, and the next argument if there is not.
     if (at + 1 < wanted.len and wanted[at + 1] == ':') {
         if (within < text.len) {
-            optarg = @constCast(@ptrCast(arg + within));
+            optarg = @ptrCast(@constCast(arg + within));
         } else {
             optind += 1;
             if (optind >= argc) {
@@ -305,7 +305,6 @@ fn indexOf(text: []const u8, byte: u8) ?usize {
     }
     return null;
 }
-
 
 /// Run a command through a command processor.
 ///

@@ -480,7 +480,6 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         return .ok;
     }
 
-
     if (request.index >= count) return .end;
 
     const iface = &ifaces[request.index];

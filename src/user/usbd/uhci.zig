@@ -630,7 +630,8 @@ const Aim = struct {
 /// This controller has no notion of a transfer larger than a packet: a
 /// descriptor is one packet on the wire, so anything longer is a chain of
 /// them and the toggle alternates down it.
-fn packets(self: *Unit, 
+fn packets(
+    self: *Unit,
     at: usize,
     pid: Pid,
     pipe: Aim,
@@ -721,7 +722,8 @@ fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!u
     }
 
     toggle = true;
-    used += packets(self, 
+    used += packets(
+        self,
         used,
         switch (setup.statusDirection()) {
             .in => .in,
@@ -774,7 +776,6 @@ fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
         .low_speed = pipe.speed == .low,
         .max_packet = pipe.max_packet,
     }, 0, data.len, &toggle);
-
 
     queue(self, used);
     try settle(self, used, 5_000_000);

@@ -349,7 +349,6 @@ fn recover(disk: *Disk) void {
     clearHalt(disk, &disk.writing);
 }
 
-
 fn say(disk: *const Disk) void {
     log.begin(name, .key);
     const megabytes = disk.capacity.bytes_() / (1024 * 1024);

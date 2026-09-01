@@ -19,7 +19,6 @@ pub fn run(args: []const []const u8) void {
     // can tell it.
     if (args.len > 0 and std.mem.eql(u8, args[0], "sync")) return sync();
 
-
     const seconds = blk: {
         const us = sys.realtimeMicros() orelse {
             out.text("date: the clock has not been set\n");

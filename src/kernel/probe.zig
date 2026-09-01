@@ -17,7 +17,6 @@ const lib = @import("lib");
 /// agree about what the words mean and how each is coloured.
 pub const Confidence = @import("lib").driver.Confidence;
 
-
 /// Shared with userspace for the same reason `Confidence` is: the boot table
 /// and the `devices` tool report the same bindings and should not differ about
 /// what they are called or how they look.

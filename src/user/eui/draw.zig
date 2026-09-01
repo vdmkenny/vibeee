@@ -473,7 +473,6 @@ test "a copy hanging off every edge keeps to the surface" {
     try testing.expectEqual(@as(u32, 0x999999), dst_pixels[7 * SIDE + 7]);
 }
 
-
 test "a surface's span is its rows by its stride in words, and only for a real shape" {
     try std.testing.expectEqual(@as(?u32, 800 * 600 * 4), spanBytes(800, 600, 800));
     // A stride wider than the row counts the padding, which the reader will

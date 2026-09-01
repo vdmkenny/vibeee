@@ -365,8 +365,6 @@ fn lookup(req: *const proto.Req, token: u32) void {
     replyEnd(token);
 }
 
-
-
 fn replyDriver(token: u32, driver_name: []const u8) void {
     var assignment = proto.Assignment{ .driver_len = @intCast(driver_name.len) };
     @memcpy(assignment.driver[0..driver_name.len], driver_name);

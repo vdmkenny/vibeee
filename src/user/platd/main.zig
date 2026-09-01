@@ -150,7 +150,7 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(proto.Req)) return .unknown;
 
-    const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
+    const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
 
     // Everything here is the firmware's to answer, so with no firmware there
     // is nothing to say but no.

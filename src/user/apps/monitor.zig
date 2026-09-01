@@ -525,4 +525,3 @@ fn processText() []const u8 {
     line.quantity(shown, if (shown == 1) "process" else "processes");
     return line.done();
 }
-

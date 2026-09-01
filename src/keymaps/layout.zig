@@ -49,11 +49,6 @@ pub const Entry = struct {
     dead_altgr: Dead = .none,
 };
 
-
-
-
-
-
 /// A layout as written in a layout file: a sparse list of key definitions.
 pub const Layout = struct {
     /// Full name, for settings UI.

@@ -220,7 +220,6 @@ fn render(r: *const Report) noreturn {
     drawText(r, text_width);
     if (have_qr) drawQr(&code, console.width() - qr_cols, 1, quiet);
 
-
     hal.halt();
 }
 

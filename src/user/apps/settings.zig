@@ -325,7 +325,6 @@ fn wallpaper(area: eui.Rect) i32 {
 /// Listed as they gain something to hold: a heading over an empty pane is a
 /// promise the machine has not kept, so a section appears here when there is
 /// a setting under it and not before.
-
 var section: Section = .display;
 
 fn draw() void {
@@ -1098,7 +1097,6 @@ fn drawAmount(pane: eui.Rect, y: i32, label: []const u8, value: u32, unit: []con
     return drawFact(pane, y, label, line.done());
 }
 
-
 /// A row of swatches for a named-colour setting, whichever list it comes
 /// from. Returns where the next thing goes.
 ///
@@ -1311,5 +1309,4 @@ fn drawFooter(area: eui.Rect) void {
         },
         else => sys.exit(0),
     };
-
 }

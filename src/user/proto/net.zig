@@ -232,7 +232,7 @@ pub fn callWith(tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error
     const bytes = reply.bytes();
     if (bytes.len < @sizeOf(Rep)) return error.Refused;
 
-    into.* = @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).*;
+    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
 
     return switch (into.status) {
         .ok => {},

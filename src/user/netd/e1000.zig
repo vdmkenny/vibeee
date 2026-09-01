@@ -434,7 +434,6 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     return true;
 }
 
-
 fn reset() bool {
     maskAndClearInterrupts();
     device.regs.write(.rctl, 0);
@@ -497,7 +496,7 @@ fn readRar() ?[6]u8 {
     const high: ReceiveAddressHigh = @bitCast(device.regs.read(.ra1));
     if (!high.valid) return null;
     const mac = [6]u8{
-        low.octet0, low.octet1, low.octet2, low.octet3,
+        low.octet0,  low.octet1,  low.octet2, low.octet3,
         high.octet4, high.octet5,
     };
     return if (validMac(mac)) mac else null;

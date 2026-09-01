@@ -96,7 +96,6 @@ pub const commands = [_]Command{
     .{ .name = "thermal", .summary = manual.summaryOf("thermal"), .run = &thermal.run },
 };
 
-
 /// The names alone, for a shell completing a command name. Derived from the
 /// table rather than written beside it, so a command added here is completable
 /// without anyone remembering to say so a second time.

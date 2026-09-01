@@ -676,7 +676,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) void {
         return;
     }
 
-    const request: *const proto.Req = @alignCast(@ptrCast(bytes.ptr));
+    const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
     switch (request.tag) {
         .list => describe(request.index, reply),
         .start => reply.result = resume_(request.named()),
@@ -921,4 +921,3 @@ fn report(who: []const u8, what: []const u8) void {
     out.text(what);
     log.end();
 }
-

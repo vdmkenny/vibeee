@@ -137,7 +137,6 @@ pub fn sys_wait(a: Args) Result {
     return @intCast(exited.id);
 }
 
-
 pub fn sys_chdir(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();

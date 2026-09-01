@@ -500,7 +500,6 @@ fn decodeName(raw: *const [11]u8, out: *[MAX_NAME]u8) usize {
     return n;
 }
 
-
 /// Case-insensitive comparison against an 8.3 name.
 fn nameMatches(entry: []const u8, wanted: []const u8) bool {
     if (entry.len != wanted.len) return false;

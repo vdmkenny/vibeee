@@ -19,7 +19,6 @@
 //! Everything here is `extern` and little-endian: it crosses a process
 //! boundary between separately compiled programs.
 
-
 /// Bumped when a change would make an old client misread a new server. The
 /// server rejects a mismatch at `hello` rather than failing later in a way
 /// that looks like a client bug.
@@ -183,7 +182,7 @@ pub fn clipboardText(mapped: []const u8) []const u8 {
     if (mapped.len < @sizeOf(ClipHead)) return "";
     const head: *const ClipHead = @ptrCast(@alignCast(mapped.ptr));
     const room = mapped.len - @sizeOf(ClipHead);
-    return mapped[@sizeOf(ClipHead) ..][0..@min(head.len, room)];
+    return mapped[@sizeOf(ClipHead)..][0..@min(head.len, room)];
 }
 
 // ---------------------------------------------------------------------------

@@ -14,10 +14,8 @@ const std = @import("std");
 /// Whether `text` begins with `prefix`. Shorter than the prefix is not.
 /// Whether two strings say the same thing, folded for case.
 ///
-
 /// Whether `a` sorts before `b`, folded for case.
 ///
-
 /// Leading decimal digits as a number. Stops at the first non-digit rather
 /// than failing, because every caller is reading a field it already trusts.
 /// Whether two strings say the same thing, folded for case.

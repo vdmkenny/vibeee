@@ -102,4 +102,3 @@ fn writeDuration(total: usize) void {
     built.duration(total);
     out.text(built.done());
 }
-

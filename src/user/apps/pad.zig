@@ -390,7 +390,6 @@ fn draw() void {
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
-
     // A menu above and a status line below, with the document between them.
     // The window frame is already a border, and a second one inset from it
     // is a margin around a document that wanted the room.
@@ -424,7 +423,6 @@ fn draw() void {
     if (eui.menubar.run(ctx, strip, &menus, &MENUS)) |id| {
         run_command(@enumFromInt(id));
     }
-
 }
 
 var place_buffer: [32]u8 = @splat(0);

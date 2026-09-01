@@ -294,5 +294,5 @@ fn connect() ?u32 {
 fn statusOf(reply: *const sys.Message) Status {
     const bytes = reply.bytes();
     if (bytes.len < @sizeOf(Rep)) return .failed;
-    return @as(*const Rep, @alignCast(@ptrCast(bytes.ptr))).status;
+    return @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).status;
 }

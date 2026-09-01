@@ -47,7 +47,6 @@ pub const layout = Layout{
         .{ .bracket_left, ka('[', '{', 0xAB, 0) },
         .{ .bracket_right, ka(']', '}', 0xBB, 0) },
         .{ .enter, k('\n', '\n') },
-
         .{ .a, ka('a', 'A', 0xE1, 0xC1) }, // á Á
         .{ .s, ka('s', 'S', 0xDF, 0xA7) }, // ß §
         .{ .d, letter('d', 'D') },

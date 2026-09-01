@@ -67,7 +67,7 @@ pub fn run(args: []const []const u8) void {
         // listener nobody ever connects to.
         const stop = sys.watch(.stop);
         var doors: [2]u32 = .{ gate.waitHandle(), if (stop >= 0) @intCast(stop) else gate.waitHandle() };
-        const woke = sys.waitMany(doors[0 .. if (stop >= 0) 2 else 1], sys.FOREVER);
+        const woke = sys.waitMany(doors[0..if (stop >= 0) 2 else 1], sys.FOREVER);
         if (woke != 0) return;
 
         const s = gate.accept() catch |err| {
@@ -174,7 +174,7 @@ fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
 
     while (true) {
         var sources: [2]u32 = .{ s.waitHandle(), @intCast(keys) };
-        const woke = sys.waitMany(sources[0 .. if (typing) 2 else 1], sys.FOREVER);
+        const woke = sys.waitMany(sources[0..if (typing) 2 else 1], sys.FOREVER);
         if (woke < 0) continue;
 
         if (woke == 1) {

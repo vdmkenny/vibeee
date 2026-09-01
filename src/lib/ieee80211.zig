@@ -123,8 +123,7 @@ pub const Topology = enum {
 
     pub fn of(control: FrameControl) Topology {
         return switch ((@as(u2, @intFromBool(control.from_ds)) << 1) |
-            @intFromBool(control.to_ds))
-        {
+            @intFromBool(control.to_ds)) {
             0b00 => .adhoc,
             0b01 => .to_ap,
             0b10 => .from_ap,

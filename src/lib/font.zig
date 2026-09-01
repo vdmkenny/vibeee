@@ -177,7 +177,7 @@ pub const Font = struct {
     /// Substitute for a code point the font lacks. Better a visible marker than
     /// a blank, which reads as a bug in the program producing the text.
     pub fn fallback(self: *const Font) []const u8 {
-        return self.glyph('?') orelse self.bitmap[0..self.height * self.row_bytes];
+        return self.glyph('?') orelse self.bitmap[0 .. self.height * self.row_bytes];
     }
 };
 

@@ -382,5 +382,5 @@ test "a name is refused when it could not be typed back" {
     try std.testing.expectEqual(@as(?Name, null), Name.of("a:b"));
     try std.testing.expectEqual(@as(?Name, null), Name.of("Uppercase"));
     try std.testing.expectEqual(@as(?Name, null), Name.of("x" ** 16));
-    try std.testing.expect(Name.of("media-player_2").? .is("media-player_2"));
+    try std.testing.expect(Name.of("media-player_2").?.is("media-player_2"));
 }

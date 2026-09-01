@@ -156,8 +156,6 @@ fn draw() void {
             row += 1;
         }
     }
-
-
 }
 
 /// The sum above the answer. A number with nothing above it is a number you

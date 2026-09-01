@@ -112,7 +112,7 @@ pub fn setupStack(
     if (frame_bytes + CALL_BYTES > offset) return error.OutOfMemory;
     offset -= frame_bytes;
 
-    const stack_words: [*]u32 = @alignCast(@ptrCast(page + offset));
+    const stack_words: [*]u32 = @ptrCast(@alignCast(page + offset));
     stack_words[0] = @intCast(count);
     for (0..count) |k| stack_words[1 + k] = @intCast(arg_addrs[k]);
     stack_words[1 + count] = 0;
@@ -128,7 +128,7 @@ pub fn setupStack(
     // every program rather than assembly reading the stack raw.
     const frame_address: u32 = @intCast(USER_STACK_TOP - paging.PAGE_SIZE + offset);
     offset -= CALL_BYTES;
-    const call_words: [*]u32 = @alignCast(@ptrCast(page + offset));
+    const call_words: [*]u32 = @ptrCast(@alignCast(page + offset));
     call_words[0] = 0;
     call_words[1] = frame_address;
 

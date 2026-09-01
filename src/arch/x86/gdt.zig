@@ -15,7 +15,6 @@
 
 const std = @import("std");
 
-
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
 pub const USER_CODE: u16 = 0x18 | 3; // RPL 3

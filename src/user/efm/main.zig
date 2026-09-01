@@ -215,8 +215,6 @@ fn typed(codepoint: u32) bool {
     return true;
 }
 
-
-
 /// Open what the cursor is on: a directory is walked into, and anything else
 /// is left alone. Running a program from here needs a way to say what it
 /// should be opened with, which is a question this does not answer yet.
@@ -247,7 +245,6 @@ fn open(pane: *Pane, entry: dir.Entry) void {
     };
     ctx.damage();
 }
-
 
 /// Up one, which is what backspace means everywhere else a path is shown.
 fn leave() void {
@@ -383,7 +380,6 @@ fn draw() void {
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
-
     // The volumes above, the keys below, the panes between.
     const parts = eui.chrome.split(area, .{ .top = true, .bottom = true });
     const places = parts.top;
@@ -410,7 +406,6 @@ fn draw() void {
     }
 
     drawKeys(keys);
-
 }
 
 /// The volumes across the top: what is mounted, how full, and how much is
@@ -770,4 +765,3 @@ fn drawQuestion(area: Rect) void {
         }
     }
 }
-

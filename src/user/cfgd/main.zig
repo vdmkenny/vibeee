@@ -74,7 +74,7 @@ fn answer(message: *const sys.Message, reply: *sys.Message) settings.Status {
     const bytes = message.bytes();
     if (bytes.len < @sizeOf(settings.Req)) return .bad_value;
 
-    const request: *const settings.Req = @alignCast(@ptrCast(bytes.ptr));
+    const request: *const settings.Req = @ptrCast(@alignCast(bytes.ptr));
     const asked = request.parts();
 
     return switch (request.tag) {

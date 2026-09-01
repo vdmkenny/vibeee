@@ -78,4 +78,3 @@ fn emitIfMatch(line: []const u8, pattern: []const u8, name: []const u8, show_nam
     out.text(line);
     out.text("\n");
 }
-

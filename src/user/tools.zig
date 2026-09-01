@@ -61,5 +61,3 @@ fn listCommands() void {
         out.text("\n");
     }
 }
-
-

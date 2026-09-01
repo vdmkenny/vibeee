@@ -109,5 +109,3 @@ fn before(_: void, a: Entry, b: Entry) bool {
     // took that literally would put every short name before every long one.
     return str.before(a.name, b.name);
 }
-
-

@@ -103,7 +103,7 @@ export fn opendir(path: [*:0]const u8) callconv(.c) ?*Dir {
         return null;
     };
 
-    const dir: *Dir = @alignCast(@ptrCast(block));
+    const dir: *Dir = @ptrCast(@alignCast(block));
     dir.* = .{ .handle = @intCast(handle) };
     return dir;
 }

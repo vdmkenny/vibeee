@@ -223,7 +223,6 @@ pub const Context = struct {
         }
     }
 
-
     /// The whole of what this context draws on.
     pub fn bounds(self: *const Context) Rect {
         return .{ .x = 0, .y = 0, .w = self.surface.width, .h = self.surface.height };
@@ -249,7 +248,6 @@ pub const Context = struct {
     pub fn postText(self: *Context, codepoint: u32) void {
         self.pending_text = codepoint;
     }
-
 
     /// What changed this pass.
     pub fn damageList(self: *const Context) []const Rect {
@@ -409,11 +407,6 @@ pub const Context = struct {
         self.pending_key = 0;
         return code;
     }
-
-
-
-
-
 
     pub fn slotFor(self: *Context, area: Rect) ?*Entry {
         const x: i16 = @intCast(@max(@min(area.x, 32767), -32768));
