@@ -117,8 +117,17 @@ pub fn applyModifier(code: KeyCode, pressed: bool) void {
 /// with no input and no way to report it.
 var key_owner: u32 = 0;
 
-pub fn claimKeys(owner: u32) void {
+/// Take the keyboard, unless somebody else has it.
+///
+/// Refused rather than granted twice, the same way the display is: two
+/// programs cannot both take the same keystroke, and one that overwrote the
+/// claim would leave the other reading from the same queue and racing it for
+/// every key, then flush what it had not read on the way out. A claimant that
+/// exits releases, so the only claim that stands in the way is a live one.
+pub fn claimKeys(owner: u32) bool {
+    if (key_owner != 0 and key_owner != owner) return false;
     key_owner = owner;
+    return true;
 }
 
 pub fn releaseKeys() void {

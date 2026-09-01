@@ -420,10 +420,14 @@ pub const Prompt = struct {
 
 /// Wait for one key press, which is what a full-screen program's loop turns
 /// on. The read blocks in the kernel, so a program at rest costs nothing.
-pub fn key() sys.KeyEvent {
+///
+/// Null when the keyboard belongs to another program. A reader with no keys
+/// coming has nothing to wait for, and the caller shows what it has and
+/// leaves rather than holding the screen against a press that cannot arrive.
+pub fn key() ?sys.KeyEvent {
     var events: [8]sys.KeyEvent = undefined;
     while (true) {
-        for (sys.keyRead(&events, sys.FOREVER)) |event| {
+        for (sys.keyRead(&events, sys.FOREVER) orelse return null) |event| {
             if (event.pressed != 0) return event;
         }
     }
@@ -487,7 +491,9 @@ const Command = enum { quit, up, down, page_up, page_down, top, bottom, wrap, nu
 /// Wait for a key and say what it means to a reader.
 fn command() Command {
     while (true) {
-        const event = key();
+        // A keyboard that is not this program's is a reader with nothing
+        // left to wait for, which is the same as being told to leave.
+        const event = key() orelse return .quit;
         const meant: Command = switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
             .q, .escape => .quit,
             .down, .enter => .down,

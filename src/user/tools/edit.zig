@@ -83,7 +83,10 @@ pub fn run(args: []const []const u8) void {
 
     while (true) {
         draw();
-        if (!handle(pager.key())) break;
+        // No keyboard to read is nothing to edit with: the document is left
+        // as it stands rather than held on a screen nobody can answer.
+        const pressed = pager.key() orelse break;
+        if (!handle(pressed)) break;
     }
 }
 

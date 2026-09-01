@@ -48,6 +48,7 @@ const CASES = [_]Case{
     .{ .says = "one of the system's own service names", .run = &reservedName, .want = .perm },
     .{ .says = "signalling an event only given to read", .run = &readOnlyEvent, .want = .perm },
     .{ .says = "a program whose bytes reach past its file", .run = &crookedProgram, .want = .inval },
+    .{ .says = "a keyboard another program is holding", .run = &heldKeyboard, .want = .busy },
 };
 
 pub fn run(args: []const []const u8) void {
@@ -55,6 +56,9 @@ pub fn run(args: []const []const u8) void {
     // the handle cases need something to call, and a server that answers is
     // the smallest thing that will do.
     if (args.len > 0 and std.mem.eql(u8, args[0], "echo")) return echo();
+    // Started with `hold` it takes the keyboard and keeps it, which is what
+    // the keyboard case needs somebody to be doing.
+    if (args.len > 0 and std.mem.eql(u8, args[0], "hold")) return hold();
 
     var passed: usize = 0;
     for (CASES) |case| {
@@ -164,6 +168,20 @@ fn connect() isize {
 
 const ECHO = "probe.echo";
 
+/// Take the keyboard and keep it for a while, so the case that asks for it
+/// has somebody to be refused by.
+fn hold() void {
+    var events: [8]abi.KeyEvent = undefined;
+    if (sys.keyRead(&events, abi.Timeout.poll) == null) return;
+
+    const said = sys.open(HOLDING, .{ .write = true, .create = true, .truncate = true });
+    if (said >= 0) _ = sys.close(@intCast(said));
+
+    // Long enough for the case to be asked and answered, and no longer: a
+    // program holding the keyboard is a program nothing else can read from.
+    for (0..200) |_| sys.sleepMicros(10_000);
+}
+
 /// The other end: take whatever arrives, close the handles that came with it,
 /// and answer. Closing them is the point, because a handle nobody closes tells
 /// nothing about whether the kernel would have let it go.
@@ -212,6 +230,7 @@ fn name(which: abi.Errno) []const u8 {
         .badf => "refused (bad handle)",
         .perm => "refused (not allowed)",
         .inval => "refused (not a program)",
+        .busy => "refused (somebody has it)",
         else => "refused",
     };
 }
@@ -367,6 +386,42 @@ const Elf = struct {
         };
     }
 };
+
+/// The keyboard, while a program of this one's own is holding it.
+///
+/// Two programs cannot both take the same keystroke. One that overwrote the
+/// claim would leave the other reading the same queue and racing it for every
+/// key, and would flush what it had not read on the way out: a program could
+/// take the desktop's keyboard by asking for it.
+fn heldKeyboard() isize {
+    _ = sys.unlink(HOLDING);
+    const holder = sys.spawnDetached("/bin/tools", &.{ "tools", "probe", "hold" });
+    if (holder < 0) return NOT_RUN;
+
+    // Wait to be told the keyboard is taken. Asking before that would claim
+    // it here, and the case would then be about which of the two went first
+    // rather than about what happens to the second.
+    if (!waitFor(HOLDING)) return NOT_RUN;
+
+    var events: [1]abi.KeyEvent = undefined;
+    return sys.keyReadRaw(&events, abi.Timeout.poll);
+}
+
+/// Where the holder says it has the keyboard. A file rather than a service,
+/// because the answer is one bit and it only has to survive until it is read.
+const HOLDING = "/tmp/probe-holding";
+
+fn waitFor(path: []const u8) bool {
+    for (0..500) |_| {
+        const file = sys.open(path, .{});
+        if (file >= 0) {
+            _ = sys.close(@intCast(file));
+            return true;
+        }
+        sys.sleepMicros(1000);
+    }
+    return false;
+}
 
 /// The keyboard's own ready event, which `watch` hands out to read and not to
 /// write. Everything waiting on keys waits on this one: a program that could

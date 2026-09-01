@@ -24,6 +24,6 @@ much memory has not come back.
 It says how many were refused as they should be. Anything other than all of
 them is a hole, and a machine that stops partway through has the worst kind.
 
-`probe echo` is the other end of that channel and is not meant to be run by
-hand: the handle cases need something to call, and a server that answers is
-the smallest thing that will do.
+`probe echo` and `probe hold` are the other halves of two of these cases and
+are not meant to be run by hand: the handle cases need something to call,
+and the keyboard case needs somebody to be holding one.

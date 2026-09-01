@@ -102,14 +102,15 @@ comptime {
 /// Zero polls, and 0xFFFFFFFF waits for as long as it takes.
 ///
 /// The first call claims the keyboard: a shell reading lines and a game
-/// reading keys cannot both consume the same keystroke. The claim ends
-/// when the process does.
+/// reading keys cannot both consume the same keystroke. The claim ends when
+/// the process does, and a keyboard another program is holding answers -1
+/// rather than a share of its keystrokes.
 export fn vb_key_read(into: ?[*]Key, count: c_int, timeout_us: c_uint) c_int {
     const buffer = into orelse return -1;
     if (count <= 0) return 0;
 
     const events: [*]sys.KeyEvent = @ptrCast(buffer);
-    const taken = sys.keyRead(events[0..@intCast(count)], timeout_us);
+    const taken = sys.keyRead(events[0..@intCast(count)], timeout_us) orelse return -1;
     return @intCast(taken.len);
 }
 

@@ -163,7 +163,10 @@ fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
     // process and wakes the keys event, instead of feeding the shell's
     // line discipline underneath the conversation.
     var events: [8]sys.KeyEvent = undefined;
-    _ = sys.keyRead(&events, sys.POLL);
+    if (sys.keyRead(&events, sys.POLL) == null) {
+        say("nc: another program is holding the keyboard\n");
+        return;
+    }
 
     var line: [512]u8 = undefined;
     var len: usize = 0;
@@ -175,7 +178,7 @@ fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
         if (woke < 0) continue;
 
         if (woke == 1) {
-            for (sys.keyRead(&events, sys.POLL)) |event| {
+            for (sys.keyRead(&events, sys.POLL) orelse break) |event| {
                 if (event.pressed == 0) continue;
                 switch (handleKey(s, datagrams, event, &line, &len)) {
                     .keep_going => {},

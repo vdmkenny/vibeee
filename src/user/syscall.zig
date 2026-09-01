@@ -666,15 +666,31 @@ pub fn displayAcquire(info: *DisplayInfo) DisplayError!isize {
 }
 
 /// Read raw key events, claiming the keyboard from the line discipline.
-pub fn keyRead(buf: []KeyEvent, timeout_us: usize) []KeyEvent {
+///
+/// Null when the keyboard belongs to another program, which is a different
+/// thing from an empty answer: nothing to read yet is worth waiting through,
+/// and a keyboard that is not yours never will be.
+pub fn keyRead(buf: []KeyEvent, timeout_us: usize) ?[]KeyEvent {
     const n = syscall3(
         abi.number("key_read"),
         @intFromPtr(buf.ptr),
         buf.len * @sizeOf(KeyEvent),
         timeout_us,
     );
+    if (n == -@as(isize, @intFromEnum(abi.Errno.busy))) return null;
     if (n <= 0) return buf[0..0];
     return buf[0..@divTrunc(@as(usize, @intCast(n)), @sizeOf(KeyEvent))];
+}
+
+/// The same read, answering with the number the kernel gave rather than with
+/// what it meant. For asking whether the keyboard is refused, and why.
+pub fn keyReadRaw(buf: []KeyEvent, timeout_us: usize) isize {
+    return syscall3(
+        abi.number("key_read"),
+        @intFromPtr(buf.ptr),
+        buf.len * @sizeOf(KeyEvent),
+        timeout_us,
+    );
 }
 
 /// Allocate a shared-memory segment. Pass the handle over a channel to share it.

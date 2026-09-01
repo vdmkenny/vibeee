@@ -16,14 +16,28 @@ pub const Ring = struct {
     /// Power-of-two length, so free-running indices wrap by masking.
     data: []u8,
 
+    /// How much there is to read.
+    ///
+    /// Clamped, because both indices live in memory the other side can write
+    /// and neither is this side's to trust. A tail ahead of head subtracts to
+    /// an enormous length, and `writable` then subtracts that from the
+    /// capacity and underflows in turn: the masking in `push` and `peek`
+    /// keeps every access inside the buffer, so what comes of it is a peer
+    /// reading and sending whatever the ring happens to hold rather than a
+    /// walk off the end. `ring.zig` has clamped for the same reason since it
+    /// was written; this one had not.
     pub fn readable(self: Ring) u32 {
         const head = @atomicLoad(u32, self.head, .acquire);
         const tail = @atomicLoad(u32, self.tail, .monotonic);
-        return head -% tail;
+        return @min(head -% tail, self.capacity());
     }
 
     pub fn writable(self: Ring) u32 {
-        return @as(u32, @intCast(self.data.len)) - self.readable();
+        return self.capacity() - self.readable();
+    }
+
+    pub fn capacity(self: Ring) u32 {
+        return @intCast(self.data.len);
     }
 
     /// Copy in as much of `bytes` as fits and publish it. Returns how much
@@ -137,4 +151,42 @@ test "indices survive wrapping around the top of u32" {
     try std.testing.expectEqual(@as(u32, 3), ring.pop(&got));
     try std.testing.expectEqualStrings("abc", &got);
     try std.testing.expectEqual(@as(u32, 1), head);
+}
+
+test "an index the other side forged is clamped rather than believed" {
+    // Both indices live in memory the peer can write. A tail ahead of head
+    // subtracts to an enormous length, and the room left subtracts that from
+    // the capacity and underflows in turn.
+    var storage: [16]u8 = @splat(0);
+    var head: u32 = 4;
+    var tail: u32 = 100;
+    const ring = Ring{ .head = &head, .tail = &tail, .data = &storage };
+
+    try std.testing.expectEqual(@as(u32, 16), ring.readable());
+    try std.testing.expectEqual(@as(u32, 0), ring.writable());
+
+    // Nothing may be read past what the buffer holds, whatever it says.
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(u32, 16), ring.pop(&buf));
+
+    // Nor written into a ring that claims to be more than full.
+    try std.testing.expectEqual(@as(u32, 0), ring.push("hello"));
+
+    // An honest pair still answers honestly.
+    head = 20;
+    tail = 16;
+    try std.testing.expectEqual(@as(u32, 4), ring.readable());
+    try std.testing.expectEqual(@as(u32, 12), ring.writable());
+}
+
+test "indices that have wrapped are still the distance between them" {
+    // Free-running and unsigned, so a producer past four billion bytes is an
+    // ordinary state rather than a forged one.
+    var storage: [16]u8 = @splat(0);
+    var head: u32 = 3;
+    var tail: u32 = std.math.maxInt(u32) - 4;
+    const ring = Ring{ .head = &head, .tail = &tail, .data = &storage };
+
+    try std.testing.expectEqual(@as(u32, 8), ring.readable());
+    try std.testing.expectEqual(@as(u32, 8), ring.writable());
 }

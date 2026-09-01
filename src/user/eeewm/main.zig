@@ -378,7 +378,9 @@ fn run() noreturn {
             acted = true;
         }
 
-        const keys = sys.keyRead(&key_events, sys.POLL);
+        // Empty until a key is pressed; null only if something else has taken
+        // the keyboard, which the desktop claimed before it started anything.
+        const keys = sys.keyRead(&key_events, sys.POLL) orelse &.{};
         for (keys) |event| {
             // The number chips in the bar follow the modifier itself, both
             // edges: they appear when Super goes down and leave with it.

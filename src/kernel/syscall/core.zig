@@ -462,8 +462,12 @@ pub fn sys_key_read(a: Args) Result {
     // Reading claims the keyboard. Doing it here rather than in a separate
     // call means a process cannot claim the keyboard and then fail to read it,
     // which would leave the shell with no input and no way to say so.
-    const self_id = if (sched.currentThread()) |t| t.id else 0;
-    input.claimKeys(self_id);
+    //
+    // A claim somebody else holds is refused rather than taken: reading is
+    // how the keyboard is claimed, so it is also where a second claimant has
+    // to be told, and told rather than quietly given a share of the other's
+    // keystrokes.
+    if (!input.claimKeys(ctx.currentId())) return Errno.busy.value();
 
     const deadline = ctx.deadlineFrom(a.a2);
 
