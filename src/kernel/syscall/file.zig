@@ -47,7 +47,6 @@ pub fn sys_open(a: Args) Result {
         const iterator = handles.newIterator(it) orelse return Errno.nomem.value();
         r.mount.open_files += 1;
         h.* = .{
-            .kind = .directory,
             .rights = .{ .read = true },
             .data = .{ .directory = .{
                 .mount = r.mount,
@@ -77,7 +76,6 @@ pub fn sys_open(a: Args) Result {
     }
 
     h.* = .{
-        .kind = .file,
         .rights = .{ .read = true, .write = flags.write, .seek = true },
         .data = .{ .file = .{
             .mount = opened.mount,
@@ -120,9 +118,10 @@ pub fn sys_mkdir(a: Args) Result {
 pub fn sys_ftruncate(a: Args) Result {
     const table = currentHandles() orelse return Errno.badf.value();
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
-    if (h.kind != .file) return Errno.inval.value();
-
-    const open = &h.data.file;
+    const open = switch (h.data) {
+        .file => |*open| open,
+        else => return Errno.inval.value(),
+    };
     vfs.resize(open.mount, &open.entry, @truncate(a.a1)) catch |err| return errnoFor(err);
     vfs.commit(open.mount, open.entry, clock.realtimeSeconds()) catch {};
     return 0;
@@ -183,9 +182,10 @@ pub fn sys_close(a: Args) Result {
 pub fn sys_seek(a: Args) Result {
     const table = currentHandles() orelse return Errno.badf.value();
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
-    if (h.kind != .file) return Errno.badf.value();
-
-    const f = &h.data.file;
+    const f = switch (h.data) {
+        .file => |*f| f,
+        else => return Errno.badf.value(),
+    };
     const displacement: isize = @bitCast(a.a1);
 
     const base: i64 = switch (a.a2) {
@@ -207,10 +207,12 @@ pub fn sys_seek(a: Args) Result {
 pub fn sys_readdir(a: Args) Result {
     const table = currentHandles() orelse return Errno.badf.value();
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
-    if (h.kind != .directory) return Errno.badf.value();
+    const d = switch (h.data) {
+        .directory => |*d| d,
+        else => return Errno.badf.value(),
+    };
 
     const out = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
-    const d = &h.data.directory;
     if (d.exhausted) return 0;
 
     // The parent comes first and is made up here rather than passed through.

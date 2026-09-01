@@ -68,7 +68,7 @@ pub fn sys_write(a: Args) Result {
     const h = table.get(number) orelse return Errno.badf.value();
     if (!h.rights.write) return Errno.perm.value();
 
-    return switch (h.kind) {
+    return switch (h.data) {
         .console => writeConsole(number, buf),
         .file => writeFile(&h.data.file, buf),
         .pipe => writePipe(h.data.pipe, buf),
@@ -171,7 +171,7 @@ pub fn sys_read(a: Args) Result {
     // Dispatched on what the handle is, not on its number: a shell whose input
     // came from a terminal emulator has a pipe on handle 0, and reading the
     // keyboard instead would take input from whoever else was typing.
-    return switch (h.kind) {
+    return switch (h.data) {
         .console => readConsole(buf),
         .file => readFile(&h.data.file, buf),
         .pipe => readPipe(h.data.pipe, buf),
@@ -433,7 +433,6 @@ pub fn sys_watch(a: Args) Result {
 
     event_mod.retain(source);
     const slot = ctx.installHandle(.{
-        .kind = .event,
         .rights = .{ .read = true },
         .data = .{ .event = source },
     }) orelse {

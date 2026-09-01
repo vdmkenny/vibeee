@@ -56,11 +56,15 @@ pub fn sys_pci_write(a: Args) Result {
 
 fn pciSelector(packed_location: usize, offset: usize) ?pcicfg.Selector {
     if (packed_location > std.math.maxInt(u16) or offset > std.math.maxInt(u8)) return null;
+    // The three shifts are `Location`'s own layout, and the masks beside them
+    // are its field widths restated. It is a packed struct, so the bytes say
+    // which is which without being taken apart by hand.
+    const at: lib.pci.Location = @bitCast(@as(u16, @intCast(packed_location)));
     return .{
-        .bus = @truncate(packed_location >> 8),
-        .device = @truncate((packed_location >> 3) & 0x1F),
-        .function = @truncate(packed_location & 0x7),
-        .register = @truncate((offset & 0xFC) >> 2),
+        .bus = at.bus,
+        .device = at.device,
+        .function = at.function,
+        .register = @truncate(offset >> 2),
     };
 }
 
@@ -95,7 +99,6 @@ pub fn sys_dma_alloc(a: Args) Result {
     };
 
     const slot = ctx.installHandle(.{
-        .kind = .shm,
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = seg },
     }) orelse {
@@ -132,7 +135,6 @@ pub fn sys_irq_attach(a: Args) Result {
     };
 
     table.entries[slot] = .{
-        .kind = .irq,
         .rights = .{ .read = true },
         .data = .{ .irq = line },
     };
@@ -144,13 +146,16 @@ pub fn sys_irq_ack(a: Args) Result {
 
     const table = currentHandles() orelse return Errno.badf.value();
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
-    if (h.kind != .irq) return Errno.badf.value();
+    const line = switch (h.data) {
+        .irq => |line| line,
+        else => return Errno.badf.value(),
+    };
 
     // `a1` says whether the pass that ended actually serviced anything,
     // which is what decides whether the line's other owners are woken: a
     // productive pass on a shared edge line may have been holding the wire
     // low across a neighbour's assertion.
-    irqevent.acknowledge(h.data.irq, a.a1 != 0);
+    irqevent.acknowledge(line, a.a1 != 0);
     return 0;
 }
 
@@ -159,7 +164,10 @@ pub fn sys_irq_ack(a: Args) Result {
 /// Here rather than in `wait_many` because arming is what attaching deferred:
 /// the line stays masked until someone is actually ready to be told about it.
 pub fn armIfIrq(h: *handles.Handle) void {
-    if (h.kind == .irq and !h.data.irq.armed) irqevent.arm(h.data.irq);
+    switch (h.data) {
+        .irq => |line| if (!line.armed) irqevent.arm(line),
+        else => {},
+    }
 }
 
 pub fn sys_ioport_grant(a: Args) Result {
@@ -273,7 +281,6 @@ const Given = struct { data: u32, doorbell: u32 };
 fn handOver(pieces: ublk.Parts) error{NoRoom}!Given {
     shm.retain(pieces.data);
     const data = ctx.installHandle(.{
-        .kind = .shm,
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = pieces.data },
     }) orelse {
@@ -286,7 +293,6 @@ fn handOver(pieces: ublk.Parts) error{NoRoom}!Given {
 
     event.retain(pieces.doorbell);
     const doorbell = ctx.installHandle(.{
-        .kind = .event,
         .rights = .{ .read = true, .write = true },
         .data = .{ .event = pieces.doorbell },
     }) orelse {
@@ -304,8 +310,7 @@ pub fn sys_volume_next(a: Args) Result {
 
     const into = ctx.userWrite(a, a.a1, @sizeOf(ublk.Request)) orelse return Errno.fault.value();
 
-    var request: ublk.Request = .{};
-    if (!ublk.next(a.a0, ctx.currentId(), &request)) return 0;
+    const request = ublk.next(a.a0, ctx.currentId()) orelse return 0;
 
     @memcpy(into, std.mem.asBytes(&request));
     return 1;

@@ -95,10 +95,22 @@ pub const ChannelRef = struct {
 };
 
 pub const Handle = struct {
-    kind: Kind = .none,
     rights: Rights = .{},
-    data: union {
+    /// What this handle is, and what it is a handle to, in one value.
+    ///
+    /// Tagged, so the two cannot disagree. A kind kept beside an untagged
+    /// union is a convention the compiler does not know about: every reader
+    /// has to check the tag and then reach into the union unchecked, and the
+    /// one that forgets reads a segment pointer out of a file's offset. Here
+    /// the tag is the union's own and reaching in means switching on it.
+    data: Data = .none,
+
+    pub const Data = union(Kind) {
         none: void,
+        /// The terminal, which every process starts with on nought, one and
+        /// two. It carries nothing: which console there is, is not a question
+        /// this system has.
+        console: void,
         file: File,
         directory: Directory,
         event: *event_mod.Event,
@@ -110,7 +122,13 @@ pub const Handle = struct {
         display: *shm_mod.Segment,
         pipe: PipeEnd,
         irq: *irqevent.IrqEvent,
-    } = .{ .none = {} },
+    };
+
+    /// What kind of thing this is, for a caller that wants to name it rather
+    /// than to reach into it.
+    pub fn kind(self: Handle) Kind {
+        return self.data;
+    }
 };
 
 /// What may cross a channel.
@@ -131,7 +149,7 @@ pub const Transfer = union(enum) {
 
 /// The transferable part of a handle, or null if it is not transferable.
 pub fn transferable(h: Handle) ?Transfer {
-    return switch (h.kind) {
+    return switch (h.data) {
         .event => .{ .event = h.data.event },
         .channel => .{ .channel = h.data.channel },
         .shm => .{ .shm = h.data.shm },
@@ -151,22 +169,18 @@ pub fn transferable(h: Handle) ?Transfer {
 pub fn fromTransfer(t: Transfer) Handle {
     return switch (t) {
         .event => |e| .{
-            .kind = .event,
             .rights = .{ .read = true, .write = true },
             .data = .{ .event = e },
         },
         .channel => |c| .{
-            .kind = .channel,
             .rights = .{ .read = true, .write = true },
             .data = .{ .channel = c },
         },
         .shm => |seg| .{
-            .kind = .shm,
             .rights = .{ .read = true, .write = true },
             .data = .{ .shm = seg },
         },
         .display => |seg| .{
-            .kind = .display,
             .rights = .{ .read = true, .write = true },
             .data = .{ .display = seg },
         },
@@ -203,7 +217,7 @@ pub fn newIterator(it: fat.Iterator) ?*fat.Iterator {
 /// number is new but the object is the same one, and it must not go away
 /// because the sender closed its copy.
 pub fn retain(h: Handle) Handle {
-    switch (h.kind) {
+    switch (h.data) {
         .file => h.data.file.mount.open_files += 1,
         // A directory handle owns its iterator, so duplicating one would need
         // a copy of it. Nothing passes directories over a channel, and doing
@@ -227,7 +241,7 @@ pub fn retain(h: Handle) Handle {
 /// reference would keep a dead server's clients blocked. The console handles
 /// are shared rather than owned, so they release nothing.
 pub fn release(h: Handle) void {
-    switch (h.kind) {
+    switch (h.data) {
         .file => {
             // The size and timestamp a write left in the entry only reach the
             // disk here. Deferring it to close is what keeps a sequential
@@ -283,8 +297,8 @@ pub const Table = struct {
         // is a process that cannot report why it failed.
         for ([_]u32{ STDIN, STDOUT, STDERR }) |h| {
             self.entries[h] = .{
-                .kind = .console,
                 .rights = .{ .read = h == STDIN, .write = h != STDIN },
+                .data = .console,
             };
         }
     }
@@ -292,7 +306,7 @@ pub const Table = struct {
     pub fn get(self: *Table, handle: u32) ?*Handle {
         if (handle >= MAX_HANDLES) return null;
         const h = &self.entries[handle];
-        return if (h.kind == .none) null else h;
+        return if (h.data == .none) null else h;
     }
 
     /// Claim the lowest free handle.
@@ -301,7 +315,7 @@ pub const Table = struct {
     /// standard handle and immediately reopen it to redirect.
     pub fn alloc(self: *Table) ?u32 {
         for (self.entries[FIRST_FREE..], FIRST_FREE..) |*h, i| {
-            if (h.kind == .none) return @intCast(i);
+            if (h.data == .none) return @intCast(i);
         }
         return null;
     }

@@ -274,8 +274,8 @@ pub const AddressSpace = struct {
         const pmm = @import("../../kernel/pmm.zig");
         const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
 
-        const pd_index = virt >> 22;
-        const pt_index = (virt >> 12) & 0x3FF;
+        const pd_index = directoryIndex(virt);
+        const pt_index = pagetable.tableIndex(virt);
 
         var pde = dir[pd_index];
         if (!pde.present) {

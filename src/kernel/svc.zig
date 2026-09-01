@@ -133,25 +133,36 @@ pub fn lookup(name: []const u8) Error!*channel.Channel {
 
 /// Every registered name, for `sysinfo` and the eventual `Monitor` app.
 ///
-/// Snapshotted into a fixed array rather than returned as a view of the table,
-/// so a caller iterating it cannot be tripped by a service registering or
-/// going away mid-walk.
+/// Snapshotted rather than returned as a view of the table, so a caller
+/// iterating it cannot be tripped by a service registering or going away
+/// mid-walk.
+///
+/// The names are copied and not pointed at. A slice into the table is still
+/// the table: an entry retired and taken by another service rewrites the
+/// bytes under whoever is reading them, and the reader sees a name that
+/// belongs to neither.
+var listed: [MAX_SERVICES][MAX_NAME]u8 = @splat(@splat(0));
 var listing: [MAX_SERVICES][]const u8 = @splat(&.{});
 
-pub fn list() [][]const u8 {
+pub fn list() []const []const u8 {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
     var n: usize = 0;
     for (&table) |*e| {
         if (!isLive(e)) continue;
-        listing[n] = e.name();
+        const name = e.name();
+        @memcpy(listed[n][0..name.len], name);
+        listing[n] = listed[n][0..name.len];
         n += 1;
     }
     return listing[0..n];
 }
 
 pub fn count() usize {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
     var n: usize = 0;
     for (&table) |*e| {
         if (isLive(e)) n += 1;

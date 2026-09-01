@@ -280,22 +280,22 @@ fn survey(index: usize) callconv(.c) void {
 
 /// Take the next request, if there is one. The server waits on the
 /// doorbell rather than asking repeatedly.
-pub fn next(index: usize, server: u32, into: *Request) bool {
+pub fn next(index: usize, server: u32) ?Request {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
     // Inside the quiet, not before it: a volume checked and then acted on is
     // a volume that can be detached in between.
-    const volume = ownedBy(index, server) orelse return false;
+    const volume = ownedBy(index, server) orelse return null;
 
     for (&volume.slots, 0..) |*slot, i| {
         if (!slot.busy or !slot.offered or slot.taken) continue;
         slot.taken = true;
-        into.* = slot.request;
-        into.tag = @intCast(i);
-        return true;
+        var taken = slot.request;
+        taken.tag = @intCast(i);
+        return taken;
     }
-    return false;
+    return null;
 }
 
 /// Answer one request, and wake whoever is waiting for it.

@@ -39,9 +39,12 @@ const deadlineFrom = ctx.deadlineFrom;
 fn eventToSignal(handle: u32) error{ NoSuchHandle, NotAllowed }!*event_mod.Event {
     const table = currentHandles() orelse return error.NoSuchHandle;
     const h = table.get(handle) orelse return error.NoSuchHandle;
-    if (h.kind != .event) return error.NoSuchHandle;
+    const e = switch (h.data) {
+        .event => |e| e,
+        else => return error.NoSuchHandle,
+    };
     if (!h.rights.write) return error.NotAllowed;
-    return h.data.event;
+    return e;
 }
 
 /// The event a handle becomes ready on, for `wait_many`.
@@ -59,7 +62,7 @@ fn eventToSignal(handle: u32) error{ NoSuchHandle, NotAllowed }!*event_mod.Event
 fn waitableEvent(handle: u32) ?*event_mod.Event {
     const table = currentHandles() orelse return null;
     const h = table.get(handle) orelse return null;
-    return switch (h.kind) {
+    return switch (h.data) {
         .event => h.data.event,
         .pipe => if (h.data.pipe.writer)
             &h.data.pipe.pipe.writable
@@ -81,17 +84,19 @@ fn waitableEvent(handle: u32) ?*event_mod.Event {
 fn getChannel(handle: u32, serving: bool) ?*channel_mod.Channel {
     const table = currentHandles() orelse return null;
     const h = table.get(handle) orelse return null;
-    if (h.kind != .channel) return null;
+    const ref = switch (h.data) {
+        .channel => |ref| ref,
+        else => return null,
+    };
     // A client cannot answer calls and a server cannot make them on its own
     // serving end; enforcing that here keeps the object free of the question.
-    if (h.data.channel.serving != serving) return null;
-    return h.data.channel.channel;
+    if (ref.serving != serving) return null;
+    return ref.channel;
 }
 
 pub fn sys_event_create(_: Args) Result {
     const e = event_mod.create() catch return Errno.nomem.value();
     const slot = installHandle(.{
-        .kind = .event,
         .rights = .{ .read = true, .write = true },
         .data = .{ .event = e },
     }) orelse {
@@ -166,7 +171,6 @@ pub fn sys_svc_register(a: Args) Result {
     // The registry holds one reference and the handle holds the one made at
     // creation, so the channel outlives either going away alone.
     const slot = installHandle(.{
-        .kind = .channel,
         .rights = .{ .read = true, .write = true },
         .data = .{ .channel = .{ .channel = ch, .serving = true } },
     }) orelse {
@@ -183,7 +187,6 @@ pub fn sys_svc_connect(a: Args) Result {
 
     const ch = svc.lookup(name) catch return Errno.noent.value();
     const slot = installHandle(.{
-        .kind = .channel,
         .rights = .{ .read = true, .write = true },
         .data = .{ .channel = .{ .channel = ch, .serving = false } },
     }) orelse {
@@ -361,7 +364,7 @@ pub fn sys_reply(a: Args) Result {
 fn getSegment(handle: u32) ?*shm.Segment {
     const table = currentHandles() orelse return null;
     const h = table.get(handle) orelse return null;
-    return switch (h.kind) {
+    return switch (h.data) {
         .shm => h.data.shm,
         // The scanout buffer maps like any other segment; the separate kind
         // exists only so closing it releases the display too.
@@ -379,7 +382,6 @@ pub fn sys_shm_create(a: Args) Result {
     };
 
     const slot = installHandle(.{
-        .kind = .shm,
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = seg },
     }) orelse {
@@ -415,7 +417,6 @@ pub fn sys_display_acquire(a: Args) Result {
     };
 
     const slot = installHandle(.{
-        .kind = .display,
         .rights = .{ .read = true, .write = true },
         .data = .{ .display = segment },
     }) orelse {
@@ -447,7 +448,7 @@ pub fn sys_pipe(a: Args) Result {
     // Claimed before the second, so the first cannot be handed out twice. The
     // kind is set now for the same reason: `alloc` finds the lowest free slot,
     // and a slot still marked free would be found again.
-    table.entries[read_slot] = .{ .kind = .console, .rights = .{} };
+    table.entries[read_slot] = .{ .rights = .{}, .data = .console };
 
     const write_slot = table.alloc() orelse {
         table.entries[read_slot] = .{};
@@ -460,12 +461,10 @@ pub fn sys_pipe(a: Args) Result {
     };
 
     table.entries[read_slot] = .{
-        .kind = .pipe,
         .rights = .{ .read = true },
         .data = .{ .pipe = .{ .pipe = p, .writer = false } },
     };
     table.entries[write_slot] = .{
-        .kind = .pipe,
         .rights = .{ .write = true },
         .data = .{ .pipe = .{ .pipe = p, .writer = true } },
     };
