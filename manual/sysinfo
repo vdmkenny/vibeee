@@ -5,7 +5,7 @@ sysinfo - any fact the kernel answers, by name
 The kernel describes itself through one interface, and every window and
 tool reads from it; this prints the same answers raw. Useful keys:
 
-  kernel cpu mem mem.hardware display display.adapter display.panel
+  kernel cpu mem mem.dma mem.hardware display display.adapter display.panel
   storage board bios uptime mounts svc clock threads irq apic mtrr
   quirks keymap font arch cmdline
 

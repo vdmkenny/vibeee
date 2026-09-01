@@ -1,11 +1,17 @@
 //! Physical memory manager: a flat bitmap over 4 KiB page frames.
 //!
 //! For 512 MB the bitmap is 16 KiB, small enough to keep permanently resident
-//! and scan with `@ctz` over u32 words. A buddy allocator would buy contiguous
-//! multi-frame allocation, but the only consumers of that on this machine are
-//! DMA buffers (EHCI schedules, HDA rings, NIC rings), which are few, early,
-//! and long-lived. Those are served from a dedicated low arena instead, which
-//! keeps the general allocator to a single bit per frame.
+//! and scan with `@ctz` over u32 words. The policy of where each kind of
+//! allocation goes lives in `lib/framemap` and is host-tested there; what is
+//! here is the machine's own state: the static words, the boot walk that
+//! frees what the firmware called usable, and the ranges that answer
+//! "is this the allocator's".
+//!
+//! The lowest free megabytes are the device band: preferred for DMA runs and
+//! avoided by everything else, so a hotplugged disk or a restarted driver
+//! finds contiguous memory that weeks of ordinary churn have not
+//! checkerboarded. A preference rather than a carve: under real pressure the
+//! band is spent like any other memory, because correctness beats placement.
 //!
 //! See design/00-vibeee.md §6.1.
 
@@ -19,25 +25,42 @@ const hal = @import("hal.zig");
 pub const PAGE_SIZE = hal.PAGE_SIZE;
 pub const PAGE_SHIFT = hal.PAGE_SHIFT;
 
-const Word = u32;
-const BITS_PER_WORD = @bitSizeOf(Word);
+const framemap = @import("lib").framemap;
+const Word = framemap.Word;
 
 /// Enough bitmap for 4 GiB of frames. Statically reserved (128 KiB of .bss)
 /// rather than bootstrapped out of the heap, because the allocator that would
 /// allocate it is the thing we are building.
 const MAX_FRAMES: usize = @as(u64, 4) * 1024 * 1024 * 1024 / PAGE_SIZE;
-var bitmap: [MAX_FRAMES / BITS_PER_WORD]Word = undefined;
+var bitmap: [MAX_FRAMES / framemap.BITS_PER_WORD]Word = undefined;
 
-var total_frames: usize = 0;
-var free_frames: usize = 0;
 /// Frames below this are never handed out: real-mode IVT/BDA, the BootInfo
 /// struct, the panic ring, and the kernel image itself.
-var lowest_usable: usize = 0;
-var next_hint: usize = 0;
+const FLOOR_FRAME: usize = 0x100000 / PAGE_SIZE;
+
+/// The device band's budget: eight mebibytes at most, minus whatever of it
+/// the kernel image and the boot already hold, and never more than a
+/// sixteenth of a small machine. The tally it covers: the two USB controller
+/// arenas, two sound arenas, three NIC arenas of one to two hundred
+/// kilobytes, and four hotplugged volumes at 64 KiB each, which is under two
+/// mebibytes with every port full, the same on 128 MiB as on 4 GiB. Hitting
+/// this wall is a reason to ask what grew before it is a reason to double it.
+const BAND_CAP: usize = 8 * 1024 * 1024 / PAGE_SIZE;
+
+var map: framemap.Map = undefined;
+
+/// Contiguous asks that found no run. The number `sysinfo mem.dma` reports,
+/// so the day fragmentation is real it is an event with evidence rather than
+/// a mystery a driver logs once.
+var contig_refusals: usize = 0;
+
+pub const Origin = framemap.Origin;
 
 pub const Stats = struct {
     total_frames: usize,
     free_frames: usize,
+    /// Contiguous asks that found no run, ever.
+    contig_refusals: usize,
     pub fn totalBytes(self: Stats) usize {
         return self.total_frames * PAGE_SIZE;
     }
@@ -45,18 +68,6 @@ pub const Stats = struct {
         return self.free_frames * PAGE_SIZE;
     }
 };
-
-inline fn testBit(frame: usize) bool {
-    return (bitmap[frame / BITS_PER_WORD] & (@as(Word, 1) << @intCast(frame % BITS_PER_WORD))) != 0;
-}
-
-inline fn setBit(frame: usize) void {
-    bitmap[frame / BITS_PER_WORD] |= (@as(Word, 1) << @intCast(frame % BITS_PER_WORD));
-}
-
-inline fn clearBit(frame: usize) void {
-    bitmap[frame / BITS_PER_WORD] &= ~(@as(Word, 1) << @intCast(frame % BITS_PER_WORD));
-}
 
 extern const __kernel_phys_start: anyopaque;
 extern const __kernel_phys_end: anyopaque;
@@ -101,9 +112,8 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
     // Start with everything marked used; free only what the memory map says is
     // usable. Defaulting to "used" means an incomplete or absent memory map
     // fails safe (no memory) rather than unsafe (hand out MMIO as RAM).
-    @memset(&bitmap, ~@as(Word, 0));
-    total_frames = 0;
-    free_frames = 0;
+    map = framemap.Map.init(&bitmap, FLOOR_FRAME, BAND_CAP, MAX_FRAMES);
+    contig_refusals = 0;
 
     var highest: usize = 0;
 
@@ -122,14 +132,17 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
 
         var f: usize = @intCast(first);
         while (f < @as(usize, @intCast(last)) and f < MAX_FRAMES) : (f += 1) {
-            if (testBit(f)) {
-                clearBit(f);
-                free_frames += 1;
-            }
+            map.release(f);
             if (f > highest) highest = f;
         }
     }
-    total_frames = highest + 1;
+
+    // The map's edge is what the machine has, not what the bitmap could
+    // hold, and the band is sized to the machine now that its size is known.
+    map.limit = highest + 1;
+    map.band = @max(map.floor, framemap.bandFrames(map.limit, BAND_CAP));
+    if (map.band > map.limit) map.band = map.limit;
+    map.hint = map.band;
 
     // Carve out the regions that are usable per E820 but must never be handed
     // out. Reserving the first megabyte wholesale costs 256 frames and saves a
@@ -145,9 +158,6 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
     if (bi.rootfs_phys != 0 and bi.rootfs_len != 0) {
         reserveRange(bi.rootfs_phys, bi.rootfs_phys + bi.rootfs_len);
     }
-
-    lowest_usable = 0x100000 / PAGE_SIZE;
-    next_hint = lowest_usable;
 }
 
 /// Mark [start, end) as unavailable. Safe to call on ranges that are already
@@ -158,10 +168,7 @@ pub fn reserveRange(start: usize, end: usize) void {
     const last = std.mem.alignForward(usize, end, PAGE_SIZE) >> PAGE_SHIFT;
     var f = first;
     while (f < last and f < MAX_FRAMES) : (f += 1) {
-        if (!testBit(f)) {
-            setBit(f);
-            if (free_frames > 0) free_frames -= 1;
-        }
+        map.reserve(f);
     }
 }
 
@@ -169,76 +176,52 @@ pub const AllocError = error{OutOfMemory};
 
 /// Allocate one frame. Returns a physical address.
 pub fn allocFrame() AllocError!usize {
-    // Two-pass scan from the rotating hint, so repeated allocation does not
-    // rescan the low frames every time.
-    if (findFree(next_hint, total_frames)) |f| return take(f);
-    if (findFree(lowest_usable, next_hint)) |f| return take(f);
-    return error.OutOfMemory;
-}
-
-fn take(frame: usize) usize {
-    setBit(frame);
-    free_frames -= 1;
-    next_hint = frame + 1;
-    if (next_hint >= total_frames) next_hint = lowest_usable;
+    const frame = map.one() orelse return error.OutOfMemory;
     return frame << PAGE_SHIFT;
 }
 
-fn findFree(from: usize, to: usize) ?usize {
-    if (from >= to) return null;
-    var w = from / BITS_PER_WORD;
-    const w_end = (to + BITS_PER_WORD - 1) / BITS_PER_WORD;
-    while (w < w_end and w < bitmap.len) : (w += 1) {
-        if (bitmap[w] == ~@as(Word, 0)) continue; // fully allocated, skip
-        const inverted = ~bitmap[w];
-        const bit = @ctz(inverted);
-        const frame = w * BITS_PER_WORD + bit;
-        if (frame >= from and frame < to) return frame;
-        // The first free bit in this word is out of range; walk the rest.
-        var b: usize = bit;
-        while (b < BITS_PER_WORD) : (b += 1) {
-            const f = w * BITS_PER_WORD + b;
-            if (f >= to) return null;
-            if (f >= from and (inverted & (@as(Word, 1) << @intCast(b))) != 0) return f;
-        }
-    }
-    return null;
-}
-
 /// Allocate `count` physically contiguous frames, none at or above `below`.
-/// Used for DMA buffers; the linear scan is acceptable because these
-/// allocations are rare and early. `below` is a u64 because a DMA ceiling
-/// like four gigabytes is one byte past what a 32-bit frame counter can say.
-pub fn allocContiguous(count: usize, below: u64) AllocError!usize {
-    if (count == 0) return error.OutOfMemory;
-    const limit = @min(@as(usize, @intCast(below >> PAGE_SHIFT)), total_frames);
-    var f = lowest_usable;
-    while (f + count <= limit) {
-        var run: usize = 0;
-        while (run < count and !testBit(f + run)) : (run += 1) {}
-        if (run == count) {
-            var i: usize = 0;
-            while (i < count) : (i += 1) {
-                setBit(f + i);
-                free_frames -= 1;
-            }
-            return f << PAGE_SHIFT;
-        }
-        f += run + 1;
-    }
-    return error.OutOfMemory;
+///
+/// `origin` says who is asking, which decides where the run comes from: a
+/// device's rings are served from the band, and everything else stays out of
+/// it. `below` is a u64 because a DMA ceiling like four gigabytes is one
+/// byte past what a 32-bit frame counter can say. The linear scan costs
+/// nothing worth measuring: these are cold-path allocations, and the words
+/// skip thirty-two frames at a time.
+pub fn allocContiguous(count: usize, below: u64, origin: Origin) AllocError!usize {
+    const ceiling: usize = @intCast(@min(below >> PAGE_SHIFT, MAX_FRAMES));
+    const frame = map.run(count, ceiling, origin) orelse {
+        contig_refusals += 1;
+        return error.OutOfMemory;
+    };
+    return frame << PAGE_SHIFT;
 }
 
 pub fn freeFrame(phys: usize) void {
-    const frame = phys >> PAGE_SHIFT;
-    if (frame >= MAX_FRAMES) return;
-    if (!testBit(frame)) return; // double free, ignore rather than corrupt
-    clearBit(frame);
-    free_frames += 1;
+    map.give(phys >> PAGE_SHIFT);
+}
+
+/// The longest unbroken free run, in bytes: how much of the free memory is
+/// usable by the things that need it in one piece.
+pub fn largestRunBytes() usize {
+    return map.largestRun(map.limit) * PAGE_SIZE;
+}
+
+/// How much of the device band is free, in bytes.
+pub fn bandFreeBytes() usize {
+    return map.bandFree() * PAGE_SIZE;
+}
+
+pub fn bandBytes() usize {
+    return (map.band - map.floor) * PAGE_SIZE;
 }
 
 pub fn stats() Stats {
-    return .{ .total_frames = total_frames, .free_frames = free_frames };
+    return .{
+        .total_frames = map.limit,
+        .free_frames = map.free,
+        .contig_refusals = contig_refusals,
+    };
 }
 
 pub fn report() void {

@@ -118,7 +118,7 @@ pub fn createDma(size: usize) Error!*Segment {
     const frames = heap.allocator.alloc(usize, pages) catch return error.OutOfMemory;
     errdefer heap.allocator.free(frames);
 
-    const base = pmm.allocContiguous(pages, 0x1_0000_0000) catch return error.OutOfMemory;
+    const base = pmm.allocContiguous(pages, 0x1_0000_0000, .device) catch return error.OutOfMemory;
     errdefer {
         for (frames[0..]) |f| pmm.freeFrame(f);
     }

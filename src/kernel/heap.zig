@@ -177,7 +177,7 @@ fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]
     // Large or over-aligned: whole frames. Frames are frame-aligned, so any
     // alignment up to a frame is satisfied for free; beyond that we cannot help.
     if (a > FRAME) return null;
-    const phys = pmm.allocContiguous(framesFor(len), 0xFFFF_F000) catch return null;
+    const phys = pmm.allocContiguous(framesFor(len), 0xFFFF_F000, .general) catch return null;
     stats_frames += framesFor(len);
     stats_bytes_live += framesFor(len) * FRAME;
     return @ptrFromInt(hal.physToVirt(phys));

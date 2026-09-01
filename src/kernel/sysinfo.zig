@@ -122,6 +122,17 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         if (platform.ram_total_mb != 0 and platform.ram_total_mb != total) {
             try w.print(" ({d} MiB fitted)", .{platform.ram_total_mb});
         }
+    } else if (eq(key, "mem.dma")) {
+        // The fragmentation reading: free bytes say how much there is, and
+        // this says how much of it the things that need one piece can use.
+        // A refusal count above zero is the event the band exists to prevent.
+        const m = pmm.stats();
+        try w.print("largest run {d} KiB, band {d} of {d} KiB free, {d} refusals", .{
+            pmm.largestRunBytes() / 1024,
+            pmm.bandFreeBytes() / 1024,
+            pmm.bandBytes() / 1024,
+            m.contig_refusals,
+        });
     } else if (eq(key, "mem.total")) {
         try w.print("{d}", .{pmm.stats().totalBytes()});
     } else if (eq(key, "mem.free")) {
