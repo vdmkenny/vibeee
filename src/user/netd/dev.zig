@@ -63,7 +63,10 @@ pub const NicOps = struct {
     stop: *const fn (dev: *NicDev) void,
     /// Service one interrupt delivery. Bounded: the line stays masked while
     /// this runs, so everything done here must finish.
-    irq: *const fn (dev: *NicDev) void,
+    /// Service the line: read the status, move what moved, clear it. Returns
+    /// whether anything was actually serviced, which on a shared line is what
+    /// wakes the neighbours to look again.
+    irq: *const fn (dev: *NicDev) bool,
     /// Put one frame on the wire. The bytes are the service's until this
     /// returns, copied into the ring before it does.
     transmit: *const fn (dev: *NicDev, frame: []const u8) bool,

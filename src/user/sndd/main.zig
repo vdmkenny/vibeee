@@ -225,7 +225,7 @@ fn serve() noreturn {
             const device = &devices[index - 2];
             const done = device.ops.irq();
             if (done.any()) advance(device, done);
-            _ = sys.irqAck(device.irq);
+            _ = sys.irqAck(device.irq, done.any());
         }
     }
 }

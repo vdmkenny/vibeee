@@ -954,13 +954,15 @@ const SERVICE_ROUNDS = 8;
 /// The overflow story is told once; after that the counter speaks.
 var overflow_said = false;
 
-pub fn irq(nic: *NicDev) void {
-    if (!device.opened or !device.started) return;
+pub fn irq(nic: *NicDev) bool {
+    if (!device.opened or !device.started) return false;
 
+    var serviced = false;
     var round: u32 = 0;
     while (round < SERVICE_ROUNDS) : (round += 1) {
         const cause = @as(Isr, @bitCast(device.regs.rd32(.isr)));
-        if (cause.none()) return; // quiet: nothing latched, or a shared line
+        if (cause.none()) return serviced; // quiet: nothing latched, or a shared line
+        serviced = true;
 
         // The everyday causes are traffic, not news, and stay quiet: the
         // status updates, the PHY answering a poll, and the companions this
@@ -1029,13 +1031,13 @@ pub fn irq(nic: *NicDev) void {
                 applyLinkState(nic.state);
                 pci.disableInterruptAndMaster(nic.location);
                 log.fail("atl2", "adapter recovery failed");
-                return;
+                return true;
             }
             dev_mod.deliverLink(nic, link(nic));
             applyLinkState(nic.state);
             device.regs.wr32(.imr, @bitCast(UNMASKED));
             _ = device.regs.rd32(.imr);
-            return;
+            return true;
         }
 
         // The vendor services on the whole event class, errors included:
@@ -1052,6 +1054,7 @@ pub fn irq(nic: *NicDev) void {
         // quiet proves nothing latched while the reaps ran.
         device.regs.wr32(.isr, 0);
     }
+    return serviced;
 }
 
 fn reapRx(nic: *NicDev) void {

@@ -640,10 +640,10 @@ pub fn stop(nic: *NicDev) void {
     nic.state = .{};
 }
 
-pub fn irq(dev: *NicDev) void {
-    if (!device.opened or !device.started) return;
+pub fn irq(dev: *NicDev) bool {
+    if (!device.opened or !device.started) return false;
     const cause = @as(Causes, @bitCast(device.regs.read(.icr)));
-    if (cause.none()) return; // a shared line, not ours
+    if (cause.none()) return false; // a shared line, not ours
 
     // Reading ICR acknowledged this snapshot. Writing it back would also
     // clear a matching cause that arrived while this handler was working.
@@ -651,6 +651,7 @@ pub fn irq(dev: *NicDev) void {
     if (cause.rx_sequence or cause.rx_overrun) dev.stats.rx_dropped += 1;
     if (cause.tx_done) reapTx(dev);
     if (cause.link_change) dev_mod.deliverLink(dev, link(dev));
+    return true;
 }
 
 fn reapRx(dev: *NicDev) void {

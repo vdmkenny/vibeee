@@ -340,14 +340,18 @@ fn serve(channel: u32) noreturn {
                 break :dispatch;
             }
             // An interrupt line. Which interface it belongs to is the match
-            // the attach made; the service runs its handler, then the ack.
+            // the attach made; the service runs its handler, then the ack,
+            // saying whether any of them found work: a line can carry more
+            // than one device, and a productive pass here may have been
+            // holding the shared wire across a neighbour's assertion.
+            var found = false;
             for (ifaces[0..count]) |*iface| {
                 if (iface.irq == handle) {
                     iface.irq_count += 1;
-                    iface.ops.irq(iface);
+                    if (iface.ops.irq(iface)) found = true;
                 }
             }
-            _ = sys.irqAck(handle);
+            _ = sys.irqAck(handle, found);
         }
 
         // Whatever this pass queued for the machine itself is delivered

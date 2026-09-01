@@ -89,6 +89,14 @@ pub fn wedgeSoon() void {
 fn onTick(_: *idt.Frame) void {
     _ = @atomicRmw(u32, &ticks, .Add, 1, .monotonic);
 
+    // The watchdog for deliveries whose owner has stopped answering. From
+    // here because this vector outranks every deferrable one by design, so
+    // it still fires while one is stuck. A few times a second is enough:
+    // the budget is a second, and the scan is a handful of lines.
+    if (@atomicLoad(u32, &ticks, .monotonic) % 32 == 0) {
+        @import("../../kernel/irqevent.zig").scrub(monotonicMicros());
+    }
+
     if (wedge_at != 0 and @atomicLoad(u32, &ticks, .monotonic) >= wedge_at) {
         // Interrupts are already off in the handler; never returning from
         // it is the seizure. Only the watchdog's NMI can speak after this.

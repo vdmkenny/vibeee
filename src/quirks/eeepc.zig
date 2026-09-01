@@ -49,3 +49,20 @@ pub const battery_percent = quirks.Quirk{
 fn batteryPercent(c: *quirks.Corrections) void {
     c.battery_percent_mislabel = true;
 }
+
+/// This BIOS answers a runtime touch of the interrupt controller's register
+/// pair with a System Management Mode trap that may never return, the level
+/// completion doorbell included. The PIRQ pins therefore ride the falling
+/// edge of their active-low wires, where the controller is owed nothing at
+/// runtime, and the drivers' service-until-quiet discipline keeps the edges
+/// lossless.
+pub const pirq_edge = quirks.Quirk{
+    .name = "eeepc-pirq-edge",
+    .why = "the firmware traps runtime interrupt controller writes; PIRQ pins ride the falling edge and owe the controller nothing",
+    .rules = &family,
+    .apply = pirqEdge,
+};
+
+fn pirqEdge(c: *quirks.Corrections) void {
+    c.pirq_edge_falling = true;
+}

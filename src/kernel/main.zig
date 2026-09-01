@@ -95,7 +95,10 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
 
     hal.initCpu(@intFromPtr(&kernel_stack) + kernel_stack.len);
     // Before the interrupt controller, which has to be told where the
-    // controllers are and how the legacy lines reach them.
+    // controllers are and how the legacy lines reach them. The board's
+    // identity comes first of all, because the quirk registry decides how
+    // the PIRQ pins are triggered.
+    platform.earlyIdentity();
     platform.readFirmwareTables(bi);
     hal.initInterruptController(platform.interruptRouting());
     hal.initSyscalls();

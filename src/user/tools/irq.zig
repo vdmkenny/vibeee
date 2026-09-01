@@ -74,6 +74,6 @@ fn take(gsi: usize) void {
     const fired = sys.waitMany(&lines, 1_000_000) >= 0;
 
     out.text(if (fired) "  an interrupt arrived\n" else "  quiet\n");
-    if (fired) _ = sys.irqAck(handle);
+    if (fired) _ = sys.irqAck(handle, false);
     out.flush();
 }

@@ -502,11 +502,11 @@ fn quiet() void {
 
 /// What the radio has to say. Reading the register acknowledges it, so it
 /// is read once and every cause in it acted on.
-pub fn irq(nic: *NicDev) void {
-    if (!device.started) return;
+pub fn irq(nic: *NicDev) bool {
+    if (!device.started) return false;
 
     const cause: Interrupts = @bitCast(device.regs.read(.interrupt_pending));
-    if (!cause.any()) return;
+    if (!cause.any()) return false;
 
     if (cause.rx_ok or cause.rx_descriptor or cause.rx_end_of_list) reapRx(nic);
     if (cause.rx_error or cause.rx_overrun) nic.stats.rx_dropped += 1;
@@ -519,6 +519,7 @@ pub fn irq(nic: *NicDev) void {
         device.regs.write(.rx_chain, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
         device.regs.write(.command, @bitCast(Command{ .receive = true }));
     }
+    return true;
 }
 
 /// Take every finished receive descriptor, in the order the radio filled

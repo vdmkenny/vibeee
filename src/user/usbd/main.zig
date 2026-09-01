@@ -173,7 +173,8 @@ fn serve() noreturn {
             const controller = &controllers[which];
             // The controller says whether a port changed; only then is
             // the bus walked, and only that controller's ports.
-            if (controller.ops.serviceIrq()) {
+            const found = controller.ops.serviceIrq();
+            if (found) {
                 core.scan(@intCast(which), controller.ops);
                 settle();
             }
@@ -182,7 +183,7 @@ fn serve() noreturn {
             for (CLASSES) |driver| {
                 if (driver.ops.woke) |look| look();
             }
-            _ = sys.irqAck(controller.irq);
+            _ = sys.irqAck(controller.irq, found);
             out.flush();
             continue;
         }

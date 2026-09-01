@@ -385,8 +385,10 @@ pub fn ioportGrant(base: u16, count: usize) isize {
 }
 
 /// Say the device has been serviced, so its line may fire again.
-pub fn irqAck(handle: u32) isize {
-    return syscall1(abi.number("irq_ack"), handle);
+/// End a service pass. `found` says whether the pass serviced anything,
+/// which on a shared line is what wakes the other owners to look again.
+pub fn irqAck(handle: u32, found: bool) isize {
+    return syscall2(abi.number("irq_ack"), handle, @intFromBool(found));
 }
 
 pub const Pipe = struct { read: u32, write: u32 };

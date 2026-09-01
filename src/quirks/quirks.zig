@@ -65,6 +65,12 @@ pub const Corrections = struct {
     /// The battery tables mislabel percentages as capacities; readings are
     /// converted on the way out.
     battery_percent_mislabel: bool = false,
+    /// The PIRQ pins are routed on the falling edge of their active-low
+    /// wires instead of as level. For firmware that traps every runtime word
+    /// said to the interrupt controller, the level completion doorbell
+    /// included: a level entry then believes its last interrupt is still in
+    /// service and an asserted line delivers nothing more.
+    pirq_edge_falling: bool = false,
 };
 
 pub const Quirk = struct {
@@ -81,7 +87,7 @@ const eeepc = @import("eeepc.zig");
 
 /// The registry. A new machine means a new module beside this one and one
 /// line here; nothing else in the system learns a machine name.
-pub const registry = [_]Quirk{ eeepc.ec_ports, eeepc.battery_percent };
+pub const registry = [_]Quirk{ eeepc.ec_ports, eeepc.battery_percent, eeepc.pirq_edge };
 
 var corrections: Corrections = .{};
 var applied: [registry.len]*const Quirk = undefined;

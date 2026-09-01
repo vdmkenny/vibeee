@@ -145,7 +145,11 @@ pub fn sys_irq_ack(a: Args) Result {
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
     if (h.kind != .irq) return Errno.badf.value();
 
-    irqevent.acknowledge(h.data.irq);
+    // `a1` says whether the pass that ended actually serviced anything,
+    // which is what decides whether the line's other owners are woken: a
+    // productive pass on a shared edge line may have been holding the wire
+    // low across a neighbour's assertion.
+    irqevent.acknowledge(h.data.irq, a.a1 != 0);
     return 0;
 }
 

@@ -16,15 +16,16 @@ const console = @import("console.zig");
 const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
+const irq = @import("irq.zig");
 
 pub const Error = error{ OutOfMemory, Busy, Unsupported };
 
-/// One line, held by one process.
+/// One owner's stake in a line.
 ///
-/// Sharing a level-triggered line between servers is what PCI needs and what
-/// the design describes; nothing here has two drivers on one line yet, and
-/// refusing the second attach is both simpler and more honest than a
-/// half-built sharing protocol.
+/// A line is shared by up to `PER_LINE` owners, because that is how the
+/// machine is wired: PIRQ pins carry several devices, and the devices end up
+/// in different services. Every owner is woken per delivery and reads its own
+/// device, saying "not mine" cheaply when the cause was a neighbour's.
 pub const IrqEvent = struct {
     gsi: u32,
     token: hal.IrqToken,
@@ -43,6 +44,17 @@ pub const IrqEvent = struct {
     refs: u32 = 1,
 };
 
+/// How long a level line's completion may stay owed before the kernel
+/// concludes its owner is not coming back and completes it itself.
+///
+/// A service pass is microseconds and a scheduling delay is milliseconds, so
+/// a full second of silence is a driver that is alive and stuck, which
+/// `release` cannot see: it only fires for one that died. Without this, a
+/// stuck owner silences its whole LAPIC priority class forever, every other
+/// device in it included, on a machine whose timer and keyboard survive by
+/// design and so look fine.
+const HELD_BUDGET_US: u64 = 1_000_000;
+
 const MAX = hal.IRQ_LINE_COUNT;
 
 /// How many owners one line may have. The machine's wiring shares lines
@@ -58,6 +70,15 @@ const Line = struct {
     claimed: bool = false,
     /// Acknowledgements outstanding for the delivery currently held.
     owed: u8 = 0,
+    /// When the current deferral began, for the watchdog that completes a
+    /// delivery whose owner has stopped answering.
+    held_since_us: u64 = 0,
+    /// Completions the watchdog performed for silent owners. Zero on a
+    /// healthy machine; anything else names a driver worth looking at.
+    forced: u32 = 0,
+    /// Wakes passed between owners after a productive service pass, which is
+    /// what keeps a shared edge line alive: see `acknowledge`.
+    cascades: u32 = 0,
     events: [PER_LINE]?*IrqEvent = @splat(null),
 
     fn empty(self: *const Line) bool {
@@ -65,6 +86,14 @@ const Line = struct {
             if (slot != null) return false;
         }
         return true;
+    }
+
+    fn owners(self: *const Line) u8 {
+        var n: u8 = 0;
+        for (self.events) |slot| {
+            if (slot != null) n += 1;
+        }
+        return n;
     }
 };
 
@@ -142,21 +171,40 @@ fn lineOf(gsi: u32) *Line {
     return &lines[gsi];
 }
 
-/// The driver has finished with the device, so the line may fire again.
+/// The driver has finished a service pass; `found` says whether the pass
+/// serviced anything.
 ///
 /// Acknowledging a line that was not held is not an error: a driver that
 /// polled its device and found nothing to do should say so rather than having
 /// to remember whether an interrupt was outstanding.
-pub fn acknowledge(self: *IrqEvent) void {
+///
+/// On a shared edge line, a productive pass wakes the other owners. The wire
+/// is common: while one device held it low, a neighbour's assertion makes no
+/// new edge, so the neighbour's cause would otherwise wait for an edge that
+/// can never come. Waking peers after every pass that did work closes that
+/// window, and only after work, so a round of quiet passes ends the exchange
+/// rather than ping-ponging forever: each cascade implies the hardware moved,
+/// and the hardware is finite.
+pub fn acknowledge(self: *IrqEvent, found: bool) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
+
+    const line = lineOf(self.gsi);
+
+    if (found and self.token.trigger == .edge and line.owners() > 1) {
+        line.cascades += 1;
+        for (line.events) |maybe| {
+            const peer = maybe orelse continue;
+            if (peer == self) continue;
+            peer.ready.signalLocked();
+        }
+    }
 
     if (!self.held) return;
     self.held = false;
 
     // The line's completion goes to the controller only when the last
     // owner of this delivery has spoken for its device.
-    const line = lineOf(self.gsi);
     if (line.owed > 0) {
         line.owed -= 1;
         if (line.owed == 0) hal.acknowledgeIrq(self.token);
@@ -207,12 +255,50 @@ pub fn release(self: *IrqEvent) void {
     heap.allocator.destroy(self);
 }
 
+/// Complete deliveries whose owners have stopped answering.
+///
+/// Run from the timer tick, which outranks every deferrable vector by
+/// design and therefore still fires while one is stuck. Only the marking
+/// happens here: the actual completion is retired on the way out of the
+/// tick, once the timer's own end-of-interrupt has been sent, because the
+/// controller completes strictly from the top of its in-service stack.
+///
+/// A forced completion is not a repair. If the device is still asserting,
+/// the line delivers again and, with its owner still silent, is forced
+/// again a budget later: the machine degrades to a slow, narrated limp
+/// instead of a silent quarter of its devices, and `sysinfo irq` names the
+/// line to look at.
+pub fn scrub(now_us: u64) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+
+    for (&lines, 0..) |*line, gsi| {
+        if (!line.claimed or line.owed == 0) continue;
+        if (now_us -| line.held_since_us < HELD_BUDGET_US) continue;
+
+        line.forced +%= 1;
+        line.owed = 0;
+        for (line.events) |maybe| {
+            const self = maybe orelse continue;
+            self.held = false;
+        }
+        hal.acknowledgeIrq(line.token);
+        console.fail("line {d} held past its budget; completed for its silent owner", .{gsi});
+    }
+}
+
 /// One line's state, for anything reporting on what is attached.
 pub const Snapshot = struct {
     gsi: u32,
     armed: bool,
     held: bool,
     count: u64,
+    /// How the line fires, which decides its whole discipline.
+    trigger: irq.Trigger,
+    /// How many owners share the line.
+    owners: u8,
+    /// Watchdog completions for silent owners; zero on a healthy machine.
+    forced: u32,
 };
 
 /// Walk the attached lines, lowest first, one row per owner.
@@ -225,6 +311,9 @@ pub fn forEach(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot)
                 .armed = self.armed,
                 .held = self.held,
                 .count = self.count,
+                .trigger = self.token.trigger,
+                .owners = line.owners(),
+                .forced = line.forced,
             });
         }
     }
@@ -239,6 +328,7 @@ fn onInterrupt(frame: *hal.InterruptFrame) void {
 
         hal.deferIrq(line.token);
         const level = line.token.trigger == .level;
+        if (level and line.owed == 0) line.held_since_us = hal.monotonicMicros();
         for (line.events) |maybe| {
             const self = maybe orelse continue;
             self.held = level;

@@ -440,23 +440,27 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     }
 
     // The lines above the legacy sixteen are the PIRQ pins the firmware's
-    // routing tables name, routed open now, in the one window where this
-    // machine tolerates controller writes, and on the FALLING EDGE of their
-    // active-low wires rather than as level. A level entry owes the
-    // controller a completion to drop its remote-IRR, and this machine
-    // punishes every runtime word said to the controller, the completion
-    // doorbell included: the entry then believes its last interrupt is
-    // still in service and an asserted line delivers nothing more. An edge
-    // entry holds no such state. What makes edge lossless is the drivers'
-    // own discipline: each services until its status reads quiet, so the
-    // wire is released on exit and every later cause is a fresh edge.
+    // routing tables name, routed open now, in the boot window where every
+    // machine tolerates controller writes. How they trigger is the board's
+    // own answer, carried in the routing: level for PCI's electrical truth
+    // on a machine with sane firmware, and the FALLING EDGE of the
+    // active-low wires where the firmware punishes every runtime word said
+    // to the controller, the level completion doorbell included. A level
+    // entry owes that doorbell to drop its remote-IRR; on such firmware the
+    // entry then believes its last interrupt is still in service and an
+    // asserted line delivers nothing more. An edge entry holds no such
+    // state, and what makes edge lossless is the drivers' own discipline:
+    // each services until its status reads quiet and says whether it found
+    // work, so the wire is released on exit, every later cause is a fresh
+    // edge, and a neighbour's cause hidden under a shared low wire is
+    // chased by the acknowledgement's cascade.
     var gsi: u32 = irq_mod.MAX_LINES;
     const pins = @min(ioapic.inputs(), MAX_GSI);
     while (gsi < pins) : (gsi += 1) {
         if (taken[gsi]) continue;
         const vector = DEVICE_VECTOR_BASE + @as(u8, @intCast(gsi - irq_mod.MAX_LINES));
-        ioapic.route(gsi, vector, .low, .edge, destination, false);
-        rememberRoute(gsi, vector, .edge);
+        ioapic.route(gsi, vector, .low, routing.pirq_trigger, destination, false);
+        rememberRoute(gsi, vector, routing.pirq_trigger);
     }
 
     captureBootEntries();

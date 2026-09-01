@@ -45,6 +45,12 @@ pub const MAX_CONTROLLERS = 2;
 pub const MAX_LINES = 16;
 
 pub const Routing = struct {
+    /// How the PIRQ pins above the legacy sixteen are triggered. Level by
+    /// default, which is their electrical truth on PCI and what a machine
+    /// with sane firmware wants; the quirk registry flips it to edge for
+    /// boards whose firmware traps the completion doorbell.
+    pirq_trigger: Trigger = .level,
+
     /// Where the per-CPU half of the controller lives, if there is one.
     local_address: u32 = 0,
 

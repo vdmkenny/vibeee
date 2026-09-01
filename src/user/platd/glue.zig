@@ -599,7 +599,7 @@ pub const Line = struct {
     /// The same, and tell the kernel the line may fire again.
     pub fn service(self: Line) void {
         self.poll();
-        _ = sys.irqAck(self.event);
+        _ = sys.irqAck(self.event, true);
     }
 
     /// Consume and service a pending delivery without blocking. Used between
@@ -629,7 +629,7 @@ export fn uacpi_kernel_install_interrupt_handler(
 
 export fn uacpi_kernel_uninstall_interrupt_handler(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) u32 {
     if (sci.event != 0) {
-        _ = sys.irqAck(sci.event);
+        _ = sys.irqAck(sci.event, true);
         _ = sys.close(sci.event);
     }
     sci = .{};

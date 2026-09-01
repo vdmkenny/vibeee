@@ -1170,8 +1170,7 @@ const REST_US: u32 = 50_000;
 fn rest() void {
     if (controller.irq != 0) {
         _ = sys.eventWait(controller.irq, REST_US);
-        _ = serviceIrq();
-        _ = sys.irqAck(controller.irq);
+        _ = sys.irqAck(controller.irq, serviceIrq());
     } else {
         sys.sleepMicros(REST_US);
     }

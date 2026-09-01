@@ -163,6 +163,12 @@ var acpi_root: u32 = 0;
 pub fn interruptRouting() ?irq.Routing {
     var routing = madt.parse() orelse return null;
 
+    // The PIRQ discipline is the board's, decided by the quirk registry:
+    // level is PCI's electrical truth and the generic answer, and the edge
+    // ride belongs to the firmware that punishes level's completion
+    // doorbell. Identity has to be read before this is called.
+    routing.pirq_trigger = if (quirks.get().pirq_edge_falling) .edge else .level;
+
     // The SCI is marked no matter what the MADT says about its form: the
     // form can come from either table, but the identity of the line is the
     // FADT's, and an unmarked line is one the runtime may write.
@@ -195,10 +201,17 @@ pub fn boardIsEmulated() bool {
     return false;
 }
 
-pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
+/// Who the board is, read before anything the answer steers: the quirk
+/// registry decides interrupt discipline, and the interrupt controller is
+/// programmed long before the rest of the platform comes up. A scan of the
+/// BIOS area through the linear map, so it needs neither heap nor interrupts.
+pub fn earlyIdentity() void {
     smbios.init();
-    publishPlatform(bi);
     evaluateQuirks();
+}
+
+pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
+    publishPlatform(bi);
 
     shutdown.setPowerOps(.{ .off = acpi_power.off, .reset = acpi_power.reset });
 

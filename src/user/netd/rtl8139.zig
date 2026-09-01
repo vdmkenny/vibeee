@@ -479,22 +479,25 @@ pub fn stop(nic: *NicDev) void {
     nic.state = .{};
 }
 
-pub fn irq(nic: *NicDev) void {
-    if (!device.started) return;
+pub fn irq(nic: *NicDev) bool {
+    if (!device.started) return false;
 
     // Acknowledge each captured cause before draining it. A cause arriving
     // during the drain then remains latched and is handled by the next pass,
     // rather than being erased by a late write-one-to-clear acknowledgement.
+    var serviced = false;
     for (0..IRQ_DRAIN_PASSES) |_| {
         const raw = device.window.in16(.isr);
-        if (raw == 0 or raw == std.math.maxInt(u16)) return; // shared line or absent device
+        if (raw == 0 or raw == std.math.maxInt(u16)) break; // shared line or absent device
         const events = @as(Events, @bitCast(raw));
-        if (!events.hasWork()) return;
+        if (!events.hasWork()) break;
 
+        serviced = true;
         device.window.out16(.isr, raw);
         if (events.hasRx()) reapRx(nic);
         if (events.hasTx()) reapTx(nic);
     }
+    return serviced;
 }
 
 fn reapRx(nic: *NicDev) void {
