@@ -106,6 +106,14 @@ pub fn installHandle(h: handles.Handle) ?u32 {
     return slot;
 }
 
+/// Give a handle back, for a handler unwinding a set it could not finish
+/// building. The pair of `installHandle`, so a caller that took one does not
+/// have to reach for the table to put it down.
+pub fn closeHandle(number: u32) void {
+    const table = currentHandles() orelse return;
+    _ = table.close(number);
+}
+
 /// Timeouts arrive as a u32 with two sentinel values (`abi.Timeout`), so a
 /// caller can poll, block forever, or bound the wait without a second argument
 /// saying which. Null here means no deadline.

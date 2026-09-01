@@ -93,7 +93,11 @@ const Volume = struct {
     flags: Flags = .{},
     /// The device as the block layer holds it, cached, so the partition
     /// scan and everything after it go through one copy of it.
-    published: block.Device = undefined,
+    ///
+    /// Optional because a volume exists before it is published: an attach
+    /// that fails between the two is torn down, and a device that was never
+    /// registered is not one to retire.
+    published: ?block.Device = null,
     /// Where waiters queue when every slot is busy. One place rather than
     /// a spin: the depth is small and a burst of readers is normal.
     room: wait.Queue = .{},
@@ -165,7 +169,11 @@ pub fn attach(name: []const u8, info: *Attach) Error!usize {
 
 /// The handles the server holds. Kept apart from `attach` so the syscall
 /// layer owns handle installation and this file owns the volume.
-pub fn parts(index: usize) ?struct { data: *shm.Segment, doorbell: *event.Event } {
+/// The two halves of a volume: the memory the requests travel in, and the
+/// event that says there is one.
+pub const Parts = struct { data: *shm.Segment, doorbell: *event.Event };
+
+pub fn parts(index: usize) ?Parts {
     if (index >= volumes.len or !volumes[index].live) return null;
     return .{
         .data = volumes[index].data.?,
@@ -198,13 +206,13 @@ pub fn publish(index: usize) void {
     // reads its own metadata over and over, and every miss here is a
     // round trip through another process.
     volume.published = bcache.wrap(raw) orelse raw;
-    block.register(volume.published);
+    block.register(volume.published.?);
 
     _ = sched.spawn("volume-scan", .normal, survey, index, 8 * 1024) catch {
         // Without the scan the volume is still there and still readable,
         // it just has no partitions listed. A medium with a filesystem
         // written straight onto it is unaffected.
-        block.markWholeDiskUsable(&volume.published);
+        block.markWholeDiskUsable(&volume.published.?);
     };
 }
 
@@ -214,13 +222,13 @@ fn survey(index: usize) callconv(.c) void {
     if (volume.live) {
         // A medium with no partition table is a filesystem in its own
         // right, which is how most sticks and cards arrive.
-        const found = block.scanPartitions(&volume.published);
-        if (found == 0) block.markWholeDiskUsable(&volume.published);
+        const found = block.scanPartitions(&volume.published.?);
+        if (found == 0) block.markWholeDiskUsable(&volume.published.?);
 
         // Then put it where media go. A disk plugged in should arrive in
         // the same place as one that was there at boot.
         for (block.list(), 0..) |*dev, i| {
-            if (dev.ctx != volume.published.ctx or !block.isMountCandidate(i)) continue;
+            if (dev.ctx != volume.published.?.ctx or !block.isMountCandidate(i)) continue;
             if (vfs.mountMedia(dev)) |where| {
                 console.info("mount", "{s} on {s}", .{ where, dev.name });
             }
@@ -284,9 +292,13 @@ pub fn detach(index: usize) void {
     _ = volume.room.wakeAll();
 
     // The mounts go before the rows do: a mount pointing at a device that
-    // answers nothing is worse than no mount at all.
-    _ = vfs.abandon(volume.published.ctx);
-    block.retire(volume.published.ctx);
+    // answers nothing is worse than no mount at all. A volume torn down
+    // before it was published has neither.
+    if (volume.published) |device| {
+        _ = vfs.abandon(device.ctx);
+        block.retire(device.ctx);
+        volume.published = null;
+    }
 
     if (volume.doorbell) |bell| event.release(bell);
     if (volume.data) |seg| shm.release(seg);

@@ -16,6 +16,7 @@ const handles = @import("../handle.zig");
 const console = @import("../console.zig");
 const hal = @import("../hal.zig");
 const input = @import("../input.zig");
+const event = @import("../event.zig");
 const irqevent = @import("../irqevent.zig");
 const ports = @import("../ports.zig");
 const pmm = @import("../pmm.zig");
@@ -244,31 +245,55 @@ pub fn sys_volume_attach(a: Args) Result {
 
     const pieces = ublk.parts(index) orelse return Errno.inval.value();
 
-    // The handles go in together or not at all: a server holding one half of
-    // a volume it cannot serve is worse than one that failed to attach.
+    const given = handOver(pieces) catch {
+        ublk.detach(index);
+        return Errno.nomem.value();
+    };
+
+    info.data = @intCast(given.data);
+    info.doorbell = @intCast(given.doorbell);
+    @memcpy(info_bytes, std.mem.asBytes(&info));
+
+    ublk.publish(index);
+    return @intCast(index);
+}
+
+/// The handle numbers the server is to use for each half.
+const Given = struct { data: u32, doorbell: u32 };
+
+/// Give the server a handle to each half of the volume it just attached.
+///
+/// Each handle takes its own reference. The volume holds one for as long as it
+/// is attached, and detaching it must not free memory the server is still
+/// mapping and still signalling through.
+///
+/// Both or neither: a server holding one half of a volume it cannot serve is
+/// worse than one that failed to attach.
+fn handOver(pieces: ublk.Parts) error{NoRoom}!Given {
+    shm.retain(pieces.data);
     const data = ctx.installHandle(.{
         .kind = .shm,
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = pieces.data },
     }) orelse {
-        ublk.detach(index);
-        return Errno.nomem.value();
+        shm.release(pieces.data);
+        return error.NoRoom;
     };
+    // The handle owns that reference now, so unwinding goes through the table
+    // rather than around it.
+    errdefer ctx.closeHandle(data);
+
+    event.retain(pieces.doorbell);
     const doorbell = ctx.installHandle(.{
         .kind = .event,
         .rights = .{ .read = true, .write = true },
         .data = .{ .event = pieces.doorbell },
     }) orelse {
-        ublk.detach(index);
-        return Errno.nomem.value();
+        event.release(pieces.doorbell);
+        return error.NoRoom;
     };
 
-    info.data = @intCast(data);
-    info.doorbell = @intCast(doorbell);
-    @memcpy(info_bytes, std.mem.asBytes(&info));
-
-    ublk.publish(index);
-    return @intCast(index);
+    return .{ .data = data, .doorbell = doorbell };
 }
 
 /// Take the next request on a volume this process serves. Never blocks: the

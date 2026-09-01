@@ -12,6 +12,7 @@
 //! back are only really exercised by a Ring 3 call into a running kernel.
 //! `probe` with no arguments runs the lot and says how many passed.
 
+const std = @import("std");
 const abi = @import("lib").syscalls;
 const out = @import("ulib").out;
 const sys = @import("sys");
@@ -45,6 +46,8 @@ const CASES = [_]Case{
     .{ .says = "a handle nobody was given", .run = &strayHandle, .want = .badf },
     .{ .says = "a message at an address it cannot sit at", .run = &misalignedMessage, .want = .fault },
     .{ .says = "one of the system's own service names", .run = &reservedName, .want = .perm },
+    .{ .says = "signalling an event only given to read", .run = &readOnlyEvent, .want = .perm },
+    .{ .says = "a program whose bytes reach past its file", .run = &crookedProgram, .want = .inval },
 };
 
 pub fn run(args: []const []const u8) void {
@@ -92,6 +95,7 @@ fn name(which: abi.Errno) []const u8 {
         .fault => "refused (fault)",
         .badf => "refused (bad handle)",
         .perm => "refused (not allowed)",
+        .inval => "refused (not a program)",
         else => "refused",
     };
 }
@@ -167,6 +171,80 @@ fn kernelPath() isize {
 
 fn strayHandle() isize {
     return sys.close(4095);
+}
+
+/// A program image whose one segment says its bytes start near the top of the
+/// address space and run a page past it.
+///
+/// Every offset in a program header is a number the file chose. Added up in
+/// the machine's own width the sum comes back around to nothing, a bounds
+/// check written that way passes, and the loader then copies a page from
+/// wherever that offset lands into memory the program can read: a way to be
+/// handed any of the machine's memory by asking to be run.
+///
+/// The arithmetic is checked where it can be tested, in `elf/plan.zig`. What
+/// this case covers is the whole path: that a file which cannot be believed
+/// comes back as a program that would not start, from the call that starts it.
+fn crookedProgram() isize {
+    var image: [Elf.SIZE]u8 = @splat(0);
+    Elf.write(&image, .{ .offset = 0xFFFF_F000, .filesz = 0x1000 });
+
+    const file = sys.open(CROOKED, .{ .write = true, .create = true, .truncate = true });
+    if (file < 0) return NOT_RUN;
+    const wrote = sys.write(@intCast(file), &image);
+    _ = sys.close(@intCast(file));
+    if (wrote != image.len) return NOT_RUN;
+
+    return sys.spawn(CROOKED, &.{CROOKED});
+}
+
+const CROOKED = "/tmp/crooked";
+
+/// Just enough of a program image to be believed as far as its one segment.
+const Elf = struct {
+    const HEADER = 52;
+    const PROGRAM = 32;
+    pub const SIZE = HEADER + PROGRAM;
+
+    const Says = struct { offset: u32, filesz: u32 };
+
+    fn write(into: *[SIZE]u8, says: Says) void {
+        into[0..4].* = "\x7fELF".*;
+        into[4] = 1; // 32-bit
+        into[5] = 1; // little-endian
+        into[6] = 1; // the only version there is
+        put(into, 16, 2); // an executable
+        put(into, 18, 3); // for this machine
+        put(into, 20, 1);
+        put(into, 24, 0x1000); // where it would start
+        put(into, 28, HEADER); // where the program table is
+        put(into, 40, HEADER); // how big this header is
+        put(into, 42, PROGRAM);
+        put(into, 44, 1); // one segment
+
+        const at = HEADER;
+        put(into, at + 0, 1); // to be loaded
+        put(into, at + 4, says.offset);
+        put(into, at + 8, 0x1000); // where it goes
+        put(into, at + 16, says.filesz);
+        put(into, at + 20, says.filesz);
+        put(into, at + 24, 0b101); // read and run
+    }
+
+    /// Little-endian, four bytes, which is every field this writes: the two
+    /// halfword fields have room to spare and nothing after them to disturb.
+    fn put(into: *[SIZE]u8, at: usize, value: u32) void {
+        std.mem.writeInt(u32, into[at..][0..4], value, .little);
+    }
+};
+
+/// The keyboard's own ready event, which `watch` hands out to read and not to
+/// write. Everything waiting on keys waits on this one: a program that could
+/// signal it would wake every window on the machine whenever it liked.
+fn readOnlyEvent() isize {
+    const watched = sys.watch(.keys);
+    if (watched < 0) return NOT_RUN;
+    return sys.eventSignal(@intCast(watched));
 }
 
 /// The name the settings store answers to. A program that took it would be

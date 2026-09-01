@@ -18,7 +18,7 @@ make vnc     # the same, over VNC (vnc://localhost:5901 on macOS)
 ```
 
 You need Zig 0.16, nasm, mtools and QEMU. It boots to a shell in about a second.
-Type `eeewm` for the desktop.
+Type `svc start eeewm` for the desktop.
 
 The emulated machine is built to resemble the target: the CPU is pinned to the Celeron
 M's feature set, memory to 512 MB, storage to the parallel ATA the machine's own SSD

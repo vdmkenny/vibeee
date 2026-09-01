@@ -137,7 +137,10 @@ fn wmMain() noreturn {
 
     const registered = sys.svcRegister(proto.wm.SERVICE);
     if (registered < 0) {
-        out.text("eeewm: cannot register the gui service\n");
+        // The name is the system's own, so it takes a capability a session
+        // does not carry: `svc` asks init, which does.
+        out.text("eeewm: the gui service is not this program's to publish.\n");
+        out.text("       start the desktop with: svc start eeewm\n");
         out.flush();
         sys.exit(1);
     }

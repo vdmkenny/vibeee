@@ -510,22 +510,13 @@ fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
     // A child is told what this shell was told. Nothing here adds to it:
     // the shell has no way to set a variable yet, so passing it on is the
     // whole of what it does with one.
-    //
-    // What it does subtract is the right to answer to one of the system's own
-    // names. The shell holds that so a person can start the desktop from a
-    // prompt; a program started from the same prompt is not the desktop, and
-    // handing the power on by default would put every program run here one
-    // dead server away from being the settings store.
-    var granted = streams;
-    granted.caps = @bitCast(sys.Caps.all.without(.{ .service = true }));
-
-    const direct = sys.spawnEnv(path, words, env.all(), granted);
+    const direct = sys.spawnEnv(path, words, env.all(), streams);
     if (direct >= 0) return direct;
 
     var argv: [MAX_WORDS + 1][]const u8 = undefined;
     argv[0] = "tools";
     for (words, 0..) |w, i| argv[1 + i] = w;
-    return sys.spawnEnv(TOOLS_PATH, argv[0 .. words.len + 1], env.all(), granted);
+    return sys.spawnEnv(TOOLS_PATH, argv[0 .. words.len + 1], env.all(), streams);
 }
 
 /// The working directory as a prompt should show it: `~` where the path

@@ -33,5 +33,9 @@ test {
     _ = @import("user/lib/command.zig");
     _ = @import("user/lib/env.zig");
     _ = @import("user/lib/table.zig");
+    // Every decision about a program image, away from the frames and the
+    // mappings it would otherwise take to ask one: the files worth asking
+    // about are the ones no linker would produce.
+    _ = @import("kernel/elf/plan.zig");
     _ = @import("kernel/ublk.zig");
 }

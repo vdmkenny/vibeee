@@ -26,10 +26,21 @@ const currentHandles = ctx.currentHandles;
 const installHandle = ctx.installHandle;
 const deadlineFrom = ctx.deadlineFrom;
 
-fn getEvent(handle: u32) ?*event_mod.Event {
-    const table = currentHandles() orelse return null;
-    const h = table.get(handle) orelse return null;
-    if (h.kind != .event) return null;
+/// The event behind a handle, for a caller about to signal it.
+///
+/// Signalling is writing to it, so it takes the write right. `watch` hands out
+/// read-only handles onto events the whole system shares, the keyboard's and
+/// the pointer's among them: a process that could signal one of those would
+/// wake every other waiter on it whenever it liked.
+///
+/// An error set rather than a null, so the answer says which of the two it is:
+/// a handle that is not an event and a handle that is one but may not be
+/// signalled are different things to be told.
+fn eventToSignal(handle: u32) error{ NoSuchHandle, NotAllowed }!*event_mod.Event {
+    const table = currentHandles() orelse return error.NoSuchHandle;
+    const h = table.get(handle) orelse return error.NoSuchHandle;
+    if (h.kind != .event) return error.NoSuchHandle;
+    if (!h.rights.write) return error.NotAllowed;
     return h.data.event;
 }
 
@@ -91,7 +102,10 @@ pub fn sys_event_create(_: Args) Result {
 }
 
 pub fn sys_event_signal(a: Args) Result {
-    const e = getEvent(@intCast(a.a0)) orelse return Errno.badf.value();
+    const e = eventToSignal(@intCast(a.a0)) catch |err| return switch (err) {
+        error.NoSuchHandle => Errno.badf.value(),
+        error.NotAllowed => Errno.perm.value(),
+    };
     e.signal();
     return 0;
 }
