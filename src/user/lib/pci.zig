@@ -11,6 +11,8 @@
 
 const lib = @import("lib");
 const sys = @import("sys");
+const std = @import("std");
+const log = @import("log.zig");
 
 pub const Location = lib.pci.Location;
 pub const Command = lib.pci.Command;
@@ -69,6 +71,58 @@ pub fn memoryBase(loc: Location, index: u8) ?u32 {
     if (window.kind == .bits64 and index >= 5) return null;
     const upper = if (window.kind == .bits64) bar(loc, index + 1) else 0;
     return lib.pci.memoryWindowBase(window, upper);
+}
+
+/// A device's register aperture, opened the one way every memory-mapped
+/// driver opens one: the window at BAR `index` decoded, its placement
+/// checked against the reach of a 32-bit mapping, its registers mapped,
+/// and decode and mastering switched on. Null means the failure is already
+/// narrated under `tag`, with `what` naming the part whose registers were
+/// wanted.
+pub fn openAperture(
+    loc: Location,
+    index: u8,
+    bytes: u32,
+    tag: []const u8,
+    comptime what: []const u8,
+) ?[*]volatile u32 {
+    const base = memoryBase(loc, index) orelse {
+        log.fail(tag, "the " ++ what ++ " exposes no register aperture");
+        return null;
+    };
+    if (base > std.math.maxInt(u32) - (bytes - 1)) {
+        log.fail(tag, "the " ++ what ++ " exposes no register aperture");
+        return null;
+    }
+
+    // The device's own account of the window, taken while decoding is off
+    // and restored before it matters. A window of another shape than the
+    // driver assumes is narrated rather than refused: the mapping serves
+    // the registers the driver touches, and the probe exists to name the
+    // device whose account disagrees.
+    const register = lib.pci.BAR0_OFFSET + 4 * index;
+    const raw = bar(loc, index);
+    const saved = readCommand(loc);
+    var probing = saved;
+    probing.memory_space = false;
+    writeCommand(loc, probing);
+    write(loc, register, std.math.maxInt(u32));
+    const mask: MemoryBar = @bitCast(bar(loc, index));
+    write(loc, register, raw);
+    writeCommand(loc, saved);
+    _ = read(loc, COMMAND_OFFSET);
+
+    const claimed = -%mask.base();
+    if (claimed == 0 or claimed < bytes or !std.math.isPowerOfTwo(claimed) or
+        !std.mem.isAligned(base, claimed))
+        log.say(tag, .dim, "the " ++ what ++ "'s window is not the shape its driver assumes");
+
+    const aperture = sys.mapDevice(base, bytes) orelse {
+        log.fail(tag, "cannot map registers");
+        return null;
+    };
+    enableMemoryAndMaster(loc);
+    return aperture;
 }
 
 pub fn bar(loc: Location, index: u8) u32 {

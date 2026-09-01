@@ -21,6 +21,7 @@ const idt = @import("idt.zig");
 const port = @import("port.zig");
 const sched = @import("../../kernel/sched.zig");
 const watchdog = @import("../../kernel/watchdog.zig");
+const irqevent = @import("../../kernel/irqevent.zig");
 
 const PIT_CHANNEL0 = 0x40;
 const PIT_COMMAND = 0x43;
@@ -86,15 +87,18 @@ pub fn wedgeSoon() void {
     console.warn("wedging in ten seconds to prove the panic path", .{});
 }
 
+/// Ticks between watchdog scans: a few times a second against a budget of
+/// a second, and the scan is a handful of lines.
+const SCRUB_EVERY_TICKS = 32;
+
 fn onTick(_: *idt.Frame) void {
     _ = @atomicRmw(u32, &ticks, .Add, 1, .monotonic);
 
     // The watchdog for deliveries whose owner has stopped answering. From
     // here because this vector outranks every deferrable one by design, so
-    // it still fires while one is stuck. A few times a second is enough:
-    // the budget is a second, and the scan is a handful of lines.
-    if (@atomicLoad(u32, &ticks, .monotonic) % 32 == 0) {
-        @import("../../kernel/irqevent.zig").scrub(monotonicMicros());
+    // it still fires while one is stuck.
+    if (@atomicLoad(u32, &ticks, .monotonic) % SCRUB_EVERY_TICKS == 0) {
+        irqevent.scrub(monotonicMicros());
     }
 
     if (wedge_at != 0 and @atomicLoad(u32, &ticks, .monotonic) >= wedge_at) {

@@ -40,7 +40,7 @@ pub const class = lib.ifmatch.Class.wifi;
 
 /// The register aperture is sixty-four kilobytes; everything this driver
 /// reaches lives in the first forty.
-const MMIO_BYTES: usize = 64 * 1024;
+const MMIO_BYTES: u32 = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Registers
@@ -392,15 +392,8 @@ pub const ops = dev_mod.NicOps{
 pub fn open(loc: pci.Location, nic: *NicDev) bool {
     device = .{ .location = loc };
 
-    const base = pci.memoryBase(loc, 0) orelse {
-        log.fail(name, "the radio exposes no register aperture");
+    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "radio") orelse
         return false;
-    };
-    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
-        log.fail(name, "cannot map registers");
-        return false;
-    };
-    pci.enableMemoryAndMaster(loc);
     var keep_enabled = false;
     defer if (!keep_enabled) pci.disableInterruptAndMaster(loc);
 

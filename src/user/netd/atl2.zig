@@ -509,12 +509,8 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     if (device.opened or device.dma_handle != null) return false;
 
     device.location = loc;
-    const base = bar0(loc) orelse return false;
-    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
-        log.fail("atl2", "cannot map registers");
+    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, "atl2", "adapter") orelse
         return false;
-    };
-    pci.enableMemoryAndMaster(loc);
     var keep_pci_enabled = false;
     defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
     device.regs = .{ .base = @ptrCast(@volatileCast(aperture)) };
@@ -574,24 +570,6 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     return true;
 }
 
-fn bar0(loc: pci.Location) ?u32 {
-    const raw = pci.bar(loc, 0);
-    const bar: pci.MemoryBar = @bitCast(raw);
-    if (bar.space != .memory or bar.kind == .reserved or bar.kind == .below_one_megabyte) {
-        log.fail("atl2", "BAR0 is not a usable memory BAR");
-        return null;
-    }
-    if (bar.kind == .bits64 and pci.bar(loc, 1) != 0) {
-        log.fail("atl2", "BAR0 lies above the 32-bit address space");
-        return null;
-    }
-    const base = bar.base();
-    if (base == 0 or base > std.math.maxInt(u32) - (MMIO_BYTES - 1)) {
-        log.fail("atl2", "BAR0 has no usable address");
-        return null;
-    }
-    return base;
-}
 
 /// Reset and configure, the sequence design/08 §4.2 fixes. Bounded waits
 /// only: a wedged controller costs a refused driver, never a machine.

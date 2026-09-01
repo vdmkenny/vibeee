@@ -21,7 +21,7 @@ const sys = @import("sys");
 const NicDev = dev_mod.NicDev;
 const RingSlots = 64;
 const Slab = 2048;
-const MmioBytes: u32 = 128 * 1024;
+const MMIO_BYTES: u32 = 128 * 1024;
 const MinimumFrame = 60;
 const AllCauses: u32 = 0xFFFF_FFFF;
 const ResetSpins = 10_000;
@@ -210,7 +210,7 @@ comptime {
     {
         @compileError("EEPROM control fields do not match EERD");
     }
-    if (@intFromEnum(R.ra1) + 4 > MmioBytes) @compileError("register exceeds BAR0");
+    if (@intFromEnum(R.ra1) + 4 > MMIO_BYTES) @compileError("register exceeds BAR0");
 }
 
 // ---------------------------------------------------------------------------
@@ -351,12 +351,8 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         return false;
     }
 
-    const base = bar0(loc) orelse return false;
-    const aperture = sys.mapDevice(base, MmioBytes) orelse {
-        log.fail("e1000", "cannot map registers");
+    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, "e1000", "adapter") orelse
         return false;
-    };
-    pci.enableMemoryAndMaster(loc);
     var keep_pci_enabled = false;
     defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
     device.regs = .{ .base = @ptrCast(aperture) };
@@ -438,38 +434,6 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     return true;
 }
 
-fn bar0(loc: pci.Location) ?u32 {
-    const raw = pci.bar(loc, 0);
-    const base = pci.memoryBase(loc, 0) orelse {
-        log.fail("e1000", "BAR0 is not an assigned 32-bit memory window");
-        return null;
-    };
-
-    // Size a BAR only while memory decoding is off, then restore both words
-    // before interpreting the mask returned by configuration space.
-    const saved_command = pci.readCommand(loc);
-    var probe_command = saved_command;
-    probe_command.memory_space = false;
-    pci.writeCommand(loc, probe_command);
-    pci.write(loc, pci.BAR0_OFFSET, 0xFFFF_FFFF);
-    const size_word = pci.bar(loc, 0);
-    pci.write(loc, pci.BAR0_OFFSET, raw);
-    pci.writeCommand(loc, saved_command);
-    _ = pci.read(loc, pci.COMMAND_OFFSET);
-
-    const probe_readback: pci.MemoryBar = @bitCast(size_word);
-    const size_mask = probe_readback.base();
-    if (size_mask == 0) {
-        log.fail("e1000", "BAR0 has no implemented aperture");
-        return null;
-    }
-    const size = (~size_mask) +% 1;
-    if (size < MmioBytes or size & (size - 1) != 0 or base & (size - 1) != 0) {
-        log.fail("e1000", "BAR0 is too small or misaligned");
-        return null;
-    }
-    return base;
-}
 
 fn reset() bool {
     maskAndClearInterrupts();

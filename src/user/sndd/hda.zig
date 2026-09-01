@@ -30,7 +30,7 @@ pub const name = "hda";
 /// The register aperture: the controller's own file, then one descriptor
 /// per stream. Sixteen kilobytes covers every stream a part of this class
 /// has.
-const MMIO_BYTES: usize = 16 * 1024;
+const MMIO_BYTES: u32 = 16 * 1024;
 
 /// Traffic class select, in configuration space. Class zero is what the
 /// specification's snooping and interrupt delivery assume, and firmware
@@ -425,15 +425,8 @@ pub const ops = dev.PcmOps{
 // ---------------------------------------------------------------------------
 
 pub fn open(loc: pci.Location) bool {
-    const base = pci.memoryBase(loc, 0) orelse {
-        log.fail(name, "the controller exposes no register aperture");
+    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "controller") orelse
         return false;
-    };
-    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
-        log.fail(name, "cannot map registers");
-        return false;
-    };
-    pci.enableMemoryAndMaster(loc);
 
     device.base = @ptrCast(aperture);
     device.words = .{ .base = device.base };

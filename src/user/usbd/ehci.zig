@@ -29,7 +29,7 @@ pub const name = "ehci";
 
 /// The capability file is small and the operational file follows it; a
 /// kilobyte covers both on every part of this class.
-const MMIO_BYTES: usize = 1024;
+const MMIO_BYTES: u32 = 1024;
 
 // ---------------------------------------------------------------------------
 // Registers
@@ -741,15 +741,8 @@ fn portWrite(index: u8, value: Port) void {
 // ---------------------------------------------------------------------------
 
 fn open(loc: pci.Location) bool {
-    const base = pci.memoryBase(loc, 0) orelse {
-        log.fail(name, "the controller exposes no register aperture");
+    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "controller") orelse
         return false;
-    };
-    const aperture = sys.mapDevice(base, MMIO_BYTES) orelse {
-        log.fail(name, "cannot map registers");
-        return false;
-    };
-    pci.enableMemoryAndMaster(loc);
 
     controller.base = @ptrCast(aperture);
     controller.location = loc;

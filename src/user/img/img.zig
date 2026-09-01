@@ -108,11 +108,11 @@ fn refusalFor() Refusal {
 /// nothing later is read before it has been written. A second buffer would
 /// double the largest allocation in the program for the sake of a copy.
 fn pack(bytes: [*]u8, into: []u32) void {
+    const Sample = packed struct(u32) { r: u8, g: u8, b: u8, x: u8 };
+    const Word = packed struct(u32) { b: u8, g: u8, r: u8, x: u8 = 0 };
     for (into, 0..) |*pixel, i| {
-        const at = i * 4;
-        pixel.* = (@as(u32, bytes[at]) << 16) |
-            (@as(u32, bytes[at + 1]) << 8) |
-            @as(u32, bytes[at + 2]);
+        const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
+        pixel.* = @bitCast(Word{ .b = sample.b, .g = sample.g, .r = sample.r });
     }
 }
 

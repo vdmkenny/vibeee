@@ -200,11 +200,15 @@ pub fn acknowledge(self: *IrqEvent, found: bool) void {
         }
     }
 
+    retire(self, line);
+}
+
+/// Retire this owner's share of a held delivery. The line's completion goes
+/// to the controller only when the last owner of the delivery has spoken
+/// for its device. Locked context.
+fn retire(self: *IrqEvent, line: *Line) void {
     if (!self.held) return;
     self.held = false;
-
-    // The line's completion goes to the controller only when the last
-    // owner of this delivery has spoken for its device.
     if (line.owed > 0) {
         line.owed -= 1;
         if (line.owed == 0) hal.acknowledgeIrq(self.token);
@@ -231,15 +235,8 @@ pub fn release(self: *IrqEvent) void {
     }
 
     // A held delivery is acknowledged on the way out, through the same
-    // shared accounting every other acknowledgement uses.
-    if (self.held and self.gsi < MAX) {
-        self.held = false;
-        const line = lineOf(self.gsi);
-        if (line.owed > 0) {
-            line.owed -= 1;
-            if (line.owed == 0) hal.acknowledgeIrq(self.token);
-        }
-    }
+    // retirement every other acknowledgement uses.
+    if (self.gsi < MAX) retire(self, lineOf(self.gsi));
     if (self.gsi < MAX) {
         const line = &lines[self.gsi];
         for (&line.events) |*slot| {

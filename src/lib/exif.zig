@@ -271,8 +271,7 @@ fn photograph(comptime tiff: []const u8) [tiff.len + 12]u8 {
     out[1] = 0xD8;
     out[2] = 0xFF;
     out[3] = 0xE1;
-    out[4] = @intCast(size >> 8);
-    out[5] = @intCast(size & 0xFF);
+    std.mem.writeInt(u16, out[4..6], size, .big);
     @memcpy(out[6..12], "Exif\x00\x00");
     @memcpy(out[12..], tiff);
     return out;
