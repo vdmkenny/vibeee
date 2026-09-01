@@ -83,6 +83,15 @@ const Slot = struct {
 
 const Volume = struct {
     live: bool = false,
+    /// The server this volume belongs to.
+    ///
+    /// A volume is one server's to serve: taking its requests, answering them
+    /// and tearing it down are all things only that server may do. The `driver`
+    /// capability cannot be what separates them, because every driver server
+    /// holds it. Without an owner recorded here the network service could
+    /// answer a disk's reads with bytes of its own choosing, and the
+    /// filesystem above would believe them.
+    server: u32 = 0,
     name: [16]u8 = @splat(0),
     name_len: u8 = 0,
     data: ?*shm.Segment = null,
@@ -138,7 +147,7 @@ const WRITE_PATIENCE_US: u64 = 15_000_000;
 // ---------------------------------------------------------------------------
 
 /// Register a volume, and hand back what the server needs to serve it.
-pub fn attach(name: []const u8, info: *Attach) Error!usize {
+pub fn attach(server: u32, name: []const u8, info: *Attach) Error!usize {
     if (info.sector_bytes == 0 or info.sectors == 0) return Error.BadGeometry;
     if (info.sector_bytes > SLOT_BYTES) return Error.BadGeometry;
 
@@ -153,6 +162,7 @@ pub fn attach(name: []const u8, info: *Attach) Error!usize {
 
     volume.* = .{
         .live = true,
+        .server = server,
         .name_len = @intCast(@min(name.len, volume.name.len)),
         .data = data,
         .doorbell = doorbell,
@@ -169,16 +179,48 @@ pub fn attach(name: []const u8, info: *Attach) Error!usize {
 
 /// The handles the server holds. Kept apart from `attach` so the syscall
 /// layer owns handle installation and this file owns the volume.
+/// Tear down every volume a server was still serving.
+///
+/// A server that exits without detaching would otherwise leave a volume
+/// live with nobody able to answer it and nobody entitled to take it down:
+/// the mounts above it would sit there failing every read until the machine
+/// stopped. Called from the scheduler with the rest of a thread's claims.
+pub fn dropVolumes(server: u32) void {
+    for (0..volumes.len) |index| {
+        if (volumes[index].live and volumes[index].server == server) detach(index, server);
+    }
+}
+
+/// The slot a server's answer names, if there is an answer to give.
+///
+/// Separate from `done`, which is otherwise a wake: this is the whole of the
+/// judgement, and a tag is a number the server chose like any other.
+fn slotToAnswer(volume: *Volume, tag: u16) ?*Slot {
+    if (tag >= volume.slots.len) return null;
+    const slot = &volume.slots[tag];
+    if (!slot.busy or !slot.taken) return null;
+    return slot;
+}
+
+/// The volume at `index`, if it is `server`'s to act on.
+///
+/// Every entry point below goes through this rather than checking the index
+/// alone: a number in range is not an entitlement, and a server naming
+/// another server's volume is asking for something that is not its own.
+fn ownedBy(index: usize, server: u32) ?*Volume {
+    if (index >= volumes.len) return null;
+    const volume = &volumes[index];
+    if (!volume.live or volume.server != server) return null;
+    return volume;
+}
+
 /// The two halves of a volume: the memory the requests travel in, and the
 /// event that says there is one.
 pub const Parts = struct { data: *shm.Segment, doorbell: *event.Event };
 
-pub fn parts(index: usize) ?Parts {
-    if (index >= volumes.len or !volumes[index].live) return null;
-    return .{
-        .data = volumes[index].data.?,
-        .doorbell = volumes[index].doorbell.?,
-    };
+pub fn parts(index: usize, server: u32) ?Parts {
+    const volume = ownedBy(index, server) orelse return null;
+    return .{ .data = volume.data.?, .doorbell = volume.doorbell.? };
 }
 
 /// Publish the volume to the block layer, once the server has its
@@ -189,9 +231,8 @@ pub fn parts(index: usize) ?Parts {
 /// the call that got here, so the first read would be one it cannot
 /// answer. A thread of its own does it, and blocks the way any other
 /// reader would until the server reaches its loop.
-pub fn publish(index: usize) void {
-    if (index >= volumes.len or !volumes[index].live) return;
-    const volume = &volumes[index];
+pub fn publish(index: usize, server: u32) void {
+    const volume = ownedBy(index, server) orelse return;
 
     const raw = block.Device{
         .name = volume.nameSlice(),
@@ -239,12 +280,13 @@ fn survey(index: usize) callconv(.c) void {
 
 /// Take the next request, if there is one. The server waits on the
 /// doorbell rather than asking repeatedly.
-pub fn next(index: usize, into: *Request) bool {
-    if (index >= volumes.len or !volumes[index].live) return false;
-    const volume = &volumes[index];
-
+pub fn next(index: usize, server: u32, into: *Request) bool {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
+
+    // Inside the quiet, not before it: a volume checked and then acted on is
+    // a volume that can be detached in between.
+    const volume = ownedBy(index, server) orelse return false;
 
     for (&volume.slots, 0..) |*slot, i| {
         if (!slot.busy or !slot.offered or slot.taken) continue;
@@ -257,16 +299,12 @@ pub fn next(index: usize, into: *Request) bool {
 }
 
 /// Answer one request, and wake whoever is waiting for it.
-pub fn done(index: usize, tag: u16, status: Status, moved: u32) void {
-    if (index >= volumes.len or !volumes[index].live) return;
-    const volume = &volumes[index];
-    if (tag >= volume.slots.len) return;
-
+pub fn done(index: usize, server: u32, tag: u16, status: Status, moved: u32) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    const slot = &volume.slots[tag];
-    if (!slot.busy or !slot.taken) return;
+    const volume = ownedBy(index, server) orelse return;
+    const slot = slotToAnswer(volume, tag) orelse return;
     slot.status = status;
     slot.moved = moved;
     slot.done = true;
@@ -275,12 +313,11 @@ pub fn done(index: usize, tag: u16, status: Status, moved: u32) void {
 
 /// The server is going away. Every waiter is told so rather than left
 /// waiting out its deadline.
-pub fn detach(index: usize) void {
-    if (index >= volumes.len or !volumes[index].live) return;
-    const volume = &volumes[index];
-
+pub fn detach(index: usize, server: u32) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
+
+    const volume = ownedBy(index, server) orelse return;
 
     for (&volume.slots) |*slot| {
         if (!slot.busy or slot.done) continue;

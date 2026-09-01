@@ -122,6 +122,17 @@ pub fn deadlineFrom(timeout_us: usize) ?u64 {
     return clock.monotonicMicros() + timeout_us;
 }
 
+/// Who is calling.
+///
+/// The same identity the kernel stamps on a channel message, so a server that
+/// owns something and a server that is talking to one are the same kind of
+/// answer. Zero before there is a process, which is the boot self-test and
+/// early init.
+pub fn currentId() u32 {
+    const t = sched.currentThread() orelse return 0;
+    return t.id;
+}
+
 /// What the calling process is allowed to do.
 ///
 /// Everything before there is a process, which is the boot self-test and early

@@ -184,6 +184,10 @@ pub fn exitWith(status: i32) noreturn {
         // a dead device write into memory already handed to another process.
         @import("probe.zig").dropClaims(t.id);
 
+        // A volume is one server's to serve, so a server that exits without
+        // detaching leaves one nobody can answer and nobody may take down.
+        @import("ublk.zig").dropVolumes(t.id);
+
         // Handles are a claim of the same kind, and they go here rather than
         // with the rest of the corpse. A pipe ends when its last writer closes,
         // and a writer that has exited has closed: leaving its handles open

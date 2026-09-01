@@ -237,16 +237,17 @@ pub fn sys_volume_attach(a: Args) Result {
     var info: ublk.Attach = undefined;
     @memcpy(std.mem.asBytes(&info), info_bytes);
 
-    const index = ublk.attach(name, &info) catch |err| return switch (err) {
+    const server = ctx.currentId();
+    const index = ublk.attach(server, name, &info) catch |err| return switch (err) {
         error.BadGeometry => Errno.inval.value(),
         error.TooMany => Errno.nomem.value(),
         error.OutOfMemory => Errno.nomem.value(),
     };
 
-    const pieces = ublk.parts(index) orelse return Errno.inval.value();
+    const pieces = ublk.parts(index, server) orelse return Errno.inval.value();
 
     const given = handOver(pieces) catch {
-        ublk.detach(index);
+        ublk.detach(index, server);
         return Errno.nomem.value();
     };
 
@@ -254,7 +255,7 @@ pub fn sys_volume_attach(a: Args) Result {
     info.doorbell = @intCast(given.doorbell);
     @memcpy(info_bytes, std.mem.asBytes(&info));
 
-    ublk.publish(index);
+    ublk.publish(index, server);
     return @intCast(index);
 }
 
@@ -304,7 +305,7 @@ pub fn sys_volume_next(a: Args) Result {
     const into = ctx.userWrite(a, a.a1, @sizeOf(ublk.Request)) orelse return Errno.fault.value();
 
     var request: ublk.Request = .{};
-    if (!ublk.next(a.a0, &request)) return 0;
+    if (!ublk.next(a.a0, ctx.currentId(), &request)) return 0;
 
     @memcpy(into, std.mem.asBytes(&request));
     return 1;
@@ -315,7 +316,7 @@ pub fn sys_volume_done(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
     if (a.a1 > std.math.maxInt(u16)) return Errno.inval.value();
 
-    ublk.done(a.a0, @intCast(a.a1), @enumFromInt(@as(u8, @truncate(a.a2))), @intCast(a.a3));
+    ublk.done(a.a0, ctx.currentId(), @intCast(a.a1), @enumFromInt(@as(u8, @truncate(a.a2))), @intCast(a.a3));
     return 0;
 }
 
@@ -323,7 +324,7 @@ pub fn sys_volume_done(a: Args) Result {
 pub fn sys_volume_detach(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 
-    ublk.detach(a.a0);
+    ublk.detach(a.a0, ctx.currentId());
     return 0;
 }
 

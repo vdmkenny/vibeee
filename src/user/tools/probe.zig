@@ -317,40 +317,54 @@ fn crookedProgram() isize {
 const CROOKED = "/tmp/crooked";
 
 /// Just enough of a program image to be believed as far as its one segment.
+///
+/// Built out of the format's own structs rather than by writing numbers at
+/// remembered offsets: the layout is stated once, in `lib`, and both the
+/// kernel that refuses this file and the program that writes it read the same
+/// declaration.
 const Elf = struct {
-    const HEADER = 52;
-    const PROGRAM = 32;
-    pub const SIZE = HEADER + PROGRAM;
+    const format = @import("lib").elf;
+
+    pub const SIZE = @sizeOf(format.Header) + @sizeOf(format.ProgramHeader);
 
     const Says = struct { offset: u32, filesz: u32 };
 
     fn write(into: *[SIZE]u8, says: Says) void {
-        into[0..4].* = "\x7fELF".*;
-        into[4] = 1; // 32-bit
-        into[5] = 1; // little-endian
-        into[6] = 1; // the only version there is
-        put(into, 16, 2); // an executable
-        put(into, 18, 3); // for this machine
-        put(into, 20, 1);
-        put(into, 24, 0x1000); // where it would start
-        put(into, 28, HEADER); // where the program table is
-        put(into, 40, HEADER); // how big this header is
-        put(into, 42, PROGRAM);
-        put(into, 44, 1); // one segment
+        const header: *align(1) format.Header = @ptrCast(into);
+        header.* = .{
+            .magic = format.MAGIC.*,
+            .class = .bits32,
+            .data = .little,
+            .version = 1,
+            .abi = 0,
+            .abi_version = 0,
+            ._pad = @splat(0),
+            .type = .executable,
+            .machine = .x86,
+            .object_version = 1,
+            .entry = 0x1000,
+            .phoff = @sizeOf(format.Header),
+            .shoff = 0,
+            .flags = 0,
+            .ehsize = @sizeOf(format.Header),
+            .phentsize = @sizeOf(format.ProgramHeader),
+            .phnum = 1,
+            .shentsize = 0,
+            .shnum = 0,
+            .shstrndx = 0,
+        };
 
-        const at = HEADER;
-        put(into, at + 0, 1); // to be loaded
-        put(into, at + 4, says.offset);
-        put(into, at + 8, 0x1000); // where it goes
-        put(into, at + 16, says.filesz);
-        put(into, at + 20, says.filesz);
-        put(into, at + 24, 0b101); // read and run
-    }
-
-    /// Little-endian, four bytes, which is every field this writes: the two
-    /// halfword fields have room to spare and nothing after them to disturb.
-    fn put(into: *[SIZE]u8, at: usize, value: u32) void {
-        std.mem.writeInt(u32, into[at..][0..4], value, .little);
+        const program: *align(1) format.ProgramHeader = @ptrCast(into[@sizeOf(format.Header)..].ptr);
+        program.* = .{
+            .type = .load,
+            .offset = says.offset,
+            .vaddr = 0x1000,
+            .paddr = 0x1000,
+            .filesz = says.filesz,
+            .memsz = says.filesz,
+            .flags = .{ .executable = true, .writable = false, .readable = true },
+            .alignment = 0x1000,
+        };
     }
 };
 
