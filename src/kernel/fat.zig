@@ -821,21 +821,7 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
     // write rather than left holding whatever the clusters held before.
     if (offset > entry.size) try zeroRange(vol, entry, entry.size, offset);
 
-    // A file with no clusters yet gets its first one here, which is also what
-    // makes an empty file cost nothing until something is written to it.
-    if (entry.cluster < 2) {
-        entry.cluster = try table.alloc(&vol.fat);
-    }
-
-    var cluster = entry.cluster;
-
-    // Walk to the cluster holding `offset`, extending the chain if the file is
-    // being written past its end.
-    var skip = offset / cluster_size;
-    while (skip > 0) : (skip -= 1) {
-        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
-    }
-
+    var cluster = try clusterAt(vol, entry, offset);
     var within: u32 = @intCast(offset % cluster_size);
     var remaining = data.len;
     var done: usize = 0;
@@ -933,6 +919,21 @@ pub fn resize(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
     }
 }
 
+/// The cluster holding byte `offset`, the chain grown to reach it: where a
+/// write past the end and a range to zero both start. A file with no
+/// clusters yet gets its first one here, which is also what makes an empty
+/// file cost nothing until something is written to it.
+fn clusterAt(vol: *Volume, entry: *Entry, offset: u64) Error!u32 {
+    if (entry.cluster < 2) entry.cluster = try table.alloc(&vol.fat);
+
+    var cluster = entry.cluster;
+    var skip = offset / vol.clusterSize();
+    while (skip > 0) : (skip -= 1) {
+        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+    }
+    return cluster;
+}
+
 /// Fill the bytes from `from` to `to` with zeros, growing the chain to
 /// reach them. What a file made longer, or written past its end, gets in
 /// the gap: nothing of what the medium held before.
@@ -940,13 +941,7 @@ fn zeroRange(vol: *Volume, entry: *Entry, from: u64, to: u64) Error!void {
     if (to <= from) return;
 
     const cluster_size = vol.clusterSize();
-    if (entry.cluster < 2) entry.cluster = try table.alloc(&vol.fat);
-
-    var cluster = entry.cluster;
-    var skip = from / cluster_size;
-    while (skip > 0) : (skip -= 1) {
-        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
-    }
+    var cluster = try clusterAt(vol, entry, from);
 
     var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
     var at = from;

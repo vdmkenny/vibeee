@@ -343,9 +343,8 @@ pub fn sys_shutdown(a: Args) Result {
             if (n > 0) {
                 console.info("shutdown", "still running after the stop: {s}", .{names[0]});
             }
-            var ids: [16]u32 = @splat(0);
-            const held = sched.liveThreadIds(self.id, &ids);
-            for (ids[0..@min(held, ids.len)]) |id| probe.dropClaims(id);
+            var live = sched.liveThreads(self.id);
+            while (live.next()) |t| probe.dropClaims(t.id);
         }
     }
 

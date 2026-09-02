@@ -314,17 +314,21 @@ pub const AddressSpace = struct {
     pub fn unmap(self: *AddressSpace, virt: usize) void {
         if (virt >= KERNEL_VMA) return;
 
-        const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
-        const pde = dir[directoryIndex(virt)];
-        if (!pde.present) return;
-
-        const table: *Table = @ptrFromInt(physToVirt(pde.address()));
+        const table = self.tableOf(virt) orelse return;
         const pt_index = pagetable.tableIndex(virt);
         if (!table[pt_index].present) return;
         table[pt_index] = .{};
         self.mapped_pages -= 1;
 
         if (isActive(self.*)) invalidatePage(virt);
+    }
+
+    /// The page table a user address falls in, if one has been made.
+    fn tableOf(self: *const AddressSpace, virt: usize) ?*Table {
+        const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
+        const pde = dir[directoryIndex(virt)];
+        if (!pde.present) return null;
+        return @ptrFromInt(physToVirt(pde.address()));
     }
 
     /// Whether the kernel may touch `virt[0..len]` on this space's behalf.

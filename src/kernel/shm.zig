@@ -30,6 +30,7 @@
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const pmm = @import("pmm.zig");
+const Bounded = @import("lib").bounded.Bounded;
 
 pub const Error = error{
     OutOfMemory,
@@ -233,21 +234,19 @@ pub const MAX_MAPPINGS = 64;
 /// that has a different problem.
 pub const Mapper = struct {
     next: usize = WINDOW_BASE,
-    held: [MAX_MAPPINGS]Mapping = undefined,
-    count: usize = 0,
+    held: Bounded(Mapping, MAX_MAPPINGS) = .{},
 
     /// Map a segment where the window has room, holding it for as long as
     /// the pages do.
     pub fn map(self: *Mapper, seg: *Segment, space: *hal.AddressSpace, writable: bool) Error!usize {
-        if (self.count == self.held.len) return error.TooManyMappings;
+        if (self.held.isFull()) return error.TooManyMappings;
 
         const at = try self.reserve(seg.size);
         errdefer self.unreserve(at);
         try mapAt(seg, space, at, writable);
 
         retain(seg);
-        self.held[self.count] = .{ .seg = seg, .at = at };
-        self.count += 1;
+        self.held.append(.{ .seg = seg, .at = at }) catch unreachable;
         return at;
     }
 
@@ -272,14 +271,14 @@ pub const Mapper = struct {
     pub fn revoke(self: *Mapper, seg: *Segment, space: *hal.AddressSpace) void {
         const pages = seg.pageCount();
         var i: usize = 0;
-        while (i < self.count) {
-            if (self.held[i].seg != seg) {
+        while (i < self.held.len) {
+            const mapping = self.held.slice()[i];
+            if (mapping.seg != seg) {
                 i += 1;
                 continue;
             }
-            for (0..pages) |page| space.unmap(self.held[i].at + page * PAGE_SIZE);
-            self.count -= 1;
-            self.held[i] = self.held[self.count];
+            for (0..pages) |page| space.unmap(mapping.at + page * PAGE_SIZE);
+            self.held.swapRemove(i);
             // The mapping's own reference. The last one may free the segment,
             // which is why nothing above reads through `seg` after this.
             release(seg);
@@ -289,7 +288,7 @@ pub const Mapper = struct {
     /// Let every segment go, once the address space has: the pages no
     /// longer name the frames, so the mappings' references end with them.
     pub fn releaseAll(self: *Mapper) void {
-        for (self.held[0..self.count]) |m| release(m.seg);
-        self.count = 0;
+        for (self.held.slice()) |m| release(m.seg);
+        self.held.clear();
     }
 };

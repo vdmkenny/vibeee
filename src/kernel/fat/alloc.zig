@@ -59,6 +59,19 @@ const SECTOR = block.SECTOR_SIZE;
 const INVALID_SECTOR: u32 = 0xFFFF_FFFF;
 /// How many sectors one read of the walk asks for.
 const WALK_SECTORS = 8;
+/// The number in a thirty-two bit entry: the top four bits are reserved,
+/// not ours, and kept as they are when an entry is written.
+const FAT32_ENTRY_MASK: u32 = 0x0FFF_FFFF;
+
+/// A sixteen or thirty-two bit entry at `at` in `bytes`. Twelve-bit ones
+/// straddle bytes and sectors and are read where they are stored.
+fn wideEntry(kind: Kind, bytes: []const u8, at: usize) u32 {
+    return switch (kind) {
+        .fat16 => std.mem.readInt(u16, bytes[at..][0..2], .little),
+        .fat32 => std.mem.readInt(u32, bytes[at..][0..4], .little) & FAT32_ENTRY_MASK,
+        .fat12 => unreachable,
+    };
+}
 
 /// The first value that means "no more clusters", per width.
 pub fn endOfChain(kind: Kind) u32 {
@@ -112,8 +125,7 @@ pub fn get(t: *Table, cluster: u32) Error!u32 {
     try loadSector(t, sector);
 
     return switch (t.kind) {
-        .fat16 => std.mem.readInt(u16, t.cache[within..][0..2], .little),
-        .fat32 => std.mem.readInt(u32, t.cache[within..][0..4], .little) & 0x0FFF_FFFF,
+        .fat16, .fat32 => wideEntry(t.kind, &t.cache, within),
         .fat12 => blk: {
             // A FAT12 entry is 12 bits and can straddle a sector boundary, so
             // the two bytes are fetched separately rather than as a u16.
@@ -156,7 +168,7 @@ fn store(t: *Table, cluster: u32, value: u32) Error!void {
             // The top four bits are reserved and must be preserved, not zeroed:
             // they are not ours, and other implementations do look at them.
             const existing = std.mem.readInt(u32, t.cache[within..][0..4], .little);
-            const merged = (existing & 0xF000_0000) | (value & 0x0FFF_FFFF);
+            const merged = (existing & ~FAT32_ENTRY_MASK) | (value & FAT32_ENTRY_MASK);
             std.mem.writeInt(u32, t.cache[within..][0..4], merged, .little);
             try storeSector(t, sector);
         },
@@ -287,12 +299,7 @@ fn countFree(t: *Table) Error!u32 {
             const cluster = sector * per_sector + i;
             if (cluster >= past_last) return free;
             if (cluster < 2) continue;
-            const at = i * width;
-            const value: u32 = if (width == 2)
-                std.mem.readInt(u16, bytes[at..][0..2], .little)
-            else
-                std.mem.readInt(u32, bytes[at..][0..4], .little) & 0x0FFF_FFFF;
-            if (value == 0) free += 1;
+            if (wideEntry(t.kind, bytes, i * width) == 0) free += 1;
         }
         sector += run;
     }

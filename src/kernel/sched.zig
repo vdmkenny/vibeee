@@ -743,15 +743,8 @@ pub fn stopAllBut(self_id: u32) usize {
 /// the first round is still exiting.
 fn killSweep(self_id: u32) usize {
     var left: usize = 0;
-    var node = thread_mod.first();
-    while (node) |t| : (node = t.all_next) {
-        if (t.state == .dead or t.id == self_id) continue;
-        // Kernel threads have no return to userspace, which is the only
-        // place the flag is acted on; the idle thread must live.
-        if (t.space.pd_phys == 0) continue;
-        if (idle_thread) |idle| {
-            if (t == idle) continue;
-        }
+    var live = liveThreads(self_id);
+    while (live.next()) |t| {
         left += 1;
         if (!t.killed) {
             t.killed = true;
@@ -761,37 +754,41 @@ fn killSweep(self_id: u32) usize {
     return left;
 }
 
+/// The userspace threads still with us but one: what a stop sweeps and
+/// what a shutdown names or quiets. Kernel threads have no return to
+/// userspace, which is the only place an end is acted on, and the idle
+/// thread must live, so neither is among them.
+pub const LiveThreads = struct {
+    but: u32,
+    node: ?*Thread,
+
+    pub fn next(self: *LiveThreads) ?*Thread {
+        while (self.node) |t| {
+            self.node = t.all_next;
+            if (t.state == .dead or t.id == self.but) continue;
+            if (t.space.pd_phys == 0) continue;
+            if (idle_thread) |idle| {
+                if (t == idle) continue;
+            }
+            return t;
+        }
+        return null;
+    }
+};
+
+pub fn liveThreads(but: u32) LiveThreads {
+    return .{ .but = but, .node = thread_mod.first() };
+}
+
 /// How long a shutdown waits for the last services to exit.
 const STOP_DEADLINE_US = 2_000_000;
 
 /// The names of the userspace threads still with us, excluding `self_id`,
 /// which is who a shutdown names when some would not leave.
-/// The ids of every userspace thread still alive but `self_id`, for a
-/// shutdown that has to quiet what they hold.
-pub fn liveThreadIds(self_id: u32, into: []u32) usize {
-    var n: usize = 0;
-    var node = thread_mod.first();
-    while (node) |t| : (node = t.all_next) {
-        if (t.state == .dead or t.id == self_id) continue;
-        if (t.space.pd_phys == 0) continue;
-        if (idle_thread) |idle| {
-            if (t == idle) continue;
-        }
-        if (n < into.len) into[n] = t.id;
-        n += 1;
-    }
-    return n;
-}
-
 pub fn liveThreadNames(self_id: u32, into: [][]const u8) usize {
     var n: usize = 0;
-    var node = thread_mod.first();
-    while (node) |t| : (node = t.all_next) {
-        if (t.state == .dead or t.id == self_id) continue;
-        if (t.space.pd_phys == 0) continue;
-        if (idle_thread) |idle| {
-            if (t == idle) continue;
-        }
+    var live = liveThreads(self_id);
+    while (live.next()) |t| {
         if (n < into.len) into[n] = t.name();
         n += 1;
     }
