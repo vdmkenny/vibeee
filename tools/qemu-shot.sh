@@ -141,7 +141,13 @@ sleep "$SETTLE"
 monitor "screendump $PPM"
 sleep 1
 [ -f "$PPM" ] || { echo "no screendump: guest may have died"; exit 1; }
-sips -s format png "$PPM" --out "$OUT" >/dev/null
+if command -v sips >/dev/null 2>&1; then
+    sips -s format png "$PPM" --out "$OUT" >/dev/null
+elif command -v magick >/dev/null 2>&1; then
+    magick "$PPM" "$OUT"
+else
+    convert "$PPM" "$OUT"
+fi
 rm -f "$PPM"
 echo "$OUT"
 [ -s "$LOG" ] && echo "$LOG"
