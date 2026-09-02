@@ -257,11 +257,13 @@ fn drain() void {
     }
 }
 
+/// The shell is what the window is for: when it goes, so does the window,
+/// the way a terminal has always closed on its shell's last word.
 fn shellExited() void {
     running = false;
     _ = sys.close(from_shell);
     _ = sys.close(to_shell);
-    show("\r\n[the shell exited]\r\n");
+    sys.exit(0);
 }
 
 fn handle(event: proto.wm.Ev) void {
