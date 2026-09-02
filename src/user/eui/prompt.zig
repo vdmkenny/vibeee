@@ -8,11 +8,15 @@
 //!
 //! Answered by button, by the letter a choice names, by Enter for the first
 //! choice and by Escape for the last: the first is what the program
-//! suggests, and the last is always the way out.
+//! suggests, and the last is always the way out. A question about a number,
+//! how much or how many, carries the number on a stepper of its own between
+//! the words and the answers, and up and down move it from the keyboard.
 
 const std = @import("std");
 const draw = @import("draw.zig");
 const footer = @import("footer.zig");
+const slider = @import("slider.zig");
+const stepper = @import("stepper.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -30,19 +34,45 @@ pub const Choice = struct {
 /// As many as a strip holds beside its question.
 pub const MAX_CHOICES = 3;
 
+/// A number the question is about, kept within its range.
+pub const Amount = struct {
+    value: i32,
+    range: slider.Range,
+};
+
 /// The question standing in a window, or none.
 pub const Prompt = struct {
     question: []const u8 = "",
     choices: []const Choice = &.{},
+    amount: ?Amount = null,
 
     pub fn ask(self: *Prompt, question: []const u8, choices: []const Choice) void {
         std.debug.assert(choices.len > 0 and choices.len <= MAX_CHOICES);
         self.question = question;
         self.choices = choices;
+        self.amount = null;
+    }
+
+    /// A question with a number in it: how much, how many, how far.
+    pub fn askFor(self: *Prompt, question: []const u8, choices: []const Choice, amount: Amount) void {
+        self.ask(question, choices);
+        self.amount = .{ .value = amount.range.clamp(amount.value), .range = amount.range };
     }
 
     pub fn dismiss(self: *Prompt) void {
         self.choices = &.{};
+        self.amount = null;
+    }
+
+    /// The number as it stands, or zero for a question without one.
+    pub fn number(self: *const Prompt) i32 {
+        return if (self.amount) |amount| amount.value else 0;
+    }
+
+    fn move(self: *Prompt, by: i32) bool {
+        const amount = &(self.amount orelse return false);
+        amount.value = amount.range.clamp(amount.value + by);
+        return true;
     }
 
     pub fn isOpen(self: *const Prompt) bool {
@@ -62,8 +92,9 @@ pub fn above(area: Rect) Rect {
 }
 
 /// Draw the sheet and take an answer from its buttons. Null while the
-/// question stands, and while there is none.
-pub fn run(ctx: *widget.Context, area: Rect, state: *const Prompt) ?usize {
+/// question stands, and while there is none. A number on the sheet is
+/// moved by its stepper and read back from `number`.
+pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
     if (!state.isOpen()) return null;
 
     const t = theme.current();
@@ -77,7 +108,20 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *const Prompt) ?usize {
     var cells: [MAX_CHOICES]Rect = undefined;
     const placed = footer.place(bar, labels[0..state.choices.len], &cells);
 
-    ctx.label(footer.messageRect(bar, placed), state.question);
+    var message = footer.messageRect(bar, placed);
+    if (state.amount) |*amount| {
+        // The number sits against the answers, and the words keep the rest.
+        const wide = stepper.width(t.control_height);
+        const counter = Rect{
+            .x = message.right() - wide,
+            .y = bar.y + @divTrunc(bar.h - t.control_height, 2),
+            .w = wide,
+            .h = t.control_height,
+        };
+        message.w = @max(0, message.w - wide - t.gap);
+        amount.value = ctx.stepper(counter, amount.range, amount.value);
+    }
+    ctx.label(message, state.question);
 
     var chosen: ?usize = null;
     for (placed, state.choices, 0..) |cell, choice, i| {
@@ -86,15 +130,19 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *const Prompt) ?usize {
     return chosen;
 }
 
-/// Answer from a key: Enter takes the first choice, Escape the last. Null
-/// when the key is not an answer.
-pub fn key(state: *const Prompt, code: KeyCode) ?usize {
+/// Answer from a key: Enter takes the first choice, Escape the last, and up
+/// and down move the number when there is one. Null when the key is not an
+/// answer.
+pub fn key(state: *Prompt, code: KeyCode) ?usize {
     if (!state.isOpen()) return null;
-    return switch (code) {
-        .enter => 0,
-        .escape => state.choices.len - 1,
-        else => null,
-    };
+    switch (code) {
+        .enter => return 0,
+        .escape => return state.choices.len - 1,
+        .up => _ = state.move(1),
+        .down => _ = state.move(-1),
+        else => {},
+    }
+    return null;
 }
 
 /// Answer from a typed letter, in either case. Null when no choice names it.
@@ -144,6 +192,28 @@ test "enter suggests, escape is the way out, a letter names its choice" {
     // Cancel names no letter, and a letter nobody names is not an answer.
     try testing.expectEqual(@as(?usize, null), letter(&prompt, 'c'));
     try testing.expectEqual(@as(?usize, null), letter(&prompt, 0x2014));
+}
+
+test "a question with a number keeps it within range, and up and down move it" {
+    var prompt = Prompt{};
+    try testing.expectEqual(@as(i32, 0), prompt.number());
+
+    prompt.askFor("Took how much?", &SAVE_OR_NOT, .{ .value = 12, .range = .{ .min = 1, .max = 9 } });
+    try testing.expectEqual(@as(i32, 9), prompt.number());
+    try testing.expectEqual(@as(?usize, null), key(&prompt, .down));
+    try testing.expectEqual(@as(i32, 8), prompt.number());
+    try testing.expectEqual(@as(?usize, null), key(&prompt, .up));
+    try testing.expectEqual(@as(?usize, null), key(&prompt, .up));
+    try testing.expectEqual(@as(i32, 9), prompt.number());
+    // The answers are still the answers.
+    try testing.expectEqual(@as(?usize, 0), key(&prompt, .enter));
+
+    prompt.dismiss();
+    try testing.expectEqual(@as(i32, 0), prompt.number());
+    // A plain question has no number to move.
+    prompt.ask("Save the changes?", &SAVE_OR_NOT);
+    try testing.expectEqual(@as(?usize, null), key(&prompt, .up));
+    try testing.expectEqual(@as(i32, 0), prompt.number());
 }
 
 test "the sheet takes the bottom and leaves the rest" {
