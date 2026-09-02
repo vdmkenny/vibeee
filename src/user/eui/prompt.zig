@@ -76,14 +76,21 @@ pub const Prompt = struct {
         self.amount = .{ .value = amount.range.clamp(amount.value), .range = amount.range };
     }
 
+    /// What a question's field starts with, and what it says while empty.
+    pub const Text = struct {
+        initial: []const u8 = "",
+        hint: []const u8 = "",
+    };
+
     /// A question with a line in it: a name, a path, a line of a file. The
-    /// field starts with `initial`, and takes the keyboard.
-    pub fn askText(self: *Prompt, question: []const u8, choices: []const Choice, initial: []const u8) void {
+    /// field starts with the text's `initial`, shows its `hint` while empty,
+    /// and takes the keyboard.
+    pub fn askText(self: *Prompt, question: []const u8, choices: []const Choice, with: Text) void {
         self.ask(question, choices);
         self.typed = .{ .bytes = &self.typed_storage };
         self.typed.clear();
-        _ = self.typed.insert(0, initial[0..@min(initial.len, TEXT_MAX)]);
-        self.editor = .{ .cursor = self.typed.len };
+        _ = self.typed.insert(0, with.initial[0..@min(with.initial.len, TEXT_MAX)]);
+        self.editor = .{ .cursor = self.typed.len, .hint = with.hint };
         self.has_text = true;
         self.focus_text = true;
     }
@@ -283,7 +290,7 @@ test "a question with a number keeps it within range, and up and down move it" {
 
 test "a question with a line keeps the letters for the field" {
     var prompt = Prompt{};
-    prompt.askText("Called?", &SAVE_OR_NOT, "cinaed");
+    prompt.askText("Called?", &SAVE_OR_NOT, .{ .initial = "cinaed", .hint = "A name" });
     try testing.expect(prompt.takesText());
     try testing.expectEqualStrings("cinaed", prompt.line());
     try testing.expectEqual(@as(?usize, null), letter(&prompt, 's'));

@@ -268,6 +268,9 @@ pub const Editor = struct {
     /// wants, and what a log pane wants, and neither of them wants a second
     /// text control to get it.
     read_only: bool = false,
+    /// What an empty field says, dimly, until something is typed: the shape
+    /// of what goes there, or an example of it. Never part of the text.
+    hint: []const u8 = "",
     bar: scroll.State = .{},
 
     pub fn selection(self: *const Editor) ?struct { from: usize, to: usize } {
@@ -763,6 +766,7 @@ fn paint(
 
     const span = state.selection();
     const clipped = surface.clipped(box);
+    if (text.len == 0 and state.hint.len > 0) clipped.text(box.x, box.y, state.hint, t.text_dim);
 
     var it = lines(text, face, box.w);
     var index: usize = 0;
