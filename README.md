@@ -2,9 +2,13 @@
 
 An experimental graphical operating system written from scratch in Zig.
 
-**Target:** ASUS Eee PC 701 4G (630 MHz Celeron M, 512 MB RAM, 800x480 display).
-It also has a QEMU development profile that matches the target's CPU, memory, ATA, and
-audio hardware where QEMU can model them.
+**Reference machine:** ASUS Eee PC 701 4G (630 MHz Celeron M, 512 MB RAM, 800x480
+display). vibeee is intended for similar low-end x86 netbooks, including later Eee PCs,
+the Acer Aspire One, and the HP Mini. The 701 is the hardware-validation baseline, not
+the project's only intended machine.
+
+The QEMU development profile matches the reference machine's CPU, memory, ATA, and audio
+hardware where QEMU can model them.
 
 ![The vibeee desktop: the file manager and the picture viewer side by side, with the launcher open over them](docs/img/desktop.png)
 
@@ -94,6 +98,19 @@ See [apps/README.md](apps/README.md) for details.
 Verified on the Eee PC 701: SD boot, native 800x480 display, keyboard, relative-mode
 touchpad, battery, backlight, hotkeys, desktop, wired networking, HDA playback, USB
 storage, and persistent settings and home volumes.
+
+### Testing Other Netbooks
+
+Testing on other low-end x86 netbooks is welcome. The system is designed to select
+hardware support through PCI discovery, ACPI/SMBIOS data, and driver manifests rather
+than a hard-coded 701 board profile. Expect untested hardware to expose gaps, especially
+for graphics, embedded-controller functions, wireless, audio codecs, touchpads, and
+storage controllers.
+
+Before testing, use an overwriteable SD card and preserve the machine's existing disk.
+Useful reports include the model and firmware version, boot result, screen mode, working
+and failing devices, and the output of `log`, `devices`, `smbios`, and `sysinfo`. A panic
+screen includes a QR-encoded register dump; a photograph of it is useful for diagnosis.
 
 Known gaps:
 
