@@ -79,6 +79,24 @@ export fn _start() callconv(.c) noreturn {
 }
 
 fn wmMain() noreturn {
+    // The one thing a session cannot do comes first: publishing the system's
+    // own gui name takes a capability init has and a shell does not. Asked
+    // before the display is taken, a refusal is said on the console the
+    // program was started from, rather than on a screen that has just gone.
+    const registered = sys.svcRegister(proto.wm.SERVICE);
+    if (registered < 0) {
+        out.text(switch (std.enums.fromInt(sys.Errno, -registered) orelse .inval) {
+            .perm => "eeewm: the gui service is not this program's to publish.\n" ++
+                "       start the desktop with: svc start eeewm\n",
+            .exists => "eeewm: a desktop is already running.\n",
+            .nomem => "eeewm: the service registry is full.\n",
+            else => "eeewm: cannot publish the gui service.\n",
+        });
+        out.flush();
+        sys.exit(1);
+    }
+    service = @intCast(registered);
+
     display_handle = sys.displayAcquire(&info) catch |err| {
         out.text(switch (err) {
             error.NoDisplay => "eeewm: no framebuffer. The machine booted in text mode; " ++
@@ -135,16 +153,6 @@ fn wmMain() noreturn {
     pointer_x = @divTrunc(info.width, 2);
     pointer_y = @divTrunc(info.height, 2);
 
-    const registered = sys.svcRegister(proto.wm.SERVICE);
-    if (registered < 0) {
-        // The name is the system's own, so it takes a capability a session
-        // does not carry: `svc` asks init, which does.
-        out.text("eeewm: the gui service is not this program's to publish.\n");
-        out.text("       start the desktop with: svc start eeewm\n");
-        out.flush();
-        sys.exit(1);
-    }
-    service = @intCast(registered);
     listenTo(.channel, registered);
 
     run();
