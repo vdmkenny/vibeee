@@ -70,11 +70,16 @@ pub const Hooks = struct {
 
 var hooks: Hooks = undefined;
 
+/// When the next periodic pass is due. Held here rather than in the loop so
+/// that `retick` can bring it forward the moment the period shortens.
+var next_tick_us: u64 = 0;
+
 /// Change how often the wait may time out. For a program whose ticking is a
 /// mode rather than a constant: meters on show want a lively wake, and the
 /// same window on another pane should sleep until something happens.
 pub fn retick(period_us: usize) void {
     hooks.tick_us = period_us;
+    next_tick_us = sys.clockMicros() +| period_us;
 }
 var buttons: eui.widget.Buttons = .{};
 var pointer_x: i32 = 0;
@@ -120,10 +125,34 @@ pub fn run(
     // toolkit keeps its own, which is what a program run on its own gets.
     ctx.clipboard = .{ .get = clipboardGet, .put = clipboardPut };
 
+    // When the next periodic pass is due, for a program that has one. The
+    // wait sleeps until then rather than for a fixed span, so a program with
+    // nothing to tick sleeps until something happens instead of waking on a
+    // timer it has no use for, which on a machine that runs on a battery is
+    // the difference between a window at rest and a window keeping the CPU up.
+    next_tick_us = sys.clockMicros() +| hooks.tick_us;
+
     while (true) {
-        const event = connection.next(hooks.tick_us) orelse {
+        const timeout: usize = if (hooks.tick == null) sys.FOREVER else timeout: {
+            const now = sys.clockMicros();
+            if (now >= next_tick_us) break :timeout 0;
+            break :timeout @intCast(@min(next_tick_us - now, @as(u64, sys.FOREVER) - 1));
+        };
+
+        const event = connection.next(timeout) orelse {
+            // Woken with nothing to take. The periodic pass runs only once its
+            // period has truly elapsed: a wake from a doorbell that had already
+            // been answered finds the clock short of the deadline and waits
+            // again, rather than running the tick early. The tick is where a
+            // meter re-reads the machine and a listing re-stats its volumes,
+            // so running it on every spare wake is what made a burst of input
+            // crawl.
             if (hooks.tick) |tick| {
-                if (tick()) redraw();
+                const now = sys.clockMicros();
+                if (now >= next_tick_us) {
+                    next_tick_us = now +| hooks.tick_us;
+                    if (tick()) redraw();
+                }
             }
             continue;
         };
