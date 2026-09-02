@@ -400,17 +400,17 @@ vnc: dev-image
 .PHONY: vnc-sd
 vnc-sd: $(IMAGE)
 	@echo "vnc://localhost:$$(( 5900 + $(VNC_DISPLAY) ))"
-	$(QEMU) $(QEMU_FLAGS) -vnc :$(VNC_DISPLAY) \
-		-drive if=none,id=sd,format=raw,file=$(IMAGE) \
-		-device usb-storage,drive=sd,bootindex=0
+	$(QEMU) $(QEMU_FLAGS) -vnc :$(VNC_DISPLAY) $(QEMU_SD)
 
 # Boot the real image. `-drive if=none,format=raw` + `usb-storage` mirrors the
 # 701's actual path: the SD card sits behind a USB mass-storage reader, and the
-# BIOS boots it through USB-HDD emulation.
+# BIOS boots it through USB-HDD emulation. The machine needs a USB host
+# controller for the reader to hang off, which `-usb` gives it.
+QEMU_SD := -usb -drive if=none,id=sd,format=raw,file=$(IMAGE) \
+	-device usb-storage,drive=sd,bootindex=0
+
 qemu-sd: $(IMAGE)
-	$(QEMU) $(QEMU_FLAGS) \
-		-drive if=none,id=sd,format=raw,file=$(IMAGE) \
-		-device usb-storage,drive=sd,bootindex=0
+	$(QEMU) $(QEMU_FLAGS) $(QEMU_SD)
 
 # Same image on an emulated IDE disk, the internal SSD install path.
 .PHONY: qemu-ide
@@ -437,7 +437,7 @@ check:
 # The partition offsets are passed in so that the script has no copy of the
 # image layout to fall out of step with.
 check-all: fmt check test dev-image image
-	@BUILD=$(BUILD) ROOTFS_IMG=$(ROOTFS_IMG) DEV_IMAGE=$(DEV_IMAGE) \
+	@BUILD=$(BUILD) ROOTFS_IMG=$(ROOTFS_IMG) DEV_IMAGE=$(DEV_IMAGE) IMAGE=$(IMAGE) \
 		CFG_OFFSET=$(CFG_OFFSET) HOME_OFFSET=$(HOME_OFFSET) QEMU_CPU="$(QEMU_CPU)" \
 		tools/check-all.sh
 
