@@ -5,6 +5,10 @@ application, not part of the system. `make hero` builds it into `home/`, where
 it is on the machine at the next image build; `make apps` builds it with the
 rest. It opens a `.hero` file from the launcher, or from its own File menu.
 
+Hero is versioned on its own, apart from the system's string, because it
+ships when it ships: `hero --version` says which, and the rail says it when no
+file is open.
+
 The rest of this file is the design: what the file is, and what the window
 makes of it.
 

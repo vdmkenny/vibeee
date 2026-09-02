@@ -164,9 +164,110 @@ pub const Skill = enum(u5) {
 };
 
 /// The five coins, smallest first, as a `coins` line lists them.
-pub const Coin = enum(u3) { cp, sp, ep, gp, pp };
+pub const Coin = enum(u3) {
+    cp,
+    sp,
+    ep,
+    gp,
+    pp,
+
+    /// A purse holds gold, silver and copper: the coin by its name.
+    pub fn word(self: Coin) []const u8 {
+        return switch (self) {
+            .cp => "copper",
+            .sp => "silver",
+            .ep => "electrum",
+            .gp => "gold",
+            .pp => "platinum",
+        };
+    }
+};
 
 pub const Advancement = enum { milestone, experience };
+
+/// Every word a line may begin with: the reader switches on it and the
+/// writers spell it with `@tagName`, so the grammar has one source. The
+/// hyphenated words are spelled as they are written.
+pub const Keyword = enum {
+    name,
+    class,
+    species,
+    background,
+    alignment,
+    size,
+    player,
+    picture,
+    level,
+    advancement,
+    str,
+    dex,
+    con,
+    int,
+    wis,
+    cha,
+    saves,
+    skills,
+    expertise,
+    hp,
+    @"hit-die",
+    ac,
+    speed,
+    spellcasting,
+    slots,
+    innate,
+    weapons,
+    tools,
+    languages,
+    armour,
+    coins,
+    attack,
+    spell,
+    item,
+    feature,
+    session,
+    damage,
+    heal,
+    temp,
+    hitdie,
+    rest,
+    cast,
+    @"innate-use",
+    save,
+    condition,
+    exhaustion,
+    inspiration,
+    gold,
+    roll,
+    note,
+
+    pub fn parse(word: []const u8) ?Keyword {
+        return std.meta.stringToEnum(Keyword, word);
+    }
+
+    /// Whether a line sets the sheet, rather than recording a moment of play.
+    pub fn isFact(self: Keyword) bool {
+        return switch (self) {
+            .session, .damage, .heal, .temp, .hitdie, .rest, .cast, .@"innate-use", .save, .condition, .exhaustion, .inspiration, .gold, .roll, .note => false,
+            else => true,
+        };
+    }
+};
+
+/// What a death save came to.
+pub const DeathSave = enum { success, failure, reset };
+
+/// The two rests.
+pub const Rest = enum { long, short };
+
+/// A thing turned on or off.
+pub const Switch = enum {
+    on,
+    off,
+
+    pub fn of(set: bool) Switch {
+        return if (set) .on else .off;
+    }
+};
 
 /// How a d20 test is rolled, which the roll helper records so a total can be
 /// checked by hand.
@@ -214,10 +315,10 @@ pub const Sheet = struct {
     level: u8 = 1,
     advancement: Advancement = .milestone,
 
-    scores: [6]u8 = @splat(10),
-    save_prof: [6]bool = @splat(false),
-    skill_prof: [18]bool = @splat(false),
-    skill_expert: [18]bool = @splat(false),
+    scores: std.EnumArray(Ability, u8) = std.EnumArray(Ability, u8).initFill(10),
+    save_prof: std.EnumSet(Ability) = std.EnumSet(Ability).initEmpty(),
+    skill_prof: std.EnumSet(Skill) = std.EnumSet(Skill).initEmpty(),
+    skill_expert: std.EnumSet(Skill) = std.EnumSet(Skill).initEmpty(),
 
     hp_max: u16 = 0,
     hp_now: u16 = 0,
@@ -238,7 +339,7 @@ pub const Sheet = struct {
     exhaustion: u8 = 0,
     inspiration: bool = false,
 
-    coins: [5]i32 = @splat(0),
+    coins: std.EnumArray(Coin, i32) = std.EnumArray(Coin, i32).initFill(0),
 
     weapons: []const u8 = "",
     tools: []const u8 = "",
@@ -257,7 +358,7 @@ pub const Sheet = struct {
     // -- what the sheet derives, rather than stores ------------------------
 
     pub fn modifier(self: Sheet, ability: Ability) i8 {
-        const score: i16 = self.scores[@intFromEnum(ability)];
+        const score: i16 = self.scores.get(ability);
         return @intCast(@divFloor(score - 10, 2));
     }
 
@@ -268,15 +369,14 @@ pub const Sheet = struct {
 
     pub fn saveBonus(self: Sheet, ability: Ability) i8 {
         const base = self.modifier(ability);
-        return if (self.save_prof[@intFromEnum(ability)]) base + self.proficiency() else base;
+        return if (self.save_prof.contains(ability)) base + self.proficiency() else base;
     }
 
     pub fn skillBonus(self: Sheet, skill: Skill) i8 {
-        const i = @intFromEnum(skill);
         var bonus = self.modifier(skill.ability());
-        if (self.skill_expert[i]) {
+        if (self.skill_expert.contains(skill)) {
             bonus += self.proficiency() * 2;
-        } else if (self.skill_prof[i]) {
+        } else if (self.skill_prof.contains(skill)) {
             bonus += self.proficiency();
         }
         return bonus;
@@ -303,7 +403,7 @@ pub const Sheet = struct {
 
     /// Fifteen pounds a point of Strength.
     pub fn carryCapacity(self: Sheet) u16 {
-        return @as(u16, self.scores[@intFromEnum(Ability.str)]) * 15;
+        return @as(u16, self.scores.get(.str)) * 15;
     }
 
     pub fn pushDragLift(self: Sheet) u16 {
@@ -343,120 +443,93 @@ pub fn fold(text: []const u8) Sheet {
     return sheet;
 }
 
-fn apply(sheet: *Sheet, keyword: []const u8, rest: []const u8) void {
-    const eq = std.mem.eql;
-
-    // Facts about who the character is.
-    if (eq(u8, keyword, "name")) {
-        sheet.name = rest;
-    } else if (eq(u8, keyword, "class")) {
-        sheet.class = rest;
-    } else if (eq(u8, keyword, "species")) {
-        sheet.species = rest;
-    } else if (eq(u8, keyword, "background")) {
-        sheet.background = rest;
-    } else if (eq(u8, keyword, "alignment")) {
-        sheet.alignment = rest;
-    } else if (eq(u8, keyword, "size")) {
-        sheet.size = rest;
-    } else if (eq(u8, keyword, "player")) {
-        sheet.player = rest;
-    } else if (eq(u8, keyword, "picture")) {
-        sheet.picture = rest;
-    } else if (eq(u8, keyword, "level")) {
-        sheet.level = @max(1, parseU8(rest));
-    } else if (eq(u8, keyword, "advancement")) {
-        sheet.advancement = if (eq(u8, rest, "experience")) .experience else .milestone;
+fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
+    // A word this reader does not know is a note in the journal, kept as it
+    // stands, so a file from a later version still opens in this one.
+    const keyword = Keyword.parse(word) orelse return;
+    switch (keyword) {
+        // Facts about who the character is.
+        .name => sheet.name = rest,
+        .class => sheet.class = rest,
+        .species => sheet.species = rest,
+        .background => sheet.background = rest,
+        .alignment => sheet.alignment = rest,
+        .size => sheet.size = rest,
+        .player => sheet.player = rest,
+        .picture => sheet.picture = rest,
+        .level => sheet.level = @max(1, parseU8(rest)),
+        .advancement => sheet.advancement = std.meta.stringToEnum(Advancement, rest) orelse .milestone,
 
         // The numbers the sheet is built from.
-    } else if (Ability.byKey(keyword)) |ability| {
-        sheet.scores[@intFromEnum(ability)] = parseU8(rest);
-    } else if (eq(u8, keyword, "saves")) {
-        var it = std.mem.tokenizeScalar(u8, rest, ' ');
-        while (it.next()) |word| {
-            if (Ability.byKey(word)) |a| sheet.save_prof[@intFromEnum(a)] = true;
-        }
-    } else if (eq(u8, keyword, "skills")) {
-        markSkills(sheet, rest, false);
-    } else if (eq(u8, keyword, "expertise")) {
-        markSkills(sheet, rest, true);
-    } else if (eq(u8, keyword, "hp")) {
-        setMaxHp(sheet, parseU16(rest));
-    } else if (eq(u8, keyword, "hit-die")) {
-        sheet.hit_die = parseDie(rest);
-    } else if (eq(u8, keyword, "ac")) {
-        sheet.ac = parseU16(rest);
-    } else if (eq(u8, keyword, "speed")) {
-        sheet.speed = parseU16(rest);
-    } else if (eq(u8, keyword, "spellcasting")) {
-        if (Ability.byKey(rest)) |a| sheet.spell_ability = a;
-    } else if (eq(u8, keyword, "slots")) {
-        setSlots(sheet, rest);
-    } else if (eq(u8, keyword, "innate")) {
-        sheet.innate_max = parseU8(rest);
-        sheet.innate_left = sheet.innate_max;
-    } else if (eq(u8, keyword, "weapons")) {
-        sheet.weapons = rest;
-    } else if (eq(u8, keyword, "tools")) {
-        sheet.tools = rest;
-    } else if (eq(u8, keyword, "languages")) {
-        sheet.languages = rest;
-    } else if (eq(u8, keyword, "armour")) {
-        sheet.armour = rest;
-    } else if (eq(u8, keyword, "coins")) {
-        setCoins(sheet, rest);
+        inline .str, .dex, .con, .int, .wis, .cha => |k| sheet.scores.set(@field(Ability, @tagName(k)), parseU8(rest)),
+        .saves => {
+            var it = std.mem.tokenizeScalar(u8, rest, ' ');
+            while (it.next()) |name| {
+                if (Ability.byKey(name)) |a| sheet.save_prof.insert(a);
+            }
+        },
+        .skills => markSkills(sheet, rest, false),
+        .expertise => markSkills(sheet, rest, true),
+        .hp => setMaxHp(sheet, parseU16(rest)),
+        .@"hit-die" => sheet.hit_die = parseDie(rest),
+        .ac => sheet.ac = parseU16(rest),
+        .speed => sheet.speed = parseU16(rest),
+        .spellcasting => if (Ability.byKey(rest)) |a| {
+            sheet.spell_ability = a;
+        },
+        .slots => setSlots(sheet, rest),
+        .innate => {
+            sheet.innate_max = parseU8(rest);
+            sheet.innate_left = sheet.innate_max;
+        },
+        .weapons => sheet.weapons = rest,
+        .tools => sheet.tools = rest,
+        .languages => sheet.languages = rest,
+        .armour => sheet.armour = rest,
+        .coins => setCoins(sheet, rest),
 
         // What the character carries and can do.
-    } else if (eq(u8, keyword, "attack")) {
-        addAttack(sheet, rest);
-    } else if (eq(u8, keyword, "spell")) {
-        addSpell(sheet, rest);
-    } else if (eq(u8, keyword, "item")) {
-        addItem(sheet, rest);
-    } else if (eq(u8, keyword, "feature")) {
-        addFeature(sheet, rest);
+        .attack => addAttack(sheet, rest),
+        .spell => addSpell(sheet, rest),
+        .item => addItem(sheet, rest),
+        .feature => addFeature(sheet, rest),
 
         // Events, folded into the current state.
-    } else if (eq(u8, keyword, "session")) {
-        sheet.session = firstPart(rest);
-    } else if (eq(u8, keyword, "damage")) {
-        applyDamage(sheet, parseU16(firstPart(rest)));
-    } else if (eq(u8, keyword, "heal")) {
-        applyHeal(sheet, parseU16(firstPart(rest)));
-    } else if (eq(u8, keyword, "temp")) {
-        sheet.hp_temp = parseU16(rest);
-    } else if (eq(u8, keyword, "hitdie")) {
-        if (sheet.hit_dice_left > 0) sheet.hit_dice_left -= 1;
-        applyHeal(sheet, parseU16(rest));
-    } else if (eq(u8, keyword, "rest")) {
-        if (eq(u8, rest, "long")) longRest(sheet);
-    } else if (eq(u8, keyword, "cast")) {
-        const level = parseU8(firstPart(rest));
-        if (level >= 1 and level <= SPELL_LEVELS and sheet.slots_left[level - 1] > 0) {
-            sheet.slots_left[level - 1] -= 1;
-        }
-    } else if (eq(u8, keyword, "innate-use")) {
-        if (sheet.innate_left > 0) sheet.innate_left -= 1;
-    } else if (eq(u8, keyword, "save")) {
-        if (eq(u8, rest, "success")) {
-            sheet.death_success +|= 1;
-        } else if (eq(u8, rest, "failure")) {
-            sheet.death_failure +|= 1;
-        } else if (eq(u8, rest, "reset")) {
-            sheet.death_success = 0;
-            sheet.death_failure = 0;
-        }
-    } else if (eq(u8, keyword, "condition")) {
-        setCondition(sheet, rest);
-    } else if (eq(u8, keyword, "exhaustion")) {
-        sheet.exhaustion = parseU8(rest);
-    } else if (eq(u8, keyword, "inspiration")) {
-        sheet.inspiration = eq(u8, rest, "on");
-    } else if (eq(u8, keyword, "gold")) {
-        sheet.coins[@intFromEnum(Coin.gp)] += parseI32(firstPart(rest));
+        .session => sheet.session = firstPart(rest),
+        .damage => applyDamage(sheet, parseU16(firstPart(rest))),
+        .heal => applyHeal(sheet, parseU16(firstPart(rest))),
+        .temp => sheet.hp_temp = parseU16(rest),
+        .hitdie => {
+            if (sheet.hit_dice_left > 0) sheet.hit_dice_left -= 1;
+            applyHeal(sheet, parseU16(rest));
+        },
+        .rest => if (std.meta.stringToEnum(Rest, rest) == .long) longRest(sheet),
+        .cast => {
+            const level = parseU8(firstPart(rest));
+            if (level >= 1 and level <= SPELL_LEVELS and sheet.slots_left[level - 1] > 0) {
+                sheet.slots_left[level - 1] -= 1;
+            }
+        },
+        .@"innate-use" => if (sheet.innate_left > 0) {
+            sheet.innate_left -= 1;
+        },
+        .save => switch (std.meta.stringToEnum(DeathSave, rest) orelse return) {
+            .success => sheet.death_success +|= 1,
+            .failure => sheet.death_failure +|= 1,
+            .reset => {
+                sheet.death_success = 0;
+                sheet.death_failure = 0;
+            },
+        },
+        .condition => setCondition(sheet, rest),
+        .exhaustion => sheet.exhaustion = parseU8(rest),
+        .inspiration => sheet.inspiration = std.meta.stringToEnum(Switch, rest) == .on,
+        .gold => sheet.coins.getPtr(.gp).* += parseI32(firstPart(rest)),
+
+        // A note and a roll change nothing on the sheet: they are the
+        // journal's, read from the file in order where it is shown.
+        .roll, .note => {},
     }
-    // A `note`, a `roll`, and anything unknown change nothing on the sheet:
-    // they are the journal's, read from the file in order where it is shown.
 }
 
 // ---------------------------------------------------------------------------
@@ -482,8 +555,8 @@ fn markSkills(sheet: *Sheet, rest: []const u8, expert: bool) void {
     var it = std.mem.tokenizeScalar(u8, rest, ' ');
     while (it.next()) |word| {
         if (Skill.byKey(word)) |s| {
-            sheet.skill_prof[@intFromEnum(s)] = true;
-            if (expert) sheet.skill_expert[@intFromEnum(s)] = true;
+            sheet.skill_prof.insert(s);
+            if (expert) sheet.skill_expert.insert(s);
         }
     }
 }
@@ -510,10 +583,9 @@ fn setSlots(sheet: *Sheet, rest: []const u8) void {
 
 fn setCoins(sheet: *Sheet, rest: []const u8) void {
     var it = std.mem.tokenizeScalar(u8, rest, ' ');
-    var i: usize = 0;
-    while (it.next()) |word| : (i += 1) {
-        if (i >= sheet.coins.len) break;
-        sheet.coins[i] = parseI32(word);
+    for (std.enums.values(Coin)) |coin| {
+        const word = it.next() orelse break;
+        sheet.coins.set(coin, parseI32(word));
     }
 }
 
@@ -546,10 +618,9 @@ fn longRest(sheet: *Sheet) void {
 
 fn setCondition(sheet: *Sheet, rest: []const u8) void {
     const name = part(rest, 0);
-    const state = part(rest, 1);
     if (name.len == 0) return;
 
-    if (std.mem.eql(u8, state, "off")) {
+    if (std.meta.stringToEnum(Switch, part(rest, 1)) == .off) {
         for (sheet.conditions.slice(), 0..) |c, i| {
             if (std.ascii.eqlIgnoreCase(c, name)) {
                 sheet.conditions.swapRemove(i);
@@ -663,55 +734,59 @@ fn writeNumbered(buf: []u8, keyword: []const u8, value: i64, why: []const u8) []
 }
 
 pub fn writeSession(buf: []u8, number: u32, date: []const u8) []const u8 {
-    return std.fmt.bufPrint(buf, "session {d} | {s}", .{ number, date }) catch buf[0..0];
+    return std.fmt.bufPrint(buf, @tagName(Keyword.session) ++ " {d} | {s}", .{ number, date }) catch buf[0..0];
 }
 
 pub fn writeDamage(buf: []u8, amount: u16, why: []const u8) []const u8 {
-    return writeNumbered(buf, "damage", amount, why);
+    return writeNumbered(buf, @tagName(Keyword.damage), amount, why);
 }
 
 pub fn writeHeal(buf: []u8, amount: u16, why: []const u8) []const u8 {
-    return writeNumbered(buf, "heal", amount, why);
+    return writeNumbered(buf, @tagName(Keyword.heal), amount, why);
 }
 
 pub fn writeTemp(buf: []u8, amount: u16) []const u8 {
-    return writeNumbered(buf, "temp", amount, "");
+    return writeNumbered(buf, @tagName(Keyword.temp), amount, "");
 }
 
 pub fn writeHitDie(buf: []u8, healed: u16) []const u8 {
-    return writeNumbered(buf, "hitdie", healed, "");
+    return writeNumbered(buf, @tagName(Keyword.hitdie), healed, "");
 }
 
 pub fn writeGold(buf: []u8, delta: i32, why: []const u8) []const u8 {
-    return writeNumbered(buf, "gold", delta, why);
+    return writeNumbered(buf, @tagName(Keyword.gold), delta, why);
 }
 
-pub fn writeRest(buf: []u8, long: bool) []const u8 {
-    return writeParts(buf, "rest", &.{if (long) "long" else "short"});
+pub fn writeExhaustion(buf: []u8, level: u8) []const u8 {
+    return writeNumbered(buf, @tagName(Keyword.exhaustion), level, "");
+}
+
+pub fn writeRest(buf: []u8, which: Rest) []const u8 {
+    return writeParts(buf, @tagName(Keyword.rest), &.{@tagName(which)});
 }
 
 pub fn writeCast(buf: []u8, level: u8, name: []const u8) []const u8 {
-    return std.fmt.bufPrint(buf, "cast {d} | {s}", .{ level, name }) catch buf[0..0];
+    return std.fmt.bufPrint(buf, @tagName(Keyword.cast) ++ " {d} | {s}", .{ level, name }) catch buf[0..0];
 }
 
 pub fn writeInnate(buf: []u8) []const u8 {
-    return writeParts(buf, "innate-use", &.{});
+    return writeParts(buf, @tagName(Keyword.@"innate-use"), &.{});
 }
 
-pub fn writeSave(buf: []u8, outcome: []const u8) []const u8 {
-    return writeParts(buf, "save", &.{outcome});
+pub fn writeSave(buf: []u8, outcome: DeathSave) []const u8 {
+    return writeParts(buf, @tagName(Keyword.save), &.{@tagName(outcome)});
 }
 
-pub fn writeCondition(buf: []u8, name: []const u8, on: bool) []const u8 {
-    return writeParts(buf, "condition", &.{ name, if (on) "on" else "off" });
+pub fn writeCondition(buf: []u8, name: []const u8, state: Switch) []const u8 {
+    return writeParts(buf, @tagName(Keyword.condition), &.{ name, @tagName(state) });
 }
 
-pub fn writeInspiration(buf: []u8, on: bool) []const u8 {
-    return writeParts(buf, "inspiration", &.{if (on) "on" else "off"});
+pub fn writeInspiration(buf: []u8, state: Switch) []const u8 {
+    return writeParts(buf, @tagName(Keyword.inspiration), &.{@tagName(state)});
 }
 
 pub fn writeNote(buf: []u8, text: []const u8) []const u8 {
-    return writeParts(buf, "note", &.{text});
+    return writeParts(buf, @tagName(Keyword.note), &.{text});
 }
 
 /// A d20 test: what it was for, the die kept, the modifier, and how it was
@@ -719,7 +794,7 @@ pub fn writeNote(buf: []u8, text: []const u8) []const u8 {
 pub fn writeRoll(buf: []u8, what: []const u8, die: u8, modifier: i16, how: Roll) []const u8 {
     const sign: []const u8 = if (modifier < 0) "-" else "+";
     const magnitude = @abs(modifier);
-    return std.fmt.bufPrint(buf, "roll {s} | {d} | {s}{d} | {s}", .{
+    return std.fmt.bufPrint(buf, @tagName(Keyword.roll) ++ " {s} | {d} | {s}{d} | {s}", .{
         what, die, sign, magnitude, @tagName(how),
     }) catch buf[0..0];
 }
@@ -799,7 +874,7 @@ test "the fold reads a character, and the numbers it derives are the sheet's" {
 
     try testing.expectEqual(@as(usize, 1), c.attacks.len);
     try testing.expectEqual(@as(usize, 2), c.spells.len);
-    try testing.expectEqual(@as(i32, 36), c.coins[@intFromEnum(Coin.gp)]);
+    try testing.expectEqual(@as(i32, 36), c.coins.get(.gp));
     try testing.expectEqualStrings("3", c.session);
 
     // Carrying: fifteen a point of Strength.
@@ -848,7 +923,7 @@ test "a condition is set and cleared by name, and gold is paid and received" {
     const c = fold(CINAED ++ "\ncondition frightened | on\ncondition poisoned | on\ncondition frightened | off\ngold -3 | rations\ngold 10 | reward");
     try testing.expect(c.hasCondition("poisoned"));
     try testing.expect(!c.hasCondition("frightened"));
-    try testing.expectEqual(@as(i32, 43), c.coins[@intFromEnum(Coin.gp)]);
+    try testing.expectEqual(@as(i32, 43), c.coins.get(.gp));
 }
 
 test "a gained level raises the maximum and the current by the same" {
@@ -864,7 +939,10 @@ test "the writers spell the grammar the fold reads" {
     var buf: [128]u8 = undefined;
     try testing.expectEqualStrings("damage 5 | goblin arrow", writeDamage(&buf, 5, "goblin arrow"));
     try testing.expectEqualStrings("gold -3 | rations", writeGold(&buf, -3, "rations"));
-    try testing.expectEqualStrings("rest long", writeRest(&buf, true));
+    try testing.expectEqualStrings("rest long", writeRest(&buf, .long));
+    try testing.expectEqualStrings("save reset", writeSave(&buf, .reset));
+    try testing.expectEqualStrings("condition prone | off", writeCondition(&buf, "prone", .off));
+    try testing.expectEqualStrings("exhaustion 2", writeExhaustion(&buf, 2));
     try testing.expectEqualStrings("cast 1 | Burning Hands", writeCast(&buf, 1, "Burning Hands"));
     try testing.expectEqualStrings("roll Persuasion | 12 | +7 | advantage", writeRoll(&buf, "Persuasion", 12, 7, .advantage));
     try testing.expectEqualStrings("session 4 | 2026-09-06", writeSession(&buf, 4, "2026-09-06"));

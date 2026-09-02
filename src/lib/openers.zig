@@ -66,6 +66,11 @@ pub const Opener = struct {
 pub const table = [_]Opener{
     .{ .name = "eimg", .path = "/bin/eimg", .opens = .{ .picture = true } },
     .{ .name = "pad", .path = "/bin/pad", .opens = .{ .text = true } },
+    // Not a system program: the character journal lives under home with the
+    // rest of what is somebody's choice, and is there only when it was built.
+    // Naming it here is what lets a .hero open from the launcher and the file
+    // manager; when it is absent the open fails as any missing program would.
+    .{ .name = "hero", .path = "/home/hero", .opens = .{ .document = true } },
 };
 
 /// Who would open this family, before anybody has chosen.
