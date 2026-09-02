@@ -1,4 +1,13 @@
-# 13. Hero: a character journal
+# Hero
+
+A character journal for Dungeons and Dragons on the 2024 rules: an optional
+application, not part of the system. `make hero` builds it into `home/`, where
+it is on the machine at the next image build; `make apps` builds it with the
+rest. It opens a `.hero` file from the launcher, or from its own File menu.
+
+The rest of this file is the design: what the file is, and what the window
+makes of it.
+
 
 Hero is an optional application, not part of the system: a tracker for a
 Dungeons and Dragons character on the 2024 rules, in the toolkit's own

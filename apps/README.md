@@ -20,6 +20,13 @@ tree; the project is theirs and is fetched.
 
 Fetched source lands in `build/apps/<name>/`, which is not tracked.
 
+Not every app is fetched, and not every app is C. A first-party program that
+is ours but is still not part of the system lives here whole rather than as a
+recipe: its source is in the tree, and it is built by the main `build.zig` into
+`home/` the same way a system program is built into the image. Hero, the
+character journal, is one of these: `apps/hero/` holds its source, `make hero`
+builds and stages it, and `make apps` does so along with the rest.
+
 ## Building
 
     make apps                 build every app

@@ -33,7 +33,7 @@ fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
 fn imageFormats(name: []const u8) ?*const [4][]const u8 {
     // The file manager previews what is under the cursor, which is as much a
     // viewer as the viewer is.
-    if (std.mem.eql(u8, name, "eimg") or std.mem.eql(u8, name, "efm") or std.mem.eql(u8, name, "hero")) {
+    if (std.mem.eql(u8, name, "eimg") or std.mem.eql(u8, name, "efm")) {
         return &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_BMP", "-DSTBI_ONLY_GIF" };
     }
     return null;
@@ -325,7 +325,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pad", .root = "src/user/apps/pad.zig" },
             .{ .name = "calc", .root = "src/user/apps/calc.zig" },
             .{ .name = "eimg", .root = "src/user/apps/eimg.zig" },
-            .{ .name = "hero", .root = "src/user/apps/hero.zig" },
             .{ .name = "efm", .root = "src/user/efm/main.zig" },
             .{ .name = "timed", .root = "src/user/timed/main.zig" },
         };
@@ -475,6 +474,71 @@ pub fn build(b: *std.Build) void {
             exe.entry = .{ .symbol_name = "_start" };
             b.installArtifact(exe);
             user_bins[i] = exe;
+        }
+
+        // Extra applications: first-party programs that are not part of the
+        // system. Built on demand into home/, beside where a person's files
+        // live, rather than into the image's /bin. `zig build hero`, which
+        // `make apps` runs; see apps/README.md. Built exactly as a system
+        // program is, the toolkit and the picture decoder included, because it
+        // is one in every way but where it is installed and whether it ships.
+        {
+            const hero = b.addExecutable(.{
+                .name = "hero",
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/hero/hero.zig"),
+                    .target = user_target,
+                    .optimize = optimize,
+                    .single_threaded = true,
+                    .strip = true,
+                    .stack_check = false,
+                    .stack_protector = false,
+                    .imports = &user_imports,
+                }),
+            });
+            hero.root_module.addIncludePath(b.path("third_party/stb"));
+            hero.root_module.addIncludePath(b.path("include"));
+            hero.root_module.addCSourceFiles(.{
+                .files = &.{"src/user/img/stb.c"},
+                .flags = &.{
+                    "-std=c11",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                    "-DSTBI_ONLY_PNG",
+                    "-DSTBI_ONLY_JPEG",
+                    "-DSTBI_ONLY_BMP",
+                    "-DSTBI_ONLY_GIF",
+                },
+            });
+            hero.root_module.addImport("clibc", b.createModule(.{
+                .root_source_file = b.path("src/user/libc/freestanding.zig"),
+                .target = user_target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "lib", .module = user_lib },
+                    .{ .name = "sys", .module = sys_mod },
+                    .{ .name = "ulib", .module = ulib_mod },
+                },
+            }));
+            hero.setLinkerScript(b.path("src/user/linker.ld"));
+            hero.entry = .{ .symbol_name = "_start" };
+
+            // Its own step, so the default build and the image never carry it.
+            const hero_step = b.step("hero", "Build the Hero extra application into zig-out/bin");
+            hero_step.dependOn(&b.addInstallArtifact(hero, .{}).step);
+
+            // The character-journal model, on the host: the whole of a
+            // character is what its lines add up to, and none of it needs a
+            // screen to be checked.
+            const hero_test = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/hero/journal.zig"),
+                    .target = b.graph.host,
+                    .optimize = .Debug,
+                }),
+            });
+            const hero_test_step = b.step("test-hero", "Test the Hero character-journal model on the host");
+            hero_test_step.dependOn(&b.addRunArtifact(hero_test).step);
         }
     } // !is_arm
 

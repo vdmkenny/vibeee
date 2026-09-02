@@ -21,7 +21,7 @@ const sys = @import("sys");
 const img = @import("img");
 const env = @import("ulib").env;
 const str = @import("lib").str;
-const hero = @import("ulib").hero;
+const hero = @import("journal.zig");
 
 const theme = eui.theme;
 const Rect = eui.Rect;

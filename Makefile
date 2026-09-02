@@ -123,7 +123,6 @@ USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_CALC := zig-out/bin/calc
 USER_EIMG := zig-out/bin/eimg
-USER_HERO := zig-out/bin/hero
 USER_EFM := zig-out/bin/efm
 USER_TIMED := zig-out/bin/timed
 USER_DEVMGD := zig-out/bin/devmgd
@@ -139,7 +138,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd help apps app fmt check check-all
+.PHONY: all clean image qemu qemu-sd run test tools sd help apps app hero fmt check check-all
 
 all: image
 
@@ -151,6 +150,7 @@ help:
 	@echo "  make qemu-sd          boot the SD image the way real hardware does (x86)"
 	@echo "  make vnc              boot over VNC instead of a local window"
 	@echo "  make apps             build the programs in apps/ into home/"
+	@echo "  make hero             build the Hero character journal into home/"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make check            module layering and import rules"
@@ -200,8 +200,20 @@ examples: kernel
 
 # Things that are not part of the system, built separately and installed
 # into `home/`. See apps/README.md.
-apps:
+apps: hero
 	@$(MAKE) --no-print-directory -C apps
+
+# Hero, the character journal: a first-party program that is not part of the
+# system, built into home/ beside a person's files rather than into the image.
+# Its model is host-tested first, since the whole of a character is what its
+# lines add up to and none of it needs a screen to be checked.
+.PHONY: hero
+hero:
+	@$(ZIG) build test-hero
+	@$(ZIG) build hero
+	@mkdir -p home
+	@cp zig-out/bin/hero home/hero
+	@echo "  ready   home/hero, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
@@ -245,7 +257,6 @@ $(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard e
 	@$(MCOPY) -i $@ -o $(USER_PAD) ::/bin/pad
 	@$(MCOPY) -i $@ -o $(USER_CALC) ::/bin/calc
 	@$(MCOPY) -i $@ -o $(USER_EIMG) ::/bin/eimg
-	@$(MCOPY) -i $@ -o $(USER_HERO) ::/bin/hero
 	@$(MCOPY) -i $@ -o $(USER_EFM) ::/bin/efm
 	@$(MCOPY) -i $@ -o $(USER_TIMED) ::/bin/timed
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
