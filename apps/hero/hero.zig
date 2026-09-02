@@ -82,9 +82,10 @@ var section: Section = .sheet;
 /// Set when the Journal has just been opened, so its note field takes the
 /// keyboard without a click: on this section, typing is a note or nothing.
 var focus_note = false;
-/// The same for the Skills table: opened, it takes the arrows and Enter, so a
-/// skill is picked and rolled without reaching for the pointer.
-var focus_skills = false;
+/// The same for the other panes' tables: opened, a table takes the arrows
+/// and Enter, so a skill is rolled, an attack made, a spell cast or an item
+/// picked without reaching for the pointer.
+var focus_table = false;
 
 fn stepSection(by: i32) void {
     const count = std.enums.values(Section).len;
@@ -97,7 +98,7 @@ fn setSection(which: Section) void {
     if (which == section) return;
     section = which;
     focus_note = which == .journal;
-    focus_skills = which == .skills;
+    focus_table = which != .journal;
     status = "";
     ctx.damage();
 }
@@ -206,6 +207,14 @@ const RollWhat = union(enum) {
     }
 };
 
+/// The pane's table takes the keyboard on the first pass after the pane
+/// opens, and not again, so a click elsewhere is not undone.
+fn takeFocus(area: Rect) void {
+    if (!focus_table) return;
+    ctx.focusAt(area);
+    focus_table = false;
+}
+
 fn attackName(index: usize) []const u8 {
     return if (index < sheet.attacks.len) sheet.attacks.slice()[index].name else "Attack";
 }
@@ -221,8 +230,8 @@ fn attackHit(index: usize) []const u8 {
 var pending: Helper = .none;
 
 /// What the menus and their shortcuts ask for. The Character menu's facts
-/// are a `Form` each, carried in the same id space above the commands.
-const Command = enum(u16) {
+/// are a `Form` each, told apart from these by `MenuId`.
+const Command = enum(u15) {
     new,
     open,
     save,
@@ -238,6 +247,7 @@ const Command = enum(u16) {
     drop_selected,
     inspiration,
     innate_use,
+    stop_concentrating,
     level_up,
     new_session,
     note,
@@ -252,16 +262,23 @@ const Command = enum(u16) {
     status_bar,
 };
 
-const FORM_ID_BASE: u16 = 1000;
+/// A menu id: a command, or a form of the Character menu, told apart by a
+/// bit. A command's own number is its id, so the menus name them with
+/// `@intFromEnum` and the bit stays clear.
+const MenuId = packed struct(u16) {
+    index: u15,
+    form: bool = false,
 
-fn idOf(form: Form) u16 {
-    return FORM_ID_BASE + @intFromEnum(form);
-}
+    fn of(form: Form) u16 {
+        return @bitCast(MenuId{ .index = @intFromEnum(form), .form = true });
+    }
 
-/// A menu id back to what it asks for.
-fn runId(id: u16) void {
-    if (id >= FORM_ID_BASE) askFact(@enumFromInt(id - FORM_ID_BASE)) else run(@enumFromInt(id));
-}
+    /// What a chosen id asks for.
+    fn dispatch(id: u16) void {
+        const menu_id: MenuId = @bitCast(id);
+        if (menu_id.form) askFact(@enumFromInt(menu_id.index)) else runCommand(@enumFromInt(menu_id.index));
+    }
+};
 
 /// The Character menu: a new character, then one item per fact the sheet is
 /// built from, in the order a sheet reads them. Built from the forms so a
@@ -270,7 +287,7 @@ const CHARACTER_ITEMS = blk: {
     var items: [MENU_FORMS.len + 2]eui.menubar.Item = undefined;
     items[0] = .{ .label = "New character...", .id = @intFromEnum(Command.new) };
     items[1] = eui.menubar.Item.separator;
-    for (MENU_FORMS, 0..) |form, i| items[i + 2] = .{ .label = form.label(), .id = idOf(form) };
+    for (MENU_FORMS, 0..) |form, i| items[i + 2] = .{ .label = form.question() ++ "...", .id = MenuId.of(form) };
     break :blk items;
 };
 
@@ -292,14 +309,14 @@ const MENUS = [_]eui.menubar.Menu{
         .{ .label = "Temporary hit points...", .id = @intFromEnum(Command.temp) },
         .{ .label = "Spend a hit die...", .id = @intFromEnum(Command.hitdie) },
         eui.menubar.Item.separator,
-        .{ .label = "Pay gold...", .id = @intFromEnum(Command.pay) },
-        .{ .label = "Receive gold...", .id = @intFromEnum(Command.receive) },
         .{ .label = "Use one of the item", .id = @intFromEnum(Command.use_one) },
         .{ .label = "Drop the selected", .id = @intFromEnum(Command.drop_selected) },
         eui.menubar.Item.separator,
         .{ .label = "Heroic Inspiration", .id = @intFromEnum(Command.inspiration) },
         .{ .label = "Use the innate feature", .id = @intFromEnum(Command.innate_use) },
+        .{ .label = "Stop concentrating", .id = @intFromEnum(Command.stop_concentrating) },
         .{ .label = "Level up...", .id = @intFromEnum(Command.level_up) },
+        eui.menubar.Item.separator,
         .{ .label = "New session", .id = @intFromEnum(Command.new_session) },
         .{ .label = "Note", .id = @intFromEnum(Command.note), .shortcut = "Ctrl+N" },
         .{ .label = "Take back the last line", .id = @intFromEnum(Command.undo), .shortcut = "Ctrl+Z" },
@@ -346,50 +363,51 @@ const Form = enum {
     item,
     feature,
 
-    /// The menu's word for it.
-    fn label(self: Form) []const u8 {
-        return switch (self) {
-            .name => "Name...",
-            .class_level => "Class and level...",
-            .origin => "Origin...",
-            .player_picture => "Player and picture...",
-            .scores => "Ability scores...",
-            .saves => "Saving throws...",
-            .skills => "Skills...",
-            .expertise => "Expertise...",
-            .hp_die => "Hit points and die...",
-            .ac_speed => "Armour class and speed...",
-            .casting => "Spellcasting and slots...",
-            .innate => "Innate feature...",
-            .training => "Training...",
-            .coins => "Coins...",
-            .attack => "Add attack...",
-            .spell => "Add spell...",
-            .item => "Add item...",
-            .feature => "Add feature...",
-        };
-    }
-
-    /// The question, which names the parts in the order they are typed.
+    /// The question on the sheet, which is also the menu's word for it.
     fn question(self: Form) []const u8 {
         return switch (self) {
             .name => "Name",
-            .class_level => "Class | level",
+            .class_level => "Class and level",
+            .origin => "Origin",
+            .player_picture => "Player and picture",
+            .scores => "Ability scores",
+            .saves => "Saving throws",
+            .skills => "Skills",
+            .expertise => "Expertise",
+            .hp_die => "Hit points and die",
+            .ac_speed => "Armour class and speed",
+            .casting => "Spellcasting and slots",
+            .innate => "Innate feature",
+            .training => "Training",
+            .coins => "Coins",
+            .attack => "New attack",
+            .spell => "New spell",
+            .item => "New item",
+            .feature => "New feature",
+        };
+    }
+
+    /// The shape of the line, shown in the field while it is empty: the
+    /// parts in the order they are typed.
+    fn hint(self: Form) []const u8 {
+        return switch (self) {
+            .name => "cinaed I",
+            .class_level => "Sorcerer | 1",
             .origin => "Species | background | alignment | size",
-            .player_picture => "Player | picture file",
-            .scores => "Str Dex Con Int Wis Cha",
-            .saves => "Saves: str dex con int wis cha",
-            .skills => "Skills, by key",
-            .expertise => "Expertise, by key",
-            .hp_die => "Hit points | hit die",
-            .ac_speed => "Armour class | speed",
-            .casting => "Ability | slots by level",
-            .innate => "Uses | name",
+            .player_picture => "Player | picture file beside the journal",
+            .scores => "Str Dex Con Int Wis Cha, as six numbers",
+            .saves => "By key: str dex con int wis cha",
+            .skills => "By key: stealth sleight_of_hand ...",
+            .expertise => "By key: stealth sleight_of_hand ...",
+            .hp_die => "Hit points | hit die, like 8 | d6",
+            .ac_speed => "Armour class | speed, like 12 | 30",
+            .casting => "Ability | slots by level, like cha | 2 0 0 0 0 0 0 0 0",
+            .innate => "Uses | name, like 2 | Innate Sorcery",
             .training => "Weapons | tools | languages | armour",
-            .coins => "cp sp ep gp pp",
+            .coins => "cp sp ep gp pp, as five numbers",
             .attack => "Name | to hit | damage | notes",
             .spell => "Name | level | time | range | notes",
-            .item => "Name | quantity | weight",
+            .item => "Name | quantity | weight of one",
             .feature => "Name | note",
         };
     }
@@ -448,6 +466,9 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
             out.flush();
             sys.exit(0);
         }
+        // The dice from the shell, the same dice the window throws:
+        // `hero --roll 2d6+3`, or `hero --roll d20 advantage`.
+        if (std.mem.eql(u8, wanted, "--roll")) rollFromShell(env.arg(frame, 2) orelse "d20", env.arg(frame, 3));
         setPath(wanted);
         load();
     }
@@ -459,6 +480,49 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
         .event = ownWindows,
         .close = mayClose,
     });
+}
+
+/// A roll printed and done: what fell, the bonus, and the total on one line.
+fn rollFromShell(notation: []const u8, mode_word: ?[]const u8) noreturn {
+    const d = hero.Dice.parse(notation) orelse {
+        out.text("hero: dice are written like 2d6+3, or d20\n");
+        out.flush();
+        sys.exit(1);
+    };
+    const mode: hero.Roll = if (mode_word) |w| std.meta.stringToEnum(hero.Roll, w) orelse .normal else .normal;
+    var line_buf: [160]u8 = @splat(0);
+    var line = str.Builder{ .buf = &line_buf };
+    line.text(notation);
+    line.text(": ");
+    var total: i32 = d.bonus;
+    if (d.faces == 20 and d.count == 1 and mode != .normal) {
+        const a = dice.rollDie(20);
+        const b = dice.rollDie(20);
+        const kept = if (mode == .advantage) @max(a, b) else @min(a, b);
+        line.number(a);
+        line.text(" and ");
+        line.number(b);
+        line.text(", kept ");
+        line.number(kept);
+        total += kept;
+    } else {
+        for (0..@min(d.count, dice.MAX_DICE)) |i| {
+            const fell = dice.rollDie(d.faces);
+            if (i > 0) line.text(" + ");
+            line.number(fell);
+            total += fell;
+        }
+    }
+    if (d.bonus != 0) {
+        line.text(if (d.bonus < 0) " - " else " + ");
+        line.number(@abs(d.bonus));
+    }
+    line.text(" = ");
+    line.number(@intCast(@max(total, 0)));
+    line.byte('\n');
+    out.text(line.done());
+    out.flush();
+    sys.exit(0);
 }
 
 fn path() []const u8 {
@@ -502,6 +566,7 @@ fn load() void {
     refold();
     saved_len = text_len;
     modified = false;
+    asked_at_start = true;
     setTitle();
     loadHeadshot();
 }
@@ -564,6 +629,11 @@ fn append(line: []const u8) void {
 
 fn appendLine(line: []const u8) void {
     if (line.len == 0) return;
+    // An empty journal starts with its magic line, whatever is written first.
+    if (text_len == 0 and !std.mem.eql(u8, line, hero.MAGIC)) {
+        @memcpy(storage[0..hero.MAGIC.len], hero.MAGIC);
+        text_len = hero.MAGIC.len;
+    }
     // A newline before it, unless the file is empty or already ends in one.
     if (text_len > 0 and storage[text_len - 1] != '\n') {
         if (text_len >= storage.len) return;
@@ -653,7 +723,7 @@ fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
         .ignored => false,
         .taken => true,
         .chosen => |id| blk: {
-            runId(id);
+            MenuId.dispatch(id);
             break :blk true;
         },
     };
@@ -718,7 +788,7 @@ comptime {
 // Commands
 // ---------------------------------------------------------------------------
 
-fn run(command: Command) void {
+fn runCommand(command: Command) void {
     switch (command) {
         .new => askNewCharacter(),
         .open => askFile(.open),
@@ -735,6 +805,7 @@ fn run(command: Command) void {
         .drop_selected => dropSelected(),
         .inspiration => append(hero.writeInspiration(&line_buffer, hero.Switch.of(!sheet.inspiration))),
         .innate_use => useInnate(),
+        .stop_concentrating => if (sheet.concentration.len > 0) append(hero.writeConcentrate(&line_buffer, "")) else say("Not concentrating on anything."),
         .level_up => askLevelUp(),
         .new_session => newSession(),
         .note => setSection(.journal),
@@ -1016,7 +1087,7 @@ var initial_buffer: [eui.prompt.TEXT_MAX]u8 = @splat(0);
 
 fn askFact(form: Form) void {
     pending = .{ .fact = form };
-    prompt.askText(form.question(), &LINE_CHOICES, initialOf(form, &initial_buffer));
+    prompt.askText(form.question(), &LINE_CHOICES, .{ .initial = initialOf(form, &initial_buffer), .hint = form.hint() });
     ctx.damage();
 }
 
@@ -1026,7 +1097,9 @@ fn initialOf(form: Form, buf: []u8) []const u8 {
     var line = str.Builder{ .buf = buf };
     switch (form) {
         .name => line.text(sheet.name),
-        .class_level => {
+        // A fact not yet set leaves the field empty, so the hint shows the
+        // shape rather than a line of nothing.
+        .class_level => if (sheet.class.len > 0) {
             line.text(sheet.class);
             line.text(" | ");
             line.number(sheet.level);
@@ -1052,7 +1125,7 @@ fn initialOf(form: Form, buf: []u8) []const u8 {
             if (line.len > 0) line.byte(' ');
             line.text(sk.key());
         },
-        .hp_die => {
+        .hp_die => if (sheet.hp_max > 0) {
             line.number(sheet.hp_max);
             line.text(" | d");
             line.number(sheet.hit_die);
@@ -1070,7 +1143,7 @@ fn initialOf(form: Form, buf: []u8) []const u8 {
                 line.number(n);
             }
         },
-        .innate => {
+        .innate => if (sheet.innate_max > 0) {
             line.number(sheet.innate_max);
             line.text(" | ");
             line.text(sheet.innate_name);
@@ -1098,21 +1171,35 @@ fn applyFact(form: Form, line: []const u8) void {
     const keywords = form.keywords();
     if (keywords.len == 1) {
         if (line.len == 0) return;
-        append(hero.writeFact(&line_buffer, keywords[0], line));
+        writeChecked(keywords[0], line);
     } else if (form.byWords()) {
         var words = std.mem.tokenizeScalar(u8, line, ' ');
         for (keywords) |k| {
             const word = words.next() orelse break;
-            append(hero.writeFact(&line_buffer, k, word));
+            writeChecked(k, word);
         }
     } else {
         for (keywords, 0..) |k, i| {
             const piece = hero.part(line, i);
             if (piece.len == 0) continue;
-            append(hero.writeFact(&line_buffer, k, piece));
+            writeChecked(k, piece);
         }
     }
     if (form == .player_picture) loadHeadshot();
+}
+
+/// One fact line, unless the keyword takes a number and this is not one.
+fn writeChecked(keyword: hero.Keyword, piece: []const u8) void {
+    if (keyword.takesNumber()) {
+        _ = std.fmt.parseInt(u16, piece, 10) catch {
+            var line = str.Builder{ .buf = &status_buffer };
+            line.text("Not a number: ");
+            line.text(piece[0..@min(piece.len, 40)]);
+            say(line.done());
+            return;
+        };
+    }
+    append(hero.writeFact(&line_buffer, keyword, piece));
 }
 
 /// An `Add...` button at the right end of a heading or a line, which asks
@@ -1128,7 +1215,7 @@ fn askNewCharacter() void {
         return;
     }
     pending = .new_character;
-    prompt.askText("The new character's name", &LINE_CHOICES, "");
+    prompt.askText("The new character's name", &LINE_CHOICES, .{ .hint = "cinaed I" });
     ctx.damage();
 }
 
@@ -1139,12 +1226,12 @@ fn newCharacter(name: []const u8) void {
     text_len = 0;
     file_len = 0;
     forgetHeadshot();
-    appendLine(hero.MAGIC);
     appendLine(hero.writeFact(&line_buffer, .name, name));
     saved_len = 0;
     modified = true;
+    asked_at_start = true;
     setSection(.sheet);
-    say("Set the facts from the Character menu, then save.");
+    say("Now the facts, then save.");
 }
 
 /// A level gained: the number, and the new maximum, offered as the die's
@@ -1224,8 +1311,9 @@ fn useOne() void {
         return;
     }
     const it = sheet.items.slice()[@min(items_table.selected, sheet.items.len - 1)];
-    const line = std.fmt.bufPrint(&question_buffer, "{s} | {d} | {d}.{d:0>2}", .{
-        it.name, it.quantity - 1, it.weight_cp / 100, it.weight_cp % 100,
+    var weight: [16]u8 = @splat(0);
+    const line = std.fmt.bufPrint(&question_buffer, "{s} | {d} | {s}", .{
+        it.name, it.quantity - 1, hundredths(&weight, it.weight_cp),
     }) catch return;
     append(hero.writeFact(&line_buffer, .item, line));
 }
@@ -1336,18 +1424,18 @@ fn draw() void {
 
     if (eui.prompt.run(ctx, pane_full, &prompt)) |choice| answer(choice);
 
-    // The status bar: what this pane is about, or what was just said; the
-    // session; and whether the journal is on the medium.
+    // The status bar: the file and whether it is on the medium; the session;
+    // and what this pane is about, or what was just said.
     if (show_status) {
         eui.statusbar.run(ctx, parts.bottom, &.{
-            .{ .text = if (file_len > 0) baseName() else "No file open" },
+            .{ .text = fileText() },
             .{ .text = sessionText(), .width = 96, .right = true },
-            .{ .text = if (status.len > 0) status else if (modified) "Unsaved changes" else paneLine(), .width = 210, .right = true },
+            .{ .text = if (status.len > 0) status else paneLine(), .width = 210, .right = true },
         });
     }
 
     // Last, so an open menu reaches over the pane rather than under it.
-    if (eui.menubar.run(ctx, strip, &menus, &MENUS)) |id| runId(id);
+    if (eui.menubar.run(ctx, strip, &menus, &MENUS)) |id| MenuId.dispatch(id);
 }
 
 fn inset(area: Rect, by: i32) Rect {
@@ -1358,6 +1446,16 @@ fn inset(area: Rect, by: i32) Rect {
 /// names the machine's; the file is the status bar's to say.
 fn caption() []const u8 {
     return "Hero " ++ VERSION;
+}
+
+var file_buffer: [64]u8 = @splat(0);
+
+/// The file's name, and that it has lines not yet saved.
+fn fileText() []const u8 {
+    var line = str.Builder{ .buf = &file_buffer };
+    line.text(if (file_len > 0) baseName() else "No file yet");
+    if (modified) line.text(" \u{b7} unsaved");
+    return line.done();
 }
 
 var subtitle_buffer: [96]u8 = @splat(0);
@@ -1382,9 +1480,17 @@ fn subtitle() []const u8 {
 fn paneLine() []const u8 {
     return switch (section) {
         .combat => hitPointLine(),
+        .spells => concentrationLine(),
         .journal => journalCountLine(),
         else => subtitle(),
     };
+}
+
+fn concentrationLine() []const u8 {
+    var line = str.Builder{ .buf = &subtitle_buffer };
+    line.text("Concentrating on ");
+    line.text(if (sheet.concentration.len > 0) sheet.concentration else "nothing");
+    return line.done();
 }
 
 fn hitPointLine() []const u8 {
@@ -1818,10 +1924,7 @@ fn drawSkills(area: Rect) void {
         row.cells[3] = signedText(&skill_cells[i][1], sheet.skillBonus(s));
         skill_rows[i] = row;
     }
-    if (focus_skills) {
-        ctx.focusAt(area);
-        focus_skills = false;
-    }
+    takeFocus(area);
     if (ctx.table(area, &skills_table, &SKILL_COLUMNS, &skill_rows)) |index| {
         const s: hero.Skill = @enumFromInt(index);
         askRoll(.{ .skill = s });
@@ -1936,6 +2039,7 @@ fn drawCombat(area: Rect) void {
     addButton(head_row, .attack);
     const table_y = y + eui.heading.height() + 2;
     const table_area = Rect{ .x = area.x, .y = table_y, .w = area.w, .h = area.bottom() - table_y };
+    takeFocus(table_area);
     if (attackRows()) |rows| {
         if (ctx.table(table_area, &attacks_table, &ATTACK_COLUMNS, rows)) |index| {
             askRoll(.{ .attack = index });
@@ -2038,6 +2142,7 @@ fn drawSpells(area: Rect) void {
         row.cells[4] = sp.notes;
         spell_rows[i] = row;
     }
+    takeFocus(table_area);
     if (ctx.table(table_area, &spells_table, &SPELL_COLUMNS, spell_rows[0..list.len])) |index| {
         const sp = list[index];
         if (sp.level == 0) {
@@ -2116,6 +2221,7 @@ fn drawGear(area: Rect) void {
         row.cells[2] = pounds(&item_cells[i][1], @as(u32, it.quantity) * it.weight_cp);
         item_rows[i] = row;
     }
+    takeFocus(table_area);
     _ = ctx.table(table_area, &items_table, &ITEM_COLUMNS, item_rows[0..list.len]);
 }
 
@@ -2243,6 +2349,7 @@ fn describe(keyword: ?hero.Keyword, word: []const u8, rest: []const u8, buf: []u
         .roll => std.fmt.bufPrint(buf, "Rolled {s}: {s} {s}", .{ first, second, hero.part(rest, 2) }) catch rest,
         .dice => std.fmt.bufPrint(buf, "Rolled {s}: {s} ({s}: {s})", .{ first, hero.part(rest, 3), second, hero.part(rest, 2) }) catch rest,
         .drop => std.fmt.bufPrint(buf, "Dropped {s}", .{second}) catch rest,
+        .concentrate => if (std.mem.eql(u8, rest, "-")) "Stopped concentrating" else std.fmt.bufPrint(buf, "Concentrating on {s}", .{rest}) catch rest,
         else => std.fmt.bufPrint(buf, "{s} {s}", .{ word, rest }) catch rest,
     };
 }
@@ -2283,8 +2390,14 @@ fn ofMax(buf: []u8, max: u16) []const u8 {
     return std.fmt.bufPrint(buf, "of {d}", .{max}) catch "";
 }
 
-fn pounds(buf: []u8, hundredths: u32) []const u8 {
-    return std.fmt.bufPrint(buf, "{d}.{d:0>2} lb", .{ hundredths / 100, hundredths % 100 }) catch "";
+/// A weight in hundredths of a pound, as `5.00`.
+fn hundredths(buf: []u8, value: u32) []const u8 {
+    return std.fmt.bufPrint(buf, "{d}.{d:0>2}", .{ value / 100, value % 100 }) catch "";
+}
+
+fn pounds(buf: []u8, value: u32) []const u8 {
+    var plain: [16]u8 = @splat(0);
+    return std.fmt.bufPrint(buf, "{s} lb", .{hundredths(&plain, value)}) catch "";
 }
 
 fn orDash(text: []const u8) []const u8 {

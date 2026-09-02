@@ -91,6 +91,7 @@ earlier line, so a correction is the line again rather than a twin, and an
 | `roll Persuasion \| 12 \| +7 \| advantage` | A d20 rolled: what for, the die kept, the modifier, and how |
 | `dice Dagger damage \| 1d4+2 \| 3 \| 5` | A handful rolled: what for, the dice as named, as they fell, and the total |
 | `drop item \| Rope, hempen` | An attack, spell, item or feature gone from the sheet, by name |
+| `concentrate Bane`, `concentrate -` | Concentration on a spell, or on nothing; casting a spell whose notes say concentration starts it, and a rest ends it |
 | `note The shrine keeper asked for the crystal back` | Anything at all |
 
 An event before the first `session` line belongs to no session, which is
@@ -117,8 +118,10 @@ which the dice window sets before it opens and says why.
 ## 13.5 The window
 
 The rail on the left holds the headshot and six sections: Sheet, Skills,
-Combat, Spells, Gear and Journal. The status bar names the file, the
-session and what was just done or is unsaved. Helpers are the toolkit's
+Combat, Spells, Gear and Journal. The status bar names the file and whether
+it is saved, the session, and what the pane is about or what was just done:
+the hit points on Combat, what is concentrated on in Spells, the count on
+Journal. Helpers are the toolkit's
 prompt sheet across the bottom of the body, so a question never covers what
 it is about: a rest asks which, a cast asks whether to spend the slot, and
 damage, healing, gold and a hit die ask how much on the sheet's own stepper.
@@ -135,18 +138,26 @@ when a mode chose. An attack offers its damage dice next.
 
 The Character menu builds and corrects the sheet a fact at a time: each item
 asks for one line, with a field on the prompt sheet already holding what the
-sheet says, in the parts the file takes. New character starts a fresh
+sheet says, in the parts the file takes, and showing the shape of the line
+while it is empty. A number that is not one is refused rather than written. New character starts a fresh
 journal that is saved where the first Save says. Each pane adds its own rows
 with an Add button: a feature on the Sheet, an attack on Combat, a spell on
-Spells, an item on Gear. The Edit menu holds the moments of play: damage,
-healing, a hit die, gold, one of an item used up, the selected row dropped,
-the innate feature used, a level gained with its new hit points, a session,
-a note, and the last line since the save taken back.
+Spells, an item on Gear, where gold is paid and received too. The Edit menu
+holds the moments of play: damage, healing, a hit die, one of an item used
+up, the selected row dropped, the innate feature used, concentration
+stopped, a level gained with its new hit points, a session, a note, and the
+last line since the save taken back. Each pane's table takes the keyboard as
+the pane opens, so arrows and Enter reach a roll, a cast or an item without
+the pointer.
 
 The journal section lists the events newest first with their session, and a
 note is typed into the strip below it. A session heading is written before
 the first event of a day the journal has not seen. Closing with lines
 unsaved asks, the way Pad asks.
+
+From the shell, `hero --version` says which Hero this is, and `hero --roll
+2d6+3` or `hero --roll d20 advantage` throws the same dice the window does
+and prints what fell.
 
 ## 13.6 Budgets
 

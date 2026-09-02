@@ -266,10 +266,20 @@ pub const Keyword = enum {
     roll,
     dice,
     drop,
+    concentrate,
     note,
 
     pub fn parse(word: []const u8) ?Keyword {
         return std.meta.stringToEnum(Keyword, word);
+    }
+
+    /// Whether the line's rest is a number, so a program asking for the
+    /// line can refuse what is not one before it is written.
+    pub fn takesNumber(self: Keyword) bool {
+        return switch (self) {
+            .level, .hp, .ac, .speed, .str, .dex, .con, .int, .wis, .cha => true,
+            else => false,
+        };
     }
 
     /// Whether a line sets the sheet, rather than recording a moment of play.
@@ -277,7 +287,7 @@ pub const Keyword = enum {
     /// dagger was lost.
     pub fn isFact(self: Keyword) bool {
         return switch (self) {
-            .session, .damage, .heal, .temp, .hitdie, .rest, .cast, .@"innate-use", .save, .condition, .exhaustion, .inspiration, .gold, .roll, .dice, .drop, .note => false,
+            .session, .damage, .heal, .temp, .hitdie, .rest, .cast, .@"innate-use", .save, .condition, .exhaustion, .inspiration, .gold, .roll, .dice, .drop, .concentrate, .note => false,
             else => true,
         };
     }
@@ -417,6 +427,11 @@ pub const Sheet = struct {
     items: Bounded(Item, MAX_ITEMS) = .{},
     features: Bounded(Feature, MAX_FEATURES) = .{},
     conditions: Bounded([]const u8, MAX_CONDITIONS) = .{},
+
+    /// The spell being concentrated on, or nothing. Casting a spell whose
+    /// notes say concentration starts it; a rest, or a `concentrate -` line,
+    /// ends it.
+    concentration: []const u8 = "",
 
     /// The heading the last `session` line named, for the status bar.
     session: []const u8 = "",
@@ -581,13 +596,18 @@ fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
             if (sheet.hit_dice_left > 0) sheet.hit_dice_left -= 1;
             applyHeal(sheet, parseU16(rest));
         },
-        .rest => if (std.meta.stringToEnum(Rest, rest) == .long) longRest(sheet),
+        .rest => {
+            if (std.meta.stringToEnum(Rest, rest) == .long) longRest(sheet);
+            sheet.concentration = "";
+        },
         .cast => {
             const level = parseU8(firstPart(rest));
             if (level >= 1 and level <= SPELL_LEVELS and sheet.slots_left[level - 1] > 0) {
                 sheet.slots_left[level - 1] -= 1;
             }
+            startConcentration(sheet, part(rest, 1));
         },
+        .concentrate => sheet.concentration = if (std.mem.eql(u8, rest, "-")) "" else rest,
         .@"innate-use" => if (sheet.innate_left > 0) {
             sheet.innate_left -= 1;
         },
@@ -754,6 +774,14 @@ fn addFeature(sheet: *Sheet, rest: []const u8) void {
     });
 }
 
+/// A spell cast whose notes say concentration is the one concentrated on,
+/// in place of whatever was.
+fn startConcentration(sheet: *Sheet, name: []const u8) void {
+    const at = indexNamed(&sheet.spells, name) orelse return;
+    const spell = sheet.spells.slice()[at];
+    if (std.ascii.indexOfIgnoreCase(spell.notes, "concentration") != null) sheet.concentration = spell.name;
+}
+
 /// `drop attack | Dagger`: the named thing leaves its list.
 fn dropNamed(sheet: *Sheet, rest: []const u8) void {
     const name = part(rest, 1);
@@ -918,6 +946,11 @@ pub fn writeDrop(buf: []u8, kind: Keyword, name: []const u8) []const u8 {
     return writeParts(buf, @tagName(Keyword.drop), &.{ @tagName(kind), name });
 }
 
+/// Concentration on a spell by name, or on nothing: `concentrate -`.
+pub fn writeConcentrate(buf: []u8, name: []const u8) []const u8 {
+    return writeParts(buf, @tagName(Keyword.concentrate), &.{if (name.len > 0) name else "-"});
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1080,6 +1113,17 @@ test "the innate feature carries its name, and three failures are the end" {
     try testing.expect(fold(CINAED ++ "\nsave failure\nsave failure\nsave failure").dead());
 }
 
+test "concentration starts with the cast and ends with a rest or a line" {
+    const bane = CINAED ++ "\nspell Bane | 1 | 1 action | 30 ft. | V/S/M, CHA 15, concentration";
+    try testing.expectEqualStrings("", fold(bane).concentration);
+    try testing.expectEqualStrings("Bane", fold(bane ++ "\ncast 1 | Bane").concentration);
+    // Burning Hands is not a concentration spell, and does not take over.
+    try testing.expectEqualStrings("Bane", fold(bane ++ "\ncast 1 | Bane\ncast 1 | Burning Hands").concentration);
+    try testing.expectEqualStrings("", fold(bane ++ "\ncast 1 | Bane\nconcentrate -").concentration);
+    try testing.expectEqualStrings("", fold(bane ++ "\ncast 1 | Bane\nrest short").concentration);
+    try testing.expectEqualStrings("Bless", fold(bane ++ "\nconcentrate Bless").concentration);
+}
+
 test "dice are read from a damage line and spelled back" {
     var buf: [16]u8 = undefined;
     const d = Dice.parse("1d4+2 piercing").?;
@@ -1109,6 +1153,10 @@ test "the writers spell the grammar the fold reads" {
     try testing.expectEqualStrings("dice Dagger damage | 1d4+2 | 3 | 5", writeDice(&buf, "Dagger damage", .{ .count = 1, .faces = 4, .bonus = 2 }, "3", 5));
     try testing.expectEqualStrings("drop item | Rope, hempen", writeDrop(&buf, .item, "Rope, hempen"));
     try testing.expectEqualStrings("hp 14", writeFact(&buf, .hp, "14"));
+    try testing.expectEqualStrings("concentrate -", writeConcentrate(&buf, ""));
+    try testing.expectEqualStrings("concentrate Bane", writeConcentrate(&buf, "Bane"));
+    try testing.expect(Keyword.hp.takesNumber());
+    try testing.expect(!Keyword.name.takesNumber());
 
     // What a writer spells, the fold reads back to the same effect.
     const line = writeDamage(&buf, 3, "test");
