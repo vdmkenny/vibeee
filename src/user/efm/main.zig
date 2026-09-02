@@ -222,13 +222,15 @@ fn enter() void {
     const pane = here();
     const entry = pane.current() orelse return;
     if (!entry.is_dir) return open(pane, entry);
+    // The parent is not a name to join onto the path but the way up.
+    if (std.mem.eql(u8, entry.name, dir.PARENT)) return leave();
 
     var buf: [160]u8 = undefined;
     const target = paths.join(pane.path(), entry.name, &buf);
     pane.setPath(target);
     pane.view = .{};
     pane.refresh();
-    ctx.damage();
+    ctx.again();
 }
 
 /// Open a file with whatever opens its sort of thing, which the launcher
@@ -263,7 +265,7 @@ fn leave() void {
     pane.setPath(buf[0..parent.len]);
     pane.view = .{};
     pane.refresh();
-    ctx.damage();
+    ctx.again();
 }
 
 const Transfer = enum { copy, move };

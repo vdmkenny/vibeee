@@ -45,17 +45,6 @@ pub const Kind = struct {
     pub fn icon(which: kind.Kind) eui.icon.Icon {
         return eui.icon.forFamily(which.family());
     }
-
-    /// Capitalised, because this is a field's value in a panel rather than a
-    /// line of a report.
-    pub fn says(which: kind.Kind) []const u8 {
-        return switch (which.family()) {
-            .directory => "Folder",
-            .picture => "Picture",
-            .text => "Text",
-            else => "File",
-        };
-    }
 };
 
 /// The facts sit in from the pane's edge, which the pane's own padding
@@ -109,6 +98,18 @@ var channels: u8 = 0;
 
 /// Why there is nothing to show, when there is nothing to show.
 var trouble: []const u8 = "";
+/// What the file's own bytes say it is, read once when it is shown. The
+/// listing goes by name, since a seek per row is what a listing must not
+/// cost; the pane beside it is about one file and can afford to look.
+var reading: kind.Reading = .{ .kind = .data };
+/// Whether what is shown differs from what was last painted. The pane is
+/// half the window, and painting it on every pass would send half the
+/// window to the screen for every move of the pointer.
+var changed = true;
+/// Where the text starts, below whatever was painted above it, kept from
+/// the pass that painted it so the text control can run on the passes that
+/// paint nothing.
+var text_top: i32 = 0;
 
 fn shownPath() []const u8 {
     return path_buf[0..path_len];
@@ -135,12 +136,38 @@ pub fn show(folder: []const u8, entry: dir.Entry) void {
     text_len = 0;
     text_doc.len = 0;
     text_view = .{ .read_only = true };
+    changed = true;
 
-    switch (Kind.of(entry).family()) {
+    reading = if (entry.is_dir) .{ .kind = .directory } else sniff(full);
+    switch (reading.kind.family()) {
         .picture => load(entry),
         .text => readText(),
         else => {},
     }
+}
+
+/// The first bytes of a file, read for what they say it is. A file that
+/// cannot be read is data, which is what nothing more can be said about.
+fn sniff(path: []const u8) kind.Reading {
+    const handle = sys.open(path, .{});
+    if (handle < 0) return .{ .kind = .data };
+    defer _ = sys.close(@intCast(handle));
+
+    var first: [kind.ENOUGH]u8 = undefined;
+    const n = sys.read(@intCast(handle), &first);
+    if (n < 0) return .{ .kind = .data };
+    return kind.fromBytes(first[0..@intCast(n)]);
+}
+
+/// The reading as a field's value: the bytes' own words, capitalised. The
+/// words come back either written into `into` or as a literal, so they are
+/// brought into `into` before the first is raised.
+fn readingSays(into: *[kind.SAYS_MAX]u8) []const u8 {
+    const said = reading.says(into);
+    const n = @min(said.len, into.len);
+    if (said.ptr != into) @memcpy(into[0..n], said[0..n]);
+    if (n > 0) into[0] = std.ascii.toUpper(into[0]);
+    return into[0..n];
 }
 
 /// Nothing is selected, or the pane was closed: let the picture go.
@@ -153,6 +180,7 @@ pub fn clear() void {
     text_len = 0;
     text_doc.len = 0;
     trouble = "";
+    changed = true;
 }
 
 fn forget() void {
@@ -235,24 +263,33 @@ fn load(entry: dir.Entry) void {
 pub fn draw(ctx: *eui.widget.Context, area: Rect, entry: ?dir.Entry) void {
     const t = theme.current();
 
-    ctx.surface.fill(area, t.surface);
-    ctx.addDamage(area);
+    // Painted when the window is, or when what is shown has changed; on any
+    // other pass the pixels stand and only the text, which is a control,
+    // runs.
+    if (ctx.damaged or changed) {
+        changed = false;
+        text_top = 0;
+        ctx.surface.fill(area, t.surface);
+        ctx.addDamage(area);
 
-    const chosen = entry orelse {
-        ctx.rowText(head(area), "Nothing selected", t.text_dim);
-        return;
-    };
+        const chosen = entry orelse {
+            ctx.rowText(head(area), "Nothing selected", t.text_dim);
+            return;
+        };
 
-    const what = Kind.of(chosen);
-    var y = drawHead(ctx, area, chosen, what);
+        const what = reading.kind;
+        var y = drawHead(ctx, area, chosen, what);
 
-    // A picture goes on the darkest ground the theme has, so its own edges
-    // are its edges and not the pane's.
-    if (what.family() == .picture) y = drawPicture(ctx, area, y);
+        // A picture goes on the darkest ground the theme has, so its own edges
+        // are its edges and not the pane's.
+        if (what.family() == .picture) y = drawPicture(ctx, area, y);
 
-    y = drawFacts(ctx, area, y, chosen, what);
+        y = drawFacts(ctx, area, y, chosen, what);
 
-    if (what.family() == .text and text_len > 0) drawText(ctx, area, y);
+        if (what.family() == .text and text_len > 0) text_top = y;
+    }
+
+    if (text_top != 0) drawText(ctx, area, text_top);
 }
 
 fn head(area: Rect) Rect {
@@ -323,7 +360,8 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
     const t = theme.current();
     var y = from;
 
-    y = eui.facts.one(ctx, inset(area), y, "Kind", Kind.says(what));
+    var kind_said: [kind.SAYS_MAX]u8 = undefined;
+    y = eui.facts.one(ctx, inset(area), y, "Kind", readingSays(&kind_said));
 
     if (!entry.is_dir) {
         var size: [16]u8 = @splat(0);
