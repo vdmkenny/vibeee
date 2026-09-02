@@ -870,6 +870,10 @@ pub fn build(b: *std.Build) void {
         .files = &.{"src/user/img/stb.c"},
         .flags = &.{
             "-std=c11",
+            // The writer packs bits with a shift the sanitiser calls
+            // undefined and every compiler carries out as meant; the machine
+            // build has no sanitiser, and the test should see what it sees.
+            "-fno-sanitize=undefined",
             "-DSTBI_ONLY_PNG",
             "-DSTBI_ONLY_JPEG",
             "-DSTBI_ONLY_BMP",

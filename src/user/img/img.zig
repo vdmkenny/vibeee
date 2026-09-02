@@ -26,14 +26,21 @@ pub const Picture = struct {
     pixels: []u32,
     width: u16,
     height: u16,
+    /// Whether the pixels are the decoder's to free, or a buffer the caller
+    /// lent, as a picture cut from another is.
+    owned: bool = true,
 
     /// Give it back. A picture is the largest thing most of these programs
     /// hold, so it is freed rather than left to the end of the process.
     pub fn deinit(self: Picture) void {
-        if (self.pixels.len == 0) return;
+        if (self.pixels.len == 0 or !self.owned) return;
         stbi_image_free(@ptrCast(self.pixels.ptr));
     }
 };
+
+/// One pixel as the surface holds it: blue in the low byte, red in the
+/// third, so the word reads as `0xRRGGBB`.
+pub const Word = packed struct(u32) { b: u8, g: u8, r: u8, x: u8 = 0 };
 
 pub const Refusal = error{
     /// Not a format this binary knows, or damaged.
@@ -109,12 +116,86 @@ fn refusalFor() Refusal {
 /// double the largest allocation in the program for the sake of a copy.
 fn pack(bytes: [*]u8, into: []u32) void {
     const Sample = packed struct(u32) { r: u8, g: u8, b: u8, x: u8 };
-    const Word = packed struct(u32) { b: u8, g: u8, r: u8, x: u8 = 0 };
     for (into, 0..) |*pixel, i| {
         const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
         pixel.* = @bitCast(Word{ .b = sample.b, .g = sample.g, .r = sample.r });
     }
 }
+
+/// A square of `side` pixels cut from the middle of a picture and shrunk to
+/// fit: the shape a headshot takes. Each pixel of the square is the mean of
+/// the block it stands for, so a photo shrunk eight times is smooth rather
+/// than a scatter of single pixels. The square lives in `into`, which the
+/// caller lends and keeps.
+pub fn squareOf(picture: Picture, side: u16, into: []u32) Picture {
+    const count = @as(usize, side) * side;
+    std.debug.assert(into.len >= count);
+    const cut: usize = @min(picture.width, picture.height);
+    const left = (picture.width - cut) / 2;
+    const top = (picture.height - cut) / 2;
+    for (0..side) |y| {
+        const y0 = top + y * cut / side;
+        const y1 = @max(top + (y + 1) * cut / side, y0 + 1);
+        for (0..side) |x| {
+            const x0 = left + x * cut / side;
+            const x1 = @max(left + (x + 1) * cut / side, x0 + 1);
+            var r: u32 = 0;
+            var g: u32 = 0;
+            var b: u32 = 0;
+            var n: u32 = 0;
+            for (y0..y1) |sy| {
+                for (x0..x1) |sx| {
+                    const word: Word = @bitCast(picture.pixels[sy * picture.width + sx]);
+                    r += word.r;
+                    g += word.g;
+                    b += word.b;
+                    n += 1;
+                }
+            }
+            into[y * side + x] = @bitCast(Word{ .r = @intCast(r / n), .g = @intCast(g / n), .b = @intCast(b / n) });
+        }
+    }
+    return .{ .pixels = into[0..count], .width = side, .height = side, .owned = false };
+}
+
+/// A picture as a JPEG file, for keeping small. `quality` runs from one to
+/// a hundred. `scratch` holds three bytes a pixel in the writer's own order,
+/// and `into` takes the file; a file that does not fit is refused whole
+/// rather than cut short.
+pub fn encodeJpeg(picture: Picture, quality: u8, scratch: []u8, into: []u8) Refusal![]const u8 {
+    const count = @as(usize, picture.width) * picture.height;
+    if (scratch.len < count * 3) return error.TooLarge;
+    for (picture.pixels[0..count], 0..) |pixel, i| {
+        const word: Word = @bitCast(pixel);
+        scratch[i * 3] = word.r;
+        scratch[i * 3 + 1] = word.g;
+        scratch[i * 3 + 2] = word.b;
+    }
+    var sink = Sink{ .into = into };
+    const clamped: c_int = @min(@max(quality, 1), 100);
+    if (stbi_write_jpg_to_func(Sink.take, &sink, picture.width, picture.height, 3, scratch.ptr, clamped) == 0) return error.Unreadable;
+    if (sink.overflowed) return error.TooLarge;
+    return into[0..sink.len];
+}
+
+/// Where the writer puts its bytes: a buffer, and the truth about whether
+/// they all fitted.
+const Sink = struct {
+    into: []u8,
+    len: usize = 0,
+    overflowed: bool = false,
+
+    fn take(context: ?*anyopaque, data: ?*anyopaque, size: c_int) callconv(.c) void {
+        const self: *Sink = @ptrCast(@alignCast(context.?));
+        const bytes = @as([*]const u8, @ptrCast(data.?))[0..@intCast(size)];
+        if (self.len + bytes.len > self.into.len) {
+            self.overflowed = true;
+            return;
+        }
+        @memcpy(self.into[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+    }
+};
 
 /// Whether a picture of this size is one this system will hold.
 ///
@@ -155,6 +236,16 @@ extern fn stbi_info_from_memory(
 
 extern fn stbi_image_free(what: ?*anyopaque) void;
 
+extern fn stbi_write_jpg_to_func(
+    func: *const fn (?*anyopaque, ?*anyopaque, c_int) callconv(.c) void,
+    context: ?*anyopaque,
+    w: c_int,
+    h: c_int,
+    comp: c_int,
+    data: [*]const u8,
+    quality: c_int,
+) c_int;
+
 /// Why the last call failed, in the decoder's own words. For a program that
 /// has something to say to somebody: "not a picture" is worth more than a
 /// window that stays empty.
@@ -188,6 +279,42 @@ test "a picture says its shape before anything is allocated for it" {
     try testing.expectEqual(@as(u16, 2), shape.width);
     try testing.expectEqual(@as(u16, 2), shape.height);
     try testing.expectEqual(@as(u8, 3), shape.channels);
+}
+
+test "a square is cut from the middle and shrunk by the mean" {
+    // Four by two: red red blue blue on the top row, green green white white
+    // below. The middle square is two by two, and shrunk to one pixel it is
+    // the mean of red, blue, green and white.
+    var pixels = [_]u32{ 0xFF0000, 0xFF0000, 0x0000FF, 0x0000FF, 0x00FF00, 0x00FF00, 0xFFFFFF, 0xFFFFFF };
+    const wide = Picture{ .pixels = &pixels, .width = 4, .height = 2, .owned = false };
+    var two: [4]u32 = undefined;
+    const square = squareOf(wide, 2, &two);
+    try testing.expectEqual(@as(u16, 2), square.width);
+    try testing.expectEqualSlices(u32, &.{ 0xFF0000, 0x0000FF, 0x00FF00, 0xFFFFFF }, square.pixels);
+    var one: [1]u32 = undefined;
+    try testing.expectEqual(@as(u32, 0x7F7F7F), squareOf(wide, 1, &one).pixels[0]);
+}
+
+test "a picture written as JPEG reads back as the picture" {
+    var pixels: [16 * 16]u32 = @splat(0x2F6FE0);
+    const flat = Picture{ .pixels = &pixels, .width = 16, .height = 16, .owned = false };
+    var scratch: [16 * 16 * 3]u8 = undefined;
+    var file: [4096]u8 = undefined;
+    const jpeg = try encodeJpeg(flat, 85, &scratch, &file);
+    try testing.expect(jpeg.len > 0);
+    try testing.expectEqualSlices(u8, &.{ 0xFF, 0xD8 }, jpeg[0..2]);
+
+    const back = try decode(jpeg);
+    defer back.deinit();
+    try testing.expectEqual(@as(u16, 16), back.width);
+    const word: Word = @bitCast(back.pixels[5 * 16 + 5]);
+    try testing.expect(@abs(@as(i32, word.r) - 0x2F) < 12);
+    try testing.expect(@abs(@as(i32, word.g) - 0x6F) < 12);
+    try testing.expect(@abs(@as(i32, word.b) - 0xE0) < 12);
+
+    // A file that does not fit is refused whole.
+    var tiny: [8]u8 = undefined;
+    try testing.expectError(error.TooLarge, encodeJpeg(flat, 85, &scratch, &tiny));
 }
 
 test "the pixels come back as the surface holds them" {

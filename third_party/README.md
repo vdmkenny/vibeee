@@ -70,6 +70,11 @@ The blocker the design recorded is gone. It needed `malloc`, `memcpy`,
 `assert` and a freestanding C toolchain, and `eeelibc` provides all of them
 for uACPI and lwIP already.
 
+Beside it, `stb_image_write.h` from the same collection, v1.16, pinned at
+`1ee679ca2ef753a528db5ba6801e1067b40481b8`, for the one thing written back:
+a portrait shrunk small and kept as JPEG inside a character journal. The
+wrapper calls only its JPEG path.
+
 Which formats a binary carries is a build decision, one `-DSTBI_ONLY_` flag
 each: the viewer opens photographs, and a program that only needs a wallpaper
 should not carry a JPEG decoder to do it.
