@@ -62,6 +62,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try text.appendSlice(arena, "\n#endif /* _VIBEEE_KEYS_H */\n");
+    if (std.fs.path.dirname(args[1])) |parent| {
+        try std.Io.Dir.cwd().createDirPath(io, parent);
+    }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args[1], .data = text.items });
 }
 
