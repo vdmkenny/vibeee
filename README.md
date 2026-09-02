@@ -38,20 +38,21 @@ Set `QEMU_AUDIODEV=none` to keep the emulated audio controller but disable host 
 ## Minimum System Requirements
 
 The current boot image is **64 MiB**. The core system uses **about 7 MiB of RAM** at
-the shell in the 512 MiB QEMU profile; the desktop and applications need additional
-memory for their surfaces and working data.
+the shell in the 512 MiB QEMU profile. A desktop session with several built-in
+applications, including Hero across multiple workspaces, has measured **about 19 MiB**.
 
 | Component | Minimum | Validated / recommended |
 |---|---|---|
 | CPU | 32-bit x86 with SSE2, APIC, TSC, MSRs, and legacy BIOS; AMD Athlon 64 / Mobile Athlon 64 class or newer | 630 MHz Pentium M / Celeron M class or faster |
-| RAM | 128 MiB for experimental basic use | 512 MiB |
+| RAM | 32 MiB for experimental basic desktop use | 512 MiB |
 | Storage | 64 MiB bootable SD, USB, or ATA media | 128 MiB+ to leave room for `/home` |
 | Graphics | VGA-class firmware framebuffer | Intel GMA 900/950 for native modesetting |
 
-The 701 is the verified hardware baseline. AMD Athlon 64-class systems meet the expected
-CPU feature floor but are not hardware-validated. Comparable BIOS-era, single-core x86
-netbooks are encouraged as test targets; SYSENTER, PAE, NX, SSE3, 64-bit mode, and
-multiple CPU cores are not required.
+The 32 MiB figure starts the desktop in QEMU but leaves little application headroom; it
+is not a general-use recommendation. The 701 is the verified hardware baseline. AMD
+Athlon 64-class systems meet the expected CPU feature floor but are not hardware-
+validated. Comparable BIOS-era, single-core x86 netbooks are encouraged as test targets;
+SYSENTER, PAE, NX, SSE3, 64-bit mode, and multiple CPU cores are not required.
 
 ## Included System
 
