@@ -100,9 +100,9 @@ pub fn run(ctx: *widget.Context) ?usize {
     const where = area(ctx.surface);
     var chosen: ?usize = null;
 
-    if (ctx.pointer_x != 0 or ctx.pointer_y != 0) {
-        menu.hover(where, items[0..count], ctx.pointer_x, ctx.pointer_y);
-    }
+    // The highlight follows the pointer while it moves and the arrow keys
+    // while it rests, as the menu bar's dropdowns do.
+    if (ctx.pointer_moved) menu.hover(where, items[0..count], ctx.pointer_x, ctx.pointer_y);
 
     if (ctx.pressedThisPass() or ctx.rightPressedThisPass()) {
         chosen = menu.itemAt(where, items[0..count], ctx.pointer_x, ctx.pointer_y);

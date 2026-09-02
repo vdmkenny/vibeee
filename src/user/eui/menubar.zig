@@ -62,6 +62,9 @@ pub const State = struct {
     /// Set while the bar has keyboard focus, so arrows walk the menus rather
     /// than reaching whatever is below.
     focused: bool = false,
+    /// Where the dropdown was painted last pass, so the ground under it is
+    /// put back when it moves along the strip or goes.
+    shown: ?Rect = null,
 };
 
 /// Draw the bar and run whatever is open. Returns the id chosen this pass.
@@ -74,6 +77,8 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
     ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
 
     var chosen: ?u16 = null;
+    const before = state.shown;
+    state.shown = null;
     var x = area.x + t.padding;
     var storage: [MAX_ITEMS]widget.MenuItem = undefined;
     // The letters show while the key that uses them is held, and not
@@ -103,6 +108,12 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
         if (is_open) chosen = dropdown(ctx, title, state, menu);
         x += width;
     }
+
+    // The ground under a dropdown that moved or went is stale until a full
+    // pass puts it back, so one is asked for whenever the dropdown is not
+    // where it was: opened, switched along the strip, chosen from, or closed
+    // by a key.
+    if (!std.meta.eql(before, state.shown)) ctx.damage();
 
     return chosen;
 }
@@ -303,12 +314,21 @@ fn dropdown(ctx: *widget.Context, title: Rect, state: *State, menu: Menu) ?u16 {
     area.x = title.x;
     area.y = title.bottom();
 
+    // The highlight follows the pointer while it moves and the arrow keys
+    // while it rests: a highlight that sat still under a moving pointer
+    // would look like a menu that had stopped responding, and one that
+    // snapped back under a resting pointer could not be driven by keyboard.
+    if (ctx.pointer_moved) state.list.hover(area, rows, ctx.pointer_x, ctx.pointer_y);
     state.list.paint(ctx.surface, area, rows);
     ctx.addDamage(area);
+    state.shown = area;
 
     if (ctx.pressedThisPass()) {
-        // A click outside dismisses rather than doing two things at once,
-        // which is what makes an open menu modal.
+        // The click belongs to the menu, on a row or off it: whatever lies
+        // under the dropdown must not take it as well, and a click outside
+        // dismisses rather than doing two things at once. That is what makes
+        // an open menu modal.
+        ctx.pressed = null;
         const row = widget.Menu.rowAt(area, rows, ctx.pointer_x, ctx.pointer_y) orelse {
             if (!hovering(ctx, title)) close(state);
             return null;

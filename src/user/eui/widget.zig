@@ -150,6 +150,11 @@ pub const Context = struct {
     focus: ?usize = null,
     /// Set when focus moved this pass, so the control losing it repaints too.
     focus_moved: bool = false,
+    /// Whether the pointer is somewhere else than it was last pass. What
+    /// follows the pointer follows it when it moves and leaves the keyboard
+    /// alone when it rests, which is the difference between a highlight that
+    /// tracks a hand and one that snaps back under a resting one.
+    pointer_moved: bool = false,
 
     /// Everything must redraw this pass.
     damaged: bool = true,
@@ -200,6 +205,7 @@ pub const Context = struct {
 
         self.previous = self.buttons;
         self.buttons = buttons;
+        self.pointer_moved = x != self.pointer_x or y != self.pointer_y;
         self.pointer_x = x;
         self.pointer_y = y;
 
