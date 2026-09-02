@@ -355,6 +355,28 @@ pub const Builder = struct {
     /// the figure is small enough for it to mean something: the difference
     /// between 4.0M and 4.9M is a decision somebody might make, and the one
     /// between 379K and 380K is not.
+    /// A number with its sign, `+7` or `-2`, the way a bonus is written.
+    pub fn signed(self: *Builder, value: isize) void {
+        self.byte(if (value < 0) '-' else '+');
+        self.number(@abs(value));
+    }
+
+    /// A number that may be negative, with a sign only when it is.
+    pub fn integer(self: *Builder, value: isize) void {
+        if (value < 0) self.byte('-');
+        self.number(@abs(value));
+    }
+
+    /// A count of hundredths as a number with two places, `5.00`: what a
+    /// weight in pounds is kept as, so half a pound is exact.
+    pub fn hundredths(self: *Builder, value: usize) void {
+        self.number(value / 100);
+        self.byte('.');
+        const rest = value % 100;
+        if (rest < 10) self.byte('0');
+        self.number(rest);
+    }
+
     pub fn bytes(self: *Builder, value: usize) void {
         const K = 1024;
         if (value < K) return self.number(value);
@@ -659,6 +681,31 @@ test "a word is what somebody means by one" {
     try std.testing.expect(!inWord('-'));
     try std.testing.expect(!inWord('/'));
     try std.testing.expect(!inWord('.'));
+}
+
+test "a bonus carries its sign, a total only a minus, and hundredths two places" {
+    var buf: [32]u8 = undefined;
+    var line = Builder{ .buf = &buf };
+    line.signed(7);
+    line.byte(' ');
+    line.signed(-2);
+    line.byte(' ');
+    line.signed(0);
+    try std.testing.expectEqualStrings("+7 -2 +0", line.done());
+
+    line = Builder{ .buf = &buf };
+    line.integer(-3);
+    line.byte(' ');
+    line.integer(18);
+    try std.testing.expectEqualStrings("-3 18", line.done());
+
+    line = Builder{ .buf = &buf };
+    line.hundredths(500);
+    line.byte(' ');
+    line.hundredths(1005);
+    line.byte(' ');
+    line.hundredths(7);
+    try std.testing.expectEqualStrings("5.00 10.05 0.07", line.done());
 }
 
 test "the word before the cursor crosses what is between them first" {

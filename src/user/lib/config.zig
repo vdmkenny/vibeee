@@ -11,7 +11,7 @@
 
 const std = @import("std");
 const str = @import("lib").str;
-const sys = @import("sys");
+const file = @import("file.zig");
 
 /// What became of one `key = value`.
 ///
@@ -186,14 +186,10 @@ pub fn pair(line: []const u8) ?struct { key: []const u8, value: []const u8 } {
 /// Missing or unreadable is not an error: a program should start with its
 /// defaults rather than refuse to run because nobody wrote a config file.
 pub fn load(path: []const u8, target: anytype, buffer: []u8) bool {
-    const handle = sys.open(path, .{});
-    if (handle < 0) return false;
-    defer _ = sys.close(@intCast(handle));
+    const n = file.readWhole(path, buffer) orelse return false;
+    if (n == 0) return false;
 
-    const n = sys.read(@intCast(handle), buffer);
-    if (n <= 0) return false;
-
-    var lines = str.lines(buffer[0..@intCast(n)]);
+    var lines = str.lines(buffer[0..n]);
     while (lines.next()) |line| {
         if (pair(line)) |kv| _ = assign(target, kv.key, kv.value);
     }

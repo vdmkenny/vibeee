@@ -20,6 +20,8 @@ const proto = @import("proto");
 const sys = @import("sys");
 const img = @import("img");
 const env = @import("ulib").env;
+const file = @import("ulib").file;
+const paths = @import("ulib").paths;
 const out = @import("ulib").out;
 const str = @import("lib").str;
 const civil = @import("lib").civil;
@@ -578,13 +580,8 @@ fn setPath(value: []const u8) void {
     file_len = n;
 }
 
-/// Where the last directory ends in `full`, or zero for a bare name.
-fn afterSlash(full: []const u8) usize {
-    return if (std.mem.lastIndexOfScalar(u8, full, '/')) |at| at + 1 else 0;
-}
-
 fn baseName() []const u8 {
-    return path()[afterSlash(path())..];
+    return paths.base(path());
 }
 
 // ---------------------------------------------------------------------------
@@ -720,27 +717,12 @@ fn loadHeadshot() void {
     if (std.mem.eql(u8, full, headshot_of[0..headshot_of_len])) return;
 
     forgetHeadshot();
-    const read = readWhole(full, &picture_file) orelse return;
+    const read = file.readWhole(full, &picture_file) orelse return;
     headshot = img.decode(picture_file[0..read]) catch null;
     if (headshot != null) {
         headshot_of_len = @min(full.len, headshot_of.len);
         @memcpy(headshot_of[0..headshot_of_len], full[0..headshot_of_len]);
     }
-}
-
-/// A file read whole into `into`: how much, or null for a file that is not
-/// there.
-fn readWhole(full: []const u8, into: []u8) ?usize {
-    const handle = sys.open(full, .{});
-    if (handle < 0) return null;
-    defer _ = sys.close(@intCast(handle));
-    var read: usize = 0;
-    while (read < into.len) {
-        const n = sys.read(@intCast(handle), into[read..]);
-        if (n <= 0) break;
-        read += @intCast(n);
-    }
-    return read;
 }
 
 /// Take a picture into the journal: read the file, decode it, cut the
@@ -755,7 +737,7 @@ fn importPortrait(name: []const u8) void {
     }
     var full_buf: [192]u8 = @splat(0);
     const full = resolve(name, &full_buf);
-    const read = readWhole(full, &picture_file) orelse {
+    const read = file.readWhole(full, &picture_file) orelse {
         say("No such picture.");
         return;
     };
@@ -793,8 +775,7 @@ fn resolve(picture: []const u8, buf: []u8) []const u8 {
         @memcpy(buf[0..n], picture[0..n]);
         return buf[0..n];
     }
-    const full = path();
-    return std.fmt.bufPrint(buf, "{s}{s}", .{ full[0..afterSlash(full)], picture }) catch picture;
+    return paths.join(paths.parent(path()), picture, buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,7 +1066,7 @@ fn askRoll(what: RollWhat) void {
         .skill => |s| {
             sub.text(s.ability().word());
             sub.byte(' ');
-            signedTight(&sub, sheet.modifier(s.ability()));
+            sub.signed(sheet.modifier(s.ability()));
             if (sheet.skill_expert.contains(s)) {
                 sub.text(" \u{b7} expert +");
                 sub.number(@intCast(sheet.proficiency() * 2));
@@ -1097,7 +1078,7 @@ fn askRoll(what: RollWhat) void {
         .save => |a| {
             sub.text(a.word());
             sub.byte(' ');
-            signedTight(&sub, sheet.modifier(a));
+            sub.signed(sheet.modifier(a));
             if (sheet.save_prof.contains(a)) {
                 sub.text(" \u{b7} proficient +");
                 sub.number(@intCast(sheet.proficiency()));
@@ -1141,7 +1122,7 @@ fn askRoll(what: RollWhat) void {
     rolling = what;
     if (what.isTest() and sheet.exhaustion > 0) {
         sub.text(" \u{b7} exhaustion ");
-        signedTight(&sub, sheet.exhaustionPenalty());
+        sub.signed(sheet.exhaustionPenalty());
     }
     if (what.hindrance()) |name| {
         setup.mode = .disadvantage;
@@ -1195,24 +1176,16 @@ fn markDeathSave(fell: u8, total: i32) void {
     say(said);
 }
 
+/// The attack line's bonus, `+4`, as a number: nothing where it is not one.
 fn attackBonus(index: usize) i16 {
     if (index >= sheet.attacks.len) return 0;
-    const hit = sheet.attacks.slice()[index].hit;
-    const digits = if (hit.len > 0 and (hit[0] == '+' or hit[0] == '-')) hit[1..] else hit;
-    const value = std.fmt.parseInt(i16, digits, 10) catch 0;
-    return if (hit.len > 0 and hit[0] == '-') -value else value;
+    return std.fmt.parseInt(i16, sheet.attacks.slice()[index].hit, 10) catch 0;
 }
 
-/// `+7` or `-2`, as a bonus is written.
-fn signedTight(line: *str.Builder, value: i16) void {
-    line.byte(if (value < 0) '-' else '+');
-    line.number(@abs(value));
-}
-
-/// The same bonus into a buffer, for a table cell or a tile.
+/// A bonus into a buffer, `+7` or `-2`, for a table cell or a tile.
 fn signedText(buf: []u8, value: anytype) []const u8 {
     var line = str.Builder{ .buf = buf };
-    signedTight(&line, @intCast(value));
+    line.signed(value);
     return line.done();
 }
 
@@ -1468,11 +1441,13 @@ fn useOne() void {
         return;
     }
     const it = sheet.items.slice()[@min(items_table.selected, sheet.items.len - 1)];
-    var weight: [16]u8 = @splat(0);
-    const line = std.fmt.bufPrint(&question_buffer, "{s} | {d} | {s}", .{
-        it.name, it.quantity - 1, hundredths(&weight, it.weight_cp),
-    }) catch return;
-    append(hero.writeFact(&line_buffer, .item, line));
+    var line = str.Builder{ .buf = &question_buffer };
+    line.text(it.name);
+    line.text(" | ");
+    line.number(it.quantity - 1);
+    line.text(" | ");
+    line.hundredths(it.weight_cp);
+    append(hero.writeFact(&line_buffer, .item, line.done()));
 }
 
 fn useInnate() void {
@@ -2270,7 +2245,7 @@ fn drawSpells(area: Rect) void {
     line.text(" \u{b7} DC ");
     line.number(@intCast(sheet.spellSaveDc()));
     line.text(" \u{b7} attack ");
-    signedTight(&line, sheet.spellAttack());
+    line.signed(sheet.spellAttack());
     surface.text(area.x + 18, area.y + 6, line.done(), t.text);
     addButton(.{ .x = area.x, .y = area.y, .w = area.w, .h = t.control_height }, .spell);
 
@@ -2556,14 +2531,11 @@ fn ofMax(buf: []u8, max: u16) []const u8 {
     return std.fmt.bufPrint(buf, "of {d}", .{max}) catch "";
 }
 
-/// A weight in hundredths of a pound, as `5.00`.
-fn hundredths(buf: []u8, value: u32) []const u8 {
-    return std.fmt.bufPrint(buf, "{d}.{d:0>2}", .{ value / 100, value % 100 }) catch "";
-}
-
 fn pounds(buf: []u8, value: u32) []const u8 {
-    var plain: [16]u8 = @splat(0);
-    return std.fmt.bufPrint(buf, "{s} lb", .{hundredths(&plain, value)}) catch "";
+    var line = str.Builder{ .buf = buf };
+    line.hundredths(value);
+    line.text(" lb");
+    return line.done();
 }
 
 fn orDash(text: []const u8) []const u8 {

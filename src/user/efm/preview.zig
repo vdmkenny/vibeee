@@ -24,7 +24,7 @@ const exif = @import("lib").exif;
 const heap = @import("ulib").heap;
 const paths = @import("ulib").paths;
 const str = @import("lib").str;
-const sys = @import("sys");
+const file = @import("ulib").file;
 const time = @import("ulib").time;
 
 const Rect = eui.Rect;
@@ -149,14 +149,9 @@ pub fn show(folder: []const u8, entry: dir.Entry) void {
 /// The first bytes of a file, read for what they say it is. A file that
 /// cannot be read is data, which is what nothing more can be said about.
 fn sniff(path: []const u8) kind.Reading {
-    const handle = sys.open(path, .{});
-    if (handle < 0) return .{ .kind = .data };
-    defer _ = sys.close(@intCast(handle));
-
     var first: [kind.ENOUGH]u8 = undefined;
-    const n = sys.read(@intCast(handle), &first);
-    if (n < 0) return .{ .kind = .data };
-    return kind.fromBytes(first[0..@intCast(n)]);
+    const n = file.readWhole(path, &first) orelse return .{ .kind = .data };
+    return kind.fromBytes(first[0..n]);
 }
 
 /// The reading as a field's value: the bytes' own words, capitalised. The
@@ -194,12 +189,7 @@ fn forget() void {
 
 /// Read the file into `into`, as much of it as fits.
 fn read(into: []u8) ?usize {
-    const handle = sys.open(shownPath(), .{});
-    if (handle < 0) return null;
-    defer _ = sys.close(@intCast(handle));
-
-    const got = sys.read(@intCast(handle), into);
-    return if (got < 0) null else @intCast(got);
+    return file.readWhole(shownPath(), into);
 }
 
 fn readText() void {

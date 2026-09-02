@@ -453,7 +453,9 @@ pub const Window = struct {
         var sum_buf: [64]u8 = @splat(0);
         if (self.outcome) |o| {
             var total_buf: [8]u8 = @splat(0);
-            surface.title(x, area.y + Surface.textHeight(), signed(&total_buf, o.total, false), t.text);
+            var total = str.Builder{ .buf = &total_buf };
+            total.integer(o.total);
+            surface.title(x, area.y + Surface.textHeight(), total.done(), t.text);
             surface.text(x, area.y + Surface.textHeight() + Surface.titleHeight(), self.sumLine(&sum_buf, o), t.text_dim);
         } else {
             surface.title(x, area.y + Surface.textHeight(), "-", t.text_dim);
@@ -479,14 +481,6 @@ pub const Window = struct {
         return line.done();
     }
 };
-
-/// A number with its sign when asked, or plainly.
-fn signed(buf: []u8, value: i32, always: bool) []const u8 {
-    var line = str.Builder{ .buf = buf };
-    if (value < 0) line.byte('-') else if (always) line.byte('+');
-    line.number(@abs(value));
-    return line.done();
-}
 
 /// Copy a caller's words into storage the window owns, since the caller's
 /// buffer is rewritten by the next question.

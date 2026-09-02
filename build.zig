@@ -535,6 +535,11 @@ pub fn build(b: *std.Build) void {
                     .root_source_file = b.path("apps/hero/journal.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
+                    .imports = &.{.{ .name = "lib", .module = b.createModule(.{
+                        .root_source_file = b.path("src/lib/lib.zig"),
+                        .target = b.graph.host,
+                        .optimize = .Debug,
+                    }) }},
                 }),
             });
             const hero_test_step = b.step("test-hero", "Test the Hero character-journal model on the host");

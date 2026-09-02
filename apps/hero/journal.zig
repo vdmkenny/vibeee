@@ -32,41 +32,11 @@ pub const MAX_FEATURES = 16;
 pub const MAX_CONDITIONS = 12;
 pub const SPELL_LEVELS = 9;
 
-/// A fixed array and how much of it is used: the collection pattern this
-/// system uses everywhere, so a sheet holds its attacks and spells the way
-/// init holds its services. Past the budget a value is dropped rather than
-/// grown into memory a character journal has no business taking.
-fn Bounded(comptime T: type, comptime capacity: usize) type {
-    return struct {
-        items: [capacity]T = undefined,
-        len: usize = 0,
-
-        const Self = @This();
-
-        pub fn slice(self: *const Self) []const T {
-            return self.items[0..self.len];
-        }
-
-        pub fn append(self: *Self, value: T) void {
-            if (self.len >= capacity) return;
-            self.items[self.len] = value;
-            self.len += 1;
-        }
-
-        pub fn swapRemove(self: *Self, index: usize) void {
-            if (index >= self.len) return;
-            self.len -= 1;
-            self.items[index] = self.items[self.len];
-        }
-
-        /// Take one out and close the gap, for a list whose order is read.
-        pub fn remove(self: *Self, index: usize) void {
-            if (index >= self.len) return;
-            std.mem.copyForwards(T, self.items[index .. self.len - 1], self.items[index + 1 .. self.len]);
-            self.len -= 1;
-        }
-    };
-}
+/// The system's own bounded list, which is what a sheet holds its attacks
+/// and spells in as init holds its services. Past the budget a value is
+/// dropped rather than grown into memory a character journal has no
+/// business taking, which is what the `catch {}` at each append says.
+const Bounded = @import("lib").bounded.Bounded;
 
 /// Where a list of named things has one by that name, in either case.
 fn indexNamed(list: anytype, name: []const u8) ?usize {
@@ -81,9 +51,9 @@ fn indexNamed(list: anytype, name: []const u8) ?usize {
 /// the end otherwise.
 fn place(list: anytype, value: anytype) void {
     if (indexNamed(list, value.name)) |i| {
-        list.items[i] = value;
+        list.mutable()[i] = value;
     } else {
-        list.append(value);
+        list.append(value) catch {};
     }
 }
 
@@ -738,7 +708,7 @@ fn setCondition(sheet: *Sheet, rest: []const u8) void {
         return;
     }
     if (sheet.hasCondition(name)) return;
-    sheet.conditions.append(name);
+    sheet.conditions.append(name) catch {};
 }
 
 fn addAttack(sheet: *Sheet, rest: []const u8) void {

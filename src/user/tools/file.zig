@@ -5,8 +5,8 @@
 //! it, which is also the only way to tell a program built for this machine
 //! from one built for another.
 
-const sys = @import("sys");
 const dir = @import("ulib").dir;
+const file = @import("ulib").file;
 const kind = @import("lib").kind;
 const out = @import("ulib").out;
 
@@ -35,18 +35,14 @@ pub fn run(args: []const []const u8) void {
 fn describe(path: []const u8) void {
     if (dir.isDirectory(path)) return out.text(kind.Kind.directory.says());
 
-    const handle = sys.open(path, .{});
-    if (handle < 0) {
+    const n = file.readWhole(path, &head) orelse {
         out.text("cannot open");
         return;
-    }
-    defer _ = sys.close(@intCast(handle));
-
-    const n = sys.read(@intCast(handle), &head);
-    if (n <= 0) {
+    };
+    if (n == 0) {
         out.text(kind.Kind.empty.says());
         return;
     }
     var room: [kind.SAYS_MAX]u8 = undefined;
-    out.text(kind.fromBytes(head[0..@intCast(n)]).says(&room));
+    out.text(kind.fromBytes(head[0..n]).says(&room));
 }

@@ -57,6 +57,21 @@ pub fn Bounded(comptime T: type, comptime capacity: usize) type {
         pub fn clear(self: *Self) void {
             self.len = 0;
         }
+
+        /// Take one out and close the gap, for a list whose order is read.
+        pub fn remove(self: *Self, index: usize) void {
+            if (index >= self.len) return;
+            std.mem.copyForwards(T, self.items[index .. self.len - 1], self.items[index + 1 .. self.len]);
+            self.len -= 1;
+        }
+
+        /// Take one out and put the last in its place, for a list whose
+        /// order means nothing: cheaper than closing the gap.
+        pub fn swapRemove(self: *Self, index: usize) void {
+            if (index >= self.len) return;
+            self.len -= 1;
+            self.items[index] = self.items[self.len];
+        }
     };
 }
 
@@ -79,6 +94,19 @@ test "clear keeps the capacity and drops the contents" {
     try std.testing.expectEqual(@as(usize, 0), list.slice().len);
     try list.append(9);
     try std.testing.expectEqual(@as(?u32, 9), list.at(0));
+}
+
+test "removing keeps the order, or fills the gap with the last" {
+    var list = Bounded(u8, 4){};
+    for ([_]u8{ 1, 2, 3, 4 }) |v| try list.append(v);
+
+    list.remove(1);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 3, 4 }, list.slice());
+    list.swapRemove(0);
+    try std.testing.expectEqualSlices(u8, &.{ 4, 3 }, list.slice());
+    // Past the end is nothing to take out.
+    list.remove(5);
+    try std.testing.expectEqual(@as(usize, 2), list.slice().len);
 }
 
 test "indexing past the end answers null rather than reading past it" {

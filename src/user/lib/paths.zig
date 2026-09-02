@@ -5,9 +5,17 @@
 //! touches the filesystem: whether a path names anything is a question for
 //! whoever opens it.
 
+const std = @import("std");
 const str = @import("lib").str;
 
 pub const SEPARATOR = '/';
+
+/// Where something is: the path without its last component, and the root
+/// for what is directly under it. A trailing slash is ignored, as `base`
+/// ignores it, so `parent("/home/pictures/")` is `/home`.
+pub fn parent(path: []const u8) []const u8 {
+    return std.fs.path.dirnamePosix(path) orelse "/";
+}
 
 /// The last component: what something is called, without where it is.
 ///
@@ -38,4 +46,12 @@ pub fn join(dir: []const u8, name: []const u8, buf: []u8) []const u8 {
     built.text(name[from..]);
 
     return built.done();
+}
+
+test "the parent is the path without its last component, and the root has itself" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("/home", parent("/home/pictures"));
+    try testing.expectEqualStrings("/home", parent("/home/pictures/"));
+    try testing.expectEqualStrings("/", parent("/home"));
+    try testing.expectEqualStrings("/", parent("/"));
 }

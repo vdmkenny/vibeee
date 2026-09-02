@@ -251,18 +251,11 @@ fn open(pane: *Pane, entry: dir.Entry) void {
 /// Up one, which is what backspace means everywhere else a path is shown.
 fn leave() void {
     const pane = here();
-    const current = pane.path();
-    if (current.len <= 1) return;
+    if (pane.path().len <= 1) return;
 
-    var end = current.len;
-    while (end > 1 and current[end - 1] != '/') end -= 1;
-    if (end > 1) end -= 1;
-
-    var buf: [128]u8 = undefined;
-    const parent = current[0..@max(end, 1)];
-    @memcpy(buf[0..parent.len], parent);
-
-    pane.setPath(buf[0..parent.len]);
+    // The parent is a prefix of the path, so the path is cut rather than
+    // copied over itself.
+    pane.path_len = paths.parent(pane.path()).len;
     pane.view = .{};
     pane.refresh();
     ctx.again();

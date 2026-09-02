@@ -9,20 +9,16 @@
 const kind = @import("lib").kind;
 const openers = @import("lib").openers;
 const paths = @import("ulib").paths;
+const file = @import("ulib").file;
 const settings = @import("settings.zig");
 const sys = @import("sys");
 
 /// What the file is, from its first bytes. A file that cannot be opened or
 /// read reads as shapeless, which opens in nothing.
 pub fn readKind(path: []const u8) kind.Reading {
-    const handle = sys.open(path, .{});
-    if (handle < 0) return .{ .kind = .data };
-    defer _ = sys.close(@intCast(handle));
-
     var head: [kind.ENOUGH]u8 = undefined;
-    const n = sys.read(@intCast(handle), &head);
-    if (n <= 0) return .{ .kind = .empty };
-    return kind.fromBytes(head[0..@intCast(n)]);
+    const n = file.readWhole(path, &head) orelse return .{ .kind = .data };
+    return kind.fromBytes(head[0..n]);
 }
 
 /// Whoever the settings name for this family, or nobody.
