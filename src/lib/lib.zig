@@ -25,6 +25,7 @@ pub const logo = @import("logo.zig");
 pub const ipv4 = @import("ipv4.zig");
 pub const kind = @import("kind.zig");
 pub const mac = @import("mac.zig");
+pub const mlme = @import("mlme.zig");
 pub const mmio = @import("mmio.zig");
 pub const pci = @import("pci.zig");
 pub const fifo = @import("fifo.zig");
@@ -54,6 +55,7 @@ pub const text = @import("text.zig");
 pub const usb = @import("usb.zig");
 pub const volume = @import("volume.zig");
 pub const wifi = @import("wifi.zig");
+pub const wpa2 = @import("wpa2.zig");
 pub const style = @import("style.zig");
 pub const syscalls = @import("syscalls.zig");
 

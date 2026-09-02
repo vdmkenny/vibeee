@@ -335,6 +335,185 @@ pub fn fromEthernet(
 }
 
 // ---------------------------------------------------------------------------
+// Management frames: what a beacon and its kin carry
+// ---------------------------------------------------------------------------
+
+/// The fixed part of a beacon or probe response: when it was sent, how
+/// often, and what the cell offers.
+pub const Beacon = struct {
+    pub const FIXED = 12;
+
+    timestamp: u64,
+    /// Beacon interval in time units of 1024 microseconds.
+    interval: u16,
+    capability: Capability,
+    /// The information elements that follow, in the frame they came in.
+    elements: []const u8,
+
+    pub const Capability = packed struct(u16) {
+        ess: bool = false,
+        ibss: bool = false,
+        _2: u2 = 0,
+        privacy: bool = false,
+        short_preamble: bool = false,
+        _6: u4 = 0,
+        short_slot_time: bool = false,
+        _11: u5 = 0,
+    };
+
+    pub fn parse(body: []const u8) ?Beacon {
+        if (body.len < FIXED) return null;
+        return .{
+            .timestamp = std.mem.readInt(u64, body[0..8], .little),
+            .interval = std.mem.readInt(u16, body[8..10], .little),
+            .capability = @bitCast(std.mem.readInt(u16, body[10..12], .little)),
+            .elements = body[FIXED..],
+        };
+    }
+};
+
+/// The information elements this system reads or writes.
+pub const ElementId = enum(u8) {
+    ssid = 0,
+    supported_rates = 1,
+    ds_parameter = 3,
+    tim = 5,
+    country = 7,
+    erp = 42,
+    ht_capabilities = 45,
+    rsn = 48,
+    extended_rates = 50,
+    ht_operation = 61,
+    vendor = 221,
+    _,
+};
+
+/// One information element: its identity and its bytes.
+pub const Element = struct {
+    id: ElementId,
+    payload: []const u8,
+};
+
+/// Walk the information elements of a management frame's body. An element
+/// whose length runs past the frame ends the walk, since nothing after it
+/// can be trusted to start where it claims.
+pub const Elements = struct {
+    rest: []const u8,
+
+    pub fn next(self: *Elements) ?Element {
+        if (self.rest.len < 2) return null;
+        const len: usize = self.rest[1];
+        if (self.rest.len < 2 + len) {
+            self.rest = &.{};
+            return null;
+        }
+        const found = Element{ .id = @enumFromInt(self.rest[0]), .payload = self.rest[2 .. 2 + len] };
+        self.rest = self.rest[2 + len ..];
+        return found;
+    }
+};
+
+pub fn elements(body: []const u8) Elements {
+    return .{ .rest = body };
+}
+
+/// The first element of a kind, if the body has one.
+pub fn element(body: []const u8, id: ElementId) ?[]const u8 {
+    var it = elements(body);
+    while (it.next()) |found| {
+        if (found.id == id) return found.payload;
+    }
+    return null;
+}
+
+/// Write one element: its identity, its length, its bytes.
+pub fn writeElement(into: []u8, id: ElementId, payload: []const u8) ?usize {
+    if (payload.len > std.math.maxInt(u8) or into.len < 2 + payload.len) return null;
+    into[0] = @intFromEnum(id);
+    into[1] = @intCast(payload.len);
+    @memcpy(into[2..][0..payload.len], payload);
+    return 2 + payload.len;
+}
+
+/// The robust security element: which ciphers and which key management a
+/// cell uses. Only the one combination this system joins with is read
+/// out in full; anything else is a cell it does not join.
+pub const Rsn = struct {
+    /// The cipher and key-management suites, under the standard's prefix.
+    pub const Suite = enum(u8) {
+        use_group = 0,
+        wep40 = 1,
+        tkip = 2,
+        ccmp = 4,
+        wep104 = 5,
+        _,
+    };
+    pub const Akm = enum(u8) {
+        eap = 1,
+        psk = 2,
+        sae = 8,
+        _,
+    };
+    const OUI = [_]u8{ 0x00, 0x0F, 0xAC };
+    const VERSION: u16 = 1;
+
+    group: Suite,
+    pairwise_ccmp: bool,
+    psk: bool,
+    /// Simultaneous authentication of equals: the key management WPA3
+    /// personal uses. Read only so a scan can name such a network; this
+    /// system does not join one.
+    sae: bool,
+
+    /// The element this station offers: version one, CCMP for the group
+    /// and the pair, a pre-shared key, no capabilities.
+    pub const psk_ccmp = [_]u8{ 0x01, 0x00 } ++ OUI ++ [_]u8{@intFromEnum(Suite.ccmp)} ++
+        [_]u8{ 0x01, 0x00 } ++ OUI ++ [_]u8{@intFromEnum(Suite.ccmp)} ++
+        [_]u8{ 0x01, 0x00 } ++ OUI ++ [_]u8{@intFromEnum(Akm.psk)} ++
+        [_]u8{ 0x00, 0x00 };
+
+    pub fn parse(payload: []const u8) ?Rsn {
+        if (payload.len < 2 or std.mem.readInt(u16, payload[0..2], .little) != VERSION) return null;
+        var at: usize = 2;
+        // Each part is optional after the one before: a cell may say only
+        // its version and mean the defaults for the rest.
+        var out = Rsn{ .group = .ccmp, .pairwise_ccmp = true, .psk = false, .sae = false };
+        if (payload.len < at + 4) return out;
+        out.group = suiteOf(payload[at..][0..4]) orelse return null;
+        at += 4;
+
+        out.pairwise_ccmp = false;
+        if (payload.len < at + 2) return out;
+        const pairwise = std.mem.readInt(u16, payload[at..][0..2], .little);
+        at += 2;
+        for (0..pairwise) |_| {
+            if (payload.len < at + 4) return null;
+            if (suiteOf(payload[at..][0..4]) == .ccmp) out.pairwise_ccmp = true;
+            at += 4;
+        }
+
+        if (payload.len < at + 2) return out;
+        const akms = std.mem.readInt(u16, payload[at..][0..2], .little);
+        at += 2;
+        for (0..akms) |_| {
+            if (payload.len < at + 4) return null;
+            if (std.mem.eql(u8, payload[at..][0..3], &OUI)) switch (@as(Akm, @enumFromInt(payload[at + 3]))) {
+                .psk => out.psk = true,
+                .sae => out.sae = true,
+                else => {},
+            };
+            at += 4;
+        }
+        return out;
+    }
+
+    fn suiteOf(bytes: *const [4]u8) ?Suite {
+        if (!std.mem.eql(u8, bytes[0..3], &OUI)) return null;
+        return @enumFromInt(bytes[3]);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -462,4 +641,44 @@ test "a frame that is truncated, unframed or empty is refused rather than guesse
     empty.control.from_ds = true;
     _ = empty.write(&frame);
     try std.testing.expectEqual(@as(?usize, null), toEthernet(&frame, &ethernet));
+}
+
+test "the elements of a beacon are walked, found by kind, and a torn one ends the walk" {
+    var body: [64]u8 = @splat(0);
+    var at: usize = Beacon.FIXED;
+    std.mem.writeInt(u16, body[8..10], 100, .little);
+    std.mem.writeInt(u16, body[10..12], @bitCast(Beacon.Capability{ .ess = true, .privacy = true }), .little);
+    at += writeElement(body[at..], .ssid, "home").?;
+    at += writeElement(body[at..], .ds_parameter, &.{6}).?;
+    at += writeElement(body[at..], .rsn, &Rsn.psk_ccmp).?;
+
+    const beacon = Beacon.parse(body[0..at]).?;
+    try std.testing.expectEqual(@as(u16, 100), beacon.interval);
+    try std.testing.expect(beacon.capability.ess and beacon.capability.privacy);
+    try std.testing.expectEqualStrings("home", element(beacon.elements, .ssid).?);
+    try std.testing.expectEqual(@as(u8, 6), element(beacon.elements, .ds_parameter).?[0]);
+    try std.testing.expectEqual(@as(?[]const u8, null), element(beacon.elements, .tim));
+
+    const rsn = Rsn.parse(element(beacon.elements, .rsn).?).?;
+    try std.testing.expect(rsn.pairwise_ccmp and rsn.psk);
+    try std.testing.expectEqual(Rsn.Suite.ccmp, rsn.group);
+
+    // An element claiming more bytes than the frame has ends the walk
+    // without yielding it.
+    var torn = elements(&[_]u8{ 0, 1, 'a', 3, 5, 1 });
+    try std.testing.expectEqualStrings("a", torn.next().?.payload);
+    try std.testing.expectEqual(@as(?Element, null), torn.next());
+}
+
+test "a cell with a different cipher or key management is not one this station joins with" {
+    // TKIP for the pair, and enterprise key management.
+    var payload = Rsn.psk_ccmp;
+    payload[11] = @intFromEnum(Rsn.Suite.tkip);
+    payload[17] = @intFromEnum(Rsn.Akm.eap);
+    const rsn = Rsn.parse(&payload).?;
+    try std.testing.expect(!rsn.pairwise_ccmp);
+    try std.testing.expect(!rsn.psk);
+    // A version this file does not know is refused.
+    payload[0] = 2;
+    try std.testing.expectEqual(@as(?Rsn, null), Rsn.parse(&payload));
 }
