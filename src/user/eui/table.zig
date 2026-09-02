@@ -86,6 +86,11 @@ pub const Sort = struct {
     }
 };
 
+/// Air inside a cell, either side: the six a right-aligned number keeps
+/// from its edge, and the same before a word so the first column does not
+/// press against the frame.
+const INSET: i32 = 6;
+
 pub fn rowHeight() i32 {
     return Surface.textHeight() + 4;
 }
@@ -290,9 +295,9 @@ fn paint(
             t.text_dim;
 
         const title_x = if (column.right)
-            x + columnWidth(columns, i, area.w) - 2 - Surface.textWidth(column.title)
+            x + columnWidth(columns, i, area.w) - INSET - Surface.textWidth(column.title)
         else
-            x;
+            x + INSET;
         surface.text(title_x, area.y + 2, column.title, head_ink);
         if (ordered) {
             surface.icon(
@@ -347,9 +352,9 @@ fn paint(
 
             if (column.right) {
                 const text_w = Surface.textWidth(cell);
-                surface.text(cx + w - text_w - 6, y + 2, cell, ink);
+                surface.text(cx + w - text_w - INSET, y + 2, cell, ink);
             } else {
-                surface.text(cx + indent, y + 2, cell, ink);
+                surface.text(cx + INSET + indent, y + 2, cell, ink);
             }
             cx += w;
         }
