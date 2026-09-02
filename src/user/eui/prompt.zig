@@ -10,13 +10,17 @@
 //! choice and by Escape for the last: the first is what the program
 //! suggests, and the last is always the way out. A question about a number,
 //! how much or how many, carries the number on a stepper of its own between
-//! the words and the answers, and up and down move it from the keyboard.
+//! the words and the answers, and up and down move it from the keyboard. A
+//! question about a name or a line, what to call something, carries a field
+//! there instead, which takes the keyboard while the question stands, so
+//! the letters go into it and only Enter and Escape answer.
 
 const std = @import("std");
 const draw = @import("draw.zig");
 const footer = @import("footer.zig");
 const slider = @import("slider.zig");
 const stepper = @import("stepper.zig");
+const text = @import("text.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -40,11 +44,24 @@ pub const Amount = struct {
     range: slider.Range,
 };
 
+/// The longest line a question takes.
+pub const TEXT_MAX = 128;
+
 /// The question standing in a window, or none.
 pub const Prompt = struct {
     question: []const u8 = "",
     choices: []const Choice = &.{},
     amount: ?Amount = null,
+
+    /// A line the question is about, kept here and edited on the sheet. The
+    /// buffer points into the prompt's own storage, which is why a prompt
+    /// lives somewhere it is never moved from: a program's global.
+    has_text: bool = false,
+    typed_storage: [TEXT_MAX]u8 = @splat(0),
+    typed: text.Buffer = .{ .bytes = &.{} },
+    editor: text.Editor = .{},
+    /// The field takes the keyboard on the first pass it stands.
+    focus_text: bool = false,
 
     pub fn ask(self: *Prompt, question: []const u8, choices: []const Choice) void {
         std.debug.assert(choices.len > 0 and choices.len <= MAX_CHOICES);
@@ -59,9 +76,32 @@ pub const Prompt = struct {
         self.amount = .{ .value = amount.range.clamp(amount.value), .range = amount.range };
     }
 
+    /// A question with a line in it: a name, a path, a line of a file. The
+    /// field starts with `initial`, and takes the keyboard.
+    pub fn askText(self: *Prompt, question: []const u8, choices: []const Choice, initial: []const u8) void {
+        self.ask(question, choices);
+        self.typed = .{ .bytes = &self.typed_storage };
+        self.typed.clear();
+        _ = self.typed.insert(0, initial[0..@min(initial.len, TEXT_MAX)]);
+        self.editor = .{ .cursor = self.typed.len };
+        self.has_text = true;
+        self.focus_text = true;
+    }
+
     pub fn dismiss(self: *Prompt) void {
         self.choices = &.{};
         self.amount = null;
+        self.has_text = false;
+    }
+
+    /// The line as it stands, or nothing for a question without one.
+    pub fn line(self: *const Prompt) []const u8 {
+        return if (self.has_text) self.typed.slice() else "";
+    }
+
+    /// Whether the letters go to a field rather than to the answers.
+    pub fn takesText(self: *const Prompt) bool {
+        return self.isOpen() and self.has_text;
     }
 
     /// The number as it stands, or zero for a question without one.
@@ -114,8 +154,26 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
     for (state.choices, 0..) |choice, i| labels[i] = choice.label;
     var cells: [MAX_CHOICES]Rect = undefined;
     const placed = footer.place(bar, labels[0..state.choices.len], &cells);
+    // Enter in the field is the first answer, the way Enter is everywhere.
+    var chosen_by_field = false;
 
     var message = footer.messageRect(bar, placed);
+    if (state.has_text) {
+        // The field takes what the words leave, and at least half the bar.
+        const question_w = @min(draw.Surface.textWidth(state.question) + t.gap, @divTrunc(message.w, 2));
+        const field = Rect{
+            .x = message.x + question_w,
+            .y = bar.y + @divTrunc(bar.h - t.control_height, 2),
+            .w = @max(0, message.w - question_w),
+            .h = t.control_height,
+        };
+        message.w = question_w;
+        if (state.focus_text) {
+            ctx.focusAt(field);
+            state.focus_text = false;
+        }
+        if (text.field(ctx, field, &state.editor, &state.typed)) chosen_by_field = true;
+    }
     if (state.amount) |*amount| {
         // The number sits against the answers, and the words keep the rest.
         const wide = stepper.width(t.control_height);
@@ -130,7 +188,7 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
     }
     ctx.label(message, state.question);
 
-    var chosen: ?usize = null;
+    var chosen: ?usize = if (chosen_by_field) 0 else null;
     for (placed, state.choices, 0..) |cell, choice, i| {
         if (ctx.buttonAs(cell, choice.label, choice.weight)) chosen = i;
     }
@@ -154,7 +212,7 @@ pub fn key(state: *Prompt, code: KeyCode) ?usize {
 
 /// Answer from a typed letter, in either case. Null when no choice names it.
 pub fn letter(state: *const Prompt, codepoint: u32) ?usize {
-    if (!state.isOpen() or codepoint > std.math.maxInt(u8)) return null;
+    if (!state.isOpen() or state.has_text or codepoint > std.math.maxInt(u8)) return null;
     const typed = std.ascii.toLower(@intCast(codepoint));
     for (state.choices, 0..) |choice, i| {
         if (choice.letter != 0 and std.ascii.toLower(choice.letter) == typed) return i;
@@ -221,6 +279,20 @@ test "a question with a number keeps it within range, and up and down move it" {
     prompt.ask("Save the changes?", &SAVE_OR_NOT);
     try testing.expectEqual(@as(?usize, null), key(&prompt, .up));
     try testing.expectEqual(@as(i32, 0), prompt.number());
+}
+
+test "a question with a line keeps the letters for the field" {
+    var prompt = Prompt{};
+    prompt.askText("Called?", &SAVE_OR_NOT, "cinaed");
+    try testing.expect(prompt.takesText());
+    try testing.expectEqualStrings("cinaed", prompt.line());
+    try testing.expectEqual(@as(?usize, null), letter(&prompt, 's'));
+    try testing.expectEqual(@as(?usize, 0), key(&prompt, .enter));
+    try testing.expectEqual(@as(?usize, 2), key(&prompt, .escape));
+
+    prompt.dismiss();
+    try testing.expect(!prompt.takesText());
+    try testing.expectEqualStrings("", prompt.line());
 }
 
 test "the sheet takes the bottom and leaves the rest" {
