@@ -236,7 +236,11 @@ fn typed(codepoint: u32) bool {
 
 fn ask(purpose: proto.dialog.Purpose) void {
     asking = purpose;
-    dialog.show(connection, purpose, baseName()) catch {
+    const why: []const u8 = switch (purpose) {
+        .open => "Open a text file",
+        .save => "Save the text as",
+    };
+    dialog.show(connection, purpose, baseName(), why) catch {
         status = "Cannot open the dialog.";
     };
 }

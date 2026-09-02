@@ -255,7 +255,7 @@ Against the table in [design §15](../design/00-vibeee.md).
 scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard and `vsh` are all in
 and exercised on every boot.
 
-**M1 is nearly complete**, and the gate is met:
+**M1 is complete.**
 
 | Item | State |
 |---|---|
@@ -277,7 +277,7 @@ and exercised on every boot.
 | eimg | Done: one picture at a time, on the darkest ground the theme has, at fit, whole or double. The camera's own words are a sidebar that is there when it is wanted, scrolled and stacked so nothing arrives cut in half. A turn by hand is a quarter on top of what the file says it was taken as, rather than a second idea of which way up something is; the same walk draws it as draws the file manager's thumbnails |
 | Calc | Done: the first window that asks to float, at the size it asks for. The arithmetic is `lib/calc.zig`, fixed point to six places so an answer is what the arithmetic says rather than the nearest binary fraction, and host-tested against the keys a hand presses rather than against a screen. Typed at or pointed at: every key on the pad has a key on the keyboard, Enter ends a sum, and the pad answers Tab and the space bar like every other control |
 | eTerm | Done |
-| Files, Edit | Moved to M3 with the rest of the GUI app work, which is parked there for now |
+| Files, Pad | Done: Files is the dual-pane manager; Pad is the graphical text editor with file dialogs and an unsaved-changes prompt |
 | Keymaps | Done: US-International and Belgian AZERTY, chosen by a setting or cycled with `Super+Space`, and the choice is remembered |
 
 **The boot line can be changed at the machine.** The loader shows what the kernel is
@@ -298,7 +298,7 @@ filesystem is rebuilt from the medium at every boot and a home that empties itse
 overnight is not one. Verified across clean shutdowns and reboots, and read back off the
 image from outside.
 
-**M1 is complete** and M2 is underway: wired networking is done on the machine through
+**M2 is complete**, except for USB suspend and resume: wired networking is done on the machine through
 the whole stack, streams and datagrams included: `nc` carries conversations both ways
 over the socket bridge, `resolve` answers names from the hosts table and DNS, `ping`
 takes names, and 127.0.0.1 works with no hardware under it. Audio runs as a routing
@@ -307,8 +307,8 @@ is read and written, and takes its mount with it when it is pulled; a USB keyboa
 types and a USB mouse moves the pointer. A hub is a device with a driver like any
 other, and what hangs off one enumerates the way a root port's device does. The boot
 bring-up model (services behind `needs`/`provides`, registered settled) is
-load-bearing. What M2 still owes on USB is suspend and resume. M3 owes the GUI apps
-parked there.
+load-bearing. USB suspend and resume remains the one unfinished M2 obligation; M3 begins
+with Wi-Fi, the remaining platform work, and new applications.
 
 ## Known gaps
 

@@ -145,9 +145,10 @@ The Character menu builds and corrects the sheet a fact at a time: each item
 asks for one line, with a field on the prompt sheet already holding what the
 sheet says, in the parts the file takes, and showing the shape of the line
 while it is empty. A number that is not one is refused rather than written.
-Portrait takes in any picture the machine reads, up to half a megabyte: the
-square from its middle is shrunk to the headshot's size and kept as JPEG on
-one line of the journal, so the face travels with the file. New character starts a fresh
+Portrait opens the file dialog, headed with what it is for, and takes in any
+picture the machine reads, up to half a megabyte: the square from its middle
+is shrunk to the headshot's size and kept as JPEG on one line of the
+journal, so the face travels with the file. New character starts a fresh
 journal that is saved where the first Save says. Each pane adds its own rows
 with an Add button: a feature on the Sheet, an attack on Combat, a spell on
 Spells, an item on Gear, where gold is paid and received too. The Edit menu

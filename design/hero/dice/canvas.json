@@ -1,0 +1,63 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 800,
+      "h": 480,
+      "title": "Over the Skills pane, ready"
+    },
+    {
+      "file": "Advantage.dc.html",
+      "x": 880,
+      "y": 0,
+      "w": 452,
+      "h": 294,
+      "title": "Advantage, both dice"
+    },
+    {
+      "file": "Condition.dc.html",
+      "x": 880,
+      "y": 420,
+      "w": 452,
+      "h": 294,
+      "title": "Disadvantage from a condition"
+    },
+    {
+      "file": "Damage.dc.html",
+      "x": 0,
+      "y": 840,
+      "w": 452,
+      "h": 294,
+      "title": "Damage dice from the attack"
+    },
+    {
+      "file": "Free.dc.html",
+      "x": 500,
+      "y": 840,
+      "w": 452,
+      "h": 294,
+      "title": "A free roll"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "how-it-opens",
+      "x": 0,
+      "y": -150,
+      "w": 420,
+      "text": "A second window of Hero, floating like the calculator, centred over the sheet. Enter on a skill, a save pip or an attack opens it filled in; Roll > Dice opens it empty. Enter rolls, Escape closes. Every roll is written to the journal as it lands, so closing never loses one."
+    },
+    {
+      "id": "modes",
+      "x": 880,
+      "y": -150,
+      "w": 420,
+      "text": "Advantage and disadvantage roll two d20s and show both, the kept one ringed in the accent. Conditions on the sheet pre-set the mode and the reason is on the line under the title. Damage and free rolls of anything but a d20 leave the modes out of reach."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

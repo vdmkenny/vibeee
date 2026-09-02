@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 12px/18px Tahoma, 'DejaVu Sans', Verdana, sans-serif; color: #1A1D21; }
+    a { color: #2F6FE0; } a:hover { color: #1A1D21; }
+    .dim { color: #5C636B; }
+    .big { font-size: 24px; line-height: 28px; }
+    .btn { height: 24px; padding: 0 14px; display: flex; align-items: center; justify-content: center; background: #E9EAEC; border: 1px solid #C6C9CD; color: #1A1D21; white-space: nowrap; }
+    .btn.strong { background: #2F6FE0; border-color: #2F6FE0; color: #FFFFFF; }
+    .btn.quiet { background: #D8DADD; color: #5C636B; }
+    .seg { display: flex; align-items: center; }
+    .seg .btn { padding: 0 8px; margin-left: -1px; }
+    .seg .btn:first-child { margin-left: 0; }
+    .seg .btn.on { background: #2F6FE0; border-color: #2F6FE0; color: #FFFFFF; position: relative; }
+    .seg .btn.off { color: #5C636B; background: #D8DADD; }
+    .stepper { display: flex; align-items: center; }
+    .stepper .btn { width: 24px; padding: 0; }
+    .stepper .val { width: 40px; text-align: center; }
+    .tile { width: 56px; height: 56px; border: 1px solid #C6C9CD; background: #F5F6F7; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .tile.kept { border: 2px solid #2F6FE0; }
+    .tile.dropped { color: #5C636B; background: #E9EAEC; }
+    .tile .cap { font-size: 12px; line-height: 14px; }
+  </style>
+</helmet>
+<div style="width: 452px; height: 294px; background: #2B3138; display: flex; align-items: center; justify-content: center"><div style="width: 420px; height: 262px; border: 2px solid #2F6FE0; background: #E9EAEC; display: flex; flex-direction: column; padding: 6px; gap: 8px; font: 12px/18px Tahoma, 'DejaVu Sans', Verdana, sans-serif; color: #1A1D21">
+  <div style="display: flex; flex-direction: column">
+    <div style="display: flex; align-items: baseline; gap: 10px"><span class="big">Dagger damage</span><div style="flex-grow: 1"></div><span class="dim" style="display: flex; align-items: center; gap: 6px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5l5.6 3.25v6.5L8 14.5l-5.6-3.25v-6.5z"></path><path d="M8 1.5L4.5 9h7zM2.4 4.75L4.5 9l3.5 5.5L11.5 9l2.1-4.25"></path></svg>Dice</span></div>
+    <div class="dim">1d4 + 2 · from the attack line</div>
+  </div>
+  <div class="seg"><div class="btn on">d4</div><div class="btn ">d6</div><div class="btn ">d8</div><div class="btn ">d10</div><div class="btn ">d12</div><div class="btn ">d20</div><div class="btn ">d100</div></div>
+  <div style="display: flex; align-items: center; gap: 16px"><div style="display: flex; align-items: center; gap: 8px"><span class="dim">Dice</span><div class="stepper"><div class="btn">&#8722;</div><div class="val">1</div><div class="btn">+</div></div></div><div style="display: flex; align-items: center; gap: 8px"><span class="dim">Bonus</span><div class="stepper"><div class="btn">&#8722;</div><div class="val">+2</div><div class="btn">+</div></div></div></div>
+  <div style="display: flex; align-items: center; gap: 8px"><span class="dim">With</span><div class="seg"><div class="btn off">Normal</div><div class="btn off">Advantage</div><div class="btn off">Disadvantage</div></div></div>
+  <div style="display: flex; align-items: center; gap: 8px; flex-grow: 1"><div class="tile kept"><span class="big">3</span></div><div style="display: flex; flex-direction: column; justify-content: center; margin-left: 8px"><span class="dim">Total</span><span class="big">5</span><span class="dim">3 + 2</span></div></div>
+  <div style="display: flex; align-items: center; gap: 8px"><span class="dim" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">In the journal · Session 3</span><div style="flex-grow: 1"></div><div class="btn ">Roll again</div><div class="btn strong">Done</div></div>
+</div></div>
+</x-dc>
+</body>
+</html>

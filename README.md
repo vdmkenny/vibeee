@@ -1,146 +1,122 @@
 # vibeee
 
-A graphical operating system for low-end netbooks, written from scratch in Zig.
+An experimental graphical operating system written from scratch in Zig.
+
+**Target:** ASUS Eee PC 701 4G (630 MHz Celeron M, 512 MB RAM, 800x480 display).
+It also has a QEMU development profile that matches the target's CPU, memory, ATA, and
+audio hardware where QEMU can model them.
 
 ![The vibeee desktop: the file manager and the picture viewer side by side, with the launcher open over them](docs/img/desktop.png)
 
-It is its own bootloader, kernel, userspace, window manager and control library.
-It was built and tested against an **ASUS Eee PC 701 4G** (2007: 630 MHz Celeron M,
-512 MB RAM, 800x480 panel) and is aimed at that whole class of machine: later Eees,
-the Acer Aspire One, the HP Mini. It boots that machine today, from an SD card to a
-working desktop, in about a second.
+## Quick Start
 
-## Try it
+Requirements: Zig 0.16, NASM, mtools, and QEMU.
 
 ```bash
-make qemu    # build everything and boot in QEMU
-make vnc     # the same, over VNC (vnc://localhost:5901 on macOS)
+make qemu                  # build and boot the development image
+make vnc                   # boot with VNC on localhost:5901
+make check-all             # format, checks, tests, images, and QEMU boot checks
 ```
 
-You need Zig 0.16, nasm, mtools and QEMU. It boots to a shell in about a second.
-Type `svc start eeewm` for the desktop.
+The system starts at a shell. Run `svc start eeewm` to launch the desktop.
 
-The emulated machine is built to resemble the target: the CPU is pinned to the Celeron
-M's feature set, memory to 512 MB, storage to the parallel ATA the machine's own SSD
-speaks, and the audio controller to the ICH6 the southbridge carries, which is the same
-part QEMU models and the same driver that binds on hardware. Sound comes out of the
-host by default where there is somewhere to send it, and `QEMU_AUDIODEV=none` turns
-that off without taking the controller away. What cannot be emulated is the rest of the
-chipset: no GMA 900, no wireless radio, and no embedded controller. The display is
-told to describe itself as a netbook panel, and the loader believes it: it asks the
-screen over DDC and takes the largest mode that fits, which is how the same image
-boots the 701's 800x480, the emulator's 800x600, and a netbook nobody had in mind.
+Useful build targets:
 
-## What is there
+```bash
+make image                 # build build/vibeee.img
+make qemu-sd               # boot the release image as USB storage
+make sd DEV=/dev/rdiskN    # guarded SD-card writer on macOS
+make MANUAL=no image       # omit the on-device manual
+```
 
-A tiling window manager whose desktops exist only while something is on them, a
-launcher you summon in the middle of the screen and type at, and seven applications
-sharing one control library and one application frame:
+Set `QEMU_AUDIODEV=none` to keep the emulated audio controller but disable host audio.
 
-| | |
+## Included System
+
+- Bootloader, 32-bit x86 kernel, preemptive O(1) scheduler, processes, ELF loader,
+  capabilities, channels, events, shared memory, and a panic QR-code report.
+- FAT12/16/32 with VFAT long filenames; persistent `/cfg` and `/home` volumes.
+- Native GMA 900/950 modesetting, a framebuffer display server, tiling and floating
+  windows, launcher, and the `libeui` control library.
+- ATA, ACPI/uACPI platform support, battery, backlight, hotkeys, USB mass storage/HID,
+  AC'97 and HDA playback, and wired IPv4 networking with DHCP, DNS, TCP, and UDP.
+- Shell, multicall command-line tools, and a small POSIX-lean C library for ports.
+
+## Kernel Model
+
+The kernel runs in Ring 0; applications, services, and most hardware drivers run in
+Ring 3 with separate address spaces. Processes receive only the capability handles they
+need at spawn time, and capabilities can only be reduced when passed to a child.
+
+Synchronous channels carry control messages and handles. Shared-memory segments plus
+events carry display surfaces, audio buffers, sockets, and other bulk data. The window
+manager is an ordinary userspace display server: clients render into their own shared
+surfaces and the manager composites them. USB, audio, networking, configuration, and
+ACPI platform support are also userspace services; the kernel retains scheduling,
+memory isolation, filesystems, interrupts, and the capability boundary.
+
+## Applications
+
+| Application | Function |
 |---|---|
-| **eTerm** | terminal, with its own VT emulator, in the interface's own monospace |
-| **Files** | two panes, copy and move between them, driven by the function keys |
-| **Pad** | text editor |
-| **Viewer** | one picture at a time, at fit, whole or double size, turned by hand, with what the camera wrote beside it |
-| **Calc** | arithmetic, in a window that floats above the tiling rather than taking a share of it |
-| **Monitor** | process list, CPU share, end a task |
-| **Settings** | theme tiles, highlight and pointer colours, interface scale, key help |
+| `eTerm` | Terminal with a native VT emulator and `vsh` shell |
+| Files | Dual-pane file manager with copy, move, preview, and file opening |
+| Pad | Plain UTF-8 text editor with file dialogs |
+| Viewer | PNG, JPEG, BMP, and GIF viewer with EXIF orientation and metadata |
+| Calc | Fixed-point calculator in a floating window |
+| Monitor | Process list, CPU/memory use, and process termination |
+| Settings | Theme, display, input, audio, power, and shortcut settings |
 
-The launcher finds files as well as programs: what is under `/home` is ranked beside
-the apps, wearing the picture its sort of file gets, and Enter opens it with whatever
-opens that sort of thing. A program says what it is willing to open rather than being
-named in a list somewhere else, so the file manager, the launcher and the shell all
-agree about what happens when you open a photograph.
+The launcher searches installed programs, open windows, and files under `/home`.
 
-Underneath: its own bootloader, a preemptive O(1) scheduler, per-process address
-spaces, capability handles, channels and events, ATA and FAT with long names, ACPI
-interpreted in a userspace service (uACPI), and a native modeset for the GMA 900/950.
-Alongside those, three services the device manager starts when it finds the hardware:
-USB over EHCI and its UHCI companions, carrying disks, keyboards, mice and hubs; sound
-as a routing graph over AC'97 and HDA; and a wired network stack that takes a lease and
-holds a conversation. Settings and home are volumes of their own, so what is changed
-outlives the power being cut.
-The window manager is an ordinary userspace program that was handed the display:
-clients talk to it over a channel, draw into their own shared-memory surface, and
-have it composited.
+## Extra Applications
 
-## Programs that are not the system
-
-The image carries what a machine needs to start and be used. Anything else is built
-apart from it and installed into `/home`, beside the files it works on:
+Extra applications are installed into the persistent `/home` volume rather than the
+base system image.
 
 ```bash
-make apps               # build every recipe in apps/
-make app APP=doom       # build just one
+make hero                  # build the first-party Hero character journal
+make apps                  # build Hero and every third-party app recipe
+make app APP=doom          # build Doom only
 ```
 
-A recipe says where a program's source comes from and how to build it, and third-party
-source is never committed here. Doom is the first one: it builds, runs, takes input and
-saves. Its data is not fetched for you, because what a program may be passed around with
-is not a build's decision to make; the recipe names the WAD it wants and where to get
-it, and stops there.
+Third-party source is fetched into `build/apps/` and is not committed. Doom data is
+not downloaded automatically; its recipe explains where the required WAD belongs.
+See [apps/README.md](apps/README.md) for details.
 
-## Running on real hardware
+## Real Hardware
 
-You do not need to be an OS developer to run this. If you can write an SD card and
-read a screen, that is the whole skill set.
+1. Run `make image`.
+2. Write `build/vibeee.img` to an SD card with `make sd DEV=/dev/rdiskN` on macOS, or
+   `dd` on another host OS.
+3. Boot the card as USB-HDD on the Eee PC.
 
-1. `make image` builds `build/vibeee.img`, a disk image.
-2. Write it to a card: `make sd DEV=/dev/rdiskN` on macOS, or plain `dd` of the
-   image anywhere else. The host build needs no root; only the write does.
-3. Put the card in the machine and power on. The BIOS boots it as a USB-HDD, which
-   the image is built to be.
+Verified on the Eee PC 701: SD boot, native 800x480 display, keyboard, relative-mode
+touchpad, battery, backlight, hotkeys, desktop, wired networking, HDA playback, USB
+storage, and persistent settings and home volumes.
 
-Expectations on the machine, day one:
+Known gaps:
 
-* **Works on the machine:** boot from SD, the screen at the panel's own 800x480 through
-  the native GMA modeset, keyboard (US-International and Belgian AZERTY included), the
-  touchpad in relative mode, battery state with remaining time, backlight levels,
-  hotkeys, the desktop with all seven applications, wired networking through the whole
-  stack, sound out of the machine's own codec, USB storage from the controller through
-  the filesystem to a mounted volume, and settings and a home directory that outlive
-  the power being cut.
-* **Written and running, but proven in the emulator rather than on the machine:** USB
-  keyboards, mice and hubs.
-* **Does not work yet:** powering off does not cut the last power (the LED stays on; see
-  below), the wireless radio is identified but not driven, and a machine that sleeps
-  comes back with its USB devices unenumerated.
-* The safest first run is with a card you can overwrite, and a machine you can pull
-  the battery out of: this is a toy operating system, not audited software.
+- Power-off reaches ACPI S5 but does not complete the final hardware power cut.
+- Wi-Fi hardware initializes but scanning, association, and WPA authentication are not implemented.
+- USB devices are not restored after suspend/resume.
+- Touchpad tap, scrolling, and gestures are not implemented.
 
-## Status, honestly
+This is unaudited hobby OS software. Test it on overwriteable media and hardware you can
+recover manually.
 
-Everything described above is real and running, on hardware and under QEMU. Three
-things the emulator could not have caught were found by running it on the machine
-and are fixed: the audio controller hands its registers over as a sixty-four bit
-window where the emulator's part is thirty-two bit; the USB controller reads the
-extended descriptor format whether or not it is asked to, for the same reason; and
-nothing had ever told a USB device which configuration to be, which the emulator
-forgives and silicon does not. The current work is what only the machine can answer:
-the final power cut, suspend and resume, and the wireless radio. `docs/status.md` is
-the day-true inventory of what exists, what works and what is missing, kept without
-measurements that go stale.
+## Documentation
 
-The code was written largely with AI assistance and has not been audited. It is a
-toy OS for a nineteen-year-old netbook, and that is the standard it is built to.
+- [Status](docs/status.md): current component inventory, test coverage, and known gaps.
+- [Master design](design/00-vibeee.md): goals, architecture, and roadmap.
+- [System calls](docs/syscalls.md): generated ABI reference.
+- [Settings](docs/settings.md): generated configuration reference.
+- [libeui](docs/libeui.md): generated UI toolkit reference.
 
-## Reading further
+The target has no serial port. Boot diagnostics appear on screen and in a kernel log ring
+readable with `log`; panic reports include a QR-encoded register dump.
 
-- [docs/status.md](docs/status.md) - what exists, component by component, including the gaps
-- [design/00-vibeee.md](design/00-vibeee.md) - the master design, the whole system as it was planned
-- [docs/syscalls.md](docs/syscalls.md) - generated from the syscall table, so it cannot drift
-- [docs/settings.md](docs/settings.md) - every configuration key, generated from the schema
-- [docs/libeui.md](docs/libeui.md) - the toolkit's controls, pictures and themes, generated from the toolkit
+## Third-Party Notices
 
-Two details are worth knowing early. The target machine has no serial port, which
-shaped the whole project: boot time self-tests report on screen, the kernel keeps a
-log ring whether or not it is printed (read it back with `log`), and a panic screen
-encodes the register dump as a QR code, so a photograph of a crash comes back as
-text. And a second verbosity: `verbose` shows the boot narration, while `debug` is a
-separate tier for chasing faults, off by default.
-
-## Licence
-
-Spleen (`third_party/spleen/`) is BSD 2-Clause, (c) Frederic Cambus.
-Ark Pixel (`third_party/ark-pixel/`) is SIL Open Font License 1.1, (c) TakWolf.
+Spleen (`third_party/spleen/`) is BSD 2-Clause, copyright Frederic Cambus.
+Ark Pixel (`third_party/ark-pixel/`) is SIL Open Font License 1.1, copyright TakWolf.

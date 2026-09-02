@@ -13,6 +13,7 @@
 const std = @import("std");
 const draw = @import("draw.zig");
 const table = @import("table.zig");
+const heading_mod = @import("heading.zig");
 const text_mod = @import("text.zig");
 const str = @import("lib").str;
 const theme = @import("theme.zig");
@@ -58,6 +59,10 @@ pub const MAX_NAME = 80;
 
 pub const Chooser = struct {
     purpose: Purpose = .open,
+    /// Why a file is being chosen, in the program's words: "Open a
+    /// character journal", "A picture for the portrait". A chooser that
+    /// says only Open leaves a person to guess what it is for.
+    heading: []const u8 = "",
 
     /// The typed name. Storage is here rather than the caller's, because every
     /// caller would give it the same thing.
@@ -85,8 +90,8 @@ pub const Chooser = struct {
 
     /// Set once, because `name` has to point at `name_storage` and a struct
     /// cannot point at itself before it exists.
-    pub fn init(self: *Chooser, purpose: Purpose, initial: []const u8) void {
-        self.* = .{ .purpose = purpose };
+    pub fn init(self: *Chooser, purpose: Purpose, initial: []const u8, heading: []const u8) void {
+        self.* = .{ .purpose = purpose, .heading = heading };
         // The name given was typed by the caller, not picked from the list, so
         // nothing should overwrite it until the selection actually moves.
         self.filled_from = 0;
@@ -124,13 +129,21 @@ pub fn run(
     const pad = t.padding;
     const row = t.control_height;
 
-    ctx.label(.{ .x = area.x + pad, .y = area.y + pad, .w = area.w - pad * 2, .h = 16 }, where);
+    // What this is for, over where it is: the question first, then the
+    // place the answer is looked for.
+    var top = area.y + pad;
+    if (state.heading.len > 0) {
+        const head = Rect{ .x = area.x + pad, .y = top, .w = area.w - pad * 2, .h = row };
+        if (ctx.damaged) heading_mod.paint(ctx.surface, head, state.heading, null);
+        top += heading_mod.height() + pad;
+    }
+    ctx.label(.{ .x = area.x + pad, .y = top, .w = area.w - pad * 2, .h = 16 }, where);
 
     // The list, then the name, then the buttons, top to bottom: the order
     // someone works through them.
     const buttons_y = area.bottom() - row - pad;
     const name_y = buttons_y - row - 6;
-    const list_top = area.y + pad + 20;
+    const list_top = top + 20;
 
     const shown = fill(entries, &state.rows, &state.sizes);
 

@@ -415,7 +415,7 @@ const Form = enum {
             .class_level => "Sorcerer | 1",
             .origin => "Species | background | alignment | size",
             .player => "Who plays this character",
-            .portrait => "A picture file beside the journal, or - for none",
+            .portrait => "A picture file",
             .scores => "Str Dex Con Int Wis Cha, as six numbers",
             .saves => "By key: str dex con int wis cha",
             .skills => "Skills | expertise, by key: stealth sleight_of_hand | stealth",
@@ -470,9 +470,32 @@ const MENU_FORMS = [_]Form{ .name, .class_level, .origin, .player, .portrait, .s
 /// What View turns off. On to start with.
 var show_status = true;
 
-// The open and save dialog, borrowed by both.
+// The file dialog, and what it is being asked for.
 var dialog: proto.FileDialog = .{};
-var asking_file: proto.dialog.Purpose = .open;
+var asking_file: FileAsk = .open;
+
+/// The three things a file is chosen for, each with its own words across
+/// the dialog.
+const FileAsk = enum {
+    open,
+    save,
+    portrait,
+
+    fn purpose(self: FileAsk) proto.dialog.Purpose {
+        return switch (self) {
+            .open, .portrait => .open,
+            .save => .save,
+        };
+    }
+
+    fn heading(self: FileAsk) []const u8 {
+        return switch (self) {
+            .open => "Open a character journal",
+            .save => "Save the journal as",
+            .portrait => "A picture for the portrait",
+        };
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Start
@@ -1205,6 +1228,11 @@ const LINE_CHOICES = [_]eui.prompt.Choice{
 var initial_buffer: [eui.prompt.TEXT_MAX]u8 = @splat(0);
 
 fn askFact(form: Form) void {
+    // The portrait is a file to pick rather than a line to type.
+    if (form == .portrait) {
+        askFile(.portrait);
+        return;
+    }
     pending = .{ .fact = form };
     prompt.askText(form.question(), &LINE_CHOICES, .{ .initial = initialOf(form, &initial_buffer), .hint = form.hint() });
     ctx.damage();
@@ -1463,9 +1491,10 @@ fn useInnate() void {
 // Dialog and title
 // ---------------------------------------------------------------------------
 
-fn askFile(purpose: proto.dialog.Purpose) void {
-    asking_file = purpose;
-    dialog.show(connection, purpose, baseName()) catch {
+fn askFile(what: FileAsk) void {
+    asking_file = what;
+    const start: []const u8 = if (what == .portrait) "" else baseName();
+    dialog.show(connection, what.purpose(), start, what.heading()) catch {
         say("Cannot open the dialog.");
     };
 }
@@ -1474,12 +1503,16 @@ fn finishFile() void {
     switch (dialog.result) {
         .pending => return,
         .cancelled => {},
-        .chosen => {
-            setPath(dialog.chosen());
-            switch (asking_file) {
-                .open => load(),
-                .save => save(),
-            }
+        .chosen => switch (asking_file) {
+            .open => {
+                setPath(dialog.chosen());
+                load();
+            },
+            .save => {
+                setPath(dialog.chosen());
+                save();
+            },
+            .portrait => importPortrait(dialog.chosen()),
         },
     }
     dialog.hide(connection);

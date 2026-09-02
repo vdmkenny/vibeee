@@ -1,0 +1,70 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 800,
+      "h": 480,
+      "title": "Sheet"
+    },
+    {
+      "file": "Skills.dc.html",
+      "x": 880,
+      "y": 0,
+      "w": 800,
+      "h": 480,
+      "title": "Skills, with a roll"
+    },
+    {
+      "file": "Combat.dc.html",
+      "x": 0,
+      "y": 600,
+      "w": 800,
+      "h": 480,
+      "title": "Combat, with a rest"
+    },
+    {
+      "file": "Spells.dc.html",
+      "x": 880,
+      "y": 600,
+      "w": 800,
+      "h": 480,
+      "title": "Spells, with a cast"
+    },
+    {
+      "file": "Journal.dc.html",
+      "x": 0,
+      "y": 1200,
+      "w": 800,
+      "h": 480,
+      "title": "Journal"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "the-file",
+      "x": 880,
+      "y": 1200,
+      "w": 380,
+      "text": "The file is the journal. Every change is a dated entry appended in order, and the sheet is what the entries add up to. Nothing is overwritten: a mistake is corrected by another entry, and the history of the character is the file itself. A session is a heading. Written whole under a new name and renamed over the old, then flushed, like every document on this machine that matters."
+    },
+    {
+      "id": "the-toolkit",
+      "x": 880,
+      "y": 1420,
+      "w": 380,
+      "text": "Everything here is libeui as it stands, in the slate theme at the panel's 800x480: the bar, the menu bar, the rail, facts, tables, checkboxes, toggles, progress, the prompt sheet, footer buttons and the status bar. Two elements are new and generic, so they go in the toolkit: pips, a tally of n of m (slots, saves, hit dice, exhaustion; elsewhere battery cells or steps), and a stepper, an exact integer with - and +. Nothing of the game is in the toolkit: the shield, heart, bolt, chevrons, skull, die, d20, moon and spark are Hero's own icon set, drawn on the toolkit's 16px stroke grid and kept in the app."
+    },
+    {
+      "id": "the-name",
+      "x": 1300,
+      "y": 1200,
+      "w": 300,
+      "text": "Hero: short to type, and it says what the file holds. Opens a .hero journal from the launcher, the file manager or the shell, the way Pad opens a text. The square at the top of the rail is the character's headshot: a picture the journal names, shown through the same thumbnail the file manager draws, and a silhouette until there is one."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

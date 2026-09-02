@@ -7,18 +7,16 @@ Claude under the author's direction. The design decisions recorded here are real
 with real reasoning, and the hardware research is verified against primary sources, but
 nothing here has been audited by a human line by line.
 
-**Implementation status.** M0 is complete and M1 is complete. What runs, on QEMU and on
-the target machine: the whole boot chain, memory and interrupts, the O(1) scheduler,
-syscalls, Ring 3 with per-process address spaces and an ELF loader, IPC, ATA and FAT, the
-console and terminal, the window manager and control library with Pad, Monitor, Settings
-and eTerm, keymaps, and the desktop. `platd` exists too, pulled forward from M2: the AML
-interpreter, the embedded controller, hotkeys, battery and backlight all run against the
-real firmware. The GUI app work not yet done (Files/Edit, Calc, Mines) has moved to M3,
-where Draw and View already wait; until then the GUI is exercised by what M1 built. Open
-items: the last part of power off (the machine's final power cut), the settings store
-surviving a reboot, and the M2 hardware services yet to be written (USB, audio,
-networking). Precisely what exists is listed in [`../docs/status.md`](../docs/status.md);
-this document is the design, and the status changes faster than design text.
+**Implementation status.** M0, M1, and M2 are complete apart from USB suspend and resume.
+What runs, on QEMU and on the target machine: the whole boot chain, memory and interrupts,
+the O(1) scheduler, syscalls, Ring 3 with per-process address spaces and an ELF loader,
+IPC, ATA and FAT, the console and terminal, the window manager and control library with
+Settings, Monitor, Pad, Files, Calc, eTerm, and the picture viewer, keymaps, and the
+desktop. `platd` runs the AML interpreter, embedded controller, hotkeys, battery, and
+backlight against the real firmware; USB, audio, and wired networking run as userspace
+services too. Open items are the final power cut, USB suspend and resume, and Wi-Fi.
+Precisely what exists is listed in [`../docs/status.md`](../docs/status.md); this document
+is the design, and the status changes faster than design text.
 
 Companion docs: [`01-boot.md`](01-boot.md) … [`11-userspace.md`](11-userspace.md) hold the
 per-subsystem detail; this document is authoritative where they differ, since it carries later
@@ -548,15 +546,15 @@ the rest are plain nouns because they are already short.
 | App | Analogue | Notes |
 |---|---|---|
 | **Settings** | Control Panel | Theme, bar position, layout, keymap. Writes `/etc/eeewm.cfg` |
-| **Pad** | WordPad | Rich-ish text: bold/italic, sizes, save as `.txt`/`.rtf`-lite |
+| **Pad** | WordPad | Plain UTF-8 text editor with file dialogs and unsaved-changes confirmation |
 | **Draw** | MS Paint | Bitmap editor: pencil, fill, shapes, selection. Saves PNG via `stb_image_write` |
-| **Edit** | vim/kilo | Terminal editor, port `kilo.c` (§11 verdict) |
+| **Edit** | vim/kilo | Optional terminal editor port, deferred; Pad is the shipped editor |
 | **Monitor** | Task Manager | Processes, CPU, RAM, per-server health, kill/restart. Bound to Fn+F6 (ATKD 0x12), which is literally the task-manager key on this keyboard |
 | **Files** | Explorer | Dual-pane, mount/eject awareness for SD and USB |
-| **Calc** | Calculator | Basic + programmer modes |
+| **Calc** | Calculator | Fixed-point arithmetic in a floating window |
 | **Mines** |, | Minesweeper: tiny, no assets, keyboard + mouse, fits the screen exactly |
 | **eTerm** | terminal | xterm-16color-compatible subset, implemented in Zig ([`10-gui.md §10.4`](10-gui.md)). The first real client: a terminal is the most demanding thing on the window protocol, since a blinking cursor is continuous small damage and the keyboard has to reach the client rather than the manager |
-| **View** | image viewer | PNG/JPEG/BMP via `stb_image` |
+| **Viewer** | image viewer | PNG/JPEG/BMP/GIF via `stb_image`, fit/whole/double size and EXIF orientation |
 
 **System configuration, one app, plus two popovers.** `Control` is the single config utility, organised in panels, so there is one place to look and one settings schema:
 
@@ -660,7 +658,7 @@ Toolchain: Zig (pinned), NASM, mtools, and nothing else. No autotools, no libc o
 | **M0** | Boot chain, kernel entry, PMM/paging/heap, IDT, LAPIC/IOAPIC, timers, scheduler, syscalls, Ring 3, IPC, ramfs, VESA console, i8042 keyboard, `vsh` | QEMU | **Done** |
 | **M1** | PATA + FAT32, `init`/`devmgd`, libc, multicall utils, touchpad, **GMA900 native modeset**, `eeewm` + `libeui`, eTerm, keymaps | **First real-hardware boot** | **Done** |
 | **M2** | `usbd` (EHCI + mass storage + ublk), `platd` (uACPI, EC, hotkeys, battery, backlight), `sndd` (HDA + ALC662), `netd` ethernet + lwIP + DHCP/DNS/SNTP, Pad/Monitor/Settings | Hardware | **Done**, less USB suspend and resume: `netd` is verified on the machine through the whole stack, `sndd` runs the routing graph over both controllers, and `usbd` carries disks, keyboards, mice and hubs |
-| **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, install-to-SSD, A/B updater, turbo mode, and the GUI apps parked from M1/M2: Files/Edit, Calc, Mines, Draw/View | Hardware | Not started |
+| **M3** | AR2425 WiFi + WPA2 supplicant, S3 suspend/resume, UVC webcam, install-to-SSD, A/B updater, turbo mode, and new GUI applications such as Mines and Draw | Hardware | Not started |
 | **M4** | Polish: 2D acceleration if profiling justifies, C3 idle, power tuning, ARM/HAL second-board proof, app bundles | Hardware | Not started |
 | **M5** | Browser experiment (litehtml + quickjs + Zig TLS), explicitly exploratory | Hardware | Not started |
 

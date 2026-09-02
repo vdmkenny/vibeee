@@ -55,16 +55,18 @@ pub const FileDialog = struct {
     answer_len: usize = 0,
 
     /// Open the dialog. `start` is the name to put in the field, which for a
-    /// save is what the document is already called.
+    /// save is what the document is already called; `heading` is why a file
+    /// is wanted, in the program's words, across the top of the dialog.
     pub fn show(
         self: *FileDialog,
         connection: *client.Connection,
         purpose: Purpose,
         start: []const u8,
+        heading: []const u8,
     ) !void {
         if (self.showing) return;
 
-        self.panel.init(purpose, start);
+        self.panel.init(purpose, start, heading);
         self.result = .pending;
         self.answer_len = 0;
 

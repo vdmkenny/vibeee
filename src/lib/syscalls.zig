@@ -949,8 +949,8 @@ pub const table = [_]Syscall{
             .{ .name = "flags", .kind = .flags, .desc = "OpenFlags: bit 0 directory, 1 write, 2 create, 3 truncate, 4 append." },
         },
         .returns = "a handle",
-        .errors = &.{ E.fault, E.inval, E.noent, E.nomem },
-        .notes = "Read-only. Writing needs cluster allocation in the FAT driver, which is not written yet.",
+        .errors = &.{ E.fault, E.inval, E.noent, E.nomem, E.perm, E.nospace, E.io },
+        .notes = "With the write flag, opens an existing file for writing or creates one with the create flag. Truncate and append apply at open; writes allocate and extend FAT cluster chains as needed.",
     },
     .{
         .number = 11,

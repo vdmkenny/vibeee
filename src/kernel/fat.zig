@@ -1501,6 +1501,11 @@ pub fn freeClusters(vol: *Volume) Error!u32 {
 
 const testing = std.testing;
 
+test {
+    // The table's own tests, which this module is the only way to reach.
+    _ = table;
+}
+
 /// One long-name fragment, built the way a medium carries it.
 fn fragment(order: Order, checksum: u8, text: []const u16) LfnEntry {
     var e = LfnEntry{

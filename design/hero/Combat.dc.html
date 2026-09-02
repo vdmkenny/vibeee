@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 12px/18px Tahoma, 'DejaVu Sans', Verdana, sans-serif; color: #1A1D21; }
+    a { color: #2F6FE0; } a:hover { color: #1A1D21; }
+    .dim { color: #5C636B; }
+    .big { font-size: 24px; line-height: 28px; }
+    .btn { height: 24px; padding: 0 14px; display: flex; align-items: center; justify-content: center; background: #E9EAEC; border: 1px solid #C6C9CD; color: #1A1D21; white-space: nowrap; }
+    .btn.strong { background: #2F6FE0; border-color: #2F6FE0; color: #FFFFFF; }
+    .btn.quiet { background: #D8DADD; color: #5C636B; }
+    .btn.on { background: #2F6FE0; border-color: #2F6FE0; color: #FFFFFF; }
+    .pip { width: 10px; height: 10px; border: 1px solid #C6C9CD; background: #F5F6F7; }
+    .pip.on { background: #2F6FE0; border-color: #2F6FE0; }
+    .pips { display: flex; gap: 4px; align-items: center; }
+    .box { width: 12px; height: 12px; border: 1px solid #C6C9CD; background: #F5F6F7; display: inline-flex; align-items: center; justify-content: center; }
+    .box.on { background: #2F6FE0; border-color: #2F6FE0; }
+    .th { height: 23px; display: grid; align-items: center; color: #5C636B; border-bottom: 1px solid #C6C9CD; }
+    .tr { height: 22px; display: grid; align-items: center; }
+    .tr.alt { background: #F5F6F7; }
+    .tr.sel { background: #2F6FE0; color: #FFFFFF; }
+    .tr.sel .dim { color: #FFFFFF; opacity: .8; }
+    .cell { padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .h { color: #5C636B; border-bottom: 1px solid #C6C9CD; height: 22px; display: flex; align-items: flex-end; padding-bottom: 2px; }
+    .fact { display: grid; grid-template-columns: 132px minmax(0, 1fr); height: 22px; align-items: center; }
+    .stepper { display: flex; align-items: center; }
+    .stepper .btn { width: 24px; padding: 0; }
+    .stepper .val { width: 40px; text-align: center; }
+  </style>
+</helmet>
+<div style="width: 800px; height: 480px; background: #2B3138; overflow: hidden; display: flex; flex-direction: column; font: 12px/18px Tahoma, 'DejaVu Sans', Verdana, sans-serif; color: #1A1D21">
+  <div style="height: 22px; flex: none; background: #1F242A; border-bottom: 1px solid #10141A; display: flex; align-items: center; color: #D6D9DD">
+    <div style="width: 26px; display: flex; justify-content: center"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6a4 4 0 1 0 0 4H6"></path></svg></div>
+    <div style="height: 21px; min-width: 130px; padding: 0 10px; background: #2F6FE0; color: #FFFFFF; display: flex; align-items: center">Hero ∗</div>
+    <div style="padding: 0 8px">+</div>
+    <div style="flex-grow: 1"></div>
+    <div style="display: flex; align-items: center; gap: 14px; padding-right: 10px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="8" rx="1"></rect><path d="M6 14h4M8 11v3"></path></svg><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h3l4-3v10l-4-3H3z"></path><path d="M12 6l2 4M14 6l-2 4"></path></svg><span>21:07</span></div>
+  </div>
+  <div style="height: 458px; flex: none; background: #E9EAEC; display: flex; flex-direction: column">
+    <div style="height: 30px; flex: none; border-bottom: 1px solid #C6C9CD; display: flex; align-items: center; padding: 0 6px">
+      <div style="padding: 0 10px">File</div><div style="padding: 0 10px">Edit</div><div style="padding: 0 10px">Roll</div><div style="padding: 0 10px">Rest</div><div style="padding: 0 10px">View</div>
+    </div>
+    <div style="flex-grow: 1; display: flex; min-height: 0">
+      <div style="width: 124px; flex: none; border-right: 1px solid #C6C9CD; display: flex; flex-direction: column">
+        <div style="height: 84px; display: flex; align-items: center; padding: 0 10px">
+          <div style="width: 64px; height: 64px; border: 1px solid #C6C9CD; background: #F5F6F7; display: flex; align-items: center; justify-content: center; color: #5C636B"><svg width="40" height="40" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5.5" r="3"></circle><path d="M2.5 14.5c0-3.5 2.5-5.5 5.5-5.5s5.5 2 5.5 5.5"></path></svg></div>
+        </div>
+        <div style="height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: transparent; color: #1A1D21"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2h6l3 3v9H4z"></path><path d="M6 8h4M6 11h4"></path></svg><span>Sheet</span></div><div style="height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: transparent; color: #1A1D21"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"></circle><circle cx="8" cy="8" r="2"></circle></svg><span>Skills</span></div><div style="height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: #2F6FE0; color: #FFFFFF"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l8-8M11 3l2 2M9 5l2 2M2 14l2-2"></path></svg><span>Combat</span></div><div style="height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: transparent; color: #1A1D21"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"></path></svg><span>Spells</span></div><div style="height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: transparent; color: #1A1D21"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h10l-1 8H4zM6 6V4a2 2 0 0 1 4 0v2"></path></svg><span>Gear</span></div><div style="height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: transparent; color: #1A1D21"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h5v10H3zM8 3h5v10H8z"></path></svg><span>Journal</span></div>
+        <div style="flex-grow: 1"></div>
+        <div class="dim" style="height: 30px; display: flex; align-items: center; padding: 0 10px">cinaed.hero</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+        <div style="flex-grow: 1; min-height: 0; padding: 10px; overflow: hidden">
+
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+  <div style="border: 1px solid #C6C9CD; background: #F5F6F7; padding: 6px 8px"><div class="dim" style="display: flex; align-items: center; gap: 6px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l5 2v4c0 3-2 5-5 6-3-1-5-3-5-6V4z"></path></svg>Armour class</div><div class="big">12</div></div>
+  <div style="border: 1px solid #C6C9CD; background: #F5F6F7; padding: 6px 8px"><div class="dim" style="display: flex; align-items: center; gap: 6px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2L4 9h4l-1 5 5-7H8z"></path></svg>Initiative</div><div class="big">+2</div></div>
+  <div style="border: 1px solid #C6C9CD; background: #F5F6F7; padding: 6px 8px"><div class="dim" style="display: flex; align-items: center; gap: 6px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4l4 4-4 4M8 4l4 4-4 4"></path></svg>Speed</div><div class="big">30 <span style="font-size: 12px">ft.</span></div></div>
+</div>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 8px">
+  <div>
+    <div class="h" style="align-items: center"><span style="display: flex; margin-right: 6px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13S3 9.5 3 6.2A2.6 2.6 0 0 1 8 5a2.6 2.6 0 0 1 5 1.2C13 9.5 8 13 8 13z"></path></svg></span>Hit points</div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 30px"><span class="dim" style="width: 60px">Current</span><div class="stepper"><div class="btn quiet">-</div><div class="val">3</div><div class="btn quiet">+</div></div><span class="dim">of 8</span></div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 30px"><span class="dim" style="width: 60px">Temporary</span><div class="stepper"><div class="btn quiet">-</div><div class="val">0</div><div class="btn quiet">+</div></div></div>
+    <div style="height: 8px; background: #D8DADD; margin: 4px 0 6px"><div style="width: 37%; height: 8px; background: #2F6FE0"></div></div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 22px"><span class="dim" style="width: 60px">Hit dice</span><div class="pips"><div class="pip on"></div></div><span class="dim" style="display: flex; align-items: center; gap: 4px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="10" height="10" rx="1.5"></rect><circle cx="6" cy="6" r=".7" fill="currentColor"></circle><circle cx="8" cy="8" r=".7" fill="currentColor"></circle><circle cx="10" cy="10" r=".7" fill="currentColor"></circle></svg>1d6</span></div>
+  </div>
+  <div>
+    <div class="h" style="align-items: center"><span style="display: flex; margin-right: 6px"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="7" r="4.5"></circle><path d="M6 11.5V14h4v-2.5"></path><circle cx="6.5" cy="7" r=".7" fill="currentColor"></circle><circle cx="9.5" cy="7" r=".7" fill="currentColor"></circle></svg></span>Death saves and conditions</div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 22px"><span class="dim" style="width: 72px">Successes</span><div class="pips"><div class="pip"></div><div class="pip"></div><div class="pip"></div></div></div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 22px"><span class="dim" style="width: 72px">Failures</span><div class="pips"><div class="pip"></div><div class="pip"></div><div class="pip"></div></div></div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 22px; margin-top: 4px"><span class="dim" style="width: 72px">Exhaustion</span><div class="pips"><div class="pip"></div><div class="pip"></div><div class="pip"></div><div class="pip"></div><div class="pip"></div><div class="pip"></div></div></div>
+    <div style="display: flex; gap: 8px; margin-top: 6px"><div class="btn on">Bloodied</div><div class="btn">Frightened</div><div class="btn">Poisoned</div><div class="btn">Prone</div></div>
+  </div>
+</div>
+<div style="margin-top: 8px"><div class="th" style="grid-template-columns: 112px 40px 120px minmax(0, 1fr)"><div class="cell">Attack</div><div class="cell">Hit</div><div class="cell">Damage</div><div class="cell">Notes</div></div><div class="tr" style="grid-template-columns: 112px 40px 120px minmax(0, 1fr)"><div class="cell">Dagger</div><div class="cell">+4</div><div class="cell">1d4+2 piercing</div><div class="cell">Finesse, light, thrown, nick, 20/60</div></div><div class="tr alt" style="grid-template-columns: 112px 40px 120px minmax(0, 1fr)"><div class="cell">Fire Bolt</div><div class="cell">+7</div><div class="cell">1d10 fire</div><div class="cell">120 ft., V/S</div></div><div class="tr" style="grid-template-columns: 112px 40px 120px minmax(0, 1fr)"><div class="cell">Chill Touch</div><div class="cell">+7</div><div class="cell">1d10 necrotic</div><div class="cell">Touch, V/S</div></div><div class="tr alt" style="grid-template-columns: 112px 40px 120px minmax(0, 1fr)"><div class="cell">Unarmed Strike</div><div class="cell">+4</div><div class="cell">3 bludgeoning</div><div class="cell"></div></div></div>
+        </div>
+        <div style="height: 30px; flex: none; border-top: 1px solid #C6C9CD; background: #E9EAEC; display: flex; align-items: center; padding: 0 10px; gap: 8px"><span style="display: flex; color: #5C636B"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10.5A5 5 0 0 1 5.5 4a5 5 0 1 0 6.5 6.5z"></path></svg></span><div style="flex-grow: 1; white-space: nowrap">Long rest: hit points and hit dice back, spell slots restored. Rest now?</div><div class="btn strong">Long rest</div><div class="btn">Short rest</div><div class="btn">Cancel</div></div>
+      </div>
+    </div>
+    <div style="height: 30px; flex: none; background: #1F242A; border-top: 1px solid #10141A; color: #D6D9DD; display: flex; align-items: center">
+      <div style="flex-grow: 1; padding: 0 10px; white-space: nowrap; overflow: hidden"><span style="display: inline-flex; align-items: center; gap: 6px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13S3 9.5 3 6.2A2.6 2.6 0 0 1 8 5a2.6 2.6 0 0 1 5 1.2C13 9.5 8 13 8 13z"></path></svg>3 of 8 hit points · Bloodied</span></div>
+      <div style="width: 96px; height: 28px; border-left: 1px solid #10141A; display: flex; align-items: center; padding: 0 10px; white-space: nowrap">Session 3</div>
+      <div style="width: 118px; height: 28px; border-left: 1px solid #10141A; display: flex; align-items: center; padding: 0 10px; white-space: nowrap">Unsaved changes</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

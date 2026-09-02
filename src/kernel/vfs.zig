@@ -116,6 +116,10 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
         m.open_files = 0;
         m.generation +%= 1;
         m.in_use = true;
+        // The one walk of the table, here rather than on the first ask: a
+        // shell and a file manager ask how full a volume is all the time,
+        // and from now on the answer is kept rather than counted.
+        _ = fat.freeClusters(&m.volume) catch {};
         return m;
     }
     return error.TableFull;

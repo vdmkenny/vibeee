@@ -178,8 +178,11 @@ Open a file or directory.
 - `EINVAL`, an argument is out of range
 - `ENOENT`, no such file or directory
 - `ENOMEM`, no handle slots free, or the buffer is too small
+- `EPERM`, the operation is not allowed on that object
+- `ENOSPC`, the volume is full
+- `EIO`, the underlying device failed
 
-Read-only. Writing needs cluster allocation in the FAT driver, which is not written yet.
+With the write flag, opens an existing file for writing or creates one with the create flag. Truncate and append apply at open; writes allocate and extend FAT cluster chains as needed.
 
 ## `close`  <sub>#11</sub>
 
@@ -616,11 +619,12 @@ A keyboard another program is holding is refused rather than shared: two program
 
 ## `kill`  <sub>#34</sub>
 
-End another process.
+End another process, now or by asking it.
 
 | arg | type | meaning |
 |---|---|---|
 | `pid` | uint | Process to end. |
+| `how` | uint | An Ending: 0 now, 1 ask. |
 
 **Returns:** 0 on success
 
@@ -628,8 +632,10 @@ End another process.
 
 - `ENOENT`, no such file or directory
 - `EPERM`, the operation is not allowed on that object
+- `ENOTCONN`, the process watches no quit event, so it cannot be asked
+- `EINVAL`, an argument is out of range
 
-There are no signals: this ends the process, it does not ask it to. The process dies at its next return to userspace, so kernel state it holds is unwound rather than abandoned; one blocked or sleeping is woken so that happens at once. Ending `init` is refused, since nothing would collect what it adopts.
+There are no signals. `now` ends the process: it dies at its next return to userspace, so kernel state it holds is unwound rather than abandoned, and one blocked or sleeping is woken so that happens at once. `ask` raises the quit event the process watches and leaves the ending to it, which is how a service finishes what it holds before it goes; a process watching nothing cannot be asked, and the caller ends it. Ending `init` is refused, since nothing would collect what it adopts.
 
 ## `pipe`  <sub>#35</sub>
 
@@ -761,7 +767,7 @@ Map a device's registers into this process.
 - `EINVAL`, an argument is out of range
 - `ENOMEM`, no handle slots free, or the buffer is too small
 
-Needs the driver capability. Mapped uncached, since a write to a register that sat in the cache would never reach the device, and marked as belonging elsewhere so ending the process unmaps it without handing device memory to the page allocator. There is no unmap: a driver that has finished with its device is a driver that should exit.
+Needs the driver capability. Mapped uncached, since a write to a register that sat in the cache would never reach the device, and marked as belonging elsewhere so ending the process unmaps it without handing device memory to the page allocator. There is no unmap: a driver that has finished with its device is a driver that should exit. What it maps is any physical range the page allocator does not own, on the driver's word: an aperture above RAM, or the firmware's tables inside it. That is the contract rather than a bounded window, because a driver that could only map what the kernel had enumerated could not bring up a device the kernel does not know. The trust is the capability's, held by the first-party drivers in etc/services and nothing else.
 
 ## `tty_mode`  <sub>#42</sub>
 
@@ -785,7 +791,7 @@ An event that fires when something happens.
 
 | arg | type | meaning |
 |---|---|---|
-| `what` | uint | A Watchable: 0 keys, 1 pointer, 2 children, 3 stop (Ctrl+C). |
+| `what` | uint | A Watchable: 0 keys, 1 pointer, 2 children, 3 stop (Ctrl+C), 4 quit (asked to end), 5 registry (a name came or went). |
 
 **Returns:** an event handle
 
@@ -1178,6 +1184,34 @@ Set the wall clock from a trustworthy source.
 
 Needs the time capability. The offset is what is stored, so the clock keeps running from the monotonic counter and a correction steps it rather than restarting it. Measuring an interval across a call to this is what clock_us is for.
 
+## `shm_size`  <sub>#65</sub>
+
+How many bytes a segment holds.
+
+| arg | type | meaning |
+|---|---|---|
+| `handle` | handle | A segment, from shm_create or received over a channel. |
+
+**Returns:** the segment's size in bytes
+
+**Errors:**
+
+- `EBADF`, the handle is not open in this process
+
+For whoever is handed a segment and told what is in it: a compositor given a surface and its geometry checks the geometry against this before reading a pixel, because the geometry is the client's word and the size is the kernel's.
+
+## `sync`  <sub>#66</sub>
+
+Push everything written so far through to the media.
+
+**Returns:** 0
+
+**Errors:**
+
+- `EIO`, the underlying device failed
+
+Every write already reaches the device: the block cache is write-through. What this adds is the device's own flush, so that what the drive has accepted into its cache is on the medium before the call returns. A program that has just replaced a file it must not lose calls this after the rename; nothing calls it after every write, because that would make every write as slow as a flush. Best effort on a drive whose firmware says it cannot: the call still returns, and the residual is the drive's, not the host's.
+
 ---
 
-65 calls defined.
+67 calls defined.
