@@ -21,7 +21,13 @@ pub const WIDTH: usize = 12;
 pub const HEIGHT: usize = 12;
 /// Two bytes a row, because twelve pixels do not fit in one.
 pub const ROW_BYTES: usize = 2;
-const BYTES: usize = HEIGHT * ROW_BYTES;
+/// The bytes one picture packs to.
+pub const BYTES: usize = HEIGHT * ROW_BYTES;
+
+/// One picture, packed: what `of` hands out for a named icon, and what a
+/// program's own picture is once `pack` has made it. A pointer to the bytes
+/// rather than the bytes, so a rail row or a tile carries a word, not a copy.
+pub const Glyph = *const [BYTES]u8;
 
 /// The picture a sort of file gets. One rule for the system: a listing, a
 /// preview pane and a launcher row draw the same file the same way, and a
@@ -792,9 +798,59 @@ pub fn rows(which: Icon) []const u8 {
     return packed_bits[at..][0..BYTES];
 }
 
+/// A named icon as a glyph, for anything that takes a caller's own picture.
+pub fn of(which: Icon) Glyph {
+    return packed_bits[@intFromEnum(which) * BYTES ..][0..BYTES];
+}
+
+/// Pack a picture written as rows of dots and hashes, the way the icons here
+/// are written, into the bytes the surface draws. At compile time, so a
+/// program's own pictures cost nothing at run time, and a row of the wrong
+/// length or a picture sitting off centre in its cell is refused before it
+/// ships rather than looking like a layout bug in whichever window somebody
+/// notices it in.
+pub fn pack(comptime picture: [HEIGHT][]const u8) [BYTES]u8 {
+    // A picture is a hundred and forty-four cells of arithmetic done once at
+    // compile time; a program packing a handful in one initialiser is past
+    // the default allowance.
+    @setEvalBranchQuota(20_000);
+    comptime {
+        var top: ?usize = null;
+        var bottom: usize = 0;
+        for (picture, 0..) |row, y| {
+            if (row.len != WIDTH) @compileError("a picture row is twelve cells wide");
+            for (row) |cell| {
+                if (cell != '#') continue;
+                if (top == null) top = y;
+                bottom = y;
+                break;
+            }
+        }
+        if (top) |first| {
+            const twice = first + bottom;
+            if (twice < 10 or twice > 12) @compileError("a picture is drawn centred in its cell");
+        }
+    }
+
+    var out: [BYTES]u8 = @splat(0);
+    inline for (picture, 0..) |row, y| {
+        inline for (row, 0..) |cell, x| {
+            if (cell == '#') out[y * ROW_BYTES + x / 8] |= @as(u8, 0x80) >> @intCast(x % 8);
+        }
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+test "a caller's picture packs to the same bytes a named icon does" {
+    // The document icon, redrawn by hand, packs to the document's own bytes.
+    const again = pack(art[@intFromEnum(Icon.document)].rows);
+    try std.testing.expectEqualSlices(u8, rows(.document), &again);
+    try std.testing.expectEqualSlices(u8, rows(.document), of(.document));
+}
 
 const testing = std.testing;
 

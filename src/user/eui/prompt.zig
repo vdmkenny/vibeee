@@ -99,9 +99,16 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
 
     const t = theme.current();
     const bar = sheet(area);
-    ctx.surface.fill(bar, t.surface);
-    ctx.surface.fill(.{ .x = bar.x, .y = bar.y, .w = bar.w, .h = 1 }, t.line);
-    ctx.addDamage(bar);
+    // The ground and its rule are painted with everything else, on a pass
+    // that repaints the window, and never on their own: the words and the
+    // buttons on the sheet keep themselves, and a ground painted under them
+    // on a quiet pass would wipe them. The program that puts the question
+    // damages the window, so the sheet's first pass is a whole one.
+    if (ctx.damaged) {
+        ctx.surface.fill(bar, t.surface);
+        ctx.surface.fill(.{ .x = bar.x, .y = bar.y, .w = bar.w, .h = 1 }, t.line);
+        ctx.addDamage(bar);
+    }
 
     var labels: [MAX_CHOICES][]const u8 = undefined;
     for (state.choices, 0..) |choice, i| labels[i] = choice.label;

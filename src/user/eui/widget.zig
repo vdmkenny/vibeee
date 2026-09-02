@@ -1122,18 +1122,27 @@ pub const Context = struct {
         return next;
     }
 
-    pub fn progress(self: *Context, area: Rect, fraction: u8) void {
+    /// How a progress bar is filled. The accent unless a caller says
+    /// otherwise: a bar that has turned into a warning is red, and says so
+    /// in the one colour the theme keeps for it.
+    pub const ProgressStyle = struct {
+        colour: ?draw.Color = null,
+    };
+
+    pub fn progress(self: *Context, area: Rect, fraction: u8, style: ProgressStyle) void {
         const entry = self.slotFor(area) orelse return;
         entry.seen = true;
 
-        // Compared on the filled width rather than the percentage: what shows
-        // is pixels, and two percentages that round to the same width need no
-        // repaint.
+        // Compared on the filled width and the colour: what shows is pixels
+        // in a colour, and two percentages that round to the same width in
+        // the same colour need no repaint.
+        const colour = style.colour orelse theme.current().accent;
         const filled = filledWidth(area, fraction);
+        const shown: i32 = filled ^ @as(i32, @bitCast(colour));
 
-        if (self.damaged or entry.detail != filled) {
-            entry.detail = filled;
-            paintBar(self.surface, area, fraction, theme.current().accent);
+        if (self.damaged or entry.detail != shown) {
+            entry.detail = shown;
+            paintBar(self.surface, area, fraction, colour);
             self.addDamage(area);
         }
     }
@@ -1257,7 +1266,9 @@ fn paintRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, styl
 
     const clipped = surface.clipped(area);
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    if (item.icon) |which| {
+    if (item.glyph) |picture| {
+        clipped.picture(area.x + t.menu_padding, Surface.iconTopFor(baseline), picture, ink);
+    } else if (item.icon) |which| {
         clipped.icon(area.x + t.menu_padding, Surface.iconTopFor(baseline), which, ink);
     }
     clipped.text(

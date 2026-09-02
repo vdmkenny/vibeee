@@ -334,11 +334,13 @@ parked there.
   other's: what belongs in `lib` is one recogniser with both doors, a cheap one
   from the name and a certain one from the bytes, so the icon a listing draws
   and the kind `file` reports cannot disagree.
-- **A program cannot carry its own icon.** The launcher draws a picture per row
-  from a list the window manager holds, so a program the manager has never heard
-  of has no picture and adding one means editing the manager. What it wants is
-  the icon in the program's own binary, with the shell's own set as the fallback:
-  design/10-gui.md §6.7 says the shape.
+- **The launcher cannot draw a program's own icon.** A program carries its own
+  pictures in the toolkit's format now, packed at compile time, and hands them to
+  its rail rows, headings and tiles; what it cannot do is hand one to the
+  launcher, which draws a picture per row from a list the window manager holds, so
+  a program under home has no picture there. What that wants is the icon in the
+  program's own binary, with the shell's own set as the fallback: design/10-gui.md
+  §6.7 says the shape.
 - **The radio hears nothing yet.** `ar2425` brings the chip up, proves which
   silicon it is, reads its store, and now lays its descriptor chains and sets it
   listening. What is missing between that and a network is the soft MAC: a

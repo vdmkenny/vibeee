@@ -1071,7 +1071,7 @@ fn drawThermal(pane: eui.Rect, from: i32) i32 {
         }
 
         ctx.labelDim(.{ .x = pane.x, .y = y + 2, .w = label_w, .h = t.control_height }, zone.named());
-        ctx.progress(.{ .x = pane.x + label_w, .y = y + 6, .w = bar_w, .h = 10 }, share);
+        ctx.progress(.{ .x = pane.x + label_w, .y = y + 6, .w = bar_w, .h = 10 }, share, .{});
         ctx.label(
             .{ .x = pane.x + label_w + bar_w + t.gap, .y = y + 2, .w = pane.w, .h = t.control_height },
             line.done(),

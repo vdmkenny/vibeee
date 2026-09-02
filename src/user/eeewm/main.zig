@@ -334,6 +334,7 @@ fn paintContent(area: Rect) void {
     ctx.progress(
         .{ .x = row.x, .y = row.bottom() + t.control_height + t.padding * 2, .w = row.w, .h = 10 },
         @intCast(@min(clicks * 20, 100)),
+        .{},
     );
 
     ctx.end();

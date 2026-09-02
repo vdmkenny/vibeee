@@ -220,6 +220,11 @@ pub const Surface = struct {
 
     /// A named picture, which is a bitmap with a name rather than a code
     /// point and goes through the same expansion a letter does.
+    /// A caller's own picture, in the icons' format and at their size.
+    pub fn picture(self: Surface, x: i32, y: i32, glyph_bits: icons.Glyph, color: Color) void {
+        self.bitmapAt(x, y, glyph_bits, icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
+    }
+
     pub fn icon(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color) void {
         self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
     }

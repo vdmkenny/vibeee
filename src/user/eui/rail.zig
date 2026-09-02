@@ -27,13 +27,16 @@ const Rect = draw.Rect;
 pub const Item = struct {
     label: []const u8,
     icon: ?icons.Icon = null,
+    /// A picture of the program's own, in the toolkit's format, for a row
+    /// the toolkit has no name for. Drawn where the icon would be.
+    glyph: ?icons.Glyph = null,
 };
 
 /// Whether any row carries a picture, which decides the indent for all of
 /// them.
 pub fn marked(items: []const Item) bool {
     for (items) |item| {
-        if (item.icon != null) return true;
+        if (item.icon != null or item.glyph != null) return true;
     }
     return false;
 }

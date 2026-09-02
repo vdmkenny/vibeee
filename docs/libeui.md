@@ -86,7 +86,7 @@ with it this pass.
 | `rowText` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
 | `pips` | `fn (*widget.Context, draw.Rect, usize, usize) usize` |
 | `stepper` | `fn (*widget.Context, draw.Rect, slider.Range, i32) i32` |
-| `progress` | `fn (*widget.Context, draw.Rect, u8) void` |
+| `progress` | `fn (*widget.Context, draw.Rect, u8, Context.ProgressStyle) void` |
 
 ## The pass
 
@@ -313,11 +313,32 @@ A label and what it says, in two columns.
 | `height` | `fn () i32` |
 | `heightIn` | `fn (draw.Rect) i32` |
 | `one` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8) i32` |
+| `columnFor` | `fn (draw.Rect, []const facts.Fact) i32` |
+| `oneWith` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8, i32) i32` |
 | `all` | `fn (*widget.Context, draw.Rect, i32, []const facts.Fact) i32` |
+
+### `eui.figure`
+
+A figure with its name: one number, large, on a tile with a dim label above it.
+
+| call | signature |
+|---|---|
+| `height` | `fn () i32` |
+| `figureRect` | `fn (draw.Rect) draw.Rect` |
+| `paint` | `fn (draw.Surface, draw.Rect, []const u8, []const u8, ?*const [24]u8) void` |
 
 ### `eui.grid`
 
 Equal cells in a rectangle.
+
+### `eui.heading`
+
+A section's title inside a pane.
+
+| call | signature |
+|---|---|
+| `height` | `fn () i32` |
+| `paint` | `fn (draw.Surface, draw.Rect, []const u8, ?*const [24]u8) void` |
 
 ### `eui.pips`
 
