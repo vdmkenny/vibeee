@@ -24,6 +24,7 @@ const out = @import("ulib").out;
 const str = @import("lib").str;
 const civil = @import("lib").civil;
 const hero = @import("journal.zig");
+const dice = @import("dice.zig");
 
 const theme = eui.theme;
 const Rect = eui.Rect;
@@ -117,9 +118,12 @@ var headshot_of_len: usize = 0;
 /// on the stack, which a picture would overflow.
 var headshot_file: [96 * 1024]u8 = undefined;
 
-/// The dice, seeded from the clock the first time something is rolled.
-var dice: std.Random.DefaultPrng = undefined;
-var dice_seeded = false;
+/// The dice window, opened by whatever asks for a roll.
+var dice_window: dice.Window = .{};
+
+/// How much of the journal was on the medium at the last load or save, so
+/// what was written since can be taken back a line at a time.
+var saved_len: usize = 0;
 
 // ---------------------------------------------------------------------------
 // The helpers: a question on the prompt sheet, and the line its answer writes
@@ -129,12 +133,11 @@ var prompt: eui.prompt.Prompt = .{};
 var question_buffer: [96]u8 = @splat(0);
 
 /// What the sheet is asking, so its answer knows which line to write. Some
-/// carry the subject the question is about: which skill is rolled, which
-/// spell is cast.
+/// carry the subject the question is about: which spell is cast, which fact
+/// of the character the line sets.
 const Helper = union(enum) {
     none,
     close,
-    roll: RollWhat,
     damage,
     heal,
     temp,
@@ -143,20 +146,28 @@ const Helper = union(enum) {
     gold_get,
     rest,
     cast: usize,
+    fact: Form,
+    new_character,
+    level_up,
 };
 
+/// What a roll is for, which is what fills the dice window in.
 const RollWhat = union(enum) {
     skill: hero.Skill,
     save: hero.Ability,
     attack: usize,
+    damage: usize,
     plain,
+    free,
 
-    fn label(self: RollWhat) []const u8 {
+    fn label(self: RollWhat, buf: []u8) []const u8 {
         return switch (self) {
-            .skill => |s| s.word(),
-            .save => |a| a.word(),
-            .attack => |i| if (i < sheet.attacks.len) sheet.attacks.slice()[i].name else "Attack",
+            .skill => |s| std.fmt.bufPrint(buf, "{s} check", .{s.word()}) catch s.word(),
+            .save => |a| std.fmt.bufPrint(buf, "{s} save", .{a.word()}) catch a.word(),
+            .attack => |i| attackName(i),
+            .damage => |i| std.fmt.bufPrint(buf, "{s} damage", .{attackName(i)}) catch "Damage",
             .plain => "d20",
+            .free => "Dice",
         };
     }
 
@@ -165,15 +176,54 @@ const RollWhat = union(enum) {
             .skill => |s| sheet.skillBonus(s),
             .save => |a| sheet.saveBonus(a),
             .attack => |i| attackBonus(i),
-            .plain => 0,
+            .damage => |i| if (hero.Dice.parse(attackDamage(i))) |d| d.bonus else 0,
+            .plain, .free => 0,
         };
-        return bonus + sheet.exhaustionPenalty();
+        return if (self.isTest()) bonus + sheet.exhaustionPenalty() else bonus;
+    }
+
+    /// A d20 test, which exhaustion and the conditions weigh on.
+    fn isTest(self: RollWhat) bool {
+        return switch (self) {
+            .skill, .save, .attack, .plain => true,
+            .damage, .free => false,
+        };
+    }
+
+    /// A condition on the sheet that sets the mode before the window opens:
+    /// poisoned and frightened weigh on checks and attacks, prone on attacks,
+    /// and none of them on a save.
+    fn hindrance(self: RollWhat) ?[]const u8 {
+        const names: []const []const u8 = switch (self) {
+            .skill, .plain => &.{ "Poisoned", "Frightened" },
+            .attack => &.{ "Poisoned", "Frightened", "Prone" },
+            .save, .damage, .free => &.{},
+        };
+        for (names) |name| {
+            if (sheet.hasCondition(name)) return name;
+        }
+        return null;
     }
 };
 
+fn attackName(index: usize) []const u8 {
+    return if (index < sheet.attacks.len) sheet.attacks.slice()[index].name else "Attack";
+}
+
+fn attackDamage(index: usize) []const u8 {
+    return if (index < sheet.attacks.len) sheet.attacks.slice()[index].damage else "";
+}
+
+fn attackHit(index: usize) []const u8 {
+    return if (index < sheet.attacks.len) sheet.attacks.slice()[index].hit else "+0";
+}
+
 var pending: Helper = .none;
 
+/// What the menus and their shortcuts ask for. The Character menu's facts
+/// are a `Form` each, carried in the same id space above the commands.
 const Command = enum(u16) {
+    new,
     open,
     save,
     save_as,
@@ -184,17 +234,49 @@ const Command = enum(u16) {
     hitdie,
     pay,
     receive,
+    use_one,
+    drop_selected,
     inspiration,
+    innate_use,
+    level_up,
     new_session,
     note,
+    undo,
     roll_check,
     roll_attack,
-    roll_plain,
+    roll_damage,
+    roll_free,
     rest,
     long_rest,
     short_rest,
     status_bar,
 };
+
+const FORM_ID_BASE: u16 = 1000;
+
+fn idOf(form: Form) u16 {
+    return FORM_ID_BASE + @intFromEnum(form);
+}
+
+/// A menu id back to what it asks for.
+fn runId(id: u16) void {
+    if (id >= FORM_ID_BASE) askFact(@enumFromInt(id - FORM_ID_BASE)) else run(@enumFromInt(id));
+}
+
+/// The Character menu: a new character, then one item per fact the sheet is
+/// built from, in the order a sheet reads them. Built from the forms so a
+/// form added turns up here without being listed twice.
+const CHARACTER_ITEMS = blk: {
+    var items: [MENU_FORMS.len + 2]eui.menubar.Item = undefined;
+    items[0] = .{ .label = "New character...", .id = @intFromEnum(Command.new) };
+    items[1] = eui.menubar.Item.separator;
+    for (MENU_FORMS, 0..) |form, i| items[i + 2] = .{ .label = form.label(), .id = idOf(form) };
+    break :blk items;
+};
+
+comptime {
+    std.debug.assert(CHARACTER_ITEMS.len <= eui.menubar.MAX_ITEMS);
+}
 
 const MENUS = [_]eui.menubar.Menu{
     .{ .label = "File", .items = &.{
@@ -212,15 +294,22 @@ const MENUS = [_]eui.menubar.Menu{
         eui.menubar.Item.separator,
         .{ .label = "Pay gold...", .id = @intFromEnum(Command.pay) },
         .{ .label = "Receive gold...", .id = @intFromEnum(Command.receive) },
+        .{ .label = "Use one of the item", .id = @intFromEnum(Command.use_one) },
+        .{ .label = "Drop the selected", .id = @intFromEnum(Command.drop_selected) },
         eui.menubar.Item.separator,
         .{ .label = "Heroic Inspiration", .id = @intFromEnum(Command.inspiration) },
+        .{ .label = "Use the innate feature", .id = @intFromEnum(Command.innate_use) },
+        .{ .label = "Level up...", .id = @intFromEnum(Command.level_up) },
         .{ .label = "New session", .id = @intFromEnum(Command.new_session) },
         .{ .label = "Note", .id = @intFromEnum(Command.note), .shortcut = "Ctrl+N" },
+        .{ .label = "Take back the last line", .id = @intFromEnum(Command.undo), .shortcut = "Ctrl+Z" },
     } },
+    .{ .label = "Character", .items = &CHARACTER_ITEMS },
     .{ .label = "Roll", .items = &.{
         .{ .label = "Skill check...", .id = @intFromEnum(Command.roll_check), .shortcut = "Ctrl+R" },
         .{ .label = "Attack...", .id = @intFromEnum(Command.roll_attack) },
-        .{ .label = "A d20", .id = @intFromEnum(Command.roll_plain) },
+        .{ .label = "Damage...", .id = @intFromEnum(Command.roll_damage) },
+        .{ .label = "Dice...", .id = @intFromEnum(Command.roll_free) },
     } },
     .{ .label = "Rest", .items = &.{
         .{ .label = "Rest...", .id = @intFromEnum(Command.rest) },
@@ -232,6 +321,113 @@ const MENUS = [_]eui.menubar.Menu{
         .{ .label = "Status bar", .id = @intFromEnum(Command.status_bar) },
     } },
 };
+
+/// A fact of the character as a line of a question: what to ask, which
+/// keywords the answer sets, and how the answer splits between them. One
+/// form asks for what one line of the sheet says, so a character is built
+/// in the order its sheet reads, and corrected the same way.
+const Form = enum {
+    name,
+    class_level,
+    origin,
+    player_picture,
+    scores,
+    saves,
+    skills,
+    expertise,
+    hp_die,
+    ac_speed,
+    casting,
+    innate,
+    training,
+    coins,
+    attack,
+    spell,
+    item,
+    feature,
+
+    /// The menu's word for it.
+    fn label(self: Form) []const u8 {
+        return switch (self) {
+            .name => "Name...",
+            .class_level => "Class and level...",
+            .origin => "Origin...",
+            .player_picture => "Player and picture...",
+            .scores => "Ability scores...",
+            .saves => "Saving throws...",
+            .skills => "Skills...",
+            .expertise => "Expertise...",
+            .hp_die => "Hit points and die...",
+            .ac_speed => "Armour class and speed...",
+            .casting => "Spellcasting and slots...",
+            .innate => "Innate feature...",
+            .training => "Training...",
+            .coins => "Coins...",
+            .attack => "Add attack...",
+            .spell => "Add spell...",
+            .item => "Add item...",
+            .feature => "Add feature...",
+        };
+    }
+
+    /// The question, which names the parts in the order they are typed.
+    fn question(self: Form) []const u8 {
+        return switch (self) {
+            .name => "Name",
+            .class_level => "Class | level",
+            .origin => "Species | background | alignment | size",
+            .player_picture => "Player | picture file",
+            .scores => "Str Dex Con Int Wis Cha",
+            .saves => "Saves: str dex con int wis cha",
+            .skills => "Skills, by key",
+            .expertise => "Expertise, by key",
+            .hp_die => "Hit points | hit die",
+            .ac_speed => "Armour class | speed",
+            .casting => "Ability | slots by level",
+            .innate => "Uses | name",
+            .training => "Weapons | tools | languages | armour",
+            .coins => "cp sp ep gp pp",
+            .attack => "Name | to hit | damage | notes",
+            .spell => "Name | level | time | range | notes",
+            .item => "Name | quantity | weight",
+            .feature => "Name | note",
+        };
+    }
+
+    /// The keywords the parts set, one each; a single keyword takes the
+    /// whole line.
+    fn keywords(self: Form) []const hero.Keyword {
+        return switch (self) {
+            .name => &.{.name},
+            .class_level => &.{ .class, .level },
+            .origin => &.{ .species, .background, .alignment, .size },
+            .player_picture => &.{ .player, .picture },
+            .scores => &.{ .str, .dex, .con, .int, .wis, .cha },
+            .saves => &.{.saves},
+            .skills => &.{.skills},
+            .expertise => &.{.expertise},
+            .hp_die => &.{ .hp, .@"hit-die" },
+            .ac_speed => &.{ .ac, .speed },
+            .casting => &.{ .spellcasting, .slots },
+            .innate => &.{.innate},
+            .training => &.{ .weapons, .tools, .languages, .armour },
+            .coins => &.{.coins},
+            .attack => &.{.attack},
+            .spell => &.{.spell},
+            .item => &.{.item},
+            .feature => &.{.feature},
+        };
+    }
+
+    /// Whether the parts are words rather than ` | ` pieces.
+    fn byWords(self: Form) bool {
+        return self == .scores;
+    }
+};
+
+/// The forms the Character menu lists: the facts, in a sheet's order. The
+/// four that add a row live on their panes, beside the rows they add to.
+const MENU_FORMS = [_]Form{ .name, .class_level, .origin, .player_picture, .scores, .saves, .skills, .expertise, .hp_die, .ac_speed, .casting, .innate, .training, .coins };
 
 /// What View turns off. On to start with.
 var show_status = true;
@@ -260,7 +456,7 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
         .draw = draw,
         .key = key,
         .text = typed,
-        .event = ownDialog,
+        .event = ownWindows,
         .close = mayClose,
     });
 }
@@ -304,6 +500,7 @@ fn load() void {
     }
 
     refold();
+    saved_len = text_len;
     modified = false;
     setTitle();
     loadHeadshot();
@@ -342,6 +539,7 @@ fn save() void {
     }
     _ = sys.sync();
 
+    saved_len = text_len;
     modified = false;
     say("Saved.");
     setTitle();
@@ -352,8 +550,19 @@ fn refold() void {
 }
 
 /// Add one journal line and read the file back. The screen is the fold, so
-/// nothing shows until the line is in the file.
+/// nothing shows until the line is in the file. A moment of play on a day
+/// the journal has not seen gets a session heading first, so the journal
+/// reads by session without anyone having to remember to start one.
 fn append(line: []const u8) void {
+    if (line.len == 0) return;
+    const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
+    if (hero.Keyword.parse(line[0..space])) |k| {
+        if (!k.isFact() and k != .session) ensureSession();
+    }
+    appendLine(line);
+}
+
+fn appendLine(line: []const u8) void {
     if (line.len == 0) return;
     // A newline before it, unless the file is empty or already ends in one.
     if (text_len > 0 and storage[text_len - 1] != '\n') {
@@ -427,8 +636,12 @@ fn resolve(picture: []const u8, buf: []u8) []const u8 {
 
 fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
     if (prompt.isOpen()) {
-        if (eui.prompt.key(&prompt, code)) |choice| answer(choice);
-        return true;
+        if (eui.prompt.key(&prompt, code)) |choice| {
+            answer(choice);
+            return true;
+        }
+        // A question with a field in it keeps the other keys for the field.
+        return !prompt.takesText();
     }
     // The sections are walked from the keyboard, so a machine with no pointer
     // and a machine with one reach the same six panes.
@@ -440,22 +653,36 @@ fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
         .ignored => false,
         .taken => true,
         .chosen => |id| blk: {
-            run(@enumFromInt(id));
+            runId(id);
             break :blk true;
         },
     };
 }
 
 fn typed(codepoint: u32) bool {
-    if (!prompt.isOpen()) return false;
+    if (!prompt.isOpen() or prompt.takesText()) return false;
     if (eui.prompt.letter(&prompt, codepoint)) |choice| answer(choice);
     return true;
 }
 
-fn ownDialog(event: proto.wm.Ev) bool {
-    if (!dialog.owns(event)) return false;
-    if (dialog.handle(connection, event)) finishFile();
-    return true;
+/// The file dialog's events are its own, and the dice window's are its own:
+/// what the dice hand back is written down here.
+fn ownWindows(event: proto.wm.Ev) bool {
+    if (dialog.owns(event)) {
+        if (dialog.handle(connection, event)) finishFile();
+        return true;
+    }
+    if (dice_window.owns(event)) {
+        dice_window.handle(connection, event);
+        if (dice_window.take()) |outcome| recordRoll(outcome);
+        switch (dice_window.wish) {
+            .nothing => {},
+            .close => dice_window.hide(connection),
+            .damage => askRoll(.{ .damage = rolling_attack }),
+        }
+        return true;
+    }
+    return false;
 }
 
 fn mayClose() bool {
@@ -482,19 +709,9 @@ const REST_CHOICES = [_]eui.prompt.Choice{
     .{ .label = "Cancel" },
 };
 
-// Normal first: Enter takes the first choice, and a plain roll is what
-// Enter should mean. Advantage and disadvantage answer to their letters. The
-// order is the journal's `Roll`, which is what the answer becomes.
-const ROLL_CHOICES = [_]eui.prompt.Choice{
-    .{ .label = "Normal", .letter = 'n', .weight = .strong },
-    .{ .label = "Advantage", .letter = 'a' },
-    .{ .label = "Disadvantage", .letter = 'd' },
-};
-
 comptime {
     std.debug.assert(CLOSE_CHOICES.len == std.enums.values(CloseChoice).len);
     std.debug.assert(REST_CHOICES.len == std.enums.values(RestChoice).len);
-    std.debug.assert(ROLL_CHOICES.len == std.enums.values(hero.Roll).len);
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +720,7 @@ comptime {
 
 fn run(command: Command) void {
     switch (command) {
+        .new => askNewCharacter(),
         .open => askFile(.open),
         .save => save(),
         .save_as => askFile(.save),
@@ -513,12 +731,18 @@ fn run(command: Command) void {
         .hitdie => spendHitDie(),
         .pay => askAmount(.gold_pay, "Pay how much gold?", 1, 99999),
         .receive => askAmount(.gold_get, "Receive how much gold?", 1, 99999),
+        .use_one => useOne(),
+        .drop_selected => dropSelected(),
         .inspiration => append(hero.writeInspiration(&line_buffer, hero.Switch.of(!sheet.inspiration))),
+        .innate_use => useInnate(),
+        .level_up => askLevelUp(),
         .new_session => newSession(),
         .note => setSection(.journal),
+        .undo => undo(),
         .roll_check => askRoll(.{ .skill = @enumFromInt(@min(skills_table.selected, std.enums.values(hero.Skill).len - 1)) }),
         .roll_attack => if (sheet.attacks.len > 0) askRoll(.{ .attack = @min(attacks_table.selected, sheet.attacks.len - 1) }) else say("No attacks written."),
-        .roll_plain => askRoll(.plain),
+        .roll_damage => if (sheet.attacks.len > 0) askRoll(.{ .damage = @min(attacks_table.selected, sheet.attacks.len - 1) }) else say("No attacks written."),
+        .roll_free => askRoll(.free),
         .rest => askRest(),
         .long_rest => append(hero.writeRest(&line_buffer, .long)),
         .short_rest => append(hero.writeRest(&line_buffer, .short)),
@@ -536,7 +760,7 @@ fn spendHitDie() void {
     }
     // Rolled for the player and offered: the die plus Constitution, which they
     // may correct before it is written.
-    const rolled: i32 = @intCast(rollDie(sheet.hit_die));
+    const rolled: i32 = @intCast(dice.rollDie(sheet.hit_die));
     const healed = @max(1, rolled + sheet.modifier(.con));
     askAmount(.hitdie, "The hit die heals how much?", healed, sheet.hit_die + 10);
 }
@@ -547,7 +771,30 @@ fn newSession() void {
     const number = sessionCount() + 1;
     var date_buf: [16]u8 = @splat(0);
     const date = today(&date_buf);
-    append(hero.writeSession(&line_buffer, number, date));
+    appendLine(hero.writeSession(&line_buffer, number, date));
+}
+
+/// A session heading for today, unless the last heading is today's already.
+/// Without a clock there is no today, and the headings are a person's to
+/// write.
+fn ensureSession() void {
+    var date_buf: [16]u8 = @splat(0);
+    const day = today(&date_buf);
+    if (day.len == 0 or std.mem.eql(u8, day, lastSessionDay())) return;
+    var line: [32]u8 = @splat(0);
+    appendLine(hero.writeSession(&line, sessionCount() + 1, day));
+}
+
+/// The day the last session heading names, or nothing.
+fn lastSessionDay() []const u8 {
+    var day: []const u8 = "";
+    var lines = std.mem.splitScalar(u8, storage[0..text_len], '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+        if (hero.Keyword.parse(line[0..space]) == .session) day = hero.part(std.mem.trim(u8, line[space + 1 ..], " \t"), 1);
+    }
+    return day;
 }
 
 /// How many session headings the file already has, so the next is one more.
@@ -605,6 +852,11 @@ fn askRest() void {
 fn answer(choice: usize) void {
     const helper = pending;
     const number = prompt.number();
+    // The line typed, copied out before the question is dismissed with it.
+    var typed_buf: [eui.prompt.TEXT_MAX]u8 = undefined;
+    const typed_raw = prompt.line();
+    @memcpy(typed_buf[0..typed_raw.len], typed_raw);
+    const line = std.mem.trim(u8, typed_buf[0..typed_raw.len], " \t");
     prompt.dismiss();
     pending = .none;
     ctx.damage();
@@ -619,9 +871,9 @@ fn answer(choice: usize) void {
             .discard => sys.exit(0),
             .cancel => {},
         },
-        .roll => |what| {
-            if (choice < ROLL_CHOICES.len) doRoll(what, @enumFromInt(choice));
-        },
+        .fact => |form| if (choice == 0) applyFact(form, line),
+        .new_character => if (choice == 0) newCharacter(line),
+        .level_up => if (choice == 0) levelUp(number),
         .damage => if (choice == 0) append(hero.writeDamage(&line_buffer, @intCast(number), "")),
         .heal => if (choice == 0) append(hero.writeHeal(&line_buffer, @intCast(number), "")),
         .temp => if (choice == 0) append(hero.writeTemp(&line_buffer, @intCast(number))),
@@ -643,40 +895,90 @@ fn castSpell(index: usize) void {
     append(hero.writeCast(&line_buffer, spell.level, spell.name));
 }
 
-/// One die, from a generator seeded by the clock the first time it is asked.
-fn rollDie(faces: u8) u8 {
-    if (!dice_seeded) {
-        const seed: u64 = @bitCast(sys.realtimeMicros() orelse @as(i64, @intCast(sys.clockMicros())));
-        dice = std.Random.DefaultPrng.init(seed);
-        dice_seeded = true;
+// ---------------------------------------------------------------------------
+// Rolling: the dice window, filled in by what asked
+// ---------------------------------------------------------------------------
+
+/// Which attack the window was opened for, so its Damage button knows whose.
+var rolling_attack: usize = 0;
+var roll_title: [48]u8 = @splat(0);
+var roll_sub: [96]u8 = @splat(0);
+
+/// Open the dice over the sheet, filled in: the words, the dice, the bonus,
+/// and disadvantage when a condition on the sheet gives it.
+fn askRoll(what: RollWhat) void {
+    var setup = dice.Setup{ .title = what.label(&roll_title), .bonus = what.modifier() };
+    var sub = str.Builder{ .buf = &roll_sub };
+    switch (what) {
+        .skill => |s| {
+            sub.text(s.ability().word());
+            sub.byte(' ');
+            signedTight(&sub, sheet.modifier(s.ability()));
+            if (sheet.skill_expert.contains(s)) {
+                sub.text(" \u{b7} expert +");
+                sub.number(@intCast(sheet.proficiency() * 2));
+            } else if (sheet.skill_prof.contains(s)) {
+                sub.text(" \u{b7} proficient +");
+                sub.number(@intCast(sheet.proficiency()));
+            }
+        },
+        .save => |a| {
+            sub.text(a.word());
+            sub.byte(' ');
+            signedTight(&sub, sheet.modifier(a));
+            if (sheet.save_prof.contains(a)) {
+                sub.text(" \u{b7} proficient +");
+                sub.number(@intCast(sheet.proficiency()));
+            }
+        },
+        .attack => |i| {
+            rolling_attack = i;
+            setup.attack = true;
+            sub.text(attackHit(i));
+            sub.text(" to hit \u{b7} ");
+            sub.text(attackDamage(i));
+        },
+        .damage => |i| {
+            const d = hero.Dice.parse(attackDamage(i)) orelse {
+                say("No dice on the attack line.");
+                return;
+            };
+            setup.face = dice.Face.of(d.faces) orelse .d6;
+            setup.count = d.count;
+            sub.text(attackDamage(i));
+            sub.text(" \u{b7} from the attack line");
+        },
+        .plain => sub.text("A bare d20"),
+        .free => sub.text("Any dice, any number, any bonus"),
     }
-    return dice.random().intRangeAtMost(u8, 1, @max(faces, 1));
+    if (what.isTest() and sheet.exhaustion > 0) {
+        sub.text(" \u{b7} exhaustion ");
+        signedTight(&sub, sheet.exhaustionPenalty());
+    }
+    if (what.hindrance()) |name| {
+        setup.mode = .disadvantage;
+        sub.text(" \u{b7} disadvantage: ");
+        sub.text(name);
+    }
+    setup.sub = sub.done();
+    dice_window.glyph = &die;
+    dice_window.show(connection, setup) catch say("Cannot open the dice.");
 }
 
-/// Roll a d20, keeping the higher of two for advantage and the lower for
-/// disadvantage, apply the modifier and the exhaustion penalty, and write the
-/// die kept so the total on the status line can be checked against the file.
-fn doRoll(what: RollWhat, how: hero.Roll) void {
-    const a = rollDie(20);
-    const b = rollDie(20);
-    const kept: u8 = switch (how) {
-        .normal => a,
-        .advantage => @max(a, b),
-        .disadvantage => @min(a, b),
-    };
-    const modifier = what.modifier();
-    const label = what.label();
-
-    append(hero.writeRoll(&line_buffer, label, kept, modifier, how));
-
+/// Write what fell: a d20 test as the `roll` line the file has always had,
+/// a handful as a `dice` line, and say the total on the status bar.
+fn recordRoll(outcome: dice.Outcome) void {
+    var fallen: [32]u8 = @splat(0);
+    if (outcome.isTest()) {
+        append(hero.writeRoll(&line_buffer, outcome.title, outcome.die(), outcome.bonus, outcome.mode));
+    } else {
+        const d = hero.Dice{ .count = outcome.count, .faces = outcome.face.faces(), .bonus = outcome.bonus };
+        append(hero.writeDice(&line_buffer, outcome.title, d, outcome.fallen(&fallen), outcome.total));
+    }
     var line = str.Builder{ .buf = &status_buffer };
-    line.text(label);
+    line.text(outcome.title);
     line.text(": ");
-    line.number(@intCast(@max(@as(i32, kept) + modifier, 0)));
-    line.text(" (");
-    line.number(kept);
-    signedSpaced(&line, modifier);
-    line.text(")");
+    line.number(@intCast(@max(outcome.total, 0)));
     status = line.done();
 }
 
@@ -686,12 +988,6 @@ fn attackBonus(index: usize) i16 {
     const digits = if (hit.len > 0 and (hit[0] == '+' or hit[0] == '-')) hit[1..] else hit;
     const value = std.fmt.parseInt(i16, digits, 10) catch 0;
     return if (hit.len > 0 and hit[0] == '-') -value else value;
-}
-
-/// ` + 7` or ` - 2`, as a sum is read.
-fn signedSpaced(line: *str.Builder, value: i16) void {
-    line.text(if (value < 0) " - " else " + ");
-    line.number(@abs(value));
 }
 
 /// `+7` or `-2`, as a bonus is written.
@@ -705,6 +1001,245 @@ fn signedText(buf: []u8, value: anytype) []const u8 {
     var line = str.Builder{ .buf = buf };
     signedTight(&line, @intCast(value));
     return line.done();
+}
+
+// ---------------------------------------------------------------------------
+// The facts: what the character is, asked for a line at a time
+// ---------------------------------------------------------------------------
+
+const LINE_CHOICES = [_]eui.prompt.Choice{
+    .{ .label = "OK", .weight = .strong },
+    .{ .label = "Cancel" },
+};
+
+var initial_buffer: [eui.prompt.TEXT_MAX]u8 = @splat(0);
+
+fn askFact(form: Form) void {
+    pending = .{ .fact = form };
+    prompt.askText(form.question(), &LINE_CHOICES, initialOf(form, &initial_buffer));
+    ctx.damage();
+}
+
+/// What the sheet says now, as the line the form takes, so a change is an
+/// edit of what is there rather than a retyping of it.
+fn initialOf(form: Form, buf: []u8) []const u8 {
+    var line = str.Builder{ .buf = buf };
+    switch (form) {
+        .name => line.text(sheet.name),
+        .class_level => {
+            line.text(sheet.class);
+            line.text(" | ");
+            line.number(sheet.level);
+        },
+        .origin => joinParts(&line, &.{ sheet.species, sheet.background, sheet.alignment, sheet.size }),
+        .player_picture => joinParts(&line, &.{ sheet.player, sheet.picture }),
+        .scores => for (std.enums.values(hero.Ability), 0..) |a, i| {
+            if (i > 0) line.byte(' ');
+            line.number(sheet.scores.get(a));
+        },
+        .saves => for (std.enums.values(hero.Ability)) |a| {
+            if (!sheet.save_prof.contains(a)) continue;
+            if (line.len > 0) line.byte(' ');
+            line.text(a.key());
+        },
+        .skills => for (std.enums.values(hero.Skill)) |sk| {
+            if (!sheet.skill_prof.contains(sk)) continue;
+            if (line.len > 0) line.byte(' ');
+            line.text(sk.key());
+        },
+        .expertise => for (std.enums.values(hero.Skill)) |sk| {
+            if (!sheet.skill_expert.contains(sk)) continue;
+            if (line.len > 0) line.byte(' ');
+            line.text(sk.key());
+        },
+        .hp_die => {
+            line.number(sheet.hp_max);
+            line.text(" | d");
+            line.number(sheet.hit_die);
+        },
+        .ac_speed => {
+            line.number(sheet.ac);
+            line.text(" | ");
+            line.number(sheet.speed);
+        },
+        .casting => {
+            line.text(sheet.spell_ability.key());
+            line.text(" |");
+            for (sheet.slots_max) |n| {
+                line.byte(' ');
+                line.number(n);
+            }
+        },
+        .innate => {
+            line.number(sheet.innate_max);
+            line.text(" | ");
+            line.text(sheet.innate_name);
+        },
+        .training => joinParts(&line, &.{ sheet.weapons, sheet.tools, sheet.languages, sheet.armour }),
+        .coins => for (std.enums.values(hero.Coin), 0..) |c, i| {
+            if (i > 0) line.byte(' ');
+            line.number(@intCast(@max(sheet.coins.get(c), 0)));
+        },
+        .attack, .spell, .item, .feature => {},
+    }
+    return line.done();
+}
+
+fn joinParts(line: *str.Builder, parts: []const []const u8) void {
+    for (parts, 0..) |piece, i| {
+        if (i > 0) line.text(" | ");
+        line.text(piece);
+    }
+}
+
+/// The answer to a form: one fact line per keyword, from the part of the
+/// line that is its; an empty part leaves what the sheet had.
+fn applyFact(form: Form, line: []const u8) void {
+    const keywords = form.keywords();
+    if (keywords.len == 1) {
+        if (line.len == 0) return;
+        append(hero.writeFact(&line_buffer, keywords[0], line));
+    } else if (form.byWords()) {
+        var words = std.mem.tokenizeScalar(u8, line, ' ');
+        for (keywords) |k| {
+            const word = words.next() orelse break;
+            append(hero.writeFact(&line_buffer, k, word));
+        }
+    } else {
+        for (keywords, 0..) |k, i| {
+            const piece = hero.part(line, i);
+            if (piece.len == 0) continue;
+            append(hero.writeFact(&line_buffer, k, piece));
+        }
+    }
+    if (form == .player_picture) loadHeadshot();
+}
+
+/// An `Add...` button at the right end of a heading or a line, which asks
+/// for the row it adds.
+fn addButton(row: Rect, form: Form) void {
+    const w = eui.footer.buttonWidth("Add...");
+    if (ctx.button(.{ .x = row.right() - w, .y = row.y, .w = w, .h = row.h }, "Add...")) askFact(form);
+}
+
+fn askNewCharacter() void {
+    if (modified) {
+        say("Save or take back the changes first.");
+        return;
+    }
+    pending = .new_character;
+    prompt.askText("The new character's name", &LINE_CHOICES, "");
+    ctx.damage();
+}
+
+/// A fresh journal in memory: the magic line and the name. Where it lives
+/// is asked at the first save.
+fn newCharacter(name: []const u8) void {
+    if (name.len == 0) return;
+    text_len = 0;
+    file_len = 0;
+    forgetHeadshot();
+    appendLine(hero.MAGIC);
+    appendLine(hero.writeFact(&line_buffer, .name, name));
+    saved_len = 0;
+    modified = true;
+    setSection(.sheet);
+    say("Set the facts from the Character menu, then save.");
+}
+
+/// A level gained: the number, and the new maximum, offered as the die's
+/// average plus Constitution and corrected by hand where a die was rolled.
+fn askLevelUp() void {
+    var q = str.Builder{ .buf = &question_buffer };
+    q.text("Hit points at level ");
+    q.number(sheet.level + 1);
+    q.byte('?');
+    const gain: i32 = @divTrunc(@as(i32, sheet.hit_die), 2) + 1 + sheet.modifier(.con);
+    ask(.level_up, q.done(), &AMOUNT_CHOICES, amountOf(@as(i32, sheet.hp_max) + @max(gain, 1), 1, 999));
+}
+
+fn levelUp(hp: i32) void {
+    var level_text: [4]u8 = @splat(0);
+    append(hero.writeFact(&line_buffer, .level, str.number(&level_text, sheet.level + 1, 10, .lower)));
+    var hp_text: [6]u8 = @splat(0);
+    append(hero.writeFact(&line_buffer, .hp, str.number(&hp_text, @intCast(@max(hp, 1)), 10, .lower)));
+}
+
+/// Take back the last line written since the last save. Nothing on the
+/// medium is touched: what was saved is history, and history is not edited.
+fn undo() void {
+    if (text_len <= saved_len) {
+        say("Nothing to take back.");
+        return;
+    }
+    var end = text_len;
+    if (storage[end - 1] == '\n') end -= 1;
+    const start = if (std.mem.lastIndexOfScalar(u8, storage[0..end], '\n')) |at| at + 1 else 0;
+    if (start < saved_len) {
+        say("Nothing to take back.");
+        return;
+    }
+    // The line's first word is what it was: a roll, a note, a fact. The
+    // whole line would not fit the status bar's cell.
+    const gone = storage[start..end];
+    const word_end = std.mem.indexOfScalar(u8, gone, ' ') orelse gone.len;
+    var word: [24]u8 = @splat(0);
+    const n = @min(word_end, word.len);
+    @memcpy(word[0..n], gone[0..n]);
+    text_len = start;
+    refold();
+    modified = text_len != saved_len;
+    setTitle();
+    var line = str.Builder{ .buf = &status_buffer };
+    line.text("Took back the ");
+    line.text(word[0..n]);
+    line.text(" line");
+    status = line.done();
+    ctx.damage();
+}
+
+const Dropping = struct { kind: hero.Keyword, name: []const u8 };
+
+/// The selected row of the pane leaves the sheet: an attack, a spell, an
+/// item, by name.
+fn dropSelected() void {
+    const dropping: ?Dropping = switch (section) {
+        .combat => if (sheet.attacks.len > 0) .{ .kind = .attack, .name = attackName(@min(attacks_table.selected, sheet.attacks.len - 1)) } else null,
+        .spells => if (sheet.spells.len > 0) .{ .kind = .spell, .name = sheet.spells.slice()[@min(spells_table.selected, sheet.spells.len - 1)].name } else null,
+        .gear => if (sheet.items.len > 0) .{ .kind = .item, .name = sheet.items.slice()[@min(items_table.selected, sheet.items.len - 1)].name } else null,
+        else => null,
+    };
+    const it = dropping orelse {
+        say("Select an attack, a spell or an item to drop.");
+        return;
+    };
+    append(hero.writeDrop(&line_buffer, it.kind, it.name));
+}
+
+/// One of the selected item used up: a ration eaten, an arrow shot. The
+/// last one is the item gone.
+fn useOne() void {
+    if (section != .gear or sheet.items.len == 0) {
+        say("Select an item on the Gear pane.");
+        return;
+    }
+    const it = sheet.items.slice()[@min(items_table.selected, sheet.items.len - 1)];
+    const line = std.fmt.bufPrint(&question_buffer, "{s} | {d} | {d}.{d:0>2}", .{
+        it.name, it.quantity - 1, it.weight_cp / 100, it.weight_cp % 100,
+    }) catch return;
+    append(hero.writeFact(&line_buffer, .item, line));
+}
+
+fn useInnate() void {
+    if (sheet.innate_max == 0) {
+        say("No innate feature written.");
+        return;
+    }
+    if (sheet.innate_left == 0) {
+        say("None left until a long rest.");
+        return;
+    }
+    append(hero.writeInnate(&line_buffer));
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +1347,7 @@ fn draw() void {
     }
 
     // Last, so an open menu reaches over the pane rather than under it.
-    if (eui.menubar.run(ctx, strip, &menus, &MENUS)) |id| run(@enumFromInt(id));
+    if (eui.menubar.run(ctx, strip, &menus, &MENUS)) |id| runId(id);
 }
 
 fn inset(area: Rect, by: i32) Rect {
@@ -863,7 +1398,7 @@ fn hitPointLine() []const u8 {
         line.number(sheet.hp_temp);
         line.text(" temporary");
     }
-    if (sheet.down()) line.text(" \u{b7} Down") else if (sheet.bloodied()) line.text(" \u{b7} Bloodied");
+    if (sheet.dead()) line.text(" \u{b7} Dead") else if (sheet.down()) line.text(" \u{b7} Down") else if (sheet.bloodied()) line.text(" \u{b7} Bloodied");
     return line.done();
 }
 
@@ -1196,6 +1731,7 @@ fn drawSheet(area: Rect) void {
     var ry = eui.facts.all(ctx, right, right.y + eui.heading.height(), &training);
     ry += t.gap;
     eui.heading.paint(surface, .{ .x = right.x, .y = ry, .w = right.w, .h = t.control_height }, "Features", null);
+    addButton(.{ .x = right.x, .y = ry, .w = right.w, .h = t.control_height }, .feature);
     ry += eui.heading.height();
     _ = eui.text.paragraph(surface, .{ .x = right.x, .y = ry, .w = right.w, .h = area.bottom() - ry }, featuresText(), t.text);
 }
@@ -1290,15 +1826,6 @@ fn drawSkills(area: Rect) void {
         const s: hero.Skill = @enumFromInt(index);
         askRoll(.{ .skill = s });
     }
-}
-
-fn askRoll(what: RollWhat) void {
-    var line = str.Builder{ .buf = &question_buffer };
-    line.text(what.label());
-    line.text(", ");
-    signedTight(&line, what.modifier());
-    line.text(". Roll with?");
-    ask(.{ .roll = what }, line.done(), &ROLL_CHOICES, null);
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,7 +1931,11 @@ fn drawCombat(area: Rect) void {
 
     // The attacks under both, and a roll on the one chosen.
     const y = @max(ly, ry) + gap;
-    const table_area = Rect{ .x = area.x, .y = y, .w = area.w, .h = area.bottom() - y };
+    const head_row = Rect{ .x = area.x, .y = y, .w = area.w, .h = t.control_height };
+    eui.heading.paint(surface, head_row, "Attacks", null);
+    addButton(head_row, .attack);
+    const table_y = y + eui.heading.height() + 2;
+    const table_area = Rect{ .x = area.x, .y = table_y, .w = area.w, .h = area.bottom() - table_y };
     if (attackRows()) |rows| {
         if (ctx.table(table_area, &attacks_table, &ATTACK_COLUMNS, rows)) |index| {
             askRoll(.{ .attack = index });
@@ -1471,18 +2002,27 @@ fn drawSpells(area: Rect) void {
     line.text(" \u{b7} attack ");
     signedTight(&line, sheet.spellAttack());
     surface.text(area.x + 18, area.y + 6, line.done(), t.text);
+    addButton(.{ .x = area.x, .y = area.y, .w = area.w, .h = t.control_height }, .spell);
 
+    // The uses and the slots as pips: a pip emptied is one spent.
     var y = area.y + t.control_height + 4;
+    const label_w = @max(92, Surface.textWidth(sheet.innateName()) + t.gap);
     if (sheet.innate_max > 0) {
-        ctx.label(.{ .x = area.x, .y = y, .w = 92, .h = t.control_height }, "Innate Sorcery");
-        _ = ctx.pips(.{ .x = area.x + 96, .y = y, .w = eui.pips.width(sheet.innate_max), .h = t.control_height }, sheet.innate_max, sheet.innate_left);
+        ctx.label(.{ .x = area.x, .y = y, .w = label_w, .h = t.control_height }, sheet.innateName());
+        const left = ctx.pips(.{ .x = area.x + label_w + 4, .y = y, .w = eui.pips.width(sheet.innate_max), .h = t.control_height }, sheet.innate_max, sheet.innate_left);
+        if (left < sheet.innate_left) {
+            for (0..sheet.innate_left - left) |_| append(hero.writeInnate(&line_buffer));
+        }
         y += t.control_height;
     }
     for (0..hero.SPELL_LEVELS) |lvl| {
         if (sheet.slots_max[lvl] == 0) continue;
         var lbl: [16]u8 = @splat(0);
-        ctx.label(.{ .x = area.x, .y = y, .w = 92, .h = t.control_height }, levelLabel(&lbl, lvl + 1));
-        _ = ctx.pips(.{ .x = area.x + 96, .y = y, .w = eui.pips.width(sheet.slots_max[lvl]), .h = t.control_height }, sheet.slots_max[lvl], sheet.slots_left[lvl]);
+        ctx.label(.{ .x = area.x, .y = y, .w = label_w, .h = t.control_height }, levelLabel(&lbl, lvl + 1));
+        const left = ctx.pips(.{ .x = area.x + label_w + 4, .y = y, .w = eui.pips.width(sheet.slots_max[lvl]), .h = t.control_height }, sheet.slots_max[lvl], sheet.slots_left[lvl]);
+        if (left < sheet.slots_left[lvl]) {
+            for (0..sheet.slots_left[lvl] - left) |_| append(hero.writeCast(&line_buffer, @intCast(lvl + 1), "a slot"));
+        }
         y += t.control_height;
     }
 
@@ -1555,12 +2095,14 @@ fn drawGear(area: Rect) void {
 
     if (ctx.button(.{ .x = area.right() - 180, .y = area.y, .w = 84, .h = t.control_height }, "Pay")) askAmount(.gold_pay, "Pay how much gold?", 1, 99999);
     if (ctx.button(.{ .x = area.right() - 92, .y = area.y, .w = 84, .h = t.control_height }, "Receive")) askAmount(.gold_get, "Receive how much gold?", 1, 99999);
+    addButton(.{ .x = area.x, .y = area.y, .w = area.w - 180 - t.gap, .h = t.control_height }, .item);
 
     // What is carried, and how much it weighs against what can be.
     var y = area.y + t.control_height + t.gap;
     var facts: [2]eui.facts.Fact = undefined;
     var fb: [2][24]u8 = @splat(@splat(0));
-    facts[0] = .{ .label = "Carried", .value = pounds(&fb[0], carriedWeight()) };
+    const over = carriedWeight() > @as(u32, sheet.carryCapacity()) * 100;
+    facts[0] = .{ .label = if (over) "Carried, over capacity" else "Carried", .value = pounds(&fb[0], carriedWeight()) };
     facts[1] = .{ .label = "Capacity", .value = pounds(&fb[1], @as(u32, sheet.carryCapacity()) * 100) };
     y = eui.facts.all(ctx, .{ .x = area.x, .y = y, .w = area.w, .h = t.control_height * 2 }, y, &facts);
 
@@ -1689,7 +2231,7 @@ fn describe(keyword: ?hero.Keyword, word: []const u8, rest: []const u8, buf: []u
         .hitdie => std.fmt.bufPrint(buf, "Spent a hit die, healed {s}", .{first}) catch rest,
         .rest => if (std.meta.stringToEnum(hero.Rest, rest) == .long) "Long rest" else "Short rest",
         .cast => std.fmt.bufPrint(buf, "Cast {s}{s}", .{ second, if (std.mem.eql(u8, first, "0")) "" else ", a slot spent" }) catch rest,
-        .@"innate-use" => "Innate Sorcery used",
+        .@"innate-use" => std.fmt.bufPrint(buf, "{s} used", .{sheet.innateName()}) catch rest,
         .save => std.fmt.bufPrint(buf, "Death save: {s}", .{rest}) catch rest,
         .condition => std.fmt.bufPrint(buf, "{s}{s}", .{ if (std.meta.stringToEnum(hero.Switch, second) == .off) "No longer " else "", first }) catch rest,
         .exhaustion => std.fmt.bufPrint(buf, "Exhaustion {s}", .{rest}) catch rest,
@@ -1699,6 +2241,8 @@ fn describe(keyword: ?hero.Keyword, word: []const u8, rest: []const u8, buf: []u
         else
             reason(buf, "Received {s} gold", .{first}, second),
         .roll => std.fmt.bufPrint(buf, "Rolled {s}: {s} {s}", .{ first, second, hero.part(rest, 2) }) catch rest,
+        .dice => std.fmt.bufPrint(buf, "Rolled {s}: {s} ({s}: {s})", .{ first, hero.part(rest, 3), second, hero.part(rest, 2) }) catch rest,
+        .drop => std.fmt.bufPrint(buf, "Dropped {s}", .{second}) catch rest,
         else => std.fmt.bufPrint(buf, "{s} {s}", .{ word, rest }) catch rest,
     };
 }

@@ -58,7 +58,33 @@ fn Bounded(comptime T: type, comptime capacity: usize) type {
             self.len -= 1;
             self.items[index] = self.items[self.len];
         }
+
+        /// Take one out and close the gap, for a list whose order is read.
+        pub fn remove(self: *Self, index: usize) void {
+            if (index >= self.len) return;
+            std.mem.copyForwards(T, self.items[index .. self.len - 1], self.items[index + 1 .. self.len]);
+            self.len -= 1;
+        }
     };
+}
+
+/// Where a list of named things has one by that name, in either case.
+fn indexNamed(list: anytype, name: []const u8) ?usize {
+    for (list.slice(), 0..) |entry, i| {
+        if (std.ascii.eqlIgnoreCase(entry.name, name)) return i;
+    }
+    return null;
+}
+
+/// Put a named thing in its list: over the one of that name when there is
+/// one, so a line written again is a correction rather than a twin, and at
+/// the end otherwise.
+fn place(list: anytype, value: anytype) void {
+    if (indexNamed(list, value.name)) |i| {
+        list.items[i] = value;
+    } else {
+        list.append(value);
+    }
 }
 
 /// The six ability scores, in the order a sheet lists them.
@@ -238,6 +264,8 @@ pub const Keyword = enum {
     inspiration,
     gold,
     roll,
+    dice,
+    drop,
     note,
 
     pub fn parse(word: []const u8) ?Keyword {
@@ -245,11 +273,46 @@ pub const Keyword = enum {
     }
 
     /// Whether a line sets the sheet, rather than recording a moment of play.
+    /// Dropping something is a moment: it shows in the journal as the day the
+    /// dagger was lost.
     pub fn isFact(self: Keyword) bool {
         return switch (self) {
-            .session, .damage, .heal, .temp, .hitdie, .rest, .cast, .@"innate-use", .save, .condition, .exhaustion, .inspiration, .gold, .roll, .note => false,
+            .session, .damage, .heal, .temp, .hitdie, .rest, .cast, .@"innate-use", .save, .condition, .exhaustion, .inspiration, .gold, .roll, .dice, .drop, .note => false,
             else => true,
         };
+    }
+};
+
+/// A handful of dice as a line names them: `2d6+3`, `1d4`, `d8-1`. The
+/// words after the dice, `piercing`, are the line's business and not read.
+pub const Dice = struct {
+    count: u8 = 1,
+    faces: u8 = 6,
+    bonus: i16 = 0,
+
+    pub fn parse(line: []const u8) ?Dice {
+        const word = if (std.mem.indexOfScalar(u8, line, ' ')) |sp| line[0..sp] else line;
+        const d = std.mem.indexOfAny(u8, word, "dD") orelse return null;
+        const count: u8 = if (d == 0) 1 else std.fmt.parseInt(u8, word[0..d], 10) catch return null;
+        var end = d + 1;
+        while (end < word.len and std.ascii.isDigit(word[end])) end += 1;
+        const faces = std.fmt.parseInt(u8, word[d + 1 .. end], 10) catch return null;
+        if (faces == 0 or count == 0) return null;
+        var bonus: i16 = 0;
+        if (end < word.len) {
+            const sign = word[end];
+            if (sign != '+' and sign != '-') return null;
+            const magnitude = std.fmt.parseInt(i16, word[end + 1 ..], 10) catch return null;
+            bonus = if (sign == '-') -magnitude else magnitude;
+        }
+        return .{ .count = count, .faces = faces, .bonus = bonus };
+    }
+
+    /// The dice as a line names them, `2d6+3`.
+    pub fn text(self: Dice, buf: []u8) []const u8 {
+        if (self.bonus == 0) return std.fmt.bufPrint(buf, "{d}d{d}", .{ self.count, self.faces }) catch buf[0..0];
+        const sign: []const u8 = if (self.bonus < 0) "-" else "+";
+        return std.fmt.bufPrint(buf, "{d}d{d}{s}{d}", .{ self.count, self.faces, sign, @abs(self.bonus) }) catch buf[0..0];
     }
 };
 
@@ -333,6 +396,9 @@ pub const Sheet = struct {
     slots_left: [SPELL_LEVELS]u8 = @splat(0),
     innate_max: u8 = 0,
     innate_left: u8 = 0,
+    /// What the innate feature is called: a sorcerer's Innate Sorcery, a
+    /// barbarian's Rage. The file names it beside the count.
+    innate_name: []const u8 = "",
 
     death_success: u8 = 0,
     death_failure: u8 = 0,
@@ -399,6 +465,16 @@ pub const Sheet = struct {
 
     pub fn down(self: Sheet) bool {
         return self.hp_now == 0;
+    }
+
+    /// Three failed death saves.
+    pub fn dead(self: Sheet) bool {
+        return self.death_failure >= 3;
+    }
+
+    /// The innate feature by its name, or by the only word there is.
+    pub fn innateName(self: Sheet) []const u8 {
+        return if (self.innate_name.len > 0) self.innate_name else "Innate feature";
     }
 
     /// Fifteen pounds a point of Strength.
@@ -479,8 +555,9 @@ fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
         },
         .slots => setSlots(sheet, rest),
         .innate => {
-            sheet.innate_max = parseU8(rest);
+            sheet.innate_max = parseU8(firstPart(rest));
             sheet.innate_left = sheet.innate_max;
+            sheet.innate_name = part(rest, 1);
         },
         .weapons => sheet.weapons = rest,
         .tools => sheet.tools = rest,
@@ -493,6 +570,7 @@ fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
         .spell => addSpell(sheet, rest),
         .item => addItem(sheet, rest),
         .feature => addFeature(sheet, rest),
+        .drop => dropNamed(sheet, rest),
 
         // Events, folded into the current state.
         .session => sheet.session = firstPart(rest),
@@ -528,7 +606,7 @@ fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
 
         // A note and a roll change nothing on the sheet: they are the
         // journal's, read from the file in order where it is shown.
-        .roll, .note => {},
+        .roll, .dice, .note => {},
     }
 }
 
@@ -634,7 +712,7 @@ fn setCondition(sheet: *Sheet, rest: []const u8) void {
 }
 
 fn addAttack(sheet: *Sheet, rest: []const u8) void {
-    sheet.attacks.append(.{
+    place(&sheet.attacks, Attack{
         .name = part(rest, 0),
         .hit = part(rest, 1),
         .damage = part(rest, 2),
@@ -643,7 +721,7 @@ fn addAttack(sheet: *Sheet, rest: []const u8) void {
 }
 
 fn addSpell(sheet: *Sheet, rest: []const u8) void {
-    sheet.spells.append(.{
+    place(&sheet.spells, Spell{
         .name = part(rest, 0),
         .level = parseU8(part(rest, 1)),
         .time = part(rest, 2),
@@ -652,19 +730,40 @@ fn addSpell(sheet: *Sheet, rest: []const u8) void {
     });
 }
 
+/// An item line names how many are carried; none left is the item gone,
+/// which is how the last ration is eaten.
 fn addItem(sheet: *Sheet, rest: []const u8) void {
-    sheet.items.append(.{
-        .name = part(rest, 0),
-        .quantity = @max(1, parseU16(part(rest, 1))),
+    const name = part(rest, 0);
+    const count = part(rest, 1);
+    const quantity: u16 = if (count.len == 0) 1 else parseU16(count);
+    if (quantity == 0) {
+        if (indexNamed(&sheet.items, name)) |i| sheet.items.remove(i);
+        return;
+    }
+    place(&sheet.items, Item{
+        .name = name,
+        .quantity = quantity,
         .weight_cp = parseWeight(part(rest, 2)),
     });
 }
 
 fn addFeature(sheet: *Sheet, rest: []const u8) void {
-    sheet.features.append(.{
+    place(&sheet.features, Feature{
         .name = part(rest, 0),
         .note = part(rest, 1),
     });
+}
+
+/// `drop attack | Dagger`: the named thing leaves its list.
+fn dropNamed(sheet: *Sheet, rest: []const u8) void {
+    const name = part(rest, 1);
+    switch (Keyword.parse(part(rest, 0)) orelse return) {
+        .attack => if (indexNamed(&sheet.attacks, name)) |i| sheet.attacks.remove(i),
+        .spell => if (indexNamed(&sheet.spells, name)) |i| sheet.spells.remove(i),
+        .item => if (indexNamed(&sheet.items, name)) |i| sheet.items.remove(i),
+        .feature => if (indexNamed(&sheet.features, name)) |i| sheet.features.remove(i),
+        else => {},
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +896,26 @@ pub fn writeRoll(buf: []u8, what: []const u8, die: u8, modifier: i16, how: Roll)
     return std.fmt.bufPrint(buf, @tagName(Keyword.roll) ++ " {s} | {d} | {s}{d} | {s}", .{
         what, die, sign, magnitude, @tagName(how),
     }) catch buf[0..0];
+}
+
+/// A handful of dice: what for, the dice as named, the dice as they fell,
+/// and the total, so a damage roll reads back whole.
+pub fn writeDice(buf: []u8, what: []const u8, dice: Dice, fallen: []const u8, total: i32) []const u8 {
+    var named: [16]u8 = undefined;
+    return std.fmt.bufPrint(buf, @tagName(Keyword.dice) ++ " {s} | {s} | {s} | {d}", .{
+        what, dice.text(&named), fallen, total,
+    }) catch buf[0..0];
+}
+
+/// A fact as the sheet keeps it: the keyword and the rest of the line, which
+/// the program has already spelled the way the fold reads it.
+pub fn writeFact(buf: []u8, keyword: Keyword, rest: []const u8) []const u8 {
+    return writeParts(buf, @tagName(keyword), &.{rest});
+}
+
+/// The named thing leaves its list: `drop item | Rope, hempen`.
+pub fn writeDrop(buf: []u8, kind: Keyword, name: []const u8) []const u8 {
+    return writeParts(buf, @tagName(Keyword.drop), &.{ @tagName(kind), name });
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1054,47 @@ test "a gained level raises the maximum and the current by the same" {
     try testing.expectEqual(@as(i8, 3), fold(CINAED ++ "\nlevel 5").proficiency());
 }
 
+test "a thing written again is corrected, and dropped is gone" {
+    // The dagger's line again, with a better bonus, is one dagger, not two.
+    const c = fold(CINAED ++ "\nattack Dagger | +5 | 1d4+3 piercing | Finesse");
+    try testing.expectEqual(@as(usize, 1), c.attacks.len);
+    try testing.expectEqualStrings("+5", c.attacks.slice()[0].hit);
+
+    // Rope dropped by name; the daggers stay, in their order.
+    const d = fold(CINAED ++ "\ndrop item | Rope, hempen");
+    try testing.expectEqual(@as(usize, 1), d.items.len);
+    try testing.expectEqualStrings("Dagger", d.items.slice()[0].name);
+
+    // A quantity of none is the item gone, and a spell dropped is gone.
+    try testing.expectEqual(@as(usize, 1), fold(CINAED ++ "\nitem Dagger | 0 | 1").items.len);
+    try testing.expectEqual(@as(usize, 1), fold(CINAED ++ "\ndrop spell | fire bolt").spells.len);
+}
+
+test "the innate feature carries its name, and three failures are the end" {
+    const c = fold(CINAED ++ "\ninnate 3 | Rage");
+    try testing.expectEqual(@as(u8, 3), c.innate_max);
+    try testing.expectEqualStrings("Rage", c.innateName());
+    try testing.expectEqualStrings("Innate feature", fold(CINAED).innateName());
+
+    try testing.expect(!fold(CINAED ++ "\nsave failure\nsave failure").dead());
+    try testing.expect(fold(CINAED ++ "\nsave failure\nsave failure\nsave failure").dead());
+}
+
+test "dice are read from a damage line and spelled back" {
+    var buf: [16]u8 = undefined;
+    const d = Dice.parse("1d4+2 piercing").?;
+    try testing.expectEqual(@as(u8, 1), d.count);
+    try testing.expectEqual(@as(u8, 4), d.faces);
+    try testing.expectEqual(@as(i16, 2), d.bonus);
+    try testing.expectEqualStrings("1d4+2", d.text(&buf));
+
+    try testing.expectEqualStrings("2d6", Dice.parse("2d6").?.text(&buf));
+    try testing.expectEqual(@as(i16, -1), Dice.parse("d8-1").?.bonus);
+    try testing.expectEqual(@as(u8, 1), Dice.parse("d8-1").?.count);
+    try testing.expectEqual(@as(?Dice, null), Dice.parse("piercing"));
+    try testing.expectEqual(@as(?Dice, null), Dice.parse("3"));
+}
+
 test "the writers spell the grammar the fold reads" {
     var buf: [128]u8 = undefined;
     try testing.expectEqualStrings("damage 5 | goblin arrow", writeDamage(&buf, 5, "goblin arrow"));
@@ -946,6 +1106,9 @@ test "the writers spell the grammar the fold reads" {
     try testing.expectEqualStrings("cast 1 | Burning Hands", writeCast(&buf, 1, "Burning Hands"));
     try testing.expectEqualStrings("roll Persuasion | 12 | +7 | advantage", writeRoll(&buf, "Persuasion", 12, 7, .advantage));
     try testing.expectEqualStrings("session 4 | 2026-09-06", writeSession(&buf, 4, "2026-09-06"));
+    try testing.expectEqualStrings("dice Dagger damage | 1d4+2 | 3 | 5", writeDice(&buf, "Dagger damage", .{ .count = 1, .faces = 4, .bonus = 2 }, "3", 5));
+    try testing.expectEqualStrings("drop item | Rope, hempen", writeDrop(&buf, .item, "Rope, hempen"));
+    try testing.expectEqualStrings("hp 14", writeFact(&buf, .hp, "14"));
 
     // What a writer spells, the fold reads back to the same effect.
     const line = writeDamage(&buf, 3, "test");

@@ -56,7 +56,7 @@ than refused, so a file from a later version still opens in an earlier one.
 | `hp 8`, `hit-die d6` | Hit point maximum, and the die a level gives |
 | `ac 12`, `speed 30` | Armour class and speed in feet |
 | `spellcasting cha`, `slots 2 0 0 0 0 0 0 0 0` | The casting ability, and slots per level from first to ninth |
-| `innate 2` | Uses of the class's innate feature per long rest, if it has one |
+| `innate 2 \| Innate Sorcery` | Uses of the class's innate feature per long rest, and what it is called |
 | `weapons Simple weapons`, `tools Calligrapher's supplies`, `languages Common`, `armour none` | Proficiencies and training |
 | `feature Innate Sorcery \| 2 / long rest` | A feature and, optionally, how often |
 | `attack Dagger \| +4 \| 1d4+2 piercing \| Finesse, light, thrown, nick, 20/60` | An attack: name, to hit, damage, notes |
@@ -65,7 +65,10 @@ than refused, so a file from a later version still opens in an earlier one.
 | `coins 0 0 0 36 0` | Copper, silver, electrum, gold, platinum |
 
 Facts may appear anywhere, so a level gained mid-journal is `level 2` on the
-day it happened, followed by the new `hp` and `slots`.
+day it happened, followed by the new `hp` and `slots`. An attack, spell,
+item or feature written again under a name already there replaces the
+earlier line, so a correction is the line again rather than a twin, and an
+`item` with a quantity of none is the item gone.
 
 ## 13.3 Events
 
@@ -79,13 +82,15 @@ day it happened, followed by the new `hp` and `slots`.
 | `rest short` | A marker; what a short rest heals is written as `hitdie` lines |
 | `rest long` | Hit points to maximum, every hit die and slot and innate use back, exhaustion down one, death saves reset |
 | `cast 1 \| Burning Hands` | A slot of that level spent; level 0 spends nothing and is a record |
-| `innate` | One innate use spent |
+| `innate-use` | One innate use spent |
 | `save success`, `save failure`, `save reset` | Death saves |
 | `condition frightened \| on` | A condition set or cleared; bloodied is derived from hit points and never written |
 | `exhaustion 1` | The exhaustion level, set |
 | `inspiration on` | Heroic Inspiration held or spent |
 | `gold -3 \| rations` | Gold paid or received, with why |
-| `roll Persuasion \| 12 \| +7 \| advantage` | A d20 rolled: what for, the die, the modifier, and how |
+| `roll Persuasion \| 12 \| +7 \| advantage` | A d20 rolled: what for, the die kept, the modifier, and how |
+| `dice Dagger damage \| 1d4+2 \| 3 \| 5` | A handful rolled: what for, the dice as named, as they fell, and the total |
+| `drop item \| Rope, hempen` | An attack, spell, item or feature gone from the sheet, by name |
 | `note The shrine keeper asked for the crystal back` | Anything at all |
 
 An event before the first `session` line belongs to no session, which is
@@ -104,23 +109,44 @@ level from every d20 test, which the roll helper applies and shows.
 
 A d20 test rolls once, or twice keeping the higher for advantage and the
 lower for disadvantage; the journal line records the die kept, so a total
-can be checked by hand.
+can be checked by hand. A handful of dice, an attack's damage or a free
+roll, is summed, and every die that fell is recorded. Poisoned and
+frightened put disadvantage on checks and attacks, and prone on attacks,
+which the dice window sets before it opens and says why.
 
 ## 13.5 The window
 
 The rail on the left holds the headshot and six sections: Sheet, Skills,
-Combat, Spells, Gear and Journal. The status bar names the character, the
-session and whether the journal is saved. Helpers are the toolkit's prompt
-sheet across the bottom of the body, so a question never covers what it is
-about: a roll asks how, a rest asks which, a cast asks whether to spend the
-slot, and damage, healing, gold and a hit die ask how much on the sheet's
-own stepper. Every answer is a line appended to the journal, and Save writes
-the file whole under a new name, renames it over the old, and flushes, like
-every document on this machine that matters.
+Combat, Spells, Gear and Journal. The status bar names the file, the
+session and what was just done or is unsaved. Helpers are the toolkit's
+prompt sheet across the bottom of the body, so a question never covers what
+it is about: a rest asks which, a cast asks whether to spend the slot, and
+damage, healing, gold and a hit die ask how much on the sheet's own stepper.
+Every answer is a line appended to the journal, and Save writes the file
+whole under a new name, renames it over the old, and flushes, like every
+document on this machine that matters.
+
+A roll opens the dice: a second window floating over the sheet, filled in by
+what asked for it. Enter on a skill, a tile's save, an attack, or the Roll
+menu for anything at all. It shows the die, how many, the bonus and where it
+comes from, and for one d20 the mode; Enter rolls, Escape leaves, and every
+roll is written as it lands, with both dice shown and the kept one ringed
+when a mode chose. An attack offers its damage dice next.
+
+The Character menu builds and corrects the sheet a fact at a time: each item
+asks for one line, with a field on the prompt sheet already holding what the
+sheet says, in the parts the file takes. New character starts a fresh
+journal that is saved where the first Save says. Each pane adds its own rows
+with an Add button: a feature on the Sheet, an attack on Combat, a spell on
+Spells, an item on Gear. The Edit menu holds the moments of play: damage,
+healing, a hit die, gold, one of an item used up, the selected row dropped,
+the innate feature used, a level gained with its new hit points, a session,
+a note, and the last line since the save taken back.
 
 The journal section lists the events newest first with their session, and a
-note is typed into the strip below it. Closing with lines unsaved asks, the
-way Pad asks.
+note is typed into the strip below it. A session heading is written before
+the first event of a day the journal has not seen. Closing with lines
+unsaved asks, the way Pad asks.
 
 ## 13.6 Budgets
 
