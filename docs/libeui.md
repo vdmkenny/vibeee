@@ -357,8 +357,8 @@ A question across the bottom of a window, with the ways to answer it.
 |---|---|
 | `sheet` | `fn (draw.Rect) draw.Rect` |
 | `above` | `fn (draw.Rect) draw.Rect` |
-| `run` | `fn (*widget.Context, draw.Rect, *const prompt.Prompt) ?usize` |
-| `key` | `fn (*const prompt.Prompt, syscalls.KeyCode) ?usize` |
+| `run` | `fn (*widget.Context, draw.Rect, *prompt.Prompt) ?usize` |
+| `key` | `fn (*prompt.Prompt, syscalls.KeyCode) ?usize` |
 | `letter` | `fn (*const prompt.Prompt, u32) ?usize` |
 
 ### `eui.rail`

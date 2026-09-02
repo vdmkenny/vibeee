@@ -169,6 +169,7 @@ pub const items = [_]Item{
     .{ .label = "Pad", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/pad", .name = "pad" } } },
     .{ .label = "Files", .category = .tools, .mark = .folder, .action = .{ .run = .{ .path = "/bin/efm", .name = "efm" } } },
     .{ .label = "Calc", .category = .tools, .mark = .calculator, .action = .{ .run = .{ .path = "/bin/calc", .name = "calc" } } },
+    .{ .label = "Hero", .category = .tools, .mark = .document, .action = .{ .run = .{ .path = "/bin/hero", .name = "hero" } } },
     .{ .label = "Viewer", .category = .tools, .mark = .picture, .action = .{ .run = .{ .path = "/bin/eimg", .name = "eimg" } } },
     .{ .label = "Monitor", .category = .system, .mark = .chart, .action = .{ .run = .{ .path = "/bin/monitor", .name = "monitor" } } },
     .{ .label = "Settings", .category = .system, .mark = .sliders, .action = .{ .run = .{ .path = "/bin/settings", .name = "settings" } } },

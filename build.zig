@@ -33,7 +33,7 @@ fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
 fn imageFormats(name: []const u8) ?*const [4][]const u8 {
     // The file manager previews what is under the cursor, which is as much a
     // viewer as the viewer is.
-    if (std.mem.eql(u8, name, "eimg") or std.mem.eql(u8, name, "efm")) {
+    if (std.mem.eql(u8, name, "eimg") or std.mem.eql(u8, name, "efm") or std.mem.eql(u8, name, "hero")) {
         return &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_BMP", "-DSTBI_ONLY_GIF" };
     }
     return null;
@@ -325,6 +325,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pad", .root = "src/user/apps/pad.zig" },
             .{ .name = "calc", .root = "src/user/apps/calc.zig" },
             .{ .name = "eimg", .root = "src/user/apps/eimg.zig" },
+            .{ .name = "hero", .root = "src/user/apps/hero.zig" },
             .{ .name = "efm", .root = "src/user/efm/main.zig" },
             .{ .name = "timed", .root = "src/user/timed/main.zig" },
         };
