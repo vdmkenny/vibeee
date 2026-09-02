@@ -878,12 +878,12 @@ fn drawPack(pane: eui.Rect, from: i32) i32 {
     said.number(percent);
     said.byte('%');
     const reading_x = glyph.right() + t.menu_padding;
-    ctx.surface.textLarge(reading_x, y + t.padding, said.done(), t.text, 2);
+    ctx.surface.title(reading_x, y + t.padding, said.done(), t.text);
 
     // What it is doing, and how long that leaves, under the number rather
     // than across it: the number is drawn at twice the face's size, so what
     // follows it clears that and not the size of an ordinary line.
-    const under = y + t.padding + eui.Surface.textLargeHeight(2);
+    const under = y + t.padding + eui.Surface.titleHeight();
     var state: [40]u8 = @splat(0);
     var says = str.Builder{ .buf = &state };
     if (pack.runtimeLeft()) |left| {
@@ -1243,9 +1243,9 @@ fn drawIdentity(pane: eui.Rect) i32 {
     var y = pane.y;
 
     if (ctx.damaged) {
-        ctx.surface.textLarge(left, y, machine(), t.text, 2);
+        ctx.surface.title(left, y, machine(), t.text);
     }
-    y += eui.Surface.textLargeHeight(2) + t.padding;
+    y += eui.Surface.titleHeight() + t.padding;
 
     const board = board_text[0..board_len];
     ctx.label(.{ .x = left, .y = y, .w = wide, .h = t.control_height }, if (board.len > 0) board else "unknown board");

@@ -750,6 +750,11 @@ pub fn build(b: *std.Build) void {
             .out = "src/lib/fonts/ark_ui_12.zig",
             .name = "Ark Pixel 12",
         },
+        .{
+            .source = "third_party/ark-pixel/ark-pixel-16px-proportional-latin.bdf",
+            .out = "src/lib/fonts/ark_ui_16.zig",
+            .name = "Ark Pixel 16",
+        },
         // The same family with a fixed advance, for the terminal: a shell and
         // a button label in one voice, at a weight the panel can carry.
         .{
@@ -763,7 +768,12 @@ pub fn build(b: *std.Build) void {
         run.addArg(spec.out);
         run.addArg(spec.name);
         run.has_side_effects = true;
-        fonts_step.dependOn(&run.step);
+        // What the converter writes is formatted like everything else in the
+        // tree, so a regenerated face passes the same check a hand-written
+        // file does.
+        const tidy = b.addFmt(.{ .paths = &.{spec.out} });
+        tidy.step.dependOn(&run.step);
+        fonts_step.dependOn(&tidy.step);
     }
 
     // ---------------------------------------------------------------------

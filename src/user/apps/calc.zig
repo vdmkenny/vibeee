@@ -103,7 +103,7 @@ fn wanted() struct { w: u16, h: u16 } {
 
 fn readoutHeight() i32 {
     const t = theme.current();
-    return t.padding * 2 + eui.Surface.textHeight() + eui.Surface.textLargeHeight(2);
+    return t.padding * 2 + eui.Surface.textHeight() + eui.Surface.titleHeight();
 }
 
 export fn _start() callconv(.c) noreturn {
@@ -199,13 +199,13 @@ fn drawReadout(area: Rect) void {
     // at that size would not fit.
     const large = machine.trouble == null;
     const width = if (large)
-        eui.Surface.textLargeWidth(shown, 2)
+        eui.Surface.titleWidth(shown)
     else
         eui.Surface.textWidth(shown);
     const y = area.y + t.padding + eui.Surface.textHeight();
     const ink = if (large) t.text else t.warning;
     if (large) {
-        ctx.surface.textLarge(right - width, y, shown, ink, 2);
+        ctx.surface.title(right - width, y, shown, ink);
     } else {
         ctx.surface.text(right - width, y, shown, ink);
     }

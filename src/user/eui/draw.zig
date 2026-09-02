@@ -24,6 +24,13 @@ pub const Font = fontlib.Font;
 /// Interface text: proportional, because everything but a terminal reads
 /// better that way at this size.
 pub const ui_font: *const Font = &fontlib.ark_ui_12;
+/// The same family at sixteen pixels, for what is set large: a name at the
+/// top of a sheet, a figure on a tile. A larger drawing of the same letters,
+/// not the small ones doubled, which on this panel reads as blocks rather than
+/// as type. Two sizes are the whole scale: `text` for everything read, and
+/// `title` for what is set large; a section's heading is `eui.heading`, words
+/// at text size with a rule under them.
+pub const title_font: *const Font = &fontlib.ark_ui_16;
 
 /// Where columns have to line up. The interface family's own fixed-advance
 /// face, so a shell and a button label speak in one voice; the console keeps
@@ -362,16 +369,23 @@ pub const Surface = struct {
     ///
     /// A multiple of the interface's own size rather than an absolute one,
     /// so a heading stays a heading when the whole interface is scaled up.
-    pub fn textLarge(self: Surface, x: i32, y: i32, message: []const u8, color: Color, times: i32) void {
-        self.textScaled(ui_font, x, y, message, color, theme.textScale() * times);
+    /// `message` set large, in the title face at the interface's scale.
+    pub fn title(self: Surface, x: i32, y: i32, message: []const u8, color: Color) void {
+        self.textScaled(title_font, x, y, message, color, theme.textScale());
     }
 
-    pub fn textLargeWidth(message: []const u8, times: i32) i32 {
-        return textWidth(message) * times;
+    pub fn titleWidth(message: []const u8) i32 {
+        return @as(i32, @intCast(title_font.measure(message))) * theme.textScale();
     }
 
-    pub fn textLargeHeight(times: i32) i32 {
-        return textHeight() * times;
+    pub fn titleHeight() i32 {
+        return @as(i32, @intCast(title_font.height)) * theme.textScale();
+    }
+
+    /// Where a line of text sits so that its baseline is a title's, for the
+    /// words set beside one.
+    pub fn besideTitle(y: i32) i32 {
+        return y + (@as(i32, @intCast(title_font.ascent)) - @as(i32, @intCast(ui_font.ascent))) * theme.textScale();
     }
 
     fn textScaled(self: Surface, face: *const Font, x: i32, y: i32, message: []const u8, color: Color, scale: i32) void {

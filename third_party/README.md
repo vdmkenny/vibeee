@@ -22,8 +22,11 @@ wrong.
 
 TakWolf's Ark Pixel font, SIL OFL 1.1. See `ark-pixel/LICENSE`.
 
-Two faces of one family: the proportional 12px for interface text, and the
-monospaced 12px for the terminal, so a label and a shell share one voice. The
+Three faces of one family: the proportional 12px for interface text, the
+monospaced 12px for the terminal, so a label and a shell share one voice, and
+the proportional 16px for what is set large, a title or a figure, so large
+text is a larger drawing of the same letters rather than the small ones
+doubled. The
 monospaced latin face is pinned at release `2026.08.11`. Its box-drawing
 glyphs are full-width in the East Asian convention; the terminal draws its own
 line glyphs from cell geometry instead, as terminals conventionally do.
