@@ -41,8 +41,11 @@ restart = always
 name    = cfgd
 binary  = /bin/cfgd
 # The settings store. Nothing else may write /etc, which is what makes two
-# programs saving at once safe.
+# programs saving at once safe. It publishes one of the system's own names
+# and needs nothing else: a parser of other programs' requests holds no
+# power a bug in it could turn into a driver's.
 provides = cfg
+caps    = service
 target  = boot
 restart = always
 

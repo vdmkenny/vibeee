@@ -324,24 +324,61 @@ fn capsFrom(granted_list: []const u8) u32 {
 // The channel: claims and control
 // ---------------------------------------------------------------------------
 
+/// What can wake the loop.
+const Source = enum { request, quit, child };
+
 fn serve() noreturn {
-    // A request, or the request to go. The drivers are their own processes
-    // and stay up: what goes is the matching, not the hardware.
-    var sources: [2]u32 = .{ service, 0 };
-    var count: usize = 1;
+    // A request, the request to go, or a driver of ours ending. The drivers
+    // are their own processes and stay up when this one goes: what goes is
+    // the matching, not the hardware. But one that dies is noted, so its
+    // binding says stopped rather than running, a rescan may bind the
+    // device again, and a start is not refused for a process that is gone.
+    var sources: [3]u32 = undefined;
+    var kinds: [3]Source = undefined;
+    var count: usize = 0;
+    sources[count] = service;
+    kinds[count] = .request;
+    count += 1;
     const quit_event = quit.event();
     if (quit_event != 0) {
-        sources[1] = quit_event;
-        count = 2;
+        sources[count] = quit_event;
+        kinds[count] = .quit;
+        count += 1;
+    }
+    const children = sys.watch(.children);
+    if (children >= 0) {
+        sources[count] = @intCast(children);
+        kinds[count] = .child;
+        count += 1;
     }
 
     while (true) {
         const woke = sys.waitMany(sources[0..count], sys.FOREVER);
-        if (woke == 1) sys.exit(0);
+        if (woke < 0) continue;
+        switch (kinds[@intCast(woke)]) {
+            .quit => sys.exit(0),
+            .child => while (sys.wait(0, sys.POLL)) |exited| noteEnded(exited.pid),
+            .request => {
+                var message = sys.Message{};
+                const request = sys.recv(service, &message, sys.POLL) orelse continue;
+                handle(&message, request.token);
+                out.flush();
+            },
+        }
+    }
+}
 
-        var message = sys.Message{};
-        const request = sys.recv(service, &message, sys.POLL) orelse continue;
-        handle(&message, request.token);
+/// A driver of ours has ended: its binding is free to be started again, or
+/// bound again by a rescan.
+fn noteEnded(pid: u32) void {
+    for (&bound) |*b| {
+        if (!b.live or b.state != .running or b.pid != pid) continue;
+        b.pid = 0;
+        b.state = .stopped;
+        log.begin("devmgd", .bad);
+        out.text(manifests[b.manifest].name);
+        out.text(": ended");
+        log.end();
         out.flush();
     }
 }
