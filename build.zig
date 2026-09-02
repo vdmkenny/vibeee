@@ -848,7 +848,8 @@ pub fn build(b: *std.Build) void {
     // wrote and the decoder is what it vendored, and the seam between them is
     // exactly what a test should be looking at. Built against the host's own
     // library, since what is being checked is the bytes that come back rather
-    // than which allocator found room for them.
+    // than which allocator found room for them. Its synthetic fixtures live in
+    // img.zig so a fresh checkout never depends on ignored home/ contents.
     const img_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/user/img/img.zig"),
@@ -859,13 +860,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     img_tests.root_module.addIncludePath(b.path("third_party/stb"));
-    // The pictures the machine ships, so the decoder is proved against the
-    // same bytes it will meet there.
-    for ([_][]const u8{ "colours.png", "tall.png", "photo.jpg", "sideways.jpg" }) |sample| {
-        img_tests.root_module.addAnonymousImport(sample, .{
-            .root_source_file = b.path(b.fmt("home/pictures/{s}", .{sample})),
-        });
-    }
     img_tests.root_module.addCSourceFiles(.{
         .files = &.{"src/user/img/stb.c"},
         .flags = &.{

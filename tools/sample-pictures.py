@@ -13,8 +13,8 @@ this script thinks one would.
 
     python3 tools/sample-pictures.py
 
-Needs Pillow. The outputs are committed, so this is only run when the set
-changes.
+Needs Pillow. The outputs are local home-directory samples, so this is only
+run when that sample set changes.
 """
 
 import os
