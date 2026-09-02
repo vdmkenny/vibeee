@@ -1,0 +1,8 @@
+FreeBSD src, sys/dev/ath/ath_hal
+pinned 7ca0c1eba2e4c49ac92499ef0f6adf27c8b930d4
+https://github.com/freebsd/freebsd-src
+
+Reference only: none of this is compiled. It is the source of truth from
+which the AR2425's register tables and reset sequences are transcribed into
+Zig, the way third_party/spleen's .bdf files are the source for the console
+font. See third_party/README.md.

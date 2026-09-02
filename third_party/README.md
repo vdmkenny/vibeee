@@ -81,3 +81,34 @@ should not carry a JPEG decoder to do it.
 
 It decodes and nothing else. What a camera wrote beside the picture, the
 orientation above all, it steps over, so `src/lib/exif.zig` reads that here.
+
+## ath_hal (Atheros radio reference)
+
+FreeBSD's Atheros Hardware Access Layer, ISC and BSD-2-Clause. See the
+permission headers in each file. Pinned at
+`7ca0c1eba2e4c49ac92499ef0f6adf27c8b930d4`; `ath_hal/COMMIT` records where it
+came from.
+
+**Reference only. None of it is compiled.** It is here the way `spleen`'s
+`.bdf` files are here: as the source of truth for data that is transcribed
+into Zig, not as code that is built. The AR2425 is reverse-engineered silicon
+with no datasheet, and the reset and channel-set pipeline the design's network
+section calls owed, the ar5212 and RF2425 mode initval tables, the EEPROM
+power and antenna derivation, the PCU and RF-bank programming, and the AGC and
+noise-floor calibration, is exactly the reverse-engineered data that is too
+error-prone to reconstruct from prose. The values come from here; the register
+writes that apply them are written in `src/user/netd` as Zig tables and
+sequences, so the driver stays enums, packed structs and masks with no C
+shapes on any path, and this tree is never linked.
+
+The whole ar5212 family is kept at one revision rather than the AR2425's files
+alone, because the 701 is the first of its family this machine drives and not
+necessarily the last: a sibling part, an AR2417 or an AR2413, is transcribed
+the same way from the same pinned reference when a machine needs it, without a
+re-fetch that might land on a different revision.
+
+Chosen over compiling the HAL as C, which is how uACPI and lwIP are vendored,
+because those are large correct interpreters of a standard and this is a driver
+whose every hot path the house rules keep in idiomatic Zig. What is irreplaceable
+about the HAL is its numbers, not its C; so the numbers are what is kept, and the
+code that uses them is ours.
