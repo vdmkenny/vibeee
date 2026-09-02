@@ -223,6 +223,7 @@ pub const Keyword = enum {
     size,
     player,
     picture,
+    portrait,
     level,
     advancement,
     str,
@@ -385,6 +386,9 @@ pub const Sheet = struct {
     size: []const u8 = "",
     player: []const u8 = "",
     picture: []const u8 = "",
+    /// The portrait's bytes as base64, one line, so the journal carries its
+    /// own face. Empty when there is none.
+    portrait: []const u8 = "",
     level: u8 = 1,
     advancement: Advancement = .milestone,
 
@@ -487,6 +491,11 @@ pub const Sheet = struct {
         return self.death_failure >= 3;
     }
 
+    /// Three death saves made: no longer dying, still down.
+    pub fn stable(self: Sheet) bool {
+        return self.down() and self.death_success >= 3;
+    }
+
     /// The innate feature by its name, or by the only word there is.
     pub fn innateName(self: Sheet) []const u8 {
         return if (self.innate_name.len > 0) self.innate_name else "Innate feature";
@@ -548,6 +557,7 @@ fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
         .size => sheet.size = rest,
         .player => sheet.player = rest,
         .picture => sheet.picture = rest,
+        .portrait => sheet.portrait = if (std.mem.eql(u8, rest, "-")) "" else rest,
         .level => sheet.level = @max(1, parseU8(rest)),
         .advancement => sheet.advancement = std.meta.stringToEnum(Advancement, rest) orelse .milestone,
 
@@ -1122,6 +1132,17 @@ test "concentration starts with the cast and ends with a rest or a line" {
     try testing.expectEqualStrings("", fold(bane ++ "\ncast 1 | Bane\nconcentrate -").concentration);
     try testing.expectEqualStrings("", fold(bane ++ "\ncast 1 | Bane\nrest short").concentration);
     try testing.expectEqualStrings("Bless", fold(bane ++ "\nconcentrate Bless").concentration);
+}
+
+test "the portrait is a line of the file, and three saves are stable" {
+    try testing.expectEqualStrings("aGVsbG8=", fold(CINAED ++ "\nportrait aGVsbG8=").portrait);
+    try testing.expectEqualStrings("", fold(CINAED ++ "\nportrait aGVsbG8=\nportrait -").portrait);
+
+    const dying = CINAED ++ "\ndamage 8\nsave success\nsave success\nsave success";
+    try testing.expect(fold(dying).stable());
+    try testing.expect(!fold(dying).dead());
+    // A hit point back is no longer down, so no longer stable either.
+    try testing.expect(!fold(dying ++ "\nheal 1").stable());
 }
 
 test "dice are read from a damage line and spelled back" {

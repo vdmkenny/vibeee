@@ -39,9 +39,17 @@ comptime {
     _ = @import("clibc");
 }
 
-/// The whole file, held at once. Years of play at a line a moment fit in this,
-/// and it is what Save writes and what every fold reads.
+/// The whole file, held at once: years of play at a line a moment, and the
+/// portrait as one line of it. It is what Save writes and what every fold
+/// reads.
 const CAPACITY = 64 * 1024;
+
+/// The portrait: the side of the square it is kept as, which is the size it
+/// is drawn at; the JPEG quality it is kept at; and the most its file may
+/// come to, which at this size and quality is a few kilobytes.
+const PORTRAIT_SIDE = 64;
+const PORTRAIT_QUALITY = 85;
+const PORTRAIT_MAX = 8 * 1024;
 
 /// Hero's own version. An application outside the system is versioned on its
 /// own rather than with the system's string: it ships when it ships.
@@ -115,9 +123,17 @@ var menus: eui.menubar.State = .{};
 var headshot: ?img.Picture = null;
 var headshot_of: [128]u8 = @splat(0);
 var headshot_of_len: usize = 0;
-/// Where a headshot file is read before it is decoded, held here rather than
-/// on the stack, which a picture would overflow.
-var headshot_file: [96 * 1024]u8 = undefined;
+/// Where a picture's bytes go before they are decoded, held here rather
+/// than on the stack, which a picture would overflow: a portrait taken in
+/// may be a photo of half a megabyte, and comes out a few kilobytes.
+var picture_file: [512 * 1024]u8 = undefined;
+/// The portrait on its way into the journal: the square it is shrunk to,
+/// the writer's own bytes of it, the JPEG, and the line as it is written.
+var portrait_pixels: [PORTRAIT_SIDE * PORTRAIT_SIDE]u32 = undefined;
+var portrait_scratch: [PORTRAIT_SIDE * PORTRAIT_SIDE * 3]u8 = undefined;
+var portrait_jpeg: [PORTRAIT_MAX]u8 = undefined;
+var portrait_line: [PORTRAIT_HEAD.len + std.base64.standard.Encoder.calcSize(PORTRAIT_MAX)]u8 = undefined;
+const PORTRAIT_HEAD = @tagName(hero.Keyword.portrait) ++ " ";
 
 /// The dice window, opened by whatever asks for a roll.
 var dice_window: dice.Window = .{};
@@ -158,6 +174,7 @@ const RollWhat = union(enum) {
     save: hero.Ability,
     attack: usize,
     damage: usize,
+    death,
     plain,
     free,
 
@@ -167,6 +184,7 @@ const RollWhat = union(enum) {
             .save => |a| std.fmt.bufPrint(buf, "{s} save", .{a.word()}) catch a.word(),
             .attack => |i| attackName(i),
             .damage => |i| std.fmt.bufPrint(buf, "{s} damage", .{attackName(i)}) catch "Damage",
+            .death => "Death save",
             .plain => "d20",
             .free => "Dice",
         };
@@ -178,7 +196,7 @@ const RollWhat = union(enum) {
             .save => |a| sheet.saveBonus(a),
             .attack => |i| attackBonus(i),
             .damage => |i| if (hero.Dice.parse(attackDamage(i))) |d| d.bonus else 0,
-            .plain, .free => 0,
+            .death, .plain, .free => 0,
         };
         return if (self.isTest()) bonus + sheet.exhaustionPenalty() else bonus;
     }
@@ -186,7 +204,7 @@ const RollWhat = union(enum) {
     /// A d20 test, which exhaustion and the conditions weigh on.
     fn isTest(self: RollWhat) bool {
         return switch (self) {
-            .skill, .save, .attack, .plain => true,
+            .skill, .save, .attack, .death, .plain => true,
             .damage, .free => false,
         };
     }
@@ -198,7 +216,7 @@ const RollWhat = union(enum) {
         const names: []const []const u8 = switch (self) {
             .skill, .plain => &.{ "Poisoned", "Frightened" },
             .attack => &.{ "Poisoned", "Frightened", "Prone" },
-            .save, .damage, .free => &.{},
+            .save, .death, .damage, .free => &.{},
         };
         for (names) |name| {
             if (sheet.hasCondition(name)) return name;
@@ -255,6 +273,7 @@ const Command = enum(u15) {
     roll_check,
     roll_attack,
     roll_damage,
+    roll_death,
     roll_free,
     rest,
     long_rest,
@@ -326,6 +345,7 @@ const MENUS = [_]eui.menubar.Menu{
         .{ .label = "Skill check...", .id = @intFromEnum(Command.roll_check), .shortcut = "Ctrl+R" },
         .{ .label = "Attack...", .id = @intFromEnum(Command.roll_attack) },
         .{ .label = "Damage...", .id = @intFromEnum(Command.roll_damage) },
+        .{ .label = "Death save...", .id = @intFromEnum(Command.roll_death) },
         .{ .label = "Dice...", .id = @intFromEnum(Command.roll_free) },
     } },
     .{ .label = "Rest", .items = &.{
@@ -347,11 +367,11 @@ const Form = enum {
     name,
     class_level,
     origin,
-    player_picture,
+    player,
+    portrait,
     scores,
     saves,
     skills,
-    expertise,
     hp_die,
     ac_speed,
     casting,
@@ -369,11 +389,11 @@ const Form = enum {
             .name => "Name",
             .class_level => "Class and level",
             .origin => "Origin",
-            .player_picture => "Player and picture",
+            .player => "Player",
+            .portrait => "Portrait",
             .scores => "Ability scores",
             .saves => "Saving throws",
-            .skills => "Skills",
-            .expertise => "Expertise",
+            .skills => "Skills and expertise",
             .hp_die => "Hit points and die",
             .ac_speed => "Armour class and speed",
             .casting => "Spellcasting and slots",
@@ -394,11 +414,11 @@ const Form = enum {
             .name => "cinaed I",
             .class_level => "Sorcerer | 1",
             .origin => "Species | background | alignment | size",
-            .player_picture => "Player | picture file beside the journal",
+            .player => "Who plays this character",
+            .portrait => "A picture file beside the journal, or - for none",
             .scores => "Str Dex Con Int Wis Cha, as six numbers",
             .saves => "By key: str dex con int wis cha",
-            .skills => "By key: stealth sleight_of_hand ...",
-            .expertise => "By key: stealth sleight_of_hand ...",
+            .skills => "Skills | expertise, by key: stealth sleight_of_hand | stealth",
             .hp_die => "Hit points | hit die, like 8 | d6",
             .ac_speed => "Armour class | speed, like 12 | 30",
             .casting => "Ability | slots by level, like cha | 2 0 0 0 0 0 0 0 0",
@@ -419,11 +439,11 @@ const Form = enum {
             .name => &.{.name},
             .class_level => &.{ .class, .level },
             .origin => &.{ .species, .background, .alignment, .size },
-            .player_picture => &.{ .player, .picture },
+            .player => &.{.player},
+            .portrait => &.{.portrait},
             .scores => &.{ .str, .dex, .con, .int, .wis, .cha },
             .saves => &.{.saves},
-            .skills => &.{.skills},
-            .expertise => &.{.expertise},
+            .skills => &.{ .skills, .expertise },
             .hp_die => &.{ .hp, .@"hit-die" },
             .ac_speed => &.{ .ac, .speed },
             .casting => &.{ .spellcasting, .slots },
@@ -445,7 +465,7 @@ const Form = enum {
 
 /// The forms the Character menu lists: the facts, in a sheet's order. The
 /// four that add a row live on their panes, beside the rows they add to.
-const MENU_FORMS = [_]Form{ .name, .class_level, .origin, .player_picture, .scores, .saves, .skills, .expertise, .hp_die, .ac_speed, .casting, .innate, .training, .coins };
+const MENU_FORMS = [_]Form{ .name, .class_level, .origin, .player, .portrait, .scores, .saves, .skills, .hp_die, .ac_speed, .casting, .innate, .training, .coins };
 
 /// What View turns off. On to start with.
 var show_status = true;
@@ -654,33 +674,87 @@ fn appendLine(line: []const u8) void {
     ctx.damage();
 }
 
+/// The headshot: the journal's own portrait line, decoded; or, for a journal
+/// without one, a picture file it names beside itself.
 fn loadHeadshot() void {
+    if (sheet.portrait.len > 0) {
+        forgetHeadshot();
+        const decoder = std.base64.standard.Decoder;
+        const size = decoder.calcSizeForSlice(sheet.portrait) catch return;
+        if (size > picture_file.len) return;
+        decoder.decode(picture_file[0..size], sheet.portrait) catch return;
+        headshot = img.decode(picture_file[0..size]) catch null;
+        return;
+    }
+
     const picture = sheet.picture;
     if (picture.len == 0) {
         forgetHeadshot();
         return;
     }
-    // Beside the character file, so a journal and its portrait travel together.
     var full_buf: [192]u8 = @splat(0);
     const full = resolve(picture, &full_buf);
     if (std.mem.eql(u8, full, headshot_of[0..headshot_of_len])) return;
 
     forgetHeadshot();
-    const handle = sys.open(full, .{});
-    if (handle < 0) return;
-    defer _ = sys.close(@intCast(handle));
-
-    var read: usize = 0;
-    while (read < headshot_file.len) {
-        const n = sys.read(@intCast(handle), headshot_file[read..]);
-        if (n <= 0) break;
-        read += @intCast(n);
-    }
-    headshot = img.decode(headshot_file[0..read]) catch null;
+    const read = readWhole(full, &picture_file) orelse return;
+    headshot = img.decode(picture_file[0..read]) catch null;
     if (headshot != null) {
         headshot_of_len = @min(full.len, headshot_of.len);
         @memcpy(headshot_of[0..headshot_of_len], full[0..headshot_of_len]);
     }
+}
+
+/// A file read whole into `into`: how much, or null for a file that is not
+/// there.
+fn readWhole(full: []const u8, into: []u8) ?usize {
+    const handle = sys.open(full, .{});
+    if (handle < 0) return null;
+    defer _ = sys.close(@intCast(handle));
+    var read: usize = 0;
+    while (read < into.len) {
+        const n = sys.read(@intCast(handle), into[read..]);
+        if (n <= 0) break;
+        read += @intCast(n);
+    }
+    return read;
+}
+
+/// Take a picture into the journal: read the file, decode it, cut the
+/// square from its middle and shrink that to the size it is drawn at, keep
+/// it as a small JPEG, and write it as one `portrait` line, so the journal
+/// carries its own face wherever it goes. `-` takes the portrait away.
+fn importPortrait(name: []const u8) void {
+    if (std.mem.eql(u8, name, "-")) {
+        append(hero.writeFact(&line_buffer, .portrait, "-"));
+        loadHeadshot();
+        return;
+    }
+    var full_buf: [192]u8 = @splat(0);
+    const full = resolve(name, &full_buf);
+    const read = readWhole(full, &picture_file) orelse {
+        say("No such picture.");
+        return;
+    };
+    if (read == picture_file.len) {
+        say("Too big: a picture of up to half a megabyte.");
+        return;
+    }
+    const picture = img.decode(picture_file[0..read]) catch {
+        say("Not a picture the machine can read.");
+        return;
+    };
+    defer picture.deinit();
+
+    const square = img.squareOf(picture, PORTRAIT_SIDE, &portrait_pixels);
+    const jpeg = img.encodeJpeg(square, PORTRAIT_QUALITY, &portrait_scratch, &portrait_jpeg) catch {
+        say("Could not keep a small picture of it.");
+        return;
+    };
+    @memcpy(portrait_line[0..PORTRAIT_HEAD.len], PORTRAIT_HEAD);
+    const encoded = std.base64.standard.Encoder.encode(portrait_line[PORTRAIT_HEAD.len..], jpeg);
+    append(portrait_line[0 .. PORTRAIT_HEAD.len + encoded.len]);
+    loadHeadshot();
 }
 
 fn forgetHeadshot() void {
@@ -813,6 +887,7 @@ fn runCommand(command: Command) void {
         .roll_check => askRoll(.{ .skill = @enumFromInt(@min(skills_table.selected, std.enums.values(hero.Skill).len - 1)) }),
         .roll_attack => if (sheet.attacks.len > 0) askRoll(.{ .attack = @min(attacks_table.selected, sheet.attacks.len - 1) }) else say("No attacks written."),
         .roll_damage => if (sheet.attacks.len > 0) askRoll(.{ .damage = @min(attacks_table.selected, sheet.attacks.len - 1) }) else say("No attacks written."),
+        .roll_death => askRoll(.death),
         .roll_free => askRoll(.free),
         .rest => askRest(),
         .long_rest => append(hero.writeRest(&line_buffer, .long)),
@@ -970,7 +1045,10 @@ fn castSpell(index: usize) void {
 // Rolling: the dice window, filled in by what asked
 // ---------------------------------------------------------------------------
 
-/// Which attack the window was opened for, so its Damage button knows whose.
+/// What the window was opened for, so what falls is written as that: a
+/// death save is marked from its die, and an attack's Damage button knows
+/// whose damage.
+var rolling: RollWhat = .plain;
 var rolling_attack: usize = 0;
 var roll_title: [48]u8 = @splat(0);
 var roll_sub: [96]u8 = @splat(0);
@@ -1019,9 +1097,25 @@ fn askRoll(what: RollWhat) void {
             sub.text(attackDamage(i));
             sub.text(" \u{b7} from the attack line");
         },
+        .death => {
+            if (!sheet.down()) {
+                say("Death saves are rolled at no hit points.");
+                return;
+            }
+            if (sheet.dead()) {
+                say("Three failures already.");
+                return;
+            }
+            if (sheet.stable()) {
+                say("Stable already.");
+                return;
+            }
+            sub.text("Ten or more succeeds \u{b7} a 1 fails twice \u{b7} a 20 heals");
+        },
         .plain => sub.text("A bare d20"),
         .free => sub.text("Any dice, any number, any bonus"),
     }
+    rolling = what;
     if (what.isTest() and sheet.exhaustion > 0) {
         sub.text(" \u{b7} exhaustion ");
         signedTight(&sub, sheet.exhaustionPenalty());
@@ -1046,11 +1140,36 @@ fn recordRoll(outcome: dice.Outcome) void {
         const d = hero.Dice{ .count = outcome.count, .faces = outcome.face.faces(), .bonus = outcome.bonus };
         append(hero.writeDice(&line_buffer, outcome.title, d, outcome.fallen(&fallen), outcome.total));
     }
+    if (rolling == .death and outcome.isTest()) {
+        markDeathSave(outcome.die(), outcome.total);
+        return;
+    }
     var line = str.Builder{ .buf = &status_buffer };
     line.text(outcome.title);
     line.text(": ");
     line.number(@intCast(@max(outcome.total, 0)));
     status = line.done();
+}
+
+/// What a death save came to: ten or more is a success, less a failure, a
+/// 1 on the die two failures, and a 20 a hit point back, which ends the
+/// dying.
+fn markDeathSave(fell: u8, total: i32) void {
+    const said: []const u8 = if (fell == 20) blk: {
+        append(hero.writeHeal(&line_buffer, 1, "a 20 on a death save"));
+        break :blk "Death save: a 20, back on one hit point";
+    } else if (fell == 1) blk: {
+        append(hero.writeSave(&line_buffer, .failure));
+        append(hero.writeSave(&line_buffer, .failure));
+        break :blk "Death save: a 1, two failures";
+    } else if (total >= 10) blk: {
+        append(hero.writeSave(&line_buffer, .success));
+        break :blk if (sheet.stable()) "Death save: success, and stable" else "Death save: success";
+    } else blk: {
+        append(hero.writeSave(&line_buffer, .failure));
+        break :blk if (sheet.dead()) "Death save: failure, the third" else "Death save: failure";
+    };
+    say(said);
 }
 
 fn attackBonus(index: usize) i16 {
@@ -1105,7 +1224,10 @@ fn initialOf(form: Form, buf: []u8) []const u8 {
             line.number(sheet.level);
         },
         .origin => joinParts(&line, &.{ sheet.species, sheet.background, sheet.alignment, sheet.size }),
-        .player_picture => joinParts(&line, &.{ sheet.player, sheet.picture }),
+        .player => line.text(sheet.player),
+        // The portrait's bytes are not a line to edit: the field takes a
+        // file to read them from.
+        .portrait => {},
         .scores => for (std.enums.values(hero.Ability), 0..) |a, i| {
             if (i > 0) line.byte(' ');
             line.number(sheet.scores.get(a));
@@ -1115,15 +1237,18 @@ fn initialOf(form: Form, buf: []u8) []const u8 {
             if (line.len > 0) line.byte(' ');
             line.text(a.key());
         },
-        .skills => for (std.enums.values(hero.Skill)) |sk| {
-            if (!sheet.skill_prof.contains(sk)) continue;
-            if (line.len > 0) line.byte(' ');
-            line.text(sk.key());
-        },
-        .expertise => for (std.enums.values(hero.Skill)) |sk| {
-            if (!sheet.skill_expert.contains(sk)) continue;
-            if (line.len > 0) line.byte(' ');
-            line.text(sk.key());
+        .skills => {
+            for (std.enums.values(hero.Skill)) |sk| {
+                if (!sheet.skill_prof.contains(sk)) continue;
+                if (line.len > 0) line.byte(' ');
+                line.text(sk.key());
+            }
+            line.text(" |");
+            for (std.enums.values(hero.Skill)) |sk| {
+                if (!sheet.skill_expert.contains(sk)) continue;
+                line.byte(' ');
+                line.text(sk.key());
+            }
         },
         .hp_die => if (sheet.hp_max > 0) {
             line.number(sheet.hp_max);
@@ -1168,6 +1293,10 @@ fn joinParts(line: *str.Builder, parts: []const []const u8) void {
 /// The answer to a form: one fact line per keyword, from the part of the
 /// line that is its; an empty part leaves what the sheet had.
 fn applyFact(form: Form, line: []const u8) void {
+    if (form == .portrait) {
+        if (line.len > 0) importPortrait(line);
+        return;
+    }
     const keywords = form.keywords();
     if (keywords.len == 1) {
         if (line.len == 0) return;
@@ -1185,7 +1314,6 @@ fn applyFact(form: Form, line: []const u8) void {
             writeChecked(k, piece);
         }
     }
-    if (form == .player_picture) loadHeadshot();
 }
 
 /// One fact line, unless the keyword takes a number and this is not one.
@@ -1275,6 +1403,7 @@ fn undo() void {
     @memcpy(word[0..n], gone[0..n]);
     text_len = start;
     refold();
+    loadHeadshot();
     modified = text_len != saved_len;
     setTitle();
     var line = str.Builder{ .buf = &status_buffer };
@@ -1504,7 +1633,7 @@ fn hitPointLine() []const u8 {
         line.number(sheet.hp_temp);
         line.text(" temporary");
     }
-    if (sheet.dead()) line.text(" \u{b7} Dead") else if (sheet.down()) line.text(" \u{b7} Down") else if (sheet.bloodied()) line.text(" \u{b7} Bloodied");
+    if (sheet.dead()) line.text(" \u{b7} Dead") else if (sheet.stable()) line.text(" \u{b7} Stable") else if (sheet.down()) line.text(" \u{b7} Down") else if (sheet.bloodied()) line.text(" \u{b7} Bloodied");
     return line.done();
 }
 
@@ -2003,6 +2132,9 @@ fn drawCombat(area: Rect) void {
     ctx.label(.{ .x = right.x, .y = ry, .w = 78, .h = t.control_height }, "Successes");
     const ds = ctx.pips(.{ .x = right.x + 84, .y = ry, .w = eui.pips.width(3), .h = t.control_height }, 3, sheet.death_success);
     if (ds != sheet.death_success) deathSave(.success, ds, sheet.death_success);
+    // The save rolled for the player, and marked from what fell.
+    const roll_w = eui.footer.buttonWidth("Roll");
+    if (ctx.button(.{ .x = right.x + 84 + eui.pips.width(3) + gap, .y = ry, .w = roll_w, .h = t.control_height }, "Roll")) askRoll(.death);
     ry += row;
     ctx.label(.{ .x = right.x, .y = ry, .w = 78, .h = t.control_height }, "Failures");
     const df = ctx.pips(.{ .x = right.x + 84, .y = ry, .w = eui.pips.width(3), .h = t.control_height }, 3, sheet.death_failure);

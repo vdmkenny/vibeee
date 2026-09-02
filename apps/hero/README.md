@@ -49,7 +49,8 @@ than refused, so a file from a later version still opens in an earlier one.
 | `class Sorcerer`, `level 1` | Class and level; the level sets the proficiency bonus |
 | `species Halfling`, `background Acolyte`, `alignment Chaotic Good`, `size Small` | Origin |
 | `player cinaed666`, `advancement milestone` | Who plays, and whether experience is counted |
-| `picture cinaed.png` | A picture beside the journal, shown as the headshot |
+| `portrait <base64>` | The headshot, a square of sixty-four pixels kept as a small JPEG inside the journal; `portrait -` takes it away |
+| `picture cinaed.png` | A picture file beside the journal, shown as the headshot when there is no portrait line |
 | `str 14` and the other five | Ability scores; modifiers are derived |
 | `saves con cha` | Saving throw proficiencies |
 | `skills deception insight persuasion religion` | Skill proficiencies; `expertise` lists the doubled ones |
@@ -110,7 +111,11 @@ level from every d20 test, which the roll helper applies and shows.
 
 A d20 test rolls once, or twice keeping the higher for advantage and the
 lower for disadvantage; the journal line records the die kept, so a total
-can be checked by hand. A handful of dice, an attack's damage or a free
+can be checked by hand. A death save, from the Roll menu or the button by
+the Combat pane's pips at no hit points, is marked from what fell: ten or
+more a success, less a failure, a 1 two failures, a 20 a hit point back.
+Three successes are stable, three failures the end, and the status line
+says which. A handful of dice, an attack's damage or a free
 roll, is summed, and every die that fell is recorded. Poisoned and
 frightened put disadvantage on checks and attacks, and prone on attacks,
 which the dice window sets before it opens and says why.
@@ -139,7 +144,10 @@ when a mode chose. An attack offers its damage dice next.
 The Character menu builds and corrects the sheet a fact at a time: each item
 asks for one line, with a field on the prompt sheet already holding what the
 sheet says, in the parts the file takes, and showing the shape of the line
-while it is empty. A number that is not one is refused rather than written. New character starts a fresh
+while it is empty. A number that is not one is refused rather than written.
+Portrait takes in any picture the machine reads, up to half a megabyte: the
+square from its middle is shrunk to the headshot's size and kept as JPEG on
+one line of the journal, so the face travels with the file. New character starts a fresh
 journal that is saved where the first Save says. Each pane adds its own rows
 with an Add button: a feature on the Sheet, an attack on Combat, a spell on
 Spells, an item on Gear, where gold is paid and received too. The Edit menu
@@ -162,8 +170,9 @@ and prints what fell.
 ## 13.6 Budgets
 
 One character per window. The file is held whole, sixty-four kilobytes,
-which is years of play at a line per moment. Up to sixty-four items, thirty-
-two spells, twelve attacks, sixteen features and two thousand lines. A
-headshot is decoded through the same library the picture viewer uses, into a
-quarter megabyte, which bounds it to about two hundred and fifty pixels a
-side.
+which is years of play at a line per moment with the portrait's few
+kilobytes among them. Up to sixty-four items, thirty-two spells, twelve
+attacks, sixteen features and two thousand lines. A picture taken in for the
+portrait is read whole, up to half a megabyte, and decoded through the same
+library the picture viewer uses; what is kept is the sixty-four pixel
+square.
