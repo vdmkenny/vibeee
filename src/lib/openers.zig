@@ -66,6 +66,7 @@ pub const Opener = struct {
 pub const table = [_]Opener{
     .{ .name = "eimg", .path = "/bin/eimg", .opens = .{ .picture = true } },
     .{ .name = "pad", .path = "/bin/pad", .opens = .{ .text = true } },
+    .{ .name = "hero", .path = "/bin/hero", .opens = .{ .document = true } },
 };
 
 /// Who would open this family, before anybody has chosen.

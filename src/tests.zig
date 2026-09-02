@@ -29,6 +29,7 @@ test {
     // it fails is a module whose tests quietly stop running.
     _ = @import("user/eui/eui.zig");
     _ = @import("user/lib/bindings.zig");
+    _ = @import("user/lib/hero.zig");
     _ = @import("user/lib/command.zig");
     _ = @import("user/lib/env.zig");
     // Both halves of the terminal key codec, and the proof they are inverses:

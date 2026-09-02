@@ -93,6 +93,7 @@ pub const Kind = enum {
     web_font,
 
     pdf,
+    hero,
     sqlite,
 
     /// The first sector of a medium something can boot from.
@@ -128,7 +129,7 @@ pub const Kind = enum {
             .wav, .ogg, .flac, .mp3, .midi => .audio,
             .matroska, .mp4, .avi => .video,
             .font, .opentype, .web_font => .font,
-            .pdf => .document,
+            .pdf, .hero => .document,
             .rootfs, .panic_record, .boot_sector, .sqlite, .wad => .system,
             .data, .empty => .data,
         };
@@ -178,6 +179,7 @@ pub const Kind = enum {
             .web_font => "web font",
 
             .pdf => "pdf document",
+            .hero => "character journal",
             .sqlite => "sqlite database",
 
             .boot_sector => "boot sector",
@@ -304,6 +306,7 @@ const signatures = [_]Signature{
 
     // The rest.
     .{ .magic = "%PDF-", .kind = .pdf },
+    .{ .magic = "hero 1", .kind = .hero },
     .{ .magic = "SQLite format 3\x00", .kind = .sqlite },
     .{ .magic = "IWAD", .kind = .wad },
     .{ .magic = "PWAD", .kind = .wad },
@@ -377,6 +380,7 @@ const suffixes = [_]struct { suffix: []const u8, kind: Kind }{
     .{ .suffix = "gif", .kind = .gif },
     .{ .suffix = "wad", .kind = .wad },
     .{ .suffix = "bdf", .kind = .font },
+    .{ .suffix = "hero", .kind = .hero },
 
     .{ .suffix = "txt", .kind = .text },
     .{ .suffix = "md", .kind = .text },
@@ -474,6 +478,7 @@ test "formats this build cannot open are still named" {
     try std.testing.expectEqual(Kind.zip, fromBytes("PK\x03\x04rest").kind);
     try std.testing.expectEqual(Kind.gzip, fromBytes("\x1F\x8B\x08\x00").kind);
     try std.testing.expectEqual(Kind.pdf, fromBytes("%PDF-1.4").kind);
+    try std.testing.expectEqual(Kind.hero, fromBytes("hero 1\nname cinaed").kind);
     try std.testing.expectEqual(Kind.sqlite, fromBytes("SQLite format 3\x00rest").kind);
     try std.testing.expectEqual(Kind.dos_program, fromBytes("MZ\x90\x00").kind);
     try std.testing.expectEqual(Kind.matroska, fromBytes("\x1A\x45\xDF\xA3rest").kind);
