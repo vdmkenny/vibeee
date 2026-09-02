@@ -269,7 +269,7 @@ pub const Window = struct {
         }
 
         self.draw(connection);
-        if (self.ctx.pending) self.draw(connection);
+        if (self.ctx.wantsPass()) self.draw(connection);
     }
 
     /// Whether advantage and disadvantage mean anything: one d20.

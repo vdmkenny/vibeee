@@ -281,6 +281,17 @@ fn titleClicked(
     const t = theme.current();
     const over = hovering(ctx, area);
 
+    // Painted when its look changes and not otherwise: a strip repainted on
+    // every move of the pointer is a strip sent to the screen on every move
+    // of the pointer.
+    const visual: widget.Visual = if (open) .active else if (over) .hot else .idle;
+    const entry = ctx.slotFor(area) orelse return false;
+    entry.seen = true;
+    const marked_now: i32 = if (mnemonic != null) 1 else 0;
+    if (!ctx.needsPaint(entry, visual) and entry.detail == marked_now) return over and ctx.pressedThisPass();
+    entry.visual = visual;
+    entry.detail = marked_now;
+
     const face = if (open) t.accent else if (over) t.surface_hot else t.surface;
     const ink = if (open) t.accent_text else t.text;
     ctx.surface.fill(area, face);

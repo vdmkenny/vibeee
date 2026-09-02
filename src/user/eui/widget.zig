@@ -165,6 +165,12 @@ pub const Context = struct {
     /// folding the two together loses the request, and the caller sees a
     /// window whose controls updated and whose background did not.
     pending: bool = false,
+    /// Another pass asked for, without everything being repainted: for a
+    /// control whose change something drawn before it in this pass has yet
+    /// to see. The pass runs at once and each control repaints only what
+    /// differs, which is the difference between a listing whose cursor moved
+    /// and a window that flashes whole.
+    pending_pass: bool = false,
 
     /// What changed this pass, in screen coordinates. A compositor sends these
     /// rather than the whole surface: design/10-gui.md §10.3, and the
@@ -202,6 +208,7 @@ pub const Context = struct {
             self.damaged = true;
             self.pending = false;
         }
+        self.pending_pass = false;
 
         self.previous = self.buttons;
         self.buttons = buttons;
@@ -338,6 +345,16 @@ pub const Context = struct {
     /// gets a whole clean pass rather than half of one.
     pub fn damage(self: *Context) void {
         self.pending = true;
+    }
+
+    /// Ask for another pass, without asking for everything to be repainted.
+    pub fn again(self: *Context) void {
+        self.pending_pass = true;
+    }
+
+    /// Whether the pass that just ended asked for another, of either kind.
+    pub fn wantsPass(self: *const Context) bool {
+        return self.pending or self.pending_pass;
     }
 
     /// Repaint everything in *this* pass. For a caller that knows before it

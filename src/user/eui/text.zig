@@ -271,6 +271,10 @@ pub const Editor = struct {
     /// What an empty field says, dimly, until something is typed: the shape
     /// of what goes there, or an example of it. Never part of the text.
     hint: []const u8 = "",
+    /// Paint on the next pass whatever else: set by a change made after
+    /// this pass painted, a command from the menu or a drag of the bar, so
+    /// the next pass shows it without the whole window being repainted.
+    repaint: bool = false,
     bar: scroll.State = .{},
 
     pub fn selection(self: *const Editor) ?struct { from: usize, to: usize } {
@@ -365,7 +369,8 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     const scrollable = wrapped > rows;
     const box = writable(area, scrollable);
 
-    var changed = false;
+    var changed = state.repaint;
+    state.repaint = false;
 
     // Where the pointer is, in the text. One conversion, used by the click
     // that puts the cursor somewhere and by the drag that selects.
@@ -404,7 +409,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     // that do not apply do nothing.
     if (act.over and ctx.rightPressedThisPass()) {
         eui_context_menu.open(ctx, entry_index, &MENU_ROWS);
-        ctx.damage();
+        ctx.again();
     }
 
     if (act.over) {
@@ -427,7 +432,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
         const here = positionOf(buffer.slice(), face, box.w, state.cursor);
         const row: i32 = @intCast(here.line -| state.scroll);
         eui_context_menu.openAt(box.x + here.x, box.y + (row + 1) * line_height, entry_index, &MENU_ROWS);
-        ctx.damage();
+        ctx.again();
     }
 
     if (ctx.takeKeyFor(entry)) |code| {
@@ -459,7 +464,10 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     if (eui_context_menu.openedBy(entry_index)) {
         if (eui_context_menu.run(ctx)) |row| {
             if (commandOf(row)) |command| {
-                if (run(state, buffer, command, ctx.clipboard)) ctx.damage();
+                if (run(state, buffer, command, ctx.clipboard)) {
+                    state.repaint = true;
+                    ctx.again();
+                }
             }
         }
     }
@@ -475,7 +483,8 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
         const dragged = ctx.scrollbar(bar, &state.bar, state.scroll, wrapped, rows);
         if (dragged != state.scroll) {
             state.scroll = dragged;
-            ctx.damage();
+            state.repaint = true;
+            ctx.again();
         }
     }
 }

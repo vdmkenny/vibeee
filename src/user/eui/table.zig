@@ -138,7 +138,7 @@ pub fn run(
             } else {
                 state.sort = .{ .column = index };
             }
-            ctx.damage();
+            ctx.again();
         }
     }
 
@@ -148,7 +148,7 @@ pub fn run(
             // what a double click amounts to without tracking the interval.
             if (state.selected == index) activated = index;
             state.selected = index;
-            ctx.damage();
+            ctx.again();
         }
     }
 
@@ -156,7 +156,7 @@ pub fn run(
         const wheel = ctx.takeWheel();
         if (wheel != 0) {
             state.scroll = wheeled(state.scroll, wheel, rows.len, visible);
-            ctx.damage();
+            ctx.again();
         }
     }
 
@@ -173,7 +173,7 @@ pub fn run(
             else => {},
         }
         if (state.selected >= rows.len) state.selected = rows.len -| 1;
-        if (state.selected != before) ctx.damage();
+        if (state.selected != before) ctx.again();
     }
 
     // Keep the selection on screen. Done after every input rather than in each
@@ -184,7 +184,10 @@ pub fn run(
 
     // Repaint when anything visible differs from last pass. A table's contents
     // change under it constantly, so comparing what would be drawn is the only
-    // check that is both cheap and right.
+    // check that is both cheap and right. A change of selection or scroll asks
+    // the window for another pass and nothing more: the table repaints itself
+    // from this comparison, and whatever follows the cursor, a preview beside
+    // the listing, sees the new selection on that pass.
     const signature = fingerprint(rows, state, hovered, act.focused, visible);
     if (ctx.needsPaint(entry, .idle) or entry.detail != signature) {
         entry.detail = signature;
@@ -203,7 +206,7 @@ pub fn run(
     const dragged = ctx.scrollbar(bar, &state.bar, state.scroll, rows.len, visible);
     if (dragged != state.scroll and rows.len > visible) {
         state.scroll = dragged;
-        ctx.damage();
+        ctx.again();
     }
 
     return activated;

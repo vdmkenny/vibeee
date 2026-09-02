@@ -247,10 +247,10 @@ fn redraw() void {
     const surface = connection.surfaceOf(window) orelse return;
     ctx.surface = surface.*;
     paint();
-    // A control asked for a full pass mid-pass; give it one now rather than
+    // A control asked for another pass mid-pass; give it one now rather than
     // on the next event, or the window sits half-drawn until the pointer
     // moves.
-    if (ctx.pending) paint();
+    if (ctx.wantsPass()) paint();
 }
 
 fn paint() void {

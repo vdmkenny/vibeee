@@ -238,7 +238,7 @@ pub const FileDialog = struct {
         }
 
         self.draw(connection);
-        if (self.ctx.pending) self.draw(connection);
+        if (self.ctx.wantsPass()) self.draw(connection);
         return self.result != .pending;
     }
 

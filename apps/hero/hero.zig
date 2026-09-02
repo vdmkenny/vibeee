@@ -1528,9 +1528,10 @@ fn setTitle() void {
     connection.setTitle(proto.app.window, line.done()) catch {};
 }
 
+/// A line for the status bar, which repaints itself when its words change.
 fn say(text: []const u8) void {
     status = text;
-    ctx.damage();
+    ctx.again();
 }
 
 // ---------------------------------------------------------------------------
