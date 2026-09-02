@@ -231,6 +231,7 @@ pub fn applyConfig(cfg: settings.Net) void {
 
 fn applySlot(slot: *Slot, role: settings.NetSlot) void {
     const nic = slot.nic orelse return;
+    if (dev.radio_config) |configure| configure(nic, role);
 
     if (!role.enabled) {
         if (slot.mode == .down) return;

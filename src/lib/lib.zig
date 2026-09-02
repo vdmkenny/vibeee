@@ -9,7 +9,7 @@
 //! so kernel and userspace share one instance and its types are the same type
 //! on both sides of a syscall.
 
-pub const ath5k = @import("ath5k.zig");
+pub const ar5212 = @import("ar5212.zig");
 pub const audio = @import("audio.zig");
 pub const audiograph = @import("audiograph.zig");
 pub const battery = @import("battery.zig");

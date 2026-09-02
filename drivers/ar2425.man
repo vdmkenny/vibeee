@@ -1,4 +1,0 @@
-# The Atheros AR2425 radio.
-name    = ar2425
-service = net
-match   = pci:168c:001c

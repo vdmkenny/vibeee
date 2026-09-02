@@ -96,10 +96,12 @@ with no datasheet, and the reset and channel-set pipeline the design's network
 section calls owed, the ar5212 and RF2425 mode initval tables, the EEPROM
 power and antenna derivation, the PCU and RF-bank programming, and the AGC and
 noise-floor calibration, is exactly the reverse-engineered data that is too
-error-prone to reconstruct from prose. The values come from here; the register
-writes that apply them are written in `src/user/netd` as Zig tables and
-sequences, so the driver stays enums, packed structs and masks with no C
-shapes on any path, and this tree is never linked.
+error-prone to reconstruct from prose. The values come from here: `make
+athtables` reads the reference's own initialiser file and writes
+`src/user/netd/ar5212/tables.zig`, so no number in the tables is typed by
+hand, and the sequences that apply them are written in `src/user/netd` as Zig,
+so the driver stays enums, packed structs and masks with no C shapes on any
+path, and this tree is never linked.
 
 The whole ar5212 family is kept at one revision rather than the AR2425's files
 alone, because the 701 is the first of its family this machine drives and not

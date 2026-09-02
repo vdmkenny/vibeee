@@ -256,48 +256,85 @@ That covers b, g and n alike. A driver produces the values its silicon has; a
 high-throughput radio produces more of them, and nothing above the driver changes.
 This is the whole of the b/g/n readiness decision: it lives here, not in a driver.
 
-### 5.2 The driver: AR2425 (`user/netd/ar2425.zig`)
+### 5.2 The driver: the AR5212 family (`user/netd/ar5212.zig`)
 
-Implemented: power-down exit, silicon identification (refusing any generation it
-does not know rather than programming a radio blind), the warm reset of PCU,
-baseband, MAC and PHY, and the card's own calibration store, from which come the
-station address, the regulatory domain, and whether the key cache may cipher. The
-bus-interface reset bit is deliberately unspellable in the reset word's type: on a
-card attached by PCI Express it takes the link down and the machine with it.
+One driver for the family, because the 701's AR2425 is the first of it this
+machine drives and not necessarily the last: the AR2417 shares its radio, and a
+sibling part is a table and a backend away. The truth source is FreeBSD's
+Atheros hardware layer, pinned reference-only under `third_party/ath_hal` and
+never compiled; the reverse-engineered numbers in it are transcribed, and the
+code that applies them is Zig with no C shape on any path.
 
-Registers are named by an enum over a shared `lib/mmio.zig` window, which proves at
-compile time that every offset is aligned for the width it is reached at. Every
-wait is bounded; a radio that has gone away costs a bounded spin and a refusal.
+The driver is split by what it knows:
 
-Not implemented, and refused honestly rather than faked: the mode initvals and
-channel-set pipeline, the descriptor rings, the MLME, the supplicant and rate
-control. `start` brings the interface up with no carrier and says so; `transmit`
-refuses and counts the refusal.
+- `ar5212/regs.zig` names every register the driver reaches and gives every
+  word it reads or writes whole as the packed struct of its fields, each pinned
+  at compile time to the reference's mask, so a field that drifts fails the
+  build rather than the radio.
+- `ar5212/tables.zig` is generated: `make athtables` reads the reference's own
+  initialiser file and writes the family's mode and common tables and the
+  RF2425's mode, common, gain and bank tables as Zig data. Nothing in it is
+  typed by hand, and a reference revision that reshapes a table fails the
+  generator rather than the machine.
+- `lib/ar5212.zig` is the family's pure vocabulary, host-tested: the
+  descriptor's words, the chain arithmetic, the hardware rate codes, the
+  synthesizer word for a frequency, the delta-slope coefficients, the analog
+  bank serialiser, the noise-floor history, the I/Q correction arithmetic, the
+  spur-channel test, the CCK adjustment, the rate-duration table, and the
+  calibration store's whole header layout, read through one `word(offset)`
+  call so a synthetic store is read on the host.
+- `ar5212/eeprom.zig` is that one call over the store's four registers;
+  `ar5212/rf2425.zig` is the radio backend, the banks and the synthesizer;
+  `ar5212/reset.zig` is the pipeline, transcribed from `ar5212Reset`: wake,
+  chip reset, the PLL and mode, the tables, the board's values from the store,
+  the banks, the synthesizer, the rate durations, the baseband's activation,
+  the gain and noise-floor calibrations, the I/Q calibration and its
+  completion on the periodic tick.
+- `ar5212.zig` brings the chip up, refuses silicon it does not know, reads the
+  store, lays out the chains, tunes, services the interrupt and hands every
+  intact frame up with the signal it arrived at. A card that answers all ones
+  has gone, which the kill switch makes the normal case: said once, carrier
+  down, nothing asked of it again.
 
-Truth sources: the Linux ath5k driver and OpenBSD's ar5k, which agree on
-everything used here. No datasheet exists.
+Every 2.4 GHz channel runs as 11g, which is the reference's own choice for
+these parts. Every wait is bounded.
 
-### 5.3 What the rest of the milestone owes
+### 5.3 The station (`user/netd/station.zig`)
 
-- **Reset and channel-set pipeline**: wake, PLL, PHY access, the ar5212 and RF2425
-  mode initval tables, EEPROM-derived power and antenna settings, PCU setup, RF
-  bank programming, PHY activation, then AGC and noise-floor calibration. This
-  silicon is known for calibration timeouts: a timeout is a warning that keeps the
-  last good noise floor and retries on the periodic tick, never a busy wait.
-- **Rings**: 5212-style descriptors in one DMA block, receive buffers handed
-  straight up as pbufs, one transmit queue in v1.
-- **MLME**: scan, authenticate, associate, and beacon tracking with a software
-  beacon-miss timer as the authority. Power save stays off in v1.
-- **WPA2-PSK**: PBKDF2 to a cached PMK, the four-way handshake over the data path
-  with EAPOL diverted before `netif.input`, hardware CCMP through the key cache
-  where the store permits it and a software implementation both as fallback and as
-  the test oracle for the hardware path.
-- **Rate control**: a small minstrel, per-rate success probability and throughput,
-  a multi-rate retry series, with a sampling frame in ten.
-- **Kill switch**: the radio hot-unplugs from the bus when the switch is thrown, so
-  surprise removal is the normal case, not the exception; the driver takes the
-  interface down, the stack sees a carrier loss, and a replug re-runs the whole
-  pipeline from power-on state.
+The driver tunes and hears; the station decides where to tune and what the
+hearing amounts to. It reaches the radio through three hooks on the device
+contract, so a second radio driver plugs into the same three: a frame with its
+signal and rate, the radio's readiness, and the configuration slot the radio
+was bound to, which carries the regulatory plan and the transmit ceiling.
+
+What it does today is scan: it walks the channels the plan allows, dwells two
+beacon intervals on each, takes the noise floor on the way to the next, and
+keeps a bounded account of every network it hears as `lib.mlme.Bss`: name,
+cell, channel, security named whether or not this system will join it, and the
+signal. A network is said to the log once as it appears. That is the first
+thing to see on the machine, and the whole of what the receive path can prove
+before anything is transmitted.
+
+### 5.4 What the rest of the milestone owes
+
+- **Transmit**: the power tables, which interpolate the store's calibration
+  curves per channel, and the spur-immunity settings a 5.3 store carries; the
+  transmit chain and queue, from the descriptor words already in
+  `lib/ar5212.zig`; and the self-test the reference runs at attach.
+- **Joining**: the MLME state machine over the frames in `lib/mlme.zig`
+  (authentication, association, beacon tracking with a software beacon-miss
+  timer as the authority), driven by the slot's `ssid` and `psk`; the
+  supplicant in `lib/wpa2.zig` on the data path with EAPOL diverted before
+  `netif.input`; hardware CCMP through the key cache where the store permits it
+  and the software cipher, already tested, as fallback and oracle.
+- **Rate control**: a small minstrel over the rate codes.
+- **The service and the tools, in parity**: a scan operation on `/svc/net`,
+  `net` listing what was heard, and the Settings network pane the design's
+  settings sheet describes, since every capability the pane has needs a
+  command behind it and the reverse.
+- **Kill switch**: the hot-unplug is recognised; the replug that re-runs the
+  whole pipeline from power-on state is not yet wired to the device manager's
+  rescan.
 
 ## 6. The stack: lwIP module map
 

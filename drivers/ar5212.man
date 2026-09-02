@@ -1,0 +1,4 @@
+# The Atheros AR5212 family: the AR2425 in the Eee PC 701, and the AR2417.
+name    = ar5212
+service = net
+match   = pci:168c:001c, pci:168c:001d

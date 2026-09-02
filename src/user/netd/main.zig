@@ -15,7 +15,7 @@
 //! DHCP, ICMP and the policy the `net` settings domain declares, all inside
 //! this one loop, whose wait deadline is the stack's own next timer.
 
-const ar2425 = @import("ar2425.zig");
+const ar5212 = @import("ar5212.zig");
 const atl2 = @import("atl2.zig");
 const rtl8139 = @import("rtl8139.zig");
 const dev = @import("dev.zig");
@@ -35,6 +35,7 @@ const proto_devices = @import("proto").devices;
 const bridge = @import("bridge.zig");
 const settings = @import("proto").settings;
 const stack = @import("stack.zig");
+const station = @import("station.zig");
 const std = @import("std");
 const sys = @import("sys");
 const str = @import("lib").str;
@@ -60,7 +61,7 @@ const DRIVERS = [_]Driver{
     .{ .name = e1000.name, .ops = e1000.ops },
     .{ .name = atl2.name, .ops = atl2.ops },
     .{ .name = rtl8139.name, .ops = rtl8139.ops },
-    .{ .name = ar2425.name, .ops = ar2425.ops, .class = ar2425.class },
+    .{ .name = ar5212.name, .ops = ar5212.ops, .class = ar5212.class },
 };
 
 /// How many interfaces a machine of this class can have behind one service.
@@ -103,6 +104,7 @@ fn netdMain() noreturn {
     stack.init();
     dev.stack_rx = stack.rx;
     dev.stack_link = stack.linkState;
+    station.init();
     for (ifaces[0..count]) |*iface| stack.attach(iface);
     stack.applyConfig(settings.load("net"));
 
@@ -325,12 +327,13 @@ fn serve(channel: u32) noreturn {
         // The wait's deadline is the stack's own next timer: DHCP renewals,
         // TCP retransmits and ARP aging all ride this one number, and an
         // idle network parks here forever.
-        const timeout: usize = if (stack.nextDeadline()) |us|
+        const timeout: usize = if (soonest(stack.nextDeadline(), station.nextDeadline())) |us|
             @intCast(@min(us, std.math.maxInt(usize) - 1))
         else
             sys.FOREVER;
         const woke = sys.waitMany(sources[0..source_count], timeout);
         stack.tick();
+        station.tick();
         if (woke >= 0) dispatch: {
             const index = @as(usize, @intCast(woke));
             if (index >= source_count) break :dispatch;
@@ -371,6 +374,13 @@ fn serve(channel: u32) noreturn {
         // before the loop sleeps: loopback never waits for a wake.
         stack.deliverLoopback();
     }
+}
+
+/// The nearer of two deadlines, either of which may be none.
+fn soonest(a: ?u64, b: ?u64) ?u64 {
+    const first = a orelse return b;
+    const second = b orelse return first;
+    return @min(first, second);
 }
 
 fn drain(channel: u32) void {

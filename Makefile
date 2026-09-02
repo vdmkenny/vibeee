@@ -441,6 +441,17 @@ check-all: fmt check test dev-image image
 		CFG_OFFSET=$(CFG_OFFSET) HOME_OFFSET=$(HOME_OFFSET) QEMU_CPU="$(QEMU_CPU)" \
 		tools/check-all.sh
 
+# The AR5212 family's register tables, transcribed from the pinned reference
+# by a generator so no number in them is ever typed by hand. Regenerated
+# only when the reference's pin moves; the output is committed.
+$(BUILD)/mkathtables: tools/mkathtables.zig | $(BUILD)
+	$(ZIG) build-exe $< -O ReleaseSafe --name mkathtables -femit-bin=$@
+
+.PHONY: athtables
+athtables: $(BUILD)/mkathtables
+	$(BUILD)/mkathtables third_party/ath_hal/ar5212/ar5212.ini src/user/netd/ar5212/tables.zig
+	$(ZIG) fmt src/user/netd/ar5212/tables.zig
+
 # Differential-test the QR encoder against libqrencode. A QR that merely looks
 # right is worthless: the failure mode is a panic screen nobody can scan.
 $(BUILD)/qrdump: src/qrdump.zig src/kernel/qr.zig | $(BUILD)

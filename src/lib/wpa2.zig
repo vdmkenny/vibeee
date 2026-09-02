@@ -16,13 +16,15 @@
 const std = @import("std");
 const ieee80211 = @import("ieee80211.zig");
 const mac = @import("mac.zig");
+const wifi = @import("wifi.zig");
 
 const HmacSha1 = std.crypto.auth.hmac.HmacSha1;
 const Aes128 = std.crypto.core.aes.Aes128;
 
 /// The pairwise master key: what the passphrase becomes, and what both
-/// sides hold before a word is exchanged.
-pub const Pmk = [32]u8;
+/// sides hold before a word is exchanged. The same bytes configuration
+/// holds when a slot stores the derived key instead of the words.
+pub const Pmk = [wifi.Psk.KEY_BYTES]u8;
 
 const NONCE_LEN = 32;
 pub const Nonce = [NONCE_LEN]u8;
@@ -30,12 +32,23 @@ pub const Nonce = [NONCE_LEN]u8;
 /// The pairwise master key from a passphrase and the network's name, by
 /// the standard's own derivation: four thousand and ninety-six rounds of
 /// the password-based function over the name.
-pub fn pmkOf(passphrase: []const u8, ssid: []const u8) Pmk {
+pub fn derive(passphrase: []const u8, ssid: []const u8) Pmk {
     var out: Pmk = undefined;
     // The parameters are the standard's and fixed, so the derivation cannot
     // be asked for something it refuses.
     std.crypto.pwhash.pbkdf2(&out, passphrase, ssid, 4096, HmacSha1) catch unreachable;
     return out;
+}
+
+/// The master key a configured secret gives on a network: a passphrase is
+/// derived against the name, a stored key is itself, and no secret is no
+/// key, which is what an open network has.
+pub fn pmkOf(psk: wifi.Psk, ssid: wifi.Ssid) ?Pmk {
+    return switch (psk) {
+        .none => null,
+        .passphrase => |words| derive(words.slice(), ssid.slice()),
+        .key => |key| key,
+    };
 }
 
 /// The pairwise transient key: three sixteen-byte keys, for the integrity
@@ -681,12 +694,21 @@ fn hex(comptime text: []const u8) [text.len / 2]u8 {
 
 test "the master key from a passphrase is the standard's own" {
     // The two vectors the standard gives, in its annex on the derivation.
-    try testing.expectEqualSlices(u8, &hex("f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"), &pmkOf("password", "IEEE"));
-    try testing.expectEqualSlices(u8, &hex("0dc0d6eb90555ed6419756b9a15ec3e3209b63df707dd508d14581f8982721af"), &pmkOf("ThisIsAPassword", "ThisIsASSID"));
+    try testing.expectEqualSlices(u8, &hex("f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"), &derive("password", "IEEE"));
+    try testing.expectEqualSlices(u8, &hex("0dc0d6eb90555ed6419756b9a15ec3e3209b63df707dd508d14581f8982721af"), &derive("ThisIsAPassword", "ThisIsASSID"));
+
+    // A configured secret resolves the same way, whichever spelling it
+    // took: the words are derived, a key is itself, nothing is nothing.
+    const name = wifi.Ssid.of("IEEE").?;
+    const from_words = pmkOf(wifi.Psk.parse("password").?, name).?;
+    try testing.expectEqualSlices(u8, &derive("password", "IEEE"), &from_words);
+    const from_key = pmkOf(wifi.Psk.parse("f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e").?, name).?;
+    try testing.expectEqualSlices(u8, &from_words, &from_key);
+    try testing.expectEqual(@as(?Pmk, null), pmkOf(.none, name));
 }
 
 test "both sides reach one transient key whichever way round they are" {
-    const pmk = pmkOf("password", "IEEE");
+    const pmk = derive("password", "IEEE");
     const aa = mac.Address{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 };
     const spa = mac.Address{ 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B };
     const anonce: Nonce = @splat(0x11);
@@ -764,7 +786,7 @@ test "a data frame protected here is read back here, and by nobody else" {
 
 test "the handshake, with the test playing the access point" {
     const ssid = "home network";
-    const pmk = pmkOf("correct horse battery", ssid);
+    const pmk = derive("correct horse battery", ssid);
     const ap = mac.Address{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 };
     const station = mac.Address{ 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B };
     const anonce: Nonce = @splat(0xA1);

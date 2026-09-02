@@ -12,6 +12,7 @@ const lib = @import("lib");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").net;
+const settings = @import("proto").settings;
 const pci = @import("ulib").pci;
 
 pub const Location = pci.Location;
@@ -119,6 +120,26 @@ pub var stack_rx: ?*const fn (dev: *NicDev, frame: []const u8) void = null;
 
 /// Where a link change goes after the driver notices it, same shape.
 pub var stack_link: ?*const fn (dev: *NicDev, up: bool) void = null;
+
+/// A radio speaks 802.11 frames, not ethernet, and they go to the station
+/// rather than the stack: every intact frame, with the signal it arrived
+/// at and the rate, when the hardware named one the driver knows.
+pub var radio_rx: ?*const fn (dev: *NicDev, frame: []const u8, signal: lib.wifi.Signal, rate: ?lib.wifi.Legacy) void = null;
+
+/// A radio has its chains and is listening: the station may begin.
+pub var radio_up: ?*const fn (dev: *NicDev) void = null;
+
+/// The configuration slot a radio was bound to, whenever it changes: the
+/// plan it obeys, the network it joins, the secret it joins with.
+pub var radio_config: ?*const fn (dev: *NicDev, role: settings.NetSlot) void = null;
+
+/// Say a whole 802.11 frame arrived: counted here, then handed to the
+/// station.
+pub fn deliverRadio(dev: *NicDev, frame: []const u8, signal: lib.wifi.Signal, rate: ?lib.wifi.Legacy) void {
+    dev.stats.rx_pkts += 1;
+    dev.stats.rx_bytes += frame.len;
+    if (radio_rx) |up| up(dev, frame, signal, rate);
+}
 
 /// Say a whole frame arrived and what was made of it: counted here, then
 /// handed to the stack. The ARP narration stays, because it reads the wire

@@ -129,6 +129,38 @@ pub const Legacy = enum(u8) {
     pub fn isBasic(byte: u8) bool {
         return byte & 0x80 != 0;
     }
+
+    /// How long a frame of `bytes` takes on the air at this rate, in
+    /// microseconds: the preamble and header the physical layer puts in
+    /// front, then the payload at the rate, then the short gap before an
+    /// answer when `with_sifs`. The 802.11b rates halve their preamble when
+    /// told to, except the slowest, which has no short form.
+    pub fn airtime(self: Legacy, bytes: u32, short_preamble: bool, with_sifs: bool) u16 {
+        const bits = bytes * 8;
+        var micros: u32 = 0;
+        switch (self.modulation()) {
+            .dsss => {
+                const PREAMBLE_BITS = 144;
+                const HEADER_BITS = 48;
+                const SIFS = 10;
+                var plcp: u32 = PREAMBLE_BITS + HEADER_BITS;
+                if (short_preamble and self != .m1) plcp /= 2;
+                micros = plcp + (bits * 1000) / self.kbps();
+                if (with_sifs) micros += SIFS;
+            },
+            .ofdm, .ht => {
+                const PREAMBLE_MICROS = 20;
+                const SERVICE_AND_TAIL_BITS = 22;
+                const SYMBOL_MICROS = 4;
+                const SIFS = 16;
+                const bits_per_symbol = (self.kbps() * SYMBOL_MICROS) / 1000;
+                const symbols = (SERVICE_AND_TAIL_BITS + bits + bits_per_symbol - 1) / bits_per_symbol;
+                micros = PREAMBLE_MICROS + symbols * SYMBOL_MICROS;
+                if (with_sifs) micros += SIFS;
+            },
+        }
+        return @intCast(micros);
+    }
 };
 
 /// Every rate an 802.11b radio has, slowest first.
@@ -738,4 +770,16 @@ test "words are words, and too few of them are refused" {
     const hex_shaped = Psk.parse("0123456789abcdef" ** 3 ++ "0123456789abcde") orelse
         return std.testing.expect(false);
     try std.testing.expectEqual(@as(std.meta.Tag(Psk), .passphrase), @as(std.meta.Tag(Psk), hex_shaped));
+}
+
+test "airtime follows the physical layer's arithmetic for both modulations" {
+    // An acknowledgement, fourteen bytes, and the gap before it.
+    try std.testing.expectEqual(@as(u16, 314), Legacy.m1.airtime(14, false, true));
+    try std.testing.expectEqual(@as(u16, 60), Legacy.m6.airtime(14, false, true));
+    // A short preamble halves the slow rates' overhead, but the slowest
+    // rate has none.
+    try std.testing.expectEqual(@as(u16, 96 + 56 + 10), Legacy.m2.airtime(14, true, true));
+    try std.testing.expectEqual(@as(u16, 314), Legacy.m1.airtime(14, true, true));
+    // Without the gap, the frame alone.
+    try std.testing.expectEqual(@as(u16, 44), Legacy.m6.airtime(14, false, false));
 }
