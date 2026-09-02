@@ -18,6 +18,7 @@ const fat = @import("fat.zig");
 const heap = @import("heap.zig");
 const irqevent = @import("irqevent.zig");
 const pipe_mod = @import("pipe.zig");
+const sched = @import("sched.zig");
 const shm_mod = @import("shm.zig");
 const vfs = @import("vfs.zig");
 
@@ -142,20 +143,26 @@ pub const Handle = struct {
 /// is transferable or it is not, decided here, rather than a file handle
 /// silently arriving somewhere with an offset that means nothing to the
 /// receiver.
-pub const Transfer = union(enum) {
-    event: *event_mod.Event,
-    channel: ChannelRef,
-    shm: *shm_mod.Segment,
-    display: *shm_mod.Segment,
+pub const Transfer = struct {
+    /// The rights the sender's handle carried, which are the rights the
+    /// receiver's will: a handle to an event it may only wait on arrives as
+    /// one it may only wait on, wherever it goes.
+    rights: Rights,
+    object: Object,
+
+    pub const Object = union(enum) {
+        event: *event_mod.Event,
+        channel: ChannelRef,
+        shm: *shm_mod.Segment,
+    };
 };
 
 /// The transferable part of a handle, or null if it is not transferable.
 pub fn transferable(h: Handle) ?Transfer {
-    return switch (h.data) {
+    const object: Transfer.Object = switch (h.data) {
         .event => .{ .event = h.data.event },
         .channel => .{ .channel = h.data.channel },
         .shm => .{ .shm = h.data.shm },
-        .display => .{ .display = h.data.display },
         // Files and directories carry a position, and a position means
         // nothing to anyone else. Consoles are shared already.
         // A pipe end could cross, but nothing needs it to: a pipe reaches
@@ -163,46 +170,40 @@ pub fn transferable(h: Handle) ?Transfer {
         // route would be a second lifetime to get right.
         // A line belongs to the process that took it. Handing one across
         // would mean two servers believing they own a device.
-        .none, .console, .file, .directory, .pipe, .irq => null,
+        // The display belongs to the process that took it, by capability:
+        // handed across, its close would hand the screen back from the
+        // wrong side, and its pages would stay with the sender.
+        .none, .console, .file, .directory, .pipe, .irq, .display => return null,
     };
+    return .{ .rights = h.rights, .object = object };
 }
 
 /// Rebuild a handle from something that arrived over a channel.
 pub fn fromTransfer(t: Transfer) Handle {
-    return switch (t) {
-        .event => |e| .{
-            .rights = .{ .read = true, .write = true },
-            .data = .{ .event = e },
-        },
-        .channel => |c| .{
-            .rights = .{ .read = true, .write = true },
-            .data = .{ .channel = c },
-        },
-        .shm => |seg| .{
-            .rights = .{ .read = true, .write = true },
-            .data = .{ .shm = seg },
-        },
-        .display => |seg| .{
-            .rights = .{ .read = true, .write = true },
-            .data = .{ .display = seg },
+    return .{
+        .rights = t.rights,
+        .data = switch (t.object) {
+            .event => |e| .{ .event = e },
+            .channel => |c| .{ .channel = c },
+            .shm => |seg| .{ .shm = seg },
         },
     };
 }
 
 pub fn retainTransfer(t: Transfer) Transfer {
-    switch (t) {
+    switch (t.object) {
         .event => |e| event_mod.retain(e),
         .channel => |c| channel_mod.retain(c.channel),
-        .shm, .display => |seg| shm_mod.retain(seg),
+        .shm => |seg| shm_mod.retain(seg),
     }
     return t;
 }
 
 pub fn releaseTransfer(t: Transfer) void {
-    switch (t) {
+    switch (t.object) {
         .event => |e| event_mod.release(e),
         .channel => |c| channel_mod.release(c.channel),
-        .shm, .display => |seg| shm_mod.release(seg),
+        .shm => |seg| shm_mod.release(seg),
     }
 }
 
@@ -244,8 +245,10 @@ pub fn retain(h: Handle) Handle {
 /// Every kind that owns a reference releases it here. Leaving a mount counted
 /// would make the volume permanently un-unmountable; leaking a channel
 /// reference would keep a dead server's clients blocked. The console handles
-/// are shared rather than owned, so they release nothing.
-pub fn release(h: Handle) void {
+/// are shared rather than owned, so they release nothing. A file whose last
+/// write could not reach its record says so, since a close that reported
+/// success over a size the disk does not know would be a lie about the file.
+pub fn release(h: Handle) vfs.Error!void {
     switch (h.data) {
         .file => {
             // The size and timestamp a write left in the entry only reach the
@@ -254,12 +257,14 @@ pub fn release(h: Handle) void {
             // is that a process killed mid-write leaves a short file, which is
             // the same bargain every filesystem without a journal makes.
             const file = h.data.file;
+            // The mount is let go whatever the record said: the handle is
+            // gone either way.
+            defer releaseMount(file.lease.slotOf());
             // Only while the volume is still there: a size committed to a
             // slot another volume has since taken would be written into it.
             if (file.dirty) {
-                if (file.lease.mount()) |m| vfs.commit(m, file.entry, clock.realtimeSeconds()) catch {};
+                if (file.lease.mount()) |m| try vfs.commit(m, file.entry, clock.realtimeSeconds());
             }
-            releaseMount(file.lease.slotOf());
         },
         .directory => {
             releaseMount(h.data.directory.lease.slotOf());
@@ -275,7 +280,12 @@ pub fn release(h: Handle) void {
         },
         .shm => shm_mod.release(h.data.shm),
         .display => {
-            shm_mod.release(h.data.display);
+            // The pages that showed the screen go with the handle: a process
+            // that has handed the display back must not still be writing to
+            // its scanout memory.
+            const seg = h.data.display;
+            if (sched.currentThread()) |t| t.shm_window.revoke(seg, &t.space);
+            shm_mod.release(seg);
             display_mod.release();
         },
         .pipe => pipe_mod.release(h.data.pipe.pipe, h.data.pipe.writer),
@@ -327,17 +337,23 @@ pub const Table = struct {
         return null;
     }
 
-    pub fn close(self: *Table, handle: u32) bool {
-        const h = self.get(handle) orelse return false;
-        release(h.*);
+    pub const CloseError = error{BadHandle} || vfs.Error;
+
+    /// Close a handle. The slot is freed whatever the release could not
+    /// write: a handle closes once, and what it failed to put on the disk is
+    /// reported rather than kept open.
+    pub fn close(self: *Table, handle: u32) CloseError!void {
+        const h = self.get(handle) orelse return error.BadHandle;
+        const closing = h.*;
         h.* = .{};
-        return true;
+        try release(closing);
     }
 
-    /// Release everything a dying process still holds.
+    /// Release everything a dying process still holds. Nobody is left to
+    /// tell what could not be written.
     pub fn closeAll(self: *Table) void {
         for (0..MAX_HANDLES) |i| {
-            _ = self.close(@intCast(i));
+            self.close(@intCast(i)) catch {};
         }
     }
 };

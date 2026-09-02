@@ -223,7 +223,14 @@ pub fn sys_map_device(a: Args) Result {
             // must unmap them without freeing them.
             .shared = true,
             .uncached = true,
-        }) catch return Errno.nomem.value();
+        }) catch {
+            // Nothing half done: the pages mapped so far go, and the window
+            // takes its addresses back, since nothing else has taken from it.
+            var back: usize = 0;
+            while (back < offset) : (back += hal.PAGE_SIZE) t.space.unmap(at + back);
+            t.shm_window.unreserve(at);
+            return Errno.nomem.value();
+        };
     }
 
     // The page the aperture starts in, plus how far into it the caller asked.

@@ -20,6 +20,7 @@
 const std = @import("std");
 const console = @import("console.zig");
 const hal = @import("hal.zig");
+const sched = @import("sched.zig");
 const shm = @import("shm.zig");
 
 pub const Error = error{
@@ -119,7 +120,10 @@ pub fn registerReporter() ?*const fn (*std.Io.Writer) void {
     return reporter;
 }
 var phys_base: usize = 0;
-var owned = false;
+/// The thread that took the display, or nobody. Ownership is the
+/// process's rather than the handle's: only the taker's close hands it
+/// back, so a copy closing elsewhere means nothing here.
+var owner: ?u32 = null;
 var available = false;
 
 /// Record what the display hardware is. Called from the composition root, the
@@ -145,7 +149,7 @@ pub fn isAvailable() bool {
 }
 
 pub fn isOwned() bool {
-    return owned;
+    return owner != null;
 }
 
 pub fn describe() Info {
@@ -160,7 +164,8 @@ pub fn describe() Info {
 /// would be catastrophic in a way that would take a long time to diagnose.
 pub fn acquire() Error!*shm.Segment {
     if (!available) return error.NoDisplay;
-    if (owned) return error.Busy;
+    if (owner != null) return error.Busy;
+    const taker = sched.currentThread() orelse return error.Busy;
 
     const segment = shm.wrapPhysical(phys_base, info.bytes) catch |err| {
         return switch (err) {
@@ -172,7 +177,7 @@ pub fn acquire() Error!*shm.Segment {
     // The console stops drawing before the new owner starts, not after: an
     // overlap means two writers to the same pixels.
     console.suspendFramebuffer();
-    owned = true;
+    owner = taker.id;
     return segment;
 }
 
@@ -187,16 +192,20 @@ pub var setMode: ?*const fn (width: u16, height: u16, bpp: u8) ModeError!void = 
 /// fixed shape and a mode change underneath it would leave every write landing
 /// somewhere else.
 pub fn requestMode(width: u16, height: u16, bpp: u8) ModeError!void {
-    if (owned) return error.Busy;
+    if (owner != null) return error.Busy;
     if (width == 0 or height == 0) return error.Invalid;
 
     const backend = setMode orelse return error.Unsupported;
     try backend(width, height, bpp);
 }
 
-/// Hand the display back and return the console to it.
+/// Hand the display back and return the console to it. Only the owner's to
+/// do: the handle to the screen closes in the process that took it, whether
+/// by its own hand or by its end, and nobody else's close is heard.
 pub fn release() void {
-    if (!owned) return;
-    owned = false;
+    const holder = owner orelse return;
+    const closing = sched.currentThread() orelse return;
+    if (closing.id != holder) return;
+    owner = null;
     console.resumeFramebuffer();
 }

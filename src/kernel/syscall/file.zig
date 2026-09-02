@@ -73,8 +73,7 @@ pub fn sys_open(a: Args) Result {
     };
 
     if (flags.truncate and flags.write) {
-        vfs.truncate(opened.mount, &opened.entry) catch |err| return errnoFor(err);
-        vfs.commit(opened.mount, opened.entry, clock.realtimeSeconds()) catch {};
+        vfs.truncate(opened.mount, &opened.entry, clock.realtimeSeconds()) catch |err| return errnoFor(err);
     }
 
     h.* = .{
@@ -120,13 +119,14 @@ pub fn sys_mkdir(a: Args) Result {
 pub fn sys_ftruncate(a: Args) Result {
     const table = currentHandles() orelse return Errno.badf.value();
     const h = table.get(@truncate(a.a0)) orelse return Errno.badf.value();
+    // Resizing is writing: a handle that may not write may not resize.
+    if (!h.rights.write) return Errno.perm.value();
     const open = switch (h.data) {
         .file => |*open| open,
         else => return Errno.inval.value(),
     };
     const m = open.lease.mount() orelse return Errno.nodev.value();
-    vfs.resize(m, &open.entry, @truncate(a.a1)) catch |err| return errnoFor(err);
-    vfs.commit(m, open.entry, clock.realtimeSeconds()) catch {};
+    vfs.resize(m, &open.entry, @truncate(a.a1), clock.realtimeSeconds()) catch |err| return errnoFor(err);
     return 0;
 }
 
@@ -179,7 +179,11 @@ pub fn sys_unlink(a: Args) Result {
 
 pub fn sys_close(a: Args) Result {
     const table = currentHandles() orelse return Errno.badf.value();
-    return if (table.close(@truncate(a.a0))) 0 else Errno.badf.value();
+    table.close(@truncate(a.a0)) catch |err| return switch (err) {
+        error.BadHandle => Errno.badf.value(),
+        else => errnoFor(err),
+    };
+    return 0;
 }
 
 pub fn sys_seek(a: Args) Result {
@@ -218,7 +222,7 @@ pub fn sys_readdir(a: Args) Result {
     // The iterator points into the volume the directory was opened on. A
     // medium pulled out since would leave it pointing at whatever the slot
     // holds next, so a dead lease ends the listing rather than continuing it.
-    if (d.lease.mount() == null) return Errno.nodev.value();
+    const m = d.lease.mount() orelse return Errno.nodev.value();
 
     const out = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
     if (d.exhausted) return 0;
@@ -239,7 +243,7 @@ pub fn sys_readdir(a: Args) Result {
     }
 
     while (true) {
-        const entry = (d.iterator.next() catch return Errno.io.value()) orelse {
+        const entry = (vfs.readDir(m, d.iterator) catch |err| return errnoFor(err)) orelse {
             d.exhausted = true;
             return 0;
         };

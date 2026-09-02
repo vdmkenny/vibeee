@@ -23,6 +23,7 @@
 //! the application believes data landed and it has not, which is precisely the
 //! failure the strategy exists to prevent.
 
+const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 
@@ -169,15 +170,17 @@ const ops = block.Ops{ .read = read, .write = write, .flush = flush };
 
 /// Storage for caches. One per whole disk; partitions share their disk's cache,
 /// which is what makes a lookup on one partition warm the FAT for the other.
+/// A cache whose device has gone is given back and taken again by the next
+/// arrival, so a card plugged in and out all day never runs the pool dry.
 var caches: [4]Cache = undefined;
-var cache_count: usize = 0;
+var taken: [caches.len]bool = @splat(false);
 
 /// Wrap `dev` in a cache and return a device that reads through it.
 pub fn wrap(dev: block.Device) ?block.Device {
-    if (cache_count >= caches.len) return null;
+    const index = std.mem.indexOfScalar(bool, &taken, false) orelse return null;
+    taken[index] = true;
 
-    const cache = &caches[cache_count];
-    cache_count += 1;
+    const cache = &caches[index];
     cache.* = .{ .backing = dev };
 
     return .{
@@ -190,9 +193,20 @@ pub fn wrap(dev: block.Device) ?block.Device {
     };
 }
 
+/// Give a cache back, once its device has retired. A context that is not a
+/// cache's, a device that was never wrapped, is nothing to give back.
+pub fn release(ctx: *anyopaque) void {
+    for (&caches, &taken) |*cache, *held| {
+        if (@as(*anyopaque, @ptrCast(cache)) != ctx) continue;
+        held.* = false;
+        return;
+    }
+}
+
 pub fn totalStats() Stats {
     var total = Stats{};
-    for (caches[0..cache_count]) |*c| {
+    for (&caches, taken) |*c, held| {
+        if (!held) continue;
         total.hits += c.stats.hits;
         total.misses += c.stats.misses;
         total.writes += c.stats.writes;

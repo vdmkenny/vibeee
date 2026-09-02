@@ -13,6 +13,7 @@ const ctx = @import("context.zig");
 const input = @import("../input.zig");
 const keymap = @import("../keymap.zig");
 const klog = @import("../klog.zig");
+const probe = @import("../probe.zig");
 const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
@@ -330,7 +331,10 @@ pub fn sys_shutdown(a: Args) Result {
 
     // Services and drivers leave first, the filesystems after them, and the
     // power switch last: what shutdown means, in one call. A thread that
-    // refuses to exit is left behind and overrun, not waited for forever.
+    // refuses to exit is left behind and overrun, not waited for forever,
+    // but a device it holds is quieted first: a driver still able to move
+    // memory while the volumes are flushed is the one thing a shutdown must
+    // not leave running.
     if (sched.currentThread()) |self| {
         const left = sched.stopAllBut(self.id);
         if (left > 0) {
@@ -339,6 +343,9 @@ pub fn sys_shutdown(a: Args) Result {
             if (n > 0) {
                 console.info("shutdown", "still running after the stop: {s}", .{names[0]});
             }
+            var ids: [16]u32 = @splat(0);
+            const held = sched.liveThreadIds(self.id, &ids);
+            for (ids[0..@min(held, ids.len)]) |id| probe.dropClaims(id);
         }
     }
 

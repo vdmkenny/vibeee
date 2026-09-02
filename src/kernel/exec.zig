@@ -105,7 +105,8 @@ fn start(
     // and a terminal emulator's shell has to find its pipes there instead.
     for (stdio, 0..) |replacement, i| {
         if (replacement) |h| {
-            handle.release(child.handles.entries[i]);
+            // The console the child would have had: nothing to write back.
+            handle.release(child.handles.entries[i]) catch {};
             child.handles.entries[i] = h;
         }
     }

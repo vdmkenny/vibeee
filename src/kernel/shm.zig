@@ -13,6 +13,12 @@
 //! tearing an address space down unmaps them without freeing them. The frames
 //! come back to the allocator when the last reference goes, and not before.
 //!
+//! A mapping is a reference. A process may close the handle it mapped a
+//! segment through while its pages still name the frames, so each mapping
+//! holds the segment for as long as the pages do: until the address space
+//! goes, or the mapping is revoked. Without that, closing the last handle
+//! would hand frames to the allocator that a live page table still reaches.
+//!
 //! Frames are allocated individually rather than as a contiguous run. Nothing
 //! here is programmed into a DMA engine, and demanding contiguity would make
 //! segment creation fail on a fragmented machine for no benefit. A driver that
@@ -31,6 +37,8 @@ pub const Error = error{
     BadSize,
     /// No room left in the caller's shared-memory window.
     NoAddressSpace,
+    /// The caller holds as many mappings as one process may.
+    TooManyMappings,
 };
 
 pub const PAGE_SIZE = 4096;
@@ -187,6 +195,12 @@ pub fn release(seg: *Segment) void {
 pub fn mapAt(seg: *Segment, space: *hal.AddressSpace, virt: usize, writable: bool) Error!void {
     if (virt < WINDOW_BASE or virt + seg.size > WINDOW_END) return error.NoAddressSpace;
 
+    // What was mapped before a failure is taken back. Pages left naming
+    // frames the segment may later free are the hazard this module exists to
+    // prevent, and a half-mapped segment is not a thing a caller can use.
+    var mapped: usize = 0;
+    errdefer for (0..mapped) |i| space.unmap(virt + i * PAGE_SIZE);
+
     for (seg.frames, 0..) |phys, i| {
         space.map(virt + i * PAGE_SIZE, phys, .{
             .writable = writable,
@@ -194,18 +208,48 @@ pub fn mapAt(seg: *Segment, space: *hal.AddressSpace, virt: usize, writable: boo
             // another process is still using.
             .shared = true,
         }) catch return error.OutOfMemory;
+        mapped = i + 1;
     }
 }
 
-/// Hands out addresses in one process's shared-memory window.
+/// Where one segment is mapped in a process.
+pub const Mapping = struct {
+    seg: *Segment,
+    at: usize,
+};
+
+/// How many segments one process may have mapped at once. A compositor
+/// maps a surface per window and the screen; a client maps its surfaces,
+/// the clipboard and a ring or two. Addresses are never reused, so a
+/// process that outgrows this is one that maps without end.
+pub const MAX_MAPPINGS = 64;
+
+/// One process's shared-memory window: which addresses are taken, and
+/// which segments the pages there hold.
 ///
-/// Bump allocation, never reused. A window of 768 MiB against an 8 MiB
-/// per-segment cap means a process would have to map ninety-six full-size
-/// segments before running out, and a process doing that has a different
-/// problem. Reclaiming addresses would need a free list and an unmap path that
-/// nothing yet asks for.
+/// Addresses are handed out by bumping, never reused. A window of 768 MiB
+/// against an 8 MiB per-segment cap means a process would have to map
+/// ninety-six full-size segments before running out, and a process doing
+/// that has a different problem.
 pub const Mapper = struct {
     next: usize = WINDOW_BASE,
+    held: [MAX_MAPPINGS]Mapping = undefined,
+    count: usize = 0,
+
+    /// Map a segment where the window has room, holding it for as long as
+    /// the pages do.
+    pub fn map(self: *Mapper, seg: *Segment, space: *hal.AddressSpace, writable: bool) Error!usize {
+        if (self.count == self.held.len) return error.TooManyMappings;
+
+        const at = try self.reserve(seg.size);
+        errdefer self.unreserve(at);
+        try mapAt(seg, space, at, writable);
+
+        retain(seg);
+        self.held[self.count] = .{ .seg = seg, .at = at };
+        self.count += 1;
+        return at;
+    }
 
     pub fn reserve(self: *Mapper, size: usize) Error!usize {
         const pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -215,5 +259,37 @@ pub const Mapper = struct {
         const at = self.next;
         self.next += bytes;
         return at;
+    }
+
+    /// Give the last reservation back, before anything else has taken from
+    /// the window: what a mapping that failed does with its addresses.
+    pub fn unreserve(self: *Mapper, at: usize) void {
+        self.next = at;
+    }
+
+    /// Take every mapping of `seg` out of the space and let the segment go:
+    /// what handing the display back does to the pages that showed it.
+    pub fn revoke(self: *Mapper, seg: *Segment, space: *hal.AddressSpace) void {
+        const pages = seg.pageCount();
+        var i: usize = 0;
+        while (i < self.count) {
+            if (self.held[i].seg != seg) {
+                i += 1;
+                continue;
+            }
+            for (0..pages) |page| space.unmap(self.held[i].at + page * PAGE_SIZE);
+            self.count -= 1;
+            self.held[i] = self.held[self.count];
+            // The mapping's own reference. The last one may free the segment,
+            // which is why nothing above reads through `seg` after this.
+            release(seg);
+        }
+    }
+
+    /// Let every segment go, once the address space has: the pages no
+    /// longer name the frames, so the mappings' references end with them.
+    pub fn releaseAll(self: *Mapper) void {
+        for (self.held[0..self.count]) |m| release(m.seg);
+        self.count = 0;
     }
 };

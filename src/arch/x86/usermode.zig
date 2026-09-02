@@ -60,6 +60,8 @@ pub fn setupStack(
     var i: usize = 0;
     while (i < USER_STACK_PAGES) : (i += 1) {
         const phys = pmm.allocFrame() catch return error.OutOfMemory;
+        // Ours until it is mapped: a mapping that fails gives it back.
+        errdefer pmm.freeFrame(phys);
         frames[i] = phys;
         @memset(@as([*]u8, @ptrFromInt(paging.physToVirt(phys)))[0..paging.PAGE_SIZE], 0);
         const virt = USER_STACK_TOP - (i + 1) * paging.PAGE_SIZE;

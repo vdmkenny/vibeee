@@ -110,7 +110,8 @@ fn claimStdio(options: *const abi.Spawn, out: *exec.Stdio) error{BadHandle}!void
 
 fn releaseStdio(stdio: *exec.Stdio) void {
     for (stdio) |maybe| {
-        if (maybe) |h| handles.release(h);
+        // A copy the child never got: nothing of its own was written.
+        if (maybe) |h| handles.release(h) catch {};
     }
     stdio.* = exec.INHERIT;
 }

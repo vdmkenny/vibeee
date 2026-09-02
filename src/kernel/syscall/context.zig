@@ -111,7 +111,7 @@ pub fn installHandle(h: handles.Handle) ?u32 {
 /// have to reach for the table to put it down.
 pub fn closeHandle(number: u32) void {
     const table = currentHandles() orelse return;
-    _ = table.close(number);
+    table.close(number) catch {};
 }
 
 /// Timeouts arrive as a u32 with two sentinel values (`abi.Timeout`), so a

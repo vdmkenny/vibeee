@@ -66,7 +66,7 @@ pub const Message = struct {
     /// it, so a transfer moves the reference and the receiver is given a fresh
     /// number for it.
     handle_count: u8 = 0,
-    handles: [MAX_HANDLES]handle.Transfer = @splat(.{ .event = undefined }),
+    handles: [MAX_HANDLES]handle.Transfer = @splat(.{ .rights = .{}, .object = .{ .event = undefined } }),
 
     pub fn slice(self: *const Message) []const u8 {
         return self.data[0..self.len];

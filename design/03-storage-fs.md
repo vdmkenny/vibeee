@@ -484,7 +484,10 @@ either the old table or the new one and never a mixture.
   thresholds in §10 may need one recalibration pass against the real device.
 - Open for 01-boot: the final bootinfo layout, and who owns the 440 B MBR code
   (assumed 01-boot, with the installer embedding it).
-- Open for kernel-core: the final VFS vtable and vnode locking model.
+- Open for kernel-core: the final VFS vtable. The locking is settled: a
+  volume is held by one operation at a time (`vfs.Lock`), since a read of
+  the medium can sleep the thread and another's operation on the same
+  volume would run in the gap.
 - Open for usbd: ublk ring depth and slot-size negotiation, mapping UNIT
   ATTENTION to MediaChanged, and who debounces card insertion.
 - Open for the GUI: how safe-remove is offered, where a low-memory warning

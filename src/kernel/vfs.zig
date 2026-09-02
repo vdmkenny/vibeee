@@ -15,6 +15,8 @@ const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const fat = @import("fat.zig");
+const hal = @import("hal.zig");
+const wait = @import("wait.zig");
 
 pub const Error = error{
     NotMounted,
@@ -25,7 +27,42 @@ pub const Error = error{
     ReadOnly,
     /// The two paths are on different volumes, which a rename cannot span.
     CrossDevice,
+    /// The caller was asked to end while waiting its turn on the volume.
+    Ending,
 } || fat.Error;
+
+/// One operation at a time on a volume.
+///
+/// Every operation on a volume reads, changes and writes state the volume
+/// keeps in one place: the allocation table's one-sector cache, the free
+/// count, a directory sector being edited. A read or write of the medium can
+/// put the thread to sleep, and on a card behind a USB reader every one
+/// does, so without this another thread's operation on the same volume
+/// would run in the gap and take that state from under the first. A volume
+/// is held while it is worked on, and a thread that finds it held waits its
+/// turn, oldest first.
+pub const Lock = struct {
+    held: bool = false,
+    waiting: wait.Queue = .{},
+
+    /// Take the volume, waiting for whoever has it. A thread asked to end
+    /// while waiting gets nothing and unwinds, like every other wait.
+    pub fn hold(self: *Lock) Error!void {
+        const flags = hal.saveAndDisableInterrupts();
+        defer hal.restoreInterrupts(flags);
+        while (self.held) {
+            _ = wait.blockOn(&.{&self.waiting}, null) catch return error.Ending;
+        }
+        self.held = true;
+    }
+
+    pub fn release(self: *Lock) void {
+        const flags = hal.saveAndDisableInterrupts();
+        defer hal.restoreInterrupts(flags);
+        self.held = false;
+        _ = self.waiting.wakeOne();
+    }
+};
 
 pub const MAX_MOUNTS = 8;
 pub const MAX_PATH = 64;
@@ -50,6 +87,8 @@ pub const Mount = struct {
     /// that has since been given to another volume answers it "gone" rather
     /// than the other volume's blocks.
     generation: u32 = 0,
+    /// Whoever is working on the volume holds this; see `Lock`.
+    lock: Lock = .{},
 
     pub fn path(self: *const Mount) []const u8 {
         return self.path_buf[0..self.path_len];
@@ -115,21 +154,17 @@ pub fn mount(path: []const u8, dev: *const block.Device, removable: bool) Error!
         m.read_only = false;
         m.open_files = 0;
         m.generation +%= 1;
-        m.in_use = true;
+        m.lock = .{};
         // The one walk of the table, here rather than on the first ask: a
         // shell and a file manager ask how full a volume is all the time,
-        // and from now on the answer is kept rather than counted.
+        // and from now on the answer is kept rather than counted. Before the
+        // slot is in use, so nothing else can be on the volume yet.
         _ = fat.freeClusters(&m.volume) catch {};
+        m.in_use = true;
         return m;
     }
     return error.TableFull;
 }
-
-/// Names for auto-mounted media, e.g. "/media/hd1p1". Static storage
-/// because a mount keeps its path and there is nowhere else for it to
-/// live.
-var media_names: [MAX_MOUNTS][MAX_PATH]u8 = undefined;
-var media_used: usize = 0;
 
 /// Whether a volume found is a volume mounted.
 ///
@@ -202,20 +237,22 @@ pub fn mountMedia(dev: *const block.Device) ?[]const u8 {
         }
     }
 
-    if (media_used >= media_names.len) return null;
-    const path = std.fmt.bufPrint(&media_names[media_used], "/media/{s}", .{dev.name}) catch return null;
+    // Named for its device, e.g. "/media/hd1p1". The mount keeps the path
+    // in its own slot, so the name lives as long as the mount and no longer,
+    // and a medium plugged in for the hundredth time is named like the first.
+    var path_buf: [MAX_PATH]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/media/{s}", .{dev.name}) catch return null;
 
     // Anything reached this way is treated as removable: it is the safe
     // assumption, and it only affects unmount expectations.
-    _ = mount(path, dev, true) catch |err| switch (err) {
+    const m = mount(path, dev, true) catch |err| switch (err) {
         error.NotFat, error.Unsupported => return null,
         else => {
             console.warn("vfs: cannot mount {s}: {s}", .{ dev.name, @errorName(err) });
             return null;
         },
     };
-    media_used += 1;
-    return path;
+    return m.path();
 }
 
 /// Detach every mount on a device whose medium has gone.
@@ -329,11 +366,13 @@ pub const Usage = struct { free: u64 = 0, total: u64 = 0 };
 
 pub fn usageAt(index: usize) Usage {
     if (index >= mounts.len or !mounts[index].in_use) return .{};
-    const volume = &mounts[index].volume;
-    const clusters = fat.freeClusters(volume) catch return .{ .total = volume.totalBytes() };
+    const m = &mounts[index];
+    m.lock.hold() catch return .{ .total = m.volume.totalBytes() };
+    defer m.lock.release();
+    const clusters = fat.freeClusters(&m.volume) catch return .{ .total = m.volume.totalBytes() };
     return .{
-        .free = @as(u64, clusters) * volume.clusterSize(),
-        .total = volume.totalBytes(),
+        .free = @as(u64, clusters) * m.volume.clusterSize(),
+        .total = m.volume.totalBytes(),
     };
 }
 
@@ -352,6 +391,8 @@ pub fn mountCount() usize {
 pub fn stat(path: []const u8) Error!fat.Entry {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath; // the mount point itself
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
     return fat.lookupPath(&r.mount.volume, r.rest);
 }
 
@@ -359,6 +400,8 @@ pub fn stat(path: []const u8) Error!fat.Entry {
 pub fn readFile(path: []const u8, buf: []u8) Error!usize {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
 
     const entry = try fat.lookupPath(&r.mount.volume, r.rest);
 
@@ -377,6 +420,8 @@ pub const Opened = struct { mount: *Mount, entry: fat.Entry };
 pub fn open(path: []const u8) Error!Opened {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
     const entry = try fat.lookupPath(&r.mount.volume, r.rest);
     r.mount.open_files += 1;
     return .{ .mount = r.mount, .entry = entry };
@@ -384,7 +429,18 @@ pub fn open(path: []const u8) Error!Opened {
 
 /// Read from an already-opened file.
 pub fn readAt(m: *Mount, entry: fat.Entry, offset: u64, buf: []u8) Error!usize {
+    try m.lock.hold();
+    defer m.lock.release();
     return fat.readAt(&m.volume, entry, offset, buf);
+}
+
+/// The next record of a directory being listed. The listing holds the
+/// volume for the one record, not for the whole walk, so a slow reader does
+/// not keep everything else off the volume.
+pub fn readDir(m: *Mount, it: *fat.Iterator) Error!?fat.Entry {
+    try m.lock.hold();
+    defer m.lock.release();
+    return it.next();
 }
 
 /// Iterate the directory at `path`.
@@ -423,6 +479,8 @@ pub fn create(path: []const u8, mtime: i64) Error!Opened {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
     try requireWritable(r.mount);
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
 
     if (fat.lookupPath(&r.mount.volume, r.rest)) |_| {
         return error.Exists;
@@ -431,9 +489,8 @@ pub fn create(path: []const u8, mtime: i64) Error!Opened {
         else => return err,
     }
 
+    const dir = try parentOf(r.mount, path);
     const split = splitParent(path);
-    const dir = try openDir(split.dir);
-
     const entry = try fat.createFile(&r.mount.volume, dir, split.name, mtime);
     r.mount.open_files += 1;
     return .{ .mount = r.mount, .entry = entry };
@@ -444,6 +501,8 @@ pub fn mkdir(path: []const u8, mtime: i64) Error!void {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
     try requireWritable(r.mount);
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
 
     if (fat.lookupPath(&r.mount.volume, r.rest)) |_| {
         return error.Exists;
@@ -452,33 +511,47 @@ pub fn mkdir(path: []const u8, mtime: i64) Error!void {
         else => return err,
     }
 
+    const dir = try parentOf(r.mount, path);
     const split = splitParent(path);
-    const dir = try openDir(split.dir);
     _ = try fat.createDirectory(&r.mount.volume, dir, split.name, mtime);
+}
+
+/// The directory a path's last component lives in, on a volume already
+/// held: a path inside a mount has its parent on the same mount, or at
+/// its root.
+fn parentOf(m: *Mount, path: []const u8) Error!fat.Iterator {
+    const parent = try resolve(splitParent(path).dir);
+    if (parent.mount != m) return error.CrossDevice;
+    return directoryOn(m, parent.rest);
 }
 
 /// Write to an already-opened file. The entry is updated in place; the caller
 /// commits it when it closes the file.
 pub fn writeAt(m: *Mount, entry: *fat.Entry, offset: u64, data: []const u8) Error!usize {
     try requireWritable(m);
+    try m.lock.hold();
+    defer m.lock.release();
     return fat.writeAt(&m.volume, entry, offset, data);
 }
 
 /// Persist an entry's size, first cluster and modification time.
 pub fn commit(m: *Mount, entry: fat.Entry, mtime: i64) Error!void {
     try requireWritable(m);
+    try m.lock.hold();
+    defer m.lock.release();
     return fat.commit(&m.volume, entry, mtime);
 }
 
-/// Make an open file exactly `size` bytes.
-pub fn resize(m: *Mount, entry: *fat.Entry, size: u32) Error!void {
+/// Make an open file exactly `size` bytes, record and all.
+pub fn resize(m: *Mount, entry: *fat.Entry, size: u32, mtime: i64) Error!void {
     try requireWritable(m);
-    return fat.resize(&m.volume, entry, size);
+    try m.lock.hold();
+    defer m.lock.release();
+    return fat.resize(&m.volume, entry, size, mtime);
 }
 
-pub fn truncate(m: *Mount, entry: *fat.Entry) Error!void {
-    try requireWritable(m);
-    return fat.truncate(&m.volume, entry);
+pub fn truncate(m: *Mount, entry: *fat.Entry, mtime: i64) Error!void {
+    return resize(m, entry, 0, mtime);
 }
 
 /// Remove a file.
@@ -494,12 +567,13 @@ pub fn rename(from: []const u8, to: []const u8, mtime: i64) Error!void {
     if (source.mount != destination.mount) return error.CrossDevice;
     if (source.rest.len == 0 or destination.rest.len == 0) return error.BadPath;
     try requireWritable(source.mount);
+    try source.mount.lock.hold();
+    defer source.mount.lock.release();
 
     const entry = try fat.lookupPath(&source.mount.volume, source.rest);
 
+    const dir = try parentOf(source.mount, to);
     const split = splitParent(to);
-    const dir = try openDir(split.dir);
-
     _ = try fat.rename(&source.mount.volume, entry, dir, split.name, mtime);
 }
 
@@ -507,6 +581,8 @@ pub fn unlink(path: []const u8) Error!void {
     const r = try resolve(path);
     if (r.rest.len == 0) return error.BadPath;
     try requireWritable(r.mount);
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
 
     const entry = try fat.lookupPath(&r.mount.volume, r.rest);
     return fat.unlink(&r.mount.volume, entry);
@@ -515,15 +591,24 @@ pub fn unlink(path: []const u8) Error!void {
 /// Free bytes on the volume holding `path`.
 pub fn freeBytes(path: []const u8) Error!u64 {
     const r = try resolve(path);
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
     const clusters = try fat.freeClusters(&r.mount.volume);
     return @as(u64, clusters) * r.mount.volume.clusterSize();
 }
 
 pub fn openDir(path: []const u8) Error!fat.Iterator {
     const r = try resolve(path);
-    if (r.rest.len == 0) return fat.rootIterator(&r.mount.volume);
+    try r.mount.lock.hold();
+    defer r.mount.lock.release();
+    return directoryOn(r.mount, r.rest);
+}
 
-    const entry = try fat.lookupPath(&r.mount.volume, r.rest);
+/// A directory on a volume already held.
+fn directoryOn(m: *Mount, rest: []const u8) Error!fat.Iterator {
+    if (rest.len == 0) return fat.rootIterator(&m.volume);
+
+    const entry = try fat.lookupPath(&m.volume, rest);
     if (!entry.is_dir) return error.NotDirectory;
-    return fat.iterate(&r.mount.volume, entry);
+    return fat.iterate(&m.volume, entry);
 }

@@ -307,6 +307,26 @@ pub const AddressSpace = struct {
         if (isActive(self.*)) invalidatePage(virt);
     }
 
+    /// Take one user page out of the space. The frame is the caller's
+    /// business: a shared one belongs to its segment, an owned one to whoever
+    /// mapped it. The page table stays, since the next map into it would
+    /// only make it again.
+    pub fn unmap(self: *AddressSpace, virt: usize) void {
+        if (virt >= KERNEL_VMA) return;
+
+        const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
+        const pde = dir[directoryIndex(virt)];
+        if (!pde.present) return;
+
+        const table: *Table = @ptrFromInt(physToVirt(pde.address()));
+        const pt_index = pagetable.tableIndex(virt);
+        if (!table[pt_index].present) return;
+        table[pt_index] = .{};
+        self.mapped_pages -= 1;
+
+        if (isActive(self.*)) invalidatePage(virt);
+    }
+
     /// Whether the kernel may touch `virt[0..len]` on this space's behalf.
     ///
     /// Every page must be there, reachable from user code, and writable where

@@ -348,6 +348,7 @@ pub fn detach(index: usize, server: u32) void {
     if (volume.published) |device| {
         _ = vfs.abandon(device.ctx);
         block.retire(device.ctx);
+        bcache.release(device.ctx);
         volume.published = null;
     }
 

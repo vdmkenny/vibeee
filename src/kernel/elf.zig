@@ -57,6 +57,9 @@ fn loadSegment(space: *hal.AddressSpace, image: []const u8, segment: plan.Segmen
     var page = first;
     while (page < last) : (page += hal.PAGE_SIZE) {
         const phys = pmm.allocFrame() catch return error.OutOfMemory;
+        // Until it is mapped the frame is nobody's but ours, and a mapping
+        // that fails must not leave it nobody's at all.
+        errdefer pmm.freeFrame(phys);
         const dest: [*]u8 = @ptrFromInt(hal.physToVirt(phys));
 
         // Zero first: `.bss` is the part of the span beyond the file, and a

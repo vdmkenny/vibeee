@@ -242,7 +242,7 @@ fn deliverHandles(msg: *channel_mod.Message, out: *abi.Message) bool {
     }
 
     if (installed < msg.handle_count) {
-        for (out.handles[0..installed]) |number| _ = table.close(number);
+        for (out.handles[0..installed]) |number| table.close(number) catch {};
         for (msg.handleSlice()[installed..]) |item| handles.releaseTransfer(item);
         msg.handle_count = 0;
         return false;
@@ -283,7 +283,7 @@ pub fn sys_call(a: Args) Result {
     const sent = request.*;
     if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
 
-    var taken: [channel_mod.MAX_HANDLES]handles.Transfer = @splat(.{ .event = undefined });
+    var taken: [channel_mod.MAX_HANDLES]handles.Transfer = @splat(.{ .rights = .{}, .object = .{ .event = undefined } });
     const count = collectHandles(&sent, &taken) orelse return Errno.badf.value();
 
     var answer: channel_mod.Message = .{};
@@ -341,7 +341,7 @@ pub fn sys_reply(a: Args) Result {
     const sent = msg.*;
     if (sent.len > abi.MAX_PAYLOAD) return Errno.inval.value();
 
-    var taken: [channel_mod.MAX_HANDLES]handles.Transfer = @splat(.{ .event = undefined });
+    var taken: [channel_mod.MAX_HANDLES]handles.Transfer = @splat(.{ .rights = .{}, .object = .{ .event = undefined } });
     const count = collectHandles(&sent, &taken) orelse return Errno.badf.value();
 
     channel_mod.reply(ch, @intCast(a.a1), sent.bytes(), taken[0..count]) catch |err| {
@@ -402,9 +402,10 @@ pub fn sys_shm_map(a: Args) Result {
 
     const t = sched.currentThread() orelse return Errno.inval.value();
 
-    const at = t.shm_window.reserve(seg.size) catch return Errno.nomem.value();
-    shm.mapAt(seg, &t.space, at, flags.writable) catch return Errno.nomem.value();
-
+    const at = t.shm_window.map(seg, &t.space, flags.writable) catch |err| return switch (err) {
+        error.BadSize => Errno.inval.value(),
+        error.OutOfMemory, error.NoAddressSpace, error.TooManyMappings => Errno.nomem.value(),
+    };
     return @intCast(at);
 }
 

@@ -281,6 +281,11 @@ pub fn mount(dev: *const block.Device) Error!Volume {
     else
         .fat16;
 
+    // A root cluster is a cluster: two or more, and on the volume. A boot
+    // sector that says otherwise is refused here rather than left to the
+    // cluster arithmetic below, which subtracts two.
+    if (kind == .fat32 and (bpb.root_cluster < 2 or bpb.root_cluster >= cluster_count + 2)) return error.NotFat;
+
     return .{
         .dev = dev,
         .kind = kind,
@@ -812,6 +817,10 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
 
     const cluster_size = vol.clusterSize();
 
+    // A write past the end leaves a gap, and the gap is zeroed before the
+    // write rather than left holding whatever the clusters held before.
+    if (offset > entry.size) try zeroRange(vol, entry, entry.size, offset);
+
     // A file with no clusters yet gets its first one here, which is also what
     // makes an empty file cost nothing until something is written to it.
     if (entry.cluster < 2) {
@@ -890,33 +899,78 @@ pub fn commit(vol: *Volume, entry: Entry, mtime: i64) Error!void {
     vol.dev.write(entry.dir_sector, &sector) catch return error.Io;
 }
 
-/// Drop everything a file holds, leaving it empty but still present.
-pub fn truncate(vol: *Volume, entry: *Entry) Error!void {
-    return resize(vol, entry, 0);
-}
-
-/// Make a file exactly `size` bytes.
+/// Make a file exactly `size` bytes, record and all.
 ///
 /// Shrinking gives the clusters past the new end back, rather than leaving a
 /// chain longer than the size it belongs to: that is legal for a reader, which
 /// stops at the size, but it is what a checker reports as a mismatch and it is
-/// space nothing will ever reclaim.
+/// space nothing will ever reclaim. The record is written before the
+/// clusters go, so a failure between the two leaves a chain longer than its
+/// file, which a checker reclaims, and never a file naming clusters that
+/// have been given away.
 ///
-/// Growing only moves the end: the clusters between are allocated when
-/// something writes into them, so a file made large and left alone costs a
-/// directory entry.
-pub fn resize(vol: *Volume, entry: *Entry, size: u32) Error!void {
+/// Growing fills the new bytes with zeros, allocating as far as they reach,
+/// before the record says they exist: a file made longer must not show what
+/// was on the medium before.
+pub fn resize(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
     if (entry.is_dir) return error.IsDirectory;
 
-    if (size == 0) {
-        if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
-        entry.cluster = 0;
-        entry.size = 0;
-        return;
+    if (size > entry.size) {
+        try zeroRange(vol, entry, entry.size, size);
+        entry.size = size;
+        return commit(vol, entry.*, mtime);
     }
 
-    if (size < entry.size) try dropTail(vol, entry, size);
+    const first = entry.cluster;
     entry.size = size;
+    if (size == 0) entry.cluster = 0;
+    try commit(vol, entry.*, mtime);
+
+    if (size == 0) {
+        if (first >= 2) try table.freeChain(&vol.fat, first);
+    } else {
+        try dropTail(vol, entry, size);
+    }
+}
+
+/// Fill the bytes from `from` to `to` with zeros, growing the chain to
+/// reach them. What a file made longer, or written past its end, gets in
+/// the gap: nothing of what the medium held before.
+fn zeroRange(vol: *Volume, entry: *Entry, from: u64, to: u64) Error!void {
+    if (to <= from) return;
+
+    const cluster_size = vol.clusterSize();
+    if (entry.cluster < 2) entry.cluster = try table.alloc(&vol.fat);
+
+    var cluster = entry.cluster;
+    var skip = from / cluster_size;
+    while (skip > 0) : (skip -= 1) {
+        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+    }
+
+    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    var at = from;
+    while (at < to) {
+        const within: u32 = @intCast(at % cluster_size);
+        const sector = vol.firstSectorOfCluster(cluster) + within / block.SECTOR_SIZE;
+        const in_sector = within % block.SECTOR_SIZE;
+        const take: u32 = @intCast(@min(block.SECTOR_SIZE - in_sector, to - at));
+
+        // A sector only partly zeroed keeps its other bytes, which are the
+        // file's own; a whole one needs no reading first.
+        if (take == block.SECTOR_SIZE) {
+            @memset(&sector_buf, 0);
+        } else {
+            vol.dev.read(sector, &sector_buf) catch return error.Io;
+            @memset(sector_buf[in_sector..][0..take], 0);
+        }
+        vol.dev.write(sector, &sector_buf) catch return error.Io;
+
+        at += take;
+        if (at < to and at % cluster_size == 0) {
+            cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+        }
+    }
 }
 
 /// Free whatever lies past the cluster holding byte `size - 1`, and end the
@@ -1389,13 +1443,15 @@ fn writeDotEntries(vol: *Volume, cluster: u32, parent: u32, mtime: i64) Error!vo
     vol.dev.write(vol.firstSectorOfCluster(cluster), &sector_buf) catch return error.Io;
 }
 
-/// Remove a file: free its clusters and mark its record deleted.
+/// Remove a file: mark its record deleted, then free its clusters. In that
+/// order, so a failure between the two leaves clusters nobody names, which
+/// a checker reclaims, and never a record naming clusters given away.
 pub fn unlink(vol: *Volume, entry: Entry) Error!void {
     if (entry.is_dir) return error.IsDirectory;
     if (entry.dir_sector == 0) return error.NotFound;
 
-    if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
     try forget(vol, entry);
+    if (entry.cluster >= 2) try table.freeChain(&vol.fat, entry.cluster);
 }
 
 /// Mark a record free without touching what it points at.

@@ -584,6 +584,9 @@ fn reap(t: *Thread) void {
     if (t.space.pd_phys != 0 and t.space.pd_phys != hal.kernelAddressSpace().pd_phys) {
         t.space.destroy();
     }
+    // With the pages gone, the mappings' hold on their segments ends, and a
+    // segment nobody else holds gives its frames back here.
+    t.shm_window.releaseAll();
 
     thread_mod.unregister(t);
 
@@ -763,6 +766,23 @@ const STOP_DEADLINE_US = 2_000_000;
 
 /// The names of the userspace threads still with us, excluding `self_id`,
 /// which is who a shutdown names when some would not leave.
+/// The ids of every userspace thread still alive but `self_id`, for a
+/// shutdown that has to quiet what they hold.
+pub fn liveThreadIds(self_id: u32, into: []u32) usize {
+    var n: usize = 0;
+    var node = thread_mod.first();
+    while (node) |t| : (node = t.all_next) {
+        if (t.state == .dead or t.id == self_id) continue;
+        if (t.space.pd_phys == 0) continue;
+        if (idle_thread) |idle| {
+            if (t == idle) continue;
+        }
+        if (n < into.len) into[n] = t.id;
+        n += 1;
+    }
+    return n;
+}
+
 pub fn liveThreadNames(self_id: u32, into: [][]const u8) usize {
     var n: usize = 0;
     var node = thread_mod.first();
