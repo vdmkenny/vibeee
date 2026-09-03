@@ -166,8 +166,23 @@ fi
 
 sleep "$SETTLE"
 monitor "screendump $PPM"
-sleep 1
-[ -f "$PPM" ] || { echo "no screendump: guest may have died"; exit 1; }
+
+# The emulator writes the screendump in its own time, and under load that is
+# not within any particular second. Waited for rather than slept on, and
+# waited for twice over: the file appears before it has finished being
+# written, so a size that has stopped changing is what says it is done.
+waited=0
+while [ "$waited" -lt 100 ]; do
+    if [ -s "$PPM" ]; then
+        was=$(wc -c < "$PPM")
+        sleep 0.1
+        [ "$was" = "$(wc -c < "$PPM")" ] && break
+    else
+        sleep 0.1
+    fi
+    waited=$((waited + 1))
+done
+[ -s "$PPM" ] || { echo "no screendump: guest may have died"; exit 1; }
 if command -v sips >/dev/null 2>&1; then
     sips -s format png "$PPM" --out "$OUT" >/dev/null
 elif command -v magick >/dev/null 2>&1; then
@@ -177,4 +192,6 @@ else
 fi
 rm -f "$PPM"
 echo "$OUT"
-[ -s "$LOG" ] && echo "$LOG"
+# Named only when there is one, and not as the script's own answer: a
+# missing log is not a failed run, and this is the last line of the script.
+if [ -s "$LOG" ]; then echo "$LOG"; fi
