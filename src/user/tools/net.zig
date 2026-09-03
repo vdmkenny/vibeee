@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const lib = @import("lib");
+const str = @import("lib").str;
 const net = @import("proto").net;
 const settings = @import("proto").settings;
 const ink = @import("ulib").ink;
@@ -108,7 +109,7 @@ pub fn run(args: []const []const u8) void {
 /// fires.
 fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []const u8) void {
     if (args.len == 0) {
-        say("net: an interface needs a verb: up, down, default, dhcp, static, join, forget\n");
+        say("net: an interface needs a verb: up, down, default, channel, dhcp, static, join, forget\n");
         return;
     }
 
@@ -174,6 +175,17 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
             return;
         }) else .none;
         want.join(ssid, psk);
+    } else if (std.mem.eql(u8, args[0], "channel")) {
+        if (args.len < 2) {
+            say("net: channel needs a number, or 0 to sweep the band\n");
+            return;
+        }
+        const number = str.toUnsigned(args[1]);
+        if (number > lib.wifi.ghz2_channels[lib.wifi.ghz2_channels.len - 1]) {
+            say("net: no channel of that number\n");
+            return;
+        }
+        want.channel = @intCast(number);
     } else if (std.mem.eql(u8, args[0], "default")) {
         // One interface holds it, so naming one takes it from whichever
         // had it. What the service does with the wish is its own: an
@@ -183,7 +195,7 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
     } else if (std.mem.eql(u8, args[0], "forget")) {
         want.forget();
     } else {
-        say("net: the verbs are up, down, default, dhcp, static, join and forget\n");
+        say("net: the verbs are up, down, default, channel, dhcp, static, join and forget\n");
         return;
     }
 

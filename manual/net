@@ -11,6 +11,7 @@ net - the network interfaces
                          of 8 to 63 characters or 64 hex digits, and is
                          left out for an open network
   net <iface> default    send traffic with no route of its own this way
+  net <iface> channel 6  hold the radio there; 0 sweeps the band
   net <iface> forget     stop joining it
   net <iface> scan       every network that radio has heard: channel,
                          signal and security
@@ -75,6 +76,8 @@ Settings, generated from the schema: net
       a network name, up to 32 characters
   net.if0_psk               unset
       a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if0_channel           0
+      a number
   net.if0_regdomain         conservative
       conservative | fcc | etsi | mkk | unrestricted
   net.if0_txpower           regulatory
@@ -95,6 +98,8 @@ Settings, generated from the schema: net
       a network name, up to 32 characters
   net.if1_psk               unset
       a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if1_channel           0
+      a number
   net.if1_regdomain         conservative
       conservative | fcc | etsi | mkk | unrestricted
   net.if1_txpower           regulatory
@@ -115,6 +120,8 @@ Settings, generated from the schema: net
       a network name, up to 32 characters
   net.if2_psk               unset
       a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if2_channel           0
+      a number
   net.if2_regdomain         conservative
       conservative | fcc | etsi | mkk | unrestricted
   net.if2_txpower           regulatory
@@ -135,6 +142,8 @@ Settings, generated from the schema: net
       a network name, up to 32 characters
   net.if3_psk               unset
       a passphrase of 8 to 63 characters, or 64 hex digits
+  net.if3_channel           0
+      a number
   net.if3_regdomain         conservative
       conservative | fcc | etsi | mkk | unrestricted
   net.if3_txpower           regulatory

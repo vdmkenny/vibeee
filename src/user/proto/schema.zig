@@ -274,6 +274,14 @@ pub const NetSlot = struct {
     /// What it joins with: nothing, a passphrase, or the derived key,
     /// which is the one to write into an image somebody may read.
     psk: wifi.Psk = .none,
+    /// Hold the radio on one channel instead of sweeping the band.
+    ///
+    /// Zero sweeps, which is what finding out what is in earshot needs. A
+    /// number holds it there, which is for a person who knows where their
+    /// network is: a sweep gives each channel a fifth of a second, so a
+    /// beacon every tenth of a second is heard once or twice a pass, and
+    /// holding still hears them all.
+    channel: u8 = 0,
     /// Which channel plan the radio obeys.
     regdomain: wifi.Regulatory = .conservative,
     /// What it transmits at, when the plan's own ceiling does not reach.
@@ -351,6 +359,9 @@ fn NetSchema() type {
                     0, 1 => true,
                     else => false,
                 },
+                // Sweeping, because a machine that has not been told where
+                // its network is has to look for it.
+                .channel => 0,
                 // Nothing is preferred out of the box: the machine picks,
                 // and it picks by slot order, which puts the wired slot
                 // first without anyone having to say so.

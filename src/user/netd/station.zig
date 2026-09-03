@@ -37,6 +37,11 @@ const State = struct {
     networks: lib.Bounded(mlme.Bss, MAX_NETWORKS) = .{},
     /// Which of the band's channels the radio is on.
     channel_index: usize = 0,
+    /// The channel configuration holds the radio on, or null to sweep.
+    /// A radio told where to listen stays there: what a sweep is for is
+    /// finding out what is in earshot, and a person who already knows has
+    /// nothing to find.
+    held: ?u8 = null,
     /// Dwells finished. A sweep of the plan is as many as there are
     /// channels in it, which is when a radio that has heard nothing has
     /// had its chance and is worth asking about.
@@ -90,6 +95,8 @@ fn begin(nic: *dev_mod.NicDev) void {
 fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     if (nic.class != .wifi) return;
     state.plan = role.regdomain;
+    state.held = if (role.channel == 0) null else role.channel;
+    if (state.held) |number| _ = ar5212.tune(.{ .number = number });
     ar5212.setSelfPower(role.txpower.resolve(role.regdomain).half_dbm);
 }
 
@@ -97,13 +104,18 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
 /// last dwell measured on the way.
 fn hop() void {
     ar5212.calibrate(true);
+    state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
 
-    // A whole sweep of the band has been listened to by now, so a radio
-    // that has heard none of it has had every channel its plan allows.
+    // As long as a sweep would have taken, whether one was made or not: a
+    // radio held on one channel has heard as much of that channel by now
+    // as a sweeping one has heard of the band.
     state.hops += 1;
     if (state.hops == wifi.ghz2_channels.len) {
         if (state.radio) |nic| ar5212.sayIfUnheard(nic);
     }
+
+    // Told where to listen, so there is nowhere to move to.
+    if (state.held != null) return;
 
     var index = state.channel_index;
     for (0..wifi.ghz2_channels.len) |_| {
@@ -111,7 +123,6 @@ fn hop() void {
         if (state.plan.allows(wifi.ghz2_channels[index])) break;
     }
     if (ar5212.tune(.{ .number = wifi.ghz2_channels[index] })) state.channel_index = index;
-    state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
 }
 
 /// A frame from the radio. Beacons and probe responses become the scan's
