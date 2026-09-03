@@ -80,14 +80,18 @@ pub const Theme = struct {
     gap: i32 = 8,
     border_width: i32 = 1,
     border_width_focused: i32 = 2,
-    /// How far the outside of a joined row of controls is rounded.
+    /// How far the outside of a control is rounded.
     ///
-    /// Everything else is square: on a panel at 1:1 with no subpixel
-    /// positioning, square is what stays crisp. A row of choices is the one
-    /// exception, and only around its outside, because that is what makes
-    /// three buttons read as one control with one of them chosen rather than
-    /// as three buttons that happen to be adjacent.
-    group_radius: i32 = 4,
+    /// What a person clicks is rounded: buttons, the choices in a row, the
+    /// field they type into. What only marks or measures is not, because a
+    /// radius on a four pixel groove or a twelve pixel box is most of it.
+    /// Neither is anything structural, which is a plane rather than a thing
+    /// to press.
+    ///
+    /// A row of joined choices rounds its outside and keeps the corners
+    /// between neighbours square, which is what makes it read as one control
+    /// with one of them chosen.
+    corner_radius: i32 = 4,
 };
 
 /// The default. Cool neutrals under dark system chrome: the bar is the

@@ -792,8 +792,8 @@ fn paint(
     const text = shown(state, buffer, &mask);
     const line_height: i32 = @intCast(face.height);
 
-    surface.fill(area, t.surface_hot);
-    surface.frame(area, if (focused) t.accent else t.line);
+    surface.fillRounded(area, t.corner_radius, draw.Corners.all, t.surface_hot);
+    surface.frameRounded(area, t.corner_radius, draw.Corners.all, if (focused) t.accent else t.line);
 
     const span = state.selection();
     const clipped = surface.clipped(box);

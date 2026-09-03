@@ -570,7 +570,7 @@ pub const Context = struct {
         const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
         if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
-            paintButtonAs(self.surface, area, text, visual, it.focused, weight, .alone);
+            paintButtonAs(self.surface, area, text, visual, it.focused, weight, .only);
             self.addDamage(area);
         }
 
@@ -734,7 +734,7 @@ pub const Context = struct {
     }
 
     pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
-        return self.segment(area, text, selected, .alone);
+        return self.segment(area, text, selected, .only);
     }
 
     /// The same, as one of a joined row. `seat` says which corners are its
@@ -1370,9 +1370,8 @@ pub fn paintBar(surface: Surface, area: Rect, fraction: u8, colour: draw.Color) 
 /// one overlaps the last by the width of a line so the two share an edge
 /// instead of drawing one each.
 pub const Seat = enum {
-    /// Joined to nothing. An ordinary control, square on all four corners.
-    alone,
-    /// The whole of a row by itself, so both ends are its own.
+    /// Joined to nothing on either side, which is what an ordinary control
+    /// is: both ends are its own and both are rounded.
     only,
     first,
     middle,
@@ -1380,7 +1379,6 @@ pub const Seat = enum {
 
     fn corners(self: Seat) draw.Corners {
         return switch (self) {
-            .alone => draw.Corners.square,
             .only => draw.Corners.all,
             .first => draw.Corners.leading,
             .middle => draw.Corners.square,
@@ -1391,7 +1389,7 @@ pub const Seat = enum {
     /// Where the next one starts, given where this one does and how wide it
     /// is. Neighbours share the line between them.
     fn nextX(self: Seat, x: i32, width: i32) i32 {
-        return x + width - if (self == .alone) 0 else theme.current().border_width;
+        return x + width - if (self == .only) 0 else theme.current().border_width;
     }
 
     /// Which seat the `index`th of `count` takes.
@@ -1403,7 +1401,7 @@ pub const Seat = enum {
 };
 
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {
-    paintButtonAs(surface, area, text, visual, focused, .plain, .alone);
+    paintButtonAs(surface, area, text, visual, focused, .plain, .only);
 }
 
 fn paintButtonAs(
@@ -1438,10 +1436,10 @@ fn paintButtonAs(
     const ink = if (on) t.accent_text else if (weight == .quiet) t.text_dim else t.text;
 
     const corners = seat.corners();
-    surface.fillRounded(area, t.group_radius, corners, face);
+    surface.fillRounded(area, t.corner_radius, corners, face);
     // A selected control under the pointer takes a stronger edge: there is no
     // lighter accent to shift to, and it still has to answer the pointer.
-    surface.frameRounded(area, t.group_radius, corners, switch (visual) {
+    surface.frameRounded(area, t.corner_radius, corners, switch (visual) {
         .checked_hot => t.text,
         .hot, .active => if (weight == .strong) t.text else if (focused) t.accent else t.line,
         else => if (focused) t.accent else if (weight == .strong) t.accent else t.line,
@@ -1515,14 +1513,21 @@ fn paintSample(surface: Surface, area: Rect, item: Context.Sample, chosen: bool,
 /// no something that works on all of them.
 fn paintSwatch(surface: Surface, area: Rect, colour: draw.Color, chosen: bool, hot: bool, focused: bool) void {
     const t = theme.current();
-    surface.fill(area, t.surface);
+    const radius = t.corner_radius;
+    surface.fillRounded(area, radius, draw.Corners.all, t.surface);
 
     const inner = if (chosen) area.inset(3) else area.inset(1);
-    surface.fill(inner, colour);
-    surface.frame(inner, t.line);
+    surface.fillRounded(inner, radius, draw.Corners.all, colour);
+    surface.frameRounded(inner, radius, draw.Corners.all, t.line);
 
-    if (chosen) surface.borderInset(area, 2, t.text);
-    if (!chosen and hot) surface.frame(area, t.text_dim);
+    // A ring of its own rather than `borderInset`: that draws square, and a
+    // square ring around a rounded chip would show a corner of daylight
+    // between the two.
+    if (chosen) {
+        surface.frameRounded(area, radius, draw.Corners.all, t.text);
+        surface.frameRounded(area.inset(1), radius, draw.Corners.all, t.text);
+    }
+    if (!chosen and hot) surface.frameRounded(area, radius, draw.Corners.all, t.text_dim);
     if (focused) paintFocusRing(surface, area.inset(1), t.text);
 }
 

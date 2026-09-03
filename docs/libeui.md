@@ -985,5 +985,5 @@ interface scale multiplies them.
 | `gap` | 8 |
 | `border_width` | 1 |
 | `border_width_focused` | 2 |
-| `group_radius` | 4 |
+| `corner_radius` | 4 |
 
