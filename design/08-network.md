@@ -328,10 +328,11 @@ before anything is transmitted.
   `netif.input`; hardware CCMP through the key cache where the store permits it
   and the software cipher, already tested, as fallback and oracle.
 - **Rate control**: a small minstrel over the rate codes.
-- **The service and the tools, in parity**: a scan operation on `/svc/net`,
-  `net` listing what was heard, and the Settings network pane the design's
-  settings sheet describes, since every capability the pane has needs a
-  command behind it and the reverse.
+- **Joining, on every surface at once**: the slot's `ssid` and `psk` are
+  already written by `net join`, by the Settings window's Network pane and by
+  the bar's network menu, all three through one model in `ulib/netconfig.zig`
+  and one set of verbs on the slot itself. What is owed is the service acting
+  on them: the station joining what the slot names.
 - **Kill switch**: the hot-unplug is recognised; the replug that re-runs the
   whole pipeline from power-on state is not yet wired to the device manager's
   rescan.

@@ -60,6 +60,12 @@ pub const Hooks = struct {
     /// leaves this alone and sleeps until something happens.
     tick_us: usize = 1_000_000,
 
+    /// An event the wait also sleeps on: a service saying something changed,
+    /// so the program is told rather than asking on a timer. `woken` runs
+    /// when it fires; true draws a fresh pass.
+    wake: ?u32 = null,
+    woken: ?*const fn () bool = null,
+
     /// Opens above the tiling rather than in it. For a program that is a
     /// tool rather than a place to work: a calculator wants to sit over
     /// what it is being used on, not take half the screen from it. Only
@@ -139,7 +145,15 @@ pub fn run(
             break :timeout @intCast(@min(next_tick_us - now, @as(u64, sys.FOREVER) - 1));
         };
 
-        const event = connection.next(timeout) orelse {
+        const event = switch (connection.nextOrWake(hooks.wake, timeout)) {
+            .event => |event| event,
+            // The service the program listens to said something changed.
+            .woke => {
+                if (hooks.woken) |woken| {
+                    if (woken()) redraw();
+                }
+                continue;
+            },
             // Woken with nothing to take. The periodic pass runs only once its
             // period has truly elapsed: a wake from a doorbell that had already
             // been answered finds the clock short of the deadline and waits
@@ -147,14 +161,16 @@ pub fn run(
             // meter re-reads the machine and a listing re-stats its volumes,
             // so running it on every spare wake is what made a burst of input
             // crawl.
-            if (hooks.tick) |tick| {
-                const now = sys.clockMicros();
-                if (now >= next_tick_us) {
-                    next_tick_us = now +| hooks.tick_us;
-                    if (tick()) redraw();
+            .timed_out => {
+                if (hooks.tick) |tick| {
+                    const now = sys.clockMicros();
+                    if (now >= next_tick_us) {
+                        next_tick_us = now +| hooks.tick_us;
+                        if (tick()) redraw();
+                    }
                 }
-            }
-            continue;
+                continue;
+            },
         };
 
         if (hooks.event) |own| {

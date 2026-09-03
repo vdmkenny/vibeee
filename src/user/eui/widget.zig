@@ -1054,6 +1054,30 @@ pub const Context = struct {
         );
     }
 
+    /// A dim label and the field it names, side by side on one row: what a
+    /// setting that is typed rather than chosen looks like. Returns true on
+    /// the pass Enter was pressed in the field.
+    ///
+    /// The label takes a fixed share of the width so a column of these lines
+    /// its fields up under each other, which is the whole reason a form reads
+    /// as a form rather than as a stack of unrelated boxes.
+    pub fn fieldRow(self: *Context, area: Rect, name: []const u8, line: anytype) bool {
+        const width = labelWidth(area.w);
+        self.labelDim(.{ .x = area.x, .y = area.y, .w = width, .h = area.h }, name);
+        return line.run(self, .{
+            .x = area.x + width,
+            .y = area.y,
+            .w = area.w - width,
+            .h = area.h,
+        });
+    }
+
+    /// How much of a row its label takes: a third, and never so much that
+    /// the field beside it is too narrow to read what was typed.
+    fn labelWidth(total: i32) i32 {
+        return @min(@divTrunc(total, 3), theme.current().control_height * 4);
+    }
+
     pub fn label(self: *Context, area: Rect, text: []const u8) void {
         self.labelIn(area, text, theme.current().text);
     }

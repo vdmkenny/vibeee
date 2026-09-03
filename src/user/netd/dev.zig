@@ -95,6 +95,8 @@ pub const NicDev = struct {
     irq_gsi: ?u32 = null,
     irq_owned: bool = false,
     mac: [6]u8 = @splat(0),
+    /// The channel a radio is tuned to, for the listing; zero for a wire.
+    radio_channel: u8 = 0,
     state: Link = .{},
     stats: Stats = .{},
 
@@ -128,6 +130,10 @@ pub var radio_rx: ?*const fn (dev: *NicDev, frame: []const u8, signal: lib.wifi.
 
 /// A radio has its chains and is listening: the station may begin.
 pub var radio_up: ?*const fn (dev: *NicDev) void = null;
+
+/// Something a watcher would want to know changed: a network heard, beside
+/// the addresses the stack already announces. The service's one event.
+pub var changed: ?*const fn () void = null;
 
 /// The configuration slot a radio was bound to, whenever it changes: the
 /// plan it obeys, the network it joins, the secret it joins with.

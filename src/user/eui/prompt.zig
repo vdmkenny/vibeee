@@ -54,12 +54,10 @@ pub const Prompt = struct {
     amount: ?Amount = null,
 
     /// A line the question is about, kept here and edited on the sheet. The
-    /// buffer points into the prompt's own storage, which is why a prompt
+    /// field points into the prompt's own storage, which is why a prompt
     /// lives somewhere it is never moved from: a program's global.
     has_text: bool = false,
-    typed_storage: [TEXT_MAX]u8 = @splat(0),
-    typed: text.Buffer = .{ .bytes = &.{} },
-    editor: text.Editor = .{},
+    typed: text.Field(TEXT_MAX) = .{},
     /// The field takes the keyboard on the first pass it stands.
     focus_text: bool = false,
 
@@ -77,20 +75,15 @@ pub const Prompt = struct {
     }
 
     /// What a question's field starts with, and what it says while empty.
-    pub const Text = struct {
-        initial: []const u8 = "",
-        hint: []const u8 = "",
-    };
+    /// A secret is shown as stars while it is typed.
+    pub const Text = text.FieldOptions;
 
     /// A question with a line in it: a name, a path, a line of a file. The
     /// field starts with the text's `initial`, shows its `hint` while empty,
     /// and takes the keyboard.
     pub fn askText(self: *Prompt, question: []const u8, choices: []const Choice, with: Text) void {
         self.ask(question, choices);
-        self.typed = .{ .bytes = &self.typed_storage };
-        self.typed.clear();
-        _ = self.typed.insert(0, with.initial[0..@min(with.initial.len, TEXT_MAX)]);
-        self.editor = .{ .cursor = self.typed.len, .hint = with.hint };
+        self.typed.init(with);
         self.has_text = true;
         self.focus_text = true;
     }
@@ -179,7 +172,7 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
             ctx.focusAt(field);
             state.focus_text = false;
         }
-        if (text.field(ctx, field, &state.editor, &state.typed)) chosen_by_field = true;
+        if (state.typed.run(ctx, field)) chosen_by_field = true;
     }
     if (state.amount) |*amount| {
         // The number sits against the answers, and the words keep the rest.

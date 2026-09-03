@@ -66,9 +66,7 @@ pub const Chooser = struct {
 
     /// The typed name. Storage is here rather than the caller's, because every
     /// caller would give it the same thing.
-    name_storage: [MAX_NAME]u8 = @splat(0),
-    name: text_mod.Buffer = undefined,
-    name_editor: text_mod.Editor = .{},
+    name: text_mod.Field(MAX_NAME) = .{},
 
     list: table.State = .{},
     /// The row a click landed on when it was a directory, so the caller knows
@@ -95,9 +93,7 @@ pub const Chooser = struct {
         // The name given was typed by the caller, not picked from the list, so
         // nothing should overwrite it until the selection actually moves.
         self.filled_from = 0;
-        self.name = .{ .bytes = &self.name_storage };
-        _ = self.name.insert(0, initial[0..@min(initial.len, MAX_NAME)]);
-        self.name_editor.cursor = self.name.len;
+        self.name.init(.{ .initial = initial });
     }
 
     pub fn typed(self: *const Chooser) []const u8 {
@@ -105,9 +101,7 @@ pub const Chooser = struct {
     }
 
     fn setName(self: *Chooser, value: []const u8) void {
-        self.name.clear();
-        _ = self.name.insert(0, value[0..@min(value.len, MAX_NAME)]);
-        self.name_editor = .{ .cursor = self.name.len };
+        self.name.set(value);
     }
 };
 
@@ -177,11 +171,9 @@ pub fn run(
         if (!selected.is_dir) state.setName(selected.name);
     }
 
-    if (text_mod.field(
+    if (state.name.run(
         ctx,
         .{ .x = area.x + pad, .y = name_y, .w = area.w - pad * 2, .h = row },
-        &state.name_editor,
-        &state.name,
     )) outcome = .accepted;
 
     const width: i32 = 76;

@@ -80,6 +80,7 @@ with it this pass.
 | `rail` | `fn (*widget.Context, draw.Rect, []const rail.Item, usize, []const u8) usize` |
 | `footer` | `fn (*widget.Context, draw.Rect, []const u8, []const []const u8, usize) ?usize` |
 | `row` | `fn (*widget.Context, draw.Rect, rail.Item, bool) bool` |
+| `fieldRow` | `fn (*widget.Context, draw.Rect, []const u8, anytype) bool` |
 | `label` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelDim` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelIn` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
@@ -104,6 +105,8 @@ What a program calls around its controls, once each way.
 | `damageList` | `fn (*const widget.Context) []const draw.Rect` |
 | `end` | `fn (*widget.Context) void` |
 | `damage` | `fn (*widget.Context) void` |
+| `again` | `fn (*widget.Context) void` |
+| `wantsPass` | `fn (*const widget.Context) bool` |
 | `damageNow` | `fn (*widget.Context) void` |
 | `pressedThisPass` | `fn (*const widget.Context) bool` |
 | `releasedThisPass` | `fn (*const widget.Context) bool` |
@@ -222,9 +225,11 @@ Editable text: a buffer, the lines it breaks into, and a control that edits it.
 | `lineCount` | `fn ([]const u8) usize` |
 | `inner` | `fn (draw.Rect) draw.Rect` |
 | `rowsIn` | `fn (draw.Rect) usize` |
+| `shown` | `fn (*const text.Editor, *const text.Buffer, *[128]u8) []const u8` |
 | `edit` | `fn (*widget.Context, draw.Rect, *text.Editor, *text.Buffer) void` |
 | `run` | `fn (*text.Editor, *text.Buffer, text.Command, widget.Clipboard) bool` |
 | `paragraph` | `fn (draw.Surface, draw.Rect, []const u8, u32) i32` |
+| `Field` | `fn (usize) type` |
 | `field` | `fn (*widget.Context, draw.Rect, *text.Editor, *text.Buffer) bool` |
 
 ### `eui.keys`

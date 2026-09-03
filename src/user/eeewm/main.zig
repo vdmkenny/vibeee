@@ -136,6 +136,7 @@ fn wmMain() noreturn {
     settings_event = proto.settings.watch("wm") catch 0;
     power_event = proto.settings.watch("power") catch 0;
     keyboard_event = proto.settings.watch("input") catch 0;
+    network_event = proto.net.watch() catch 0;
     listenTo(.keys, sys.watch(.keys));
     listenTo(.pointer, sys.watch(.pointer));
     listenTo(.children, sys.watch(.children));
@@ -143,12 +144,14 @@ fn wmMain() noreturn {
     listenTo(.wm_settings, @intCast(settings_event));
     listenTo(.keyboard_settings, @intCast(keyboard_event));
     listenTo(.power_settings, @intCast(power_event));
+    listenTo(.network, @intCast(network_event));
 
     // The desktop paints its own ground, and only the parts of it that show:
     // filling the screen and then covering most of it again is the flash this
     // whole path exists to avoid.
     ctx = ui.Context.initOn(screen, .none);
     bar.refresh();
+    bar.begin();
 
     pointer_x = @divTrunc(info.width, 2);
     pointer_y = @divTrunc(info.height, 2);
@@ -376,6 +379,7 @@ fn run() noreturn {
 
         if (askedToQuit()) quit();
         if (settingsChanged()) acted = true;
+        if (networkChanged()) acted = true;
 
         // Applications are this process's children, so their exits arrive
         // here. Collecting them is both how a window closed from inside an
@@ -495,6 +499,10 @@ const Source = enum {
     wm_settings,
     keyboard_settings,
     power_settings,
+    /// The network service: an address arriving or going, a link changing,
+    /// a network the radio has heard. The bar's icon and its menu are what
+    /// change, so the bar is told rather than asking on the clock's timer.
+    network,
     /// The supervisor asking the desktop to go, answered the way its own
     /// menu's leaving is: every window asked to close, the display given back.
     quit,
@@ -1097,6 +1105,18 @@ fn nextKeymap() void {
 var settings_event: u32 = 0;
 var power_event: u32 = 0;
 var keyboard_event: u32 = 0;
+var network_event: u32 = 0;
+
+/// The network service said something changed. Only the bar has anything to
+/// show for it, so only the bar is repainted: setting the whole desktop dirty
+/// to move one icon is the full-screen wipe this path exists to avoid.
+fn networkChanged() bool {
+    if (network_event == 0) return false;
+    if (sys.waitMany(&.{network_event}, sys.POLL) < 0) return false;
+    bar.networkChanged();
+    paintBar();
+    return true;
+}
 
 /// Take up a settings change somebody else made.
 ///

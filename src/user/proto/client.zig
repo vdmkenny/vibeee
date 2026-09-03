@@ -284,9 +284,33 @@ pub const Connection = struct {
 
     /// Block until an event arrives, then take it.
     pub fn next(self: *Connection, timeout_us: usize) ?wm.Ev {
-        if (self.poll()) |event| return event;
-        if (sys.eventWait(self.event_signal, timeout_us) < 0) return null;
-        return self.poll();
+        return switch (self.nextOrWake(null, timeout_us)) {
+            .event => |event| event,
+            .woke, .timed_out => null,
+        };
+    }
+
+    /// What a wait came back with: the manager's next event, the other
+    /// handle firing, or neither.
+    pub const Next = union(enum) {
+        event: wm.Ev,
+        woke,
+        timed_out,
+    };
+
+    /// The next event, or the other handle's firing, whichever comes first.
+    /// A program that is told things by a service waits on the service's
+    /// event here rather than asking it on a timer.
+    pub fn nextOrWake(self: *Connection, wake: ?u32, timeout_us: usize) Next {
+        if (self.poll()) |event| return .{ .event = event };
+        if (wake) |other| {
+            const fired = sys.waitMany(&.{ self.event_signal, other }, timeout_us);
+            if (fired < 0) return .timed_out;
+            if (fired == 1) return .woke;
+        } else {
+            if (sys.eventWait(self.event_signal, timeout_us) < 0) return .timed_out;
+        }
+        return if (self.poll()) |event| .{ .event = event } else .timed_out;
     }
 
     pub fn surfaceOf(self: *Connection, id: u8) ?*eui.Surface {

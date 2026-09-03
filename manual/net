@@ -6,6 +6,13 @@ net - the network interfaces
   net <iface> dhcp       clear any static claim; DHCP asks
   net <iface> static 192.0.2.50/24 gw 192.0.2.1 dns 192.0.2.1
                          claim an address; gw and dns are optional
+  net <iface> join <name> [<key>]
+                         join a wireless network; the key is a passphrase
+                         of 8 to 63 characters or 64 hex digits, and is
+                         left out for an open network
+  net <iface> forget     stop joining it
+  net scan               every network the radio has heard: channel,
+                         signal and security
 
 An interface is named the way the listing prints it ("e1000",
 "e1000.1" for a second card of the same kind), by class ("ether",
@@ -21,6 +28,11 @@ its slot again.
 With no static claim, an enabled interface asks DHCP as soon as its
 cable carries, and prints the address when it arrives. An interface
 no slot covers stays down.
+
+A radio scans whenever it is not joined, and the listing says which
+channel it is on. Every verb here has the same control in the
+Settings window's Network pane and in the bar's network menu, and
+`cfg net` shows the slot they all edit.
 
   net -p <address>       one ARP probe beneath the stack; the next
                          `net` shows which machine answered

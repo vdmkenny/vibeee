@@ -55,6 +55,11 @@ pub fn networks() []const mlme.Bss {
     return state.networks.slice();
 }
 
+/// One of them, by index, or null past the last.
+pub fn network(index: usize) ?mlme.Bss {
+    return state.networks.at(index);
+}
+
 /// Microseconds until the station next needs the loop, for the wait
 /// deadline. Null while there is no radio.
 pub fn nextDeadline() ?u64 {
@@ -117,6 +122,7 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
         return;
     };
     say(nic, seen);
+    if (dev_mod.changed) |tell| tell();
 }
 
 fn say(nic: *dev_mod.NicDev, bss: mlme.Bss) void {

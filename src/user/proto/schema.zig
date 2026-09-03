@@ -271,6 +271,38 @@ pub const NetSlot = struct {
     regdomain: wifi.Regulatory = .conservative,
     /// What it transmits at, when the plan's own ceiling does not reach.
     txpower: wifi.TxPower = .regulatory,
+
+    // The changes a person makes to a slot, here once so the command, the
+    // Settings pane and the bar's menu give a verb one meaning.
+
+    /// Clear any static claim: DHCP asks.
+    pub fn askDhcp(self: *NetSlot) void {
+        self.enabled = true;
+        self.address = .{};
+        self.gateway = .{};
+    }
+
+    /// Claim an address; the gateway and the servers may be unset.
+    pub fn claimStatic(self: *NetSlot, address: ipv4.Cidr, gateway: ipv4.Maybe, dns: ipv4.Pair) void {
+        self.enabled = true;
+        self.address = address;
+        self.gateway = gateway;
+        self.dns = dns;
+    }
+
+    /// Join a network: its name, and the secret, which is none for an open
+    /// network. The interface is enabled with it.
+    pub fn join(self: *NetSlot, ssid: wifi.Ssid, psk: wifi.Psk) void {
+        self.enabled = true;
+        self.ssid = ssid;
+        self.psk = psk;
+    }
+
+    /// Forget the network a radio was told to join; the rest stays.
+    pub fn forget(self: *NetSlot) void {
+        self.ssid = .{};
+        self.psk = .none;
+    }
 };
 
 pub const Net = NetSchema();

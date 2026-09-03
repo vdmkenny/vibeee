@@ -251,6 +251,11 @@ pub fn offsetAt(text: []const u8, font: *const draw.Font, line: Line, x: i32) us
 
 /// What an editable text area remembers between passes.
 pub const Editor = struct {
+    /// Shown as stars rather than as itself: a secret being typed. What is
+    /// measured and painted is the stars, so the cursor and the selection
+    /// stand where they would on the text they hide; the text itself is
+    /// untouched, and a passphrase is what the buffer holds.
+    masked: bool = false,
     /// Byte offset of the insertion point.
     cursor: usize = 0,
     /// Where a selection began, or null when there is none.
@@ -354,6 +359,19 @@ pub fn rowsIn(area: Rect) usize {
 }
 
 /// An editable, scrolling, soft-wrapped text area.
+/// The most a masked field shows: a secret is a line, never a document.
+pub const MASK_MAX = 128;
+
+/// What is measured and painted: the text, or a star per byte of it when the
+/// editor hides what it holds. The mask is one byte per byte so every offset
+/// in the text is the same offset in the mask.
+pub fn shown(state: *const Editor, buffer: *const Buffer, mask: *[MASK_MAX]u8) []const u8 {
+    if (!state.masked) return buffer.slice();
+    const len = @min(buffer.len, MASK_MAX);
+    @memset(mask[0..len], '*');
+    return mask[0..len];
+}
+
 pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) void {
     const entry = ctx.slotFor(area) orelse return;
     const act = ctx.interact(entry, area);
@@ -362,10 +380,13 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     const rows = rowsIn(area);
     const line_height: i32 = @intCast(face.height);
 
+    var mask: [MASK_MAX]u8 = undefined;
+    const visible = shown(state, buffer, &mask);
+
     // Whether there is a scrollbar changes how wide the text may be, which
     // changes how many lines there are. Measured against the narrower width so
     // the answer cannot flip back and forth between the two.
-    const wrapped = count(buffer.slice(), face, writable(area, true).w);
+    const wrapped = count(visible, face, writable(area, true).w);
     const scrollable = wrapped > rows;
     const box = writable(area, scrollable);
 
@@ -375,8 +396,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     // Where the pointer is, in the text. One conversion, used by the click
     // that puts the cursor somewhere and by the drag that selects.
     const under = struct {
-        fn at(state_in: *const Editor, buffer_in: *const Buffer, box_in: Rect, ctx_in: *const widget.Context, height: i32) usize {
-            const text = buffer_in.slice();
+        fn at(state_in: *const Editor, text: []const u8, box_in: Rect, ctx_in: *const widget.Context, height: i32) usize {
             const line_index = state_in.scroll +
                 @as(usize, @intCast(@max(@divTrunc(ctx_in.pointer_y - box_in.y, height), 0)));
             const line = lineAt(text, face, box_in.w, line_index);
@@ -388,7 +408,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
         // Held with shift, a click extends what is selected rather than
         // starting again, which is how a long selection is made without
         // dragging across a screen this size.
-        state.moveTo(under(state, buffer, box, ctx, line_height), ctx.key_mods.shift);
+        state.moveTo(under(state, visible, box, ctx, line_height), ctx.key_mods.shift);
         state.goal = null;
         changed = true;
     }
@@ -396,7 +416,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     // Dragging selects. The press already put the cursor where it started,
     // so every move after it extends from there.
     if (act.holding and !ctx.pressedThisPass()) {
-        const to = under(state, buffer, box, ctx, line_height);
+        const to = under(state, visible, box, ctx, line_height);
         if (to != state.cursor) {
             state.moveTo(to, true);
             state.goal = null;
@@ -429,7 +449,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
         (ctx.pending_key == @intFromEnum(KeyCode.f10) and ctx.key_mods.shift);
     if (ctx.focus == entry_index and asked_for_menu) {
         ctx.pending_key = 0;
-        const here = positionOf(buffer.slice(), face, box.w, state.cursor);
+        const here = positionOf(visible, face, box.w, state.cursor);
         const row: i32 = @intCast(here.line -| state.scroll);
         eui_context_menu.openAt(box.x + here.x, box.y + (row + 1) * line_height, entry_index, &MENU_ROWS);
         ctx.again();
@@ -443,8 +463,9 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     }
 
     // Follow the cursor. Done after every input rather than in each branch, so
-    // a caller that moved the cursor itself gets it too.
-    const here = positionOf(buffer.slice(), face, box.w, state.cursor);
+    // a caller that moved the cursor itself gets it too. The text may have
+    // changed above, so what is shown is taken again.
+    const here = positionOf(shown(state, buffer, &mask), face, box.w, state.cursor);
     if (here.line < state.scroll) {
         state.scroll = here.line;
         changed = true;
@@ -767,7 +788,8 @@ fn paint(
     focused: bool,
 ) void {
     const t = theme.current();
-    const text = buffer.slice();
+    var mask: [MASK_MAX]u8 = undefined;
+    const text = shown(state, buffer, &mask);
     const line_height: i32 = @intCast(face.height);
 
     surface.fill(area, t.surface_hot);
@@ -834,6 +856,70 @@ fn paintCursor(
     // A bar between characters rather than a block over one: this is an
     // insertion point, and a block says the character under it is selected.
     surface.fill(.{ .x = x, .y = y, .w = 1, .h = line_height }, theme.current().text);
+}
+
+/// What a field starts as, and what it says while empty.
+pub const FieldOptions = struct {
+    initial: []const u8 = "",
+    /// Shown dim while nothing has been typed.
+    hint: []const u8 = "",
+    /// Shown as stars: a key, a passphrase.
+    secret: bool = false,
+};
+
+/// A one-line field with its own storage: what a question about a name, an
+/// address or a key is typed into.
+///
+/// The three parts a field needs travel together, because a caller keeping
+/// them apart has to remember to point the buffer at the storage before the
+/// first pass, and a buffer pointing at nothing is a field that silently
+/// takes no letters. Every field on this system is one of these; `field`
+/// below is what one draws with, for the rare caller whose storage is
+/// somewhere else already.
+pub fn Field(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+
+        pub const CAPACITY = capacity;
+
+        storage: [capacity]u8 = @splat(0),
+        buffer: Buffer = .{ .bytes = &.{} },
+        editor: Editor = .{},
+
+        /// Point the buffer at the storage and fill it. Called before the
+        /// first pass, because a struct cannot point at itself before it
+        /// exists.
+        pub fn init(self: *Self, with: FieldOptions) void {
+            self.buffer = .{ .bytes = &self.storage };
+            self.buffer.clear();
+            _ = self.buffer.insert(0, with.initial[0..@min(with.initial.len, capacity)]);
+            self.editor = .{ .cursor = self.buffer.len, .hint = with.hint, .masked = with.secret };
+        }
+
+        /// Replace what it holds, leaving what it is: the hint, and whether
+        /// it hides what is typed.
+        pub fn set(self: *Self, value: []const u8) void {
+            if (self.buffer.bytes.len == 0) self.buffer = .{ .bytes = &self.storage };
+            self.buffer.clear();
+            _ = self.buffer.insert(0, value[0..@min(value.len, capacity)]);
+            self.editor.cursor = self.buffer.len;
+            self.editor.anchor = null;
+        }
+
+        pub fn slice(self: *const Self) []const u8 {
+            return self.buffer.slice();
+        }
+
+        pub fn clear(self: *Self) void {
+            self.set("");
+        }
+
+        /// Draw it and take what is typed. True on the pass Enter was
+        /// pressed, which is what a field is usually waiting for.
+        pub fn run(self: *Self, ctx: *widget.Context, area: Rect) bool {
+            return field(ctx, area, &self.editor, &self.buffer);
+        }
+    };
 }
 
 /// A one-line text field.

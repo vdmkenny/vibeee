@@ -25,6 +25,11 @@ const out = @import("ulib").out;
 const DEFAULT_ASK = 0x0A000202; // 10.0.2.2
 
 pub fn run(args: []const []const u8) void {
+    if (args.len > 0 and std.mem.eql(u8, args[0], "scan")) {
+        scan();
+        return;
+    }
+
     // A first word that is not a flag names an interface to configure.
     if (args.len > 0 and args[0].len > 0 and args[0][0] != '-') {
         const matcher = lib.ifmatch.Match.parse(args[0]) orelse {
@@ -94,7 +99,7 @@ pub fn run(args: []const []const u8) void {
 /// fires.
 fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []const u8) void {
     if (args.len == 0) {
-        say("net: an interface needs a verb: up, down, dhcp, static\n");
+        say("net: an interface needs a verb: up, down, dhcp, static, join, forget\n");
         return;
     }
 
@@ -111,9 +116,7 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
     } else if (std.mem.eql(u8, args[0], "down")) {
         want.enabled = false;
     } else if (std.mem.eql(u8, args[0], "dhcp")) {
-        want.enabled = true;
-        want.address = .{};
-        want.gateway = .{};
+        want.askDhcp();
     } else if (std.mem.eql(u8, args[0], "static")) {
         if (args.len < 2) {
             say("net: static needs an address like 192.0.2.7/24\n");
@@ -123,9 +126,8 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
             say("net: that is not an address/prefix\n");
             return;
         };
-        want.enabled = true;
-        want.address = claim;
-
+        var gateway = lib.ipv4.Maybe{};
+        var dns = lib.ipv4.Pair{};
         var at: usize = 2;
         while (at < args.len) : (at += 2) {
             if (at + 1 >= args.len) {
@@ -133,12 +135,12 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
                 return;
             }
             if (std.mem.eql(u8, args[at], "gw")) {
-                want.gateway = lib.ipv4.Maybe.parse(args[at + 1]) orelse {
+                gateway = lib.ipv4.Maybe.parse(args[at + 1]) orelse {
                     say("net: that gateway is not an address\n");
                     return;
                 };
             } else if (std.mem.eql(u8, args[at], "dns")) {
-                want.dns = lib.ipv4.Pair.parse(args[at + 1]) orelse {
+                dns = lib.ipv4.Pair.parse(args[at + 1]) orelse {
                     say("net: dns takes one address, or two with a comma\n");
                     return;
                 };
@@ -147,8 +149,26 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
                 return;
             }
         }
+        want.claimStatic(claim, gateway, dns);
+    } else if (std.mem.eql(u8, args[0], "join")) {
+        // The name, and the key unless the network is open.
+        if (args.len < 2) {
+            say("net: join needs the network's name, and its key unless it is open\n");
+            return;
+        }
+        const ssid = lib.wifi.Ssid.of(args[1]) orelse {
+            say("net: a network name is up to 32 characters\n");
+            return;
+        };
+        const psk: lib.wifi.Psk = if (args.len >= 3) (lib.wifi.Psk.parse(args[2]) orelse {
+            say("net: a key is a passphrase of 8 to 63 characters, or 64 hex digits\n");
+            return;
+        }) else .none;
+        want.join(ssid, psk);
+    } else if (std.mem.eql(u8, args[0], "forget")) {
+        want.forget();
     } else {
-        say("net: the verbs are up, down, dhcp and static\n");
+        say("net: the verbs are up, down, dhcp, static, join and forget\n");
         return;
     }
 
@@ -226,6 +246,45 @@ fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
     }
 }
 
+/// Every network the radio has heard, one per line, or why there are none.
+fn scan() void {
+    var has_radio = false;
+    var i: usize = 0;
+    while (net.interfaceAt(i)) |iface| : (i += 1) {
+        if (iface.kind == .radio) has_radio = true;
+    }
+    if (!has_radio) {
+        say(if (net.interfaceCount() == 0) "net: the network service is not answering\n" else "no radio in this machine\n");
+        return;
+    }
+
+    var index: usize = 0;
+    while (net.networkAt(index)) |network| : (index += 1) {
+        printNetwork(&network);
+    }
+    if (index == 0) say("no networks heard yet; the radio is still listening\n");
+    out.flush();
+}
+
+fn printNetwork(network: *const net.Network) void {
+    out.text("  ");
+    ink.write(.key, network.name());
+    out.text("  channel ");
+    out.decimal(network.channel);
+    out.text("  ");
+    if (network.dbm < 0) {
+        out.text("-");
+        out.decimal(@intCast(-@as(i32, network.dbm)));
+    } else {
+        out.decimal(@intCast(network.dbm));
+    }
+    out.text(" dBm ");
+    out.text(network.strength());
+    out.text("  ");
+    out.text(network.security.spell());
+    out.byte('\n');
+}
+
 fn printInterface(iface: *const net.Iface) void {
     ink.write(.key, labelOf(&iface.driver));
 
@@ -238,6 +297,9 @@ fn printInterface(iface: *const net.Iface) void {
             .full => "full",
             else => "unknown",
         });
+    } else if (iface.kind == .radio and iface.channel != 0) {
+        out.text("channel ");
+        out.decimal(iface.channel);
     } else {
         out.text("       ");
     }

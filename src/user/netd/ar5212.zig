@@ -89,6 +89,8 @@ comptime {
 /// made.
 const Device = struct {
     location: pci.Location = .{ .bus = 0, .device = 0, .function = 0 },
+    /// The interface record the service keeps for this radio.
+    nic: ?*NicDev = null,
     chip: ?reset.Chip = null,
     opened: bool = false,
     started: bool = false,
@@ -125,7 +127,7 @@ pub const ops = dev_mod.NicOps{
 /// Bring the card out of whatever state the firmware left it in, prove
 /// which silicon it is, and read its store.
 pub fn open(loc: pci.Location, nic: *NicDev) bool {
-    device = .{ .location = loc };
+    device = .{ .location = loc, .nic = nic };
 
     const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "radio") orelse return false;
     var keep_enabled = false;
@@ -319,6 +321,7 @@ pub fn tune(channel: wifi.Channel) bool {
         return false;
     };
     device.channel = channel;
+    if (device.nic) |nic| nic.radio_channel = channel.number;
 
     startReceive(chip.regs);
     chip.regs.put(.interrupt_enable, regs_mod.InterruptEnable{ .enabled = true });

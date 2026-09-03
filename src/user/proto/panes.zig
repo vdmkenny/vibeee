@@ -15,6 +15,7 @@ const icons = @import("eui").icon;
 
 pub const Section = enum {
     display,
+    network,
     input,
     audio,
     power,
@@ -31,6 +32,7 @@ pub const Section = enum {
     pub fn title(self: Section) []const u8 {
         return switch (self) {
             .display => "Display",
+            .network => "Network",
             .input => "Input",
             .audio => "Audio",
             .power => "Power",
@@ -43,6 +45,7 @@ pub const Section = enum {
     pub fn icon(self: Section) icons.Icon {
         return switch (self) {
             .display => .display,
+            .network => .wifi,
             .input => .keyboard,
             .audio => .speaker,
             .power => .battery,
@@ -57,6 +60,7 @@ pub const Section = enum {
     pub fn says(self: Section) []const u8 {
         return switch (self) {
             .display => "Display",
+            .network => "Wired and wireless networks",
             .input => "Keyboard and input",
             .audio => "Sound",
             .power => "Battery and power",

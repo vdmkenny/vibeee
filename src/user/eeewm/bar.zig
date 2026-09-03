@@ -34,6 +34,7 @@ const eui_keys = @import("eui").keys;
 const graph = @import("lib").audiograph;
 const ipv4 = @import("lib").ipv4;
 const net = @import("proto").net;
+const netconfig = @import("ulib").netconfig;
 const platform = @import("proto").platform;
 const sys = @import("sys");
 const theme = @import("eui").theme;
@@ -1063,7 +1064,7 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
     }
 
     if (net_open) {
-        var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+        var rows: [NET_ROWS]ui.MenuItem = undefined;
         const before = net_menu.selected;
         net_menu.hover(netPanel(width, height), netItems(&rows), x, y);
         return net_menu.selected != before;
@@ -1246,29 +1247,59 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 // Network
 //
 // What the machine is connected to, behind the one icon that says whether it
-// is connected at all. The rows report rather than act, because there is
-// nothing here to change that the settings do not own; the last row goes
-// where those are.
+// is connected at all. The interface rows report rather than act, because
+// there is nothing on a wire to change that the settings do not own; the
+// networks a radio has heard are rows that join, the way the Settings pane's
+// list and `net join` do, and the last row goes where the settings are.
 // ---------------------------------------------------------------------------
 
 var net_menu: ui.Menu = .{};
 var net_open = false;
 var ifaces: [MAX_IFACES]net.Iface = undefined;
 var iface_addrs: [MAX_IFACES]net.AddressInfo = undefined;
-var iface_texts: [MAX_IFACES][15]u8 = undefined;
+var iface_texts: [MAX_IFACES][16]u8 = undefined;
 var iface_count: usize = 0;
+/// The first radio among them, and what it has heard.
+var radio_index: ?usize = null;
+var heard: [MAX_HEARD]net.Network = undefined;
+var heard_texts: [MAX_HEARD][24]u8 = undefined;
+var heard_count: usize = 0;
 
 const MAX_IFACES = 4;
+/// How many heard networks the menu offers. The pane lists more.
+const MAX_HEARD = 6;
+const NET_ROWS = MAX_IFACES + 1 + MAX_HEARD + 2;
+
 fn netWidth() i32 {
     return theme.enlarged(216);
 }
 
 fn readNetwork() void {
     iface_count = @min(net.interfaceCount(), MAX_IFACES);
+    radio_index = null;
     for (0..iface_count) |i| {
         ifaces[i] = net.interfaceAt(i) orelse .{};
         iface_addrs[i] = net.addressOf(i) orelse .{};
+        if (radio_index == null and ifaces[i].kind == .radio) radio_index = i;
     }
+    heard_count = 0;
+    if (radio_index != null) {
+        while (heard_count < MAX_HEARD) : (heard_count += 1) {
+            heard[heard_count] = net.networkAt(heard_count) orelse break;
+        }
+    }
+}
+
+/// The service said something changed: an address, a link, a network heard.
+pub fn networkChanged() void {
+    readNetwork();
+}
+
+/// Read it once at startup, before the first paint: the event only says what
+/// changed after it, and a bar drawn before the first change would show an
+/// empty menu until something moved.
+pub fn begin() void {
+    readNetwork();
 }
 
 /// Whether anything is up and addressed, which is what the bar's icon says.
@@ -1284,14 +1315,24 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
     for (0..iface_count) |i| {
         if (count == into.len) break;
         const address = iface_addrs[i].addr;
+        const radio = ifaces[i].kind == .radio;
+        var detail: []const u8 = undefined;
+        if (address != 0) {
+            detail = ipv4.text(address, iface_texts[i][0..15]);
+        } else if (radio and ifaces[i].channel != 0) {
+            var spelled = str.Builder{ .buf = &iface_texts[i] };
+            spelled.text("channel ");
+            spelled.number(ifaces[i].channel);
+            detail = spelled.done();
+        } else {
+            detail = if (ifaces[i].up != 0) "no address" else "no link";
+        }
         into[count] = .{
             .label = net.nameOf(&ifaces[i]),
             // The rows say what is; changing it is the settings' business.
             .kind = .disabled,
-            .mark = .ethernet,
-            .detail = if (address != 0)
-                ipv4.text(address, &iface_texts[i])
-            else if (ifaces[i].up != 0) "no address" else "no link",
+            .mark = if (radio) .wifi else .ethernet,
+            .detail = detail,
         };
         count += 1;
     }
@@ -1301,12 +1342,53 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
         count += 1;
     }
 
+    // What the radio has heard, each a row that joins it.
+    if (radio_index != null and heard_count > 0 and count + 1 + heard_count <= into.len) {
+        into[count] = .{ .kind = .separator };
+        count += 1;
+        for (0..heard_count) |i| {
+            var spelled = str.Builder{ .buf = &heard_texts[i] };
+            spelled.text(heard[i].strength());
+            spelled.text(", ");
+            spelled.text(heard[i].security.spell());
+            into[count] = .{
+                .label = heard[i].name(),
+                .kind = if (heard[i].security.joinable()) .item else .disabled,
+                .mark = .wifi,
+                .detail = spelled.done(),
+            };
+            count += 1;
+        }
+    }
+
     if (count + 2 <= into.len) {
         into[count] = .{ .kind = .separator };
-        into[count + 1] = .{ .label = "Settings", .mark = .sliders };
+        into[count + 1] = .{ .label = "Network settings", .mark = .sliders };
         count += 2;
     }
     return into[0..count];
+}
+
+/// Which heard network a menu row is, if it is one.
+fn heardAt(row: usize) ?usize {
+    const first = iface_count + 1;
+    if (radio_index == null or heard_count == 0 or row < first or row >= first + heard_count) return null;
+    return row - first;
+}
+
+/// Join a heard network: at once when it is open, and through the Settings
+/// pane, which asks for the key, when it is protected. The pane opens on the
+/// network section, so the row that was chosen here is the list it shows.
+fn joinHeard(index: usize) void {
+    const network = &heard[index];
+    if (network.security != .open) {
+        _ = sys.spawnDetached("/bin/settings", &.{ "settings", "network" });
+        return;
+    }
+    const radio = radio_index orelse return;
+    var model = netconfig.Model.load();
+    const ssid = lib.wifi.Ssid.of(network.name()) orelse return;
+    if (model.join(radio, ssid, .none)) model.save() catch {};
 }
 
 fn netPanel(width: i32, height: i32) Rect {
@@ -1318,7 +1400,7 @@ fn netPanel(width: i32, height: i32) Rect {
         if (slot.which == .network) anchor = slot.area;
     }
 
-    var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+    var rows: [NET_ROWS]ui.MenuItem = undefined;
     const list = netItems(&rows);
 
     return popover.place(
@@ -1337,16 +1419,18 @@ fn paintNetwork(surface: Surface, area: Rect) void {
     else if (networkUp()) t.bar_text else t.text_dim;
 
     if (net_open) surface.fill(area, t.accent);
+    // A machine with a radio is one whose network is the air, whichever
+    // interface happens to carry the address.
     surface.icon(
         area.x + @divTrunc(area.w - Surface.iconSize(), 2),
         area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-        .ethernet,
+        if (radio_index != null) .wifi else .ethernet,
         ink,
     );
 }
 
 fn paintNetMenu(surface: Surface, width: i32, height: i32) void {
-    var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+    var rows: [NET_ROWS]ui.MenuItem = undefined;
     net_menu.paint(surface, netPanel(width, height), netItems(&rows));
 }
 
@@ -1381,9 +1465,11 @@ fn soundWidth() i32 {
 
 /// The strip above the rows: the icon, the slider and the percentage, inside
 /// the same inset the rows below it use.
+/// What the bar re-reads on the clock's own timer: what changes on its own
+/// and has no event to say so. The network has one, and arrives through
+/// `networkChanged` instead.
 pub fn refresh() void {
     readSound();
-    readNetwork();
     readPower();
 }
 
@@ -2045,14 +2131,18 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     }
 
     if (net_open) {
-        var rows: [MAX_IFACES + 2]ui.MenuItem = undefined;
+        var rows: [NET_ROWS]ui.MenuItem = undefined;
         const list = netItems(&rows);
         const chosen = ui.Menu.rowAt(netPanel(width, height), list, x, y);
         net_open = false;
-        // The one row that acts is the last: where the settings are.
+        // A heard network joins; the last row is where the settings are.
         if (chosen) |row| {
             if (list[row].kind == .item) {
-                _ = sys.spawnDetached("/bin/settings", &.{"settings"});
+                if (heardAt(row)) |index| {
+                    joinHeard(index);
+                } else {
+                    _ = sys.spawnDetached("/bin/settings", &.{ "settings", "network" });
+                }
             }
         }
         return .consumed;

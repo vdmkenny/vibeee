@@ -104,6 +104,7 @@ fn netdMain() noreturn {
     stack.init();
     dev.stack_rx = stack.rx;
     dev.stack_link = stack.linkState;
+    dev.changed = addressChanged;
     station.init();
     for (ifaces[0..count]) |*iface| stack.attach(iface);
     stack.applyConfig(settings.load("net"));
@@ -418,8 +419,9 @@ fn drain(channel: u32) void {
 }
 
 /// The event a waiting service holds, signalled whenever an address arrives
-/// or goes away. One event for the whole system: a lease landing wakes every
-/// waiter at once, and nobody is left asking every few seconds.
+/// or goes away, and whenever the radio hears a network it had not. One event
+/// for the whole system: a lease landing wakes every waiter at once, and
+/// nobody is left asking every few seconds.
 var address_event: u32 = 0;
 
 fn addressChanged() void {
@@ -503,6 +505,13 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         return .ok;
     }
 
+    // The scan's list is the station's, indexed on its own.
+    if (request.tag == .wifi_scan) {
+        const bss = station.network(request.index) orelse return .end;
+        reply.body = .{ .network = proto.Network.of(bss) };
+        return .ok;
+    }
+
     if (request.index >= count) return .end;
 
     const iface = &ifaces[request.index];
@@ -551,6 +560,8 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         .tx_pkts = @truncate(iface.stats.tx_pkts),
         .tx_bytes = @truncate(iface.stats.tx_bytes),
         .arp_replies = @truncate(iface.stats.rx_arp),
+        .kind = if (iface.class == .wifi) .radio else .wire,
+        .channel = iface.radio_channel,
     } };
     const label = iface.label.slice();
     @memcpy(reply.body.iface.driver[0..label.len], label);

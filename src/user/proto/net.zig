@@ -4,6 +4,7 @@
 //! neither can drift. One interface at a time, asked for by index, which is
 //! how a caller walks a list of unknown length: ask until `end`.
 
+const lib = @import("lib");
 const socket = @import("socket.zig");
 const std = @import("std");
 const sys = @import("sys");
@@ -25,9 +26,10 @@ pub const Tag = enum(u8) {
     ping,
     /// The stack's address story for the interface at `index`.
     address,
-    /// An event that fires whenever an interface gains or loses an address.
-    /// What a service waiting for the network waits on, rather than asking
-    /// every few seconds whether it has arrived.
+    /// An event that fires whenever an interface gains or loses an address,
+    /// or a radio hears a network it had not. What a service waiting for the
+    /// network waits on, and what a listing sleeps on, rather than asking
+    /// every few seconds.
     watch,
     /// Open a stream to `param`:`param2`. The reply waits for the handshake
     /// and grants the socket: `body.sock` and the three handles.
@@ -46,6 +48,9 @@ pub const Tag = enum(u8) {
     /// A name to an address, `ResolveReq` shaped: the hosts table first,
     /// then DNS. Deferred while a server is asked.
     resolve,
+    /// One network a radio has heard, at `index`, in `body.network`; `end`
+    /// past the last. What a scan listing and a chooser walk.
+    wifi_scan,
 };
 
 /// The two ports of `udp_open`, packed into its second parameter.
@@ -130,7 +135,59 @@ pub const Iface = extern struct {
     arp_replies: u32 = 0,
     peer_ip: u32 = 0,
     peer_mac: [6]u8 = @splat(0),
-    _pad: u16 = 0,
+    /// A wire or a radio, which decides what a listing says of it.
+    kind: Kind = .wire,
+    /// The channel a radio is tuned to; zero for a wire.
+    channel: u8 = 0,
+};
+
+/// What an interface is, as the record carries it.
+pub const Kind = enum(u8) {
+    wire = 0,
+    radio = 1,
+};
+
+/// One network a radio has heard, for `wifi_scan`: the station's account of
+/// it, in a fixed shape.
+pub const Network = extern struct {
+    ssid: [lib.wifi.Ssid.MAX]u8 = @splat(0),
+    ssid_len: u8 = 0,
+    bssid: [6]u8 = @splat(0),
+    channel: u8 = 0,
+    security: lib.wifi.Security = .open,
+    dbm: i8 = 0,
+    snr_db: u8 = 0,
+    /// Zero to three, the way an indicator draws it.
+    bars: u8 = 0,
+    _pad: [4]u8 = @splat(0),
+
+    pub fn of(bss: lib.mlme.Bss) Network {
+        var out = Network{
+            .ssid_len = bss.ssid.len,
+            .bssid = bss.bssid,
+            .channel = bss.channel,
+            .security = bss.security,
+            .dbm = bss.signal.dbm,
+            .snr_db = bss.signal.snr_db,
+            .bars = bss.signal.bars(),
+        };
+        @memcpy(out.ssid[0..bss.ssid.len], bss.ssid.slice());
+        return out;
+    }
+
+    pub fn name(self: *const Network) []const u8 {
+        return self.ssid[0..@min(self.ssid_len, lib.wifi.Ssid.MAX)];
+    }
+
+    /// The signal in a word, the same word on every surface.
+    pub fn strength(self: *const Network) []const u8 {
+        return switch (self.bars) {
+            0 => "weak",
+            1 => "fair",
+            2 => "good",
+            else => "strong",
+        };
+    }
 };
 
 /// The stack's address story for one interface: what is held, where it came
@@ -174,6 +231,8 @@ pub const Body = extern union {
     sock: SockGrant,
     /// For `resolve`: the answer and where it came from.
     resolved: Resolved,
+    /// For `wifi_scan`: one network heard.
+    network: Network,
 };
 
 /// A granted socket. The reply's handles are, in order, the shared
@@ -208,6 +267,7 @@ comptime {
     if (@sizeOf(Req) != 16) @compileError("a network request is sixteen bytes");
     if (@sizeOf(ResolveReq) != 64) @compileError("a resolve request fills one payload");
     if (@sizeOf(Iface) != 56) @compileError("an interface record is 56 bytes");
+    if (@sizeOf(Network) != 48) @compileError("a network record is 48 bytes");
     if (@sizeOf(AddressInfo) != 16) @compileError("an address record is sixteen bytes");
     if (@sizeOf(SockGrant) != 12) @compileError("a socket grant is twelve bytes");
 }
@@ -302,6 +362,14 @@ pub fn addressOf(index: usize) ?AddressInfo {
     call(.address, @intCast(index), 0, &reply) catch return null;
     if (reply.status != .ok) return null;
     return reply.body.address;
+}
+
+/// One network the radio has heard, by index, or null past the last or
+/// when nothing is serving.
+pub fn networkAt(index: usize) ?Network {
+    var reply = Rep{};
+    call(.wifi_scan, @intCast(index), 0, &reply) catch return null;
+    return reply.body.network;
 }
 
 /// An interface's name, which the protocol carries padded with zeroes.

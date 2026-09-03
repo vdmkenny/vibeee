@@ -29,6 +29,7 @@ const Section = proto.panes.Section;
 const keymaps = @import("keymaps");
 const palette = @import("lib").palette;
 const platform = proto.platform;
+const network = @import("settings/network.zig");
 const theme = eui.theme;
 
 const store = proto.settings;
@@ -66,8 +67,12 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
 
     proto.app.run("settings", "Settings", 260, 200, .{
         .draw = draw,
+        .key = key,
+        .text = typed,
         .tick = tick,
         .tick_us = tickPeriod(),
+        .wake = network.wakeEvent(),
+        .woken = woken,
     });
 }
 
@@ -79,6 +84,7 @@ fn load() void {
     current = store.load("wm");
     input = store.load("input");
     power = store.load("power");
+    network.load();
     readVolume();
 }
 
@@ -103,6 +109,23 @@ var peak_right: u8 = 0;
 /// The wait timed out, which is when what ages is read again: the pane on
 /// screen decides what that is, and a pane showing nothing that ages reads
 /// nothing at all.
+/// The network pane's question takes the keys while it stands; nothing
+/// else in this window listens to the keyboard.
+fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
+    return network.key(code, mods);
+}
+
+fn typed(codepoint: u32) bool {
+    return network.typed(codepoint);
+}
+
+/// The network service said something changed: an address, a link, a
+/// network heard. The pane reads again; other panes have nothing to hear.
+fn woken() bool {
+    if (section != .network) return false;
+    return network.changed();
+}
+
 fn tick() bool {
     switch (section) {
         .power, .display => {
@@ -139,9 +162,17 @@ fn tickPeriod() usize {
     return switch (section) {
         .audio => METER_TICK_US,
         .power, .display => PLATFORM_TICK_US,
+        // The network pane is told by the service's event, so it has nothing
+        // to wake up for: the wait sleeps until something is said.
+        .network => TOLD_NOT_ASKED,
         else => 1_000_000,
     };
 }
+
+/// A period that never elapses, for a pane an event speaks to. The frame's
+/// wait takes the smaller of this and forever, so the window sleeps until
+/// the service, the manager or a person says something.
+const TOLD_NOT_ASKED: usize = std.math.maxInt(usize);
 
 /// What the sound service says the default output is at.
 ///
@@ -179,6 +210,7 @@ fn readPlatform() void {
             }
         },
         .display => lamp = platform.backlight(),
+        .network => _ = network.changed(),
         .about => readFacts(),
         else => {},
     }
@@ -210,7 +242,7 @@ fn save() void {
 /// What separates one subject from the next. The design draws the pane as a
 /// grid with edges; this is that edge, drawn where a section ends rather than
 /// around a cell nothing else knows the shape of.
-fn rule(pane: eui.Rect, y: i32) i32 {
+pub fn rule(pane: eui.Rect, y: i32) i32 {
     const t = theme.current();
     ctx.surface.fill(.{ .x = pane.x, .y = y, .w = pane.w, .h = 1 }, t.line);
     ctx.addDamage(.{ .x = pane.x, .y = y, .w = pane.w, .h = 1 });
@@ -225,7 +257,7 @@ fn ruleDown(x: i32, from: i32, to: i32) void {
 }
 
 /// A heading over a row of controls, and where the row starts.
-fn group(y: *i32, area: eui.Rect, title: []const u8) i32 {
+pub fn group(y: *i32, area: eui.Rect, title: []const u8) i32 {
     ctx.labelDim(.{ .x = area.x, .y = y.*, .w = area.w, .h = 16 }, title);
     y.* += 18;
     return y.*;
@@ -335,11 +367,14 @@ fn draw() void {
     const body = eui.footer.above(area);
     const rail = eui.rail.column(body, 0);
     const beside = eui.rail.beside(body, rail);
+    // A question standing on the sheet takes the bottom of the pane's side,
+    // so it never covers what it is about.
+    const pane_side = if (network.promptOpen()) eui.prompt.above(beside) else beside;
     const pane = eui.Rect{
-        .x = beside.x + t.menu_padding,
-        .y = beside.y + t.menu_padding,
-        .w = beside.w - t.menu_padding * 2,
-        .h = beside.h - t.menu_padding,
+        .x = pane_side.x + t.menu_padding,
+        .y = pane_side.y + t.menu_padding,
+        .w = pane_side.w - t.menu_padding * 2,
+        .h = pane_side.h - t.menu_padding,
     };
 
     drawRail(rail);
@@ -360,6 +395,7 @@ fn draw() void {
     help_view = view;
     const drawn = switch (section) {
         .display => drawDisplay(inner),
+        .network => network.draw(inner),
         .input => drawInput(inner),
         .audio => drawAudio(inner),
         .power => drawPower(inner),
@@ -368,6 +404,7 @@ fn draw() void {
     };
     eui.scrollpane.end(ctx, scrolled, view, drawn - view.top());
 
+    network.runPrompt(beside);
     drawFooter(area);
 }
 
@@ -1207,15 +1244,15 @@ fn drawFacts(pane: eui.Rect, from: i32, facts: []const Fact, at: usize) i32 {
 /// A fallback key's answer, in the words the row wants. `mem.total` is a
 /// count of bytes, which is a number for a program rather than an answer for
 /// a person.
-fn describe(key: []const u8, buf: []u8) []const u8 {
-    if (std.mem.eql(u8, key, "mem.total")) {
+fn describe(wanted: []const u8, buf: []u8) []const u8 {
+    if (std.mem.eql(u8, wanted, "mem.total")) {
         const bytes = info.askNumber("mem.total");
         if (bytes == 0) return "";
         var line = str.Builder{ .buf = buf };
         line.quantity(bytes / (1024 * 1024), "MiB");
         return line.done();
     }
-    return info.ask(key, buf);
+    return info.ask(wanted, buf);
 }
 
 /// The head of the page: what this machine is called, what it is, and what it
