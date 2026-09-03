@@ -439,6 +439,38 @@ pub fn sayIfUnheard(nic: *NicDev) void {
         out.text("none");
     }
     log.end();
+
+    sayReceivePath(chip);
+}
+
+/// What the receive path is doing, said beside the interrupt plumbing when
+/// nothing has woken this service.
+///
+/// The noise floor is the measurement that matters: it is taken through the
+/// analog receive chain itself, so a plausible one is that chain working and
+/// the fault being somewhere between a frame arriving and this service
+/// hearing of it. One that never settled, or settled somewhere impossible,
+/// is a receive chain that is not listening at all, and no descriptor will
+/// ever complete however well the engine is set up.
+///
+/// The engine and where it is pointed are said next to it because those are
+/// the other way a chain completes nothing: an engine that is not running,
+/// or one walking descriptors that are not the ones this service reads.
+fn sayReceivePath(chip: *reset.Chip) void {
+    const regs = chip.regs;
+
+    log.begin(name, .warn);
+    out.text("the receive path: noise floor ");
+    out.signed(chip.noise.current);
+    out.text(" dBm");
+    if (chip.noise.settling) out.text(" (not settled)");
+    out.text(", engine ");
+    out.text(if (regs.get(.control, regs_mod.Control).rx_enable) "running" else "stopped");
+    out.text(", walking 0x");
+    out.hex(regs.read(.rx_pointer), 8);
+    out.text(" of 0x");
+    out.hex(Chain.addressOf(chainBase("rx_desc"), 0), 8);
+    log.end();
 }
 
 var said_unheard = false;

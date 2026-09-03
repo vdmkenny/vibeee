@@ -134,12 +134,7 @@ fn say(nic: *dev_mod.NicDev, bss: mlme.Bss) void {
     out.text("\" on channel ");
     out.decimal(bss.channel);
     out.text(", ");
-    if (bss.signal.dbm < 0) {
-        out.text("-");
-        out.decimal(@intCast(-@as(i32, bss.signal.dbm)));
-    } else {
-        out.decimal(@intCast(bss.signal.dbm));
-    }
+    out.signed(bss.signal.dbm);
     out.text(" dBm, ");
     out.text(bss.security.spell());
     log.end();

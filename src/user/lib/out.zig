@@ -91,6 +91,14 @@ pub fn hex(value: usize, digits: usize) void {
 
 /// Write `value` right-aligned in `width` columns. Used for size columns,
 /// where alignment is what makes a listing scannable.
+/// A number that may be negative, which the readings taken off a radio
+/// are: a signal strength and a noise floor are both decibels below a
+/// milliwatt, and neither is ever positive on a working one.
+pub fn signed(value: i32) void {
+    if (value < 0) byte('-');
+    decimal(@abs(value));
+}
+
 pub fn decimalRight(value: usize, width: usize) void {
     var buf: [20]u8 = [_]u8{0} ** 20;
     var i = buf.len;
