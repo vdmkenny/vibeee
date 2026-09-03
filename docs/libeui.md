@@ -70,6 +70,7 @@ with it this pass.
 | `choiceAmong` | `fn (*widget.Context, draw.Rect, anytype, anytype, []const []const u8) anytype` |
 | `slider` | `fn (*widget.Context, draw.Rect, slider.Range, i32, Context.SliderStyle) i32` |
 | `toggle` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
+| `segment` | `fn (*widget.Context, draw.Rect, []const u8, bool, widget.Seat) bool` |
 | `checkbox` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
 | `scrollbar` | `fn (*widget.Context, draw.Rect, *scroll.State, usize, usize, usize) usize` |
 | `table` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
@@ -984,4 +985,5 @@ interface scale multiplies them.
 | `gap` | 8 |
 | `border_width` | 1 |
 | `border_width_focused` | 2 |
+| `group_radius` | 4 |
 

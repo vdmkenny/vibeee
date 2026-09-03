@@ -80,6 +80,14 @@ pub const Theme = struct {
     gap: i32 = 8,
     border_width: i32 = 1,
     border_width_focused: i32 = 2,
+    /// How far the outside of a joined row of controls is rounded.
+    ///
+    /// Everything else is square: on a panel at 1:1 with no subpixel
+    /// positioning, square is what stays crisp. A row of choices is the one
+    /// exception, and only around its outside, because that is what makes
+    /// three buttons read as one control with one of them chosen rather than
+    /// as three buttons that happen to be adjacent.
+    group_radius: i32 = 4,
 };
 
 /// The default. Cool neutrals under dark system chrome: the bar is the

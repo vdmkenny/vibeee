@@ -114,6 +114,60 @@ pub fn spanBytes(width: u16, height: u16, stride: u16) ?u32 {
 /// because a widget draws a dozen primitives and every one of them must be
 /// confined to the same place. Forgetting once is a widget that paints over
 /// its neighbour.
+/// Which corners of a rectangle are rounded.
+///
+/// Named one at a time rather than as a single radius, because what joins
+/// two controls into one shape is the corners between them staying square.
+pub const Corners = packed struct(u4) {
+    top_left: bool = false,
+    top_right: bool = false,
+    bottom_left: bool = false,
+    bottom_right: bool = false,
+
+    pub const square: Corners = .{};
+    pub const all: Corners = .{
+        .top_left = true,
+        .top_right = true,
+        .bottom_left = true,
+        .bottom_right = true,
+    };
+    /// The leading pair, for the first of a joined row.
+    pub const leading: Corners = .{ .top_left = true, .bottom_left = true };
+    /// The trailing pair, for the last of one.
+    pub const trailing: Corners = .{ .top_right = true, .bottom_right = true };
+
+    pub fn any(self: Corners) bool {
+        return @as(u4, @bitCast(self)) != 0;
+    }
+};
+
+/// How far in a rounded corner's row begins, `dy` rows from the outer edge.
+///
+/// The quarter circle in whole pixels: a pixel belongs to the shape when its
+/// centre is inside the arc, which is the test written in doubled coordinates
+/// so it is integers throughout. The radii this is drawn at are single
+/// figures, so walking out from the edge costs less than a square root.
+pub fn cornerInset(radius: i32, dy: i32) i32 {
+    if (radius <= 0 or dy < 0 or dy >= radius) return 0;
+
+    const d = 2 * radius;
+    const ky = 2 * dy + 1 - d;
+
+    var x: i32 = 0;
+    while (x < radius) : (x += 1) {
+        const kx = 2 * x + 1 - d;
+        if (kx * kx + ky * ky <= d * d) return x;
+    }
+    return radius;
+}
+
+/// The radius a rectangle can actually carry: never past half of either side,
+/// and nothing at all when no corner asked for it.
+fn roundingFor(area: Rect, radius: i32, corners: Corners) i32 {
+    if (radius <= 0 or !corners.any() or area.w <= 0 or area.h <= 0) return 0;
+    return @min(radius, @min(@divTrunc(area.w, 2), @divTrunc(area.h, 2)));
+}
+
 pub const Surface = struct {
     pixels: [*]u32,
     width: i32,
@@ -150,6 +204,94 @@ pub const Surface = struct {
     pub fn get(self: Surface, x: i32, y: i32) Color {
         if (x < 0 or y < 0 or x >= self.width or y >= self.height) return 0;
         return self.pixels[@intCast(y * self.stride + x)];
+    }
+
+    /// Fill `area`, rounding the corners `corners` names.
+    pub fn fillRounded(self: Surface, area: Rect, radius: i32, corners: Corners, color: Color) void {
+        const r = roundingFor(area, radius, corners);
+        if (r == 0) return self.fill(area, color);
+
+        // The middle, at full width, and then the two bands the corners eat
+        // into, a row at a time.
+        self.fill(.{ .x = area.x, .y = area.y + r, .w = area.w, .h = area.h - 2 * r }, color);
+
+        var dy: i32 = 0;
+        while (dy < r) : (dy += 1) {
+            const cut = cornerInset(r, dy);
+            const top_left = if (corners.top_left) cut else 0;
+            const top_right = if (corners.top_right) cut else 0;
+            self.fill(.{
+                .x = area.x + top_left,
+                .y = area.y + dy,
+                .w = area.w - top_left - top_right,
+                .h = 1,
+            }, color);
+
+            const low_left = if (corners.bottom_left) cut else 0;
+            const low_right = if (corners.bottom_right) cut else 0;
+            self.fill(.{
+                .x = area.x + low_left,
+                .y = area.bottom() - 1 - dy,
+                .w = area.w - low_left - low_right,
+                .h = 1,
+            }, color);
+        }
+    }
+
+    /// Draw the outline of `area` with the same corners `fillRounded` gives it.
+    pub fn frameRounded(self: Surface, area: Rect, radius: i32, corners: Corners, color: Color) void {
+        const r = roundingFor(area, radius, corners);
+        if (r == 0) return self.frame(area, color);
+
+        // The straight runs, each starting where its corner leaves off.
+        const top_left = if (corners.top_left) r else 0;
+        const top_right = if (corners.top_right) r else 0;
+        const low_left = if (corners.bottom_left) r else 0;
+        const low_right = if (corners.bottom_right) r else 0;
+
+        self.fill(.{ .x = area.x + top_left, .y = area.y, .w = area.w - top_left - top_right, .h = 1 }, color);
+        self.fill(.{
+            .x = area.x + low_left,
+            .y = area.bottom() - 1,
+            .w = area.w - low_left - low_right,
+            .h = 1,
+        }, color);
+        self.fill(.{ .x = area.x, .y = area.y + top_left, .w = 1, .h = area.h - top_left - low_left }, color);
+        self.fill(.{
+            .x = area.right() - 1,
+            .y = area.y + top_right,
+            .w = 1,
+            .h = area.h - top_right - low_right,
+        }, color);
+
+        // The arcs. Each row runs from its own inset out to where the row
+        // above it started, so a corner whose inset falls by more than one
+        // pixel a row is still a closed line rather than a dotted one.
+        var dy: i32 = 0;
+        while (dy < r) : (dy += 1) {
+            const cut = cornerInset(r, dy);
+            const above = if (dy == 0) r else cornerInset(r, dy - 1);
+            const run = @max(above - cut, 1);
+            if (corners.top_left) self.fill(.{ .x = area.x + cut, .y = area.y + dy, .w = run, .h = 1 }, color);
+            if (corners.top_right) self.fill(.{
+                .x = area.right() - cut - run,
+                .y = area.y + dy,
+                .w = run,
+                .h = 1,
+            }, color);
+            if (corners.bottom_left) self.fill(.{
+                .x = area.x + cut,
+                .y = area.bottom() - 1 - dy,
+                .w = run,
+                .h = 1,
+            }, color);
+            if (corners.bottom_right) self.fill(.{
+                .x = area.right() - cut - run,
+                .y = area.bottom() - 1 - dy,
+                .w = run,
+                .h = 1,
+            }, color);
+        }
     }
 
     /// Fill what is inside `area` but outside `inner`.
@@ -572,4 +714,70 @@ test "a picture covering everything leaves no ground, and one covering nothing i
     surface.fillAround(whole, .{ .x = 0, .y = 0, .w = 0, .h = 0 }, 0x999999);
     try testing.expectEqual(@as(u32, 0x999999), pixels[0]);
     try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE * SIDE - 1]);
+}
+
+test "a corner's rows step in as the arc says" {
+    // Worked out by hand from the pixel centres: the row at the very edge
+    // starts two pixels in, the next one, and then the arc has met the side.
+    try testing.expectEqual(@as(i32, 2), cornerInset(4, 0));
+    try testing.expectEqual(@as(i32, 1), cornerInset(4, 1));
+    try testing.expectEqual(@as(i32, 0), cornerInset(4, 2));
+    try testing.expectEqual(@as(i32, 0), cornerInset(4, 3));
+
+    // A single pixel taken off the corner is the smallest round there is.
+    try testing.expectEqual(@as(i32, 1), cornerInset(2, 0));
+    try testing.expectEqual(@as(i32, 0), cornerInset(2, 1));
+
+    // Nothing is rounded by a radius of nothing, and nothing outside the
+    // band is inset at all.
+    try testing.expectEqual(@as(i32, 0), cornerInset(0, 0));
+    try testing.expectEqual(@as(i32, 0), cornerInset(4, 4));
+    try testing.expectEqual(@as(i32, 0), cornerInset(4, -1));
+}
+
+test "a rounded fill takes the corners it is given and leaves the others" {
+    var pixels: [SIDE * SIDE]u32 = undefined;
+    const surface = flat(&pixels, 0x111111);
+    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
+
+    surface.fillRounded(whole, 2, Corners.leading, 0x999999);
+
+    // The two leading corners are cut away and the trailing two are not.
+    try testing.expectEqual(@as(u32, 0x111111), pixels[0]);
+    try testing.expectEqual(@as(u32, 0x111111), pixels[(SIDE - 1) * SIDE]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE - 1]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE * SIDE - 1]);
+
+    // And the middle is filled either way.
+    try testing.expectEqual(@as(u32, 0x999999), pixels[(SIDE / 2) * SIDE]);
+}
+
+test "a rounded frame closes, corner to corner" {
+    var pixels: [SIDE * SIDE]u32 = undefined;
+    const surface = flat(&pixels, 0x111111);
+    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
+
+    surface.frameRounded(whole, 2, Corners.all, 0x999999);
+
+    // Every row and column of the outline has ink where the shape reaches
+    // it: the corner pixel is gone, the one beside it is not.
+    try testing.expectEqual(@as(u32, 0x111111), pixels[0]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[1]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE]);
+
+    // The straight runs are there, and the inside is untouched.
+    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE / 2]);
+    try testing.expectEqual(@as(u32, 0x111111), pixels[SIDE + 1]);
+}
+
+test "no corners means the plain rectangle, whatever the radius" {
+    var rounded: [SIDE * SIDE]u32 = undefined;
+    var plain: [SIDE * SIDE]u32 = undefined;
+    const a = flat(&rounded, 0x111111);
+    const b = flat(&plain, 0x111111);
+    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
+
+    a.fillRounded(whole, 3, Corners.square, 0x999999);
+    b.fill(whole, 0x999999);
+    try testing.expectEqualSlices(u32, &plain, &rounded);
 }

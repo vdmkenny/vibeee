@@ -570,7 +570,7 @@ pub const Context = struct {
         const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
         if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
-            paintButtonAs(self.surface, area, text, visual, it.focused, weight);
+            paintButtonAs(self.surface, area, text, visual, it.focused, weight, .alone);
             self.addDamage(area);
         }
 
@@ -605,19 +605,21 @@ pub const Context = struct {
     /// the values are declared rather than being written out again here.
     pub fn choiceOf(self: *Context, area: Rect, chosen: anytype, labels: []const []const u8) @TypeOf(chosen) {
         const T = @TypeOf(chosen);
+        const fields = @typeInfo(T).@"enum".fields;
         const gap = theme.current().padding;
 
         var picked = chosen;
         var x = area.x;
 
-        inline for (@typeInfo(T).@"enum".fields, 0..) |field, i| {
+        inline for (fields, 0..) |field, i| {
             const text = if (i < labels.len) labels[i] else field.name;
             const width = Surface.textWidth(text) + gap * 3;
             const value: T = @enumFromInt(field.value);
-            if (self.toggle(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value)) {
+            const seat = Seat.of(i, fields.len);
+            if (self.segment(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value, seat)) {
                 picked = value;
             }
-            x += width + gap;
+            x = seat.nextX(x, width);
         }
         return picked;
     }
@@ -643,10 +645,11 @@ pub const Context = struct {
         for (values, 0..) |value, i| {
             const text = if (i < labels.len) labels[i] else @tagName(value);
             const width = Surface.textWidth(text) + gap * 3;
-            if (self.toggle(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value)) {
+            const seat = Seat.of(i, values.len);
+            if (self.segment(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value, seat)) {
                 picked = value;
             }
-            x += width + gap;
+            x = seat.nextX(x, width);
         }
         return picked;
     }
@@ -731,6 +734,12 @@ pub const Context = struct {
     }
 
     pub fn toggle(self: *Context, area: Rect, text: []const u8, selected: bool) bool {
+        return self.segment(area, text, selected, .alone);
+    }
+
+    /// The same, as one of a joined row. `seat` says which corners are its
+    /// own and which it shares with a neighbour.
+    pub fn segment(self: *Context, area: Rect, text: []const u8, selected: bool, seat: Seat) bool {
         const entry = self.slotFor(area) orelse return false;
         const it = self.interact(entry, area);
 
@@ -745,7 +754,7 @@ pub const Context = struct {
 
         if (self.needsPaint(entry, visual)) {
             entry.visual = visual;
-            paintButton(self.surface, area, text, visual, it.focused);
+            paintButtonAs(self.surface, area, text, visual, it.focused, .plain, seat);
             self.addDamage(area);
         }
 
@@ -1354,8 +1363,47 @@ pub fn paintBar(surface: Surface, area: Rect, fraction: u8, colour: draw.Color) 
     surface.frame(area, t.line);
 }
 
+/// Where a control sits among the ones it is joined to.
+///
+/// A row of choices is drawn as one shape rather than as several: the
+/// outside is rounded, the corners between neighbours stay square, and each
+/// one overlaps the last by the width of a line so the two share an edge
+/// instead of drawing one each.
+pub const Seat = enum {
+    /// Joined to nothing. An ordinary control, square on all four corners.
+    alone,
+    /// The whole of a row by itself, so both ends are its own.
+    only,
+    first,
+    middle,
+    last,
+
+    fn corners(self: Seat) draw.Corners {
+        return switch (self) {
+            .alone => draw.Corners.square,
+            .only => draw.Corners.all,
+            .first => draw.Corners.leading,
+            .middle => draw.Corners.square,
+            .last => draw.Corners.trailing,
+        };
+    }
+
+    /// Where the next one starts, given where this one does and how wide it
+    /// is. Neighbours share the line between them.
+    fn nextX(self: Seat, x: i32, width: i32) i32 {
+        return x + width - if (self == .alone) 0 else theme.current().border_width;
+    }
+
+    /// Which seat the `index`th of `count` takes.
+    fn of(index: usize, count: usize) Seat {
+        if (count <= 1) return .only;
+        if (index == 0) return .first;
+        return if (index + 1 == count) .last else .middle;
+    }
+};
+
 fn paintButton(surface: Surface, area: Rect, text: []const u8, visual: Visual, focused: bool) void {
-    paintButtonAs(surface, area, text, visual, focused, .plain);
+    paintButtonAs(surface, area, text, visual, focused, .plain, .alone);
 }
 
 fn paintButtonAs(
@@ -1365,6 +1413,7 @@ fn paintButtonAs(
     visual: Visual,
     focused: bool,
     weight: Emphasis,
+    seat: Seat,
 ) void {
     const t = theme.current();
     const on = visual == .checked or visual == .checked_hot or weight == .strong;
@@ -1388,10 +1437,11 @@ fn paintButtonAs(
     };
     const ink = if (on) t.accent_text else if (weight == .quiet) t.text_dim else t.text;
 
-    surface.fill(area, face);
+    const corners = seat.corners();
+    surface.fillRounded(area, t.group_radius, corners, face);
     // A selected control under the pointer takes a stronger edge: there is no
     // lighter accent to shift to, and it still has to answer the pointer.
-    surface.frame(area, switch (visual) {
+    surface.frameRounded(area, t.group_radius, corners, switch (visual) {
         .checked_hot => t.text,
         .hot, .active => if (weight == .strong) t.text else if (focused) t.accent else t.line,
         else => if (focused) t.accent else if (weight == .strong) t.accent else t.line,

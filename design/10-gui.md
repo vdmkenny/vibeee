@@ -377,7 +377,10 @@ bar_bg #20242C  bar_text #D8D4CC  urgent #A02020
 ```
 Metrics (133 DPI): base unit 4 px; control height 24; list row 18; menu/palette row 20; padding
 6h/4v; scrollbar 10 wide (touchpad target); checkbox 12×12; slider track 4; border radius 0
-(square: crisp on 1:1 pixels, cheaper). All widgets integer-pixel; no subpixel positioning.
+(square: crisp on 1:1 pixels, cheaper), except a joined row of choices, which rounds the
+outside of the row by 4 and keeps the corners between neighbours square: that is what makes
+one of them chosen rather than several adjacent buttons. All widgets integer-pixel; no
+subpixel positioning.
 
 ### 6.7 Icons: carried by the program, fallen back to by the shell
 
