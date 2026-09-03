@@ -41,6 +41,14 @@ pub const Driver = struct {
     /// Bring the device up. Left null while a driver is designed but not yet
     /// written, so the probe table doubles as an honest status board.
     attach: ?*const fn (dev: Device) anyerror!void = null,
+    /// What the part actually is, for one whose class says otherwise.
+    ///
+    /// A device's class is its own claim about itself, and some of them are
+    /// wrong: several radios of this era declare themselves ethernet
+    /// controllers. A driver that recognised the exact part knows better
+    /// than the claim does, and this is where it says so. Null leaves the
+    /// bus's own description standing, which is the ordinary case.
+    describes: ?[]const u8 = null,
 };
 
 /// A device offered for binding.
@@ -222,7 +230,16 @@ fn bound(dev: Device) Binding {
             best = drv;
         }
     }
-    return .{ .dev = dev, .driver = best, .confidence = best_conf };
+
+    var entry = Binding{ .dev = dev, .driver = best, .confidence = best_conf };
+    // Only a driver that recognised the exact part may rename it. One that
+    // matched a whole class knows no more about what it is than the class
+    // did, and a generic fallback renaming every device it half matched
+    // would be worse than the claim it replaced.
+    if (best_conf == .exact) {
+        if (best.?.describes) |what| entry.dev.description = what;
+    }
+    return entry;
 }
 
 /// Where the entry for one place on one bus is, or null when nothing is
@@ -443,4 +460,48 @@ test "a sweep leaves another bus alone" {
 
     try testing.expectEqual(@as(usize, 1), testCount());
     try testing.expect(find("usb", .{ 0, 1, 0 }) != null);
+}
+
+test "the driver that recognised the part names it; one that guessed does not" {
+    const table = [_]Driver{
+        .{
+            .name = "exactly",
+            .kind = .net,
+            .match = &.{},
+            .probe = &struct {
+                fn probe(dev: Device) Confidence {
+                    return if (dev.vendor == 0x168C) .exact else .no;
+                }
+            }.probe,
+            .describes = "wireless controller",
+        },
+        .{
+            .name = "roughly",
+            .kind = .net,
+            .match = &.{},
+            .probe = &struct {
+                fn probe(dev: Device) Confidence {
+                    return if (dev.class == 0x02) .weak else .no;
+                }
+            }.probe,
+            .describes = "something else entirely",
+        },
+    };
+
+    begin(&table, null);
+    consider(testDevice(1, 0x168C, 0x001C));
+    consider(testDevice(2, 0x8086, 0x100E));
+
+    // The part whose class says one thing and whose driver knows another.
+    try testing.expectEqualStrings(
+        "wireless controller",
+        find("pci", .{ 0, 1, 0 }).?.dev.description,
+    );
+
+    // The one nothing recognised exactly keeps what the bus called it, so a
+    // generic driver cannot rename every device it half matched.
+    try testing.expectEqualStrings(
+        "test device",
+        find("pci", .{ 0, 2, 0 }).?.dev.description,
+    );
 }

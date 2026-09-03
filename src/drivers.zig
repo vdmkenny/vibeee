@@ -178,6 +178,9 @@ pub const table = [_]probe.Driver{
         .kind = .net,
         .match = &.{.{ .pci_id = .{ .vendor = 0x168C, .device = 0x001C } }},
         .probe = &exact(0x168C, 0x001C),
+        // The part declares class 02:00, which is what an ethernet
+        // controller declares. It is a radio.
+        .describes = "wireless controller",
     },
     .{
         // QEMU's default NIC. Not present on any real target, but having it

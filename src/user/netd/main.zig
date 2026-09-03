@@ -219,7 +219,7 @@ fn attach(iface: *dev.NicDev) bool {
                 return false;
             };
             iface.irq_owned = true;
-            log.begin("netd", .dim);
+            log.begin("netd", .value);
             out.text("line ");
             out.decimal(gsi);
             out.text(" taken");
