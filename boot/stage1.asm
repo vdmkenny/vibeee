@@ -18,6 +18,13 @@ STAGE2_OFF      equ 0x8000      ; stage2 loads at linear 0x8000
 STAGE2_LBA      equ 1           ; immediately after this sector
 STAGE2_SECTORS  equ 32          ; 16 KiB ceiling; mkimage checks the real size
 
+; How many times a read is asked for before the boot gives up. The medium is
+; an SD card behind the BIOS's USB-HDD emulation, and such a reader answers
+; late often enough that one refusal must not end the boot: the BIOS reports a
+; transfer that did not finish in time as an error like any other, and the
+; cure is to ask again.
+READ_TRIES      equ 5
+
 start:
     cli
     xor ax, ax
@@ -39,12 +46,29 @@ start:
     jne .no_edd
 
     ; --- read stage2 ---------------------------------------------------
+    ;
+    ; The count goes back into the packet before every attempt because the
+    ; BIOS replaces it with the number of sectors it managed, which is zero
+    ; after a refusal; asking again with that would ask for nothing. The drive
+    ; is reset between attempts, which is what a controller stopped
+    ; mid-transfer needs before it will answer.
+    mov byte [tries], READ_TRIES
+.attempt:
+    mov word [dap_count], STAGE2_SECTORS
     mov si, dap
     mov ah, 0x42
     mov dl, [boot_drive]
     int 0x13
-    jc  .disk_error
+    jnc .loaded
 
+    dec byte [tries]
+    jz  .disk_error
+    xor ah, ah
+    mov dl, [boot_drive]
+    int 0x13                    ; reset the drive, then ask again
+    jmp .attempt
+
+.loaded:
     mov dl, [boot_drive]        ; stage2 expects the drive number in DL
     jmp STAGE2_SEG:STAGE2_OFF
 
@@ -79,12 +103,14 @@ align 4
 dap:
     db 0x10                     ; packet size
     db 0
+dap_count:
     dw STAGE2_SECTORS
     dw STAGE2_OFF
     dw STAGE2_SEG
     dq STAGE2_LBA
 
 boot_drive:  db 0
+tries:       db 0
 msg_no_edd:  db "vibeee: BIOS lacks EDD", 0
 msg_disk:    db "vibeee: stage2 read failed", 0
 

@@ -36,6 +36,13 @@ KERNEL_PHYS     equ 0x100000        ; where the kernel lands
 ROOTFS_PHYS     equ 0x1000000       ; 16 MiB: clear of the kernel and its heap
 LOAD_BUF_SEG    equ 0x2000          ; 0x20000: staging buffer for disk reads
 CHUNK_SECTORS   equ 64              ; 32 KiB per INT 13h call
+
+; How many times a chunk is asked for before the boot gives up. The medium
+; this machine boots from is an SD card behind a USB card reader, and such a
+; reader answers late often enough that one refusal must not end the boot: the
+; BIOS reports a transfer that did not finish in time as an error like any
+; other, and the cure is to ask again.
+READ_TRIES      equ 5
 BOOTINFO_ADDR   equ 0x6000
 E820_BUF        equ 0x7000          ; scratch for one E820 entry
 
@@ -672,6 +679,7 @@ rsdp_sig: db "RSD PTR "
 ; past 1 MiB through a flat ES (unreal mode).
 ; ---------------------------------------------------------------------------
 load_kernel:
+    mov word [read_what], msg_kernel
     mov eax, [kernel_lba]
     mov ecx, [kernel_sectors]
     mov edi, KERNEL_PHYS
@@ -687,6 +695,7 @@ load_kernel:
 ; be in RAM before that transition.
 ; ---------------------------------------------------------------------------
 load_rootfs:
+    mov word [read_what], msg_rootfs
     mov ecx, [rootfs_sectors]
     test ecx, ecx
     jz .none                        ; no rootfs packed into this image
@@ -715,15 +724,11 @@ load_blob:
     mov eax, CHUNK_SECTORS
 .have_count:
     mov [chunk_count], ax
-    mov [dap_count], ax
 
     ; --- read into the staging buffer ---
     push ecx
     push edi
-    mov si, dap
-    mov ah, 0x42
-    mov dl, [boot_drive]
-    int 0x13
+    call read_chunk
     pop edi
     pop ecx
     jc .read_error
@@ -760,7 +765,7 @@ load_blob:
     ret
 
 .read_error:
-    mov si, msg_read
+    mov si, [read_what]
     jmp fatal
 
 ; Enter protected mode briefly so ES caches a 4 GiB limit, then drop back to
@@ -947,6 +952,42 @@ putc:
     pop ax
     ret
 
+; ---------------------------------------------------------------------------
+; Read [chunk_count] sectors at [dap_lba] into the staging buffer, retried.
+;
+; The count goes back into the packet before every attempt because the BIOS
+; replaces it with the number of sectors it managed, which is zero after a
+; refusal; asking again with that would ask for nothing. The drive is reset
+; between attempts, which is what a controller stopped mid-transfer needs
+; before it will answer.
+;
+; Carry set when every attempt was refused.
+; ---------------------------------------------------------------------------
+read_chunk:
+    mov byte [tries], READ_TRIES
+.attempt:
+    mov ax, [chunk_count]
+    mov [dap_count], ax
+    mov si, dap
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    int 0x13
+    jnc .read
+
+    dec byte [tries]
+    jz .refused
+    xor ah, ah
+    mov dl, [boot_drive]
+    int 0x13                        ; reset the drive, then ask again
+    jmp .attempt
+
+.refused:
+    stc
+    ret
+.read:
+    clc
+    ret
+
 fatal:
     call print
     cli
@@ -968,6 +1009,12 @@ dap_lba:    dq 0
 
 chunk_count: dw 0
 boot_drive:  db 0
+; The attempts a chunk has left. In memory rather than a register because the
+; BIOS is under no obligation to hand one back across INT 13h.
+tries:       db 0
+; Which blob is being read, so a refusal says which one it was rather than
+; naming the kernel for both.
+read_what:   dw msg_kernel
 
 align 8
 gdt:
@@ -988,4 +1035,5 @@ msg_rub:      db 8, ' ', 8, 0       ; back over the character, blank it, back ag
 msg_crlf:     db 13, 10, 0
 msg_entering: db " ok", 13, 10, 0
 msg_a20:      db "A20 failed", 13, 10, 0
-msg_read:     db "kernel read failed", 13, 10, 0
+msg_kernel:   db "kernel read failed", 13, 10, 0
+msg_rootfs:   db "root filesystem read failed", 13, 10, 0
