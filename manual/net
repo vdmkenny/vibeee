@@ -33,7 +33,7 @@ no slot covers stays down.
 radio taken down here keeps its power, which is what leaves `net scan`
 able to hear anything. `hw wireless off` cuts the power, and the
 wireless key is wired to do both in the order that keeps them agreeing,
-for the presses this machine does not deliver (`man hotkeys`). A radio
+for a machine whose firmware hands the key over (`man hotkeys`). A radio
 whose power is off is on no bus at all, so it is absent from `devices`
 rather than shown as an interface that is down.
 

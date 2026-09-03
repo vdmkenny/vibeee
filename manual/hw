@@ -16,9 +16,10 @@ like hardware that is broken, and this is what tells the two apart.
 
 The wireless key is wired to do the same for the radio, Fn+F2 on this
 machine, and more besides: the network service takes the interface down
-before the power goes and brings it back up after, in that order. No
-press reaches it, for the reason `man hotkeys` gives. `hw` switches the
-power alone, which is how it is asked for meanwhile and what serves the
+before the power goes and brings it back up after, in that order. The
+key does not reach this system, for the reason `man hotkeys` gives, so
+what the firmware makes of it is the firmware's own. `hw` switches the
+power here, which is how it is asked for meanwhile and what serves the
 parts no service speaks for.
 
 On this machine the internal ports carry the camera and the card reader,

@@ -4,5 +4,6 @@ backlight - how bright the panel is
   backlight 50           set it
 
 The firmware owns the scale, so the numbers a machine accepts are its
-own. Fn+F3 and Fn+F4 are wired to do the same through the platform
-service and do not reach it: `man hotkeys` says why.
+own. Fn+F3 and Fn+F4 move the panel too, and the firmware moves it: the
+level they leave it at is not known here until something asks. `man
+hotkeys` says why.

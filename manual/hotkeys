@@ -4,23 +4,29 @@ hotkeys - the keys that do not arrive as keys
   hotkeys watch          keep listening and print each as it comes
 
 Volume, brightness and the radio switch are not scancodes: the embedded
-controller reports them to the firmware and the firmware to the platform
-service. `hotkeys watch` is how to find out what a key actually sends.
+controller reports them to the firmware, and the firmware either acts on
+them itself or hands them to the operating system. Which of the two it
+does is the firmware's own setting, and on this machine it does the
+first: the keys work, and nothing here sees them.
 
-Two of them are acted on rather than only reported. The brightness keys
-move the panel, because nothing else can reach it. The wireless key
-switches the radio's power and takes the interface up or down with it,
-in that order, which is the network service's doing: `hw` switches the
-power alone and `net` the interface alone.
+That is why this listing is empty on a machine whose keys plainly do
+something. The brightness keys move the panel because the firmware
+moves it, from system management mode, with the operating system not
+consulted and not informed. `hotkeys watch` shows what the firmware
+hands over, which is nothing.
 
-No press arrives yet on this machine. A notification reaches an
-operating system through the system control interrupt, and that gate is
-held shut here: the burst of methods this firmware runs when it opens is
-not yet understood, and the first event delivered through it is a coin
-flip to survive. So the keys stay on the firmware's side and this
-listing is empty. What each key means is written down and wired, and
-opens with the gate.
+Two things would change if it handed them over. The keys this system
+would do more with than the firmware does would start doing it: the
+wireless key would switch the radio's power and take the interface up or
+down with it, in that order. And the panel's level would be known here
+rather than only to the firmware. Both are written down and wired, and
+wait on two gates, each held shut for its own reason. The vendor
+greeting that moves the keys across writes a trap port whose handler on
+this unit sometimes never returns. The system control interrupt, which
+is how a notification would arrive at all, opens onto a burst of
+firmware methods that is not yet understood, and the first event
+delivered through it is a coin flip to survive.
 
-Nothing waits on that gate but the keys. Everything they would do is
-asked for directly in the meantime: `backlight` for the panel, `hw` for
-the radio's power, `net` for the interface, `vol` for the volume.
+Nothing else waits on either gate. What the keys do is asked for
+directly meanwhile: `backlight` for the panel, `hw` for the radio's
+power, `net` for the interface, `vol` for the volume.
