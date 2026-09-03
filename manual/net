@@ -61,7 +61,7 @@ Settings, generated from the schema: net
       regulatory | max | a number of dBm
   net.if1_match             wifi
       a class (ether, wifi), a driver name, a bus location, or unset
-  net.if1_enabled           false
+  net.if1_enabled           true
       true | false
   net.if1_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP

@@ -30,6 +30,7 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const irqroute = @import("ulib").irqroute;
 const pci = @import("ulib").pci;
+const platform = @import("proto").platform;
 const proto = @import("proto").net;
 const proto_devices = @import("proto").devices;
 const bridge = @import("bridge.zig");
@@ -266,9 +267,10 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 // ---------------------------------------------------------------------------
 
 fn serve(channel: u32) noreturn {
-    // The channel, one handle per interface's line, and the config domain's
-    // watch. Fixed: the counts are capped, so the sources never grow.
-    var sources: [MAX_IFACES + 4]u32 = undefined;
+    // The channel, one handle per interface's line, the config domain's
+    // watch, and the wireless key. Fixed: the counts are capped, so the
+    // sources never grow.
+    var sources: [MAX_IFACES + 5]u32 = undefined;
     var source_count: usize = 1;
     sources[0] = channel;
 
@@ -316,6 +318,19 @@ fn serve(channel: u32) noreturn {
         log.warn("netd", "no settings watch; configuration is boot-time only");
     }
 
+    // The key on the top row that has no other way to reach here: the
+    // platform service turns the ACPI notification into an event the same
+    // shape as everything else this loop waits on. Nothing to wait on
+    // where there is no such service, or no such key.
+    var hotkey_watch: ?u32 = null;
+    if (platform.watchHotkeys()) |handle| {
+        hotkey_watch = handle;
+        sources[source_count] = handle;
+        source_count += 1;
+    } else |_| {
+        log.warn("netd", "no platform service; the wireless key does nothing");
+    }
+
     // The supervisor's request to go. Answered by giving the lines back and
     // leaving; the lease and the sockets are the kernel's to unwind.
     const quit_event = quit.event();
@@ -356,6 +371,10 @@ fn serve(channel: u32) noreturn {
                 stack.applyConfig(settings.load("net"));
                 break :dispatch;
             }
+            if (hotkey_watch != null and handle == hotkey_watch.?) {
+                drainHotkeys();
+                break :dispatch;
+            }
             // An interrupt line. Which interface it belongs to is the match
             // the attach made; the service runs its handler, then the ack,
             // saying whether any of them found work: a line can carry more
@@ -374,6 +393,17 @@ fn serve(channel: u32) noreturn {
         // Whatever this pass queued for the machine itself is delivered
         // before the loop sleeps: loopback never waits for a wake.
         stack.deliverLoopback();
+    }
+}
+
+/// Everything the platform service has queued. The wireless key is the
+/// only one this service can do anything about; the rest are somebody
+/// else's, and are left for them to read.
+fn drainHotkeys() void {
+    while (true) {
+        var press = platform.Press{};
+        platform.nextHotkey(&press) catch return;
+        if (press.hotkey == .wireless) stack.toggleEnabled(.wifi);
     }
 }
 

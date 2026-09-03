@@ -237,8 +237,9 @@ pub const Open = struct {
 /// a machine may carry several wired ports, so each slot names which
 /// interface it binds through a matcher, and the most specific claim wins.
 /// `if0` matching any ethernet with DHCP is the zero-configuration story;
-/// `if1` holds the radio down until a driver exists to raise it. Keys are
-/// flat because the store's grammar is `domain.key`; the slot view below
+/// `if1` matches the radio and starts enabled, which with no network
+/// configured to join means scanning and nothing more. Keys are flat
+/// because the store's grammar is `domain.key`; the slot view below
 /// rebuilds the grouping.
 pub const NET_SLOTS = 4;
 
@@ -335,7 +336,15 @@ fn NetSchema() type {
                     1 => .{ .class = .wifi },
                     else => .none,
                 },
-                .enabled => slot == 0,
+                // Slot 0 is the wired zero-configuration story; slot 1 is
+                // the radio, and starts enabled too now that a driver
+                // exists to raise it, scanning being all it does with
+                // nothing configured to join. The spares stay off until a
+                // machine claims one.
+                .enabled => switch (slot) {
+                    0, 1 => true,
+                    else => false,
+                },
                 // A union has no empty literal, so the cases that are one
                 // name the state they start in.
                 .psk => .none,

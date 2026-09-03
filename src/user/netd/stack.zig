@@ -186,22 +186,9 @@ pub fn applyConfig(cfg: settings.Net) void {
     chosen_name = settings.netMachine(cfg).hostname;
     refreshName();
 
-    // The comptime accessors unrolled into a runtime table, because which
-    // slot governs which interface is decided at runtime by the binder.
     var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
-    inline for (0..settings.NET_SLOTS) |i| wants[i] = settings.netSlot(cfg, i);
-
-    var matches: [settings.NET_SLOTS]ifmatch.Match = undefined;
-    for (&matches, wants) |*m, want| m.* = want.match;
-
-    var ifaces: [MAX]ifmatch.Iface = undefined;
-    for (slots[0..count], 0..) |slot, i| {
-        const nic = slot.nic orelse continue;
-        ifaces[i] = .{ .class = nic.class, .label = nic.label, .location = nic.location };
-    }
-
     var bound: [MAX]?u8 = undefined;
-    ifmatch.bind(&matches, ifaces[0..count], bound[0..count]);
+    bindLocal(cfg, &wants, &bound);
 
     // A slot nothing claimed. The rest of the fields are whatever a slot
     // starts as, so a field added to the shape does not have to be added
@@ -227,6 +214,76 @@ pub fn applyConfig(cfg: settings.Net) void {
         }
         break;
     }
+}
+
+/// Which slot, if any, claims each of this service's own interfaces, and
+/// what every slot in `cfg` currently wants. Shared by `applyConfig`, which
+/// acts on every slot at once, and `toggleEnabled`, which only reads and
+/// changes one.
+fn bindLocal(cfg: settings.Net, wants: *[settings.NET_SLOTS]settings.NetSlot, bound: *[MAX]?u8) void {
+    // The comptime accessors unrolled into a runtime table, because which
+    // slot governs which interface is decided at runtime by the binder.
+    inline for (0..settings.NET_SLOTS) |i| wants[i] = settings.netSlot(cfg, i);
+
+    var matches: [settings.NET_SLOTS]ifmatch.Match = undefined;
+    for (&matches, wants.*) |*m, want| m.* = want.match;
+
+    var ifaces: [MAX]ifmatch.Iface = undefined;
+    for (slots[0..count], 0..) |slot, i| {
+        const nic = slot.nic orelse continue;
+        ifaces[i] = .{ .class = nic.class, .label = nic.label, .location = nic.location };
+    }
+
+    ifmatch.bind(&matches, ifaces[0..count], bound[0..count]);
+}
+
+/// Flip whether the slot bound to this service's interface of `class` is
+/// enabled, and persist it: the same change the Settings pane's toggle and
+/// the bar's menu make, made here for a hotkey instead of a click.
+///
+/// A radio with nothing configured to join does nothing more than scan when
+/// this turns it on, which is what makes a key that only ever enables or
+/// disables the right shape for both the machine that has never been
+/// configured and the one somebody uses as an off switch.
+///
+/// Quiet when there is no interface of that class here, or every slot is
+/// already somebody else's and none is free to claim this one: a key that
+/// changed nothing says so by changing nothing.
+pub fn toggleEnabled(class: ifmatch.Class) void {
+    var cfg = settings.load("net");
+    var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
+    var bound: [MAX]?u8 = undefined;
+    bindLocal(cfg, &wants, &bound);
+
+    for (slots[0..count], 0..) |slot, i| {
+        const nic = slot.nic orelse continue;
+        if (nic.class != class) continue;
+
+        const which = bound[i] orelse claimFree(&wants, nic) orelse return;
+        wants[which].enabled = !wants[which].enabled;
+
+        // `setNetSlot` writes through a comptime-built field name, so the
+        // runtime choice of slot is which of its four unrolled forms runs.
+        inline for (0..settings.NET_SLOTS) |s| {
+            if (s == which) settings.setNetSlot(&cfg, s, wants[which]);
+        }
+        settings.save("net", cfg) catch |err| {
+            log.warn("netd", @errorName(err));
+        };
+        return;
+    }
+}
+
+/// The first slot nothing has claimed, bound to `nic` by its driver name so
+/// the claim survives a reboot and reads back the same in every pane that
+/// shows it. Null when every slot already belongs to something else.
+fn claimFree(wants: *[settings.NET_SLOTS]settings.NetSlot, nic: *dev.NicDev) ?u8 {
+    for (wants, 0..) |*want, i| {
+        if (want.match != .none) continue;
+        want.match = .{ .driver = nic.label };
+        return @intCast(i);
+    }
+    return null;
 }
 
 fn applySlot(slot: *Slot, role: settings.NetSlot) void {

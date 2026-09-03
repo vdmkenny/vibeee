@@ -48,7 +48,7 @@ so an image ships with the first and a machine remembers the second.
 | `net.if0_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if0_txpower` | regulatory \| max \| a number of dBm | `regulatory` |
 | `net.if1_match` | a class (ether, wifi), a driver name, a bus location, or unset | `wifi` |
-| `net.if1_enabled` | true \| false | `false` |
+| `net.if1_enabled` | true \| false | `true` |
 | `net.if1_address` | an address and prefix, a.b.c.d/nn; unset asks DHCP | unset |
 | `net.if1_gateway` | an address, a.b.c.d; unset takes what the lease offers | unset |
 | `net.if1_dns` | up to two addresses, comma separated | unset |
