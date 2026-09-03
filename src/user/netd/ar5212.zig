@@ -308,8 +308,7 @@ pub fn stop(_: *NicDev) void {
 /// back: the causes are masked, the engines stopped, and only then is the
 /// chain pointer cleared.
 fn quiet(regs: Regs) void {
-    regs.put(.interrupt_enable, regs_mod.InterruptEnable{});
-    regs.put(.interrupt_mask, regs_mod.Interrupts{});
+    listenFor(regs, .{});
     regs.flush(.interrupt_status_clearing);
     stopReceive(regs);
     regs.write(.rx_pointer, 0);
@@ -347,9 +346,41 @@ pub fn tune(channel: wifi.Channel) bool {
     if (device.nic) |nic| nic.radio_channel = channel.number;
 
     startReceive(chip.regs);
-    chip.regs.put(.interrupt_enable, regs_mod.InterruptEnable{ .enabled = true });
-    chip.regs.flush(.interrupt_enable);
+    listenFor(chip.regs, WANTED);
     return true;
+}
+
+/// The causes this driver acts on, and so the only ones it asks to be woken
+/// for. Every one of them is answered in `irq`.
+const WANTED = regs_mod.Interrupts{
+    .rx_ok = true,
+    .rx_descriptor = true,
+    .rx_error = true,
+    .rx_overrun = true,
+    .rx_end_of_list = true,
+    .bus_error = true,
+};
+
+/// Ask the radio to raise its line for exactly `causes`, and for nothing if
+/// there are none.
+///
+/// Two registers, and both of them matter. The mask says which causes may
+/// raise the line at all; the enable is a gate in front of it, and a gate in
+/// front of nothing stays shut for ever. A card whose mask is clear receives
+/// perfectly well and says nothing about it: frames land in the chain by
+/// themselves, the chain fills, and nothing ever comes to read it, because
+/// being told is what the line is for.
+///
+/// Shut before either is written and opened after, which is the order the
+/// vendor's own driver uses: a cause arriving between the two writes would
+/// be raised against a mask half rewritten.
+fn listenFor(regs: Regs, causes: regs_mod.Interrupts) void {
+    regs.put(.interrupt_enable, regs_mod.InterruptEnable{});
+    regs.flush(.interrupt_enable);
+    regs.put(.interrupt_mask, causes);
+    if (!causes.any()) return;
+    regs.put(.interrupt_enable, regs_mod.InterruptEnable{ .enabled = true });
+    regs.flush(.interrupt_enable);
 }
 
 /// The channel the radio is on.
