@@ -360,43 +360,73 @@ fn setRateDurations(regs: Regs) void {
     }
 }
 
-/// Count the values the radio did not keep, and say so once.
+/// Count the values the radio did not keep, per table, and name the first
+/// one it dropped.
 ///
 /// Every comparison against the reference says what the radio is written;
 /// none of them says what it holds afterwards. A part that silently drops
-/// a bit, or a whole range of registers that lands somewhere other than
-/// where it was aimed, reads back as a radio configured differently from
-/// the one the code describes, and every register anybody thought to look
-/// at by hand can still be right.
+/// a bit, or a range of registers landing somewhere other than where it
+/// was aimed, reads back as a radio configured differently from the one
+/// the code describes, and every register anybody thought to check by
+/// hand can still be right.
 ///
-/// Only the tables, because those are the bulk of the configuration and
-/// the only part large enough for a pattern to show. Some registers do not
-/// read back what was written to them by design, so a handful of
-/// differences is ordinary and a great many is the news.
+/// Counted per table and not only in total, because which table lost them
+/// is most of the answer: a whole one missing is a table that never
+/// arrived, and a scattering across all three is registers that do not
+/// read back what they were given, which many of them do not.
 fn sayUnkeptWrites(regs: Regs, mode: tables.Mode, band: tables.Band) void {
-    var looked: usize = 0;
-    var differed: usize = 0;
+    var first: ?Mismatch = null;
+    var modes = Tally{};
+    var common = Tally{};
+    var gain = Tally{};
 
-    for (tables.rf2425.modes) |row| {
-        looked += 1;
-        if (regs.readAt(row.register) != row.value(mode)) differed += 1;
-    }
-    for (tables.rf2425.common) |row| {
-        looked += 1;
-        if (regs.readAt(row.register) != row.value) differed += 1;
-    }
-    for (tables.rf2425.gain) |row| {
-        looked += 1;
-        if (regs.readAt(row.register) != row.value(band)) differed += 1;
-    }
+    for (tables.rf2425.modes) |row| kept(regs, row.register, row.value(mode), &modes, &first);
+    for (tables.rf2425.common) |row| kept(regs, row.register, row.value, &common, &first);
+    for (tables.rf2425.gain) |row| kept(regs, row.register, row.value(band), &gain, &first);
 
-    log.begin(name, if (differed * 4 > looked) .warn else .value);
+    const whole = modes.looked + common.looked + gain.looked;
+    const held = modes.held + common.held + gain.held;
+
+    log.begin(name, if (held * 4 < whole * 3) .warn else .value);
     out.text("the radio kept ");
-    out.decimal(looked - differed);
-    out.text(" of the ");
-    out.decimal(looked);
-    out.text(" values its tables gave it");
+    modes.say("of its modes");
+    common.say(", of its common");
+    gain.say(", of its gain");
+    if (first) |bad| {
+        out.text("; first dropped 0x");
+        out.hex(bad.register, 4);
+        out.text(", wanted 0x");
+        out.hex(bad.wanted, 8);
+        out.text(", holds 0x");
+        out.hex(bad.holds, 8);
+    }
     log.end();
+}
+
+const Mismatch = struct { register: u16, wanted: u32, holds: u32 };
+
+const Tally = struct {
+    held: usize = 0,
+    looked: usize = 0,
+
+    fn say(self: Tally, what: []const u8) void {
+        out.decimal(self.held);
+        out.text("/");
+        out.decimal(self.looked);
+        out.text(" ");
+        out.text(what);
+    }
+};
+
+/// Read one back, count it, and remember the first that differed.
+fn kept(regs: Regs, register: u16, wanted: u32, tally: *Tally, first: *?Mismatch) void {
+    tally.looked += 1;
+    const holds = regs.readAt(register);
+    if (holds == wanted) {
+        tally.held += 1;
+        return;
+    }
+    if (first.* == null) first.* = .{ .register = register, .wanted = wanted, .holds = holds };
 }
 
 /// Activate the baseband and wait for it: the synthesizer's own settling
