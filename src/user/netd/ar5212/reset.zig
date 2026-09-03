@@ -415,26 +415,29 @@ pub fn killed(chip: *const Chip) bool {
     return pin == chip.store.rf_silent.polarity;
 }
 
-/// Wire the kill switch the store names to the baseband's silence input
-/// and to a pin interrupt on its edge.
-fn enableRfKill(chip: *Chip) void {
+/// Read the pin the store names as the kill switch, and leave the
+/// baseband alone.
+///
+/// The baseband has an input that silences it, and the board wires a pin
+/// to it. Connecting the two is what the vendor's own driver does, and it
+/// is left unconnected here: the pin sits in whichever state the board
+/// leaves it, nothing on this system drives it, and a baseband wired to a
+/// line nobody drives is a radio that may be silenced for its whole life
+/// with every register reading correct. This machine's other operating
+/// system has to be told to enable the card before it hears anything,
+/// which is what a line resting in the silencing state looks like from
+/// the far side.
+///
+/// What this system switches the radio by is the firmware's own method,
+/// through `hw wireless`, which cuts its power rather than muting its
+/// baseband. The pin is still configured as an input, because reading it
+/// is how the radio reports what the switch is doing.
+fn watchRfKill(chip: *Chip) void {
     const regs = chip.regs;
-    const select = chip.store.rf_silent.gpio;
-    const polarity: u1 = chip.store.rf_silent.polarity;
-
     var control = regs.get(.gpio_control, regs_mod.GpioControl);
-    control.setPin(select, .input);
+    control.setPin(chip.store.rf_silent.gpio, .input);
     regs.put(.gpio_control, control);
-    regs.set(.phy_test, regs_mod.PhyTest, "rf_silence", true);
-
-    // Armed for the edge away from wherever it sits, so either throw of
-    // the switch is what the pin interrupt reports.
-    const level: u1 = if (killed(chip)) ~polarity else polarity;
-    control = regs.get(.gpio_control, regs_mod.GpioControl);
-    control.interrupt_pin = select;
-    control.interrupt_enable = true;
-    control.interrupt_when_high = level == 1;
-    regs.put(.gpio_control, control);
+    regs.set(.phy_test, regs_mod.PhyTest, "rf_silence", false);
 }
 
 /// The whole sequence. On a channel change the sequence number, the
@@ -569,7 +572,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     mask2.parity_error = true;
     regs.put(.interrupt_mask_2, mask2);
 
-    if (chip.store.rf_kill) enableRfKill(chip);
+    if (chip.store.rf_kill) watchRfKill(chip);
 
     if (!pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "calibrate", false, pace.DEFAULT_TRIES)) {
         log.warn(name, "offset calibration did not complete; noisy surroundings?");
