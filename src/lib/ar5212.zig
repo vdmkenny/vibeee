@@ -152,6 +152,39 @@ pub const RxStatus0 = packed struct(u32) {
 /// before handing a descriptor over and the hardware sets it when it is
 /// finished, so a descriptor with it clear belongs to the radio and must
 /// not be touched.
+/// Why the baseband gave up on a frame.
+///
+/// The two families are the two modulations: a radio failing every OFDM
+/// frame and no CCK one is configured wrongly for one of them, and which
+/// half is failing says which. Non-exhaustive, because the silicon has
+/// codes this list does not name and one of those is still worth
+/// reporting by its number.
+pub const PhyError = enum(u8) {
+    underrun = 0,
+    timing = 1,
+    parity = 2,
+    rate = 3,
+    length = 4,
+    radar = 5,
+    service = 6,
+    transmit_override = 7,
+    ofdm_timing = 17,
+    ofdm_signal_parity = 18,
+    ofdm_rate = 19,
+    ofdm_length = 20,
+    ofdm_power_drop = 21,
+    ofdm_service = 22,
+    ofdm_restart = 23,
+    false_radar = 24,
+    cck_timing = 25,
+    cck_header_crc = 26,
+    cck_rate = 27,
+    cck_service = 30,
+    cck_restart = 31,
+    cck_length = 32,
+    _,
+};
+
 pub const RxStatus1 = packed struct(u32) {
     done: bool = false,
     received: bool = false,
@@ -169,6 +202,17 @@ pub const RxStatus1 = packed struct(u32) {
     /// flagged is dropped: a radio hears a great deal that is not for it
     /// and not intact, and the count of those belongs in statistics
     /// rather than in the stack.
+    /// Why the baseband gave up, or null for a frame it did not.
+    ///
+    /// The code sits where the key index goes, because the two never both
+    /// apply: a frame that failed in the baseband was never decrypted and
+    /// has no key to name.
+    pub fn phyError(self: RxStatus1) ?PhyError {
+        if (!self.physical_error) return null;
+        const low: u8 = @intFromBool(self.key_index_valid);
+        return @enumFromInt(low | (@as(u8, self.key_index) << 1));
+    }
+
     pub fn intact(self: RxStatus1) bool {
         return self.received and !self.check_sequence_error and
             !self.decrypt_check_error and !self.physical_error and

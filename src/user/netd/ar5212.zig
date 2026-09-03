@@ -438,6 +438,20 @@ pub fn sayIfUnheard(nic: *NicDev) void {
     out.text(" handed up, ");
     out.decimal(@intCast(nic.stats.rx_dropped));
     out.text(" dropped");
+    if (commonestGivingUp()) |common| {
+        out.text("; it gave up most often for ");
+        // The silicon has codes this build does not name, and one of those
+        // is still worth reporting by its number rather than not at all.
+        if (std.enums.tagName(lib.ar5212.PhyError, common.why)) |named| {
+            out.text(named);
+        } else {
+            out.text("reason 0x");
+            out.hex(@intFromEnum(common.why), 2);
+        }
+        out.text(", ");
+        out.decimal(common.times);
+        out.text(" times");
+    }
     log.end();
 
     sayReceivePath(chip);
@@ -539,6 +553,37 @@ var said_unheard = false;
 /// acted on: nothing can be done with one, and the count is the proof that
 /// the analog path reaches the demodulator at all.
 var phy_errors: usize = 0;
+
+/// How often the baseband gave up for each reason, by the code it gives.
+///
+/// Which reason dominates is what a radio failing every frame has to say
+/// for itself: the codes come in an OFDM family and a CCK one, so a radio
+/// failing all of one and none of the other is misconfigured for that
+/// modulation, and one failing both the same way is not listening to the
+/// right thing at all.
+var given_up: [GIVEN_UP_CODES]u16 = @splat(0);
+
+/// The codes the silicon uses fit in six bits; anything wider than the
+/// list this build names is still counted under its own number.
+const GIVEN_UP_CODES = 64;
+
+fn noteGivenUp(why: lib.ar5212.PhyError) void {
+    const code = @intFromEnum(why);
+    if (code < GIVEN_UP_CODES) given_up[code] +|= 1;
+}
+
+/// The reason the baseband gave most often, and how many times.
+fn commonestGivingUp() ?struct { why: lib.ar5212.PhyError, times: u16 } {
+    var best: usize = 0;
+    var most: u16 = 0;
+    for (given_up, 0..) |times, code| {
+        if (times <= most) continue;
+        most = times;
+        best = code;
+    }
+    if (most == 0) return null;
+    return .{ .why = @enumFromInt(@as(u8, @intCast(best))), .times = most };
+}
 
 /// The channel the radio is on.
 pub fn tuned() ?wifi.Channel {
@@ -690,6 +735,7 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
             dev_mod.deliverRadio(nic, frame, signalOf(chip, report.status0.signal), report.status0.rate.rate());
         } else {
             nic.stats.rx_dropped += 1;
+            if (report.status1.phyError()) |why| noteGivenUp(why);
         }
 
         armReceive(rings, slot);
