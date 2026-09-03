@@ -488,7 +488,14 @@ fn start(state: *State) void {
 }
 
 /// How long a service has to register the name it promised.
-const READY_WINDOW_US: u64 = 2_000_000;
+///
+/// Long enough for a first job, not just for a process to start: a bus
+/// service publishes its name once it has walked its ports, and a machine
+/// with a hub and a handful of devices spends real time on the resets that
+/// takes. The window is here to notice a service that is never going to
+/// answer, so erring long costs a slower verdict on a broken boot and
+/// nothing on a working one.
+const READY_WINDOW_US: u64 = 5_000_000;
 
 fn listenForNames() void {
     const handle = sys.watch(.registry);

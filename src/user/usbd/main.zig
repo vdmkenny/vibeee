@@ -20,6 +20,7 @@ const umass = @import("umass.zig");
 const volume = @import("volume.zig");
 const ehci = @import("ehci.zig");
 const hc = @import("hc.zig");
+const names = @import("ulib").info;
 const irqroute = @import("ulib").irqroute;
 const lib = @import("lib");
 const log = @import("ulib").log;
@@ -77,12 +78,10 @@ export fn _start() callconv(.c) noreturn {
 }
 
 fn usbdMain() noreturn {
-    const channel = sys.svcRegister(proto.SERVICE);
-    if (channel < 0) {
-        log.note("usbd", "already serving; letting this instance stand down");
-        sys.exit(0);
-    }
-    service = @intCast(channel);
+    // Asked before the work rather than after it, so a second instance does
+    // not walk a bus it is not going to serve. The registration below is
+    // what actually settles which process is the bus service.
+    if (serving()) standDown();
 
     core.drivers = &CLASSES;
     claim();
@@ -94,9 +93,29 @@ fn usbdMain() noreturn {
     // plugged in and will never announce themselves.
     scanAll();
     settle();
+
+    // The name goes up once the bus has been walked, because that is what
+    // the boot is waiting for. A name published at the top of this function
+    // says the process started, which is not the same thing: the machine
+    // would report a finished boot with its own disks still undiscovered.
+    const channel = sys.svcRegister(proto.SERVICE);
+    if (channel < 0) standDown();
+    service = @intCast(channel);
     out.flush();
 
     serve();
+}
+
+/// One bus service to a machine, and the other one was here first.
+fn standDown() noreturn {
+    log.note("usbd", "already serving; letting this instance stand down");
+    sys.exit(0);
+}
+
+/// Whether something is already answering as the bus service.
+fn serving() bool {
+    var buf: [512]u8 = @splat(0);
+    return names.listContains("svc", proto.SERVICE, &buf);
 }
 
 /// Walk every controller, twice when a walk hands ports down: the fast
