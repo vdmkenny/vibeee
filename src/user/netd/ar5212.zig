@@ -420,9 +420,29 @@ fn listenFor(regs: Regs, causes: regs_mod.Interrupts) void {
 pub fn sayIfUnheard(nic: *NicDev) void {
     if (said_unheard or !device.started or device.gone) return;
     said_unheard = true;
-    if (nic.irq_count != 0) return;
 
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
+
+    // What a sweep of the band came to, whether or not anything woke this
+    // service. A radio that is woken thousands of times and hands up no
+    // frame is as much a fault as one that is never woken at all, and it
+    // is a different one: the first is hearing a band it cannot make sense
+    // of, the second is hearing nothing.
+    log.begin(name, if (nic.irq_count == 0) .warn else .value);
+    out.text("a sweep of the band: woken ");
+    out.decimal(@intCast(nic.irq_count));
+    out.text(" times, ");
+    out.decimal(phy_errors);
+    out.text(" of them frames it could not decode, ");
+    out.decimal(@intCast(nic.stats.rx_pkts));
+    out.text(" handed up, ");
+    out.decimal(@intCast(nic.stats.rx_dropped));
+    out.text(" dropped");
+    log.end();
+
+    sayReceivePath(chip);
+    if (nic.irq_count != 0) return;
+
     const regs = chip.regs;
     const command = pci.readCommand(nic.location);
 
@@ -445,8 +465,6 @@ pub fn sayIfUnheard(nic: *NicDev) void {
         out.text("none");
     }
     log.end();
-
-    sayReceivePath(chip);
 }
 
 /// What the receive path is doing, said beside the interrupt plumbing when
