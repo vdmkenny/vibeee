@@ -13,6 +13,7 @@ const icmp = @import("lib").icmp;
 const hostname = @import("lib").hostname;
 const ifmatch = @import("lib").ifmatch;
 const ipv4 = @import("lib").ipv4;
+const pci = @import("lib").pci;
 const log = @import("ulib").log;
 const lwip = @import("lwip.zig");
 const out = @import("ulib").out;
@@ -237,30 +238,43 @@ fn bindLocal(cfg: settings.Net, wants: *[settings.NET_SLOTS]settings.NetSlot, bo
     ifmatch.bind(&matches, ifaces[0..count], bound[0..count]);
 }
 
-/// Flip whether the slot bound to this service's interface of `class` is
-/// enabled, and persist it: the same change the Settings pane's toggle and
-/// the bar's menu make, made here for a hotkey instead of a click.
+/// Whether the slot speaking for an interface of `class` has it enabled.
+///
+/// A class no slot speaks for reads as disabled, which is what an interface
+/// nothing is configured to use is.
+pub fn isEnabled(class: ifmatch.Class) bool {
+    const cfg = settings.load("net");
+    var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
+    var bound: [MAX]?u8 = undefined;
+    bindLocal(cfg, &wants, &bound);
+
+    const which = slotFor(class, &wants, &bound) orelse return false;
+    return wants[which].enabled;
+}
+
+/// Say whether the slot speaking for `class` is enabled, persist it, and act
+/// on it now: the same change the Settings pane's toggle and the bar's menu
+/// make, made here for a hotkey instead of a click.
+///
+/// Applied here rather than left to the watch that the saving wakes, because
+/// a caller cutting the power to a radio needs the interface already down
+/// when it does, and a watch wake arrives whenever the loop next goes round.
+/// Applying twice costs nothing: the second pass finds everything as the
+/// first left it.
 ///
 /// A radio with nothing configured to join does nothing more than scan when
 /// this turns it on, which is what makes a key that only ever enables or
 /// disables the right shape for both the machine that has never been
 /// configured and the one somebody uses as an off switch.
-///
-/// Quiet when there is no interface of that class here, or every slot is
-/// already somebody else's and none is free to claim this one: a key that
-/// changed nothing says so by changing nothing.
-pub fn toggleEnabled(class: ifmatch.Class) void {
+pub fn setEnabled(class: ifmatch.Class, on: bool) void {
     var cfg = settings.load("net");
     var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
     var bound: [MAX]?u8 = undefined;
     bindLocal(cfg, &wants, &bound);
 
-    for (slots[0..count], 0..) |slot, i| {
-        const nic = slot.nic orelse continue;
-        if (nic.class != class) continue;
-
-        const which = bound[i] orelse claimFree(&wants, nic) orelse return;
-        wants[which].enabled = !wants[which].enabled;
+    const which = slotFor(class, &wants, &bound) orelse return;
+    if (wants[which].enabled != on) {
+        wants[which].enabled = on;
 
         // `setNetSlot` writes through a comptime-built field name, so the
         // runtime choice of slot is which of its four unrolled forms runs.
@@ -270,8 +284,59 @@ pub fn toggleEnabled(class: ifmatch.Class) void {
         settings.save("net", cfg) catch |err| {
             log.warn("netd", @errorName(err));
         };
-        return;
     }
+
+    // Applied whether or not the setting moved: an interface that has just
+    // been taken up needs what configuration already said about it, and a
+    // slot that was already enabled said it before the interface existed.
+    applyConfig(cfg);
+}
+
+/// Where configuration says an interface of `class` is, when it says at all.
+///
+/// For a caller that has to name a device the machine cannot currently see:
+/// a slot claiming an exact place is somebody having written down where it
+/// is, and that outlives the device being switched off.
+pub fn configuredPlace(class: ifmatch.Class) ?pci.Location {
+    const cfg = settings.load("net");
+    var wants: [settings.NET_SLOTS]settings.NetSlot = undefined;
+    var bound: [MAX]?u8 = undefined;
+    bindLocal(cfg, &wants, &bound);
+
+    const which = slotFor(class, &wants, &bound) orelse return null;
+    return switch (wants[which].match) {
+        .location => |at| at,
+        else => null,
+    };
+}
+
+/// Which slot speaks for an interface of `class`, claiming a free one if
+/// none does yet.
+///
+/// The interface itself may not be here: a radio whose power is off is on no
+/// bus, and what a person means by turning it back on is this slot. So a live
+/// interface is preferred, because a slot already bound to one is the slot
+/// somebody configured, and a slot naming the class is what answers when
+/// there is nothing to bind to.
+///
+/// Null when every slot already belongs to something else and none is free.
+fn slotFor(class: ifmatch.Class, wants: *[settings.NET_SLOTS]settings.NetSlot, bound: *[MAX]?u8) ?u8 {
+    for (slots[0..count], 0..) |slot, i| {
+        const nic = slot.nic orelse continue;
+        if (nic.class != class) continue;
+        return bound[i] orelse claimFree(wants, nic);
+    }
+
+    for (wants, 0..) |want, i| {
+        if (want.match == .class and want.match.class == class) return @intCast(i);
+    }
+
+    for (wants, 0..) |*want, i| {
+        if (want.match != .none) continue;
+        want.match = .{ .class = class };
+        return @intCast(i);
+    }
+    return null;
 }
 
 /// The first slot nothing has claimed, bound to `nic` by its driver name so

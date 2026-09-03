@@ -84,16 +84,7 @@ fn netdMain() noreturn {
         sys.exit(0);
     }
 
-    probe();
-    const discovered = count;
-    count = 0;
-    for (0..discovered) |i| {
-        var candidate = ifaces[i];
-        if (!attach(&candidate)) continue;
-        ifaces[count] = candidate;
-        count += 1;
-        log.note("netd", "driving the hardware");
-    }
+    _ = adopt();
 
     if (count == 0) {
         log.warn("netd", "no adapter matched a driver");
@@ -113,28 +104,37 @@ fn netdMain() noreturn {
     serve(@intCast(channel));
 }
 
-/// Walk the bus once, from the kernel's own table, and take every device a
-/// driver here knows. The kernel has already bound its built-ins; anything
-/// left undriven is offered to userspace, which is exactly this walk.
-fn probe() void {
+/// Take every device the manager has assigned this service that is not
+/// already driven here, and bring each up. Answers how many joined.
+///
+/// The same walk at boot and afterwards: a radio switched on by a person is
+/// hardware that arrived, and nothing about adopting it differs from adopting
+/// what was there when the machine started. Devices already driven are passed
+/// over by where they are, so a walk that runs again over a machine that has
+/// not changed changes nothing.
+fn adopt() usize {
+    var joined: usize = 0;
     var index: u32 = 0;
     while (count < MAX_IFACES) : (index += 1) {
         var assignment = proto_devices.Assignment{};
         proto_devices.claimNext(proto.SERVICE, index, &assignment) catch break;
+
+        const location: lib.pci.Location = @bitCast(assignment.location);
+        if (driving(location)) continue;
 
         const driver = driverNamed(assignment.driverSlice()) orelse {
             log.warn("netd", "assigned a driver this build does not carry");
             continue;
         };
 
-        const location: lib.pci.Location = @bitCast(assignment.location);
-        ifaces[count] = .{
+        var candidate = dev.NicDev{
             .name = driver.name,
             .label = labelFor(driver.name),
             .class = driver.class,
             .ops = driver.ops,
             .location = location,
         };
+
         log.begin("netd", .key);
         out.text(driver.name);
         out.text(" at ");
@@ -142,8 +142,21 @@ fn probe() void {
         out.text(lib.pci.spell(location, &place));
         out.text(" is ours to drive");
         log.end();
+
+        if (!attach(&candidate)) continue;
+        ifaces[count] = candidate;
         count += 1;
+        joined += 1;
+        log.note("netd", "driving the hardware");
     }
+    return joined;
+}
+
+fn driving(location: lib.pci.Location) bool {
+    for (ifaces[0..count]) |iface| {
+        if (iface.location.eql(location)) return true;
+    }
+    return false;
 }
 
 fn driverNamed(wanted: []const u8) ?*const Driver {
@@ -242,7 +255,22 @@ fn attach(iface: *dev.NicDev) bool {
     }
 
     keep_claim = true;
+    iface.driving = true;
     return true;
+}
+
+/// Give the hardware back: stopped, its line let go, its claim released.
+///
+/// The interface itself stays, because what a person configured about it is
+/// still true and the part may be back in a moment. What does not stay is
+/// anything that describes the hardware's current state, because a part
+/// about to lose its power is about to stop having one.
+fn detach(iface: *dev.NicDev) void {
+    if (!iface.driving) return;
+    iface.driving = false;
+    iface.ops.stop(iface);
+    releaseIrq(iface);
+    _ = sys.releaseDevice(iface.location);
 }
 
 fn releaseIrq(iface: *dev.NicDev) void {
@@ -266,12 +294,35 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 // The event loop
 // ---------------------------------------------------------------------------
 
+/// Wait on an interface's interrupt line as well.
+///
+/// One handle per line rather than per interface: lines are shared on this
+/// machine's wiring, and a line waited on twice is one event delivered twice
+/// with nothing more behind it. An interface that arrived after the loop
+/// started joins the same way the ones at boot did.
+fn watchLine(iface: *dev.NicDev) void {
+    if (iface.irq == 0) return;
+    for (sources[1..source_count]) |s| {
+        if (s == iface.irq) return;
+    }
+    if (source_count >= sources.len) return;
+    sources[source_count] = iface.irq;
+    source_count += 1;
+}
+
+/// What the loop waits on: the channel, one handle per interface's line, the
+/// doorbell, the config domain's watch, the wireless key and the supervisor's
+/// request to go. Capped, because each of those is one or none and there are
+/// at most `MAX_IFACES` lines.
+///
+/// Here rather than inside the loop because an interface can arrive after the
+/// loop has started: a radio switched on is a line to wait on that nothing
+/// was waiting on a moment ago.
+var sources: [MAX_IFACES + 5]u32 = undefined;
+var source_count: usize = 0;
+
 fn serve(channel: u32) noreturn {
-    // The channel, one handle per interface's line, the config domain's
-    // watch, and the wireless key. Fixed: the counts are capped, so the
-    // sources never grow.
-    var sources: [MAX_IFACES + 5]u32 = undefined;
-    var source_count: usize = 1;
+    source_count = 1;
     sources[0] = channel;
 
     const event = sys.eventCreate();
@@ -280,21 +331,7 @@ fn serve(channel: u32) noreturn {
         stack.announce = addressChanged;
     }
 
-    for (ifaces[0..count]) |iface| {
-        if (iface.irq == 0) continue;
-        // One handle per line: shared lines are woken in one place, not
-        // waited on twice for the same event.
-        var already = false;
-        for (sources[1..source_count]) |s| {
-            if (s == iface.irq) {
-                already = true;
-                break;
-            }
-        }
-        if (already) continue;
-        sources[source_count] = iface.irq;
-        source_count += 1;
-    }
+    for (ifaces[0..count]) |*iface| watchLine(iface);
 
     // Streams and datagrams ride shared rings; the doorbell is the one
     // wake for every client's production.
@@ -360,7 +397,7 @@ fn serve(channel: u32) noreturn {
                 break :dispatch;
             }
             if (quit_event != 0 and handle == quit_event) {
-                for (ifaces[0..count]) |*iface| releaseIrq(iface);
+                for (ifaces[0..count]) |*iface| detach(iface);
                 sys.exit(0);
             }
             if (bell != null and handle == bell.?) {
@@ -403,8 +440,113 @@ fn drainHotkeys() void {
     while (true) {
         var press = platform.Press{};
         platform.nextHotkey(&press) catch return;
-        if (press.hotkey == .wireless) stack.toggleEnabled(.wifi);
+        if (press.hotkey == .wireless) setWireless(!stack.isEnabled(.wifi));
     }
+}
+
+/// The wireless, both halves of it, in the order that keeps them agreeing.
+///
+/// The radio's power is the platform service's and the interface using it is
+/// this service's, and the two have an order. Going off, the interface comes
+/// down first: a driver left polling a part whose power has gone reads its
+/// registers as all ones and has no way to tell that from an answer. Coming
+/// on, the power goes first, because until it does there is nothing on the
+/// bus to look for.
+///
+/// A machine whose radio has no switch at all is served by the same path:
+/// the platform service answers that it cannot switch it, the enabling
+/// carries on, and the interface is configured as it always was.
+fn setWireless(on: bool) void {
+    const where = wirelessPlace();
+
+    if (!on) {
+        stack.setEnabled(.wifi, false);
+        for (ifaces[0..count]) |*iface| {
+            if (iface.class == .wifi) detach(iface);
+        }
+        _ = platform.setFeature(.wireless, where, false);
+        return;
+    }
+
+    const state = platform.setFeature(.wireless, where, true);
+    if (state.isPresent() and !state.isOn()) {
+        log.warn("netd", "the firmware would not power the radio");
+        return;
+    }
+
+    takeUp(.wifi);
+    stack.setEnabled(.wifi, true);
+}
+
+/// Take up hardware that has just been powered, until it is there.
+///
+/// Asked more than once because a part does not answer the moment its power
+/// does: a card comes up, trains its link and only then reads back as
+/// anything but an empty slot, and how long that takes is the card's. So the
+/// answer is waited for rather than a length of time, with a bound past
+/// which the part is powered and unclaimed and says so, which is a state a
+/// person can see and act on.
+///
+/// Two ways in, because a part coming back is not always new. An interface
+/// this service already knows is taken up again from the beginning: the card
+/// came back with its registers as the factory left them, so what was mapped
+/// and started before means nothing now. Anything the manager has newly
+/// bound is adopted as at boot.
+fn takeUp(class: lib.ifmatch.Class) void {
+    for (0..ARRIVAL_TRIES) |attempt| {
+        if (attempt > 0) sys.sleepMicros(ARRIVAL_WAIT_US);
+
+        // Through the manager, because which driver drives what is its
+        // question: it walks the bus again and binds what it finds, and this
+        // service then claims what was bound to it.
+        var reply = proto_devices.Rep{};
+        proto_devices.call(.{ .tag = .rescan }, &reply) catch {
+            log.warn("netd", "no device manager; the hardware is powered and unclaimed");
+            return;
+        };
+
+        var took = false;
+        for (ifaces[0..count]) |*iface| {
+            if (iface.class != class or iface.driving) continue;
+            if (!answering(iface.location) or !attach(iface)) continue;
+            watchLine(iface);
+            took = true;
+        }
+
+        const joined = adopt();
+        for (ifaces[count - joined ..][0..joined]) |*iface| {
+            stack.attach(iface);
+            watchLine(iface);
+        }
+
+        if (took or joined > 0) return;
+    }
+
+    log.warn("netd", "the hardware is powered and nothing appeared on the bus");
+}
+
+/// Whether anything answers at that place. Asked before a claim so that a
+/// slot still coming up is waited for rather than reported as a device that
+/// refused: the two look the same from a claim that failed.
+fn answering(location: lib.pci.Location) bool {
+    return @as(u16, @truncate(pci.read(location, 0))) != lib.pci.NO_DEVICE;
+}
+
+/// How long to keep looking. A card of this era is on the bus well inside
+/// this; a machine that takes longer has something else wrong with it, and
+/// waiting further would only hold the network's own loop for longer.
+const ARRIVAL_TRIES = 6;
+const ARRIVAL_WAIT_US = 100_000;
+
+/// Where the radio is, for the standard way of switching it, which needs the
+/// device's place to find the node that speaks for it. Null on a machine
+/// whose radio has never been seen, where only a vendor's own method can
+/// help: that method names the part itself and needs no place.
+fn wirelessPlace() ?lib.pci.Location {
+    for (ifaces[0..count]) |iface| {
+        if (iface.class == .wifi) return iface.location;
+    }
+    return stack.configuredPlace(.wifi);
 }
 
 /// The nearer of two deadlines, either of which may be none.

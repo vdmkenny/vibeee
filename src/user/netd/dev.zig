@@ -94,6 +94,15 @@ pub const NicDev = struct {
     irq: u32 = 0,
     irq_gsi: ?u32 = null,
     irq_owned: bool = false,
+    /// Whether the hardware is claimed, mapped and started right now.
+    ///
+    /// An interface can outlive that: a part switched off loses its power
+    /// and comes back with its registers as the factory left them, so what
+    /// was mapped and started has to be claimed, mapped and started again
+    /// before it is anything but a slot with a card in it. The stack's own
+    /// interface stays either way, because what a person configured about
+    /// it did not stop being true.
+    driving: bool = false,
     mac: [6]u8 = @splat(0),
     /// The channel a radio is tuned to, for the listing; zero for a wire.
     radio_channel: u8 = 0,
