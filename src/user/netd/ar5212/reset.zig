@@ -16,6 +16,7 @@
 
 const lib = @import("lib");
 const log = @import("ulib").log;
+const out = @import("ulib").out;
 const pace = @import("pace.zig");
 const regs_mod = @import("regs.zig");
 const rf2425 = @import("rf2425.zig");
@@ -359,6 +360,45 @@ fn setRateDurations(regs: Regs) void {
     }
 }
 
+/// Count the values the radio did not keep, and say so once.
+///
+/// Every comparison against the reference says what the radio is written;
+/// none of them says what it holds afterwards. A part that silently drops
+/// a bit, or a whole range of registers that lands somewhere other than
+/// where it was aimed, reads back as a radio configured differently from
+/// the one the code describes, and every register anybody thought to look
+/// at by hand can still be right.
+///
+/// Only the tables, because those are the bulk of the configuration and
+/// the only part large enough for a pattern to show. Some registers do not
+/// read back what was written to them by design, so a handful of
+/// differences is ordinary and a great many is the news.
+fn sayUnkeptWrites(regs: Regs, mode: tables.Mode, band: tables.Band) void {
+    var looked: usize = 0;
+    var differed: usize = 0;
+
+    for (tables.rf2425.modes) |row| {
+        looked += 1;
+        if (regs.readAt(row.register) != row.value(mode)) differed += 1;
+    }
+    for (tables.rf2425.common) |row| {
+        looked += 1;
+        if (regs.readAt(row.register) != row.value) differed += 1;
+    }
+    for (tables.rf2425.gain) |row| {
+        looked += 1;
+        if (regs.readAt(row.register) != row.value(band)) differed += 1;
+    }
+
+    log.begin(name, if (differed * 4 > looked) .warn else .value);
+    out.text("the radio kept ");
+    out.decimal(looked - differed);
+    out.text(" of the ");
+    out.decimal(looked);
+    out.text(" values its tables gave it");
+    log.end();
+}
+
 /// Activate the baseband and wait for it: the synthesizer's own settling
 /// time, then the reference's check that the baseband is ready, since the
 /// delay alone is not reliable on notebooks.
@@ -466,6 +506,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     for (tables.family.modes) |row| regs.writeAt(row.register, row.value(mode));
     writeCommon(regs, kind);
     rf2425.writeRegs(regs, mode, band);
+    if (kind == .power_on) sayUnkeptWrites(regs, mode, band);
 
     if (chip.phy_revision >= regs_mod.PhyRevision.rev2) {
         regs.put(.phy_adc_control, regs_mod.PhyAdcControl{
