@@ -394,19 +394,18 @@ fn writeIrqs(w: *Writer) Error!void {
 
         fn visit(self: *@This(), line: irqevent.Snapshot) void {
             self.any = true;
-            self.w.print("{d}\t{s}\t{s}\t{d} owner(s)\t{d}", .{
+            // Six fields, always, each one thing: a reader that has to count
+            // words to find a number reads whichever word happens to sit
+            // there. Zero on a healthy machine is the forced count, which is
+            // the reader's to leave unsaid rather than this one's to omit.
+            self.w.print("{d}\t{s}\t{s}\t{d}\t{d}\t{d}\n", .{
                 line.gsi,
                 if (line.held) "held" else if (line.armed) "armed" else "masked",
                 @tagName(line.trigger),
                 line.owners,
                 line.count,
+                line.forced,
             }) catch {};
-            // Zero on a healthy machine, so it is only said when it is news:
-            // a forced completion names a driver that stopped answering.
-            if (line.forced > 0) {
-                self.w.print("\tforced {d}", .{line.forced}) catch {};
-            }
-            self.w.print("\n", .{}) catch {};
         }
     };
 

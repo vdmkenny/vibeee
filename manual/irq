@@ -1,4 +1,15 @@
 irq - interrupt lines held outside the kernel
 
-Each line a service holds, whether it is armed, and how many times it
-has delivered. The first question when a device has gone quiet.
+Each line a service holds, whether it is armed, how it is triggered, how
+many services wait on it, and how many times it has delivered. The first
+question when a device has gone quiet.
+
+A line delivering nothing is hardware that is not reaching this system
+at all, which is a different fault from one that delivers and is not
+understood: a driver counting no packets on a line that fires is being
+spoken to and failing to listen. Lines are shared on this machine's
+wiring, so a line with several owners wakes all of them and each reads
+its own device to find out whether it was the one that spoke.
+
+`forced` appears only when it is news: a completion the kernel had to
+make itself names a driver that stopped answering for its line.

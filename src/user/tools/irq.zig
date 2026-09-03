@@ -28,7 +28,7 @@ fn list() void {
         return;
     }
 
-    out.text("line  state   count\n");
+    out.text("line  state   trigger  owners  delivered\n");
 
     var lines = str.lines(text);
     while (lines.next()) |line| {
@@ -38,7 +38,18 @@ fn list() void {
         out.decimalRight(str.toUnsigned(it.next() orelse "0"), 4);
         out.text("  ");
         out.pad(it.next() orelse "", 8);
+        out.pad(it.next() orelse "", 9);
+        out.decimalRight(str.toUnsigned(it.next() orelse "0"), 6);
+        out.text("  ");
         out.decimal(str.toUnsigned(it.next() orelse "0"));
+
+        // Zero on a healthy machine, so it is only said when it is news: a
+        // forced completion names a driver that stopped answering.
+        const forced = str.toUnsigned(it.next() orelse "0");
+        if (forced > 0) {
+            out.text("  forced ");
+            out.decimal(forced);
+        }
         out.byte('\n');
     }
     out.flush();
