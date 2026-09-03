@@ -392,23 +392,34 @@ ceiling_width:   dw 0
 ceiling_height:  dw 0
 
 ; ---------------------------------------------------------------------------
-; Set a linear-framebuffer VBE mode, if one was asked for and one exists.
+; Set a linear-framebuffer VBE mode, unless "nofb" appears in the command
+; line.
 ;
-; Gated on "fb" appearing in the command line. Switching to graphics silences
-; the text console, so on a machine whose only output is the screen the default
-; has to be the mode that is already known to work.
+; On by default now: graphics is what the desktop needs to run at all, and a
+; boot heading for it is the ordinary case. "nofb" is for a machine, or a
+; VBE call, that does not get on with it, where the text console is what
+; stays working.
 ; ---------------------------------------------------------------------------
 maybe_set_video:
-    ; Look for "fb" in the command line.
+    ; Look for "nofb" in the command line. A match reads four bytes from
+    ; `si`; the buffer is CMDLINE_LIMIT + 1 long and always null-terminated
+    ; by then, so a start this close to the end cannot fit a match and is
+    ; skipped rather than read past where the buffer is known to end.
     mov si, cmdline
 .scan:
     mov al, [si]
     test al, al
-    jz .done                        ; end of string, not requested
-    cmp al, 'f'
+    jz .requested                   ; end of string, "nofb" was never seen
+    cmp si, cmdline + CMDLINE_LIMIT - 3
+    ja .next
+    cmp al, 'n'
     jne .next
-    cmp byte [si + 1], 'b'
-    je .requested
+    cmp byte [si + 1], 'o'
+    jne .next
+    cmp byte [si + 2], 'f'
+    jne .next
+    cmp byte [si + 3], 'b'
+    je .done                        ; "nofb": stay in text mode
 .next:
     inc si
     jmp .scan

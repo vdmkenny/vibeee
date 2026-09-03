@@ -138,7 +138,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd help apps app hero fmt check check-all
+.PHONY: all clean image qemu qemu-sd run test tools sd update-sd help apps app hero fmt check check-all
 
 all: image
 
@@ -156,7 +156,8 @@ help:
 	@echo "  make check            module layering and import rules"
 	@echo "  make check-all        format, layering, tests, images, a headless boot and a reboot"
 	@echo "  make qemu-panic       boot into the panic screen (x86)"
-	@echo "  make sd DEV=/dev/rdiskN   flash the image to a card (x86)"
+	@echo "  make sd DEV=/dev/rdiskN   flash the whole image to a card (x86), wiping it"
+	@echo "  make update-sd DEV=/dev/rdiskN  overwrite a card's system partition only"
 	@echo "  make MANUAL=no image   build without the manual"
 	@echo "  make clean"
 
@@ -329,7 +330,7 @@ DEV_IMAGE := $(BUILD)/vibeee-dev.img
 # machine will use. `fb` is opt-in rather than the default because switching to
 # graphics silences the text console: on a machine whose only output is the
 # screen, the default has to be the mode already known to work.
-DEV_CMDLINE ?= verbose fb
+DEV_CMDLINE ?= verbose
 
 # What the emulator's display reports when asked. QEMU's BIOS answers DDC, so
 # this is only the ceiling for a machine that does not; it is set here because
@@ -488,6 +489,24 @@ sd: $(IMAGE)
 	diskutil unmountDisk $(DEV) || true
 	@echo "Writing to a raw device needs root; the build itself does not."
 	sudo dd if=$(IMAGE) of=$(DEV) bs=1m status=progress
+	sync
+	diskutil eject $(DEV) || true
+
+# The same guard as `sd`, but stopped short of `/cfg`: only the bytes before
+# it, the boot sectors and the system partition, are written. A card's
+# settings and its home files are past that point and never touched, which
+# is what makes this the one to reach for on a card already carrying
+# somebody's own files rather than the one built to throw away.
+update-sd: $(IMAGE)
+	@if [ -z "$(DEV)" ]; then echo "usage: make update-sd DEV=/dev/rdiskN"; exit 1; fi
+	@if [ ! -e "$(DEV)" ]; then echo "$(DEV) does not exist"; exit 1; fi
+	@echo "About to overwrite the system partition of $(DEV) with $(IMAGE)"
+	@echo "(the first $(CFG_LBA) sectors; /cfg and /home are left alone):"
+	@diskutil info $(DEV) 2>/dev/null | grep -E "Device / Media Name|Disk Size|Removable Media|Virtual" || true
+	@printf "Type ERASE to continue: "; read ans; [ "$$ans" = "ERASE" ] || { echo aborted; exit 1; }
+	diskutil unmountDisk $(DEV) || true
+	@echo "Writing to a raw device needs root; the build itself does not."
+	sudo dd if=$(IMAGE) of=$(DEV) bs=512 count=$(CFG_LBA) status=progress
 	sync
 	diskutil eject $(DEV) || true
 
