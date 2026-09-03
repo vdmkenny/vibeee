@@ -615,7 +615,28 @@ pub const RxFilter = packed struct(u32) {
     promiscuous: bool = false,
     _6: u1 = 0,
     probe_request: bool = false,
-    _8: u24 = 0,
+    /// Frames the baseband could not decode. A receiver is told about
+    /// these separately from traffic, and told nothing at all unless the
+    /// error filter below names which kinds it cares about.
+    phy_error: bool = false,
+    radar_error: bool = false,
+    _10: u22 = 0,
+};
+
+/// Which kinds of undecodable frame the baseband reports at all.
+///
+/// Empty is the quiet setting and the one a driver wanting only traffic
+/// leaves it at. Naming a kind is what makes the count of them mean
+/// anything: a receiver hearing a band it cannot decode says so here and
+/// nowhere else.
+pub const PhyErrorFilter = packed struct(u32) {
+    _0: u5 = 0,
+    radar: bool = false,
+    _6: u11 = 0,
+    ofdm: bool = false,
+    _18: u7 = 0,
+    cck: bool = false,
+    _26: u6 = 0,
 };
 
 pub const Diagnostics = packed struct(u32) {
@@ -981,6 +1002,11 @@ comptime {
     pinLayout(BeaconControl, .{ .enable = true }, 0x0080_0000);
     pinLayout(BeaconControl, .{ .reset_tsf = true }, 0x0100_0000);
     pinLayout(RxFilter, .{ .beacon = true }, 0x0000_0010);
+    pinLayout(RxFilter, .{ .phy_error = true }, 0x0000_0100);
+    pinLayout(RxFilter, .{ .radar_error = true }, 0x0000_0200);
+    pinLayout(PhyErrorFilter, .{ .radar = true }, 0x0000_0020);
+    pinLayout(PhyErrorFilter, .{ .ofdm = true }, 0x0002_0000);
+    pinLayout(PhyErrorFilter, .{ .cck = true }, 0x0200_0000);
     pinLayout(RxFilter, .{ .probe_request = true }, 0x0000_0080);
     pinLayout(Diagnostics, .{ .rx_disable = true }, 0x0000_0020);
     pinLayout(Diagnostics, .{ .scrambler_seed = 0x7F }, 0x0001_FC00);

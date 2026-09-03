@@ -549,8 +549,12 @@ fn startReceive(regs: Regs) void {
         .multicast = true,
         .broadcast = true,
         .beacon = true,
+        // Asked for so that a band this radio hears and cannot decode is
+        // distinguishable from a band with nothing on it. Both modulations
+        // this radio speaks, because either failing is the same news.
+        .phy_error = true,
     });
-    regs.write(.phy_error_filter, 0);
+    regs.put(.phy_error_filter, regs_mod.PhyErrorFilter{ .ofdm = true, .cck = true });
     regs.set(.rx_config, regs_mod.RxConfig, "zero_length_dma", false);
 }
 
