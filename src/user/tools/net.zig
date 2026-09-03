@@ -108,7 +108,7 @@ pub fn run(args: []const []const u8) void {
 /// fires.
 fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []const u8) void {
     if (args.len == 0) {
-        say("net: an interface needs a verb: up, down, dhcp, static, join, forget\n");
+        say("net: an interface needs a verb: up, down, default, dhcp, static, join, forget\n");
         return;
     }
 
@@ -174,16 +174,24 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
             return;
         }) else .none;
         want.join(ssid, psk);
+    } else if (std.mem.eql(u8, args[0], "default")) {
+        // One interface holds it, so naming one takes it from whichever
+        // had it. What the service does with the wish is its own: an
+        // interface that cannot carry the route does not hold it.
+        for (&wants) |*other| other.default = false;
+        want.default = true;
     } else if (std.mem.eql(u8, args[0], "forget")) {
         want.forget();
     } else {
-        say("net: the verbs are up, down, dhcp, static, join and forget\n");
+        say("net: the verbs are up, down, default, dhcp, static, join and forget\n");
         return;
     }
 
-    inline for (0..settings.NET_SLOTS) |i| {
-        if (i == chosen) settings.setNetSlot(&cfg, i, wants[i]);
-    }
+    // Every slot, not only the one named: a verb may take something from
+    // another interface, as naming a default takes it from whichever held
+    // it. Saving writes only what actually differs from what is stored,
+    // so the slots nothing touched cost nothing.
+    inline for (0..settings.NET_SLOTS) |i| settings.setNetSlot(&cfg, i, wants[i]);
 
     settings.save("net", cfg) catch {
         say("net: the settings store would not take it\n");

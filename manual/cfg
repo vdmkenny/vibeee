@@ -47,6 +47,8 @@ Settings, generated from the schema: all
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if0_enabled           true
       true | false
+  net.if0_default           false
+      true | false
   net.if0_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP
   net.if0_gateway           unset
@@ -64,6 +66,8 @@ Settings, generated from the schema: all
   net.if1_match             wifi
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if1_enabled           true
+      true | false
+  net.if1_default           false
       true | false
   net.if1_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP
@@ -83,6 +87,8 @@ Settings, generated from the schema: all
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if2_enabled           false
       true | false
+  net.if2_default           false
+      true | false
   net.if2_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP
   net.if2_gateway           unset
@@ -100,6 +106,8 @@ Settings, generated from the schema: all
   net.if3_match             unset
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if3_enabled           false
+      true | false
+  net.if3_default           false
       true | false
   net.if3_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP

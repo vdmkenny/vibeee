@@ -10,6 +10,7 @@ net - the network interfaces
                          join a wireless network; the key is a passphrase
                          of 8 to 63 characters or 64 hex digits, and is
                          left out for an open network
+  net <iface> default    send traffic with no route of its own this way
   net <iface> forget     stop joining it
   net <iface> scan       every network that radio has heard: channel,
                          signal and security
@@ -29,6 +30,14 @@ its slot again.
 With no static claim, an enabled interface asks DHCP as soon as its
 cable carries, and prints the address when it arrives. An interface
 no slot covers stays down.
+
+`default` is a wish rather than a rule. An interface that is down or has
+no address cannot carry the traffic that has no route of its own, so one
+that can carries it instead, and the named interface takes it back when
+it is able again. With nothing named, the machine chooses in slot order,
+which gives it to the wired slot without anyone saying so. This is what
+to set on a machine whose radio and wired port are both up and should
+not both be answering for the whole network.
 
 `up` and `down` are about the interface and not about the hardware: a
 radio taken down here keeps its power, which is what leaves `net scan`
@@ -54,6 +63,8 @@ Settings, generated from the schema: net
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if0_enabled           true
       true | false
+  net.if0_default           false
+      true | false
   net.if0_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP
   net.if0_gateway           unset
@@ -71,6 +82,8 @@ Settings, generated from the schema: net
   net.if1_match             wifi
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if1_enabled           true
+      true | false
+  net.if1_default           false
       true | false
   net.if1_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP
@@ -90,6 +103,8 @@ Settings, generated from the schema: net
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if2_enabled           false
       true | false
+  net.if2_default           false
+      true | false
   net.if2_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP
   net.if2_gateway           unset
@@ -107,6 +122,8 @@ Settings, generated from the schema: net
   net.if3_match             unset
       a class (ether, wifi), a driver name, a bus location, or unset
   net.if3_enabled           false
+      true | false
+  net.if3_default           false
       true | false
   net.if3_address           unset
       an address and prefix, a.b.c.d/nn; unset asks DHCP

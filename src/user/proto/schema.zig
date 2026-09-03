@@ -257,6 +257,12 @@ pub const NetSlot = struct {
     /// or a bus location like "03:00.0". Empty leaves the slot unused.
     match: ifmatch.Match = .none,
     enabled: bool = false,
+    /// Whether traffic with no route of its own should leave by this
+    /// interface. A wish rather than a rule: an interface that is down or
+    /// has no address cannot carry it, and one that can takes it instead
+    /// until this one is able again. Unset on every slot leaves the
+    /// machine to choose, which it does in slot order.
+    default: bool = false,
     /// Unset asks DHCP; "a.b.c.d/nn" claims the address statically.
     address: ipv4.Cidr = .{},
     gateway: ipv4.Maybe = .{},
@@ -345,6 +351,10 @@ fn NetSchema() type {
                     0, 1 => true,
                     else => false,
                 },
+                // Nothing is preferred out of the box: the machine picks,
+                // and it picks by slot order, which puts the wired slot
+                // first without anyone having to say so.
+                .default => false,
                 // A union has no empty literal, so the cases that are one
                 // name the state they start in.
                 .psk => .none,

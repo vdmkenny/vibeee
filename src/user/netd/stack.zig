@@ -102,6 +102,7 @@ pub fn attach(nic: *dev.NicDev) void {
     slot.netif.num = @intCast(count);
     if (count == 0) lwip.netif_set_default(&slot.netif);
     count += 1;
+    refreshDefault();
 
     refreshName();
     if (nic.state.up) lwip.netif_set_link_up(&slot.netif);
@@ -167,6 +168,9 @@ pub fn linkState(nic: *dev.NicDev, up: bool) void {
     } else {
         lwip.netif_set_link_down(&slot.netif);
     }
+    // A carrier coming or going changes which interface can hold the
+    // default route as surely as an address does.
+    refreshDefault();
 }
 
 fn slotOf(nic: *dev.NicDev) ?*Slot {
@@ -195,9 +199,14 @@ pub fn applyConfig(cfg: settings.Net) void {
     // starts as, so a field added to the shape does not have to be added
     // here too.
     const parked = settings.NetSlot{ .match = .none, .enabled = false };
-    for (slots[0..count], bound[0..count]) |*slot, claim| {
-        applySlot(slot, if (claim) |s| wants[s] else parked);
+    preferred = null;
+    for (slots[0..count], bound[0..count], 0..) |*slot, claim, i| {
+        const want = if (claim) |s| wants[s] else parked;
+        rank[i] = claim orelse std.math.maxInt(u8);
+        if (want.default) preferred = i;
+        applySlot(slot, want);
     }
+    refreshDefault();
 
     // Statically named servers outrank whatever a lease suggested; the
     // first bound slot naming any speaks for the machine, because DNS is
@@ -393,6 +402,59 @@ fn applySlot(slot: *Slot, role: settings.NetSlot) void {
     }
 }
 
+/// Give the default route to an interface that can carry it.
+///
+/// Which interface held it was decided by the order they were attached in,
+/// which is the order the bus lists them: a machine whose radio sits at a
+/// lower place than its wired port gave the route to the radio and kept it
+/// there, so everything without a route of its own left by a radio that
+/// might have no address, no link, and nothing listening. Traffic to a
+/// neighbour still worked, because that has a route of its own, which is
+/// what makes this look like the far end being unreachable.
+///
+/// Recomputed wherever an address or a link changes. An interface that is
+/// up and addressed takes it, earliest first; where none is, whatever
+/// holds it keeps it, so an interface coming back finds the route it had
+/// rather than a machine with none at all.
+fn refreshDefault() void {
+    if (preferred) |which| {
+        if (which < count and carries(&slots[which])) {
+            lwip.netif_set_default(&slots[which].netif);
+            return;
+        }
+    }
+    // By configuration slot rather than by the order the interfaces were
+    // attached in, which is the order the bus lists them and means nothing
+    // to anybody: a radio at a lower place than a wired port would take
+    // the route for no reason a person could see or change.
+    var best: ?*Slot = null;
+    var best_rank: u8 = std.math.maxInt(u8);
+    for (slots[0..count], rank[0..count]) |*slot, slot_rank| {
+        if (!carries(slot)) continue;
+        if (slot_rank >= best_rank) continue;
+        best_rank = slot_rank;
+        best = slot;
+    }
+    if (best) |slot| lwip.netif_set_default(&slot.netif);
+}
+
+/// Which configuration slot each interface answers to, for ordering them
+/// the way the configuration does. Unclaimed interfaces rank last.
+var rank: [MAX]u8 = @splat(std.math.maxInt(u8));
+
+/// Whether an interface could carry traffic that has no route of its own:
+/// something is driving it, it is up, and it has an address to send from.
+fn carries(slot: *Slot) bool {
+    if (slot.nic == null) return false;
+    if (!slot.netif.flags.up) return false;
+    return slot.netif.ip_addr.addr != 0;
+}
+
+/// The interface configuration asked to hold the default route, if any.
+/// Read from the configuration rather than at every change, because the
+/// changes are link and address events and this answer is neither.
+var preferred: ?usize = null;
+
 /// Told whenever an address arrives or goes away, so a service waiting for
 /// the network learns of it instead of asking. Set by the serve loop, which
 /// owns the event the answer travels on.
@@ -403,6 +465,7 @@ pub var announce: ?*const fn () void = null;
 /// path converges.
 fn statusChanged(netif: *lwip.Netif) callconv(.c) void {
     const nic: *dev.NicDev = @ptrCast(@alignCast(netif.state orelse return));
+    refreshDefault();
     if (announce) |tell| tell();
     if (netif.ip_addr.addr == 0) {
         if (netif.flags.up) say(nic, "no address");
