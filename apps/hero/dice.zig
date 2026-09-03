@@ -18,6 +18,7 @@ const std = @import("std");
 const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
+const keys = @import("ulib").keys;
 const str = @import("lib").str;
 const hero = @import("journal.zig");
 
@@ -240,19 +241,20 @@ pub const Window = struct {
                 } else if (code == .down) {
                     self.setup.bonus -|= 1;
                 } else {
-                    self.ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
-                }
-                self.ctx.damage();
-            },
-            .text => {
-                // The letters of the modes, and R to roll again, as the
-                // prompt sheet's choices answer to theirs.
-                switch (event.body.text.cp) {
-                    'r', 'R' => self.roll(),
-                    'n', 'N' => self.setMode(.normal),
-                    'a', 'A' => self.setMode(.advantage),
-                    'd', 'D' => self.setMode(.disadvantage),
-                    else => self.ctx.postText(event.body.text.cp),
+                    const mods: sys.Modifiers = @bitCast(event.body.key.mods);
+                    self.ctx.postKey(@intCast(event.body.key.code), mods);
+
+                    // The letters of the modes, and R to roll again, as the
+                    // prompt sheet's choices answer to theirs.
+                    if (keys.typed(event.body.key.codepoint, mods)) |character| {
+                        switch (character) {
+                            'r', 'R' => self.roll(),
+                            'n', 'N' => self.setMode(.normal),
+                            'a', 'A' => self.setMode(.advantage),
+                            'd', 'D' => self.setMode(.disadvantage),
+                            else => self.ctx.postText(character),
+                        }
+                    }
                 }
                 self.ctx.damage();
             },
