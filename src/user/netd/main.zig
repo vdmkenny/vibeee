@@ -378,7 +378,7 @@ fn serve(channel: u32) noreturn {
         sources[source_count] = handle;
         source_count += 1;
     } else |_| {
-        log.warn("netd", "no platform service; the wireless key does nothing");
+        log.warn("netd", "the platform service reports no hotkeys; the wireless key does nothing");
     }
 
     // The supervisor's request to go. Answered by giving the lines back and

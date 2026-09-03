@@ -557,10 +557,6 @@ fn startReceive(regs: Regs) void {
         .multicast = true,
         .broadcast = true,
         .beacon = true,
-        // Asked for so that a band this radio hears and cannot decode is
-        // distinguishable from a band with nothing on it. Both modulations
-        // this radio speaks, because either failing is the same news.
-        .phy_error = true,
         // Everything the baseband manages to decode, whoever it was for.
         // A station with no cell of its own has nothing to be selective
         // about: what it is doing is listening to a band to find out what
@@ -568,8 +564,18 @@ fn startReceive(regs: Regs) void {
         // looking for. What it accepts narrows when it joins something.
         .promiscuous = true,
     });
-    regs.put(.phy_error_filter, regs_mod.PhyErrorFilter{ .ofdm = true, .cck = true });
-    regs.set(.rx_config, regs_mod.RxConfig, "zero_length_dma", false);
+    // Undecodable frames are asked for here and not in the filter above:
+    // the protocol unit takes no bit for them, which is why one written
+    // there is dropped. Both modulations this radio speaks, because either
+    // failing is the same news, and a receiver hearing a band it cannot
+    // make sense of is what tells it apart from a band with nothing on it.
+    const errors = regs_mod.PhyErrorFilter{ .ofdm = true, .cck = true };
+    regs.put(.phy_error_filter, errors);
+
+    // One of these arrives with no frame behind it, so the engine has to be
+    // willing to write nothing at all. Asking for them without this is
+    // asking for a report that cannot be delivered.
+    regs.set(.rx_config, regs_mod.RxConfig, "zero_length_dma", @as(u32, @bitCast(errors)) != 0);
 }
 
 /// Stop the protocol unit passing frames and the engine fetching them,
@@ -590,9 +596,18 @@ pub fn irq(nic: *NicDev) bool {
     const chip: *reset.Chip = if (device.chip) |*c| c else return false;
     const regs = chip.regs;
 
-    // A card that has gone answers all ones, which is not the pending
-    // bit alone.
+    // All ones before anything else. A card that has gone answers that to
+    // every read, and it is not the pending bit alone, so a test for the
+    // pending bit sends it away as an interrupt that was not ours: the
+    // card is then never noticed to have gone, however many times it is
+    // asked. Absence is read from the raw word rather than from a
+    // bitfield, because a bitfield is an interpretation and this is the
+    // value that means there was nothing to interpret.
     const pending = regs.read(.interrupt_pending);
+    if (pending == std.math.maxInt(u32)) {
+        goneAway(nic);
+        return false;
+    }
     if (pending != @as(u32, @bitCast(regs_mod.InterruptPending{ .pending = true }))) return false;
 
     const cause = regs.get(.interrupt_status_clearing, regs_mod.Interrupts);
