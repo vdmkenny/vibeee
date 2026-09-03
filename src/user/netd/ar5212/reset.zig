@@ -575,6 +575,18 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
         log.warn(name, "offset calibration did not complete; noisy surroundings?");
     }
 
+    // Only on the way up, and only once. The measurement is started beside
+    // the gain control above and read much later by the periodic
+    // calibration, so nothing else is in a position to notice that it never
+    // finished, and a receiver that measures no floor is one that is hearing
+    // nothing to measure. Waited for here rather than on every channel
+    // change, where the waiting would cost every hop the whole timeout.
+    if (kind == .power_on and
+        !pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "noise_floor", false, pace.DEFAULT_TRIES))
+    {
+        log.warn(name, "the noise floor never measured; the receiver hears nothing to measure");
+    }
+
     setupClock(chip);
 
     // The beacon register starts timers, so it is written last: no beacons
