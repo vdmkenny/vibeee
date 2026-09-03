@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const audio = @import("lib").audio;
+const framebuffer = @import("framebuffer");
 const sys = @import("sys");
 const ulib = @import("ulib");
 
@@ -47,8 +48,7 @@ comptime {
 /// ignored. A C program can write a pixel as 0x00RRGGBB.
 pub const FORMAT_XRGB8888: u8 = 0;
 
-var mapped: ?[*]u8 = null;
-var owned: ?u32 = null;
+var held: ?ulib.display.Screen = null;
 
 /// Take the screen and map it. Returns the pixels, or null when the
 /// screen is already somebody's.
@@ -56,28 +56,17 @@ var owned: ?u32 = null;
 /// One process owns the display at a time, by decision: two programs
 /// drawing into one framebuffer produce a mess neither can undo.
 export fn vb_display_acquire(into: ?*Display) ?[*]u8 {
-    if (mapped) |already| return already;
-
-    var info = sys.DisplayInfo{};
-    const handle = sys.displayAcquire(&info) catch return null;
-
-    const pixels = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        _ = sys.close(@intCast(handle));
-        return null;
-    };
-
-    owned = @intCast(handle);
-    mapped = pixels;
-    if (into) |out| out.* = @bitCast(info);
-    return pixels;
+    if (held == null) held = ulib.display.take() catch return null;
+    const screen = &held.?;
+    if (into) |out| out.* = @bitCast(screen.info);
+    return @ptrCast(screen.pixels);
 }
 
 /// Give it back. The console gets the screen, cleared, which is what a
 /// program leaving should leave behind.
 export fn vb_display_release() void {
-    if (owned) |handle| _ = sys.close(handle);
-    owned = null;
-    mapped = null;
+    if (held) |*screen| screen.release();
+    held = null;
 }
 
 /// One key, as it happened. Both presses and releases arrive: a game
@@ -96,6 +85,83 @@ comptime {
     if (@sizeOf(Key) != @sizeOf(sys.KeyEvent)) {
         @compileError("the C key event must match the kernel's");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Virtual framebuffer window
+// ---------------------------------------------------------------------------
+
+/// One C port owns one virtual framebuffer. Native programs use
+/// `framebuffer.Window` itself and are not restricted by this C convenience.
+var virtual: ?framebuffer.Window = null;
+
+pub const WINDOW_FULLSCREEN: c_uint = 1;
+
+/// Open a fixed logical framebuffer inside the compositor. Unlike
+/// `vb_display_acquire`, this neither needs nor takes the physical display.
+export fn vb_window_open(
+    title: ?[*:0]const u8,
+    width: u16,
+    height: u16,
+    flags: c_uint,
+    into: ?*Display,
+) ?[*]u8 {
+    if (virtual) |*window| return @ptrCast(window.surface().ptr);
+
+    const name = if (title) |text| std.mem.span(text) else "program";
+    const mode: framebuffer.Mode = if (flags & WINDOW_FULLSCREEN != 0) .fullscreen else .windowed;
+    var window = framebuffer.Window.open(name, width, height, mode) catch return null;
+    const pixels = window.surface();
+
+    if (into) |out| {
+        out.* = .{
+            .width = width,
+            .height = height,
+            .stride_px = width,
+            .bytes = @intCast(pixels.len * @sizeOf(u32)),
+        };
+    }
+    virtual = window;
+    return @ptrCast(pixels.ptr);
+}
+
+/// Copy the logical framebuffer into the current compositor surface.
+export fn vb_window_present() c_int {
+    const window = &(virtual orelse return -1);
+    window.present() catch return -1;
+    return 0;
+}
+
+/// Read input dispatched by the compositor without claiming its physical
+/// keyboard. The manager keeps the keycode and the keymap's codepoint in one
+/// record, so a port receives one event per press or release.
+export fn vb_window_key_read(into: ?[*]Key, count: c_int, timeout_us: c_uint) c_int {
+    const window = &(virtual orelse return -1);
+    const out = into orelse return -1;
+    if (count <= 0) return 0;
+
+    var used: usize = 0;
+    while (used < @as(usize, @intCast(count))) {
+        const timeout: usize = if (used == 0) timeout_us else 0;
+        const event = window.next(timeout) orelse break;
+        switch (event.tag) {
+            .key => out[used] = .{
+                .code = @truncate(event.body.key.code),
+                .pressed = event.body.key.down,
+                .modifiers = event.body.key.mods,
+                .codepoint = event.body.key.codepoint,
+            },
+            .close_req => return if (used == 0) -1 else @intCast(used),
+            else => continue,
+        }
+        used += 1;
+    }
+    return @intCast(used);
+}
+
+export fn vb_window_close() void {
+    if (virtual) |*window| window.close();
+    virtual = null;
 }
 
 /// Read up to `count` keys, waiting at most `timeout_us` microseconds.

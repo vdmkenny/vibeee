@@ -152,6 +152,33 @@ pub const Surface = struct {
         return self.pixels[@intCast(y * self.stride + x)];
     }
 
+    /// Fill what is inside `area` but outside `inner`.
+    ///
+    /// For anything that puts a picture in a space larger than itself and
+    /// owns the ground around it. Clearing the whole space and drawing over
+    /// it does the same in two passes, but anything reading the surface in
+    /// between sees the clear: on a framebuffer read by a compositor, that
+    /// is a black flash across the picture.
+    pub fn fillAround(self: Surface, area: Rect, inner: Rect, color: Color) void {
+        const kept = area.intersect(inner);
+        if (kept.isEmpty()) return self.fill(area, color);
+
+        self.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = kept.y - area.y }, color);
+        self.fill(.{
+            .x = area.x,
+            .y = kept.bottom(),
+            .w = area.w,
+            .h = area.bottom() - kept.bottom(),
+        }, color);
+        self.fill(.{ .x = area.x, .y = kept.y, .w = kept.x - area.x, .h = kept.h }, color);
+        self.fill(.{
+            .x = kept.right(),
+            .y = kept.y,
+            .w = area.right() - kept.right(),
+            .h = kept.h,
+        }, color);
+    }
+
     pub fn fill(self: Surface, area: Rect, color: Color) void {
         const r = self.clip.intersect(area);
         if (r.isEmpty()) return;
@@ -508,4 +535,41 @@ test "a surface's span is its rows by its stride in words, and only for a real s
 
 fn testing_null(got: ?u32) !void {
     try std.testing.expectEqual(@as(?u32, null), got);
+}
+
+test "the ground around a picture is filled, and the picture is not touched" {
+    var pixels: [SIDE * SIDE]u32 = undefined;
+    const surface = flat(&pixels, 0x111111);
+
+    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
+    const middle = Rect{ .x = 2, .y = 2, .w = 4, .h = 4 };
+    surface.fillAround(whole, middle, 0x999999);
+
+    // Every corner and edge is ground.
+    try testing.expectEqual(@as(u32, 0x999999), pixels[0]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[1 * SIDE + 3]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[3 * SIDE + 1]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[3 * SIDE + 6]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[6 * SIDE + 3]);
+
+    // What the picture covers is left as it was found.
+    try testing.expectEqual(@as(u32, 0x111111), pixels[2 * SIDE + 2]);
+    try testing.expectEqual(@as(u32, 0x111111), pixels[5 * SIDE + 5]);
+}
+
+test "a picture covering everything leaves no ground, and one covering nothing is all ground" {
+    var pixels: [SIDE * SIDE]u32 = undefined;
+    const surface = flat(&pixels, 0x111111);
+    const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
+
+    surface.fillAround(whole, whole, 0x999999);
+    try testing.expectEqual(@as(u32, 0x111111), pixels[0]);
+    try testing.expectEqual(@as(u32, 0x111111), pixels[SIDE * SIDE - 1]);
+
+    // Nothing shown means the whole space is ground, rather than nothing
+    // drawn at all: a picture that failed to load must not leave the last
+    // one behind it.
+    surface.fillAround(whole, .{ .x = 0, .y = 0, .w = 0, .h = 0 }, 0x999999);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[0]);
+    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE * SIDE - 1]);
 }

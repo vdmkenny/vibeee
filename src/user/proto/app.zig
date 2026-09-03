@@ -16,6 +16,7 @@ const eui = @import("eui");
 const sys = @import("sys");
 const client = @import("client.zig");
 const wm = @import("wm.zig");
+const keys = @import("ulib").keys;
 const out = @import("ulib").out;
 
 /// The connection and window, public because a program occasionally needs
@@ -206,11 +207,13 @@ pub fn run(
                 const mods: Modifiers = @bitCast(event.body.key.mods);
                 const taken = if (hooks.key) |own| own(code, mods) else false;
                 if (!taken) ctx.postKey(@intCast(event.body.key.code), mods);
-                redraw();
-            },
-            .text => {
-                const taken = if (hooks.text) |own| own(event.body.text.cp) else false;
-                if (!taken) ctx.postText(event.body.text.cp);
+                // The same press, as the character it typed. A shortcut and a
+                // text field want different halves of one event, and a key
+                // that named a command typed nothing.
+                if (keys.typed(event.body.key.codepoint, mods)) |character| {
+                    const spoken = if (hooks.text) |own| own(character) else false;
+                    if (!spoken) ctx.postText(character);
+                }
                 redraw();
             },
             // The appearance arrives as two records; the connection folds

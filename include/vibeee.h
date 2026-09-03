@@ -29,7 +29,11 @@ typedef struct {
 /* Take the screen and map it; returns the pixels, or NULL when the screen
  * is already somebody else's. One process owns it at a time, by decision:
  * two programs drawing into one framebuffer make a mess neither can undo.
- * Passing NULL for `info` is allowed if the sizes are not wanted. */
+ * Passing NULL for `info` is allowed if the sizes are not wanted.
+ *
+ * This is the screen as it is, at whatever size it turns out to be, and it
+ * is refused while a desktop is running. A program that draws a picture of
+ * its own fixed size wants vb_window_open below, which coexists with one. */
 void *vb_display_acquire(vb_display *info);
 
 /* Give it back. The console gets the screen, cleared. */
@@ -58,6 +62,41 @@ typedef struct {
 int vb_key_read(vb_key *into, int count, unsigned int timeout_us);
 
 #define VB_WAIT_FOREVER 0xFFFFFFFFu
+
+/* ---- virtual framebuffer windows -------------------------------------- */
+
+/* A virtual framebuffer is a fixed-size pixel buffer, shown wherever there is
+ * room for it: an ordinary desktop window when a desktop is running, and the
+ * screen itself when none is. It is for games, emulators and other ports that
+ * draw their own pixels, which is why the program's loop is the same either
+ * way. The pixels are scaled with nearest-neighbour sampling, keeping their
+ * proportions and leaving black where they do not reach. Only one virtual
+ * framebuffer is open per C program; native Zig programs use
+ * framebuffer.Window directly and may own more.
+ *
+ * Passing VB_WINDOW_FULLSCREEN asks for the desktop content area above other
+ * windows. The desktop bar remains available. Without it the window follows
+ * the normal tiling policy. On the bare screen the flag makes no difference.
+ * Returns NULL when neither a window nor the screen can be had, or when
+ * memory cannot be allocated. `info` describes the fixed logical framebuffer
+ * rather than the surface it is presented on, and may be NULL for a program
+ * that already knows the shape it asked for. */
+#define VB_WINDOW_FULLSCREEN 0x1u
+void *vb_window_open(const char *title, unsigned short width,
+                     unsigned short height, unsigned int flags,
+                     vb_display *info);
+
+/* Scale and present the virtual framebuffer. Returns 0 on success, or -1
+ * when the desktop window has closed or cannot be presented. */
+int vb_window_present(void);
+
+/* Read keyboard events for this window: from the desktop when it is in one,
+ * and from the keyboard itself when it is on the bare screen. Same result
+ * shape as vb_key_read. A window-close request returns -1. */
+int vb_window_key_read(vb_key *into, int count, unsigned int timeout_us);
+
+/* Give the window or the screen back and free the framebuffer. */
+void vb_window_close(void);
 
 /* Key numbers, written from the enum that defines them. */
 #include <vibeee-keys.h>

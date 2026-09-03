@@ -6,12 +6,11 @@
 //! be sendable and unreadable: adding one is a row, and the row is what
 //! `send` writes and what `read` recognises.
 //!
-//! Two sources, because the window manager sends two things. A `text` event
-//! carries what the layout produced, which is what a character key means; a
-//! `key` event carries which physical key it was, which is what an arrow, a
-//! function key or a control chord means. Using the wrong one for either is
-//! how a terminal ends up sending `Ctrl+Q` on an AZERTY keyboard when the
-//! person pressed the key printed `A`.
+//! Two halves of one event, because a key press is two facts. Which physical
+//! key it was is what an arrow, a function key or a control chord means; what
+//! the layout made of it is what a character key means. Using the wrong one
+//! for either is how a terminal ends up sending `Ctrl+Q` on an AZERTY
+//! keyboard when the person pressed the key printed `A`.
 //!
 //! Pure and host-tested, in both directions and against each other: every key
 //! in the table is sent and read back, so the two halves are proved to be
@@ -139,6 +138,22 @@ pub fn key(code: KeyCode, mods: Modifiers, application: bool, out: []u8) []const
             w.byte(either.plain),
     }
     return w.done();
+}
+
+/// The character a press typed, or nothing when the key named a command.
+///
+/// Alt and Control held make a key a command whatever the layout puts on it,
+/// and a text field that inserted the character as well would type into
+/// whatever the command just did. AltGr is not one of those: on a Belgian
+/// keyboard it is how `@` and the brackets are typed at all.
+///
+/// A terminal wants no such filter, because a chord is exactly what it
+/// encodes; this is for the programs where typing and commanding are
+/// different things.
+pub fn typed(codepoint: u32, mods: Modifiers) ?u32 {
+    if (codepoint == 0) return null;
+    if (mods.alt or mods.control) return null;
+    return codepoint;
 }
 
 /// What a character key sends, given what the layout produced.
@@ -750,4 +765,16 @@ test "the sequences that carry a modifier belong to one key each" {
             try testing.expect(!same);
         }
     }
+}
+
+test "a plain press types, and a chord commands" {
+    try std.testing.expectEqual(@as(?u32, 'a'), typed('a', .{}));
+    try std.testing.expectEqual(@as(?u32, 'A'), typed('A', .{ .shift = true }));
+    // AltGr is how the character is reached at all on a Belgian layout.
+    try std.testing.expectEqual(@as(?u32, '@'), typed('@', .{ .altgr = true }));
+
+    try std.testing.expectEqual(@as(?u32, null), typed('c', .{ .control = true }));
+    try std.testing.expectEqual(@as(?u32, null), typed('f', .{ .alt = true }));
+    // A key the layout makes nothing of types nothing, held or not.
+    try std.testing.expectEqual(@as(?u32, null), typed(0, .{}));
 }

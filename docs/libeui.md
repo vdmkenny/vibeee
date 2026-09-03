@@ -471,6 +471,7 @@ A picture, shrunk to fit and stood the right way up.
 | call | signature |
 |---|---|
 | `uprightSize` | `fn (u16, u16, exif.Orientation) thumb.Size` |
+| `fitAs` | `fn (draw.Rect, u16, u16, thumb.Scale) draw.Rect` |
 | `fit` | `fn (draw.Rect, u16, u16) draw.Rect` |
 | `paint` | `fn (draw.Surface, draw.Rect, thumb.Source, exif.Orientation) void` |
 | `sampleAt` | `fn (u32, u32, u16, u16, exif.Orientation) thumb.Point` |

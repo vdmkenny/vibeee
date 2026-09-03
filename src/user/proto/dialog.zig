@@ -20,6 +20,7 @@ const wm = @import("wm.zig");
 
 const chooser = eui.chooser;
 const dir = ulib.dir;
+const keys = ulib.keys;
 
 pub const Purpose = chooser.Purpose;
 
@@ -222,9 +223,12 @@ pub const FileDialog = struct {
                     self.result = .cancelled;
                     return true;
                 }
-                self.ctx.postKey(@intCast(event.body.key.code), @bitCast(event.body.key.mods));
+                const mods: sys.Modifiers = @bitCast(event.body.key.mods);
+                self.ctx.postKey(@intCast(event.body.key.code), mods);
+                if (keys.typed(event.body.key.codepoint, mods)) |character| {
+                    self.ctx.postText(character);
+                }
             },
-            .text => self.ctx.postText(event.body.text.cp),
             .theme, .look => {
                 _ = connection.adoptLook(event);
                 self.ctx.damage();

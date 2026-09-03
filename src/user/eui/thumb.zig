@@ -45,12 +45,23 @@ pub fn uprightSize(width: u16, height: u16, turn: exif.Orientation) Size {
     return if (turn.turned()) .{ .w = height, .h = width } else .{ .w = width, .h = height };
 }
 
+/// Whether something smaller than its room may be drawn larger than it is.
+pub const Scale = enum {
+    /// Never past its own size. A preview blown up is a blurry claim to
+    /// detail the picture does not have.
+    natural,
+    /// As large as the room allows. What a program's own pixels want: a
+    /// fixed logical size shown in whatever window the desktop gives it,
+    /// where drawing it small in the middle would be the wrong answer.
+    fill,
+};
+
 /// Where a picture of this shape goes inside `area`, keeping its proportions
-/// and never stretched past its own size.
+/// and growing or not according to `policy`.
 ///
-/// Centred in what is left over. A preview pinned to a corner reads as a
-/// picture that failed to load rather than as one smaller than its frame.
-pub fn fit(area: Rect, width: u16, height: u16) Rect {
+/// Centred in what is left over, because a picture pinned to a corner reads
+/// as one that failed to load rather than as one smaller than its frame.
+pub fn fitAs(area: Rect, width: u16, height: u16, policy: Scale) Rect {
     if (width == 0 or height == 0 or area.w <= 0 or area.h <= 0) {
         return .{ .x = area.x, .y = area.y, .w = 0, .h = 0 };
     }
@@ -58,14 +69,26 @@ pub fn fit(area: Rect, width: u16, height: u16) Rect {
     const w: i64 = width;
     const h: i64 = height;
 
-    // The smaller of the two ratios, in sixteenths, so this stays whole
-    // numbers: a picture wider than its room is bounded by the width.
-    const by_width = @divTrunc(@as(i64, area.w) * 16, w);
-    const by_height = @divTrunc(@as(i64, area.h) * 16, h);
-    const scale = @min(@min(by_width, by_height), 16);
+    // Worked out at the picture's full size, so the proportions are exact:
+    // a rounded scale factor costs a picture nearly as large as its room a
+    // border of nothing, which reads as a border somebody meant.
+    //
+    // As wide as the room, unless that makes it taller than the room, in
+    // which case the height is what binds.
+    var wide: i64 = area.w;
+    var tall: i64 = @divTrunc(wide * h, w);
+    if (tall > area.h) {
+        tall = area.h;
+        wide = @divTrunc(tall * w, h);
+    }
 
-    const drawn_w: i32 = @intCast(@max(@divTrunc(w * scale, 16), 1));
-    const drawn_h: i32 = @intCast(@max(@divTrunc(h * scale, 16), 1));
+    if (policy == .natural and wide > w) {
+        wide = w;
+        tall = h;
+    }
+
+    const drawn_w: i32 = @intCast(@max(wide, 1));
+    const drawn_h: i32 = @intCast(@max(tall, 1));
 
     return .{
         .x = area.x + @divTrunc(area.w - drawn_w, 2),
@@ -73,6 +96,11 @@ pub fn fit(area: Rect, width: u16, height: u16) Rect {
         .w = drawn_w,
         .h = drawn_h,
     };
+}
+
+/// The same, for a preview: never larger than the picture itself.
+pub fn fit(area: Rect, width: u16, height: u16) Rect {
+    return fitAs(area, width, height, .natural);
 }
 
 /// The widest a drawn picture may be before this stops keeping a column
@@ -223,6 +251,38 @@ test "a small picture is not blown up to fill the room" {
     const small = fit(room, 20, 10);
     try testing.expectEqual(@as(i32, 20), small.w);
     try testing.expectEqual(@as(i32, 10), small.h);
+}
+
+test "asked to fill, the same picture is drawn as large as the room allows" {
+    // Twice as wide as it is tall, in a room twice as wide as it is tall:
+    // it fills the room exactly.
+    const filled = fitAs(room, 20, 10, .fill);
+    try testing.expectEqual(@as(i32, 200), filled.w);
+    try testing.expectEqual(@as(i32, 100), filled.h);
+    try testing.expectEqual(room.x, filled.x);
+    try testing.expectEqual(room.y, filled.y);
+
+    // Squarer than its room: the height binds, and the spare width is split
+    // rather than stretched.
+    const boxed = fitAs(room, 100, 100, .fill);
+    try testing.expectEqual(@as(i32, 100), boxed.w);
+    try testing.expectEqual(@as(i32, 100), boxed.h);
+    try testing.expectEqual(room.x + 50, boxed.x);
+
+    // Nothing to draw still takes no room, whichever way it is asked.
+    try testing.expectEqual(@as(i32, 0), fitAs(room, 0, 10, .fill).w);
+}
+
+test "a picture nearly as large as its room keeps its size" {
+    // A picture four pixels narrower than its room is drawn four pixels
+    // narrower, not at whatever coarser step a scale factor would land on.
+    const snug = fitAs(.{ .x = 0, .y = 0, .w = 796, .h = 576 }, 800, 480, .fill);
+    try testing.expectEqual(@as(i32, 796), snug.w);
+    try testing.expectEqual(@as(i32, 477), snug.h);
+
+    // And it stays centred in what is left over.
+    try testing.expectEqual(@as(i32, 0), snug.x);
+    try testing.expectEqual(@as(i32, 49), snug.y);
 }
 
 test "nothing to draw takes no room" {

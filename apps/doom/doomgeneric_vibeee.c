@@ -3,6 +3,7 @@
  * engine, which is untouched. */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -13,9 +14,7 @@
 
 static void pump(void);
 
-static vb_display screen;
 static unsigned int *pixels;
-static int left, top;
 
 /* A small ring, because the engine asks for one key at a time and the
  * keyboard hands over several at once. */
@@ -25,40 +24,22 @@ static unsigned int head, tail;
 
 void DG_Init(void)
 {
-    pixels = vb_display_acquire(&screen);
-    if (pixels == NULL) {
-        fprintf(stderr, "doom: the screen is not available\n");
-        return;
-    }
-    left = ((int)screen.width - DOOMGENERIC_RESX) / 2;
-    top = ((int)screen.height - DOOMGENERIC_RESY) / 2;
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-
-    /* Blacked out once, because the engine draws its own rectangle and
-     * never touches what is around it: whatever the screen was showing
-     * before would otherwise sit there for the whole game. Once is
-     * enough, since the surround does not change afterwards. */
-    for (unsigned int y = 0; y < screen.height; y++)
-        memset(pixels + (size_t)y * screen.stride_px, 0,
-               (size_t)screen.width * sizeof(unsigned int));
+    /* The engine's own resolution, whatever it is shown on: the window
+     * scales it and puts it in the middle. Its shape is the engine's, so
+     * there is nothing to be told back about it. */
+    pixels = vb_window_open("Doom", DOOMGENERIC_RESX, DOOMGENERIC_RESY,
+                            VB_WINDOW_FULLSCREEN, NULL);
+    if (pixels == NULL)
+        fprintf(stderr, "doom: there is nowhere to draw\n");
 }
 
 void DG_DrawFrame(void)
 {
     if (pixels == NULL) return;
 
-    int rows = DOOMGENERIC_RESY;
-    if (top + rows > (int)screen.height) rows = (int)screen.height - top;
-    int cols = DOOMGENERIC_RESX;
-    if (left + cols > (int)screen.width) cols = (int)screen.width - left;
-
-    for (int y = 0; y < rows; y++) {
-        memcpy(pixels + (size_t)(top + y) * screen.stride_px + left,
-               DG_ScreenBuffer + (size_t)y * DOOMGENERIC_RESX,
-               (size_t)cols * sizeof(unsigned int));
-    }
-
+    memcpy(pixels, DG_ScreenBuffer,
+           (size_t)DOOMGENERIC_RESX * DOOMGENERIC_RESY * sizeof(unsigned int));
+    if (vb_window_present() < 0) exit(0);
     pump();
 }
 
@@ -139,7 +120,8 @@ static unsigned char translate(const vb_key *event)
 static void pump(void)
 {
     vb_key events[16];
-    int n = vb_key_read(events, 16, 0);
+    int n = vb_window_key_read(events, 16, 0);
+    if (n < 0) exit(0);
     for (int i = 0; i < n; i++) {
         unsigned char k = translate(&events[i]);
         if (k == 0) continue;

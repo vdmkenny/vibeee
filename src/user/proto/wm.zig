@@ -22,7 +22,7 @@
 /// Bumped when a change would make an old client misread a new server. The
 /// server rejects a mismatch at `hello` rather than failing later in a way
 /// that looks like a client bug.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 pub const MAX_WINDOWS_PER_CLIENT = 8;
 
@@ -44,7 +44,10 @@ pub const WinFlags = packed struct(u8) {
     dialog: bool = false,
     /// Refuses to be closed by the manager.
     no_close: bool = false,
-    _reserved: u5 = 0,
+    /// Occupies the desktop's content area above other windows. The desktop
+    /// bar remains available as the way back out.
+    fullscreen: bool = false,
+    _reserved: u4 = 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -190,12 +193,12 @@ pub fn clipboardText(mapped: []const u8) []const u8 {
 // ---------------------------------------------------------------------------
 
 pub const EvTag = enum(u8) {
-    /// A raw key, for shortcuts. Carries the keycode, not the character.
+    /// A key going down or coming up: which key it was, what was held with
+    /// it, and what the layout made of it. One event rather than two,
+    /// because a shortcut wants the keycode, a text field wants the
+    /// character, and a program drawing its own pixels wants both without
+    /// having to pair them up.
     key,
-    /// A character, after layout, dead keys and composition. What a text field
-    /// wants; `key` is what a shortcut wants, and sending only one of the two
-    /// would make the other impossible.
-    text,
     ptr_motion,
     ptr_button,
     scroll,
@@ -241,8 +244,14 @@ pub const Ev = extern struct {
     t_us: u32 = 0,
 
     body: extern union {
-        key: extern struct { code: u16, down: u8, mods: u8 },
-        text: extern struct { cp: u32 },
+        key: extern struct {
+            code: u16,
+            down: u8,
+            mods: u8,
+            /// What the layout produced, after dead keys and composition.
+            /// Zero for a key that types nothing, such as an arrow.
+            codepoint: u32,
+        },
         motion: extern struct { x: i16, y: i16 },
         button: extern struct { btn: u8, down: u8, x: i16, y: i16 },
         scroll: extern struct { dy: i8, dx: i8 },

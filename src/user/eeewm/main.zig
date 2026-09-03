@@ -33,6 +33,7 @@ const region = @import("eui").region;
 const ui = @import("eui").widget;
 const sys = @import("sys");
 const bindings = @import("ulib").bindings;
+const display = @import("ulib").display;
 const out = @import("ulib").out;
 
 const Rect = eui.Rect;
@@ -59,7 +60,8 @@ var pointer_y: i32 = 0;
 var buttons: sys.Buttons = .{};
 
 /// The display, held so the session can give it back before it says goodbye.
-var display_handle: isize = 0;
+/// Null until it is taken, which is before anything is drawn.
+var held: ?display.Screen = null;
 
 /// Everything needs redrawing. Set by anything that changes the arrangement,
 /// because working out what survived a retile costs more than repainting.
@@ -97,29 +99,17 @@ fn wmMain() noreturn {
     }
     service = @intCast(registered);
 
-    display_handle = sys.displayAcquire(&info) catch |err| {
-        out.text(switch (err) {
-            error.NoDisplay => "eeewm: no framebuffer. The machine booted in text mode; " ++
-                "add `fb` to the kernel command line.\n",
-            error.Busy => "eeewm: something already owns the display.\n",
-            error.OutOfMemory => "eeewm: not enough memory to take the display.\n",
-        });
+    const taken = display.take() catch |err| {
+        out.text("eeewm: ");
+        out.text(display.reasonFor(err));
+        out.text("\n");
         out.flush();
         sys.exit(1);
     };
+    held = taken;
+    info = taken.info;
 
-    const pixels = sys.shmMap(@intCast(display_handle), .{ .writable = true }) orelse {
-        out.text("eeewm: cannot map the scanout buffer\n");
-        out.flush();
-        sys.exit(1);
-    };
-
-    screen = eui.Surface.init(
-        @ptrCast(@alignCast(pixels)),
-        info.width,
-        info.height,
-        info.stride_px,
-    );
+    screen = eui.Surface.init(taken.pixels, info.width, info.height, info.stride_px);
 
     openClipboard();
 
@@ -424,20 +414,9 @@ fn run() noreturn {
                         .code = event.code,
                         .down = event.pressed,
                         .mods = event.modifiers,
+                        .codepoint = event.codepoint,
                     } },
                 });
-                // A chord is not typing. Alt and Control held mean the key
-                // names a command, and a window that received the character
-                // as well would insert it into whatever the command just
-                // did. AltGr is not one of these: on a Belgian keyboard it
-                // is how @ and the brackets are typed at all.
-                const chord = event.mods().alt or event.mods().control;
-                if (event.codepoint != 0 and event.isPress() and !chord) {
-                    postToFocused(.{
-                        .tag = .text,
-                        .body = .{ .text = .{ .cp = event.codepoint } },
-                    });
-                }
             }
             acted = true;
         }
@@ -1001,12 +980,14 @@ fn onCreate(pid: u32, req: *const wire.Req) Answer {
     const flags = req.body.create.flags;
     const index = desktop.open(
         "",
-        flags.floating or flags.dialog,
+        flags.floating or flags.dialog or flags.fullscreen,
         req.body.create.min_w,
         req.body.create.min_h,
     ) orelse return refuse(.no_room);
 
     const w = &desktop.windows[index];
+    w.fullscreen = flags.fullscreen;
+    if (w.fullscreen) desktop.arrange();
     w.client_pid = pid;
     // The client's id for the window, which is per client rather than global:
     // the slot index is ours and would collide across clients.
@@ -1233,7 +1214,7 @@ fn quit() noreturn {
     // The display goes back before anything is said, because the console
     // throws away whatever is written while it is suspended: a farewell
     // printed with the desktop still up is a farewell nobody reads.
-    _ = sys.close(@intCast(display_handle));
+    if (held) |*screen_held| screen_held.release();
     out.text("eeewm: the desktop has exited. Start it again with eeewm.\n");
     out.flush();
     sys.exit(0);

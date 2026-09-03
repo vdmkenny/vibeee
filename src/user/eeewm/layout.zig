@@ -17,10 +17,16 @@
 //! windows are the exception, and they are exceptions on purpose: dialogs,
 //! pickers and the launcher, which are transient and want to be above.
 
+const std = @import("std");
 const compose = @import("compose.zig");
 const draw = @import("eui").draw;
 
 const Rect = draw.Rect;
+
+/// Where a window sits in the stack, in the order the desktop is drawn: the
+/// tiles, then whatever floats above them, then a program that asked for the
+/// whole content area. The bar is outside this and stays the way back out.
+pub const Layer = enum { tiled, floating, fullscreen };
 
 /// Desktops are created as they are needed rather than fixed at four. A
 /// numbered row of empty slots is a menu of nothing; a row of named tabs is a
@@ -66,10 +72,18 @@ pub const Window = struct {
     tag: u8 = 0,
     /// Above the tiles, positioned by hand rather than by the layout.
     floating: bool = false,
+    /// A floating window that occupies the desktop's whole content area.
+    fullscreen: bool = false,
     /// Where it is now. Set by `arrange` for tiled windows and by dragging for
     /// floating ones.
     area: Rect = .{},
     used: bool = false,
+
+    /// Which layer it is drawn in.
+    pub fn layer(self: *const Window) Layer {
+        if (self.fullscreen) return .fullscreen;
+        return if (self.floating) .floating else .tiled;
+    }
 
     pub fn name(self: *const Window) []const u8 {
         return self.title[0..self.title_len];
@@ -210,33 +224,28 @@ pub const Desktop = struct {
         return self.countOn(self.tag) == 1;
     }
 
-    /// Windows on the current tag, in order, tiled ones first.
+    /// Windows on the current tag, in the order they are drawn.
     pub fn visible(self: *Desktop, out: []usize) []usize {
         var n: usize = 0;
-        for (&self.windows, 0..) |*w, i| {
-            if (!w.used or w.tag != self.tag or w.floating) continue;
-            if (n == out.len) break;
-            out[n] = i;
-            n += 1;
-        }
-        for (&self.windows, 0..) |*w, i| {
-            if (!w.used or w.tag != self.tag or !w.floating) continue;
-            if (n == out.len) break;
-            out[n] = i;
-            n += 1;
-        }
+        for (std.enums.values(Layer)) |layer| n = self.gather(layer, out, n);
         return out[0..n];
     }
 
     fn tiled(self: *Desktop, out: []usize) []usize {
-        var n: usize = 0;
+        return out[0..self.gather(.tiled, out, 0)];
+    }
+
+    /// Append the current tag's windows in `layer` after the `n` already in
+    /// `out`, and say how many there are now.
+    fn gather(self: *const Desktop, layer: Layer, out: []usize, n: usize) usize {
+        var count = n;
         for (&self.windows, 0..) |*w, i| {
-            if (!w.used or w.tag != self.tag or w.floating) continue;
-            if (n == out.len) break;
-            out[n] = i;
-            n += 1;
+            if (!w.used or w.tag != self.tag or w.layer() != layer) continue;
+            if (count == out.len) break;
+            out[count] = i;
+            count += 1;
         }
-        return out[0..n];
+        return count;
     }
 
     // -----------------------------------------------------------------------
@@ -255,6 +264,12 @@ pub const Desktop = struct {
 
     /// Give every tiled window on the current tag its rectangle.
     pub fn arrange(self: *Desktop) void {
+        // Fullscreen windows sit above the tiling but track the content area
+        // when the bar or display geometry changes.
+        for (&self.windows) |*w| {
+            if (w.used and w.tag == self.tag and w.fullscreen) w.area = self.bounds;
+        }
+
         var buf: [MAX_WINDOWS]usize = undefined;
         const list = self.tiled(&buf);
         if (list.len == 0) return;

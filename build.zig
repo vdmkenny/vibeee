@@ -228,6 +228,18 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ulib", .module = ulib_mod },
             },
         });
+        const framebuffer_mod = b.createModule(.{
+            .root_source_file = b.path("src/user/framebuffer.zig"),
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "lib", .module = user_lib },
+                .{ .name = "sys", .module = sys_mod },
+                .{ .name = "ulib", .module = ulib_mod },
+                .{ .name = "eui", .module = eui_mod },
+                .{ .name = "proto", .module = proto_mod },
+            },
+        });
         // The socket client in ulib speaks the net protocol; the proto module's
         // own conveniences already lean on ulib, and the cycle is fine because
         // modules are names, not link units.
@@ -250,6 +262,7 @@ pub fn build(b: *std.Build) void {
                     .{ .name = "lib", .module = user_lib },
                     .{ .name = "sys", .module = sys_mod },
                     .{ .name = "ulib", .module = ulib_mod },
+                    .{ .name = "framebuffer", .module = framebuffer_mod },
                 },
             }),
         });
@@ -303,6 +316,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "eui", .module = eui_mod },
             .{ .name = "keymaps", .module = keymaps_mod },
             .{ .name = "proto", .module = proto_mod },
+            .{ .name = "framebuffer", .module = framebuffer_mod },
             .{ .name = "manual", .module = manual_mod },
         };
 

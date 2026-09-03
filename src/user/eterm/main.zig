@@ -274,14 +274,16 @@ fn handle(event: proto.wm.Ev) void {
             var buf: [keys.MAX]u8 = undefined;
             const code: abi.KeyCode = @enumFromInt(event.body.key.code);
             const mods: abi.Modifiers = @bitCast(event.body.key.mods);
-            send(keys.key(code, mods, terminal.application_cursor, &buf), code, mods);
-        },
-        .text => {
-            var buf: [keys.MAX]u8 = undefined;
-            // A text event carries no modifier state of its own, so control
-            // chords are recognised from the key event above and this path
-            // handles what the layout produced.
-            send(keys.text(event.body.text.cp, .{}, &buf), .none, .{});
+
+            // Which key it was first: an arrow, a function key or Enter is
+            // named by the key rather than by what the layout puts on it.
+            const named = keys.key(code, mods, terminal.application_cursor, &buf);
+            if (named.len > 0) return send(named, code, mods);
+
+            // Otherwise what the layout made of it, chords included: a
+            // terminal is where Ctrl+C is a character, and it is the key
+            // printed C whatever the layout puts there.
+            send(keys.text(event.body.key.codepoint, mods, &buf), code, mods);
         },
         .theme, .look => {
             _ = connection.adoptLook(event);
