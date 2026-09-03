@@ -150,20 +150,69 @@ fn quiesce(binding: *const Binding) void {
 /// Drivers available to bind, supplied by the composition root.
 var registry: []const Driver = &.{};
 
+/// How to walk the buses again, supplied with the drivers. Which buses exist
+/// is the composition root's knowledge: this file binds devices to drivers and
+/// deliberately knows of no bus at all.
+var walk: ?*const fn () void = null;
+
 /// Start a probing pass with the given driver set. Bus drivers then call
 /// `consider` for each device they find, `attachAll` brings them up, and
-/// `report` prints the outcome.
-pub fn begin(drivers: []const Driver) void {
+/// `report` prints the outcome. `again` runs that walk a second time, for
+/// hardware that arrives after the boot has been through it once.
+pub fn begin(drivers: []const Driver, again: ?*const fn () void) void {
     registry = drivers;
+    walk = again;
     binding_count = 0;
+}
+
+/// Walk the buses again, so the table says what is there now rather than what
+/// was there at boot. What a device switched on by a firmware method needs:
+/// nothing announces it, so somebody has to look.
+pub fn rescan() bool {
+    const again = walk orelse return false;
+    again();
+    return true;
+}
+
+/// Drop every device on `bus` that `present` no longer finds.
+///
+/// The question is the bus driver's to answer and the table is this file's to
+/// change, which is why it is asked rather than told. Walked backwards so that
+/// filling a hole with the last entry cannot skip the entry that moved.
+pub fn sweep(bus: []const u8, present: *const fn (location: [3]u16) bool) void {
+    var i = binding_count;
+    while (i > 0) {
+        i -= 1;
+        const b = &bindings[i];
+        if (!std.mem.eql(u8, b.dev.bus, bus)) continue;
+        if (present(b.dev.location)) continue;
+        _ = forget(bus, b.dev.location);
+    }
 }
 
 /// Offer one device for binding. Called by bus drivers; the composition root
 /// (src/platform.zig) is what connects the two, so kernel core needs no
 /// knowledge of which buses exist.
+///
+/// A device already at that place is left as it is, claim and all: a walk
+/// that runs again over a machine that has not changed must not turn a
+/// driven device into a second row saying nobody drives it. Different
+/// hardware in the same place replaces the row instead, because the entry
+/// describes the place and what is in it, and what is in it has changed.
 pub fn consider(dev: Device) void {
-    if (binding_count >= bindings.len) return;
+    if (find(dev.bus, dev.location)) |existing| {
+        if (existing.dev.vendor == dev.vendor and existing.dev.device == dev.device) return;
+        existing.* = bound(dev);
+        return;
+    }
 
+    if (binding_count >= bindings.len) return;
+    bindings[binding_count] = bound(dev);
+    binding_count += 1;
+}
+
+/// The device with the driver that fits it best, which is what an entry is.
+fn bound(dev: Device) Binding {
     var best: ?*const Driver = null;
     var best_conf: Confidence = .no;
     for (registry) |*drv| {
@@ -173,9 +222,37 @@ pub fn consider(dev: Device) void {
             best = drv;
         }
     }
+    return .{ .dev = dev, .driver = best, .confidence = best_conf };
+}
 
-    bindings[binding_count] = .{ .dev = dev, .driver = best, .confidence = best_conf };
-    binding_count += 1;
+/// Where the entry for one place on one bus is, or null when nothing is
+/// recorded there.
+fn indexOf(bus: []const u8, location: [3]u16) ?usize {
+    for (bindings[0..binding_count], 0..) |b, i| {
+        if (!std.mem.eql(u8, b.dev.bus, bus)) continue;
+        if (std.mem.eql(u16, &b.dev.location, &location)) return i;
+    }
+    return null;
+}
+
+fn find(bus: []const u8, location: [3]u16) ?*Binding {
+    return &bindings[indexOf(bus, location) orelse return null];
+}
+
+/// Drop the entry at `location` on `bus`, which is a device that has gone.
+///
+/// Stopped before it is forgotten: the entry is what says a userspace driver
+/// holds it, so once the row is gone nothing is left to quiesce it by, and a
+/// part still mastering the bus would keep doing so with nobody accountable.
+pub fn forget(bus: []const u8, location: [3]u16) bool {
+    const index = indexOf(bus, location) orelse return false;
+    quiesce(&bindings[index]);
+
+    // The order of the table is discovery order and nothing reads meaning
+    // into it, so the last entry fills the hole rather than the tail moving.
+    binding_count -= 1;
+    bindings[index] = bindings[binding_count];
+    return true;
 }
 
 /// Bring up every bound device.
@@ -257,4 +334,113 @@ pub fn report() void {
         console.printf("{s}\n", .{b.dev.description});
         console.setColor(.light_grey, .black);
     }
+}
+
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// A device at a place, with ids a test can tell apart.
+fn testDevice(slot: u16, vendor: u16, device: u16) Device {
+    return .{
+        .bus = "pci",
+        .location = .{ 0, slot, 0 },
+        .vendor = vendor,
+        .device = device,
+        .class = 0x02,
+        .subclass = 0x00,
+        .prog_if = 0,
+        .description = "test device",
+    };
+}
+
+fn testCount() usize {
+    var seen: usize = 0;
+    forEachDevice(&seen, struct {
+        fn visit(counter: *usize, _: Binding) void {
+            counter.* += 1;
+        }
+    }.visit);
+    return seen;
+}
+
+test "a walk that runs again over an unchanged machine changes nothing" {
+    begin(&.{}, null);
+    consider(testDevice(1, 0x8086, 0x100E));
+    consider(testDevice(2, 0x168C, 0x001C));
+    try testing.expectEqual(@as(usize, 2), testCount());
+
+    // The same walk again. Twice, because the bug this guards against is an
+    // entry appended per pass rather than per device.
+    consider(testDevice(1, 0x8086, 0x100E));
+    consider(testDevice(2, 0x168C, 0x001C));
+    consider(testDevice(1, 0x8086, 0x100E));
+    try testing.expectEqual(@as(usize, 2), testCount());
+}
+
+test "a device that was claimed keeps its claim across a walk" {
+    begin(&.{}, null);
+    consider(testDevice(1, 0x8086, 0x100E));
+    try claimDevice(.{ 0, 1, 0 }, 42);
+
+    consider(testDevice(1, 0x8086, 0x100E));
+
+    const held = find("pci", .{ 0, 1, 0 }).?;
+    try testing.expect(held.attached);
+    try testing.expectEqual(@as(u32, 42), held.claimed_by);
+}
+
+test "different hardware in the same place replaces the entry" {
+    begin(&.{}, null);
+    consider(testDevice(1, 0x8086, 0x100E));
+    try claimDevice(.{ 0, 1, 0 }, 42);
+
+    consider(testDevice(1, 0x168C, 0x001C));
+    try testing.expectEqual(@as(usize, 1), testCount());
+
+    // The claim was on what was there, not on the place: a card swapped for
+    // another must not be handed the first one's driver as if nothing moved.
+    const now = find("pci", .{ 0, 1, 0 }).?;
+    try testing.expectEqual(@as(u16, 0x168C), now.dev.vendor);
+    try testing.expect(!now.attached);
+    try testing.expectEqual(@as(u32, 0), now.claimed_by);
+}
+
+test "a device that stopped answering is dropped, and the rest stay" {
+    begin(&.{}, null);
+    consider(testDevice(1, 0x8086, 0x100E));
+    consider(testDevice(2, 0x168C, 0x001C));
+    consider(testDevice(3, 0x1969, 0x2048));
+
+    // The middle one, so that filling the hole with the last entry is what
+    // has to keep the other two.
+    sweep("pci", struct {
+        fn present(location: [3]u16) bool {
+            return location[1] != 2;
+        }
+    }.present);
+
+    try testing.expectEqual(@as(usize, 2), testCount());
+    try testing.expect(find("pci", .{ 0, 1, 0 }) != null);
+    try testing.expect(find("pci", .{ 0, 2, 0 }) == null);
+    try testing.expect(find("pci", .{ 0, 3, 0 }) != null);
+}
+
+test "a sweep leaves another bus alone" {
+    begin(&.{}, null);
+    consider(testDevice(1, 0x8086, 0x100E));
+
+    var usb = testDevice(1, 0x0000, 0x0000);
+    usb.bus = "usb";
+    consider(usb);
+
+    // Nothing on pci answers, and the usb entry is not pci's to remove.
+    sweep("pci", struct {
+        fn present(_: [3]u16) bool {
+            return false;
+        }
+    }.present);
+
+    try testing.expectEqual(@as(usize, 1), testCount());
+    try testing.expect(find("usb", .{ 0, 1, 0 }) != null);
 }

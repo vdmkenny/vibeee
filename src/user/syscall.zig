@@ -358,6 +358,13 @@ pub fn releaseDevice(location: lib.pci.Location) isize {
     return syscall3(abi.number("release_device"), location.bus, location.device, location.function);
 }
 
+/// Walk the PCI bus again, so the kernel's table says what is on it now.
+/// What a device switched on after the boot needs: the bus announces nothing,
+/// so somebody has to look.
+pub fn pciRescan() isize {
+    return syscall1(abi.number("pci_rescan"), 0);
+}
+
 pub fn dmaAlloc(size: usize, physOut: *u32) isize {
     return syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut));
 }

@@ -36,6 +36,12 @@ pub const Location = packed struct(u16) {
         return @bitCast(self);
     }
 
+    /// Whether two name the same place. A packed struct compares as the
+    /// number it is, which is the whole of what a place is here.
+    pub fn eql(self: Location, other: Location) bool {
+        return self.encode() == other.encode();
+    }
+
     pub fn fromComponents(bus: usize, device: usize, function: usize) ?Location {
         if (bus > std.math.maxInt(u8) or
             device > std.math.maxInt(u5) or
@@ -47,6 +53,11 @@ pub const Location = packed struct(u16) {
         };
     }
 };
+
+/// What a vendor id reads as where there is no device: nothing drove the
+/// lines and the bus is pulled up. The one answer that means absence, so it
+/// is written down once rather than spelled at every place that asks.
+pub const NO_DEVICE: u16 = 0xFFFF;
 
 pub const COMMAND_OFFSET: u8 = 0x04;
 pub const BAR0_OFFSET: u8 = 0x10;

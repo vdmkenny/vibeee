@@ -272,7 +272,7 @@ pub fn earlyDevices(bi: *const bootinfo.BootInfo) void {
 
 /// Enumerate every bus this machine has and bind drivers to what turns up.
 pub fn probeHardware(bi: *const bootinfo.BootInfo) void {
-    probe.begin(&drivers.table);
+    probe.begin(&drivers.table, &walkAgain);
     enumeratePci();
     // Both ends of every link's power negotiation are the OS's to settle;
     // the endpoints settle theirs at driver open, the root ports here.
@@ -513,6 +513,18 @@ fn silenceUsbLegacySmi() void {
     }
     hal.outl(smi_en, was & ~(LEGACY_USB | LEGACY_USB2));
     console.debug("usb", "legacy emulation interrupts quieted, were {x:0>8}", .{was});
+}
+
+/// Walk PCI again and make the table say what is on the bus now.
+///
+/// Both halves, because a bus walk only ever meets what answers: what turned
+/// up is offered for binding, and what stopped answering is taken out. A
+/// device switched on by a firmware method announces itself to nothing, so
+/// somebody has to look, and this is the looking.
+fn walkAgain() void {
+    enumeratePci();
+    probe.sweep("pci", &pci.answers);
+    probe.attachAll();
 }
 
 fn enumeratePci() void {

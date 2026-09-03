@@ -9,6 +9,7 @@ test {
     _ = @import("kernel/bootinfo.zig");
     _ = @import("kernel/klog.zig");
     _ = @import("kernel/ports.zig");
+    _ = @import("kernel/probe.zig");
     _ = @import("arch/x86/mtrr.zig");
     // What stands between a stray user pointer and a dead machine. Split from
     // the paging code it belongs to precisely so it can be asked here, against

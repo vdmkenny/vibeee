@@ -156,6 +156,7 @@ const E = struct {
     const busy = Err{ .name = "EBUSY", .when = "another process already owns it" };
     const timedout = Err{ .name = "ETIMEDOUT", .when = "the timeout elapsed before anything happened" };
     const perm = Err{ .name = "EPERM", .when = "the operation is not allowed on that object" };
+    const nosys = Err{ .name = "ENOSYS", .when = "this build has nothing behind the call" };
 };
 
 /// The number of a syscall, looked up by name at compile time.
@@ -1754,6 +1755,20 @@ pub const table = [_]Syscall{
             "calls it after every write, because that would make every write as slow as a " ++
             "flush. Best effort on a drive whose firmware says it cannot: the call still " ++
             "returns, and the residual is the drive's, not the host's.",
+    },
+    .{
+        .number = 67,
+        .name = "pci_rescan",
+        .summary = "Walk the PCI bus again, so the device table says what is there now.",
+        .args = &.{},
+        .returns = "0",
+        .errors = &.{ E.perm, E.nosys },
+        .notes = "Requires Caps.driver. The bus has no way of announcing that something " ++
+            "arrived or left, so a device switched on by a firmware method is invisible " ++
+            "until somebody looks again. What turns up is offered for binding and what " ++
+            "stopped answering is taken out, quiesced first. A device already there keeps " ++
+            "its entry and its claim: a walk over a machine that has not changed changes " ++
+            "nothing.",
     },
 };
 

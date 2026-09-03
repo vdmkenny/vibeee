@@ -239,7 +239,7 @@ fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
         const iface = &reply.body.iface;
         const covered = switch (matcher) {
             .driver => |name| name.is(labelOf(&iface.driver)),
-            .location => |at| @as(u16, @bitCast(at)) == iface.location,
+            .location => |at| at.encode() == iface.location,
             else => false,
         };
         if (covered) return true;

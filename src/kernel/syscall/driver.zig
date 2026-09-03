@@ -88,6 +88,17 @@ pub fn sys_release_device(a: Args) Result {
     return if (probe.releaseDevice(.{ location.bus, location.device, location.function }, t.id)) 0 else Errno.noent.value();
 }
 
+/// Look at the bus again.
+///
+/// Nothing on PCI announces an arrival or a departure, so a device a firmware
+/// method has just switched on is on the bus and in no table until something
+/// walks it again. The walk itself belongs to whoever knows which buses this
+/// machine has, which is not kernel core; this is the door to it.
+pub fn sys_pci_rescan(_: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    return if (probe.rescan()) 0 else Errno.nosys.value();
+}
+
 pub fn sys_dma_alloc(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 

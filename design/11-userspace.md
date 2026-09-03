@@ -151,7 +151,7 @@ pub const PciDevInfo = extern struct {
     bars: [6]PciBar,
 };
 pub extern fn sys_pci_table(buf: [*]PciDevInfo, max: u32) i32;    // count or -errno
-pub extern fn sys_pci_rescan(bus: u8) i32;                        // re-walk one bus (wifi slot)
+pub extern fn sys_pci_rescan() i32;                               // built: re-walk, upsert and drop
 ```
 User drivers still use contract `pci_cfg_read/write(bdf)` for their own device; the table is for matching only. Rationale: no TOCTOU on claims, one enumerator, devmgd stays unprivileged for config-space writes.
 

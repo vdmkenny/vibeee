@@ -63,6 +63,18 @@ pub fn quiesce(location: [3]u16) void {
     _ = pcicfg.read(selector);
 }
 
+/// Whether anything still answers at that place.
+///
+/// A slot with nothing in it reads as all ones, because no part drove the
+/// lines and the bus is pulled up. The one question a table of devices has to
+/// be able to ask again: a part that was switched off is gone from the bus
+/// without anything saying so.
+pub fn answers(location: [3]u16) bool {
+    const loc = lib.pci.Location.fromComponents(location[0], location[1], location[2]) orelse return false;
+    const addr = Address{ .bus = loc.bus, .slot = loc.device, .func = loc.function };
+    return @as(u16, @truncate(configRead32(addr, 0x00))) != lib.pci.NO_DEVICE;
+}
+
 pub const CLASS_OFFSET: u8 = 0x08;
 pub const HEADER_TYPE_OFFSET = lib.pci.HEADER_TYPE_OFFSET;
 pub const BAR0_OFFSET = lib.pci.BAR0_OFFSET;
@@ -87,7 +99,7 @@ fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
     const base = Address{ .bus = bus, .slot = slot, .func = 0 };
     const id = configRead32(base, 0x00);
     const vendor: u16 = @truncate(id);
-    if (vendor == 0xFFFF) return; // nothing here
+    if (vendor == lib.pci.NO_DEVICE) return;
 
     cb(base, vendor, @truncate(id >> 16));
 
@@ -101,7 +113,7 @@ fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
         const a = Address{ .bus = bus, .slot = slot, .func = @truncate(func) };
         const fid = configRead32(a, 0x00);
         const fvendor: u16 = @truncate(fid);
-        if (fvendor == 0xFFFF) continue;
+        if (fvendor == lib.pci.NO_DEVICE) continue;
         cb(a, fvendor, @truncate(fid >> 16));
     }
 }
@@ -123,7 +135,7 @@ pub fn quietBridgeAspm() void {
         while (func < 8) : (func += 1) {
             const a = Address{ .bus = 0, .slot = @truncate(slot), .func = @truncate(func) };
             const id = configRead32(a, 0x00);
-            if (@as(u16, @truncate(id)) == 0xFFFF) continue;
+            if (@as(u16, @truncate(id)) == lib.pci.NO_DEVICE) continue;
 
             const class = configRead32(a, CLASS_OFFSET);
             const is_bridge = @as(u8, @truncate(class >> 24)) == 0x06 and
