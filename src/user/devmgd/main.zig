@@ -218,7 +218,7 @@ fn bindDevices() void {
 
 fn alreadyBound(location: lib.pci.Location) bool {
     for (bound) |b| {
-        if (b.live and @as(u16, @bitCast(b.location)) == @as(u16, @bitCast(location))) return true;
+        if (b.live and b.location.eql(location)) return true;
     }
     return false;
 }
@@ -501,6 +501,11 @@ fn control(req: *const proto.Req, token: u32, wanted: proto.DriverState) void {
 /// Read the manifests again and bind anything newly matched: how a driver
 /// dropped into `/lib/drivers` on a running machine comes alive.
 fn rescan(token: u32) void {
+    // The bus first, then what may drive it. Which devices exist is the
+    // kernel's to say and it only finds out by looking, so a rescan that
+    // read the manifests alone would rebind faithfully against a table
+    // still describing the machine as it was at boot.
+    _ = sys.pciRescan();
     readManifests();
     bindDevices();
     replyBody(token, .{ .none = 0 });
