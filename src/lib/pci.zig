@@ -179,6 +179,21 @@ pub const CapabilityId = enum(u8) {
     _,
 };
 
+/// The message-signalled interrupt capability's control half.
+///
+/// Only the enable matters to a driver that waits on a pin: a device with
+/// messages enabled does not assert its pin at all, by specification, so a
+/// driver watching the line waits for ever while the device is perfectly
+/// busy. Firmware that enabled them for its own use leaves them enabled.
+pub const MsiControl = packed struct(u16) {
+    enable: bool = false,
+    multiple_capable: u3 = 0,
+    multiple_enable: u3 = 0,
+    address_64: bool = false,
+    per_vector_masking: bool = false,
+    _9: u7 = 0,
+};
+
 /// The PCI Express capability's Device Control and Device Status pair, for
 /// the error-reporting enables a driver masks.
 pub const PcieDeviceControl = packed struct(u32) {

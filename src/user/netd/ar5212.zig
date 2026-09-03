@@ -264,6 +264,11 @@ pub fn start(nic: *NicDev) bool {
         device.started = false;
         return false;
     }
+    // Before the line is armed: a device left delivering messages asserts
+    // no pin, and this system routes pins.
+    if (pci.useIntx(nic.location)) {
+        log.note(name, "the card was set to message interrupts; turned back to its pin");
+    }
     pci.enableInterrupt(nic.location);
     sayListening();
     if (dev_mod.radio_up) |up| up(nic);

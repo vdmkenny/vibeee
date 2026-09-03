@@ -693,28 +693,20 @@ fn initPcie() void {
 /// device's PCI Express capability. The capability list is walked, not
 /// assumed: the pointer is whatever the silicon says it is.
 fn quietPcieCapability() void {
-    const head: pci.CapabilityPointer = @bitCast(pci.read(device.location, pci.CAPABILITIES_OFFSET));
+    const at = pci.capabilityAt(device.location, .pcie) orelse return;
 
-    var at = head.pointer;
-    while (at != 0) {
-        const capability: pci.Capability = @bitCast(pci.read(device.location, at));
-        if (capability.id == .pcie) {
-            var control: pci.PcieDeviceControl =
-                @bitCast(pci.read(device.location, at + pci.PcieDeviceControl.OFFSET));
-            control.correctable_report = false;
-            control.non_fatal_report = false;
-            control.fatal_report = false;
-            control.unsupported_report = false;
-            pci.write(device.location, at + pci.PcieDeviceControl.OFFSET, @bitCast(control));
+    var control: pci.PcieDeviceControl =
+        @bitCast(pci.read(device.location, at + pci.PcieDeviceControl.OFFSET));
+    control.correctable_report = false;
+    control.non_fatal_report = false;
+    control.fatal_report = false;
+    control.unsupported_report = false;
+    pci.write(device.location, at + pci.PcieDeviceControl.OFFSET, @bitCast(control));
 
-            var wire: pci.PcieLinkControl =
-                @bitCast(pci.read(device.location, at + pci.PcieLinkControl.OFFSET));
-            wire.aspm = 0;
-            pci.write(device.location, at + pci.PcieLinkControl.OFFSET, @bitCast(wire));
-            return;
-        }
-        at = capability.next;
-    }
+    var wire: pci.PcieLinkControl =
+        @bitCast(pci.read(device.location, at + pci.PcieLinkControl.OFFSET));
+    wire.aspm = 0;
+    pci.write(device.location, at + pci.PcieLinkControl.OFFSET, @bitCast(wire));
 }
 
 fn resetController() bool {

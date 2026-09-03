@@ -24,6 +24,7 @@ pub const IoBar = lib.pci.IoBar;
 pub const CAPABILITIES_OFFSET = lib.pci.CAPABILITIES_OFFSET;
 pub const CapabilityPointer = lib.pci.CapabilityPointer;
 pub const Capability = lib.pci.Capability;
+pub const MsiControl = lib.pci.MsiControl;
 pub const CapabilityId = lib.pci.CapabilityId;
 pub const PcieDeviceControl = lib.pci.PcieDeviceControl;
 pub const PcieLinkControl = lib.pci.PcieLinkControl;
@@ -136,6 +137,52 @@ pub fn sizeWindow(loc: Location, index: u8, bytes: u32, tag: []const u8, comptim
 
 pub fn bar(loc: Location, index: u8) u32 {
     return read(loc, lib.pci.BAR0_OFFSET + 4 * index);
+}
+
+/// Where the capability with `id` sits in this device's list, or null when
+/// it has none.
+///
+/// The list is walked rather than assumed: the pointer is whatever the
+/// silicon says it is. Bounded, because a list that points at itself is
+/// silicon nobody should spin on, and configuration space has room for no
+/// more entries than this.
+pub fn capabilityAt(loc: Location, id: lib.pci.CapabilityId) ?u8 {
+    const head: CapabilityPointer = @bitCast(read(loc, CAPABILITIES_OFFSET));
+
+    var at = head.pointer;
+    var hops: u8 = 0;
+    while (at != 0 and hops < MAX_CAPABILITIES) : (hops += 1) {
+        const capability: Capability = @bitCast(read(loc, at));
+        if (capability.id == id) return at;
+        at = capability.next;
+    }
+    return null;
+}
+
+/// Configuration space is 256 bytes and a capability takes four, so a list
+/// longer than this is a list that loops.
+const MAX_CAPABILITIES = 64;
+
+/// Make the device deliver its interrupts on its pin, and say whether it
+/// had to be told to.
+///
+/// A device with message-signalled interrupts enabled asserts no pin, so a
+/// driver waiting on the line waits for ever, and the device looks exactly
+/// like one with nothing to say. This system routes pins; a device left
+/// with messages enabled by firmware is turned back.
+pub fn useIntx(loc: Location) bool {
+    const at = capabilityAt(loc, .msi) orelse return false;
+    const capability: Capability = @bitCast(read(loc, at));
+
+    var control: MsiControl = @bitCast(capability.control);
+    if (!control.enable) return false;
+
+    control.enable = false;
+    var next = capability;
+    next.control = @bitCast(control);
+    write(loc, at, @bitCast(next));
+    _ = read(loc, at);
+    return true;
 }
 
 /// The interrupt line the firmware routed this device to, if any.
