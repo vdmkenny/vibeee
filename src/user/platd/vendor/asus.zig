@@ -250,9 +250,10 @@ fn setPanelLevel(device: *uacpi.Node, level: u32) bool {
 // same device, so what `INIT` hands over is which side answers the key, not
 // whether these answer at all.
 
-/// What this maker offers for one part: the pair of methods that switch it,
-/// and the bit under which a unit states it has it.
+/// What this maker switches for one part: which part it is, the pair of
+/// methods that switch it, and the bit under which a unit states it has it.
 const Offer = struct {
+    part: proto.Feature,
     set: [*:0]const u8,
     get: [*:0]const u8,
     /// Read out of a unit's stated feature list. A vendor's list is its own
@@ -261,20 +262,26 @@ const Offer = struct {
     stated: *const fn (Methods) bool,
 };
 
-/// What this maker offers for each part, or null for one it does not switch.
-/// Exhaustive over the protocol's own list, so a part added there is a build
-/// error here, answered deliberately either way, rather than a request this
-/// silently cannot serve.
+/// What these machines switch, and nothing else. A part absent from this
+/// list is one this maker does not switch, which is the ordinary case: the
+/// protocol names what a laptop of this age might have, and no one maker has
+/// all of it.
+const offers = [_]Offer{
+    .{ .part = .wireless, .set = "WLDS", .get = "WLDG", .stated = &statedWlan },
+    .{ .part = .camera, .set = "CAMS", .get = "CAMG", .stated = &statedCamera },
+    .{ .part = .card_reader, .set = "CRDS", .get = "CRDG", .stated = &statedCardReader },
+    // The three ports are switched together by one method, so the first of
+    // them standing for all three is what a unit is saying.
+    .{ .part = .usb_ports, .set = "USBS", .get = "USBG", .stated = &statedUsbPorts },
+    .{ .part = .modem, .set = "MODS", .get = "MODG", .stated = &statedModem },
+};
+
+comptime {
+    Vendor.checkTable(Offer, &offers);
+}
+
 fn offerFor(which: proto.Feature) ?Offer {
-    return switch (which) {
-        .wireless => .{ .set = "WLDS", .get = "WLDG", .stated = &statedWlan },
-        .camera => .{ .set = "CAMS", .get = "CAMG", .stated = &statedCamera },
-        .card_reader => .{ .set = "CRDS", .get = "CRDG", .stated = &statedCardReader },
-        // The three ports are switched together by one method, so the first
-        // of them standing for all three is what a unit is saying.
-        .usb_ports => .{ .set = "USBS", .get = "USBG", .stated = &statedUsbPorts },
-        .modem => .{ .set = "MODS", .get = "MODG", .stated = &statedModem },
-    };
+    return Vendor.switching(Offer, &offers, which);
 }
 
 fn statedWlan(m: Methods) bool {

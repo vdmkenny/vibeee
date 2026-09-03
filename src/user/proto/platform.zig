@@ -113,6 +113,16 @@ pub const FeatureAsk = packed struct(u32) {
     location: u16 = 0,
 };
 
+comptime {
+    // The place travels as the number a packed location already is. The
+    // location's own width is pinned where it is declared; what is not is
+    // the field it travels in, and a field narrowed under it would deliver
+    // a different place with nothing in the crossing able to say so.
+    if (@bitSizeOf(lib.pci.Location) != @bitSizeOf(@FieldType(FeatureAsk, "location"))) {
+        @compileError("a pci location no longer fits the field it travels in");
+    }
+}
+
 /// What one of them is doing.
 pub const FeatureState = extern struct {
     /// Whether this machine offers any way to switch it at all. A machine
