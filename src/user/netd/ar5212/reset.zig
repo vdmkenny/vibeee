@@ -612,7 +612,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
 // ---------------------------------------------------------------------------
 
 /// The noise floor the baseband last measured.
-fn readNoiseFloor(regs: Regs) i16 {
+pub fn readNoiseFloor(regs: Regs) i16 {
     return regs.get(.phy_cca, regs_mod.PhyCca).noise_floor;
 }
 

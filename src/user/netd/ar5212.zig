@@ -464,6 +464,16 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.signed(chip.noise.current);
     out.text(" dBm");
     if (chip.noise.settling) out.text(" (not settled)");
+
+    // The reading itself, beside what is done with it. A floor settles
+    // only out of readings inside the plausible band, and one outside it
+    // starts the window over, so a floor that never settles is a reading
+    // that keeps arriving impossible: the value is the whole question and
+    // the settled figure never shows it.
+    out.text(", last read ");
+    out.signed(reset.readNoiseFloor(regs));
+    out.text(" against a ceiling of ");
+    out.signed(chip.store.section(.g).noise_floor_threshold);
     out.text(", engine ");
     out.text(if (regs.get(.control, regs_mod.Control).rx_enable) "running" else "stopped");
     out.text(", walking 0x");
