@@ -84,20 +84,28 @@ fn netdMain() noreturn {
         sys.exit(0);
     }
 
+    // The hooks before the hardware. A driver is started by the adopting
+    // below, and starting is when it reports itself up; a radio says that
+    // exactly once, and a report made to a hook nobody has taken yet is
+    // made to nobody. The station never began, so it never hopped, so a
+    // radio sat on the channel it was first tuned to and heard whatever
+    // happened to be there.
+    //
+    // Frames may arrive from this point, and one for an interface the
+    // stack has not been given yet is dropped where it lands rather than
+    // being a reason to start the hardware first.
+    stack.init();
+    dev.stack_rx = stack.rx;
+    dev.stack_link = stack.linkState;
+    dev.changed = addressChanged;
+    station.init();
+
     _ = adopt();
 
     if (count == 0) {
         log.warn("netd", "no adapter matched a driver");
     }
 
-    // The stack, over whatever is driven: one netif each, frames and link
-    // changes flowing through the hooks, and the configured policy applied
-    // once now and again on every watch wake.
-    stack.init();
-    dev.stack_rx = stack.rx;
-    dev.stack_link = stack.linkState;
-    dev.changed = addressChanged;
-    station.init();
     for (ifaces[0..count]) |*iface| stack.attach(iface);
     stack.applyConfig(settings.load("net"));
 

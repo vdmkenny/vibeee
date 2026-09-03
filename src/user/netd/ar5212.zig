@@ -271,7 +271,15 @@ pub fn start(nic: *NicDev) bool {
     }
     pci.enableInterrupt(nic.location);
     sayListening();
-    if (dev_mod.radio_up) |up| up(nic);
+
+    // Reported exactly once, so a hook nobody has taken yet is a report
+    // made to nobody and a radio that never hops off the channel it was
+    // first tuned to. Silence would look like a quiet band.
+    if (dev_mod.radio_up) |up| {
+        up(nic);
+    } else {
+        log.warn(name, "nothing was listening for the radio coming up; it will not scan");
+    }
     return true;
 }
 
