@@ -135,7 +135,13 @@ fn adopt() usize {
             continue;
         };
 
-        var candidate = dev.NicDev{
+        // Built where it will live, and brought up there. Starting a
+        // driver hands it this address and it keeps it: the station holds
+        // the radio by it for as long as the radio is driven, so an
+        // interface brought up somewhere else and copied here afterwards
+        // leaves everything that was handed the address pointing at a
+        // place nothing owns any more.
+        ifaces[count] = .{
             .name = driver.name,
             .label = labelFor(driver.name),
             .class = driver.class,
@@ -151,8 +157,7 @@ fn adopt() usize {
         out.text(" is ours to drive");
         log.end();
 
-        if (!attach(&candidate)) continue;
-        ifaces[count] = candidate;
+        if (!attach(&ifaces[count])) continue;
         count += 1;
         joined += 1;
         log.note("netd", "driving the hardware");

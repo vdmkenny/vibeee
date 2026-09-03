@@ -81,6 +81,12 @@ pub const NicOps = struct {
 };
 
 /// One attached adapter.
+/// One interface, and the address of one is its identity.
+///
+/// A driver is handed this address when it is opened and keeps it; so does
+/// the station, for as long as it holds the radio. So an interface lives
+/// where it will stay before it is brought up, and is never brought up
+/// somewhere else and copied into place afterwards.
 pub const NicDev = struct {
     /// The driver's name in the probe table, exactly.
     name: []const u8,
