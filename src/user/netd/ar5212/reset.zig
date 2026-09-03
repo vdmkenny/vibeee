@@ -388,12 +388,17 @@ const Tally = struct {
     what: []const u8,
     held: usize = 0,
     looked: usize = 0,
+    /// How many read back as nothing at all. A whole table of these is a
+    /// range that does not answer reads rather than one that did not take
+    /// the writes, and the two look identical one register at a time.
+    silent: usize = 0,
     first: ?Mismatch = null,
 
     /// Read one back and count it, keeping the first that differed.
     fn note(self: *Tally, regs: Regs, register: u16, wanted: u32) void {
         self.looked += 1;
         const holds = regs.readAt(register);
+        if (holds == 0) self.silent += 1;
         if (holds == wanted) {
             self.held += 1;
             return;
@@ -412,6 +417,13 @@ const Tally = struct {
         out.decimal(self.looked);
         out.text(" ");
         out.text(self.what);
+        if (self.silent == self.looked) {
+            out.text(", every one of which reads as nothing");
+        } else if (self.silent > 0) {
+            out.text(", ");
+            out.decimal(self.silent);
+            out.text(" reading as nothing");
+        }
         if (self.first) |bad| {
             out.text("; 0x");
             out.hex(bad.register, 4);
