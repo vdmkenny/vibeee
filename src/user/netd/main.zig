@@ -109,6 +109,13 @@ fn netdMain() noreturn {
     for (ifaces[0..count]) |*iface| stack.attach(iface);
     stack.applyConfig(settings.load("net"));
 
+    // A radio the firmware leaves powered down is on no bus, so there was
+    // nothing to adopt and nothing configuration could be applied to. Asked
+    // for once here when configuration says it should be in use: the key
+    // that would otherwise ask is handled by the firmware itself on this
+    // machine and never arrives, so nothing else would ever ask.
+    if (stack.isEnabled(.wifi) and !anyOfClass(.wifi)) setWireless(true);
+
     serve(@intCast(channel));
 }
 
@@ -163,6 +170,14 @@ fn adopt() usize {
         log.note("netd", "driving the hardware");
     }
     return joined;
+}
+
+/// Whether an interface of this kind is being driven here.
+fn anyOfClass(class: lib.ifmatch.Class) bool {
+    for (ifaces[0..count]) |iface| {
+        if (iface.class == class) return true;
+    }
+    return false;
 }
 
 fn driving(location: lib.pci.Location) bool {

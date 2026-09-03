@@ -361,73 +361,68 @@ fn setRateDurations(regs: Regs) void {
 }
 
 /// Count the values the radio did not keep, per table, and name the first
-/// one it dropped.
+/// each table dropped.
 ///
 /// Every comparison against the reference says what the radio is written;
-/// none of them says what it holds afterwards. A part that silently drops
-/// a bit, or a range of registers landing somewhere other than where it
-/// was aimed, reads back as a radio configured differently from the one
-/// the code describes, and every register anybody thought to check by
-/// hand can still be right.
-///
-/// Counted per table and not only in total, because which table lost them
-/// is most of the answer: a whole one missing is a table that never
-/// arrived, and a scattering across all three is registers that do not
-/// read back what they were given, which many of them do not.
+/// none of them says what it holds afterwards. Which table lost them is
+/// most of the answer, and what one of them holds instead is the rest: a
+/// register reading zero was never written, and one reading something
+/// else entirely is a register that does not answer with what it was
+/// given, which several of these do not.
 fn sayUnkeptWrites(regs: Regs, mode: tables.Mode, band: tables.Band) void {
-    var first: ?Mismatch = null;
-    var modes = Tally{};
-    var common = Tally{};
-    var gain = Tally{};
+    var modes = Tally{ .what = "modes" };
+    var common = Tally{ .what = "common" };
+    var gain = Tally{ .what = "gain" };
 
-    for (tables.rf2425.modes) |row| kept(regs, row.register, row.value(mode), &modes, &first);
-    for (tables.rf2425.common) |row| kept(regs, row.register, row.value, &common, &first);
-    for (tables.rf2425.gain) |row| kept(regs, row.register, row.value(band), &gain, &first);
+    for (tables.rf2425.modes) |row| modes.note(regs, row.register, row.value(mode));
+    for (tables.rf2425.common) |row| common.note(regs, row.register, row.value);
+    for (tables.rf2425.gain) |row| gain.note(regs, row.register, row.value(band));
 
-    const whole = modes.looked + common.looked + gain.looked;
-    const held = modes.held + common.held + gain.held;
-
-    log.begin(name, if (held * 4 < whole * 3) .warn else .value);
-    out.text("the radio kept ");
-    modes.say("of its modes");
-    common.say(", of its common");
-    gain.say(", of its gain");
-    if (first) |bad| {
-        out.text("; first dropped 0x");
-        out.hex(bad.register, 4);
-        out.text(", wanted 0x");
-        out.hex(bad.wanted, 8);
-        out.text(", holds 0x");
-        out.hex(bad.holds, 8);
-    }
-    log.end();
+    for ([_]Tally{ modes, common, gain }) |tally| tally.say();
 }
 
 const Mismatch = struct { register: u16, wanted: u32, holds: u32 };
 
+/// One table's account of itself.
 const Tally = struct {
+    what: []const u8,
     held: usize = 0,
     looked: usize = 0,
+    first: ?Mismatch = null,
 
-    fn say(self: Tally, what: []const u8) void {
+    /// Read one back and count it, keeping the first that differed.
+    fn note(self: *Tally, regs: Regs, register: u16, wanted: u32) void {
+        self.looked += 1;
+        const holds = regs.readAt(register);
+        if (holds == wanted) {
+            self.held += 1;
+            return;
+        }
+        if (self.first == null) self.first = .{ .register = register, .wanted = wanted, .holds = holds };
+    }
+
+    /// A table that kept most of what it was given is a line nobody needs
+    /// to read; one that did not is the whole question.
+    fn say(self: Tally) void {
+        const most = self.held * 4 >= self.looked * 3;
+        log.begin(name, if (most) .value else .warn);
+        out.text("the radio kept ");
         out.decimal(self.held);
-        out.text("/");
+        out.text(" of ");
         out.decimal(self.looked);
         out.text(" ");
-        out.text(what);
+        out.text(self.what);
+        if (self.first) |bad| {
+            out.text("; 0x");
+            out.hex(bad.register, 4);
+            out.text(" was given 0x");
+            out.hex(bad.wanted, 8);
+            out.text(" and holds 0x");
+            out.hex(bad.holds, 8);
+        }
+        log.end();
     }
 };
-
-/// Read one back, count it, and remember the first that differed.
-fn kept(regs: Regs, register: u16, wanted: u32, tally: *Tally, first: *?Mismatch) void {
-    tally.looked += 1;
-    const holds = regs.readAt(register);
-    if (holds == wanted) {
-        tally.held += 1;
-        return;
-    }
-    if (first.* == null) first.* = .{ .register = register, .wanted = wanted, .holds = holds };
-}
 
 /// Activate the baseband and wait for it: the synthesizer's own settling
 /// time, then the reference's check that the baseband is ready, since the
