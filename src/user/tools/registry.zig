@@ -14,6 +14,7 @@ const ask = @import("ask.zig");
 const thermal = @import("thermal.zig");
 const acpi = @import("acpi.zig");
 const backlight = @import("backlight.zig");
+const hw = @import("hw.zig");
 const battery = @import("battery.zig");
 const cfg = @import("cfg.zig");
 const date = @import("date.zig");
@@ -60,6 +61,7 @@ pub const commands = [_]Command{
     .{ .name = "free", .summary = manual.summaryOf("free"), .run = &status.free },
     .{ .name = "battery", .summary = manual.summaryOf("battery"), .run = &battery.run },
     .{ .name = "backlight", .summary = manual.summaryOf("backlight"), .run = &backlight.run },
+    .{ .name = "hw", .summary = manual.summaryOf("hw"), .run = &hw.run },
     .{ .name = "hotkeys", .summary = manual.summaryOf("hotkeys"), .run = &hotkeys.run },
     .{ .name = "top", .summary = manual.summaryOf("top"), .run = &status.top },
     .{ .name = "kill", .summary = manual.summaryOf("kill"), .run = &status.kill },

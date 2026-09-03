@@ -15,6 +15,7 @@
 //! Both are interface facts read from the vendor's published driver, which is
 //! the only place this contract is written down.
 
+const lib = @import("lib");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
@@ -169,25 +170,105 @@ const GREET = false;
 /// asking for a hundred and getting whatever the firmware makes of it.
 pub const PANEL_LEVELS = 15;
 
-/// The device, when this unit both is one and names the panel among its
-/// features. A unit that stated its features and did not name the panel is
-/// believed; one that stated nothing is tried, because some of these
-/// firmwares underclaim.
-pub fn panelDevice() ?*uacpi.Node {
-    if (methods()) |stated| {
-        if (!stated.panel_brightness) return null;
+/// The device answering one of the feature's methods.
+///
+/// `offered` is whether this unit's stated feature list names this one, and
+/// null for a unit that stated nothing at all. A unit that stated its
+/// features and did not name this one is believed; one that stated nothing
+/// is tried anyway, because some of these firmwares underclaim. `anchor` is
+/// a method only a unit with this feature has, which is what a unit with no
+/// vendor device of the expected id is found by instead.
+fn deviceFor(offered: ?bool, anchor: [*:0]const u8) ?*uacpi.Node {
+    if (offered) |named| {
+        if (!named) return null;
     }
-    return node() orelse uacpi.firstWith("PBLS");
+    return node() orelse uacpi.firstWith(anchor);
+}
+
+/// What a getter answers, read as the plain integer every one of these
+/// returns.
+fn readInteger(device: *uacpi.Node, getter: [*:0]const u8) ?u32 {
+    var value: u64 = 0;
+    if (uacpi.uacpi_eval_simple_integer(device, getter, &value) != .ok) return null;
+    return @truncate(value);
+}
+
+pub fn panelDevice() ?*uacpi.Node {
+    return deviceFor(if (methods()) |stated| stated.panel_brightness else null, "PBLS");
 }
 
 pub fn panelLevel(device: *uacpi.Node) ?u32 {
-    var value: u64 = 0;
-    if (uacpi.uacpi_eval_simple_integer(device, "PBLG", &value) != .ok) return null;
-    return @truncate(value);
+    return readInteger(device, "PBLG");
 }
 
 pub fn setPanelLevel(device: *uacpi.Node, level: u32) bool {
     return uacpi.callWith(device, "PBLS", @min(level, PANEL_LEVELS));
+}
+
+// ---------------------------------------------------------------------------
+// The parts it switches
+// ---------------------------------------------------------------------------
+//
+// Every one of these is a pair of methods on the vendor device following the
+// convention the panel follows: a feature, then S to set it or G to get it.
+// None of them is behind `INIT`: the panel already works without it, on the
+// same device, so what `INIT` hands over is which side answers the key, not
+// whether these answer at all.
+
+/// The pair of methods that switch one part.
+const Pair = struct {
+    set: [*:0]const u8,
+    get: [*:0]const u8,
+};
+
+/// Which pair belongs to which part. Exhaustive over the protocol's own list,
+/// so a part added there is a build error here rather than a request this
+/// silently cannot answer.
+fn pairFor(which: proto.Feature) Pair {
+    return switch (which) {
+        .wireless => .{ .set = "WLDS", .get = "WLDG" },
+        .camera => .{ .set = "CAMS", .get = "CAMG" },
+        .card_reader => .{ .set = "CRDS", .get = "CRDG" },
+        .usb_ports => .{ .set = "USBS", .get = "USBG" },
+        .modem => .{ .set = "MODS", .get = "MODG" },
+    };
+}
+
+/// Whether a unit's stated feature list names this part. The vendor's list is
+/// its own shape and the protocol's is ours, so the two are mapped rather
+/// than assumed to line up.
+fn offers(which: proto.Feature, stated: Methods) bool {
+    return switch (which) {
+        .wireless => stated.wlan,
+        .camera => stated.camera,
+        .card_reader => stated.card_reader,
+        // The three ports are switched together by one method, so the first
+        // of them standing for all three is what this unit is saying.
+        .usb_ports => stated.usb_port_1,
+        .modem => stated.modem,
+    };
+}
+
+/// The vendor device, when this unit offers the part at all. The location is
+/// the standard way's to use: a vendor method names the part itself.
+pub fn featureDevice(which: proto.Feature, _: ?lib.pci.Location) ?*uacpi.Node {
+    return deviceFor(
+        if (methods()) |stated| offers(which, stated) else null,
+        pairFor(which).set,
+    );
+}
+
+/// What the firmware currently has the part set to, read rather than assumed:
+/// this is the whole point of asking before acting on a method nobody here
+/// has called before.
+pub fn featureState(which: proto.Feature, device: *uacpi.Node) ?bool {
+    return (readInteger(device, pairFor(which).get) orelse return null) != 0;
+}
+
+/// Ask for it on or off. What `on` and `off` are worth is the getter's own
+/// answer read back after, not assumed here.
+pub fn setFeature(which: proto.Feature, device: *uacpi.Node, on: bool) bool {
+    return uacpi.callWith(device, pairFor(which).set, @intFromBool(on));
 }
 
 // ---------------------------------------------------------------------------

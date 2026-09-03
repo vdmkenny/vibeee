@@ -180,7 +180,26 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
         .pci_route => route.answer(@bitCast(request.param), &body.body.route),
         .hotkey => hotkey.take(&body.body.press),
         .hotkey_watch => hotkey.subscribe(reply),
+        .feature => featureRead(request.param, &body.body.feature),
+        .feature_set => featureWrite(request.param, &body.body.feature),
     };
+}
+
+/// Unpack one of the two feature requests. The place is optional in the
+/// question and optional here, because a caller that has never seen the
+/// device has none to give.
+fn placeIn(question: proto.FeatureAsk) ?lib.pci.Location {
+    return if (question.located) @bitCast(question.location) else null;
+}
+
+fn featureRead(param: u32, into: *proto.FeatureState) proto.Status {
+    const question: proto.FeatureAsk = @bitCast(param);
+    return feature.read(question.which, placeIn(question), into);
+}
+
+fn featureWrite(param: u32, into: *proto.FeatureState) proto.Status {
+    const question: proto.FeatureAsk = @bitCast(param);
+    return feature.write(question.which, placeIn(question), question.on, into);
 }
 
 /// Off, through the firmware's own account of what that means.
@@ -245,6 +264,7 @@ fn stopEverything() bool {
 
 const asus = @import("asus.zig");
 const backlight = @import("backlight.zig");
+const feature = @import("feature.zig");
 const battery = @import("battery.zig");
 const thermal = @import("thermal.zig");
 const ec = @import("ec.zig");
@@ -255,6 +275,7 @@ const uacpi = @import("uacpi.zig");
 const work = @import("work.zig");
 const proto = @import("proto").platform;
 const std = @import("std");
+const lib = @import("lib");
 const quit = @import("ulib").quit;
 
 /// Read the tables and make the namespace usable.
@@ -323,8 +344,9 @@ fn bringUp() bool {
         backlight.check("with the controller listening");
     }
 
-    // Only now, because both of these call methods.
+    // Only now, because all of these call methods.
     backlight.report();
+    feature.report();
     if (EVENTS) hotkey.listen();
 
     log.note("platd", "firmware ready");

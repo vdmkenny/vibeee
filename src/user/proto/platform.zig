@@ -40,6 +40,11 @@ pub const Tag = enum(u8) {
     /// One thermal zone by position: what it reads and the two temperatures
     /// the firmware acts on. `end` past the last.
     thermal,
+    /// Whether one of the machine's switchable parts is powered. `param`
+    /// carries a `FeatureAsk` naming which.
+    feature,
+    /// Power it on or off. `param` carries the same, `on` included.
+    feature_set,
 };
 
 pub const Req = extern struct {
@@ -70,6 +75,60 @@ pub const RouteAsk = packed struct(u32) {
 /// The answer: a global line, wired as the routing tables wire them.
 pub const Route = extern struct {
     gsi: u32 = 0,
+};
+
+/// A part of the machine whose power a firmware method switches.
+///
+/// Named by what it is rather than by whose method answers: a laptop of this
+/// age powers these down to save a battery, every vendor spells the switch
+/// differently, and a caller asking for the wireless should not have to know
+/// which. A part this machine cannot switch is answered as absent rather than
+/// refused: there is nothing there to say no.
+pub const Feature = enum(u8) {
+    wireless,
+    camera,
+    card_reader,
+    /// The internal ports, which on a machine of this shape is what the
+    /// camera and the card reader are reached through: switching these off
+    /// takes everything behind them off the bus with it.
+    usb_ports,
+    modem,
+};
+
+/// Which one, and where it is when the caller knows.
+///
+/// The place matters because the portable way to switch a device's power is
+/// its own node in the firmware's namespace, and what ties a node to a device
+/// is the address the node carries. A vendor's own method needs none of this
+/// and ignores it.
+pub const FeatureAsk = packed struct(u32) {
+    which: Feature = .wireless,
+    on: bool = false,
+    /// Whether `location` says anything. A caller that has never seen the
+    /// device cannot name where it is, which is the case a vendor method
+    /// answers and a portable one cannot.
+    located: bool = false,
+    _rest: u6 = 0,
+    /// `lib.pci.Location`, packed.
+    location: u16 = 0,
+};
+
+/// What one of them is doing.
+pub const FeatureState = extern struct {
+    /// Whether this machine offers any way to switch it at all. A machine
+    /// that does not is not a machine refusing: there is nothing there, and
+    /// a caller should say so rather than report a failure.
+    present: u8 = 0,
+    on: u8 = 0,
+    _reserved: [2]u8 = @splat(0),
+
+    pub fn isPresent(self: FeatureState) bool {
+        return self.present != 0;
+    }
+
+    pub fn isOn(self: FeatureState) bool {
+        return self.on != 0;
+    }
 };
 
 pub const Status = enum(u8) {
@@ -403,6 +462,7 @@ pub const Body = extern union {
     backlight: Backlight,
     press: Press,
     route: Route,
+    feature: FeatureState,
 };
 
 comptime {
@@ -576,6 +636,37 @@ pub fn setBacklight(level: u32) ?Backlight {
 
     const panel = reply.body.backlight;
     return if (panel.isPresent()) panel else null;
+}
+
+/// Whether one of the machine's parts is powered, and whether this machine
+/// can say at all.
+///
+/// `where` is the device's place on the bus for a caller that has seen it,
+/// and null for one that has not: a machine whose only way to switch a part
+/// is the device's own node cannot find that node without it.
+pub fn feature(which: Feature, where: ?lib.pci.Location) FeatureState {
+    return featureCall(.feature, which, where, false);
+}
+
+/// Switch one, and answer with what it is doing afterwards rather than with
+/// what was asked for: a firmware that took the call and did nothing is the
+/// failure worth seeing, and reading back is the only way to know.
+pub fn setFeature(which: Feature, where: ?lib.pci.Location, on: bool) FeatureState {
+    return featureCall(.feature_set, which, where, on);
+}
+
+fn featureCall(tag: Tag, which: Feature, where: ?lib.pci.Location, on: bool) FeatureState {
+    const question = FeatureAsk{
+        .which = which,
+        .on = on,
+        .located = where != null,
+        .location = if (where) |at| @bitCast(at) else 0,
+    };
+
+    var reply = Rep{};
+    callWith(tag, @bitCast(question), &reply) catch return .{};
+    if (reply.status != .ok) return .{};
+    return reply.body.feature;
 }
 
 /// How full it is, against what it last managed to hold rather than what it

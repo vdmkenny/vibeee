@@ -1,0 +1,18 @@
+hw - the parts of the machine the firmware can switch
+
+  hw                     what this machine can switch, and how each stands
+  hw wireless            just that one
+  hw wireless on         switch it on
+  hw camera off          switch it off
+
+A netbook of this age powers parts of itself down to save a battery, and
+a part that is off is on no bus at all: it will not appear in `devices`
+or `usb`, because there is nothing there to appear. That looks exactly
+like hardware that is broken, and this is what tells the two apart.
+
+Fn+F2 does the same for the wireless, through the platform service,
+which also takes the interface down before the power goes and brings it
+back up after.
+
+On this machine the internal ports carry the camera and the card reader,
+so switching usb_ports off takes both off the bus with it.

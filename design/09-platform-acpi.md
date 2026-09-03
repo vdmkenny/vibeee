@@ -229,8 +229,14 @@ pub const PlatformReq = union(enum(u16)) {
     get_status: void,                       // → PowerStatus (also mirrored in status shm)
     backlight_set: u4,                      // PBLS 0..15
     backlight_get: void,                    // → u4
-    radio_set: struct { which: enum(u8){ wifi, camera }, on: bool }, // full gate flow §7.4
-    radio_get: struct { which: enum(u8){ wifi, camera } },           // → GateState
+    feature_set: struct { which: Feature, on: bool, where: ?pci.Location }, // built
+    feature: struct { which: Feature, where: ?pci.Location },               // → FeatureState
+    // Feature = wireless | camera | card_reader | usb_ports | modem. Two
+    // backends behind one op: the vendor's own S/G pair, which names the part
+    // and needs no address, and the standard `_PS0`/`_PS3`/`_STA` on the
+    // device's own node, reached by matching `_ADR` against `where`. Nothing
+    // in ACPI marks a node as a radio, so the portable way needs the place
+    // and answers "not switchable here" without one.
     fan_override: struct { pwm_pct: u8 },   // enters manual mode; caller must renew ≤10 s (watchdog)
     fan_auto: void,
     request_sleep: void, request_poweroff: void, request_reboot: void,
@@ -253,11 +259,16 @@ pub fn injectHotkey(code: u16, value: i32) void;        // wraps input_core.inje
 pub fn injectSwitch(code: u16, value: i32) void;        // EV_SW: SW_LID
 // Platform→GUI OSD events (brightness/volume popups) ride the PowerStatus event, not input.
 
-// ---- devmgr coordination (contract with devmgr/06) ----
-pub const GateNotice = union(enum(u16)) {   // platform → devmgr channel
-    pre_disable: enum(u8){ wifi_pcie_01_00_0, camera_usb },  // devmgr must quiesce netd/usbd, then ack
-    disabled: void, enabled_rescan: void,   // after WLDS/CAMS: rescan bus, rebind driver
-};
+// ---- who sequences a gate (built, and not as sketched) ----
+// There is no platform→devmgr notice channel and no ack. Each service owns
+// its own concern and asks the others for what is outside it, which puts the
+// order in the one place that has all of it: the service that owns the
+// interface. netd, on the wireless key, takes its interface down and then
+// asks platd to cut the power; coming back it asks platd for the power, then
+// asks devmgd to rescan, then claims what was bound to it. platd holds the
+// firmware and knows nothing of networks; devmgd holds which driver drives
+// what and knows nothing of radios. A part with no interface to sequence
+// (the camera, the ports) is switched through the same op by `hw`.
 
 // ---- powerd (userspace) config /cfg/power.conf (key=value) ----
 // lid_action=sleep|ignore, sleep_button=sleep, batt_warn=15, batt_sleep=5, batt_off=2,
@@ -357,7 +368,7 @@ to a GPIO port (0xFC2C) the EC firmware is not known to touch at runtime.
 ### 6.6 Hotkey decode table (Notify(ATKD, code) → action)
 | Code | Action |
 |---|---|
-| 0x10/0x11 | wifi toggle intent → powerd (gate flow §7.4); also inject KEY_WLAN |
+| 0x10/0x11 | wifi toggle intent, published as a press; netd sequences it (§5) |
 | 0x12 | inject KEY_PROG1 |
 | 0x13/0x14/0x15 | inject KEY_MUTE / KEY_VOLUMEDOWN / KEY_VOLUMEUP (sndd/GUI handle) |
 | 0x16 | inject KEY_DISPLAYOFF → GUI blanks (display driver DPMS) |

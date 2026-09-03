@@ -454,6 +454,65 @@ fn keepFirst(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
     return .stop;
 }
 
+/// The device the firmware places at `address` on its parent bus.
+///
+/// What ties a node to a device on a bus: `_ADR` is the address, and matching
+/// it is the only way to reach the node belonging to a particular device. A
+/// search by method or by name cannot do it, because nothing in the
+/// specification marks a node as being any particular kind of device.
+pub fn firstWithAddress(address: u64) ?*Node {
+    var at = ByAddress{ .wanted = address };
+    _ = namespace_for_each_child_simple(namespace_root(), matchAddress, &at);
+    return at.found;
+}
+
+const ByAddress = struct {
+    wanted: u64,
+    found: ?*Node = null,
+};
+
+fn matchAddress(user: ?*anyopaque, node: ?*Node, _: u32) callconv(.c) Walk {
+    const at: *ByAddress = @ptrCast(@alignCast(user.?));
+    if (!isDevice(node)) return .proceed;
+
+    var address: u64 = 0;
+    if (uacpi_eval_simple_integer(node, "_ADR", &address) != .ok) return .proceed;
+    if (address != at.wanted) return .proceed;
+
+    at.found = node;
+    return .stop;
+}
+
+/// Call a method that takes nothing, which is what the standard power methods
+/// are: `_PS0` and `_PS3` are instructions rather than questions.
+pub fn call(node: ?*Node, path: [*:0]const u8) bool {
+    return uacpi_eval(node, path, null, null) == .ok;
+}
+
+/// What `_STA` answers about a device.
+///
+/// Absent means the firmware has nothing there at all, which is not the same
+/// as a device that is present and switched off: the first cannot be switched
+/// on and the second is exactly what asking is for.
+pub const DeviceStatus = packed struct(u32) {
+    present: bool = false,
+    enabled: bool = false,
+    shown: bool = false,
+    working: bool = false,
+    battery_present: bool = false,
+    _rest: u27 = 0,
+};
+
+/// What the firmware says about a device, or its own default for a node that
+/// offers no `_STA`: a device that is there and on.
+pub fn status(node: ?*Node) DeviceStatus {
+    var value: u64 = 0;
+    if (uacpi_eval_simple_integer(node, "_STA", &value) != .ok) {
+        return .{ .present = true, .enabled = true, .shown = true, .working = true };
+    }
+    return @bitCast(@as(u32, @truncate(value)));
+}
+
 /// The node called `name`, wherever it sits. Any node, not only a device: a
 /// caller asking for one by name has usually read it off a listing.
 pub fn named(name: []const u8) ?*Node {
