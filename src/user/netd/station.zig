@@ -12,6 +12,7 @@
 //! driver, because there is one radio in the machine this is for. A second
 //! radio driver plugs into the same three hooks.
 
+const std = @import("std");
 const ar5212 = @import("ar5212.zig");
 const dev_mod = @import("dev.zig");
 const lib = @import("lib");
@@ -94,9 +95,21 @@ fn begin(nic: *dev_mod.NicDev) void {
 /// The slot's plan and ceiling, whenever the configuration says.
 fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     if (nic.class != .wifi) return;
+
+    const held = if (role.channel == 0) null else role.channel;
+    const moved = !std.meta.eql(state.plan, role.regdomain) or state.held != held;
     state.plan = role.regdomain;
-    state.held = if (role.channel == 0) null else role.channel;
-    if (state.held) |number| _ = ar5212.tune(.{ .number = number });
+    state.held = held;
+    if (held) |number| _ = ar5212.tune(.{ .number = number });
+
+    // Told something new, so what it heard as the radio it used to be is
+    // not evidence about the radio it now is. Counted and reported again
+    // from here, which is what makes a channel named after the boot worth
+    // naming at all.
+    if (moved) {
+        state.hops = 0;
+        ar5212.watchAgain(nic);
+    }
     ar5212.setSelfPower(role.txpower.resolve(role.regdomain).half_dbm);
 }
 

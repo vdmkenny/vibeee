@@ -420,6 +420,7 @@ fn listenFor(regs: Regs, causes: regs_mod.Interrupts) void {
 pub fn sayIfUnheard(nic: *NicDev) void {
     if (said_unheard or !device.started or device.gone) return;
     said_unheard = true;
+    const woken = nic.irq_count -| since.woken;
 
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
 
@@ -428,15 +429,15 @@ pub fn sayIfUnheard(nic: *NicDev) void {
     // frame is as much a fault as one that is never woken at all, and it
     // is a different one: the first is hearing a band it cannot make sense
     // of, the second is hearing nothing.
-    log.begin(name, if (nic.irq_count == 0) .warn else .value);
+    log.begin(name, if (woken == 0) .warn else .value);
     out.text("a sweep of the band: woken ");
-    out.decimal(@intCast(nic.irq_count));
+    out.decimal(@intCast(nic.irq_count -| since.woken));
     out.text(" times, ");
     out.decimal(phy_errors);
     out.text(" of them frames it could not decode, ");
-    out.decimal(@intCast(nic.stats.rx_pkts));
+    out.decimal(@intCast(nic.stats.rx_pkts -| since.handed_up));
     out.text(" handed up, ");
-    out.decimal(@intCast(nic.stats.rx_dropped));
+    out.decimal(@intCast(nic.stats.rx_dropped -| since.dropped));
     out.text(" dropped");
     if (commonestGivingUp()) |common| {
         out.text("; it gave up most often for ");
@@ -455,7 +456,7 @@ pub fn sayIfUnheard(nic: *NicDev) void {
     log.end();
 
     sayReceivePath(chip);
-    if (nic.irq_count != 0) return;
+    if (woken != 0) return;
 
     const regs = chip.regs;
     const command = pci.readCommand(nic.location);
@@ -548,6 +549,30 @@ fn sayReceivePath(chip: *reset.Chip) void {
 }
 
 var said_unheard = false;
+
+/// What a sweep is measured against: the counters as they stood when the
+/// radio was last told something new. A report covering the whole life of
+/// the interface would be mostly about whatever it was doing before the
+/// change that prompted a fresh look, which is the opposite of the
+/// question being asked.
+const Since = struct { woken: u64 = 0, handed_up: u64 = 0, dropped: u64 = 0 };
+var since = Since{};
+
+/// Look again, and measure from here.
+///
+/// Called when the radio is told something new, because everything
+/// counted until then was about the radio it used to be: a channel it was
+/// not listening on is not evidence about the one it is.
+pub fn watchAgain(nic: *NicDev) void {
+    said_unheard = false;
+    phy_errors = 0;
+    given_up = @splat(0);
+    since = .{
+        .woken = nic.irq_count,
+        .handed_up = nic.stats.rx_pkts,
+        .dropped = nic.stats.rx_dropped,
+    };
+}
 
 /// Frames the baseband heard and could not decode. Counted rather than
 /// acted on: nothing can be done with one, and the count is the proof that
