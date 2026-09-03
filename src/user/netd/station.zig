@@ -37,6 +37,10 @@ const State = struct {
     networks: lib.Bounded(mlme.Bss, MAX_NETWORKS) = .{},
     /// Which of the band's channels the radio is on.
     channel_index: usize = 0,
+    /// Dwells finished. A sweep of the plan is as many as there are
+    /// channels in it, which is when a radio that has heard nothing has
+    /// had its chance and is worth asking about.
+    hops: usize = 0,
     next_hop_at: u64 = 0,
     full_said: bool = false,
 };
@@ -78,6 +82,7 @@ pub fn tick() void {
 fn begin(nic: *dev_mod.NicDev) void {
     state.radio = nic;
     state.channel_index = 0;
+    state.hops = 0;
     state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
 }
 
@@ -91,9 +96,14 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
 /// Move to the next channel the plan allows, taking the noise floor the
 /// last dwell measured on the way.
 fn hop() void {
-    // A dwell has passed, so a radio that was going to be woken has been.
-    if (state.radio) |nic| ar5212.sayIfUnheard(nic);
     ar5212.calibrate(true);
+
+    // A whole sweep of the band has been listened to by now, so a radio
+    // that has heard none of it has had every channel its plan allows.
+    state.hops += 1;
+    if (state.hops == wifi.ghz2_channels.len) {
+        if (state.radio) |nic| ar5212.sayIfUnheard(nic);
+    }
 
     var index = state.channel_index;
     for (0..wifi.ghz2_channels.len) |_| {

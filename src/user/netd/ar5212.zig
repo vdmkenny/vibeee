@@ -372,6 +372,12 @@ const WANTED = regs_mod.Interrupts{
     .rx_overrun = true,
     .rx_end_of_list = true,
     .bus_error = true,
+    // Frames the baseband heard and could not make sense of. Not asked
+    // for by a driver that only wants traffic, and asked for here because
+    // it is the one thing that separates a receiver hearing nothing at
+    // all from one hearing a band it cannot decode: a radio counting
+    // these is a radio whose analog path reaches its demodulator.
+    .rx_phy_error = true,
 };
 
 /// Ask the radio to raise its line for exactly `causes`, and for nothing if
@@ -474,6 +480,8 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.signed(reset.readNoiseFloor(regs));
     out.text(" against a ceiling of ");
     out.signed(chip.store.section(.g).noise_floor_threshold);
+    out.text(", heard and not understood ");
+    out.decimal(phy_errors);
     out.text(", engine ");
     out.text(if (regs.get(.control, regs_mod.Control).rx_enable) "running" else "stopped");
     out.text(", walking 0x");
@@ -484,6 +492,11 @@ fn sayReceivePath(chip: *reset.Chip) void {
 }
 
 var said_unheard = false;
+
+/// Frames the baseband heard and could not decode. Counted rather than
+/// acted on: nothing can be done with one, and the count is the proof that
+/// the analog path reaches the demodulator at all.
+var phy_errors: usize = 0;
 
 /// The channel the radio is on.
 pub fn tuned() ?wifi.Channel {
@@ -557,6 +570,7 @@ pub fn irq(nic: *NicDev) bool {
 
     if (cause.rx_ok or cause.rx_descriptor or cause.rx_error) reapRx(nic, chip);
     if (cause.rx_overrun) nic.stats.rx_dropped += 1;
+    if (cause.rx_phy_error) phy_errors +%= 1;
 
     // A chain that ran to its end was starved rather than broken: it is
     // circular, so pointing the radio back at the slot the service is
