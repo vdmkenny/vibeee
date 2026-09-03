@@ -670,6 +670,238 @@ pub fn radioRevision(raw: u8) u8 {
 const Nibbles = packed struct(u8) { low: u4, high: u4 };
 
 // ---------------------------------------------------------------------------
+// Transmit power: the amplifier's curve, from the store's calibration points
+// ---------------------------------------------------------------------------
+//
+// The baseband does not take a power in decibels. It takes a table of a
+// hundred and twenty-eight detector readings, one per half decibel, and the
+// boundaries at which one gain setting of the amplifier gives way to the
+// next. The store holds a handful of measured points per gain, at a handful
+// of channels; the table is those points interpolated to the channel in use
+// and filled in at every half decibel between them.
+//
+// All of it is arithmetic, so all of it is here and tested. What the driver
+// does with the answer is write it to the baseband.
+
+/// One gain setting's measured curve: the detector's reading at each of a
+/// handful of powers.
+pub const PdGain = struct {
+    pub const MAX_POINTS = 5;
+
+    /// Which gain setting of the amplifier this curve is for.
+    gain: u16 = 0,
+    points: u8 = 0,
+    /// The detector's reading at each point.
+    vpd: [MAX_POINTS]u16 = @splat(0),
+    /// The power at each point, in quarter decibels.
+    quarter_dbm: [MAX_POINTS]i16 = @splat(0),
+};
+
+/// The curves measured at one channel.
+pub const CalChannel = struct {
+    pub const MAX_GAINS = 4;
+
+    max_quarter_dbm: i16 = 0,
+    /// Highest gain setting first, which is the lowest power.
+    per_gain: [MAX_GAINS]PdGain = @splat(.{}),
+};
+
+/// Every curve the store holds for a band.
+pub const CalCurves = struct {
+    pub const MAX_CHANNELS = 10;
+
+    /// The channels measured, in ascending order.
+    megahertz: [MAX_CHANNELS]u16 = @splat(0),
+    channels: u8 = 0,
+    per_channel: [MAX_CHANNELS]CalChannel = @splat(.{}),
+};
+
+/// What the baseband is given.
+pub const PowerTable = struct {
+    pub const ENTRIES = 128;
+
+    /// One reading per half decibel.
+    pdadc: [ENTRIES]u8 = @splat(0),
+    /// Where each gain setting gives way to the next, in half decibels.
+    boundaries: [CalChannel.MAX_GAINS]u16 = @splat(0),
+    /// The gain settings used, lowest power first.
+    gains: [CalChannel.MAX_GAINS]u16 = @splat(0),
+    used: u8 = 0,
+    /// The lowest power the curves were measured at, in half decibels. A
+    /// power index into the table is counted from here, not from zero.
+    floor_half_dbm: i16 = 0,
+};
+
+/// How far one gain setting's curve is carried past its boundary, in half
+/// decibels: the reference stretches the last one by this much.
+const GAIN_BOUNDARY_STRETCH: u16 = 4;
+
+/// The most half-decibels one gain setting's curve covers.
+const PWR_RANGE_HALF_DB = 64;
+
+/// The highest reading the table holds.
+const PDADC_MAX: u16 = 127;
+
+/// Where a value sits in an ascending list: the entries either side of it,
+/// or the same entry twice when it is one of them or outside the list.
+fn bracket(comptime T: type, target: T, list: []const T) struct { lo: usize, hi: usize } {
+    if (list.len == 0) return .{ .lo = 0, .hi = 0 };
+    if (target < list[0]) return .{ .lo = 0, .hi = 0 };
+    if (target >= list[list.len - 1]) return .{ .lo = list.len - 1, .hi = list.len - 1 };
+    for (list, 0..) |value, i| {
+        if (value == target) return .{ .lo = i, .hi = i };
+        if (i + 1 < list.len and target < list[i + 1]) return .{ .lo = i, .hi = i + 1 };
+    }
+    return .{ .lo = list.len - 1, .hi = list.len - 1 };
+}
+
+/// A value read off the straight line between two measured points.
+fn interpolate(target: i32, left: i32, right: i32, at_left: i32, at_right: i32) i32 {
+    if (right == left) return at_left;
+    return @divTrunc((target - left) * at_right + (right - target) * at_left, right - left);
+}
+
+/// Fill one gain's detector readings at every half decibel from `floor` to
+/// `ceiling`, reading between the measured points and beyond the ends.
+/// False when there are too few points to draw a line through.
+fn fillVpd(gain: *const PdGain, floor: i16, ceiling: i16, into: *[PWR_RANGE_HALF_DB]u16) bool {
+    const points = gain.points;
+    if (points < 2) return false;
+
+    const powers = gain.quarter_dbm[0..points];
+    var step: usize = 0;
+    // The measured powers are in quarter decibels and the steps are halves.
+    var power: i16 = floor *| 2;
+    while (step <= @as(usize, @intCast(@max(ceiling - floor, 0)))) : (step += 1) {
+        if (step >= PWR_RANGE_HALF_DB) break;
+        const near = bracket(i16, power, powers);
+        // At the ends the line is carried on rather than stopped.
+        const hi = @max(near.hi, 1);
+        const lo = @min(near.lo, points - 2);
+        into[step] = @intCast(std.math.clamp(
+            interpolate(power, powers[lo], powers[hi], gain.vpd[lo], gain.vpd[hi]),
+            0,
+            std.math.maxInt(u16),
+        ));
+        power +|= 2;
+    }
+    return true;
+}
+
+/// The amplifier's table for a channel, from the curves either side of it.
+///
+/// `overlap_half_db` is how far the baseband is told the gain settings
+/// overlap, which it holds in a register of its own.
+pub fn powerTable(curves: *const CalCurves, megahertz: u16, overlap_half_db: u16) ?PowerTable {
+    if (curves.channels == 0) return null;
+    const near = bracket(u16, megahertz, curves.megahertz[0..curves.channels]);
+    const left = &curves.per_channel[near.lo];
+    const right = &curves.per_channel[near.hi];
+
+    var out = PowerTable{};
+    var floor: [CalChannel.MAX_GAINS]i16 = @splat(0);
+    var ceiling: [CalChannel.MAX_GAINS]i16 = @splat(0);
+    var curve: [CalChannel.MAX_GAINS][PWR_RANGE_HALF_DB]u16 = @splat(@splat(0));
+
+    // Backwards, because the highest gain setting is the lowest power.
+    var which: usize = CalChannel.MAX_GAINS;
+    while (which > 0) {
+        which -= 1;
+        const on_left = &left.per_gain[which];
+        const on_right = &right.per_gain[which];
+        const points = on_left.points;
+        if (points == 0) continue;
+
+        const used = out.used;
+        out.gains[used] = on_left.gain;
+        // The lower of the two channels' ends, so the curve covers both.
+        floor[used] = @divTrunc(@min(on_left.quarter_dbm[0], on_right.quarter_dbm[0]), 2);
+        ceiling[used] = @divTrunc(@min(
+            on_left.quarter_dbm[points - 1],
+            on_right.quarter_dbm[points - 1],
+        ), 2);
+
+        var on_the_left: [PWR_RANGE_HALF_DB]u16 = @splat(0);
+        var on_the_right: [PWR_RANGE_HALF_DB]u16 = @splat(0);
+        if (!fillVpd(on_left, floor[used], ceiling[used], &on_the_left)) continue;
+        if (!fillVpd(on_right, floor[used], ceiling[used], &on_the_right)) continue;
+
+        const span: usize = @intCast(@max(ceiling[used] - floor[used], 0));
+        for (0..@min(span, PWR_RANGE_HALF_DB)) |step| {
+            curve[used][step] = @intCast(std.math.clamp(interpolate(
+                megahertz,
+                curves.megahertz[near.lo],
+                curves.megahertz[near.hi],
+                on_the_left[step],
+                on_the_right[step],
+            ), 0, std.math.maxInt(u16)));
+        }
+        out.used += 1;
+    }
+    if (out.used == 0) return null;
+
+    out.floor_half_dbm = floor[0];
+
+    var at: usize = 0;
+    for (0..out.used) |gain| {
+        // The last gain setting has no successor to meet, so its curve is
+        // carried a little past its end.
+        out.boundaries[gain] = if (gain == out.used - 1)
+            @intCast(@max(ceiling[gain] + GAIN_BOUNDARY_STRETCH, 0))
+        else
+            @intCast(@max(@divTrunc(ceiling[gain] + floor[gain + 1], 2), 0));
+
+        // Where this gain's curve starts, which is below its own floor when
+        // the setting before it stopped short.
+        var step: i32 = if (gain == 0)
+            0
+        else
+            (@as(i32, out.boundaries[gain - 1]) - floor[gain]) - overlap_half_db;
+
+        // Below the measured points the curve is carried on at the slope it
+        // starts with, never below nothing.
+        const rising: i32 = @max(@as(i32, curve[gain][1]) - @as(i32, curve[gain][0]), 1);
+        while (step < 0 and at < PowerTable.ENTRIES) : (step += 1) {
+            const value = @as(i32, curve[gain][0]) + step * rising;
+            out.pdadc[at] = @intCast(std.math.clamp(value, 0, PDADC_MAX));
+            at += 1;
+        }
+
+        const span: i32 = ceiling[gain] - floor[gain];
+        const wanted: i32 = @as(i32, out.boundaries[gain]) + overlap_half_db - floor[gain];
+        const measured = @min(wanted, span);
+        while (step < measured and at < PowerTable.ENTRIES) : (step += 1) {
+            out.pdadc[at] = @intCast(@min(curve[gain][@intCast(step)], PDADC_MAX));
+            at += 1;
+        }
+
+        // Past the measured points, likewise carried on at the slope it ends
+        // with, never above what the table can hold.
+        if (span >= 2) {
+            const falling: i32 = @max(
+                @as(i32, curve[gain][@intCast(span - 1)]) - @as(i32, curve[gain][@intCast(span - 2)]),
+                1,
+            );
+            while (step < wanted and at < PowerTable.ENTRIES) : (step += 1) {
+                const value = @as(i32, curve[gain][@intCast(span - 1)]) + (step - measured) * falling;
+                out.pdadc[at] = @intCast(std.math.clamp(value, 0, PDADC_MAX));
+                at += 1;
+            }
+        }
+    }
+
+    // A boundary for every setting, and a reading for every half decibel:
+    // the last of each stands for whatever is past the end.
+    for (out.used..CalChannel.MAX_GAINS) |gain| {
+        out.boundaries[gain] = out.boundaries[gain - 1];
+    }
+    while (at < PowerTable.ENTRIES) : (at += 1) {
+        out.pdadc[at] = if (at == 0) 0 else out.pdadc[at - 1];
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // The calibration store
 // ---------------------------------------------------------------------------
 
@@ -1545,4 +1777,100 @@ test "the rate-duration table times an acknowledgement at each rate's control ra
         }
     }
     try testing.expect(found_short);
+}
+
+test "the amplifier's table is the store's points filled in at every half decibel" {
+    // Two channels measured the same, so the interpolation between them is
+    // the identity and the arithmetic can be followed by hand. Two gain
+    // settings, each a straight line: the detector reads one more for every
+    // half decibel.
+    var gains = CalChannel{};
+    gains.per_gain[3] = .{
+        .gain = 3,
+        .points = 4,
+        .quarter_dbm = .{ 0, 40, 80, 120, 0 },
+        .vpd = .{ 0, 20, 40, 60, 0 },
+    };
+    gains.per_gain[2] = .{
+        .gain = 1,
+        .points = 4,
+        .quarter_dbm = .{ 80, 120, 160, 200, 0 },
+        .vpd = .{ 30, 50, 70, 90, 0 },
+    };
+
+    var curves = CalCurves{ .channels = 2 };
+    curves.megahertz[0] = 2412;
+    curves.megahertz[1] = 2462;
+    curves.per_channel[0] = gains;
+    curves.per_channel[1] = gains;
+
+    const table = powerTable(&curves, 2437, 2).?;
+
+    // Both settings are used, highest gain first, and the floor is the
+    // lowest power anything was measured at.
+    try testing.expectEqual(@as(u8, 2), table.used);
+    try testing.expectEqual(@as(u16, 3), table.gains[0]);
+    try testing.expectEqual(@as(u16, 1), table.gains[1]);
+    try testing.expectEqual(@as(i16, 0), table.floor_half_dbm);
+
+    // The first setting gives way halfway between where it ends and where
+    // the next begins; the last is carried a little past its end.
+    try testing.expectEqual(@as(u16, 50), table.boundaries[0]);
+    try testing.expectEqual(@as(u16, 104), table.boundaries[1]);
+    // A boundary for every setting, the last standing for the rest.
+    try testing.expectEqual(@as(u16, 104), table.boundaries[3]);
+
+    // The first setting's own readings, up to its boundary and the overlap.
+    try testing.expectEqual(@as(u8, 0), table.pdadc[0]);
+    try testing.expectEqual(@as(u8, 51), table.pdadc[51]);
+    // Then the second setting takes over, starting where the boundary and
+    // the overlap put it rather than at its own first point.
+    try testing.expectEqual(@as(u8, 38), table.pdadc[52]);
+    try testing.expectEqual(@as(u8, 89), table.pdadc[103]);
+    // Past its last measured point the line is carried on at its own slope.
+    try testing.expectEqual(@as(u8, 89), table.pdadc[104]);
+    try testing.expectEqual(@as(u8, 94), table.pdadc[109]);
+    // And the rest of the table holds what the end of it held.
+    try testing.expectEqual(@as(u8, 94), table.pdadc[127]);
+}
+
+test "a table is refused where there is nothing measured to build one from" {
+    var empty = CalCurves{};
+    try testing.expectEqual(@as(?PowerTable, null), powerTable(&empty, 2437, 2));
+
+    // A channel with no usable curve is no better than none.
+    empty.channels = 1;
+    empty.megahertz[0] = 2412;
+    try testing.expectEqual(@as(?PowerTable, null), powerTable(&empty, 2412, 2));
+
+    // One point is not a line, so nothing can be read between them.
+    var thin = CalCurves{ .channels = 1 };
+    thin.megahertz[0] = 2412;
+    thin.per_channel[0].per_gain[3] = .{ .gain = 3, .points = 1, .quarter_dbm = .{ 40, 0, 0, 0, 0 }, .vpd = .{ 20, 0, 0, 0, 0 } };
+    try testing.expectEqual(@as(?PowerTable, null), powerTable(&thin, 2412, 2));
+}
+
+test "the curve is read between the two channels either side of the one wanted" {
+    // The same setting measured differently at each end of the band: at the
+    // middle the reading is the average of the two.
+    var low = CalChannel{};
+    low.per_gain[3] = .{ .gain = 3, .points = 2, .quarter_dbm = .{ 0, 120, 0, 0, 0 }, .vpd = .{ 0, 60, 0, 0, 0 } };
+    var high = CalChannel{};
+    high.per_gain[3] = .{ .gain = 3, .points = 2, .quarter_dbm = .{ 0, 120, 0, 0, 0 }, .vpd = .{ 20, 80, 0, 0, 0 } };
+
+    var curves = CalCurves{ .channels = 2 };
+    curves.megahertz[0] = 2400;
+    curves.megahertz[1] = 2500;
+    curves.per_channel[0] = low;
+    curves.per_channel[1] = high;
+
+    // At the low end it is the low channel's own curve.
+    const at_low = powerTable(&curves, 2400, 0).?;
+    try testing.expectEqual(@as(u8, 0), at_low.pdadc[0]);
+    // Halfway, twenty higher at the bottom of the curve is ten higher here.
+    const middle = powerTable(&curves, 2450, 0).?;
+    try testing.expectEqual(@as(u8, 10), middle.pdadc[0]);
+    // At the high end, the high channel's.
+    const at_high = powerTable(&curves, 2500, 0).?;
+    try testing.expectEqual(@as(u8, 20), at_high.pdadc[0]);
 }
