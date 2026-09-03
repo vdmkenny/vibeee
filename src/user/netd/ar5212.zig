@@ -553,6 +553,12 @@ fn startReceive(regs: Regs) void {
         // distinguishable from a band with nothing on it. Both modulations
         // this radio speaks, because either failing is the same news.
         .phy_error = true,
+        // Everything the baseband manages to decode, whoever it was for.
+        // A station with no cell of its own has nothing to be selective
+        // about: what it is doing is listening to a band to find out what
+        // is on it, and a frame addressed elsewhere is exactly what it is
+        // looking for. What it accepts narrows when it joins something.
+        .promiscuous = true,
     });
     regs.put(.phy_error_filter, regs_mod.PhyErrorFilter{ .ofdm = true, .cck = true });
     regs.set(.rx_config, regs_mod.RxConfig, "zero_length_dma", false);
