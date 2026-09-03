@@ -5,7 +5,13 @@
 # happened on a machine with no serial port, and it should be one command.
 #
 #   tools/qemu-shot.sh <out.png> [-t "text to type"] [-m "monitor commands"]
-#                      [-w seconds] [-p seconds] [-s seconds] [-- qemu args]
+#                      [-w seconds] [-d seconds] [-p seconds] [-s seconds]
+#                      [-- qemu args]
+#
+# `-w` is how long to wait for the boot to report itself done before typing;
+# the wait ends as soon as it does. `-d` is how much longer to wait after
+# that, for a machine whose removable storage arrives once the boot has
+# reported: a volume is mounted when the bus finds it, which is after.
 #
 # `-p` is the pause after each typed line, for a line whose command takes
 # longer than a moment: keys typed while it runs are not read by the shell.
@@ -30,7 +36,14 @@ TYPE=""
 # and a screenshot taken then says nothing about whether it works.
 SETTLE=1
 MONITOR=""
+# The longest the machine is given to report a finished boot before it is
+# typed at anyway. A boot that never reports is a boot worth screenshotting.
 BOOT_WAIT=3
+# What a finished boot says. Every image runs the same init.
+READY="boot reported done"
+# How long the machine is left alone after that. The prompt is drawn before
+# it, so this is only for what is still arriving as the boot reports.
+AFTER_READY=0.5
 PAUSE=0.6
 
 while [ $# -gt 0 ]; do
@@ -38,6 +51,7 @@ while [ $# -gt 0 ]; do
         -t) TYPE="$2"; shift 2 ;;
         -m) MONITOR="$2"; shift 2 ;;
         -w) BOOT_WAIT="$2"; shift 2 ;;
+        -d) AFTER_READY="$2"; shift 2 ;;
         -p) PAUSE="$2"; shift 2 ;;
         -s) SETTLE="$2"; shift 2 ;;
         --) shift; break ;;
@@ -65,7 +79,20 @@ trap 'kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true; rm -f "$SO
 
 # Wait for the monitor socket rather than sleeping a guessed interval.
 i=0; while [ ! -S "$SOCK" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
-sleep "$BOOT_WAIT"
+
+# And for the machine, on the same principle. A key sent before the shell
+# reads it is dropped by the keyboard controller, and the command it belonged
+# to reads afterwards like one that ran and printed nothing. The boot says
+# when it is done on the serial line the rest of the transcript arrives on,
+# so the wait ends on that; `-w` is only how long to wait for it.
+ticks=$(awk -v s="$BOOT_WAIT" 'BEGIN { printf "%d", (s * 10) + 0.5 }')
+i=0
+while [ $i -lt "$ticks" ]; do
+    grep -q "$READY" "$LOG" 2>/dev/null && break
+    sleep 0.1
+    i=$((i+1))
+done
+sleep "$AFTER_READY"
 
 monitor() { printf '%s\n' "$1" | nc -U "$SOCK" >/dev/null 2>&1 || true; }
 
