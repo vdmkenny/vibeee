@@ -498,6 +498,14 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.signed(chip.store.section(.g).noise_floor_threshold);
     out.text(", heard and not understood ");
     out.decimal(phy_errors);
+    // Read back rather than assumed. Everything above says what the radio
+    // was told; these say what it is holding, and a setting that did not
+    // survive whatever came after it looks exactly like one that was never
+    // written.
+    out.text(", baseband ");
+    out.text(if (regs.get(.phy_active, regs_mod.PhyActive).enable) "active" else "idle");
+    out.text(", accepting 0x");
+    out.hex(@as(u32, @bitCast(regs.get(.rx_filter, regs_mod.RxFilter))), 4);
     out.text(", engine ");
     out.text(if (regs.get(.control, regs_mod.Control).rx_enable) "running" else "stopped");
     out.text(", walking 0x");
