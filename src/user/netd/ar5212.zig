@@ -388,6 +388,53 @@ fn listenFor(regs: Regs, causes: regs_mod.Interrupts) void {
     regs.flush(.interrupt_enable);
 }
 
+/// Say, once, when the radio has been listening and its line has never
+/// delivered anything.
+///
+/// Three faults look identical from outside, and this is everything needed
+/// to tell them apart. A mask that reads back empty is a write the chip did
+/// not take, and nothing will ever raise the line. A mask that took, with
+/// causes standing in the status register, is a radio raising an interrupt
+/// that does not arrive here, which is a question about how the line is
+/// routed rather than about the radio. A mask that took with nothing
+/// standing is a radio that genuinely has nothing to say, and then the fault
+/// is in front of the baseband rather than behind it.
+///
+/// The pin and the decode are said beside them because a card that asserts
+/// correctly and is told not to, or is routed to a line nobody waits on,
+/// answers the second case and is not the radio's doing either.
+pub fn sayIfUnheard(nic: *NicDev) void {
+    if (said_unheard or !device.started or device.gone) return;
+    said_unheard = true;
+    if (nic.irq_count != 0) return;
+
+    const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    const regs = chip.regs;
+    const command = pci.readCommand(nic.location);
+
+    log.begin(name, .warn);
+    out.text("listening and never woken: mask 0x");
+    out.hex(@as(u32, @bitCast(regs.get(.interrupt_mask, regs_mod.Interrupts))), 8);
+    out.text(", enabled ");
+    out.text(if (regs.get(.interrupt_enable, regs_mod.InterruptEnable).enabled) "yes" else "no");
+    out.text(", standing 0x");
+    // The status that does not clear on reading, so this cannot take a
+    // cause the handler is owed.
+    out.hex(@as(u32, @bitCast(regs.get(.interrupt_status, regs_mod.Interrupts))), 8);
+    out.text(", pin ");
+    out.text(@tagName(pci.interruptPin(nic.location)));
+    if (command.interrupt_disable) out.text(" told not to assert");
+    out.text(", line ");
+    if (nic.irq_gsi) |gsi| {
+        out.decimal(gsi);
+    } else {
+        out.text("none");
+    }
+    log.end();
+}
+
+var said_unheard = false;
+
 /// The channel the radio is on.
 pub fn tuned() ?wifi.Channel {
     return device.channel;

@@ -91,6 +91,8 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
 /// Move to the next channel the plan allows, taking the noise floor the
 /// last dwell measured on the way.
 fn hop() void {
+    // A dwell has passed, so a radio that was going to be woken has been.
+    if (state.radio) |nic| ar5212.sayIfUnheard(nic);
     ar5212.calibrate(true);
 
     var index = state.channel_index;
