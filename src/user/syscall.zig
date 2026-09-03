@@ -324,8 +324,8 @@ pub fn irqAttach(gsi: u32) IrqError!u32 {
 }
 
 /// Map a device's registers into this process. Needs the driver capability.
-pub fn mapDevice(phys: usize, len: usize) ?[*]volatile u32 {
-    const at = syscall3(abi.number("map_device"), phys, len, 0);
+pub fn mapDevice(phys: lib.Phys, len: usize) ?[*]volatile u32 {
+    const at = syscall3(abi.number("map_device"), phys.addr(), len, 0);
     return if (at < 0) null else @ptrFromInt(@as(usize, @intCast(at)));
 }
 
@@ -365,7 +365,7 @@ pub fn pciRescan() isize {
     return syscall1(abi.number("pci_rescan"), 0);
 }
 
-pub fn dmaAlloc(size: usize, physOut: *u32) isize {
+pub fn dmaAlloc(size: usize, physOut: *lib.Phys) isize {
     return syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut));
 }
 

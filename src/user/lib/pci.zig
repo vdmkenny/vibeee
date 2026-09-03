@@ -67,13 +67,13 @@ pub fn write8(loc: Location, register: u8, value: u8) void {
 /// Every driver mapping registers asks this same question, and asking it
 /// in one place is what keeps a driver from mapping an I/O port number as
 /// if it were memory.
-pub fn memoryBase(loc: Location, index: u8) ?u32 {
+pub fn memoryBase(loc: Location, index: u8) ?lib.Phys {
     const window: MemoryBar = @bitCast(bar(loc, index));
     // A 64-bit window is a pair whose upper half lives in the next slot,
     // and a pair claimed by the last slot has no next slot to live in.
     if (window.kind == .bits64 and index >= 5) return null;
     const upper = if (window.kind == .bits64) bar(loc, index + 1) else 0;
-    return lib.pci.memoryWindowBase(window, upper);
+    return lib.Phys.of(lib.pci.memoryWindowBase(window, upper) orelse return null);
 }
 
 /// A device's register aperture, opened the one way every memory-mapped
@@ -93,7 +93,7 @@ pub fn openAperture(
         log.fail(tag, "the " ++ what ++ " exposes no register aperture");
         return null;
     };
-    if (base > std.math.maxInt(u32) - (bytes - 1)) {
+    if (base.plus(bytes - 1) == null) {
         log.fail(tag, "the " ++ what ++ " exposes no register aperture");
         return null;
     }

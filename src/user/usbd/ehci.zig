@@ -1143,7 +1143,7 @@ fn hostError() void {
     out.text("a host system error while walking ");
     out.hex(opRead(.async_base), 8);
     out.text("; the arena is at ");
-    out.hex(controller.arena.phys, 8);
+    out.hex(controller.arena.phys.addr(), 8);
     pci.tellBusTrouble(controller.location);
     log.end();
 

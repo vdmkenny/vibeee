@@ -334,7 +334,7 @@ comptime {
 const Device = struct {
     regs: Regs = .{ .base = undefined },
     rings: *Rings = undefined,
-    phys: u32 = 0,
+    phys: lib.Phys = .none,
     dma_handle: ?u32 = null,
     rx_next: u16 = 0, // next completed receive descriptor
     tx_next: u16 = 0, // next transmit descriptor to publish
@@ -367,7 +367,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     }
 
     // One physically contiguous run for descriptors and buffers.
-    var phys: u32 = 0;
+    var phys: lib.Phys = .none;
     const handle = sys.dmaAlloc(@sizeOf(Rings), &phys);
     if (handle < 0) {
         log.failed("e1000", "cannot allocate DMA rings", handle);
@@ -375,7 +375,9 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     }
     const dma_handle: u32 = @intCast(handle);
     const last_offset: u32 = @intCast(@sizeOf(Rings) - 1);
-    if (phys % @alignOf(Rings) != 0 or phys > AllCauses - last_offset) {
+    // A run that leaves the addresses this machine has is one the engine
+    // would walk off the end of.
+    if (phys.addr() % @alignOf(Rings) != 0 or phys.plus(last_offset) == null) {
         _ = sys.close(dma_handle);
         log.fail("e1000", "DMA rings are unaligned or cross 4 GiB");
         return false;
@@ -398,12 +400,12 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // frame over the real mode vector table.
     for (&device.rings.rx_desc, 0..) |*desc, i| {
         desc.* = .{
-            .addr_low = device.phys + @as(u32, @intCast(@offsetOf(Rings, "rx_buffer") + i * Slab)),
+            .addr_low = device.phys.addr() + @as(u32, @intCast(@offsetOf(Rings, "rx_buffer") + i * Slab)),
         };
     }
     for (&device.rings.tx_desc, 0..) |*desc, i| {
         desc.* = .{
-            .addr_low = device.phys + @as(u32, @intCast(@offsetOf(Rings, "tx_buffer") + i * Slab)),
+            .addr_low = device.phys.addr() + @as(u32, @intCast(@offsetOf(Rings, "tx_buffer") + i * Slab)),
             .status = .{ .done = true },
         };
     }
@@ -413,7 +415,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     configureLink();
 
     // Receive path: the descriptor ring and its buffers are one run.
-    device.regs.write(.rdbal, device.phys + @offsetOf(Rings, "rx_desc"));
+    device.regs.write(.rdbal, device.phys.addr() + @offsetOf(Rings, "rx_desc"));
     device.regs.write(.rdbah, 0);
     device.regs.write(.rdlen, RingSlots * @sizeOf(RxDesc));
     device.regs.write(.rdh, 0);
@@ -422,7 +424,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     device.regs.write(.rdt, RingSlots - 1);
 
     // Transmit path.
-    device.regs.write(.tdbal, device.phys + @offsetOf(Rings, "tx_desc"));
+    device.regs.write(.tdbal, device.phys.addr() + @offsetOf(Rings, "tx_desc"));
     device.regs.write(.tdbah, 0);
     device.regs.write(.tdlen, RingSlots * @sizeOf(TxDesc));
     device.regs.write(.tdh, 0);
@@ -595,7 +597,7 @@ pub fn stop(nic: *NicDev) void {
     pci.disableInterruptAndMaster(nic.location);
     if (device.dma_handle) |handle| _ = sys.close(handle);
     device.dma_handle = null;
-    device.phys = 0;
+    device.phys = .none;
     device.rx_next = 0;
     device.tx_next = 0;
     device.tx_clean = 0;

@@ -12,6 +12,7 @@
 //! possible and spinning is the exception.
 
 const dev_mod = @import("dev.zig");
+const lib = @import("lib");
 const dma = @import("dma.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -480,7 +481,7 @@ const Arena = struct {
 const Device = struct {
     regs: Regs = .{ .base = undefined },
     arena: *Arena = undefined,
-    phys: u32 = 0,
+    phys: lib.Phys = .none,
     dma_handle: ?u32 = null,
     mac: [6]u8 = @splat(0),
     /// Where it sits on the bus, kept for the PCIe capability work.
@@ -523,7 +524,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         return false;
     };
 
-    var phys: u32 = 0;
+    var phys: lib.Phys = .none;
     const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
     if (handle < 0) {
         log.failed("atl2", "cannot allocate DMA rings", handle);
@@ -535,7 +536,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // and the card each writing a different arena.
     const dma_handle: u32 = @intCast(handle);
     const last_offset: u32 = @intCast(@sizeOf(Arena) - 1);
-    if (phys % @alignOf(Arena) != 0 or phys > std.math.maxInt(u32) - last_offset) {
+    if (phys.addr() % @alignOf(Arena) != 0 or phys.plus(last_offset) == null) {
         _ = sys.close(dma_handle);
         log.fail("atl2", "DMA memory is not aligned for the adapter");
         return false;
@@ -558,7 +559,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         keep_pci_enabled = true;
         _ = sys.close(dma_handle);
         device.dma_handle = null;
-        device.phys = 0;
+        device.phys = .none;
         return false;
     }
     log.say("atl2", .dim, "engine configured");
@@ -589,11 +590,11 @@ fn configure() bool {
 
     // Descriptor addresses: this machine is 32-bit, the high word is zero.
     device.regs.wr32(.desc_base_hi, 0);
-    device.regs.wr32(.txd_base_lo, device.phys + @as(u32, @intCast(@offsetOf(Arena, "txd"))));
+    device.regs.wr32(.txd_base_lo, device.phys.addr() + @as(u32, @intCast(@offsetOf(Arena, "txd"))));
     device.regs.wr16(.txd_mem_size, TXD_BYTES / @sizeOf(u32));
-    device.regs.wr32(.txs_base_lo, device.phys + @as(u32, @intCast(@offsetOf(Arena, "txs"))));
+    device.regs.wr32(.txs_base_lo, device.phys.addr() + @as(u32, @intCast(@offsetOf(Arena, "txs"))));
     device.regs.wr16(.txs_mem_size, TXS_COUNT);
-    device.regs.wr32(.rxd_base_lo, device.phys + @as(u32, @intCast(@offsetOf(Arena, "rxd"))));
+    device.regs.wr32(.rxd_base_lo, device.phys.addr() + @as(u32, @intCast(@offsetOf(Arena, "rxd"))));
     device.regs.wr16(.rxd_buf_num, RX_COUNT);
 
     // Frame scheduling.
@@ -862,7 +863,7 @@ pub fn stop(nic: *NicDev) void {
     resetRings();
     if (device.dma_handle) |handle| _ = sys.close(handle);
     device.dma_handle = null;
-    device.phys = 0;
+    device.phys = .none;
     device.opened = false;
     nic.state = .{};
 }

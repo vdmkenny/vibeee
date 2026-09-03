@@ -101,7 +101,7 @@ const Device = struct {
 
     rings: ?*Rings = null,
     /// Where the run begins, as the radio addresses it.
-    phys: u32 = 0,
+    phys: lib.Phys = .none,
     dma_handle: ?u32 = null,
     /// The next descriptor the service expects to find finished.
     rx_next: usize = 0,
@@ -795,7 +795,7 @@ pub fn link(_: *NicDev) dev_mod.Link {
 
 /// Where one chain begins, as the radio addresses it.
 fn chainBase(comptime field: []const u8) u32 {
-    return device.phys + @offsetOf(Rings, field);
+    return device.phys.addr() + @offsetOf(Rings, field);
 }
 
 /// Hand one receive descriptor back to the radio: its buffer, its
@@ -814,7 +814,7 @@ fn armReceive(rings: *Rings, slot: usize) void {
 fn buildRings() bool {
     if (device.rings != null) return true;
 
-    var phys: u32 = 0;
+    var phys: lib.Phys = .none;
     const handle = sys.dmaAlloc(@sizeOf(Rings), &phys);
     if (handle < 0) {
         log.failed(name, "cannot allocate the descriptor chains", handle);
@@ -822,7 +822,7 @@ fn buildRings() bool {
     }
     const owned: u32 = @intCast(handle);
 
-    if (!Chain.addressable(phys) or phys % @alignOf(Rings) != 0) {
+    if (!Chain.addressable(phys.addr()) or phys.addr() % @alignOf(Rings) != 0) {
         _ = sys.close(owned);
         log.fail(name, "the descriptor chains are unaligned or out of reach");
         return false;
@@ -857,5 +857,5 @@ fn releaseRings() void {
     _ = sys.close(handle);
     device.dma_handle = null;
     device.rings = null;
-    device.phys = 0;
+    device.phys = .none;
 }

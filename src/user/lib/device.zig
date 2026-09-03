@@ -6,6 +6,7 @@
 //! were written twice before this file existed.
 
 const log = @import("log.zig");
+const lib = @import("lib");
 const sys = @import("sys");
 
 /// A block of DMA memory, mapped for this process and addressable by the
@@ -16,12 +17,12 @@ pub fn Dma(comptime T: type) type {
         const Self = @This();
 
         at: *volatile T,
-        phys: u32,
+        phys: lib.Phys,
 
         /// `tag` names the driver in any failure line, because a driver
         /// that cannot get its rings has to say which driver it was.
         pub fn alloc(tag: []const u8) ?Self {
-            var phys: u32 = 0;
+            var phys: lib.Phys = .none;
             const handle = sys.dmaAlloc(@sizeOf(T), &phys);
             if (handle < 0) {
                 log.fail(tag, "cannot allocate DMA memory");
@@ -36,7 +37,7 @@ pub fn Dma(comptime T: type) type {
             // address the device reads directly, so an arena the hardware
             // cannot address at all is refused here rather than discovered
             // as silence later.
-            if (phys % @alignOf(T) != 0) {
+            if (phys.addr() % @alignOf(T) != 0) {
                 log.fail(tag, "DMA memory is not aligned for the device");
                 return null;
             }
@@ -46,7 +47,7 @@ pub fn Dma(comptime T: type) type {
         /// The physical address of one field, which is what a descriptor
         /// base register wants.
         pub fn physOf(self: Self, comptime field: []const u8) u32 {
-            return self.phys + @offsetOf(T, field);
+            return self.phys.addr() + @offsetOf(T, field);
         }
 
         /// The physical address of one element of an array field.

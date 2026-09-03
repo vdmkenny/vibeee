@@ -29,6 +29,7 @@ pub const mac = @import("mac.zig");
 pub const mlme = @import("mlme.zig");
 pub const mmio = @import("mmio.zig");
 pub const pci = @import("pci.zig");
+pub const Phys = @import("phys.zig").Phys;
 pub const fifo = @import("fifo.zig");
 pub const find = @import("find.zig");
 pub const limits = @import("limits.zig");

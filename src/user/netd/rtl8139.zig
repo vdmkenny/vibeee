@@ -11,6 +11,7 @@
 //! steers from the interrupt handler.
 
 const dev_mod = @import("dev.zig");
+const lib = @import("lib");
 const dma = @import("dma.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
@@ -288,7 +289,7 @@ const Device = struct {
     window: Window = .{ .base = 0 },
     /// Receive ring + guard in one DMAR run.
     rx: [*]volatile u8 = undefined,
-    rx_phys: u32 = 0,
+    rx_phys: lib.Phys = .none,
     /// Transmit descriptor words are computed from these; the buffers share
     /// the receive segment's tail is not done here: each slot owns its
     /// buffer inside one shared DMA segment.
@@ -346,14 +347,14 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     if (!reset()) return false;
     readMac(dev);
 
-    var phys: u32 = 0;
+    var phys: lib.Phys = .none;
     const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
     if (handle < 0) {
         log.failed("rtl8139", "cannot allocate DMA rings", handle);
         return false;
     }
     const dma_handle: u32 = @intCast(handle);
-    if (phys % @alignOf(Arena) != 0) {
+    if (phys.addr() % @alignOf(Arena) != 0) {
         _ = sys.close(dma_handle);
         log.fail("rtl8139", "DMA memory is not aligned for the adapter");
         return false;
@@ -367,10 +368,10 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     device.rx = @ptrCast(&arena.rx);
     // DMA memory is page-granular, which is every alignment this chip asks
     // for; adjusting the physical side alone would part it from the mapping.
-    device.rx_phys = phys + @offsetOf(Arena, "rx");
+    device.rx_phys = lib.Phys.of(phys.addr() + @offsetOf(Arena, "rx"));
     device.tx_buffer = @ptrCast(&arena.tx);
     inline for (0..TX_SLOTS) |i| {
-        device.tx_phys[i] = phys + @offsetOf(Arena, "tx") + i * TX_BUFFER;
+        device.tx_phys[i] = phys.addr() + @offsetOf(Arena, "tx") + i * TX_BUFFER;
     }
 
     device.rx_at = 0;
@@ -421,7 +422,7 @@ pub fn start(_: *NicDev) bool {
     device.rx_at = 0;
     device.tx_at = 0;
     device.pending = @splat(false);
-    device.window.out32(.rbstart, device.rx_phys);
+    device.window.out32(.rbstart, device.rx_phys.addr());
     inline for (0..TX_SLOTS) |i| {
         device.window.out32(txAddressRegister(i), device.tx_phys[i]);
     }
@@ -473,7 +474,7 @@ pub fn stop(nic: *NicDev) void {
     pci.disableInterruptAndMaster(nic.location);
     if (device.dma_handle) |handle| _ = sys.close(handle);
     device.dma_handle = null;
-    device.rx_phys = 0;
+    device.rx_phys = .none;
     device.tx_phys = @splat(0);
     attached = false;
     nic.state = .{};
@@ -567,7 +568,7 @@ fn recoverRx(nic: *NicDev) void {
     const command = @as(Cmd, @bitCast(device.window.in8(.cmd)));
     device.window.out8(.cmd, @bitCast(Cmd{ .tx_enable = command.tx_enable }));
     device.rx_at = 0;
-    device.window.out32(.rbstart, device.rx_phys);
+    device.window.out32(.rbstart, device.rx_phys.addr());
     device.window.out8(.cmd, @bitCast(Cmd{
         .tx_enable = command.tx_enable,
         .rx_enable = command.rx_enable,

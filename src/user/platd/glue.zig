@@ -16,6 +16,7 @@ const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pm = @import("pm.zig");
 const ports = @import("ulib").ports;
+const lib = @import("lib");
 const sys = @import("sys");
 const uacpi = @import("uacpi.zig");
 const work = @import("work.zig");
@@ -60,7 +61,7 @@ export fn uacpi_kernel_map(phys: u32, len: usize) callconv(.c) ?[*]u8 {
 
     // A refusal is worth saying: uACPI does not check, and a null handed back
     // becomes a fault somewhere with no obvious connection to the mapping.
-    const mapped = sys.mapDevice(base, len + skew) orelse {
+    const mapped = sys.mapDevice(lib.Phys.of(base), len + skew) orelse {
         log.fail("acpi", "cannot map firmware memory");
         return null;
     };
