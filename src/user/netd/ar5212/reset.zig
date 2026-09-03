@@ -407,8 +407,21 @@ const Tally = struct {
     }
 
     /// A table that kept most of what it was given is a line nobody needs
-    /// to read; one that did not is the whole question.
+    /// to read; one that did not is the whole question. A table that
+    /// answers every read with nothing is neither: it is a range that does
+    /// not answer reads, which several of these are by design, and saying
+    /// it kept none of them would be reporting the instrument rather than
+    /// the radio.
     fn say(self: Tally) void {
+        if (self.silent == self.looked) {
+            log.begin(name, .value);
+            out.text("the radio's ");
+            out.text(self.what);
+            out.text(" cannot be read back, so what it made of them is not knowable from here");
+            log.end();
+            return;
+        }
+
         const most = self.held * 4 >= self.looked * 3;
         log.begin(name, if (most) .value else .warn);
         out.text("the radio kept ");
@@ -417,9 +430,7 @@ const Tally = struct {
         out.decimal(self.looked);
         out.text(" ");
         out.text(self.what);
-        if (self.silent == self.looked) {
-            out.text(", every one of which reads as nothing");
-        } else if (self.silent > 0) {
+        if (self.silent > 0) {
             out.text(", ");
             out.decimal(self.silent);
             out.text(" reading as nothing");
