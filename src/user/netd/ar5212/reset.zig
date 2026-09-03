@@ -422,7 +422,7 @@ const Tally = struct {
     /// the radio.
     fn say(self: Tally) void {
         if (self.silent == self.looked) {
-            log.begin(name, .value);
+            log.begin(name, .dim);
             out.text("the radio's ");
             out.text(self.what);
             out.text(" cannot be read back, so what it made of them is not knowable from here");
@@ -431,7 +431,7 @@ const Tally = struct {
         }
 
         const most = self.held * 4 >= self.looked * 3;
-        log.begin(name, if (most) .value else .warn);
+        log.begin(name, if (most) .dim else .warn);
         out.text("the radio kept ");
         out.decimal(self.held);
         out.text(" of ");

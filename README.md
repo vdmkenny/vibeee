@@ -125,8 +125,8 @@ storage, and persistent settings and home volumes.
 The top-row keys are the firmware's on this machine rather than this system's: they
 work, and it is the BIOS that acts on them. Taking them over waits on two firmware
 gates this build holds shut, which `man hotkeys` explains; what the keys do is
-reachable by command meanwhile. `hw wireless on` powers the radio and lights its lamp;
-joining a network is owed.
+reachable by command meanwhile. `hw wireless on` powers the radio, and the radio hears: `net wifi scan` lists
+the networks in earshot. Joining one is owed.
 
 ### Testing Other Netbooks
 

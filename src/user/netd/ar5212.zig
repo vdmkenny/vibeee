@@ -295,7 +295,7 @@ fn sayListening() void {
     if (!chip.store.rf_kill) return;
 
     const silenced = reset.killed(chip);
-    log.begin(name, if (silenced) .warn else .key);
+    log.begin(name, if (silenced) .warn else .dim);
     out.text(if (silenced)
         "the kill switch is silencing the radio; it will hear nothing"
     else
@@ -429,7 +429,7 @@ pub fn sayIfUnheard(nic: *NicDev) void {
     // frame is as much a fault as one that is never woken at all, and it
     // is a different one: the first is hearing a band it cannot make sense
     // of, the second is hearing nothing.
-    log.begin(name, if (woken == 0) .warn else .value);
+    log.begin(name, if (woken == 0) .warn else .dim);
     out.text("a sweep of the band: woken ");
     out.decimal(@intCast(nic.irq_count -| since.woken));
     out.text(" times, ");
@@ -504,23 +504,7 @@ pub fn sayIfUnheard(nic: *NicDev) void {
 fn sayReceivePath(chip: *reset.Chip) void {
     const regs = chip.regs;
 
-    // The analog part asked again, now that the radio has been through a
-    // full reset. The first reading is taken before that and answers
-    // nothing while the part is held in reset, which is why it is stood in
-    // for rather than trusted. A revision that appears here and not there
-    // is a part that came up late and is working. One that is still
-    // nothing is a part that never came up at all, and then no aerial and
-    // no descriptor would make any difference: the radio is not listening
-    // because there is nothing in it that could.
-    const saved_test = regs.read(.phy_test);
-    regs.put(.phy_test, regs_mod.PhyTest.analog_access);
-    const revision = readRadioRevision(regs);
-    regs.write(.phy_test, saved_test);
-
-    log.begin(name, .warn);
-    out.text("the analog part now answers 0x");
-    out.hex(revision, 2);
-    out.text("; ");
+    log.begin(name, .dim);
     out.text("the receive path: noise floor ");
     out.signed(chip.noise.current);
     out.text(" dBm");

@@ -346,22 +346,30 @@ with Wi-Fi, the remaining platform work, and new applications.
   a program under home has no picture there. What that wants is the icon in the
   program's own binary, with the shell's own set as the fallback: design/10-gui.md
   §6.7 says the shape.
-- **The radio tunes and hears; it does not join yet.** `ar5212` brings the
+- **The radio hears; it does not join yet.** Scanning is confirmed on the
+  machine: `net wifi scan` lists the networks in earshot. `ar5212` brings the
   AR2425 up, reads its store, runs the transcribed reset and channel-set
-  pipeline and hands frames up; the station scans and keeps the networks it
-  hears, said once each to the log. What is missing between that and a network
-  is transmission, which needs the power tables interpolated from the store's
-  calibration curves, and the soft MAC's joining: authentication, association,
-  beacon tracking and the four-way handshake, whose frames and arithmetic are
-  already in `lib/mlme.zig` and `lib/wpa2.zig`, host-tested. The scan operation,
-  the `net` listing and the Settings network pane come together, in parity.
-  None of this can be exercised in the emulator, which has no such radio: the
-  first thing to see on the machine is the log line per network heard.
+  pipeline and hands frames up; the station sweeps the plan, or holds a channel
+  configuration names, and keeps what it hears. What is missing between that
+  and a network is transmission, which needs the power tables interpolated from
+  the store's calibration curves, and the soft MAC's joining: authentication,
+  association, beacon tracking and the four-way handshake, whose frames and
+  arithmetic are already in `lib/mlme.zig` and `lib/wpa2.zig`, host-tested. The
+  scan operation, the `net` listing and the Settings network pane come
+  together, in parity. None of it can be exercised in the emulator, which has
+  no such radio.
 
   Ahead of all of it, the radio has to be on the bus at all. This firmware
   leaves it powered down, so the card is not a device that failed to bind: it
   is not there, and nothing in a bus walk at boot could have found it. `hw
   wireless on` switches it through the vendor's own method, and the bus is
   walked again so what appears is bound and claimed without a reboot. The
-  The power and its lamp answer on the machine; what the card does once it is
-  on the bus is the paragraph above.
+  network service asks for it at start-up too, when configuration says the
+  radio should be in use.
+
+  What a radio does while it is deaf is report, and it reports enough to say
+  why: what its interrupt plumbing holds, what its receive path is doing, the
+  noise floor it measured against the ceiling it is judged by, and how often
+  each demodulator gave up and for which reason. That last one is what found
+  the fault: both demodulators failing on timing, in the proportion the air
+  carries them, is a fault common to both, and what they share is the clock.

@@ -38,6 +38,9 @@ const State = struct {
     networks: lib.Bounded(mlme.Bss, MAX_NETWORKS) = .{},
     /// Which of the band's channels the radio is on.
     channel_index: usize = 0,
+    /// The network configuration last named, so being unable to join it is
+    /// said once rather than at every pass of the settings.
+    asked: wifi.Ssid = .{},
     /// The channel configuration holds the radio on, or null to sweep.
     /// A radio told where to listen stays there: what a sweep is for is
     /// finding out what is in earshot, and a person who already knows has
@@ -101,6 +104,19 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     state.plan = role.regdomain;
     state.held = held;
     if (held) |number| _ = ar5212.tune(.{ .number = number });
+
+    // A network named is a network somebody is waiting to be on, and
+    // nothing here can put them on it yet: the radio listens and does not
+    // speak. Said once per network named, because a command that reports
+    // success and is followed by nothing at all is worse than a refusal.
+    if (role.ssid.len != 0 and !std.mem.eql(u8, state.asked.slice(), role.ssid.slice())) {
+        state.asked = role.ssid;
+        log.begin("netd", .warn);
+        out.text("asked to join \"");
+        out.text(role.ssid.slice());
+        out.text("\"; this radio listens and cannot yet speak, so it will not join");
+        log.end();
+    }
 
     // Told something new, so what it heard as the radio it used to be is
     // not evidence about the radio it now is. Counted and reported again
