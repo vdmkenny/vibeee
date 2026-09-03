@@ -85,15 +85,47 @@ const Slot = struct {
         taken,
         /// Answered. The caller is woken and frees it on its way out.
         done,
+        /// The caller gave up waiting, but the server still has it: a card
+        /// reader's own housekeeping can stall for seconds, well past a
+        /// caller's patience, and the server does not know its answer will
+        /// go nowhere. The slot's memory stays spoken for until that answer
+        /// arrives, or nothing stops a request that reuses it from having
+        /// its data overwritten mid-transfer by whatever the abandoned one
+        /// was still doing.
+        abandoned,
     };
 
     state: State = .free,
+    /// Which claim of this slot is current. Bumped on every claim, and
+    /// folded into the tag `next` hands out, so an answer that arrives late
+    /// for a claim this slot has since moved on from is recognised as
+    /// stale rather than mistaken for the one now using it. The same width
+    /// as `Tag.generation`, which is the only place it travels to.
+    generation: u14 = 0,
     request: Request = .{},
     status: Status = .ok,
     moved: u32 = 0,
     /// Where the caller waits for its own request and no other.
     queue: wait.Queue = .{},
 };
+
+/// A slot index and which of its claims this is, packed into the tag the
+/// wire protocol already carries: the server treats a tag as an opaque
+/// number to hand back, so nothing about its shape is a protocol change.
+///
+/// Two bits of slot: `DEPTH` is 4, one occupancy of a slot is telling four
+/// apart, not addressing them, so the comptime check below is what keeps
+/// this honest if `DEPTH` ever grows past what two bits name.
+const Tag = packed struct(u16) {
+    slot: u2,
+    generation: u14 = 0,
+};
+
+comptime {
+    if (DEPTH > 1 << @bitSizeOf(@FieldType(Tag, "slot"))) {
+        @compileError("Tag.slot no longer has enough bits to name every slot DEPTH allows");
+    }
+}
 
 const Volume = struct {
     live: bool = false,
@@ -209,10 +241,12 @@ pub fn dropVolumes(server: u32) void {
 ///
 /// Separate from `done`, which is otherwise a wake: this is the whole of the
 /// judgement, and a tag is a number the server chose like any other.
-fn slotToAnswer(volume: *Volume, tag: u16) ?*Slot {
-    if (tag >= volume.slots.len) return null;
-    const slot = &volume.slots[tag];
-    if (slot.state != .taken) return null;
+fn slotToAnswer(volume: *Volume, raw_tag: u16) ?*Slot {
+    const tag: Tag = @bitCast(raw_tag);
+    if (tag.slot >= volume.slots.len) return null;
+    const slot = &volume.slots[tag.slot];
+    if (slot.generation != tag.generation) return null;
+    if (slot.state != .taken and slot.state != .abandoned) return null;
     return slot;
 }
 
@@ -275,17 +309,29 @@ pub fn publish(index: usize, server: u32) void {
 fn survey(index: usize) callconv(.c) void {
     const volume = &volumes[index];
     if (volume.live) {
+        const dev = volume.published.?;
         // A medium with no partition table is a filesystem in its own
         // right, which is how most sticks and cards arrive.
-        const found = block.scanPartitions(&volume.published.?);
-        if (found == 0) block.markWholeDiskUsable(&volume.published.?);
+        const found = block.scanPartitions(&dev);
+
+        // `scanPartitions` reads the medium, which for this volume means
+        // asking the server and waiting for its answer: this thread was off
+        // the CPU for that, and the server is free to have detached the
+        // volume in the meantime. `volume.published` is what detach clears,
+        // so it, not the snapshot taken above, is what says whether what
+        // follows still has anywhere to go.
+        if (volume.published == null) {
+            sched.exit();
+        }
+
+        if (found == 0) block.markWholeDiskUsable(&dev);
 
         // Then put it where media go. A disk plugged in should arrive in
         // the same place as one that was there at boot.
-        for (block.list(), 0..) |*dev, i| {
-            if (dev.ctx != volume.published.?.ctx or !block.isMountCandidate(i)) continue;
-            if (vfs.mountMedia(dev)) |where| {
-                console.info("mount", "{s} on {s}", .{ where, dev.name });
+        for (block.list(), 0..) |*d, i| {
+            if (d.ctx != dev.ctx or !block.isMountCandidate(i)) continue;
+            if (vfs.mountMedia(d)) |where| {
+                console.info("mount", "{s} on {s}", .{ where, d.name });
             }
         }
     }
@@ -306,7 +352,7 @@ pub fn next(index: usize, server: u32) ?Request {
         if (slot.state != .offered) continue;
         slot.state = .taken;
         var taken = slot.request;
-        taken.tag = @intCast(i);
+        taken.tag = @bitCast(Tag{ .slot = @intCast(i), .generation = slot.generation });
         return taken;
     }
     return null;
@@ -319,6 +365,15 @@ pub fn done(index: usize, server: u32, tag: u16, status: Status, moved: u32) voi
 
     const volume = ownedBy(index, server) orelse return;
     const slot = slotToAnswer(volume, tag) orelse return;
+
+    if (slot.state == .abandoned) {
+        // Whoever asked has long since stopped waiting; only the slot's
+        // memory was still spoken for, and now it is not.
+        slot.state = .free;
+        _ = volume.room.wakeOne();
+        return;
+    }
+
     slot.status = status;
     slot.moved = moved;
     slot.state = .done;
@@ -435,7 +490,13 @@ fn claim(volume: *Volume) block.Error!usize {
     while (volume.live) {
         for (&volume.slots, 0..) |*slot, i| {
             if (slot.state != .free) continue;
-            slot.* = .{ .state = .claimed, .queue = slot.queue };
+            slot.* = .{
+                .state = .claimed,
+                .queue = slot.queue,
+                // A fresh claim, whatever the last one was tagged: it is
+                // this generation the server's answer must now name.
+                .generation = slot.generation +% 1,
+            };
             return i;
         }
         _ = wait.blockOn(&.{&volume.room}, sched.deadlineIn(READ_PATIENCE_US)) catch
@@ -444,11 +505,20 @@ fn claim(volume: *Volume) block.Error!usize {
     return block.Error.IoError;
 }
 
+/// Give a slot back. One a caller stopped waiting on before the server
+/// answered is not free to hand out again: the server still has it, and
+/// its answer, whenever it comes, must find `abandoned` waiting rather than
+/// somebody else's request half a transfer along.
 fn freeSlot(volume: *Volume, index: usize) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    volume.slots[index].state = .free;
+    const slot = &volume.slots[index];
+    if (slot.state == .taken) {
+        slot.state = .abandoned;
+        return;
+    }
+    slot.state = .free;
     _ = volume.room.wakeOne();
 }
 
