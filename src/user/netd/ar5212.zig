@@ -174,7 +174,8 @@ pub fn open(loc: pci.Location, nic: *NicDev) bool {
 
     regs.put(.phy_test, regs_mod.PhyTest.analog_access);
     chip.radio_revision = readRadioRevision(regs);
-    if (chip.radio_revision == 0) chip.radio_revision = RADIO_REVISION_ASSUMED;
+    chip.radio_revision_assumed = chip.radio_revision == 0;
+    if (chip.radio_revision_assumed) chip.radio_revision = RADIO_REVISION_ASSUMED;
 
     // The store's size, as the bus block reports it. A part attached by
     // PCI Express reports none and is trusted; anything but sixteen
@@ -234,6 +235,7 @@ fn sayIdentity(chip: *const reset.Chip) void {
     out.decimal(chip.revision);
     out.text(", radio 0x");
     out.hex(chip.radio_revision, 2);
+    if (chip.radio_revision_assumed) out.text(" assumed, the analog part reported none");
     out.text(", store ");
     out.decimal(chip.store.version.major());
     out.text(".");
@@ -263,8 +265,29 @@ pub fn start(nic: *NicDev) bool {
         return false;
     }
     pci.enableInterrupt(nic.location);
+    sayListening();
     if (dev_mod.radio_up) |up| up(nic);
     return true;
+}
+
+/// What the radio is doing once it is listening.
+///
+/// The kill switch is the thing worth saying: a silenced radio hears
+/// nothing and says nothing, which is exactly what a radio somewhere with
+/// no network in earshot does, and without this the two cannot be told
+/// apart from a log. Said here rather than with the identity because the
+/// pin is not an input until the first full reset has wired it.
+fn sayListening() void {
+    const chip = if (device.chip) |*c| c else return;
+    if (!chip.store.rf_kill) return;
+
+    const silenced = reset.killed(chip);
+    log.begin(name, if (silenced) .warn else .key);
+    out.text(if (silenced)
+        "the kill switch is silencing the radio; it will hear nothing"
+    else
+        "the kill switch is clear");
+    log.end();
 }
 
 pub fn stop(_: *NicDev) void {

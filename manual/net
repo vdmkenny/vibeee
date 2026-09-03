@@ -11,8 +11,9 @@ net - the network interfaces
                          of 8 to 63 characters or 64 hex digits, and is
                          left out for an open network
   net <iface> forget     stop joining it
-  net scan               every network the radio has heard: channel,
+  net <iface> scan       every network that radio has heard: channel,
                          signal and security
+  net scan               the same, of whichever radio this machine has
 
 An interface is named the way the listing prints it ("e1000",
 "e1000.1" for a second card of the same kind), by class ("ether",

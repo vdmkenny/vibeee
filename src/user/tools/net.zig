@@ -25,17 +25,26 @@ const out = @import("ulib").out;
 const DEFAULT_ASK = 0x0A000202; // 10.0.2.2
 
 pub fn run(args: []const []const u8) void {
-    if (args.len > 0 and std.mem.eql(u8, args[0], "scan")) {
-        scan();
+    // No interface named, as `net` alone means every interface: the radio
+    // this machine has, whichever it is.
+    if (args.len == 1 and std.mem.eql(u8, args[0], "scan")) {
+        scan(null);
         return;
     }
 
-    // A first word that is not a flag names an interface to configure.
+    // A first word that is not a flag names an interface to act on.
     if (args.len > 0 and args[0].len > 0 and args[0][0] != '-') {
         const matcher = lib.ifmatch.Match.parse(args[0]) orelse {
             say("net: that names no interface, class or location\n");
             return;
         };
+        // Asking what a radio has heard is a question about the hardware
+        // rather than a change to what is configured, so it is answered
+        // here rather than among the verbs that edit a slot.
+        if (args.len == 2 and std.mem.eql(u8, args[1], "scan")) {
+            scan(matcher);
+            return;
+        }
         configure(args[0], matcher, args[1..]);
         return;
     }
@@ -226,6 +235,23 @@ fn resolveSlot(
     return null;
 }
 
+/// Whether a matcher names this interface.
+///
+/// The same question the service's own binder answers about configuration
+/// slots, asked here about what the service is actually driving, which is
+/// what a person naming an interface on the command line means.
+fn covers(matcher: lib.ifmatch.Match, iface: *const net.Iface) bool {
+    return switch (matcher) {
+        .none => false,
+        .class => |wanted| wanted == switch (iface.kind) {
+            .wire => lib.ifmatch.Class.ether,
+            .radio => lib.ifmatch.Class.wifi,
+        },
+        .driver => |name| name.is(labelOf(&iface.driver)),
+        .location => |at| at.encode() == iface.location,
+    };
+}
+
 /// Whether the service lists an interface this matcher covers, or null when
 /// it is not answering.
 fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
@@ -236,25 +262,32 @@ fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
             error.NoService => return null,
             else => return false,
         };
-        const iface = &reply.body.iface;
-        const covered = switch (matcher) {
-            .driver => |name| name.is(labelOf(&iface.driver)),
-            .location => |at| at.encode() == iface.location,
-            else => false,
-        };
-        if (covered) return true;
+        if (covers(matcher, &reply.body.iface)) return true;
     }
 }
 
 /// Every network the radio has heard, one per line, or why there are none.
-fn scan() void {
+///
+/// `only` names which interface was asked about, and null is the question
+/// asked of the machine rather than of one of its interfaces.
+fn scan(only: ?lib.ifmatch.Match) void {
     var has_radio = false;
+    var named_a_wire = false;
     var i: usize = 0;
     while (net.interfaceAt(i)) |iface| : (i += 1) {
-        if (iface.kind == .radio) has_radio = true;
+        const asked = if (only) |m| covers(m, &iface) else true;
+        if (!asked) continue;
+        if (iface.kind == .radio) has_radio = true else named_a_wire = true;
     }
     if (!has_radio) {
-        say(if (net.interfaceCount() == 0) "net: the network service is not answering\n" else "no radio in this machine\n");
+        say(if (net.interfaceCount() == 0)
+            "net: the network service is not answering\n"
+        else if (only == null)
+            "no radio in this machine\n"
+        else if (named_a_wire)
+            "net: that interface is not a radio; only a radio hears anything\n"
+        else
+            "net: no interface of this machine answers to that\n");
         return;
     }
 

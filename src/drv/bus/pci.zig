@@ -180,7 +180,11 @@ pub fn describe(class: u8, subclass: u8) []const u8 {
             0x08 => "NVMe controller",
             else => "mass storage controller",
         },
-        0x02 => "ethernet controller",
+        0x02 => switch (subclass) {
+            0x00 => "ethernet controller",
+            0x80 => "network controller",
+            else => "network controller",
+        },
         0x03 => "display controller",
         0x04 => switch (subclass) {
             0x03 => "audio device (HDA)",

@@ -36,6 +36,11 @@ pub const Chip = struct {
     revision: u4,
     phy_revision: u8,
     radio_revision: u8,
+    /// Whether the revision above was read from the analog part or stood
+    /// in for. The part reports none while it is unpowered, which is what
+    /// a thrown kill switch leaves it, so which of the two it was is the
+    /// difference between a radio that is quiet and one that is not there.
+    radio_revision_assumed: bool = false,
     part: rf2425.Part,
     mac: mac.Address,
     banks: rf2425.Banks = .{},
@@ -395,6 +400,21 @@ fn setupClock(chip: *Chip) void {
     regs.set(.usec, regs_mod.Usec, "usec32", 31);
 }
 
+/// Whether the kill switch is silencing the radio at this moment.
+///
+/// The store names the pin and which of its two levels means silence.
+/// Worth asking rather than assuming: a silenced radio hears nothing and
+/// says nothing, which is what a radio somewhere very quiet also does,
+/// and the two are otherwise indistinguishable from outside.
+///
+/// Answers false where the store names no switch, which is a radio
+/// nothing can silence rather than one that is not silenced now.
+pub fn killed(chip: *const Chip) bool {
+    if (!chip.store.rf_kill) return false;
+    const pin: u1 = @intFromBool(chip.regs.get(.gpio_in, regs_mod.GpioData).pin(chip.store.rf_silent.gpio));
+    return pin == chip.store.rf_silent.polarity;
+}
+
 /// Wire the kill switch the store names to the baseband's silence input
 /// and to a pin interrupt on its edge.
 fn enableRfKill(chip: *Chip) void {
@@ -407,8 +427,9 @@ fn enableRfKill(chip: *Chip) void {
     regs.put(.gpio_control, control);
     regs.set(.phy_test, regs_mod.PhyTest, "rf_silence", true);
 
-    const pin_high: u1 = @intFromBool(regs.get(.gpio_in, regs_mod.GpioData).pin(select));
-    const level: u1 = if (pin_high == polarity) ~polarity else polarity;
+    // Armed for the edge away from wherever it sits, so either throw of
+    // the switch is what the pin interrupt reports.
+    const level: u1 = if (killed(chip)) ~polarity else polarity;
     control = regs.get(.gpio_control, regs_mod.GpioControl);
     control.interrupt_pin = select;
     control.interrupt_enable = true;
