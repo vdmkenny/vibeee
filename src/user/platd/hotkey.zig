@@ -17,7 +17,7 @@
 //! deliberate: this machine's numbering was not knowable in advance either, and
 //! the way to learn the next machine's is to watch it say so.
 
-const asus = @import("asus.zig");
+const vendor = @import("vendor.zig");
 const Fifo = @import("lib").fifo.Fifo;
 const backlight = @import("backlight.zig");
 const log = @import("ulib").log;
@@ -43,9 +43,9 @@ const Source = struct {
 };
 
 const sources = [_]Source{
-    // The vendor device is `asus.zig`'s; the hid here is a fallback for a
-    // machine of the same make this build has not met.
-    .{ .kind = .vendor, .hid = asus.HID },
+    // The vendor device is whichever maker's this machine turned out to be,
+    // so this row carries no id: the maker's own row knows how it is found.
+    .{ .kind = .vendor },
     .{ .kind = .display, .method = "_BCM" },
     .{ .kind = .power_button, .hid = "PNP0C0C" },
     .{ .kind = .lid, .hid = "PNP0C0D" },
@@ -64,7 +64,7 @@ pub fn listen() void {
 
     for (sources, 0..) |source, i| {
         owners[i] = if (source.kind == .vendor)
-            asus.node()
+            vendor.node()
         else if (source.hid) |hid|
             uacpi.firstWithHid(hid)
         else if (source.method) |method|
@@ -155,7 +155,7 @@ fn pressed(which: proto.Hotkey) u32 {
 /// on any machine that raises them at all.
 fn meaning(kind: Kind, value: u64) proto.Hotkey {
     return switch (kind) {
-        .vendor => asus.press(value),
+        .vendor => vendor.press(value),
         .display => switch (value) {
             0x80, 0x81, 0x82, 0x83, 0x84 => .display_switch,
             0x85 => .brightness_cycle,

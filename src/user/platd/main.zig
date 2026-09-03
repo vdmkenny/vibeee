@@ -262,7 +262,7 @@ fn stopEverything() bool {
     return true;
 }
 
-const asus = @import("asus.zig");
+const vendor = @import("vendor.zig");
 const backlight = @import("backlight.zig");
 const feature = @import("feature.zig");
 const battery = @import("battery.zig");
@@ -316,7 +316,7 @@ fn bringUp() bool {
     // fallback paths it keeps for a machine with no operating system, and
     // both must come before any of its methods are called.
     ec.connect();
-    asus.greet();
+    vendor.greet();
 
     // The panel is asked once now and once after each enablement below. The
     // firmware's trap handler answers this exact question in this machine

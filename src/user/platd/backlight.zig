@@ -8,7 +8,7 @@
 //! would have to, and they would disagree the first time one of them was
 //! written against a machine the other had not seen.
 
-const asus = @import("asus.zig");
+const vendor = @import("vendor.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
@@ -18,23 +18,48 @@ const uacpi = @import("uacpi.zig");
 const Backend = struct {
     /// What to call it in the boot log. Which one was picked is the first
     /// thing worth knowing when the panel does not dim, and inferring it from
-    /// silence is how an afternoon goes.
-    name: []const u8,
+    /// silence is how an afternoon goes. A question rather than a word,
+    /// because the vendor row is whichever maker this machine turned out
+    /// to be.
+    name: *const fn () []const u8,
     /// Whether this machine has it, and where. Sets `where` when it does.
     find: *const fn () ?*uacpi.Node,
     read: *const fn (node: *uacpi.Node) ?u32,
     write: *const fn (node: *uacpi.Node, level: u32) bool,
-    /// Highest level the method accepts. Zero means ask `levels`.
-    max: u32,
+    /// The highest level this way of asking accepts. A question rather than
+    /// a number, because the standard way reads it off the panel and a
+    /// vendor's way has it written down.
+    max: *const fn (node: *uacpi.Node) u32,
 };
 
 /// Standard first, because a machine that has it is one this works on without
-/// knowing anything about who made it. The vendor's own is the fallback, and on
-/// the Eee PC it is the only one: the panel there offers no `_BCM` at all.
+/// knowing anything about who made it. Whichever maker this machine is, is the
+/// fallback, and on the Eee PC it is the only one: the panel there offers no
+/// `_BCM` at all.
 const backends = [_]Backend{
-    .{ .name = "standard", .find = &standardDevice, .read = &standardRead, .write = &standardWrite, .max = 0 },
-    .{ .name = "asus", .find = &asus.panelDevice, .read = &asus.panelLevel, .write = &asus.setPanelLevel, .max = asus.PANEL_LEVELS },
+    .{ .name = &standardName, .find = &standardDevice, .read = &standardRead, .write = &standardWrite, .max = &standardMax },
+    .{ .name = &vendor.name, .find = &vendorDevice, .read = &vendorRead, .write = &vendorWrite, .max = &vendorMax },
 };
+
+// The maker's way, reached through its row. Null at every step on a machine
+// of no maker this build knows, or one whose maker offers no panel of its
+// own, which is what the standard way is there for.
+
+fn vendorDevice() ?*uacpi.Node {
+    return (vendor.panel() orelse return null).find();
+}
+
+fn vendorRead(node: *uacpi.Node) ?u32 {
+    return (vendor.panel() orelse return null).read(node);
+}
+
+fn vendorWrite(node: *uacpi.Node, level: u32) bool {
+    return (vendor.panel() orelse return false).write(node, level);
+}
+
+fn vendorMax(_: *uacpi.Node) u32 {
+    return (vendor.panel() orelse return 0).levels;
+}
 
 /// A backend and the device it drives, found once and kept: the namespace does
 /// not change under a running machine.
@@ -77,7 +102,7 @@ pub fn report() void {
 
     log.begin("platd", .key);
     out.text("backlight via ");
-    out.text(found.backend.name);
+    out.text(found.backend.name());
     out.text(" on ");
     out.text(uacpi.trimmed(&name.text));
     log.end();
@@ -109,7 +134,7 @@ pub fn read(into: *proto.Backlight) proto.Status {
     into.* = .{
         .present = 1,
         .level = level,
-        .max = if (found.backend.max != 0) found.backend.max else standardMax(found.node),
+        .max = found.backend.max(found.node),
     };
     return .ok;
 }
@@ -137,6 +162,10 @@ pub fn write(level: u32, into: *proto.Backlight) proto.Status {
 // `_BCM` sets, `_BQC` reads, `_BCL` lists what the panel accepts. Defined by
 // the specification, so a machine that has it needs nothing else known about
 // it.
+
+fn standardName() []const u8 {
+    return "standard";
+}
 
 fn standardDevice() ?*uacpi.Node {
     return uacpi.firstWith("_BCM");

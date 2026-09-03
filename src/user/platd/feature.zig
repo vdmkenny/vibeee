@@ -17,7 +17,7 @@
 //! the policy.
 
 const std = @import("std");
-const asus = @import("asus.zig");
+const vendor = @import("vendor.zig");
 const lib = @import("lib");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -28,9 +28,6 @@ const Feature = proto.Feature;
 
 /// How a machine offers a part's power.
 const Backend = struct {
-    /// What to call it in the log. Which one answered is the first thing
-    /// worth knowing when a part will not come on.
-    name: []const u8,
     /// Whether this machine has it, and on which node.
     find: *const fn (which: Feature, where: ?lib.pci.Location) ?*uacpi.Node,
     /// Whether it is on. Null when the node would not answer, which is a
@@ -44,9 +41,25 @@ const Backend = struct {
 /// whose part is currently on no bus at all. The standard way is what every
 /// other machine is served by.
 const backends = [_]Backend{
-    .{ .name = "vendor", .find = &asus.featureDevice, .read = &asus.featureState, .write = &asus.setFeature },
-    .{ .name = "standard", .find = &standardDevice, .read = &standardRead, .write = &standardWrite },
+    .{ .find = &vendorDevice, .read = &vendorRead, .write = &vendorWrite },
+    .{ .find = &standardDevice, .read = &standardRead, .write = &standardWrite },
 };
+
+// The maker's way, reached through its row. Null at every step on a machine
+// of no maker this build knows, or one whose maker switches nothing, which
+// is what the standard way is there for.
+
+fn vendorDevice(which: Feature, where: ?lib.pci.Location) ?*uacpi.Node {
+    return (vendor.parts() orelse return null).find(which, where);
+}
+
+fn vendorRead(which: Feature, node: *uacpi.Node) ?bool {
+    return (vendor.parts() orelse return null).read(which, node);
+}
+
+fn vendorWrite(which: Feature, node: *uacpi.Node, on: bool) bool {
+    return (vendor.parts() orelse return false).write(which, node, on);
+}
 
 /// A backend and the node it acts on, or null when nothing here can switch
 /// this part on this machine.

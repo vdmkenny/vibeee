@@ -16,14 +16,37 @@
 //! the only place this contract is written down.
 
 const lib = @import("lib");
+const Vendor = @import("../vendor.zig").Vendor;
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const proto = @import("proto").platform;
-const uacpi = @import("uacpi.zig");
+const uacpi = @import("../uacpi.zig");
+
+/// This maker, as the rest of the service sees it. Everything below is
+/// reachable only through here: the row is the whole of what this file
+/// offers, and what it offers is what any maker has to.
+pub const vendor = Vendor{
+    .name = "asus",
+    .claims = &claims,
+    .node = &node,
+    .greet = &greet,
+    .press = &press,
+    .panel = .{
+        .find = &panelDevice,
+        .read = &panelLevel,
+        .write = &setPanelLevel,
+        .levels = PANEL_LEVELS,
+    },
+    .parts = .{
+        .find = &featureDevice,
+        .read = &featureState,
+        .write = &setFeature,
+    },
+};
 
 /// The id the firmware registers the device under. Its name in the namespace
 /// is the vendor's whim; the id is what they had to fix.
-pub const HID = "ASUS010";
+const HID = "ASUS010";
 
 /// What `INIT`'s argument means: each bit hands one feature's firmware-side
 /// handling to the operating system.
@@ -32,7 +55,7 @@ pub const HID = "ASUS010";
 /// vendor's own driver has always passed, and this firmware has only ever
 /// been tested against it. Both are features this system will drive itself;
 /// until it does, their keys arrive as hotkeys and do nothing more.
-pub const Handover = packed struct(u32) {
+const Handover = packed struct(u32) {
     wlan: bool = false,
     bluetooth: bool = false,
     irda: bool = false,
@@ -57,7 +80,7 @@ const TAKEN = Handover{};
 /// What `CMSG` answers: which of the vendor's fixed feature list this unit
 /// has. The list is the vendor's and does not vary; which bits are set does,
 /// per model, which is why it is asked rather than assumed.
-pub const Methods = packed struct(u32) {
+const Methods = packed struct(u32) {
     wlan: bool = false,
     bluetooth: bool = false,
     irda: bool = false,
@@ -94,31 +117,43 @@ pub const Methods = packed struct(u32) {
 /// so an absent answer is treated as permission to try.
 var claimed: ?Methods = null;
 
-pub fn methods() ?Methods {
+fn methods() ?Methods {
     return claimed;
 }
 
 var found: ?*uacpi.Node = null;
 var looked = false;
 
+/// Whether this machine is one of ours.
+///
+/// The id first, which no machine of another make registers. Failing that,
+/// one of the methods: some units of this line ship the methods and register
+/// no device for them, and a panel that only this vendor's firmware knows
+/// how to dim is still this vendor's panel. Both are named here because both
+/// are this file's knowledge.
+fn claims() bool {
+    if (node() != null) return true;
+    for (SIGNATURES) |method| {
+        if (uacpi.firstWith(method) != null) return true;
+    }
+    return false;
+}
+
+/// Methods no other maker has. The panel's setter and the radio's, which are
+/// the two this build actually drives.
+const SIGNATURES = [_][*:0]const u8{ "PBLS", "WLDS" };
+
 /// The vendor device, found once. Null on every machine that is not one.
-pub fn node() ?*uacpi.Node {
+fn node() ?*uacpi.Node {
     if (looked) return found;
     looked = true;
     found = uacpi.firstWithHid(HID);
     return found;
 }
 
-/// Whether this machine is one of ours: the vendor device exists, which no
-/// machine of another vendor's would say. Everything ASUS in this build
-/// hangs off the answer, and the answer is asked once.
-pub fn present() bool {
-    return node() != null;
-}
-
 /// Say hello, once the namespace is up and before anything else asks the
 /// device for something.
-pub fn greet() void {
+fn greet() void {
     const device = node() orelse return;
 
     // The greeting itself writes the vendor's trap port, and this machine's
@@ -168,7 +203,7 @@ const GREET = false;
 /// Sixteen levels, which is what the hardware takes and is not discoverable
 /// from the namespace. Written down because the alternative is a caller
 /// asking for a hundred and getting whatever the firmware makes of it.
-pub const PANEL_LEVELS = 15;
+const PANEL_LEVELS = 15;
 
 /// The device answering one of the feature's methods.
 ///
@@ -193,15 +228,15 @@ fn readInteger(device: *uacpi.Node, getter: [*:0]const u8) ?u32 {
     return @truncate(value);
 }
 
-pub fn panelDevice() ?*uacpi.Node {
+fn panelDevice() ?*uacpi.Node {
     return deviceFor(if (methods()) |stated| stated.panel_brightness else null, "PBLS");
 }
 
-pub fn panelLevel(device: *uacpi.Node) ?u32 {
+fn panelLevel(device: *uacpi.Node) ?u32 {
     return readInteger(device, "PBLG");
 }
 
-pub fn setPanelLevel(device: *uacpi.Node, level: u32) bool {
+fn setPanelLevel(device: *uacpi.Node, level: u32) bool {
     return uacpi.callWith(device, "PBLS", @min(level, PANEL_LEVELS));
 }
 
@@ -215,60 +250,72 @@ pub fn setPanelLevel(device: *uacpi.Node, level: u32) bool {
 // same device, so what `INIT` hands over is which side answers the key, not
 // whether these answer at all.
 
-/// The pair of methods that switch one part.
-const Pair = struct {
+/// What this maker offers for one part: the pair of methods that switch it,
+/// and the bit under which a unit states it has it.
+const Offer = struct {
     set: [*:0]const u8,
     get: [*:0]const u8,
+    /// Read out of a unit's stated feature list. A vendor's list is its own
+    /// shape and the protocol's is ours, so the two are mapped rather than
+    /// assumed to line up.
+    stated: *const fn (Methods) bool,
 };
 
-/// Which pair belongs to which part. Exhaustive over the protocol's own list,
-/// so a part added there is a build error here rather than a request this
-/// silently cannot answer.
-fn pairFor(which: proto.Feature) Pair {
+/// What this maker offers for each part, or null for one it does not switch.
+/// Exhaustive over the protocol's own list, so a part added there is a build
+/// error here, answered deliberately either way, rather than a request this
+/// silently cannot serve.
+fn offerFor(which: proto.Feature) ?Offer {
     return switch (which) {
-        .wireless => .{ .set = "WLDS", .get = "WLDG" },
-        .camera => .{ .set = "CAMS", .get = "CAMG" },
-        .card_reader => .{ .set = "CRDS", .get = "CRDG" },
-        .usb_ports => .{ .set = "USBS", .get = "USBG" },
-        .modem => .{ .set = "MODS", .get = "MODG" },
+        .wireless => .{ .set = "WLDS", .get = "WLDG", .stated = &statedWlan },
+        .camera => .{ .set = "CAMS", .get = "CAMG", .stated = &statedCamera },
+        .card_reader => .{ .set = "CRDS", .get = "CRDG", .stated = &statedCardReader },
+        // The three ports are switched together by one method, so the first
+        // of them standing for all three is what a unit is saying.
+        .usb_ports => .{ .set = "USBS", .get = "USBG", .stated = &statedUsbPorts },
+        .modem => .{ .set = "MODS", .get = "MODG", .stated = &statedModem },
     };
 }
 
-/// Whether a unit's stated feature list names this part. The vendor's list is
-/// its own shape and the protocol's is ours, so the two are mapped rather
-/// than assumed to line up.
-fn offers(which: proto.Feature, stated: Methods) bool {
-    return switch (which) {
-        .wireless => stated.wlan,
-        .camera => stated.camera,
-        .card_reader => stated.card_reader,
-        // The three ports are switched together by one method, so the first
-        // of them standing for all three is what this unit is saying.
-        .usb_ports => stated.usb_port_1,
-        .modem => stated.modem,
-    };
+fn statedWlan(m: Methods) bool {
+    return m.wlan;
+}
+fn statedCamera(m: Methods) bool {
+    return m.camera;
+}
+fn statedCardReader(m: Methods) bool {
+    return m.card_reader;
+}
+fn statedUsbPorts(m: Methods) bool {
+    return m.usb_port_1;
+}
+fn statedModem(m: Methods) bool {
+    return m.modem;
 }
 
 /// The vendor device, when this unit offers the part at all. The location is
 /// the standard way's to use: a vendor method names the part itself.
-pub fn featureDevice(which: proto.Feature, _: ?lib.pci.Location) ?*uacpi.Node {
+fn featureDevice(which: proto.Feature, _: ?lib.pci.Location) ?*uacpi.Node {
+    const offer = offerFor(which) orelse return null;
     return deviceFor(
-        if (methods()) |stated| offers(which, stated) else null,
-        pairFor(which).set,
+        if (methods()) |stated| offer.stated(stated) else null,
+        offer.set,
     );
 }
 
 /// What the firmware currently has the part set to, read rather than assumed:
 /// this is the whole point of asking before acting on a method nobody here
 /// has called before.
-pub fn featureState(which: proto.Feature, device: *uacpi.Node) ?bool {
-    return (readInteger(device, pairFor(which).get) orelse return null) != 0;
+fn featureState(which: proto.Feature, device: *uacpi.Node) ?bool {
+    const offer = offerFor(which) orelse return null;
+    return (readInteger(device, offer.get) orelse return null) != 0;
 }
 
 /// Ask for it on or off. What `on` and `off` are worth is the getter's own
 /// answer read back after, not assumed here.
-pub fn setFeature(which: proto.Feature, device: *uacpi.Node, on: bool) bool {
-    return uacpi.callWith(device, pairFor(which).set, @intFromBool(on));
+fn setFeature(which: proto.Feature, device: *uacpi.Node, on: bool) bool {
+    const offer = offerFor(which) orelse return false;
+    return uacpi.callWith(device, offer.set, @intFromBool(on));
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +328,7 @@ pub fn setFeature(which: proto.Feature, device: *uacpi.Node, on: bool) bool {
 /// machines send, which is only knowable by reading it off a running one.
 /// Anything absent here arrives as `unknown` carrying its number, which is
 /// how the rest of this table gets written.
-pub fn press(value: u64) proto.Hotkey {
+fn press(value: u64) proto.Hotkey {
     // The brightness keys carry the level the firmware has already moved to
     // in the low nibble, so there is nothing to set and nothing to work out
     // from the direction: the panel is where it says it is.
