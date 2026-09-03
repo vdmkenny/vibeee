@@ -26,6 +26,7 @@
 const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
+const lock_mod = @import("lock.zig");
 
 /// 64 sets × 4 ways × 512 B = 128 KiB. Small against the 48 MiB idle-RAM
 /// budget, and comfortably larger than the working set of a FAT lookup.
@@ -59,6 +60,13 @@ pub const Cache = struct {
     lines: [SETS][WAYS]Line = @splat(@splat(.{})),
     clock: u64 = 0,
     stats: Stats = .{},
+    /// One operation at a time, cache-wide. Partitions of one disk share
+    /// this cache, so a lock scoped to a partition's own mount is not
+    /// enough: two mounts can pick the same line for two different LBAs
+    /// while each believes only its own volume is being touched, and the
+    /// backing read that decides which one wins is itself the thing that
+    /// blocks and lets the other in. See `lock.zig`.
+    lock: lock_mod.Lock = .{},
 
     fn setOf(lba: u64) usize {
         return @intCast(lba % SETS);
@@ -89,6 +97,13 @@ pub const Cache = struct {
     }
 
     fn readSector(self: *Cache, lba: u64, out: []u8) block.Error!void {
+        // Held for the whole operation, backing read included: picking a
+        // line and filling it are two steps around a wait for the medium,
+        // and a second caller let in between them can pick the very line
+        // the first is still filling, for a different sector entirely.
+        self.lock.hold() catch return block.Error.IoError;
+        defer self.lock.release();
+
         if (self.find(lba)) |line| {
             self.stats.hits += 1;
             self.touch(line);
@@ -111,6 +126,9 @@ pub const Cache = struct {
     }
 
     fn writeSector(self: *Cache, lba: u64, in: []const u8) block.Error!void {
+        self.lock.hold() catch return block.Error.IoError;
+        defer self.lock.release();
+
         const w = self.backing.ops.write orelse return error.NotSupported;
         try w(self.backing.ctx, lba, in);
         self.stats.writes += 1;

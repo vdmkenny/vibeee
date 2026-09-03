@@ -15,8 +15,7 @@ const std = @import("std");
 const block = @import("block.zig");
 const console = @import("console.zig");
 const fat = @import("fat.zig");
-const hal = @import("hal.zig");
-const wait = @import("wait.zig");
+const lock_mod = @import("lock.zig");
 
 pub const Error = error{
     NotMounted,
@@ -31,38 +30,10 @@ pub const Error = error{
     Ending,
 } || fat.Error;
 
-/// One operation at a time on a volume.
-///
-/// Every operation on a volume reads, changes and writes state the volume
-/// keeps in one place: the allocation table's one-sector cache, the free
-/// count, a directory sector being edited. A read or write of the medium can
-/// put the thread to sleep, and on a card behind a USB reader every one
-/// does, so without this another thread's operation on the same volume
-/// would run in the gap and take that state from under the first. A volume
-/// is held while it is worked on, and a thread that finds it held waits its
-/// turn, oldest first.
-pub const Lock = struct {
-    held: bool = false,
-    waiting: wait.Queue = .{},
-
-    /// Take the volume, waiting for whoever has it. A thread asked to end
-    /// while waiting gets nothing and unwinds, like every other wait.
-    pub fn hold(self: *Lock) Error!void {
-        const flags = hal.saveAndDisableInterrupts();
-        defer hal.restoreInterrupts(flags);
-        while (self.held) {
-            _ = wait.blockOn(&.{&self.waiting}, null) catch return error.Ending;
-        }
-        self.held = true;
-    }
-
-    pub fn release(self: *Lock) void {
-        const flags = hal.saveAndDisableInterrupts();
-        defer hal.restoreInterrupts(flags);
-        self.held = false;
-        _ = self.waiting.wakeOne();
-    }
-};
+/// One operation at a time on a volume's own metadata: the allocation
+/// table's one-sector cache, the free count, a directory sector being
+/// edited. See `lock.zig` for why this is a lock at all rather than nothing.
+pub const Lock = lock_mod.Lock;
 
 pub const MAX_MOUNTS = 8;
 pub const MAX_PATH = 64;
