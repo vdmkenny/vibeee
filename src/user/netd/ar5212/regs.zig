@@ -115,6 +115,8 @@ pub const R = enum(usize) {
     phy_settling = 0x9844,
     phy_rx_gain = 0x9848,
     phy_desired_size = 0x9850,
+    phy_find_signal = 0x9858,
+    phy_agc_control1 = 0x985C,
     phy_agc_control = 0x9860,
     phy_cca = 0x9864,
     phy_sleep_counter_control = 0x9870,
@@ -749,8 +751,27 @@ pub const PhyDesiredSize = packed struct(u32) {
     adc: i8 = 0,
     pga: i8 = 0,
     _16: u4 = 0,
-    total: u8 = 0,
+    /// How much signal the baseband wants before it believes one has
+    /// begun. Negative, like every power figure here: decibels below a
+    /// milliwatt.
+    total: i8 = 0,
     _28: u4 = 0,
+};
+
+/// What the baseband takes for the start of a signal.
+pub const PhyFindSignal = packed struct(u32) {
+    _0: u12 = 0,
+    firstep: u6 = 0,
+    firpwr: i8 = 0,
+    _26: u6 = 0,
+};
+
+/// The gain control's coarse bounds.
+pub const PhyAgcControl1 = packed struct(u32) {
+    _0: u7 = 0,
+    coarse_low: i8 = 0,
+    coarse_high: i7 = 0,
+    _22: u10 = 0,
 };
 
 pub const PhyAgcControl = packed struct(u32) {
@@ -1019,6 +1040,12 @@ comptime {
     pinLayout(PhyTest, .{ .rf_silence = true }, 0x0000_2000);
     pinLayout(PhyTurbo, .{ .turbo_mode = true, .short_symbols = true }, 0x0000_0003);
     pinLayout(PhyTestControl, PhyTestControl.hold_tx, 0x0000_3800);
+    pinLayout(PhyDesiredSize, .{ .total = -1 }, 0x0FF0_0000);
+    pinLayout(PhyFindSignal, .{ .firstep = 0x3F }, 0x0003_F000);
+    pinLayout(PhyFindSignal, .{ .firpwr = -1 }, 0x03FC_0000);
+    pinLayout(PhyAgcControl1, .{ .coarse_low = -1 }, 0x0000_7F80);
+    pinLayout(PhyAgcControl1, .{ .coarse_high = -1 }, 0x003F_8000);
+    pinLayout(PhyTiming5, .{ .cycle_power_threshold1 = 0x7F }, 0x0000_00FE);
     pinLayout(PhyTiming3, .{ .delta_slope_exponent = 0xF }, 0x0001_E000);
     pinLayout(PhyTiming3, .{ .delta_slope_mantissa = 0x7FFF }, 0xFFFE_0000);
     pinLayout(PhyActive, .{ .enable = true }, 0x0000_0001);

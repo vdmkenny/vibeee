@@ -185,6 +185,32 @@ pub const PhyError = enum(u8) {
     _,
 };
 
+/// Which modulation a reason belongs to. The two demodulators fail
+/// separately and are made harder to convince separately, so a count of
+/// failures is only useful once it is split this way.
+pub const Modulation = enum { ofdm, cck, either };
+
+pub fn modulationOf(why: PhyError) Modulation {
+    return switch (why) {
+        .ofdm_timing,
+        .ofdm_signal_parity,
+        .ofdm_rate,
+        .ofdm_length,
+        .ofdm_power_drop,
+        .ofdm_service,
+        .ofdm_restart,
+        => .ofdm,
+        .cck_timing,
+        .cck_header_crc,
+        .cck_rate,
+        .cck_service,
+        .cck_restart,
+        .cck_length,
+        => .cck,
+        else => .either,
+    };
+}
+
 pub const RxStatus1 = packed struct(u32) {
     done: bool = false,
     received: bool = false,

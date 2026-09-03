@@ -117,6 +117,10 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
 /// last dwell measured on the way.
 fn hop() void {
     ar5212.calibrate(true);
+    // What the last dwell's failures came to. Asked here because a dwell
+    // is the period the radio is judged over: long enough for a count to
+    // mean something, short enough to follow a room that changes.
+    ar5212.adapt();
     state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
 
     // As long as a sweep would have taken, whether one was made or not: a

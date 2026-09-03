@@ -15,6 +15,7 @@
 //! receiver does not need either.
 
 const lib = @import("lib");
+const immunity_mod = @import("immunity.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pace = @import("pace.zig");
@@ -53,6 +54,10 @@ pub const Chip = struct {
     /// The correction measured on the current channel, once one has been.
     iq_measured: ?lib.ar5212.IqCorrection = null,
     noise: lib.ar5212.NoiseFloor = .{},
+    /// How much noise the baseband is asked to ignore. Kept with the chip
+    /// because a reset puts the registers it lives in back to what the
+    /// tables say, so what was learned has to be applied again.
+    immunity: immunity_mod.State = .{},
     /// The ceiling, in half decibels, on the frames the unit sends itself:
     /// acknowledgements and the like. The regulatory plan sets it.
     self_power: u6 = MAX_RATE_POWER,
@@ -587,6 +592,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
 
     rf2425.setRfRegs(regs, &chip.banks, mode, chip.part, chip.store.bias_g);
     setDeltaSlope(regs, megahertz);
+    if (kind == .power_on) chip.immunity.begin(regs) else chip.immunity.restore(regs);
     setBoardValues(chip, megahertz);
 
     if (kind == .channel_change) regs.write(.sequence_number, saved_sequence);

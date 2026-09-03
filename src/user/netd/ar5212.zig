@@ -439,6 +439,12 @@ pub fn sayIfUnheard(nic: *NicDev) void {
     out.text(" handed up, ");
     out.decimal(@intCast(nic.stats.rx_dropped -| since.dropped));
     out.text(" dropped");
+    const split = givenUpByModulation();
+    out.text(" (");
+    out.decimal(split.ofdm);
+    out.text(" on ofdm, ");
+    out.decimal(split.cck);
+    out.text(" on cck)");
     if (commonestGivingUp()) |common| {
         out.text("; it gave up most often for ");
         // The silicon has codes this build does not name, and one of those
@@ -567,6 +573,7 @@ pub fn watchAgain(nic: *NicDev) void {
     said_unheard = false;
     phy_errors = 0;
     given_up = @splat(0);
+    judged = .{};
     since = .{
         .woken = nic.irq_count,
         .handed_up = nic.stats.rx_pkts,
@@ -591,6 +598,61 @@ var given_up: [GIVEN_UP_CODES]u16 = @splat(0);
 /// The codes the silicon uses fit in six bits; anything wider than the
 /// list this build names is still counted under its own number.
 const GIVEN_UP_CODES = 64;
+
+/// What a period of listening came to, and what to do about it.
+///
+/// The baseband decides for itself when a signal has begun, and one too
+/// willing to decide finds signals in noise: it starts, fails on the
+/// timing, and says so, often enough that a real frame arriving in the
+/// middle has nothing listening for it. So how hard it is to convince is
+/// raised while it is giving up too often and lowered when it is not,
+/// and the counts it is judged on are the ones it reported itself.
+pub fn adapt() void {
+    const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    if (!device.started or device.gone) return;
+
+    const now = givenUpByModulation();
+    if (chip.immunity.heard(chip.regs, now.ofdm -| judged.ofdm, now.cck -| judged.cck)) {
+        sayImmunity(chip);
+    }
+    judged = now;
+}
+
+/// What the counts stood at when the radio was last judged. The tally
+/// itself is the sweep's to report, so what a dwell came to is the
+/// difference rather than a count anybody clears.
+var judged: Modulations = .{};
+
+const Modulations = struct { ofdm: u32 = 0, cck: u32 = 0 };
+
+/// The failures so far, split by which demodulator gave up. The two fail
+/// separately and are made harder to convince separately, and a radio
+/// failing all of one and none of the other is not configured for that
+/// modulation at all.
+fn givenUpByModulation() Modulations {
+    var totals = Modulations{};
+    for (given_up, 0..) |times, code| {
+        if (times == 0) continue;
+        switch (lib.ar5212.modulationOf(@enumFromInt(@as(u8, @intCast(code))))) {
+            .ofdm => totals.ofdm += times,
+            .cck => totals.cck += times,
+            .either => {},
+        }
+    }
+    return totals;
+}
+
+fn sayImmunity(chip: *const reset.Chip) void {
+    log.begin(name, .dim);
+    const at = chip.immunity.rungs();
+    out.text("harder to convince: noise ");
+    out.decimal(at.noise);
+    out.text(", spur ");
+    out.decimal(at.spur);
+    out.text(", first step ");
+    out.decimal(at.firstep);
+    log.end();
+}
 
 fn noteGivenUp(why: lib.ar5212.PhyError) void {
     const code = @intFromEnum(why);
