@@ -39,3 +39,15 @@ pub const MAX_SERVICES = 12;
 /// in strips before the number is doubled.
 pub const IMAGE_SIDE_MAX = 4096;
 pub const IMAGE_PIXELS_MAX = 16 * 1024 * 1024;
+
+/// How many events one `wait_many` covers.
+///
+/// Doubled once from eight, which the desktop hit: it waits on the keyboard,
+/// the pointer, its children, its clients, three settings domains, the
+/// network and its supervisor. Each of those is a different kind of event
+/// rather than one worth folding into another, and a process that cannot
+/// wait on all of its reasons to wake has to poll instead.
+///
+/// The waiter array lives on a kernel stack while a thread is blocked, so
+/// sixteen of them is a quarter of a kilobyte there.
+pub const MAX_WAIT_HANDLES = 16;

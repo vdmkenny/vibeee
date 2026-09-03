@@ -1090,7 +1090,10 @@ pub const table = [_]Syscall{
         .summary = "Block until one of several events is signalled.",
         .args = &.{
             .{ .name = "handles", .kind = .cptr, .desc = "Array of u32 event handles." },
-            .{ .name = "count", .kind = .len, .desc = "How many, at most 8." },
+            .{ .name = "count", .kind = .len, .desc = std.fmt.comptimePrint(
+                "How many, at most {d}.",
+                .{@import("limits.zig").MAX_WAIT_HANDLES},
+            ) },
             .{ .name = "timeout_us", .kind = .uint, .desc = "0 to poll, 0xFFFFFFFF to block forever, else microseconds." },
         },
         .returns = "index of the event that fired",

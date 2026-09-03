@@ -27,9 +27,9 @@
 const std = @import("std");
 const sched = @import("sched.zig");
 
-/// Most queues a single `blockOn` can cover. Bounded so the waiter array can
-/// live on the stack; `wait_many` over more than eight objects has no caller.
-pub const MAX_QUEUES = 8;
+/// Most queues a single `blockOn` can cover, which is the same number the
+/// `wait_many` call takes: the waiters live on this stack.
+pub const MAX_QUEUES = @import("lib").limits.MAX_WAIT_HANDLES;
 
 /// One thread's membership of one queue.
 pub const Waiter = struct {
