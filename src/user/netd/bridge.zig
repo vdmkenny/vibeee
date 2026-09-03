@@ -244,7 +244,7 @@ fn udpOpen(req: *const proto.Req, token: u32) void {
     s.peer_addr = req.param;
     s.peer_port = ports.remote;
     view.ctrl.state = .established;
-    grant(s, token, .udp);
+    _ = grant(s, token, .udp);
 }
 
 fn sockClose(req: *const proto.Req, token: u32) void {
@@ -351,7 +351,9 @@ fn connectedCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, err: lwip.Err) callconv(.c) 
     sayPeer(s, "stream open to ");
     if (s.pending) {
         s.pending = false;
-        grant(s, s.pending_token, .tcp);
+        // Aborted on the way through, so the stack is told that rather
+        // than being handed back a connection that no longer exists.
+        if (!grant(s, s.pending_token, .tcp)) return .abrt;
     }
     return .ok;
 }
@@ -662,16 +664,24 @@ fn grantAccepted(pcb: *lwip.TcpPcb, token: u32) void {
     s.peer_addr = peer.addr;
     s.peer_port = peer.port;
     sayPeer(s, "stream accepted from ");
-    grant(s, token, .tcp);
+    _ = grant(s, token, .tcp);
 }
 
 /// The granting reply: the socket's numbers and the three handles.
-fn grant(s: *Sock, token: u32, kind: socket.Kind) void {
+/// Hand the client its half of the socket, and answer with whether the
+/// connection survived doing so.
+///
+/// A grant with no segment to give aborts the connection, and a callback
+/// that aborted its own has to say so rather than answering as though it
+/// still had one: the stack reads that answer and goes on using what it
+/// was told is still there.
+fn grant(s: *Sock, token: u32, kind: socket.Kind) bool {
     const view = slotView(s, kind) orelse {
         log.warn("netd", "no segment for the socket");
         dropPcb(s);
         s.kind = .free;
-        return refuse(token);
+        refuse(token);
+        return false;
     };
     view.ctrl.state = .established;
 
@@ -689,6 +699,7 @@ fn grant(s: *Sock, token: u32, kind: socket.Kind) void {
     } else {
         log.say("netd", .dim, "socket granted");
     }
+    return true;
 }
 
 fn quietPcb(pcb: *lwip.TcpPcb) void {
