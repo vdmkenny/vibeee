@@ -23,6 +23,7 @@ pub const font = @import("font.zig");
 pub const framemap = @import("framemap.zig");
 pub const logo = @import("logo.zig");
 pub const ipv4 = @import("ipv4.zig");
+pub const join = @import("join.zig");
 pub const kind = @import("kind.zig");
 pub const mac = @import("mac.zig");
 pub const mlme = @import("mlme.zig");
