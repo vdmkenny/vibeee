@@ -86,9 +86,14 @@ pub const Thread = struct {
     /// Monotonic microseconds at which a sleeping thread becomes runnable.
     wake_at: u64 = 0,
     stack: []u8,
-    /// Intrusive link for whichever queue this thread is on.
+    /// Intrusive link for whichever list this thread is on: a run queue, the
+    /// sleeper list, or the reap list, never more than one at a time.
     next: ?*Thread = null,
-    /// On a run queue right now. See `Queue.push`.
+    /// On one of those lists right now, `next` meaning whichever it is. Kept
+    /// current by `Queue.push`/`pop` for the run queues and by
+    /// `sched.pushList`/`removeFromList` for the other two, so a caller
+    /// about to reuse `next` for a different list can tell whether it
+    /// already means something else instead of silently overwriting it.
     queued: bool = false,
     /// Link in the registry of every thread that exists. A separate field from
     /// `next` because a thread is on at most one run queue but is always here,

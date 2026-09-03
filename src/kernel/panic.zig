@@ -125,10 +125,18 @@ pub fn kpanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
 
 /// Frame-pointer walk. Valid because the kernel keeps frame pointers
 /// specifically so this works (see build.zig).
+///
+/// A frame pointer is legitimate below the kernel's own base, where a
+/// user stack lives, or at or above it, where the kernel's does. What is
+/// neither is garbage: the two ranges are not adjacent, so nothing above
+/// user space and below `KERNEL_BASE` is ever a real frame, on this
+/// architecture or the next one that sets its own base differently.
 pub fn collectBacktrace(r: *Report, start_fp: usize) void {
     var ebp = start_fp;
     while (r.trace_len < MAX_BACKTRACE) {
-        if (ebp < 0x1000 or ebp > 0x8000_0000 or (ebp & 3) != 0) break;
+        const in_user = ebp >= 0x1000 and ebp < hal.KERNEL_BASE;
+        const in_kernel = ebp >= hal.KERNEL_BASE and ebp < 0xFFFF_F000;
+        if (!(in_user or in_kernel) or (ebp & 3) != 0) break;
         const frame: [*]const usize = @ptrFromInt(ebp);
         const next = frame[0];
         const ret = frame[1];

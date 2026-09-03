@@ -16,6 +16,7 @@
 //!
 //! See design/00-vibeee.md §6.4.
 
+const std = @import("std");
 const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
@@ -24,6 +25,7 @@ const input = @import("input.zig");
 const queue = @import("sched/queue.zig");
 const thread_mod = @import("sched/thread.zig");
 const console = @import("console.zig");
+const panic = @import("panic.zig");
 const wait = @import("wait.zig");
 
 pub const Thread = thread_mod.Thread;
@@ -54,8 +56,48 @@ var sleepers: ?*Thread = null;
 /// collected at the top of a later `schedule`, by which point it is provably
 /// off the CPU.
 ///
-/// Linked through `next`, which a dead thread no longer needs for a run queue.
+/// Linked through `next`, the same field the run queues and the sleeper list
+/// use: a thread is on at most one of the three at a time, `queued` says
+/// whether it is on any, and `exitWith` only puts a thread here once nothing
+/// still ahead of it can put it on another.
 var to_reap: ?*Thread = null;
+
+/// Put `t` on `list`, which must not already hold it through `next`.
+///
+/// `queued` is one flag for whichever of the run queues, the sleeper list or
+/// the reap list currently owns `next`, the same discipline `Fifo.push`
+/// already keeps for the run queues (see `sched/queue.zig`), extended here to
+/// the two lists too small to want a `Fifo` of their own. A thread linked
+/// into two of these at once corrupts both, silently, in a way that surfaces
+/// far from here and differently every time: this is what turns that into an
+/// immediate, diagnosable stop instead.
+///
+/// A real stop, not `std.debug.assert`: this kernel ships `ReleaseSmall`,
+/// where an assert compiles to nothing and the corruption it was written to
+/// catch would still happen, unremarked. What must never happen either does
+/// not compile in, or costs a branch and stays in every build; this is worth
+/// the branch.
+fn pushList(list: *?*Thread, t: *Thread) void {
+    if (t.queued) panic.kpanic("thread already on a list", null);
+    t.queued = true;
+    t.next = list.*;
+    list.* = t;
+}
+
+/// Take `t` off `list`, wherever in it `t` is, and free `next` for whichever
+/// list wants it next.
+fn removeFromList(list: *?*Thread, t: *Thread) void {
+    var link = list;
+    while (link.*) |node| {
+        if (node == t) {
+            link.* = node.next;
+            t.next = null;
+            t.queued = false;
+            return;
+        }
+        link = &node.next;
+    }
+}
 
 var current: ?*Thread = null;
 var idle_thread: ?*Thread = null;
@@ -160,20 +202,17 @@ pub fn exit() noreturn {
 }
 
 pub fn exitWith(status: i32) noreturn {
-    hal.disableInterrupts();
     if (current) |t| {
         t.exit_status = status;
-        t.state = .dead;
-        thread_count -= 1;
-        // A thread nobody will wait for is queued for collection now. One that
-        // is awaited stays as a corpse until its parent takes the status.
-        if (!t.awaited) {
-            t.next = to_reap;
-            to_reap = t;
-        }
-        // Before scheduling away: this thread never runs again, so anything
-        // waiting on it must be released now or it never will be.
-        _ = t.exit_queue.wakeAll();
+
+        // Everything a thread owns is given back while it is still an
+        // ordinary, schedulable thread, interrupts on. Closing a file
+        // written to a volume a server answers over IPC means waiting for
+        // that server, which means being switched away and back, and a
+        // thread the scheduler already believes is dead must never go on a
+        // wait queue: `t.next` links one list at a time, the reap list
+        // among them, and a thread linked into two at once corrupts both.
+
         // Claims that would otherwise outlive their claimant. The keyboard is
         // the one that matters: leaving it claimed by a dead process gives the
         // shell no input at all.
@@ -195,6 +234,20 @@ pub fn exitWith(status: i32) noreturn {
         // writer to finish but for a third party to notice that it did, which
         // is a wait that need never end.
         t.handles.closeAll();
+
+        // From here the thread is retired: nothing below blocks, and nothing
+        // above may run again once it does. `t.next` is free to mean the
+        // reap list, because nothing else still needs it to mean anything
+        // else.
+        hal.disableInterrupts();
+        t.state = .dead;
+        thread_count -= 1;
+        // A thread nobody will wait for is queued for collection now. One that
+        // is awaited stays as a corpse until its parent takes the status.
+        if (!t.awaited) pushList(&to_reap, t);
+        // Anything waiting on this thread must be released now or it never
+        // will be.
+        _ = t.exit_queue.wakeAll();
         if (find(t.parent_id)) |p| {
             _ = p.child_exit.wakeAll();
             // Interrupts are already off here, which is what `signalLocked`
@@ -202,6 +255,8 @@ pub fn exitWith(status: i32) noreturn {
             if (p.child_event) |ready| ready.signalLocked();
         }
         orphanChildren(t);
+    } else {
+        hal.disableInterrupts();
     }
     schedule();
     unreachable; // a dead thread is never rescheduled
@@ -356,8 +411,7 @@ pub fn sleepUntil(deadline_us: u64) void {
     if (current) |t| {
         t.state = .sleeping;
         t.wake_at = deadline_us;
-        t.next = sleepers;
-        sleepers = t;
+        pushList(&sleepers, t);
     }
     schedule();
 }
@@ -390,8 +444,7 @@ pub fn blockCurrent(deadline_us: ?u64) void {
     if (deadline_us) |deadline| {
         t.state = .sleeping;
         t.wake_at = deadline;
-        t.next = sleepers;
-        sleepers = t;
+        pushList(&sleepers, t);
     } else {
         t.state = .blocked;
     }
@@ -415,7 +468,10 @@ pub fn unblock(t: *Thread) void {
     }
 
     t.state = .ready;
-    t.next = null;
+    // Not `t.next = null` first: `Fifo.push` already does that itself for a
+    // thread that is not already on some other list, and doing it here too
+    // would, for one that is, clear that list's link before `Fifo.push`'s own
+    // `queued` check gets a chance to refuse the push and leave it alone.
     active.push(t, t.priority);
     // A woken IRQ owner can be the only path to acknowledging a deferred
     // level interrupt, and completion held at the controller should be held
@@ -424,14 +480,7 @@ pub fn unblock(t: *Thread) void {
 }
 
 fn removeSleeper(t: *Thread) void {
-    var link = &sleepers;
-    while (link.*) |s| {
-        if (s == t) {
-            link.* = s.next;
-            return;
-        }
-        link = &s.next;
-    }
+    removeFromList(&sleepers, t);
 }
 
 /// Move any sleeper whose deadline has passed back to the run queues.
@@ -441,10 +490,13 @@ fn wakeSleepers(now: u64) void {
         if (t.wake_at <= now) {
             // Off the sleeper list before going on a run queue: both are
             // threaded through the same `next` field, so a thread on two lists
-            // at once corrupts whichever is walked second.
+            // at once corrupts whichever is walked second. `Fifo.push` below
+            // trusts `queued` to say which; clearing it here is what makes
+            // that push land rather than be silently refused as a repeat.
             link.* = t.next;
-            t.state = .ready;
             t.next = null;
+            t.queued = false;
+            t.state = .ready;
             active.push(t, t.priority);
         } else {
             link = &t.next;
