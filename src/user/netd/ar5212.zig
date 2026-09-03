@@ -643,7 +643,9 @@ fn givenUpByModulation() Modulations {
 }
 
 fn sayImmunity(chip: *const reset.Chip) void {
-    log.begin(name, .dim);
+    // Kept rather than gated behind asking for debug: a radio that had to
+    // be made harder to convince is a room worth knowing about.
+    log.begin(name, .value);
     const at = chip.immunity.rungs();
     out.text("harder to convince: noise ");
     out.decimal(at.noise);

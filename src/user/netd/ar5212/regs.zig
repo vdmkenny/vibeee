@@ -870,12 +870,19 @@ pub const PhyXlna = packed struct(u32) {
 };
 
 /// The values the phase-locked loop takes, from the reference.
+/// What the baseband is clocked at, per radio family.
+///
+/// A clock rather than a modulation, whatever uses it most: the 2.4 GHz
+/// band runs at 44 MHz for both of the modulations it carries, and a
+/// baseband clocked at the other one is a tenth out on every symbol and
+/// chip boundary, so nothing decodes and both demodulators blame their
+/// timing.
 pub const PhyPll = enum(u32) {
-    ofdm_40 = 0xAA,
-    cck_44 = 0xAB,
-    ofdm_40_5112 = 0xEA,
-    cck_44_5112 = 0xEB,
-    ofdm_40_5413 = 0x04,
+    mhz40 = 0xAA,
+    mhz44 = 0xAB,
+    mhz40_5112 = 0xEA,
+    mhz44_5112 = 0xEB,
+    mhz40_5413 = 0x04,
     _,
 };
 

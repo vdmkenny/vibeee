@@ -251,9 +251,12 @@ pub fn chipReset(chip: *Chip, megahertz: ?u16) bool {
     if (megahertz == null) return true;
 
     // The 11g mode of a 2.4 GHz channel on this radio: both modulations,
-    // told apart per frame, at the 40 MHz clock.
+    // told apart per frame, at the 44 MHz clock the band runs at. Forty is
+    // the five gigahertz figure, and a baseband given it here is a tenth
+    // out on every symbol and chip boundary: both demodulators start on
+    // what they hear and both give up on the timing.
     const mode = regs_mod.PhyMode{ .radio_5112 = true, .rf_2ghz = true, .dynamic = true };
-    const pll: regs_mod.PhyPll = .ofdm_40_5112;
+    const pll: regs_mod.PhyPll = .mhz44_5112;
     const current: regs_mod.PhyPll = @enumFromInt(regs.read(.phy_pll_control));
 
     if (current != pll) {
