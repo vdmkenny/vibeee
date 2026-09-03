@@ -5,14 +5,21 @@ hw - the parts of the machine the firmware can switch
   hw wireless on         switch it on
   hw camera off          switch it off
 
+The parts, whichever of them a machine has: wireless, camera,
+card_reader, usb_ports, modem. Only the ones this machine can switch
+are listed, because a part it cannot switch is one it may not have.
+
 A netbook of this age powers parts of itself down to save a battery, and
 a part that is off is on no bus at all: it will not appear in `devices`
 or `usb`, because there is nothing there to appear. That looks exactly
 like hardware that is broken, and this is what tells the two apart.
 
-Fn+F2 does the same for the wireless, through the platform service,
-which also takes the interface down before the power goes and brings it
-back up after.
+The wireless key is wired to do the same for the radio, Fn+F2 on this
+machine, and more besides: the network service takes the interface down
+before the power goes and brings it back up after, in that order. No
+press reaches it, for the reason `man hotkeys` gives. `hw` switches the
+power alone, which is how it is asked for meanwhile and what serves the
+parts no service speaks for.
 
 On this machine the internal ports carry the camera and the card reader,
 so switching usb_ports off takes both off the bus with it.

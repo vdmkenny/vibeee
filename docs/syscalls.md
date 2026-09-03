@@ -365,7 +365,7 @@ Block until one of several events is signalled.
 | arg | type | meaning |
 |---|---|---|
 | `handles` | const ptr | Array of u32 event handles. |
-| `count` | len | How many, at most 8. |
+| `count` | len | How many, at most 16. |
 | `timeout_us` | uint | 0 to poll, 0xFFFFFFFF to block forever, else microseconds. |
 
 **Returns:** index of the event that fired
@@ -1212,6 +1212,19 @@ Push everything written so far through to the media.
 
 Every write already reaches the device: the block cache is write-through. What this adds is the device's own flush, so that what the drive has accepted into its cache is on the medium before the call returns. A program that has just replaced a file it must not lose calls this after the rename; nothing calls it after every write, because that would make every write as slow as a flush. Best effort on a drive whose firmware says it cannot: the call still returns, and the residual is the drive's, not the host's.
 
+## `pci_rescan`  <sub>#67</sub>
+
+Walk the PCI bus again, so the device table says what is there now.
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `ENOSYS`, this build has nothing behind the call
+
+Requires Caps.driver. The bus has no way of announcing that something arrived or left, so a device switched on by a firmware method is invisible until somebody looks again. What turns up is offered for binding and what stopped answering is taken out, quiesced first. A device already there keeps its entry and its claim: a walk over a machine that has not changed changes nothing.
+
 ---
 
-67 calls defined.
+68 calls defined.

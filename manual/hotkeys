@@ -6,3 +6,21 @@ hotkeys - the keys that do not arrive as keys
 Volume, brightness and the radio switch are not scancodes: the embedded
 controller reports them to the firmware and the firmware to the platform
 service. `hotkeys watch` is how to find out what a key actually sends.
+
+Two of them are acted on rather than only reported. The brightness keys
+move the panel, because nothing else can reach it. The wireless key
+switches the radio's power and takes the interface up or down with it,
+in that order, which is the network service's doing: `hw` switches the
+power alone and `net` the interface alone.
+
+No press arrives yet on this machine. A notification reaches an
+operating system through the system control interrupt, and that gate is
+held shut here: the burst of methods this firmware runs when it opens is
+not yet understood, and the first event delivered through it is a coin
+flip to survive. So the keys stay on the firmware's side and this
+listing is empty. What each key means is written down and wired, and
+opens with the gate.
+
+Nothing waits on that gate but the keys. Everything they would do is
+asked for directly in the meantime: `backlight` for the panel, `hw` for
+the radio's power, `net` for the interface, `vol` for the volume.

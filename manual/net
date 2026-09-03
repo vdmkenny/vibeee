@@ -29,6 +29,14 @@ With no static claim, an enabled interface asks DHCP as soon as its
 cable carries, and prints the address when it arrives. An interface
 no slot covers stays down.
 
+`up` and `down` are about the interface and not about the hardware: a
+radio taken down here keeps its power, which is what leaves `net scan`
+able to hear anything. `hw wireless off` cuts the power, and the
+wireless key is wired to do both in the order that keeps them agreeing,
+for the presses this machine does not deliver (`man hotkeys`). A radio
+whose power is off is on no bus at all, so it is absent from `devices`
+rather than shown as an interface that is down.
+
 A radio scans whenever it is not joined, and the listing says which
 channel it is on. Every verb here has the same control in the
 Settings window's Network pane and in the bar's network menu, and

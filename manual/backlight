@@ -4,4 +4,5 @@ backlight - how bright the panel is
   backlight 50           set it
 
 The firmware owns the scale, so the numbers a machine accepts are its
-own. Fn+F3 and Fn+F4 do the same through the platform service.
+own. Fn+F3 and Fn+F4 are wired to do the same through the platform
+service and do not reach it: `man hotkeys` says why.

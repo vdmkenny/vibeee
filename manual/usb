@@ -37,7 +37,10 @@ into it costs no interrupts.
 `usb ports` is the view for when a device is plugged in and does not
 appear: a port that reads connected with no address against it is one
 the machine sees and could not enumerate, which is a different fault
-from a port with nothing in it. A port reading `companion` handed its
+from a port with nothing in it. A port that reads as nothing at all may
+be one with no power: these machines switch their internal ports, and
+what hangs off them, a camera or a card reader, goes with them. `hw`
+says which parts this machine switches and what state each is in. A port reading `companion` handed its
 device to another controller, which is what happens to a full or low
 speed device on a high speed bus. That controller is driven too, so the
 device appears against it rather than being lost: the first column says

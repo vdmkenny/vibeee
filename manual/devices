@@ -7,6 +7,11 @@ driven from the kernel or from a service. A device nobody drives is
 shown as unclaimed, which is the first thing to look at when hardware
 does nothing.
 
+The listing is what the bus says now, not what it said at boot. A part
+switched off with `hw` is gone from it, because a part with no power is
+on no bus; `driver rescan` is what goes and looks again after one is
+switched back on.
+
 What drives what is the device manager's decision, not this listing's:
 `driver` shows its bindings and `/lib/drivers` holds the manifests it
 reads.

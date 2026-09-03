@@ -61,8 +61,12 @@ SYSENTER, PAE, NX, SSE3, 64-bit mode, and multiple CPU cores are not required.
 - FAT12/16/32 with VFAT long filenames; persistent `/cfg` and `/home` volumes.
 - Native GMA 900/950 modesetting, a framebuffer display server, tiling and floating
   windows, launcher, and the `libeui` control library.
-- ATA, ACPI/uACPI platform support, battery, backlight, hotkeys, USB mass storage/HID,
+- ATA, ACPI/uACPI platform support, battery, backlight, USB mass storage/HID,
   AC'97 and HDA playback, and wired IPv4 networking with DHCP, DNS, TCP, and UDP.
+- Switching the parts a laptop powers down to save its battery (the radio, the camera,
+  the card reader, the internal USB ports), through the standard ACPI power methods
+  where a machine has them and the vendor's own where it does not, with the bus
+  re-walked so a part switched on appears without a reboot.
 - Shell, multicall command-line tools, and a small POSIX-lean C library for ports.
 
 ## Kernel Model
@@ -115,14 +119,22 @@ See [apps/README.md](apps/README.md) for details.
 3. Boot the card as USB-HDD on the Eee PC.
 
 Verified on the Eee PC 701: SD boot, native 800x480 display, keyboard, relative-mode
-touchpad, battery, backlight, hotkeys, desktop, wired networking, HDA playback, USB
-storage, and persistent settings and home volumes.
+touchpad, battery, backlight, desktop, wired networking, HDA playback, USB storage,
+and persistent settings and home volumes.
+
+Not yet: the firmware's own event delivery is held shut on this machine, so the top-row
+keys are decoded and wired but no press arrives (`man hotkeys`); everything they would
+do is reachable by command. `hw wireless on` powers the radio and lights its lamp,
+confirmed on the machine; joining a network is owed.
 
 ### Testing Other Netbooks
 
 Testing on other low-end x86 netbooks is welcome. The system is designed to select
 hardware support through PCI discovery, ACPI/SMBIOS data, and driver manifests rather
-than a hard-coded 701 board profile. Expect untested hardware to expose gaps, especially
+than a hard-coded 701 board profile. Machine-specific firmware behaviour is likewise
+kept to two places: corrections for firmware that is wrong are one module per family
+under `src/quirks/`, and a laptop maker's own control interface is one file under
+`src/user/platd/vendor/` plus one row in the registry beside it. Expect untested hardware to expose gaps, especially
 for graphics, embedded-controller functions, wireless, audio codecs, touchpads, and
 storage controllers.
 

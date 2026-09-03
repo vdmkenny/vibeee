@@ -259,7 +259,7 @@ pub fn injectHotkey(code: u16, value: i32) void;        // wraps input_core.inje
 pub fn injectSwitch(code: u16, value: i32) void;        // EV_SW: SW_LID
 // Platform→GUI OSD events (brightness/volume popups) ride the PowerStatus event, not input.
 
-// ---- who sequences a gate (built, and not as sketched) ----
+// ---- who sequences a gate ----
 // There is no platform→devmgr notice channel and no ack. Each service owns
 // its own concern and asks the others for what is outside it, which puts the
 // order in the one place that has all of it: the service that owns the

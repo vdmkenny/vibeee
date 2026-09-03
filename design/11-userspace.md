@@ -159,6 +159,8 @@ User drivers still use contract `pci_cfg_read/write(bdf)` for their own device; 
 
 `/drivers/<name>.drv` (EMF) + `/drivers/bin/<name>`. devmgd scans rootfs `/drivers` and, once mounted, `/data/drivers` (user drop-ins; same-name wins over rootfs, the modularity story).
 
+**As built**: `/lib/drivers/<name>.man`, with the binary named by the manifest's own `binary` key rather than placed by convention, and one directory rather than two. `drivers/README` and `Manifest` in `src/user/devmgd/main.zig` are the format; the drop-in story is unchanged.
+
 ```toml
 # /drivers/netd.drv
 [driver]

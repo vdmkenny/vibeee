@@ -52,9 +52,9 @@ The boot carries a line of flags, set where the image is written. The
 loader shows it and waits two seconds; press a key in that time and it
 can be typed at:
 
-  boot: verbose fb
+  boot: verbose
         a key within two seconds changes it
-  boot> verbose fb debug
+  boot> verbose debug
 
 Typing continues from the end of what is there, so the usual change is
 a word added. Backspace takes one off; enter boots with what is shown.
@@ -71,6 +71,21 @@ The flags:
   noautomount            mount nothing that is found, /cfg and /home
                          included; `mount` still attaches by hand, and
                          settings changed without /cfg are refused
+  nofb                   stay in text mode; the loader otherwise sets a
+                         graphics mode, which is what a program drawing
+                         its own pixels needs. For a machine whose panel
+                         the mode does not suit, and for reading a boot
+                         that stops before the kernel's own display
+                         driver takes over
+  no.<service>           keep one service down for this boot, by the
+                         name `svc` lists it under: `no.netd` boots
+                         without the network. `nonet` and `nohw` are the
+                         older spellings of `no.netd` and `no.devmgd`
+  late.<service>         start it once the shell is on screen instead of
+                         during the boot, so a service whose hardware
+                         stops the machine does it under a prompt you
+                         can read. `netlate` is the older spelling of
+                         `late.netd`
 
 `edit` changes a file and writes it back; `man edit` describes it. Long
 output reads through `page`. The boot's own messages are under

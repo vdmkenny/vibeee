@@ -3,7 +3,8 @@ driver - what drives what
   driver                 the bindings
   driver stop <name>     stop a standalone driver process
   driver start <name>    start it again
-  driver rescan          read the manifests again, bind anything new
+  driver rescan          look at the bus again, read the manifests again,
+                         and bind anything new
 
 The device manager matches hardware to drivers and is the only thing
 that knows vendor numbers. A manifest in /lib/drivers names the
@@ -22,3 +23,8 @@ for its whole class.
 
 Dropping a manifest and its program into /lib/drivers and running
 `driver rescan` brings a new driver up on a running machine.
+
+A rescan walks the bus before it reads the manifests, so it also finds
+hardware that was not there at boot: a part switched on with `hw`
+announces itself to nothing, and this is what goes and looks. What has
+stopped answering is taken out of the listing at the same time.

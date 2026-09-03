@@ -15,3 +15,8 @@ directory and the parser cannot drift.
 
 A device the kernel already drives is left alone. Two drivers on one device is
 worse than the wrong one of them.
+
+`driver rescan` reads this directory again and binds what it finds, so a
+driver added to a running machine comes up without a reboot. It walks the bus
+first, so it also finds hardware that was not on it at boot: a part switched
+on with `hw` announces itself to nothing.
