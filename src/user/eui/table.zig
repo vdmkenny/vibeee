@@ -63,6 +63,14 @@ pub const State = struct {
     /// needs to be read across: the eye follows the stripe rather than
     /// counting down from the top.
     striped: bool = false,
+    /// Whether the column headings are drawn at all.
+    ///
+    /// A table of two or three rows whose columns are self-evident is a list,
+    /// and a list wearing a heading band spends a row of the window saying
+    /// what the rows already say. What the headings are for is sorting and
+    /// naming columns a reader has to be told apart, so they go where that
+    /// is worth a row and not where it is not.
+    headings: bool = true,
     /// The heading drawn in the accent, for a table that is the focus of a
     /// window holding more than one.
     head_accent: bool = false,
@@ -108,7 +116,7 @@ pub fn run(
     const act = ctx.interact(entry, area);
 
     const row_h = rowHeight();
-    const header_h = row_h + 1;
+    const header_h: i32 = if (state.headings) row_h + 1 else 0;
     const body = Rect{
         .x = area.x,
         .y = area.y + header_h,
@@ -127,8 +135,8 @@ pub fn run(
     // The headings are what a table is sorted by. Clicking one orders by it,
     // and clicking it again turns it round: the first click on a new column
     // is descending, because a column of numbers is asked for largest first.
-    const header = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = row_h };
-    if (act.over and ctx.pressedThisPass() and header.contains(ctx.pointer_x, ctx.pointer_y)) {
+    const header = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = header_h };
+    if (state.headings and act.over and ctx.pressedThisPass() and header.contains(ctx.pointer_x, ctx.pointer_y)) {
         if (columnAt(columns, area, ctx.pointer_x)) |index| {
             if (state.sort) |current| {
                 state.sort = if (current.column == index)
@@ -213,6 +221,31 @@ pub fn run(
 }
 
 /// Which heading a point falls on.
+/// Where a row is drawn inside `area`, or null when it is scrolled out of
+/// sight.
+///
+/// For a caller putting a control at the end of a row: a switch, a button,
+/// anything the table itself has no business knowing about. The table draws
+/// the row and the caller draws into the end of it, both asking here so the
+/// two cannot drift apart.
+pub fn rowRect(area: Rect, state: *const State, index: usize, rows: usize) ?Rect {
+    const row_h = rowHeight();
+    const header_h: i32 = if (state.headings) row_h + 1 else 0;
+    const body_h = area.h - header_h;
+    const visible = @max(@as(usize, @intCast(@max(@divTrunc(body_h, row_h), 0))), 1);
+
+    if (index < state.scroll or index >= state.scroll + visible or index >= rows) return null;
+
+    const width = if (rows > visible) area.w - scroll.WIDTH else area.w;
+    const step: i32 = @intCast(index - state.scroll);
+    return .{
+        .x = area.x,
+        .y = area.y + header_h + step * row_h,
+        .w = width,
+        .h = row_h,
+    };
+}
+
 fn columnAt(columns: []const Column, area: Rect, x: i32) ?usize {
     var at = area.x + 2;
     for (columns, 0..) |_, i| {
@@ -284,10 +317,11 @@ fn paint(
     // Headings, then a rule. A heading that scrolled with the rows would be
     // worse than none.
     const head = Rect{ .x = area.x, .y = area.y, .w = area.w, .h = row_h };
-    surface.fill(head, if (state.head_accent) t.accent else t.surface_pressed);
+    if (state.headings) surface.fill(head, if (state.head_accent) t.accent else t.surface_pressed);
 
     var x = area.x + 2;
     for (columns, 0..) |column, i| {
+        if (!state.headings) break;
         const w = columnWidth(columns, i, area.w);
         const ordered = if (state.sort) |by| by.column == i else false;
         const head_ink = if (state.head_accent)
@@ -312,7 +346,7 @@ fn paint(
         }
         x += w;
     }
-    surface.fill(.{ .x = area.x, .y = area.y + row_h, .w = area.w, .h = 1 }, t.line);
+    if (state.headings) surface.fill(.{ .x = area.x, .y = area.y + row_h, .w = area.w, .h = 1 }, t.line);
 
     // One row with a picture indents them all, so the names line up whether
     // or not the row above has one.
@@ -353,11 +387,15 @@ fn paint(
             const indent: i32 = (if (column.tree) @as(i32, row.depth) * 10 else 0) +
                 (if (i == 0 and pictured) Surface.iconSize() + 4 else 0);
 
+            // Every cell is drawn to its own column's width. One that
+            // overran would paint across the cell beside it, and two values
+            // run together read as one.
+            const room = w - INSET * 2 - indent;
             if (column.right) {
-                const text_w = Surface.textWidth(cell);
-                surface.text(cx + w - text_w - INSET, y + 2, cell, ink);
+                const text_w = @min(Surface.textWidth(cell), room);
+                surface.textFitted(cx + w - text_w - INSET, y + 2, room, cell, ink);
             } else {
-                surface.text(cx + INSET + indent, y + 2, cell, ink);
+                surface.textFitted(cx + INSET + indent, y + 2, room, cell, ink);
             }
             cx += w;
         }

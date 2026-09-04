@@ -45,6 +45,12 @@ pub const Icon = enum {
     /// Four ascending bars: signal, and the only thing in the bar that says
     /// whether the radio has anything.
     wifi,
+    /// The same bars with the tallest ones unlit: a network heard less
+    /// well. The lit bars stay where they are, so the picture reads as a
+    /// level rather than as a different drawing each time.
+    wifi_good,
+    wifi_fair,
+    wifi_weak,
     /// A wired link, for a machine that has a cable in it.
     ethernet,
     speaker,
@@ -124,9 +130,18 @@ pub const Icon = enum {
 /// one insertion away from every icon after it drawing the wrong thing,
 /// and nothing about the result looks wrong until somebody sees a tick
 /// where a window should be. The comptime block below proves the order.
+/// Where a picture sits in its cell.
+///
+/// Almost everything is centred, and the check below holds it to that. A
+/// family that reads as a scale is the exception: signal bars grow from one
+/// corner, and re-centring each step would make the bars jump about as the
+/// strength changed, which is the one thing a strength picture must not do.
+const Anchor = enum { centre, corner };
+
 const Picture = struct {
     icon: Icon,
     rows: [HEIGHT][]const u8,
+    anchor: Anchor = .centre,
 };
 
 const art = [_]Picture{
@@ -144,6 +159,60 @@ const art = [_]Picture{
             "...##.##.##.",
             "##.##.##.##.",
             "##.##.##.##.",
+            "............",
+        },
+    },
+    .{
+        .icon = .wifi_good,
+        .anchor = .corner,
+        .rows = .{
+            "............",
+            "............",
+            "............",
+            "............",
+            "......##.##.",
+            "......##.##.",
+            "......##.##.",
+            "...##.##.##.",
+            "...##.##.##.",
+            "##.##.##.##.",
+            "##.##.##.##.",
+            "............",
+        },
+    },
+    .{
+        .icon = .wifi_fair,
+        .anchor = .corner,
+        .rows = .{
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "...##.##....",
+            "...##.##....",
+            "##.##.##....",
+            "##.##.##....",
+            "............",
+        },
+    },
+    .{
+        .icon = .wifi_weak,
+        .anchor = .corner,
+        .rows = .{
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "............",
+            "##..........",
+            "##..........",
             "............",
         },
     },
@@ -746,6 +815,7 @@ comptime {
             }
         }
 
+        if (picture.anchor == .corner) continue;
         const first = top orelse continue;
         // Twice the centre, so the half a row an even-height picture lands on
         // stays a whole number: eleven is the middle of twelve rows.
@@ -763,6 +833,19 @@ comptime {
 /// pictures, and every place that shows a level wants the same one: a bar
 /// indicator and a panel that disagreed about what half volume looks like
 /// would be two different machines.
+/// Which picture says how well a network is heard.
+///
+/// `bars` is what the network service reports, zero to three, so the
+/// picture and any figure beside it cannot disagree about one reading.
+pub fn signal(bars: u8) Icon {
+    return switch (bars) {
+        0 => .wifi_weak,
+        1 => .wifi_fair,
+        2 => .wifi_good,
+        else => .wifi,
+    };
+}
+
 pub fn volume(percent: u8, muted: bool) Icon {
     if (muted or percent == 0) return .muted;
     return if (percent < 50) .speaker_low else .speaker;

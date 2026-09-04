@@ -48,8 +48,19 @@ pub const Amount = struct {
 pub const TEXT_MAX = 128;
 
 /// The question standing in a window, or none.
+/// The longest question a prompt keeps. Longer than any this system asks,
+/// and short enough that a prompt is still a small value.
+const QUESTION_MAX = 96;
+
 pub const Prompt = struct {
-    question: []const u8 = "",
+    /// The words of the question, copied rather than borrowed.
+    ///
+    /// A prompt outlives the call that opened it: it stands for as many
+    /// passes as it takes somebody to answer, while the caller that built
+    /// the words returned long ago. Holding a slice of theirs means drawing
+    /// whatever is on that stack by then, which is not their question.
+    asked: [QUESTION_MAX]u8 = undefined,
+    asked_len: u8 = 0,
     choices: []const Choice = &.{},
     amount: ?Amount = null,
 
@@ -61,16 +72,18 @@ pub const Prompt = struct {
     /// The field takes the keyboard on the first pass it stands.
     focus_text: bool = false,
 
-    pub fn ask(self: *Prompt, question: []const u8, choices: []const Choice) void {
+    pub fn ask(self: *Prompt, words: []const u8, choices: []const Choice) void {
         std.debug.assert(choices.len > 0 and choices.len <= MAX_CHOICES);
-        self.question = question;
+        const room = @min(words.len, QUESTION_MAX);
+        @memcpy(self.asked[0..room], words[0..room]);
+        self.asked_len = @intCast(room);
         self.choices = choices;
         self.amount = null;
     }
 
     /// A question with a number in it: how much, how many, how far.
-    pub fn askFor(self: *Prompt, question: []const u8, choices: []const Choice, amount: Amount) void {
-        self.ask(question, choices);
+    pub fn askFor(self: *Prompt, words: []const u8, choices: []const Choice, amount: Amount) void {
+        self.ask(words, choices);
         self.amount = .{ .value = amount.range.clamp(amount.value), .range = amount.range };
     }
 
@@ -81,11 +94,16 @@ pub const Prompt = struct {
     /// A question with a line in it: a name, a path, a line of a file. The
     /// field starts with the text's `initial`, shows its `hint` while empty,
     /// and takes the keyboard.
-    pub fn askText(self: *Prompt, question: []const u8, choices: []const Choice, with: Text) void {
-        self.ask(question, choices);
+    pub fn askText(self: *Prompt, words: []const u8, choices: []const Choice, with: Text) void {
+        self.ask(words, choices);
         self.typed.init(with);
         self.has_text = true;
         self.focus_text = true;
+    }
+
+    /// What was asked.
+    pub fn question(self: *const Prompt) []const u8 {
+        return self.asked[0..self.asked_len];
     }
 
     pub fn dismiss(self: *Prompt) void {
@@ -160,7 +178,7 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
     var message = footer.messageRect(bar, placed);
     if (state.has_text) {
         // The field takes what the words leave, and at least half the bar.
-        const question_w = @min(draw.Surface.textWidth(state.question) + t.gap, @divTrunc(message.w, 2));
+        const question_w = @min(draw.Surface.textWidth(state.question()) + t.gap, @divTrunc(message.w, 2));
         const field = Rect{
             .x = message.x + question_w,
             .y = bar.y + @divTrunc(bar.h - t.control_height, 2),
@@ -186,7 +204,7 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
         message.w = @max(0, message.w - wide - t.gap);
         amount.value = ctx.stepper(counter, amount.range, amount.value);
     }
-    ctx.label(message, state.question);
+    ctx.label(message, state.question());
 
     var chosen: ?usize = if (chosen_by_field) 0 else null;
     for (placed, state.choices, 0..) |cell, choice, i| {

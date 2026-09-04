@@ -761,6 +761,34 @@ pub const Context = struct {
         return activated;
     }
 
+    /// A switch: on or off, for a row that has no width to spare for a
+    /// labelled toggle. `on` is the caller's state; the returned value is
+    /// what it should be after this pass.
+    ///
+    /// What it is for is said by the row it sits at the end of, so it
+    /// carries no text of its own. Where there is room for a word, the
+    /// labelled `toggle` says more.
+    pub fn onOff(self: *Context, area: Rect, on: bool) bool {
+        const entry = self.slotFor(area) orelse return on;
+        const it = self.interact(entry, area);
+
+        const value = if (it.clicked or self.activatedByKey(entry)) !on else on;
+        const visual: Visual = if (value)
+            hotOr(it.over, .checked_hot, .checked)
+        else if (it.holding)
+            .active
+        else
+            hotOr(it.over, .hot, .idle);
+
+        if (self.needsPaint(entry, visual)) {
+            entry.visual = visual;
+            paintSwitch(self.surface, area, value, visual, it.focused);
+            self.addDamage(area);
+        }
+
+        return value;
+    }
+
     /// A checkbox. `checked` is the caller's state; the returned value is what
     /// it should be after this pass.
     pub fn checkbox(self: *Context, area: Rect, text: []const u8, checked: bool) bool {
@@ -1108,7 +1136,10 @@ pub const Context = struct {
             entry.detail = signature;
             const t = theme.current();
             self.surface.fill(area, t.surface);
-            self.surface.clipped(area).text(area.x, area.y, text, ink);
+            // Fitted rather than clipped: a label cut by the edge of its
+            // area ends mid-letter, and half a letter reads as a fault
+            // rather than as words that did not fit.
+            self.surface.clipped(area).textFitted(area.x, area.y, area.w, text, ink);
             self.addDamage(area);
         }
     }
@@ -1546,6 +1577,69 @@ pub fn paintFocusRing(surface: Surface, area: Rect, color: draw.Color) void {
         surface.set(area.x, y, color);
         surface.set(area.right() - 1, y, color);
     }
+}
+
+/// A switch's track, measured from the control height so it grows with
+/// everything else: a control's height less its padding either side, and
+/// wide enough for the knob to travel its own width again.
+pub fn switchTrack(area: Rect) Rect {
+    const t = theme.current();
+    const h = @max(t.control_height - theme.enlarged(8), theme.enlarged(10));
+    const w = h + @divTrunc(h * 3, 4);
+    return .{
+        .x = area.x,
+        .y = area.y + @divTrunc(area.h - h, 2),
+        .w = w,
+        .h = h,
+    };
+}
+
+/// How much width a switch wants, for a caller laying out the row it ends.
+pub fn switchWidth() i32 {
+    return switchTrack(.{ .x = 0, .y = 0, .w = 0, .h = 0 }).w;
+}
+
+fn paintSwitch(surface: Surface, area: Rect, on: bool, visual: Visual, focused: bool) void {
+    const t = theme.current();
+    surface.fill(area, t.surface);
+
+    const track = switchTrack(area);
+    const radius = t.corner_radius;
+    const corners = draw.Corners.all;
+
+    // The same faces a button answers with, so a switch and a button in one
+    // row read as the same material.
+    const face = switch (visual) {
+        .active => t.surface_pressed,
+        .checked, .checked_hot => t.accent,
+        .hot => t.surface_hot,
+        else => t.surface,
+    };
+    surface.fillRounded(track, radius, corners, face);
+
+    // The accent has no lighter shade to step to, so a switch that is on
+    // answers the pointer with its edge, the way a button does.
+    const edge = if (visual == .checked_hot)
+        t.text
+    else if (on or focused)
+        t.accent
+    else
+        t.line;
+    surface.frameRounded(track, radius, corners, edge);
+
+    // The knob travels; it does not grow. Rounded one step less than the
+    // track, so the two curves sit inside each other rather than touching.
+    const inset: i32 = 2;
+    const size = track.h - inset * 2;
+    const knob = Rect{
+        .x = if (on) track.right() - size - inset else track.x + inset,
+        .y = track.y + inset,
+        .w = size,
+        .h = size,
+    };
+    surface.fillRounded(knob, @max(radius - 1, 1), corners, if (on) t.accent_text else t.text_dim);
+
+    if (focused) paintFocusRing(surface, area, t.text_dim);
 }
 
 fn paintCheckbox(surface: Surface, area: Rect, text: []const u8, checked: bool, hot: bool, focused: bool) void {
