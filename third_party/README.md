@@ -114,3 +114,27 @@ because those are large correct interpreters of a standard and this is a driver
 whose every hot path the house rules keep in idiomatic Zig. What is irreplaceable
 about the HAL is its numbers, not its C; so the numbers are what is kept, and the
 code that uses them is ours.
+
+## irc-parser-tests
+
+Daniel Oaks' cross-implementation IRC parser test cases, CC0 1.0. See
+`irc-parser-tests/LICENSE`. Pinned at
+`6b417e666de20ba677b14e0189213b3706009df6`; `irc-parser-tests/COMMIT` records
+where they came from.
+
+**Reference only. None of it is compiled.** These are data transcribed into
+Zig, like `spleen`'s `.bdf` files, not code that is built. `make irctests`
+reads them and writes `apps/echat/irc/vectors.zig`, so no case in the table is
+typed by hand and re-pinning means re-running the generator.
+
+Three of the five files are transcribed: splitting a line into its atoms,
+rendering atoms back into a line, and splitting a source into nick, user and
+host. The other two cover mask matching and hostname validation, which
+`apps/echat` does not do.
+
+Chosen over writing cases from the grammar because the grammar is not what
+implementations disagree about. The disagreements are in the corners: two
+spaces where the standard allows one, an empty parameter, a trailing backslash
+in a tag value, a colon inside a message. These cases were collected from four
+other projects' suites and reflect what real networks send, so a client that
+matches them matches other clients.

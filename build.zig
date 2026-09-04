@@ -558,6 +558,23 @@ pub fn build(b: *std.Build) void {
             });
             const hero_test_step = b.step("test-hero", "Test the Hero character-journal model on the host");
             hero_test_step.dependOn(&b.addRunArtifact(hero_test).step);
+
+            // The IRC engine, on the host: the protocol is bytes in and bytes
+            // out, tested against the shared parser vectors.
+            const echat_test = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/echat/irc.zig"),
+                    .target = b.graph.host,
+                    .optimize = .Debug,
+                    .imports = &.{.{ .name = "lib", .module = b.createModule(.{
+                        .root_source_file = b.path("src/lib/lib.zig"),
+                        .target = b.graph.host,
+                        .optimize = .Debug,
+                    }) }},
+                }),
+            });
+            const echat_test_step = b.step("test-echat", "Test the IRC protocol engine on the host");
+            echat_test_step.dependOn(&b.addRunArtifact(echat_test).step);
         }
     } // !is_arm
 

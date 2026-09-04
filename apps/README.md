@@ -8,6 +8,17 @@ somebody's choice, and choices belong where a person's things are. So an
 app here is built separately and installed into `/home`, where it sits
 beside the files it works on and survives a reboot like they do.
 
+## What is here
+
+| Program | Source | What it is |
+|---|---|---|
+| Doom | [`doom/`](doom/) | The portable engine, fetched. What is kept here is its platform half: six calls answered with this system's screen, key stream and clock. It runs at whatever size the screen comes up at and saves into `/home`. No sound backend. The WAD is not fetched for you; the recipe says which one and where to get it. |
+| Hero | [`hero/`](hero/) | A character journal for Dungeons and Dragons on the 2024 rules, written here and built by the main `build.zig`. It opens a `.hero` file from the launcher or its own File menu, and handles rolls, damage, rests, spells, gold and notes. |
+| echat | [`echat/`](echat/) | An IRC client. The protocol engine is written and tested with `make echat`; the window on top of it is not built yet. |
+
+Each is built and versioned on its own, separately from the system's version
+string.
+
 ## What is in the tree, and what is not
 
 Third-party source is never committed here. An app is a recipe saying
@@ -31,6 +42,8 @@ builds and stages it, and `make apps` does so along with the rest.
 
     make apps                 build every app
     make app APP=doom         build one
+    make hero                 build Hero alone
+    make echat                check echat's protocol engine
 
 An app builds into `home/`, and the image seeds `/home` from there. So
 anything in `home/` is on the machine at the next boot, and rebuilding

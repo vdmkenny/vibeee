@@ -101,15 +101,19 @@ The launcher searches installed programs, open windows, and files under `/home`.
 Extra applications are installed into the persistent `/home` volume rather than the
 base system image.
 
+Doom, the Hero character journal, and the echat IRC client. Each is built and
+versioned on its own, separately from the system's version string.
+
 ```bash
 make hero                  # build the first-party Hero character journal
+make echat                 # check echat's protocol engine
 make apps                  # build Hero and every third-party app recipe
 make app APP=doom          # build Doom only
 ```
 
 Third-party source is fetched into `build/apps/` and is not committed. Doom data is
 not downloaded automatically; its recipe explains where the required WAD belongs.
-See [apps/README.md](apps/README.md) for details.
+See [apps/README.md](apps/README.md) for what is installed and how it is built.
 
 ## Real Hardware
 
@@ -160,6 +164,7 @@ recover manually.
 
 - [Status](docs/status.md): current component inventory, test coverage, and known gaps.
 - [Master design](design/00-vibeee.md): goals, architecture, and roadmap.
+- [Extra applications](apps/README.md): the programs that are not part of the system.
 - [System calls](docs/syscalls.md): generated ABI reference.
 - [Settings](docs/settings.md): generated configuration reference.
 - [libeui](docs/libeui.md): generated UI toolkit reference.

@@ -138,7 +138,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd update-sd help apps app hero fmt check check-all
+.PHONY: all clean image qemu qemu-sd run test tools sd update-sd help apps app hero echat fmt check check-all
 
 all: image
 
@@ -151,6 +151,7 @@ help:
 	@echo "  make vnc              boot over VNC instead of a local window"
 	@echo "  make apps             build the programs in apps/ into home/"
 	@echo "  make hero             build the Hero character journal into home/"
+	@echo "  make echat            check the IRC engine against the reference vectors"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make check            module layering and import rules"
@@ -215,6 +216,11 @@ hero:
 	@mkdir -p home
 	@cp zig-out/bin/hero home/hero
 	@echo "  ready   home/hero, on the machine at the next image build"
+
+# The IRC engine, tested on the host against the reference vectors.
+.PHONY: echat
+echat:
+	@$(ZIG) build test-echat
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
@@ -424,7 +430,7 @@ test: qr-verify
 # The tree is formatted, as `zig fmt` formats it. Checked rather than
 # assumed: the one file a hand-aligned table exempts is the one that drifts.
 fmt:
-	$(ZIG) fmt --check src tools build.zig
+	$(ZIG) fmt --check src tools apps build.zig
 
 check:
 	$(ZIG) build check
@@ -452,6 +458,17 @@ $(BUILD)/mkathtables: tools/mkathtables.zig | $(BUILD)
 athtables: $(BUILD)/mkathtables
 	$(BUILD)/mkathtables third_party/ath_hal/ar5212/ar5212.ini src/user/netd/ar5212/tables.zig
 	$(ZIG) fmt src/user/netd/ar5212/tables.zig
+
+# The IRC parser vectors, transcribed from the pinned reference by a generator
+# so no case in the table is typed by hand. Regenerate when the reference's pin
+# moves; the output is committed.
+$(BUILD)/mkirctests: tools/mkirctests.zig | $(BUILD)
+	$(ZIG) build-exe $< -O ReleaseSafe --name mkirctests -femit-bin=$@
+
+.PHONY: irctests
+irctests: $(BUILD)/mkirctests
+	$(BUILD)/mkirctests third_party/irc-parser-tests apps/echat/irc/vectors.zig
+	$(ZIG) fmt apps/echat/irc/vectors.zig
 
 # Differential-test the QR encoder against libqrencode. A QR that merely looks
 # right is worthless: the failure mode is a panic screen nobody can scan.
