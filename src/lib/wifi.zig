@@ -179,6 +179,72 @@ pub const b_rates = [_]Legacy{ .m1, .m2, .m5_5, .m11 };
 /// The rates 802.11g adds.
 pub const g_rates = [_]Legacy{ .m6, .m9, .m12, .m18, .m24, .m36, .m48, .m54 };
 
+/// Every legacy rate this station knows how to speak, in the order the
+/// two rate elements list them. Everything that reasons about a set of
+/// rates walks this one array.
+pub const known = b_rates ++ g_rates;
+
+/// Which of those a cell offers. An ordered list rather than a set: it is
+/// short, it is walked far more often than it is searched, and the order
+/// a cell listed them in is worth keeping.
+pub const Rates = struct {
+    held: [known.len]Legacy = @splat(.m1),
+    len: u8 = 0,
+
+    pub fn add(self: *Rates, rate: Legacy) void {
+        if (self.len >= self.held.len or self.has(rate)) return;
+        self.held[self.len] = rate;
+        self.len += 1;
+    }
+
+    pub fn slice(self: *const Rates) []const Legacy {
+        return self.held[0..self.len];
+    }
+
+    pub fn has(self: *const Rates, rate: Legacy) bool {
+        return std.mem.indexOfScalar(Legacy, self.slice(), rate) != null;
+    }
+
+    /// The slowest rate offered, which is the one most likely to get
+    /// through when nothing else is.
+    pub fn slowest(self: *const Rates) ?Legacy {
+        var found: ?Legacy = null;
+        for (self.slice()) |rate| {
+            if (found == null or rate.kbps() < found.?.kbps()) found = rate;
+        }
+        return found;
+    }
+
+    /// Every rate this station knows, for a cell that named none.
+    pub fn all() Rates {
+        var rates = Rates{};
+        for (known) |rate| rates.add(rate);
+        return rates;
+    }
+};
+
+test "a rate set keeps what it is given once, and knows which is slowest" {
+    var rates = Rates{};
+    try std.testing.expectEqual(@as(?Legacy, null), rates.slowest());
+
+    rates.add(.m24);
+    rates.add(.m6);
+    rates.add(.m24);
+    try std.testing.expectEqual(@as(usize, 2), rates.slice().len);
+    try std.testing.expect(rates.has(.m6));
+    try std.testing.expect(!rates.has(.m54));
+    try std.testing.expectEqual(Legacy.m6, rates.slowest().?);
+
+    // The slowest is by speed, not by the order they arrived or the
+    // order the elements list them: 11 megabit precedes 6 in `known`.
+    var mixed = Rates{};
+    mixed.add(.m11);
+    mixed.add(.m6);
+    try std.testing.expectEqual(Legacy.m6, mixed.slowest().?);
+
+    try std.testing.expectEqual(known.len, Rates.all().slice().len);
+}
+
 /// A high-throughput rate: which coding index, across how many spatial
 /// streams, at which width and guard interval. A driver for a radio
 /// without high throughput simply never produces one, and nothing above

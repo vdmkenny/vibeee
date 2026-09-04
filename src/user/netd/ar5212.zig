@@ -167,6 +167,7 @@ pub const ops = dev_mod.NicOps{
         .calibrate = calibrate,
         .adapt = adapt,
         .answerFor = answerFor,
+        .transmitAt = transmitAt,
         .draw = draw,
         .watchAgain = watchAgain,
         .sayIfUnheard = sayIfUnheard,
@@ -1007,10 +1008,19 @@ fn refused(nic: *NicDev) bool {
 /// what goes where in it is the station's business, and how fast and how
 /// hard it goes is this one's.
 pub fn transmit(nic: *NicDev, frame: []const u8) bool {
+    const channel = device.channel orelse return refused(nic);
+    // Nothing has been agreed about this frame, so it goes at the rate
+    // the band obliges every station to understand.
+    return transmitAt(nic, frame, lib.rates.only(channel.band.slowest(), FRAME_TRIES));
+}
+
+/// The same, at a chosen series: try the first, and work down to the one
+/// that has to arrive.
+pub fn transmitAt(nic: *NicDev, frame: []const u8, series: lib.rates.Series) bool {
     if (!device.started or device.gone) return refused(nic);
     const chip: *reset.Chip = if (device.chip) |*c| c else return refused(nic);
     const rings = device.rings orelse return refused(nic);
-    const channel = device.channel orelse return refused(nic);
+    if (series.slice().len == 0) return refused(nic);
     if (frame.len == 0 or frame.len > SLAB) return refused(nic);
 
     // Finished descriptors first: the ring is short, and a frame offered
@@ -1029,12 +1039,9 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     const desc: *volatile Desc = &rings.tx_desc[slot];
     desc.armTransmit(chainBase("tx_buffer") + @as(u32, @intCast(slot * SLAB)), 0, .{
         .frame_bytes = @intCast(frame.len),
-        // Everything goes at the slowest rate the band obliges every
-        // station to understand. Nothing here has agreed on more yet.
-        .rate = lib.ar5212.RateCode.of(channel.band.slowest()),
+        .series = series,
         .power = chip.self_power,
         .acknowledged = answered,
-        .tries = FRAME_TRIES,
     });
     dma.publish();
 
@@ -1069,6 +1076,23 @@ fn reapTx(nic: *NicDev) void {
         const report = desc.sent();
         if (!report.done()) break;
         dma.consume();
+
+        // Which rates to credit and which to blame. The control words are
+        // as they were written, so the frame says this about itself.
+        //
+        // Every step the hardware worked past is a step that did not get
+        // through, and it is said so: a rate blamed only when it is the
+        // last one tried is a rate whose failures are always paid for by
+        // the step behind it, and the account would go on choosing it.
+        const speeds: lib.ar5212.TxControl3 = @bitCast(desc.body.tx.control3);
+        const final = report.status1.final_series;
+        for (0..@as(usize, final) + 1) |step| {
+            const carried = lib.ar5212.rateOfStep(speeds, @intCast(step)).rate() orelse continue;
+            dev_mod.deliverTxDone(nic, .{
+                .rate = carried,
+                .sent = step == final and report.status0.sent,
+            });
+        }
 
         if (report.failure()) |why| {
             nic.stats.tx_failed += 1;

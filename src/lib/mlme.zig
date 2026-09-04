@@ -309,6 +309,9 @@ pub const Bss = struct {
     security: wifi.Security,
     capability: Capability,
     signal: wifi.Signal = .{},
+    /// What the cell says it can speak. A frame sent faster than this
+    /// goes to a station that cannot hear it.
+    rates: wifi.Rates = .{},
 
     /// Read a beacon or probe response. The signal is the radio's, passed
     /// in because the frame does not carry it.
@@ -334,6 +337,7 @@ pub const Bss = struct {
             .security = securityOf(beacon.capability, beacon.elements),
             .capability = beacon.capability,
             .signal = signal,
+            .rates = ratesOf(beacon.elements),
         };
     }
 };
@@ -342,6 +346,19 @@ pub const Bss = struct {
 /// or not this system will join it. The robust-security element decides
 /// between the WPA generations; the privacy bit alone, without one, is the
 /// old wired-equivalent cipher.
+/// What a cell says it can speak, from the two elements that carry it.
+/// Whether a rate is one every station must support is marked in the top
+/// bit and does not change what the rate is.
+fn ratesOf(elements: []const u8) wifi.Rates {
+    var rates = wifi.Rates{};
+    inline for (.{ .supported_rates, .extended_rates }) |which| {
+        if (ieee80211.element(elements, which)) |listed| {
+            for (listed) |byte| rates.add(wifi.Legacy.ofElement(byte));
+        }
+    }
+    return rates;
+}
+
 fn securityOf(capability: Capability, elements: []const u8) wifi.Security {
     if (ieee80211.element(elements, .rsn)) |payload| {
         const rsn = ieee80211.Rsn.parse(payload) orelse return .unsupported;
@@ -477,6 +494,10 @@ test "a scan reads a protected network's name, channel, cell and security" {
     at += ieee80211.writeElement(elements[at..], .ssid, "cinaed's network").?;
     at += ieee80211.writeElement(elements[at..], .ds_parameter, &.{6}).?;
     at += ieee80211.writeElement(elements[at..], .rsn, &ieee80211.Rsn.psk_ccmp).?;
+    // Two of the four b rates, marked as ones every station must speak,
+    // and two OFDM rates in the element that holds the overflow.
+    at += ieee80211.writeElement(elements[at..], .supported_rates, &.{ 0x82, 0x84 }).?;
+    at += ieee80211.writeElement(elements[at..], .extended_rates, &.{ 0x0C, 0x18 }).?;
 
     var frame: [128]u8 = @splat(0);
     const len = beaconFrame(&frame, .{ .ess = true, .privacy = true }, elements[0..at]);
@@ -488,6 +509,16 @@ test "a scan reads a protected network's name, channel, cell and security" {
     try testing.expectEqual(wifi.Security.wpa2_psk, bss.security);
     try testing.expect(bss.security.joinable());
     try testing.expectEqual(@as(i8, -60), bss.signal.dbm);
+
+    // Both elements read, the basic-rate mark stripped, and the slowest
+    // of them the one a frame falls back to.
+    try testing.expectEqual(@as(usize, 4), bss.rates.slice().len);
+    try testing.expect(bss.rates.has(.m1));
+    try testing.expect(bss.rates.has(.m2));
+    try testing.expect(bss.rates.has(.m6));
+    try testing.expect(bss.rates.has(.m12));
+    try testing.expect(!bss.rates.has(.m54));
+    try testing.expectEqual(wifi.Legacy.m1, bss.rates.slowest().?);
 }
 
 test "a scan names every protection, and joins only the two it can" {

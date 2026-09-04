@@ -86,6 +86,9 @@ const State = struct {
     /// again without anybody asking twice, and when to try.
     wanted: ?settings.NetSlot = null,
     retry_at: u64 = 0,
+    /// How fast to talk to the cell, and the account of how each rate
+    /// has fared that decides it.
+    speed: lib.rates.Choice = .{},
     /// The number the next frame this station sends carries. Every frame
     /// in a cell is numbered, so the far end can tell a repeat from a new
     /// one.
@@ -98,6 +101,7 @@ var state: State = .{};
 pub fn init() void {
     dev_mod.radio_rx = heard;
     dev_mod.radio_tx = send;
+    dev_mod.radio_tx_done = sent;
     dev_mod.radio_up = begin;
     dev_mod.radio_config = configure;
 }
@@ -209,8 +213,11 @@ fn send(nic: *dev_mod.NicDev, frame: []const u8) bool {
     ) orelse return false;
     const built = state.plain[0..length];
 
+    const radio_ops = nic.ops.radio orelse return false;
+    const series = state.speed.series();
+
     // An open network takes the frame as it stands.
-    const keys = state.keys orelse return nic.ops.transmit(nic, built);
+    const keys = state.keys orelse return radio_ops.transmitAt(nic, built, series);
 
     // Otherwise sealed under this station's own key, with a number that
     // is never used twice.
@@ -224,7 +231,13 @@ fn send(nic: *dev_mod.NicDev, frame: []const u8) bool {
         built[head.len..],
         &state.dressed,
     ) orelse return false;
-    return nic.ops.transmit(nic, state.dressed[0..sealed]);
+    return radio_ops.transmitAt(nic, state.dressed[0..sealed], series);
+}
+
+/// What became of a frame. The account this feeds is what decides how
+/// fast the next one goes.
+fn sent(_: *dev_mod.NicDev, outcome: lib.rates.Outcome) void {
+    state.speed.report(outcome);
 }
 
 /// The reverse, for a frame the cell sent: undressed and handed to the
@@ -329,6 +342,9 @@ fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
     state.join = null;
     state.keys = null;
     state.wanted = null;
+    // A different cell's distance and interference have nothing to do
+    // with this one's.
+    state.speed.forget();
     ops.answerFor(nic, null);
     dev_mod.deliverLink(nic, .{});
 }
@@ -365,6 +381,20 @@ fn settle(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, won: join_mod.Joined) voi
     ops.answerFor(nic, .{ .bssid = won.bssid, .association = won.aid });
     state.keys = won.keys;
     state.pn = 0;
+
+    // What the cell said it can hear. One that named no rates is taken to
+    // hear everything this station can say, and the account corrects that
+    // soon enough. Something is always offered: a cell with no rates at
+    // all is one nothing can be sent to.
+    var offered = lib.wifi.Rates.all();
+    var short_preamble = false;
+    if (state.join) |attempt| {
+        if (attempt.bss) |bss| {
+            if (bss.rates.slice().len != 0) offered = bss.rates;
+            short_preamble = bss.capability.short_preamble;
+        }
+    }
+    state.speed.offer(offered, short_preamble);
 
     // What the carrier is is the driver's to say, and it says the same
     // thing to whatever asks it later.

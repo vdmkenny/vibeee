@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const mac = @import("mac.zig");
+const rates = @import("rates.zig");
 const wifi = @import("wifi.zig");
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,15 @@ pub const TxControl3 = packed struct(u32) {
     _25: u7 = 0,
 };
 
+/// Which rate a given step of the series was set to. The four fields are
+/// reached by name for the same reason they are written that way.
+pub fn rateOfStep(word: TxControl3, step: u2) RateCode {
+    inline for (0..rates.SERIES) |which| {
+        if (which == step) return @field(word, std.fmt.comptimePrint("rate{d}", .{which}));
+    }
+    unreachable;
+}
+
 /// The first status word a completed transmission leaves behind.
 pub const TxStatus0 = packed struct(u32) {
     sent: bool = false,
@@ -136,9 +146,10 @@ pub const Send = struct {
     /// The frame as it sits in the buffer: header and body, no check bytes.
     /// No longer than `MAX_FRAME`, which the buffer it came from proves.
     frame_bytes: u12,
-    /// How fast to send it, and how many times to try before giving up.
-    rate: RateCode,
-    tries: u4 = 4,
+    /// How fast to try, and how many goes at each. Worked down in order:
+    /// the first is the hope and the last is the one that has to arrive.
+    /// An empty series is a frame with no way to go out.
+    series: rates.Series = .{},
     /// Half decibel-milliwatts, capped by the table the reset programmed.
     power: u6,
     kind: FrameType = .normal,
@@ -373,6 +384,18 @@ pub const Desc = extern struct {
     /// long, how fast, and how hard to try. The status words are cleared,
     /// so a reader can tell this frame's outcome from the last one's.
     pub fn armTransmit(self: *volatile Desc, buffer_physical: u32, next_physical: u32, send: Send) void {
+        // The four steps of the series into the four pairs of fields the
+        // two words hold, by name, so the four are written once.
+        var tries = TxControl2{};
+        var speeds = TxControl3{};
+        const steps = send.series.slice();
+        inline for (0..rates.SERIES) |step| {
+            if (step < steps.len) {
+                @field(tries, std.fmt.comptimePrint("tries{d}", .{step})) = steps[step].tries;
+                @field(speeds, std.fmt.comptimePrint("rate{d}", .{step})) = RateCode.of(steps[step].rate);
+            }
+        }
+
         self.link = next_physical;
         self.buffer = buffer_physical;
         self.body = .{ .tx = .{
@@ -389,8 +412,8 @@ pub const Desc = extern struct {
                 .frame_type = send.kind,
                 .no_acknowledgement = !send.acknowledged,
             }),
-            .control2 = @bitCast(TxControl2{ .tries0 = send.tries }),
-            .control3 = @bitCast(TxControl3{ .rate0 = send.rate }),
+            .control2 = @bitCast(@as(u32, @bitCast(tries))),
+            .control3 = @bitCast(@as(u32, @bitCast(speeds))),
         } };
     }
 
@@ -438,6 +461,11 @@ comptime {
     {
         @compileError("the second transmit control word drifted");
     }
+    // The series the caller hands over and the pairs of fields these two
+    // words hold are the same four, which is what lets one loop fill them
+    // by name.
+    if (rates.SERIES != 4) @compileError("the transmit control words hold four rates and four counts");
+
     if (@as(u32, @bitCast(TxControl2{ .tries0 = 1 })) != 0x0001_0000 or
         @as(u32, @bitCast(TxControl2{ .duration_update = true })) != 0x0000_8000)
     {
@@ -1652,7 +1680,7 @@ test "an armed transmit descriptor states the frame with its check bytes and the
     // Stale status from whatever went out of this slot last.
     desc.body = .{ .tx = .{ .status0 = 0xFFFF_FFFF, .status1 = 0xFFFF_FFFF } };
 
-    desc.armTransmit(0x0040_0000, 0, .{ .frame_bytes = 100, .rate = .m1, .power = 30 });
+    desc.armTransmit(0x0040_0000, 0, .{ .frame_bytes = 100, .series = rates.only(.m1, 4), .power = 30 });
 
     try testing.expectEqual(@as(u32, 0), desc.link);
     try testing.expectEqual(@as(u32, 0x0040_0000), desc.buffer);
@@ -1672,7 +1700,7 @@ test "an armed transmit descriptor states the frame with its check bytes and the
 
 test "a transmit descriptor names its key only when it has one, and asks for no answer to a group frame" {
     var plain: Desc = .{};
-    plain.armTransmit(0, 0, .{ .frame_bytes = 60, .rate = .m6, .power = 20 });
+    plain.armTransmit(0, 0, .{ .frame_bytes = 60, .series = rates.only(.m6, 4), .power = 20 });
     var ctl0: TxControl0 = @bitCast(plain.body.tx.control0);
     var ctl1: TxControl1 = @bitCast(plain.body.tx.control1);
     try testing.expect(!ctl0.destination_index_valid);
@@ -1682,12 +1710,11 @@ test "a transmit descriptor names its key only when it has one, and asks for no 
     var ciphered: Desc = .{};
     ciphered.armTransmit(0, 0, .{
         .frame_bytes = 60,
-        .rate = .m6,
+        .series = rates.only(.m6, 1),
         .power = 20,
         .key = 3,
         .acknowledged = false,
         .kind = .beacon,
-        .tries = 1,
     });
     ctl0 = @bitCast(ciphered.body.tx.control0);
     ctl1 = @bitCast(ciphered.body.tx.control1);
@@ -1700,6 +1727,32 @@ test "a transmit descriptor names its key only when it has one, and asks for no 
     const ctl3: TxControl3 = @bitCast(ciphered.body.tx.control3);
     try testing.expectEqual(@as(u4, 1), ctl2.tries0);
     try testing.expectEqual(RateCode.m6, ctl3.rate0);
+}
+
+test "a whole retry series lands in the two words that hold it, in order" {
+    var series = rates.Series{};
+    series.append(.{ .rate = .m54, .tries = 1 }) catch unreachable;
+    series.append(.{ .rate = .m24, .tries = 2 }) catch unreachable;
+    series.append(.{ .rate = .m1, .tries = 3 }) catch unreachable;
+
+    var desc: Desc = .{};
+    desc.armTransmit(0, 0, .{ .frame_bytes = 200, .series = series, .power = 40 });
+
+    const tries: TxControl2 = @bitCast(desc.body.tx.control2);
+    const speeds: TxControl3 = @bitCast(desc.body.tx.control3);
+    try testing.expectEqual(@as(u4, 1), tries.tries0);
+    try testing.expectEqual(@as(u4, 2), tries.tries1);
+    try testing.expectEqual(@as(u4, 3), tries.tries2);
+    // A step that was never given is a step the hardware must not take.
+    try testing.expectEqual(@as(u4, 0), tries.tries3);
+    try testing.expectEqual(RateCode.none, speeds.rate3);
+
+    // And each step can be read back by its place, which is how a
+    // completed frame says which rate carried it.
+    try testing.expectEqual(RateCode.m54, rateOfStep(speeds, 0));
+    try testing.expectEqual(RateCode.m24, rateOfStep(speeds, 1));
+    try testing.expectEqual(RateCode.m1, rateOfStep(speeds, 2));
+    try testing.expectEqual(wifi.Legacy.m24, rateOfStep(speeds, 1).rate().?);
 }
 
 test "a finished transmission tells a sent frame from each way of failing" {

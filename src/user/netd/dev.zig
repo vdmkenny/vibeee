@@ -105,6 +105,10 @@ pub const RadioOps = struct {
     /// here, and wake for what it announces. None to answer for nothing,
     /// which is what a station does while it belongs to no cell.
     answerFor: *const fn (dev: *NicDev, cell: ?Cell) void,
+    /// Put one frame on the air at this series of rates, worked down in
+    /// order. What `transmit` does, with the choice of how fast made by
+    /// whoever knows what the far end can hear.
+    transmitAt: *const fn (dev: *NicDev, frame: []const u8, series: lib.rates.Series) bool,
     /// Draw bytes nothing here can predict. A radio hears a room full of
     /// things this machine did not arrange, which is the only such source
     /// it has. False while too little has been heard to answer honestly,
@@ -195,6 +199,10 @@ pub var radio_rx: ?*const fn (dev: *NicDev, frame: []const u8, signal: lib.wifi.
 /// this; a machine with no radio leaves it unset.
 pub var radio_tx: ?*const fn (dev: *NicDev, frame: []const u8) bool = null;
 
+/// What became of a frame that went out, for whoever is keeping the
+/// account that decides how fast the next one goes.
+pub var radio_tx_done: ?*const fn (dev: *NicDev, outcome: lib.rates.Outcome) void = null;
+
 /// A radio has its chains and is listening: the station may begin.
 pub var radio_up: ?*const fn (dev: *NicDev) void = null;
 
@@ -217,6 +225,12 @@ pub fn deliverRadio(dev: *NicDev, frame: []const u8, signal: lib.wifi.Signal, ra
 /// Say a whole frame arrived and what was made of it: counted here, then
 /// handed to the stack. The ARP narration stays, because it reads the wire
 /// beneath the stack and is the debug boot's traffic proof.
+/// A frame the radio has finished with: which rate carried it, and
+/// whether it arrived.
+pub fn deliverTxDone(dev: *NicDev, outcome: lib.rates.Outcome) void {
+    if (radio_tx_done) |done| done(dev, outcome);
+}
+
 /// Put one ordinary frame on this interface, whatever medium is under
 /// it. A wire takes it as it stands; a radio has it dressed as the cell
 /// expects first. Everything above here sends the same way to both.
