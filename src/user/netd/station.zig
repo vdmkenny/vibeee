@@ -77,6 +77,22 @@ const State = struct {
     undressed: [DATA_MAX]u8 = @splat(0),
     plain: [DATA_MAX]u8 = @splat(0),
     opened: [DATA_MAX]u8 = @splat(0),
+    /// Frames heard while an exchange was in hand. The one thing that
+    /// separates a cell that never answered from an answer that was not
+    /// understood.
+    heard_joining: u32 = 0,
+    /// Of those, the ones this station was addressed by name in, and the
+    /// ones that were the answer it was waiting for. Between them they
+    /// separate a cell that never replied from a reply that arrived and
+    /// was not accepted.
+    heard_for_us: u32 = 0,
+    heard_auth: u32 = 0,
+    /// What a heard frame asked for, carried out from the loop rather
+    /// than where it was decided. Deciding happens inside the driver's
+    /// walk of its receive ring, and tuning resets the radio underneath
+    /// that walk, which leaves the ring and the hardware disagreeing
+    /// about where it is.
+    pending: ?join_mod.Action = null,
     /// The keys the join earned, where it earned any, and the number the
     /// next sealed frame carries. A number is never used twice under one
     /// key, so it only counts up and starts again with a new key.
@@ -120,6 +136,8 @@ pub fn network(index: usize) ?mlme.Bss {
 /// deadline. Null while there is no radio.
 pub fn nextDeadline() ?u64 {
     if (state.radio == null) return null;
+    // Something a frame asked for is owed now.
+    if (state.pending != null) return 0;
     const now = sys.clockMicros();
     const hop_in: u64 = if (state.next_hop_at > now) state.next_hop_at - now else 0;
 
@@ -169,6 +187,13 @@ fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
 /// Run whatever the station owes: a hop when the dwell is over.
 pub fn tick() void {
     const now = sys.clockMicros();
+
+    // Whatever a frame asked for, now that the driver is no longer in the
+    // middle of handing it over.
+    if (state.pending) |what| {
+        state.pending = null;
+        act(what);
+    }
 
     // A join that failed comes round again on its own. The next attempt
     // is dated first and unconditionally: a deadline left in the past is
@@ -325,6 +350,9 @@ fn nonce(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) lib.wpa2.Nonce {
 /// Start looking for a network and joining it.
 fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) void {
     state.wanted = role;
+    state.heard_joining = 0;
+    state.heard_for_us = 0;
+    state.heard_auth = 0;
     var attempt = join_mod.Join{ .station = nic.mac };
     attempt.wants(role.ssid, role.psk, nonce(nic, ops));
     state.join = attempt;
@@ -340,6 +368,7 @@ fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) voi
 fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
     if (state.join) |*attempt| attempt.stop();
     state.join = null;
+    state.pending = null;
     state.keys = null;
     state.wanted = null;
     // A different cell's distance and interference have nothing to do
@@ -358,7 +387,13 @@ fn act(what: join_mod.Action) void {
         // The network was heard here, so the radio stops sweeping and
         // stays long enough for the exchange that follows.
         .tune => |channel| {
-            if (it.ops.tune(it.nic, channel)) state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+            if (!it.ops.tune(it.nic, channel)) return;
+            state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+            // The cell is known now, so the hardware is told to answer for
+            // it before anything is said to it. A frame that is not
+            // acknowledged is one the far end sends again and then stops
+            // sending, which reads exactly like a cell that never replied.
+            if (state.join) |attempt| it.ops.answerFor(it.nic, .{ .bssid = attempt.bssid() });
         },
         .joined => |won| settle(it.nic, it.ops, won),
         .failed => |why| {
@@ -367,10 +402,30 @@ fn act(what: join_mod.Action) void {
             out.text(state.asked.slice());
             out.text("\": ");
             out.text(why.spell());
+            out.text("; ");
+            out.decimal(state.heard_joining);
+            out.text(" frames heard while it was trying, ");
+            out.decimal(state.heard_for_us);
+            out.text(" addressed to this station, ");
+            out.decimal(state.heard_auth);
+            out.text(" of them authentications");
+            if (it.ops.tuned(it.nic)) |on| {
+                out.text(", on channel ");
+                out.decimal(on.number);
+            }
+            if (state.join) |attempt| {
+                if (attempt.bss) |bss| {
+                    out.text(", where the network is on ");
+                    out.decimal(bss.channel);
+                }
+            }
             log.end();
             // Nothing answered, so the next thing worth knowing is
             // whether anything was actually said.
             if (it.ops.sayUnanswered) |ask| ask(it.nic);
+            // And the radio stops answering for a cell it did not get
+            // into, which it was told to answer for in order to try.
+            it.ops.answerFor(it.nic, null);
             state.join = null;
             // Kept, and tried again: a network out of earshot now may be
             // in earshot shortly, and nobody should have to ask twice.
@@ -451,7 +506,23 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
     _ = rate;
     // The join sees every frame: the beacons that tell it where its
     // network is, and the replies that carry the exchange forward.
-    if (state.join) |*attempt| act(attempt.heard(frame, signal, sys.clockMicros(), &state.frame));
+    if (state.join) |*attempt| {
+        if (!sweeping(attempt.*)) {
+            state.heard_joining +|= 1;
+            if (lib.ieee80211.Header.parse(frame)) |head| {
+                if (lib.mac.eql(head.addr1, nic.mac)) state.heard_for_us +|= 1;
+            }
+            // Counted before anything decides whether to accept it: an
+            // answer that arrived and was turned down is a different
+            // fault from one that never came.
+            if (mlme.Auth.parse(frame) != null) state.heard_auth +|= 1;
+        }
+        // Held, not carried out: see `pending`. Where two frames of one
+        // walk both ask for something, the later one stands, which is the
+        // one an exchange is waiting on.
+        const what = attempt.heard(frame, signal, sys.clockMicros(), &state.frame);
+        if (what != .none) state.pending = what;
+    }
 
     // Traffic, once there is a cell to have traffic with.
     carry(nic, frame);

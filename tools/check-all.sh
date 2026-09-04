@@ -36,10 +36,13 @@ mdir -i "$DEV_IMAGE@@$CFG_OFFSET" -b ::/ >/dev/null 2>&1 || fail "the settings v
 mdir -i "$DEV_IMAGE@@$HOME_OFFSET" -b ::/readme.txt >/dev/null 2>&1 || fail "the home volume has no readme"
 echo "root, settings and home volumes hold what a boot needs"
 
+# Only the chatter is discarded, never the complaint: the emulator says on
+# its error output why it would not start, and a run that throws that away
+# leaves nothing behind but the fact that it did not.
 boot() {
     out="$1"; shift
     QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$out" "$@" \
-        -- -drive if=ide,format=raw,file="$DEV_IMAGE" >/dev/null 2>&1 \
+        -- -drive if=ide,format=raw,file="$DEV_IMAGE" >/dev/null \
         || fail "the emulator did not run (see ${out%.png}.log)"
 }
 
@@ -50,7 +53,7 @@ bootsd() {
     out="$1"; shift
     QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$out" "$@" \
         -- -usb -drive if=none,id=sd,format=raw,file="$SD_COPY" \
-        -device usb-storage,drive=sd,bootindex=0 >/dev/null 2>&1 \
+        -device usb-storage,drive=sd,bootindex=0 >/dev/null \
         || fail "the emulator did not run (see ${out%.png}.log)"
 }
 

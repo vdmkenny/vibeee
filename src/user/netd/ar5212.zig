@@ -742,7 +742,11 @@ pub fn sayUnanswered(nic: *NicDev) void {
     const held = regs.get(.queue_disable, regs_mod.QueueMask).queues;
     const status: regs_mod.QueueStatus = @bitCast(regs.readAt(regs_mod.queueStatus(QUEUE)));
 
-    log.begin(name, if (nic.stats.tx_pkts == 0) .warn else .dim);
+    // Always said, never dimmed: this is asked for where something has
+    // already gone wrong, and a line that reports the fault only when the
+    // fault is of one particular kind is a line that is missing exactly
+    // when it is wanted.
+    log.begin(name, .warn);
     out.text("what it sent: ");
     out.decimal(@intCast(nic.stats.tx_pkts));
     out.text(" went, ");
@@ -768,7 +772,10 @@ pub fn sayUnanswered(nic: *NicDev) void {
     out.hex(regs.readAt(regs_mod.txPointer(QUEUE)), 8);
     out.text(", with ");
     out.decimal(status.pending_frames);
-    out.text(" frames pending");
+    out.text(" frames pending. It heard ");
+    out.decimal(@intCast(nic.stats.rx_pkts));
+    out.text(" frames and dropped ");
+    out.decimal(@intCast(nic.stats.rx_dropped));
     log.end();
 }
 
@@ -903,12 +910,17 @@ fn stopTransmit(regs: Regs) void {
 /// what is on it, and a frame addressed elsewhere is exactly what it is
 /// looking for. Once it belongs to a cell, it takes what is meant for it.
 fn receiveFilter() regs_mod.RxFilter {
+    // A station the cell has not yet given a number to is still finding
+    // its way in, and hears everything while it does: the address is set
+    // early so the hardware answers for the cell, and narrowing what it
+    // listens to that early would only hide the replies it is waiting on.
+    const inside = if (device.cell) |cell| cell.association != 0 else false;
     return .{
         .unicast = true,
         .multicast = true,
         .broadcast = true,
         .beacon = true,
-        .promiscuous = device.cell == null,
+        .promiscuous = !inside,
     };
 }
 
