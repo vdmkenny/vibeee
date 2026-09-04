@@ -25,6 +25,28 @@ Commands are `/server`, `/join`, `/part`, `/nick`, `/topic`, `/me`, `/msg` and
 `/quit`. Anything else typed after a slash goes as written, so a network's own
 commands work without this client knowing each one.
 
+## What it remembers
+
+Networks are written down in `/cfg/echat.cfg`, on the settings volume, in the
+same `key = value` grammar every configured thing on this machine uses. One
+record per network, a blank line between them:
+
+    at = irc.example.org
+    nick = kenny
+    account = kenny
+    password = ...
+    join = #vibeee #zig
+    open = yes
+
+`at` is the only key a record needs. An empty `nick` takes the machine's own
+name; an account and password together prove the account with SASL and are
+left out where a network has none; `join` is asked for once the network says
+hello; `open` reaches it when the window opens.
+
+The schema is echat's own rather than one of `cfgd`'s domains, because echat
+is not part of the system and the system should carry no knowledge of it. What
+is shared is the store: the grammar, the parser and the volume.
+
 ## Reaching a network
 
 A bare name is spoken to over TLS on 6697. A port with a plus in front of it

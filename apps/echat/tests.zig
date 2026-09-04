@@ -5,4 +5,5 @@ test {
     _ = @import("irc.zig");
     _ = @import("rooms.zig");
     _ = @import("layout.zig");
+    _ = @import("config.zig");
 }

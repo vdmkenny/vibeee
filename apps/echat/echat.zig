@@ -22,6 +22,7 @@ const sock = ulib.sock;
 const irc = @import("irc.zig");
 const rooms = @import("rooms.zig");
 const layout = @import("layout.zig");
+const store = @import("config.zig");
 
 const theme = eui.theme;
 const Rect = eui.Rect;
@@ -109,11 +110,20 @@ const Link = struct {
     nick: [rooms.NAME_MAX]u8 = @splat(0),
     user: [rooms.NAME_MAX]u8 = @splat(0),
     real: [rooms.NAME_MAX]u8 = @splat(0),
+    account: [store.NAME]u8 = @splat(0),
+    password: [store.SECRET]u8 = @splat(0),
+    /// Channels to join once the network says hello, space separated.
+    waiting: [store.CHANNELS]u8 = @splat(0),
+    /// Whether those have been asked for yet.
+    joined_waiting: bool = false,
 };
 
 /// Left undefined and set at start rather than given an initialiser, so a
 /// third of a megabyte of empty transcript is zeroed by the loader instead of
 /// being carried in the binary.
+/// What is written down: the networks this machine knows how to reach.
+var book: store.Book = .{};
+
 var model: rooms.Model = undefined;
 var links: [rooms.NETWORK_MAX]Link = undefined;
 
@@ -138,6 +148,9 @@ var notice: Bounded(u8, 128) = .{};
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     model.init();
     for (&links) |*link| forget(link);
+
+    var read_buffer: [store.FILE_MAX]u8 = undefined;
+    book = store.read(&read_buffer);
     // Before the first pass: a field whose buffer points at nothing takes no
     // letters and says nothing about why.
     input.init(.{ .hint = "Say something, or /server to connect" });
@@ -174,6 +187,9 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 
 /// A network named on the command line, connected once the window is up.
 var opening: ?[]const u8 = null;
+
+/// Whether the networks that asked to be opened have been.
+var opened_written = false;
 
 /// Reach a network and say how it went, on the console rather than in a
 /// window. What a shell asks when a connection is the thing in question:
@@ -261,6 +277,7 @@ fn connect(where: []const u8) void {
     link.network = network;
     link.socket = opened;
     setIdentity(link);
+    if (written(host)) |about| adopt(link, about);
     link.session.begin();
     listen();
     flush(link);
@@ -319,6 +336,46 @@ fn authorities(when: i64) ?*ulib.tls.Roots {
     return &roots.?;
 }
 
+/// What was written down about a network, matched on the name it is reached
+/// by. Null for one nobody has configured, which is every network the first
+/// time it is reached.
+fn written(host: []const u8) ?*const store.Network {
+    for (book.slice()) |*about| {
+        const at = store.Network.text(&about.at);
+        const colon = std.mem.lastIndexOfScalar(u8, at, ':');
+        const name = if (colon) |cut| at[0..cut] else at;
+        if (lib.str.eqlFold(name, host)) return about;
+    }
+    return null;
+}
+
+/// Take what was written down: the name to use there, the account to prove,
+/// and the channels to join once it says hello.
+fn adopt(link: *Link, about: *const store.Network) void {
+    const nick = store.Network.text(&about.nick);
+    if (nick.len != 0) {
+        copyInto(&link.nick, nick);
+        copyInto(&link.user, nick);
+        copyInto(&link.real, nick);
+        link.session.wants(spanOf(&link.nick));
+        link.session.user = spanOf(&link.user);
+        link.session.real = spanOf(&link.real);
+    }
+
+    const account = store.Network.text(&about.account);
+    const password = store.Network.text(&about.password);
+    if (account.len != 0 and password.len != 0) {
+        copyInto(&link.account, account);
+        copyInto(&link.password, password);
+        link.session.account = .{ .plain = .{
+            .account = spanOf(&link.account),
+            .password = spanOf(&link.password),
+        } };
+    }
+
+    copyInto(&link.waiting, store.Network.text(&about.join));
+}
+
 /// What this client calls itself. The nick is the machine's own name until
 /// there is somewhere to keep a preference: it is already a name this
 /// machine answers to, and `/nick` changes it.
@@ -362,6 +419,10 @@ fn forget(link: *Link) void {
     @memset(&link.nick, 0);
     @memset(&link.user, 0);
     @memset(&link.real, 0);
+    @memset(&link.account, 0);
+    @memset(&link.password, 0);
+    @memset(&link.waiting, 0);
+    link.joined_waiting = false;
 }
 
 fn freeLink() ?usize {
@@ -467,6 +528,7 @@ fn act(link: *Link, event: irc.session.Event) void {
             model.networks.items[link.network].connected = true;
             named(link);
             tell(tab, "connected");
+            joinWaiting(link);
         },
         .renamed => |name| {
             var room: [96]u8 = undefined;
@@ -477,6 +539,20 @@ fn act(link: *Link, event: irc.session.Event) void {
             drop(link);
         },
     }
+}
+
+/// Ask for the channels that were written down, once and only once.
+fn joinWaiting(link: *Link) void {
+    if (link.joined_waiting) return;
+    link.joined_waiting = true;
+
+    var each = lib.str.words(spanOf(&link.waiting));
+    while (each.next()) |channel| {
+        var line: irc.Line = .{ .command = .{ .verb = .join } };
+        line.params.append(channel) catch continue;
+        link.session.send(line);
+    }
+    flush(link);
 }
 
 /// Take the network's own name once the server has given it.
@@ -693,8 +769,14 @@ fn draw() void {
     const area = Rect{ .x = 0, .y = 0, .w = ctx.surface.width, .h = ctx.surface.height };
     if (ctx.damaged) ctx.surface.fill(area, t.surface);
 
-    // A network named on the command line is opened once there is a window to
-    // show it in, so a failure has somewhere to be said.
+    // Opened once there is a window to show them in, so a failure has
+    // somewhere to be said: what was written down, then what a shell named.
+    if (!opened_written) {
+        opened_written = true;
+        for (book.slice()) |about| {
+            if (about.open) connect(store.Network.text(&about.at));
+        }
+    }
     if (opening) |where| {
         opening = null;
         connect(where);

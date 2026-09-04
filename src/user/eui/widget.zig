@@ -997,8 +997,13 @@ pub const Context = struct {
             else
                 hotOr(it.over, .hot, .idle);
 
-            if (self.needsPaint(entry, visual)) {
+            // What a row draws is not only its state: the place it stands
+            // for can change under it while it stays the row it was, and a
+            // row that only repainted on state would keep the old name.
+            const signature = rowFingerprint(item);
+            if (self.needsPaint(entry, visual) or entry.detail != signature) {
                 entry.visual = visual;
+                entry.detail = signature;
                 paintRow(self.surface, at, item, visual, .{
                     .indented = indented,
                     .divider = index + 1 < items.len,
@@ -1087,8 +1092,10 @@ pub const Context = struct {
         else
             hotOr(it.over, .hot, .idle);
 
-        if (self.needsPaint(entry, visual)) {
+        const signature = rowFingerprint(item);
+        if (self.needsPaint(entry, visual) or entry.detail != signature) {
             entry.visual = visual;
+            entry.detail = signature;
             paintRow(self.surface, area, item, visual, .{
                 .indented = item.icon != null,
                 .ground = theme.current().surface,
@@ -1768,6 +1775,21 @@ pub const Fingerprint = struct {
 };
 
 /// The fingerprint of one string, which is what a label needs.
+/// Everything a row draws, as one number. What is not here cannot make a row
+/// repaint, so a field added to `rail.Item` is added here too.
+fn rowFingerprint(item: rails.Item) i32 {
+    var h = Fingerprint{};
+    h.text(item.label);
+    h.number(item.depth);
+    h.number(item.count);
+    h.flag(item.urgent);
+    h.flag(item.icon != null);
+    if (item.icon) |which| h.number(@intFromEnum(which));
+    h.flag(item.glyph != null);
+    if (item.glyph) |picture| h.text(picture);
+    return h.done();
+}
+
 pub fn fingerprint(bytes: []const u8) i32 {
     var h = Fingerprint{};
     h.text(bytes);

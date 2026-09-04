@@ -185,6 +185,52 @@ pub fn pair(line: []const u8) ?struct { key: []const u8, value: []const u8 } {
 ///
 /// Missing or unreadable is not an error: a program should start with its
 /// defaults rather than refuse to run because nobody wrote a config file.
+/// Read a file holding several records of one shape, a blank line between
+/// them, and say how many were filled. Records past what `into` holds are
+/// dropped.
+///
+/// The grammar already said a blank line separates records; this is what
+/// reads them. A file of one record is a file of one record, so a caller with
+/// a single stanza can use either.
+pub fn loadEach(path: []const u8, into: anytype, buffer: []u8) usize {
+    const n = file.readWhole(path, buffer) orelse return 0;
+    return eachFrom(buffer[0..n], into);
+}
+
+/// The same, from text already in hand. Split from the reading so the
+/// grammar can be exercised without a file to read.
+pub fn eachFrom(text: []const u8, into: anytype) usize {
+    if (text.len == 0) return 0;
+
+    var count: usize = 0;
+    var started = false;
+    var lines = str.lines(text);
+    while (lines.next()) |line| {
+        if (pair(line)) |kv| {
+            if (!started) {
+                if (count == into.len) return count;
+                started = true;
+                count += 1;
+            }
+            _ = assign(&into[count - 1], kv.key, kv.value);
+            continue;
+        }
+        // A blank line ends a record; a comment is not a line at all, so a
+        // file may be annotated without splitting what it describes.
+        if (str.trim(line).len == 0) started = false;
+    }
+    return count;
+}
+
+/// Write several records back, a blank line between them.
+pub fn renderEach(records: anytype, into: *str.Builder) void {
+    for (records, 0..) |record, index| {
+        if (index != 0) into.text("\n");
+        var one = record;
+        render(&one, into);
+    }
+}
+
 pub fn load(path: []const u8, target: anytype, buffer: []u8) bool {
     const n = file.readWhole(path, buffer) orelse return false;
     if (n == 0) return false;
