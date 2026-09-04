@@ -438,6 +438,9 @@ The column of sections down the side of a window.
 
 | call | signature |
 |---|---|
+| `indentOf` | `fn (u2) i32` |
+| `badge` | `fn (draw.Rect, u16) ?draw.Rect` |
+| `spellCount` | `fn (u16, *[4]u8) []const u8` |
 | `marked` | `fn ([]const rail.Item) bool` |
 | `width` | `fn () i32` |
 | `rowHeight` | `fn () i32` |
@@ -449,6 +452,7 @@ The column of sections down the side of a window.
 
 Numbers it owns:
 
+- `INDENT` = 10
 - `WIDTH` = 124
 - `ROW_HEIGHT` = 26
 

@@ -1333,6 +1333,27 @@ const RowStyle = struct {
     divider: bool = false,
 };
 
+/// The badge at the right of a row, saying how much is waiting there.
+fn paintCount(surface: Surface, row: Rect, item: rails.Item, selected: bool) ?Rect {
+    const at = rails.badge(row, item.count) orelse return null;
+    const t = theme.current();
+    // On the chosen row the accent is already the ground, so the badge takes
+    // the ink colour instead and stays legible.
+    const ground = if (selected) t.accent_text else if (item.urgent) t.warning else t.text_dim;
+    const ink = if (selected) t.accent else t.accent_text;
+
+    var room: [4]u8 = undefined;
+    const label = rails.spellCount(item.count, &room);
+    surface.fillRounded(at, t.corner_radius, draw.Corners.all, ground);
+    surface.clipped(at).text(
+        at.x + @divTrunc(at.w - Surface.textWidth(label), 2),
+        at.y + @divTrunc(at.h - Surface.textHeight(), 2),
+        label,
+        ink,
+    );
+    return at;
+}
+
 /// A row of colour and a label, with no edge of its own.
 ///
 /// Selection is the strong state and hover is the weak one, so a hovered row
@@ -1351,16 +1372,24 @@ fn paintRow(surface: Surface, area: Rect, item: rails.Item, visual: Visual, styl
     const ink = if (selected) t.accent_text else t.text;
     surface.fill(area, ground);
 
-    const clipped = surface.clipped(area);
+    const badge = paintCount(surface, area, item, selected);
+    // The label stops before the badge rather than running under it.
+    const room: Rect = if (badge) |mark|
+        .{ .x = area.x, .y = area.y, .w = mark.x - area.x, .h = area.h }
+    else
+        area;
+
+    const clipped = surface.clipped(room);
+    const left = area.x + t.menu_padding + rails.indentOf(item.depth);
     const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
     if (item.glyph) |picture| {
-        clipped.picture(area.x + t.menu_padding, Surface.iconTopFor(baseline), picture, ink);
+        clipped.picture(left, Surface.iconTopFor(baseline), picture, ink);
     } else if (item.icon) |which| {
-        clipped.icon(area.x + t.menu_padding, Surface.iconTopFor(baseline), which, ink);
+        clipped.icon(left, Surface.iconTopFor(baseline), which, ink);
     }
     clipped.text(
-        area.x + t.menu_padding + if (style.indented) markWidth() else 0,
-        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+        left + if (style.indented) markWidth() else 0,
+        baseline,
         item.label,
         ink,
     );

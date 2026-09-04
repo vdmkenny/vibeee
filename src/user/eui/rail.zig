@@ -30,7 +30,60 @@ pub const Item = struct {
     /// A picture of the program's own, in the toolkit's format, for a row
     /// the toolkit has no name for. Drawn where the icon would be.
     glyph: ?icons.Glyph = null,
+    /// How far the row is held under the ones above it. A rail with more
+    /// places than fit groups them, and the group is the parent row: a
+    /// channel sits under its network, a folder's contents under the folder.
+    depth: u2 = 0,
+    /// How much is waiting here, drawn as a badge at the right edge. Zero
+    /// draws none.
+    count: u16 = 0,
+    /// The count wants attention now rather than when you next look. Drawn
+    /// in the warning colour.
+    urgent: bool = false,
 };
+
+/// How far one level of nesting moves a row's contents.
+pub const INDENT: i32 = 10;
+
+/// How far in a row's contents start at this depth.
+pub fn indentOf(depth: u2) i32 {
+    return theme.enlarged(INDENT) * depth;
+}
+
+/// The badge at the right of a row, or null where the row has no count.
+///
+/// Sized from the digits it holds so a four-figure count is not clipped, and
+/// never wider than half the row: a rail is a list of names first.
+pub fn badge(row: Rect, count: u16) ?Rect {
+    if (count == 0) return null;
+    const t = theme.current();
+    var room: [4]u8 = undefined;
+    const height = draw.Surface.textHeight() + 2;
+    const across = @min(
+        @max(draw.Surface.textWidth(spellCount(count, &room)) + t.padding, height),
+        @divTrunc(row.w, 2),
+    );
+    return .{
+        .x = row.right() - t.menu_padding - across,
+        .y = row.y + @divTrunc(row.h - height, 2),
+        .w = across,
+        .h = height,
+    };
+}
+
+/// The largest count drawn as a number. Above it the badge says so with a
+/// plus: the difference between 300 and 400 waiting messages is not something
+/// a badge can usefully say.
+pub const COUNT_MAX: u16 = 99;
+
+/// The count as text, written into `room`.
+pub fn spellCount(count: u16, room: *[4]u8) []const u8 {
+    if (count > COUNT_MAX) {
+        room[0..3].* = "99+".*;
+        return room[0..3];
+    }
+    return std.fmt.bufPrint(room, "{d}", .{count}) catch unreachable;
+}
 
 /// Whether any row carries a picture, which decides the indent for all of
 /// them.
@@ -148,6 +201,42 @@ test "the empty column below the last row is not a row" {
     try testing.expectEqual(@as(?usize, null), rowAt(rail, 6, below.x + 4, below.y + 4));
     try testing.expectEqual(@as(?usize, null), rowAt(rail, 6, rail.right() + 8, rail.y + 4));
     try testing.expectEqual(@as(?usize, null), rowAt(rail, 6, rail.x + 4, rail.bottom() - 1));
+}
+
+test "a nested row starts further in than its parent" {
+    try testing.expectEqual(@as(i32, 0), indentOf(0));
+    try testing.expectEqual(INDENT, indentOf(1));
+    try testing.expectEqual(INDENT * 2, indentOf(2));
+}
+
+test "a count is a badge at the right of the row" {
+    const rail = column(window, 30);
+    const row = rowRect(rail, 0);
+
+    try testing.expectEqual(@as(?Rect, null), badge(row, 0));
+
+    const one = badge(row, 3) orelse return error.NoBadge;
+    try testing.expect(one.right() < row.right());
+    try testing.expect(one.y > row.y);
+    try testing.expectEqual(row.bottom() - one.bottom(), one.y - row.y);
+
+    // One digit and two are the same width, so a badge does not jitter as
+    // the count passes ten. A longer label grows it, and nothing takes more
+    // than half the row.
+    const two = badge(row, 42) orelse return error.NoBadge;
+    try testing.expectEqual(one.w, two.w);
+    const capped = badge(row, 65535) orelse return error.NoBadge;
+    try testing.expect(capped.w > one.w);
+    try testing.expect(capped.w <= @divTrunc(row.w, 2));
+}
+
+test "a count past the cap says so rather than growing" {
+    var room: [4]u8 = undefined;
+    try testing.expectEqualStrings("1", spellCount(1, &room));
+    try testing.expectEqualStrings("42", spellCount(42, &room));
+    try testing.expectEqualStrings("99", spellCount(COUNT_MAX, &room));
+    try testing.expectEqualStrings("99+", spellCount(COUNT_MAX + 1, &room));
+    try testing.expectEqualStrings("99+", spellCount(65535, &room));
 }
 
 test "the footer sits at the bottom of the rail" {
