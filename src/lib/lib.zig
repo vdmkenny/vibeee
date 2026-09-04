@@ -43,6 +43,7 @@ pub const elf = @import("elf.zig");
 pub const escapes = @import("escapes.zig");
 pub const exif = @import("exif.zig");
 pub const eth = @import("eth.zig");
+pub const entropy = @import("entropy.zig");
 pub const hostname = @import("hostname.zig");
 pub const hosts = @import("hosts.zig");
 pub const icmp = @import("icmp.zig");
