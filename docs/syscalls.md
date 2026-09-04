@@ -1225,6 +1225,41 @@ Walk the PCI bus again, so the device table says what is there now.
 
 Requires Caps.driver. The bus has no way of announcing that something arrived or left, so a device switched on by a firmware method is invisible until somebody looks again. What turns up is offered for binding and what stopped answering is taken out, quiesced first. A device already there keeps its entry and its claim: a walk over a machine that has not changed changes nothing.
 
+## `random`  <sub>#68</sub>
+
+Fill a buffer with unpredictable bytes.
+
+| arg | type | meaning |
+|---|---|---|
+| `into` | ptr | Buffer to fill. |
+| `len` | len | How many bytes to draw. |
+
+**Returns:** 1 if the machine has heard enough for the bytes to be unguessable, 0 if they are only unrepeatable
+
+**Errors:**
+
+- `EFAULT`, a pointer argument is outside the caller's address space
+
+The machine has no hardware random source, so the kernel collects the gaps between interrupts, which vary with caches, memory refresh, bus traffic and the devices themselves. Those seed a stream cipher that answers every request, so two callers never draw the same bytes and no draw says anything about another. Early in a boot too little has been collected to call any of it unguessable: the call still fills the buffer, and returns 0 to say so. Anything keeping a secret has to read that answer; anything wanting a number nobody else picked does not.
+
+## `random_stir`  <sub>#69</sub>
+
+Add to the pool the machine's randomness is drawn from.
+
+| arg | type | meaning |
+|---|---|---|
+| `bytes` | const ptr | Whatever the caller has that is hard to predict. |
+| `len` | len | How many bytes. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EPERM`, the operation is not allowed on that object
+- `EFAULT`, a pointer argument is outside the caller's address space
+
+Requires Caps.driver. For a server holding a source the kernel cannot see: a radio hears the exact moment a frame lands, and the frames it could not decode at all are the band's noise. Nothing stirred in can make the pool worse, so the kernel does not judge what it is given, and a caller with nothing surprising to offer only wastes its own time. What one driver hears improves what every program draws.
+
 ---
 
-68 calls defined.
+70 calls defined.

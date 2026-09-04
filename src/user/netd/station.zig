@@ -269,7 +269,7 @@ pub fn tick() void {
     // a loop that never waits.
     if (state.join == null and state.wanted != null and now >= state.retry_at) {
         state.retry_at = now + RETRY_MICROS;
-        if (radio()) |it| seek(it.nic, it.ops, state.wanted.?);
+        if (radio()) |it| seek(it.nic, state.wanted.?);
     }
 
     if (state.join) |*attempt| {
@@ -389,7 +389,7 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     if (!std.mem.eql(u8, state.asked.slice(), role.ssid.slice())) {
         state.asked = role.ssid;
         leave(nic, ops);
-        if (role.ssid.len != 0) seek(nic, ops, role);
+        if (role.ssid.len != 0) seek(nic, role);
     }
 
     // Told something new, so what it heard as the radio it used to be is
@@ -403,57 +403,41 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
 }
 
-/// Unpredictable bytes for anything that asks, drawn the same way the key
-/// exchange's nonce is: from what the radio has heard, and from the clock
-/// where it has heard too little.
-pub fn draw(into: []u8) void {
-    if (radio()) |found| {
-        if (found.ops.draw) |from| {
-            if (from(found.nic, into)) return;
-        }
-    }
-    fallback(into);
-}
-
-/// Where a radio has heard too little, or there is no radio at all: a pool
-/// stirred with the clock and moved on after every draw.
+/// Unpredictable bytes for anything that asks, and whether they are worth
+/// calling unguessable.
 ///
-/// Anyone who knows roughly when this was drawn can narrow down what came
-/// out, so it is weaker than a radio that has been listening. What it is not
-/// is repeatable: two draws in the same microsecond gave the same bytes when
-/// the clock alone was hashed, and a handshake seeded with the same bytes
-/// twice is a handshake with no secret in it.
-var spare: lib.entropy.Pool = .{};
-
-fn fallback(into: []u8) void {
-    var stamp: [8]u8 = undefined;
-    std.mem.writeInt(u64, &stamp, sys.clockMicros(), .little);
-    spare.stir(&stamp);
-    if (radio()) |found| spare.stir(&found.nic.mac);
-
-    // A pool asks to have been stirred a good many times before it will
-    // answer. Until then the clock is all there is, with the pool's own
-    // state carried in so that two draws a moment apart still differ.
-    if (spare.draw(into)) return;
-    lib.entropy.fromClock(sys.clockMicros(), &spare.state, into);
-    spare.stir(into);
+/// The kernel holds the machine's randomness, because it sees every interrupt
+/// and every program needs the answer. What netd has that the kernel does not
+/// is the radio: the exact moment a frame lands, and the frames it could not
+/// decode at all, which are the band's noise. That goes into the same pool, so
+/// a machine with a radio has a better one than a machine without.
+pub fn draw(into: []u8) bool {
+    contribute();
+    return sys.random(into);
 }
 
-/// A nonce for the key exchange, drawn from what the radio has heard.
-/// Where it has heard too little, or has nothing to offer, the clock
-/// stands in: weaker, and better than refusing to join over it.
-fn nonce(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) lib.wpa2.Nonce {
+/// Give the kernel whatever the radio has heard since last time.
+fn contribute() void {
+    const found = radio() orelse return;
+    const from = found.ops.draw orelse return;
+    var noise: [lib.entropy.Pool.BLOCK]u8 = undefined;
+    if (from(found.nic, &noise)) sys.randomStir(&noise);
+}
+
+/// A nonce for the key exchange.
+///
+/// The radio's own noise is stirred in first where it has any, so a join on a
+/// machine that has been listening draws on what it heard.
+fn nonce(nic: *dev_mod.NicDev) lib.wpa2.Nonce {
     var value: lib.wpa2.Nonce = @splat(0);
-    if (ops.draw) |from| {
-        if (from(nic, &value)) return value;
+    if (!draw(&value)) {
+        log.say(nic.name, .dim, "not enough heard yet; the key exchange nonce is unrepeatable rather than unguessable");
     }
-    log.say(nic.name, .dim, "not enough heard to draw on; the key exchange nonce comes from the clock");
-    lib.entropy.fromClock(sys.clockMicros(), &nic.mac, &value);
     return value;
 }
 
 /// Start looking for a network and joining it.
-fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) void {
+fn seek(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     state.wanted = role;
     state.heard_joining = 0;
     state.stopped = .none;
@@ -462,7 +446,7 @@ fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) voi
     state.sent_joining = 0;
     state.last_auth = null;
     var attempt = join_mod.Join{ .station = nic.mac };
-    attempt.wants(role.ssid, role.psk, nonce(nic, ops));
+    attempt.wants(role.ssid, role.psk, nonce(nic));
     state.join = attempt;
 
     log.begin(nic.name, .key);

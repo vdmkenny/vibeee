@@ -1770,6 +1770,42 @@ pub const table = [_]Syscall{
             "its entry and its claim: a walk over a machine that has not changed changes " ++
             "nothing.",
     },
+    .{
+        .number = 68,
+        .name = "random",
+        .summary = "Fill a buffer with unpredictable bytes.",
+        .args = &.{
+            .{ .name = "into", .kind = .ptr, .desc = "Buffer to fill." },
+            .{ .name = "len", .kind = .len, .desc = "How many bytes to draw." },
+        },
+        .returns = "1 if the machine has heard enough for the bytes to be unguessable, 0 if they are only unrepeatable",
+        .errors = &.{E.fault},
+        .notes = "The machine has no hardware random source, so the kernel collects the " ++
+            "gaps between interrupts, which vary with caches, memory refresh, bus " ++
+            "traffic and the devices themselves. Those seed a stream cipher that answers " ++
+            "every request, so two callers never draw the same bytes and no draw says " ++
+            "anything about another. Early in a boot too little has been collected to " ++
+            "call any of it unguessable: the call still fills the buffer, and returns 0 " ++
+            "to say so. Anything keeping a secret has to read that answer; anything " ++
+            "wanting a number nobody else picked does not.",
+    },
+    .{
+        .number = 69,
+        .name = "random_stir",
+        .summary = "Add to the pool the machine's randomness is drawn from.",
+        .args = &.{
+            .{ .name = "bytes", .kind = .cptr, .desc = "Whatever the caller has that is hard to predict." },
+            .{ .name = "len", .kind = .len, .desc = "How many bytes." },
+        },
+        .returns = "0",
+        .errors = &.{ E.perm, E.fault },
+        .notes = "Requires Caps.driver. For a server holding a source the kernel cannot " ++
+            "see: a radio hears the exact moment a frame lands, and the frames it could " ++
+            "not decode at all are the band's noise. Nothing stirred in can make the " ++
+            "pool worse, so the kernel does not judge what it is given, and a caller " ++
+            "with nothing surprising to offer only wastes its own time. What one driver " ++
+            "hears improves what every program draws.",
+    },
 };
 
 // Numbers must be unique and contiguous from zero: the dispatcher indexes the

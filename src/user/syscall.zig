@@ -174,6 +174,24 @@ pub fn sleepMicros(us: usize) void {
     _ = syscall1(abi.number("sleep_us"), us);
 }
 
+/// Fill `into` with unpredictable bytes, and say whether the machine has heard
+/// enough for them to be unguessable.
+///
+/// The kernel collects the gaps between interrupts, which vary with everything
+/// the machine is doing, and seeds a stream cipher from them. Early in a boot
+/// too little has been collected: the buffer is still filled, and still differs
+/// from every other draw, but the answer is `false`. A caller keeping a secret
+/// has to check it; a caller wanting a number nobody else picked does not.
+pub fn random(into: []u8) bool {
+    return syscall2(abi.number("random"), @intFromPtr(into.ptr), into.len) > 0;
+}
+
+/// Add to the pool the kernel draws from. Needs the `driver` capability, and
+/// is for a server holding a source the kernel cannot see for itself.
+pub fn randomStir(bytes: []const u8) void {
+    _ = syscall2(abi.number("random_stir"), @intFromPtr(bytes.ptr), bytes.len);
+}
+
 pub fn clockMicros() u64 {
     var out: u64 = 0;
     _ = syscall1(abi.number("clock_us"), @intFromPtr(&out));

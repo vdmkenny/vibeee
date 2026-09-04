@@ -373,16 +373,13 @@ export fn sys_now() callconv(.c) u32 {
     return @truncate(@as(u64, @intCast(sys.clockMicros())) / 1000);
 }
 
-/// For DHCP transaction ids and TCP sequence numbers: a splitmix step over
-/// the microsecond clock, stirred so two boots do not replay each other.
-var rand_state: u64 = 0x9E3779B97F4A7C15;
-
+/// For DHCP transaction ids and TCP sequence numbers, from the machine's own
+/// pool. A sequence number somebody else can work out is a connection somebody
+/// else can interfere with, and the clock is not a secret.
 export fn netd_lwip_rand() callconv(.c) c_uint {
-    rand_state +%= @as(u64, @intCast(sys.clockMicros())) | 1;
-    var z = rand_state;
-    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
-    z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
-    return @truncate(z ^ (z >> 31));
+    var bytes: [@sizeOf(c_uint)]u8 = undefined;
+    _ = sys.random(&bytes);
+    return @bitCast(bytes);
 }
 
 /// A failed stack invariant. The stack's state is not trustworthy past this

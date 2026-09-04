@@ -11,6 +11,8 @@
 
 const std = @import("std");
 const console = @import("../../kernel/console.zig");
+const cpu = @import("cpu.zig");
+const random = @import("../../kernel/random.zig");
 const nmiwatch = @import("nmiwatch.zig");
 const ioapic = @import("ioapic.zig");
 const lapic = @import("lapic.zig");
@@ -148,6 +150,12 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
     // the very state it interrupts: no breadcrumbs, no scheduler, no EOI,
     // because NMI delivery owes the APIC nothing.
     if (vec == 2 and nmiwatch.onNmi(frame)) return;
+
+    // The moment this landed. Interrupts arrive at times that vary with the
+    // machine's own state, which is where a computer with no hardware random
+    // source gets its randomness. A subtract and a store: everything costlier
+    // happens when someone asks for the result.
+    random.sample(cpu.readTsc());
 
     console.interruptEntered(vec);
     if (handlers[vec]) |h| {

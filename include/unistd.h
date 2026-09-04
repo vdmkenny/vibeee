@@ -40,4 +40,14 @@ int usleep(unsigned int microseconds);
 
 extern char **environ;
 int ftruncate(int fd, off_t size);
+
+/* Unpredictable bytes from the machine's own pool, for anything that needs
+ * randomness rather than the repeatable sequence rand() gives. No seeding:
+ * the kernel gathers what the machine cannot predict. getentropy() takes at
+ * most 256 bytes and answers 0, or -1 with errno set; the arc4random pair
+ * take any length and always answer. */
+#define GETENTROPY_MAX 256
+int getentropy(void *buf, size_t len);
+void arc4random_buf(void *buf, size_t len);
+unsigned int arc4random(void);
 #endif

@@ -282,6 +282,20 @@ The constraint that shapes everything. Five mechanisms, in order of use:
 
 The ICH6 EHCI does expose a debug port, but it needs a specific USB debug cable and a working EHCI stack to be useful, i.e. exactly the thing that's broken when you need it. Documented, not relied upon.
 
+### 6.10 Randomness
+
+This machine has no hardware random source: no RDRAND (Dothan predates it by six years), no TPM, no dedicated generator anywhere on the board. What it has is timing. Interrupts land at moments that vary with cache state, memory refresh, bus contention and the devices themselves, and the kernel is the only thing that sees every one of them.
+
+[`kernel/random.zig`](../src/kernel/random.zig) samples the TSC on each interrupt from the common entry in [`arch/x86/idt.zig`](../src/arch/x86/idt.zig) and keeps the gap since the last, truncated to its low bits: the high bits only say what time it is, which is no secret. Sampling costs a subtract and a store. Every 32 samples the ring is hashed into a pool ([`lib/entropy.zig`](../src/lib/entropy.zig)), which is a few hashes a second at the 100 Hz timer rate and cheap enough for the interrupt path; hashing at *every* interrupt is what would not be. The pool seeds `std.Random.DefaultCsprng`, which answers every request and is re-keyed from the pool on each one.
+
+**How much is enough, and how soon.** The pool counts estimated bits rather than how many times it was stirred, so a source that hears a lot at once counts for a lot at once. A batch is credited one bit per interrupt it saw, which is generous for what is hard to guess about a gap's low bits, and the target is 256 bits, the size of the seed being filled. That is 256 interrupts: under three seconds on an idle machine at the timer rate alone, and sooner on one doing anything, since disk, USB, keyboard and network lines all deliver. Two things a batch cannot do: count while partial, so a program asking in a loop cannot talk the pool into believing it heard more than arrived, and count while every sample in it is identical, so a machine whose interrupts arrive like clockwork reports honestly that it has nothing.
+
+**Two syscalls.** `random(into, len)` fills a buffer and returns whether the machine has heard enough for the answer to be unguessable rather than merely unrepeatable, which is the distinction a caller keeping a secret has to act on: TLS refuses to hand shake without it, a die roll does not care. `random_stir(bytes, len)` adds to the pool and needs `Caps.driver`. That gate is not because stirring could weaken a hash, it cannot, but because an unprivileged program calling it in a loop would spend the kernel's time hashing, and the only processes with a source worth stirring are drivers.
+
+**Why the kernel and not netd.** A radio hears things nothing else on the machine does, above all the frames it could not decode, which are the band's noise. That argues for netd *contributing*, not for netd *owning*: every program needs randomness, most machines here have no radio, and a program asking a network server for a TCP sequence number is a dependency loop. So netd stirs what its radio hears through `random_stir` and draws through `random` like everything else, lwIP's `LWIP_RAND()` included.
+
+**Consumers.** TLS handshake seeds, WPA2 key-exchange nonces, DHCP transaction ids and TCP initial sequence numbers, `getentropy`/`arc4random` in the libc shim, and Hero's dice. Nothing keeps a generator of its own.
+
 ---
 
 ## 7. Storage

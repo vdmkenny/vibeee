@@ -169,11 +169,12 @@ pub const Stream = struct {
     ) Error!*Stream {
         if (now <= 0) return error.NoClock;
 
-        // Drawn where the machine keeps its randomness rather than made up
-        // here: a handshake seeded from a clock every program can read is a
-        // handshake somebody else can follow.
+        // Drawn from the machine's own pool rather than made up here: a
+        // handshake seeded from a clock every program can read is a handshake
+        // somebody else can follow. Refuse outright when the pool says it has
+        // heard too little, because that is exactly the secret this protects.
         var seed: [SEED]u8 = undefined;
-        sock.random(&seed) catch return error.NoRandomness;
+        if (!sys.random(&seed)) return error.NoRandomness;
 
         const self = gpa.create(Stream) catch return error.OutOfMemory;
         errdefer gpa.destroy(self);

@@ -144,3 +144,40 @@ export fn fsync(fd: c_int) callconv(.c) c_int {
     // handle: a machine with one drive has one cache to empty either way.
     return if (sys.sync()) 0 else -1;
 }
+
+// ---------------------------------------------------------------------------
+// Randomness
+// ---------------------------------------------------------------------------
+
+/// The most one call may ask for, which is what every system implementing
+/// this promises and no more.
+pub const GETENTROPY_MAX = 256;
+
+/// Unpredictable bytes from the machine's own pool.
+///
+/// What a C program calls when it wants randomness rather than the repeatable
+/// sequence `rand` is required to give. The kernel collects the gaps between
+/// interrupts and seeds a stream cipher from them, so this needs no seeding
+/// and has no state here.
+export fn getentropy(buf: ?[*]u8, len: usize) callconv(.c) c_int {
+    if (len > GETENTROPY_MAX) return errno.fail(errno.EIO);
+    const into = buf orelse return errno.fail(errno.EFAULT);
+    // A caller that has to know whether the machine has heard enough wants
+    // the syscall, which answers that. This one only promises bytes.
+    _ = sys.random(into[0..len]);
+    return 0;
+}
+
+/// The same bytes under the name BSD gave them, which is what most code that
+/// wants randomness actually calls. No length limit and no failure: the pool
+/// always answers.
+export fn arc4random_buf(buf: ?[*]u8, len: usize) callconv(.c) void {
+    const into = buf orelse return;
+    _ = sys.random(into[0..len]);
+}
+
+export fn arc4random() callconv(.c) u32 {
+    var bytes: [4]u8 = undefined;
+    _ = sys.random(&bytes);
+    return @bitCast(bytes);
+}

@@ -127,17 +127,21 @@ pub const Outcome = struct {
 /// What the window is asked for next, once an event has been handled.
 pub const Wish = enum { nothing, close, damage };
 
-/// One die, from a generator seeded by the clock the first time it is asked.
-var generator: std.Random.DefaultPrng = undefined;
-var seeded = false;
+/// The machine's own randomness, as std.Random wants it. Hero does not keep a
+/// generator of its own: the kernel already has one, seeded from what the
+/// machine cannot predict, and a die anybody could work out in advance is not
+/// worth throwing.
+fn fromKernel(_: *anyopaque, into: []u8) void {
+    // A die that has not been called before is unrepeatable even on a machine
+    // that has just started, which is all a die needs. Only a secret has to
+    // care about the answer.
+    _ = sys.random(into);
+}
+
+const dice: std.Random = .{ .ptr = undefined, .fillFn = fromKernel };
 
 pub fn rollDie(faces: u8) u8 {
-    if (!seeded) {
-        const seed: u64 = @bitCast(sys.realtimeMicros() orelse @as(i64, @intCast(sys.clockMicros())));
-        generator = std.Random.DefaultPrng.init(seed);
-        seeded = true;
-    }
-    return generator.random().intRangeAtMost(u8, 1, @max(faces, 1));
+    return dice.intRangeAtMost(u8, 1, @max(faces, 1));
 }
 
 pub const Window = struct {

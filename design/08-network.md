@@ -100,8 +100,9 @@ Vendored at `third_party/lwip` (git release tag, `src/core`, `src/include`,
 port surface in `NO_SYS` mode is two functions and a header:
 
 - `sys_now()`: milliseconds from `clockMicros() / 1000`.
-- `LWIP_RAND()`: from the kernel's entropy syscall if present, else a splitmix over
-  `clockMicros()`; DHCP xids and TCP ISNs are the consumers.
+- `LWIP_RAND()`: the `random` syscall (§6.10). DHCP xids and TCP ISNs are the
+  consumers, and a sequence number drawn from a clock every program can read is a
+  connection anyone can interfere with.
 - `lwipopts.h`, the decisions that matter:
   - `NO_SYS=1`, `LWIP_NETCONN=0`, `LWIP_SOCKET=0`: raw callback API only. No OS
     emulation layer, no threads, no mailboxes.

@@ -14,6 +14,7 @@ const input = @import("../input.zig");
 const keymap = @import("../keymap.zig");
 const klog = @import("../klog.zig");
 const probe = @import("../probe.zig");
+const random = @import("../random.zig");
 const sched = @import("../sched.zig");
 const shutdown_mod = @import("../shutdown.zig");
 const sysinfo = @import("../sysinfo.zig");
@@ -509,4 +510,28 @@ pub fn sys_key_read(a: Args) Result {
     }
 
     return @intCast(written * size);
+}
+
+/// Unpredictable bytes for anything that asks.
+///
+/// A program that needs a number nobody else will pick, or a secret nobody can
+/// guess, asks here rather than making one out of a clock every other program
+/// can read. The answer says which of the two it is worth.
+pub fn sys_random(a: Args) Result {
+    const into = userWrite(a, a.a0, a.a1) orelse return Errno.fault.value();
+    return if (random.fill(into)) 1 else 0;
+}
+
+/// Add to the pool the kernel draws from.
+///
+/// Gated on `driver` because the pool is meant to hold what the machine's own
+/// hardware heard. Mixing in known bytes cannot take away what is already in a
+/// hash, so this is not how a caller would weaken the pool, but an unprivileged
+/// program calling it in a loop would spend the kernel's time hashing, and the
+/// one process with a source worth stirring is a driver anyway.
+pub fn sys_random_stir(a: Args) Result {
+    if (ctx.require(.{ .driver = true })) |denied| return denied;
+    const bytes = userRead(a, a.a0, a.a1) orelse return Errno.fault.value();
+    random.stir(bytes);
+    return 0;
 }
