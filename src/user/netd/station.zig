@@ -87,6 +87,10 @@ const State = struct {
     /// was not accepted.
     heard_for_us: u32 = 0,
     heard_auth: u32 = 0,
+    /// Frames the exchange asked to have sent. Against what the radio
+    /// reports sending, this says whether anything was lost between
+    /// deciding to speak and speaking.
+    sent_joining: u32 = 0,
     /// What a heard frame asked for, carried out from the loop rather
     /// than where it was decided. Deciding happens inside the driver's
     /// walk of its receive ring, and tuning resets the radio underneath
@@ -353,6 +357,7 @@ fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) voi
     state.heard_joining = 0;
     state.heard_for_us = 0;
     state.heard_auth = 0;
+    state.sent_joining = 0;
     var attempt = join_mod.Join{ .station = nic.mac };
     attempt.wants(role.ssid, role.psk, nonce(nic, ops));
     state.join = attempt;
@@ -383,7 +388,10 @@ fn act(what: join_mod.Action) void {
     const it = radio() orelse return;
     switch (what) {
         .none => {},
-        .send => |length| _ = it.nic.ops.transmit(it.nic, state.frame[0..length]),
+        .send => |length| {
+            state.sent_joining +|= 1;
+            _ = it.nic.ops.transmit(it.nic, state.frame[0..length]);
+        },
         // The network was heard here, so the radio stops sweeping and
         // stays long enough for the exchange that follows.
         .tune => |channel| {
@@ -408,7 +416,8 @@ fn act(what: join_mod.Action) void {
             out.decimal(state.heard_for_us);
             out.text(" addressed to this station, ");
             out.decimal(state.heard_auth);
-            out.text(" of them authentications");
+            out.text(" of them authentications; it asked to send ");
+            out.decimal(state.sent_joining);
             if (it.ops.tuned(it.nic)) |on| {
                 out.text(", on channel ");
                 out.decimal(on.number);
