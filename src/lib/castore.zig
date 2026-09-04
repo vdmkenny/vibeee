@@ -66,12 +66,17 @@ pub fn read(bytes: []const u8) Error!Store {
     const table = @sizeOf(Head) + @as(usize, head.certs) * @sizeOf(Entry);
     if (table > bytes.len) return error.Corrupt;
 
+    // Every certificate follows the one before it, none overlaps, and the
+    // last ends inside the file. Bounds alone were not enough: entries that
+    // all named the same long stretch would be in bounds and still add up to
+    // far more than the file, which a reader sizing itself from the total
+    // would then try to hold.
     const entries = std.mem.bytesAsSlice(Entry, bytes[@sizeOf(Head)..table]);
+    var next = table;
     for (entries) |entry| {
-        const end = @as(usize, entry.at) + entry.len;
-        if (entry.len == 0 or end > bytes.len or end < entry.at or entry.at < table) {
-            return error.Corrupt;
-        }
+        if (entry.len == 0 or entry.at != next) return error.Corrupt;
+        next = @as(usize, entry.at) + entry.len;
+        if (next > bytes.len) return error.Corrupt;
     }
     return .{ .bytes = bytes, .entries = entries };
 }
@@ -128,8 +133,31 @@ test "anything that is not a store is refused" {
     // An entry pointing past the file, and one pointing into the table it is
     // listed in: both are files to refuse rather than index.
     const entry: *align(1) Entry = @ptrCast(written.ptr + @sizeOf(Head));
+    const was = entry.*;
     entry.len = 4096;
     try std.testing.expectError(error.Corrupt, read(written));
     entry.* = .{ .at = 0, .len = 4 };
+    try std.testing.expectError(error.Corrupt, read(written));
+    entry.* = was;
+}
+
+test "certificates that overlap or repeat are refused" {
+    const certs = [_][]const u8{ "first", "second" };
+    const bytes = try std.testing.allocator.alloc(u8, sizeOf(&certs));
+    defer std.testing.allocator.free(bytes);
+    const written = @constCast(write(bytes, &certs));
+    _ = try read(written);
+
+    // Two entries naming the same stretch: in bounds, and together claiming
+    // more than the file holds. A reader that reserved for the total would
+    // ask for memory the file does not justify.
+    const second: *align(1) Entry = @ptrCast(written.ptr + @sizeOf(Head) + @sizeOf(Entry));
+    const first: *align(1) const Entry = @ptrCast(written.ptr + @sizeOf(Head));
+    second.* = first.*;
+    try std.testing.expectError(error.Corrupt, read(written));
+
+    // A gap between them is refused too: what is skipped is bytes the file
+    // says are certificates and nothing reads.
+    second.* = .{ .at = first.at + first.len + 1, .len = 1 };
     try std.testing.expectError(error.Corrupt, read(written));
 }

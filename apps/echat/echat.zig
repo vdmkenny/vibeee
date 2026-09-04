@@ -67,9 +67,16 @@ const Wire = union(enum) {
         };
     }
 
-    fn recv(self: Wire, into: []u8) usize {
+    /// What a read came to, in the one shape the rest of this file handles.
+    const Read = ulib.tls.Stream.Read;
+
+    fn recv(self: Wire, into: []u8) Read {
         return switch (self) {
-            .plain => |socket| socket.recv(into),
+            .plain => |socket| plain: {
+                const n = socket.recv(into);
+                if (n != 0) break :plain .{ .got = n };
+                break :plain if (socket.state() == .closed) .{ .done = .cut } else .quiet;
+            },
             .secure => |stream| stream.recv(into),
         };
     }
@@ -84,7 +91,7 @@ const Wire = union(enum) {
     fn finished(self: Wire) bool {
         return switch (self) {
             .plain => |socket| socket.state() == .closed,
-            .secure => |stream| stream.socket.state() == .closed,
+            .secure => |stream| stream.ending != null or stream.socket.state() == .closed,
         };
     }
 
@@ -484,11 +491,20 @@ fn pump(link: *Link) bool {
     const wire = link.socket orelse return false;
     var changed = false;
 
+    var ended: ?ulib.tls.Stream.Ending = null;
     while (true) {
         const room = link.stream.room();
         if (room.len == 0) break;
-        const read = wire.recv(room);
-        if (read == 0) break;
+        const read = switch (wire.recv(room)) {
+            .got => |n| n,
+            .quiet => break,
+            // A sealed connection that failed says so once. Reading on would
+            // be asking a stream that has nothing left to give.
+            .done => |why| {
+                ended = why;
+                break;
+            },
+        };
         link.stream.filled(read);
 
         while (link.stream.next()) |text| {
@@ -511,10 +527,12 @@ fn pump(link: *Link) bool {
         changed = true;
     }
 
-    // A connection the service has finished with is a network that has gone.
-    if (wire.finished() and link.session.state != .closed) {
-        link.session.quit("");
-        tell(model.networks.items[link.network].tab, "the connection closed");
+    // A connection that has finished, however it did, is a network that has
+    // gone. What ended it is worth saying: a certificate that stopped being
+    // acceptable and a peer that hung up are not the same news.
+    if (ended != null or wire.finished()) {
+        const why = ended orelse ulib.tls.Stream.Ending.cut;
+        tell(model.networks.items[link.network].tab, why.spell());
         drop(link);
         return true;
     }
@@ -614,8 +632,14 @@ fn fold(link: *Link, line: *const irc.Line) void {
                 // itself says belongs to the network: a notice from a server
                 // is not somebody to talk back to.
                 const sender = line.source orelse irc.Source{};
+                const mine = support.same(from, me);
                 const where = if (support.isChannel(target))
                     model.addRoom(network, .channel, target) orelse return
+                else if (mine)
+                    // Our own message, handed back by `echo-message`. A
+                    // conversation is with whoever it was addressed to, not
+                    // with ourselves.
+                    model.addRoom(network, .query, target) orelse return
                 else if (sender.isUser())
                     model.addRoom(network, .query, from) orelse return
                 else
@@ -628,8 +652,8 @@ fn fold(link: *Link, line: *const irc.Line) void {
                         .kind = .acted,
                         .room = where,
                         .at = now(),
-                        .mine = support.same(from, me),
-                        .highlight = names(did, me),
+                        .mine = mine,
+                        .highlight = !mine and names(did, me),
                     }, from, did);
                     return;
                 }
@@ -637,8 +661,9 @@ fn fold(link: *Link, line: *const irc.Line) void {
                     .kind = if (verb == .notice) .noticed else .said,
                     .room = where,
                     .at = now(),
-                    .mine = support.same(from, me),
-                    .highlight = names(text, me),
+                    .mine = mine,
+                    // Our own words naming us is not somebody calling us.
+                    .highlight = !mine and names(text, me),
                 }, from, text);
             },
             .join => {
@@ -1369,6 +1394,21 @@ fn submit() void {
     ctx.damage();
 }
 
+/// Write what this client just said into the room it was said in.
+///
+/// Only where the server will not hand it back: with `echo-message` our own
+/// words arrive like anyone else's, and writing them here as well would show
+/// everything twice.
+fn saidHere(link: *Link, room: u8, kind: rooms.Kind, text: []const u8) void {
+    if (link.session.has(.echo_message)) return;
+    model.say(room, .{
+        .kind = kind,
+        .room = room,
+        .at = now(),
+        .mine = true,
+    }, link.session.nick.slice(), text);
+}
+
 fn speak(text: []const u8) void {
     const room = model.current() orelse return;
     if (room.sort == .server) return say("that is the network's own tab; join a channel to talk");
@@ -1380,16 +1420,7 @@ fn speak(text: []const u8) void {
     link.session.send(line);
     flush(link);
 
-    // Without `echo-message` the server does not send our own words back, so
-    // they are written here. With it, they arrive like anyone else's.
-    if (!link.session.has(.echo_message)) {
-        model.say(model.open, .{
-            .kind = .said,
-            .room = model.open,
-            .at = now(),
-            .mine = true,
-        }, link.session.nick.slice(), text);
-    }
+    saidHere(link, model.open, .said, text);
     following = true;
 }
 
@@ -1406,14 +1437,14 @@ fn command(text: []const u8) void {
     const link = linkFor(room.network) orelse return say("not connected");
 
     if (lib.str.eqlFold(word, "join")) {
-        return sendWords(link, .{ .verb = .join }, rest, false);
+        return sendWords(link, .{ .verb = .join }, rest);
     }
     if (lib.str.eqlFold(word, "part")) {
         const target = if (rest.len != 0) rest else room.called();
-        return sendWords(link, .{ .verb = .part }, target, false);
+        return sendWords(link, .{ .verb = .part }, target);
     }
     if (lib.str.eqlFold(word, "nick")) {
-        return sendWords(link, .{ .verb = .nick }, rest, false);
+        return sendWords(link, .{ .verb = .nick }, rest);
     }
     if (lib.str.eqlFold(word, "topic")) {
         var line: irc.Line = .{ .command = .{ .verb = .topic }, .trail = true };
@@ -1429,12 +1460,7 @@ fn command(text: []const u8) void {
         line.params.append(room.called()) catch return;
         line.params.append(body) catch return;
         link.session.send(line);
-        model.say(model.open, .{
-            .kind = .acted,
-            .room = model.open,
-            .at = now(),
-            .mine = true,
-        }, link.session.nick.slice(), rest);
+        saidHere(link, model.open, .acted, rest);
         return flush(link);
     }
     if (lib.str.eqlFold(word, "msg")) {
@@ -1446,12 +1472,7 @@ fn command(text: []const u8) void {
         line.params.append(body) catch return;
         link.session.send(line);
         const where = model.addRoom(room.network, .query, who) orelse return flush(link);
-        model.say(where, .{
-            .kind = .said,
-            .room = where,
-            .at = now(),
-            .mine = true,
-        }, link.session.nick.slice(), body);
+        saidHere(link, where, .said, body);
         return flush(link);
     }
     if (lib.str.eqlFold(word, "quit")) {
@@ -1461,17 +1482,26 @@ fn command(text: []const u8) void {
     }
 
     // Anything else goes as it was typed, so a network's own commands work
-    // without this client having to know each one.
-    var line: irc.Line = .{ .command = irc.Command.from(word), .word = word, .trail = true };
-    if (rest.len != 0) line.params.append(rest) catch return;
+    // without this client having to know each one. Its arguments are words
+    // like any command's, except the last, which may be a message and is
+    // introduced as one where it needs to be.
+    var line: irc.Line = .{ .command = irc.Command.from(word), .word = word };
+    var each = lib.str.words(rest);
+    while (each.next()) |argument| line.params.append(argument) catch break;
     link.session.send(line);
     flush(link);
 }
 
-fn sendWords(link: *Link, command_of: irc.Command, argument: []const u8, trail: bool) void {
+/// Send a command whose arguments are words rather than a message.
+///
+/// `/mode #room +o somebody` is three parameters, not one run of text: a
+/// command handed over whole arrives as a single trailing argument and means
+/// something else entirely.
+fn sendWords(link: *Link, command_of: irc.Command, argument: []const u8) void {
     if (argument.len == 0) return say("that needs something to act on");
-    var line: irc.Line = .{ .command = command_of, .trail = trail };
-    line.params.append(argument) catch return;
+    var line: irc.Line = .{ .command = command_of };
+    var each = lib.str.words(argument);
+    while (each.next()) |word| line.params.append(word) catch break;
     link.session.send(line);
     flush(link);
 }

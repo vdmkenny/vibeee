@@ -92,6 +92,16 @@ fn onSyscall(frame: *idt.Frame) void {
         .from_user = frame.cs & 3 != 0,
     });
     frame.eax = @bitCast(@as(i32, @truncate(result)));
+
+    // The same reclamation the other door does, so a program that came
+    // through this one does not keep the stack it grew into. The self-test
+    // calls from kernel mode have no user stack to hand back, and the space
+    // says so.
+    if (frame.cs & 3 != 0) {
+        if (sched.currentThread()) |t| {
+            if (t.space.pd_phys != 0) usermode.shrinkStack(&t.space, frame.user_esp);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

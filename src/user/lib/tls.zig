@@ -69,6 +69,10 @@ pub const Error = error{
 /// work on this machine, and it is the same answer every time.
 pub const Roots = struct {
     bundle: Certificate.Bundle = .empty,
+    /// Authorities the store held that this build could not make sense of.
+    /// Worth knowing: a host refused for want of a root is otherwise
+    /// indistinguishable from one refused on its own merits.
+    skipped: usize = 0,
 
     /// Read the store and index it. `now` is seconds since the epoch, which
     /// decides which authorities have expired.
@@ -103,10 +107,17 @@ pub const Roots = struct {
             const der = store.at(index);
             const at: u32 = @intCast(roots.bundle.bytes.items.len);
             roots.bundle.bytes.appendSliceAssumeCapacity(der);
-            // An authority this build cannot parse is one it will not vouch
-            // for, and one bad certificate is not a reason to trust nothing.
-            roots.bundle.parseCert(gpa, at, now) catch {
-                roots.bundle.bytes.items.len = at;
+            // An authority this build cannot make sense of is one it will not
+            // vouch for, and one such certificate is not a reason to trust
+            // nothing. Running out of memory is not that: a store half read
+            // because the heap was tight would refuse hosts it should accept,
+            // and say nothing about why.
+            roots.bundle.parseCert(gpa, at, now) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    roots.bundle.bytes.items.len = at;
+                    roots.skipped += 1;
+                },
             };
         }
         if (roots.bundle.map.count() == 0) return error.NoAuthorities;
@@ -141,6 +152,10 @@ pub const Stream = struct {
     plain_in: [BUFFER]u8,
     plain_out: [BUFFER]u8,
 
+    /// Whether this stream is finished, and why. Set the first time a read or
+    /// a write said so, and kept: a finished stream stays finished.
+    ending: ?Ending = null,
+
     /// Open a connection to `host` at `addr`. The name is what the
     /// certificate is checked against, so it is the name that was asked for
     /// rather than the address it resolved to.
@@ -163,6 +178,7 @@ pub const Stream = struct {
         const self = gpa.create(Stream) catch return error.OutOfMemory;
         errdefer gpa.destroy(self);
 
+        self.ending = null;
         self.socket = sock.Sock.connect(addr, port) catch return error.Unreachable;
         errdefer self.socket.close();
 
@@ -204,17 +220,74 @@ pub const Stream = struct {
         return self;
     }
 
-    /// As much as `into` holds. Zero when the connection is finished.
-    pub fn recv(self: *Stream, into: []u8) usize {
-        const n = self.client.reader.readSliceShort(into) catch return 0;
-        return n;
+    /// What a read came to.
+    ///
+    /// Three answers rather than one number, because a caller has to tell
+    /// them apart: nothing yet is a connection to come back to, and the
+    /// other two are not. A stream that folded every failure into zero bytes
+    /// would leave a window drawing a conversation that had already ended.
+    pub const Read = union(enum) {
+        /// This much arrived.
+        got: usize,
+        /// Nothing right now. The connection stands.
+        quiet,
+        /// Over, for this reason. Nothing more will arrive.
+        done: Ending,
+    };
+
+    pub const Ending = enum {
+        /// The peer said goodbye the way the protocol asks.
+        closed,
+        /// It stopped without saying so.
+        cut,
+        /// The protocol refused what arrived: a record that would not
+        /// decrypt, an alert, a peer breaking its own rules.
+        broken,
+
+        pub fn spell(self: Ending) []const u8 {
+            return switch (self) {
+                .closed => "the connection closed",
+                .cut => "the connection was cut",
+                .broken => "the sealed connection failed",
+            };
+        }
+    };
+
+    /// As much as `into` holds.
+    pub fn recv(self: *Stream, into: []u8) Read {
+        if (self.ending) |why| return .{ .done = why };
+
+        // Every way a read can fail here is the protocol refusing what
+        // arrived or the transport under it giving up; which of the two is
+        // not something the caller can act on differently.
+        const n = self.client.reader.readSliceShort(into) catch {
+            return .{ .done = self.finish(.broken) };
+        };
+        if (n != 0) return .{ .got = n };
+
+        // Nothing decrypted. Either the peer has finished, which the protocol
+        // knows about, or nothing has arrived yet.
+        if (self.client.eof()) return .{ .done = self.finish(.closed) };
+        return .quiet;
     }
 
     /// All of `bytes`, or none: a record half sent is a connection ended.
     pub fn send(self: *Stream, bytes: []const u8) bool {
-        self.client.writer.writeAll(bytes) catch return false;
-        self.client.writer.flush() catch return false;
+        if (self.ending != null) return false;
+        self.client.writer.writeAll(bytes) catch {
+            _ = self.finish(.cut);
+            return false;
+        };
+        self.client.writer.flush() catch {
+            _ = self.finish(.cut);
+            return false;
+        };
         return true;
+    }
+
+    fn finish(self: *Stream, why: Ending) Ending {
+        if (self.ending == null) self.ending = why;
+        return self.ending.?;
     }
 
     /// The handle a wait set listens on for this connection's news.
