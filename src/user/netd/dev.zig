@@ -78,6 +78,52 @@ pub const NicOps = struct {
     /// policy provides this so every refresh re-arms the engine, and the
     /// answer "up" can never outrun the hardware being told so.
     sync_link: ?*const fn (dev: *NicDev) void = null,
+    /// What this interface offers beyond a wire, for a radio. The station
+    /// works through this table and names no driver, so a second radio is
+    /// a second table and nothing else.
+    radio: ?RadioOps = null,
+};
+
+/// What a radio can be asked that a wire cannot. Everything above the
+/// driver speaks to a radio through this and stays ignorant of which one
+/// it has.
+pub const RadioOps = struct {
+    /// Move to a channel, and say whether the hardware settled there.
+    tune: *const fn (dev: *NicDev, channel: lib.wifi.Channel) bool,
+    /// The channel it is on, or none while it is between channels.
+    tuned: *const fn (dev: *NicDev) ?lib.wifi.Channel,
+    /// Send no harder than this, in half decibel-milliwatts. What the
+    /// figure should be is the regulatory plan's business; how the
+    /// hardware is told is the driver's.
+    setPower: *const fn (dev: *NicDev, half_dbm: u6) void,
+    /// Re-measure what drifts while the radio sits on a channel. The long
+    /// form is the one that takes the receiver off the air.
+    calibrate: *const fn (dev: *NicDev, long: bool) void,
+    /// Re-fit the receiver to the noise it is hearing.
+    adapt: *const fn (dev: *NicDev) void,
+    /// Answer for this cell: take its traffic, acknowledge what it sends
+    /// here, and wake for what it announces. None to answer for nothing,
+    /// which is what a station does while it belongs to no cell.
+    answerFor: *const fn (dev: *NicDev, cell: ?Cell) void,
+    /// Draw bytes nothing here can predict. A radio hears a room full of
+    /// things this machine did not arrange, which is the only such source
+    /// it has. False while too little has been heard to answer honestly,
+    /// and a caller that needs a secret needs that answer.
+    draw: ?*const fn (dev: *NicDev, into: []u8) bool = null,
+    /// Start the driver's account of what it is hearing over again,
+    /// because something changed that makes the old account no evidence.
+    /// Not every driver keeps one.
+    watchAgain: ?*const fn (dev: *NicDev) void = null,
+    /// Say what that account came to, where a stretch has passed with
+    /// nothing heard at all.
+    sayIfUnheard: ?*const fn (dev: *NicDev) void = null,
+};
+
+/// The cell a station belongs to: which one, and the number it was given
+/// within it.
+pub const Cell = struct {
+    bssid: lib.mac.Address,
+    association: u14 = 0,
 };
 
 /// One attached adapter.
@@ -143,6 +189,12 @@ pub var stack_link: ?*const fn (dev: *NicDev, up: bool) void = null;
 /// at and the rate, when the hardware named one the driver knows.
 pub var radio_rx: ?*const fn (dev: *NicDev, frame: []const u8, signal: lib.wifi.Signal, rate: ?lib.wifi.Legacy) void = null;
 
+/// How an ordinary frame reaches a radio. A radio carries traffic in its
+/// own framing, and turning one into the other needs to know the cell,
+/// which is the station's knowledge and no driver's. The station sets
+/// this; a machine with no radio leaves it unset.
+pub var radio_tx: ?*const fn (dev: *NicDev, frame: []const u8) bool = null;
+
 /// A radio has its chains and is listening: the station may begin.
 pub var radio_up: ?*const fn (dev: *NicDev) void = null;
 
@@ -165,6 +217,15 @@ pub fn deliverRadio(dev: *NicDev, frame: []const u8, signal: lib.wifi.Signal, ra
 /// Say a whole frame arrived and what was made of it: counted here, then
 /// handed to the stack. The ARP narration stays, because it reads the wire
 /// beneath the stack and is the debug boot's traffic proof.
+/// Put one ordinary frame on this interface, whatever medium is under
+/// it. A wire takes it as it stands; a radio has it dressed as the cell
+/// expects first. Everything above here sends the same way to both.
+pub fn send(dev: *NicDev, frame: []const u8) bool {
+    if (dev.class != .wifi) return dev.ops.transmit(dev, frame);
+    const dressed = radio_tx orelse return false;
+    return dressed(dev, frame);
+}
+
 pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     if (!report.ok) {
         dev.stats.rx_dropped += 1;

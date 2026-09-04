@@ -65,6 +65,18 @@ const DRIVERS = [_]Driver{
     .{ .name = ar5212.name, .ops = ar5212.ops, .class = ar5212.class },
 };
 
+comptime {
+    // A radio is reached entirely through its radio table: nothing above
+    // the driver names one. A driver that calls itself a radio and brings
+    // no table would be an interface the station could do nothing with,
+    // so it is not one that compiles.
+    for (DRIVERS) |driver| {
+        if ((driver.class == .wifi) != (driver.ops.radio != null)) {
+            @compileError("`" ++ driver.name ++ "` disagrees with itself about being a radio");
+        }
+    }
+}
+
 /// How many interfaces a machine of this class can have behind one service.
 const MAX_IFACES = 4;
 
@@ -747,7 +759,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
 
         var frame: [lib.eth.FRAME]u8 = undefined;
         lib.eth.arpRequest(&frame, iface.mac, PROBE_SOURCE, request.param);
-        return if (iface.ops.transmit(iface, &frame)) .ok else .refused;
+        return if (dev.send(iface, &frame)) .ok else .refused;
     }
 
     reply.body = .{ .iface = .{

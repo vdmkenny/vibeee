@@ -1,19 +1,17 @@
 //! The station: what a radio is doing above its driver.
 //!
-//! The driver tunes and hears; this file decides where to tune and what
-//! the hearing amounts to. In this pass that is a scan: the radio walks the
-//! channels its regulatory plan allows, dwells long enough on each to hear
-//! a beacon, and keeps an account of every network it hears, said once to
-//! the log as it appears. Joining a network, with the authentication,
-//! association and key exchange that takes, is what the next pass owes;
-//! the frames for it are already in `lib.mlme` and `lib.wpa2`.
+//! The driver tunes and hears; this file decides where to tune, what the
+//! hearing amounts to, and what to say back. With no network named that is
+//! a scan: the radio walks the channels its regulatory plan allows, dwells
+//! long enough on each to hear a beacon, and keeps an account of every
+//! network it hears. With one named it is a join, which `lib.join` decides
+//! the steps of and this file carries out.
 //!
-//! The radio is reached through the device contract's hooks and one
-//! driver, because there is one radio in the machine this is for. A second
-//! radio driver plugs into the same three hooks.
+//! The radio is reached through the device contract's hooks and the radio
+//! table an interface carries. No driver is named here: a second radio is
+//! a second table, and this file does not change.
 
 const std = @import("std");
-const ar5212 = @import("ar5212.zig");
 const dev_mod = @import("dev.zig");
 const lib = @import("lib");
 const log = @import("ulib").log;
@@ -21,8 +19,18 @@ const out = @import("ulib").out;
 const settings = @import("proto").settings;
 const sys = @import("sys");
 
+const join_mod = lib.join;
 const mlme = lib.mlme;
 const wifi = lib.wifi;
+
+/// Room for the longest frame the join writes: an association request
+/// carrying the rates and the security element, or a key frame wrapped in
+/// a data frame.
+const FRAME_MAX = 512;
+
+/// Room for traffic either way: an ethernet frame at its longest, and the
+/// radio header that wraps one.
+const DATA_MAX = 1600;
 
 /// How many networks the scan keeps. A home hears a dozen; a flat in a
 /// city hears more, and the rest are heard again on the next pass.
@@ -31,6 +39,12 @@ const MAX_NETWORKS = 32;
 /// How long the radio listens on a channel: two beacon intervals, so a
 /// network beaconing at the usual hundred milliseconds is heard.
 const DWELL_MICROS: u64 = 200_000;
+
+/// How long to leave a network alone after failing to join it. Long
+/// enough not to hammer an access point that refused, short enough that
+/// one which was merely out of earshot is picked up again without anybody
+/// asking twice.
+const RETRY_MICROS: u64 = 10_000_000;
 
 const State = struct {
     radio: ?*dev_mod.NicDev = null,
@@ -52,6 +66,30 @@ const State = struct {
     hops: usize = 0,
     next_hop_at: u64 = 0,
     full_said: bool = false,
+    /// The join in hand, or none while no network is named.
+    join: ?join_mod.Join = null,
+    /// Where the join writes the frames it wants sent.
+    frame: [FRAME_MAX]u8 = @splat(0),
+    /// Where traffic is turned from one framing into the other. Both
+    /// directions can be in hand at once, because the stack answers some
+    /// frames as they arrive, so neither borrows the other's room.
+    dressed: [DATA_MAX]u8 = @splat(0),
+    undressed: [DATA_MAX]u8 = @splat(0),
+    plain: [DATA_MAX]u8 = @splat(0),
+    opened: [DATA_MAX]u8 = @splat(0),
+    /// The keys the join earned, where it earned any, and the number the
+    /// next sealed frame carries. A number is never used twice under one
+    /// key, so it only counts up and starts again with a new key.
+    keys: ?lib.wpa2.Handshake.Keys = null,
+    pn: lib.wpa2.Ccmp.Pn = 0,
+    /// What to be on, kept past the join that failed so it can be tried
+    /// again without anybody asking twice, and when to try.
+    wanted: ?settings.NetSlot = null,
+    retry_at: u64 = 0,
+    /// The number the next frame this station sends carries. Every frame
+    /// in a cell is numbered, so the far end can tell a repeat from a new
+    /// one.
+    sequence: u12 = 0,
 };
 
 var state: State = .{};
@@ -59,6 +97,7 @@ var state: State = .{};
 /// Take the radio's hooks. Called once, before any driver starts.
 pub fn init() void {
     dev_mod.radio_rx = heard;
+    dev_mod.radio_tx = send;
     dev_mod.radio_up = begin;
     dev_mod.radio_config = configure;
 }
@@ -78,14 +117,145 @@ pub fn network(index: usize) ?mlme.Bss {
 pub fn nextDeadline() ?u64 {
     if (state.radio == null) return null;
     const now = sys.clockMicros();
-    return if (state.next_hop_at > now) state.next_hop_at - now else 0;
+    const hop_in: u64 = if (state.next_hop_at > now) state.next_hop_at - now else 0;
+
+    const attempt = state.join orelse {
+        // Nothing in hand: the sweep, or the moment a failed join is due
+        // to be tried again, whichever comes first.
+        if (state.wanted == null) return hop_in;
+        const retry_in: u64 = if (state.retry_at > now) state.retry_at - now else 0;
+        return @min(hop_in, retry_in);
+    };
+    const owed = owedIn(attempt, now);
+
+    // A join still looking rides the sweep, so whichever comes first. One
+    // that has found its network owns the radio and the sweep is not
+    // happening, so its deadline is not one to wake for; a join waiting on
+    // nothing at all asks for no wake, and the traffic wakes it instead.
+    if (sweeping(attempt)) return if (owed) |soon| @min(hop_in, soon) else hop_in;
+    return owed;
+}
+
+/// Whether the join still leaves the radio free to sweep the band. Read
+/// the same way wherever it matters: a pass that sweeps without renewing
+/// the dwell, or renews one it does not sweep, is a loop that never
+/// waits.
+fn sweeping(attempt: join_mod.Join) bool {
+    return switch (attempt.state) {
+        .idle, .seeking => true,
+        .tuning, .authenticating, .associating, .handshaking, .joined, .failed => false,
+    };
+}
+
+/// How long until the join next needs looking at, or null while it needs
+/// nothing. Waiting on a reply is the only thing it waits for, and it
+/// waits exactly as long as it is worth waiting.
+fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
+    if (attempt.settling) return 0;
+    return switch (attempt.state) {
+        // The radio has been pointed at the channel; the next step is
+        // owed now.
+        .tuning => 0,
+        .authenticating, .associating, .handshaking => if (attempt.deadline > now) attempt.deadline - now else 0,
+        // Nothing owed: not started, still listening, finished either way.
+        .idle, .seeking, .joined, .failed => null,
+    };
 }
 
 /// Run whatever the station owes: a hop when the dwell is over.
 pub fn tick() void {
-    if (state.radio == null) return;
-    if (sys.clockMicros() < state.next_hop_at) return;
+    const now = sys.clockMicros();
+
+    // A join that failed comes round again on its own. The next attempt
+    // is dated first and unconditionally: a deadline left in the past is
+    // a loop that never waits.
+    if (state.join == null and state.wanted != null and now >= state.retry_at) {
+        state.retry_at = now + RETRY_MICROS;
+        if (radio()) |it| seek(it.nic, it.ops, state.wanted.?);
+    }
+
+    if (state.join) |*attempt| {
+        act(attempt.tick(now, &state.frame));
+        // A join that is still looking wants the sweep to carry on; one
+        // that has found its network owns the channel it found it on.
+        if (state.join) |a| {
+            if (!sweeping(a)) return;
+        }
+    }
+    if (state.radio == null or now < state.next_hop_at) return;
     hop();
+}
+
+/// The cell this station belongs to, or none while it belongs to none.
+/// Traffic can only be dressed for a cell, so this is what says whether
+/// there is any traffic to carry.
+fn cell() ?lib.mac.Address {
+    const attempt = state.join orelse return null;
+    if (attempt.state != .joined) return null;
+    return attempt.bssid();
+}
+
+/// One ordinary frame, dressed as the cell expects and handed to the
+/// radio.
+fn send(nic: *dev_mod.NicDev, frame: []const u8) bool {
+    const bssid = cell() orelse return false;
+
+    state.sequence +%= 1;
+    const length = lib.ieee80211.fromEthernet(
+        frame,
+        bssid,
+        .{ .sequence = state.sequence },
+        &state.plain,
+    ) orelse return false;
+    const built = state.plain[0..length];
+
+    // An open network takes the frame as it stands.
+    const keys = state.keys orelse return nic.ops.transmit(nic, built);
+
+    // Otherwise sealed under this station's own key, with a number that
+    // is never used twice.
+    const head = lib.ieee80211.Header.parse(built) orelse return false;
+    state.pn +%= 1;
+    const sealed = lib.wpa2.Ccmp.protect(
+        keys.tk,
+        head,
+        state.pn,
+        0,
+        built[head.len..],
+        &state.dressed,
+    ) orelse return false;
+    return nic.ops.transmit(nic, state.dressed[0..sealed]);
+}
+
+/// The reverse, for a frame the cell sent: undressed and handed to the
+/// stack, which knows nothing about radios.
+fn carry(nic: *dev_mod.NicDev, frame: []const u8) void {
+    if (cell() == null) return;
+    const head = lib.ieee80211.Header.parse(frame) orelse return;
+
+    var plain = frame;
+    if (head.control.protected) {
+        const keys = state.keys orelse return;
+        // A frame spoken to the room is sealed with the key the room
+        // shares; one spoken to this station, with this station's own.
+        const key = if (lib.mac.isGroup(head.addr1)) keys.gtk.key else keys.tk;
+        if (head.len >= state.opened.len) return;
+
+        @memcpy(state.opened[0..head.len], frame[0..head.len]);
+        const got = lib.wpa2.Ccmp.unprotect(key, frame, state.opened[head.len..]) orelse return;
+        plain = state.opened[0 .. head.len + got.len];
+    }
+
+    const length = lib.ieee80211.toEthernet(plain, &state.undressed) orelse return;
+    dev_mod.deliverRx(nic, .{ .frame = state.undressed[0..length], .ok = true });
+}
+
+/// The radio and the table it answers through, or none while there is no
+/// radio or the interface is a wire.
+fn radio() ?struct { nic: *dev_mod.NicDev, ops: dev_mod.RadioOps } {
+    const nic = state.radio orelse return null;
+    const ops = nic.ops.radio orelse return null;
+    return .{ .nic = nic, .ops = ops };
 }
 
 fn begin(nic: *dev_mod.NicDev) void {
@@ -98,24 +268,21 @@ fn begin(nic: *dev_mod.NicDev) void {
 /// The slot's plan and ceiling, whenever the configuration says.
 fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     if (nic.class != .wifi) return;
+    const ops = nic.ops.radio orelse return;
 
     const held = if (role.channel == 0) null else role.channel;
     const moved = !std.meta.eql(state.plan, role.regdomain) or state.held != held;
     state.plan = role.regdomain;
     state.held = held;
-    if (held) |number| _ = ar5212.tune(.{ .number = number });
+    if (held) |number| _ = ops.tune(nic, .{ .number = number });
 
-    // A network named is a network somebody is waiting to be on, and
-    // nothing here can put them on it yet: the radio listens and does not
-    // speak. Said once per network named, because a command that reports
-    // success and is followed by nothing at all is worse than a refusal.
-    if (role.ssid.len != 0 and !std.mem.eql(u8, state.asked.slice(), role.ssid.slice())) {
+    // A network named is one to be on; named nothing is one to leave.
+    // Acted on when the name changes, so a settings pass that says the
+    // same thing again does not restart a join that is already running.
+    if (!std.mem.eql(u8, state.asked.slice(), role.ssid.slice())) {
         state.asked = role.ssid;
-        log.begin("netd", .warn);
-        out.text("asked to join \"");
-        out.text(role.ssid.slice());
-        out.text("\"; this radio listens and cannot yet speak, so it will not join");
-        log.end();
+        leave(nic, ops);
+        if (role.ssid.len != 0) seek(nic, ops, role);
     }
 
     // Told something new, so what it heard as the radio it used to be is
@@ -124,27 +291,114 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     // naming at all.
     if (moved) {
         state.hops = 0;
-        ar5212.watchAgain(nic);
+        if (ops.watchAgain) |again| again(nic);
     }
-    ar5212.setSelfPower(role.txpower.resolve(role.regdomain).half_dbm);
+    ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
+}
+
+/// A nonce for the key exchange, drawn from what the radio has heard.
+/// Where it has heard too little, or has nothing to offer, the clock
+/// stands in: weaker, and better than refusing to join over it.
+fn nonce(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) lib.wpa2.Nonce {
+    var value: lib.wpa2.Nonce = @splat(0);
+    if (ops.draw) |from| {
+        if (from(nic, &value)) return value;
+    }
+    log.say(nic.name, .dim, "not enough heard to draw on; the key exchange nonce comes from the clock");
+    lib.entropy.fromClock(sys.clockMicros(), &nic.mac, &value);
+    return value;
+}
+
+/// Start looking for a network and joining it.
+fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) void {
+    state.wanted = role;
+    var attempt = join_mod.Join{ .station = nic.mac };
+    attempt.wants(role.ssid, role.psk, nonce(nic, ops));
+    state.join = attempt;
+
+    log.begin(nic.name, .key);
+    out.text("looking for \"");
+    out.text(role.ssid.slice());
+    out.text("\"");
+    log.end();
+}
+
+/// Leave whatever the radio belongs to, and stop whatever it was joining.
+fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
+    if (state.join) |*attempt| attempt.stop();
+    state.join = null;
+    state.keys = null;
+    state.wanted = null;
+    ops.answerFor(nic, null);
+    dev_mod.deliverLink(nic, .{});
+}
+
+/// Carry out what the join asked for.
+fn act(what: join_mod.Action) void {
+    const it = radio() orelse return;
+    switch (what) {
+        .none => {},
+        .send => |length| _ = it.nic.ops.transmit(it.nic, state.frame[0..length]),
+        // The network was heard here, so the radio stops sweeping and
+        // stays long enough for the exchange that follows.
+        .tune => |channel| {
+            if (it.ops.tune(it.nic, channel)) state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+        },
+        .joined => |won| settle(it.nic, it.ops, won),
+        .failed => |why| {
+            log.begin(it.nic.name, .warn);
+            out.text("could not join \"");
+            out.text(state.asked.slice());
+            out.text("\": ");
+            out.text(why.spell());
+            log.end();
+            state.join = null;
+            // Kept, and tried again: a network out of earshot now may be
+            // in earshot shortly, and nobody should have to ask twice.
+            state.retry_at = sys.clockMicros() + RETRY_MICROS;
+        },
+    }
+}
+
+/// Joined: answer for the cell, and say the carrier is up.
+fn settle(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, won: join_mod.Joined) void {
+    ops.answerFor(nic, .{ .bssid = won.bssid, .association = won.aid });
+    state.keys = won.keys;
+    state.pn = 0;
+
+    // What the carrier is is the driver's to say, and it says the same
+    // thing to whatever asks it later.
+    dev_mod.deliverLink(nic, nic.ops.link(nic));
+
+    log.begin(nic.name, .key);
+    out.text("joined \"");
+    out.text(state.asked.slice());
+    out.text("\" on ");
+    out.text(&lib.mac.text(won.bssid));
+    log.end();
 }
 
 /// Move to the next channel the plan allows, taking the noise floor the
 /// last dwell measured on the way.
 fn hop() void {
-    ar5212.calibrate(true);
+    // Before anything that can return early: this is what says the dwell
+    // is not over, and a pass that leaves it in the past is a loop that
+    // never waits.
+    state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+
+    const it = radio() orelse return;
+    it.ops.calibrate(it.nic, true);
     // What the last dwell's failures came to. Asked here because a dwell
     // is the period the radio is judged over: long enough for a count to
     // mean something, short enough to follow a room that changes.
-    ar5212.adapt();
-    state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+    it.ops.adapt(it.nic);
 
     // As long as a sweep would have taken, whether one was made or not: a
     // radio held on one channel has heard as much of that channel by now
     // as a sweeping one has heard of the band.
     state.hops += 1;
     if (state.hops == wifi.ghz2_channels.len) {
-        if (state.radio) |nic| ar5212.sayIfUnheard(nic);
+        if (it.ops.sayIfUnheard) |ask| ask(it.nic);
     }
 
     // Told where to listen, so there is nowhere to move to.
@@ -155,13 +409,20 @@ fn hop() void {
         index = (index + 1) % wifi.ghz2_channels.len;
         if (state.plan.allows(wifi.ghz2_channels[index])) break;
     }
-    if (ar5212.tune(.{ .number = wifi.ghz2_channels[index] })) state.channel_index = index;
+    if (it.ops.tune(it.nic, .{ .number = wifi.ghz2_channels[index] })) state.channel_index = index;
 }
 
 /// A frame from the radio. Beacons and probe responses become the scan's
 /// account; a network heard again is refreshed, a new one is said.
 fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wifi.Legacy) void {
     _ = rate;
+    // The join sees every frame: the beacons that tell it where its
+    // network is, and the replies that carry the exchange forward.
+    if (state.join) |*attempt| act(attempt.heard(frame, signal, sys.clockMicros(), &state.frame));
+
+    // Traffic, once there is a cell to have traffic with.
+    carry(nic, frame);
+
     const seen = mlme.Bss.fromBeacon(frame, signal) orelse return;
 
     for (state.networks.mutable()) |*known| {

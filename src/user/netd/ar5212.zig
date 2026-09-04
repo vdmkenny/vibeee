@@ -66,6 +66,36 @@ const SLAB = 2048;
 const FCS_BYTES = 4;
 const Chain = lib.ar5212.Chain(RING_SLOTS);
 
+/// The one queue this station sends from. The family has ten, which are
+/// there to hold traffic of different urgencies apart; a station with no
+/// such classes has one kind of traffic and needs one queue.
+const QUEUE: u4 = 0;
+
+/// How much of a reception is worth stirring into the pool. A frame that
+/// failed to decode is noise all the way through, so the beginning of one
+/// says as much as the whole of it.
+const NOISE_BYTES = 64;
+
+/// How a station waits its turn: the window it backs off within, in
+/// slots, and the fixed space it leaves ahead of that. The distributed
+/// access defaults, which every station in a cell shares.
+const CONTENTION_MIN = 15;
+const CONTENTION_MAX = 1023;
+const ARBITRATION_SPACE = 2;
+
+/// How many times the hardware tries a frame before it gives up, and how
+/// many times it tries the exchange that reserves the air for one.
+const FRAME_TRIES = 10;
+const STATION_TRIES = 32;
+
+comptime {
+    if (QUEUE >= regs_mod.QUEUES) @compileError("the queue is not one the family has");
+    // A frame that fits the buffer must be one the descriptor can state,
+    // which is what lets the transmit path measure against the buffer
+    // alone.
+    if (SLAB > lib.ar5212.MAX_FRAME) @compileError("a full buffer states a length the descriptor cannot hold");
+}
+
 /// The descriptors and the buffers they name, in one physically
 /// contiguous run so every address in it is one the radio can reach.
 const Rings = struct {
@@ -105,8 +135,20 @@ const Device = struct {
     dma_handle: ?u32 = null,
     /// The next descriptor the service expects to find finished.
     rx_next: usize = 0,
+    /// The next transmit descriptor the service will fill, the next it
+    /// expects to find finished, and how many lie between them.
+    tx_next: usize = 0,
+    tx_reap: usize = 0,
+    tx_filled: usize = 0,
+    /// The descriptor the chain currently ends at, which a new frame is
+    /// linked onto. None while the queue has nothing outstanding, and the
+    /// radio has to be pointed at the frame rather than led to it.
+    tx_link: ?usize = null,
     /// The channel tuned, or none yet.
     channel: ?wifi.Channel = null,
+    /// The cell this station answers for, or none while it belongs to
+    /// nothing.
+    cell: ?dev_mod.Cell = null,
 };
 
 var device: Device = .{};
@@ -118,6 +160,17 @@ pub const ops = dev_mod.NicOps{
     .irq = irq,
     .transmit = transmit,
     .link = link,
+    .radio = .{
+        .tune = tune,
+        .tuned = tuned,
+        .setPower = setPower,
+        .calibrate = calibrate,
+        .adapt = adapt,
+        .answerFor = answerFor,
+        .draw = draw,
+        .watchAgain = watchAgain,
+        .sayIfUnheard = sayIfUnheard,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -260,7 +313,7 @@ pub fn start(nic: *NicDev) bool {
         return false;
     }
     device.started = true;
-    if (!tune(.{ .number = 1 })) {
+    if (!tune(nic, .{ .number = 1 })) {
         device.started = false;
         return false;
     }
@@ -323,6 +376,7 @@ pub fn stop(_: *NicDev) void {
 fn quiet(regs: Regs) void {
     listenFor(regs, .{});
     regs.flush(.interrupt_status_clearing);
+    stopTransmit(regs);
     stopReceive(regs);
     regs.write(.rx_pointer, 0);
     regs.flush(.rx_pointer);
@@ -334,7 +388,7 @@ fn quiet(regs: Regs) void {
 
 /// Tune to a channel: the whole reset, with the protocol unit's timers
 /// kept after the first, then receive again.
-pub fn tune(channel: wifi.Channel) bool {
+pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     if (!device.started or device.gone) return false;
     const chip: *reset.Chip = if (device.chip) |*c| c else return false;
     const megahertz = channel.megahertz() orelse return false;
@@ -359,6 +413,7 @@ pub fn tune(channel: wifi.Channel) bool {
     if (device.nic) |nic| nic.radio_channel = channel.number;
 
     startReceive(chip.regs);
+    startTransmit(chip.regs);
     listenFor(chip.regs, WANTED);
     return true;
 }
@@ -378,6 +433,8 @@ const WANTED = regs_mod.Interrupts{
     // all from one hearing a band it cannot decode: a radio counting
     // these is a radio whose analog path reaches its demodulator.
     .rx_phy_error = true,
+    .tx_ok = true,
+    .tx_error = true,
 };
 
 /// Ask the radio to raise its line for exactly `causes`, and for nothing if
@@ -396,6 +453,13 @@ const WANTED = regs_mod.Interrupts{
 fn listenFor(regs: Regs, causes: regs_mod.Interrupts) void {
     regs.put(.interrupt_enable, regs_mod.InterruptEnable{});
     regs.flush(.interrupt_enable);
+    // A transmit cause asked for here is still silent until the queue it
+    // belongs to is named in the secondary mask. The primary word says
+    // what kind of news is wanted; these say whose.
+    const ours: u10 = if (causes.tx_ok or causes.tx_error) @as(u10, 1) << QUEUE else 0;
+    regs.put(.interrupt_mask_0, regs_mod.InterruptsS0{ .tx_ok = ours });
+    regs.put(.interrupt_mask_1, regs_mod.InterruptsS1{ .tx_error = ours });
+
     regs.put(.interrupt_mask, causes);
     if (!causes.any()) return;
     regs.put(.interrupt_enable, regs_mod.InterruptEnable{ .enabled = true });
@@ -591,7 +655,7 @@ const GIVEN_UP_CODES = 64;
 /// middle has nothing listening for it. So how hard it is to convince is
 /// raised while it is giving up too often and lowered when it is not,
 /// and the counts it is judged on are the ones it reported itself.
-pub fn adapt() void {
+pub fn adapt(_: *NicDev) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     if (!device.started or device.gone) return;
 
@@ -640,6 +704,48 @@ fn sayImmunity(chip: *const reset.Chip) void {
     log.end();
 }
 
+/// Unpredictable bytes, gathered from what the radio hears. The band is
+/// full of things this machine did not arrange, and a frame the baseband
+/// could not decode is nothing but those.
+var noise = lib.entropy.Pool{};
+
+/// Stir one reception in: how it measured, when it landed, and what it
+/// amounted to. Only until the pool has had enough, because past that
+/// point the hashing is work with nothing to show for it.
+fn stirFrom(report: anytype, heard: []const u8) void {
+    if (noise.ready()) return;
+    var words: [8]u8 = undefined;
+    std.mem.writeInt(u32, words[0..4], @bitCast(report.status0), .little);
+    std.mem.writeInt(u32, words[4..8], @bitCast(report.status1), .little);
+    noise.stir(&words);
+    noise.stir(heard);
+}
+
+/// Bytes nothing here can predict, or false while too little has been
+/// heard to say that honestly.
+pub fn draw(_: *NicDev, into: []u8) bool {
+    return noise.draw(into);
+}
+
+/// How frames failed to leave, by kind. A station that cannot get a word
+/// in says which way it is failing rather than only that it is.
+var unsent = std.enums.EnumArray(lib.ar5212.Failure, u32).initFill(0);
+
+fn noteUnsent(why: lib.ar5212.Failure) void {
+    unsent.getPtr(why).* +|= 1;
+}
+
+/// The kind of failure the radio meets most often, if it has met any.
+fn commonestUnsent() ?struct { why: lib.ar5212.Failure, times: u32 } {
+    var worst: ?struct { why: lib.ar5212.Failure, times: u32 } = null;
+    for (std.enums.values(lib.ar5212.Failure)) |why| {
+        const times = unsent.get(why);
+        if (times == 0) continue;
+        if (worst == null or times > worst.?.times) worst = .{ .why = why, .times = times };
+    }
+    return worst;
+}
+
 fn noteGivenUp(why: lib.ar5212.PhyError) void {
     const code = @intFromEnum(why);
     if (code < GIVEN_UP_CODES) given_up[code] +|= 1;
@@ -659,13 +765,13 @@ fn commonestGivingUp() ?struct { why: lib.ar5212.PhyError, times: u16 } {
 }
 
 /// The channel the radio is on.
-pub fn tuned() ?wifi.Channel {
+pub fn tuned(_: *NicDev) ?wifi.Channel {
     return device.channel;
 }
 
 /// The periodic calibration: I/Q on a short call, the noise floor too on
 /// a long one.
-pub fn calibrate(long: bool) void {
+pub fn calibrate(_: *NicDev, long: bool) void {
     if (!device.started or device.gone) return;
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     reset.calibrate(chip, long);
@@ -673,7 +779,7 @@ pub fn calibrate(long: bool) void {
 
 /// The ceiling on the frames the protocol unit sends itself, from the
 /// regulatory plan. Applied at the next reset.
-pub fn setSelfPower(half_dbm: u6) void {
+pub fn setPower(_: *NicDev, half_dbm: u6) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     chip.self_power = half_dbm;
 }
@@ -688,18 +794,7 @@ fn startReceive(regs: Regs) void {
     regs.put(.control, regs_mod.Control{ .rx_enable = true });
     regs.set(.diagnostics, regs_mod.Diagnostics, "rx_disable", false);
     regs.put(.mib_control, regs_mod.MibControl{});
-    regs.put(.rx_filter, regs_mod.RxFilter{
-        .unicast = true,
-        .multicast = true,
-        .broadcast = true,
-        .beacon = true,
-        // Everything the baseband manages to decode, whoever it was for.
-        // A station with no cell of its own has nothing to be selective
-        // about: what it is doing is listening to a band to find out what
-        // is on it, and a frame addressed elsewhere is exactly what it is
-        // looking for. What it accepts narrows when it joins something.
-        .promiscuous = true,
-    });
+    regs.put(.rx_filter, receiveFilter());
     // Undecodable frames are asked for here and not in the filter above:
     // the protocol unit takes no bit for them, which is why one written
     // there is dropped. Both modulations this radio speaks, because either
@@ -712,6 +807,81 @@ fn startReceive(regs: Regs) void {
     // willing to write nothing at all. Asking for them without this is
     // asking for a report that cannot be delivered.
     regs.set(.rx_config, regs_mod.RxConfig, "zero_length_dma", @as(u32, @bitCast(errors)) != 0);
+}
+
+/// Set the queue up to send: one scheduler feeding one arbiter, waiting
+/// its turn the way every station in a cell agrees to.
+fn startTransmit(regs: Regs) void {
+    if (device.rings == null) return;
+
+    // Which scheduler feeds this arbiter. One each, so a frame queued is
+    // a frame this arbiter contends for.
+    regs.putAt(regs_mod.dcuQueueMask(QUEUE), regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
+    regs.putAt(regs_mod.dcuLocalIfs(QUEUE), regs_mod.LocalIfs{
+        .contention_min = CONTENTION_MIN,
+        .contention_max = CONTENTION_MAX,
+        .arbitration_space = ARBITRATION_SPACE,
+    });
+    regs.putAt(regs_mod.dcuRetryLimit(QUEUE), regs_mod.RetryLimit{
+        .frame_short = FRAME_TRIES,
+        .frame_long = FRAME_TRIES,
+        .station_short = STATION_TRIES,
+        .station_long = STATION_TRIES,
+    });
+    // Nothing holds the medium for a stretch: a frame at a time, released
+    // between them.
+    regs.putAt(regs_mod.dcuChannelTime(QUEUE), regs_mod.ChannelTime{});
+    regs.putAt(regs_mod.queueMisc(QUEUE), regs_mod.QueueMisc{
+        .scheduling = .as_soon_as_possible,
+        .early_termination = true,
+    });
+    regs.putAt(regs_mod.dcuMisc(QUEUE), regs_mod.DcuMisc{ .wait_for_fragment = true });
+}
+
+/// Stop the queue and let go of whatever the service was still holding
+/// room for.
+fn stopTransmit(regs: Regs) void {
+    regs.put(.queue_disable, regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
+    _ = pace.until(regs, .queue_enable, regs_mod.QueueMask, "queues", 0, pace.DEFAULT_TRIES);
+    device.tx_next = 0;
+    device.tx_reap = 0;
+    device.tx_filled = 0;
+    device.tx_link = null;
+}
+
+/// What the receiver accepts. A station with no cell of its own has
+/// nothing to be selective about: it is listening to a band to find out
+/// what is on it, and a frame addressed elsewhere is exactly what it is
+/// looking for. Once it belongs to a cell, it takes what is meant for it.
+fn receiveFilter() regs_mod.RxFilter {
+    return .{
+        .unicast = true,
+        .multicast = true,
+        .broadcast = true,
+        .beacon = true,
+        .promiscuous = device.cell == null,
+    };
+}
+
+/// Answer for a cell: take its traffic and acknowledge what it addresses
+/// here. None to answer for nothing, which is where a station starts and
+/// where it returns when it leaves.
+pub fn answerFor(_: *NicDev, cell: ?dev_mod.Cell) void {
+    device.cell = cell;
+    const chip: *reset.Chip = if (device.chip) |*c| c else return;
+
+    // Kept on the chip, not only in its registers: a reset writes them
+    // back from here, so a retune does not drop the cell.
+    chip.bssid = if (cell) |c| c.bssid else @splat(0);
+    chip.association_id = if (cell) |c| c.association else 0;
+    if (device.gone) return;
+
+    chip.regs.write(.bss_id_low, std.mem.readInt(u32, chip.bssid[0..4], .little));
+    chip.regs.put(.bss_id_high, regs_mod.BssIdHigh{
+        .address_high = std.mem.readInt(u16, chip.bssid[4..6], .little),
+        .association_id = chip.association_id,
+    });
+    chip.regs.put(.rx_filter, receiveFilter());
 }
 
 /// Stop the protocol unit passing frames and the engine fetching them,
@@ -754,6 +924,7 @@ pub fn irq(nic: *NicDev) bool {
     if (!cause.any()) return false;
 
     if (cause.rx_ok or cause.rx_descriptor or cause.rx_error) reapRx(nic, chip);
+    if (cause.tx_ok or cause.tx_error) reapTx(nic);
     if (cause.rx_overrun) nic.stats.rx_dropped += 1;
     if (cause.rx_phy_error) phy_errors +%= 1;
 
@@ -803,6 +974,7 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
         // the buffer that holds it; the check sequence at the end is the
         // hardware's and not the frame's.
         const length: usize = report.status0.data_length;
+        stirFrom(report, rings.rx_buffer[slot][0..@min(length, NOISE_BYTES)]);
         if (report.status1.intact() and !report.status0.more and length > FCS_BYTES and length <= SLAB) {
             const frame = rings.rx_buffer[slot][0 .. length - FCS_BYTES];
             dev_mod.deliverRadio(nic, frame, signalOf(chip, report.status0.signal), report.status0.rate.rate());
@@ -825,16 +997,111 @@ fn signalOf(chip: *const reset.Chip, margin: u8) wifi.Signal {
     return .{ .snr_db = margin, .dbm = @intCast(dbm) };
 }
 
-/// A radio with no association has nowhere to send a frame, and says so
-/// rather than dropping it silently.
-pub fn transmit(nic: *NicDev, _: []const u8) bool {
+/// Count a frame that never left, and say so to the caller.
+fn refused(nic: *NicDev) bool {
     nic.stats.tx_failed += 1;
     return false;
 }
 
-/// The carrier of a radio is its association, which does not exist yet.
+/// Put one frame on the air. The bytes are already a whole radio frame:
+/// what goes where in it is the station's business, and how fast and how
+/// hard it goes is this one's.
+pub fn transmit(nic: *NicDev, frame: []const u8) bool {
+    if (!device.started or device.gone) return refused(nic);
+    const chip: *reset.Chip = if (device.chip) |*c| c else return refused(nic);
+    const rings = device.rings orelse return refused(nic);
+    const channel = device.channel orelse return refused(nic);
+    if (frame.len == 0 or frame.len > SLAB) return refused(nic);
+
+    // Finished descriptors first: the ring is short, and a frame offered
+    // just after one completes should find the room it freed.
+    reapTx(nic);
+    if (device.tx_filled == RING_SLOTS) return refused(nic);
+
+    const slot = device.tx_next;
+    @memcpy(rings.tx_buffer[slot][0..frame.len], frame);
+
+    // Only a frame sent to one station is answered, and only an answered
+    // frame is worth retrying. A group address is spoken to the room.
+    const head = lib.ieee80211.Header.parse(frame);
+    const answered = if (head) |h| !lib.mac.isGroup(h.addr1) else false;
+
+    const desc: *volatile Desc = &rings.tx_desc[slot];
+    desc.armTransmit(chainBase("tx_buffer") + @as(u32, @intCast(slot * SLAB)), 0, .{
+        .frame_bytes = @intCast(frame.len),
+        // Everything goes at the slowest rate the band obliges every
+        // station to understand. Nothing here has agreed on more yet.
+        .rate = lib.ar5212.RateCode.of(channel.band.slowest()),
+        .power = chip.self_power,
+        .acknowledged = answered,
+        .tries = FRAME_TRIES,
+    });
+    dma.publish();
+
+    const address = Chain.addressOf(chainBase("tx_desc"), slot);
+    if (device.tx_link) |tail| {
+        // The queue is already running: put this frame on the end of the
+        // chain it is working through.
+        rings.tx_desc[tail].link = address;
+        dma.publish();
+    } else {
+        chip.regs.writeAt(regs_mod.txPointer(QUEUE), address);
+    }
+    device.tx_link = slot;
+    device.tx_next = Chain.next(slot);
+    device.tx_filled += 1;
+
+    // Said every time, not only when the chain was empty: a queue that
+    // reached the old end and stopped before the link was written needs
+    // telling that there is more.
+    chip.regs.put(.queue_enable, regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
+    return true;
+}
+
+/// Take every finished transmit descriptor, in the order the radio
+/// worked through them, and account for what became of each frame.
+fn reapTx(nic: *NicDev) void {
+    const rings = device.rings orelse return;
+
+    while (device.tx_filled != 0) {
+        const slot = device.tx_reap;
+        const desc: *const volatile Desc = &rings.tx_desc[slot];
+        const report = desc.sent();
+        if (!report.done()) break;
+        dma.consume();
+
+        if (report.failure()) |why| {
+            nic.stats.tx_failed += 1;
+            noteUnsent(why);
+        } else {
+            nic.stats.tx_pkts += 1;
+            // The hardware leaves the control words as they were written,
+            // so the frame measures itself and needs no record kept
+            // alongside the ring.
+            const filled: lib.ar5212.TxControl1 = @bitCast(desc.body.tx.control1);
+            nic.stats.tx_bytes += filled.buffer_length;
+        }
+
+        device.tx_reap = Chain.next(slot);
+        device.tx_filled -= 1;
+        // The chain ends where the service stopped filling it. With
+        // nothing outstanding there is no end to add to, and the next
+        // frame is one the radio has to be pointed at.
+        if (device.tx_filled == 0) device.tx_link = null;
+    }
+}
+
+/// The carrier of a radio is the cell it belongs to. Nothing has agreed
+/// on a faster rate than the one the band obliges every station to
+/// understand, so that is what it runs at.
 pub fn link(_: *NicDev) dev_mod.Link {
-    return .{};
+    if (device.cell == null) return .{};
+    const channel = device.channel orelse return .{};
+    return .{
+        .up = true,
+        .mbps = @intCast(channel.band.slowest().kbps() / 1000),
+        .duplex = .half,
+    };
 }
 
 // ---------------------------------------------------------------------------

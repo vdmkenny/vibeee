@@ -23,6 +23,16 @@ pub const Band = enum(u8) {
     pub fn spell(self: Band) []const u8 {
         return @tagName(self);
     }
+
+    /// The slowest rate every station in the band must understand. What a
+    /// frame goes at while there is no agreement yet about anything
+    /// faster, which is every frame that arranges the agreement.
+    pub fn slowest(self: Band) Legacy {
+        return switch (self) {
+            .ghz2 => .m1,
+            .ghz5 => .m6,
+        };
+    }
 };
 
 /// How wide a channel is. Twenty megahertz is every legacy rate and the

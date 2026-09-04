@@ -131,14 +131,14 @@ fn linkOutput(netif: *lwip.Netif, p: *lwip.Pbuf) callconv(.c) lwip.Err {
     const nic: *dev.NicDev = @ptrCast(@alignCast(netif.state orelse return .arg));
 
     if (p.next == null) {
-        return if (nic.ops.transmit(nic, p.payload[0..p.len])) .ok else .mem;
+        return if (dev.send(nic, p.payload[0..p.len])) .ok else .mem;
     }
 
     var frame: [1518]u8 = undefined;
     if (p.tot_len > frame.len) return .arg;
     const took = lwip.pbuf_copy_partial(p, &frame, p.tot_len, 0);
     if (took != p.tot_len) return .arg;
-    return if (nic.ops.transmit(nic, frame[0..took])) .ok else .mem;
+    return if (dev.send(nic, frame[0..took])) .ok else .mem;
 }
 
 /// Up the stack: every received frame, copied into a pool pbuf. Exhaustion
