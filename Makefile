@@ -94,9 +94,11 @@ CMDLINE  ?=
 # image at a byte offset with the @@ syntax, which is how the filesystem gets
 # created inside the partition without loopback mounts or root.
 ROOTFS_IMG    := $(BUILD)/rootfs.img
-# Small on purpose: it is read over the BIOS's slow USB path at boot, so every
-# kilobyte is time on the target machine.
-ROOTFS_MB     ?= 2
+# Small on purpose: the whole of it is read over the BIOS's slow USB path at
+# boot, so every kilobyte is time on the target machine. What sets the size is
+# the certificate store, which is a hundred and thirty kilobytes of authorities
+# and does not fit in two megabytes beside everything else.
+ROOTFS_MB     ?= 3
 
 # Whether the manual is in decides what the image holds and what the
 # programs were compiled against, and neither is a file whose timestamp
@@ -247,13 +249,14 @@ $(MANUAL_STAMP): manual-stamp
 # after that would not be seen. Listed explicitly for the ones that exist,
 # which is what makes rebuilding one of them rebuild the image it goes in:
 # without this the old binary ships and the new one is never run.
-$(ROOTFS_IMG): kernel examples $(FONT_PACK) $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
+$(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@for d in bin etc lib lib/drivers share tmp home media cfg; do $(MMD) -i $@ ::/$$d; done
 	@if [ "$(MANUAL)" = "yes" ]; then $(MMD) -i $@ ::/doc; fi
 	@$(MCOPY) -i $@ -o $(FONT_PACK) ::/share/fonts.pack
+	@$(MCOPY) -i $@ -o $(CA_STORE) ::/share/ca.store
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
@@ -476,6 +479,17 @@ $(BUILD)/mkfontpack: tools/mkfontpack.zig $(wildcard src/lib/fonts/*.zig) src/li
 
 $(FONT_PACK): $(BUILD)/mkfontpack
 	@$(BUILD)/mkfontpack $@
+
+# The certificate authorities a TLS connection is checked against, decoded
+# from the vendored bundle once here rather than at every connection.
+CA_STORE := $(BUILD)/ca.store
+
+$(BUILD)/mkcastore: tools/mkcastore.zig src/lib/castore.zig | $(BUILD)
+	$(ZIG) build-exe -O ReleaseSafe --name mkcastore -femit-bin=$@ \
+		--dep lib -Mroot=tools/mkcastore.zig -Mlib=src/lib/lib.zig
+
+$(CA_STORE): $(BUILD)/mkcastore third_party/cacert/cacert.pem
+	@$(BUILD)/mkcastore third_party/cacert/cacert.pem $@
 
 # The IRC parser vectors, transcribed from the pinned reference by a generator
 # so no case in the table is typed by hand. Regenerate when the reference's pin

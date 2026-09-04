@@ -403,6 +403,42 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
 }
 
+/// Unpredictable bytes for anything that asks, drawn the same way the key
+/// exchange's nonce is: from what the radio has heard, and from the clock
+/// where it has heard too little.
+pub fn draw(into: []u8) void {
+    if (radio()) |found| {
+        if (found.ops.draw) |from| {
+            if (from(found.nic, into)) return;
+        }
+    }
+    fallback(into);
+}
+
+/// Where a radio has heard too little, or there is no radio at all: a pool
+/// stirred with the clock and moved on after every draw.
+///
+/// Anyone who knows roughly when this was drawn can narrow down what came
+/// out, so it is weaker than a radio that has been listening. What it is not
+/// is repeatable: two draws in the same microsecond gave the same bytes when
+/// the clock alone was hashed, and a handshake seeded with the same bytes
+/// twice is a handshake with no secret in it.
+var spare: lib.entropy.Pool = .{};
+
+fn fallback(into: []u8) void {
+    var stamp: [8]u8 = undefined;
+    std.mem.writeInt(u64, &stamp, sys.clockMicros(), .little);
+    spare.stir(&stamp);
+    if (radio()) |found| spare.stir(&found.nic.mac);
+
+    // A pool asks to have been stirred a good many times before it will
+    // answer. Until then the clock is all there is, with the pool's own
+    // state carried in so that two draws a moment apart still differ.
+    if (spare.draw(into)) return;
+    lib.entropy.fromClock(sys.clockMicros(), &spare.state, into);
+    spare.stir(into);
+}
+
 /// A nonce for the key exchange, drawn from what the radio has heard.
 /// Where it has heard too little, or has nothing to offer, the clock
 /// stands in: weaker, and better than refusing to join over it.

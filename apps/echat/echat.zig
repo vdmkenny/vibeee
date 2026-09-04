@@ -35,8 +35,11 @@ const ctx = &proto.app.ctx;
 /// own rather than with the system's string.
 pub const VERSION = "0.1";
 
-/// Where a network is reached, when nothing says otherwise.
-pub const PORT: u16 = 6667;
+/// Where a network is reached when nothing says otherwise, and where it is
+/// reached in the clear. A bare name is spoken to over TLS: a network that
+/// wants to be listened to says so with a port and no plus in front of it.
+pub const PORT: u16 = 6697;
+pub const PLAIN_PORT: u16 = 6667;
 
 /// How long between passes that have nothing to draw: what the keepalive
 /// needs, and nothing finer.
@@ -50,13 +53,55 @@ const INPUT_MAX = 512;
 // State
 // ---------------------------------------------------------------------------
 
-/// One network's connection: the socket, what has arrived on it, and where
-/// the protocol has got to.
+/// What a connection is made of, sealed or not. The rest of this file asks
+/// the same four things of either.
+const Wire = union(enum) {
+    plain: sock.Sock,
+    secure: *ulib.tls.Stream,
+
+    fn send(self: Wire, bytes: []const u8) usize {
+        return switch (self) {
+            .plain => |socket| socket.send(bytes),
+            .secure => |stream| if (stream.send(bytes)) bytes.len else 0,
+        };
+    }
+
+    fn recv(self: Wire, into: []u8) usize {
+        return switch (self) {
+            .plain => |socket| socket.recv(into),
+            .secure => |stream| stream.recv(into),
+        };
+    }
+
+    fn waitHandle(self: Wire) u32 {
+        return switch (self) {
+            .plain => |socket| socket.waitHandle(),
+            .secure => |stream| stream.waitHandle(),
+        };
+    }
+
+    fn finished(self: Wire) bool {
+        return switch (self) {
+            .plain => |socket| socket.state() == .closed,
+            .secure => |stream| stream.socket.state() == .closed,
+        };
+    }
+
+    fn close(self: Wire) void {
+        switch (self) {
+            .plain => |socket| socket.close(),
+            .secure => |stream| stream.close(ulib.heap.allocator),
+        }
+    }
+};
+
+/// One network's connection: the wire, what has arrived on it, and where the
+/// protocol has got to.
 const Link = struct {
     used: bool = false,
     /// Which network in the model this speaks for.
     network: u8 = 0,
-    socket: ?sock.Sock = null,
+    socket: ?Wire = null,
     session: irc.Session = .{},
     stream: irc.Stream = .{},
     /// Storage for what the session was configured with, since it holds
@@ -103,6 +148,15 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
             out.flush();
             sys.exit(0);
         }
+        // Reaching a network, said on the console rather than drawn: what a
+        // shell can ask when something is wrong with the connection itself
+        // and a window would be the wrong place to find out.
+        // Reaching a network, checked from a shell: the one question about a
+        // connection a window is the wrong place to answer.
+        if (std.mem.eql(u8, wanted, "--reach")) {
+            model.init();
+            reachFromShell(env.arg(frame, 2) orelse "");
+        }
         // A network on the command line is one to open at once, which is what
         // opening a link to it from somewhere else does.
         opening = wanted;
@@ -121,30 +175,84 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 /// A network named on the command line, connected once the window is up.
 var opening: ?[]const u8 = null;
 
+/// Reach a network and say how it went, on the console rather than in a
+/// window. What a shell asks when a connection is the thing in question:
+/// whether the name resolves, whether the authorities read, and whether the
+/// server's certificate is one this machine accepts.
+fn reachFromShell(where: []const u8) noreturn {
+    const colon = std.mem.lastIndexOfScalar(u8, where, ':');
+    const host = if (colon) |at| where[0..at] else where;
+    const port: u16 = if (colon) |at| @intCast(lib.str.toUnsigned(where[at + 1 ..])) else PORT;
+    if (host.len == 0) return leave("echat: name a network to reach", 1);
+
+    const address = sock.addressOf(host) catch return leave("could not find that name", 1);
+
+    const when = now();
+    if (when <= 0) return leave("the clock is not set, so a certificate cannot be checked", 1);
+
+    var trusted = ulib.tls.Roots.open(ulib.heap.allocator, when) catch
+        return leave("the certificate authorities could not be read", 1);
+
+    const stream = ulib.tls.Stream.connect(
+        ulib.heap.allocator,
+        &trusted,
+        address,
+        port,
+        host,
+        when,
+    ) catch |err| {
+        out.text(switch (err) {
+            error.NoClock => "the clock is not set",
+            error.Unreachable => "could not reach it",
+            error.Refused => "the handshake failed: ",
+            error.NoAuthorities => "the authorities could not be read",
+            error.NoRandomness => "the machine has no randomness to seal with",
+            error.OutOfMemory => "not enough memory",
+        });
+        if (err == error.Refused) out.text(ulib.tls.last_failure);
+        return leave("", 1);
+    };
+    stream.close(ulib.heap.allocator);
+    return leave("sealed", 0);
+}
+
+fn leave(what: []const u8, code: u8) noreturn {
+    out.text(what);
+    out.text("\n");
+    out.flush();
+    sys.exit(code);
+}
+
 // ---------------------------------------------------------------------------
 // Connections
 // ---------------------------------------------------------------------------
 
-/// Open a network. `where` is a host, optionally with `:port`.
+/// Open a network. `where` is a host, optionally with `:port`, and a plus in
+/// front of the port means the port is spoken to over TLS. A bare name is
+/// sealed; a bare port is not, which is the convention every client follows.
 fn connect(where: []const u8) void {
     const colon = std.mem.lastIndexOfScalar(u8, where, ':');
     const host = if (colon) |at| where[0..at] else where;
-    const port: u16 = if (colon) |at|
-        @intCast(lib.str.toUnsigned(where[at + 1 ..]))
-    else
-        PORT;
+    var sealed = true;
+    var port = PORT;
+    if (colon) |at| {
+        const given = where[at + 1 ..];
+        sealed = given.len != 0 and given[0] == '+';
+        port = @intCast(lib.str.toUnsigned(if (sealed) given[1..] else given));
+        if (port == 0) port = if (sealed) PORT else PLAIN_PORT;
+    }
     if (host.len == 0) return say("that is not a network to connect to");
 
     const slot = freeLink() orelse return say("no room for another network");
-    const network = model.addNetwork(host) orelse return say("no room for another network");
 
     const address = sock.addressOf(host) catch {
         say("could not find that network");
         return;
     };
-    const opened = sock.Sock.connect(address, port) catch {
-        say("could not reach that network");
-        return;
+    const opened = open(address, port, host, sealed) orelse return;
+    const network = model.addNetwork(host) orelse {
+        opened.close();
+        return say("no room for another network");
     };
 
     const link = &links[slot];
@@ -162,6 +270,53 @@ fn connect(where: []const u8) void {
 
     model.show(model.networks.items[network].tab);
     tell(model.networks.items[network].tab, "connecting");
+}
+
+/// Reach a network, sealed or in the clear. The reason a connection failed
+/// is said here, because this is where it is known.
+fn open(address: u32, port: u16, host: []const u8, sealed: bool) ?Wire {
+    if (!sealed) {
+        const socket = sock.Sock.connect(address, port) catch {
+            say("could not reach that network");
+            return null;
+        };
+        return .{ .plain = socket };
+    }
+
+    const when = now();
+    const trusted = authorities(when) orelse return null;
+    const stream = ulib.tls.Stream.connect(
+        ulib.heap.allocator,
+        trusted,
+        address,
+        port,
+        host,
+        when,
+    ) catch |err| {
+        say(switch (err) {
+            error.NoClock => "the clock is not set, so a certificate cannot be checked",
+            error.Unreachable => "could not reach that network",
+            error.Refused => "the network's certificate was not accepted",
+            error.NoAuthorities => "the certificate authorities could not be read",
+            error.NoRandomness => "the machine has no randomness to seal with",
+            error.OutOfMemory => "not enough memory for a sealed connection",
+        });
+        return null;
+    };
+    return .{ .secure = stream };
+}
+
+/// The authorities, read the first time one is wanted and kept after that.
+var roots: ?ulib.tls.Roots = null;
+
+fn authorities(when: i64) ?*ulib.tls.Roots {
+    if (roots == null) {
+        roots = ulib.tls.Roots.open(ulib.heap.allocator, when) catch {
+            say("the certificate authorities could not be read");
+            return null;
+        };
+    }
+    return &roots.?;
 }
 
 /// What this client calls itself. The nick is the machine's own name until
@@ -228,9 +383,9 @@ fn linkFor(network: u8) ?*Link {
 fn listen() void {
     waking = 0;
     for (&links) |*link| {
-        const open = link.socket orelse continue;
+        const wire = link.socket orelse continue;
         if (!link.used) continue;
-        wakes[waking] = open.waitHandle();
+        wakes[waking] = wire.waitHandle();
         waking += 1;
     }
     proto.app.wakeOn(wakes[0..waking]);
@@ -250,13 +405,13 @@ fn woken(index: usize) bool {
 /// Read what has arrived, hand every whole line to the session, and write
 /// back whatever it wants to say. True when something changed on screen.
 fn pump(link: *Link) bool {
-    const open = link.socket orelse return false;
+    const wire = link.socket orelse return false;
     var changed = false;
 
     while (true) {
         const room = link.stream.room();
         if (room.len == 0) break;
-        const read = open.recv(room);
+        const read = wire.recv(room);
         if (read == 0) break;
         link.stream.filled(read);
 
@@ -275,8 +430,8 @@ fn pump(link: *Link) bool {
         changed = true;
     }
 
-    // A socket the service has finished with is a network that has gone.
-    if (open.state() == .closed and link.session.state != .closed) {
+    // A connection the service has finished with is a network that has gone.
+    if (wire.finished() and link.session.state != .closed) {
         link.session.quit("");
         tell(model.networks.items[link.network].tab, "the connection closed");
         drop(link);
@@ -289,11 +444,11 @@ fn pump(link: *Link) bool {
 
 /// Write what the session has queued, as far as the socket will take it.
 fn flush(link: *Link) void {
-    const open = link.socket orelse return;
+    const wire = link.socket orelse return;
     while (true) {
         const waiting = link.session.pending();
         if (waiting.len == 0) break;
-        const sent = open.send(waiting);
+        const sent = wire.send(waiting);
         if (sent == 0) break;
         link.session.sent(sent);
     }
@@ -334,7 +489,7 @@ fn named(link: *Link) void {
 }
 
 fn drop(link: *Link) void {
-    if (link.socket) |open| open.close();
+    if (link.socket) |wire| wire.close();
     link.socket = null;
     link.used = false;
     model.networks.items[link.network].connected = false;

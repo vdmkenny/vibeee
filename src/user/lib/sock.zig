@@ -157,6 +157,24 @@ pub const Listener = struct {
 
 /// A host argument to an address: dotted text parses directly, anything
 /// else goes through the resolver. What every tool taking a host wants.
+/// Unpredictable bytes, from where the machine keeps them. Falls to nothing
+/// rather than to something guessable: a caller that cannot have randomness
+/// must know it, and go without whatever it wanted it for.
+pub fn random(into: []u8) Error!void {
+    const channel = try serviceChannel();
+    defer _ = sys.close(channel);
+
+    var at: usize = 0;
+    while (at < into.len) {
+        const wanted: u32 = @intCast(@min(into.len - at, proto.RANDOM_MAX));
+        var reply = proto.Rep{};
+        try callOn(channel, .{ .tag = .random, .param = wanted }, &reply, &.{}, null);
+        if (reply.status != .ok) return error.Refused;
+        @memcpy(into[at..][0..wanted], reply.body.random[0..wanted]);
+        at += wanted;
+    }
+}
+
 pub fn addressOf(name: []const u8) Error!u32 {
     if (@import("lib").ipv4.parse(name)) |addr| return addr;
     const answer = try resolve(name);

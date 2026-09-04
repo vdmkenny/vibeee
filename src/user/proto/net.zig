@@ -31,6 +31,11 @@ pub const Tag = enum(u8) {
     /// network waits on, and what a listing sleeps on, rather than asking
     /// every few seconds.
     watch,
+    /// Unpredictable bytes, `param` of them, up to `RANDOM_MAX`. Answered
+    /// from what the radio has heard, and from the clock where it has heard
+    /// too little; either way this service is where a machine's randomness
+    /// is kept, so a program asks rather than inventing its own.
+    random,
     /// Open a stream to `param`:`param2`. The reply waits for the handshake
     /// and grants the socket: `body.sock` and the three handles.
     tcp_connect,
@@ -297,9 +302,15 @@ pub const Rep = extern struct {
     body: Body = .{ .count = 0 },
 };
 
+/// How many random bytes one reply carries. What is left of a payload once
+/// the reply's own head is taken.
+pub const RANDOM_MAX = 32;
+
 pub const Body = extern union {
     /// For `count`: how many interfaces there are.
     count: u32,
+    /// For `random`: the bytes, `param` of them.
+    random: [RANDOM_MAX]u8,
     /// For `ping`: the round trip in microseconds.
     rtt_us: u32,
     /// For `status`: the interface.

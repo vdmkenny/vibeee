@@ -24,11 +24,19 @@ pub const USER_STACK_TOP: usize = 0x3FFF_0000;
 /// vendored decoder builds its Huffman tables in a frame of its own, and four
 /// kilobytes of that on top of a drawing pass is over the edge.
 ///
-/// The wall was real both times and the growth is what it costs to do the
-/// work, so the number doubled rather than the work being avoided. Nothing
-/// below the bottom page is mapped, so an overflow still faults at once and
-/// says where, rather than quietly writing into whatever is under it.
-pub const USER_STACK_PAGES = 16;
+/// The wall was real every time and the growth is what it costs to do the
+/// work, so the number grew rather than the work being avoided. What sets it
+/// now is a TLS handshake: the standard library's client keeps two whole
+/// record buffers and a certificate chain on the stack at once, and measured
+/// against a real server it wants more than forty pages and fits inside
+/// forty-eight. Nothing below the bottom page is mapped, so an overflow still
+/// faults at once and says where, rather than quietly writing into whatever
+/// is under it.
+///
+/// It is every process's stack, which is the wrong shape for a cost one
+/// program incurs: a program that asked for what it needs, the way an ELF's
+/// own stack header says, would leave the rest at sixteen.
+pub const USER_STACK_PAGES = 48;
 
 pub const Error = error{OutOfMemory};
 

@@ -144,3 +144,23 @@ spaces where the standard allows one, an empty parameter, a trailing backslash
 in a tag value, a colon inside a message. These cases were collected from four
 other projects' suites and reflect what real networks send, so a client that
 matches them matches other clients.
+
+## cacert (certificate authorities)
+
+The Mozilla root certificate store, extracted by the curl project, MPL 2.0.
+Pinned at the extraction dated 2026-08-13, which the file's own header records.
+
+**Reference only. None of it is compiled.** `make castore` decodes the
+hundred and twenty-one certificates in it once and writes
+`/share/ca.store`, so nothing on the machine decodes base64 at connection
+time and the file it reads is a hundred and thirty kilobytes rather than a
+hundred and eighty-eight.
+
+Chosen over a curated handful of authorities because which roots a network
+signs with is not something this system can predict, and a store missing one
+fails in the way that teaches people to turn verification off. Chosen over
+trusting on first use because a first use is exactly when somebody is on a
+network they do not control.
+
+Updating is a re-fetch from https://curl.se/ca/cacert.pem and a re-run of the
+generator; the store is built, not committed.

@@ -717,6 +717,18 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         return .ok;
     }
 
+    // The machine's randomness is kept here, because what feeds it is here:
+    // a radio hears what nobody arranged. A program asks rather than making
+    // its own out of a clock every other program can read.
+    if (request.tag == .random) {
+        const wanted = @min(request.param, proto.RANDOM_MAX);
+        if (wanted == 0) return .refused;
+        var drawn: [proto.RANDOM_MAX]u8 = @splat(0);
+        station.draw(drawn[0..wanted]);
+        reply.body = .{ .random = drawn };
+        return .ok;
+    }
+
     // The scan's list is the station's, indexed on its own.
     if (request.tag == .wifi_scan) {
         const bss = station.network(request.index) orelse return .end;

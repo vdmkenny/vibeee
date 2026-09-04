@@ -25,9 +25,38 @@ Commands are `/server`, `/join`, `/part`, `/nick`, `/topic`, `/me`, `/msg` and
 `/quit`. Anything else typed after a slash goes as written, so a network's own
 commands work without this client knowing each one.
 
-It reaches a network on 6667. TLS is not written yet: `std.crypto.tls` is the
-one to use when it is, and the connection belongs with `netd`, which owns the
-network, rather than in each program that wants one.
+## Reaching a network
+
+A bare name is spoken to over TLS on 6697. A port with a plus in front of it
+is TLS on that port, and a bare port is in the clear, which is the convention
+every client follows:
+
+    /server irc.example.org           TLS on 6697
+    /server irc.example.org:+6697     TLS on 6697, said outright
+    /server irc.example.org:6667      in the clear
+
+The connection is `ulib.tls`, which is `std.crypto.tls` over a socket the
+network service granted, checked against the authorities in
+`/share/ca.store`. One module for every program that needs one: the protocol
+itself is the standard library's, and what is here is the two ends of it.
+
+Reaching a network can be asked from a shell, where a window is the wrong
+place to answer:
+
+    echat --reach irc.example.org
+
+It says whether the name resolved, whether the authorities read, and whether
+the certificate was accepted, and nothing else.
+
+### What does not work yet
+
+Libera.Chat asks every client for a certificate of its own, which is how it
+offers to recognise you by one. The standard library's TLS client has no
+answer for that request and ends the handshake, so `echat --reach
+irc.libera.chat` says `TlsUnexpectedMessage`. A network that does not ask
+connects. Reaching Libera means either speaking to it in the clear on 6667 or
+a client that answers the request, which is a change to `std.crypto.tls`
+rather than to anything here.
 
 ## The protocol
 
