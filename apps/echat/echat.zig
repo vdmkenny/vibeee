@@ -202,8 +202,7 @@ var opened_written = false;
 var asked_for: Bounded(u8, 160) = .{};
 
 fn reach(where: []const u8) void {
-    asked_for.clear();
-    for (where) |ch| asked_for.append(ch) catch break;
+    _ = asked_for.set(where);
     proto.app.retick(0);
 }
 
@@ -498,6 +497,11 @@ fn pump(link: *Link) bool {
             const event = link.session.receive(&line);
             fold(link, &line);
             act(link, event);
+
+            // Acting on a line can end the connection, and everything below
+            // reads a socket that would then be closed and its shared memory
+            // given back.
+            if (!link.used) return true;
         }
     }
 
@@ -576,8 +580,7 @@ fn named(link: *Link) void {
     const network = &model.networks.items[link.network];
     const given = link.session.support.network.slice();
     if (given.len == 0) return;
-    network.named.clear();
-    for (given) |ch| network.named.append(ch) catch break;
+    _ = network.named.set(given);
 }
 
 fn drop(link: *Link) void {
@@ -676,8 +679,7 @@ fn fold(link: *Link, line: *const irc.Line) void {
                     if (room.network != network) continue;
                     const which: u8 = @intCast(index);
                     const member = model.member(which, support.casemapping, from) orelse continue;
-                    member.nick.clear();
-                    for (wanted) |ch| member.nick.append(ch) catch break;
+                    _ = member.nick.set(wanted);
                     told(which, from, "is now known");
                 }
             },
@@ -754,8 +756,7 @@ fn names(text: []const u8, me: []const u8) bool {
 
 fn setTopic(room: u8, text: []const u8) void {
     const at = &model.rooms.items[room];
-    at.topic.clear();
-    for (text) |ch| at.topic.append(ch) catch break;
+    _ = at.topic.set(text);
 }
 
 /// Something the server said, in the room it is about.
@@ -771,8 +772,7 @@ fn told(room: u8, who: []const u8, what: []const u8) void {
 
 /// Something the window itself has to say, on the strip along the bottom.
 fn say(text: []const u8) void {
-    notice.clear();
-    for (text) |ch| notice.append(ch) catch break;
+    _ = notice.set(text);
 }
 
 fn now() i64 {
@@ -852,8 +852,7 @@ fn drawHeader(area: Rect, room: ?*rooms.Room) void {
         .h = Surface.textHeight(),
     };
 
-    var signature = headerFingerprint(at);
-    if (sealed) signature = (signature ^ 1) *% 16777619;
+    const signature = headerFingerprint(at, sealed);
     if (ctx.damaged or header_shown != signature) {
         header_shown = signature;
         ctx.surface.fill(area, t.surface);
@@ -872,7 +871,7 @@ fn drawHeader(area: Rect, room: ?*rooms.Room) void {
     }
 }
 
-var header_shown: u32 = 0;
+var header_shown: i32 = 0;
 
 /// How much room a picture beside a word takes, the picture and the air
 /// after it.
@@ -880,29 +879,26 @@ fn widgetMark() i32 {
     return Surface.iconSize() + theme.current().gap;
 }
 
-fn headerFingerprint(room: *const rooms.Room) u32 {
-    var value: u32 = 2166136261;
-    for (room.called()) |ch| value = (value ^ ch) *% 16777619;
-    for (room.topic.slice()) |ch| value = (value ^ ch) *% 16777619;
-    return value;
+fn headerFingerprint(room: *const rooms.Room, sealed: bool) i32 {
+    var mark: eui.widget.Fingerprint = .{};
+    mark.text(room.called());
+    mark.text(room.topic.slice());
+    mark.flag(sealed);
+    return mark.done();
 }
 
 /// What the transcript is showing. A pane that has not changed is left alone.
-var transcript_shown: u64 = 0;
+var transcript_shown: i32 = 0;
 
-fn transcriptFingerprint(area: Rect) u64 {
-    var value: u64 = 1469598103934665603;
-    for ([_]u64{
-        model.open,
-        model.lines.len,
-        @intCast(transcript_scroll.offset + 1),
-        @intCast(area.w),
-        @intCast(area.h),
-        @intFromBool(following),
-    }) |part| {
-        value = (value ^ part) *% 1099511628211;
-    }
-    return value;
+fn transcriptFingerprint(area: Rect) i32 {
+    var mark: eui.widget.Fingerprint = .{};
+    mark.number(model.open);
+    mark.number(model.lines.len);
+    mark.number(@intCast(transcript_scroll.offset + 1));
+    mark.number(@intCast(area.w));
+    mark.number(@intCast(area.h));
+    mark.flag(following);
+    return mark.done();
 }
 
 /// A run of lines from one person, drawn with their name once.
@@ -1170,7 +1166,7 @@ fn drawMembers(area: Rect, room: *rooms.Room) void {
 fn drawNotice(area: Rect) void {
     const t = theme.current();
     const said = notice.slice();
-    const signature = fingerprintOf(said);
+    const signature = eui.widget.fingerprint(said);
     if (!ctx.damaged and signature == notice_shown) return;
     notice_shown = signature;
 
@@ -1186,13 +1182,7 @@ fn drawNotice(area: Rect) void {
     ctx.addDamage(area);
 }
 
-var notice_shown: u32 = 0;
-
-fn fingerprintOf(text: []const u8) u32 {
-    var value: u32 = 2166136261;
-    for (text) |ch| value = (value ^ ch) *% 16777619;
-    return value;
-}
+var notice_shown: i32 = 0;
 
 fn drawInput(area: Rect) void {
     const t = theme.current();

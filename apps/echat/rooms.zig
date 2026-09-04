@@ -167,12 +167,26 @@ pub const Model = struct {
     /// model is asked often enough that it holds a copy per network.
     mappings: [NETWORK_MAX]support.Casemapping = @splat(.rfc1459),
 
-    /// Add a network and its server tab. Returns the network's index.
+    /// The network reached by this name, or null for one nobody has opened.
+    /// Names are matched without regard to case, as hostnames are.
+    pub fn findNetwork(self: *const Model, label: []const u8) ?u8 {
+        for (self.networks.slice(), 0..) |*network, index| {
+            if (lib.str.eqlFold(network.label.slice(), label)) return @intCast(index);
+        }
+        return null;
+    }
+
+    /// Add a network and its server tab, or return the one already there.
+    ///
+    /// Idempotent like `addRoom`: a network reached again after it dropped is
+    /// the same network, and adding a second row for it would leave what was
+    /// said on the first one stranded beside it.
     pub fn addNetwork(self: *Model, label: []const u8) ?u8 {
+        if (self.findNetwork(label)) |found| return found;
         if (self.networks.isFull() or self.rooms.isFull()) return null;
         const which: u8 = @intCast(self.networks.len);
         var network: Network = .{ .tab = @intCast(self.rooms.len) };
-        fill(&network.label, label);
+        _ = network.label.set(label);
         self.networks.append(network) catch return null;
         _ = self.addRoom(which, .server, label) orelse return null;
         return which;
@@ -184,7 +198,7 @@ pub const Model = struct {
         if (self.rooms.isFull()) return null;
         const which: u8 = @intCast(self.rooms.len);
         var room: Room = .{ .sort = sort, .network = network };
-        fill(&room.name, name);
+        _ = room.name.set(name);
         self.rooms.append(room) catch return null;
         return which;
     }
@@ -282,12 +296,12 @@ pub const Model = struct {
         if (nick.len == 0 or room >= self.rooms.len) return;
         const mapping = self.mappingOf(self.rooms.items[room].network);
         if (self.member(room, mapping, nick)) |found| {
-            fill(&found.marks, marks);
+            _ = found.marks.set(marks);
             return;
         }
         var joined: Member = .{ .room = room };
-        fill(&joined.nick, nick);
-        fill(&joined.marks, marks);
+        _ = joined.nick.set(nick);
+        _ = joined.marks.set(marks);
         self.members.append(joined) catch {};
     }
 
@@ -375,11 +389,6 @@ pub const Model = struct {
     }
 };
 
-fn fill(field: anytype, text: []const u8) void {
-    field.clear();
-    for (text) |ch| field.append(ch) catch break;
-}
-
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
@@ -388,6 +397,24 @@ fn fresh() !*Model {
     const model = try std.testing.allocator.create(Model);
     model.* = .{};
     return model;
+}
+
+test "a network reached again is the network it was" {
+    const model = try fresh();
+    defer std.testing.allocator.destroy(model);
+
+    const first = model.addNetwork("irc.example.org") orelse return error.NoRoom;
+    const room = model.addRoom(first, .channel, "#here") orelse return error.NoRoom;
+    model.say(room, .{ .kind = .said, .room = room }, "aoife", "before");
+
+    // The same name, in any case, is the same network: its tab, its rooms and
+    // what was said in them are still there.
+    try expect(model.addNetwork("IRC.Example.ORG").? == first);
+    try expect(model.networks.len == 1);
+    try expect(model.findRoom(first, "#here").? == room);
+
+    var shown: [8]usize = undefined;
+    try expect(model.transcript(room, &shown).len == 1);
 }
 
 test "a network brings its own tab, and rooms belong to networks" {

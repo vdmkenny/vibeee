@@ -66,17 +66,21 @@ pub const RULES: stack.Rules = .{
 pub fn growStack(space: *paging.AddressSpace, addr: usize) bool {
     const span = stack.growth(RULES, space.stack_bottom, addr) orelse return false;
 
-    var at = span.from;
-    while (at <= span.to) : (at += paging.PAGE_SIZE) {
+    // Downward from what is already there, recording each page as it goes.
+    // Everything from the bottom to the top is mapped after every step, so a
+    // frame that cannot be had leaves a stack that is smaller than was asked
+    // for rather than one whose bottom is a lie.
+    var at = span.to;
+    while (true) : (at -= paging.PAGE_SIZE) {
         const phys = pmm.allocFrame() catch return false;
         @memset(@as([*]u8, @ptrFromInt(paging.physToVirt(phys)))[0..paging.PAGE_SIZE], 0);
         space.map(at, phys, .{ .writable = true }) catch {
             pmm.freeFrame(phys);
             return false;
         };
+        space.stack_bottom = at;
+        if (at == span.from) return true;
     }
-    space.stack_bottom = span.from;
-    return true;
 }
 
 /// Hand back the stack pages the program has climbed away from.
@@ -87,13 +91,16 @@ pub fn growStack(space: *paging.AddressSpace, addr: usize) bool {
 pub fn shrinkStack(space: *paging.AddressSpace, sp: usize) void {
     const span = stack.reclaim(RULES, space.stack_bottom, sp) orelse return;
 
+    // Upward from the bottom, moving it as each page goes: the same
+    // invariant, so a stack is never described as reaching further down than
+    // it does.
     var at = span.from;
     while (at <= span.to) : (at += paging.PAGE_SIZE) {
+        space.stack_bottom = at + paging.PAGE_SIZE;
         const phys = space.physicalOf(at) orelse continue;
         space.unmap(at);
         pmm.freeFrame(phys);
     }
-    space.stack_bottom = span.to + paging.PAGE_SIZE;
 }
 
 /// Give a freshly loaded process its stack, with arguments on it.

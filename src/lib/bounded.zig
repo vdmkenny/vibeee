@@ -42,6 +42,26 @@ pub fn Bounded(comptime T: type, comptime capacity: usize) type {
             self.len += 1;
         }
 
+        /// Replace what it holds with as much of `values` as fits, and say
+        /// whether all of them did.
+        ///
+        /// The shape every caller was writing out: clear, then a loop that
+        /// appends until it stops fitting. Written once because the loop was
+        /// the same every time and the answer to "did it all fit" was thrown
+        /// away in most of them.
+        pub fn set(self: *Self, values: []const T) bool {
+            self.len = 0;
+            return self.extend(values);
+        }
+
+        /// Add as many of `values` as fit, and say whether all of them did.
+        pub fn extend(self: *Self, values: []const T) bool {
+            const room = @min(values.len, capacity - self.len);
+            @memcpy(self.items[self.len..][0..room], values[0..room]);
+            self.len += room;
+            return room == values.len;
+        }
+
         pub fn at(self: *const Self, index: usize) ?T {
             return if (index < self.len) self.items[index] else null;
         }
@@ -73,6 +93,35 @@ pub fn Bounded(comptime T: type, comptime capacity: usize) type {
             self.items[index] = self.items[self.len];
         }
     };
+}
+
+const testing = std.testing;
+
+test "setting replaces what is there, and says when it did not all fit" {
+    var list = Bounded(u8, 4){};
+    try testing.expect(list.set("abc"));
+    try testing.expectEqualSlices(u8, "abc", list.slice());
+
+    // Shorter replaces rather than overwrites the front.
+    try testing.expect(list.set("z"));
+    try testing.expectEqualSlices(u8, "z", list.slice());
+
+    // Too long keeps what fits and says so, rather than dropping it all or
+    // pretending it went in.
+    try testing.expect(!list.set("abcdefg"));
+    try testing.expectEqualSlices(u8, "abcd", list.slice());
+
+    try testing.expect(list.set(""));
+    try testing.expect(list.isEmpty());
+}
+
+test "extending adds to what is there" {
+    var list = Bounded(u8, 4){};
+    try testing.expect(list.extend("ab"));
+    try testing.expect(list.extend("cd"));
+    try testing.expectEqualSlices(u8, "abcd", list.slice());
+    try testing.expect(!list.extend("e"));
+    try testing.expectEqualSlices(u8, "abcd", list.slice());
 }
 
 test "append fills to the bound and then refuses" {

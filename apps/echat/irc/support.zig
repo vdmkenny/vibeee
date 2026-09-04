@@ -169,8 +169,7 @@ pub const ChanModes = struct {
         var out: ChanModes = .{};
         var groups = std.mem.splitScalar(u8, value, ',');
         inline for (.{ "list", "setting", "limit", "flag" }) |name| {
-            const group = groups.next() orelse "";
-            for (group) |ch| @field(out, name).append(ch) catch break;
+            _ = @field(out, name).set(groups.next() orelse "");
         }
         return out;
     }
@@ -257,6 +256,13 @@ pub const Support = struct {
         for (tokens[1 .. tokens.len - 1]) |token| self.readToken(token);
     }
 
+    /// A token's value into a fixed field, as much of it as fits: a network
+    /// that names more channel prefixes than this holds is not one this
+    /// machine can speak to anyway.
+    fn setTo(field: anytype, value: []const u8) void {
+        _ = field.set(value);
+    }
+
     fn readToken(self: *Support, token: []const u8) void {
         // A leading minus withdraws a token, restoring the default.
         if (token.len != 0 and token[0] == '-') {
@@ -267,9 +273,9 @@ pub const Support = struct {
         const name = if (equals) |i| token[0..i] else token;
         const value = if (equals) |i| token[i + 1 ..] else "";
 
-        if (lib.str.eqlFold(name, "NETWORK")) return set(&self.network, value);
-        if (lib.str.eqlFold(name, "CHANTYPES")) return set(&self.chantypes, value);
-        if (lib.str.eqlFold(name, "STATUSMSG")) return set(&self.statusmsg, value);
+        if (lib.str.eqlFold(name, "NETWORK")) return setTo(&self.network, value);
+        if (lib.str.eqlFold(name, "CHANTYPES")) return setTo(&self.chantypes, value);
+        if (lib.str.eqlFold(name, "STATUSMSG")) return setTo(&self.statusmsg, value);
         if (lib.str.eqlFold(name, "PREFIX")) {
             self.prefixes = Prefixes.from(value);
             return;
@@ -306,11 +312,6 @@ pub const Support = struct {
                 return;
             }
         }
-    }
-
-    fn set(field: anytype, value: []const u8) void {
-        field.clear();
-        for (value) |ch| field.append(ch) catch break;
     }
 
     /// Whether a target is a channel rather than a user.

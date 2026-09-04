@@ -228,8 +228,7 @@ pub const Session = struct {
 
     /// Set the nick to request. Call before `begin`.
     pub fn wants(self: *Session, nick: []const u8) void {
-        self.nick.clear();
-        for (nick) |ch| self.nick.append(ch) catch break;
+        _ = self.nick.set(nick);
     }
 
     /// Queue everything a client sends before the server says anything.
@@ -471,8 +470,7 @@ pub const Session = struct {
     // -- proving an account
 
     fn remember(self: *Session, list: []const u8) void {
-        self.mechanisms.clear();
-        for (list) |ch| self.mechanisms.append(ch) catch break;
+        _ = self.mechanisms.set(list);
     }
 
     /// Whether the server accepts this mechanism. A server that named none
@@ -578,7 +576,7 @@ pub const Session = struct {
 
     fn rename(self: *Session, name: []const u8) void {
         self.nick.clear();
-        for (name) |ch| self.nick.append(ch) catch break;
+        _ = self.nick.set(name);
     }
 
     // -- saying things

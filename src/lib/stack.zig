@@ -31,7 +31,7 @@ pub const Rules = struct {
     slack: usize = 32,
 
     pub fn pageOf(self: Rules, addr: usize) usize {
-        return addr & ~(self.page - 1);
+        return std.mem.alignBackward(usize, addr, self.page);
     }
 
     /// Whether an address belongs to the stack's reservation.
@@ -54,6 +54,10 @@ pub const Span = struct {
 /// Null when the address is not the stack's to grow into, or when the page is
 /// already mapped, which makes the fault about something else.
 pub fn growth(rules: Rules, bottom: usize, addr: usize) ?Span {
+    // A bottom outside the reservation is a space with no stack of this
+    // shape: a kernel thread, or one whose stack was never set up. Nothing
+    // here is its to grow.
+    if (!rules.holds(bottom)) return null;
     if (!rules.holds(addr)) return null;
 
     const page = rules.pageOf(addr);
@@ -70,6 +74,7 @@ pub fn growth(rules: Rules, bottom: usize, addr: usize) ?Span {
 /// is mapped. Null when there is not enough spare to be worth it, which is
 /// most of the time.
 pub fn reclaim(rules: Rules, bottom: usize, sp: usize) ?Span {
+    if (!rules.holds(bottom)) return null;
     if (!rules.holds(sp)) return null;
     if (sp <= bottom) return null;
 
@@ -145,6 +150,16 @@ test "a stack that climbed away gives back what it left below" {
     try testing.expectEqual(sp - shape.keep * PAGE - PAGE, span.to);
     try testing.expect(span.to < sp);
     try testing.expect(span.pages(PAGE) >= shape.slack);
+}
+
+test "a space with no stack of this shape is left alone" {
+    // Zero is what an address space that never had one carries, and a kernel
+    // thread reaching either of these must not be handed pages, nor have the
+    // whole of its space counted as stack to give back.
+    try testing.expect(growth(shape, 0, TOP - PAGE) == null);
+    try testing.expect(reclaim(shape, 0, TOP - PAGE) == null);
+    try testing.expect(growth(shape, shape.limit - PAGE, TOP - PAGE) == null);
+    try testing.expect(reclaim(shape, shape.limit - PAGE, TOP - PAGE) == null);
 }
 
 test "a stack pointer outside the reservation says nothing about it" {
