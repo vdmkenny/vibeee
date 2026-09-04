@@ -73,12 +73,30 @@ qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
     -display none -vga none -device VGA,edid=on,xres=800,yres=600 -serial "file:$LOG" \
     -monitor "unix:$SOCK,server,nowait" "$@" &
 QPID=$!
-# Waited for as well as killed: the next run opens the same disk image, and
-# QEMU holds its write lock until it has actually gone.
-trap 'kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true; rm -f "$SOCK"' EXIT
+# Waited for as well as killed, and waited for by asking whether it is still
+# there rather than by `wait`: the next boot opens the same disk image, and
+# QEMU holds that image's write lock until it has actually gone. A boot that
+# starts while the last one still holds the lock does not start at all.
+gone() {
+    kill "$QPID" 2>/dev/null || true
+    i=0
+    while kill -0 "$QPID" 2>/dev/null && [ $i -lt 100 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    rm -f "$SOCK"
+}
+trap gone EXIT
 
-# Wait for the monitor socket rather than sleeping a guessed interval.
+# Wait for the monitor socket rather than sleeping a guessed interval. Its
+# never appearing means the emulator never came up, which is worth saying
+# now and by name: waited out instead, it surfaces half a minute later as a
+# missing screenshot, which is the one thing it is not about.
 i=0; while [ ! -S "$SOCK" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+if [ ! -S "$SOCK" ]; then
+    echo "the emulator did not start: it may still be holding a disk image open" >&2
+    exit 1
+fi
 
 # And for the machine, on the same principle. A key sent before the shell
 # reads it is dropped by the keyboard controller, and the command it belonged

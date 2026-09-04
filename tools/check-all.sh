@@ -16,6 +16,12 @@ cd "$(dirname "$0")/.."
 : "${BUILD:?}" "${ROOTFS_IMG:?}" "${DEV_IMAGE:?}" "${IMAGE:?}" "${CFG_OFFSET:?}" "${HOME_OFFSET:?}"
 : "${QEMU_CPU:=pentium3,+sse2,+pae,+nx,-sse3}"
 
+# Nothing from a previous run survives into this one. A boot that fails to
+# produce a transcript leaves the last run's sitting there, and a stale
+# transcript read as this run's evidence is worse than no evidence: it says
+# the thing worked.
+rm -f "$BUILD"/check-boot*.png "$BUILD"/check-boot*.log "$BUILD"/check-boot*.log.txt
+
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 # The transcript carries the console's colours, cursor moves and carriage
