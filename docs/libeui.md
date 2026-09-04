@@ -71,6 +71,7 @@ with it this pass.
 | `slider` | `fn (*widget.Context, draw.Rect, slider.Range, i32, Context.SliderStyle) i32` |
 | `toggle` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
 | `segment` | `fn (*widget.Context, draw.Rect, []const u8, bool, widget.Seat) bool` |
+| `onOff` | `fn (*widget.Context, draw.Rect, bool) bool` |
 | `checkbox` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
 | `scrollbar` | `fn (*widget.Context, draw.Rect, *scroll.State, usize, usize, usize) usize` |
 | `table` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
@@ -131,6 +132,48 @@ that means it has to be painted again.
 | `interact` | `fn (*widget.Context, *widget.Entry, draw.Rect) Context.Interaction` |
 | `activatedByKey` | `fn (*widget.Context, *const widget.Entry) bool` |
 | `needsPaint` | `fn (*const widget.Context, *const widget.Entry, widget.Visual) bool` |
+
+### What a control paints with
+
+Every control is handed a `draw.Surface` and a rectangle, and these
+are all it may do to the one inside the other. Listed from the
+surface itself, so a primitive added to the toolkit is a primitive
+this guide offers rather than one an author has to find by reading
+another control.
+
+| call | signature |
+|---|---|
+| `init` | `fn ([*]u32, i32, i32, i32) draw.Surface` |
+| `clipped` | `fn (draw.Surface, draw.Rect) draw.Surface` |
+| `set` | `fn (draw.Surface, i32, i32, u32) void` |
+| `get` | `fn (draw.Surface, i32, i32) u32` |
+| `fillRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, u32) void` |
+| `frameRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, u32) void` |
+| `fillAround` | `fn (draw.Surface, draw.Rect, draw.Rect, u32) void` |
+| `fill` | `fn (draw.Surface, draw.Rect, u32) void` |
+| `copyFrom` | `fn (draw.Surface, draw.Surface, i32, i32, draw.Rect) void` |
+| `frame` | `fn (draw.Surface, draw.Rect, u32) void` |
+| `borderInset` | `fn (draw.Surface, draw.Rect, i32, u32) void` |
+| `glyph` | `fn (draw.Surface, i32, i32, u21, u32) void` |
+| `glyphIn` | `fn (draw.Surface, *const font.Font, i32, i32, u21, u32) void` |
+| `picture` | `fn (draw.Surface, i32, i32, *const [24]u8, u32) void` |
+| `icon` | `fn (draw.Surface, i32, i32, icon.Icon, u32) void` |
+| `iconLarge` | `fn (draw.Surface, i32, i32, icon.Icon, u32, i32) void` |
+| `iconLargeSize` | `fn (i32) i32` |
+| `iconTopFor` | `fn (i32) i32` |
+| `iconSize` | `fn () i32` |
+| `bitmap` | `fn (draw.Surface, i32, i32, []const u8, usize, usize, usize, u32) void` |
+| `bitmapAt` | `fn (draw.Surface, i32, i32, []const u8, usize, usize, usize, u32, i32) void` |
+| `text` | `fn (draw.Surface, i32, i32, []const u8, u32) void` |
+| `textIn` | `fn (draw.Surface, *const font.Font, i32, i32, []const u8, u32) void` |
+| `title` | `fn (draw.Surface, i32, i32, []const u8, u32) void` |
+| `titleWidth` | `fn ([]const u8) i32` |
+| `titleHeight` | `fn () i32` |
+| `besideTitle` | `fn (i32) i32` |
+| `textFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, u32) void` |
+| `textWidth` | `fn ([]const u8) i32` |
+| `textHeight` | `fn () i32` |
+| `textCentred` | `fn (draw.Surface, draw.Rect, []const u8, u32) void` |
 
 ## Parts
 
@@ -209,6 +252,7 @@ A scrolling table of rows.
 |---|---|
 | `rowHeight` | `fn () i32` |
 | `run` | `fn (*widget.Context, draw.Rect, *table.State, []const table.Column, []const table.Row) ?usize` |
+| `rowRect` | `fn (draw.Rect, *const table.State, usize, usize) ?draw.Rect` |
 
 ### `eui.text`
 
@@ -496,6 +540,48 @@ wifi
         ####  ####  ####  
   ####  ####  ####  ####  
   ####  ####  ####  ####  
+                          
+
+wifi_good
+                          
+                          
+                          
+                          
+              ####  ####  
+              ####  ####  
+              ####  ####  
+        ####  ####  ####  
+        ####  ####  ####  
+  ####  ####  ####  ####  
+  ####  ####  ####  ####  
+                          
+
+wifi_fair
+                          
+                          
+                          
+                          
+                          
+                          
+                          
+        ####  ####        
+        ####  ####        
+  ####  ####  ####        
+  ####  ####  ####        
+                          
+
+wifi_weak
+                          
+                          
+                          
+                          
+                          
+                          
+                          
+                          
+                          
+  ####                    
+  ####                    
                           
 
 ethernet

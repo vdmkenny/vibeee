@@ -138,6 +138,26 @@ fn controls(gpa: std.mem.Allocator, w: *std.ArrayList(u8), grouping: *const Grou
         \\
         \\
     );
+
+    try w.appendSlice(gpa,
+        \\### What a control paints with
+        \\
+        \\Every control is handed a `draw.Surface` and a rectangle, and these
+        \\are all it may do to the one inside the other. Listed from the
+        \\surface itself, so a primitive added to the toolkit is a primitive
+        \\this guide offers rather than one an author has to find by reading
+        \\another control.
+        \\
+        \\
+    );
+    try w.appendSlice(gpa, "| call | signature |\n|---|---|\n");
+    inline for (@typeInfo(eui.draw.Surface).@"struct".decls) |decl| {
+        const field = @field(eui.draw.Surface, decl.name);
+        if (@typeInfo(@TypeOf(field)) == .@"fn") {
+            try w.print(gpa, "| `{s}` | `{s}` |\n", .{ decl.name, comptime signature(@TypeOf(field)) });
+        }
+    }
+    try w.appendSlice(gpa, "\n");
 }
 
 const Group = enum { frame, authoring, control };
