@@ -71,7 +71,7 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
         .text = typed,
         .tick = tick,
         .tick_us = tickPeriod(),
-        .wake = network.wakeEvent(),
+        .wakes = network.wakeEvents(),
         .woken = woken,
     });
 }
@@ -121,7 +121,8 @@ fn typed(codepoint: u32) bool {
 
 /// The network service said something changed: an address, a link, a
 /// network heard. The pane reads again; other panes have nothing to hear.
-fn woken() bool {
+fn woken(index: usize) bool {
+    _ = index;
     if (section != .network) return false;
     return network.changed();
 }

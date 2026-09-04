@@ -61,11 +61,15 @@ pub const Hooks = struct {
     /// leaves this alone and sleeps until something happens.
     tick_us: usize = 1_000_000,
 
-    /// An event the wait also sleeps on: a service saying something changed,
-    /// so the program is told rather than asking on a timer. `woken` runs
-    /// when it fires; true draws a fresh pass.
-    wake: ?u32 = null,
-    woken: ?*const fn () bool = null,
+    /// Events the wait also sleeps on besides the manager's own: a service
+    /// saying something changed, a socket with bytes waiting. The program is
+    /// told rather than asking on a timer. `woken` runs when one fires, with
+    /// which of them it was; true draws a fresh pass.
+    ///
+    /// The program owns the slice. One whose set changes while it runs, a
+    /// program that opens connections, calls `wakeOn`.
+    wakes: []const u32 = &.{},
+    woken: ?*const fn (index: usize) bool = null,
 
     /// Opens above the tiling rather than in it. For a program that is a
     /// tool rather than a place to work: a calculator wants to sit over
@@ -87,6 +91,12 @@ var next_tick_us: u64 = 0;
 pub fn retick(period_us: usize) void {
     hooks.tick_us = period_us;
     next_tick_us = sys.clockMicros() +| period_us;
+}
+
+/// Change what the wait sleeps on, for a program whose connections come and
+/// go. The slice stays the program's, so it must outlive the change.
+pub fn wakeOn(handles: []const u32) void {
+    hooks.wakes = handles;
 }
 var buttons: eui.widget.Buttons = .{};
 var pointer_x: i32 = 0;
@@ -146,12 +156,12 @@ pub fn run(
             break :timeout @intCast(@min(next_tick_us - now, @as(u64, sys.FOREVER) - 1));
         };
 
-        const event = switch (connection.nextOrWake(hooks.wake, timeout)) {
+        const event = switch (connection.nextOrWake(hooks.wakes, timeout)) {
             .event => |event| event,
-            // The service the program listens to said something changed.
-            .woke => {
+            // Something the program listens to said it had news.
+            .woke => |index| {
                 if (hooks.woken) |woken| {
-                    if (woken()) redraw();
+                    if (woken(index)) redraw();
                 }
                 continue;
             },

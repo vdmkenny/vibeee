@@ -98,9 +98,17 @@ pub fn load() void {
 }
 
 /// The event the frame sleeps on, when the service gave one.
-pub fn wakeEvent() ?u32 {
-    return wake;
+/// The service's event, as the one-element set the wait takes. Empty before
+/// the service has been reached.
+pub fn wakeEvents() []const u32 {
+    if (wake) |handle| {
+        one = handle;
+        return (&one)[0..1];
+    }
+    return &.{};
 }
+
+var one: u32 = 0;
 
 /// The service said something changed: read it all again. Always a fresh
 /// pass, since a signal that moved is a row that changed.

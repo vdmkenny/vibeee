@@ -14,6 +14,7 @@ const lib = @import("lib");
 const sys = @import("sys");
 const wm = @import("wm.zig");
 
+const limits = lib.limits;
 const ring = lib.ring;
 
 pub const Error = error{
@@ -284,7 +285,7 @@ pub const Connection = struct {
 
     /// Block until an event arrives, then take it.
     pub fn next(self: *Connection, timeout_us: usize) ?wm.Ev {
-        return switch (self.nextOrWake(null, timeout_us)) {
+        return switch (self.nextOrWake(&.{}, timeout_us)) {
             .event => |event| event,
             .woke, .timed_out => null,
         };
@@ -294,21 +295,30 @@ pub const Connection = struct {
     /// handle firing, or neither.
     pub const Next = union(enum) {
         event: wm.Ev,
-        woke,
+        /// One of the handles fired, and which one.
+        woke: usize,
         timed_out,
     };
+
+    /// How many handles besides the manager's own the wait takes. The
+    /// kernel's limit less the one this connection always waits on.
+    pub const WAKE_MAX = limits.MAX_WAIT_HANDLES - 1;
 
     /// The next event, or the other handle's firing, whichever comes first.
     /// A program that is told things by a service waits on the service's
     /// event here rather than asking it on a timer.
-    pub fn nextOrWake(self: *Connection, wake: ?u32, timeout_us: usize) Next {
+    pub fn nextOrWake(self: *Connection, wakes: []const u32, timeout_us: usize) Next {
         if (self.poll()) |event| return .{ .event = event };
-        if (wake) |other| {
-            const fired = sys.waitMany(&.{ self.event_signal, other }, timeout_us);
-            if (fired < 0) return .timed_out;
-            if (fired == 1) return .woke;
-        } else {
+        if (wakes.len == 0) {
             if (sys.eventWait(self.event_signal, timeout_us) < 0) return .timed_out;
+        } else {
+            var handles: [WAKE_MAX + 1]u32 = undefined;
+            handles[0] = self.event_signal;
+            const count = @min(wakes.len, WAKE_MAX);
+            @memcpy(handles[1..][0..count], wakes[0..count]);
+            const fired = sys.waitMany(handles[0 .. count + 1], timeout_us);
+            if (fired < 0) return .timed_out;
+            if (fired > 0) return .{ .woke = @intCast(fired - 1) };
         }
         return if (self.poll()) |event| .{ .event = event } else .timed_out;
     }

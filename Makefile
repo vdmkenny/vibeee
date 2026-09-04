@@ -151,7 +151,7 @@ help:
 	@echo "  make vnc              boot over VNC instead of a local window"
 	@echo "  make apps             build the programs in apps/ into home/"
 	@echo "  make hero             build the Hero character journal into home/"
-	@echo "  make echat            check the IRC engine against the reference vectors"
+	@echo "  make echat            build the echat IRC client into home/"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make check            module layering and import rules"
@@ -202,7 +202,7 @@ examples: kernel
 
 # Things that are not part of the system, built separately and installed
 # into `home/`. See apps/README.md.
-apps: hero
+apps: hero echat
 	@$(MAKE) --no-print-directory -C apps
 
 # Hero, the character journal: a first-party program that is not part of the
@@ -217,10 +217,15 @@ hero:
 	@cp zig-out/bin/hero home/hero
 	@echo "  ready   home/hero, on the machine at the next image build"
 
-# The IRC engine, tested on the host against the reference vectors.
+# The IRC client. Its engine and model are host-tested first: a protocol is
+# bytes in and bytes out, and none of it needs a screen to be checked.
 .PHONY: echat
 echat:
 	@$(ZIG) build test-echat
+	@$(ZIG) build echat
+	@mkdir -p home
+	@cp zig-out/bin/echat home/echat
+	@echo "  ready   home/echat, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi

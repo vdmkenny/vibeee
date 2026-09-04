@@ -541,6 +541,24 @@ pub fn build(b: *std.Build) void {
             const hero_step = b.step("hero", "Build the Hero extra application into zig-out/bin");
             hero_step.dependOn(&b.addInstallArtifact(hero, .{}).step);
 
+            const echat = b.addExecutable(.{
+                .name = "echat",
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/echat/echat.zig"),
+                    .target = user_target,
+                    .optimize = optimize,
+                    .single_threaded = true,
+                    .strip = true,
+                    .stack_check = false,
+                    .stack_protector = false,
+                    .imports = &user_imports,
+                }),
+            });
+            echat.setLinkerScript(b.path("src/user/linker.ld"));
+            echat.entry = .{ .symbol_name = "_start" };
+            const echat_step = b.step("echat", "Build the echat IRC client into zig-out/bin");
+            echat_step.dependOn(&b.addInstallArtifact(echat, .{}).step);
+
             // The character-journal model, on the host: the whole of a
             // character is what its lines add up to, and none of it needs a
             // screen to be checked.
@@ -559,21 +577,30 @@ pub fn build(b: *std.Build) void {
             const hero_test_step = b.step("test-hero", "Test the Hero character-journal model on the host");
             hero_test_step.dependOn(&b.addRunArtifact(hero_test).step);
 
-            // The IRC engine, on the host: the protocol is bytes in and bytes
-            // out, tested against the shared parser vectors.
+            // echat's host side: the protocol engine, tested against the
+            // shared parser vectors, and the state the window draws.
+            const echat_lib = b.createModule(.{
+                .root_source_file = b.path("src/lib/lib.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            });
             const echat_test = b.addTest(.{
                 .root_module = b.createModule(.{
-                    .root_source_file = b.path("apps/echat/irc.zig"),
+                    .root_source_file = b.path("apps/echat/tests.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
-                    .imports = &.{.{ .name = "lib", .module = b.createModule(.{
-                        .root_source_file = b.path("src/lib/lib.zig"),
-                        .target = b.graph.host,
-                        .optimize = .Debug,
-                    }) }},
+                    .imports = &.{
+                        .{ .name = "lib", .module = echat_lib },
+                        .{ .name = "eui", .module = b.createModule(.{
+                            .root_source_file = b.path("src/user/eui/eui.zig"),
+                            .target = b.graph.host,
+                            .optimize = .Debug,
+                            .imports = &.{.{ .name = "lib", .module = echat_lib }},
+                        }) },
+                    },
                 }),
             });
-            const echat_test_step = b.step("test-echat", "Test the IRC protocol engine on the host");
+            const echat_test_step = b.step("test-echat", "Test echat's engine and model on the host");
             echat_test_step.dependOn(&b.addRunArtifact(echat_test).step);
         }
     } // !is_arm
