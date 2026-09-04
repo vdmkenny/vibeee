@@ -762,19 +762,24 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
         return if (dev.send(iface, &frame)) .ok else .refused;
     }
 
-    reply.body = .{ .iface = .{
-        .up = @intFromBool(iface.state.up),
-        .duplex = iface.state.duplex,
-        .mbps = iface.state.mbps,
-        .mac = iface.mac,
-        .rx_pkts = @truncate(iface.stats.rx_pkts),
-        .rx_bytes = @truncate(iface.stats.rx_bytes),
-        .tx_pkts = @truncate(iface.stats.tx_pkts),
-        .tx_bytes = @truncate(iface.stats.tx_bytes),
-        .arp_replies = @truncate(iface.stats.rx_arp),
-        .kind = if (iface.class == .wifi) .radio else .wire,
-        .channel = iface.radio_channel,
-    } };
+    reply.body = .{
+        .iface = .{
+            .up = @intFromBool(iface.state.up),
+            .duplex = iface.state.duplex,
+            .mbps = iface.state.mbps,
+            .mac = iface.mac,
+            .rx_pkts = @truncate(iface.stats.rx_pkts),
+            .rx_bytes = @truncate(iface.stats.rx_bytes),
+            .tx_pkts = @truncate(iface.stats.tx_pkts),
+            .tx_bytes = @truncate(iface.stats.tx_bytes),
+            .arp_replies = @truncate(iface.stats.rx_arp),
+            .kind = if (iface.class == .wifi) .radio else .wire,
+            .channel = iface.radio_channel,
+            // Only a radio joins anything, so a wire reports nothing about it.
+            .joining = if (iface.class == .wifi) station.joining() else .idle,
+            .stopped = if (iface.class == .wifi) station.stopped() else .none,
+        },
+    };
     const label = iface.label.slice();
     @memcpy(reply.body.iface.driver[0..label.len], label);
     reply.body.iface.location = @bitCast(iface.location);

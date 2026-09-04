@@ -21,6 +21,7 @@ const sys = @import("sys");
 
 const join_mod = lib.join;
 const mlme = lib.mlme;
+const proto_net = @import("proto").net;
 const wifi = lib.wifi;
 
 /// Room for the longest frame the join writes: an association request
@@ -40,6 +41,10 @@ const MAX_NETWORKS = 32;
 /// network beaconing at the usual hundred milliseconds is heard.
 const DWELL_MICROS: u64 = 200_000;
 
+/// How far a network's signal may wander before it is worth reordering the
+/// list for, in decibels. Below this the account is the same account.
+const SIGNAL_SLACK: u16 = 3;
+
 /// How long to leave a network alone after failing to join it. Long
 /// enough not to hammer an access point that refused, short enough that
 /// one which was merely out of earshot is picked up again without anybody
@@ -50,6 +55,10 @@ const State = struct {
     radio: ?*dev_mod.NicDev = null,
     plan: wifi.Regulatory = .conservative,
     networks: lib.Bounded(mlme.Bss, MAX_NETWORKS) = .{},
+    /// Whether the account is in the order it is offered in. Cleared when
+    /// a network is heard, and put right on the next read rather than on
+    /// every beacon: a sort per frame is work nobody asked for.
+    ordered: bool = false,
     /// Which of the band's channels the radio is on.
     channel_index: usize = 0,
     /// The network configuration last named, so being unable to join it is
@@ -103,6 +112,10 @@ const State = struct {
         /// looks at, however right it is.
         state_then: join_mod.State,
     } = null,
+    /// Why the last attempt stopped, in the words a screen needs. Kept past
+    /// the attempt, because what somebody wants to know is why the thing
+    /// they asked for did not happen.
+    stopped: proto_net.Stopped = .none,
     /// Which step of the exchange it was on when it gave up.
     failed_in: join_mod.State = .idle,
     /// What a heard frame asked for, carried out from the loop rather
@@ -140,13 +153,51 @@ pub fn init() void {
     dev_mod.radio_config = configure;
 }
 
+/// How far the radio has got with the network it was told to join, and why
+/// it stopped where it did. Read by anything that lists interfaces, so the
+/// pane, the menu bar and `net` all say the same thing.
+pub fn joining() proto_net.Joining {
+    const attempt = state.join orelse {
+        return if (state.wanted != null) .stopped else .idle;
+    };
+    return switch (attempt.state) {
+        .idle, .seeking => .looking,
+        .tuning, .authenticating, .associating, .handshaking => .connecting,
+        .joined => .connected,
+        .failed => .stopped,
+    };
+}
+
+pub fn stopped() proto_net.Stopped {
+    return state.stopped;
+}
+
 /// The networks the scan has heard, newest last.
 pub fn networks() []const mlme.Bss {
+    order();
     return state.networks.slice();
 }
 
+/// Put the account in the order it is offered in: strongest first.
+///
+/// Done here, once, because the Settings pane, the bar's menu and
+/// `net wifi scan` all read this list, and a list that is ordered by
+/// whoever shows it is three orders that drift apart.
+fn order() void {
+    if (state.ordered) return;
+    // Stable and small: a dozen networks, and two of equal strength keep
+    // the order they were heard in.
+    std.sort.insertion(mlme.Bss, state.networks.mutable(), {}, mlme.Bss.strongerFirst);
+    state.ordered = true;
+}
+
 /// One of them, by index, or null past the last.
+///
+/// A caller walks this from zero, so the order is settled at the start of a
+/// walk and left alone through it. Reordering underneath one would show a
+/// network twice and skip another.
 pub fn network(index: usize) ?mlme.Bss {
+    if (index == 0) order();
     return state.networks.at(index);
 }
 
@@ -369,6 +420,7 @@ fn nonce(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) lib.wpa2.Nonce {
 fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) void {
     state.wanted = role;
     state.heard_joining = 0;
+    state.stopped = .none;
     state.heard_for_us = 0;
     state.heard_auth = 0;
     state.sent_joining = 0;
@@ -420,7 +472,18 @@ fn act(what: join_mod.Action) void {
         },
         .joined => |won| settle(it.nic, it.ops, won),
         .failed => |why| {
-            if (state.join) |attempt| state.failed_in = attempt.failed_in;
+            if (state.join) |attempt| {
+                state.failed_in = attempt.failed_in;
+                state.stopped = switch (why) {
+                    .unsupported => .unsupported,
+                    .no_key => .needs_password,
+                    .refused => .refused,
+                    .bad_key => .wrong_password,
+                    // Nothing answered. Which step it was on says whether
+                    // the network was ever there to answer.
+                    .timed_out => if (attempt.failed_in == .seeking) .not_found else .no_answer,
+                };
+            }
             log.begin(it.nic.name, .warn);
             out.text("could not join \"");
             out.text(state.asked.slice());
@@ -579,10 +642,16 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
 
     for (state.networks.mutable()) |*known| {
         if (lib.mac.eql(known.bssid, seen.bssid)) {
+            // A signal wanders by a decibel or two while nothing moves, and
+            // a list that reorders on that is a list whose rows swap under
+            // the pointer. Only a change worth seeing disturbs the order.
+            const moved = @abs(@as(i16, known.signal.dbm) - @as(i16, seen.signal.dbm));
+            if (moved > SIGNAL_SLACK) state.ordered = false;
             known.* = seen;
             return;
         }
     }
+    state.ordered = false;
     state.networks.append(seen) catch {
         if (!state.full_said) {
             log.note(nic.name, "more networks than the list holds; the rest are not kept");

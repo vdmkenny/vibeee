@@ -139,12 +139,93 @@ pub const Iface = extern struct {
     kind: Kind = .wire,
     /// The channel a radio is tuned to; zero for a wire.
     channel: u8 = 0,
+    /// How a radio is getting on with the network it was told to join, and
+    /// why it stopped where it did. Carried on the interface rather than
+    /// asked for separately, so everything that lists interfaces can say
+    /// what is happening without a second call.
+    joining: Joining = .idle,
+    stopped: Stopped = .none,
+    _pad: [2]u8 = @splat(0),
 };
 
 /// What an interface is, as the record carries it.
 pub const Kind = enum(u8) {
     wire = 0,
     radio = 1,
+};
+
+/// How far a radio has got with the network it was told to join.
+pub const Joining = enum(u8) {
+    /// Told to join nothing.
+    idle = 0,
+    /// Listening for the network it was told to join.
+    looking = 1,
+    /// Talking to it.
+    connecting = 2,
+    /// On it.
+    connected = 3,
+    /// It gave up. `Stopped` says why.
+    stopped = 4,
+
+    /// What to put on a screen on its own, for a caller that has no name
+    /// to hand. Held here so the settings pane, the menu bar and `net`
+    /// cannot describe the same state three different ways.
+    pub fn spell(self: Joining) []const u8 {
+        return switch (self) {
+            .idle => "Not connected",
+            .looking => "Looking for the network",
+            .connecting => "Connecting",
+            .connected => "Connected",
+            .stopped => "Could not connect",
+        };
+    }
+
+    /// The same, ready for the network's name to follow it.
+    pub fn spellNaming(self: Joining) []const u8 {
+        return switch (self) {
+            .idle => "Not connected",
+            .looking => "Looking for ",
+            .connecting => "Connecting to ",
+            .connected => "Connected to ",
+            .stopped => "Could not connect to ",
+        };
+    }
+
+    /// Whether a name follows what `spellNaming` says.
+    pub fn named(self: Joining) bool {
+        return self != .idle;
+    }
+};
+
+/// Why a radio stopped trying, in the words somebody reading a screen needs
+/// rather than the ones the exchange uses.
+pub const Stopped = enum(u8) {
+    none = 0,
+    /// The network was not found.
+    not_found = 1,
+    /// The network refused this station.
+    refused = 2,
+    /// The password was not accepted.
+    wrong_password = 3,
+    /// It stopped answering partway through.
+    no_answer = 4,
+    /// This system cannot join a network protected that way.
+    unsupported = 5,
+    /// A password is needed and none was given.
+    needs_password = 6,
+
+    /// What to put on a screen.
+    pub fn spell(self: Stopped) []const u8 {
+        return switch (self) {
+            .none => "",
+            .not_found => "Network not found",
+            .refused => "The network refused this computer",
+            .wrong_password => "Wrong password",
+            .no_answer => "The network stopped responding",
+            .unsupported => "This system cannot join that kind of network",
+            .needs_password => "That network needs a password",
+        };
+    }
 };
 
 /// One network a radio has heard, for `wifi_scan`: the station's account of
@@ -266,7 +347,7 @@ comptime {
     }
     if (@sizeOf(Req) != 16) @compileError("a network request is sixteen bytes");
     if (@sizeOf(ResolveReq) != 64) @compileError("a resolve request fills one payload");
-    if (@sizeOf(Iface) != 56) @compileError("an interface record is 56 bytes");
+    if (@sizeOf(Iface) != 60) @compileError("an interface record is 60 bytes");
     if (@sizeOf(Network) != 48) @compileError("a network record is 48 bytes");
     if (@sizeOf(AddressInfo) != 16) @compileError("an address record is sixteen bytes");
     if (@sizeOf(SockGrant) != 12) @compileError("a socket grant is twelve bytes");

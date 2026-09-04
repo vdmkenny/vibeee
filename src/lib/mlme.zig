@@ -315,6 +315,16 @@ pub const Bss = struct {
 
     /// Read a beacon or probe response. The signal is the radio's, passed
     /// in because the frame does not carry it.
+    /// Which of two networks to offer first: the stronger one.
+    ///
+    /// Equal signals keep the order they were heard in, which a stable sort
+    /// preserves, so a list does not shuffle while two cells trade a
+    /// decibel. Held here rather than at each of the three places that show
+    /// a list, so all three offer the same network first.
+    pub fn strongerFirst(_: void, a: Bss, b: Bss) bool {
+        return a.signal.dbm > b.signal.dbm;
+    }
+
     pub fn fromBeacon(frame: []const u8, signal: wifi.Signal) ?Bss {
         const head = Header.parse(frame) orelse return null;
         if (head.control.kind != .management) return null;
@@ -486,6 +496,38 @@ fn beaconFrame(into: []u8, capability: Capability, elements: []const u8) usize {
     std.mem.writeInt(u16, into[wrote + 10 ..][0..2], @bitCast(capability), .little);
     @memcpy(into[wrote + 12 ..][0..elements.len], elements);
     return wrote + 12 + elements.len;
+}
+
+test "networks are offered strongest first, and equal ones keep the order they were heard in" {
+    const of = struct {
+        fn make(name: []const u8, dbm: i8) Bss {
+            return .{
+                .bssid = @splat(0),
+                .ssid = wifi.Ssid.of(name).?,
+                .security = .open,
+                .capability = .{},
+                .signal = .{ .dbm = dbm },
+            };
+        }
+    };
+
+    var list = [_]Bss{
+        of.make("far", -84),
+        of.make("near", -42),
+        of.make("tied-first", -60),
+        of.make("middling", -58),
+        of.make("tied-second", -60),
+    };
+    std.sort.insertion(Bss, &list, {}, Bss.strongerFirst);
+
+    try testing.expectEqualStrings("near", list[0].ssid.slice());
+    try testing.expectEqualStrings("middling", list[1].ssid.slice());
+    try testing.expectEqualStrings("far", list[4].ssid.slice());
+
+    // The two at sixty keep the order they arrived in, so a list does not
+    // reorder itself under the pointer while nothing has really changed.
+    try testing.expectEqualStrings("tied-first", list[2].ssid.slice());
+    try testing.expectEqualStrings("tied-second", list[3].ssid.slice());
 }
 
 test "a scan reads a protected network's name, channel, cell and security" {
