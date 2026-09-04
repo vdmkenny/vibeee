@@ -178,6 +178,11 @@ while [ "$waited" -lt 100 ]; do
         sleep 0.1
         [ "$was" = "$(wc -c < "$PPM")" ] && break
     else
+        # The monitor command is sent over a socket and its delivery is
+        # not guaranteed: a screendump that was never heard never arrives,
+        # however long it is waited for. So it is asked for again while it
+        # is waited for, which costs nothing when the first was heard.
+        if [ $((waited % 10)) -eq 9 ]; then monitor "screendump $PPM"; fi
         sleep 0.1
     fi
     waited=$((waited + 1))
