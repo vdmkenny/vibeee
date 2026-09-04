@@ -185,11 +185,27 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     });
 }
 
-/// A network named on the command line, connected once the window is up.
+/// A network named on the command line, reached once the window is up.
 var opening: ?[]const u8 = null;
 
 /// Whether the networks that asked to be opened have been.
 var opened_written = false;
+
+/// Where to reach next, asked for by something that must not do it itself.
+///
+/// Reaching a network is a handshake: several round trips, a certificate
+/// chain, and a good deal of stack. None of that belongs inside a drawing
+/// pass, which is where every command is typed and where the toolkit is
+/// already many calls deep. So a command asks here and the periodic pass
+/// carries it out, brought forward so it happens at once rather than at the
+/// end of the next period.
+var asked_for: Bounded(u8, 160) = .{};
+
+fn reach(where: []const u8) void {
+    asked_for.clear();
+    for (where) |ch| asked_for.append(ch) catch break;
+    proto.app.retick(0);
+}
 
 /// Reach a network and say how it went, on the console rather than in a
 /// window. What a shell asks when a connection is the thing in question:
@@ -678,6 +694,17 @@ fn fold(link: *Link, line: *const irc.Line) void {
                 model.depart(where, who);
                 told(where, who, "was removed");
             },
+            // `away-notify` says when somebody steps away and when they come
+            // back: a name with no reason after it is a name that is back.
+            .away => {
+                const gone = line.text().len != 0;
+                for (model.rooms.slice(), 0..) |*room, index| {
+                    if (room.network != network) continue;
+                    const which: u8 = @intCast(index);
+                    const member = model.member(which, support.casemapping, from) orelse continue;
+                    member.away = gone;
+                }
+            },
             .@"error" => tell(tab, line.text()),
             else => {},
         },
@@ -769,19 +796,6 @@ fn draw() void {
     const area = Rect{ .x = 0, .y = 0, .w = ctx.surface.width, .h = ctx.surface.height };
     if (ctx.damaged) ctx.surface.fill(area, t.surface);
 
-    // Opened once there is a window to show them in, so a failure has
-    // somewhere to be said: what was written down, then what a shell named.
-    if (!opened_written) {
-        opened_written = true;
-        for (book.slice()) |about| {
-            if (about.open) connect(store.Network.text(&about.at));
-        }
-    }
-    if (opening) |where| {
-        opening = null;
-        connect(where);
-    }
-
     const room = model.current();
     const with_members = room != null and room.?.sort == .channel;
     const panes = layout.place(area, with_members, notice.len != 0);
@@ -822,9 +836,14 @@ fn drawHeader(area: Rect, room: ?*rooms.Room) void {
         return;
     };
 
+    // A lock where the connection is sealed, and nothing where it is not: a
+    // mark that appeared either way would say nothing.
+    const sealed = if (linkFor(at.network)) |link| link.socket != null and
+        link.socket.? == .secure else false;
+
     // The name, then what the room is about in the space left over.
     const name = at.called();
-    const left = area.x + t.padding;
+    const left = area.x + t.padding + if (sealed) widgetMark() else 0;
     const width = Surface.textWidth(name);
     const line: Rect = .{
         .x = left,
@@ -833,12 +852,16 @@ fn drawHeader(area: Rect, room: ?*rooms.Room) void {
         .h = Surface.textHeight(),
     };
 
-    const signature = headerFingerprint(at);
+    var signature = headerFingerprint(at);
+    if (sealed) signature = (signature ^ 1) *% 16777619;
     if (ctx.damaged or header_shown != signature) {
         header_shown = signature;
         ctx.surface.fill(area, t.surface);
         ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
         const clipped = ctx.surface.clipped(area);
+        if (sealed) {
+            clipped.icon(area.x + t.padding, Surface.iconTopFor(line.y), .lock, t.text_dim);
+        }
         clipped.text(line.x, line.y, name, t.text);
         const topic = at.topic.slice();
         if (topic.len != 0) {
@@ -850,6 +873,12 @@ fn drawHeader(area: Rect, room: ?*rooms.Room) void {
 }
 
 var header_shown: u32 = 0;
+
+/// How much room a picture beside a word takes, the picture and the air
+/// after it.
+fn widgetMark() i32 {
+    return Surface.iconSize() + theme.current().gap;
+}
 
 fn headerFingerprint(room: *const rooms.Room) u32 {
     var value: u32 = 2166136261;
@@ -930,7 +959,16 @@ fn drawTranscript(area: Rect) void {
     view.offset = transcript_scroll.offset;
 
     const width = view.area.w - t.padding * 2;
-    var y = view.top();
+
+    // A conversation grows from the bottom of the pane, not the top: what was
+    // said last is where the eye goes, and a handful of lines strung along
+    // the top of an empty pane reads as a page that failed to load.
+    //
+    // Measured before it is drawn rather than taken from what the last pass
+    // came to: a height one pass out of date puts the air in the wrong place,
+    // and the pass that would correct it is the one nothing asked for.
+    const room_left = @max(area.h - measure(lines, width), 0);
+    var y = view.top() + room_left;
     var at: usize = 0;
     while (at < lines.len) {
         const group = groupAt(lines, at);
@@ -938,7 +976,9 @@ fn drawTranscript(area: Rect) void {
         at = group.from + group.count;
     }
 
-    const content = y - view.top();
+    // What was drawn, not counting the air it was pushed down by: measuring
+    // that too would make the pane taller every pass until it filled.
+    const content = y - view.top() - room_left;
     eui.scrollpane.end(ctx, &transcript_scroll, view, content);
 
     // Scrolling away from the end stops the following; scrolling back to it
@@ -946,6 +986,32 @@ fn drawTranscript(area: Rect) void {
     if (transcript_scroll.content_h > area.h) {
         following = transcript_scroll.offset >= transcript_scroll.content_h - area.h - 1;
     }
+}
+
+/// How tall the whole of a room's transcript comes to at this width.
+fn measure(lines: []const usize, width: i32) i32 {
+    var total: i32 = 0;
+    var at: usize = 0;
+    while (at < lines.len) {
+        const group = groupAt(lines, at);
+        total += groupHeight(lines, group, width);
+        at = group.from + group.count;
+    }
+    return total;
+}
+
+/// How tall one run comes to: the air above it, the name if it carries one,
+/// and every line it holds wrapped to the width.
+fn groupHeight(lines: []const usize, group: Group, width: i32) i32 {
+    const t = theme.current();
+    const row = Surface.textHeight();
+    var height: i32 = if (group.named) t.padding else theme.enlarged(2);
+    if (group.named) height += row;
+    for (lines[group.from..][0..group.count]) |index| {
+        const line = model.lines.items[index];
+        height += @as(i32, @intCast(eui.text.count(bodyOf(line), drawFace(line), width))) * row;
+    }
+    return height;
 }
 
 /// The run of lines starting at `at`.
@@ -982,13 +1048,7 @@ fn drawGroup(
     const first = model.lines.items[lines[group.from]];
     const gap = if (group.named) t.padding else theme.enlarged(2);
     const row = Surface.textHeight();
-
-    var height = gap;
-    if (group.named) height += row;
-    for (lines[group.from..][0..group.count]) |index| {
-        const line = model.lines.items[index];
-        height += @as(i32, @intCast(eui.text.count(bodyOf(line), drawFace(line), width))) * row;
-    }
+    const height = groupHeight(lines, group, width);
 
     if (!paint or !view.shows(at.y, height)) return height;
 
@@ -1036,12 +1096,14 @@ fn drawGroup(
 /// than by a name, which is how it has always been shown.
 fn bodyOf(line: rooms.Line) []const u8 {
     if (line.kind != .told) return model.textOf(line.text);
-    told_text[0] = '-';
-    told_text[1] = ' ';
+    // An em dash and a space, which is what sets the server's own news apart
+    // from what a person said without giving it a name.
+    const mark = "\u{2014} ";
+    @memcpy(told_text[0..mark.len], mark);
     const text = model.textOf(line.text);
-    const take = @min(text.len, told_text.len - 2);
-    @memcpy(told_text[2..][0..take], text[0..take]);
-    return told_text[0 .. take + 2];
+    const take = @min(text.len, told_text.len - mark.len);
+    @memcpy(told_text[mark.len..][0..take], text[0..take]);
+    return told_text[0 .. take + mark.len];
 }
 
 var told_text: [512]u8 = undefined;
@@ -1085,7 +1147,11 @@ fn drawMembers(area: Rect, room: *rooms.Room) void {
         const member = model.members.items[which];
         const at = layout.memberRow(area, index);
         const mark = member.marks.slice();
-        const ink = if (member.away) t.text_dim else t.text;
+        const mine = link != null and link.?.session.support.same(
+            member.nick.slice(),
+            link.?.session.nick.slice(),
+        );
+        const ink = if (member.away) t.text_dim else if (mine) t.accent else t.text;
         const marked = Surface.textWidth("@");
         ctx.labelIn(.{ .x = at.x + t.padding, .y = at.y, .w = marked, .h = at.h }, mark, t.text_dim);
         ctx.labelIn(.{
@@ -1252,6 +1318,33 @@ fn startsWithFold(mapping: irc.support.Casemapping, whole: []const u8, start: []
 
 fn tick() bool {
     var drawn = false;
+
+    // What was asked for while drawing, done now that nothing is.
+    if (!opened_written) {
+        opened_written = true;
+        for (book.slice()) |about| {
+            if (about.open) {
+                connect(store.Network.text(&about.at));
+                drawn = true;
+            }
+        }
+    }
+    if (opening) |where| {
+        opening = null;
+        connect(where);
+        drawn = true;
+    }
+    if (asked_for.len != 0) {
+        var where: [160]u8 = undefined;
+        const take = asked_for.slice();
+        @memcpy(where[0..take.len], take);
+        const len = take.len;
+        asked_for.clear();
+        proto.app.retick(TICK_US);
+        connect(where[0..len]);
+        drawn = true;
+    }
+
     const millis: u64 = @intCast(@divFloor(sys.clockMicros(), 1000));
     for (&links) |*link| {
         if (!link.used) continue;
@@ -1316,7 +1409,8 @@ fn command(text: []const u8) void {
     const rest = lib.str.trim(text[@min(word.len + 1, text.len)..]);
 
     if (lib.str.eqlFold(word, "server") or lib.str.eqlFold(word, "connect")) {
-        return connect(rest);
+        if (rest.len == 0) return say("name a network to reach");
+        return reach(rest);
     }
     const room = model.current() orelse return say("nothing to do that in");
     const link = linkFor(room.network) orelse return say("not connected");

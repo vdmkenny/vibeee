@@ -10,6 +10,7 @@ const std = @import("std");
 const gdt = @import("gdt.zig");
 const paging = @import("paging.zig");
 const pmm = @import("../../kernel/pmm.zig");
+const stack = @import("lib").stack;
 
 /// Top of the initial user stack. Below the loaded image, and well clear of the
 /// null page so a null dereference still faults.
@@ -24,21 +25,76 @@ pub const USER_STACK_TOP: usize = 0x3FFF_0000;
 /// vendored decoder builds its Huffman tables in a frame of its own, and four
 /// kilobytes of that on top of a drawing pass is over the edge.
 ///
-/// The wall was real every time and the growth is what it costs to do the
-/// work, so the number grew rather than the work being avoided. What sets it
-/// now is a TLS handshake: the standard library's client keeps two whole
-/// record buffers and a certificate chain on the stack at once, and measured
-/// against a real server it wants more than forty pages and fits inside
-/// forty-eight. Nothing below the bottom page is mapped, so an overflow still
-/// faults at once and says where, rather than quietly writing into whatever
-/// is under it.
-///
-/// It is every process's stack, which is the wrong shape for a cost one
-/// program incurs: a program that asked for what it needs, the way an ELF's
-/// own stack header says, would leave the rest at sixteen.
-pub const USER_STACK_PAGES = 48;
+/// This is what a process starts with, not what it may have. A stack that
+/// runs past it faults, and the fault maps more: a program pays for the
+/// depth it reaches and nothing pays for the depth it does not. A TLS
+/// handshake wants a few hundred kilobytes and every other program wants
+/// sixteen pages, and neither has to be told about the other.
+pub const USER_STACK_PAGES = 16;
+
+/// How far the stack may grow. Past this a program is running away rather
+/// than working, and the fault it takes is the one that says so.
+pub const USER_STACK_MAX_PAGES = 256;
+
+/// How much is added each time it runs out. One page at a time would fault
+/// once per page down a deep call; a chunk means a handful of faults for the
+/// deepest thing this system does.
+pub const USER_STACK_GROW_PAGES = 16;
+
+/// The lowest address the stack may ever reach.
+pub const USER_STACK_LIMIT: usize = USER_STACK_TOP - USER_STACK_MAX_PAGES * paging.PAGE_SIZE;
 
 pub const Error = error{OutOfMemory};
+
+/// How this system's user stacks are shaped, for the arithmetic that decides
+/// what to map and what to hand back.
+pub const RULES: stack.Rules = .{
+    .top = USER_STACK_TOP,
+    .limit = USER_STACK_LIMIT,
+    .page = paging.PAGE_SIZE,
+    .chunk = USER_STACK_GROW_PAGES,
+    .keep = USER_STACK_GROW_PAGES,
+    .slack = USER_STACK_GROW_PAGES * 2,
+};
+
+/// Map more stack under a fault that landed below what is mapped.
+///
+/// True when the address was the stack's to grow into and the pages went in,
+/// so the instruction that faulted can simply be run again. False for
+/// anything else, which is a fault the program has to answer for: an address
+/// outside the reservation, or a stack that has run to its limit.
+pub fn growStack(space: *paging.AddressSpace, addr: usize) bool {
+    const span = stack.growth(RULES, space.stack_bottom, addr) orelse return false;
+
+    var at = span.from;
+    while (at <= span.to) : (at += paging.PAGE_SIZE) {
+        const phys = pmm.allocFrame() catch return false;
+        @memset(@as([*]u8, @ptrFromInt(paging.physToVirt(phys)))[0..paging.PAGE_SIZE], 0);
+        space.map(at, phys, .{ .writable = true }) catch {
+            pmm.freeFrame(phys);
+            return false;
+        };
+    }
+    space.stack_bottom = span.from;
+    return true;
+}
+
+/// Hand back the stack pages the program has climbed away from.
+///
+/// Called where the stack pointer is worth believing, which is on the way out
+/// of the kernel: a program in the middle of a call has told the kernel where
+/// its stack is, and everything below that is nobody's.
+pub fn shrinkStack(space: *paging.AddressSpace, sp: usize) void {
+    const span = stack.reclaim(RULES, space.stack_bottom, sp) orelse return;
+
+    var at = span.from;
+    while (at <= span.to) : (at += paging.PAGE_SIZE) {
+        const phys = space.physicalOf(at) orelse continue;
+        space.unmap(at);
+        pmm.freeFrame(phys);
+    }
+    space.stack_bottom = span.to + paging.PAGE_SIZE;
+}
 
 /// Give a freshly loaded process its stack, with arguments on it.
 ///
@@ -75,6 +131,8 @@ pub fn setupStack(
         const virt = USER_STACK_TOP - (i + 1) * paging.PAGE_SIZE;
         space.map(virt, phys, .{ .writable = true }) catch return error.OutOfMemory;
     }
+
+    space.stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * paging.PAGE_SIZE;
 
     // Only the topmost page is used for arguments; anything longer than that
     // belongs in a file rather than a command line.

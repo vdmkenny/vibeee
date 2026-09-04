@@ -28,6 +28,7 @@ knows when this was last true, and the tree knows how big it is.
 | Heap | [`heap.zig`](../src/kernel/heap.zig) | Slab, exposed as `std.mem.Allocator`. Self-tests at boot. |
 | Scheduler | [`sched.zig`](../src/kernel/sched.zig), [`sched/queue.zig`](../src/kernel/sched/queue.zig), [`sched/thread.zig`](../src/kernel/sched/thread.zig) | O(1), 32 priority levels, preemptive. Queues are unit-tested on the host. |
 | Blocking | [`wait.zig`](../src/kernel/wait.zig) | One mechanism. Waiter nodes on the blocking thread's stack; no allocation. |
+| User stacks | [`arch/x86/usermode.zig`](../src/arch/x86/usermode.zig), [`lib/stack.zig`](../src/lib/stack.zig) | A process starts with sixteen pages and may reach a hundred and twenty-eight. A fault below what is mapped adds a chunk and runs the instruction again; leaving a syscall hands back what the stack pointer has climbed away from, keeping a chunk under it so a program that dips again does not fault at once. So a shallow program costs sixteen pages and a TLS handshake costs what it reaches, without either being told about the other. Which pages to add and which to return is arithmetic rather than mapping, so it lives in `lib` and is tested on the host. |
 | Events | [`event.zig`](../src/kernel/event.zig) | Counting, with `waitMany`. |
 | Channels | [`channel.zig`](../src/kernel/channel.zig) | Synchronous call/reply, 64-byte payload, generation-tagged reply tokens. |
 | Service registry | [`svc.zig`](../src/kernel/svc.zig) | Name → channel. |

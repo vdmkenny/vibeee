@@ -548,7 +548,7 @@ pub fn build(b: *std.Build) void {
                     .target = user_target,
                     .optimize = optimize,
                     .single_threaded = true,
-                    .strip = true,
+                    .strip = !named(symbols, "echat"),
                     .stack_check = false,
                     .stack_protector = false,
                     .imports = &user_imports,

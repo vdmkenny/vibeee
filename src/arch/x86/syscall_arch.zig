@@ -18,6 +18,7 @@ const gdt = @import("gdt.zig");
 const hal = @import("../../kernel/hal.zig");
 const idt = @import("idt.zig");
 const sched = @import("../../kernel/sched.zig");
+const usermode = @import("usermode.zig");
 const syscall = @import("../../kernel/syscall.zig");
 
 /// Where the CPU takes the fast path's kernel context from.
@@ -185,6 +186,12 @@ export fn sysenterDispatch(frame: *Frame) callconv(.c) void {
         .from_user = true,
     });
     frame.number = @bitCast(@as(i32, @truncate(result)));
+
+    // On the way out, where the stack pointer is worth believing: a program
+    // in a syscall has told the kernel where its stack is, and whatever it
+    // grew into and has since climbed away from is nobody's. Almost every
+    // call finds nothing spare and does two comparisons.
+    usermode.shrinkStack(&t.space, stack);
 }
 
 /// What a process reports when it enters the kernel with a stack pointer that

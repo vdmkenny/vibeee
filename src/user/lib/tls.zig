@@ -88,10 +88,21 @@ pub const Roots = struct {
 
         var roots: Roots = .{};
         errdefer roots.deinit(gpa);
+
+        // Room for every certificate before the first is parsed. Each parsed
+        // one leaves the map holding a key that describes where in `bytes` it
+        // sits, and the map reads those bytes again whenever it grows: a
+        // buffer that moved under them is a lookup into memory that was
+        // handed back. The standard library's own reader reserves for the
+        // whole file first for the same reason.
+        var total: usize = 0;
+        for (0..store.count()) |index| total += store.at(index).len;
+        roots.bundle.bytes.ensureTotalCapacity(gpa, total) catch return error.OutOfMemory;
+
         for (0..store.count()) |index| {
             const der = store.at(index);
             const at: u32 = @intCast(roots.bundle.bytes.items.len);
-            roots.bundle.bytes.appendSlice(gpa, der) catch return error.OutOfMemory;
+            roots.bundle.bytes.appendSliceAssumeCapacity(der);
             // An authority this build cannot parse is one it will not vouch
             // for, and one bad certificate is not a reason to trust nothing.
             roots.bundle.parseCert(gpa, at, now) catch {

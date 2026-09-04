@@ -369,7 +369,7 @@ Death/removal: server exit or `ublk_unregister` ⇒ all in-flight complete ECONN
 
 ## 12. ELF loader, stack/TLS
 
-**Fixed-base static ET_EXEC** (base 0x0804_8000), not PIE. Rationale: ASLR is theater on a machine with no NX and trusted-DMA servers; PIE costs a relocation pass (+code, +boot time per spawn) and ~2–5% size in GOT-relative addressing. Loader: validate EM_386/ET_EXEC, PT_LOAD within user range; text/rodata pages mapped **shared RO from ramfs frames** (zero copy); data copied eagerly; bss demand-zero. PT_TLS: per-thread TLS block allocated atop the stack region; GDT[6] base = tls_block; `gs:0` = self-ptr (Zig/LLVM i386 convention). Initial stack (128 KB + guard): `[argc][argv*][NULL][envp*][NULL][auxv: AT_PAGESZ, AT_PHDR, AT_ENTRY, AT_NULL][strings]`. Grants land as handles 0..n-1 before entry.
+**Fixed-base static ET_EXEC** (base 0x0804_8000), not PIE. Rationale: ASLR is theater on a machine with no NX and trusted-DMA servers; PIE costs a relocation pass (+code, +boot time per spawn) and ~2–5% size in GOT-relative addressing. Loader: validate EM_386/ET_EXEC, PT_LOAD within user range; text/rodata pages mapped **shared RO from ramfs frames** (zero copy); data copied eagerly; bss demand-zero. PT_TLS: per-thread TLS block allocated atop the stack region; GDT[6] base = tls_block; `gs:0` = self-ptr (Zig/LLVM i386 convention). Initial stack (64 KB, grown on fault into a 1 MB reservation and handed back on the way out of a syscall once the pointer has climbed away; `lib/stack.zig` decides both and is tested on the host): `[argc][argv*][NULL][envp*][NULL][auxv: AT_PAGESZ, AT_PHDR, AT_ENTRY, AT_NULL][strings]`. Grants land as handles 0..n-1 before entry.
 
 ## 13. Panic & debug (no serial port)
 

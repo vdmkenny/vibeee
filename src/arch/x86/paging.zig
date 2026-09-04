@@ -215,6 +215,12 @@ pub const AddressSpace = struct {
     /// window manager holding the screen costs nothing.
     mapped_pages: u32 = 0,
 
+    /// The lowest stack page mapped into it. The stack grows down into its
+    /// reservation as faults ask for it, and gives pages back once the
+    /// pointer has climbed away, so how far down it reaches is state rather
+    /// than a constant.
+    stack_bottom: usize = 0,
+
     pub const Error = error{OutOfMemory};
 
     /// How much memory is mapped into it.
@@ -321,6 +327,21 @@ pub const AddressSpace = struct {
         self.mapped_pages -= 1;
 
         if (isActive(self.*)) invalidatePage(virt);
+    }
+
+    /// The frame behind a user address, or null where nothing is mapped
+    /// there. What a caller handing a page back needs, since the frame is
+    /// what goes back to the allocator and the entry is what is cleared.
+    pub fn physicalOf(self: *const AddressSpace, virt: usize) ?usize {
+        if (virt >= KERNEL_VMA) return null;
+        const table = self.tableOf(virt) orelse return null;
+        const entry = table[pagetable.tableIndex(virt)];
+        return if (entry.present) entry.address() else null;
+    }
+
+    /// Whether a user address has a page behind it.
+    pub fn mappedAt(self: *const AddressSpace, virt: usize) bool {
+        return self.physicalOf(virt) != null;
     }
 
     /// The page table a user address falls in, if one has been made.

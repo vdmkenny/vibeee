@@ -11,6 +11,7 @@ const sched = @import("../../kernel/sched.zig");
 const idt = @import("idt.zig");
 const paging = @import("paging.zig");
 const panic = @import("../../kernel/panic.zig");
+const usermode = @import("usermode.zig");
 
 const VECTOR_PAGE_FAULT = 14;
 
@@ -22,6 +23,15 @@ const VECTOR_PAGE_FAULT = 14;
 pub fn onException(frame: *idt.Frame) void {
     if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 == 0) {
         if (paging.syncKernelMapping(cpu.readCr2())) return;
+    }
+
+    // A stack that reached further than it had been given. The pages go in
+    // and the instruction runs again, which is what makes a deep call cost
+    // memory only when it is actually made.
+    if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 != 0) {
+        if (sched.currentThread()) |t| {
+            if (t.space.pd_phys != 0 and usermode.growStack(&t.space, cpu.readCr2())) return;
+        }
     }
 
     var r = panic.Report{

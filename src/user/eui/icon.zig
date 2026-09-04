@@ -122,6 +122,9 @@ pub const Icon = enum {
     /// Which way a table is ordered, beside the heading it is ordered by.
     sort_up,
     sort_down,
+    /// A closed padlock: a connection nobody in between can read. Shown
+    /// beside what it protects rather than as a state to change.
+    lock,
 };
 
 /// A picture and the name it belongs to.
@@ -756,6 +759,23 @@ const art = [_]Picture{
             ".....##.....",
             "............",
             "............",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .lock,
+        .rows = .{
+            "............",
+            "............",
+            "....####....",
+            "...##..##...",
+            "...##..##...",
+            "..########..",
+            "..##....##..",
+            "..##.##.##..",
+            "..##.##.##..",
+            "..########..",
             "............",
             "............",
         },
