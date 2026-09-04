@@ -94,7 +94,17 @@ const State = struct {
     /// What the last authentication meant for this station actually said,
     /// and whether it came from the cell being joined. Every test the join
     /// puts an answer through, reported rather than inferred.
-    last_auth: ?struct { sequence: u16, status: u16, from_cell: bool } = null,
+    last_auth: ?struct {
+        sequence: u16,
+        status: u16,
+        from_cell: bool,
+        /// What the join was doing when it arrived. An answer that lands
+        /// while the exchange is not waiting for one is an answer nothing
+        /// looks at, however right it is.
+        state_then: join_mod.State,
+    } = null,
+    /// Which step of the exchange it was on when it gave up.
+    failed_in: join_mod.State = .idle,
     /// What a heard frame asked for, carried out from the loop rather
     /// than where it was decided. Deciding happens inside the driver's
     /// walk of its receive ring, and tuning resets the radio underneath
@@ -410,11 +420,14 @@ fn act(what: join_mod.Action) void {
         },
         .joined => |won| settle(it.nic, it.ops, won),
         .failed => |why| {
+            if (state.join) |attempt| state.failed_in = attempt.failed_in;
             log.begin(it.nic.name, .warn);
             out.text("could not join \"");
             out.text(state.asked.slice());
             out.text("\": ");
             out.text(why.spell());
+            out.text(" while ");
+            out.text(std.enums.tagName(join_mod.State, state.failed_in) orelse "somewhere");
             out.text("; ");
             out.decimal(state.heard_joining);
             out.text(" frames heard while it was trying, ");
@@ -429,6 +442,8 @@ fn act(what: join_mod.Action) void {
                 out.text(", status ");
                 out.decimal(answer.status);
                 out.text(if (answer.from_cell) ", from the cell it is joining" else ", from some other cell");
+                out.text(", and reached it while ");
+                out.text(std.enums.tagName(join_mod.State, answer.state_then) orelse "somewhere");
             } else {
                 out.text(". No authentication was addressed to it");
             }
@@ -540,6 +555,7 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
                             .sequence = answer.sequence,
                             .status = @intFromEnum(answer.status),
                             .from_cell = lib.mac.eql(head.bssid(), attempt.bssid()),
+                            .state_then = attempt.state,
                         };
                     }
                 }

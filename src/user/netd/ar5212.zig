@@ -707,6 +707,12 @@ fn sayImmunity(chip: *const reset.Chip) void {
     log.end();
 }
 
+/// Frames heard and thrown away for a reason other than the baseband
+/// failing to read them: damaged in the air, or the wrong shape to be
+/// handed up at all.
+var dropped_broken: u32 = 0;
+var dropped_shape: u32 = 0;
+
 /// Unpredictable bytes, gathered from what the radio hears. The band is
 /// full of things this machine did not arrange, and a frame the baseband
 /// could not decode is nothing but those.
@@ -781,7 +787,11 @@ pub fn sayUnanswered(nic: *NicDev) void {
     // for any other reason was, and is a different thing to be losing.
     out.text(", ");
     out.decimal(phy_errors);
-    out.text(" of the drops being frames it could not decode");
+    out.text(" of the drops being frames it could not decode, ");
+    out.decimal(dropped_broken);
+    out.text(" damaged in the air and ");
+    out.decimal(dropped_shape);
+    out.text(" the wrong shape");
     log.end();
 }
 
@@ -1047,7 +1057,15 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
             dev_mod.deliverRadio(nic, frame, signalOf(chip, report.status0.signal), report.status0.rate.rate());
         } else {
             nic.stats.rx_dropped += 1;
-            if (report.status1.phyError()) |why| noteGivenUp(why);
+            if (report.status1.phyError()) |why| {
+                noteGivenUp(why);
+            } else if (!report.status1.intact()) {
+                // Heard, decoded, and wrong by its own check: a frame the
+                // air damaged rather than one the baseband could not read.
+                dropped_broken +%= 1;
+            } else {
+                dropped_shape +%= 1;
+            }
         }
 
         armReceive(rings, slot);

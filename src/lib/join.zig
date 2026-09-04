@@ -123,6 +123,10 @@ pub const Join = struct {
 
     state: State = .idle,
     failure: Failure = .timed_out,
+    /// Where it was when it gave up. A join that ran out of attempts says
+    /// only that nothing answered; which step nothing answered at is the
+    /// thing worth knowing.
+    failed_in: State = .idle,
     /// The network being joined, once one has been heard.
     bss: ?mlme.Bss = null,
     /// What the access point granted.
@@ -367,6 +371,7 @@ pub const Join = struct {
     }
 
     fn give(self: *Join, why: Failure) Action {
+        self.failed_in = self.state;
         self.state = .failed;
         self.failure = why;
         return .{ .failed = why };
