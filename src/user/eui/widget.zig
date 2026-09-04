@@ -67,7 +67,12 @@ pub const Entry = struct {
     x: i16 = 0,
     y: i16 = 0,
     used: bool = false,
-    visual: Visual = .idle,
+    /// The look last painted here, or null when nothing has been. A control
+    /// that moved is a new slot at the new place, and the look it computes
+    /// may well match the one a slot would otherwise start with: an idle
+    /// button that moved would then decide it had nothing to do and leave
+    /// the ground where it now sits unpainted.
+    visual: ?Visual = null,
     /// Whatever the control needs to notice a change beyond its visual state:
     /// the filled width of a progress bar, for instance. Compared, not
     /// interpreted.
@@ -2133,3 +2138,56 @@ pub const Menu = struct {
             cellRect(area, items, self.columns, index);
     }
 };
+
+const testing = std.testing;
+
+/// A context with nowhere to draw, for the parts that decide rather than
+/// paint. Past the first pass, where everything paints because nothing on the
+/// surface is known yet.
+fn forTesting(pixels: *[16]u32) Context {
+    return .{ .surface = Surface.init(pixels, 4, 4, 4), .damaged = false };
+}
+
+test "a control that moved paints where it moved to" {
+    var pixels: [16]u32 = @splat(0);
+    var ctx = forTesting(&pixels);
+
+    // Where it was: a first pass paints it, and a second with nothing changed
+    // does not.
+    const was = Rect{ .x = 10, .y = 100, .w = 60, .h = 24 };
+    const first = ctx.slotFor(was).?;
+    try testing.expect(ctx.needsPaint(first, .idle));
+    first.visual = .idle;
+    try testing.expect(!ctx.needsPaint(first, .idle));
+
+    // A table above it grew, so the same control is asked for lower down. It
+    // looks exactly as it did, which is what used to leave it undrawn.
+    const now = Rect{ .x = 10, .y = 126, .w = 60, .h = 24 };
+    const moved = ctx.slotFor(now).?;
+    try testing.expect(moved != first);
+    try testing.expect(ctx.needsPaint(moved, .idle));
+}
+
+test "a slot the pass did not touch is given up, and the next claim of it paints" {
+    var pixels: [16]u32 = @splat(0);
+    var ctx = forTesting(&pixels);
+
+    const area = Rect{ .x = 4, .y = 40, .w = 60, .h = 24 };
+    const entry = ctx.slotFor(area).?;
+    entry.visual = .idle;
+    entry.seen = true;
+
+    // The sweep at the end of a pass keeps what was drawn.
+    for (&ctx.entries) |*e| {
+        if (e.used and !e.seen) e.* = .{};
+    }
+    try testing.expect(!ctx.needsPaint(ctx.slotFor(area).?, .idle));
+
+    // A pass that does not ask for it gives the slot up, so whatever claims
+    // that place next starts with nothing painted there.
+    for (&ctx.entries) |*e| e.seen = false;
+    for (&ctx.entries) |*e| {
+        if (e.used and !e.seen) e.* = .{};
+    }
+    try testing.expect(ctx.needsPaint(ctx.slotFor(area).?, .idle));
+}

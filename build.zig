@@ -907,6 +907,19 @@ pub fn build(b: *std.Build) void {
     const lib_tests = b.addTest(.{ .root_module = host_lib });
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
 
+    // The toolkit, for the same reason. It touches no syscalls, so all of it
+    // builds for the host: geometry, the repaint decisions, the icon and
+    // figure arithmetic, and what a control does with a key. `eui.zig` pulls
+    // its modules in with `refAllDecls`, so a file added there is tested
+    // without anyone listing it a second time.
+    const eui_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/user/eui/eui.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = &.{.{ .name = "lib", .module = host_lib }},
+    }) });
+    test_step.dependOn(&b.addRunArtifact(eui_tests).step);
+
     // The picture decoder, on the host: the wrapper is what this system
     // wrote and the decoder is what it vendored, and the seam between them is
     // exactly what a test should be looking at. Built against the host's own

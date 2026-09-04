@@ -95,6 +95,7 @@ pub fn begin(ctx: *widget.Context, area: Rect, state: *State) View {
 /// knows where it stopped, and nothing else does.
 pub fn end(ctx: *widget.Context, state: *State, view: View, content_h: i32) void {
     ctx.surface = view.saved;
+    const resized = state.content_h != content_h;
     state.content_h = content_h;
 
     const scrollable = state.scrollable(view.area);
@@ -102,7 +103,12 @@ pub fn end(ctx: *widget.Context, state: *State, view: View, content_h: i32) void
     // What was drawn disagrees with what the pass was laid out for: the
     // contents turned out taller than the pane, or no longer are. Neither can
     // be known before drawing, so the pane is drawn again with the answer.
-    if (scrollable != view.barred) ctx.damage();
+    //
+    // Contents that changed height at all ask for the same thing. A pane that
+    // grew has moved everything below the growth, and one that shrank has left
+    // whatever the old height reached with nothing drawn over it; a repaint
+    // fills the ground first, which is what names those pixels.
+    if (scrollable != view.barred or resized) ctx.damage();
 
     if (!scrollable) {
         state.offset = 0;
