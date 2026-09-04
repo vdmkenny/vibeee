@@ -1,0 +1,136 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 640,
+      "h": 400,
+      "title": "Settings: Network"
+    },
+    {
+      "file": "Joining.dc.html",
+      "x": 760,
+      "y": 0,
+      "w": 640,
+      "h": 400,
+      "title": "Settings: switching network"
+    },
+    {
+      "file": "Crowded.dc.html",
+      "x": 1520,
+      "y": 0,
+      "w": 640,
+      "h": 400,
+      "title": "Settings: four interfaces"
+    },
+    {
+      "file": "NoRadio.dc.html",
+      "x": 2280,
+      "y": 0,
+      "w": 640,
+      "h": 400,
+      "title": "Settings: no wireless adapter"
+    },
+    {
+      "file": "BarMenu.dc.html",
+      "x": 3040,
+      "y": 0,
+      "w": 320,
+      "h": 420,
+      "title": "Bar: network menu"
+    },
+    {
+      "file": "Stacked.dc.html",
+      "x": 3480,
+      "y": 0,
+      "w": 516,
+      "h": 400,
+      "title": "Alternate: tightened stack"
+    },
+    {
+      "file": "Split.dc.html",
+      "x": 4116,
+      "y": 0,
+      "w": 516,
+      "h": 400,
+      "title": "Alternate: master and detail"
+    },
+    {
+      "file": "Switch.dc.html",
+      "x": 3040,
+      "y": 560,
+      "w": 520,
+      "h": 300,
+      "title": "New control: switch"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -152,
+      "w": 420,
+      "text": "Network settings, made compact, and built around connecting and switching networks.\nSlate theme, Ark Pixel 12 metrics, 24px controls, 22px table rows, 216px menu.\nDrawn against screenshots of the running desktop."
+    },
+    {
+      "id": "why-main",
+      "x": 0,
+      "y": 432,
+      "w": 420,
+      "text": "Settings: Network\nOne row per interface: name, status, IP address, on/off. The selected interface's DHCP or static choice sits on a single row below, and the radio's status moves into the Wireless heading.\nThe pane currently uses 96px per interface; this uses 24, so two interfaces and six networks fit on screen at once. Networks are sorted by signal strength."
+    },
+    {
+      "id": "why-joining",
+      "x": 760,
+      "y": 432,
+      "w": 420,
+      "text": "Switching networks\nThe password is asked for in a bar rather than a dialog, so the list stays visible and you can see which network you are entering it for. Join and Cancel keep their keyboard letters.\nThe heading still shows the current connection while you switch, so leaving a working network is deliberate."
+    },
+    {
+      "id": "why-crowded",
+      "x": 1520,
+      "y": 432,
+      "w": 420,
+      "text": "Settings: four interfaces\nThe usual machine has ethernet and wireless; some have only ethernet, and a few pick up a USB adapter or a second port. The list is a loop, so any number lays out the same way, and it scrolls past four rows rather than growing.\nThe network list keeps a floor of about four rows, so extra interfaces can never squeeze it away. netd and the menu bar both cap at four interfaces."
+    },
+    {
+      "id": "why-noradio",
+      "x": 2280,
+      "y": 432,
+      "w": 420,
+      "text": "Settings: no wireless adapter\nA machine with no radio drops the whole Wireless section, so the pane has room. It spends it on the selected interface instead of leaving a gap: the static address form sits open rather than behind the mode switch, with Address, Gateway and DNS as the app already defines them.\nOne quiet line says why there is no wireless list, so the section is not just missing."
+    },
+    {
+      "id": "why-bar",
+      "x": 3040,
+      "y": 452,
+      "w": 400,
+      "text": "Menu bar: network\nToday this lists interfaces and a settings link. It keeps that and adds the available networks, since connecting from the menu bar is what you want at this size: signal strength, name, and a padlock on password-protected networks.\nOnly the five strongest are offered, so the menu is the same height in a crowded place as in an empty one. What is left out is counted on a row that opens Settings, rather than being dropped without saying so. bar.zig already caps at six; this proposes five and shows the cap."
+    },
+    {
+      "id": "why-stacked",
+      "x": 3480,
+      "y": 432,
+      "w": 400,
+      "text": "Alternate: tightened stack\nToday's layout halved, two lines per interface instead of four, with DHCP/Static moved onto the name row.\nSmallest change; the IP address still costs a row each."
+    },
+    {
+      "id": "why-split",
+      "x": 4116,
+      "y": 432,
+      "w": 400,
+      "text": "Alternate: master and detail\nInterfaces on the left, the selected one's settings on the right. Scales if interfaces gain more settings.\nCosts 156px of a 516px pane to a list that is usually two rows long."
+    },
+    {
+      "id": "why-switch",
+      "x": 3040,
+      "y": 892,
+      "w": 420,
+      "text": "New control: switch\nlibeui has no switch today. `toggle` is a labelled segment, 96px wide because it carries the word Enabled, which is most of an interface row.\nThis is the same control at 28x16, rounded 4px like every button, with the states the toolkit's Visual already distinguishes. It belongs in libeui rather than in the Settings app, so the menu bar and anything else can use it."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

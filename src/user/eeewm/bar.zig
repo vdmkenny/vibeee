@@ -1264,11 +1264,20 @@ var radio_index: ?usize = null;
 var heard: [MAX_HEARD]net.Network = undefined;
 var heard_texts: [MAX_HEARD][24]u8 = undefined;
 var heard_count: usize = 0;
+/// How many the service has, against how many are shown.
+var heard_total: usize = 0;
+var more_text: [24]u8 = undefined;
 
 const MAX_IFACES = 4;
-/// How many heard networks the menu offers. The pane lists more.
-const MAX_HEARD = 6;
-const NET_ROWS = MAX_IFACES + 1 + MAX_HEARD + 2;
+/// How many networks the menu offers: the strongest few, since netd hands
+/// them over strongest first. A menu as long as the air is crowded is one
+/// that covers the screen in a busy place, and what somebody wants from the
+/// bar is the network they are near.
+const MAX_HEARD = 5;
+/// How far the menu counts what it is not showing, so "so many more" is a
+/// number rather than a guess. Past this it stops asking.
+const MAX_COUNTED = 32;
+const NET_ROWS = MAX_IFACES + 1 + MAX_HEARD + 3;
 
 fn netWidth() i32 {
     return theme.enlarged(216);
@@ -1283,9 +1292,16 @@ fn readNetwork() void {
         if (radio_index == null and ifaces[i].kind == .radio) radio_index = i;
     }
     heard_count = 0;
+    heard_total = 0;
     if (radio_index != null) {
         while (heard_count < MAX_HEARD) : (heard_count += 1) {
             heard[heard_count] = net.networkAt(heard_count) orelse break;
+        }
+        // The rest are counted and not kept: the menu says how many it is
+        // leaving out, and the pane is where they are all listed.
+        heard_total = heard_count;
+        while (heard_total < MAX_COUNTED) : (heard_total += 1) {
+            _ = net.networkAt(heard_total) orelse break;
         }
     }
 }
@@ -1359,6 +1375,16 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
             };
             count += 1;
         }
+    }
+
+    // What is not shown says so, and goes where the rest of them are. A
+    // list silently cut is a list somebody scrolls for and never finds.
+    if (heard_total > heard_count and count < into.len) {
+        var spelled = str.Builder{ .buf = &more_text };
+        spelled.number(@intCast(heard_total - heard_count));
+        spelled.text(" more networks");
+        into[count] = .{ .label = spelled.done(), .mark = .wifi };
+        count += 1;
     }
 
     if (count + 2 <= into.len) {

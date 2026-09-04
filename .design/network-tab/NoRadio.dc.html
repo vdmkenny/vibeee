@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #2F6FE0; } a:hover { color: #1F4FA8; }
+    .lbl { font-size: 12px; line-height: 18px; }
+  </style>
+</helmet>
+
+<div style="width: 640px; height: 400px; display: flex; background: #E9EAEC; color: #1A1D21; overflow: hidden">
+
+  <div style="width: 124px; flex-shrink: 0; border-right: 1px solid #C6C9CD; display: flex; flex-direction: column; padding-top: 6px">
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; color: #5C636B">Display</div>
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; background: #2F6FE0; color: #FFFFFF">Network</div>
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; color: #5C636B">Input</div>
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; color: #5C636B">Audio</div>
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; color: #5C636B">Power</div>
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; color: #5C636B">Help</div>
+    <div class="lbl" style="height: 24px; display: flex; align-items: center; padding: 0 8px; color: #5C636B">About</div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; padding: 6px; gap: 6px; min-width: 0">
+
+    <div style="display: flex; align-items: baseline; gap: 8px; height: 18px">
+      <div class="lbl" style="font-weight: 600">Interfaces</div>
+      <div style="flex-grow: 1; height: 1px; background: #C6C9CD"></div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; border: 1px solid #C6C9CD; background: #F5F6F7">
+      <div style="display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px; background: #2F6FE0; color: #FFFFFF">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><rect x="0.5" y="4.5" width="11" height="6" /><path d="M3 4.5V2.5h6v2" /></svg>
+        <div class="lbl" style="width: 62px; flex-shrink: 0">eth0</div>
+        <div class="lbl" style="width: 128px; flex-shrink: 0; opacity: 0.85">Connected, 100 Mbit/s</div>
+        <div class="lbl" style="flex-grow: 1; min-width: 0; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">192.168.1.20</div>
+        <div style="width: 26px; height: 14px; flex-shrink: 0; border: 1px solid #FFFFFF; background: #FFFFFF; display: flex; justify-content: flex-end; align-items: center; padding: 1px"><div style="width: 10px; height: 10px; background: #2F6FE0"></div></div>
+      </div>
+    </div>
+
+    <!-- With no radio the pane has room, so the interface shows its whole
+         settings rather than hiding them behind the mode switch. -->
+    <div style="display: flex; align-items: center; gap: 8px; height: 24px">
+      <div class="lbl" style="color: #5C636B; width: 62px; flex-shrink: 0">eth0</div>
+      <div style="display: flex; border: 1px solid #C6C9CD; height: 20px; border-radius: 4px; overflow: hidden">
+        <div class="lbl" style="display: flex; align-items: center; padding: 0 10px; background: #E9EAEC">DHCP</div>
+        <div class="lbl" style="display: flex; align-items: center; padding: 0 10px; background: #2F6FE0; color: #FFFFFF; border-left: 1px solid #C6C9CD">Static</div>
+      </div>
+    </div>
+
+    <sc-for list="{{fields}}" as="f" hint-placeholder-count="3">
+      <div style="display: flex; align-items: center; gap: 8px; height: 24px">
+        <div class="lbl" style="width: 62px; flex-shrink: 0; color: #5C636B">{{f.label}}</div>
+        <div style="flex-grow: 1; min-width: 0; height: 22px; border: 1px solid {{f.line}}; background: #FFFFFF; border-radius: 4px; display: flex; align-items: center; padding: 0 6px">
+          <div class="lbl">{{f.value}}</div>
+          <sc-if value="{{f.focused}}" hint-placeholder-val="{{ false }}">
+            <div style="width: 1px; height: 13px; background: #1A1D21; margin-left: 1px"></div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-for>
+
+    <div style="display: flex; align-items: center; gap: 8px; height: 24px">
+      <div class="lbl" style="color: #5C636B; flex-grow: 1">Applies when you press Apply.</div>
+      <div class="lbl" style="display: flex; align-items: center; justify-content: center; width: 72px; height: 22px; border: 1px solid #2F6FE0; background: #2F6FE0; border-radius: 4px; border-radius: 4px; color: #FFFFFF">Apply</div>
+    </div>
+
+    <div style="flex-grow: 1"></div>
+
+    <!-- No radio in this machine, so no Wireless section at all. Said once,
+         quietly, where the section would have been. -->
+    <div style="display: flex; align-items: baseline; gap: 8px; height: 18px">
+      <div class="lbl" style="font-weight: 600; color: #5C636B">Wireless</div>
+      <div style="flex-grow: 1; height: 1px; background: #C6C9CD"></div>
+    </div>
+    <div class="lbl" style="color: #5C636B; height: 18px">No wireless adapter in this computer.</div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":640,"height":400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      fields: [
+        { label: 'Address', value: '192.168.1.20/24', line: '#2F6FE0', focused: true },
+        { label: 'Gateway', value: '192.168.1.1', line: '#C6C9CD', focused: false },
+        { label: 'DNS', value: '192.168.1.1, 9.9.9.9', line: '#C6C9CD', focused: false },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

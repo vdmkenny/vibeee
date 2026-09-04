@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #2F6FE0; } a:hover { color: #1F4FA8; }
+    .lbl { font-size: 12px; line-height: 18px; }
+  </style>
+</helmet>
+<div style="width: 516px; height: 400px; background: #E9EAEC; color: #1A1D21; padding: 6px; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px">
+
+  <!-- Interfaces on the left, the chosen one's settings on the right -->
+  <div style="display: flex; gap: 8px; height: 96px">
+    <div style="width: 156px; flex-shrink: 0; border: 1px solid #C6C9CD; background: #F5F6F7; display: flex; flex-direction: column">
+      <div class="lbl" style="height: 22px; display: flex; align-items: center; padding: 0 6px; background: #E9EAEC; border-bottom: 1px solid #C6C9CD; color: #5C636B">Interfaces</div>
+      <div class="lbl" style="height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 6px; background: #2F6FE0; color: #FFFFFF">
+        <div style="width: 6px; height: 6px; background: #FFFFFF"></div>eth0
+      </div>
+      <div class="lbl" style="height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 6px">
+        <div style="width: 6px; height: 6px; background: #5C636B"></div>wifi0
+      </div>
+    </div>
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; align-items: center; gap: 8px; height: 24px">
+        <div class="lbl" style="font-weight: 600; flex-grow: 1">eth0</div>
+        <div style="width: 26px; height: 14px; border: 1px solid #2F6FE0; background: #2F6FE0; display: flex; justify-content: flex-end; align-items: center; padding: 1px"><div style="width: 10px; height: 10px; background: #FFFFFF"></div></div>
+      </div>
+      <div class="lbl" style="color: #5C636B; height: 18px">Connected, 100 Mbit/s</div>
+      <div class="lbl" style="color: #5C636B; height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">192.168.1.5 &middot; 255.255.255.0</div>
+      <div style="display: flex; border: 1px solid #C6C9CD; height: 20px; border-radius: 4px; overflow: hidden; width: 148px">
+        <div class="lbl" style="display: flex; align-items: center; padding: 0 10px; background: #2F6FE0; color: #FFFFFF">DHCP</div>
+        <div class="lbl" style="display: flex; align-items: center; padding: 0 10px; border-left: 1px solid #C6C9CD">Static</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: baseline; gap: 8px; height: 18px">
+    <div class="lbl" style="font-weight: 600">Wireless</div>
+    <div style="flex-grow: 1; height: 1px; background: #C6C9CD"></div>
+    <div class="lbl" style="color: #5C636B">Connected to cinaed</div>
+  </div>
+
+  <div style="flex-grow: 1; min-height: 0; border: 1px solid #C6C9CD; background: #F5F6F7; display: flex; flex-direction: column">
+    <div style="display: flex; height: 22px; background: #E9EAEC; border-bottom: 1px solid #C6C9CD; align-items: center; padding: 0 6px; gap: 8px">
+      <div class="lbl" style="flex-grow: 1; color: #5C636B">Network</div>
+      <div class="lbl" style="width: 30px; text-align: right; color: #5C636B">Ch</div>
+      <div class="lbl" style="width: 64px; color: #5C636B">Signal</div>
+      <div class="lbl" style="width: 56px; color: #5C636B">Security</div>
+    </div>
+    <sc-for list="{{rows}}" as="row" hint-placeholder-count="5">
+      <div style="display: flex; height: 22px; align-items: center; padding: 0 6px; gap: 8px; background: {{row.ground}}; color: {{row.ink}}">
+        <div class="lbl" style="flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{row.name}}</div>
+        <div class="lbl" style="width: 30px; text-align: right">{{row.channel}}</div>
+        <div class="lbl" style="width: 64px">{{row.dbm}} dBm</div>
+        <div class="lbl" style="width: 56px">{{row.security}}</div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 8px; height: 24px">
+    <div style="flex-grow: 1"></div>
+    <div class="lbl" style="display: flex; align-items: center; justify-content: center; width: 72px; height: 22px; border: 1px solid #C6C9CD; background: #E9EAEC; border-radius: 4px; border-radius: 4px">Forget</div>
+    <div class="lbl" style="display: flex; align-items: center; justify-content: center; width: 72px; height: 22px; border: 1px solid #2F6FE0; background: #2F6FE0; border-radius: 4px; border-radius: 4px; color: #FFFFFF">Join</div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":516,"height":400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const heard = [
+      { name: 'cinaed', channel: '6', dbm: '-42', security: 'WPA2', joined: true },
+      { name: 'BTHub-7QX2', channel: '1', dbm: '-58', security: 'WPA2' },
+      { name: 'VM8452119', channel: '11', dbm: '-67', security: 'WPA2' },
+      { name: 'SKY9F2A', channel: '6', dbm: '-71', security: 'WPA2' },
+      { name: 'Hotel Guest', channel: '11', dbm: '-79', security: 'open' },
+    ];
+    return {
+      rows: heard.map((n, i) => ({
+        ...n,
+        ground: n.joined ? '#2F6FE0' : (i % 2 === 1 ? '#E9EAEC' : '#F5F6F7'),
+        ink: n.joined ? '#FFFFFF' : '#1A1D21',
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

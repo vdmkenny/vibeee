@@ -21,7 +21,7 @@ pub fn run(args: []const []const u8) void {
     if (args.len == 0) return list();
 
     const which = std.meta.stringToEnum(platform.Feature, args[0]) orelse {
-        out.text("no part of this machine is called that; `hw` lists them\n");
+        out.text("no device of that name; `hw` lists them\n");
         out.flush();
         return;
     };
@@ -29,7 +29,7 @@ pub fn run(args: []const []const u8) void {
     if (args.len == 1) return show(which, platform.feature(which, null));
 
     const on = switching(args[1]) orelse {
-        out.text("say on or off\n");
+        out.text("expected on or off\n");
         out.flush();
         return;
     };
@@ -51,7 +51,7 @@ fn list() void {
         any = true;
     }
 
-    if (!any) out.text("this machine offers no way to switch any of its parts\n");
+    if (!any) out.text("this computer has no devices that can be switched\n");
     out.flush();
 }
 
@@ -62,7 +62,7 @@ fn show(which: platform.Feature, state: platform.FeatureState) void {
     out.text("  ");
     if (!state.isPresent()) {
         ink.use(.dim);
-        out.text("not switchable here\n");
+        out.text("this device cannot be switched\n");
     } else if (state.isOn()) {
         ink.use(.good);
         out.text("on\n");

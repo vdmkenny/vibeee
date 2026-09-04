@@ -20,6 +20,7 @@ const lib = @import("lib");
 const str = @import("lib").str;
 const net = @import("proto").net;
 const settings = @import("proto").settings;
+const netconfig = @import("ulib").netconfig;
 const ink = @import("ulib").ink;
 const out = @import("ulib").out;
 
@@ -65,7 +66,7 @@ pub fn run(args: []const []const u8) void {
     net.call(.count, 0, 0, &count) catch |err| {
         say(switch (err) {
             error.NoService => "net: the network service is not answering\n",
-            else => "net: the service would not say\n",
+            else => "net: the network service did not answer\n",
         });
         return;
     };
@@ -74,6 +75,10 @@ pub fn run(args: []const []const u8) void {
         say("no network interfaces\n");
         return;
     }
+
+    // What each interface was told to join, from the same model the settings
+    // pane and the menu bar read, so all three name the same network.
+    var model = netconfig.Model.load();
 
     var i: u32 = 0;
     while (i < count.body.count) : (i += 1) {
@@ -94,7 +99,8 @@ pub fn run(args: []const []const u8) void {
             if (err == error.End) break;
             continue;
         };
-        printInterface(&reply.body.iface);
+        const named = if (model.slotOf(i)) |slot| slot.ssid.slice() else "";
+        printInterface(&reply.body.iface, named);
 
         var addressed = net.Rep{};
         if (net.call(.address, i, 0, &addressed)) |_| {
@@ -163,7 +169,7 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
     } else if (std.mem.eql(u8, args[0], "join")) {
         // The name, and the key unless the network is open.
         if (args.len < 2) {
-            say("net: join needs the network's name, and its key unless it is open\n");
+            say("net: join needs the network's name, and its password unless the network is open\n");
             return;
         }
         const ssid = lib.wifi.Ssid.of(args[1]) orelse {
@@ -171,13 +177,13 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
             return;
         };
         const psk: lib.wifi.Psk = if (args.len >= 3) (lib.wifi.Psk.parse(args[2]) orelse {
-            say("net: a key is a passphrase of 8 to 63 characters, or 64 hex digits\n");
+            say("net: the password is 8 to 63 characters, or 64 hex digits\n");
             return;
         }) else .none;
         want.join(ssid, psk);
     } else if (std.mem.eql(u8, args[0], "channel")) {
         if (args.len < 2) {
-            say("net: channel needs a number, or 0 to sweep the band\n");
+            say("net: channel needs a number, or 0 to scan every channel\n");
             return;
         }
         const number = str.toUnsigned(args[1]);
@@ -206,7 +212,7 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
     inline for (0..settings.NET_SLOTS) |i| settings.setNetSlot(&cfg, i, wants[i]);
 
     settings.save("net", cfg) catch {
-        say("net: the settings store would not take it\n");
+        say("net: the setting could not be saved\n");
         return;
     };
     say("configured; the service applies it now\n");
@@ -303,9 +309,9 @@ fn scan(only: ?lib.ifmatch.Match) void {
         say(if (net.interfaceCount() == 0)
             "net: the network service is not answering\n"
         else if (only == null)
-            "no radio in this machine\n"
+            "no wireless adapter in this computer\n"
         else if (named_a_wire)
-            "net: that interface is not a radio; only a radio hears anything\n"
+            "net: that interface is not wireless; only a wireless one can scan\n"
         else
             "net: no interface of this machine answers to that\n");
         return;
@@ -315,7 +321,7 @@ fn scan(only: ?lib.ifmatch.Match) void {
     while (net.networkAt(index)) |network| : (index += 1) {
         printNetwork(&network);
     }
-    if (index == 0) say("no networks heard yet; the radio is still listening\n");
+    if (index == 0) say("no networks found yet; still scanning\n");
     out.flush();
 }
 
@@ -338,7 +344,7 @@ fn printNetwork(network: *const net.Network) void {
     out.byte('\n');
 }
 
-fn printInterface(iface: *const net.Iface) void {
+fn printInterface(iface: *const net.Iface, named: []const u8) void {
     ink.write(.key, labelOf(&iface.driver));
 
     out.text(if (iface.up != 0) "  up    " else "  down  ");
@@ -363,6 +369,24 @@ fn printInterface(iface: *const net.Iface) void {
     var place_field: [8]u8 = undefined;
     out.text(lib.pci.spell(@bitCast(iface.location), &place_field));
     out.byte('\n');
+
+    // What a radio is doing about the network it was told to join, and why
+    // it stopped. Said in the same words the settings pane and the menu bar
+    // use, because all three read the one field.
+    if (iface.kind == .radio and iface.joining != .idle) {
+        out.text("    ");
+        if (named.len != 0) {
+            out.text(iface.joining.spellNaming());
+            out.text(named);
+        } else {
+            out.text(iface.joining.spell());
+        }
+        if (iface.stopped != .none) {
+            out.text(": ");
+            out.text(iface.stopped.spell());
+        }
+        out.byte('\n');
+    }
 
     out.text("    rx ");
     out.decimal(iface.rx_pkts);

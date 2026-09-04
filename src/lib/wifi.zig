@@ -324,13 +324,15 @@ pub const Security = enum(u8) {
         };
     }
 
+    /// How it is written where somebody reads it. Capitalised the way the
+    /// standards are, since that is how every other system writes them.
     pub fn spell(self: Security) []const u8 {
         return switch (self) {
-            .open => "open",
-            .wep => "wep",
-            .wpa2_psk => "wpa2",
-            .wpa3_sae => "wpa3",
-            .unsupported => "unsupported",
+            .open => "Open",
+            .wep => "WEP",
+            .wpa2_psk => "WPA2",
+            .wpa3_sae => "WPA3",
+            .unsupported => "Unsupported",
         };
     }
 };
@@ -557,7 +559,7 @@ test "security says what may be joined" {
     try std.testing.expect(Security.wpa2_psk.joinable());
     try std.testing.expect(!Security.wep.joinable());
     try std.testing.expect(!Security.wpa3_sae.joinable());
-    try std.testing.expectEqualStrings("wpa2", Security.wpa2_psk.spell());
+    try std.testing.expectEqualStrings("WPA2", Security.wpa2_psk.spell());
 }
 
 test "signal strength becomes bars" {

@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #2F6FE0; } a:hover { color: #1F4FA8; }
+    .lbl { font-size: 12px; line-height: 18px; }
+  </style>
+</helmet>
+
+<div style="width: 320px; height: 340px; background: #2B3138; position: relative; overflow: hidden">
+
+  <!-- The bar, with the network indicator lit while its menu stands -->
+  <div style="height: 22px; background: #1F242A; display: flex; align-items: center; justify-content: flex-end; gap: 0; padding-right: 6px">
+    <div style="width: 26px; height: 22px; background: #2F6FE0; display: flex; align-items: center; justify-content: center; color: #FFFFFF">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><rect x="0.5" y="4.5" width="11" height="6" /><path d="M3 4.5V2.5h6v2" /></svg>
+    </div>
+    <div style="width: 26px; height: 22px; display: flex; align-items: center; justify-content: center; color: #D6D9DD">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M2 4.5h2l3-2.5v8l-3-2.5H2z" /><path d="M9 4l2 4M11 4L9 8" /></svg>
+    </div>
+    <div class="lbl" style="color: #D6D9DD; padding-left: 6px">08:24</div>
+  </div>
+
+  <!-- The menu, 216px as netWidth() fixes it, inset from the right edge -->
+  <div style="position: absolute; top: 22px; right: 6px; width: 216px; background: #F5F6F7; border: 1px solid #C6C9CD; display: flex; flex-direction: column">
+
+    <!-- What each interface is doing. Reports; it does not act. -->
+    <sc-for list="{{ifaces}}" as="i" hint-placeholder-count="2">
+      <div style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px">
+        <div style="width: 12px; flex-shrink: 0; display: flex; color: {{i.ink}}">
+          <sc-if value="{{i.wired}}" hint-placeholder-val="{{ true }}">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><rect x="0.5" y="4.5" width="11" height="6" /><path d="M3 4.5V2.5h6v2" /></svg>
+          </sc-if>
+          <sc-if value="{{i.wireless}}" hint-placeholder-val="{{ false }}">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 4.5a7 7 0 0 1 10 0" /><path d="M3 7a4 4 0 0 1 6 0" /><circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none" /></svg>
+          </sc-if>
+        </div>
+        <div class="lbl" style="flex-grow: 1; min-width: 0; color: {{i.ink}}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{i.name}}</div>
+        <div class="lbl" style="color: #5C636B; flex-shrink: 0">{{i.value}}</div>
+      </div>
+    </sc-for>
+
+    <div style="height: 1px; background: #C6C9CD"></div>
+
+    <!-- What the radio heard. These rows join, the way the pane's list does. -->
+    <div class="lbl" style="height: 22px; display: flex; align-items: center; padding: 0 10px; color: #5C636B">Available networks</div>
+    <sc-for list="{{heard}}" as="n" hint-placeholder-count="4">
+      <div style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; background: {{n.ground}}; color: {{n.ink}}">
+        <div style="display: flex; align-items: flex-end; gap: 1px; height: 9px; width: 12px; flex-shrink: 0">
+          <div style="width: 2px; height: 3px; background: {{n.bar1}}"></div>
+          <div style="width: 2px; height: 5px; background: {{n.bar2}}"></div>
+          <div style="width: 2px; height: 7px; background: {{n.bar3}}"></div>
+          <div style="width: 2px; height: 9px; background: {{n.bar4}}"></div>
+        </div>
+        <div class="lbl" style="flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{n.name}}</div>
+        <sc-if value="{{n.secured}}" hint-placeholder-val="{{ true }}">
+          <div style="width: 10px; flex-shrink: 0; display: flex; opacity: 0.7">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1.5" y="4.5" width="7" height="5" /><path d="M3.5 4.5V3a1.5 1.5 0 0 1 3 0v1.5" /></svg>
+          </div>
+        </sc-if>
+      </div>
+    </sc-for>
+
+    <!-- Only the strongest few, so the menu is the same height in a crowded
+         place as in an empty one. What is left out says so and goes to the
+         full list rather than being silently dropped. -->
+    <sc-if value="{{cut}}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; color: #5C636B">
+        <div style="width: 12px; flex-shrink: 0; display: flex">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><circle cx="2" cy="6" r="0.9" fill="currentColor" stroke="none" /><circle cx="6" cy="6" r="0.9" fill="currentColor" stroke="none" /><circle cx="10" cy="6" r="0.9" fill="currentColor" stroke="none" /></svg>
+        </div>
+        <div class="lbl" style="flex-grow: 1">{{more}} more networks</div>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1" style="flex-shrink: 0"><path d="M3.5 1.5L7 5l-3.5 3.5" /></svg>
+      </div>
+    </sc-if>
+
+    <div style="height: 1px; background: #C6C9CD"></div>
+
+    <!-- Where the rest of it lives -->
+    <div style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px">
+      <div style="width: 12px; flex-shrink: 0; display: flex; color: #1A1D21">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 3h10M1 6h10M1 9h10" /><circle cx="4" cy="3" r="1.2" fill="#F5F6F7" /><circle cx="8" cy="6" r="1.2" fill="#F5F6F7" /><circle cx="4" cy="9" r="1.2" fill="#F5F6F7" /></svg>
+      </div>
+      <div class="lbl" style="flex-grow: 1">Network settings</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":320,"height":340}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ifaces = [
+      { name: 'eth0', value: '192.168.1.5', wired: true, wireless: false, ink: '#1A1D21' },
+      { name: 'wifi0', value: 'Not connected', wired: false, wireless: true, ink: '#5C636B' },
+    ];
+    // How many the menu offers at most. The pane lists them all.
+    const SHOWN = 5;
+    const all = [
+      { name: 'cinaed', bars: 4, dbm: -42, secured: true, joined: true },
+      { name: 'BTHub-7QX2', bars: 3, dbm: -58, secured: true },
+      { name: 'VM8452119', bars: 3, dbm: -63, secured: true },
+      { name: 'SKY9F2A', bars: 2, dbm: -71, secured: true },
+      { name: 'TALKTALK-A81C', bars: 2, dbm: -74, secured: true },
+      { name: 'Hotel Guest', bars: 1, dbm: -79, secured: false },
+      { name: 'PLUSNET-3H9', bars: 1, dbm: -84, secured: true },
+      { name: 'EE-BrightBox-2', bars: 1, dbm: -88, secured: true },
+    ];
+    const strongest = all.slice().sort((a, b) => b.dbm - a.dbm);
+    const list = strongest.slice(0, SHOWN);
+    const heard = list.map((n) => {
+      const on = n.joined === true;
+      const lit = on ? '#FFFFFF' : '#1A1D21';
+      const dim = on ? 'rgba(255,255,255,0.35)' : '#C6C9CD';
+      return {
+        ...n,
+        ground: on ? '#2F6FE0' : 'transparent',
+        ink: on ? '#FFFFFF' : '#1A1D21',
+        bar1: n.bars >= 1 ? lit : dim,
+        bar2: n.bars >= 2 ? lit : dim,
+        bar3: n.bars >= 3 ? lit : dim,
+        bar4: n.bars >= 4 ? lit : dim,
+      };
+    });
+    return { ifaces, heard, cut: all.length > SHOWN, more: all.length - SHOWN };
+  }
+}
+</script>
+</body>
+</html>

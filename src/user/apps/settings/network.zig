@@ -35,6 +35,15 @@ var wake: ?u32 = null;
 var networks: [MAX_SHOWN]net.Network = undefined;
 var network_count: usize = 0;
 var table_state: eui.table.State = .{ .striped = true };
+/// Which interface the settings below the list belong to.
+var iface_table: eui.table.State = .{ .striped = true, .headings = false };
+
+/// How many interface rows are shown before the list scrolls. Almost every
+/// machine has two; the rest fit without pushing the networks off the pane.
+const VISIBLE_IFACES = 4;
+/// The columns of the row that carries the chosen interface's settings.
+const NAME_W = 96;
+const MODE_W = 132;
 var prompt: eui.prompt.Prompt = .{};
 /// What a note under the wireless group says, when something was refused.
 var note: []const u8 = "";
@@ -71,7 +80,7 @@ const Pending = union(enum) {
 var pending: Pending = .none;
 
 const JOIN_CHOICES = [_]eui.prompt.Choice{
-    .{ .label = "Join", .letter = 'j' },
+    .{ .label = "Join", .letter = 'j', .weight = .strong },
     .{ .label = "Cancel", .letter = 'c' },
 };
 
@@ -145,85 +154,94 @@ pub fn draw(pane: eui.Rect) i32 {
     y = app.group(&y, .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "Interfaces");
     if (model.count == 0) {
         ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, if (model.serving) "No interfaces" else "The network service is not answering");
-        y += t.control_height;
-    }
-    for (0..model.count) |i| {
-        y = drawInterface(pane, y, i);
-        if (i + 1 < model.count) y = app.rule(pane, y);
+        return y + t.control_height + t.padding;
     }
 
+    y = drawInterfaces(pane, y);
+    y += t.padding;
+    y = drawChosen(pane, y);
+
+    y += t.padding;
+    y = app.group(&y, .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "Wireless");
     if (model.radio()) |radio| {
-        y += t.padding;
-        y = app.group(&y, .{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "Wireless");
         y = drawWireless(pane, y, radio);
+    } else {
+        // Said rather than left out. A section that simply is not there
+        // reads as a pane that failed to draw it, and somebody looking for
+        // wireless wants to know it is the computer and not the window.
+        ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "No wireless adapter in this computer.");
+        y += t.control_height;
     }
     return y + t.padding;
 }
 
-/// One interface: its name and state, whether it is enabled, its address,
-/// and how it gets one.
-fn drawInterface(pane: eui.Rect, from: i32, index: usize) i32 {
+/// Every interface on one row each: what it is called, what it is doing,
+/// the address it holds, and whether it is on.
+///
+/// A table without its headings, which is what a list of two or three
+/// self-evident columns wants, with the switch drawn into the end of each
+/// row the table hands back.
+fn drawInterfaces(pane: eui.Rect, from: i32) i32 {
     const t = theme.current();
-    var y = from;
-    const iface = &model.ifaces[index];
-    const address = &model.addresses[index];
+    const sw = eui.widget.switchWidth() + t.padding * 2;
 
-    // The name and what the link is doing, with the switch beside it.
-    var state_buf: [40]u8 = undefined;
-    var state = str.Builder{ .buf = &state_buf };
-    if (iface.up != 0) {
-        state.text("up, ");
-        state.number(iface.mbps);
-        state.text(" Mbit");
-    } else if (iface.kind == .radio and iface.channel != 0) {
-        state.text("scanning channel ");
-        state.number(iface.channel);
-    } else {
-        state.text("down");
-    }
-    const toggle_w = t.control_height * 4;
-    ctx.rowText(.{ .x = pane.x, .y = y, .w = pane.w - toggle_w, .h = t.control_height }, net.nameOf(iface), t.text);
-    // The switch reports a press, not a state: what it should become is the
-    // opposite of what it is.
-    const enabled = if (model.slotOf(index)) |slot| slot.enabled else false;
-    if (ctx.toggle(.{ .x = pane.right() - toggle_w, .y = y, .w = toggle_w, .h = t.control_height }, "Enabled", enabled)) {
-        if (model.setEnabled(index, !enabled)) commit();
-    }
-    y += t.control_height;
-    ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, state.done());
-    y += t.control_height;
+    const columns = [_]eui.table.Column{
+        .{ .title = "Interface", .width = 92 },
+        .{ .title = "Status", .width = 152 },
+        .{ .title = "Address", .width = 96, .flex = true },
+    };
 
-    // The address the stack holds, and where it came from.
-    var addr_buf: [64]u8 = undefined;
-    var line = str.Builder{ .buf = &addr_buf };
-    if (address.addr != 0) {
-        var field: [15]u8 = undefined;
-        line.text(ipv4.text(address.addr, &field));
-        line.byte('/');
-        line.number(address.prefix);
-        if (address.gateway != 0) {
-            line.text(" via ");
-            line.text(ipv4.text(address.gateway, &field));
+    var rows: [netconfig.MAX_IFACES]eui.table.Row = undefined;
+    var cells: [netconfig.MAX_IFACES][2][64]u8 = undefined;
+    for (0..model.count) |i| {
+        const iface = &model.ifaces[i];
+        rows[i] = .{
+            .cells = .{ net.nameOf(iface), stateOf(i, &cells[i][0]), addressOf(i, &cells[i][1]), "", "", "" },
+            .icon = if (iface.kind == .radio) .wifi else .ethernet,
+        };
+    }
+    const listed = rows[0..model.count];
+
+    const shown: i32 = @intCast(@min(model.count, VISIBLE_IFACES));
+    const height = eui.table.rowHeight() * shown + 2;
+    // The switch stands at the end of each row, so the last column stops
+    // short of it rather than running underneath.
+    const area = eui.Rect{ .x = pane.x, .y = from, .w = pane.w - sw, .h = height };
+    _ = ctx.table(area, &iface_table, &columns, listed);
+
+    for (0..model.count) |i| {
+        const line = eui.table.rowRect(area, &iface_table, i, model.count) orelse continue;
+        const enabled = if (model.slotOf(i)) |slot| slot.enabled else false;
+        const at = eui.Rect{ .x = area.right() + t.padding, .y = line.y, .w = sw, .h = line.h };
+        if (ctx.onOff(at, enabled) != enabled) {
+            if (model.setEnabled(i, !enabled)) commit();
         }
-        line.text(switch (address.source) {
-            .static_claim => ", static",
-            .dhcp => ", from DHCP",
-            .none => "",
-        });
-    } else {
-        line.text(if (iface.up != 0) "no address yet" else "no address");
     }
-    ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, line.done());
-    y += t.control_height;
+    return from + height;
+}
 
-    // DHCP or a claim: what the slot says, or what was picked and not yet
-    // applied. DHCP applies at once, since there is nothing to type; a claim
-    // waits for the address to be written and the button pressed.
+/// What the chosen interface is set to: on or off, and where its address
+/// comes from. One row for every interface would be four rows of controls
+/// nobody is looking at; this is the one being looked at.
+fn drawChosen(pane: eui.Rect, from: i32) i32 {
+    const t = theme.current();
+    const index = @min(iface_table.selected, model.count - 1);
+    var y = from;
+
+    const row = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height };
+    var cells: [2]eui.Rect = undefined;
+    // The switch's cell carries the gap after it: `place` sets cells side by
+    // side, and a control that touches the next one reads as part of it.
+    const laid = eui.row.place(row, .left, &.{ NAME_W, MODE_W }, &cells);
+
+    ctx.rowText(laid[0], net.nameOf(&model.ifaces[index]), theme.current().text);
+
     const claimed = if (model.slotOf(index)) |slot| slot.address.isSet() else false;
     const stored: Mode = if (claimed) .static else .dhcp;
     const mode = claims[index].picked orelse stored;
-    const picked = ctx.choiceOf(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, mode, &.{ "DHCP", "Static address" });
+    const picked = ctx.choiceOf(laid[1], mode, &.{ "DHCP", "Static" });
     y += t.control_height;
+
     if (picked != mode) {
         claims[index].picked = picked;
         switch (picked) {
@@ -242,7 +260,36 @@ fn drawInterface(pane: eui.Rect, from: i32, index: usize) i32 {
     return y;
 }
 
-/// Put the slot's claim into the fields.
+/// What the link is doing, in the words the rest of the system uses.
+fn stateOf(index: usize, buf: *[64]u8) []const u8 {
+    const iface = &model.ifaces[index];
+    var line = str.Builder{ .buf = buf };
+    if (iface.up != 0) {
+        line.text("Connected, ");
+        line.number(iface.mbps);
+        line.text(" Mbit/s");
+    } else {
+        line.text("Not connected");
+    }
+    return line.done();
+}
+
+/// The address the stack holds, and where it came from.
+fn addressOf(index: usize, buf: *[64]u8) []const u8 {
+    const address = &model.addresses[index];
+    if (address.addr == 0) return "No IP address";
+
+    var line = str.Builder{ .buf = buf };
+    var field: [15]u8 = undefined;
+    line.text(ipv4.text(address.addr, &field));
+    line.text(switch (address.source) {
+        .static_claim => ", static",
+        .dhcp => ", DHCP",
+        .none => "",
+    });
+    return line.done();
+}
+
 fn fill(index: usize) void {
     const claim = &claims[index];
     var buf: [48]u8 = undefined;
@@ -264,7 +311,6 @@ fn fill(index: usize) void {
     claim.filled = true;
 }
 
-/// The three lines of a claim and the button that applies them.
 fn drawClaim(pane: eui.Rect, from: i32, index: usize) i32 {
     const t = theme.current();
     const claim = &claims[index];
@@ -280,7 +326,8 @@ fn drawClaim(pane: eui.Rect, from: i32, index: usize) i32 {
         y += t.control_height + t.gap;
     }
     const button_w = t.control_height * 3;
-    if (ctx.button(.{ .x = pane.right() - button_w, .y = y, .w = button_w, .h = t.control_height }, "Apply")) applied = true;
+    // What the form is for, so it carries the weight Save and Join do.
+    if (ctx.buttonAs(.{ .x = pane.right() - button_w, .y = y, .w = button_w, .h = t.control_height }, "Apply", .strong)) applied = true;
     if (applied) applyClaim(index);
     return y + t.control_height + t.padding;
 }
@@ -288,7 +335,7 @@ fn drawClaim(pane: eui.Rect, from: i32, index: usize) i32 {
 fn applyClaim(index: usize) void {
     const claim = &claims[index];
     const address = ipv4.Cidr.parse(claim.address.slice()) orelse {
-        note = "The address is written a.b.c.d/nn.";
+        note = "The address must be written a.b.c.d/nn.";
         ctx.damage();
         return;
     };
@@ -322,22 +369,31 @@ fn drawWireless(pane: eui.Rect, from: i32, radio: usize) i32 {
     var status_buf: [64]u8 = undefined;
     var status = str.Builder{ .buf = &status_buf };
     const joined: ?wifi.Ssid = if (model.slotOf(radio)) |slot| (if (slot.ssid.len > 0) slot.ssid else null) else null;
+    const iface = &model.ifaces[radio];
     if (joined) |ssid| {
-        status.text("Joining \"");
-        status.text(ssid.slice());
-        status.text("\"");
+        status.text(iface.joining.spellNaming());
+        if (iface.joining.named()) status.text(ssid.slice());
+        // Why it stopped, rather than only that it is not connected: what
+        // somebody wants to know is why what they asked for did not happen.
+        if (iface.stopped != .none) {
+            status.text(": ");
+            status.text(iface.stopped.spell());
+        }
     } else {
-        status.text("No network chosen");
+        status.text("Not connected");
     }
     ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, status.done());
     y += t.control_height;
 
     // The table of what was heard.
     const columns = [_]eui.table.Column{
+        // The name takes what is left, and the rest take what they need:
+        // a signal reading is as wide as a signal reading gets, and a name
+        // cut short is a name you can still recognise.
         .{ .title = "Network", .width = 80, .flex = true },
-        .{ .title = "Channel", .width = 56, .right = true },
-        .{ .title = "Signal", .width = 90 },
-        .{ .title = "Security", .width = 64 },
+        .{ .title = "Ch", .width = 34, .right = true },
+        .{ .title = "Signal", .width = 128 },
+        .{ .title = "Security", .width = 60 },
     };
     var rows: [MAX_SHOWN]eui.table.Row = undefined;
     var cells: [MAX_SHOWN][2][16]u8 = undefined;
@@ -351,8 +407,13 @@ fn drawWireless(pane: eui.Rect, from: i32, radio: usize) i32 {
         signal.text(network.strength());
         rows[i] = .{
             .cells = .{ network.name(), channel.done(), signal.done(), network.security.spell(), "", "" },
-            .marked = if (joined) |ssid| std.mem.eql(u8, ssid.slice(), network.name()) else false,
-            .icon = .wifi,
+            .marked = switch (pending) {
+                // While the bar is asking, the row it is asking about is
+                // the one to look at.
+                .key => |row| row == i,
+                .none => if (joined) |ssid| std.mem.eql(u8, ssid.slice(), network.name()) else false,
+            },
+            .icon = eui.icon.signal(network.bars),
         };
     }
     const shown = @max(network_count, 1);
@@ -360,7 +421,7 @@ fn drawWireless(pane: eui.Rect, from: i32, radio: usize) i32 {
     const activated = ctx.table(.{ .x = pane.x, .y = y, .w = pane.w, .h = table_h }, &table_state, &columns, rows[0..network_count]);
     y += table_h + t.gap;
     if (network_count == 0) {
-        ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "Nothing heard yet; the radio is listening.");
+        ctx.labelDim(.{ .x = pane.x, .y = y, .w = pane.w, .h = t.control_height }, "No networks found yet.");
         y += t.control_height;
     }
     if (activated) |row| askToJoin(radio, row);
@@ -370,7 +431,7 @@ fn drawWireless(pane: eui.Rect, from: i32, radio: usize) i32 {
     var x = pane.right();
     if (network_count > 0) {
         x -= button_w;
-        if (ctx.button(.{ .x = x, .y = y, .w = button_w, .h = t.control_height }, "Join")) askToJoin(radio, table_state.selected);
+        if (ctx.buttonAs(.{ .x = x, .y = y, .w = button_w, .h = t.control_height }, "Join", .strong)) askToJoin(radio, table_state.selected);
         x -= t.gap;
     }
     if (joined != null) {
@@ -394,7 +455,7 @@ fn askToJoin(radio: usize, row: usize) void {
     const ssid = wifi.Ssid.of(network.name()) orelse return;
 
     if (!network.security.joinable()) {
-        note = "That network's protection is not one this system can join.";
+        note = "This system cannot connect to that kind of protected network.";
         ctx.damage();
         return;
     }
@@ -404,12 +465,12 @@ fn askToJoin(radio: usize, row: usize) void {
         return;
     }
 
-    var question_buf: [64]u8 = undefined;
-    var question = str.Builder{ .buf = &question_buf };
-    question.text("Key for \"");
-    question.text(network.name());
-    question.text("\"");
-    prompt.askText(question.done(), &JOIN_CHOICES, .{ .hint = "8 to 63 characters, or 64 hex digits", .secret = true });
+    // The name is not in the question. An SSID runs to thirty-two
+    // characters, the question is held to half the bar, and a long name
+    // would leave the field too narrow to type a password into. Which
+    // network is being asked about is said by the list, where the row
+    // stays marked while the bar stands.
+    prompt.askText("Password", &JOIN_CHOICES, .{ .hint = "8 to 63 characters, or 64 hex digits", .secret = true });
     pending = .{ .key = row };
     ctx.damage();
 }
@@ -432,11 +493,11 @@ fn answer(choice: usize) void {
             const radio = model.radio() orelse return;
             const ssid = wifi.Ssid.of(networks[row].name()) orelse return;
             const psk = wifi.Psk.parse(line) orelse {
-                note = "A key is a passphrase of 8 to 63 characters, or 64 hex digits.";
+                note = "The password is 8 to 63 characters, or 64 hex digits.";
                 return;
             };
             if (psk == .none) {
-                note = "That network needs a key.";
+                note = "That network needs a password.";
                 return;
             }
             note = "";
@@ -448,7 +509,7 @@ fn answer(choice: usize) void {
 /// Hand the change to the store; the service applies it.
 fn commit() void {
     model.save() catch {
-        note = "The settings store would not take it.";
+        note = "The setting could not be saved.";
         ctx.damage();
         return;
     };
