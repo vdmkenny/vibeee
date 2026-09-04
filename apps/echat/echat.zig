@@ -702,12 +702,13 @@ fn draw() void {
 
     const room = model.current();
     const with_members = room != null and room.?.sort == .channel;
-    const panes = layout.place(area, with_members);
+    const panes = layout.place(area, with_members, notice.len != 0);
 
     drawRail(panes.rail);
     drawHeader(panes.header, room);
     drawTranscript(panes.transcript);
     if (panes.members.w != 0) drawMembers(panes.members, room.?);
+    if (panes.notice.h != 0) drawNotice(panes.notice);
     drawInput(panes.input);
 }
 
@@ -836,6 +837,7 @@ fn drawTranscript(area: Rect) void {
         return;
     }
     const which = model.open;
+    transcript_height = area.h;
 
     const lines = model.transcript(which, &shown);
     var view = eui.scrollpane.begin(ctx, area, &transcript_scroll);
@@ -1013,6 +1015,37 @@ fn drawMembers(area: Rect, room: *rooms.Room) void {
     }
 }
 
+/// What the window itself has to say: a connection that failed, a command it
+/// could not carry out. On its own strip rather than in the transcript,
+/// because it is this program speaking rather than the network, and because
+/// it has to be sayable before there is a room to say it in.
+fn drawNotice(area: Rect) void {
+    const t = theme.current();
+    const said = notice.slice();
+    const signature = fingerprintOf(said);
+    if (!ctx.damaged and signature == notice_shown) return;
+    notice_shown = signature;
+
+    ctx.surface.fill(area, t.surface_pressed);
+    ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
+    ctx.surface.clipped(area).textFitted(
+        area.x + t.padding,
+        area.y + @divTrunc(area.h - Surface.textHeight(), 2),
+        area.w - t.padding * 2,
+        said,
+        t.warning,
+    );
+    ctx.addDamage(area);
+}
+
+var notice_shown: u32 = 0;
+
+fn fingerprintOf(text: []const u8) u32 {
+    var value: u32 = 2166136261;
+    for (text) |ch| value = (value ^ ch) *% 16777619;
+    return value;
+}
+
 fn drawInput(area: Rect) void {
     const t = theme.current();
     if (ctx.damaged) {
@@ -1042,14 +1075,97 @@ fn typed(codepoint: u32) bool {
 }
 
 fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
-    _ = mods;
     switch (code) {
-        .page_up, .page_down => {
-            following = code == .page_down;
+        // Through the rooms, in the order the rail shows them.
+        .page_up, .page_down => if (mods.control) {
+            step(if (code == .page_down) 1 else -1);
+            return true;
+        } else {
+            const pane = @max(transcript_height - Surface.textHeight(), Surface.textHeight());
+            scrollBy(if (code == .page_up) -pane else pane);
+            return true;
+        },
+        .home, .end => if (mods.control) {
+            scrollBy(if (code == .home) -transcript_scroll.content_h else transcript_scroll.content_h);
+            return true;
+        },
+        // The whole of what an IRC client's Tab is for: the name in front of
+        // you, finished. Taken before the toolkit sees it, which would
+        // otherwise move the keyboard off the line you are typing on.
+        .tab => {
+            if (complete()) return true;
             return false;
         },
-        else => return false,
+        else => {},
     }
+    return false;
+}
+
+/// How tall the transcript was drawn, for a page of scrolling.
+var transcript_height: i32 = 0;
+
+fn scrollBy(delta: i32) void {
+    const limit = @max(transcript_scroll.content_h - transcript_height, 0);
+    transcript_scroll.offset = @max(0, @min(transcript_scroll.offset + delta, limit));
+    following = transcript_scroll.offset >= limit;
+    ctx.damage();
+}
+
+/// Move `by` rooms along the rail, wrapping at either end.
+fn step(by: i32) void {
+    const rows = layout.rowCount(&model);
+    if (rows == 0) return;
+    const at = @as(i32, @intCast(layout.rowOf(&model, model.open)));
+    const count = @as(i32, @intCast(rows));
+    const wanted = @mod(at + by + count, count);
+    if (layout.roomAt(&model, @intCast(wanted))) |which| {
+        model.show(which);
+        following = true;
+        ctx.damage();
+    }
+}
+
+/// Finish the name being typed, from who is in the room. True when there was
+/// one to finish.
+fn complete() bool {
+    const room = model.current() orelse return false;
+    const typed_text = input.slice();
+    const from = lastWordStart(typed_text);
+    const partial = typed_text[from..];
+    if (partial.len == 0) return false;
+
+    const mapping = model.mappingOf(room.network);
+    var here: [rooms.MEMBER_MAX]usize = undefined;
+    for (model.membersOf(model.open, &here)) |which| {
+        const nick = model.members.items[which].nick.slice();
+        if (nick.len <= partial.len) continue;
+        if (!startsWithFold(mapping, nick, partial)) continue;
+
+        var line: [rooms.NICK_MAX + 4]u8 = undefined;
+        // A name at the start of a line is addressed to somebody, and the
+        // colon is what every network's clients read as addressing.
+        const ending: []const u8 = if (from == 0) ": " else " ";
+        const finished = std.fmt.bufPrint(&line, "{s}{s}", .{ nick, ending }) catch return false;
+
+        var whole: [INPUT_MAX]u8 = undefined;
+        const said = std.fmt.bufPrint(&whole, "{s}{s}", .{ typed_text[0..from], finished }) catch return false;
+        input.set(said);
+        ctx.damage();
+        return true;
+    }
+    return false;
+}
+
+/// Where the word being typed starts.
+fn lastWordStart(text: []const u8) usize {
+    var at = text.len;
+    while (at != 0 and text[at - 1] != ' ') at -= 1;
+    return at;
+}
+
+fn startsWithFold(mapping: irc.support.Casemapping, whole: []const u8, start: []const u8) bool {
+    if (whole.len < start.len) return false;
+    return mapping.eql(whole[0..start.len], start);
 }
 
 fn tick() bool {
@@ -1075,6 +1191,14 @@ fn tick() bool {
 fn submit() void {
     const text = input.slice();
     if (text.len == 0) return;
+
+    // What was said about the last thing tried stands until the next thing
+    // is tried. Clearing it on any key would take it away under the fingers
+    // of somebody typing the very command it was about.
+    if (notice.len != 0) {
+        notice.clear();
+        ctx.damage();
+    }
     if (text[0] == '/') command(text[1..]) else speak(text);
     input.clear();
     ctx.damage();

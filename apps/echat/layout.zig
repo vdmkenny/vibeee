@@ -36,6 +36,12 @@ pub fn membersWidth() i32 {
     return theme.enlarged(MEMBERS);
 }
 
+/// A strip the window uses to say something itself. Only there when there is
+/// something to say.
+pub fn noticeHeight() i32 {
+    return Surface.textHeight() + theme.enlarged(2);
+}
+
 /// The panes of the window, in the order they are drawn.
 pub const Panes = struct {
     /// The places this window has, with the nick at its foot.
@@ -48,21 +54,24 @@ pub const Panes = struct {
     members: Rect,
     /// What you are typing.
     input: Rect,
+    /// What the window has to say. Zero-height when it has nothing.
+    notice: Rect,
 };
 
 /// Lay out a window. `with_members` is false for a server tab and a private
 /// conversation, where a list of who is here would say nothing.
-pub fn place(area: Rect, with_members: bool) Panes {
+pub fn place(area: Rect, with_members: bool, with_notice: bool) Panes {
     const rail = eui.rail.column(area, 0);
     const rest = eui.rail.beside(area, rail);
 
     const header: Rect = .{ .x = rest.x, .y = rest.y, .w = rest.w, .h = headerHeight() };
     const input_h = inputHeight();
+    const notice_h: i32 = if (with_notice) noticeHeight() else 0;
     const middle: Rect = .{
         .x = rest.x,
         .y = header.bottom(),
         .w = rest.w,
-        .h = rest.h - header.h - input_h,
+        .h = rest.h - header.h - input_h - notice_h,
     };
 
     // The list of who is here takes from the right, and the words take the
@@ -85,7 +94,8 @@ pub fn place(area: Rect, with_members: bool) Panes {
             .h = middle.h,
         },
         .members = members,
-        .input = .{ .x = rest.x, .y = middle.bottom(), .w = rest.w, .h = input_h },
+        .notice = .{ .x = rest.x, .y = middle.bottom(), .w = rest.w, .h = notice_h },
+        .input = .{ .x = rest.x, .y = middle.bottom() + notice_h, .w = rest.w, .h = input_h },
     };
 }
 
@@ -191,6 +201,21 @@ pub fn railItems(model: *const rooms.Model, into: []eui.rail.Item) []const eui.r
     return into[0..count];
 }
 
+/// How many rows the rail has: every network and every room on it.
+pub fn rowCount(model: *const rooms.Model) usize {
+    return model.networks.len + model.rooms.len - countTabs(model);
+}
+
+/// Networks whose own tab is a room, which every network's is: counted so a
+/// tab is not counted twice.
+fn countTabs(model: *const rooms.Model) usize {
+    var count: usize = 0;
+    for (model.networks.slice()) |network| {
+        if (network.tab < model.rooms.len) count += 1;
+    }
+    return count;
+}
+
 /// Which room a rail row stands for, or null for a row that is not there.
 pub fn roomAt(model: *const rooms.Model, row: usize) ?u8 {
     var count: usize = 0;
@@ -238,7 +263,7 @@ fn emptyModel() !*rooms.Model {
 
 test "the panes fill the window and do not overlap" {
     withFaces();
-    const panes = place(screen, true);
+    const panes = place(screen, true, false);
 
     try testing.expectEqual(screen.x, panes.rail.x);
     try testing.expectEqual(screen.h, panes.rail.h);
@@ -257,24 +282,37 @@ test "the panes fill the window and do not overlap" {
 
 test "a room with nobody in it gives the words the whole width" {
     withFaces();
-    const with = place(screen, true);
-    const without = place(screen, false);
+    const with = place(screen, true, false);
+    const without = place(screen, false, false);
     try testing.expectEqual(@as(i32, 0), without.members.w);
     try testing.expect(without.transcript.w > with.transcript.w);
     try testing.expectEqual(without.header.right(), without.transcript.right());
 }
 
+test "a notice takes its strip from the words, not from the line you type" {
+    withFaces();
+    const quiet = place(screen, true, false);
+    const talking = place(screen, true, true);
+    try testing.expectEqual(@as(i32, 0), quiet.notice.h);
+    try testing.expect(talking.notice.h > 0);
+    try testing.expectEqual(quiet.input.h, talking.input.h);
+    try testing.expectEqual(quiet.input.bottom(), talking.input.bottom());
+    try testing.expectEqual(talking.transcript.h + talking.notice.h, quiet.transcript.h);
+    try testing.expectEqual(talking.transcript.bottom(), talking.notice.y);
+    try testing.expectEqual(talking.notice.bottom(), talking.input.y);
+}
+
 test "a window too narrow for both keeps the words" {
     withFaces();
     const narrow = Rect{ .x = 0, .y = 0, .w = 320, .h = 240 };
-    const panes = place(narrow, true);
+    const panes = place(narrow, true, false);
     try testing.expectEqual(@as(i32, 0), panes.members.w);
     try testing.expect(panes.transcript.w > 0);
 }
 
 test "members stack under the strip that counts them" {
     withFaces();
-    const panes = place(screen, true);
+    const panes = place(screen, true, false);
     const first = memberRow(panes.members, 0);
     try testing.expectEqual(panes.members.y + headerHeight(), first.y);
     try testing.expectEqual(panes.members.w, first.w);
@@ -312,6 +350,8 @@ test "the rail lists each network and holds its rooms under it" {
         try testing.expectEqual(row, rowOf(built, which));
     }
     try testing.expectEqual(@as(?u8, null), roomAt(built, order.len));
+    try testing.expectEqual(order.len, rowCount(built));
+    try testing.expectEqual(items.len, rowCount(built));
 }
 
 test "what is waiting in a room shows on its rail row" {
