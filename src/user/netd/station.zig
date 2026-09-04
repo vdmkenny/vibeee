@@ -57,6 +57,17 @@ const RETRY_MICROS: u64 = 10_000_000;
 /// to matter on a machine that is listening, rare enough to cost nothing.
 const STIR_MICROS: u64 = 1_000_000;
 
+/// How often the radio's long calibration runs.
+///
+/// The long one measures the noise floor, and measuring it means waiting on
+/// the hardware to say it has finished. That wait is the reference's own, and
+/// its patience runs to fifty milliseconds of looking; a dwell is two hundred.
+/// So on the dwell's cadence a slow measurement costs a quarter of the machine
+/// and an unjoined radio is the busiest thing on it. A noise floor follows the
+/// room rather than the channel, and the room does not change five times a
+/// second.
+const LONG_CAL_MICROS: u64 = 30_000_000;
+
 const State = struct {
     radio: ?*dev_mod.NicDev = null,
     plan: wifi.Regulatory = .conservative,
@@ -81,6 +92,7 @@ const State = struct {
     hops: usize = 0,
     next_hop_at: u64 = 0,
     next_stir_at: u64 = 0,
+    next_long_cal_at: u64 = 0,
     full_said: bool = false,
     /// The join in hand, or none while no network is named.
     join: ?join_mod.Join = null,
@@ -628,10 +640,15 @@ fn hop() void {
     // Before anything that can return early: this is what says the dwell
     // is not over, and a pass that leaves it in the past is a loop that
     // never waits.
-    state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+    const now = sys.clockMicros();
+    state.next_hop_at = now + DWELL_MICROS;
 
     const it = radio() orelse return;
-    it.ops.calibrate(it.nic, true);
+
+    // The short calibration every dwell, the long one on its own cadence.
+    const long = now >= state.next_long_cal_at;
+    if (long) state.next_long_cal_at = now + LONG_CAL_MICROS;
+    it.ops.calibrate(it.nic, long);
     // What the last dwell's failures came to. Asked here because a dwell
     // is the period the radio is judged over: long enough for a count to
     // mean something, short enough to follow a room that changes.

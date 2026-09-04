@@ -588,6 +588,13 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.signed(chip.store.section(.g).noise_floor_threshold);
     out.text(", heard and not understood ");
     out.decimal(phy_errors);
+    // Each of these is a wait that spent its whole patience looking at a
+    // register that never changed, which is fifty milliseconds of this
+    // machine doing nothing else.
+    if (pace.exhausted > 0) {
+        out.text(", waits that ran out ");
+        out.decimal(pace.exhausted);
+    }
     // Read back rather than assumed. Everything above says what the radio
     // was told; these say what it is holding, and a setting that did not
     // survive whatever came after it looks exactly like one that was never

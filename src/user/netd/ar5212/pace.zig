@@ -28,6 +28,11 @@ pub fn delay(micros: u32) void {
 pub const DEFAULT_TRIES = 5000;
 const LOOK_MICROS = 10;
 
+/// Waits that ran out. Each one is its whole patience spent looking, which at
+/// the default is fifty milliseconds of this machine doing nothing else, so a
+/// count that climbs says where the time went.
+pub var exhausted: u32 = 0;
+
 /// Poll `field` of `register` until it reads `wanted`, or the tries run
 /// out. True when it did.
 pub fn until(regs: Regs, register: regs_mod.R, comptime Word: type, comptime field: []const u8, wanted: anytype, tries: u32) bool {
@@ -37,5 +42,6 @@ pub fn until(regs: Regs, register: regs_mod.R, comptime Word: type, comptime fie
         if (@field(word, field) == wanted) return true;
         delay(LOOK_MICROS);
     }
+    exhausted +%= 1;
     return false;
 }
