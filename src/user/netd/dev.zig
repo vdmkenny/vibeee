@@ -210,6 +210,16 @@ pub var radio_tx_done: ?*const fn (dev: *NicDev, outcome: lib.rates.Outcome) voi
 /// A radio has its chains and is listening: the station may begin.
 pub var radio_up: ?*const fn (dev: *NicDev) void = null;
 
+/// A radio has stopped: powered down, or taken away. Everything above it was
+/// about that radio and none of it means anything now.
+pub var radio_down: ?*const fn (dev: *NicDev) void = null;
+
+/// Say a radio has gone, for whoever was driving it.
+pub fn radioGone(dev: *NicDev) void {
+    if (dev.ops.radio == null) return;
+    if (radio_down) |down| down(dev);
+}
+
 /// Something a watcher would want to know changed: a network heard, beside
 /// the addresses the stack already announces. The service's one event.
 pub var changed: ?*const fn () void = null;

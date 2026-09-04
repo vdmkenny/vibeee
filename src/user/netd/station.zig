@@ -157,6 +157,7 @@ pub fn init() void {
     dev_mod.radio_tx = send;
     dev_mod.radio_tx_done = sent;
     dev_mod.radio_up = begin;
+    dev_mod.radio_down = forget;
     dev_mod.radio_config = configure;
 }
 
@@ -385,6 +386,24 @@ fn begin(nic: *dev_mod.NicDev) void {
     state.channel_index = 0;
     state.hops = 0;
     state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+}
+
+/// The radio has gone. Everything here was about that radio, and a station
+/// still holding it asks the loop to wake for a sweep of a band nothing is
+/// listening to.
+fn forget(nic: *dev_mod.NicDev) void {
+    if (state.radio != nic) return;
+    state.radio = null;
+    state.join = null;
+    state.pending = null;
+    state.keys = null;
+    state.wanted = null;
+    state.held = null;
+    state.hops = 0;
+    state.networks.clear();
+    state.ordered = true;
+    state.asked = .{};
+    if (dev_mod.changed) |tell| tell();
 }
 
 /// The slot's plan and ceiling, whenever the configuration says.

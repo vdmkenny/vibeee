@@ -313,16 +313,41 @@ fn attach(iface: *dev.NicDev) bool {
 fn detach(iface: *dev.NicDev) void {
     if (!iface.driving) return;
     iface.driving = false;
+    dev.radioGone(iface);
     iface.ops.stop(iface);
     releaseIrq(iface);
     _ = sys.releaseDevice(iface.location);
 }
 
+/// Stop waiting on an interface's line, and give the line back when that was
+/// the last interface on it.
+///
+/// One handle serves every interface on a line, so the one that attached is
+/// not always the last to leave: it hands the line to whoever is still on it
+/// rather than closing it under them.
+///
+/// The handle leaves the wait set before it is closed, and this is the whole
+/// reason this is not two lines. A closed handle in the set makes every wait
+/// return at once with an error instead of blocking, so the loop stops waiting
+/// for anything and runs flat out; and a number closed first can be handed
+/// straight back out for something else, which would leave the set waiting on
+/// whatever that turned out to be.
 fn releaseIrq(iface: *dev.NicDev) void {
-    if (iface.irq_owned and iface.irq != 0) _ = sys.close(iface.irq);
+    const handle = iface.irq;
+    const owned = iface.irq_owned;
     iface.irq = 0;
     iface.irq_gsi = null;
     iface.irq_owned = false;
+    if (handle == 0) return;
+
+    for (ifaces[0..count]) |*other| {
+        if (other == iface or other.irq != handle) continue;
+        if (owned) other.irq_owned = true;
+        return;
+    }
+
+    _ = sources.remove(handle);
+    if (owned) _ = sys.close(handle);
 }
 
 /// Which line this adapter's interrupt arrives on.
@@ -346,13 +371,7 @@ fn routedLine(iface: *dev.NicDev) ?u32 {
 /// with nothing more behind it. An interface that arrived after the loop
 /// started joins the same way the ones at boot did.
 fn watchLine(iface: *dev.NicDev) void {
-    if (iface.irq == 0) return;
-    for (sources[1..source_count]) |s| {
-        if (s == iface.irq) return;
-    }
-    if (source_count >= sources.len) return;
-    sources[source_count] = iface.irq;
-    source_count += 1;
+    _ = sources.add(iface.irq);
 }
 
 /// What the loop waits on: the channel, one handle per interface's line, the
@@ -363,12 +382,11 @@ fn watchLine(iface: *dev.NicDev) void {
 /// Here rather than inside the loop because an interface can arrive after the
 /// loop has started: a radio switched on is a line to wait on that nothing
 /// was waiting on a moment ago.
-var sources: [MAX_IFACES + 5]u32 = undefined;
-var source_count: usize = 0;
+var sources: lib.waitset.WaitSet(MAX_IFACES + 5) = .{};
 
 fn serve(channel: u32) noreturn {
-    source_count = 1;
-    sources[0] = channel;
+    sources = .{};
+    _ = sources.add(channel);
 
     const event = sys.eventCreate();
     if (event >= 0) {
@@ -383,8 +401,7 @@ fn serve(channel: u32) noreturn {
     var bell: ?u32 = null;
     if (bridge.init(channel)) |bell_handle| {
         bell = bell_handle;
-        sources[source_count] = bell_handle;
-        source_count += 1;
+        _ = sources.add(bell_handle);
     } else {
         log.warn("netd", "no doorbell; sockets are off");
     }
@@ -394,8 +411,7 @@ fn serve(channel: u32) noreturn {
     var cfg_watch: ?u32 = null;
     if (settings.watch("net")) |handle| {
         cfg_watch = handle;
-        sources[source_count] = handle;
-        source_count += 1;
+        _ = sources.add(handle);
     } else |_| {
         log.warn("netd", "no settings watch; configuration is boot-time only");
     }
@@ -407,8 +423,7 @@ fn serve(channel: u32) noreturn {
     var hotkey_watch: ?u32 = null;
     if (platform.watchHotkeys()) |handle| {
         hotkey_watch = handle;
-        sources[source_count] = handle;
-        source_count += 1;
+        _ = sources.add(handle);
     } else |_| {
         log.warn("netd", "the platform service reports no hotkeys; the wireless key does nothing");
     }
@@ -417,8 +432,7 @@ fn serve(channel: u32) noreturn {
     // leaving; the lease and the sockets are the kernel's to unwind.
     const quit_event = quit.event();
     if (quit_event != 0) {
-        sources[source_count] = quit_event;
-        source_count += 1;
+        _ = sources.add(quit_event);
     }
 
     while (true) {
@@ -429,14 +443,14 @@ fn serve(channel: u32) noreturn {
             @intCast(@min(us, std.math.maxInt(usize) - 1))
         else
             sys.FOREVER;
-        const woke = sys.waitMany(sources[0..source_count], timeout);
+        const woke = sys.waitMany(sources.slice(), timeout);
         load.wakes +%= 1;
         stack.tick();
         station.tick();
         if (woke >= 0) dispatch: {
             const index = @as(usize, @intCast(woke));
-            if (index >= source_count) break :dispatch;
-            const handle = sources[index];
+            if (index >= sources.len) break :dispatch;
+            const handle = sources.slice()[index];
 
             if (handle == channel) {
                 drain(channel);
