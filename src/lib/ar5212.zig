@@ -124,6 +124,72 @@ pub const TxStatus1 = packed struct(u32) {
     _25: u7 = 0,
 };
 
+/// The check bytes the hardware appends to every frame it sends. They are
+/// not in the buffer, and they are counted in the length the frame states.
+pub const CHECK_BYTES = 4;
+
+/// The longest frame a descriptor can state, the check bytes included.
+pub const MAX_FRAME = std.math.maxInt(u12) - CHECK_BYTES;
+
+/// What a frame needs said about it before it can go out.
+pub const Send = struct {
+    /// The frame as it sits in the buffer: header and body, no check bytes.
+    /// No longer than `MAX_FRAME`, which the buffer it came from proves.
+    frame_bytes: u12,
+    /// How fast to send it, and how many times to try before giving up.
+    rate: RateCode,
+    tries: u4 = 4,
+    /// Half decibel-milliwatts, capped by the table the reset programmed.
+    power: u6,
+    kind: FrameType = .normal,
+    /// Cleared for the group addresses, which nothing answers.
+    acknowledged: bool = true,
+    /// The key the body is ciphered with, or none to send it in clear.
+    key: ?u7 = null,
+    /// Which aerials the frame may leave by; zero leaves the choice made
+    /// at reset standing.
+    antenna: u4 = 0,
+
+    /// What the hardware is told the frame measures: the buffer, plus the
+    /// check bytes it appends itself.
+    pub fn statedLength(self: Send) u12 {
+        return self.frame_bytes + CHECK_BYTES;
+    }
+};
+
+/// What a transmission left behind, both status words.
+pub const Sent = struct {
+    status0: TxStatus0,
+    status1: TxStatus1,
+
+    /// Whether the hardware is finished with the descriptor. Until it is,
+    /// the rest of the words mean nothing.
+    pub fn done(self: Sent) bool {
+        return self.status1.done;
+    }
+
+    /// Why the frame did not go, or null if it did.
+    pub fn failure(self: Sent) ?Failure {
+        if (self.status0.sent) return null;
+        if (self.status0.fifo_underrun) return .underrun;
+        if (self.status0.excessive_retries) return .unanswered;
+        if (self.status0.filtered) return .filtered;
+        return .refused;
+    }
+};
+
+/// The ways a frame fails to leave.
+pub const Failure = enum {
+    /// The descriptor was read slower than the air needed it.
+    underrun,
+    /// Every try went unacknowledged.
+    unanswered,
+    /// The hardware held the frame back rather than sending it.
+    filtered,
+    /// Finished, unsent, and for none of the stated reasons.
+    refused,
+};
+
 /// A receive descriptor's second word: how much buffer it offers, and
 /// whether the hardware raises an interrupt on filling it.
 pub const RxControl1 = packed struct(u32) {
@@ -301,6 +367,39 @@ pub const Desc = extern struct {
         self.body = .{ .rx = .{
             .control1 = @bitCast(RxControl1{ .buffer_length = buffer_bytes, .interrupt_request = true }),
         } };
+    }
+
+    /// Hand a transmit descriptor to the radio: where the frame is, how
+    /// long, how fast, and how hard to try. The status words are cleared,
+    /// so a reader can tell this frame's outcome from the last one's.
+    pub fn armTransmit(self: *volatile Desc, buffer_physical: u32, next_physical: u32, send: Send) void {
+        self.link = next_physical;
+        self.buffer = buffer_physical;
+        self.body = .{ .tx = .{
+            .control0 = @bitCast(TxControl0{
+                .frame_length = send.statedLength(),
+                .transmit_power = send.power,
+                .antenna_mode = send.antenna,
+                .interrupt_request = true,
+                .destination_index_valid = send.key != null,
+            }),
+            .control1 = @bitCast(TxControl1{
+                .buffer_length = send.frame_bytes,
+                .destination_index = send.key orelse 0,
+                .frame_type = send.kind,
+                .no_acknowledgement = !send.acknowledged,
+            }),
+            .control2 = @bitCast(TxControl2{ .tries0 = send.tries }),
+            .control3 = @bitCast(TxControl3{ .rate0 = send.rate }),
+        } };
+    }
+
+    /// What a transmission reports, both status words.
+    pub fn sent(self: *const volatile Desc) Sent {
+        return .{
+            .status0 = @bitCast(self.body.tx.status0),
+            .status1 = @bitCast(self.body.tx.status1),
+        };
     }
 
     /// What a reception reports, both status words.
@@ -1546,6 +1645,79 @@ test "an armed receive descriptor belongs to the radio, names its buffer, and cl
     const report = desc.received();
     try testing.expect(!report.status1.done);
     try testing.expectEqual(@as(u12, 0), report.status0.data_length);
+}
+
+test "an armed transmit descriptor states the frame with its check bytes and the buffer without them" {
+    var desc: Desc = .{};
+    // Stale status from whatever went out of this slot last.
+    desc.body = .{ .tx = .{ .status0 = 0xFFFF_FFFF, .status1 = 0xFFFF_FFFF } };
+
+    desc.armTransmit(0x0040_0000, 0, .{ .frame_bytes = 100, .rate = .m1, .power = 30 });
+
+    try testing.expectEqual(@as(u32, 0), desc.link);
+    try testing.expectEqual(@as(u32, 0x0040_0000), desc.buffer);
+
+    const control0: TxControl0 = @bitCast(desc.body.tx.control0);
+    const control1: TxControl1 = @bitCast(desc.body.tx.control1);
+    try testing.expectEqual(@as(u12, 104), control0.frame_length);
+    try testing.expectEqual(@as(u12, 100), control1.buffer_length);
+    try testing.expectEqual(@as(u6, 30), control0.transmit_power);
+    try testing.expect(control0.interrupt_request);
+    try testing.expect(!control1.more);
+
+    // Arming clears what the last frame left, so its outcome cannot be
+    // read as this one's.
+    try testing.expect(!desc.sent().done());
+}
+
+test "a transmit descriptor names its key only when it has one, and asks for no answer to a group frame" {
+    var plain: Desc = .{};
+    plain.armTransmit(0, 0, .{ .frame_bytes = 60, .rate = .m6, .power = 20 });
+    var ctl0: TxControl0 = @bitCast(plain.body.tx.control0);
+    var ctl1: TxControl1 = @bitCast(plain.body.tx.control1);
+    try testing.expect(!ctl0.destination_index_valid);
+    try testing.expectEqual(@as(u7, 0), ctl1.destination_index);
+    try testing.expect(!ctl1.no_acknowledgement);
+
+    var ciphered: Desc = .{};
+    ciphered.armTransmit(0, 0, .{
+        .frame_bytes = 60,
+        .rate = .m6,
+        .power = 20,
+        .key = 3,
+        .acknowledged = false,
+        .kind = .beacon,
+        .tries = 1,
+    });
+    ctl0 = @bitCast(ciphered.body.tx.control0);
+    ctl1 = @bitCast(ciphered.body.tx.control1);
+    try testing.expect(ctl0.destination_index_valid);
+    try testing.expectEqual(@as(u7, 3), ctl1.destination_index);
+    try testing.expect(ctl1.no_acknowledgement);
+    try testing.expectEqual(FrameType.beacon, ctl1.frame_type);
+
+    const ctl2: TxControl2 = @bitCast(ciphered.body.tx.control2);
+    const ctl3: TxControl3 = @bitCast(ciphered.body.tx.control3);
+    try testing.expectEqual(@as(u4, 1), ctl2.tries0);
+    try testing.expectEqual(RateCode.m6, ctl3.rate0);
+}
+
+test "a finished transmission tells a sent frame from each way of failing" {
+    const cases = [_]struct { status0: TxStatus0, want: ?Failure }{
+        .{ .status0 = .{ .sent = true }, .want = null },
+        .{ .status0 = .{ .fifo_underrun = true }, .want = .underrun },
+        .{ .status0 = .{ .excessive_retries = true }, .want = .unanswered },
+        .{ .status0 = .{ .filtered = true }, .want = .filtered },
+        .{ .status0 = .{}, .want = .refused },
+    };
+    for (cases) |case| {
+        const report = Sent{ .status0 = case.status0, .status1 = .{ .done = true } };
+        try testing.expect(report.done());
+        try testing.expectEqual(case.want, report.failure());
+    }
+
+    // Nothing is known until the hardware says it is finished.
+    try testing.expect(!(Sent{ .status0 = .{}, .status1 = .{} }).done());
 }
 
 test "a completed reception reports its length, rate and signal, and whether it is worth keeping" {

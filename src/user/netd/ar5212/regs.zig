@@ -39,12 +39,19 @@ pub const R = enum(usize) {
     tx_pointer_0 = 0x0800,
     queue_enable = 0x0840,
     queue_disable = 0x0880,
+    queue_misc_0 = 0x09C0,
     queue_status_0 = 0x0A00,
+    // The DCU's own words alternate with the global ones: ten per queue
+    // from each base, then the setting that governs all of them.
     dcu_queue_mask_0 = 0x1000,
     ifs_sifs = 0x1030,
+    dcu_local_ifs_0 = 0x1040,
     ifs_slot = 0x1070,
+    dcu_retry_limit_0 = 0x1080,
     ifs_eifs = 0x10B0,
+    dcu_channel_time_0 = 0x10C0,
     ifs_misc = 0x10F0,
+    dcu_misc_0 = 0x1100,
     sequence_number = 0x1140,
 
     // Reset, sleep and the bus.
@@ -174,6 +181,26 @@ pub fn dcuQueueMask(dcu: u4) usize {
     return @intFromEnum(R.dcu_queue_mask_0) + @as(usize, dcu) * 4;
 }
 
+pub fn queueMisc(queue: u4) usize {
+    return @intFromEnum(R.queue_misc_0) + @as(usize, queue) * 4;
+}
+
+pub fn dcuLocalIfs(dcu: u4) usize {
+    return @intFromEnum(R.dcu_local_ifs_0) + @as(usize, dcu) * 4;
+}
+
+pub fn dcuRetryLimit(dcu: u4) usize {
+    return @intFromEnum(R.dcu_retry_limit_0) + @as(usize, dcu) * 4;
+}
+
+pub fn dcuChannelTime(dcu: u4) usize {
+    return @intFromEnum(R.dcu_channel_time_0) + @as(usize, dcu) * 4;
+}
+
+pub fn dcuMisc(dcu: u4) usize {
+    return @intFromEnum(R.dcu_misc_0) + @as(usize, dcu) * 4;
+}
+
 pub fn rateDuration(code: lib.ar5212.RateCode) usize {
     return @intFromEnum(R.rate_duration_0) + @as(usize, @intFromEnum(code)) * 4;
 }
@@ -196,6 +223,14 @@ pub const Regs = struct {
 
     pub fn writeAt(self: Regs, offset: usize, value: u32) void {
         self.window.writeAt(offset, value);
+    }
+
+    pub fn putAt(self: Regs, offset: usize, word: anytype) void {
+        self.writeAt(offset, @bitCast(word));
+    }
+
+    pub fn getAt(self: Regs, offset: usize, comptime Word: type) Word {
+        return @bitCast(self.readAt(offset));
     }
 
     pub fn readAt(self: Regs, offset: usize) u32 {
@@ -346,6 +381,153 @@ pub const QueueMask = packed struct(u32) {
 
     pub const all = QueueMask{ .queues = std.math.maxInt(u10) };
 };
+
+/// When a queue's frames may start: at the first chance the medium gives,
+/// or held for one of the beacon's rhythms.
+pub const Scheduling = enum(u4) {
+    as_soon_as_possible = 0,
+    constant_bit_rate = 1,
+    beacon_gated = 2,
+    tim_gated = 3,
+    beacon_sent_gated = 4,
+    _,
+};
+
+/// A queue's scheduling and the counters it keeps.
+pub const QueueMisc = packed struct(u32) {
+    scheduling: Scheduling = .as_soon_as_possible,
+    one_shot: bool = false,
+    hold_count_while_queue_empty: bool = false,
+    hold_count_while_beacon_empty: bool = false,
+    carries_beacons: bool = false,
+    count_limit: bool = false,
+    clear_on_ready_time: bool = false,
+    reset_count: bool = false,
+    /// Let the DCU end a frame early when the queue has nothing more.
+    early_termination: bool = false,
+    compression: bool = false,
+    _13: u19 = 0,
+};
+
+/// How long a queue waits before it may talk: the contention window it
+/// backs off within, and the fixed space ahead of that.
+pub const LocalIfs = packed struct(u32) {
+    contention_min: u10 = 0,
+    contention_max: u10 = 0,
+    arbitration_space: u8 = 0,
+    _28: u4 = 0,
+};
+
+/// How many times a frame and a station may try.
+pub const RetryLimit = packed struct(u32) {
+    frame_short: u4 = 0,
+    frame_long: u4 = 0,
+    station_short: u6 = 0,
+    station_long: u6 = 0,
+    _20: u12 = 0,
+};
+
+/// How long a queue may hold the medium once it has it.
+pub const ChannelTime = packed struct(u32) {
+    duration: u20 = 0,
+    enabled: bool = false,
+    _21: u11 = 0,
+};
+
+/// What a virtual collision does to the frame that lost it.
+pub const Collision = enum(u2) {
+    /// Back off, as a real collision would.
+    back_off = 0,
+    /// Carry on regardless.
+    ignore = 1,
+    _,
+};
+
+/// Which other queues a queue locks out while it holds the medium.
+pub const Lockout = enum(u2) {
+    none = 0,
+    within_frame = 1,
+    global = 2,
+    _,
+};
+
+/// The rest of a queue's manners.
+pub const DcuMisc = packed struct(u32) {
+    backoff_threshold: u6 = 0,
+    end_series_on_rts_failure: bool = false,
+    end_series_on_window_expiry: bool = false,
+    /// Hold the medium between the pieces of a split frame.
+    wait_for_fragment: bool = false,
+    backoff_between_fragments: bool = false,
+    _10: u1 = 0,
+    poll_enabled: bool = false,
+    backoff_persistence: bool = false,
+    prefetch_enabled: bool = false,
+    virtual_collision: Collision = .back_off,
+    carries_beacons: bool = false,
+    lockout: Lockout = .none,
+    ignore_lockout: bool = false,
+    hold_sequence_number: bool = false,
+    no_backoff_after_frame: bool = false,
+    virtual_collision_policy: bool = false,
+    blown_space_policy: bool = false,
+    _24: u8 = 0,
+};
+
+/// The first secondary mask: which queues report a frame sent, and which
+/// report a descriptor finished. A cause asked for in the primary mask is
+/// still silent until the queue it belongs to is named here.
+pub const InterruptsS0 = packed struct(u32) {
+    tx_ok: u10 = 0,
+    _10: u6 = 0,
+    tx_descriptor: u10 = 0,
+    _26: u6 = 0,
+};
+
+/// The second: which queues report a frame that failed, and which report
+/// a chain run to its end.
+pub const InterruptsS1 = packed struct(u32) {
+    tx_error: u10 = 0,
+    _10: u6 = 0,
+    tx_end_of_list: u10 = 0,
+    _26: u6 = 0,
+};
+
+comptime {
+    // The bit positions the reference names.
+    if (@as(u32, @bitCast(QueueMisc{ .scheduling = .beacon_gated })) != 0x0000_0002 or
+        @as(u32, @bitCast(QueueMisc{ .early_termination = true })) != 0x0000_0800 or
+        @as(u32, @bitCast(QueueMisc{ .carries_beacons = true })) != 0x0000_0080)
+    {
+        @compileError("a queue's scheduling word drifted");
+    }
+    if (@as(u32, @bitCast(LocalIfs{ .contention_max = 1 })) != 0x0000_0400 or
+        @as(u32, @bitCast(LocalIfs{ .arbitration_space = 1 })) != 0x0010_0000)
+    {
+        @compileError("a queue's spacing word drifted");
+    }
+    if (@as(u32, @bitCast(RetryLimit{ .frame_long = 1 })) != 0x0000_0010 or
+        @as(u32, @bitCast(RetryLimit{ .station_short = 1 })) != 0x0000_0100 or
+        @as(u32, @bitCast(RetryLimit{ .station_long = 1 })) != 0x0000_4000)
+    {
+        @compileError("a queue's retry word drifted");
+    }
+    if (@as(u32, @bitCast(ChannelTime{ .enabled = true })) != 0x0010_0000) {
+        @compileError("a queue's holding word drifted");
+    }
+    if (@as(u32, @bitCast(DcuMisc{ .wait_for_fragment = true })) != 0x0000_0100 or
+        @as(u32, @bitCast(DcuMisc{ .virtual_collision = .ignore })) != 0x0000_4000 or
+        @as(u32, @bitCast(DcuMisc{ .lockout = .global })) != 0x0004_0000 or
+        @as(u32, @bitCast(DcuMisc{ .no_backoff_after_frame = true })) != 0x0020_0000)
+    {
+        @compileError("a queue's manners word drifted");
+    }
+    if (@as(u32, @bitCast(InterruptsS0{ .tx_descriptor = 1 })) != 0x0001_0000 or
+        @as(u32, @bitCast(InterruptsS1{ .tx_end_of_list = 1 })) != 0x0001_0000)
+    {
+        @compileError("a per-queue mask drifted");
+    }
+}
 
 pub const QueueStatus = packed struct(u32) {
     pending_frames: u2 = 0,
