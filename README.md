@@ -127,7 +127,8 @@ work, and it is the BIOS that acts on them. Taking them over waits on two firmwa
 gates this build holds shut, which `man hotkeys` explains; what the keys do is
 reachable by command meanwhile. `hw wireless on` powers the radio, and the radio hears and speaks: `net wifi scan`
 lists the networks in earshot, and `net wifi join` reaches an access point, which
-acknowledges it. Getting an answer back out of that exchange is owed.
+answers. Acting on that answer is owed, and `docs/status.md` says what is known
+about why it is not acted on.
 
 ### Testing Other Netbooks
 

@@ -296,8 +296,11 @@ The driver is split by what it knows:
   synthesizer word for a frequency, the delta-slope coefficients, the analog
   bank serialiser, the noise-floor history, the I/Q correction arithmetic, the
   spur-channel test, the CCK adjustment, the rate-duration table, and the
-  calibration store's whole header layout, read through one `word(offset)`
-  call so a synthetic store is read on the host.
+  calibration store's whole header layout and the amplifier's measured curves,
+  both read through one `word(offset)` call so a synthetic store is read on the
+  host. The curves are packed as one bit stream rather than as fields at fixed
+  offsets, and a compile-time check proves the widths this reads them at fill
+  exactly the words per channel the reference states.
 - `ar5212/eeprom.zig` is that one call over the store's four registers;
   `ar5212/rf2425.zig` is the radio backend, the banks and the synthesizer;
   `ar5212/reset.zig` is the pipeline, transcribed from `ar5212Reset`: wake,
@@ -353,23 +356,37 @@ rescued by its fallback is not credited for the rescue.
 
 ### 5.4 What the rest of the milestone owes
 
-- **The exchange itself.** The access point acknowledges the authentication
-  request and no answer follows. Acknowledgement is a hardware reflex to a
-  well-formed unicast frame, so what is not yet known is whether the answer is
-  never sent, never received, or received and refused. The station counts
-  frames heard while an exchange is in hand, how many were addressed to it, how
-  many were authentications, and how many sends it asked for against how many
-  the radio reports; the radio answers with what its queue did.
-- **Transmit power.** The amplifier's table, interpolated from the store's
-  calibration curves either side of a channel, is arithmetic in
-  `user/netd/ar5212/family.zig` and host-tested, and the driver does not yet program it: a
-  frame goes out at whatever the reset leaves, under the ceiling the regulatory
-  plan sets. The spur-immunity settings a 5.3 store carries, and the self-test
-  the reference runs at attach, are owed with it.
+- **The exchange itself.** The access point answers the authentication request
+  with sequence two, a success status and the cell address being joined, which
+  is every test `sawAuth` applies, and the join does not act on it. Three
+  attempts are made and two frames go out, which is one short and probably the
+  same fault: both follow from the exchange not being on the step it is thought
+  to be on when the service next runs it. The station reports the step it gave
+  up on and the step it was on when the answer arrived; those two settle it.
+- **Association applied at association.** The radio is told the cell's address
+  before authenticating, and the number the cell gives this station only once
+  the key exchange finishes. The access point considers the station associated
+  from its association response onward, so the hardware should be told then.
+- **The last frame of the key exchange.** The join reports itself joined on the
+  pass after it hands over the fourth key frame, without waiting for that frame
+  to be sent, let alone acknowledged. The radio reports what became of every
+  frame, so acknowledgement is available to wait on.
 - **Beacon tracking.** A software beacon-miss timer as the authority on whether
   the cell is still there.
 - **Hardware CCMP** through the key cache where the store permits it, with the
-  software cipher as fallback and oracle.
+  software cipher as fallback and oracle. What runs now is the software cipher
+  for all traffic, which costs the processor and is the same whichever radio is
+  underneath.
+- **Per-rate transmit power.** The amplifier's own table is programmed from the
+  store's curves; the four registers that cap power per rate are not, so those
+  caps stand at whatever the reset leaves. The spur-immunity settings a 5.3
+  store carries, and the self-test the reference runs at attach, are owed with
+  them.
+- **The control rate for acknowledgements**, which is taken from the register as
+  the reset left it rather than chosen from the cell's basic rates.
+- **Transmit end-of-list and underrun** are neither asked for nor acted on. A
+  queue that reaches the end of its chain between a frame being linked on and
+  the queue being told is a queue that can stall.
 - **Kill switch**: the hot-unplug is recognised; the replug that re-runs the
   whole pipeline from power-on state is not yet wired to the device manager's
   rescan.

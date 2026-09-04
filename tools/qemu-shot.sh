@@ -69,14 +69,30 @@ PPM=$(mktemp -u /tmp/vibeee-shot.XXXXXX).ppm
 # itself looks like.
 LOG="${OUT%.png}.log"
 
-qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
-    -display none -vga none -device VGA,edid=on,xres=800,yres=600 -serial "file:$LOG" \
-    -monitor "unix:$SOCK,server,nowait" "$@" &
-QPID=$!
-# Waited for as well as killed, and waited for by asking whether it is still
-# there rather than by `wait`: the next boot opens the same disk image, and
-# QEMU holds that image's write lock until it has actually gone. A boot that
-# starts while the last one still holds the lock does not start at all.
+# The previous boot's emulator holds this disk image's lock until it has
+# actually gone, and it is not always gone the instant it was asked to be. A
+# launch that loses that race exits at once and says so, so the answer is to
+# wait a moment and ask again rather than to guess how long is long enough
+# beforehand.
+start() {
+    qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
+        -display none -vga none -device VGA,edid=on,xres=800,yres=600 -serial "file:$LOG" \
+        -monitor "unix:$SOCK,server,nowait" "$@" &
+    QPID=$!
+
+    # Up to five seconds for the monitor socket, which is what says it is
+    # running. An emulator that failed to start is gone well before that.
+    i=0
+    while [ ! -S "$SOCK" ] && [ $i -lt 50 ]; do
+        if ! kill -0 "$QPID" 2>/dev/null; then return 1; fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    [ -S "$SOCK" ]
+}
+
+# Killed and then waited out, by asking whether it is still there: the next
+# boot opens the same image, and the lock outlives the request to stop.
 gone() {
     kill "$QPID" 2>/dev/null || true
     i=0
@@ -88,13 +104,16 @@ gone() {
 }
 trap gone EXIT
 
-# Wait for the monitor socket rather than sleeping a guessed interval. Its
-# never appearing means the emulator never came up, which is worth saying
-# now and by name: waited out instead, it surfaces half a minute later as a
-# missing screenshot, which is the one thing it is not about.
-i=0; while [ ! -S "$SOCK" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+QPID=""
+tries=0
+while [ $tries -lt 10 ]; do
+    if start "$@"; then break; fi
+    tries=$((tries + 1))
+    sleep 0.5
+done
+
 if [ ! -S "$SOCK" ]; then
-    echo "the emulator did not start: it may still be holding a disk image open" >&2
+    echo "the emulator would not start after $tries attempts; its own reason is above" >&2
     exit 1
 fi
 
