@@ -114,13 +114,23 @@ gone() {
         sleep 0.1
         i=$((i + 1))
     done
+    # Asked to stop and still there: the image's write lock outlives the
+    # process, and the next boot opens the same image. Taken away rather than
+    # left, because a run that cannot start says nothing about the system.
+    if kill -0 "$QPID" 2>/dev/null; then
+        kill -9 "$QPID" 2>/dev/null || true
+        while kill -0 "$QPID" 2>/dev/null; do sleep 0.1; done
+    fi
     rm -f "$SOCK"
 }
 trap gone EXIT
 
+# Long enough to outlast the previous boot letting go of the image: the lock
+# is released when that process is reaped, which under load is seconds after
+# it was asked to stop.
 QPID=""
 tries=0
-while [ $tries -lt 10 ]; do
+while [ $tries -lt 40 ]; do
     if start "$@"; then break; fi
     tries=$((tries + 1))
     sleep 0.5
