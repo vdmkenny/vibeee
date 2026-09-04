@@ -161,7 +161,10 @@ pub fn configurePcie(regs: Regs) void {
 /// Stop the receive and transmit engines and wait for them to say so.
 fn macStop(regs: Regs) bool {
     regs.set(.control, regs_mod.Control, "rx_disable", true);
-    regs.put(.queue_disable, regs_mod.QueueMask.all);
+    regs.holdQueues(regs_mod.QueueMask.all.queues);
+    // However this leaves, the queues are let go of: one still held is one
+    // that cannot be enabled again, and nothing would ever be sent.
+    defer regs.releaseQueues();
 
     var rx_running = true;
     var tx_running = true;

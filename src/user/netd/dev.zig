@@ -118,6 +118,10 @@ pub const RadioOps = struct {
     /// because something changed that makes the old account no evidence.
     /// Not every driver keeps one.
     watchAgain: ?*const fn (dev: *NicDev) void = null,
+    /// Say what became of what it tried to send. Asked where something
+    /// sent went unanswered, because the first question then is whether
+    /// it left at all.
+    sayUnanswered: ?*const fn (dev: *NicDev) void = null,
     /// Say what that account came to, where a stretch has passed with
     /// nothing heard at all.
     sayIfUnheard: ?*const fn (dev: *NicDev) void = null,

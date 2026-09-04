@@ -169,6 +169,7 @@ pub const ops = dev_mod.NicOps{
         .answerFor = answerFor,
         .transmitAt = transmitAt,
         .draw = draw,
+        .sayUnanswered = sayUnanswered,
         .watchAgain = watchAgain,
         .sayIfUnheard = sayIfUnheard,
     },
@@ -728,6 +729,49 @@ pub fn draw(_: *NicDev, into: []u8) bool {
     return noise.draw(into);
 }
 
+/// What became of everything this radio tried to send. Asked where
+/// something sent went unanswered, because the first question then is
+/// whether it was sent at all, and the account and the registers answer
+/// that between them.
+pub fn sayUnanswered(nic: *NicDev) void {
+    if (!device.started or device.gone) return;
+    const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    const regs = chip.regs;
+
+    const enabled = regs.get(.queue_enable, regs_mod.QueueMask).queues;
+    const held = regs.get(.queue_disable, regs_mod.QueueMask).queues;
+    const status: regs_mod.QueueStatus = @bitCast(regs.readAt(regs_mod.queueStatus(QUEUE)));
+
+    log.begin(name, if (nic.stats.tx_pkts == 0) .warn else .dim);
+    out.text("what it sent: ");
+    out.decimal(@intCast(nic.stats.tx_pkts));
+    out.text(" went, ");
+    out.decimal(@intCast(nic.stats.tx_failed));
+    out.text(" did not, ");
+    out.decimal(device.tx_filled);
+    out.text(" still in the queue");
+    if (commonestUnsent()) |common| {
+        out.text("; most often ");
+        out.text(std.enums.tagName(lib.ar5212.Failure, common.why) orelse "of no stated kind");
+        out.text(", ");
+        out.decimal(common.times);
+        out.text(" times");
+    }
+
+    // The registers, because a queue that is held still or was never
+    // pointed anywhere is a different fault from one that sent and was
+    // not answered.
+    out.text(". The queue is ");
+    out.text(if (enabled & (@as(u10, 1) << QUEUE) != 0) "running" else "idle");
+    if (held & (@as(u10, 1) << QUEUE) != 0) out.text(", and held still");
+    out.text(", pointed at ");
+    out.hex(regs.readAt(regs_mod.txPointer(QUEUE)), 8);
+    out.text(", with ");
+    out.decimal(status.pending_frames);
+    out.text(" frames pending");
+    log.end();
+}
+
 /// How frames failed to leave, by kind. A station that cannot get a word
 /// in says which way it is failing rather than only that it is.
 var unsent = std.enums.EnumArray(lib.ar5212.Failure, u32).initFill(0);
@@ -736,9 +780,12 @@ fn noteUnsent(why: lib.ar5212.Failure) void {
     unsent.getPtr(why).* +|= 1;
 }
 
+/// A kind of failure and how often it has been met.
+const Unsent = struct { why: lib.ar5212.Failure, times: u32 };
+
 /// The kind of failure the radio meets most often, if it has met any.
-fn commonestUnsent() ?struct { why: lib.ar5212.Failure, times: u32 } {
-    var worst: ?struct { why: lib.ar5212.Failure, times: u32 } = null;
+fn commonestUnsent() ?Unsent {
+    var worst: ?Unsent = null;
     for (std.enums.values(lib.ar5212.Failure)) |why| {
         const times = unsent.get(why);
         if (times == 0) continue;
@@ -842,8 +889,9 @@ fn startTransmit(regs: Regs) void {
 /// Stop the queue and let go of whatever the service was still holding
 /// room for.
 fn stopTransmit(regs: Regs) void {
-    regs.put(.queue_disable, regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
+    regs.holdQueues(@as(u10, 1) << QUEUE);
     _ = pace.until(regs, .queue_enable, regs_mod.QueueMask, "queues", 0, pace.DEFAULT_TRIES);
+    regs.releaseQueues();
     device.tx_next = 0;
     device.tx_reap = 0;
     device.tx_filled = 0;

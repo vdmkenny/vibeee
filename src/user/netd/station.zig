@@ -368,6 +368,9 @@ fn act(what: join_mod.Action) void {
             out.text("\": ");
             out.text(why.spell());
             log.end();
+            // Nothing answered, so the next thing worth knowing is
+            // whether anything was actually said.
+            if (it.ops.sayUnanswered) |ask| ask(it.nic);
             state.join = null;
             // Kept, and tried again: a network out of earshot now may be
             // in earshot shortly, and nobody should have to ask twice.

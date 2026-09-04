@@ -253,6 +253,22 @@ pub const Regs = struct {
     }
 
     /// A read whose value is not wanted, to flush posted writes.
+    /// Hold these queues still.
+    ///
+    /// The register behind this is a latch and not a command: a queue
+    /// named here stays stopped until `releaseQueues`, however many times
+    /// the enable register is written in between. Whatever stops a queue
+    /// has to let it go again, which is why these two are named as a
+    /// pair and neither is a bare register write.
+    pub fn holdQueues(self: Regs, queues: u10) void {
+        self.put(.queue_disable, QueueMask{ .queues = queues });
+    }
+
+    /// Let go of every queue held by `holdQueues`.
+    pub fn releaseQueues(self: Regs) void {
+        self.put(.queue_disable, QueueMask{});
+    }
+
     pub fn flush(self: Regs, register: R) void {
         _ = self.window.read(register);
     }
