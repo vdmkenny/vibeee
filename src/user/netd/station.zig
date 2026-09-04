@@ -51,6 +51,12 @@ const SIGNAL_SLACK: u16 = 3;
 /// asking twice.
 const RETRY_MICROS: u64 = 10_000_000;
 
+/// How often what the radio has heard is handed to the machine's pool. The
+/// kernel needs a seed's worth in total and the radio is a bonus on top of the
+/// interrupt timing it already has, so this is slow on purpose: often enough
+/// to matter on a machine that is listening, rare enough to cost nothing.
+const STIR_MICROS: u64 = 1_000_000;
+
 const State = struct {
     radio: ?*dev_mod.NicDev = null,
     plan: wifi.Regulatory = .conservative,
@@ -74,6 +80,7 @@ const State = struct {
     /// had its chance and is worth asking about.
     hops: usize = 0,
     next_hop_at: u64 = 0,
+    next_stir_at: u64 = 0,
     full_said: bool = false,
     /// The join in hand, or none while no network is named.
     join: ?join_mod.Join = null,
@@ -256,6 +263,14 @@ fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
 /// Run whatever the station owes: a hop when the dwell is over.
 pub fn tick() void {
     const now = sys.clockMicros();
+
+    // What the radio has heard, handed to the machine's pool. The kernel sees
+    // every interrupt and no radio; this is the one process that sees one, so
+    // giving it up is this service's to do and nobody asks for it.
+    if (now >= state.next_stir_at) {
+        state.next_stir_at = now + STIR_MICROS;
+        contribute();
+    }
 
     // Whatever a frame asked for, now that the driver is no longer in the
     // middle of handing it over.
@@ -499,6 +514,7 @@ fn act(what: join_mod.Action) void {
                     .no_key => .needs_password,
                     .refused => .refused,
                     .bad_key => .wrong_password,
+                    .unsent => .unsent,
                     // Nothing answered. Which step it was on says whether
                     // the network was ever there to answer.
                     .timed_out => if (attempt.failed_in == .seeking) .not_found else .no_answer,

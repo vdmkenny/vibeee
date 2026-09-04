@@ -60,6 +60,8 @@ pub const Failure = enum {
     timed_out,
     /// The key exchange failed: the wrong secret, or a torn exchange.
     bad_key,
+    /// The frame could not be built, which trying again would not change.
+    unsent,
 
     pub fn spell(self: Failure) []const u8 {
         return switch (self) {
@@ -68,6 +70,7 @@ pub const Failure = enum {
             .refused => "the access point refused",
             .timed_out => "it stopped answering",
             .bad_key => "the key was not accepted",
+            .unsent => "the request could not be built",
         };
     }
 };
@@ -239,7 +242,7 @@ pub const Join = struct {
     // -----------------------------------------------------------------------
 
     fn sendAuth(self: *Join, now: u64, into: []u8) Action {
-        const len = mlme.Auth.write(self.toAp(), .{ .sequence = 1 }, into) orelse return .none;
+        const len = mlme.Auth.write(self.toAp(), .{ .sequence = 1 }, into) orelse return self.give(.unsent);
         self.state = .authenticating;
         self.deadline = now + REPLY_MICROS;
         return .{ .send = len };
@@ -261,9 +264,10 @@ pub const Join = struct {
     // -----------------------------------------------------------------------
 
     fn sendAssoc(self: *Join, now: u64, into: []u8) Action {
-        const protected = (self.bss orelse return .none).security != .open;
+        const protected = (self.bss orelse return self.give(.unsent)).security != .open;
         const rsn: []const u8 = if (protected) &OFFERED_RSN else &.{};
-        const len = mlme.AssocRequest.write(self.toAp(), .{}, self.want, rsn, into) orelse return .none;
+        const len = mlme.AssocRequest.write(self.toAp(), .{}, self.want, rsn, into) orelse
+            return self.give(.unsent);
         self.state = .associating;
         self.deadline = now + REPLY_MICROS;
         return .{ .send = len };
@@ -771,4 +775,54 @@ test "frames from another cell on the channel are not mistaken for answers" {
     const own = mlme.Auth.write(.{ .addr1 = AP, .addr2 = US, .addr3 = AP }, .{ .sequence = 1 }, &air).?;
     try testing.expectEqual(Action.none, join.heard(air[0..own], .{}, 100, &out));
     try testing.expectEqual(State.authenticating, join.state);
+}
+
+test "a tick at a deadline that has passed never leaves the deadline where it was" {
+    // The station above this asks how long it may wait by looking at the
+    // state and the deadline. A tick that acts on a deadline already passed
+    // and leaves it there is a wait of nothing, every pass, forever.
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+    const beacon = ap.beacon(&air);
+    _ = join.heard(air[0..beacon], .{ .dbm = -50 }, 0, &out);
+    try testing.expectEqual(State.tuning, join.state);
+
+    var now: u64 = 0;
+    for (0..TRIES * 4) |_| {
+        _ = join.tick(now, &out);
+        switch (join.state) {
+            // The states that wait on an answer are the ones the deadline is
+            // for, and every one of them must be waiting on a later moment.
+            .authenticating, .associating, .handshaking => try testing.expect(join.deadline > now),
+            // Anything else asks for no wake at all.
+            .idle, .seeking, .tuning, .joined, .failed => {},
+        }
+        now = @max(now + 1, join.deadline);
+    }
+    try testing.expectEqual(State.failed, join.state);
+}
+
+test "a frame that will not fit ends the join instead of stalling it" {
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+    const beacon = ap.beacon(&air);
+    _ = join.heard(air[0..beacon], .{ .dbm = -50 }, 0, &out);
+    try testing.expectEqual(State.tuning, join.state);
+
+    // Nowhere to write the request. Trying again would not make room, so the
+    // join ends rather than sitting in a state whose deadline nobody moves.
+    var cramped: [4]u8 = @splat(0);
+    try testing.expectEqual(Failure.unsent, switch (join.tick(0, &cramped)) {
+        .failed => |why| why,
+        else => return error.TestUnexpectedResult,
+    });
+    try testing.expectEqual(State.failed, join.state);
 }

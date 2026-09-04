@@ -213,6 +213,9 @@ pub const Stopped = enum(u8) {
     unsupported = 5,
     /// A password is needed and none was given.
     needs_password = 6,
+    /// This computer could not put the request together, which is a fault
+    /// here rather than anything the network did.
+    unsent = 7,
 
     /// What to put on a screen.
     pub fn spell(self: Stopped) []const u8 {
@@ -224,6 +227,7 @@ pub const Stopped = enum(u8) {
             .no_answer => "The network stopped responding",
             .unsupported => "This system cannot join that kind of network",
             .needs_password => "That network needs a password",
+            .unsent => "This computer could not build the request",
         };
     }
 };
