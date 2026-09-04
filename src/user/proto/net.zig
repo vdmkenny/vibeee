@@ -31,6 +31,10 @@ pub const Tag = enum(u8) {
     /// network waits on, and what a listing sleeps on, rather than asking
     /// every few seconds.
     watch,
+    /// What the service has been woken for since it started, in `body.load`.
+    /// A wake that no interface claimed is a line shared with another device,
+    /// which is work this service is doing for somebody else's hardware.
+    load,
     /// Open a stream to `param`:`param2`. The reply waits for the handshake
     /// and grants the socket: `body.sock` and the three handles.
     tcp_connect,
@@ -146,6 +150,22 @@ pub const Iface = extern struct {
     joining: Joining = .idle,
     stopped: Stopped = .none,
     _pad: [2]u8 = @splat(0),
+};
+
+/// What the service's loop has been woken for since it started.
+///
+/// A loop that waits on events costs nothing between them, so what it costs is
+/// how often it is woken and how much of that was worth waking for. `unclaimed`
+/// is the number that says whether an interrupt line is shared with a device
+/// this service knows nothing about: those wakes read a register, find nothing,
+/// and go back to sleep.
+pub const Load = extern struct {
+    /// Times the wait returned, whether for an event or a deadline.
+    wakes: u32 = 0,
+    /// Of those, interrupt lines this service is attached to.
+    irqs: u32 = 0,
+    /// Of those interrupts, the ones no interface had work for.
+    unclaimed: u32 = 0,
 };
 
 /// What an interface is, as the record carries it.
@@ -306,6 +326,8 @@ pub const Body = extern union {
     count: u32,
     /// For `ping`: the round trip in microseconds.
     rtt_us: u32,
+    /// For `load`: what the loop has been woken for.
+    load: Load,
     /// For `status`: the interface.
     iface: Iface,
     /// For `address`: the stack's address story.
@@ -355,6 +377,7 @@ comptime {
     if (@sizeOf(Network) != 48) @compileError("a network record is 48 bytes");
     if (@sizeOf(AddressInfo) != 16) @compileError("an address record is sixteen bytes");
     if (@sizeOf(SockGrant) != 12) @compileError("a socket grant is twelve bytes");
+    if (@sizeOf(Load) != 12) @compileError("a load reading is twelve bytes");
 }
 
 pub const Error = error{ NoService, Refused, End, TimedOut };
@@ -401,6 +424,14 @@ pub fn interfaceCount() usize {
     call(.count, 0, 0, &reply) catch return 0;
     if (reply.status != .ok) return 0;
     return reply.body.count;
+}
+
+/// What the service's loop has been woken for since it started.
+pub fn serviceLoad() ?Load {
+    var reply = Rep{};
+    call(.load, 0, 0, &reply) catch return null;
+    if (reply.status != .ok) return null;
+    return reply.body.load;
 }
 
 /// One interface, by index.

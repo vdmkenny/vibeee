@@ -83,6 +83,11 @@ const MAX_IFACES = 4;
 var ifaces: [MAX_IFACES]dev.NicDev = @splat(.{ .name = "", .ops = undefined, .location = .{ .bus = 0, .device = 0, .function = 0 } });
 var count: usize = 0;
 
+/// What the loop has been woken for. A service that waits on events costs what
+/// it is woken for and nothing between, so this is the reading that says
+/// whether it is doing work or being disturbed.
+var load: proto.Load = .{};
+
 export fn _start() callconv(.c) noreturn {
     netdMain();
 }
@@ -425,6 +430,7 @@ fn serve(channel: u32) noreturn {
         else
             sys.FOREVER;
         const woke = sys.waitMany(sources[0..source_count], timeout);
+        load.wakes +%= 1;
         stack.tick();
         station.tick();
         if (woke >= 0) dispatch: {
@@ -458,11 +464,17 @@ fn serve(channel: u32) noreturn {
             // than one device, and a productive pass here may have been
             // holding the shared wire across a neighbour's assertion.
             var found = false;
+            var mine = false;
             for (ifaces[0..count]) |*iface| {
                 if (iface.irq == handle) {
+                    mine = true;
                     iface.irq_count += 1;
                     if (iface.ops.irq(iface)) found = true;
                 }
+            }
+            if (mine) {
+                load.irqs +%= 1;
+                if (!found) load.unclaimed +%= 1;
             }
             _ = sys.irqAck(handle, found);
         }
@@ -711,6 +723,11 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
     if (bytes.len < @sizeOf(proto.Req)) return .refused;
 
     const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+
+    if (request.tag == .load) {
+        reply.body = .{ .load = load };
+        return .ok;
+    }
 
     if (request.tag == .count) {
         reply.body = .{ .count = @intCast(count) };

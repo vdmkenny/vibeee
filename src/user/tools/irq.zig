@@ -50,6 +50,16 @@ fn list() void {
             out.text("  forced ");
             out.decimal(forced);
         }
+
+        // Only on a line more than one device shares, because that is the
+        // only kind that has them: each one woke every other owner of the
+        // line to read a device that had nothing to say.
+        const cascades = str.toUnsigned(it.next() orelse "0");
+        if (cascades > 0) {
+            out.text("  woke the neighbours ");
+            out.decimal(cascades);
+            out.text(" times");
+        }
         out.byte('\n');
     }
     out.flush();

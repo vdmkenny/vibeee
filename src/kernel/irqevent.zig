@@ -296,6 +296,11 @@ pub const Snapshot = struct {
     owners: u8,
     /// Watchdog completions for silent owners; zero on a healthy machine.
     forced: u32,
+    /// Times a productive pass on this shared edge line woke its other
+    /// owners. Every one of those is a driver reading its own device to find
+    /// the delivery was a neighbour's, which is work a service does for
+    /// hardware it knows nothing about.
+    cascades: u32,
 };
 
 /// Walk the attached lines, lowest first, one row per owner.
@@ -311,6 +316,7 @@ pub fn forEach(context: anytype, comptime visit: fn (@TypeOf(context), Snapshot)
                 .trigger = self.token.trigger,
                 .owners = line.owners(),
                 .forced = line.forced,
+                .cascades = line.cascades,
             });
         }
     }

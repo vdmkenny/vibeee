@@ -34,6 +34,11 @@ pub fn run(args: []const []const u8) void {
         return;
     }
 
+    if (args.len == 1 and std.mem.eql(u8, args[0], "load")) {
+        load();
+        return;
+    }
+
     // A first word that is not a flag names an interface to act on.
     if (args.len > 0 and args[0].len > 0 and args[0][0] != '-') {
         const matcher = lib.ifmatch.Match.parse(args[0]) orelse {
@@ -296,6 +301,44 @@ fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
 ///
 /// `only` names which interface was asked about, and null is the question
 /// asked of the machine rather than of one of its interfaces.
+/// What the network service is spending its time on.
+///
+/// A service that waits on events costs what it is woken for. Interrupts that
+/// no interface had work for are the reading to look at: a line shared with
+/// another device wakes this service for that device's traffic, which is work
+/// done on somebody else's behalf and the usual reason a network service is
+/// busy on an idle network.
+fn load() void {
+    const reading = net.serviceLoad() orelse {
+        say("net: the network service is not answering\n");
+        return;
+    };
+
+    out.text("woken ");
+    out.decimal(reading.wakes);
+    out.text(" times, ");
+    out.decimal(reading.irqs);
+    out.text(" of them by an interrupt this service is attached to");
+    if (reading.irqs > 0) {
+        out.text(", ");
+        out.decimal(reading.unclaimed);
+        out.text(" of those with nothing to do");
+    }
+    out.byte('\n');
+
+    var i: usize = 0;
+    while (net.interfaceAt(i)) |iface| : (i += 1) {
+        out.text("  ");
+        out.text(std.mem.sliceTo(&iface.driver, 0));
+        out.text("  ");
+        out.decimal(iface.rx_pkts);
+        out.text(" in, ");
+        out.decimal(iface.tx_pkts);
+        out.text(" out\n");
+    }
+    out.flush();
+}
+
 fn scan(only: ?lib.ifmatch.Match) void {
     var has_radio = false;
     var named_a_wire = false;

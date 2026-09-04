@@ -16,6 +16,15 @@ net - the network interfaces
   net <iface> scan       every network that radio has heard: channel,
                          signal and security
   net scan               the same, of whichever radio this machine has
+  net load               what the network service has been woken for, and
+                         how much of that it had nothing to do about
+
+`net load` answers the question a busy network service raises on an idle
+network. The service waits on events and costs nothing between them, so
+what it costs is how often it is woken. Interrupts it was woken for and
+had nothing to do about are the reading that matters: a PCI line shared
+with another device wakes this service for that device's traffic, and
+the work is real even though none of it is the network's.
 
 An interface is named the way the listing prints it ("e1000",
 "e1000.1" for a second card of the same kind), by class ("ether",

@@ -13,3 +13,9 @@ its own device to find out whether it was the one that spoke.
 
 `forced` appears only when it is news: a completion the kernel had to
 make itself names a driver that stopped answering for its line.
+
+So does the count of times a line woke its neighbours. It appears only
+on a shared line, and it is what a service busy on an idle machine is
+usually busy with: another device's interrupts, read and dismissed. Set
+it beside `net load`, which says how many of a network service's wakes
+it had nothing to do about.
