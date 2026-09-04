@@ -10,6 +10,7 @@
 //! reads or writes on its own.
 
 const lib = @import("lib");
+const family = @import("family.zig");
 const std = @import("std");
 
 /// Every register is a word, so one window serves the whole chip.
@@ -201,7 +202,7 @@ pub fn dcuMisc(dcu: u4) usize {
     return @intFromEnum(R.dcu_misc_0) + @as(usize, dcu) * 4;
 }
 
-pub fn rateDuration(code: lib.ar5212.RateCode) usize {
+pub fn rateDuration(code: family.RateCode) usize {
     return @intFromEnum(R.rate_duration_0) + @as(usize, @intFromEnum(code)) * 4;
 }
 

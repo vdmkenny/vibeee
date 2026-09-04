@@ -1,8 +1,8 @@
 //! The calibration store's port: one sixteen-bit word at a time through
 //! four registers, the way the reference reads it. What the words mean is
-//! `lib.ar5212`'s, pure and host-tested; this file is only the read.
+//! `family`'s, pure and host-tested; this file is only the read.
 
-const lib = @import("lib");
+const family = @import("family.zig");
 const pace = @import("pace.zig");
 const regs_mod = @import("regs.zig");
 
@@ -28,6 +28,6 @@ pub const Port = struct {
     }
 };
 
-pub fn read(regs: Regs) lib.ar5212.StoreError!lib.ar5212.Store {
-    return lib.ar5212.readStore(Port{ .regs = regs });
+pub fn read(regs: Regs) family.StoreError!family.Store {
+    return family.readStore(Port{ .regs = regs });
 }

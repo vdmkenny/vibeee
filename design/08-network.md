@@ -122,8 +122,9 @@ port surface in `NO_SYS` mode is two functions and a header:
 ### 3.3 netif glue
 
 One `struct netif` per NicDev. Output: lwIP hands a pbuf chain, the glue flattens it
-into the driver's `transmit` (every driver copies into its own ring or FIFO anyway,
-so the flatten is the same copy). Input: the driver's rx delivery allocates a
+into `dev.send`, which reaches the driver's `transmit` for a wire and the
+station's dressing for a radio (every driver copies into its own ring or FIFO
+anyway, so the flatten is the same copy). Input: the driver's rx delivery allocates a
 `PBUF_POOL` pbuf, copies the frame in, and calls `netif.input` (`ethernet_input`).
 One copy each direction beyond DMA; §4's budget already paid for it at 100 Mbit.
 Driver link changes call `netif_set_link_up/down`, which is also what makes lwIP's
@@ -140,9 +141,21 @@ depend on it.
 
 As implemented in `src/user/netd/dev.zig`: `open`, `start`, `stop`, `irq`,
 `transmit`, `link`, `sync_link`, with rx delivered upward through `deliverRx`. The
-stack consumes rx via the netif glue; the `NicOps` contract does not change for the
-stack milestone. The wifi driver later adds `WifiOps` consumed only by the MLME
-module; the netstack sees wifi as an ethernet netif carrying ethertype frames.
+stack consumes rx via the netif glue and sees a radio as an ethernet netif
+carrying ethertype frames.
+
+A radio carries one field more: `radio`, a table of what a radio can be asked
+that a wire cannot. Tuning, what it is tuned to, the power ceiling, calibration,
+re-fitting the receiver, which cell to answer for, sending at a chosen series of
+rates, and drawing unpredictable bytes from what it has heard; two reporting
+entries are optional. Everything above a driver reaches a radio through this
+table alone, so no driver is named above the device layer. A comptime check over
+the driver registry refuses a driver that calls itself a radio and brings no
+table, and one that brings a table without saying it is a radio.
+
+Sending goes through `dev.send` rather than straight into `transmit`: a wire
+takes an ethernet frame as it stands, and a radio has it dressed as the cell
+expects first, by the station, which is the layer that knows the cell.
 
 ### 3.5 The language boundary
 
@@ -276,8 +289,10 @@ The driver is split by what it knows:
   RF2425's mode, common, gain and bank tables as Zig data. Nothing in it is
   typed by hand, and a reference revision that reshapes a table fails the
   generator rather than the machine.
-- `lib/ar5212.zig` is the family's pure vocabulary, host-tested: the
-  descriptor's words, the chain arithmetic, the hardware rate codes, the
+- `user/netd/ar5212/family.zig` is the family's pure vocabulary, host-tested: the
+  descriptor's words either way, arming one to send a frame at a series of
+  rates and reading back what became of it, the chain arithmetic, the hardware
+  rate codes, the
   synthesizer word for a frequency, the delta-slope coefficients, the analog
   bank serialiser, the noise-floor history, the I/Q correction arithmetic, the
   spur-channel test, the CCK adjustment, the rate-duration table, and the
@@ -301,38 +316,60 @@ these parts. Every wait is bounded.
 
 ### 5.3 The station (`user/netd/station.zig`)
 
-The driver tunes and hears; the station decides where to tune and what the
-hearing amounts to. It reaches the radio through three hooks on the device
-contract, so a second radio driver plugs into the same three: a frame with its
-signal and rate, the radio's readiness, and the configuration slot the radio
-was bound to, which carries the regulatory plan and the transmit ceiling.
+The driver tunes and hears; the station decides where to tune, what the hearing
+amounts to, and what to say back. It reaches the radio through the radio table
+an interface carries, so it names no driver and a second radio is a second
+table. A driver whose class says radio and whose table is absent does not
+compile.
 
-What it does today is scan: it walks the channels the plan allows, dwells two
-beacon intervals on each, takes the noise floor on the way to the next, and
+With no network named it scans: it walks the channels the plan allows, dwells
+two beacon intervals on each, takes the noise floor on the way to the next, and
 keeps a bounded account of every network it hears as `lib.mlme.Bss`: name,
-cell, channel, security named whether or not this system will join it, and the
-signal. A network is said to the log once as it appears. That is the first
-thing to see on the machine, and the whole of what the receive path can prove
-before anything is transmitted.
+cell, channel, security named whether or not this system will join it, the
+rates the cell offers, and the signal. A network is said to the log once as it
+appears.
+
+With one named it joins. `lib/join.zig` holds the whole exchange as a value:
+frames go in, an action comes out, and the station carries the action out. It
+tells the radio to answer for the cell as soon as it has tuned to it, because a
+frame the hardware does not acknowledge is one the far end stops sending;
+the receiver stays open until the cell gives this station a number, so
+narrowing early cannot hide the replies being waited on. Actions decided while
+a frame is being handed over are carried out from the loop rather than there,
+because tuning resets the radio underneath the driver's walk of its receive
+ring.
+
+Traffic is dressed here too. An ethernet frame becomes a data frame addressed
+to the cell and, where there are keys, is sealed with the counter-mode cipher
+before it reaches the driver; what arrives is opened and undressed the same
+way. Doing it here rather than in a key cache means the cipher is the same
+whichever radio is underneath, at the cost of the processor doing the work.
+
+How fast to speak comes from `lib/rates.zig`, which keeps a smoothed account
+per rate of how often a frame arrived and ranks rates by that chance over the
+air each takes. The hardware works down a series of four, and every step it
+worked past is reported as a rate that did not get through, so a fast rate
+rescued by its fallback is not credited for the rescue.
 
 ### 5.4 What the rest of the milestone owes
 
-- **Transmit**: the power tables, which interpolate the store's calibration
-  curves per channel, and the spur-immunity settings a 5.3 store carries; the
-  transmit chain and queue, from the descriptor words already in
-  `lib/ar5212.zig`; and the self-test the reference runs at attach.
-- **Joining**: the MLME state machine over the frames in `lib/mlme.zig`
-  (authentication, association, beacon tracking with a software beacon-miss
-  timer as the authority), driven by the slot's `ssid` and `psk`; the
-  supplicant in `lib/wpa2.zig` on the data path with EAPOL diverted before
-  `netif.input`; hardware CCMP through the key cache where the store permits it
-  and the software cipher, already tested, as fallback and oracle.
-- **Rate control**: a small minstrel over the rate codes.
-- **Joining, on every surface at once**: the slot's `ssid` and `psk` are
-  already written by `net join`, by the Settings window's Network pane and by
-  the bar's network menu, all three through one model in `ulib/netconfig.zig`
-  and one set of verbs on the slot itself. What is owed is the service acting
-  on them: the station joining what the slot names.
+- **The exchange itself.** The access point acknowledges the authentication
+  request and no answer follows. Acknowledgement is a hardware reflex to a
+  well-formed unicast frame, so what is not yet known is whether the answer is
+  never sent, never received, or received and refused. The station counts
+  frames heard while an exchange is in hand, how many were addressed to it, how
+  many were authentications, and how many sends it asked for against how many
+  the radio reports; the radio answers with what its queue did.
+- **Transmit power.** The amplifier's table, interpolated from the store's
+  calibration curves either side of a channel, is arithmetic in
+  `user/netd/ar5212/family.zig` and host-tested, and the driver does not yet program it: a
+  frame goes out at whatever the reset leaves, under the ceiling the regulatory
+  plan sets. The spur-immunity settings a 5.3 store carries, and the self-test
+  the reference runs at attach, are owed with it.
+- **Beacon tracking.** A software beacon-miss timer as the authority on whether
+  the cell is still there.
+- **Hardware CCMP** through the key cache where the store permits it, with the
+  software cipher as fallback and oracle.
 - **Kill switch**: the hot-unplug is recognised; the replug that re-runs the
   whole pipeline from power-on state is not yet wired to the device manager's
   rescan.

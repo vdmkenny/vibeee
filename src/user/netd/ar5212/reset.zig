@@ -15,6 +15,7 @@
 //! receiver does not need either.
 
 const lib = @import("lib");
+const family = @import("family.zig");
 const immunity_mod = @import("immunity.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -33,7 +34,7 @@ const name = "ar5212";
 /// what the pipeline keeps between resets.
 pub const Chip = struct {
     regs: Regs,
-    store: lib.ar5212.Store,
+    store: family.Store,
     version: regs_mod.MacVersion,
     revision: u4,
     phy_revision: u8,
@@ -52,8 +53,8 @@ pub const Chip = struct {
     association_id: u14 = 0,
     iq: IqState = .inactive,
     /// The correction measured on the current channel, once one has been.
-    iq_measured: ?lib.ar5212.IqCorrection = null,
-    noise: lib.ar5212.NoiseFloor = .{},
+    iq_measured: ?family.IqCorrection = null,
+    noise: family.NoiseFloor = .{},
     /// How much noise the baseband is asked to ignore. Kept with the chip
     /// because a reset puts the registers it lives in back to what the
     /// tables say, so what was learned has to be applied again.
@@ -276,14 +277,14 @@ pub fn chipReset(chip: *Chip, megahertz: ?u16) bool {
 /// the beacon timers and the sleep state across the change.
 fn writeCommon(regs: Regs, kind: Kind) void {
     for (tables.family.common) |row| {
-        if (kind == .channel_change and lib.ar5212.survivesChannelChange(row.register)) continue;
+        if (kind == .channel_change and family.survivesChannelChange(row.register)) continue;
         regs.writeAt(row.register, row.value);
     }
 }
 
 /// The OFDM timing coefficients for the carrier.
 fn setDeltaSlope(regs: Regs, megahertz: u16) void {
-    const slope = lib.ar5212.deltaSlope(megahertz);
+    const slope = family.deltaSlope(megahertz);
     var timing = regs.get(.phy_timing3, regs_mod.PhyTiming3);
     timing.delta_slope_mantissa = slope.mantissa;
     timing.delta_slope_exponent = slope.exponent;
@@ -342,12 +343,12 @@ fn setBoardValues(chip: *Chip, megahertz: u16) void {
     // A suspected clock spur causes false OFDM detects; back the weak
     // signal sensitivity off on the channels near it.
     var backoff: u8 = NO_FALSE_DETECT_BACKOFF;
-    if (store.version.atLeast(.v3_3) and lib.ar5212.isSpurChannel(megahertz)) backoff += section.false_detect_backoff;
+    if (store.version.atLeast(.v3_3) and family.isSpurChannel(megahertz)) backoff += section.false_detect_backoff;
     regs.set(.phy_timing5, regs_mod.PhyTiming5, "cycle_power_threshold1", @as(u7, @truncate(backoff)));
 
     // The I/Q correction: what was measured on this channel, else what
     // the store says.
-    const correction: lib.ar5212.IqCorrection = chip.iq_measured orelse .{
+    const correction: family.IqCorrection = chip.iq_measured orelse .{
         .i = @bitCast(store.iq_cal_i[band_2ghz]),
         .q = @bitCast(store.iq_cal_q[band_2ghz]),
     };
@@ -366,7 +367,7 @@ fn setBoardValues(chip: *Chip, megahertz: u16) void {
 /// The time an answer at each rate takes, which the protocol unit uses
 /// for multi-rate retry.
 fn setRateDurations(regs: Regs) void {
-    for (lib.ar5212.RATE_DURATIONS) |entry| {
+    for (family.RATE_DURATIONS) |entry| {
         regs.writeAt(regs_mod.rateDuration(entry.code), entry.micros);
     }
 }
@@ -574,7 +575,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
             .off_power_down_dac = true,
             .off_power_down_adc = true,
         });
-        const adjust = lib.ar5212.cckAdjust(chip.store.cck_ofdm_power_delta, chip.store.scaled_ch14_filter_cck_delta, megahertz);
+        const adjust = family.cckAdjust(chip.store.cck_ofdm_power_delta, chip.store.scaled_ch14_filter_cck_delta, megahertz);
         regs.put(.phy_tx_power_adjust, regs_mod.PhyTxPowerAdjust{
             .cck_gain_delta = adjust.gain_delta,
             .cck_pcdac_index = adjust.pcdac_index,
@@ -778,7 +779,7 @@ pub fn calibrate(chip: *Chip, long: bool) void {
             regs.set(.phy_timing_control4, regs_mod.PhyTimingControl4, "do_iq_calibration", true);
         }
 
-        if (lib.ar5212.iqCorrection(power_i, power_q, correlation)) |correction| {
+        if (family.iqCorrection(power_i, power_q, correlation)) |correction| {
             var timing4 = regs.get(.phy_timing_control4, regs_mod.PhyTimingControl4);
             timing4.iq_correction_i = correction.i;
             timing4.iq_correction_q = correction.q;

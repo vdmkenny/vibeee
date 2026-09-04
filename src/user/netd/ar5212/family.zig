@@ -19,9 +19,11 @@
 //! invent.
 
 const std = @import("std");
-const mac = @import("mac.zig");
-const rates = @import("rates.zig");
-const wifi = @import("wifi.zig");
+const lib = @import("lib");
+
+const mac = lib.mac;
+const rates = lib.rates;
+const wifi = lib.wifi;
 
 // ---------------------------------------------------------------------------
 // Descriptors

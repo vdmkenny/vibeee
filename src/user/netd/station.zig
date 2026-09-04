@@ -91,6 +91,10 @@ const State = struct {
     /// reports sending, this says whether anything was lost between
     /// deciding to speak and speaking.
     sent_joining: u32 = 0,
+    /// What the last authentication meant for this station actually said,
+    /// and whether it came from the cell being joined. Every test the join
+    /// puts an answer through, reported rather than inferred.
+    last_auth: ?struct { sequence: u16, status: u16, from_cell: bool } = null,
     /// What a heard frame asked for, carried out from the loop rather
     /// than where it was decided. Deciding happens inside the driver's
     /// walk of its receive ring, and tuning resets the radio underneath
@@ -358,6 +362,7 @@ fn seek(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, role: settings.NetSlot) voi
     state.heard_for_us = 0;
     state.heard_auth = 0;
     state.sent_joining = 0;
+    state.last_auth = null;
     var attempt = join_mod.Join{ .station = nic.mac };
     attempt.wants(role.ssid, role.psk, nonce(nic, ops));
     state.join = attempt;
@@ -418,6 +423,15 @@ fn act(what: join_mod.Action) void {
             out.decimal(state.heard_auth);
             out.text(" of them authentications; it asked to send ");
             out.decimal(state.sent_joining);
+            if (state.last_auth) |answer| {
+                out.text(". The last authentication meant for it said sequence ");
+                out.decimal(answer.sequence);
+                out.text(", status ");
+                out.decimal(answer.status);
+                out.text(if (answer.from_cell) ", from the cell it is joining" else ", from some other cell");
+            } else {
+                out.text(". No authentication was addressed to it");
+            }
             if (it.ops.tuned(it.nic)) |on| {
                 out.text(", on channel ");
                 out.decimal(on.number);
@@ -519,7 +533,16 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
         if (!sweeping(attempt.*)) {
             state.heard_joining +|= 1;
             if (lib.ieee80211.Header.parse(frame)) |head| {
-                if (lib.mac.eql(head.addr1, nic.mac)) state.heard_for_us +|= 1;
+                if (lib.mac.eql(head.addr1, nic.mac)) {
+                    state.heard_for_us +|= 1;
+                    if (mlme.Auth.parse(frame)) |answer| {
+                        state.last_auth = .{
+                            .sequence = answer.sequence,
+                            .status = @intFromEnum(answer.status),
+                            .from_cell = lib.mac.eql(head.bssid(), attempt.bssid()),
+                        };
+                    }
+                }
             }
             // Counted before anything decides whether to accept it: an
             // answer that arrived and was turned down is a different

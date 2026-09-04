@@ -47,4 +47,8 @@ test {
     // over bytes from whatever medium somebody puts in the machine.
     _ = @import("kernel/fat.zig");
     _ = @import("kernel/ublk.zig");
+    // A driver's pure half: what the AR5212 family's words mean and the
+    // arithmetic its bring-up runs. Values a test can check, kept with the
+    // driver that is the only thing reading them.
+    _ = @import("user/netd/ar5212/family.zig");
 }

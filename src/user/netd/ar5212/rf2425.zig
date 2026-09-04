@@ -7,7 +7,7 @@
 //! bias fields into the sixth, and writes them out row by row; so does
 //! this.
 
-const lib = @import("lib");
+const family = @import("family.zig");
 const regs_mod = @import("regs.zig");
 const tables = @import("tables.zig");
 
@@ -51,7 +51,7 @@ pub fn writeRegs(regs: Regs, mode: tables.Mode, band: tables.Band) void {
 /// transmissions, which the reference switches on for it and off for
 /// every other channel.
 pub fn setChannel(regs: Regs, megahertz: u16) bool {
-    const word = lib.ar5212.synthWord(megahertz) orelse return false;
+    const word = family.synthWord(megahertz) orelse return false;
 
     regs.set(.phy_cck_tx_control, regs_mod.PhyCckTxControl, "japan", megahertz == 2484);
     regs.write(.phy_bank_data, word.low());
@@ -62,13 +62,13 @@ pub fn setChannel(regs: Regs, megahertz: u16) bool {
 /// Fill the banks for a mode, patch the bias into the sixth, and write
 /// them to the radio. The bias is the store's, from the section for the
 /// mode the channel runs in.
-pub fn setRfRegs(regs: Regs, banks: *Banks, mode: tables.Mode, part: Part, bias: lib.ar5212.Bias) void {
+pub fn setRfRegs(regs: Regs, banks: *Banks, mode: tables.Mode, part: Part, bias: family.Bias) void {
     for (tables.rf2425.bank1, &banks.bank1) |row, *value| value.* = row.value;
     for (tables.rf2425.bank2, &banks.bank2) |row, *value| value.* = row.value(mode);
     for (tables.rf2425.bank3, &banks.bank3) |row, *value| value.* = row.value(mode);
     for (tables.rf2425.bank6, &banks.bank6) |row, *value| value.* = row.value(mode);
-    lib.ar5212.insertBankField(&banks.bank6, bias.ob, BIAS_BITS, OB_FIRST_BIT, 0);
-    lib.ar5212.insertBankField(&banks.bank6, bias.db, BIAS_BITS, DB_FIRST_BIT, 0);
+    family.insertBankField(&banks.bank6, bias.ob, BIAS_BITS, OB_FIRST_BIT, 0);
+    family.insertBankField(&banks.bank6, bias.db, BIAS_BITS, DB_FIRST_BIT, 0);
     for (tables.rf2425.bank7, &banks.bank7) |row, *value| value.* = row.value(mode);
 
     for (tables.rf2425.bank1, banks.bank1) |row, value| regs.writeAt(row.register, value);

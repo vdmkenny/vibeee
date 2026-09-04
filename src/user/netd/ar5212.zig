@@ -21,6 +21,7 @@ const dev_mod = @import("dev.zig");
 const dma = @import("dma.zig");
 const eeprom = @import("ar5212/eeprom.zig");
 const lib = @import("lib");
+const family = @import("ar5212/family.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pace = @import("ar5212/pace.zig");
@@ -32,7 +33,7 @@ const sys = @import("sys");
 
 const NicDev = dev_mod.NicDev;
 const Regs = regs_mod.Regs;
-const Desc = lib.ar5212.Desc;
+const Desc = family.Desc;
 const wifi = lib.wifi;
 
 pub const name = "ar5212";
@@ -64,7 +65,7 @@ const RADIO_REVISION_STROBES = 8;
 const RING_SLOTS = 32;
 const SLAB = 2048;
 const FCS_BYTES = 4;
-const Chain = lib.ar5212.Chain(RING_SLOTS);
+const Chain = family.Chain(RING_SLOTS);
 
 /// The one queue this station sends from. The family has ten, which are
 /// there to hold traffic of different urgencies apart; a station with no
@@ -93,7 +94,7 @@ comptime {
     // A frame that fits the buffer must be one the descriptor can state,
     // which is what lets the transmit path measure against the buffer
     // alone.
-    if (SLAB > lib.ar5212.MAX_FRAME) @compileError("a full buffer states a length the descriptor cannot hold");
+    if (SLAB > family.MAX_FRAME) @compileError("a full buffer states a length the descriptor cannot hold");
 }
 
 /// The descriptors and the buffers they name, in one physically
@@ -280,7 +281,7 @@ pub fn open(loc: pci.Location, nic: *NicDev) bool {
 fn readRadioRevision(regs: Regs) u8 {
     regs.write(.phy_bank2, RADIO_REVISION_SELECT);
     for (0..RADIO_REVISION_STROBES) |_| regs.write(.phy_radio_revision_strobe, RADIO_REVISION_STROBE);
-    return lib.ar5212.radioRevision(regs.get(.phy_radio_revision, regs_mod.PhyRadioRevision).value);
+    return family.radioRevision(regs.get(.phy_radio_revision, regs_mod.PhyRadioRevision).value);
 }
 
 fn sayIdentity(chip: *const reset.Chip) void {
@@ -515,7 +516,7 @@ pub fn sayIfUnheard(nic: *NicDev) void {
         out.text("; it gave up most often for ");
         // The silicon has codes this build does not name, and one of those
         // is still worth reporting by its number rather than not at all.
-        if (std.enums.tagName(lib.ar5212.PhyError, common.why)) |named| {
+        if (std.enums.tagName(family.PhyError, common.why)) |named| {
             out.text(named);
         } else {
             out.text("reason 0x");
@@ -683,7 +684,7 @@ fn givenUpByModulation() Modulations {
     var totals = Modulations{};
     for (given_up, 0..) |times, code| {
         if (times == 0) continue;
-        switch (lib.ar5212.modulationOf(@enumFromInt(@as(u8, @intCast(code))))) {
+        switch (family.modulationOf(@enumFromInt(@as(u8, @intCast(code))))) {
             .ofdm => totals.ofdm += times,
             .cck => totals.cck += times,
             .either => {},
@@ -756,7 +757,7 @@ pub fn sayUnanswered(nic: *NicDev) void {
     out.text(" still in the queue");
     if (commonestUnsent()) |common| {
         out.text("; most often ");
-        out.text(std.enums.tagName(lib.ar5212.Failure, common.why) orelse "of no stated kind");
+        out.text(std.enums.tagName(family.Failure, common.why) orelse "of no stated kind");
         out.text(", ");
         out.decimal(common.times);
         out.text(" times");
@@ -776,24 +777,29 @@ pub fn sayUnanswered(nic: *NicDev) void {
     out.decimal(@intCast(nic.stats.rx_pkts));
     out.text(" frames and dropped ");
     out.decimal(@intCast(nic.stats.rx_dropped));
+    // A frame the baseband could not decode was never a frame; one dropped
+    // for any other reason was, and is a different thing to be losing.
+    out.text(", ");
+    out.decimal(phy_errors);
+    out.text(" of the drops being frames it could not decode");
     log.end();
 }
 
 /// How frames failed to leave, by kind. A station that cannot get a word
 /// in says which way it is failing rather than only that it is.
-var unsent = std.enums.EnumArray(lib.ar5212.Failure, u32).initFill(0);
+var unsent = std.enums.EnumArray(family.Failure, u32).initFill(0);
 
-fn noteUnsent(why: lib.ar5212.Failure) void {
+fn noteUnsent(why: family.Failure) void {
     unsent.getPtr(why).* +|= 1;
 }
 
 /// A kind of failure and how often it has been met.
-const Unsent = struct { why: lib.ar5212.Failure, times: u32 };
+const Unsent = struct { why: family.Failure, times: u32 };
 
 /// The kind of failure the radio meets most often, if it has met any.
 fn commonestUnsent() ?Unsent {
     var worst: ?Unsent = null;
-    for (std.enums.values(lib.ar5212.Failure)) |why| {
+    for (std.enums.values(family.Failure)) |why| {
         const times = unsent.get(why);
         if (times == 0) continue;
         if (worst == null or times > worst.?.times) worst = .{ .why = why, .times = times };
@@ -801,13 +807,13 @@ fn commonestUnsent() ?Unsent {
     return worst;
 }
 
-fn noteGivenUp(why: lib.ar5212.PhyError) void {
+fn noteGivenUp(why: family.PhyError) void {
     const code = @intFromEnum(why);
     if (code < GIVEN_UP_CODES) given_up[code] +|= 1;
 }
 
 /// The reason the baseband gave most often, and how many times.
-fn commonestGivingUp() ?struct { why: lib.ar5212.PhyError, times: u16 } {
+fn commonestGivingUp() ?struct { why: family.PhyError, times: u16 } {
     var best: usize = 0;
     var most: u16 = 0;
     for (given_up, 0..) |times, code| {
@@ -1144,10 +1150,10 @@ fn reapTx(nic: *NicDev) void {
         // through, and it is said so: a rate blamed only when it is the
         // last one tried is a rate whose failures are always paid for by
         // the step behind it, and the account would go on choosing it.
-        const speeds: lib.ar5212.TxControl3 = @bitCast(desc.body.tx.control3);
+        const speeds: family.TxControl3 = @bitCast(desc.body.tx.control3);
         const final = report.status1.final_series;
         for (0..@as(usize, final) + 1) |step| {
-            const carried = lib.ar5212.rateOfStep(speeds, @intCast(step)).rate() orelse continue;
+            const carried = family.rateOfStep(speeds, @intCast(step)).rate() orelse continue;
             dev_mod.deliverTxDone(nic, .{
                 .rate = carried,
                 .sent = step == final and report.status0.sent,
@@ -1162,7 +1168,7 @@ fn reapTx(nic: *NicDev) void {
             // The hardware leaves the control words as they were written,
             // so the frame measures itself and needs no record kept
             // alongside the ring.
-            const filled: lib.ar5212.TxControl1 = @bitCast(desc.body.tx.control1);
+            const filled: family.TxControl1 = @bitCast(desc.body.tx.control1);
             nic.stats.tx_bytes += filled.buffer_length;
         }
 
