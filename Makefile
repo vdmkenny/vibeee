@@ -247,12 +247,13 @@ $(MANUAL_STAMP): manual-stamp
 # after that would not be seen. Listed explicitly for the ones that exist,
 # which is what makes rebuilding one of them rebuild the image it goes in:
 # without this the old binary ships and the new one is never run.
-$(ROOTFS_IMG): kernel examples $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
+$(ROOTFS_IMG): kernel examples $(FONT_PACK) $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
-	@for d in bin etc lib lib/drivers tmp home media cfg; do $(MMD) -i $@ ::/$$d; done
+	@for d in bin etc lib lib/drivers share tmp home media cfg; do $(MMD) -i $@ ::/$$d; done
 	@if [ "$(MANUAL)" = "yes" ]; then $(MMD) -i $@ ::/doc; fi
+	@$(MCOPY) -i $@ -o $(FONT_PACK) ::/share/fonts.pack
 	@$(MCOPY) -i $@ -o $(USER_INIT) ::/bin/init
 	@$(MCOPY) -i $@ -o $(USER_VSH) ::/bin/vsh
 	@$(MCOPY) -i $@ -o $(BUILD)/greet ::/bin/greet
@@ -463,6 +464,18 @@ $(BUILD)/mkathtables: tools/mkathtables.zig | $(BUILD)
 athtables: $(BUILD)/mkathtables
 	$(BUILD)/mkathtables third_party/ath_hal/ar5212/ar5212.ini src/user/netd/ar5212/tables.zig
 	$(ZIG) fmt src/user/netd/ar5212/tables.zig
+
+# The interface faces, packed into the one file every window draws from. Built
+# rather than committed: it is the same glyphs as `src/lib/fonts/`, in the shape
+# a program maps.
+FONT_PACK := $(BUILD)/fonts.pack
+
+$(BUILD)/mkfontpack: tools/mkfontpack.zig $(wildcard src/lib/fonts/*.zig) src/lib/font.zig | $(BUILD)
+	$(ZIG) build-exe -O ReleaseSafe --name mkfontpack -femit-bin=$@ \
+		--dep lib -Mroot=tools/mkfontpack.zig -Mlib=src/lib/lib.zig
+
+$(FONT_PACK): $(BUILD)/mkfontpack
+	@$(BUILD)/mkfontpack $@
 
 # The IRC parser vectors, transcribed from the pinned reference by a generator
 # so no case in the table is typed by hand. Regenerate when the reference's pin

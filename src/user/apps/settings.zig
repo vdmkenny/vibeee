@@ -778,8 +778,8 @@ var help_view: eui.scrollpane.View = undefined;
 /// How tall the intro is when it is scrolled past: the rows below it have to
 /// start in the same place whether or not it was drawn.
 fn paragraphHeight(width: i32) i32 {
-    const wrapped = eui.text.count(HELP_INTRO, eui.text.face, width);
-    return @intCast(wrapped * @as(usize, eui.text.face.height));
+    const wrapped = eui.text.count(HELP_INTRO, eui.text.face(), width);
+    return @intCast(wrapped * @as(usize, eui.text.face().height));
 }
 
 /// What somebody opening this page needs to know before the table means

@@ -111,6 +111,7 @@ pub fn all(ctx: *widget.Context, area: Rect, from: i32, list: []const Fact) i32 
 }
 
 test "a list's label column grows to its widest label" {
+    draw.useLinked();
     const area = Rect{ .x = 0, .y = 0, .w = 300, .h = 200 };
     const short = [_]Fact{.{ .label = "Speed", .value = "30 ft." }};
     const long = [_]Fact{.{ .label = "Passive Investigation", .value = "14" }};

@@ -1,0 +1,173 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #2F6FE0; } a:hover { color: #1F4FA8; }
+    .t { font-size: 12px; line-height: 18px; }
+    .m { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; line-height: 18px; }
+  </style>
+</helmet>
+
+<div style="width: 800px; height: 480px; display: flex; flex-direction: column; background: #E9EAEC; color: #1A1D21; overflow: hidden">
+
+  <div style="height: 22px; flex-shrink: 0; background: #1F242A; display: flex; align-items: center; padding: 0 6px">
+    <div class="t" style="color: #D6D9DD; width: 16px">e</div>
+    <div class="t" style="background: #2F6FE0; color: #FFFFFF; padding: 0 8px; height: 22px; display: flex; align-items: center">IRC</div>
+    <div class="t" style="color: #D6D9DD; padding: 0 8px">+</div>
+    <div style="flex-grow: 1"></div>
+    <div class="t" style="color: #D6D9DD">21:07</div>
+  </div>
+
+  <div style="flex-grow: 1; min-height: 0; display: flex">
+
+    <!-- The rail: 124 wide, 26 tall rows, the chosen one a filled band and
+         the rest plain text on the sunken ground. Two things it does not do
+         yet: hold a row under another, and carry a count. -->
+    <div style="width: 124px; flex-shrink: 0; background: #D8DADD; border-right: 1px solid #C6C9CD; display: flex; flex-direction: column">
+      <sc-for list="{{rail}}" as="row" hint-placeholder-count="7">
+        <div style="height: 26px; display: flex; align-items: center; gap: 6px; padding-right: 6px; padding-left: {{row.indent}}; background: {{row.ground}}; color: {{row.ink}}">
+          <div style="width: 12px; flex-shrink: 0; display: flex; align-items: center">
+            <sc-if value="{{row.server}}" hint-placeholder-val="{{ false }}">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><rect x="0.5" y="1.5" width="11" height="3.5" /><rect x="0.5" y="7" width="11" height="3.5" /></svg>
+            </sc-if>
+            <sc-if value="{{row.channel}}" hint-placeholder-val="{{ true }}">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1"><path d="M4.5 1.5L3 10.5M8.5 1.5L7 10.5M1.5 4.5h9M1 8h9" /></svg>
+            </sc-if>
+          </div>
+          <div class="t" style="flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{row.name}}</div>
+          <sc-if value="{{row.unread}}" hint-placeholder-val="{{ true }}">
+            <div class="t" style="flex-shrink: 0; min-width: 13px; height: 14px; border-radius: 4px; background: {{row.badge}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; padding: 0 3px">{{row.count}}</div>
+          </sc-if>
+        </div>
+      </sc-for>
+      <div style="flex-grow: 1"></div>
+      <div class="t" style="height: 26px; display: flex; align-items: center; padding: 0 8px; color: #5C636B; border-top: 1px solid #C6C9CD">kenny</div>
+    </div>
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+
+      <div style="height: 22px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-bottom: 1px solid #C6C9CD">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#5C636B" stroke-width="1" style="flex-shrink: 0"><rect x="1.5" y="4.5" width="7" height="5" /><path d="M3.5 4.5V3a1.5 1.5 0 0 1 3 0v1.5" /></svg>
+        <div class="t" style="font-weight: 600; flex-shrink: 0">#vibeee</div>
+        <div class="t" style="color: #5C636B; flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">a from-scratch OS for the Eee PC 701 | logs kept | builds posted here</div>
+      </div>
+
+      <div style="flex-grow: 1; min-height: 0; display: flex">
+
+        <!-- Said in groups: one name for a run from the same person, and the
+             words at the full width of the pane rather than beside a column
+             of names repeated down the screen. -->
+        <div style="flex-grow: 1; min-width: 0; background: #F5F6F7; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; padding: 0 0 4px">
+          <sc-for list="{{groups}}" as="g" hint-placeholder-count="8">
+            <div style="padding: {{g.pad}} 8px 0; background: {{g.ground}}">
+              <sc-if value="{{g.named}}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; align-items: baseline; gap: 6px; height: 18px">
+                  <div class="t" style="font-weight: 600; color: {{g.nick_ink}}">{{g.nick}}</div>
+                  <div class="t" style="color: #9AA1A8">{{g.at}}</div>
+                </div>
+              </sc-if>
+              <sc-for list="{{g.said}}" as="one" hint-placeholder-count="2">
+                <div class="m" style="color: {{g.ink}}; overflow-wrap: break-word">{{one.text}}</div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="width: 116px; flex-shrink: 0; border-left: 1px solid #C6C9CD; display: flex; flex-direction: column">
+          <div class="t" style="height: 20px; display: flex; align-items: center; padding: 0 6px; color: #5C636B; border-bottom: 1px solid #C6C9CD">2 ops, 12 here</div>
+          <sc-for list="{{nicks}}" as="who" hint-placeholder-count="12">
+            <div style="height: 18px; display: flex; align-items: center; gap: 5px; padding: 0 6px">
+              <div class="m" style="width: 7px; flex-shrink: 0; color: #5C636B">{{who.mark}}</div>
+              <div class="t" style="flex-grow: 1; min-width: 0; color: {{who.ink}}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{who.name}}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="height: 26px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding: 0 6px; border-top: 1px solid #C6C9CD">
+        <div style="flex-grow: 1; min-width: 0; height: 20px; border: 1px solid #2F6FE0; border-radius: 4px; background: #F5F6F7; display: flex; align-items: center; padding: 0 6px">
+          <div class="m">the queue latch was the whole of it</div>
+          <div style="width: 1px; height: 13px; background: #1A1D21; margin-left: 1px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":800,"height":480}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const rail = [
+      { name: 'libera.chat', server: true },
+      { name: 'vibeee', channel: true, open: true },
+      { name: 'zig', channel: true, count: '12' },
+      { name: 'osdev', channel: true, count: '3' },
+      { name: 'hexmap', count: '2', urgent: true },
+      { name: 'oftc', server: true },
+      { name: 'llvm', channel: true },
+    ].map((row) => ({
+      ...row,
+      indent: row.server ? '6px' : '16px',
+      ground: row.open ? '#2F6FE0' : 'transparent',
+      ink: row.open ? '#FFFFFF' : (row.server ? '#5C636B' : '#1A1D21'),
+      badge: row.urgent ? '#B33A2B' : '#5C636B',
+      unread: row.count !== undefined,
+      count: row.count || '',
+      server: row.server === true,
+      channel: row.channel === true,
+    }));
+
+    const groups = [
+      { kind: 'system', said: ['Now talking on #vibeee'] },
+      { nick: 'aoife', at: '20:58', said: [
+        'the descriptor ring was chained but nothing ever kicked the queue',
+        'AR_Q_TXD is a latch, not a command',
+      ] },
+      { nick: 'mikko', at: '21:01', said: ['oh, that would explain the silence'] },
+      { kind: 'system', said: ['ruaidhri joined'] },
+      { nick: 'ruaidhri', at: '21:02', said: ['what did I miss'] },
+      { nick: 'kenny', at: '21:04', mine: true, said: [
+        'the reset writes the disable mask and never writes it back',
+        'so every queue was held from the first tune onward',
+      ] },
+      { nick: 'mikko', at: '21:04', highlight: true, said: ['kenny: does the access point answer now?'] },
+      { nick: 'kenny', at: '21:05', mine: true, said: ['it acknowledges the auth request, yes'] },
+      { nick: 'ruaidhri', at: '21:06', said: ['that is the hardware telling you it heard you'] },
+    ].map((g) => {
+      const system = g.kind === 'system';
+      return {
+        ...g,
+        named: !system,
+        pad: system ? '2px' : '6px',
+        ground: g.highlight ? '#D8DADD' : 'transparent',
+        ink: system ? '#5C636B' : '#1A1D21',
+        nick_ink: g.mine ? '#2F6FE0' : '#1A1D21',
+        said: g.said.map((text) => ({ text: system ? '— ' + text : text })),
+      };
+    });
+
+    const nicks = [
+      { name: 'aoife_afk', op: true, away: true }, { name: 'kenny', op: true, mine: true },
+      { name: 'mikko', voice: true }, { name: 'ruaidhri' }, { name: 'bjarne' },
+      { name: 'cinaed' }, { name: 'eimear' }, { name: 'fionnuala' },
+      { name: 'hakon' }, { name: 'ingrid' }, { name: 'jarkko' }, { name: 'niamh' },
+    ].map((who) => ({
+      ...who,
+      mark: who.op ? '@' : (who.voice ? '+' : ''),
+      ink: who.away ? '#5C636B' : (who.mine ? '#2F6FE0' : '#1A1D21'),
+    }));
+
+    return { rail, groups, nicks };
+  }
+}
+</script>
+</body>
+</html>

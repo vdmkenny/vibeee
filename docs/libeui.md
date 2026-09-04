@@ -266,6 +266,7 @@ Editable text: a buffer, the lines it breaks into, and a control that edits it.
 | `positionOf` | `fn ([]const u8, *const font.Font, i32, usize) text.Position` |
 | `lineAt` | `fn ([]const u8, *const font.Font, i32, usize) text.Line` |
 | `offsetAt` | `fn ([]const u8, *const font.Font, text.Line, i32) usize` |
+| `face` | `fn () *const font.Font` |
 | `placeOf` | `fn ([]const u8, usize) text.Place` |
 | `lineCount` | `fn ([]const u8) usize` |
 | `inner` | `fn (draw.Rect) draw.Rect` |

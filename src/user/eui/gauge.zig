@@ -176,6 +176,7 @@ test "a row of nothing has nothing in it" {
 }
 
 test "the bar fills its share and never more" {
+    draw.useLinked();
     const bar = barRect(cellRect(row, 4, 0));
     try testing.expectEqual(@as(i32, 0), widget.filledWidth(bar, 0));
     try testing.expectEqual(bar.w, widget.filledWidth(bar, 100));
@@ -204,6 +205,7 @@ test "a reading turns at the end that is the bad one" {
 }
 
 test "the bar stays inside its cell" {
+    draw.useLinked();
     for (0..4) |i| {
         const cell = cellRect(row, 4, i);
         const bar = barRect(cell);

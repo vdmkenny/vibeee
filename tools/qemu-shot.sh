@@ -80,20 +80,34 @@ start() {
         -monitor "unix:$SOCK,server,nowait" "$@" &
     QPID=$!
 
-    # Up to five seconds for the monitor socket, which is what says it is
-    # running. An emulator that failed to start is gone well before that.
+    # Up to fifteen seconds for the monitor socket, which is what says it is
+    # running. A loaded host is slow to get there, and the wait costs nothing
+    # on one that is not: it ends as soon as the socket appears.
     i=0
-    while [ ! -S "$SOCK" ] && [ $i -lt 50 ]; do
-        if ! kill -0 "$QPID" 2>/dev/null; then return 1; fi
+    while [ ! -S "$SOCK" ] && [ $i -lt 150 ]; do
+        if ! kill -0 "$QPID" 2>/dev/null; then QPID=""; return 1; fi
         sleep 0.1
         i=$((i + 1))
     done
-    [ -S "$SOCK" ]
+    [ -S "$SOCK" ] && return 0
+
+    # Alive, but it never opened its monitor. Left running it would keep the
+    # image's write lock, and every later attempt would fail to take it: the
+    # one this gives up on is stopped before the next is started.
+    kill "$QPID" 2>/dev/null || true
+    i=0
+    while kill -0 "$QPID" 2>/dev/null && [ $i -lt 100 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    QPID=""
+    return 1
 }
 
 # Killed and then waited out, by asking whether it is still there: the next
 # boot opens the same image, and the lock outlives the request to stop.
 gone() {
+    [ -n "$QPID" ] || { rm -f "$SOCK"; return; }
     kill "$QPID" 2>/dev/null || true
     i=0
     while kill -0 "$QPID" 2>/dev/null && [ $i -lt 100 ]; do

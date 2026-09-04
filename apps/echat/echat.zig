@@ -630,7 +630,7 @@ fn drawTranscript(area: Rect) void {
 
     // Nothing open at all: say how to start, rather than showing an empty
     // pane that gives no hint there is anything to do.
-    const room = model.current() orelse {
+    if (model.current() == null) {
         // On the pane's own ground rather than a label's, which paints the
         // window's and would leave a band across the top.
         if (ctx.damaged) {
@@ -642,8 +642,7 @@ fn drawTranscript(area: Rect) void {
             );
         }
         return;
-    };
-    _ = room;
+    }
     const which = model.open;
 
     const lines = model.transcript(which, &shown);
@@ -735,9 +734,12 @@ fn drawGroup(view: eui.scrollpane.View, at: Rect, lines: []const usize, group: G
             .acted => t.accent,
             .said => t.text,
         };
-        var wrapped = eui.text.lines(bodyOf(line), drawFace(line), width);
+        // Taken once: what a line reads as is written into one buffer, and
+        // asking again while a wrapped slice of it is in hand would be
+        // writing under that slice.
+        const body = bodyOf(line);
+        var wrapped = eui.text.lines(body, drawFace(line), width);
         while (wrapped.next()) |piece| {
-            const body = bodyOf(line);
             ctx.surface.textIn(drawFace(line), at.x + t.padding, y, body[piece.start..piece.end], ink);
             y += row;
         }

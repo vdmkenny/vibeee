@@ -95,6 +95,7 @@ test "the strip is a control tall plus a margin, at the bottom" {
 }
 
 test "a button is as wide as what it says" {
+    draw.useLinked();
     try testing.expect(buttonWidth("Save") < buttonWidth("Disconnect"));
     // Both are wider than their text by the same padding, so neither looks
     // cramped next to the other.
@@ -105,6 +106,7 @@ test "a button is as wide as what it says" {
 }
 
 test "buttons pack right in the order they are named, with air between" {
+    draw.useLinked();
     const bar = strip(window);
     var cells: [4]Rect = undefined;
     const placed = place(bar, &.{ "Save", "Close" }, &cells);
@@ -121,6 +123,7 @@ test "buttons pack right in the order they are named, with air between" {
 }
 
 test "the message gets what the buttons leave" {
+    draw.useLinked();
     const bar = strip(window);
     var cells: [4]Rect = undefined;
     const placed = place(bar, &.{ "Save", "Close" }, &cells);

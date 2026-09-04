@@ -84,9 +84,10 @@ pub const Connection = struct {
         self.look = rep.body.hello.look;
         applyAppearance(self.look);
 
-        // Two handles come back: the event ring's memory, and the event that
-        // says there is something in it.
-        if (reply.handle_count < 2) return error.Refused;
+        // Three handles come back: the event ring's memory, the event that
+        // says there is something in it, and the faces every window draws
+        // with, which the manager holds one copy of.
+        if (reply.handle_count < 3) return error.Refused;
 
         const ring_handle = reply.handles[0];
         self.event_signal = reply.handles[1];
@@ -95,6 +96,12 @@ pub const Connection = struct {
         const header: *volatile ring.Header = @ptrCast(@alignCast(base));
         self.events = ring.Ring.attach(header, base[4096 .. 4096 + wm.EVENT_RING_BYTES]) catch
             return error.Refused;
+
+        // Mapped read-only: the glyphs are the manager's, and a client that
+        // could write them would be drawing in every other window too.
+        const size = sys.shmSize(reply.handles[2]) orelse return error.Refused;
+        const fonts = sys.shmMap(reply.handles[2], .{}) orelse return error.OutOfMemory;
+        if (!eui.draw.use(fonts[0..size])) return error.Refused;
 
         return self;
     }

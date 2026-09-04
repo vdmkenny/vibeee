@@ -1,0 +1,60 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 800,
+      "h": 480,
+      "title": "Talking"
+    },
+    {
+      "file": "Networks.dc.html",
+      "x": 920,
+      "y": 0,
+      "w": 800,
+      "h": 480,
+      "title": "Networks"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -190,
+      "w": 470,
+      "text": "IRC, an app for vibeee, after XChat Cerulean.\nBinary echat, readable name IRC. Lives in apps/, not the system tree.\nSlate theme throughout, the toolkit's own rail on the left, Ark Mono for what was said and Ark Pixel for the chrome. 800x480, the whole screen."
+    },
+    {
+      "id": "why-rail",
+      "x": 0,
+      "y": 512,
+      "w": 470,
+      "text": "The rail\nThe same control Settings uses: 124 wide, 26 tall rows, the chosen one a filled band and the rest plain text on the sunken ground, with a caption at the foot where Settings puts the version and this puts your nickname.\n\nIt needs two things it does not have. A row held under another, so channels sit beneath their network. And a count, so a rail row can say how much is waiting. Both are general: any rail with more places than fit wants them."
+    },
+    {
+      "id": "why-transcript",
+      "x": 500,
+      "y": 512,
+      "w": 470,
+      "text": "The transcript\nA run of messages from one person carries their name once, and the words run the full width of the pane rather than beside a column of names repeated down the screen. On 800 pixels that column was costing 88 of them on every line.\n\nWhat is kept from IRC: the server speaks with a dash rather than a name, a line that names you takes the ground a chosen row takes, and ops and voice are marked in the list of who is here.\n\nUnderneath it is a scrolling pane of wrapped lines, which the toolkit already draws."
+    },
+    {
+      "id": "why-colour",
+      "x": 1000,
+      "y": 512,
+      "w": 400,
+      "text": "About the nick colours\nCerulean tells names apart by hue. The theme carries one highlight and no palette to draw seven from, so this leans on the grouping instead: one bold name per run, yours in the accent.\n\nIf you want the hues, they belong in the theme as a named palette every app can reach, not invented in this one."
+    },
+    {
+      "id": "why-networks",
+      "x": 920,
+      "y": 700,
+      "w": 460,
+      "text": "Networks\nThe directory XChat has, in this system's shape: a list with the chosen one's settings on a row beneath it, the way the network pane puts an interface's settings under its list.\n\nConnect is the primary action and carries the accent, as Save and Join do."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

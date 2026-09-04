@@ -34,6 +34,7 @@ const ui = @import("eui").widget;
 const sys = @import("sys");
 const bindings = @import("ulib").bindings;
 const display = @import("ulib").display;
+const file = @import("ulib").file;
 const out = @import("ulib").out;
 
 const Rect = eui.Rect;
@@ -98,6 +99,15 @@ fn wmMain() noreturn {
         sys.exit(1);
     }
     service = @intCast(registered);
+
+    // The faces every window draws with, read once into one segment that each
+    // client maps. Before the display, because a desktop that cannot draw
+    // text should say so on the console it was started from.
+    openFonts() catch {
+        out.text("eeewm: cannot read " ++ FONTS ++ ", which every window draws with.\n");
+        out.flush();
+        sys.exit(1);
+    };
 
     const taken = display.take() catch |err| {
         out.text("eeewm: ");
@@ -944,7 +954,36 @@ fn onClipboardPut(req: *const wire.Req) Answer {
     } };
 }
 
-var hello_handles: [2]u32 = @splat(0);
+var hello_handles: [3]u32 = @splat(0);
+
+/// Where the faces live in the image, and the most a pack may come to.
+const FONTS = "/share/fonts.pack";
+const FONTS_MAX = 4 << 20;
+
+/// The segment holding them, kept for the life of the desktop: every client
+/// maps this one, so the glyphs are in memory once however many windows are
+/// open.
+var fonts_handle: u32 = 0;
+
+fn openFonts() !void {
+    // What the file is before it is read, so a segment is asked for once and
+    // at the right size.
+    var record: [512]u8 = undefined;
+    const told = sys.stat(FONTS, &record);
+    if (told <= 0) return error.NoFile;
+    const entry = sys.Dirent.decode(&record, @intCast(told)) orelse return error.NoFile;
+    if (entry.size == 0 or entry.size > FONTS_MAX) return error.BadFile;
+
+    const created = sys.shmCreate(entry.size);
+    if (created < 0) return error.NoMemory;
+    fonts_handle = @intCast(created);
+
+    const at = sys.shmMap(fonts_handle, .{ .writable = true }) orelse return error.NoMemory;
+    const bytes = at[0..entry.size];
+    const read = file.readWhole(FONTS, bytes) orelse return error.NoFile;
+    if (read != entry.size) return error.BadFile;
+    if (!eui.use(bytes)) return error.BadFile;
+}
 
 fn onHello(pid: u32, req: *const wire.Req) Answer {
     if (req.body.hello.proto != wire.VERSION) {
@@ -955,7 +994,7 @@ fn onHello(pid: u32, req: *const wire.Req) Answer {
         return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
     };
 
-    hello_handles = .{ client.events_handle, client.signal };
+    hello_handles = .{ client.events_handle, client.signal, fonts_handle };
 
     return .{
         .rep = .{

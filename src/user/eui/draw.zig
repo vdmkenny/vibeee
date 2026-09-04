@@ -21,21 +21,65 @@ pub const Color = theme.Color;
 /// terminal needs and what a button label should not look like.
 pub const Font = fontlib.Font;
 
+/// The faces, which are not linked into a program: they are read from one
+/// file into one segment, and every window that draws points at the same
+/// glyphs. `use` is what points them there, and the window manager's reply is
+/// where the bytes come from.
+///
+/// Undefined until then on purpose. A program that draws before it has a
+/// window has nowhere to draw either, and faulting is a better answer than
+/// text nobody can see.
+var faces: fontlib.pack.Faces = undefined;
+
 /// Interface text: proportional, because everything but a terminal reads
 /// better that way at this size.
-pub const ui_font: *const Font = &fontlib.ark_ui_12;
+pub var ui_font: *const Font = undefined;
 /// The same family at sixteen pixels, for what is set large: a name at the
 /// top of a sheet, a figure on a tile. A larger drawing of the same letters,
 /// not the small ones doubled, which on this panel reads as blocks rather than
 /// as type. Two sizes are the whole scale: `text` for everything read, and
 /// `title` for what is set large; a section's heading is `eui.heading`, words
 /// at text size with a rule under them.
-pub const title_font: *const Font = &fontlib.ark_ui_16;
+pub var title_font: *const Font = undefined;
 
 /// Where columns have to line up. The interface family's own fixed-advance
 /// face, so a shell and a button label speak in one voice; the console keeps
 /// Spleen, which was drawn for a framebuffer console and stays there.
-pub const mono_font: *const Font = &fontlib.ark_mono_12;
+pub var mono_font: *const Font = undefined;
+
+/// Point the toolkit at the faces in `bytes`, which stay mapped for as long
+/// as anything draws. False for anything that is not a font pack, which is a
+/// program that must not go on to draw.
+pub fn use(bytes: []const u8) bool {
+    faces = fontlib.pack.read(bytes) orelse return false;
+    point();
+    return true;
+}
+
+/// Point at the faces linked into this binary rather than at a pack.
+///
+/// For a test that needs a face's metrics and has no window manager to get
+/// them from. Nothing in the system calls it: a program takes its faces from
+/// the manager, and referencing the tables anywhere a program reaches is what
+/// would put fifty kilobytes of glyphs back into every binary.
+pub fn useLinked() void {
+    faces = .{ fontlib.ark_ui_12, fontlib.ark_ui_16, fontlib.ark_mono_12 };
+    point();
+}
+
+fn point() void {
+    ui_font = &faces[@intFromEnum(fontlib.pack.Face.ui)];
+    title_font = &faces[@intFromEnum(fontlib.pack.Face.title)];
+    mono_font = &faces[@intFromEnum(fontlib.pack.Face.mono)];
+
+    const band = ui_font.inkBand('x') orelse
+        fontlib.Band{ .top = 0, .bottom = ui_font.height - 1 };
+    body_middle = @intCast(@divTrunc(band.twiceMiddle() + 1, 2));
+}
+
+/// Half way down the body of a lowercase letter, in rows of the face. Set
+/// with the faces, since it is measured from one.
+var body_middle: i32 = 0;
 
 /// Walking a string as characters rather than bytes. Lives in `lib` because
 /// the font's own measuring needs it and the kernel's console draws from the
@@ -428,17 +472,8 @@ pub const Surface = struct {
     /// eye puts the line. Measured from the face rather than given as a
     /// number, so a different face or a doubled one still lines up.
     pub fn iconTopFor(y: i32) i32 {
-        return y + BODY_MIDDLE * theme.textScale() - @divTrunc(iconSize(), 2);
+        return y + body_middle * theme.textScale() - @divTrunc(iconSize(), 2);
     }
-
-    /// Half way down the body of a lowercase letter, in rows of the face.
-    /// Taken from an `x`, which has neither an ascender nor a descender, and
-    /// from an `o` where a face has no `x`.
-    const BODY_MIDDLE: i32 = blk: {
-        const band = ui_font.inkBand('x') orelse
-            fontlib.Band{ .top = 0, .bottom = ui_font.height - 1 };
-        break :blk @intCast(@divTrunc(band.twiceMiddle() + 1, 2));
-    };
 
     pub fn iconSize() i32 {
         return @as(i32, @intCast(icons.WIDTH)) * theme.textScale();

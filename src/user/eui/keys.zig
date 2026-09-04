@@ -194,6 +194,7 @@ fn render(surface: Surface, shown: []const Placed, area: Rect, style: Style, ink
 const testing = std.testing;
 
 test "keys are placed left to right, each after the last" {
+    draw.useLinked();
     const area = Rect{ .x = 0, .y = 100, .w = 800, .h = 22 };
     const entries = [_]Key{
         .{ .key = "Tab", .label = "pane" },
@@ -214,6 +215,7 @@ test "keys are placed left to right, each after the last" {
 }
 
 test "what does not fit is dropped, not squeezed" {
+    draw.useLinked();
     const entries = [_]Key{
         .{ .key = "Tab", .label = "pane" },
         .{ .key = "Ret", .label = "open" },
@@ -232,6 +234,7 @@ test "what does not fit is dropped, not squeezed" {
 }
 
 test "the limit is where the row stops, not the edge" {
+    draw.useLinked();
     const area = Rect{ .x = 0, .y = 0, .w = 800, .h = 22 };
     const entries = [_]Key{
         .{ .key = "Tab", .label = "pane" },
@@ -248,6 +251,7 @@ test "the limit is where the row stops, not the edge" {
 }
 
 test "a row with nowhere to put anything places nothing" {
+    draw.useLinked();
     const none = Rect{ .x = 0, .y = 0, .w = 0, .h = 22 };
     var buf: [MAX]Placed = undefined;
     try testing.expectEqual(@as(usize, 0), place(none, none.right(), &.{
@@ -256,6 +260,7 @@ test "a row with nowhere to put anything places nothing" {
 }
 
 test "no more keys are placed than the caller has room for" {
+    draw.useLinked();
     const area = Rect{ .x = 0, .y = 0, .w = 4000, .h = 22 };
     const entries = [_]Key{
         .{ .key = "a", .label = "one" },

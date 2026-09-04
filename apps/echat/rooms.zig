@@ -257,18 +257,18 @@ pub const Model = struct {
     /// The lines belonging to a room, oldest first, written into `into`.
     /// Returns what was written.
     pub fn transcript(self: *const Model, room: u8, into: []usize) []const usize {
+        // Newest first, filling `into` from its end: a pane shows the end of
+        // a conversation, and walking forwards would shift everything down
+        // once per line past the window.
         var count: usize = 0;
-        for (self.lines.slice(), 0..) |line, index| {
-            if (line.room != room) continue;
-            if (count == into.len) {
-                // Keep the newest: a pane shows the end of a conversation.
-                std.mem.copyForwards(usize, into[0 .. count - 1], into[1..count]);
-                count -= 1;
-            }
-            into[count] = index;
+        var index = self.lines.len;
+        while (index != 0 and count < into.len) {
+            index -= 1;
+            if (self.lines.items[index].room != room) continue;
+            into[into.len - 1 - count] = index;
             count += 1;
         }
-        return into[0..count];
+        return into[into.len - count ..];
     }
 
     pub fn textOf(self: *const Model, span: Span) []const u8 {

@@ -96,6 +96,7 @@ test "the strip is a control tall, and the list gets the rest" {
 }
 
 test "picture, groove and number sit in that order and do not overlap" {
+    draw.useLinked();
     const bar = of(menu);
     const picture = button(bar);
     const groove = track(bar, "100%");
@@ -108,6 +109,7 @@ test "picture, groove and number sit in that order and do not overlap" {
 }
 
 test "a longer reading takes its room from the groove" {
+    draw.useLinked();
     const bar = of(menu);
     const short = track(bar, "5%");
     const long = track(bar, "16 of 16");
@@ -119,6 +121,7 @@ test "a longer reading takes its room from the groove" {
 }
 
 test "everything stays inside the panel" {
+    draw.useLinked();
     const bar = of(menu);
     for ([_][]const u8{ "0%", "100%", "16 of 16" }) |text| {
         const groove = track(bar, text);

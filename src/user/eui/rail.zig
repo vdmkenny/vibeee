@@ -210,6 +210,7 @@ test "a nested row starts further in than its parent" {
 }
 
 test "a count is a badge at the right of the row" {
+    draw.useLinked();
     const rail = column(window, 30);
     const row = rowRect(rail, 0);
 
@@ -240,6 +241,7 @@ test "a count past the cap says so rather than growing" {
 }
 
 test "the footer sits at the bottom of the rail" {
+    draw.useLinked();
     const rail = column(window, 30);
     const strip = footer(rail);
     try testing.expectEqual(rail.bottom(), strip.bottom());

@@ -31,6 +31,12 @@ monospaced latin face is pinned at release `2026.08.11`. Its box-drawing
 glyphs are full-width in the East Asian convention; the terminal draws its own
 line glyphs from cell geometry instead, as terminals conventionally do.
 
+`make fonts` converts the source to the tables in `src/lib/fonts/`, and the
+image build packs those three faces into `/share/fonts.pack`. No GUI program
+links them: the window manager reads the pack into a shared segment and hands
+it to each client, so the glyphs are in memory once rather than once per
+window.
+
 ## uACPI
 
 Daniil Tatianin's ACPI implementation, MIT. See `uacpi/LICENSE`. Pinned at

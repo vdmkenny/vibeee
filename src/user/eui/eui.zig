@@ -52,6 +52,10 @@ pub const widget = @import("widget.zig");
 /// Re-exported because almost every caller wants them by these names.
 pub const Rect = draw.Rect;
 pub const Surface = draw.Surface;
+
+/// Point the toolkit at the faces every window draws with.
+pub const use = draw.use;
+pub const useLinked = draw.useLinked;
 pub const Color = draw.Color;
 pub const Context = widget.Context;
 pub const Theme = theme.Theme;

@@ -224,6 +224,12 @@ pub fn rowOf(model: *const rooms.Model, room: u8) usize {
 const testing = std.testing;
 const screen = Rect{ .x = 0, .y = 0, .w = 800, .h = 458 };
 
+/// Every size here is measured from a face, and a test has no window manager
+/// to take one from.
+fn withFaces() void {
+    eui.useLinked();
+}
+
 fn emptyModel() !*rooms.Model {
     const built = try testing.allocator.create(rooms.Model);
     built.* = .{};
@@ -231,6 +237,7 @@ fn emptyModel() !*rooms.Model {
 }
 
 test "the panes fill the window and do not overlap" {
+    withFaces();
     const panes = place(screen, true);
 
     try testing.expectEqual(screen.x, panes.rail.x);
@@ -249,6 +256,7 @@ test "the panes fill the window and do not overlap" {
 }
 
 test "a room with nobody in it gives the words the whole width" {
+    withFaces();
     const with = place(screen, true);
     const without = place(screen, false);
     try testing.expectEqual(@as(i32, 0), without.members.w);
@@ -257,6 +265,7 @@ test "a room with nobody in it gives the words the whole width" {
 }
 
 test "a window too narrow for both keeps the words" {
+    withFaces();
     const narrow = Rect{ .x = 0, .y = 0, .w = 320, .h = 240 };
     const panes = place(narrow, true);
     try testing.expectEqual(@as(i32, 0), panes.members.w);
@@ -264,6 +273,7 @@ test "a window too narrow for both keeps the words" {
 }
 
 test "members stack under the strip that counts them" {
+    withFaces();
     const panes = place(screen, true);
     const first = memberRow(panes.members, 0);
     try testing.expectEqual(panes.members.y + headerHeight(), first.y);
@@ -273,6 +283,7 @@ test "members stack under the strip that counts them" {
 }
 
 test "the rail lists each network and holds its rooms under it" {
+    withFaces();
     const built = try emptyModel();
     defer testing.allocator.destroy(built);
 
@@ -304,6 +315,7 @@ test "the rail lists each network and holds its rooms under it" {
 }
 
 test "what is waiting in a room shows on its rail row" {
+    withFaces();
     const built = try emptyModel();
     defer testing.allocator.destroy(built);
 

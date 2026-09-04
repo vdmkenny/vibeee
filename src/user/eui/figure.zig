@@ -45,6 +45,7 @@ pub fn paint(surface: Surface, area: Rect, label: []const u8, value: []const u8,
 }
 
 test "a tile holds its label and its figure with air around them" {
+    draw.useLinked();
     const area = Rect{ .x = 0, .y = 0, .w = 120, .h = height() };
     const at = figureRect(area);
     try std.testing.expect(at.y > area.y + Surface.textHeight());

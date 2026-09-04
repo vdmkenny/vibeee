@@ -35,6 +35,7 @@ pub fn paint(surface: Surface, area: Rect, text: []const u8, picture: ?icons.Gly
 }
 
 test "a heading is its words and the air under the rule" {
+    draw.useLinked();
     try std.testing.expect(height() > Surface.textHeight());
     try std.testing.expectEqual(Surface.textHeight() + BELOW, height());
 }

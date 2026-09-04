@@ -213,6 +213,145 @@ pub const spleen_12x24 = @import("fonts/spleen_12x24.zig").desc;
 
 /// Proportional, for interface text rather than a terminal grid.
 /// Ark Pixel by TakWolf, SIL Open Font License 1.1.
+/// Faces packed into one file, so a program maps them rather than carrying
+/// its own copy of every glyph.
+///
+/// Every GUI program draws with the same three faces. Linked into each one
+/// they cost fifty kilobytes a binary and a copy in memory per process; read
+/// from one file into one segment they cost that once. The window manager
+/// owns the segment and hands it to each client, which is where the sharing
+/// comes from: nothing here opens a file.
+pub const pack = struct {
+    /// What the file starts with, so a truncated or wrong file is refused
+    /// rather than read as glyphs.
+    pub const MAGIC = "eeefont1";
+
+    /// The faces a pack holds, in this order.
+    pub const Face = enum(u32) { ui, title, mono };
+    pub const FACES = @typeInfo(Face).@"enum".fields.len;
+
+    /// The head of the file, then one `Entry` per face, then the bytes each
+    /// entry points into. Offsets are from the start of the file.
+    pub const Head = extern struct {
+        magic: [8]u8,
+        faces: u32,
+        bytes: u32,
+    };
+
+    pub const Entry = extern struct {
+        width: u32,
+        height: u32,
+        row_bytes: u32,
+        ascent: u32,
+        bitmap_at: u32,
+        bitmap_len: u32,
+        /// Zero for a monospaced face, which advances by its width.
+        advances_at: u32,
+        advances_len: u32,
+    };
+
+    comptime {
+        // Both sides read the same layout or neither does.
+        if (@sizeOf(Head) != 16) @compileError("font pack head is not sixteen bytes");
+        if (@sizeOf(Entry) != 32) @compileError("font pack entry is not thirty-two bytes");
+    }
+
+    pub const SIZE = @sizeOf(Head) + FACES * @sizeOf(Entry);
+
+    /// The faces a pack holds, pointing into the bytes it was read from.
+    pub const Faces = [FACES]Font;
+
+    /// Read a pack. Null for anything that is not one: a short file, a wrong
+    /// magic, a face whose glyphs run off the end. Nothing here trusts the
+    /// file, because it is a file.
+    pub fn read(bytes: []const u8) ?Faces {
+        if (bytes.len < SIZE) return null;
+        const head: *align(1) const Head = @ptrCast(bytes.ptr);
+        if (!std.mem.eql(u8, &head.magic, MAGIC)) return null;
+        if (head.faces != FACES or head.bytes != bytes.len) return null;
+
+        var faces: Faces = undefined;
+        for (0..FACES) |index| {
+            const entry: *align(1) const Entry = @ptrCast(bytes.ptr + @sizeOf(Head) + index * @sizeOf(Entry));
+            if (entry.width == 0 or entry.height == 0 or entry.row_bytes == 0) return null;
+            if (entry.bitmap_len != SLOTS * entry.height * entry.row_bytes) return null;
+            const bitmap = slice(bytes, entry.bitmap_at, entry.bitmap_len) orelse return null;
+
+            var advances: ?[]const u8 = null;
+            if (entry.advances_len != 0) {
+                if (entry.advances_len != SLOTS) return null;
+                advances = slice(bytes, entry.advances_at, entry.advances_len) orelse return null;
+            }
+
+            faces[index] = .{
+                .name = "",
+                .width = entry.width,
+                .height = entry.height,
+                .row_bytes = entry.row_bytes,
+                .ascent = entry.ascent,
+                .bitmap = bitmap,
+                .advances = advances,
+            };
+        }
+        return faces;
+    }
+
+    fn slice(bytes: []const u8, at: u32, len: u32) ?[]const u8 {
+        const end = @as(usize, at) + len;
+        if (end > bytes.len or end < at) return null;
+        return bytes[at..end];
+    }
+
+    /// How large a pack of these faces comes to.
+    pub fn sizeOf(faces: [FACES]*const Font) usize {
+        var total: usize = SIZE;
+        for (faces) |face| {
+            total += face.bitmap.len;
+            if (face.advances) |advances| total += advances.len;
+        }
+        return total;
+    }
+
+    /// Write a pack into `into`, which must be `sizeOf` bytes. Returns what
+    /// was written.
+    pub fn write(into: []u8, faces: [FACES]*const Font) []const u8 {
+        const total = sizeOf(faces);
+        std.debug.assert(into.len >= total);
+
+        const head: *align(1) Head = @ptrCast(into.ptr);
+        head.* = .{ .magic = MAGIC.*, .faces = FACES, .bytes = @intCast(total) };
+
+        var at: u32 = SIZE;
+        for (faces, 0..) |face, index| {
+            const entry: *align(1) Entry = @ptrCast(into.ptr + @sizeOf(Head) + index * @sizeOf(Entry));
+            const bitmap_at = at;
+            @memcpy(into[at..][0..face.bitmap.len], face.bitmap);
+            at += @intCast(face.bitmap.len);
+
+            var advances_at: u32 = 0;
+            var advances_len: u32 = 0;
+            if (face.advances) |advances| {
+                advances_at = at;
+                advances_len = @intCast(advances.len);
+                @memcpy(into[at..][0..advances.len], advances);
+                at += advances_len;
+            }
+
+            entry.* = .{
+                .width = @intCast(face.width),
+                .height = @intCast(face.height),
+                .row_bytes = @intCast(face.row_bytes),
+                .ascent = @intCast(face.ascent),
+                .bitmap_at = bitmap_at,
+                .bitmap_len = @intCast(face.bitmap.len),
+                .advances_at = advances_at,
+                .advances_len = advances_len,
+            };
+        }
+        return into[0..total];
+    }
+};
+
 pub const ark_ui_12 = @import("fonts/ark_ui_12.zig").desc;
 pub const ark_ui_16 = @import("fonts/ark_ui_16.zig").desc;
 pub const ark_mono_12 = @import("fonts/ark_mono_12.zig").desc;
@@ -279,4 +418,50 @@ test "text is cut on a character, with room left for the mark that says so" {
     const none = face.fit("eth0", 2);
     try std.testing.expectEqual(@as(usize, 0), none.len);
     try std.testing.expect(none.cut);
+}
+
+test "a pack holds the faces it was written from" {
+    const faces = [_]*const Font{ &ark_ui_12, &ark_ui_16, &ark_mono_12 };
+    const total = pack.sizeOf(faces);
+
+    const bytes = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(bytes);
+    const written = pack.write(bytes, faces);
+    try std.testing.expectEqual(total, written.len);
+
+    const read = pack.read(written) orelse return error.NotAPack;
+    for (faces, read) |wanted, got| {
+        try std.testing.expectEqual(wanted.width, got.width);
+        try std.testing.expectEqual(wanted.height, got.height);
+        try std.testing.expectEqual(wanted.row_bytes, got.row_bytes);
+        try std.testing.expectEqual(wanted.ascent, got.ascent);
+        try std.testing.expectEqualSlices(u8, wanted.bitmap, got.bitmap);
+        try std.testing.expectEqual(wanted.isProportional(), got.isProportional());
+        if (wanted.advances) |advances| {
+            try std.testing.expectEqualSlices(u8, advances, got.advances.?);
+        }
+        // The glyphs read back as the same pictures, which is the only thing
+        // a face is for.
+        for ("Ag@ 0") |code| {
+            const one = wanted.glyph(code) orelse return error.NoGlyph;
+            const two = got.glyph(code) orelse return error.NoGlyph;
+            try std.testing.expectEqualSlices(u8, one, two);
+        }
+    }
+}
+
+test "anything that is not a pack is refused" {
+    try std.testing.expect(pack.read("") == null);
+    try std.testing.expect(pack.read("eeefont1") == null);
+
+    const faces = [_]*const Font{ &ark_ui_12, &ark_ui_16, &ark_mono_12 };
+    const bytes = try std.testing.allocator.alloc(u8, pack.sizeOf(faces));
+    defer std.testing.allocator.free(bytes);
+    const written = @constCast(pack.write(bytes, faces));
+
+    // Truncated, and with the head saying something the file does not bear
+    // out: both are files to refuse rather than read.
+    try std.testing.expect(pack.read(written[0 .. written.len - 1]) == null);
+    written[0] = 'x';
+    try std.testing.expect(pack.read(written) == null);
 }
