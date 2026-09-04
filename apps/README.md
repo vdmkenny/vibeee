@@ -14,7 +14,7 @@ beside the files it works on and survives a reboot like they do.
 |---|---|---|
 | Doom | [`doom/`](doom/) | The portable engine, fetched. What is kept here is its platform half: six calls answered with this system's screen, key stream and clock. It runs at whatever size the screen comes up at and saves into `/home`. No sound backend. The WAD is not fetched for you; the recipe says which one and where to get it. |
 | Hero | [`hero/`](hero/) | A character journal for Dungeons and Dragons on the 2024 rules, written here and built by the main `build.zig`. It opens a `.hero` file from the launcher or its own File menu, and handles rolls, damage, rests, spells, gold and notes. |
-| echat | [`echat/`](echat/) | An IRC client. The protocol engine is written and tested with `make echat`; the window on top of it is not built yet. |
+| echat | [`echat/`](echat/) | An IRC client: networks and their channels down a rail, the transcript grouped by who is speaking, who is here, and a line to type into. `make echat` checks its engine and model against the reference vectors first. It reaches a network on 6667; TLS is not written yet. |
 
 Each is built and versioned on its own, separately from the system's version
 string.

@@ -123,6 +123,7 @@ that means it has to be painted again.
 | call | signature |
 |---|---|
 | `addDamage` | `fn (*widget.Context, draw.Rect) void` |
+| `focusNext` | `fn (*widget.Context) void` |
 | `takeWheel` | `fn (*widget.Context) i8` |
 | `takeTextFor` | `fn (*widget.Context, *const widget.Entry) ?u32` |
 | `slotFor` | `fn (*widget.Context, draw.Rect) ?*widget.Entry` |

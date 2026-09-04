@@ -150,6 +150,8 @@ pub const Context = struct {
     focus: ?usize = null,
     /// Set when focus moved this pass, so the control losing it repaints too.
     focus_moved: bool = false,
+    /// The next control drawn should take the keyboard, if nothing has it.
+    focus_wanted: bool = false,
     /// Whether the pointer is somewhere else than it was last pass. What
     /// follows the pointer follows it when it moves and leaves the keyboard
     /// alone when it rests, which is the difference between a highlight that
@@ -330,6 +332,7 @@ pub const Context = struct {
         // going nowhere, and the way out is to click on the thing that was
         // obviously already waiting to be typed into.
         if (self.focus == null) self.moveFocus(.forward);
+        self.focus_wanted = false;
 
         self.damaged = false;
         self.pending_key = 0;
@@ -409,6 +412,15 @@ pub const Context = struct {
 
         self.damage_rects[self.damage_count] = area;
         self.damage_count += 1;
+    }
+
+    /// Give the keyboard to the next control drawn, when nothing has it yet.
+    ///
+    /// For a window with one obvious place to type: the line in a chat
+    /// client, the box in a search. Without it the keyboard goes to whatever
+    /// is drawn first, which is usually a list nobody wants to type into.
+    pub fn focusNext(self: *Context) void {
+        self.focus_wanted = true;
     }
 
     /// Take the pending key if this control has focus.
@@ -496,6 +508,14 @@ pub const Context = struct {
         entry.focusable = true;
 
         const index = self.indexOf(entry);
+
+        // A window that named where the keyboard belongs gives it to that
+        // control the first time it is drawn.
+        if (self.focus_wanted and self.focus == null) {
+            self.focus_wanted = false;
+            self.focus = index;
+            self.focus_moved = true;
+        }
         const over = area.contains(self.pointer_x, self.pointer_y);
 
         if (over and self.pressedThisPass()) {

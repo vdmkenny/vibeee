@@ -93,6 +93,9 @@ var notice: Bounded(u8, 128) = .{};
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
     model.init();
     for (&links) |*link| forget(link);
+    // Before the first pass: a field whose buffer points at nothing takes no
+    // letters and says nothing about why.
+    input.init(.{ .hint = "Say something, or /server to connect" });
 
     if (env.argument(frame)) |wanted| {
         if (std.mem.eql(u8, wanted, "--version")) {
@@ -153,6 +156,9 @@ fn connect(where: []const u8) void {
     link.session.begin();
     listen();
     flush(link);
+    // The server answers at once, and the first read here means the greeting
+    // is on screen without waiting for a wake.
+    _ = pump(link);
 
     model.show(model.networks.items[network].tab);
     tell(model.networks.items[network].tab, "connecting");
@@ -353,11 +359,14 @@ fn fold(link: *Link, line: *const irc.Line) void {
             .privmsg, .notice => {
                 const target = line.param(0) orelse return;
                 const text = line.text();
-                // A message to us belongs in a conversation with whoever sent
-                // it; one to a channel belongs in the channel.
+                // A message to a channel belongs in the channel and one to us
+                // in a conversation with whoever sent it. What the server
+                // itself says belongs to the network: a notice from a server
+                // is not somebody to talk back to.
+                const sender = line.source orelse irc.Source{};
                 const where = if (support.isChannel(target))
                     model.addRoom(network, .channel, target) orelse return
-                else if (from.len != 0)
+                else if (sender.isUser())
                     model.addRoom(network, .query, from) orelse return
                 else
                     tab;
@@ -611,6 +620,24 @@ fn headerFingerprint(room: *const rooms.Room) u32 {
     return value;
 }
 
+/// What the transcript is showing. A pane that has not changed is left alone.
+var transcript_shown: u64 = 0;
+
+fn transcriptFingerprint(area: Rect) u64 {
+    var value: u64 = 1469598103934665603;
+    for ([_]u64{
+        model.open,
+        model.lines.len,
+        @intCast(transcript_scroll.offset + 1),
+        @intCast(area.w),
+        @intCast(area.h),
+        @intFromBool(following),
+    }) |part| {
+        value = (value ^ part) *% 1099511628211;
+    }
+    return value;
+}
+
 /// A run of lines from one person, drawn with their name once.
 const Group = struct {
     /// Where in `shown` the run starts, and how many lines it holds.
@@ -626,7 +653,17 @@ const RUN_SECONDS: i64 = 300;
 
 fn drawTranscript(area: Rect) void {
     const t = theme.current();
-    if (ctx.damaged) ctx.surface.fill(area, t.surface_hot);
+
+    // The ground goes down again whenever what stands on it has changed:
+    // lines arrive, the room changes, the pane scrolls. Drawing the new text
+    // over the old without this leaves both.
+    const signature = transcriptFingerprint(area);
+    const fresh = ctx.damaged or signature != transcript_shown;
+    transcript_shown = signature;
+    if (fresh) {
+        ctx.surface.fill(area, t.surface_hot);
+        ctx.addDamage(area);
+    }
 
     // Nothing open at all: say how to start, rather than showing an empty
     // pane that gives no hint there is anything to do.
@@ -658,7 +695,7 @@ fn drawTranscript(area: Rect) void {
     var at: usize = 0;
     while (at < lines.len) {
         const group = groupAt(lines, at);
-        y += drawGroup(view, .{ .x = view.area.x, .y = y, .w = view.area.w, .h = 0 }, lines, group, width);
+        y += drawGroup(view, .{ .x = view.area.x, .y = y, .w = view.area.w, .h = 0 }, lines, group, width, fresh);
         at = group.from + group.count;
     }
 
@@ -691,8 +728,17 @@ fn groupAt(lines: []const usize, at: usize) Group {
     return .{ .from = at, .count = count, .named = first.kind != .told, .highlight = highlight };
 }
 
-/// Draw one run and return how tall it turned out.
-fn drawGroup(view: eui.scrollpane.View, at: Rect, lines: []const usize, group: Group, width: i32) i32 {
+/// Draw one run and return how tall it turned out. A pass that is only
+/// measuring still walks it: the pane's height and its bar come from what the
+/// last pass drew, and a pass that skipped the walk would leave both stale.
+fn drawGroup(
+    view: eui.scrollpane.View,
+    at: Rect,
+    lines: []const usize,
+    group: Group,
+    width: i32,
+    paint: bool,
+) i32 {
     const t = theme.current();
     const first = model.lines.items[lines[group.from]];
     const gap = if (group.named) t.padding else theme.enlarged(2);
@@ -705,7 +751,7 @@ fn drawGroup(view: eui.scrollpane.View, at: Rect, lines: []const usize, group: G
         height += @as(i32, @intCast(eui.text.count(bodyOf(line), drawFace(line), width))) * row;
     }
 
-    if (!view.shows(at.y, height)) return height;
+    if (!paint or !view.shows(at.y, height)) return height;
 
     // A run that names this client takes the ground a chosen row takes, so it
     // is findable by looking rather than by reading.
@@ -825,6 +871,9 @@ fn drawInput(area: Rect) void {
         .w = area.w - t.padding * 2,
         .h = t.control_height,
     };
+    // The keyboard belongs here: a chat client is a window you type into,
+    // and every other control is reached with Tab or the pointer.
+    ctx.focusNext();
     if (input.run(ctx, field)) submit();
 }
 
@@ -852,6 +901,11 @@ fn tick() bool {
     var drawn = false;
     const millis: u64 = @intCast(@divFloor(sys.clockMicros(), 1000));
     for (&links) |*link| {
+        if (!link.used) continue;
+        // Read as well as keep alive. The socket's own event is what usually
+        // brings a line in; this is what catches one that arrived while the
+        // window was busy, so a connection cannot sit unread.
+        if (pump(link)) drawn = true;
         if (!link.used) continue;
         const event = link.session.tick(millis);
         act(link, event);

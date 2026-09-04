@@ -16,8 +16,18 @@ allocates nothing: lines go in as bytes and come out as bytes. So all of it
 runs on the host, and `make echat` tests it against the same vectors other
 implementations use.
 
-The client sits on top. It owns the connection, the buffers and the window,
-and asks the engine what the bytes mean.
+The client sits on top. It owns the connections, the buffers and the window,
+and asks the engine what the bytes mean. Up to four networks at once, each
+with its own socket; the wait sleeps on all of them, so a line arriving wakes
+the window rather than a timer finding it.
+
+Commands are `/server`, `/join`, `/part`, `/nick`, `/topic`, `/me`, `/msg` and
+`/quit`. Anything else typed after a slash goes as written, so a network's own
+commands work without this client knowing each one.
+
+It reaches a network on 6667. TLS is not written yet: `std.crypto.tls` is the
+one to use when it is, and the connection belongs with `netd`, which owns the
+network, rather than in each program that wants one.
 
 ## The protocol
 
