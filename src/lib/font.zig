@@ -167,6 +167,31 @@ pub const Font = struct {
     /// By character, not by byte: a three-byte box-drawing rule advances once,
     /// and counting its bytes made every measurement of anything above Latin-1
     /// three times too wide.
+    /// How much of `text` fits in `room`, leaving space for the mark that
+    /// says it was cut, and whether it had to be cut at all.
+    ///
+    /// Cut on a character, never inside one: half a letter is a notdef box,
+    /// which reads as a fault rather than as an abbreviation.
+    pub fn fit(self: *const Font, text: []const u8, room: usize) struct { len: usize, cut: bool } {
+        if (self.measure(text) <= room) return .{ .len = text.len, .cut = false };
+
+        const mark = self.advance(glyphs.ellipsis);
+        if (room <= mark) return .{ .len = 0, .cut = true };
+        const left = room - mark;
+
+        var used: usize = 0;
+        var at: usize = 0;
+        while (at < text.len) {
+            const step = std.unicode.utf8ByteSequenceLength(text[at]) catch 1;
+            const next = @min(at + step, text.len);
+            const wide = self.measure(text[at..next]);
+            if (used + wide > left) break;
+            used += wide;
+            at = next;
+        }
+        return .{ .len = at, .cut = true };
+    }
+
     pub fn measure(self: *const Font, text: []const u8) usize {
         var total: usize = 0;
         var it = codepoints(text);
@@ -230,4 +255,28 @@ pub const Codepoints = struct {
 
 pub fn codepoints(bytes: []const u8) Codepoints {
     return .{ .bytes = bytes };
+}
+
+test "text is cut on a character, with room left for the mark that says so" {
+    const face = &@import("fonts/ark_ui_12.zig").desc;
+
+    // What fits is left alone, and says so.
+    const whole = face.fit("eth0", 400);
+    try std.testing.expectEqual(@as(usize, 4), whole.len);
+    try std.testing.expect(!whole.cut);
+
+    // What does not is cut short, with room kept for the mark.
+    const room = face.measure("Connected, 1000");
+    const cut = face.fit("Connected, 1000 Mbit/s", room);
+    try std.testing.expect(cut.cut);
+    try std.testing.expect(cut.len < "Connected, 1000 Mbit/s".len);
+    try std.testing.expect(
+        face.measure("Connected, 1000 Mbit/s"[0..cut.len]) + face.advance(glyphs.ellipsis) <= room,
+    );
+
+    // A space too small for even the mark yields nothing rather than a
+    // stray glyph.
+    const none = face.fit("eth0", 2);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
+    try std.testing.expect(none.cut);
 }

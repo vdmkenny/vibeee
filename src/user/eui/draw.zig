@@ -574,6 +574,23 @@ pub const Surface = struct {
     /// Measured at the size it will be drawn: every caller that centres a
     /// label or sizes a control to one asks here, so the answer has to be
     /// the answer for the screen rather than for the face.
+    /// Text drawn to fit a width, cut with an ellipsis where it does not.
+    ///
+    /// A cell that overruns its column paints over the one beside it, which
+    /// reads as two values run together rather than as one too long. So
+    /// anything drawn into a measured space comes through here.
+    pub fn textFitted(self: Surface, x: i32, y: i32, room: i32, message: []const u8, color: Color) void {
+        const scale = theme.textScale();
+        const room_glyphs: usize = @intCast(@max(@divTrunc(room, scale), 0));
+        const cut = ui_font.fit(message, room_glyphs);
+
+        self.text(x, y, message[0..cut.len], color);
+        if (cut.cut) {
+            const at = x + @as(i32, @intCast(ui_font.measure(message[0..cut.len]))) * scale;
+            self.glyphIn(ui_font, at, y, fontlib.glyphs.ellipsis, color);
+        }
+    }
+
     pub fn textWidth(message: []const u8) i32 {
         return @as(i32, @intCast(ui_font.measure(message))) * theme.textScale();
     }

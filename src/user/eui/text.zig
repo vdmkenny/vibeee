@@ -342,6 +342,10 @@ pub fn lineCount(text: []const u8) usize {
 }
 
 /// The inside of a text area: its frame and padding taken off.
+/// How wide the mark that says where typing goes is. One pixel: on a panel
+/// this dense a wider one is a block sitting in the words.
+const CARET_WIDTH = 1;
+
 pub fn inner(area: Rect) Rect {
     return area.inset(2);
 }
@@ -797,7 +801,12 @@ fn paint(
 
     const span = state.selection();
     const clipped = surface.clipped(box);
-    if (text.len == 0 and state.hint.len > 0) clipped.text(box.x, box.y, state.hint, t.text_dim);
+    // Clear of the caret, which sits at the start of an empty field and
+    // would otherwise be drawn down the first letter of the hint: a caret
+    // through an eight makes it a B.
+    if (text.len == 0 and state.hint.len > 0) {
+        clipped.text(box.x + CARET_WIDTH + 1, box.y, state.hint, t.text_dim);
+    }
 
     var it = lines(text, face, box.w);
     var index: usize = 0;
@@ -855,7 +864,7 @@ fn paintCursor(
     const y = box.y + @as(i32, @intCast(here.line - state.scroll)) * line_height;
     // A bar between characters rather than a block over one: this is an
     // insertion point, and a block says the character under it is selected.
-    surface.fill(.{ .x = x, .y = y, .w = 1, .h = line_height }, theme.current().text);
+    surface.fill(.{ .x = x, .y = y, .w = CARET_WIDTH, .h = line_height }, theme.current().text);
 }
 
 /// What a field starts as, and what it says while empty.
