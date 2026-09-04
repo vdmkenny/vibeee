@@ -171,46 +171,24 @@ fn fold(a: *[8]u8, step: usize) void {
 
 /// AES in the counter-with-CBC-MAC construction, with the eight-byte code
 /// and two-byte length the standard fixes for 802.11.
+/// The cipher this key exchange's traffic is sealed under: counter mode
+/// with a chained code over the same key, in the shape 802.11 fixes for
+/// it. An eight-byte code and a thirteen-byte nonce are what the standard
+/// names, and what the library's own construction takes.
 pub const Ccm = struct {
-    pub const MIC = 8;
-    pub const NONCE = 13;
+    pub const MIC = Aead.tag_length;
+    pub const NONCE = Aead.nonce_length;
 
-    /// The first byte of the first block and of every counter block: how
-    /// long the length field is, how long the code is, and whether data is
-    /// bound. The length is two bytes and the code eight, both fixed by
-    /// 802.11; a counter block names no code and binds nothing.
-    const Flags = packed struct(u8) {
-        /// The length field's size in bytes, less one.
-        length_bytes_less_one: u3 = 2 - 1,
-        code: Code = .none,
-        has_bound_data: bool = false,
-        _7: u1 = 0,
-
-        /// The code's size, less two, halved: how the flag byte counts it.
-        const Code = enum(u3) { none = 0, eight = (MIC - 2) / 2 };
-    };
-
-    comptime {
-        // The flag byte for a bound, eight-byte-coded message is the one
-        // the construction's own vectors carry.
-        if (@as(u8, @bitCast(Flags{ .has_bound_data = true, .code = .eight })) != 0x59) {
-            @compileError("the counter-mode flag byte drifted");
-        }
-    }
+    const Aead = std.crypto.aead.aes_ccm.Aes128Ccm8;
 
     /// Seal `plain` under `key` and `nonce`, binding `aad` without
     /// encrypting it: the ciphertext followed by the code, into `into`.
     pub fn seal(key: [16]u8, nonce: [NONCE]u8, aad: []const u8, plain: []const u8, into: []u8) ?usize {
         if (into.len < plain.len + MIC or plain.len > std.math.maxInt(u16) or aad.len >= 0xFF00) return null;
-        const enc = Aes128.initEnc(key);
-        const tag = authenticate(enc, nonce, aad, plain);
 
-        var counter = counterBlock(nonce, 0);
-        var pad: [16]u8 = undefined;
-        enc.encrypt(&pad, &counter);
-        for (0..MIC) |i| into[plain.len + i] = tag[i] ^ pad[i];
-
-        crypt(enc, nonce, plain, into[0..plain.len]);
+        var code: [MIC]u8 = undefined;
+        Aead.encrypt(into[0..plain.len], &code, plain, aad, nonce, key);
+        @memcpy(into[plain.len..][0..MIC], &code);
         return plain.len + MIC;
     }
 
@@ -220,92 +198,13 @@ pub const Ccm = struct {
         if (sealed.len < MIC) return null;
         const body = sealed[0 .. sealed.len - MIC];
         if (into.len < body.len or aad.len >= 0xFF00) return null;
-        const enc = Aes128.initEnc(key);
 
-        crypt(enc, nonce, body, into[0..body.len]);
-
-        var counter = counterBlock(nonce, 0);
-        var pad: [16]u8 = undefined;
-        enc.encrypt(&pad, &counter);
-        var expected: [MIC]u8 = undefined;
-        for (0..MIC) |i| expected[i] = sealed[body.len + i] ^ pad[i];
-
-        const tag = authenticate(enc, nonce, aad, into[0..body.len]);
-        if (!std.crypto.timing_safe.eql([MIC]u8, tag, expected)) {
+        const code: [MIC]u8 = sealed[body.len..][0..MIC].*;
+        Aead.decrypt(into[0..body.len], body, code, aad, nonce, key) catch {
             @memset(into[0..body.len], 0);
             return null;
-        }
+        };
         return body.len;
-    }
-
-    /// The chained code over the first block, the bound data and the
-    /// payload, each padded to the cipher's block.
-    fn authenticate(enc: anytype, nonce: [NONCE]u8, aad: []const u8, plain: []const u8) [MIC]u8 {
-        var x: [16]u8 = undefined;
-        // The first block: a flags byte saying there is bound data and how
-        // long the code and the length are, the nonce, and the length.
-        var b0: [16]u8 = undefined;
-        b0[0] = @bitCast(Flags{ .has_bound_data = true, .code = .eight });
-        @memcpy(b0[1..14], &nonce);
-        std.mem.writeInt(u16, b0[14..16], @intCast(plain.len), .big);
-        enc.encrypt(&x, &b0);
-
-        var block: [16]u8 = @splat(0);
-        var filled: usize = 2;
-        std.mem.writeInt(u16, block[0..2], @intCast(aad.len), .big);
-        for (aad) |byte| {
-            block[filled] = byte;
-            filled += 1;
-            if (filled == 16) {
-                chain(enc, &x, &block);
-                block = @splat(0);
-                filled = 0;
-            }
-        }
-        if (filled > 0) chain(enc, &x, &block);
-
-        block = @splat(0);
-        filled = 0;
-        for (plain) |byte| {
-            block[filled] = byte;
-            filled += 1;
-            if (filled == 16) {
-                chain(enc, &x, &block);
-                block = @splat(0);
-                filled = 0;
-            }
-        }
-        if (filled > 0) chain(enc, &x, &block);
-        return x[0..MIC].*;
-    }
-
-    fn chain(enc: anytype, x: *[16]u8, block: *const [16]u8) void {
-        var mixed: [16]u8 = undefined;
-        for (0..16) |i| mixed[i] = x[i] ^ block[i];
-        enc.encrypt(x, &mixed);
-    }
-
-    /// The counter blocks, numbered from one, each encrypted and folded
-    /// into the bytes they cover.
-    fn crypt(enc: anytype, nonce: [NONCE]u8, from: []const u8, to: []u8) void {
-        var at: usize = 0;
-        var index: u16 = 1;
-        while (at < from.len) : (index += 1) {
-            var counter = counterBlock(nonce, index);
-            var pad: [16]u8 = undefined;
-            enc.encrypt(&pad, &counter);
-            const take = @min(16, from.len - at);
-            for (0..take) |i| to[at + i] = from[at + i] ^ pad[i];
-            at += take;
-        }
-    }
-
-    fn counterBlock(nonce: [NONCE]u8, index: u16) [16]u8 {
-        var block: [16]u8 = undefined;
-        block[0] = @bitCast(Flags{});
-        @memcpy(block[1..14], &nonce);
-        std.mem.writeInt(u16, block[14..16], index, .big);
-        return block;
     }
 };
 
