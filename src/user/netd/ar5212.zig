@@ -1106,7 +1106,7 @@ pub fn transmitAt(nic: *NicDev, frame: []const u8, series: lib.rates.Series) boo
     desc.armTransmit(chainBase("tx_buffer") + @as(u32, @intCast(slot * SLAB)), 0, .{
         .frame_bytes = @intCast(frame.len),
         .series = series,
-        .power = chip.self_power,
+        .power = reset.descriptorPower(chip),
         .acknowledged = answered,
     });
     dma.publish();

@@ -99,6 +99,13 @@ pub const Joined = struct {
 /// spelling of it.
 const OFFERED_RSN = ieee80211.Rsn.psk_ccmp;
 
+/// The same thing with the two bytes an information element carries in
+/// front of it. The association request has those written for it; the key
+/// exchange carries the element whole, because what both ends check is
+/// that the bytes seen in the association are the bytes seen here.
+const OFFERED_RSN_ELEMENT =
+    [_]u8{ @intFromEnum(ieee80211.ElementId.rsn), OFFERED_RSN.len } ++ OFFERED_RSN;
+
 /// Room for the key frame the handshake writes before it is wrapped in a
 /// data frame.
 const KEY_FRAME_MAX = wpa2.KeyFrame.HEAD + wpa2.KEY_DATA_MAX;
@@ -281,7 +288,7 @@ pub const Join = struct {
             .station = self.station,
             .ap = found.bssid,
             .snonce = self.snonce,
-            .rsn = &OFFERED_RSN,
+            .rsn = &OFFERED_RSN_ELEMENT,
         };
         self.state = .handshaking;
         // The access point speaks first here, so this is a wait rather than
@@ -313,10 +320,13 @@ pub const Join = struct {
                 // last, and the keys are installed after it has gone: a
                 // frame enciphered with a key the access point has not
                 // acknowledged is a frame nobody can read.
-                if (shake.keys()) |earned| {
-                    self.earned = earned;
+                // Latched once. The exchange's last frame can be asked
+                // for again, and answering it again is not a second
+                // joining.
+                if (self.earned == null and shake.keys() != null) {
+                    self.earned = shake.keys();
                     self.settling = true;
-                } else {
+                } else if (shake.keys() == null) {
                     self.deadline = now + REPLY_MICROS;
                     self.left = TRIES;
                 }

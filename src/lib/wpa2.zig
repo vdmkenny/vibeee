@@ -561,9 +561,23 @@ pub const Handshake = struct {
 
     fn third(self: *Handshake, frame: []const u8, key: KeyFrame, into: []u8) Outcome {
         const ptk = self.ptk orelse return .ignored;
-        // A replayed frame is one already answered, and a code that does not
-        // match is an access point that does not hold the key.
-        if (key.replay <= self.replay) return .refused;
+        // An access point that did not hear the answer sends its frame
+        // again. Most carry a fresh counter for it; one that reuses the
+        // counter it already spent is answered rather than refused, since
+        // refusing reports a wrong key for a network whose key was right.
+        //
+        // Answered, and no more than that: the keys are not derived again
+        // and nothing is installed a second time. Reinstalling a key that
+        // is already in use restarts the numbering underneath it, which is
+        // exactly what an attacker replaying this frame is fishing for.
+        const again = self.done and key.replay == self.replay;
+        if (!again and key.replay <= self.replay) return .refused;
+        if (again) {
+            if (!KeyFrame.verify(frame, ptk.kck)) return .refused;
+            const said = KeyFrame.write(into, .{ .pairwise = true, .mic = true, .secure = true }, 0, key.replay, @splat(0), &.{}) orelse return .refused;
+            KeyFrame.sign(into[0..said], ptk.kck);
+            return .{ .reply = said };
+        }
         if (!KeyFrame.verify(frame, ptk.kck)) return .refused;
         if (!key.info.encrypted) return .refused;
 
@@ -743,8 +757,14 @@ test "the handshake, with the test playing the access point" {
     try testing.expectEqualSlices(u8, &gtk.key, &keys.gtk.key);
     try testing.expectEqual(@as(u2, 1), keys.gtk.index);
 
-    // The same message three again is a replay, and refused.
-    try testing.expectEqual(Handshake.Outcome.refused, handshake.answer(frame[0..three], &reply));
+    // The same message three again is answered again, because an access
+    // point that did not hear the answer is waiting for one. What it is
+    // not is a reason to derive or install anything a second time.
+    const before = handshake.keys().?;
+    try testing.expect(handshake.answer(frame[0..three], &reply) == .reply);
+    const after = handshake.keys().?;
+    try testing.expectEqualSlices(u8, &before.tk, &after.tk);
+    try testing.expectEqualSlices(u8, &before.gtk.key, &after.gtk.key);
     // A message three signed with the wrong key is refused.
     var forged = frame;
     forged[9 + 7] = 9;

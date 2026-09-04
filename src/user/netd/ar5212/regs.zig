@@ -145,6 +145,13 @@ pub const R = enum(usize) {
     phy_timing5 = 0x9924,
     phy_frame_control = 0x9944,
     phy_tx_power_adjust = 0x994C,
+    /// How many gain settings the amplifier's table uses, and where each
+    /// gives way to the next.
+    phy_power_gains = 0xA258,
+    phy_power_boundaries = 0xA26C,
+    /// Where the amplifier's table itself is written, thirty-two words of
+    /// four readings each.
+    phy_power_table = 0xA280,
     phy_antenna_switch_a = 0x9960,
     phy_antenna_switch_b = 0x9964,
     phy_noise_floor_threshold = 0x9968,
@@ -490,6 +497,43 @@ pub const DcuMisc = packed struct(u32) {
     blown_space_policy: bool = false,
     _24: u8 = 0,
 };
+
+/// How many gain settings the amplifier's table covers, counted from one,
+/// and which setting each of the later ones is.
+pub const PowerGains = packed struct(u32) {
+    _0: u14 = 0,
+    /// One less than the number used, which is how the field counts.
+    gains_less_one: u2 = 0,
+    setting1: u2 = 0,
+    setting2: u2 = 0,
+    setting3: u2 = 0,
+    _22: u10 = 0,
+};
+
+/// Where one gain setting's part of the table gives way to the next, in
+/// half decibels, and how far they are told to overlap.
+pub const PowerBoundaries = packed struct(u32) {
+    overlap: u4 = 0,
+    first: u6 = 0,
+    second: u6 = 0,
+    third: u6 = 0,
+    fourth: u6 = 0,
+    _28: u4 = 0,
+};
+
+comptime {
+    if (@as(u32, @bitCast(PowerGains{ .gains_less_one = 3 })) != 0x0000_C000 or
+        @as(u32, @bitCast(PowerGains{ .setting1 = 3 })) != 0x0003_0000)
+    {
+        @compileError("the amplifier's gain-count word drifted");
+    }
+    if (@as(u32, @bitCast(PowerBoundaries{ .overlap = 0xF })) != 0x0000_000F or
+        @as(u32, @bitCast(PowerBoundaries{ .first = 0x3F })) != 0x0000_03F0 or
+        @as(u32, @bitCast(PowerBoundaries{ .fourth = 0x3F })) != 0x0FC0_0000)
+    {
+        @compileError("the amplifier's boundary word drifted");
+    }
+}
 
 /// The first secondary mask: which queues report a frame sent, and which
 /// report a descriptor finished. A cause asked for in the primary mask is

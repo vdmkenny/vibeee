@@ -987,6 +987,155 @@ fn fillVpd(gain: *const PdGain, floor: i16, ceiling: i16, into: *[PWR_RANGE_HALF
     return true;
 }
 
+/// A little-endian bit stream over store words. The measured curves are
+/// packed end to end, least significant bit first, and every field runs
+/// across word boundaries wherever it lands: reading them in order is what
+/// the layout is. The reference spells the same thing as a shift and a mask
+/// per field, which is the same arithmetic written out four times over.
+const Bits = struct {
+    words: []const u16,
+    at: usize = 0,
+
+    /// The next `width` bits. The width is known at compile time, so what
+    /// comes back is a type that holds exactly it and no caller has to
+    /// narrow the result or trust that it fits.
+    fn take(self: *Bits, comptime width: u5) std.meta.Int(.unsigned, width) {
+        var value: u32 = 0;
+        var got: u5 = 0;
+        while (got < width) {
+            const word = self.at / 16;
+            if (word >= self.words.len) break;
+            const offset: u5 = @intCast(self.at % 16);
+            const want: u5 = @min(width - got, 16 - offset);
+            const mask: u32 = (@as(u32, 1) << want) - 1;
+            value |= ((@as(u32, self.words[word]) >> offset) & mask) << got;
+            got += want;
+            self.at += want;
+        }
+        return @truncate(value);
+    }
+};
+
+/// How wide each field of a measured curve is.
+const CURVE_POWER_BITS: u5 = 5;
+const CURVE_DETECTOR_BITS: u5 = 7;
+const CURVE_POWER_STEP_BITS: u5 = 4;
+const CURVE_DETECTOR_STEP_BITS: u5 = 6;
+
+/// How many words one channel's curves occupy, by how many gain settings
+/// were measured. The reference's own table, and the arithmetic above
+/// agrees with it: each gain costs twelve bits and then ten per step, and
+/// the last gain measured carries one step more than the others.
+const CURVE_WORDS = [_]u8{ 4, 6, 9, 12 };
+
+/// How many points a gain's curve holds. The last one measured carries an
+/// extra, which is where the reference's four spellings of this differ.
+fn curvePoints(which: usize, used: usize) u8 {
+    return if (which + 1 == used) PdGain.MAX_POINTS else PdGain.MAX_POINTS - 1;
+}
+
+/// The gain settings a mask says were measured, highest first, which is
+/// the order they are packed in and the order the table walks them.
+fn gainSlots(mask: u4, into: *[CalChannel.MAX_GAINS]u8) usize {
+    var used: usize = 0;
+    var slot: usize = CalChannel.MAX_GAINS;
+    while (slot > 0) {
+        slot -= 1;
+        if (mask & (@as(u4, 1) << @intCast(slot)) != 0) {
+            into[used] = @intCast(slot);
+            used += 1;
+        }
+    }
+    return used;
+}
+
+comptime {
+    // The reference states how many words a channel's curves occupy and
+    // spells the unpacking out per field; this reads the same bits as one
+    // stream. The two agree exactly when the fields, laid end to end, fill
+    // those words, which is what this checks and what makes the stream a
+    // transcription rather than a guess.
+    for (CURVE_WORDS, 1..) |words, used| {
+        var bits: usize = 0;
+        for (0..used) |which| {
+            bits += CURVE_POWER_BITS + CURVE_DETECTOR_BITS;
+            bits += (curvePoints(which, used) - 1) * (CURVE_POWER_STEP_BITS + CURVE_DETECTOR_STEP_BITS);
+        }
+        const need = (bits + 15) / 16;
+        if (need != words) {
+            @compileError(std.fmt.comptimePrint(
+                "{d} gain settings pack into {d} words, and the reference says {d}",
+                .{ used, need, words },
+            ));
+        }
+    }
+}
+
+/// The curves the store measured for a band, or none where it holds none.
+///
+/// A channel's curves are a run of words per measured channel, after a
+/// list of the channels themselves packed a byte each. What comes out is
+/// what the amplifier does: at each gain setting, the detector's reading
+/// at a handful of powers, from which the table for any channel between
+/// two measured ones is drawn.
+pub fn readCurves(source: anytype, store: *const Store, mode: StoreMode) StoreError!?CalCurves {
+    if (store.power_cal_start == 0) return null;
+    if (!store.version.atLeast(.v5_0)) return null;
+
+    const mask = store.sections[@intFromEnum(mode)].xgain;
+    var slots: [CalChannel.MAX_GAINS]u8 = @splat(0);
+    const used = gainSlots(mask, &slots);
+    if (used == 0) return null;
+
+    // The 2.4 GHz bands measure fewer channels than the 5 GHz one, and the
+    // list is as long as the band allows whether or not it is filled.
+    const room: usize = if (mode == .a) CalCurves.MAX_CHANNELS else 4;
+
+    var curves = CalCurves{};
+    var at: u16 = store.power_cal_start;
+    var listed: usize = 0;
+    walk: while (listed < room) {
+        const word = try readWord(source, at);
+        at += 1;
+        for ([_]u4{ 0, 8 }) |shift| {
+            const fbin: u8 = @truncate(word >> shift);
+            if (fbin == 0 or listed >= room) break :walk;
+            curves.megahertz[listed] = if (mode == .a) 4800 + @as(u16, fbin) * 5 else 2300 + @as(u16, fbin);
+            listed += 1;
+        }
+    }
+    if (listed == 0) return null;
+    curves.channels = @intCast(listed);
+
+    // The curves follow the whole of the channel list, filled or not.
+    var word_at: u16 = store.power_cal_start + @as(u16, @intCast(room / 2));
+    const span = CURVE_WORDS[used - 1];
+
+    for (0..listed) |channel| {
+        var buffer: [CURVE_WORDS[CURVE_WORDS.len - 1]]u16 = @splat(0);
+        for (0..span) |i| {
+            buffer[i] = try readWord(source, word_at);
+            word_at += 1;
+        }
+
+        var bits = Bits{ .words = buffer[0..span] };
+        for (0..used) |which| {
+            const points = curvePoints(which, used);
+            var gain = PdGain{ .gain = slots[which], .points = points };
+
+            gain.quarter_dbm[0] = @as(i16, bits.take(CURVE_POWER_BITS)) * 4;
+            gain.vpd[0] = bits.take(CURVE_DETECTOR_BITS);
+            for (1..points) |step| {
+                gain.quarter_dbm[step] = gain.quarter_dbm[step - 1] +
+                    @as(i16, bits.take(CURVE_POWER_STEP_BITS)) * 2;
+                gain.vpd[step] = gain.vpd[step - 1] + bits.take(CURVE_DETECTOR_STEP_BITS);
+            }
+            curves.per_channel[channel].per_gain[slots[which]] = gain;
+        }
+    }
+    return curves;
+}
+
 /// The amplifier's table for a channel, from the curves either side of it.
 ///
 /// `overlap_half_db` is how far the baseband is told the gain settings
@@ -1184,6 +1333,9 @@ const ModesWord = packed struct(u16) {
 };
 const GainsWord = packed struct(u16) { ghz2: i8 = 0, ghz5: i8 = 0 };
 const MapWord = packed struct(u16) { ear_start: u12 = 0, disable_xr2: bool = false, disable_xr5: bool = false, map: u2 = 0 };
+
+/// Where the amplifier's measured curves begin, in the word that carries it.
+const PowerCalWord = packed struct(u16) { _0: u4 = 0, offset: u12 = 0 };
 const TargetsWord = packed struct(u16) { target_powers_start: u12 = 0, _12: u2 = 0, crystal_32khz: bool = false, _15: u1 = 0 };
 const SizeUpperWord = packed struct(u16) { _0: u4 = 0, high: u12 = 0 };
 
@@ -1287,6 +1439,9 @@ pub const Store = struct {
     antenna_gain_5ghz: i8,
     map: u2 = 0,
     crystal_32khz: bool = false,
+    /// Where the per-channel amplifier curves begin. Zero in a store that
+    /// was never calibrated, and in one too old to carry them.
+    power_cal_start: u12 = 0,
     sections: [3]ModeSection = @splat(.{}),
     /// The bias each 2.4 GHz mode's section names, which the RF2425's
     /// sixth bank is patched with.
@@ -1380,6 +1535,10 @@ pub fn readStore(source: anytype) StoreError!Store {
         store.map = mapping.map;
         const targets: TargetsWord = @bitCast(try readWord(source, at));
         store.crystal_32khz = targets.crystal_32khz;
+        if (version.atLeast(.v5_0)) {
+            const start: PowerCalWord = @bitCast(try readWord(source, at + 3));
+            store.power_cal_start = start.offset;
+        }
     }
 
     for ([_]StoreMode{ .a, .b, .g }) |mode| {
@@ -2029,6 +2188,122 @@ test "a synthetic calibration store reads back, word layouts and all" {
     image[StoreAt.mac_top - 1] = 0;
     image[StoreAt.mac_top - 2] = 0;
     try testing.expectError(StoreError.Address, readStore(Image{ .words = &image }));
+}
+
+test "a channel's measured curves are read back off the bit stream that holds them" {
+    // Two gain settings measured, which is the reference's six-word case:
+    // the first packed gain carries four points and the last five.
+    const mask: u4 = 0b0101;
+    var slots: [CalChannel.MAX_GAINS]u8 = @splat(0);
+    const used = gainSlots(mask, &slots);
+    try testing.expectEqual(@as(usize, 2), used);
+    // Highest gain setting first, which is both how they are packed and
+    // the order the table walks them in.
+    try testing.expectEqual(@as(u8, 2), slots[0]);
+    try testing.expectEqual(@as(u8, 0), slots[1]);
+
+    const START: u16 = 4;
+    const PIERS = 4;
+    var image: [64]u16 = @splat(0);
+
+    // The channels measured, a byte each, in a list as long as the band
+    // allows however few are filled.
+    image[START] = 12 | (62 << 8);
+
+    // Their curves, least significant bit first, each channel starting on
+    // a word boundary.
+    const Packer = struct {
+        image: *[64]u16,
+        base: usize,
+        at: usize = 0,
+        fn put(self: *@This(), width: u5, value: u16) void {
+            for (0..width) |bit| {
+                if (value & (@as(u16, 1) << @intCast(bit)) != 0) {
+                    const which = self.base + (self.at / 16);
+                    self.image[which] |= @as(u16, 1) << @intCast(self.at % 16);
+                }
+                self.at += 1;
+            }
+        }
+    };
+
+    const span = CURVE_WORDS[used - 1];
+    for (0..2) |channel| {
+        var packer = Packer{ .image = &image, .base = START + PIERS / 2 + channel * span };
+        for (0..used) |which| {
+            packer.put(CURVE_POWER_BITS, @intCast(3 + channel));
+            packer.put(CURVE_DETECTOR_BITS, @intCast(20 + channel));
+            for (1..curvePoints(which, used)) |_| {
+                packer.put(CURVE_POWER_STEP_BITS, 2);
+                packer.put(CURVE_DETECTOR_STEP_BITS, 7);
+            }
+        }
+    }
+
+    const Image = struct {
+        words: []const u16,
+        pub fn word(self: @This(), offset: u16) ?u16 {
+            return if (offset < self.words.len) self.words[offset] else null;
+        }
+    };
+
+    var store = Store{
+        .version = .v5_0,
+        .protect = 0,
+        .regulatory_domain = 0,
+        .a_mode = false,
+        .b_mode = true,
+        .g_mode = true,
+        .turbo2_disable = false,
+        .turbo5_disable = false,
+        .rf_kill = false,
+        .device_type = 0,
+        .antenna_gain_2ghz = 0,
+        .antenna_gain_5ghz = 0,
+        .mac = @splat(0),
+    };
+    store.power_cal_start = START;
+    store.sections[@intFromEnum(StoreMode.g)].xgain = mask;
+
+    const curves = (try readCurves(Image{ .words = &image }, &store, .g)).?;
+
+    // The two channels, decoded from their byte form.
+    try testing.expectEqual(@as(u8, 2), curves.channels);
+    try testing.expectEqual(@as(u16, 2312), curves.megahertz[0]);
+    try testing.expectEqual(@as(u16, 2362), curves.megahertz[1]);
+
+    for (0..2) |channel| {
+        const measured = &curves.per_channel[channel];
+        const bump: i16 = @intCast(channel);
+
+        // The gain packed first landed in the slot the mask named, with
+        // four points; the one packed last has five.
+        const high = &measured.per_gain[2];
+        const low = &measured.per_gain[0];
+        try testing.expectEqual(@as(u8, 4), high.points);
+        try testing.expectEqual(@as(u8, 5), low.points);
+        try testing.expectEqual(@as(u16, 2), high.gain);
+        try testing.expectEqual(@as(u16, 0), low.gain);
+
+        // Powers are quarter decibels and step by twice what is written;
+        // detector readings step by exactly what is written.
+        for ([_]*const PdGain{ high, low }) |gain| {
+            try testing.expectEqual(@as(i16, (3 + bump) * 4), gain.quarter_dbm[0]);
+            try testing.expectEqual(@as(u16, @intCast(20 + bump)), gain.vpd[0]);
+            for (1..gain.points) |step| {
+                try testing.expectEqual(gain.quarter_dbm[step - 1] + 4, gain.quarter_dbm[step]);
+                try testing.expectEqual(gain.vpd[step - 1] + 7, gain.vpd[step]);
+            }
+        }
+
+        // The gain settings the mask did not name were never measured.
+        try testing.expectEqual(@as(u8, 0), measured.per_gain[1].points);
+        try testing.expectEqual(@as(u8, 0), measured.per_gain[3].points);
+    }
+
+    // And what all that is for: a table for a channel between the two.
+    const table = powerTable(&curves, 2337, 0).?;
+    try testing.expectEqual(@as(u8, 2), table.used);
 }
 
 test "the reset's arithmetic: spur channels, the CCK adjustment, what survives a change" {

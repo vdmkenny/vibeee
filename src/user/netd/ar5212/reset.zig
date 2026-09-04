@@ -15,6 +15,7 @@
 //! receiver does not need either.
 
 const lib = @import("lib");
+const eeprom = @import("eeprom.zig");
 const family = @import("family.zig");
 const immunity_mod = @import("immunity.zig");
 const log = @import("ulib").log;
@@ -35,6 +36,11 @@ const name = "ar5212";
 pub const Chip = struct {
     regs: Regs,
     store: family.Store,
+    /// The amplifier's measured curves, read from the store on the first
+    /// channel and kept: they are a walk over the whole calibration
+    /// section, and nothing in them changes with the channel.
+    curves: ?family.CalCurves = null,
+    curves_read: bool = false,
     version: regs_mod.MacVersion,
     revision: u4,
     phy_revision: u8,
@@ -62,6 +68,9 @@ pub const Chip = struct {
     /// The ceiling, in half decibels, on the frames the unit sends itself:
     /// acknowledgements and the like. The regulatory plan sets it.
     self_power: u6 = MAX_RATE_POWER,
+    /// What to add to a power before it goes in a descriptor, so the
+    /// figure lands where the amplifier's table expects to be indexed.
+    power_offset: i16 = 0,
     /// Whether the baseband is powered, which decides whether its
     /// registers may be touched.
     phy_powered: bool = false,
@@ -298,6 +307,88 @@ fn setDeltaSlope(regs: Regs, megahertz: u16) void {
 /// The store's per-band pairs are indexed the reference's way: the second
 /// entry for anything at 2.4 GHz, which for the settling, attenuation and
 /// margin figures is what the 11b section holds.
+/// The power to put in a descriptor for a frame this station sends: what
+/// the regulatory plan allows, moved to where the amplifier's table is
+/// indexed from, and capped at what the field can hold.
+pub fn descriptorPower(chip: *const Chip) u6 {
+    const wanted = @as(i32, chip.self_power) + chip.power_offset;
+    return @intCast(std.math.clamp(wanted, 0, MAX_RATE_POWER));
+}
+
+/// Program the amplifier's table for this channel: what reading the
+/// detector should give at each half decibel, and where one gain setting
+/// gives way to the next.
+///
+/// Without it the amplifier runs on whatever the reset left, and a frame
+/// goes out at a power nothing chose. The curves are measured per board
+/// at a handful of channels; the table for the one in use is drawn
+/// between the two nearest.
+fn setAmplifier(chip: *Chip, megahertz: u16) void {
+    const regs = chip.regs;
+
+    if (!chip.curves_read) {
+        chip.curves = eeprom.curves(regs, &chip.store, .g);
+        chip.curves_read = true;
+    }
+    const curves = if (chip.curves) |*c| c else {
+        if (!said_amplifier) {
+            said_amplifier = true;
+            log.warn(name, "the store holds no amplifier curves; frames go out at whatever the reset left");
+        }
+        return;
+    };
+
+    // How far the baseband is told the gain settings overlap is its own
+    // setting, and the table has to be drawn to match it.
+    const boundaries = regs.get(.phy_power_boundaries, regs_mod.PowerBoundaries);
+    const table = family.powerTable(curves, megahertz, boundaries.overlap) orelse return;
+
+    regs.set(.phy_power_gains, regs_mod.PowerGains, "gains_less_one", @as(u2, @intCast(table.used - 1)));
+
+    // Four readings to a word, in the order the baseband reads them.
+    var word: usize = 0;
+    while (word * 4 < family.PowerTable.ENTRIES) : (word += 1) {
+        const at = word * 4;
+        regs.writeAt(@intFromEnum(regs_mod.R.phy_power_table) + word * 4, @as(u32, table.pdadc[at]) |
+            (@as(u32, table.pdadc[at + 1]) << 8) |
+            (@as(u32, table.pdadc[at + 2]) << 16) |
+            (@as(u32, table.pdadc[at + 3]) << 24));
+    }
+
+    regs.put(.phy_power_boundaries, regs_mod.PowerBoundaries{
+        .overlap = boundaries.overlap,
+        .first = @truncate(table.boundaries[0]),
+        .second = @truncate(table.boundaries[1]),
+        .third = @truncate(table.boundaries[2]),
+        .fourth = @truncate(table.boundaries[3]),
+    });
+
+    // A power in a descriptor is an index into the table that was just
+    // written, counted from the lowest power the curves were measured at.
+    // Kept beside the ceiling rather than folded into it: the ceiling is
+    // what the regulatory plan allows and is nobody else's to move.
+    chip.power_offset = -table.floor_half_dbm;
+
+    // Said once. It is the same table on every channel of a band, and what
+    // is worth knowing is that the amplifier is running on measured
+    // figures rather than on whatever the reset left.
+    if (!said_amplifier) {
+        said_amplifier = true;
+        log.begin(name, .key);
+        out.text("amplifier: ");
+        out.decimal(table.used);
+        out.text(" gain settings measured over ");
+        out.decimal(curves.channels);
+        out.text(" channels, from ");
+        out.signed(@divTrunc(table.floor_half_dbm, 2));
+        out.text(" dBm");
+        log.end();
+    }
+}
+
+/// Said once, because it is the same answer on every channel.
+var said_amplifier = false;
+
 fn setBoardValues(chip: *Chip, megahertz: u16) void {
     const regs = chip.regs;
     const store = &chip.store;
@@ -601,6 +692,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     setDeltaSlope(regs, megahertz);
     if (kind == .power_on) chip.immunity.begin(regs) else chip.immunity.restore(regs);
     setBoardValues(chip, megahertz);
+    setAmplifier(chip, megahertz);
 
     if (kind == .channel_change) regs.write(.sequence_number, saved_sequence);
 
