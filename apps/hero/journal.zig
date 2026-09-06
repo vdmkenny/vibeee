@@ -14,10 +14,11 @@
 //! none of it needs a screen to be checked.
 //!
 //! The grammar, in full: the first line is `hero 1`. Every other line is a
-//! keyword, a space, and the rest; where the rest has parts they are joined
-//! by ` | `. A blank line, or one that starts with `#`, is kept and ignored.
-//! An unknown keyword is kept as a note rather than refused, so a file written
-//! by a later version still opens in an earlier one.
+//! keyword and, after a space, the rest; where the rest has parts they are
+//! joined by ` | `, and a keyword that takes nothing stands alone, as
+//! `innate-use` does. A blank line, or one that starts with `#`, is kept and
+//! ignored. An unknown keyword is kept as a note rather than refused, so a
+//! file written by a later version still opens in an earlier one.
 
 const std = @import("std");
 
@@ -407,8 +408,12 @@ pub const Sheet = struct {
     /// ends it.
     concentration: []const u8 = "",
 
-    /// The heading the last `session` line named, for the status bar.
+    /// The heading the last `session` line named, for the status bar, and
+    /// the day beside it; and how many headings the file has, so the next
+    /// one written is one more.
     session: []const u8 = "",
+    session_day: []const u8 = "",
+    sessions: u32 = 0,
 
     // -- what the sheet derives, rather than stores ------------------------
 
@@ -496,27 +501,93 @@ pub const Sheet = struct {
     }
 };
 
+/// One line of the file: the word it starts with, and what follows the
+/// space after it, trimmed. A keyword that takes nothing stands alone on
+/// its line, as `innate-use` does, and its rest is empty.
+pub const Line = struct {
+    word: []const u8,
+    rest: []const u8,
+
+    pub fn of(line: []const u8) Line {
+        const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
+        return .{ .word = line[0..space], .rest = std.mem.trim(u8, line[space..], " \t") };
+    }
+
+    pub fn keyword(self: Line) ?Keyword {
+        return Keyword.parse(self.word);
+    }
+};
+
+/// The lines of a file that say something, one `Line` each. Blank lines,
+/// comments and the magic line are passed over and the ends are trimmed, so
+/// every reader of the file walks it the same way.
+pub const Lines = struct {
+    raw: std.mem.SplitIterator(u8, .scalar),
+
+    pub fn next(self: *Lines) ?Line {
+        while (self.raw.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len == 0 or line[0] == '#' or std.mem.eql(u8, line, MAGIC)) continue;
+            return Line.of(line);
+        }
+        return null;
+    }
+};
+
+pub fn lines(text: []const u8) Lines {
+    return .{ .raw = std.mem.splitScalar(u8, text, '\n') };
+}
+
+/// A moment of play as the journal lists it: the line, and the session and
+/// day of the heading above it. Empty where no heading has come yet.
+pub const Event = struct {
+    session: []const u8,
+    day: []const u8,
+    line: Line,
+};
+
+/// The events of a file, in the order they were written. A fact sets the
+/// sheet and is read from there rather than listed; a heading names the
+/// session and the day of everything after it.
+pub const Events = struct {
+    lines: Lines,
+    session: []const u8 = "",
+    day: []const u8 = "",
+
+    pub fn next(self: *Events) ?Event {
+        while (self.lines.next()) |line| {
+            const keyword = line.keyword();
+            if (keyword == .session) {
+                self.session = part(line.rest, 0);
+                self.day = part(line.rest, 1);
+                continue;
+            }
+            if (keyword) |k| if (k.isFact()) continue;
+            return .{ .session = self.session, .day = self.day, .line = line };
+        }
+        return null;
+    }
+};
+
+pub fn events(text: []const u8) Events {
+    return .{ .lines = lines(text) };
+}
+
 /// Read a whole file into the character it describes. Unknown and malformed
 /// lines are skipped rather than refused: a journal is worth more open with a
 /// line it did not understand than closed over one.
 pub fn fold(text: []const u8) Sheet {
     var sheet = Sheet{};
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (std.mem.eql(u8, line, MAGIC)) continue;
-
-        const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
-        apply(&sheet, line[0..space], std.mem.trim(u8, line[space + 1 ..], " \t"));
-    }
+    var it = lines(text);
+    while (it.next()) |line| apply(&sheet, line);
     return sheet;
 }
 
-fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
+fn apply(sheet: *Sheet, line: Line) void {
     // A word this reader does not know is a note in the journal, kept as it
     // stands, so a file from a later version still opens in this one.
-    const keyword = Keyword.parse(word) orelse return;
+    const keyword = line.keyword() orelse return;
+    const rest = line.rest;
     switch (keyword) {
         // Facts about who the character is.
         .name => sheet.name = rest,
@@ -568,7 +639,11 @@ fn apply(sheet: *Sheet, word: []const u8, rest: []const u8) void {
         .drop => dropNamed(sheet, rest),
 
         // Events, folded into the current state.
-        .session => sheet.session = firstPart(rest),
+        .session => {
+            sheet.session = firstPart(rest);
+            sheet.session_day = part(rest, 1);
+            sheet.sessions += 1;
+        },
         .damage => applyDamage(sheet, parseU16(firstPart(rest))),
         .heal => applyHeal(sheet, parseU16(firstPart(rest))),
         .temp => sheet.hp_temp = parseU16(rest),
@@ -1033,6 +1108,10 @@ test "damage never falls below nothing, and healing never rises above the maximu
 }
 
 test "a long rest gives back hit points, hit dice, slots and an innate use" {
+    // The innate line stands alone, and one use is spent by it.
+    try testing.expectEqual(@as(u8, 1), fold(CINAED ++ "\ninnate-use").innate_left);
+    try testing.expectEqual(@as(u8, 0), fold(CINAED ++ "\ninnate-use\ninnate-use\ninnate-use").innate_left);
+
     const journal = CINAED ++
         "\ndamage 6\nhitdie 4\ncast 1 | Burning Hands\ninnate-use\nexhaustion 2\nrest long";
     const c = fold(journal);
@@ -1113,6 +1192,66 @@ test "the portrait is a line of the file, and three saves are stable" {
     try testing.expect(!fold(dying).dead());
     // A hit point back is no longer down, so no longer stable either.
     try testing.expect(!fold(dying ++ "\nheal 1").stable());
+}
+
+test "a line is its first word and the trimmed rest, and a word alone has an empty rest" {
+    const damage = Line.of("damage 5 | goblin");
+    try testing.expectEqualStrings("damage", damage.word);
+    try testing.expectEqualStrings("5 | goblin", damage.rest);
+    try testing.expectEqual(@as(?Keyword, .damage), damage.keyword());
+
+    const innate = Line.of("innate-use");
+    try testing.expectEqualStrings("innate-use", innate.word);
+    try testing.expectEqualStrings("", innate.rest);
+    try testing.expectEqual(@as(?Keyword, .@"innate-use"), innate.keyword());
+
+    try testing.expectEqualStrings("spaced out", Line.of("note   spaced out \t").rest);
+    try testing.expectEqual(@as(?Keyword, null), Line.of("unknown word").keyword());
+}
+
+test "the reader passes over blank lines, comments and the magic line" {
+    var it = lines("hero 1\n\n# a comment\n  name cinaed I \r\n\t\ninnate-use\n");
+    try testing.expectEqualStrings("name", it.next().?.word);
+    try testing.expectEqualStrings("innate-use", it.next().?.word);
+    try testing.expectEqual(@as(?Line, null), it.next());
+}
+
+test "events come in order under their session heading, and facts are not among them" {
+    var it = events(CINAED ++ "\ndamage 3 | goblin\ninnate-use\nsession 4 | 2026-09-06\nlevel 2\nnote The shrine keeper");
+
+    const hit = it.next().?;
+    try testing.expectEqualStrings("3", hit.session);
+    try testing.expectEqualStrings("2026-08-30", hit.day);
+    try testing.expectEqualStrings("damage", hit.line.word);
+    try testing.expectEqualStrings("3 | goblin", hit.line.rest);
+
+    const innate = it.next().?;
+    try testing.expectEqualStrings("3", innate.session);
+    try testing.expectEqualStrings("innate-use", innate.line.word);
+
+    // The level line is a fact and is not listed; the note is, under the
+    // new heading.
+    const note = it.next().?;
+    try testing.expectEqualStrings("4", note.session);
+    try testing.expectEqualStrings("2026-09-06", note.day);
+    try testing.expectEqualStrings("The shrine keeper", note.line.rest);
+    try testing.expectEqual(@as(?Event, null), it.next());
+
+    // A file with no heading lists its events under none.
+    var bare = events("hero 1\nname x\ndamage 1");
+    try testing.expectEqualStrings("", bare.next().?.session);
+}
+
+test "the sheet counts the session headings and keeps the last one's day" {
+    const one = fold(CINAED);
+    try testing.expectEqual(@as(u32, 1), one.sessions);
+    try testing.expectEqualStrings("2026-08-30", one.session_day);
+
+    const two = fold(CINAED ++ "\nsession 4 | 2026-09-06\ndamage 1");
+    try testing.expectEqual(@as(u32, 2), two.sessions);
+    try testing.expectEqualStrings("4", two.session);
+    try testing.expectEqualStrings("2026-09-06", two.session_day);
+    try testing.expectEqual(@as(u32, 0), fold("hero 1\nname x").sessions);
 }
 
 test "dice are read from a damage line and spelled back" {
