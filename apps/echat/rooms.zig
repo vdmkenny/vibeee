@@ -162,6 +162,10 @@ pub const Model = struct {
     lines: Bounded(Line, LINE_MAX) = .{},
     text: [TEXT_MAX]u8 = undefined,
     used: u32 = 0,
+    /// How many times the transcript has changed. What a pane compares
+    /// across passes to know whether to draw again: the count of lines held
+    /// stands still once the oldest are dropped to make room for new ones.
+    generation: usize = 0,
 
     /// Casemapping is the network's to say, and the connection keeps it. The
     /// model is asked often enough that it holds a copy per network.
@@ -235,6 +239,7 @@ pub const Model = struct {
         self.members = .{};
         self.lines = .{};
         self.used = 0;
+        self.generation = 0;
         self.open = 0;
         self.mappings = @splat(.rfc1459);
     }
@@ -260,6 +265,7 @@ pub const Model = struct {
         written.nick = self.keep(nick);
         written.text = self.keep(text);
         self.lines.append(written) catch return;
+        self.generation += 1;
 
         if (room != self.open and line.kind.counts()) {
             const at = &self.rooms.items[room];
@@ -513,6 +519,28 @@ test "old lines go when there is no room, and the rest still read" {
         try expectEqualStrings(long, model.textOf(line.text));
         try expect(model.textOf(line.nick).len == 2);
     }
+}
+
+test "a line written once the transcript is full still counts as a change" {
+    const model = try fresh();
+    defer std.testing.allocator.destroy(model);
+
+    const net = model.addNetwork("net") orelse return error.NoRoom;
+    const room = model.addRoom(net, .channel, "#full") orelse return error.NoRoom;
+
+    for (0..LINE_MAX) |_| model.say(room, .{ .kind = .said, .room = room }, "a", "x");
+    try expect(model.lines.len == LINE_MAX);
+    try expect(model.generation == LINE_MAX);
+
+    // The oldest line goes to make room, so the count stands still and the
+    // generation is what says something arrived.
+    model.say(room, .{ .kind = .said, .room = room }, "a", "y");
+    try expect(model.lines.len == LINE_MAX);
+    try expect(model.generation == LINE_MAX + 1);
+
+    // A line that was not written is not a change.
+    model.say(ROOM_MAX - 1, .{ .kind = .said, .room = ROOM_MAX - 1 }, "a", "nowhere");
+    try expect(model.generation == LINE_MAX + 1);
 }
 
 test "who is in a room, and who runs it" {

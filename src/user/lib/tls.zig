@@ -10,9 +10,11 @@
 //! from the vendored bundle. A program opens them once and connects as often
 //! as it likes.
 //!
-//! A connection blocks: the handshake is several round trips and there is no
+//! Connecting blocks: the handshake is several round trips and there is no
 //! way to have half of one. A program that must stay answering while it
-//! connects does so on its own account.
+//! connects does so on its own account. Reading does not block: a read
+//! answers with what has arrived, and the socket's own event says when to
+//! come back for more.
 
 const std = @import("std");
 const sys = @import("sys");
@@ -254,22 +256,43 @@ pub const Stream = struct {
         }
     };
 
-    /// As much as `into` holds.
+    /// As much as `into` holds, without waiting.
+    ///
+    /// The protocol takes a record at a time, and for one it has only part
+    /// of it asks the socket for the rest, which waits. So it is only asked
+    /// once a whole record is here: what the socket holds is taken into the
+    /// record buffer first, and a record still short of its length is left
+    /// there for the next call. A record that decrypts to no text, a key
+    /// update or a session ticket, is taken and the next one looked at.
     pub fn recv(self: *Stream, into: []u8) Read {
         if (self.ending) |why| return .{ .done = why };
 
-        // Every way a read can fail here is the protocol refusing what
-        // arrived or the transport under it giving up; which of the two is
-        // not something the caller can act on differently.
-        const n = self.client.reader.readSliceShort(into) catch {
-            return .{ .done = self.finish(.broken) };
-        };
-        if (n != 0) return .{ .got = n };
+        while (true) {
+            // What has been decrypted goes first.
+            const held = self.client.reader.buffered();
+            if (held.len != 0) {
+                const n = @min(held.len, into.len);
+                @memcpy(into[0..n], held[0..n]);
+                self.client.reader.toss(n);
+                return .{ .got = n };
+            }
+            if (self.client.eof()) return .{ .done = self.finish(.closed) };
 
-        // Nothing decrypted. Either the peer has finished, which the protocol
-        // knows about, or nothing has arrived yet.
-        if (self.client.eof()) return .{ .done = self.finish(.closed) };
-        return .quiet;
+            self.from_socket.gather();
+            if (!self.from_socket.holdsRecord()) {
+                if (self.socket.state() == .closed) return .{ .done = self.finish(.cut) };
+                return .quiet;
+            }
+
+            // One record, decrypted into the reader's buffer. Every way this
+            // can fail is the protocol refusing what arrived: a record that
+            // will not decrypt, an alert, a peer breaking its own rules. The
+            // socket is not asked, since the whole record is already here.
+            self.client.reader.fillMore() catch |err| switch (err) {
+                error.EndOfStream => return .{ .done = self.finish(.closed) },
+                error.ReadFailed => return .{ .done = self.finish(.broken) },
+            };
+        }
     }
 
     /// All of `bytes`, or none: a record half sent is a connection ended.
@@ -303,12 +326,86 @@ pub const Stream = struct {
     }
 };
 
+/// The five bytes in front of every record: what it carries, the version it
+/// claims, and how long the rest is, big endian.
+const RecordHeader = extern struct {
+    content: u8,
+    version: [2]u8,
+    length: [2]u8,
+
+    fn bodyLength(self: RecordHeader) u16 {
+        return std.mem.readInt(u16, &self.length, .big);
+    }
+};
+
+comptime {
+    std.debug.assert(@sizeOf(RecordHeader) == tls.record_header_len);
+}
+
+/// Whether `held`, the unread ciphertext, starts with a whole record, so the
+/// protocol can be handed one without asking the socket for the rest.
+///
+/// A record longer than the protocol allows counts as whole: the protocol
+/// refuses it from the header alone, and a wait for the rest of it would
+/// never end.
+pub fn startsWithRecord(held: []const u8) bool {
+    if (held.len < tls.record_header_len) return false;
+    const header = std.mem.bytesToValue(RecordHeader, held[0..tls.record_header_len]);
+    const length = header.bodyLength();
+    if (length > tls.max_ciphertext_len) return true;
+    return held.len >= tls.record_header_len + length;
+}
+
+test "a record is whole once its header's length has arrived behind it" {
+    const expect = std.testing.expect;
+    // Application data, TLS 1.2 on the wire, three bytes long.
+    const header = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x03 };
+
+    try expect(!startsWithRecord(""));
+    try expect(!startsWithRecord(header[0..4]));
+    try expect(!startsWithRecord(&header));
+    try expect(!startsWithRecord(&(header ++ [_]u8{ 1, 2 })));
+    try expect(startsWithRecord(&(header ++ [_]u8{ 1, 2, 3 })));
+    // What follows a whole record does not change the answer.
+    try expect(startsWithRecord(&(header ++ [_]u8{ 1, 2, 3, 4, 5 })));
+
+    // A length the protocol will not accept is handed over as it stands,
+    // with nothing to wait for.
+    const oversized = [_]u8{ 0x17, 0x03, 0x03, 0xff, 0xff };
+    try expect(startsWithRecord(&oversized));
+    const largest = [_]u8{ 0x17, 0x03, 0x03 } ++ std.mem.toBytes(std.mem.nativeToBig(u16, tls.max_ciphertext_len));
+    try expect(!startsWithRecord(&largest));
+}
+
 /// The ciphertext arriving, as something the protocol can read.
+///
+/// Two ways in. The handshake reads through the interface, which waits for
+/// the socket: several round trips with nothing to do between them. After
+/// that a connection is read with `Stream.recv`, which takes what the socket
+/// holds through `gather` without waiting and only hands the protocol a
+/// record that is here whole.
 const SocketReader = struct {
     socket: *const sock.Sock,
     interface: Reader,
 
     const vtable: Reader.VTable = .{ .stream = stream };
+
+    /// Take what the socket holds into the buffer, without waiting.
+    fn gather(self: *SocketReader) void {
+        const r = &self.interface;
+        // Room for a whole record from where the unread bytes start: a
+        // record is the unit the protocol takes, and one that could not fit
+        // there would never be whole. The default rebase makes the room by
+        // moving the unread bytes down, and cannot fail.
+        r.rebase(tls.max_ciphertext_record_len) catch unreachable;
+        r.end += self.socket.recv(r.buffer[r.end..]);
+    }
+
+    /// Whether the unread bytes start with a whole record.
+    fn holdsRecord(self: *const SocketReader) bool {
+        const r = &self.interface;
+        return startsWithRecord(r.buffer[r.seek..r.end]);
+    }
 
     fn stream(r: *Reader, w: *Writer, limit: std.Io.Limit) Reader.StreamError!usize {
         const self: *SocketReader = @fieldParentPtr("interface", r);
