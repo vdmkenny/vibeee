@@ -748,7 +748,10 @@ fn fold(link: *Link, line: *const irc.Line) void {
                 var each = lib.str.words(line.text());
                 while (each.next()) |name| {
                     const split = support.prefixes.split(name);
-                    model.arrive(where, split.nick, split.marks);
+                    // With `userhost-in-names` an entry is a whole source,
+                    // and a member is known by the nick alone: that is what
+                    // every later PART, QUIT and NICK names them by.
+                    model.arrive(where, irc.Source.from(split.nick).nick, split.marks);
                 }
             },
             .no_topic => {},
@@ -918,8 +921,12 @@ var transcript_shown: i32 = 0;
 fn transcriptFingerprint(area: Rect) i32 {
     var mark: eui.widget.Fingerprint = .{};
     mark.number(model.open);
-    mark.number(model.lines.len);
-    mark.number(@intCast(transcript_scroll.offset + 1));
+    // How often the transcript has changed, not how much it holds: the count
+    // of lines stands still once the oldest go to make room for new ones.
+    mark.number(model.generation);
+    // Following the end, the offset is set from what is measured rather than
+    // compared, and what it is measured from is already here.
+    mark.number(if (following) 0 else @intCast(transcript_scroll.offset + 1));
     mark.number(@intCast(area.w));
     mark.number(@intCast(area.h));
     mark.flag(following);
@@ -933,7 +940,14 @@ const Group = struct {
     count: usize,
     named: bool,
     highlight: bool,
+    /// How tall it comes to at the width it was measured at.
+    height: i32,
 };
+
+/// The runs of the room in view, measured once per pass that draws. Wrapping
+/// every line is the cost of a pass, so it is paid once, and a run is wrapped
+/// again only when it is painted.
+var groups: Bounded(Group, shown.len) = .{};
 
 /// How far apart two lines from the same person may be and still read as one
 /// run rather than two.
@@ -968,75 +982,89 @@ fn drawTranscript(area: Rect) void {
         }
         return;
     }
-    const which = model.open;
     transcript_height = area.h;
 
-    const lines = model.transcript(which, &shown);
     var view = eui.scrollpane.begin(ctx, area, &transcript_scroll);
 
-    // Pinned to the end until somebody scrolls away from it, which is what a
-    // conversation wants: the newest line is the one being read.
-    if (following) transcript_scroll.offset = @max(0, transcript_scroll.content_h - area.h);
-    view.offset = transcript_scroll.offset;
+    // Nothing has changed: what stands is left standing, as tall as it was
+    // measured. The pane still takes the wheel and draws its bar.
+    if (!fresh) {
+        eui.scrollpane.end(ctx, &transcript_scroll, view, transcript_scroll.content_h);
+        settleFollowing(area);
+        return;
+    }
 
+    const lines = model.transcript(model.open, &shown);
     const width = view.area.w - t.padding * 2;
+    const total = layoutGroups(lines, width);
+
+    // Pinned to the end until somebody scrolls away from it, which is what a
+    // conversation wants: the newest line is the one being read. Set from
+    // what was just measured, so a line that has arrived is on screen this
+    // pass rather than the next.
+    if (following) transcript_scroll.offset = @max(0, total - area.h);
+    view.offset = transcript_scroll.offset;
 
     // A conversation grows from the bottom of the pane, not the top: what was
     // said last is where the eye goes, and a handful of lines strung along
     // the top of an empty pane reads as a page that failed to load.
-    //
-    // Measured before it is drawn rather than taken from what the last pass
-    // came to: a height one pass out of date puts the air in the wrong place,
-    // and the pass that would correct it is the one nothing asked for.
-    const room_left = @max(area.h - measure(lines, width), 0);
+    const room_left = @max(area.h - total, 0);
     var y = view.top() + room_left;
-    var at: usize = 0;
-    while (at < lines.len) {
-        const group = groupAt(lines, at);
-        y += drawGroup(view, .{ .x = view.area.x, .y = y, .w = view.area.w, .h = 0 }, lines, group, width, fresh);
-        at = group.from + group.count;
+    for (groups.slice()) |group| {
+        // What is scrolled past has been measured and is not wrapped again.
+        if (view.shows(y, group.height)) {
+            paintGroup(.{ .x = view.area.x, .y = y, .w = view.area.w, .h = group.height }, lines, group, width);
+        }
+        y += group.height;
     }
 
-    // What was drawn, not counting the air it was pushed down by: measuring
+    // What was measured, not counting the air it was pushed down by: counting
     // that too would make the pane taller every pass until it filled.
-    const content = y - view.top() - room_left;
-    eui.scrollpane.end(ctx, &transcript_scroll, view, content);
+    eui.scrollpane.end(ctx, &transcript_scroll, view, total);
+    settleFollowing(area);
+}
 
-    // Scrolling away from the end stops the following; scrolling back to it
-    // starts again, so it is never a mode to get stuck in.
+/// Scrolling away from the end stops the following; scrolling back to it
+/// starts again, so it is never a mode to get stuck in.
+fn settleFollowing(area: Rect) void {
     if (transcript_scroll.content_h > area.h) {
         following = transcript_scroll.offset >= transcript_scroll.content_h - area.h - 1;
     }
 }
 
-/// How tall the whole of a room's transcript comes to at this width.
-fn measure(lines: []const usize, width: i32) i32 {
+/// Measure the runs of `lines` at `width` into `groups`, and return how tall
+/// they come to together.
+fn layoutGroups(lines: []const usize, width: i32) i32 {
+    groups.clear();
     var total: i32 = 0;
     var at: usize = 0;
     while (at < lines.len) {
-        const group = groupAt(lines, at);
-        total += groupHeight(lines, group, width);
-        at = group.from + group.count;
+        const group = groupAt(lines, at, width);
+        // A run holds at least one line, so there are never more runs than
+        // `groups` has room for lines.
+        groups.append(group) catch unreachable;
+        total += group.height;
+        at += group.count;
     }
     return total;
 }
 
 /// How tall one run comes to: the air above it, the name if it carries one,
 /// and every line it holds wrapped to the width.
-fn groupHeight(lines: []const usize, group: Group, width: i32) i32 {
+fn groupHeight(run: []const usize, with_name: bool, width: i32) i32 {
     const t = theme.current();
     const row = Surface.textHeight();
-    var height: i32 = if (group.named) t.padding else theme.enlarged(2);
-    if (group.named) height += row;
-    for (lines[group.from..][0..group.count]) |index| {
+    var height: i32 = if (with_name) t.padding else theme.enlarged(2);
+    if (with_name) height += row;
+    for (run) |index| {
         const line = model.lines.items[index];
         height += @as(i32, @intCast(eui.text.count(bodyOf(line), drawFace(line), width))) * row;
     }
     return height;
 }
 
-/// The run of lines starting at `at`.
-fn groupAt(lines: []const usize, at: usize) Group {
+/// The run of lines starting at `at`, measured at `width`.
+fn groupAt(lines: []const usize, at: usize, width: i32) Group {
     const first = model.lines.items[lines[at]];
     var count: usize = 1;
     while (at + count < lines.len) : (count += 1) {
@@ -1047,37 +1075,31 @@ fn groupAt(lines: []const usize, at: usize) Group {
         if (next.at != 0 and first.at != 0 and next.at - first.at > RUN_SECONDS) break;
     }
 
+    const run = lines[at..][0..count];
     var highlight = false;
-    for (lines[at .. at + count]) |index| {
+    for (run) |index| {
         if (model.lines.items[index].highlight) highlight = true;
     }
-    return .{ .from = at, .count = count, .named = first.kind != .told, .highlight = highlight };
+    const with_name = first.kind != .told;
+    return .{
+        .from = at,
+        .count = count,
+        .named = with_name,
+        .highlight = highlight,
+        .height = groupHeight(run, with_name, width),
+    };
 }
 
-/// Draw one run and return how tall it turned out. A pass that is only
-/// measuring still walks it: the pane's height and its bar come from what the
-/// last pass drew, and a pass that skipped the walk would leave both stale.
-fn drawGroup(
-    view: eui.scrollpane.View,
-    at: Rect,
-    lines: []const usize,
-    group: Group,
-    width: i32,
-    paint: bool,
-) i32 {
+/// Paint one run into `at`, which is as tall as the run was measured.
+fn paintGroup(at: Rect, lines: []const usize, group: Group, width: i32) void {
     const t = theme.current();
     const first = model.lines.items[lines[group.from]];
     const gap = if (group.named) t.padding else theme.enlarged(2);
     const row = Surface.textHeight();
-    const height = groupHeight(lines, group, width);
-
-    if (!paint or !view.shows(at.y, height)) return height;
 
     // A run that names this client takes the ground a chosen row takes, so it
     // is findable by looking rather than by reading.
-    if (group.highlight) {
-        ctx.surface.fill(.{ .x = at.x, .y = at.y, .w = at.w, .h = height }, t.surface_pressed);
-    }
+    if (group.highlight) ctx.surface.fill(at, t.surface_pressed);
 
     var y = at.y + gap;
     if (group.named) {
@@ -1110,7 +1132,6 @@ fn drawGroup(
             y += row;
         }
     }
-    return height;
 }
 
 /// What a line reads as. The server's own news is set apart by a dash rather
