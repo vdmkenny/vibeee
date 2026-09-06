@@ -168,8 +168,18 @@ fn framesFor(len: usize) usize {
 // std.mem.Allocator plumbing
 // ---------------------------------------------------------------------------
 
+// Every entry point holds interrupts off for its whole body. The kernel
+// switches threads at any interrupt exit, kernel-mode ones included, so two
+// threads can otherwise be inside the same free list at once and be handed
+// the same object. One core, so interrupts off is the lock every other module
+// with shared state already uses; the allocator has to hold it too, because
+// its callers cannot know whether they are on a path that may be switched
+// away from.
+
 fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
     if (!initialised or len == 0) return null;
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     const a = alignment.toByteUnits();
 
     if (classFor(len, a)) |idx| return allocClass(idx);
@@ -184,12 +194,18 @@ fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]
 }
 
 fn resize(_: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, _: usize) bool {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     const a = alignment.toByteUnits();
     if (classFor(memory.len, a)) |idx| {
         // In-place only while it still fits the same class.
         return new_len <= classes[idx].size;
     }
-    return framesFor(new_len) == framesFor(memory.len);
+    // A whole-frame allocation must stay one. Shrunk to a length that
+    // classifies as a slab size, the eventual free would take the slab path
+    // over a frame that has no slab header, reading a class index out of the
+    // caller's own bytes.
+    return classFor(new_len, a) == null and framesFor(new_len) == framesFor(memory.len);
 }
 
 fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
@@ -199,6 +215,8 @@ fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: u
 
 fn free(_: *anyopaque, memory: []u8, alignment: std.mem.Alignment, _: usize) void {
     if (!initialised or memory.len == 0) return;
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     const a = alignment.toByteUnits();
 
     if (classFor(memory.len, a) != null) {
