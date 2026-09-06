@@ -39,6 +39,10 @@ test {
     _ = @import("user/lib/paths.zig");
     _ = @import("user/lib/console.zig");
     _ = @import("user/lib/table.zig");
+    // The C library's length modifiers: which type a `printf` argument is
+    // read as and a `scanf` result is stored as. The rest of the formatter
+    // needs a stream, and this is the part that decides where the bytes go.
+    _ = @import("user/libc/length.zig");
     // Every decision about a program image, away from the frames and the
     // mappings it would otherwise take to ask one: the files worth asking
     // about are the ones no linker would produce.

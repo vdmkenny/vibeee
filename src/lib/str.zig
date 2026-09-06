@@ -254,6 +254,19 @@ const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 /// digits come out least significant first, so writing forward would mean
 /// generating them and then reversing them.
 pub fn number(buf: []u8, value: usize, base: u8, case: Case) []const u8 {
+    return render(buf, value, base, case);
+}
+
+/// The same for a value wider than a word, which is what C's `long long` is
+/// on a thirty-two-bit machine. Its own entry because a wide division is a
+/// call per digit there rather than an instruction, and a caller that has a
+/// word should not pay for it.
+pub fn wide(buf: []u8, value: u64, base: u8, case: Case) []const u8 {
+    return render(buf, value, base, case);
+}
+
+/// The loop behind both, compiled once per width it is asked for.
+fn render(buf: []u8, value: anytype, base: u8, case: Case) []const u8 {
     if (buf.len == 0) return buf[0..0];
 
     var at = buf.len;
@@ -459,6 +472,17 @@ test "collapseSpaces trims the ends and reduces every internal run to one" {
 
     var single = "x".*;
     try std.testing.expectEqualStrings("x", collapseSpaces(&single));
+}
+
+test "a number is written in full whether it is a word or wider" {
+    var buf: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("0", number(&buf, 0, 10, .lower));
+    try std.testing.expectEqualStrings("255", number(&buf, 255, 10, .lower));
+    try std.testing.expectEqualStrings("ff", number(&buf, 255, 16, .lower));
+    try std.testing.expectEqualStrings("0", wide(&buf, 0, 10, .lower));
+    try std.testing.expectEqualStrings("18446744073709551615", wide(&buf, std.math.maxInt(u64), 10, .lower));
+    try std.testing.expectEqualStrings("FFFFFFFFFFFFFFFF", wide(&buf, std.math.maxInt(u64), 16, .upper));
+    try std.testing.expectEqualStrings("1777777777777777777777", wide(&buf, std.math.maxInt(u64), 8, .lower));
 }
 
 test "the builder writes hardware identifiers at a fixed width" {
