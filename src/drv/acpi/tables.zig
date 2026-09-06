@@ -34,8 +34,12 @@ const Rsdp = extern struct {
     rsdt_address: u32 align(1),
 };
 
-/// Only the fields shutdown uses. The table is much larger; the rest is left to
+/// The table up to the register block lengths, which is as far as shutdown
+/// and the no-touch check read. The table is much larger; the rest is left to
 /// the platform driver.
+///
+/// Each legacy block field holds a whole port address. Its length is a
+/// separate byte further on, so both are read as the fields they are.
 const Fadt = extern struct {
     header: Header,
     firmware_ctrl: u32 align(1),
@@ -54,14 +58,16 @@ const Fadt = extern struct {
     pm1b_cnt_blk: u32 align(1),
     pm2_cnt_blk: u32 align(1),
     pm_tmr_blk: u32 align(1),
-};
+    gpe0_blk: u32 align(1),
+    gpe1_blk: u32 align(1),
+    pm1_evt_len: u8,
+    pm1_cnt_len: u8,
 
-/// How the FADT packs a legacy PM register block: the base in the low word,
-/// the length in the next byte.
-const PmBlk = packed struct(u32) {
-    base: u16,
-    length: u8,
-    reserved: u8 = 0,
+    comptime {
+        // The offsets the ACPI specification gives the two length bytes.
+        std.debug.assert(@offsetOf(Fadt, "pm1_evt_len") == 88);
+        std.debug.assert(@offsetOf(Fadt, "pm1_cnt_len") == 89);
+    }
 };
 
 pub const Info = struct {
@@ -141,6 +147,10 @@ pub fn init(rsdp_phys: u32) void {
     rsdt_phys = rsdp.rsdt_address;
 
     const facp = find("FACP") orelse return;
+    // A table too short to hold the fields read below is not one to read
+    // from: every FADT since ACPI 1.0 is longer than this struct, so a
+    // shorter one is a firmware fault rather than an older revision.
+    if (facp.length < @sizeOf(Fadt)) return;
     const fadt: *align(1) const Fadt = @ptrCast(facp);
 
     info.pm1a_control = @truncate(fadt.pm1a_cnt_blk);
@@ -149,13 +159,11 @@ pub fn init(rsdp_phys: u32) void {
     info.smi_command = @truncate(fadt.smi_cmd);
     info.acpi_enable = fadt.acpi_enable;
     info.sci_int = fadt.sci_int;
-    // The event and control blocks, unpacked: base and length are both what
-    // the safety check needs.
-    const pm_evt: PmBlk = @bitCast(fadt.pm1a_evt_blk);
-    const pm_cnt: PmBlk = @bitCast(fadt.pm1a_cnt_blk);
-    info.pm1a_event = pm_evt.base;
-    info.pm1a_event_len = pm_evt.length;
-    info.pm1a_control_len = pm_cnt.length;
+    // The event and control blocks' base and length, which are what the
+    // safety check needs.
+    info.pm1a_event = @truncate(fadt.pm1a_evt_blk);
+    info.pm1a_event_len = fadt.pm1_evt_len;
+    info.pm1a_control_len = fadt.pm1_cnt_len;
     have_info = true;
 
     findS5(fadt.dsdt);

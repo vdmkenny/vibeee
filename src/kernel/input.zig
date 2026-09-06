@@ -239,6 +239,18 @@ pub fn post(event: Event) void {
     }
     queue[tail] = event;
     tail = next;
+    // Keys arrive from the interrupt handler and from a driver's syscall
+    // alike, so the interrupt guard is taken here rather than assumed.
+    line_event.signal();
+}
+
+/// Signalled whenever a key event is queued for the line discipline, so a
+/// reader can block instead of polling. Counting, so an event delivered just
+/// before a reader arrives is not lost.
+var line_event: event_mod.Event = .{};
+
+pub fn lineReady() *event_mod.Event {
+    return &line_event;
 }
 
 pub fn poll() ?Event {
