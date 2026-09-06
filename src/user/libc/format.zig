@@ -10,6 +10,7 @@
 //! buffer was too small, so it is counted whether or not it was written.
 
 const stdio = @import("stdio.zig");
+const Length = @import("length.zig").Length;
 const str = @import("lib").str;
 const exact = @import("lib").decimal;
 
@@ -54,9 +55,9 @@ const Spec = struct {
     alt: bool = false,
     width: usize = 0,
     precision: ?usize = null,
-    /// How wide the argument is on the stack, which is what decides how much
-    /// of it to read.
-    long: bool = false,
+    /// Which C type the argument is, which decides how much of the stack it
+    /// takes and where the argument after it begins.
+    length: Length = .int,
 };
 
 /// The one body. `out` is a pointer to whichever destination, and every write
@@ -80,7 +81,7 @@ fn run(out: anytype, format: [*:0]const u8, args: *std.builtin.VaList) void {
         readFlags(format, &i, &spec);
         readWidth(out, format, &i, &spec, args);
         readPrecision(out, format, &i, &spec, args);
-        readLength(format, &i, &spec);
+        spec.length = Length.read(format, &i);
 
         convert(out, format[i], &spec, args);
     }
@@ -129,19 +130,6 @@ fn readPrecision(out: anytype, format: [*:0]const u8, i: *usize, spec: *Spec, ar
     spec.precision = readNumber(format, i);
 }
 
-/// `l`, `ll`, `h`, `hh` and `z`. Only whether the argument is wider than an
-/// int matters: everything narrower is promoted before it reaches here, so
-/// `h` and `hh` are read and discarded.
-fn readLength(format: [*:0]const u8, i: *usize, spec: *Spec) void {
-    while (true) : (i.* += 1) {
-        switch (format[i.*]) {
-            'l', 'z', 'j', 't' => spec.long = true,
-            'h', 'L' => {},
-            else => return,
-        }
-    }
-}
-
 fn readNumber(format: [*:0]const u8, i: *usize) usize {
     var n: usize = 0;
     while (format[i.*] >= '0' and format[i.*] <= '9') : (i.* += 1) {
@@ -157,11 +145,11 @@ const Kind = enum { number, text };
 
 fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void {
     switch (verb) {
-        'd', 'i' => signed(out, @cVaArg(args, c_long), spec),
-        'u' => unsigned(out, @cVaArg(args, c_ulong), spec, 10, false),
-        'x' => unsigned(out, @cVaArg(args, c_ulong), spec, 16, false),
-        'X' => unsigned(out, @cVaArg(args, c_ulong), spec, 16, true),
-        'o' => unsigned(out, @cVaArg(args, c_ulong), spec, 8, false),
+        'd', 'i' => signed(out, spec.length.take(.signed, args), spec),
+        'u' => unsigned(out, spec.length.take(.unsigned, args), spec, 10, false),
+        'x' => unsigned(out, spec.length.take(.unsigned, args), spec, 16, false),
+        'X' => unsigned(out, spec.length.take(.unsigned, args), spec, 16, true),
+        'o' => unsigned(out, spec.length.take(.unsigned, args), spec, 8, false),
         'c' => {
             const byte: u8 = @truncate(@as(c_uint, @bitCast(@cVaArg(args, c_int))));
             padded(out, &[_]u8{byte}, spec, "", .text);
@@ -328,20 +316,14 @@ fn signOf(value: f64, spec: *const Spec) []const u8 {
     return "";
 }
 
-fn signed(out: anytype, value: c_long, spec: *Spec) void {
-    const negative = value < 0;
-    const magnitude: c_ulong = if (negative)
-        @as(c_ulong, @intCast(-(value + 1))) + 1
-    else
-        @intCast(value);
-
-    const sign = if (negative) "-" else if (spec.plus) "+" else if (spec.space) " " else "";
+fn signed(out: anytype, value: i64, spec: *Spec) void {
+    const sign = if (value < 0) "-" else if (spec.plus) "+" else if (spec.space) " " else "";
 
     var digits: [24]u8 = undefined;
-    padded(out, decimal(&digits, magnitude, 10, false), spec, sign, .number);
+    padded(out, decimal(&digits, @abs(value), 10, false), spec, sign, .number);
 }
 
-fn unsigned(out: anytype, value: c_ulong, spec: *Spec, base: u8, upper: bool) void {
+fn unsigned(out: anytype, value: u64, spec: *Spec, base: u8, upper: bool) void {
     const prefix: []const u8 = if (!spec.alt or value == 0)
         ""
     else switch (base) {
@@ -354,9 +336,11 @@ fn unsigned(out: anytype, value: c_ulong, spec: *Spec, base: u8, upper: bool) vo
     padded(out, decimal(&digits, value, base, upper), spec, prefix, .number);
 }
 
-/// The digits, from the one place that turns a number into them.
-fn decimal(into: *[24]u8, value: c_ulong, base: u8, upper: bool) []const u8 {
-    return str.number(into, @intCast(value), base, if (upper) .upper else .lower);
+/// The digits, from the one place that turns a number into them. Every
+/// length is widened to sixty-four bits first, so there is one caller here
+/// rather than one per C type.
+fn decimal(into: *[24]u8, value: u64, base: u8, upper: bool) []const u8 {
+    return str.wide(into, value, base, if (upper) .upper else .lower);
 }
 
 /// Lay a converted value out: the sign or prefix, then the padding, then the
@@ -496,11 +480,9 @@ export fn vsscanf(text: [*:0]const u8, format: [*:0]const u8, args: std.builtin.
         if (discard) i += 1;
 
         const width = readNumber(format, &i);
-        // Length modifiers change the width of the destination, which for the
-        // conversions here is always an int or a pointer either way.
-        while (format[i] == 'l' or format[i] == 'h' or format[i] == 'z') i += 1;
+        const length = Length.read(format, &i);
 
-        if (!scanOne(text, &at, format[i], width, discard, &taken)) return stored;
+        if (!scanOne(text, &at, format[i], width, length, discard, &taken)) return stored;
         if (!discard) stored += 1;
     }
     return stored;
@@ -511,6 +493,7 @@ fn scanOne(
     at: *usize,
     verb: u8,
     width: usize,
+    length: Length,
     discard: bool,
     args: *std.builtin.VaList,
 ) bool {
@@ -528,7 +511,7 @@ fn scanOne(
             const negative = text[at.*] == '-';
             if (text[at.*] == '-' or text[at.*] == '+') at.* += 1;
 
-            var value: c_ulong = 0;
+            var value: u64 = 0;
             var any = false;
             var read: usize = 0;
             while (read < limit) : (read += 1) {
@@ -539,9 +522,13 @@ fn scanOne(
             }
             if (!any) return false;
 
+            // The caller's object is as wide as the length modifier says,
+            // and the store is exactly that wide. A negative number is its
+            // two's complement, which is what C stores in a signed object
+            // and in an unsigned one alike.
             if (!discard) {
-                const slot = @cVaArg(args, *c_long);
-                slot.* = if (negative) -@as(c_long, @bitCast(value)) else @bitCast(value);
+                const bits = if (negative) 0 -% value else value;
+                length.store(@cVaArg(args, *anyopaque), bits);
             }
         },
         'c' => {

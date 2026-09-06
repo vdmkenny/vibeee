@@ -11,7 +11,9 @@
  * depends on the machine's word size, its pointers, or its locale. */
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +59,28 @@ static void formatting(void)
     snprintf(b, sizeof b, "%ld|%lu", 1234567890L, 4000000000UL);
     say("printf.long", b);
 
+    /* A wide argument takes eight bytes of the call, and what follows it
+     * begins after those eight. */
+    snprintf(b, sizeof b, "%lld|%llu|%s|%d", -1234567890123LL, 18446744073709551615ULL, "after", 7);
+    say("printf.longlong", b);
+
+    snprintf(b, sizeof b, "%llx|%llX|%llo", 0xDEADBEEFCAFEBABEULL, 0xDEADBEEFCAFEBABEULL, 0777777777777777777777ULL);
+    say("printf.longlong.bases", b);
+
+    int64_t least = INT64_MIN;
+    uint64_t most = UINT64_MAX;
+    snprintf(b, sizeof b, "%" PRId64 "|%" PRIu64 "|%" PRIx64, least, most, most);
+    say("printf.int64", b);
+
+    snprintf(b, sizeof b, "%jd|%zu|%td", (intmax_t)-5, sizeof(int), (ptrdiff_t)(b + 3 - b));
+    say("printf.max.size.diff", b);
+
+    /* A narrow argument arrives as an int and keeps only its own bytes. */
+    int over_char = 300;
+    int over_short = 70000;
+    snprintf(b, sizeof b, "%hhd|%hhu|%hd|%hu|%hhd", over_char, over_char, over_short, over_short, -1);
+    say("printf.narrow", b);
+
     snprintf(b, sizeof b, "%s|%10s|%-10s|%.3s", "abc", "abc", "abc", "abcdef");
     say("printf.string", b);
 
@@ -91,6 +115,37 @@ static void formatting(void)
     int n = sscanf("17 -4 hello", "%d %d %s", &wanted, &n, b);
     say("sscanf.count", n == 3 ? "3" : "wrong");
     sayn("sscanf.value", wanted);
+
+    /* A length modifier on a scan says how wide the target is, so a byte
+     * target keeps its neighbours and a wide one is filled to the top. */
+    int8_t bytes[4] = { 1, 2, 3, 4 };
+    sscanf("-5", "%" SCNd8, &bytes[0]);
+    snprintf(b, sizeof b, "%d|%d|%d|%d", bytes[0], bytes[1], bytes[2], bytes[3]);
+    say("sscanf.int8", b);
+
+    uint8_t octets[2] = { 1, 2 };
+    sscanf("ff", "%" SCNx8, &octets[0]);
+    snprintf(b, sizeof b, "%u|%u", octets[0], octets[1]);
+    say("sscanf.uint8", b);
+
+    int16_t halves[2] = { 1, 2 };
+    sscanf("-300", "%" SCNd16, &halves[0]);
+    snprintf(b, sizeof b, "%d|%d", halves[0], halves[1]);
+    say("sscanf.int16", b);
+
+    int64_t wide = -1;
+    uint64_t huge = 0;
+    sscanf("123456789012 18446744073709551615", "%" SCNd64 " %" SCNu64, &wide, &huge);
+    snprintf(b, sizeof b, "%" PRId64 "|%" PRIu64, wide, huge);
+    say("sscanf.int64", b);
+
+    sscanf("-1 ffffffffffffffff", "%" SCNd64 " %" SCNx64, &wide, &huge);
+    snprintf(b, sizeof b, "%" PRId64 "|%" PRIx64, wide, huge);
+    say("sscanf.int64.ends", b);
+
+    long along = 0;
+    sscanf("-4", "%ld", &along);
+    sayn("sscanf.long", along);
 }
 
 /* ---- strings --------------------------------------------------------- */
