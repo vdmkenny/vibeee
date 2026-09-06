@@ -23,8 +23,13 @@ pub const Error = error{
 pub const Mode = struct {
     width: u16,
     height: u16,
+    /// Bits per pixel. `adapter_choice` asks for whatever the adapter prefers,
+    /// which is what the set_mode call carries for a caller with no
+    /// preference, and the backend alone decides what that is.
     bpp: u8 = 32,
     refresh: u8 = 60,
+
+    pub const adapter_choice: u8 = 0;
 };
 
 /// Where the adapter put the framebuffer once a mode is set.

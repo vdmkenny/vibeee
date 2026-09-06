@@ -28,18 +28,54 @@ const Error = modeset.Error;
 const Mode = modeset.Mode;
 const Framebuffer = modeset.Framebuffer;
 
-/// The 915, 945 and Pineview families.
+/// The parts of the family, where they differ.
 ///
-/// One family for modeset purposes. They differ in clock limits and in where a
-/// few registers moved, not in the shape of programming a pipe, a PLL and a
-/// plane, which is why the driver they all share upstream is one driver.
-pub const devices = [_]u16{
-    0x2592, // 915GM, Eee PC 701 and 900
-    0x2792, // 915GMS
-    0x27A2, // 945GM
-    0x27AE, // 945GSE, Eee PC 901/1000, Aspire One AOA110/150, HP Mini 110
-    0xA011, // Pineview M, Eee PC 1001PX/1015, Aspire One D255, HP Mini 210
-    0xA012, // Pineview M, second id
+/// One family for modeset purposes. They differ in clock limits, in the size
+/// of the display FIFO and in where a few registers moved, not in the shape of
+/// programming a pipe, a PLL and a plane, which is why the driver they all
+/// share upstream is one driver.
+const Part = enum {
+    i915,
+    i945,
+    pineview,
+
+    fn of(device: u16) ?Part {
+        for (members) |member| {
+            if (member.id == device) return member.part;
+        }
+        return null;
+    }
+
+    /// Lines of display FIFO shared by the planes, 64 bytes each, as the
+    /// reference drivers count them: 95 on the 915 and 127 on the 945.
+    /// Pineview's FIFO is larger than either, and the reference sizes its
+    /// self refresh watermark from 512 lines, so the most the split's fields
+    /// can name is a safe share for it.
+    fn fifoLines(self: Part) u7 {
+        return switch (self) {
+            .i915 => 95,
+            .i945, .pineview => 127,
+        };
+    }
+};
+
+const Member = struct { id: u16, part: Part };
+
+const members = [_]Member{
+    .{ .id = 0x2592, .part = .i915 }, // 915GM, Eee PC 701 and 900
+    .{ .id = 0x2792, .part = .i915 }, // 915GMS
+    .{ .id = 0x27A2, .part = .i945 }, // 945GM
+    .{ .id = 0x27AE, .part = .i945 }, // 945GSE, Eee PC 901/1000, Aspire One AOA110/150, HP Mini 110
+    .{ .id = 0xA011, .part = .pineview }, // Pineview M, Eee PC 1001PX/1015, Aspire One D255, HP Mini 210
+    .{ .id = 0xA012, .part = .pineview }, // Pineview M, second id
+};
+
+/// The PCI device ids this backend answers for, derived from the membership
+/// table so an id cannot be matched without also naming its part.
+pub const devices = blk: {
+    var ids: [members.len]u16 = undefined;
+    for (members, 0..) |member, i| ids[i] = member.id;
+    break :blk ids;
 };
 
 /// The register window is 512 KiB on this generation.
@@ -49,13 +85,19 @@ const MMIO_BYTES: usize = 512 * 1024;
 // Register layout
 // ---------------------------------------------------------------------------
 
-/// One pipe's register block.
+/// One of the two display planes. Each pipe feeds the plane of its own letter,
+/// and the FIFO split and the fetch watermarks name the plane, not the pipe.
+const Plane = enum { a, b };
+
+/// One pipe's register block, with the plane it feeds.
 ///
 /// The two pipes are identical blocks at different offsets, so which one drives
 /// the panel is data rather than a code path. The offsets within a block are
-/// written once, in `pipeAt`, and the register dump lists every field of this
-/// struct, so a register added here is dumped without further ceremony.
+/// written once, in `pipeAt`, and the register dump lists every offset field
+/// of this struct, so a register added here is dumped without further
+/// ceremony.
 const Pipe = struct {
+    plane: Plane,
     dsl: u32,
     htotal: u32,
     hblank: u32,
@@ -73,9 +115,11 @@ const Pipe = struct {
     size: u32,
 };
 
-/// A pipe from the addresses of its timing block and its plane block.
-fn pipeAt(timing: u32, plane: u32) Pipe {
+/// A pipe from the plane it feeds and the addresses of its timing block and
+/// its plane block.
+fn pipeAt(plane: Plane, timing: u32, block: u32) Pipe {
     return .{
+        .plane = plane,
         .htotal = timing + 0x00,
         .hblank = timing + 0x04,
         .hsync = timing + 0x08,
@@ -83,19 +127,19 @@ fn pipeAt(timing: u32, plane: u32) Pipe {
         .vblank = timing + 0x10,
         .vsync = timing + 0x14,
         .src = timing + 0x1C,
-        .dsl = plane + 0x000,
-        .conf = plane + 0x008,
-        .stat = plane + 0x024,
-        .cntr = plane + 0x180,
-        .base = plane + 0x184,
-        .stride = plane + 0x188,
-        .pos = plane + 0x18C,
-        .size = plane + 0x190,
+        .dsl = block + 0x000,
+        .conf = block + 0x008,
+        .stat = block + 0x024,
+        .cntr = block + 0x180,
+        .base = block + 0x184,
+        .stride = block + 0x188,
+        .pos = block + 0x18C,
+        .size = block + 0x190,
     };
 }
 
-const pipe_a = pipeAt(0x60000, 0x70000);
-const pipe_b = pipeAt(0x61000, 0x71000);
+const pipe_a = pipeAt(.a, 0x60000, 0x70000);
+const pipe_b = pipeAt(.b, 0x61000, 0x71000);
 
 const DPLL_A = 0x06014;
 const DPLL_B = 0x06018;
@@ -174,15 +218,30 @@ const PlaneSize = packed struct(u32) {
     }
 };
 
-/// Lines of display FIFO, shared by the planes. 64 bytes each.
-const FIFO_TOTAL_LINES = 95;
-
 /// How the FIFO's lines are split: plane A owns the start, the cursor owns the
 /// end, and plane B owns whatever lies between.
 const Dsparb = packed struct(u32) {
     a_end: u7,
     c_start: u7,
     _rest: u18 = 0,
+
+    /// The whole FIFO to the one plane that fetches. Firmware reserves shares
+    /// for both planes and the hardware cursor; the reference gives a disabled
+    /// plane exactly nothing, and the cursor is off.
+    fn wholeTo(fetching: Plane, lines: u7) Dsparb {
+        return switch (fetching) {
+            .a => .{ .a_end = lines, .c_start = lines },
+            .b => .{ .a_end = 0, .c_start = lines },
+        };
+    }
+
+    /// The lines a plane owns, read the way the reference reads the split.
+    fn share(self: Dsparb, plane: Plane) u7 {
+        return switch (plane) {
+            .a => self.a_end,
+            .b => self.c_start - self.a_end,
+        };
+    }
 };
 
 /// The planes' fetch watermarks: the FIFO level at which refill begins. Too
@@ -197,6 +256,27 @@ const FwBlc = packed struct(u32) {
     _c: u2 = 0,
     burst_b: bool,
     _d: u7 = 0,
+
+    /// The reference's watermark for a plane that fetches nothing.
+    const idle: u6 = 1;
+
+    /// The computed level to the plane that fetches, the idle level to the
+    /// other, bursts on both.
+    fn forFetching(fetching: Plane, mark: u6) FwBlc {
+        return .{
+            .plane_a = if (fetching == .a) mark else idle,
+            .burst_a = true,
+            .plane_b = if (fetching == .b) mark else idle,
+            .burst_b = true,
+        };
+    }
+
+    fn level(self: FwBlc, plane: Plane) u6 {
+        return switch (plane) {
+            .a => self.plane_a,
+            .b => self.plane_b,
+        };
+    }
 };
 
 const FwBlc2 = packed struct(u32) {
@@ -208,12 +288,22 @@ const FwBlc2 = packed struct(u32) {
 
 const Register = struct { name: []const u8, offset: u32 };
 
-/// What a pipe contributes to the dump: every field of `Pipe`, named for the
-/// pipe it belongs to, derived from the struct so the two cannot drift.
-fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [std.meta.fields(Pipe).len]Register {
-    var out: [std.meta.fields(Pipe).len]Register = undefined;
-    inline for (std.meta.fields(Pipe), 0..) |field, i| {
-        out[i] = .{ .name = field.name ++ suffix, .offset = @field(p, field.name) };
+/// The fields of `Pipe` that hold a register offset, by name. The plane tag is
+/// the one field that does not.
+const pipe_register_names = blk: {
+    var names: []const []const u8 = &.{};
+    for (std.meta.fields(Pipe)) |field| {
+        if (field.type == u32) names = names ++ &[_][]const u8{field.name};
+    }
+    break :blk names;
+};
+
+/// What a pipe contributes to the dump: every register of `Pipe`, named for
+/// the pipe it belongs to, derived from the struct so the two cannot drift.
+fn pipeRegisters(comptime suffix: []const u8, comptime p: Pipe) [pipe_register_names.len]Register {
+    var out: [pipe_register_names.len]Register = undefined;
+    inline for (pipe_register_names, 0..) |name, i| {
+        out[i] = .{ .name = name ++ suffix, .offset = @field(p, name) };
     }
     return out;
 }
@@ -366,13 +456,26 @@ pub fn native(dev: probe.Device) ?Mode {
 /// Bytes a plane's stride has to be a multiple of.
 const STRIDE_ALIGN: u32 = 64;
 
+/// Bits per pixel the plane is driven at. The plane's pixel format is left as
+/// firmware programmed it, and every framebuffer this kernel draws is 32 bits
+/// deep, so this is the adapter's choice and the only depth it offers.
+const BPP: u8 = 32;
+
+/// The depth a request gets, or null when the plane cannot be driven at the
+/// depth asked for. A request with no preference gets the adapter's choice.
+fn depthFor(want: u8) ?u8 {
+    if (want == Mode.adapter_choice or want == BPP) return BPP;
+    return null;
+}
+
 /// Give the panel the whole plane instead of a scaled part of it.
 ///
 /// Refused unless the request matches the timing already running, because
 /// anything else would mean programming a clock. See the note at the top.
 pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     if (comptime !hal.available) return error.Unsupported;
-    if (want.bpp != 32) return error.Unsupported;
+    const bpp = depthFor(want.bpp) orelse return error.Unsupported;
+    const part = Part.of(dev.device) orelse return error.Unsupported;
 
     const w = open(dev) orelse return error.Hardware;
     const pipe = panelPipe(w) orelse return error.Hardware;
@@ -394,7 +497,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         .stride = read(u32, w, pipe.stride),
         .fw_blc = read(u32, w, FW_BLC),
         .fw_blc2 = read(u32, w, FW_BLC2),
-        .self_refresh = selfRefreshOn(w, dev.device),
+        .self_refresh = selfRefreshOn(w, part),
     };
 
     acknowledgeUnderrun(w, pipe);
@@ -413,21 +516,16 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     // framebuffer on this part, and ours is always linear. Left on with the
     // firmware's wakeup watermark, the memory sleeps too long for the wider
     // fetch and the plane starves.
-    setSelfRefresh(w, dev.device, false);
+    setSelfRefresh(w, part, false);
 
-    // The whole FIFO to the one plane that fetches. Firmware reserves shares
-    // for plane A and the hardware cursor, both of which are off; the
-    // reference gives a disabled plane exactly nothing.
-    write(Dsparb, w, DSPARB, .{ .a_end = 0, .c_start = FIFO_TOTAL_LINES });
+    // The split and the watermarks name the plane the panel's pipe feeds,
+    // whichever one firmware chose.
+    const lines = part.fifoLines();
+    write(Dsparb, w, DSPARB, Dsparb.wholeTo(pipe.plane, lines));
 
     const total_khz: u32 = @as(u32, read(Timing, w, pipe.htotal).total()) *
         read(Timing, w, pipe.vtotal).total() * want.refresh / 1000;
-    write(FwBlc, w, FW_BLC, .{
-        .plane_a = 1,
-        .burst_a = true,
-        .plane_b = watermark(total_khz, FIFO_TOTAL_LINES),
-        .burst_b = true,
-    });
+    write(FwBlc, w, FW_BLC, FwBlc.forFetching(pipe.plane, watermark(total_khz, lines)));
     write(FwBlc2, w, FW_BLC2, .{ .cursor = 2, .burst = true });
 
     // Geometry, with nothing fetching. The fitter goes first so the timing's
@@ -436,7 +534,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
     fitter.on = false;
     write(Enable, w, PFIT_CONTROL, fitter);
 
-    const pitch = std.mem.alignForward(u32, @as(u32, want.width) * 4, STRIDE_ALIGN);
+    const pitch = std.mem.alignForward(u32, @as(u32, want.width) * (bpp / 8), STRIDE_ALIGN);
     write(PlaneSize, w, pipe.size, PlaneSize.of(want.width, want.height));
     write(u32, w, pipe.pos, 0);
     write(Source, w, pipe.src, Source.of(want.width, want.height));
@@ -461,15 +559,15 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
             want.width, want.height,
         });
         console.info("video", "native: fwblc {x:0>8} dsparb {x:0>8} self {}, was {x:0>8} {x:0>8}", .{
-            read(u32, w, FW_BLC),         read(u32, w, DSPARB),
-            selfRefreshOn(w, dev.device), saved.fw_blc,
+            read(u32, w, FW_BLC),   read(u32, w, DSPARB),
+            selfRefreshOn(w, part), saved.fw_blc,
             saved.dsparb,
         });
         console.info("video", "native: size {x:0>8} src {x:0>8} stride {x:0>8} cntr {x:0>8}", .{
             read(u32, w, pipe.size),   read(u32, w, pipe.src),
             read(u32, w, pipe.stride), read(u32, w, pipe.cntr),
         });
-        revert(w, pipe, dev.device, cntr, saved);
+        revert(w, pipe, part, cntr, saved);
         return error.Hardware;
     }
 
@@ -478,7 +576,7 @@ pub fn set(dev: probe.Device, want: Mode) Error!Framebuffer {
         .pitch = pitch,
         .width = want.width,
         .height = want.height,
-        .bpp = 32,
+        .bpp = bpp,
     };
 }
 
@@ -496,7 +594,7 @@ const Saved = struct {
 };
 
 /// Put back everything `set` changed, around the same plane restart.
-fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void {
+fn revert(w: Windows, pipe: Pipe, part: Part, cntr: Enable, saved: Saved) void {
     planeOff(w, pipe, cntr);
     pipeOff(w, pipe);
 
@@ -508,7 +606,7 @@ fn revert(w: Windows, pipe: Pipe, device: u16, cntr: Enable, saved: Saved) void 
     write(u32, w, pipe.stride, saved.stride);
     write(u32, w, FW_BLC, saved.fw_blc);
     write(u32, w, FW_BLC2, saved.fw_blc2);
-    setSelfRefresh(w, device, saved.self_refresh);
+    setSelfRefresh(w, part, saved.self_refresh);
 
     pipeOn(w, pipe);
     planeOn(w, pipe, cntr);
@@ -569,29 +667,27 @@ fn acknowledgeUnderrun(w: Windows, pipe: Pipe) void {
 
 /// Whether the memory controller's display self refresh is on.
 ///
-/// Where the switch lives moved between the generations, which is the whole
-/// reason these two functions exist.
-fn selfRefreshOn(w: Windows, device: u16) bool {
-    return switch (device) {
-        0x2592, 0x2792 => read(u32, w, INSTPM) & (1 << 12) != 0,
-        0x27A2, 0x27AE => read(u32, w, FW_BLC_SELF) & (1 << 15) != 0,
-        0xA011, 0xA012 => read(u32, w, DSPFW3) & (1 << 30) != 0,
-        else => false,
+/// Where the switch lives moved between the parts, which is the whole reason
+/// these two functions exist.
+fn selfRefreshOn(w: Windows, part: Part) bool {
+    return switch (part) {
+        .i915 => read(u32, w, INSTPM) & (1 << 12) != 0,
+        .i945 => read(u32, w, FW_BLC_SELF) & (1 << 15) != 0,
+        .pineview => read(u32, w, DSPFW3) & (1 << 30) != 0,
     };
 }
 
 /// Switch the memory controller's display self refresh. The older parts hold
 /// the switch in a masked register; Pineview holds it in a plain one.
-fn setSelfRefresh(w: Windows, device: u16, on: bool) void {
-    switch (device) {
-        0x2592, 0x2792 => write(u32, w, INSTPM, masked(12, on)),
-        0x27A2, 0x27AE => write(u32, w, FW_BLC_SELF, masked(15, on)),
-        0xA011, 0xA012 => {
+fn setSelfRefresh(w: Windows, part: Part, on: bool) void {
+    switch (part) {
+        .i915 => write(u32, w, INSTPM, masked(12, on)),
+        .i945 => write(u32, w, FW_BLC_SELF, masked(15, on)),
+        .pineview => {
             const bit = @as(u32, 1) << 30;
             const now = read(u32, w, DSPFW3);
             write(u32, w, DSPFW3, if (on) now | bit else now & ~bit);
         },
-        else => {},
     }
 }
 
@@ -661,4 +757,65 @@ fn readRegisters(dev: probe.Device, out: *std.Io.Writer) void {
         while (pad < 12) : (pad += 1) out.print(" ", .{}) catch {};
         out.print("{x:0>8}\n", .{read(u32, w, item.offset)}) catch {};
     }
+}
+
+// ---------------------------------------------------------------------------
+// What can be checked without the adapter
+// ---------------------------------------------------------------------------
+
+test "a request with no depth preference gets the adapter's choice" {
+    try std.testing.expectEqual(@as(?u8, BPP), depthFor(Mode.adapter_choice));
+}
+
+test "a request for the depth the plane runs is honoured" {
+    try std.testing.expectEqual(@as(?u8, BPP), depthFor(32));
+}
+
+test "a request for another depth is refused rather than half honoured" {
+    try std.testing.expectEqual(@as(?u8, null), depthFor(16));
+    try std.testing.expectEqual(@as(?u8, null), depthFor(24));
+}
+
+test "every id the backend answers for names its part" {
+    for (devices) |id| try std.testing.expect(Part.of(id) != null);
+    try std.testing.expectEqual(@as(?Part, null), Part.of(0xFFFF));
+}
+
+test "the FIFO is sized by part" {
+    try std.testing.expectEqual(@as(u7, 95), Part.of(0x2592).?.fifoLines());
+    try std.testing.expectEqual(@as(u7, 127), Part.of(0x27AE).?.fifoLines());
+}
+
+test "the fetching plane owns the whole FIFO and the other plane none" {
+    for ([_]Plane{ .a, .b }) |fetching| {
+        const split = Dsparb.wholeTo(fetching, 127);
+        for ([_]Plane{ .a, .b }) |plane| {
+            const expected: u7 = if (plane == fetching) 127 else 0;
+            try std.testing.expectEqual(expected, split.share(plane));
+        }
+    }
+}
+
+test "the fetching plane gets the computed watermark and the idle plane the minimum" {
+    for ([_]Plane{ .a, .b }) |fetching| {
+        const marks = FwBlc.forFetching(fetching, 40);
+        for ([_]Plane{ .a, .b }) |plane| {
+            const expected: u6 = if (plane == fetching) 40 else FwBlc.idle;
+            try std.testing.expectEqual(expected, marks.level(plane));
+        }
+        try std.testing.expect(marks.burst_a and marks.burst_b);
+    }
+}
+
+test "the watermark leaves the latency's worth of lines free, within the field's reach" {
+    // 800x480 at 60 Hz on the 701: 29.58 MHz, 592 bytes in five microseconds,
+    // ten lines plus the guard of two, so the level sits twelve below the
+    // share.
+    try std.testing.expectEqual(@as(u6, 60 - 12), watermark(29_580, 60));
+    // A whole FIFO's share puts the level past what the field can hold, and
+    // the field's maximum is what the plane gets.
+    try std.testing.expectEqual(@as(u6, std.math.maxInt(u6)), watermark(29_580, 95));
+    try std.testing.expectEqual(@as(u6, std.math.maxInt(u6)), watermark(29_580, 127));
+    // A share too small to hold the latency's worth is floored at the burst.
+    try std.testing.expectEqual(@as(u6, 8), watermark(29_580, 20));
 }
