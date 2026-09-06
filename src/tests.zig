@@ -39,6 +39,9 @@ test {
     _ = @import("user/lib/paths.zig");
     _ = @import("user/lib/console.zig");
     _ = @import("user/lib/table.zig");
+    // Whether the ciphertext in hand starts with a whole record, which is what
+    // lets a sealed connection be read without waiting on the socket.
+    _ = @import("user/lib/tls.zig");
     // The C library's length modifiers: which type a `printf` argument is
     // read as and a `scanf` result is stored as. The rest of the formatter
     // needs a stream, and this is the part that decides where the bytes go.
