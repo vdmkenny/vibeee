@@ -130,6 +130,14 @@ const Frame = extern struct {
 /// like any other kernel work. They are left on through SYSEXIT, which does
 /// not restore the flag itself, so turning them off here would hand userspace
 /// a machine that never takes another interrupt.
+/// Both entries clear the direction flag before any kernel code runs. The
+/// ABI every function here is compiled against assumes it clear, and the
+/// compiler emits `rep stos` and `rep movs` on that assumption: a program
+/// that sets it with `std` and then enters the kernel would otherwise have
+/// the kernel's own memsets and memcpys run backwards over whatever sits
+/// below their targets. Ring 3 is not disturbed by it: the int path restores
+/// the caller's flags through IRET, and on the SYSEXIT path a clear flag is
+/// what the ABI already promises at every call boundary.
 export fn sysenterEntry() callconv(.naked) noreturn {
     asm volatile (
         \\ push %%ebp
@@ -152,6 +160,7 @@ export fn sysenterEntry() callconv(.naked) noreturn {
         \\ movw %[kds], %%ax
         \\ movw %%ax, %%ds
         \\ movw %%ax, %%es
+        \\ cld
         \\ sti
         \\ push %%esp
         \\ call sysenterDispatch

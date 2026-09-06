@@ -125,6 +125,7 @@ fn stub(comptime vec: u8) fn () callconv(.naked) void {
                 \\ movw %%ax, %%es
                 \\ movw %%ax, %%fs
                 \\ movw %%ax, %%gs
+                \\ cld
                 \\ pushl %%esp
                 \\ call isrDispatch
                 \\ addl $4, %%esp
