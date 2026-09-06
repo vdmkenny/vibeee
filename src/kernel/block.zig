@@ -87,30 +87,134 @@ pub const Device = struct {
     }
 };
 
-/// Registered devices, whole disks and partitions alike. A fixed table rather
-/// than a list: this machine has one internal disk and a handful of removable
-/// ones, and a static bound removes an allocation from the boot path.
-var devices: [16]Device = undefined;
-var device_count: usize = 0;
+/// How many devices the table holds, whole disks and partitions alike. A
+/// fixed table rather than a list: this machine has one internal disk and a
+/// handful of removable ones, and a static bound removes an allocation from
+/// the boot path.
+pub const ROWS = 16;
+
+/// The longest name a row holds: the sixteen bytes a published volume's
+/// name may run to, plus the "p" and single digit a primary partition adds.
+pub const NAME_MAX = 16 + 2;
+
+pub const RegisterError = error{
+    TableFull,
+    NameTooLong,
+};
+
+/// The device table, and the rules for a row in it. Pure, so the row and
+/// name discipline is checked on the host; the module's one instance below
+/// is what the kernel uses.
+const Table = struct {
+    rows: [ROWS]Device = undefined,
+    /// Each row's name, kept with the row. A Device holds a slice, and a row
+    /// outlives whatever buffer its registrant built the name in. A row
+    /// reused for a new device reuses its name storage with it, so a machine
+    /// where media come and go all day never runs out of names.
+    names: [ROWS][NAME_MAX]u8 = undefined,
+    /// Devices with no partition table that should still be considered for
+    /// mounting. Tracked separately so the mount pass can tell "whole disk
+    /// holding a filesystem" from "whole disk that merely contains
+    /// partitions".
+    whole_disk_usable: [ROWS]bool = @splat(false),
+    count: usize = 0,
+
+    fn list(self: *const Table) []const Device {
+        return self.rows[0..self.count];
+    }
+
+    /// The row the next device takes: a retired one first, so that plugging
+    /// and unplugging never grows the table, else the first never used.
+    /// Null when the table is full.
+    fn freeRow(self: *const Table) ?usize {
+        for (self.list(), 0..) |*d, i| {
+            if (d.retired) return i;
+        }
+        return if (self.count < ROWS) self.count else null;
+    }
+
+    /// Put a device in the table under the table's own copy of its name,
+    /// returning the row it took.
+    fn place(self: *Table, dev: Device) RegisterError!*const Device {
+        if (dev.name.len > NAME_MAX) return error.NameTooLong;
+        const row = self.freeRow() orelse return error.TableFull;
+
+        const name = self.names[row][0..dev.name.len];
+        @memcpy(name, dev.name);
+        self.rows[row] = dev;
+        self.rows[row].name = name;
+        self.whole_disk_usable[row] = false;
+        if (row == self.count) self.count += 1;
+        return &self.rows[row];
+    }
+
+    /// Retire every row sharing a context.
+    fn retire(self: *Table, ctx: *anyopaque) void {
+        for (self.rows[0..self.count], 0..) |*d, i| {
+            if (d.retired or d.ctx != ctx) continue;
+            d.retired = true;
+            self.whole_disk_usable[i] = false;
+        }
+    }
+
+    fn find(self: *const Table, name: []const u8) ?*const Device {
+        for (self.list()) |*d| {
+            if (!d.retired and std.mem.eql(u8, d.name, name)) return d;
+        }
+        return null;
+    }
+
+    fn markWholeDiskUsable(self: *Table, disk: *const Device) void {
+        for (self.list(), 0..) |*d, i| {
+            if (d == disk or std.mem.eql(u8, d.name, disk.name)) {
+                self.whole_disk_usable[i] = true;
+                return;
+            }
+        }
+    }
+
+    fn isMountCandidate(self: *const Table, index: usize) bool {
+        if (index >= self.count or self.rows[index].retired) return false;
+        // Partitions always; whole disks only when they hold a filesystem
+        // directly.
+        return self.rows[index].offset != 0 or self.whole_disk_usable[index];
+    }
+
+    /// A partition's place, or null for a whole device. Partitions carry
+    /// their parent's context, which is the link between them, and the scan
+    /// names a partition after the disk it came from, so the number is read
+    /// back from the name that named it.
+    fn partitionOf(self: *const Table, part: *const Device) ?Partition {
+        if (part.offset == 0) return null;
+        for (self.list()) |*disk| {
+            if (disk.offset != 0 or disk.retired or disk.ctx != part.ctx) continue;
+            if (part.name.len <= disk.name.len + 1) return null;
+            if (!std.mem.startsWith(u8, part.name, disk.name)) return null;
+            if (part.name[disk.name.len] != 'p') return null;
+            const number = std.fmt.parseInt(u8, part.name[disk.name.len + 1 ..], 10) catch return null;
+            return .{ .disk = disk, .number = number };
+        }
+        return null;
+    }
+};
+
+var table: Table = .{};
+
+/// Put a device in the table, or say why it could not be. A device that is
+/// quietly not there is worse than one the log says was dropped.
+fn admit(dev: Device) bool {
+    _ = table.place(dev) catch |err| {
+        switch (err) {
+            error.TableFull => console.warn("block: device table full, dropping {s}", .{dev.name}),
+            error.NameTooLong => console.warn("block: name too long, dropping {s}", .{dev.name}),
+        }
+        return false;
+    };
+    return true;
+}
 
 pub fn register(dev: Device) void {
-    // A retired entry is reused before the table grows: a machine where
-    // something is plugged and unplugged all day must not run out of
-    // rows for doing so.
-    for (devices[0..device_count], 0..) |*d, i| {
-        if (!d.retired) continue;
-        d.* = dev;
-        whole_disk_usable[i] = false;
-        return;
-    }
-
-    if (device_count >= devices.len) {
-        console.warn("block: device table full, dropping {s}", .{dev.name});
-        return;
-    }
-    devices[device_count] = dev;
-    whole_disk_usable[device_count] = false;
-    device_count += 1;
+    _ = admit(dev);
 }
 
 /// The medium behind these devices is gone. Everything sharing the
@@ -120,22 +224,15 @@ pub fn register(dev: Device) void {
 /// The caller unmounts first. Retiring a device something still reads
 /// would leave that reader holding a row that answers nothing.
 pub fn retire(ctx: *anyopaque) void {
-    for (devices[0..device_count], 0..) |*d, i| {
-        if (d.retired or d.ctx != ctx) continue;
-        d.retired = true;
-        whole_disk_usable[i] = false;
-    }
+    table.retire(ctx);
 }
 
 pub fn list() []const Device {
-    return devices[0..device_count];
+    return table.list();
 }
 
 pub fn find(name: []const u8) ?*const Device {
-    for (devices[0..device_count]) |*d| {
-        if (!d.retired and std.mem.eql(u8, d.name, name)) return d;
-    }
-    return null;
+    return table.find(name);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,16 +286,11 @@ const RawEntry = extern struct {
     sectors: u32 align(1),
 };
 
-/// Names for partitions, built as "<disk>p<n>". Static storage because a
-/// Device holds a slice and partitions outlive any scratch buffer.
-var name_storage: [16][16]u8 = undefined;
-var names_used: usize = 0;
-
-fn partitionName(disk: []const u8, index: usize) []const u8 {
-    if (names_used >= name_storage.len) return "part";
-    const buf = &name_storage[names_used];
-    names_used += 1;
-    return std.fmt.bufPrint(buf, "{s}p{d}", .{ disk, index + 1 }) catch "part";
+/// A partition's name: its disk's, then "p" and its number, counted from one
+/// the way the table does. Refused when it would not fit a row, since a name
+/// cut short would name some other partition.
+fn partitionName(buf: *[NAME_MAX]u8, disk: []const u8, number: usize) error{NameTooLong}![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}p{d}", .{ disk, number }) catch error.NameTooLong;
 }
 
 /// True if sector 0 looks like a filesystem boot sector rather than a
@@ -265,15 +357,22 @@ pub fn scanPartitions(disk: *const Device) usize {
             continue;
         }
 
-        found += 1;
-        register(.{
-            .name = partitionName(disk.name, i),
+        // Built on the stack and copied into the row it takes: the table
+        // owns the names of its rows.
+        var name_buf: [NAME_MAX]u8 = undefined;
+        const name = partitionName(&name_buf, disk.name, i + 1) catch {
+            console.warn("block: {s} partition {d}: name does not fit", .{ disk.name, i + 1 });
+            continue;
+        };
+        if (!admit(.{
+            .name = name,
             .ctx = disk.ctx,
             .ops = disk.ops,
             .sectors = raw.sectors,
             .offset = disk.offset + raw.lba_first,
             .read_only = disk.read_only,
-        });
+        })) continue;
+        found += 1;
 
         // Named rather than numbered where the type is one we know, and said
         // outright when it holds something this cannot read: a partition that
@@ -295,18 +394,8 @@ pub fn scanPartitions(disk: *const Device) usize {
     return found;
 }
 
-/// Devices with no partition table that should still be considered for
-/// mounting. Tracked separately so the mount pass can tell "whole disk holding
-/// a filesystem" from "whole disk that merely contains partitions".
-var whole_disk_usable: [16]bool = @splat(false);
-
 pub fn markWholeDiskUsable(disk: *const Device) void {
-    for (devices[0..device_count], 0..) |*d, i| {
-        if (d == disk or std.mem.eql(u8, d.name, disk.name)) {
-            whole_disk_usable[i] = true;
-            return;
-        }
-    }
+    table.markWholeDiskUsable(disk);
 }
 
 /// The signature the partition table carries, which is how a medium is
@@ -327,27 +416,13 @@ pub const Partition = struct {
     number: u8,
 };
 
-/// A partition's place, or null for a whole device. Partitions carry
-/// their parent's context, which is the link between them, and the scan
-/// names a partition after the disk it came from, so the number is read
-/// back from the name that named it.
+/// A partition's place, or null for a whole device.
 pub fn partitionOf(part: *const Device) ?Partition {
-    if (part.offset == 0) return null;
-    for (devices[0..device_count]) |*disk| {
-        if (disk.offset != 0 or disk.retired or disk.ctx != part.ctx) continue;
-        if (part.name.len <= disk.name.len + 1) return null;
-        if (!std.mem.startsWith(u8, part.name, disk.name)) return null;
-        if (part.name[disk.name.len] != 'p') return null;
-        const number = std.fmt.parseInt(u8, part.name[disk.name.len + 1 ..], 10) catch return null;
-        return .{ .disk = disk, .number = number };
-    }
-    return null;
+    return table.partitionOf(part);
 }
 
 pub fn isMountCandidate(index: usize) bool {
-    if (index >= device_count or devices[index].retired) return false;
-    // Partitions always; whole disks only when they hold a filesystem directly.
-    return devices[index].offset != 0 or whole_disk_usable[index];
+    return table.isMountCandidate(index);
 }
 
 pub fn partitionTypeOf(disk: *const Device, index: usize) ?PartitionType {
@@ -357,4 +432,98 @@ pub fn partitionTypeOf(disk: *const Device, index: usize) ?PartitionType {
     if (index >= 4) return null;
     const raw: *align(1) const RawEntry = @ptrCast(&sector[PARTITION_TABLE_OFFSET + index * 16]);
     return @enumFromInt(raw.type);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// A device that answers nothing, for tests of the table alone.
+const test_ops = Ops{ .read = struct {
+    fn read(_: *anyopaque, _: u64, _: []u8) Error!void {
+        return error.IoError;
+    }
+}.read };
+
+fn testDisk(ctx: *anyopaque, name: []const u8) Device {
+    return .{ .name = name, .ctx = ctx, .ops = &test_ops, .sectors = 100 };
+}
+
+test "a row reused after its medium is gone reuses its name with it" {
+    var t = Table{};
+    var medium: u8 = 0;
+    var name_buf: [NAME_MAX]u8 = undefined;
+
+    // Many more insertions than the table has rows: every pass takes the
+    // three rows the previous pass retired.
+    for (0..3 * ROWS) |_| {
+        const disk = try t.place(testDisk(&medium, "hd0"));
+        var first = testDisk(&medium, try partitionName(&name_buf, disk.name, 1));
+        first.offset = 1;
+        const p1 = try t.place(first);
+        var second = testDisk(&medium, try partitionName(&name_buf, disk.name, 2));
+        second.offset = 11;
+        const p2 = try t.place(second);
+
+        try std.testing.expectEqualStrings("hd0p1", p1.name);
+        try std.testing.expectEqualStrings("hd0p2", p2.name);
+        try std.testing.expectEqual(p1, t.find("hd0p1").?);
+
+        const where = t.partitionOf(p2) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(disk, where.disk);
+        try std.testing.expectEqual(@as(u8, 2), where.number);
+
+        t.retire(&medium);
+        try std.testing.expectEqual(@as(?*const Device, null), t.find("hd0p1"));
+    }
+    try std.testing.expectEqual(@as(usize, 3), t.count);
+}
+
+test "a name is the table's own copy, not the registrant's buffer" {
+    var t = Table{};
+    var medium: u8 = 0;
+    var scratch: [NAME_MAX]u8 = undefined;
+    @memcpy(scratch[0..3], "rd0");
+    const placed = try t.place(testDisk(&medium, scratch[0..3]));
+    @memcpy(scratch[0..3], "xxx");
+    try std.testing.expectEqualStrings("rd0", placed.name);
+}
+
+test "a name that does not fit a row is refused rather than cut short" {
+    var t = Table{};
+    var medium: u8 = 0;
+    const long = "v" ** (NAME_MAX + 1);
+    try std.testing.expectError(error.NameTooLong, t.place(testDisk(&medium, long)));
+    try std.testing.expectEqual(@as(usize, 0), t.count);
+
+    var name_buf: [NAME_MAX]u8 = undefined;
+    try std.testing.expectError(error.NameTooLong, partitionName(&name_buf, "v" ** (NAME_MAX - 1), 1));
+    const longest = "v" ** (NAME_MAX - 2);
+    try std.testing.expectEqualStrings(longest ++ "p4", try partitionName(&name_buf, longest, 4));
+}
+
+test "a full table refuses the next device" {
+    var t = Table{};
+    var medium: u8 = 0;
+    for (0..ROWS) |_| _ = try t.place(testDisk(&medium, "hd0"));
+    try std.testing.expectError(error.TableFull, t.place(testDisk(&medium, "hd1")));
+    try std.testing.expectEqual(@as(usize, ROWS), t.count);
+}
+
+test "only a partition, or a whole disk said to hold a filesystem, is mounted" {
+    var t = Table{};
+    var medium: u8 = 0;
+    const disk = try t.place(testDisk(&medium, "hd0"));
+    var part = testDisk(&medium, "hd0p1");
+    part.offset = 1;
+    _ = try t.place(part);
+
+    try std.testing.expect(!t.isMountCandidate(0));
+    try std.testing.expect(t.isMountCandidate(1));
+    t.markWholeDiskUsable(disk);
+    try std.testing.expect(t.isMountCandidate(0));
+    t.retire(&medium);
+    try std.testing.expect(!t.isMountCandidate(0));
+    try std.testing.expect(!t.isMountCandidate(1));
+    try std.testing.expect(!t.isMountCandidate(ROWS));
 }

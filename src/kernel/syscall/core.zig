@@ -184,10 +184,13 @@ pub fn sys_read(a: Args) Result {
 }
 
 fn readConsole(buf: []u8) Result {
-    // Block until a line is available. Sleeping rather than spinning matters:
-    // a shell waiting at a prompt must not consume the CPU everything else
-    // needs, and on a single core it would starve them.
-    while (!tty.hasLine()) sched.sleepMicros(10_000);
+    // Block until a line is available, woken by the key that completes it.
+    // Blocking rather than polling matters: a shell waiting at a prompt must
+    // not consume the CPU everything else needs, and on a single core it
+    // would starve them.
+    while (!tty.hasLine()) {
+        tty.ready().waitOne(null) catch return Errno.timedout.value();
+    }
     return @intCast(tty.read(buf));
 }
 
