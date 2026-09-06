@@ -43,7 +43,8 @@ comptime {
 
 /// The whole file, held at once: years of play at a line a moment, and the
 /// portrait as one line of it. It is what Save writes and what every fold
-/// reads.
+/// reads. A file past it is refused rather than cut, so Save never writes
+/// back less than the file had.
 const CAPACITY = 64 * 1024;
 
 /// The portrait: the side of the square it is kept as, which is the size it
@@ -588,27 +589,39 @@ fn baseName() []const u8 {
 // File
 // ---------------------------------------------------------------------------
 
+/// Read the file at the path into the document. A file that does not fit
+/// the budget is refused, and leaves no document and no path, so Save has
+/// nothing to write over it with.
 fn load() void {
-    const handle = sys.open(path(), .{});
-    if (handle < 0) {
-        say("No such character.");
+    const read = file.readEntire(path(), &storage) catch |err| {
+        switch (err) {
+            error.NoFile => say("No such character."),
+            error.TooBig => {
+                clearDocument();
+                say("Too big: a journal of up to sixty-four kilobytes.");
+            },
+        }
         return;
-    }
-    defer _ = sys.close(@intCast(handle));
-
-    text_len = 0;
-    while (text_len < storage.len) {
-        const n = sys.read(@intCast(handle), storage[text_len..]);
-        if (n <= 0) break;
-        text_len += @intCast(n);
-    }
-
+    };
+    text_len = read;
     refold();
     saved_len = text_len;
     modified = false;
     asked_at_start = true;
     setTitle();
     loadHeadshot();
+}
+
+/// No document: nothing in memory, and no file for Save to write.
+fn clearDocument() void {
+    text_len = 0;
+    file_len = 0;
+    saved_len = 0;
+    modified = false;
+    asked_at_start = true;
+    refold();
+    forgetHeadshot();
+    setTitle();
 }
 
 /// Write the file whole under a new name, rename it over the old, and flush,
@@ -660,8 +673,7 @@ fn refold() void {
 /// reads by session without anyone having to remember to start one.
 fn append(line: []const u8) void {
     if (line.len == 0) return;
-    const space = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
-    if (hero.Keyword.parse(line[0..space])) |k| {
+    if (hero.Line.of(line).keyword()) |k| {
         if (!k.isFact() and k != .session) ensureSession();
     }
     appendLine(line);
@@ -717,7 +729,7 @@ fn loadHeadshot() void {
     if (std.mem.eql(u8, full, headshot_of[0..headshot_of_len])) return;
 
     forgetHeadshot();
-    const read = file.readWhole(full, &picture_file) orelse return;
+    const read = file.readEntire(full, &picture_file) catch return;
     headshot = img.decode(picture_file[0..read]) catch null;
     if (headshot != null) {
         headshot_of_len = @min(full.len, headshot_of.len);
@@ -737,14 +749,13 @@ fn importPortrait(name: []const u8) void {
     }
     var full_buf: [192]u8 = @splat(0);
     const full = resolve(name, &full_buf);
-    const read = file.readWhole(full, &picture_file) orelse {
-        say("No such picture.");
+    const read = file.readEntire(full, &picture_file) catch |err| {
+        say(switch (err) {
+            error.NoFile => "No such picture.",
+            error.TooBig => "Too big: a picture of up to half a megabyte.",
+        });
         return;
     };
-    if (read == picture_file.len) {
-        say("Too big: a picture of up to half a megabyte.");
-        return;
-    }
     const picture = img.decode(picture_file[0..read]) catch {
         say("Not a picture the machine can read.");
         return;
@@ -917,11 +928,11 @@ fn spendHitDie() void {
 
 var line_buffer: [256]u8 = @splat(0);
 
+/// The next session heading: one more than the sheet counts, dated today.
 fn newSession() void {
-    const number = sessionCount() + 1;
     var date_buf: [16]u8 = @splat(0);
     const date = today(&date_buf);
-    appendLine(hero.writeSession(&line_buffer, number, date));
+    appendLine(hero.writeSession(&line_buffer, sheet.sessions + 1, date));
 }
 
 /// A session heading for today, unless the last heading is today's already.
@@ -930,33 +941,9 @@ fn newSession() void {
 fn ensureSession() void {
     var date_buf: [16]u8 = @splat(0);
     const day = today(&date_buf);
-    if (day.len == 0 or std.mem.eql(u8, day, lastSessionDay())) return;
+    if (day.len == 0 or std.mem.eql(u8, day, sheet.session_day)) return;
     var line: [32]u8 = @splat(0);
-    appendLine(hero.writeSession(&line, sessionCount() + 1, day));
-}
-
-/// The day the last session heading names, or nothing.
-fn lastSessionDay() []const u8 {
-    var day: []const u8 = "";
-    var lines = std.mem.splitScalar(u8, storage[0..text_len], '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
-        if (hero.Keyword.parse(line[0..space]) == .session) day = hero.part(std.mem.trim(u8, line[space + 1 ..], " \t"), 1);
-    }
-    return day;
-}
-
-/// How many session headings the file already has, so the next is one more.
-fn sessionCount() u32 {
-    var count: u32 = 0;
-    var lines = std.mem.splitScalar(u8, storage[0..text_len], '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
-        if (hero.Keyword.parse(line[0..space]) == .session) count += 1;
-    }
-    return count;
+    appendLine(hero.writeSession(&line, sheet.sessions + 1, day));
 }
 
 fn today(buf: []u8) []const u8 {
@@ -1352,13 +1339,8 @@ fn askNewCharacter() void {
 /// is asked at the first save.
 fn newCharacter(name: []const u8) void {
     if (name.len == 0) return;
-    text_len = 0;
-    file_len = 0;
-    forgetHeadshot();
+    clearDocument();
     appendLine(hero.writeFact(&line_buffer, .name, name));
-    saved_len = 0;
-    modified = true;
-    asked_at_start = true;
     setSection(.sheet);
     say("Now the facts, then save.");
 }
@@ -1397,10 +1379,9 @@ fn undo() void {
     }
     // The line's first word is what it was: a roll, a note, a fact. The
     // whole line would not fit the status bar's cell.
-    const gone = storage[start..end];
-    const word_end = std.mem.indexOfScalar(u8, gone, ' ') orelse gone.len;
+    const gone = hero.Line.of(storage[start..end]).word;
     var word: [24]u8 = @splat(0);
-    const n = @min(word_end, word.len);
+    const n = @min(gone.len, word.len);
     @memcpy(word[0..n], gone[0..n]);
     text_len = start;
     refold();
@@ -1646,13 +1627,14 @@ fn hitPointLine() []const u8 {
     return line.done();
 }
 
+/// Every event the file has, shown or not, and every session heading.
 fn journalCountLine() []const u8 {
     var line = str.Builder{ .buf = &subtitle_buffer };
-    line.number(journal_rows_len);
-    line.text(if (journal_rows_len == 1) " entry" else " entries");
+    line.number(journal_total);
+    line.text(if (journal_total == 1) " entry" else " entries");
     line.text(" \u{b7} ");
-    line.number(sessionCount());
-    line.text(if (sessionCount() == 1) " session" else " sessions");
+    line.number(sheet.sessions);
+    line.text(if (sheet.sessions == 1) " session" else " sessions");
     return line.done();
 }
 
@@ -2389,9 +2371,14 @@ const JOURNAL_COLUMNS = [_]eui.table.Column{
 /// The events, gathered once per pass from the file: which session and day
 /// each belongs to, and what it says in words. Held here because the table
 /// takes slices and they have to outlive the pass that built them.
+///
+/// The pane is a page of the newest events, which is where a diary opens:
+/// a few sessions of play, at a row each. The count line says how many the
+/// file has in all.
 const MAX_JOURNAL = 256;
 var journal_rows: [MAX_JOURNAL]eui.table.Row = undefined;
 var journal_rows_len: usize = 0;
+var journal_total: usize = 0;
 var journal_words: [MAX_JOURNAL][72]u8 = undefined;
 var journal_table: eui.table.State = .{ .striped = true };
 
@@ -2418,45 +2405,26 @@ fn drawJournal(area: Rect) void {
     if (ctx.buttonAs(.{ .x = area.right() - note_w, .y = strip_y, .w = note_w, .h = strip_h }, "Note", .strong)) addNote();
 }
 
-/// Walk the file once, forwards, so every event knows its session and day;
-/// then lay the rows out newest first, naming the session and the day only
-/// where they change, as a page of a diary does.
+/// Walk the file once, forwards, so every event knows its session and day,
+/// keeping the newest page of them in a ring; then lay the rows out newest
+/// first, naming the session and the day only where they change, as a page
+/// of a diary does.
 fn gatherJournal() void {
-    var in_order: [MAX_JOURNAL]struct { session: []const u8, day: []const u8, text: []const u8 } = undefined;
-    var n: usize = 0;
-    var session: []const u8 = "";
-    var day: []const u8 = "";
+    var ring: [MAX_JOURNAL]hero.Event = undefined;
+    var total: usize = 0;
+    var events = hero.events(storage[0..text_len]);
+    while (events.next()) |event| : (total += 1) ring[total % MAX_JOURNAL] = event;
 
-    var lines = std.mem.splitScalar(u8, storage[0..text_len], '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#' or std.mem.eql(u8, line, hero.MAGIC)) continue;
-        const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
-        const word = line[0..space];
-        const rest = std.mem.trim(u8, line[space + 1 ..], " \t");
-        const keyword = hero.Keyword.parse(word);
-        if (keyword == .session) {
-            session = hero.part(rest, 0);
-            day = hero.part(rest, 1);
-            continue;
-        }
-        if (keyword) |k| {
-            if (k.isFact()) continue;
-        }
-        if (n == MAX_JOURNAL) break;
-        in_order[n] = .{ .session = session, .day = day, .text = describe(keyword, word, rest, &journal_words[n]) };
-        n += 1;
-    }
-
-    journal_rows_len = n;
+    journal_total = total;
+    journal_rows_len = @min(total, MAX_JOURNAL);
     var shown_session: []const u8 = "";
     var shown_day: []const u8 = "";
-    for (0..n) |i| {
-        const event = in_order[n - 1 - i];
+    for (0..journal_rows_len) |i| {
+        const event = ring[(total - 1 - i) % MAX_JOURNAL];
         var row = eui.table.Row{};
         row.cells[0] = if (std.mem.eql(u8, event.session, shown_session)) "" else event.session;
         row.cells[1] = if (std.mem.eql(u8, event.day, shown_day) and std.mem.eql(u8, event.session, shown_session)) "" else event.day;
-        row.cells[2] = event.text;
+        row.cells[2] = describe(event.line, &journal_words[i]);
         shown_session = event.session;
         shown_day = event.day;
         journal_rows[i] = row;
@@ -2466,10 +2434,11 @@ fn gatherJournal() void {
 /// An event as a person reads it, rather than as the file spells it. A word
 /// the reader does not know is shown as it stands, which is what keeping it
 /// as a note means.
-fn describe(keyword: ?hero.Keyword, word: []const u8, rest: []const u8, buf: []u8) []const u8 {
+fn describe(line: hero.Line, buf: []u8) []const u8 {
+    const rest = line.rest;
     const first = hero.part(rest, 0);
     const second = hero.part(rest, 1);
-    const k = keyword orelse return std.fmt.bufPrint(buf, "{s} {s}", .{ word, rest }) catch rest;
+    const k = line.keyword() orelse return asWritten(line, buf);
     return switch (k) {
         .note => rest,
         .damage => reason(buf, "Took {s} damage", .{first}, second),
@@ -2491,8 +2460,15 @@ fn describe(keyword: ?hero.Keyword, word: []const u8, rest: []const u8, buf: []u
         .dice => std.fmt.bufPrint(buf, "Rolled {s}: {s} ({s}: {s})", .{ first, hero.part(rest, 3), second, hero.part(rest, 2) }) catch rest,
         .drop => std.fmt.bufPrint(buf, "Dropped {s}", .{second}) catch rest,
         .concentrate => if (std.mem.eql(u8, rest, "-")) "Stopped concentrating" else std.fmt.bufPrint(buf, "Concentrating on {s}", .{rest}) catch rest,
-        else => std.fmt.bufPrint(buf, "{s} {s}", .{ word, rest }) catch rest,
+        else => asWritten(line, buf),
     };
+}
+
+/// The line as the file spells it, for a word the reader has no words of
+/// its own for.
+fn asWritten(line: hero.Line, buf: []u8) []const u8 {
+    if (line.rest.len == 0) return line.word;
+    return std.fmt.bufPrint(buf, "{s} {s}", .{ line.word, line.rest }) catch line.rest;
 }
 
 /// A line, and the reason for it in brackets when one was written.
