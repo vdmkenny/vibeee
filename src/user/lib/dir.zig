@@ -22,6 +22,12 @@ pub const Entry = struct {
 /// stopped early without saying so would be worse than one that is bounded.
 pub const MAX = 96;
 
+/// How much name storage a listing wants: room for every entry it holds at
+/// a length that covers what people actually call files. A caller with less
+/// gets a listing that says it is short rather than one that pretends to be
+/// whole, so this is a budget rather than a limit.
+pub const NAMES = MAX * 48;
+
 pub const Listing = struct {
     entries: Bounded(Entry, MAX) = .{},
     /// The directory held more than `MAX`, so what is here is not all of it.

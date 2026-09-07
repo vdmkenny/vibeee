@@ -121,15 +121,20 @@ fn startAssigned() void {
 // Manifests
 // ---------------------------------------------------------------------------
 
+/// The driver manifests' names, here rather than on the stack: room for
+/// every entry a listing holds is more than a user stack should carry in
+/// one frame.
+var manifest_names: [dir.NAMES]u8 = undefined;
+
 fn readManifests() void {
-    var names: [dir.MAX * 16]u8 = undefined;
     var listing: dir.Listing = .{};
 
-    dir.read(DRIVER_DIR, &names, &listing) catch {
+    dir.read(DRIVER_DIR, &manifest_names, &listing) catch {
         // No directory at all is the ordinary case on a machine with no
         // userspace drivers yet, and is not worth a line.
         return;
     };
+    if (listing.truncated) log.warn("devmgd", "the driver directory did not fit; some manifests are not read");
 
     for (listing.items()) |entry| {
         if (entry.is_dir) continue;

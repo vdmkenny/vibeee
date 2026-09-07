@@ -43,7 +43,11 @@ const ctx = &proto.app.ctx;
 const Pane = struct {
     path_buf: [128]u8 = @splat(0),
     path_len: usize = 0,
-    names: [dir.MAX * 12]u8 = undefined,
+    /// Name storage the listing's entries point into. Room for every entry
+    /// the listing holds at the longest name a volume can carry, so a
+    /// directory of long names is not cut short for want of somewhere to
+    /// put them.
+    names: [dir.NAMES]u8 = undefined,
     listing: dir.Listing = .{},
     /// The table's own memory: which row is selected and how far down it is.
     /// The control keeps it, this only owns it.
@@ -484,12 +488,57 @@ fn refreshAll() void {
 
 fn drawPlaces(area: Rect) void {
     const t = theme.current();
-    if (ctx.damaged) {
-        ctx.surface.fill(area, t.surface_pressed);
-        ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
-        ctx.addDamage(area);
+    // The strip is a picture of what is mounted and which of them is being
+    // looked at: nothing else about it changes, so it is drawn when one of
+    // those does. Drawn every pass, and a pass arrives for every movement
+    // of the pointer anywhere in the window, it refilled and re-sent every
+    // cell for a picture nobody had changed.
+    const shape = placesFingerprint();
+    const entry = ctx.slotFor(area) orelse {
+        paintPlaces(area);
+        return;
+    };
+    if (!ctx.needsPaint(entry, .idle) and entry.detail == shape) {
+        takePlacePresses(area);
+        return;
     }
+    entry.visual = .idle;
+    entry.detail = shape;
 
+    ctx.surface.fill(area, t.surface_pressed);
+    ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
+    ctx.addDamage(area);
+    paintPlaces(area);
+}
+
+/// What the strip would draw: which volumes there are, how full each is,
+/// and which one is being looked at.
+fn placesFingerprint() i32 {
+    var h = eui.widget.Fingerprint{};
+    h.number(place_count);
+    for (volumes[0..place_count], 0..) |volume, index| {
+        h.text(volume.name);
+        h.text(volume.free);
+        h.flag(volume.known);
+        h.flag(std.mem.eql(u8, here().path(), placePath(index)));
+    }
+    return h.done();
+}
+
+/// A press on a place, for the passes that draw nothing.
+fn takePlacePresses(area: Rect) void {
+    var x = area.x;
+    for (volumes[0..place_count], 0..) |volume, index| {
+        const width = volumeWidth(volume);
+        if (x + width > area.right()) break;
+        const cell = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
+        if (pressed(cell)) goTo(placePath(index));
+        x += width;
+    }
+}
+
+fn paintPlaces(area: Rect) void {
+    const t = theme.current();
     var x = area.x;
     for (volumes[0..place_count], 0..) |volume, index| {
         const width = volumeWidth(volume);
@@ -584,8 +633,11 @@ fn paintVolume(cell: Rect, volume: Volume, current: bool) void {
 
     const baseline = cell.y + @divTrunc(cell.h - eui.Surface.textHeight(), 2);
     var x = cell.x + t.menu_padding;
+    // Measured once: `volumeWidth` asked the same question a moment ago,
+    // and measuring decodes the name and looks up an advance per letter.
+    const named = eui.Surface.textWidth(volume.name);
     ctx.surface.text(x, baseline, volume.name, ink);
-    x += eui.Surface.textWidth(volume.name) + t.gap;
+    x += named + t.gap;
 
     if (volume.known) {
         const gauge = Rect{
@@ -648,9 +700,12 @@ fn drawPane(index: usize, area: Rect) void {
     // where it is once, and the table's own header row is where that goes;
     // the count belongs beside it rather than in a status bar shared with
     // the other pane, which could only ever say one of them.
-    var counted: [16]u8 = @splat(0);
+    var counted: [24]u8 = @splat(0);
     var count = str.Builder{ .buf = &counted };
     count.quantity(items.len, "items");
+    // A listing that did not fit says so, rather than reporting what it
+    // holds as though that were the whole directory.
+    if (pane.listing.truncated) count.text(" of more");
 
     const columns = [_]eui.table.Column{
         .{ .title = pane.path(), .width = theme.enlarged(80), .flex = true },

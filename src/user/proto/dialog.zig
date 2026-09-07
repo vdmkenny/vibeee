@@ -47,7 +47,7 @@ pub const FileDialog = struct {
     path_len: usize = 0,
 
     listing: dir.Listing = .{},
-    names: [dir.MAX * 16]u8 = undefined,
+    names: [dir.NAMES]u8 = undefined,
     entries: [dir.MAX]chooser.Entry = undefined,
     entry_count: usize = 0,
 
