@@ -119,7 +119,7 @@ fn wmMain() noreturn {
     held = taken;
     info = taken.info;
 
-    screen = eui.Surface.init(taken.pixels, info.width, info.height, info.stride_px);
+    screen = eui.Surface.init(@ptrCast(taken.pixels), info.width, info.height, info.stride_px);
 
     openClipboard();
 
@@ -168,8 +168,8 @@ fn wmMain() noreturn {
 /// What the desktop is painted with: the wallpaper somebody chose, or the
 /// theme's own when nobody has. One question, asked wherever the ground
 /// behind the windows is drawn.
-fn wallpaper() u32 {
-    return config.current().wallpaper.orElse(theme.current().desktop);
+fn wallpaper() eui.Color {
+    return config.current().wallpaper orelse theme.current().desktop;
 }
 
 /// Repaint everything.

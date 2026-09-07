@@ -132,7 +132,7 @@ var headshot_of_len: usize = 0;
 var picture_file: [512 * 1024]u8 = undefined;
 /// The portrait on its way into the journal: the square it is shrunk to,
 /// the writer's own bytes of it, the JPEG, and the line as it is written.
-var portrait_pixels: [PORTRAIT_SIDE * PORTRAIT_SIDE]u32 = undefined;
+var portrait_pixels: [PORTRAIT_SIDE * PORTRAIT_SIDE]eui.Color = undefined;
 var portrait_scratch: [PORTRAIT_SIDE * PORTRAIT_SIDE * 3]u8 = undefined;
 var portrait_jpeg: [PORTRAIT_MAX]u8 = undefined;
 var portrait_line: [PORTRAIT_HEAD.len + std.base64.standard.Encoder.calcSize(PORTRAIT_MAX)]u8 = undefined;
@@ -2309,7 +2309,7 @@ fn drawGear(area: Rect) void {
     if (ctx.damaged) surface.fill(area, t.surface);
 
     // The purse, and the two ways it changes.
-    surface.picture(area.x, area.y + 4, &coin, 0xB8860B);
+    surface.picture(area.x, area.y + 4, &coin, .hex(0xB8860B));
     var purse: [64]u8 = @splat(0);
     var line = str.Builder{ .buf = &purse };
     for (std.enums.values(hero.Coin)) |kind| {

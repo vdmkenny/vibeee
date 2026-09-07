@@ -213,14 +213,14 @@ fn roundingFor(area: Rect, radius: i32, corners: Corners) i32 {
 }
 
 pub const Surface = struct {
-    pixels: [*]u32,
+    pixels: [*]Color,
     width: i32,
     height: i32,
     /// Pixels per scanline, which is not the width.
     stride: i32,
     clip: Rect,
 
-    pub fn init(pixels: [*]u32, width: i32, height: i32, stride: i32) Surface {
+    pub fn init(pixels: [*]Color, width: i32, height: i32, stride: i32) Surface {
         return .{
             .pixels = pixels,
             .width = width,
@@ -246,7 +246,7 @@ pub const Surface = struct {
     /// has to put back what it drew over, which without a hardware cursor
     /// plane is how a pointer moves without the screen being redrawn.
     pub fn get(self: Surface, x: i32, y: i32) Color {
-        if (x < 0 or y < 0 or x >= self.width or y >= self.height) return 0;
+        if (x < 0 or y < 0 or x >= self.width or y >= self.height) return .{};
         return self.pixels[@intCast(y * self.stride + x)];
     }
 
@@ -689,16 +689,16 @@ const testing = @import("std").testing;
 
 const SIDE = 8;
 
-fn flat(pixels: *[SIDE * SIDE]u32, value: u32) Surface {
+fn flat(pixels: *[SIDE * SIDE]Color, value: Color) Surface {
     @memset(pixels, value);
     return Surface.init(pixels, SIDE, SIDE, SIDE);
 }
 
 test "a copy lands where it was placed and nowhere else" {
-    var dst_pixels: [SIDE * SIDE]u32 = undefined;
-    var src_pixels: [SIDE * SIDE]u32 = undefined;
-    const dst = flat(&dst_pixels, 0x111111);
-    var src = flat(&src_pixels, 0x999999);
+    var dst_pixels: [SIDE * SIDE]Color = undefined;
+    var src_pixels: [SIDE * SIDE]Color = undefined;
+    const dst = flat(&dst_pixels, Color.hex(0x111111));
+    var src = flat(&src_pixels, Color.hex(0x999999));
     src.width = 3;
     src.height = 2;
 
@@ -707,17 +707,17 @@ test "a copy lands where it was placed and nowhere else" {
     for (0..SIDE) |y| {
         for (0..SIDE) |x| {
             const inside = x >= 2 and x < 5 and y >= 3 and y < 5;
-            const want: u32 = if (inside) 0x999999 else 0x111111;
+            const want: Color = if (inside) .hex(0x999999) else .hex(0x111111);
             try testing.expectEqual(want, dst_pixels[y * SIDE + x]);
         }
     }
 }
 
 test "the limit and the clip both confine a copy" {
-    var dst_pixels: [SIDE * SIDE]u32 = undefined;
-    var src_pixels: [SIDE * SIDE]u32 = undefined;
-    var dst = flat(&dst_pixels, 0x111111);
-    const src = flat(&src_pixels, 0x999999);
+    var dst_pixels: [SIDE * SIDE]Color = undefined;
+    var src_pixels: [SIDE * SIDE]Color = undefined;
+    var dst = flat(&dst_pixels, Color.hex(0x111111));
+    const src = flat(&src_pixels, Color.hex(0x999999));
 
     dst.clip = .{ .x = 1, .y = 1, .w = 5, .h = 5 };
     dst.copyFrom(src, 0, 0, .{ .x = 3, .y = 0, .w = SIDE, .h = 4 });
@@ -726,27 +726,27 @@ test "the limit and the clip both confine a copy" {
         for (0..SIDE) |x| {
             // Only where the placement, the limit and the clip all agree.
             const inside = x >= 3 and x < 6 and y >= 1 and y < 4;
-            const want: u32 = if (inside) 0x999999 else 0x111111;
+            const want: Color = if (inside) .hex(0x999999) else .hex(0x111111);
             try testing.expectEqual(want, dst_pixels[y * SIDE + x]);
         }
     }
 }
 
 test "a copy hanging off every edge keeps to the surface" {
-    var dst_pixels: [SIDE * SIDE]u32 = undefined;
-    var src_pixels: [SIDE * SIDE]u32 = undefined;
-    const dst = flat(&dst_pixels, 0x111111);
-    const src = flat(&src_pixels, 0x999999);
+    var dst_pixels: [SIDE * SIDE]Color = undefined;
+    var src_pixels: [SIDE * SIDE]Color = undefined;
+    const dst = flat(&dst_pixels, Color.hex(0x111111));
+    const src = flat(&src_pixels, Color.hex(0x999999));
 
     // Off the top-left and off the bottom-right: both must clamp, and a
     // negative placement must skip the right amount of the source.
     dst.copyFrom(src, -3, -3, .{ .x = 0, .y = 0, .w = SIDE, .h = SIDE });
     dst.copyFrom(src, 6, 6, .{ .x = 0, .y = 0, .w = SIDE, .h = SIDE });
 
-    try testing.expectEqual(@as(u32, 0x999999), dst_pixels[0]);
-    try testing.expectEqual(@as(u32, 0x999999), dst_pixels[4 * SIDE + 4]);
-    try testing.expectEqual(@as(u32, 0x111111), dst_pixels[5 * SIDE + 5]);
-    try testing.expectEqual(@as(u32, 0x999999), dst_pixels[7 * SIDE + 7]);
+    try testing.expectEqual(Color.hex(0x999999), dst_pixels[0]);
+    try testing.expectEqual(Color.hex(0x999999), dst_pixels[4 * SIDE + 4]);
+    try testing.expectEqual(Color.hex(0x111111), dst_pixels[5 * SIDE + 5]);
+    try testing.expectEqual(Color.hex(0x999999), dst_pixels[7 * SIDE + 7]);
 }
 
 test "a surface's span is its rows by its stride in words, and only for a real shape" {
@@ -768,40 +768,40 @@ fn testing_null(got: ?u32) !void {
 }
 
 test "the ground around a picture is filled, and the picture is not touched" {
-    var pixels: [SIDE * SIDE]u32 = undefined;
-    const surface = flat(&pixels, 0x111111);
+    var pixels: [SIDE * SIDE]Color = undefined;
+    const surface = flat(&pixels, Color.hex(0x111111));
 
     const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
     const middle = Rect{ .x = 2, .y = 2, .w = 4, .h = 4 };
-    surface.fillAround(whole, middle, 0x999999);
+    surface.fillAround(whole, middle, Color.hex(0x999999));
 
     // Every corner and edge is ground.
-    try testing.expectEqual(@as(u32, 0x999999), pixels[0]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[1 * SIDE + 3]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[3 * SIDE + 1]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[3 * SIDE + 6]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[6 * SIDE + 3]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[0]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[1 * SIDE + 3]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[3 * SIDE + 1]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[3 * SIDE + 6]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[6 * SIDE + 3]);
 
     // What the picture covers is left as it was found.
-    try testing.expectEqual(@as(u32, 0x111111), pixels[2 * SIDE + 2]);
-    try testing.expectEqual(@as(u32, 0x111111), pixels[5 * SIDE + 5]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[2 * SIDE + 2]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[5 * SIDE + 5]);
 }
 
 test "a picture covering everything leaves no ground, and one covering nothing is all ground" {
-    var pixels: [SIDE * SIDE]u32 = undefined;
-    const surface = flat(&pixels, 0x111111);
+    var pixels: [SIDE * SIDE]Color = undefined;
+    const surface = flat(&pixels, Color.hex(0x111111));
     const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
 
-    surface.fillAround(whole, whole, 0x999999);
-    try testing.expectEqual(@as(u32, 0x111111), pixels[0]);
-    try testing.expectEqual(@as(u32, 0x111111), pixels[SIDE * SIDE - 1]);
+    surface.fillAround(whole, whole, Color.hex(0x999999));
+    try testing.expectEqual(Color.hex(0x111111), pixels[0]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[SIDE * SIDE - 1]);
 
     // Nothing shown means the whole space is ground, rather than nothing
     // drawn at all: a picture that failed to load must not leave the last
     // one behind it.
-    surface.fillAround(whole, .{ .x = 0, .y = 0, .w = 0, .h = 0 }, 0x999999);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[0]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE * SIDE - 1]);
+    surface.fillAround(whole, .{ .x = 0, .y = 0, .w = 0, .h = 0 }, Color.hex(0x999999));
+    try testing.expectEqual(Color.hex(0x999999), pixels[0]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[SIDE * SIDE - 1]);
 }
 
 test "a corner's rows step in as the arc says" {
@@ -824,48 +824,48 @@ test "a corner's rows step in as the arc says" {
 }
 
 test "a rounded fill takes the corners it is given and leaves the others" {
-    var pixels: [SIDE * SIDE]u32 = undefined;
-    const surface = flat(&pixels, 0x111111);
+    var pixels: [SIDE * SIDE]Color = undefined;
+    const surface = flat(&pixels, Color.hex(0x111111));
     const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
 
-    surface.fillRounded(whole, 2, Corners.leading, 0x999999);
+    surface.fillRounded(whole, 2, Corners.leading, Color.hex(0x999999));
 
     // The two leading corners are cut away and the trailing two are not.
-    try testing.expectEqual(@as(u32, 0x111111), pixels[0]);
-    try testing.expectEqual(@as(u32, 0x111111), pixels[(SIDE - 1) * SIDE]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE - 1]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE * SIDE - 1]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[0]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[(SIDE - 1) * SIDE]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[SIDE - 1]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[SIDE * SIDE - 1]);
 
     // And the middle is filled either way.
-    try testing.expectEqual(@as(u32, 0x999999), pixels[(SIDE / 2) * SIDE]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[(SIDE / 2) * SIDE]);
 }
 
 test "a rounded frame closes, corner to corner" {
-    var pixels: [SIDE * SIDE]u32 = undefined;
-    const surface = flat(&pixels, 0x111111);
+    var pixels: [SIDE * SIDE]Color = undefined;
+    const surface = flat(&pixels, Color.hex(0x111111));
     const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
 
-    surface.frameRounded(whole, 2, Corners.all, 0x999999);
+    surface.frameRounded(whole, 2, Corners.all, Color.hex(0x999999));
 
     // Every row and column of the outline has ink where the shape reaches
     // it: the corner pixel is gone, the one beside it is not.
-    try testing.expectEqual(@as(u32, 0x111111), pixels[0]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[1]);
-    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[0]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[1]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[SIDE]);
 
     // The straight runs are there, and the inside is untouched.
-    try testing.expectEqual(@as(u32, 0x999999), pixels[SIDE / 2]);
-    try testing.expectEqual(@as(u32, 0x111111), pixels[SIDE + 1]);
+    try testing.expectEqual(Color.hex(0x999999), pixels[SIDE / 2]);
+    try testing.expectEqual(Color.hex(0x111111), pixels[SIDE + 1]);
 }
 
 test "no corners means the plain rectangle, whatever the radius" {
-    var rounded: [SIDE * SIDE]u32 = undefined;
-    var plain: [SIDE * SIDE]u32 = undefined;
-    const a = flat(&rounded, 0x111111);
-    const b = flat(&plain, 0x111111);
+    var rounded: [SIDE * SIDE]Color = undefined;
+    var plain: [SIDE * SIDE]Color = undefined;
+    const a = flat(&rounded, Color.hex(0x111111));
+    const b = flat(&plain, Color.hex(0x111111));
     const whole = Rect{ .x = 0, .y = 0, .w = SIDE, .h = SIDE };
 
-    a.fillRounded(whole, 3, Corners.square, 0x999999);
-    b.fill(whole, 0x999999);
-    try testing.expectEqualSlices(u32, &plain, &rounded);
+    a.fillRounded(whole, 3, Corners.square, Color.hex(0x999999));
+    b.fill(whole, Color.hex(0x999999));
+    try testing.expectEqualSlices(Color, &plain, &rounded);
 }

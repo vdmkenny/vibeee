@@ -1,61 +1,67 @@
-//! A colour, as a setting spells it.
+//! A colour.
 //!
-//! Three channels and whether anybody has chosen them. Unset is a state
-//! rather than a colour, because "the theme's own" and "black" are different
-//! answers and a file that cannot tell them apart cannot say the first one.
+//! The shape the panel actually takes: eight bits a channel in one word, with
+//! the top byte unused, which is what a surface's pixels are and what the
+//! framebuffer holds. So a colour and a pixel are one value, and a channel is
+//! a field rather than something shifted out at each use.
 //!
 //! Written as `#rrggbb`, which is the one spelling everybody already knows.
+//!
+//! Whether anybody chose a colour is not a colour: that is `?Colour`, so
+//! "the theme's own" and "black" cannot be confused for each other.
 //!
 //! Pure, so it is host-tested rather than judged by looking at a wall.
 
 const std = @import("std");
 const str = @import("str.zig");
 
-pub const Colour = struct {
-    r: u8 = 0,
-    g: u8 = 0,
+pub const Colour = packed struct(u32) {
     b: u8 = 0,
-    /// Whether these three mean anything. A caller with an unset colour uses
-    /// whatever it would have used before the setting existed.
-    set: bool = false,
+    g: u8 = 0,
+    r: u8 = 0,
+    /// The byte the panel ignores. Present so the whole thing is one word:
+    /// XRGB8888 is the format the display reports and the surfaces are in.
+    _unused: u8 = 0,
 
     pub const accepts = "#rrggbb; unset takes the theme's own";
 
     pub fn of(r: u8, g: u8, b: u8) Colour {
-        return .{ .r = r, .g = g, .b = b, .set = true };
+        return .{ .r = r, .g = g, .b = b };
     }
 
-    /// The colour as the surface takes it: eight bits a channel, red highest.
-    pub fn packed24(self: Colour) u32 {
-        return (@as(u32, self.r) << 16) | (@as(u32, self.g) << 8) | self.b;
+    /// A colour written the way a person writes one down, for the tables that
+    /// are nothing but colours: `rgb.hex(0x2F6FE0)`.
+    pub fn hex(value: u24) Colour {
+        return @bitCast(@as(u32, value));
     }
 
-    pub fn ofPacked(value: u32) Colour {
-        return of(
-            @truncate(value >> 16),
-            @truncate(value >> 8),
-            @truncate(value),
-        );
-    }
-
-    /// This colour, or the one to fall back to when nobody has chosen.
-    pub fn orElse(self: Colour, fallback: u32) u32 {
-        return if (self.set) self.packed24() else fallback;
+    /// The word the hardware takes, for the few places that need one: a
+    /// message field, a mask, a comparison.
+    pub fn word(self: Colour) u32 {
+        return @bitCast(self);
     }
 
     pub fn eql(self: Colour, other: Colour) bool {
-        if (self.set != other.set) return false;
-        if (!self.set) return true;
-        return self.r == other.r and self.g == other.g and self.b == other.b;
+        return self.word() == other.word();
     }
 
-    /// Nothing written is nobody having chosen. Anything that is not six hex
-    /// digits is refused rather than repaired: a wall quietly painted a
-    /// colour nobody asked for is worse than a setting that did not take.
+    /// How light this reads, nought to two hundred and fifty-five.
+    ///
+    /// The eye is far more sensitive to green than to blue, so a plain
+    /// average calls a saturated blue as light as a mid grey. These are the
+    /// usual weights, in eighths, which is close enough at this depth and
+    /// needs no division.
+    pub fn lightness(self: Colour) u8 {
+        const weighted = @as(u32, self.r) * 2 + @as(u32, self.g) * 5 + self.b;
+        return @intCast(weighted / 8);
+    }
+
+    /// Anything that is not six hex digits is refused rather than repaired: a
+    /// wall quietly painted a colour nobody asked for is worse than a setting
+    /// that did not take.
     pub fn parse(text: []const u8) ?Colour {
         var trimmed = str.trim(text);
-        if (trimmed.len == 0) return Colour{};
-        if (trimmed[0] == '#') trimmed = trimmed[1..];
+        if (trimmed.len != 0 and trimmed[0] == '#') trimmed = trimmed[1..];
         if (trimmed.len != 6) return null;
 
         var out: [3]u8 = undefined;
@@ -68,12 +74,7 @@ pub const Colour = struct {
     }
 
     pub fn spell(self: Colour, into: *str.Builder) void {
-        if (!self.set) return;
-        into.byte('#');
-        for ([_]u8{ self.r, self.g, self.b }) |channel| {
-            into.byte(std.fmt.digitToChar(channel >> 4, .lower));
-            into.byte(std.fmt.digitToChar(channel & 0xF, .lower));
-        }
+        into.print("#{x:0>2}{x:0>2}{x:0>2}", .{ self.r, self.g, self.b });
     }
 };
 
@@ -83,29 +84,22 @@ pub const Colour = struct {
 
 const testing = std.testing;
 
-test "a colour is three channels and whether anybody chose them" {
+test "a colour is three channels, and the word is what the panel takes" {
     const slate = Colour.parse("#2b3138") orelse return error.TestUnexpectedResult;
-    try testing.expect(slate.set);
     try testing.expectEqual(@as(u8, 0x2b), slate.r);
     try testing.expectEqual(@as(u8, 0x31), slate.g);
     try testing.expectEqual(@as(u8, 0x38), slate.b);
-    try testing.expectEqual(@as(u32, 0x2B3138), slate.packed24());
-}
+    try testing.expectEqual(@as(u32, 0x2B3138), slate.word());
 
-test "unset is a state, not a colour" {
-    const unset = Colour.parse("") orelse return error.TestUnexpectedResult;
-    try testing.expect(!unset.set);
-    // Which is what makes it different from black.
-    try testing.expect(!unset.eql(Colour.of(0, 0, 0)));
-    try testing.expectEqual(@as(u32, 0x5C6670), unset.orElse(0x5C6670));
-    try testing.expectEqual(@as(u32, 0x2B3138), Colour.ofPacked(0x2B3138).orElse(0x5C6670));
+    // Which is the same value written the way a table writes it.
+    try testing.expect(slate.eql(Colour.hex(0x2B3138)));
 }
 
 test "the hash is optional and the digits are not" {
     try testing.expect(Colour.parse("2b3138").?.eql(Colour.parse("#2b3138").?));
     try testing.expect(Colour.parse("#2B3138").?.eql(Colour.parse("#2b3138").?));
 
-    for ([_][]const u8{ "#2b313", "#2b31388", "#2b313g", "blue", "#" }) |bad| {
+    for ([_][]const u8{ "#2b313", "#2b31388", "#2b313g", "blue", "#", "" }) |bad| {
         try testing.expectEqual(@as(?Colour, null), Colour.parse(bad));
     }
 }
@@ -118,15 +112,16 @@ test "a colour reads back as what it was written as" {
         colour.spell(&built);
         try testing.expectEqualStrings(text, built.done());
     }
-
-    // Unset writes nothing, which is how the file says nobody chose.
-    var built = str.Builder{ .buf = &buf };
-    (Colour{}).spell(&built);
-    try testing.expectEqualStrings("", built.done());
 }
 
-test "packing and unpacking are the same colour" {
-    for ([_]u32{ 0x000000, 0x2B3138, 0xFFFFFF, 0x0A0B0C }) |value| {
-        try testing.expectEqual(value, Colour.ofPacked(value).packed24());
-    }
+test "lightness weighs green heaviest, as the eye does" {
+    const green = Colour.hex(0x00FF00);
+    const blue = Colour.hex(0x0000FF);
+    const red = Colour.hex(0xFF0000);
+
+    try testing.expect(green.lightness() > red.lightness());
+    try testing.expect(red.lightness() > blue.lightness());
+
+    try testing.expectEqual(@as(u8, 0), Colour.hex(0x000000).lightness());
+    try testing.expectEqual(@as(u8, 255), Colour.hex(0xFFFFFF).lightness());
 }

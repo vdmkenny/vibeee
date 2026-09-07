@@ -2155,12 +2155,12 @@ const testing = std.testing;
 /// A context with nowhere to draw, for the parts that decide rather than
 /// paint. Past the first pass, where everything paints because nothing on the
 /// surface is known yet.
-fn forTesting(pixels: *[16]u32) Context {
+fn forTesting(pixels: *[16]draw.Color) Context {
     return .{ .surface = Surface.init(pixels, 4, 4, 4), .damaged = false };
 }
 
 test "a control that moved paints where it moved to" {
-    var pixels: [16]u32 = @splat(0);
+    var pixels: [16]draw.Color = @splat(.{});
     var ctx = forTesting(&pixels);
 
     // Where it was: a first pass paints it, and a second with nothing changed
@@ -2180,7 +2180,7 @@ test "a control that moved paints where it moved to" {
 }
 
 test "a slot the pass did not touch is given up, and the next claim of it paints" {
-    var pixels: [16]u32 = @splat(0);
+    var pixels: [16]draw.Color = @splat(.{});
     var ctx = forTesting(&pixels);
 
     const area = Rect{ .x = 4, .y = 40, .w = 60, .h = 24 };

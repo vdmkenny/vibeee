@@ -82,7 +82,7 @@ pub const Wm = struct {
     /// The desktop behind everything. Unset takes the theme's own, which is
     /// what makes changing the theme change the wall as well until somebody
     /// says otherwise.
-    wallpaper: rgb.Colour = .{},
+    wallpaper: ?rgb.Colour = null,
     /// How large the interface is drawn, as a percentage. The panel is dense
     /// enough that what is comfortable is a matter of eyes rather than of
     /// arithmetic, so it is a setting and the only way to choose it is to

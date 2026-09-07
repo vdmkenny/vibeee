@@ -66,6 +66,16 @@ fn parse(comptime T: type, value: []const u8) ?T {
         return out;
     }
 
+    // A setting nobody has chosen. Empty is the file saying so, which is a
+    // value and not a refusal: "the theme's own" and "black" are different
+    // answers, and a field that could not hold the first one had to invent a
+    // colour that means it.
+    if (@typeInfo(T) == .optional) {
+        const Inner = @typeInfo(T).optional.child;
+        if (str.trim(value).len == 0) return @as(T, null);
+        return parse(Inner, value) orelse null;
+    }
+
     // A type that spells and parses itself is its own grammar: an address,
     // a prefix, a list. The pair of declarations is the contract, so a type
     // with only half of it does not silently round-trip wrong.
@@ -157,6 +167,11 @@ pub fn format(into: *str.Builder, value: anytype) void {
     const T = @TypeOf(value);
     if (@typeInfo(T) == .array and @typeInfo(T).array.child == u8) {
         return into.text(std.mem.span(@ptrCast(&value)));
+    }
+    // Unset writes nothing, which is how the file says nobody chose.
+    if (@typeInfo(T) == .optional) {
+        if (value) |chosen| format(into, chosen);
+        return;
     }
     if (comptime selfSpelling(T)) return value.spell(into);
     switch (@typeInfo(T)) {

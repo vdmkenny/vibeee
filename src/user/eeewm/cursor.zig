@@ -25,7 +25,7 @@ const bits = [HEIGHT]u8{
     0b11011000, 0b10001100, 0b00001100, 0b00000110,
 };
 
-var backing: [SAVE_W * SAVE_H]u32 = undefined;
+var backing: [SAVE_W * SAVE_H]eui.Color = undefined;
 var saved = false;
 var at_x: i32 = 0;
 var at_y: i32 = 0;
@@ -57,8 +57,8 @@ pub fn invalidate() void {
 
 /// What the pointer is drawn in, and the outline that keeps it visible on a
 /// background of its own colour.
-var ink: eui.Color = 0xFFFFFF;
-var edge: eui.Color = 0x000000;
+var ink: eui.Color = eui.Color.hex(0xFFFFFF);
+var edge: eui.Color = eui.Color.hex(0x000000);
 
 pub fn setColour(fill: eui.Color, outline: eui.Color) void {
     ink = fill;

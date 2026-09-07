@@ -16,13 +16,14 @@
 
 const std = @import("std");
 const limits = @import("lib").limits;
+const rgb = @import("lib").rgb;
 
 /// A decoded picture: pixels the surface can copy from, and its shape.
 ///
-/// The pixels are the same words a surface holds, so drawing one is a copy
+/// The pixels are the same colours a surface holds, so drawing one is a copy
 /// rather than a conversion per pixel.
 pub const Picture = struct {
-    pixels: []u32,
+    pixels: []rgb.Colour,
     width: u16,
     height: u16,
     /// Whether the pixels are the decoder's to free, or a buffer the caller
@@ -36,10 +37,6 @@ pub const Picture = struct {
         stbi_image_free(@ptrCast(self.pixels.ptr));
     }
 };
-
-/// One pixel as the surface holds it: blue in the low byte, red in the
-/// third, so the word reads as `0xRRGGBB`.
-pub const Word = packed struct(u32) { b: u8, g: u8, r: u8, x: u8 = 0 };
 
 pub const Refusal = error{
     /// Not a format this binary knows, or damaged.
@@ -91,7 +88,7 @@ pub fn decode(bytes: []const u8) Refusal!Picture {
     }
 
     const count = @as(usize, shape.width) * @as(usize, shape.height);
-    const pixels = @as([*]u32, @ptrCast(@alignCast(decoded)))[0..count];
+    const pixels = @as([*]rgb.Colour, @ptrCast(@alignCast(decoded)))[0..count];
     pack(decoded, pixels);
 
     return .{ .pixels = pixels, .width = shape.width, .height = shape.height };
@@ -113,11 +110,13 @@ fn refusalFor() Refusal {
 /// Forwards, because a word is written where its own four bytes were and
 /// nothing later is read before it has been written. A second buffer would
 /// double the largest allocation in the program for the sake of a copy.
-fn pack(bytes: [*]u8, into: []u32) void {
+fn pack(bytes: [*]u8, into: []rgb.Colour) void {
+    // What the decoder writes: red first, which is the order a file holds
+    // and the reverse of what the panel takes.
     const Sample = packed struct(u32) { r: u8, g: u8, b: u8, x: u8 };
     for (into, 0..) |*pixel, i| {
         const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
-        pixel.* = @bitCast(Word{ .b = sample.b, .g = sample.g, .r = sample.r });
+        pixel.* = .{ .r = sample.r, .g = sample.g, .b = sample.b };
     }
 }
 
@@ -126,7 +125,7 @@ fn pack(bytes: [*]u8, into: []u32) void {
 /// the block it stands for, so a photo shrunk eight times is smooth rather
 /// than a scatter of single pixels. The square lives in `into`, which the
 /// caller lends and keeps.
-pub fn squareOf(picture: Picture, side: u16, into: []u32) Picture {
+pub fn squareOf(picture: Picture, side: u16, into: []rgb.Colour) Picture {
     const count = @as(usize, side) * side;
     std.debug.assert(into.len >= count);
     const cut: usize = @min(picture.width, picture.height);
@@ -144,14 +143,14 @@ pub fn squareOf(picture: Picture, side: u16, into: []u32) Picture {
             var n: u32 = 0;
             for (y0..y1) |sy| {
                 for (x0..x1) |sx| {
-                    const word: Word = @bitCast(picture.pixels[sy * picture.width + sx]);
-                    r += word.r;
-                    g += word.g;
-                    b += word.b;
+                    const pixel = picture.pixels[sy * picture.width + sx];
+                    r += pixel.r;
+                    g += pixel.g;
+                    b += pixel.b;
                     n += 1;
                 }
             }
-            into[y * side + x] = @bitCast(Word{ .r = @intCast(r / n), .g = @intCast(g / n), .b = @intCast(b / n) });
+            into[y * side + x] = .{ .r = @intCast(r / n), .g = @intCast(g / n), .b = @intCast(b / n) };
         }
     }
     return .{ .pixels = into[0..count], .width = side, .height = side, .owned = false };
@@ -165,10 +164,9 @@ pub fn encodeJpeg(picture: Picture, quality: u8, scratch: []u8, into: []u8) Refu
     const count = @as(usize, picture.width) * picture.height;
     if (scratch.len < count * 3) return error.TooLarge;
     for (picture.pixels[0..count], 0..) |pixel, i| {
-        const word: Word = @bitCast(pixel);
-        scratch[i * 3] = word.r;
-        scratch[i * 3 + 1] = word.g;
-        scratch[i * 3 + 2] = word.b;
+        scratch[i * 3] = pixel.r;
+        scratch[i * 3 + 1] = pixel.g;
+        scratch[i * 3 + 2] = pixel.b;
     }
     var sink = Sink{ .into = into };
     const clamped: c_int = @min(@max(quality, 1), 100);
@@ -284,18 +282,25 @@ test "a square is cut from the middle and shrunk by the mean" {
     // Four by two: red red blue blue on the top row, green green white white
     // below. The middle square is two by two, and shrunk to one pixel it is
     // the mean of red, blue, green and white.
-    var pixels = [_]u32{ 0xFF0000, 0xFF0000, 0x0000FF, 0x0000FF, 0x00FF00, 0x00FF00, 0xFFFFFF, 0xFFFFFF };
+    var pixels = [_]rgb.Colour{
+        .hex(0xFF0000), .hex(0xFF0000), .hex(0x0000FF), .hex(0x0000FF),
+        .hex(0x00FF00), .hex(0x00FF00), .hex(0xFFFFFF), .hex(0xFFFFFF),
+    };
     const wide = Picture{ .pixels = &pixels, .width = 4, .height = 2, .owned = false };
-    var two: [4]u32 = undefined;
+    var two: [4]rgb.Colour = undefined;
     const square = squareOf(wide, 2, &two);
     try testing.expectEqual(@as(u16, 2), square.width);
-    try testing.expectEqualSlices(u32, &.{ 0xFF0000, 0x0000FF, 0x00FF00, 0xFFFFFF }, square.pixels);
-    var one: [1]u32 = undefined;
-    try testing.expectEqual(@as(u32, 0x7F7F7F), squareOf(wide, 1, &one).pixels[0]);
+    try testing.expectEqualSlices(
+        rgb.Colour,
+        &.{ .hex(0xFF0000), .hex(0x0000FF), .hex(0x00FF00), .hex(0xFFFFFF) },
+        square.pixels,
+    );
+    var one: [1]rgb.Colour = undefined;
+    try testing.expectEqual(rgb.Colour.hex(0x7F7F7F), squareOf(wide, 1, &one).pixels[0]);
 }
 
 test "a picture written as JPEG reads back as the picture" {
-    var pixels: [16 * 16]u32 = @splat(0x2F6FE0);
+    var pixels: [16 * 16]rgb.Colour = @splat(.hex(0x2F6FE0));
     const flat = Picture{ .pixels = &pixels, .width = 16, .height = 16, .owned = false };
     var scratch: [16 * 16 * 3]u8 = undefined;
     var file: [4096]u8 = undefined;
@@ -306,10 +311,10 @@ test "a picture written as JPEG reads back as the picture" {
     const back = try decode(jpeg);
     defer back.deinit();
     try testing.expectEqual(@as(u16, 16), back.width);
-    const word: Word = @bitCast(back.pixels[5 * 16 + 5]);
-    try testing.expect(@abs(@as(i32, word.r) - 0x2F) < 12);
-    try testing.expect(@abs(@as(i32, word.g) - 0x6F) < 12);
-    try testing.expect(@abs(@as(i32, word.b) - 0xE0) < 12);
+    const pixel = back.pixels[5 * 16 + 5];
+    try testing.expect(@abs(@as(i32, pixel.r) - 0x2F) < 12);
+    try testing.expect(@abs(@as(i32, pixel.g) - 0x6F) < 12);
+    try testing.expect(@abs(@as(i32, pixel.b) - 0xE0) < 12);
 
     // A file that does not fit is refused whole.
     var tiny: [8]u8 = undefined;
@@ -326,10 +331,10 @@ test "the pixels come back as the surface holds them" {
 
     // Red, green, blue, white: packed with red highest, which is what a
     // surface draws.
-    try testing.expectEqual(@as(u32, 0xFF0000), picture.pixels[0]);
-    try testing.expectEqual(@as(u32, 0x00FF00), picture.pixels[1]);
-    try testing.expectEqual(@as(u32, 0x0000FF), picture.pixels[2]);
-    try testing.expectEqual(@as(u32, 0xFFFFFF), picture.pixels[3]);
+    try testing.expectEqual(rgb.Colour.hex(0xFF0000), picture.pixels[0]);
+    try testing.expectEqual(rgb.Colour.hex(0x00FF00), picture.pixels[1]);
+    try testing.expectEqual(rgb.Colour.hex(0x0000FF), picture.pixels[2]);
+    try testing.expectEqual(rgb.Colour.hex(0xFFFFFF), picture.pixels[3]);
 }
 
 test "what is not a picture is refused, and says why" {
@@ -350,9 +355,9 @@ test "packing is done in the buffer the bytes arrived in" {
         0x12, 0x34, 0x56, 0xFF,
         0x78, 0x9A, 0xBC, 0xFF,
     };
-    var pixels: [2]u32 = undefined;
+    var pixels: [2]rgb.Colour = undefined;
     pack(&bytes, &pixels);
 
-    try testing.expectEqual(@as(u32, 0x123456), pixels[0]);
-    try testing.expectEqual(@as(u32, 0x789ABC), pixels[1]);
+    try testing.expectEqual(rgb.Colour.hex(0x123456), pixels[0]);
+    try testing.expectEqual(rgb.Colour.hex(0x789ABC), pixels[1]);
 }

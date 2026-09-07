@@ -394,7 +394,7 @@ fn themeTable(gpa: std.mem.Allocator, w: *std.ArrayList(u8)) !void {
         if (field.type == eui.Color) {
             try w.print(gpa, "| `{s}` |", .{field.name});
             inline for (theme.all) |t| {
-                try w.print(gpa, " `#{X:0>6}` |", .{@field(t, field.name)});
+                try w.print(gpa, " `#{X:0>6}` |", .{@field(t, field.name).word()});
             }
             try w.appendSlice(gpa, "\n");
         }

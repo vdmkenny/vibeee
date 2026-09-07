@@ -261,11 +261,11 @@ pub fn palette(index: u8) Color {
 
     if (index < 232) {
         const n = index - 16;
-        return rgb(LEVELS[n / 36], LEVELS[(n / 6) % 6], LEVELS[n % 6]);
+        return Color.of(LEVELS[n / 36], LEVELS[(n / 6) % 6], LEVELS[n % 6]);
     }
 
     const grey: u8 = @intCast(8 + @as(u16, index - 232) * 10);
-    return rgb(grey, grey, grey);
+    return Color.of(grey, grey, grey);
 }
 
 /// The six values the colour cube steps through. Not evenly spaced: the first
@@ -278,27 +278,23 @@ const LEVELS = [6]u8{ 0, 95, 135, 175, 215, 255 };
 /// and the blue are the two the design names, and the rest are pitched to
 /// keep them company rather than to match any one terminal.
 const ANSI = [16]Color{
-    rgb(0x14, 0x14, 0x0F), // black, the ground itself
-    rgb(0xC8, 0x85, 0x85), // red
-    rgb(0x8F, 0xBF, 0x8F), // green
-    rgb(0xC8, 0xB8, 0x7F), // yellow
-    rgb(0x7F, 0xA8, 0xD8), // blue
-    rgb(0xBF, 0x8F, 0xBF), // magenta
-    rgb(0x8F, 0xBF, 0xBF), // cyan
-    rgb(0xD8, 0xD8, 0xD0), // white
-    rgb(0x60, 0x60, 0x58), // bright black
-    rgb(0xE0, 0xA0, 0xA0), // bright red
-    rgb(0xAF, 0xD8, 0xAF), // bright green
-    rgb(0xE0, 0xD0, 0x9F), // bright yellow
-    rgb(0x9F, 0xC4, 0xEC), // bright blue
-    rgb(0xD8, 0xAF, 0xD8), // bright magenta
-    rgb(0xAF, 0xD8, 0xD8), // bright cyan
-    rgb(0xF0, 0xF0, 0xE8), // bright white
+    Color.of(0x14, 0x14, 0x0F), // black, the ground itself
+    Color.of(0xC8, 0x85, 0x85), // red
+    Color.of(0x8F, 0xBF, 0x8F), // green
+    Color.of(0xC8, 0xB8, 0x7F), // yellow
+    Color.of(0x7F, 0xA8, 0xD8), // blue
+    Color.of(0xBF, 0x8F, 0xBF), // magenta
+    Color.of(0x8F, 0xBF, 0xBF), // cyan
+    Color.of(0xD8, 0xD8, 0xD0), // white
+    Color.of(0x60, 0x60, 0x58), // bright black
+    Color.of(0xE0, 0xA0, 0xA0), // bright red
+    Color.of(0xAF, 0xD8, 0xAF), // bright green
+    Color.of(0xE0, 0xD0, 0x9F), // bright yellow
+    Color.of(0x9F, 0xC4, 0xEC), // bright blue
+    Color.of(0xD8, 0xAF, 0xD8), // bright magenta
+    Color.of(0xAF, 0xD8, 0xD8), // bright cyan
+    Color.of(0xF0, 0xF0, 0xE8), // bright white
 };
-
-fn rgb(r: u8, g: u8, b: u8) Color {
-    return (@as(Color, r) << 16) | (@as(Color, g) << 8) | @as(Color, b);
-}
 
 /// Which arms a line-drawing character has, or null for one that is not.
 ///

@@ -16,8 +16,17 @@
 //! colours and the bar height against the panel's real geometry.
 
 const std = @import("std");
+const rgb = @import("lib").rgb;
 
-pub const Color = u32;
+/// A colour is the shape the panel takes it in: three channels in one word,
+/// which is also a surface's pixel. So a theme's colour and what is written
+/// into the framebuffer are one value, and a channel is a field rather than
+/// something shifted out wherever one is needed.
+pub const Color = rgb.Colour;
+
+/// A colour written the way a table of them is written. Every entry below
+/// goes through it, which is the whole reason it is short.
+const hex = rgb.Colour.hex;
 
 pub const Theme = struct {
     name: []const u8,
@@ -103,94 +112,94 @@ pub const Theme = struct {
 /// blends.
 pub const slate = Theme{
     .name = "slate",
-    .desktop = 0x2B3138,
-    .surface = 0xE9EAEC,
-    .surface_hot = 0xF5F6F7,
-    .surface_pressed = 0xD8DADD,
-    .text = 0x1A1D21,
-    .text_dim = 0x5C636B,
-    .text_inverted = 0xF7F8F9,
-    .accent = 0x2F6FE0,
-    .accent_text = 0xFFFFFF,
-    .line = 0xC6C9CD,
-    .border = 0xC6C9CD,
-    .border_focused = 0x2F6FE0,
-    .bar = 0x1F242A,
-    .bar_text = 0xD6D9DD,
-    .bar_line = 0x10141A,
-    .warning = 0xB33A2B,
-    .terminal_ground = 0x141414,
-    .terminal_ink = 0xD8D8D8,
+    .desktop = hex(0x2B3138),
+    .surface = hex(0xE9EAEC),
+    .surface_hot = hex(0xF5F6F7),
+    .surface_pressed = hex(0xD8DADD),
+    .text = hex(0x1A1D21),
+    .text_dim = hex(0x5C636B),
+    .text_inverted = hex(0xF7F8F9),
+    .accent = hex(0x2F6FE0),
+    .accent_text = hex(0xFFFFFF),
+    .line = hex(0xC6C9CD),
+    .border = hex(0xC6C9CD),
+    .border_focused = hex(0x2F6FE0),
+    .bar = hex(0x1F242A),
+    .bar_text = hex(0xD6D9DD),
+    .bar_line = hex(0x10141A),
+    .warning = hex(0xB33A2B),
+    .terminal_ground = hex(0x141414),
+    .terminal_ink = hex(0xD8D8D8),
 };
 
 /// Warm greys and a single medium blue, the way a workstation looked before
 /// anyone had a gradient to spare.
 pub const classic = Theme{
     .name = "classic",
-    .desktop = 0x5C6670,
-    .surface = 0xD6D3CE,
-    .surface_hot = 0xE4E2DE,
-    .surface_pressed = 0xB8B5B0,
-    .text = 0x14140F,
-    .text_dim = 0x5A5A54,
-    .text_inverted = 0xF4F4F0,
-    .accent = 0x2864A4,
-    .accent_text = 0xFFFFFF,
-    .line = 0xA8A498,
-    .border = 0xA8A498,
-    .border_focused = 0x2864A4,
-    .bar = 0xC8C5C0,
-    .bar_text = 0x14140F,
-    .bar_line = 0x8C8880,
-    .warning = 0xA02820,
-    .terminal_ground = 0x141414,
-    .terminal_ink = 0xD8D8D8,
+    .desktop = hex(0x5C6670),
+    .surface = hex(0xD6D3CE),
+    .surface_hot = hex(0xE4E2DE),
+    .surface_pressed = hex(0xB8B5B0),
+    .text = hex(0x14140F),
+    .text_dim = hex(0x5A5A54),
+    .text_inverted = hex(0xF4F4F0),
+    .accent = hex(0x2864A4),
+    .accent_text = hex(0xFFFFFF),
+    .line = hex(0xA8A498),
+    .border = hex(0xA8A498),
+    .border_focused = hex(0x2864A4),
+    .bar = hex(0xC8C5C0),
+    .bar_text = hex(0x14140F),
+    .bar_line = hex(0x8C8880),
+    .warning = hex(0xA02820),
+    .terminal_ground = hex(0x141414),
+    .terminal_ink = hex(0xD8D8D8),
 };
 
 /// Higher contrast, for sunlight. Same shapes, harder edges.
 pub const paper = Theme{
     .name = "paper",
-    .desktop = 0x707070,
-    .surface = 0xF0F0EC,
-    .surface_hot = 0xFFFFFC,
-    .surface_pressed = 0xD0D0CC,
-    .text = 0x000000,
-    .text_dim = 0x4A4A44,
-    .text_inverted = 0xFFFFFF,
-    .accent = 0x1A4E8C,
-    .accent_text = 0xFFFFFF,
-    .line = 0x808078,
-    .border = 0x808078,
-    .border_focused = 0x1A4E8C,
-    .bar = 0xE0E0DC,
-    .bar_text = 0x000000,
-    .bar_line = 0x707068,
-    .warning = 0x901810,
-    .terminal_ground = 0x141414,
-    .terminal_ink = 0xD8D8D8,
+    .desktop = hex(0x707070),
+    .surface = hex(0xF0F0EC),
+    .surface_hot = hex(0xFFFFFC),
+    .surface_pressed = hex(0xD0D0CC),
+    .text = hex(0x000000),
+    .text_dim = hex(0x4A4A44),
+    .text_inverted = hex(0xFFFFFF),
+    .accent = hex(0x1A4E8C),
+    .accent_text = hex(0xFFFFFF),
+    .line = hex(0x808078),
+    .border = hex(0x808078),
+    .border_focused = hex(0x1A4E8C),
+    .bar = hex(0xE0E0DC),
+    .bar_text = hex(0x000000),
+    .bar_line = hex(0x707068),
+    .warning = hex(0x901810),
+    .terminal_ground = hex(0x141414),
+    .terminal_ink = hex(0xD8D8D8),
 };
 
 /// For a dark room, where a lit 7-inch panel is the brightest thing present.
 pub const dusk = Theme{
     .name = "dusk",
-    .desktop = 0x1B1F24,
-    .surface = 0x2A2E35,
-    .surface_hot = 0x363B44,
-    .surface_pressed = 0x1F2229,
-    .text = 0xD8DBE0,
-    .text_dim = 0x8A9099,
-    .text_inverted = 0x14171B,
-    .accent = 0x3A78BE,
-    .accent_text = 0xF4F8FC,
-    .line = 0x424852,
-    .border = 0x424852,
-    .border_focused = 0x3A78BE,
-    .bar = 0x14171B,
-    .bar_text = 0xC8CCD2,
-    .bar_line = 0x2A2E35,
-    .warning = 0xC05050,
-    .terminal_ground = 0x141414,
-    .terminal_ink = 0xD8D8D8,
+    .desktop = hex(0x1B1F24),
+    .surface = hex(0x2A2E35),
+    .surface_hot = hex(0x363B44),
+    .surface_pressed = hex(0x1F2229),
+    .text = hex(0xD8DBE0),
+    .text_dim = hex(0x8A9099),
+    .text_inverted = hex(0x14171B),
+    .accent = hex(0x3A78BE),
+    .accent_text = hex(0xF4F8FC),
+    .line = hex(0x424852),
+    .border = hex(0x424852),
+    .border_focused = hex(0x3A78BE),
+    .bar = hex(0x14171B),
+    .bar_text = hex(0xC8CCD2),
+    .bar_line = hex(0x2A2E35),
+    .warning = hex(0xC05050),
+    .terminal_ground = hex(0x141414),
+    .terminal_ink = hex(0xD8D8D8),
 };
 
 pub const all = [_]*const Theme{ &slate, &classic, &paper, &dusk };
@@ -255,7 +264,7 @@ pub fn textScale() i32 {
 /// a hairline at any size, and a two pixel focus ring drawn at four is a
 /// window that looks selected from across the room.
 /// The highlight somebody chose, or none for the theme's own.
-var accent_choice: ?u32 = null;
+var accent_choice: ?Color = null;
 
 /// Draw the interface in a different highlight.
 ///
@@ -263,7 +272,7 @@ var accent_choice: ?u32 = null;
 /// slider's fill and the marks in the bar are all the same colour by
 /// construction, and a theme where they drifted apart would look like four
 /// decisions rather than one.
-pub fn setAccent(colour: ?u32) void {
+pub fn setAccent(colour: ?Color) void {
     accent_choice = colour;
     rebuild();
 }

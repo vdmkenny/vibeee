@@ -35,7 +35,7 @@ const Shown = union(enum) {
 
 pub const Window = struct {
     shown: Shown,
-    pixels: []u32,
+    pixels: []eui.Color,
     width: u16,
     height: u16,
     closed: bool = false,
@@ -48,9 +48,9 @@ pub const Window = struct {
     pub fn open(title: []const u8, width: u16, height: u16, mode: Mode) Error!Window {
         if (width == 0 or height == 0) return error.InvalidSize;
         const count = std.math.mul(usize, width, height) catch return error.InvalidSize;
-        const pixels = heap.allocator.alloc(u32, count) catch return error.NoMemory;
+        const pixels = heap.allocator.alloc(eui.Color, count) catch return error.NoMemory;
         errdefer heap.allocator.free(pixels);
-        @memset(pixels, 0);
+        @memset(pixels, .{});
 
         var window = Window{
             .shown = try showSomewhere(title, width, height, mode),
@@ -65,7 +65,7 @@ pub const Window = struct {
     }
 
     /// The program's logical framebuffer. Its stride is always `width`.
-    pub fn surface(self: *Window) []u32 {
+    pub fn surface(self: *Window) []eui.Color {
         return self.pixels;
     }
 
@@ -93,7 +93,7 @@ pub const Window = struct {
             .{ .pixels = self.pixels, .width = self.width, .height = self.height },
             .up,
         );
-        onto.fillAround(area, where, 0);
+        onto.fillAround(area, where, .{});
 
         switch (self.shown) {
             .desktop => |*on| try on.connection.commit(on.id, &.{area}),
@@ -151,7 +151,7 @@ pub const Window = struct {
         return switch (self.shown) {
             .desktop => |*on| (on.connection.surfaceOf(on.id) orelse return null).*,
             .screen => |*on| eui.Surface.init(
-                on.pixels,
+                @ptrCast(on.pixels),
                 on.info.width,
                 on.info.height,
                 on.info.stride_px,

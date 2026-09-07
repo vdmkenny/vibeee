@@ -290,6 +290,10 @@ fn pad(gpa: std.mem.Allocator, page: *std.ArrayList(u8), written: usize, column:
 /// shapes that have no grammar beyond themselves are described from their
 /// fields.
 fn accepted(comptime T: type) []const u8 {
+    // A key that may be left unset accepts what its value would, plus the
+    // nothing that says nobody chose. The `accepts` line says so itself.
+    if (@typeInfo(T) == .optional) return accepted(@typeInfo(T).optional.child);
+
     if (comptime std.meta.hasFn(T, "parse") and @hasDecl(T, "accepts")) return T.accepts;
 
     return switch (@typeInfo(T)) {
@@ -309,6 +313,11 @@ fn accepted(comptime T: type) []const u8 {
 /// How a value is written in a settings file, which is what a default has
 /// to be shown as.
 fn spell(comptime T: type, value: T, buf: []u8) []const u8 {
+    // Unset writes nothing, which is how the file says nobody chose.
+    if (@typeInfo(T) == .optional) {
+        const chosen = value orelse return "";
+        return spell(@typeInfo(T).optional.child, chosen, buf);
+    }
     if (comptime std.meta.hasFn(T, "spell")) {
         var built = str.Builder{ .buf = buf };
         value.spell(&built);

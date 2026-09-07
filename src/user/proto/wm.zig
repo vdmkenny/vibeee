@@ -20,6 +20,7 @@
 //! boundary between separately compiled programs.
 
 const abi = @import("lib").syscalls;
+const rgb = @import("lib").rgb;
 
 /// Bumped when a change would make an old client misread a new server. The
 /// server rejects a mismatch at `hello` rather than failing later in a way
@@ -237,8 +238,8 @@ pub const EvTag = enum(u8) {
 /// rather than part of one.
 pub const Appearance = extern struct {
     theme: [16]u8 = @splat(0),
-    /// The highlight colour, as red, green and blue in the low three bytes.
-    accent: u32 = 0,
+    /// The highlight colour.
+    accent: rgb.Colour = .{},
     /// Percent of the face's own size.
     scale: u16 = 100,
     _pad: u16 = 0,
@@ -267,7 +268,7 @@ pub const Ev = extern struct {
         theme: extern struct { name: [16]u8 },
         /// The rest of the appearance, sent with `theme`: a record is
         /// sixteen bytes of body and the name alone fills that.
-        look: extern struct { accent: u32, scale: u16 },
+        look: extern struct { accent: rgb.Colour, scale: u16 },
         raw: [16]u8,
     } = .{ .raw = @splat(0) },
 };

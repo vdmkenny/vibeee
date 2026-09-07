@@ -282,31 +282,26 @@ fn wallpaper(area: eui.Rect) i32 {
     const pad = t.padding;
 
     const swatch = eui.Rect{ .x = area.x, .y = area.y, .w = 72, .h = area.h };
-    const chosen = current.wallpaper.orElse(t.desktop);
+    const chosen = current.wallpaper orelse t.desktop;
     ctx.surface.fill(swatch, chosen);
     ctx.surface.frame(swatch, t.border);
 
     var text: [8]u8 = undefined;
     var spelled = str.Builder{ .buf = &text };
-    current.wallpaper.spell(&spelled);
+    if (current.wallpaper) |colour| colour.spell(&spelled);
     ctx.label(
         .{ .x = swatch.x, .y = swatch.bottom() + 2, .w = swatch.w, .h = 16 },
-        if (current.wallpaper.set) spelled.done() else "theme",
+        if (current.wallpaper != null) spelled.done() else "theme",
     );
 
     const left = swatch.right() + pad * 2;
     const width = area.right() - left;
 
     // Read out of the colour rather than kept beside it, so what the sliders
-    // show and what the wall is cannot come apart.
-    var channels = [_]u8{ current.wallpaper.r, current.wallpaper.g, current.wallpaper.b };
-    if (!current.wallpaper.set) {
-        channels = .{
-            @truncate(chosen >> 16),
-            @truncate(chosen >> 8),
-            @truncate(chosen),
-        };
-    }
+    // show and what the wall is cannot come apart. With nothing chosen they
+    // start where the theme's own is, which is where they would be if it had
+    // been chosen.
+    var channels = [_]u8{ chosen.r, chosen.g, chosen.b };
 
     // A label, the slider, and what it reads. The number is there because
     // a colour is often copied from somewhere rather than found by eye.
@@ -317,7 +312,7 @@ fn wallpaper(area: eui.Rect) i32 {
     // primary: three identical bars are three bars nobody can tell apart at
     // a glance, and a saturated red beside this accent is a different
     // interface.
-    const tints = [_]u32{ 0xC04A3A, 0x3E9450, 0x3A6FD0 };
+    const tints = [_]eui.Color{ .hex(0xC04A3A), .hex(0x3E9450), .hex(0x3A6FD0) };
 
     var moved = false;
     for (&channels, 0..) |*channel, i| {

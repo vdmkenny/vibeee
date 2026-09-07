@@ -178,6 +178,6 @@ pub fn adoptSurface(handle: u32, w: u16, h: u16, stride: u16) ?Surface {
 /// read.
 pub fn blit(screen: eui.Surface, surface: Surface, at: eui.Rect, damage: eui.Rect) void {
     const pixels = surface.pixels orelse return;
-    const source = eui.Surface.init(pixels, surface.width, surface.height, surface.stride);
+    const source = eui.Surface.init(@ptrCast(pixels), surface.width, surface.height, surface.stride);
     screen.copyFrom(source, at.x, at.y, at.intersect(damage));
 }

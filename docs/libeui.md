@@ -78,15 +78,15 @@ with it this pass.
 | `sampleHeight` | `fn () i32` |
 | `samplesWidth` | `fn (*const widget.Context, usize) i32` |
 | `samples` | `fn (*widget.Context, draw.Rect, Context.Sample, usize) usize` |
-| `swatches` | `fn (*widget.Context, draw.Rect, []const u32, usize) usize` |
+| `swatches` | `fn (*widget.Context, draw.Rect, []const rgb.Colour, usize) usize` |
 | `rail` | `fn (*widget.Context, draw.Rect, []const rail.Item, usize, []const u8) usize` |
 | `footer` | `fn (*widget.Context, draw.Rect, []const u8, []const []const u8, usize) ?usize` |
 | `row` | `fn (*widget.Context, draw.Rect, rail.Item, bool) bool` |
 | `fieldRow` | `fn (*widget.Context, draw.Rect, []const u8, anytype) bool` |
 | `label` | `fn (*widget.Context, draw.Rect, []const u8) void` |
 | `labelDim` | `fn (*widget.Context, draw.Rect, []const u8) void` |
-| `labelIn` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
-| `rowText` | `fn (*widget.Context, draw.Rect, []const u8, u32) void` |
+| `labelIn` | `fn (*widget.Context, draw.Rect, []const u8, rgb.Colour) void` |
+| `rowText` | `fn (*widget.Context, draw.Rect, []const u8, rgb.Colour) void` |
 | `pips` | `fn (*widget.Context, draw.Rect, usize, usize) usize` |
 | `stepper` | `fn (*widget.Context, draw.Rect, slider.Range, i32) i32` |
 | `progress` | `fn (*widget.Context, draw.Rect, u8, Context.ProgressStyle) void` |
@@ -145,38 +145,38 @@ another control.
 
 | call | signature |
 |---|---|
-| `init` | `fn ([*]u32, i32, i32, i32) draw.Surface` |
+| `init` | `fn ([*]rgb.Colour, i32, i32, i32) draw.Surface` |
 | `clipped` | `fn (draw.Surface, draw.Rect) draw.Surface` |
-| `set` | `fn (draw.Surface, i32, i32, u32) void` |
-| `get` | `fn (draw.Surface, i32, i32) u32` |
-| `fillRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, u32) void` |
-| `frameRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, u32) void` |
-| `fillAround` | `fn (draw.Surface, draw.Rect, draw.Rect, u32) void` |
-| `fill` | `fn (draw.Surface, draw.Rect, u32) void` |
+| `set` | `fn (draw.Surface, i32, i32, rgb.Colour) void` |
+| `get` | `fn (draw.Surface, i32, i32) rgb.Colour` |
+| `fillRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, rgb.Colour) void` |
+| `frameRounded` | `fn (draw.Surface, draw.Rect, i32, draw.Corners, rgb.Colour) void` |
+| `fillAround` | `fn (draw.Surface, draw.Rect, draw.Rect, rgb.Colour) void` |
+| `fill` | `fn (draw.Surface, draw.Rect, rgb.Colour) void` |
 | `copyFrom` | `fn (draw.Surface, draw.Surface, i32, i32, draw.Rect) void` |
-| `frame` | `fn (draw.Surface, draw.Rect, u32) void` |
-| `borderInset` | `fn (draw.Surface, draw.Rect, i32, u32) void` |
-| `glyph` | `fn (draw.Surface, i32, i32, u21, u32) void` |
-| `glyphIn` | `fn (draw.Surface, *const font.Font, i32, i32, u21, u32) void` |
-| `picture` | `fn (draw.Surface, i32, i32, *const [24]u8, u32) void` |
-| `icon` | `fn (draw.Surface, i32, i32, icon.Icon, u32) void` |
-| `iconLarge` | `fn (draw.Surface, i32, i32, icon.Icon, u32, i32) void` |
+| `frame` | `fn (draw.Surface, draw.Rect, rgb.Colour) void` |
+| `borderInset` | `fn (draw.Surface, draw.Rect, i32, rgb.Colour) void` |
+| `glyph` | `fn (draw.Surface, i32, i32, u21, rgb.Colour) void` |
+| `glyphIn` | `fn (draw.Surface, *const font.Font, i32, i32, u21, rgb.Colour) void` |
+| `picture` | `fn (draw.Surface, i32, i32, *const [24]u8, rgb.Colour) void` |
+| `icon` | `fn (draw.Surface, i32, i32, icon.Icon, rgb.Colour) void` |
+| `iconLarge` | `fn (draw.Surface, i32, i32, icon.Icon, rgb.Colour, i32) void` |
 | `iconLargeSize` | `fn (i32) i32` |
 | `iconTopFor` | `fn (i32) i32` |
 | `iconSize` | `fn () i32` |
-| `bitmap` | `fn (draw.Surface, i32, i32, []const u8, usize, usize, usize, u32) void` |
-| `bitmapAt` | `fn (draw.Surface, i32, i32, []const u8, usize, usize, usize, u32, i32) void` |
-| `text` | `fn (draw.Surface, i32, i32, []const u8, u32) void` |
-| `textIn` | `fn (draw.Surface, *const font.Font, i32, i32, []const u8, u32) void` |
-| `title` | `fn (draw.Surface, i32, i32, []const u8, u32) void` |
+| `bitmap` | `fn (draw.Surface, i32, i32, []const u8, usize, usize, usize, rgb.Colour) void` |
+| `bitmapAt` | `fn (draw.Surface, i32, i32, []const u8, usize, usize, usize, rgb.Colour, i32) void` |
+| `text` | `fn (draw.Surface, i32, i32, []const u8, rgb.Colour) void` |
+| `textIn` | `fn (draw.Surface, *const font.Font, i32, i32, []const u8, rgb.Colour) void` |
+| `title` | `fn (draw.Surface, i32, i32, []const u8, rgb.Colour) void` |
 | `titleWidth` | `fn ([]const u8) i32` |
 | `titleHeight` | `fn () i32` |
 | `besideTitle` | `fn (i32) i32` |
-| `textFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, u32) void` |
-| `titleFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, u32) void` |
+| `textFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, rgb.Colour) void` |
+| `titleFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, rgb.Colour) void` |
 | `textWidth` | `fn ([]const u8) i32` |
 | `textHeight` | `fn () i32` |
-| `textCentred` | `fn (draw.Surface, draw.Rect, []const u8, u32) void` |
+| `textCentred` | `fn (draw.Surface, draw.Rect, []const u8, rgb.Colour) void` |
 
 ## Parts
 
@@ -275,7 +275,7 @@ Editable text: a buffer, the lines it breaks into, and a control that edits it.
 | `shown` | `fn (*const text.Editor, *const text.Buffer, *[128]u8) []const u8` |
 | `edit` | `fn (*widget.Context, draw.Rect, *text.Editor, *text.Buffer) void` |
 | `run` | `fn (*text.Editor, *text.Buffer, text.Command, widget.Clipboard) bool` |
-| `paragraph` | `fn (draw.Surface, draw.Rect, []const u8, u32) i32` |
+| `paragraph` | `fn (draw.Surface, draw.Rect, []const u8, rgb.Colour) i32` |
 | `Field` | `fn (usize) type` |
 | `field` | `fn (*widget.Context, draw.Rect, *text.Editor, *text.Buffer) bool` |
 
@@ -290,7 +290,7 @@ The keys, named, along the bottom of a window.
 | `placeRight` | `fn (draw.Rect, []const keys.Key, keys.Style, []keys.Placed) []keys.Placed` |
 | `bar` | `fn (draw.Surface, draw.Rect, []const keys.Key, []const u8) void` |
 | `paint` | `fn (draw.Surface, draw.Rect, []const keys.Key, i32, keys.Style) i32` |
-| `drawPlaced` | `fn (draw.Surface, []const keys.Placed, draw.Rect, keys.Style, u32) void` |
+| `drawPlaced` | `fn (draw.Surface, []const keys.Placed, draw.Rect, keys.Style, rgb.Colour) void` |
 
 ### `eui.meter`
 
@@ -336,7 +336,7 @@ A reading with a proportion to it: what it is, what it says, how full it is, and
 | call | signature |
 |---|---|
 | `alarming` | `fn (u8, gauge.Alarm) bool` |
-| `inkFor` | `fn (u8, gauge.Alarm) u32` |
+| `inkFor` | `fn (u8, gauge.Alarm) rgb.Colour` |
 | `height` | `fn () i32` |
 | `cellRect` | `fn (draw.Rect, usize, usize) draw.Rect` |
 | `barRect` | `fn (draw.Rect) draw.Rect` |

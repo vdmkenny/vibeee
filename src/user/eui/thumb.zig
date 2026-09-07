@@ -22,13 +22,13 @@ const exif = @import("lib").exif;
 const Rect = draw.Rect;
 const Surface = draw.Surface;
 
-/// A picture as this draws one: words in a row, and its shape.
+/// A picture as this draws one: pixels in a row, and its shape.
 pub const Source = struct {
-    pixels: []const u32,
+    pixels: []const draw.Color,
     width: u16,
     height: u16,
 
-    fn at(self: Source, x: u32, y: u32) u32 {
+    fn at(self: Source, x: u32, y: u32) draw.Color {
         const index = @as(usize, y) * @as(usize, self.width) + @as(usize, x);
         return if (index < self.pixels.len) self.pixels[index] else 0;
     }
@@ -182,7 +182,7 @@ pub fn paint(surface: Surface, into: Rect, source: Source, turn: exif.Orientatio
             // A picture whose buffer is shorter than its own shape claims is
             // a picture from somewhere else; it reads as nothing rather than
             // as whatever is past the end of it.
-            line[i] = if (at >= 0 and at < limit) source.pixels[@intCast(at)] else 0;
+            line[i] = if (at >= 0 and at < limit) source.pixels[@intCast(at)] else .{};
         }
     }
 }
