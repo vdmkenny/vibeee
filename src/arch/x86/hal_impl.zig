@@ -25,8 +25,15 @@ pub const saveAndDisableInterrupts = cpu.saveAndDisableInterrupts;
 pub const writeCombine = @import("mtrr.zig").writeCombine;
 pub const mtrrRangeCount = @import("mtrr.zig").rangeCount;
 pub const mtrrRangeAt = @import("mtrr.zig").rangeAt;
-pub const outl = port.outl;
+pub const inb = port.inb;
+pub const outb = port.outb;
+pub const inw = port.inw;
+pub const outw = port.outw;
 pub const inl = port.inl;
+pub const outl = port.outl;
+pub const insw = port.insw;
+pub const outsw = port.outsw;
+pub const ioWait = port.ioWait;
 pub const restoreInterrupts = cpu.restoreInterrupts;
 pub const halt = cpu.halt;
 pub const raiseInvalidOpcode = cpu.raiseInvalidOpcode;
@@ -73,6 +80,14 @@ pub const enableIoBitmap = gdt.enableIoBitmap;
 pub const denyIoPorts = gdt.denyIoPorts;
 
 pub const InterruptFrame = idt.Frame;
+
+/// Take a legacy ISA line for a driver the kernel builds in: install the
+/// handler on whichever vector the active controller routed the line to, and
+/// let it through.
+pub fn claimLegacyIrq(line: u8, handler: idt.Handler) void {
+    idt.setHandler(idt.legacyVector(line), handler);
+    idt.setIrqMask(line, false);
+}
 pub const IrqToken = idt.IrqToken;
 pub const IRQ_LINE_COUNT = idt.MAX_GSI;
 pub const gsiClaimed = idt.gsiClaimed;

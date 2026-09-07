@@ -12,13 +12,15 @@
 const console = @import("../../kernel/console.zig");
 const input = @import("../../kernel/input.zig");
 const keymap = @import("../../kernel/keymap.zig");
-const cpu = @import("../../arch/x86/cpu.zig");
-const idt = @import("../../arch/x86/idt.zig");
-const port = @import("../../arch/x86/port.zig");
+const hal = @import("../../kernel/hal.zig");
+const sched = @import("../../kernel/sched.zig");
 
 pub const DATA = 0x60;
 pub const STATUS = 0x64;
 pub const COMMAND = 0x64;
+
+/// The ISA line the keyboard half of this controller is wired to.
+const KEYBOARD_LINE = 1;
 
 /// The status register, one read.
 pub const Status = packed struct(u8) {
@@ -33,7 +35,7 @@ pub const Status = packed struct(u8) {
 };
 
 pub fn status() Status {
-    return @bitCast(port.inb(STATUS));
+    return @bitCast(hal.inb(STATUS));
 }
 
 /// One controller, two devices. The keyboard is below; the pointing device
@@ -49,17 +51,37 @@ pub fn readData() ?u8 {
     while (!status().output_full) : (spins += 1) {
         if (spins >= 100_000) return null;
     }
-    return port.inb(DATA);
+    return hal.inb(DATA);
 }
 
 pub fn command(byte: u8) void {
     waitInputClear();
-    port.outb(COMMAND, byte);
+    hal.outb(COMMAND, byte);
+}
+
+/// The command that pulses the machine's reset line.
+const PULSE_RESET = 0xFE;
+
+/// Restart the machine through the controller's reset line.
+///
+/// Here because this file owns the controller: the ports, the status bits and
+/// the commands are all its, and a caller reaching around it to write 0xFE to
+/// port 0x64 would be a second place that knows them.
+///
+/// Polled asleep rather than spun on: a restart costs nothing before the line
+/// is written, and the controller answers in microseconds, so the first look
+/// usually ends the wait.
+pub fn resetMachine() void {
+    const deadline = sched.deadlineIn(50_000);
+    while (status().input_full and hal.monotonicMicros() < deadline) {
+        sched.sleepMicros(1_000);
+    }
+    command(PULSE_RESET);
 }
 
 pub fn writeData(byte: u8) void {
     waitInputClear();
-    port.outb(DATA, byte);
+    hal.outb(DATA, byte);
 }
 
 /// The controller's configuration byte.
@@ -99,7 +121,7 @@ pub const BUFFERED_MAX = 32;
 pub fn drain() void {
     var drained: u32 = 0;
     while (status().output_full and drained < BUFFERED_MAX) : (drained += 1) {
-        _ = port.inb(DATA);
+        _ = hal.inb(DATA);
     }
 }
 
@@ -247,7 +269,7 @@ pub fn onKeyboardInterrupt() void {
         // consume half a movement packet.
         if (now.from_aux) return;
 
-        const byte = port.inb(DATA);
+        const byte = hal.inb(DATA);
 
         if (byte == 0xE0) {
             expecting_extended = true;
@@ -276,8 +298,8 @@ pub fn init() void {
     // configuration byte takes two round trips through the shared output
     // buffer, and anything that reads from it in between corrupts the value
     // written back.
-    const flags = cpu.saveAndDisableInterrupts();
-    defer cpu.restoreInterrupts(flags);
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
 
     // Flush anything the BIOS left buffered, so the first real keystroke is not
     // preceded by a stale one.
@@ -297,13 +319,12 @@ pub fn init() void {
         console.warn("kbd: controller did not answer for its configuration; left as it is", .{});
     }
 
-    idt.setHandler(idt.legacyVector(1), onIrq);
-    idt.setIrqMask(1, false);
+    hal.claimLegacyIrq(KEYBOARD_LINE, onIrq);
 
     console.info("kbd", "i8042 ready, layout {s}", .{keymap.current().name});
 }
 
-fn onIrq(_: *idt.Frame) void {
+fn onIrq(_: *hal.InterruptFrame) void {
     onKeyboardInterrupt();
 }
 
@@ -313,8 +334,8 @@ fn onIrq(_: *idt.Frame) void {
 /// controller handed back with its interrupt off is a dead keyboard with no
 /// error anywhere.
 pub fn reassert() void {
-    const flags = cpu.saveAndDisableInterrupts();
-    defer cpu.restoreInterrupts(flags);
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
 
     drain();
 

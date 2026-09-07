@@ -20,7 +20,6 @@ const bcache = @import("../../kernel/bcache.zig");
 const block = @import("../../kernel/block.zig");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
-const port = @import("../../arch/x86/port.zig");
 
 /// Register offsets from a channel's I/O base.
 const REG_DATA = 0;
@@ -34,11 +33,11 @@ const REG_STATUS = 7;
 const REG_COMMAND = 7;
 
 fn readStatus(ch: Channel) Status {
-    return @bitCast(port.inb(ch.io + REG_STATUS));
+    return @bitCast(hal.inb(ch.io + REG_STATUS));
 }
 
 fn issue(ch: Channel, cmd: Command) void {
-    port.outb(ch.io + REG_COMMAND, @intFromEnum(cmd));
+    hal.outb(ch.io + REG_COMMAND, @intFromEnum(cmd));
 }
 
 /// The status register.
@@ -123,7 +122,7 @@ var drive_count: usize = 0;
 /// four reads is the conventional way to wait the 400 ns the spec requires
 /// after a drive select before the status byte is meaningful.
 fn selectDelay(ch: Channel) void {
-    for (0..4) |_| _ = port.inb(ch.control);
+    for (0..4) |_| _ = hal.inb(ch.control);
 }
 
 fn waitWhileBusy(ch: Channel) block.Error!Status {
@@ -156,7 +155,7 @@ fn waitForDataWithin(ch: Channel, patience_us: u64) block.Error!void {
 
 fn selectDrive(ch: Channel, slave: bool, lba_high_nibble: u8) void {
     const value: u8 = 0xE0 | (@as(u8, @intFromBool(slave)) << 4) | (lba_high_nibble & 0x0F);
-    port.outb(ch.io + REG_DRIVE, value);
+    hal.outb(ch.io + REG_DRIVE, value);
     selectDelay(ch);
 }
 
@@ -183,10 +182,10 @@ fn identify(ch: Channel, slave: bool) ?Drive {
 
     // Zero the addressing registers: a non-zero signature here after IDENTIFY
     // means an ATAPI device answered, which we do not handle.
-    port.outb(ch.io + REG_SECTOR_COUNT, 0);
-    port.outb(ch.io + REG_LBA_LOW, 0);
-    port.outb(ch.io + REG_LBA_MID, 0);
-    port.outb(ch.io + REG_LBA_HIGH, 0);
+    hal.outb(ch.io + REG_SECTOR_COUNT, 0);
+    hal.outb(ch.io + REG_LBA_LOW, 0);
+    hal.outb(ch.io + REG_LBA_MID, 0);
+    hal.outb(ch.io + REG_LBA_HIGH, 0);
 
     issue(ch, .identify);
     selectDelay(ch);
@@ -200,12 +199,12 @@ fn identify(ch: Channel, slave: bool) ?Drive {
 
     // ATAPI and SATA devices answer IDENTIFY with a signature in the LBA mid
     // and high registers instead of data.
-    if (port.inb(ch.io + REG_LBA_MID) != 0 or port.inb(ch.io + REG_LBA_HIGH) != 0) return null;
+    if (hal.inb(ch.io + REG_LBA_MID) != 0 or hal.inb(ch.io + REG_LBA_HIGH) != 0) return null;
 
     waitForDataWithin(ch, IDENTIFY_PATIENCE_US) catch return null;
 
     var words: [256]u16 = undefined;
-    port.insw(ch.io + REG_DATA, std.mem.sliceAsBytes(&words));
+    hal.insw(ch.io + REG_DATA, std.mem.sliceAsBytes(&words));
 
     // Words 60-61 hold the 28-bit LBA capacity. This is the only capacity
     // field used: the target device is ATA-4 and has no LBA48 field to read.
@@ -239,10 +238,10 @@ fn setupTransfer(drive: *const Drive, lba: u64, count: u8) block.Error!void {
     _ = try waitWhileBusy(ch);
 
     selectDrive(ch, drive.slave, @truncate((lba >> 24) & 0x0F));
-    port.outb(ch.io + REG_SECTOR_COUNT, count);
-    port.outb(ch.io + REG_LBA_LOW, @truncate(lba));
-    port.outb(ch.io + REG_LBA_MID, @truncate(lba >> 8));
-    port.outb(ch.io + REG_LBA_HIGH, @truncate(lba >> 16));
+    hal.outb(ch.io + REG_SECTOR_COUNT, count);
+    hal.outb(ch.io + REG_LBA_LOW, @truncate(lba));
+    hal.outb(ch.io + REG_LBA_MID, @truncate(lba >> 8));
+    hal.outb(ch.io + REG_LBA_HIGH, @truncate(lba >> 16));
 }
 
 fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
@@ -261,7 +260,7 @@ fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
 
         for (0..batch) |_| {
             try waitForData(ch);
-            port.insw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
+            hal.insw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
             offset += block.SECTOR_SIZE;
         }
 
@@ -284,7 +283,7 @@ fn writeSectors(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
 
         for (0..batch) |_| {
             try waitForData(ch);
-            port.outsw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
+            hal.outsw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
             offset += block.SECTOR_SIZE;
         }
 

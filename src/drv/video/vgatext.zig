@@ -9,7 +9,6 @@
 //! and on a machine with no serial port it is the only early output there is.
 
 const hal = @import("../../kernel/hal.zig");
-const port = @import("../../arch/x86/port.zig");
 
 pub const WIDTH: usize = 80;
 pub const HEIGHT: usize = 25;
@@ -85,16 +84,16 @@ pub fn cellAt(x: usize, y: usize) struct { ch: u8, fg: Color, bg: Color } {
 }
 
 pub fn showCursor(visible: bool) void {
-    port.outb(CRTC_INDEX, 0x0A);
-    const start = port.inb(CRTC_DATA);
-    port.outb(CRTC_INDEX, 0x0A);
-    port.outb(CRTC_DATA, if (visible) start & ~@as(u8, 0x20) else start | 0x20);
+    hal.outb(CRTC_INDEX, 0x0A);
+    const start = hal.inb(CRTC_DATA);
+    hal.outb(CRTC_INDEX, 0x0A);
+    hal.outb(CRTC_DATA, if (visible) start & ~@as(u8, 0x20) else start | 0x20);
 }
 
 pub fn setCursor(x: usize, y: usize) void {
     const pos: u16 = @intCast(@min(y, HEIGHT - 1) * WIDTH + @min(x, WIDTH - 1));
-    port.outb(CRTC_INDEX, 0x0F);
-    port.outb(CRTC_DATA, @truncate(pos & 0xFF));
-    port.outb(CRTC_INDEX, 0x0E);
-    port.outb(CRTC_DATA, @truncate((pos >> 8) & 0xFF));
+    hal.outb(CRTC_INDEX, 0x0F);
+    hal.outb(CRTC_DATA, @truncate(pos & 0xFF));
+    hal.outb(CRTC_INDEX, 0x0E);
+    hal.outb(CRTC_DATA, @truncate((pos >> 8) & 0xFF));
 }

@@ -36,6 +36,7 @@ pub const rates = @import("rates.zig");
 pub const Phys = @import("phys.zig").Phys;
 pub const fifo = @import("fifo.zig");
 pub const find = @import("find.zig");
+pub const firmware = @import("firmware.zig");
 pub const limits = @import("limits.zig");
 pub const ntp = @import("ntp.zig");
 pub const openers = @import("openers.zig");

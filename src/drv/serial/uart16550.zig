@@ -11,7 +11,7 @@
 //! Probed rather than assumed: a port that is not there reads back 0xFF, and
 //! the loopback self-test below distinguishes a real UART from a floating bus.
 
-const port = @import("../../arch/x86/port.zig");
+const hal = @import("../../kernel/hal.zig");
 
 /// Standard PC port assignments. COM1 first because that is where everything
 /// looks by default.
@@ -44,13 +44,13 @@ var base: ?u16 = null;
 const DIVISOR: u16 = 1;
 
 fn configure(io: u16) void {
-    port.outb(io + REG_INT_ENABLE, 0x00); // polled output only
-    port.outb(io + REG_LINE_CTRL, LCR_DLAB);
-    port.outb(io + REG_DIVISOR_LOW, @truncate(DIVISOR));
-    port.outb(io + REG_DIVISOR_HIGH, @truncate(DIVISOR >> 8));
-    port.outb(io + REG_LINE_CTRL, LCR_8N1);
-    port.outb(io + REG_FIFO_CTRL, 0xC7); // enable and clear FIFOs, 14-byte trigger
-    port.outb(io + REG_MODEM_CTRL, 0x0B); // DTR, RTS, OUT2
+    hal.outb(io + REG_INT_ENABLE, 0x00); // polled output only
+    hal.outb(io + REG_LINE_CTRL, LCR_DLAB);
+    hal.outb(io + REG_DIVISOR_LOW, @truncate(DIVISOR));
+    hal.outb(io + REG_DIVISOR_HIGH, @truncate(DIVISOR >> 8));
+    hal.outb(io + REG_LINE_CTRL, LCR_8N1);
+    hal.outb(io + REG_FIFO_CTRL, 0xC7); // enable and clear FIFOs, 14-byte trigger
+    hal.outb(io + REG_MODEM_CTRL, 0x0B); // DTR, RTS, OUT2
 }
 
 /// Put the UART in loopback mode and check a byte comes back.
@@ -61,10 +61,10 @@ fn configure(io: u16) void {
 fn probe(io: u16) bool {
     configure(io);
 
-    port.outb(io + REG_MODEM_CTRL, 0x1E); // loopback on
-    port.outb(io + REG_DATA, 0xAE);
-    const echoed = port.inb(io + REG_DATA);
-    port.outb(io + REG_MODEM_CTRL, 0x0B); // loopback off
+    hal.outb(io + REG_MODEM_CTRL, 0x1E); // loopback on
+    hal.outb(io + REG_DATA, 0xAE);
+    const echoed = hal.inb(io + REG_DATA);
+    hal.outb(io + REG_MODEM_CTRL, 0x0B); // loopback off
 
     return echoed == 0xAE;
 }
@@ -89,10 +89,10 @@ fn putByte(io: u16, byte: u8) void {
     // misconfigured one must not hang the machine that is trying to report why.
     var spins: u32 = 0;
     while (spins < 100_000) : (spins += 1) {
-        const line: LineStatus = @bitCast(port.inb(io + REG_LINE_STATUS));
+        const line: LineStatus = @bitCast(hal.inb(io + REG_LINE_STATUS));
         if (line.tx_empty) break;
     }
-    port.outb(io + REG_DATA, byte);
+    hal.outb(io + REG_DATA, byte);
 }
 
 /// Write bytes, translating bare newlines for terminals that expect CRLF.

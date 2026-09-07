@@ -10,6 +10,7 @@ const std = @import("std");
 const bootinfo = @import("../../kernel/bootinfo.zig");
 const boot = @import("boot.zig");
 const paging = @import("paging.zig");
+const firmware = @import("lib").firmware;
 
 const BOOTLOADER_MAGIC: u32 = 0x2BADB002;
 
@@ -169,9 +170,7 @@ fn scan(start: u32, end: u32) ?u32 {
         if (!std.mem.eql(u8, candidate[0..8], "RSD PTR ")) continue;
         // Verify the ACPI 1.0 checksum: the signature alone turns up in
         // unrelated data often enough to matter.
-        var sum: u8 = 0;
-        for (candidate[0..20]) |b| sum +%= b;
-        if (sum == 0) return p;
+        if (firmware.checksumOk(candidate[0..20])) return p;
     }
     return null;
 }

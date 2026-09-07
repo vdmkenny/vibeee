@@ -22,11 +22,17 @@ const console = @import("../../kernel/console.zig");
 const input = @import("../../kernel/input.zig");
 // Named `kbc` rather than after the file: `i8042` is a valid Zig integer type.
 const kbc = @import("i8042.zig");
-const idt = @import("../../arch/x86/idt.zig");
-const cpu = @import("../../arch/x86/cpu.zig");
-const port = @import("../../arch/x86/port.zig");
+const hal = @import("../../kernel/hal.zig");
 
 /// Controller commands that concern the second port.
+/// The ISA line the auxiliary half of the controller is wired to.
+const MOUSE_LINE = 12;
+
+/// What each pad answers the identify knock with.
+const SYNAPTICS_SIGNATURE = 0x47;
+const ELANTECH_ID = 0x3C;
+const ELANTECH_VERSION = 0x03;
+
 const ENABLE_AUX = 0xA8;
 const DISABLE_AUX = 0xA7;
 const WRITE_TO_AUX = 0xD4;
@@ -118,39 +124,38 @@ fn tryWheel() bool {
     return (deviceId() orelse 0) == 3;
 }
 
-/// Synaptics identify: four resolution writes carry a six-bit address two bits
-/// at a time, then a status request returns three bytes describing the pad.
-/// A Synaptics device answers with 0x47 in the second byte.
-fn synapticsIdentify() bool {
-    // Address 0x00 is the identify register.
+/// The knock a touchpad answers.
+///
+/// Four resolution writes carry a six-bit address two bits at a time, then a
+/// status request returns three bytes describing the pad. Address zero is the
+/// identify register in both vendors' schemes, so one knock answers for both;
+/// asked twice, the second question would be the same question and the pad
+/// would give the same answer.
+fn identify() ?[3]u8 {
     var i: usize = 0;
     while (i < 4) : (i += 1) {
-        if (!sendWith(SET_RESOLUTION, 0)) return false;
+        if (!sendWith(SET_RESOLUTION, 0)) return null;
     }
-    if (!send(STATUS_REQUEST)) return false;
+    if (!send(STATUS_REQUEST)) return null;
 
-    _ = kbc.readData() orelse return false;
-    const signature = kbc.readData() orelse return false;
-    _ = kbc.readData() orelse return false;
-
-    return signature == 0x47;
+    var reply: [3]u8 = undefined;
+    for (&reply) |*byte| byte.* = kbc.readData() orelse return null;
+    return reply;
 }
 
-/// Elantech answers a similar knock with a version in place of the signature.
-/// Detected but not decoded: the pad works in standard mode, and reporting it
-/// is what a port to an Elantech machine needs.
-fn elantechIdentify() bool {
-    if (!sendWith(SET_RESOLUTION, 0)) return false;
-    if (!sendWith(SET_RESOLUTION, 0)) return false;
-    if (!sendWith(SET_RESOLUTION, 0)) return false;
-    if (!sendWith(SET_RESOLUTION, 0)) return false;
-    if (!send(STATUS_REQUEST)) return false;
+/// Which pad answered, if one did.
+fn padKind(reply: ?[3]u8) ?Kind {
+    const answer = reply orelse return null;
 
-    const a = kbc.readData() orelse return false;
-    const b = kbc.readData() orelse return false;
-    _ = kbc.readData() orelse return false;
+    // Synaptics puts its signature in the second byte.
+    if (answer[1] == SYNAPTICS_SIGNATURE) return .synaptics;
 
-    return a == 0x3C and b == 0x03;
+    // Elantech answers with a version in the first two. Detected but not
+    // decoded: the pad works in standard mode, and reporting it is what a
+    // port to an Elantech machine needs.
+    if (answer[0] == ELANTECH_ID and answer[1] == ELANTECH_VERSION) return .elantech;
+
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,8 +173,8 @@ pub fn init() Kind {
     // reads from the same place: a handler that fires mid-sequence consumes an
     // acknowledgement or, worse, the configuration byte, and writing back what
     // was read instead would turn off the keyboard's own interrupt.
-    const flags = cpu.saveAndDisableInterrupts();
-    defer cpu.restoreInterrupts(flags);
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
 
     kbc.command(ENABLE_AUX);
 
@@ -195,17 +200,10 @@ pub fn init() Kind {
         return .none;
     }
 
-    // The identify sequences leave the device in a known state either way, so
-    // the specific probes run before the generic fallback. Order matters only
-    // in that a Synaptics pad also answers the wheel knock.
-    kind = if (synapticsIdentify())
-        .synaptics
-    else if (elantechIdentify())
-        .elantech
-    else if (tryWheel())
-        .intellimouse
-    else
-        .generic;
+    // The knock leaves the device in a known state either way, so the pads
+    // are recognised before the generic fallback. Order matters only in that a
+    // Synaptics pad also answers the wheel knock.
+    kind = padKind(identify()) orelse if (tryWheel()) .intellimouse else .generic;
 
     packet_len = if (kind == .intellimouse) 4 else 3;
 
@@ -215,8 +213,7 @@ pub fn init() Kind {
     _ = sendWith(SET_SAMPLE_RATE, 100);
     _ = send(ENABLE_REPORTING);
 
-    idt.setHandler(idt.legacyVector(12), onIrq);
-    idt.setIrqMask(12, false);
+    hal.claimLegacyIrq(MOUSE_LINE, onIrq);
 
     console.info("mouse", "{s} on irq12, {d}-byte packets", .{ kind.name(), packet_len });
     return kind;
@@ -230,7 +227,7 @@ pub fn present() bool {
 // Packets
 // ---------------------------------------------------------------------------
 
-fn onIrq(_: *idt.Frame) void {
+fn onIrq(_: *hal.InterruptFrame) void {
     // Drain: the controller may hold more than one byte, and a single read per
     // interrupt falls permanently behind a moving finger. Bounded by what the
     // controller can hold, like the keyboard's: a stuck flag costs one pass.
@@ -239,7 +236,7 @@ fn onIrq(_: *idt.Frame) void {
         const now = kbc.status();
         if (!now.output_full) break;
         if (!now.from_aux) return;
-        feed(port.inb(kbc.DATA));
+        feed(hal.inb(kbc.DATA));
     }
 }
 

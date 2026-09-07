@@ -47,8 +47,6 @@ pub const disableInterrupts = impl.disableInterrupts;
 pub const enableInterrupts = impl.enableInterrupts;
 /// Disable interrupts, returning the previous state for nested restore.
 pub const saveAndDisableInterrupts = impl.saveAndDisableInterrupts;
-pub const outl = impl.outl;
-pub const inl = impl.inl;
 pub const restoreInterrupts = impl.restoreInterrupts;
 /// Park the CPU until the next interrupt. The idle loop's entire body.
 pub const idle = impl.idle;
@@ -75,8 +73,39 @@ pub const loadIoBitmap = impl.loadIoBitmap;
 pub const enableIoBitmap = impl.enableIoBitmap;
 pub const denyIoPorts = impl.denyIoPorts;
 
+// ---------------------------------------------------------------------------
+// Port I/O
+//
+// A second address space, which some architectures have and others do not: a
+// driver needing it guards on `caps.port_io`. Listed here because the
+// alternative is a driver reaching into `arch/` for it, which is the one thing
+// this file exists to prevent.
+// ---------------------------------------------------------------------------
+
+pub const inb = impl.inb;
+pub const outb = impl.outb;
+pub const inw = impl.inw;
+pub const outw = impl.outw;
+pub const inl = impl.inl;
+pub const outl = impl.outl;
+/// A run of sixteen-bit reads or writes on one port, which is how the older
+/// disk interfaces move a sector.
+pub const insw = impl.insw;
+pub const outsw = impl.outsw;
+/// A short delay by touching an unused port, for hardware that needs one
+/// between accesses.
+pub const ioWait = impl.ioWait;
+
+// ---------------------------------------------------------------------------
+// Interrupts
+// ---------------------------------------------------------------------------
+
 /// Claiming a global interrupt line for a handler, for the driver capability.
 pub const InterruptFrame = impl.InterruptFrame;
+/// Take a legacy line for a driver the kernel builds in, named for the line
+/// the device is wired to rather than for the vector it lands on: which vector
+/// that is depends on what the firmware described.
+pub const claimLegacyIrq = impl.claimLegacyIrq;
 pub const IrqToken = impl.IrqToken;
 /// Number of architecture interrupt identifiers representable by the backend.
 pub const IRQ_LINE_COUNT = impl.IRQ_LINE_COUNT;

@@ -7,7 +7,7 @@
 //! starting point to correct.
 
 const std = @import("std");
-const port = @import("../../arch/x86/port.zig");
+const hal = @import("../../kernel/hal.zig");
 
 const ADDRESS = 0x70;
 const DATA = 0x71;
@@ -47,8 +47,8 @@ pub const DateTime = struct {
 fn read(reg: u8) u8 {
     // Bit 7 of the address port is the NMI disable flag; preserving it as zero
     // keeps NMIs enabled, which is what the BIOS left them as.
-    port.outb(ADDRESS, reg);
-    return port.inb(DATA);
+    hal.outb(ADDRESS, reg);
+    return hal.inb(DATA);
 }
 
 fn updating() bool {

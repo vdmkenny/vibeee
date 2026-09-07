@@ -13,6 +13,7 @@
 const std = @import("std");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
+const firmware = @import("lib").firmware;
 
 /// The 32-bit entry point, anchored on "_SM_".
 const EntryPoint = extern struct {
@@ -68,7 +69,7 @@ pub fn init() void {
 
         const ep: *align(1) const EntryPoint = @ptrCast(candidate);
         if (ep.length == 0 or ep.length > 64) continue;
-        if (!checksumOk(candidate[0..ep.length])) continue;
+        if (!firmware.checksumOk(candidate[0..ep.length])) continue;
 
         if (ep.table_address == 0 or ep.table_length == 0) continue;
         if (!hal.isLinearPhys(ep.table_address)) continue;
@@ -86,12 +87,6 @@ pub fn init() void {
         });
         return;
     }
-}
-
-fn checksumOk(bytes: []const u8) bool {
-    var sum: u8 = 0;
-    for (bytes) |b| sum +%= b;
-    return sum == 0;
 }
 
 /// Walk to the structure of a given type and return its string at `index`.

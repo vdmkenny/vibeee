@@ -3,9 +3,9 @@
 const std = @import("std");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
-const port = @import("../../arch/x86/port.zig");
 const sched = @import("../../kernel/sched.zig");
 const tables = @import("tables.zig");
+const kbc = @import("../input/i8042.zig");
 
 /// The PM1 control register. Writing `sleep_enable` commits `sleep_type`,
 /// and `acpi_mode` says the chipset listens to any of this at all rather
@@ -19,7 +19,7 @@ const Pm1Control = packed struct(u16) {
 };
 
 fn pm1(at: u16) Pm1Control {
-    return @bitCast(port.inw(at));
+    return @bitCast(hal.inw(at));
 }
 
 /// Hand the machine from legacy mode into ACPI mode.
@@ -36,7 +36,7 @@ fn enterAcpiMode(info: tables.Info) bool {
     if (pm1(info.pm1a_control).acpi_mode) return true;
     if (info.smi_command == 0 or info.acpi_enable == 0) return false;
 
-    port.outb(info.smi_command, info.acpi_enable);
+    hal.outb(info.smi_command, info.acpi_enable);
 
     // Firmware answers in its own time and this runs with interrupts off, so
     // the wait counts spins rather than microseconds: there is no clock to
@@ -66,14 +66,14 @@ pub fn off() void {
             // so the last line printed is the only way to tell which write it
             // was that never came back.
             console.debug("shutdown", "pm1a {x:0>4} = {x:0>4}, s5 type {d}, smi {x:0>4}/{x:0>2}", .{
-                info.pm1a_control, port.inw(info.pm1a_control),
+                info.pm1a_control, hal.inw(info.pm1a_control),
                 info.slp_typ_a,    info.smi_command,
                 info.acpi_enable,
             });
 
             const in_acpi = enterAcpiMode(info);
             console.debug("shutdown", "acpi mode {}, pm1a now {x:0>4}", .{
-                in_acpi, port.inw(info.pm1a_control),
+                in_acpi, hal.inw(info.pm1a_control),
             });
 
             // What is already there, so this write does not undo an earlier
@@ -97,8 +97,8 @@ pub fn off() void {
             // firmware of this era cannot take SLP_TYP and SLP_EN in the same
             // write, which is one more way a one-shot sequence does nothing.
             console.debug("shutdown", "sleeping with {x:0>4}", .{@as(u16, @bitCast(go))});
-            port.outw(info.pm1a_control, @bitCast(slp));
-            port.outw(info.pm1a_control, @bitCast(go));
+            hal.outw(info.pm1a_control, @bitCast(slp));
+            hal.outw(info.pm1a_control, @bitCast(go));
 
             // The second register exists on chipsets that split the power
             // management block; writing it when absent is harmless.
@@ -113,8 +113,8 @@ pub fn off() void {
                     .sleep_type = @truncate(info.slp_typ_b),
                     .sleep_enable = true,
                 };
-                port.outw(info.pm1b_control, @bitCast(b_slp));
-                port.outw(info.pm1b_control, @bitCast(b_go));
+                hal.outw(info.pm1b_control, @bitCast(b_slp));
+                hal.outw(info.pm1b_control, @bitCast(b_go));
             }
 
             // Power does not drop instantly; give the hardware time before
@@ -125,7 +125,7 @@ pub fn off() void {
     }
 
     console.debug("shutdown", "acpi would not sleep; trying the emulator ports", .{});
-    for (EMULATOR_PORTS) |p| port.outw(p.port, p.value);
+    for (EMULATOR_PORTS) |p| hal.outw(p.port, p.value);
 }
 
 /// Restart the machine.
@@ -134,15 +134,7 @@ pub fn off() void {
 /// needs no tables. The triple fault is the last resort: an empty IDT makes the
 /// next interrupt unrecoverable, which every x86 implements as a reset.
 pub fn reset() void {
-    // The keyboard controller is polled for its input buffer: no interrupt
-    // says "empty". Polled asleep, not spun: a reset costs nothing before the
-    // line is written, and the controller answers in microseconds, so the
-    // first look usually ends the wait.
-    const deadline = sched.deadlineIn(50_000);
-    while (port.inb(0x64) & 0x02 != 0 and hal.monotonicMicros() < deadline) {
-        sched.sleepMicros(1_000);
-    }
-    port.outb(0x64, 0xFE);
+    kbc.resetMachine();
 
     // The reset line needs a moment to take before the machine is asked, one
     // last time, to leave.

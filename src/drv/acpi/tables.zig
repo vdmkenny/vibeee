@@ -13,6 +13,8 @@
 
 const std = @import("std");
 const hal = @import("../../kernel/hal.zig");
+const firmware = @import("lib").firmware;
+const console = @import("../../kernel/console.zig");
 
 pub const Header = extern struct {
     signature: [4]u8,
@@ -98,12 +100,6 @@ pub fn get() ?Info {
     return if (have_info) info else null;
 }
 
-fn checksumOk(bytes: []const u8) bool {
-    var sum: u8 = 0;
-    for (bytes) |b| sum +%= b;
-    return sum == 0;
-}
-
 /// The table with this signature, or null.
 ///
 /// Public because the interrupt controller wants the MADT and shutdown wants
@@ -144,6 +140,17 @@ pub fn init(rsdp_phys: u32) void {
 
     const rsdt = mapTable(rsdp.rsdt_address) orelse return;
     if (!std.mem.eql(u8, &rsdt.signature, "RSDT")) return;
+
+    // The one table whose checksum is worth refusing on. Its length decides
+    // how many pointers `find` walks, so a corrupt one sends the walk through
+    // arbitrary physical memory; the tables it points at are read as their own
+    // structs, where firmware getting a checksum wrong is common enough that
+    // refusing would cost a working machine its power management.
+    const rsdt_bytes: [*]const u8 = @ptrCast(rsdt);
+    if (!firmware.checksumOk(rsdt_bytes[0..rsdt.length])) {
+        console.warn("acpi: the RSDT does not add up; no tables read", .{});
+        return;
+    }
     rsdt_phys = rsdp.rsdt_address;
 
     const facp = find("FACP") orelse return;
