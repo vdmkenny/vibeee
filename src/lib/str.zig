@@ -401,8 +401,11 @@ pub const Builder = struct {
             else => K * K * K,
         };
 
-        // Tenths, so the rounding happens once and in one place.
-        const tenths = value * 10 / scale;
+        // Tenths, so the rounding happens once and in one place. In sixty-
+        // four bits, because a `usize` here is thirty-two: ten times four
+        // hundred and ten mebibytes is past what one holds, and this machine
+        // has more memory than that to report.
+        const tenths: usize = @intCast(@as(u64, value) * 10 / scale);
         self.number(tenths / 10);
         if (tenths < 1000) {
             self.byte('.');
@@ -443,6 +446,28 @@ pub const Builder = struct {
         return self.buf[0..self.len];
     }
 };
+
+test "a size larger than a tenth of the address space still reads as itself" {
+    var buf: [32]u8 = undefined;
+
+    // Half a gibibyte, which is what this machine has: ten times it is past
+    // what thirty-two bits hold.
+    var half = Builder{ .buf = &buf };
+    half.bytes(512 * 1024 * 1024);
+    try std.testing.expectEqualStrings("512M", half.done());
+
+    var three = Builder{ .buf = &buf };
+    three.bytes(3 * 1024 * 1024 * 1024 / 2);
+    try std.testing.expectEqualStrings("1.5G", three.done());
+
+    // And the sizes below it read as they always did.
+    var small = Builder{ .buf = &buf };
+    small.bytes(1536);
+    try std.testing.expectEqualStrings("1.5K", small.done());
+    var tiny = Builder{ .buf = &buf };
+    tiny.bytes(999);
+    try std.testing.expectEqualStrings("999", tiny.done());
+}
 
 test "hex reads both cases and stops at the first character that is not one" {
     try std.testing.expectEqual(@as(usize, 0x8086), fromHex("8086"));
