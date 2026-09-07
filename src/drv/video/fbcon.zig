@@ -99,12 +99,7 @@ pub fn init(bi: *const bootinfo.BootInfo) bool {
     // rendered garbage at another depth would be worse than staying in text.
     if (bi.fb_bpp != 32) return false;
 
-    // A framebuffer normally sits at a physical address well above RAM, so it
-    // has no linear-map address and must be mapped explicitly.
-    const fb_virt = if (hal.isLinearPhys(bi.fb_addr))
-        hal.physToVirt(bi.fb_addr)
-    else
-        hal.mapMmio(bi.fb_addr, @as(usize, bi.fb_pitch) * bi.fb_height, .cached) catch return false;
+    const fb_virt = mapped(bi.fb_addr, @as(usize, bi.fb_pitch) * bi.fb_height) orelse return false;
 
     fb = @ptrFromInt(fb_virt);
     rom_font = if (bi.font_addr != 0)
@@ -175,6 +170,40 @@ fn fitConsole() void {
     rows = @min(pixel_height / font.height, MAX_ROWS);
 }
 
+/// The aperture this console has mapped, kept so a mode change within it
+/// costs no new mapping. A framebuffer normally sits at a physical address
+/// well above RAM, so it has no linear-map address and must be mapped
+/// explicitly, and the kernel's window for such mappings is never given
+/// back: every modeset that mapped afresh would spend four megabytes of it.
+const Aperture = struct {
+    phys: usize,
+    len: usize,
+    virt: usize,
+
+    fn covers(self: Aperture, base: usize, len: usize) bool {
+        return base >= self.phys and len <= self.len and base - self.phys <= self.len - len;
+    }
+
+    fn at(self: Aperture, base: usize) usize {
+        return self.virt + (base - self.phys);
+    }
+};
+
+var aperture: ?Aperture = null;
+
+/// Where `len` bytes of framebuffer at `phys` can be written: through the
+/// linear map when it is RAM, through the aperture already mapped when it
+/// lies within it, and through a fresh mapping otherwise.
+fn mapped(base: usize, len: usize) ?usize {
+    if (hal.isLinearPhys(base)) return hal.physToVirt(base);
+    if (aperture) |have| {
+        if (have.covers(base, len)) return have.at(base);
+    }
+    const virt = hal.mapMmio(base, len, .cached) catch return null;
+    aperture = .{ .phys = base, .len = len, .virt = virt };
+    return virt;
+}
+
 /// Point the console at a framebuffer of a different shape.
 ///
 /// For after a modeset: the pixels sit in the same aperture, but the geometry
@@ -183,10 +212,7 @@ fn fitConsole() void {
 pub fn adopt(new_phys: usize, new_pitch: usize, width: usize, height: usize) bool {
     if (!ready) return false;
 
-    const virt = if (hal.isLinearPhys(new_phys))
-        hal.physToVirt(new_phys)
-    else
-        hal.mapMmio(new_phys, new_pitch * height, .cached) catch return false;
+    const virt = mapped(new_phys, new_pitch * height) orelse return false;
 
     fb = @ptrFromInt(virt);
     phys = new_phys;

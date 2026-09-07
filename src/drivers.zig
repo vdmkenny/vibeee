@@ -302,6 +302,12 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
     const backend = display_backend orelse return error.Unsupported;
     const set = backend.set orelse return error.Unsupported;
 
+    // The console draws straight into the framebuffer, so a mode it could
+    // not follow is not set at all: in text mode there is nothing to follow
+    // with, and that is known before the adapter is touched.
+    if (console.framebufferLayout().addr == 0) return error.Unsupported;
+    const before = console.pixelSize();
+
     const fb = set(display_dev, .{ .width = width, .height = height, .bpp = bpp }) catch |err| {
         return switch (err) {
             error.Unsupported => error.Unsupported,
@@ -309,7 +315,16 @@ fn requestMode(width: u16, height: u16, bpp: u8) display.ModeError!void {
         };
     };
 
-    if (!console.adoptFramebuffer(fb.phys, fb.pitch, fb.width, fb.height)) return error.Failed;
+    if (!console.adoptFramebuffer(fb.phys, fb.pitch, fb.width, fb.height)) {
+        // The adapter goes back to where the console still is, rather than
+        // being left showing a mode nothing draws for.
+        _ = set(display_dev, .{
+            .width = @intCast(before.width),
+            .height = @intCast(before.height),
+            .bpp = bpp,
+        }) catch {};
+        return error.Failed;
+    }
 
     display.present(fb.phys, .{
         .width = fb.width,
