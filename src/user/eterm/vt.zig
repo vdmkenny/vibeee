@@ -25,6 +25,18 @@ const Style = screen.Style;
 /// emulator stays free of anything that can block.
 pub const MAX_REPLY = 32;
 
+/// One region of the screen moved by so many rows. A line feed at the
+/// bottom of a screen is this, and it is what showing a file does
+/// thousands of times.
+pub const Scrolled = union(enum) {
+    up: Region,
+    /// More than one distinct scroll, or one in each direction: not worth
+    /// replaying, so the renderer draws the region again.
+    many,
+
+    pub const Region = struct { top: usize, bottom: usize, rows: usize };
+};
+
 pub const Terminal = struct {
     grid: Grid = undefined,
     /// The alternate screen, which full-window programs switch to so the
@@ -75,6 +87,12 @@ pub const Terminal = struct {
     /// Set whenever anything changed, so a caller knows to redraw. Cleared by
     /// whoever acts on it.
     dirty: bool = false,
+    /// A scroll of the active screen since the last paint, so the renderer
+    /// can move the pixels it already has rather than drawing every cell of
+    /// the region again. Null when nothing scrolled; `.many` when more than
+    /// one distinct scroll happened, which is drawn afresh rather than
+    /// replayed.
+    scrolled: ?Scrolled = null,
     /// The visible bell: a program rang, and the window should say so without
     /// a speaker.
     bell: bool = false,
@@ -233,9 +251,49 @@ pub const Terminal = struct {
         self.cursor.wrap_pending = false;
     }
 
+    /// Move a region up, and remember that it moved: the renderer has the
+    /// pixels of every row already and can shift them, rather than drawing
+    /// every cell of the region again. One line feed at the bottom of a
+    /// full screen is three thousand cells redrawn without this, which is
+    /// most of what showing a file costs.
+    fn scrollRegionUp(self: *Terminal, top: usize, bottom: usize, rows: usize) void {
+        self.active().scrollUp(top, bottom, rows, self.cursor.pen.blank());
+        self.noteScroll(.{ .top = top, .bottom = bottom, .rows = rows });
+    }
+
+    /// Down is not replayed: it is rare, and one shape of replay is enough
+    /// to write once and be sure of.
+    fn scrollRegionDown(self: *Terminal, top: usize, bottom: usize, rows: usize) void {
+        self.active().scrollDown(top, bottom, rows, self.cursor.pen.blank());
+        self.scrolled = .many;
+    }
+
+    fn noteScroll(self: *Terminal, region: Scrolled.Region) void {
+        const held = self.scrolled orelse {
+            self.scrolled = .{ .up = region };
+            return;
+        };
+        // Two scrolls of the same region add up; anything else is drawn
+        // again rather than reasoned about.
+        switch (held) {
+            .up => |before| {
+                if (before.top == region.top and before.bottom == region.bottom) {
+                    self.scrolled = .{ .up = .{
+                        .top = region.top,
+                        .bottom = region.bottom,
+                        .rows = before.rows + region.rows,
+                    } };
+                } else {
+                    self.scrolled = .many;
+                }
+            },
+            .many => {},
+        }
+    }
+
     fn lineFeed(self: *Terminal) void {
         if (self.cursor.row == self.bottom) {
-            self.active().scrollUp(self.top, self.bottom, 1, self.cursor.pen.blank());
+            self.scrollRegionUp(self.top, self.bottom, 1);
         } else if (self.cursor.row + 1 < self.active().rows) {
             self.cursor.row += 1;
         }
@@ -243,7 +301,7 @@ pub const Terminal = struct {
 
     fn reverseLineFeed(self: *Terminal) void {
         if (self.cursor.row == self.top) {
-            self.active().scrollDown(self.top, self.bottom, 1, self.cursor.pen.blank());
+            self.scrollRegionDown(self.top, self.bottom, 1);
         } else if (self.cursor.row > 0) {
             self.cursor.row -= 1;
         }
@@ -332,12 +390,12 @@ pub const Terminal = struct {
             'd' => self.goTo(at(seq, 0), self.cursor.col),
             'J' => self.eraseDisplay(seq.raw(0)),
             'K' => self.eraseLine(seq.raw(0)),
-            'L' => g.scrollDown(@max(self.cursor.row, self.top), self.bottom, seq.get(0, 1), self.cursor.pen.blank()),
-            'M' => g.scrollUp(@max(self.cursor.row, self.top), self.bottom, seq.get(0, 1), self.cursor.pen.blank()),
+            'L' => self.scrollRegionDown(@max(self.cursor.row, self.top), self.bottom, seq.get(0, 1)),
+            'M' => self.scrollRegionUp(@max(self.cursor.row, self.top), self.bottom, seq.get(0, 1)),
             'P' => g.deleteChars(self.cursor.row, self.cursor.col, seq.get(0, 1), self.cursor.pen.blank()),
             '@' => g.insertChars(self.cursor.row, self.cursor.col, seq.get(0, 1), self.cursor.pen.blank()),
-            'S' => g.scrollUp(self.top, self.bottom, seq.get(0, 1), self.cursor.pen.blank()),
-            'T' => g.scrollDown(self.top, self.bottom, seq.get(0, 1), self.cursor.pen.blank()),
+            'S' => self.scrollRegionUp(self.top, self.bottom, seq.get(0, 1)),
+            'T' => self.scrollRegionDown(self.top, self.bottom, seq.get(0, 1)),
             'X' => self.eraseChars(seq.get(0, 1)),
             'm' => self.style(seq),
             'n' => self.report(seq),

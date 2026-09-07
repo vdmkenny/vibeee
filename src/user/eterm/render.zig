@@ -39,8 +39,11 @@ pub const Shadow = struct {
     pub fn invalidate(self: *Shadow) void {
         // A character no cell can hold, so every comparison fails and the next
         // pass draws everything.
-        self.cells = @splat(.{ .ch = 0xFFFF_FFFF });
+        self.cells = @splat(.{ .ch = NOTHING });
     }
+
+    /// What a shadow cell holds when nothing on the screen matches it.
+    pub const NOTHING: u32 = 0xFFFF_FFFF;
 };
 
 /// Draw the terminal into `area`, and return what changed.
@@ -65,6 +68,25 @@ pub fn paint(
     const cursor_moved = shadow.cursor_row != term.cursor.row or
         shadow.cursor_col != term.cursor.col or
         shadow.cursor_shown != cursor_visible;
+
+    // What scrolled since the last pass is moved rather than drawn again:
+    // the pixels of every row but the new one are already on the screen and
+    // the shadow already agrees with them, so shifting both leaves one row
+    // for the pass below to draw. Drawn instead, one line feed at the
+    // bottom of a full screen is three thousand cells, which is most of
+    // what showing a file costs.
+    var moved: ?Rect = null;
+    if (term.scrolled) |what| {
+        switch (what) {
+            .up => |region| moved = replayUp(surface, area, shadow, g.cols, cw, ch, region),
+            .many => {},
+        }
+        term.scrolled = null;
+    }
+    if (moved) |rect| {
+        top = rect.y;
+        bottom = rect.bottom();
+    }
 
     for (0..g.rows) |r| {
         var changed = false;
@@ -102,6 +124,53 @@ pub fn paint(
 
     const first = top orelse return null;
     return .{ .x = area.x, .y = first, .w = @as(i32, @intCast(g.cols)) * cw, .h = bottom - first };
+}
+
+/// Shift a region's pixels and its shadow up by `rows`, and say what that
+/// touched. The rows uncovered at the bottom are left for the pass that
+/// follows: their shadow is marked as nothing any cell can be, so it draws
+/// them.
+fn replayUp(
+    surface: Surface,
+    area: Rect,
+    shadow: *Shadow,
+    cols: usize,
+    cw: i32,
+    ch: i32,
+    region: vt.Scrolled.Region,
+) ?Rect {
+    if (region.rows == 0 or region.top > region.bottom) return null;
+    const height = region.bottom - region.top + 1;
+    // A scroll of the whole region says nothing about what was there, so
+    // there is nothing to move.
+    if (region.rows >= height) return null;
+
+    const kept = height - region.rows;
+    const from_y = area.y + @as(i32, @intCast(region.top + region.rows)) * ch;
+    const to_y = area.y + @as(i32, @intCast(region.top)) * ch;
+    const wide = @as(i32, @intCast(cols)) * cw;
+
+    // Upwards, so a row is read before the row that overwrites it.
+    var line: i32 = 0;
+    while (line < @as(i32, @intCast(kept)) * ch) : (line += 1) {
+        const src = surface.pixels + @as(usize, @intCast((from_y + line) * surface.stride + area.x));
+        const dst = surface.pixels + @as(usize, @intCast((to_y + line) * surface.stride + area.x));
+        @memcpy(dst[0..@intCast(wide)], src[0..@intCast(wide)]);
+    }
+
+    // The shadow moves with them, so the pass that follows finds the rows
+    // that did not change already matching.
+    for (0..kept) |k| {
+        const to = (region.top + k) * screen.MAX_COLS;
+        const src = (region.top + k + region.rows) * screen.MAX_COLS;
+        @memcpy(shadow.cells[to..][0..cols], shadow.cells[src..][0..cols]);
+    }
+    for (0..region.rows) |k| {
+        const at = (region.top + kept + k) * screen.MAX_COLS;
+        @memset(shadow.cells[at..][0..cols], .{ .ch = Shadow.NOTHING });
+    }
+
+    return .{ .x = area.x, .y = to_y, .w = wide, .h = @as(i32, @intCast(height)) * ch };
 }
 
 fn drawCell(

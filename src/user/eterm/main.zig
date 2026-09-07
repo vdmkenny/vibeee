@@ -56,9 +56,18 @@ export fn _start() callconv(.c) noreturn {
     etermMain();
 }
 
+/// Nothing on the screen is what the shadow says, so the next pass draws
+/// all of it. Whatever the terminal had scrolled goes with it: replaying a
+/// move onto pixels that are about to be drawn again would move the wrong
+/// ones.
+fn forgetScreen() void {
+    shadow.invalidate();
+    terminal.scrolled = null;
+}
+
 fn etermMain() noreturn {
     terminal.init();
-    shadow.invalidate();
+    forgetScreen();
 
     connection = proto.client.Connection.open("eterm") catch {
         out.text("eterm: no window manager is running\n");
@@ -291,7 +300,7 @@ fn handle(event: proto.wm.Ev) void {
         },
         .theme, .look => {
             _ = connection.adoptLook(event);
-            shadow.invalidate();
+            forgetScreen();
         },
         .close_req => sys.exit(0),
         .overflow => shadow.invalidate(),
@@ -376,7 +385,7 @@ fn resize(w: u16, h: u16) void {
     const cols = @divTrunc(@as(i32, w), render.cellWidth());
     const rows = @divTrunc(@as(i32, h), render.cellHeight());
     terminal.resize(@intCast(@max(cols, 1)), @intCast(@max(rows, 1)));
-    shadow.invalidate();
+    forgetScreen();
 
     // A full-screen program lays itself out to a size only this terminal
     // knows, so a window that changes size has to say so. It goes to the

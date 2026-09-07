@@ -306,3 +306,41 @@ test "a terminal has a usable size before it is told one" {
     t.write("output before the first configure");
     try expectLine(&t, 0, "output before the first configure");
 }
+
+test "a line feed at the bottom is recorded as a scroll of the region" {
+    var term: vt.Terminal = undefined;
+    term.init();
+    term.resize(20, 5);
+    term.scrolled = null;
+
+    // Filling the screen and one line more scrolls once.
+    term.write("a\nb\nc\nd\ne");
+    try std.testing.expectEqual(@as(?vt.Scrolled, null), term.scrolled);
+
+    term.write("\nf");
+    const once = term.scrolled orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), once.up.top);
+    try std.testing.expectEqual(@as(usize, 4), once.up.bottom);
+    try std.testing.expectEqual(@as(usize, 1), once.up.rows);
+
+    // Two of the same region add up rather than becoming two records.
+    term.write("\ng");
+    const twice = term.scrolled orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), twice.up.rows);
+
+    // The top line is what scrolled off.
+    try std.testing.expectEqual(@as(u32, 'c'), term.active().at(0, 0).ch);
+    try std.testing.expectEqual(@as(u32, 'g'), term.active().at(4, 0).ch);
+}
+
+test "a scroll the other way is not replayed" {
+    var term: vt.Terminal = undefined;
+    term.init();
+    term.resize(20, 5);
+    term.write("a\nb\nc\nd\ne");
+    term.scrolled = null;
+
+    // Insert a line, which moves the region down.
+    term.write("\x1b[H\x1b[L");
+    try std.testing.expect(term.scrolled.? == .many);
+}
