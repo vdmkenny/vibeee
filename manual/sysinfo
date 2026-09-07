@@ -1,12 +1,11 @@
 sysinfo - any fact the kernel answers, by name
 
+  sysinfo                list every key
   sysinfo <key>          print one answer
 
 The kernel describes itself through one interface, and every window and
-tool reads from it; this prints the same answers raw. Useful keys:
+tool reads from it; this prints the same answers raw.
 
-  kernel cpu mem mem.dma mem.hardware display display.adapter display.panel
-  storage board bios uptime mounts svc clock threads irq apic mtrr
-  quirks keymap font arch cmdline
-
-A key the kernel does not know is refused rather than answered blankly.
+The list comes from the kernel rather than from here, so it is whatever
+this build actually answers. A key it does not know is refused rather
+than answered blankly.

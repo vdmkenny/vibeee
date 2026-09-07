@@ -80,223 +80,324 @@ pub fn setPlatform(p: Platform) void {
 
 pub const Error = error{ UnknownKey, NoSpace };
 
+/// Every question this answers.
+///
+/// The names are the enum's, so the lookup is one and the switch below is
+/// total: a name added here without an answer will not compile, and an answer
+/// for a name nobody can ask cannot be written.
+pub const Key = enum {
+    /// Every other one of these, so a caller can ask what there is rather
+    /// than be told in a manual that drifts from the list.
+    keys,
+    kernel,
+    cmdline,
+    @"log.verbose",
+    @"log.debug",
+    arch,
+    cpu,
+    syscall,
+    @"cpu.features",
+    mem,
+    @"mem.dma",
+    @"mem.total",
+    @"mem.free",
+    heap,
+    uptime,
+    svc,
+    clock,
+    threads,
+    @"mem.hardware",
+    display,
+    @"display.adapter",
+    @"display.panel",
+    @"display.registers",
+    console,
+    font,
+    keymap,
+    board,
+    bios,
+    quirks,
+    @"quirks.ec",
+    @"quirks.battery",
+    mtrr,
+    irq,
+    apic,
+    @"threads.list",
+    acpi,
+    @"acpi.pm",
+    pci,
+    disks,
+    storage,
+    mounts,
+    log,
+    smbios,
+};
+
 /// Write the value for `key` into `buf`, returning the number of bytes.
-pub fn query(key: []const u8, buf: []u8) Error!usize {
+pub fn query(name: []const u8, buf: []u8) Error!usize {
+    const key = std.meta.stringToEnum(Key, name) orelse return error.UnknownKey;
     var w = str.Builder{ .buf = buf };
 
-    if (eq(key, "kernel")) {
-        w.print("vibeee {s}", .{VERSION});
-    } else if (eq(key, "cmdline")) {
-        if (platform.cmdline.len == 0) return error.UnknownKey;
-        w.print("{s}", .{platform.cmdline});
-    } else if (eq(key, "log.verbose")) {
-        // The two gates services log under, so their lines follow the
-        // kernel's own: one `verbose` on the command line decides for the
-        // whole boot, and one `debug` for the fault-chasing tier beneath it.
-        w.print("{d}", .{@intFromBool(console.isVerbose())});
-    } else if (eq(key, "log.debug")) {
-        w.print("{d}", .{@intFromBool(console.isDebug())});
-    } else if (eq(key, "arch")) {
-        w.print("{s}", .{@tagName(@import("builtin").cpu.arch)});
-    } else if (eq(key, "cpu")) {
-        const info = hal.cpuInfo();
-        w.print("{s}", .{info.brand});
-    } else if (eq(key, "syscall")) {
-        // What the kernel armed, not what the CPU can do. A stub that chose
-        // from CPUID alone would use a fast path whose MSRs were never
-        // programmed, and jump to nothing.
-        w.print("{s}", .{if (hal.fastSyscallArmed()) "sysenter" else "int80"});
-    } else if (eq(key, "cpu.features")) {
-        const info = hal.cpuInfo();
-        w.print("{s}, {s}", .{
-            if (info.fast_syscall) "sysenter" else "int80",
-            if (info.freq_scaling) "freq scaling" else "fixed clock",
-        });
-    } else if (eq(key, "mem")) {
-        const m = pmm.stats();
-        const total = m.totalBytes() / (1024 * 1024);
-        const used = (m.totalBytes() - m.freeBytes()) / (1024 * 1024);
-        w.print("{d} MiB used / {d} MiB", .{ used, total });
-
-        // The firmware's figure is worth showing when it differs: the gap is
-        // memory the map reserved, and seeing it beats wondering where it went.
-        if (platform.ram_total_mb != 0 and platform.ram_total_mb != total) {
-            w.print(" ({d} MiB fitted)", .{platform.ram_total_mb});
-        }
-    } else if (eq(key, "mem.dma")) {
-        // The fragmentation reading: free bytes say how much there is, and
-        // this says how much of it the things that need one piece can use.
-        // A refusal count above zero is the event the band exists to prevent.
-        const m = pmm.stats();
-        w.print("largest run {d} KiB, band {d} of {d} KiB free, {d} refusals", .{
-            pmm.largestRunBytes() / 1024,
-            pmm.bandFreeBytes() / 1024,
-            pmm.bandBytes() / 1024,
-            m.contig_refusals,
-        });
-    } else if (eq(key, "mem.total")) {
-        w.print("{d}", .{pmm.stats().totalBytes()});
-    } else if (eq(key, "mem.free")) {
-        w.print("{d}", .{pmm.stats().freeBytes()});
-    } else if (eq(key, "heap")) {
-        const h = heap.stats();
-        w.print("{d} bytes live, {d} frames", .{ h.live_bytes, h.frames });
-    } else if (eq(key, "uptime")) {
-        w.print("{d}", .{clock.monotonicMicros() / 1_000_000});
-    } else if (eq(key, "svc")) {
-        try writeServices(&w);
-    } else if (eq(key, "clock")) {
-        if (!clock.valid()) return error.UnknownKey;
-        w.print("{s}", .{clock.sourceName()});
-    } else if (eq(key, "threads")) {
-        w.print("{d}", .{sched.stats().threads});
-    } else if (eq(key, "mem.hardware")) {
-        if (platform.ram_devices == 0) return error.UnknownKey;
-        w.print("{d} MiB", .{platform.ram_total_mb});
-        if (platform.ram_type.len > 0) w.print(" {s}", .{platform.ram_type});
-        if (platform.ram_speed_mhz != 0) w.print("-{d}", .{platform.ram_speed_mhz});
-        w.print(", {d} module{s}", .{
-            platform.ram_devices,
-            if (platform.ram_devices == 1) "" else "s",
-        });
-    } else if (eq(key, "display")) {
-        // The display module first: once a compositor owns the screen the
-        // console is suspended and would answer nothing, but the screen is
-        // very much in a mode. The console's answer covers the boot, before
-        // anything has taken over.
-        const owned = display.describe();
-        const px = console.pixelSize();
-        if (owned.width != 0 and display.isOwned()) {
-            w.print("{d}x{d} 32bpp, composited", .{ owned.width, owned.height });
-        } else if (px.width != 0) {
-            w.print("{d}x{d} 32bpp", .{ px.width, px.height });
-        } else {
-            w.print("text mode", .{});
-        }
-    } else if (eq(key, "display.adapter")) {
-        const a = display.describeAdapter();
-        if (a.backend.len == 0) {
-            w.print("unrecognised, using the firmware's mode", .{});
-        } else {
-            w.print("{s} ({s}), {s}", .{
-                a.backend,
-                a.family,
-                if (a.can_set) "can set modes" else "no modeset yet",
+    switch (key) {
+        .keys => {
+            for (std.enums.values(Key), 0..) |which, i| {
+                if (i != 0) w.byte('\n');
+                w.text(@tagName(which));
+            }
+        },
+        .kernel => {
+            w.print("vibeee {s}", .{VERSION});
+        },
+        .cmdline => {
+            if (platform.cmdline.len == 0) return error.UnknownKey;
+            w.print("{s}", .{platform.cmdline});
+        },
+        .@"log.verbose" => {
+            // The two gates services log under, so their lines follow the
+            // kernel's own: one `verbose` on the command line decides for the
+            // whole boot, and one `debug` for the fault-chasing tier beneath it.
+            w.print("{d}", .{@intFromBool(console.isVerbose())});
+        },
+        .@"log.debug" => {
+            w.print("{d}", .{@intFromBool(console.isDebug())});
+        },
+        .arch => {
+            w.print("{s}", .{@tagName(@import("builtin").cpu.arch)});
+        },
+        .cpu => {
+            const info = hal.cpuInfo();
+            w.print("{s}", .{info.brand});
+        },
+        .syscall => {
+            // What the kernel armed, not what the CPU can do. A stub that chose
+            // from CPUID alone would use a fast path whose MSRs were never
+            // programmed, and jump to nothing.
+            w.print("{s}", .{if (hal.fastSyscallArmed()) "sysenter" else "int80"});
+        },
+        .@"cpu.features" => {
+            const info = hal.cpuInfo();
+            w.print("{s}, {s}", .{
+                if (info.fast_syscall) "sysenter" else "int80",
+                if (info.freq_scaling) "freq scaling" else "fixed clock",
             });
-        }
-    } else if (eq(key, "display.panel")) {
-        if (display.panelMode()) |p| {
-            w.print("{d}x{d}", .{ p.width, p.height });
-        }
-    } else if (eq(key, "display.registers")) {
-        if (display.registerReporter()) |f| {
-            w.delegate(f);
-        } else {
-            w.print("no adapter that reports registers", .{});
-        }
-    } else if (eq(key, "console")) {
-        w.print("{d}x{d} cells", .{ console.width(), console.height() });
-    } else if (eq(key, "font")) {
-        w.print("{s}", .{console.fontName()});
-    } else if (eq(key, "keymap")) {
-        w.print("{s}", .{keymap.current().name});
-    } else if (eq(key, "board")) {
-        w.print("{s} {s}", .{
-            platform.system_manufacturer orelse "unknown",
-            platform.system_product orelse "",
-        });
-    } else if (eq(key, "bios")) {
-        w.print("{s} {s}", .{
-            platform.bios_vendor orelse "unknown",
-            platform.bios_version orelse "",
-        });
-    } else if (eq(key, "quirks")) {
-        const list = quirks.appliedQuirks();
-        if (list.len == 0) return error.UnknownKey;
-        for (list, 0..) |quirk, i| {
-            if (i > 0) w.print("\n", .{});
-            w.print("{s}: {s}", .{ quirk.name, quirk.why });
-        }
-    } else if (eq(key, "quirks.ec")) {
-        const c = quirks.get();
-        if (c.ec_data_port == null or c.ec_status_port == null) return error.UnknownKey;
-        w.print("{x} {x}", .{ c.ec_data_port.?, c.ec_status_port.? });
-    } else if (eq(key, "quirks.battery")) {
-        if (!quirks.get().battery_percent_mislabel) return error.UnknownKey;
-        w.print("1", .{});
-    } else if (eq(key, "mtrr")) {
-        // The memory-type map, straight off the registers: when the boot log
-        // says the firmware already typed the framebuffer, this says with
-        // what, which is the fact a fix would be built on.
-        if (!hal.caps.write_combine) return error.UnknownKey;
-        const count = hal.impl.mtrrRangeCount();
-        if (count == 0) return error.UnknownKey;
-        var shown = false;
-        for (0..count) |slot| {
-            const range = hal.impl.mtrrRangeAt(slot) orelse continue;
-            if (shown) w.print("\n", .{});
-            shown = true;
-            w.print("{x:0>8} +{x:0>8} {s}", .{ range.base, range.size, range.typeName() });
-        }
-        if (!shown) w.print("no ranges programmed", .{});
-    } else if (eq(key, "irq")) {
-        try writeIrqs(&w);
-    } else if (eq(key, "apic")) {
-        // The controller's own account: the gate value, then the vectors in
-        // service, requested-but-waiting, and marked level. What software
-        // state cannot substitute for when a delivery is late.
-        w.print("ppr {x}", .{hal.interruptPriority()});
-        var vectors: [16]u8 = undefined;
-        const groups = [_]struct { name: []const u8, read: *const fn ([]u8) usize }{
-            .{ .name = " isr", .read = hal.interruptsInService },
-            .{ .name = " irr", .read = hal.interruptsRequested },
-            .{ .name = " tmr", .read = hal.interruptsLevel },
-        };
-        for (groups) |group| {
-            w.print("{s}", .{group.name});
-            const n = group.read(&vectors);
-            for (vectors[0..n]) |vector| w.print(" {x}", .{vector});
-        }
-    } else if (eq(key, "threads.list")) {
-        writeThreads(&w);
-    } else if (eq(key, "acpi")) {
-        // Where the tables begin, for the process that interprets them. A
-        // physical address rather than anything mapped: what to do with it is
-        // the asker's business, and it needs the driver capability to do it.
-        w.print("{x}", .{platform.acpi_rsdp});
-    } else if (eq(key, "acpi.pm")) {
-        // The power management block's ranges, base and length pairs, in
-        // hex. What must never be driven, asked of the firmware's own table
-        // and of the chipset rather than guessed.
-        if (platform.pm1a_event_len == 0 and platform.pm1a_control_len == 0 and
-            platform.pm_block_len == 0) return error.UnknownKey;
-        w.print("{x} {x} {x} {x} {x} {x}", .{
-            platform.pm1a_event,   platform.pm1a_event_len,
-            platform.pm1a_control, platform.pm1a_control_len,
-            platform.pm_block,     platform.pm_block_len,
-        });
-    } else if (eq(key, "pci")) {
-        try writeDevices(&w);
-    } else if (eq(key, "disks")) {
-        writeDisks(&w);
-    } else if (eq(key, "storage")) {
-        writeStorage(&w);
-    } else if (eq(key, "mounts")) {
-        writeMounts(&w);
-    } else if (eq(key, "log")) {
-        // The whole ring, copied straight out rather than formatted: it is
-        // already text, and the ring is larger than the writer's idea of a
-        // line.
-        const n = klog.copyOut(buf);
-        if (n == 0) return error.UnknownKey;
-        return n;
-    } else if (eq(key, "smbios")) {
-        const table = platform.smbios_table orelse return error.UnknownKey;
-        if (table.len > buf.len) return error.NoSpace;
-        @memcpy(buf[0..table.len], table);
-        return table.len;
-    } else {
-        return error.UnknownKey;
+        },
+        .mem => {
+            const m = pmm.stats();
+            const total = m.totalBytes() / (1024 * 1024);
+            const used = (m.totalBytes() - m.freeBytes()) / (1024 * 1024);
+            w.print("{d} MiB used / {d} MiB", .{ used, total });
+
+            // The firmware's figure is worth showing when it differs: the gap is
+            // memory the map reserved, and seeing it beats wondering where it went.
+            if (platform.ram_total_mb != 0 and platform.ram_total_mb != total) {
+                w.print(" ({d} MiB fitted)", .{platform.ram_total_mb});
+            }
+        },
+        .@"mem.dma" => {
+            // The fragmentation reading: free bytes say how much there is, and
+            // this says how much of it the things that need one piece can use.
+            // A refusal count above zero is the event the band exists to prevent.
+            const m = pmm.stats();
+            w.print("largest run {d} KiB, band {d} of {d} KiB free, {d} refusals", .{
+                pmm.largestRunBytes() / 1024,
+                pmm.bandFreeBytes() / 1024,
+                pmm.bandBytes() / 1024,
+                m.contig_refusals,
+            });
+        },
+        .@"mem.total" => {
+            w.print("{d}", .{pmm.stats().totalBytes()});
+        },
+        .@"mem.free" => {
+            w.print("{d}", .{pmm.stats().freeBytes()});
+        },
+        .heap => {
+            const h = heap.stats();
+            w.print("{d} bytes live, {d} frames", .{ h.live_bytes, h.frames });
+        },
+        .uptime => {
+            w.print("{d}", .{clock.monotonicMicros() / 1_000_000});
+        },
+        .svc => {
+            try writeServices(&w);
+        },
+        .clock => {
+            if (!clock.valid()) return error.UnknownKey;
+            w.print("{s}", .{clock.sourceName()});
+        },
+        .threads => {
+            w.print("{d}", .{sched.stats().threads});
+        },
+        .@"mem.hardware" => {
+            if (platform.ram_devices == 0) return error.UnknownKey;
+            w.print("{d} MiB", .{platform.ram_total_mb});
+            if (platform.ram_type.len > 0) w.print(" {s}", .{platform.ram_type});
+            if (platform.ram_speed_mhz != 0) w.print("-{d}", .{platform.ram_speed_mhz});
+            w.print(", {d} module{s}", .{
+                platform.ram_devices,
+                if (platform.ram_devices == 1) "" else "s",
+            });
+        },
+        .display => {
+            // The display module first: once a compositor owns the screen the
+            // console is suspended and would answer nothing, but the screen is
+            // very much in a mode. The console's answer covers the boot, before
+            // anything has taken over.
+            const owned = display.describe();
+            const px = console.pixelSize();
+            if (owned.width != 0 and display.isOwned()) {
+                w.print("{d}x{d} 32bpp, composited", .{ owned.width, owned.height });
+            } else if (px.width != 0) {
+                w.print("{d}x{d} 32bpp", .{ px.width, px.height });
+            } else {
+                w.print("text mode", .{});
+            }
+        },
+        .@"display.adapter" => {
+            const a = display.describeAdapter();
+            if (a.backend.len == 0) {
+                w.print("unrecognised, using the firmware's mode", .{});
+            } else {
+                w.print("{s} ({s}), {s}", .{
+                    a.backend,
+                    a.family,
+                    if (a.can_set) "can set modes" else "no modeset yet",
+                });
+            }
+        },
+        .@"display.panel" => {
+            if (display.panelMode()) |p| {
+                w.print("{d}x{d}", .{ p.width, p.height });
+            }
+        },
+        .@"display.registers" => {
+            if (display.registerReporter()) |f| {
+                w.delegate(f);
+            } else {
+                w.print("no adapter that reports registers", .{});
+            }
+        },
+        .console => {
+            w.print("{d}x{d} cells", .{ console.width(), console.height() });
+        },
+        .font => {
+            w.print("{s}", .{console.fontName()});
+        },
+        .keymap => {
+            w.print("{s}", .{keymap.current().name});
+        },
+        .board => {
+            w.print("{s} {s}", .{
+                platform.system_manufacturer orelse "unknown",
+                platform.system_product orelse "",
+            });
+        },
+        .bios => {
+            w.print("{s} {s}", .{
+                platform.bios_vendor orelse "unknown",
+                platform.bios_version orelse "",
+            });
+        },
+        .quirks => {
+            const list = quirks.appliedQuirks();
+            if (list.len == 0) return error.UnknownKey;
+            for (list, 0..) |quirk, i| {
+                if (i > 0) w.print("\n", .{});
+                w.print("{s}: {s}", .{ quirk.name, quirk.why });
+            }
+        },
+        .@"quirks.ec" => {
+            const c = quirks.get();
+            if (c.ec_data_port == null or c.ec_status_port == null) return error.UnknownKey;
+            w.print("{x} {x}", .{ c.ec_data_port.?, c.ec_status_port.? });
+        },
+        .@"quirks.battery" => {
+            if (!quirks.get().battery_percent_mislabel) return error.UnknownKey;
+            w.print("1", .{});
+        },
+        .mtrr => {
+            // The memory-type map, straight off the registers: when the boot log
+            // says the firmware already typed the framebuffer, this says with
+            // what, which is the fact a fix would be built on.
+            if (!hal.caps.write_combine) return error.UnknownKey;
+            const count = hal.impl.mtrrRangeCount();
+            if (count == 0) return error.UnknownKey;
+            var shown = false;
+            for (0..count) |slot| {
+                const range = hal.impl.mtrrRangeAt(slot) orelse continue;
+                if (shown) w.print("\n", .{});
+                shown = true;
+                w.print("{x:0>8} +{x:0>8} {s}", .{ range.base, range.size, range.typeName() });
+            }
+            if (!shown) w.print("no ranges programmed", .{});
+        },
+        .irq => {
+            try writeIrqs(&w);
+        },
+        .apic => {
+            // The controller's own account: the gate value, then the vectors in
+            // service, requested-but-waiting, and marked level. What software
+            // state cannot substitute for when a delivery is late.
+            w.print("ppr {x}", .{hal.interruptPriority()});
+            var vectors: [16]u8 = undefined;
+            const groups = [_]struct { name: []const u8, read: *const fn ([]u8) usize }{
+                .{ .name = " isr", .read = hal.interruptsInService },
+                .{ .name = " irr", .read = hal.interruptsRequested },
+                .{ .name = " tmr", .read = hal.interruptsLevel },
+            };
+            for (groups) |group| {
+                w.print("{s}", .{group.name});
+                const n = group.read(&vectors);
+                for (vectors[0..n]) |vector| w.print(" {x}", .{vector});
+            }
+        },
+        .@"threads.list" => {
+            writeThreads(&w);
+        },
+        .acpi => {
+            // Where the tables begin, for the process that interprets them. A
+            // physical address rather than anything mapped: what to do with it is
+            // the asker's business, and it needs the driver capability to do it.
+            w.print("{x}", .{platform.acpi_rsdp});
+        },
+        .@"acpi.pm" => {
+            // The power management block's ranges, base and length pairs, in
+            // hex. What must never be driven, asked of the firmware's own table
+            // and of the chipset rather than guessed.
+            if (platform.pm1a_event_len == 0 and platform.pm1a_control_len == 0 and
+                platform.pm_block_len == 0) return error.UnknownKey;
+            w.print("{x} {x} {x} {x} {x} {x}", .{
+                platform.pm1a_event,   platform.pm1a_event_len,
+                platform.pm1a_control, platform.pm1a_control_len,
+                platform.pm_block,     platform.pm_block_len,
+            });
+        },
+        .pci => {
+            try writeDevices(&w);
+        },
+        .disks => {
+            writeDisks(&w);
+        },
+        .storage => {
+            writeStorage(&w);
+        },
+        .mounts => {
+            writeMounts(&w);
+        },
+        .log => {
+            // The whole ring, copied straight out rather than formatted: it is
+            // already text, and the ring is larger than the writer's idea of a
+            // line.
+            const n = klog.copyOut(buf);
+            if (n == 0) return error.UnknownKey;
+            return n;
+        },
+        .smbios => {
+            const table = platform.smbios_table orelse return error.UnknownKey;
+            if (table.len > buf.len) return error.NoSpace;
+            @memcpy(buf[0..table.len], table);
+            return table.len;
+        },
     }
 
     // Asked once, at the end. A report that did not fit is a report the
@@ -487,8 +588,4 @@ fn writeMounts(w: *str.Builder) void {
         w.print(" free={d} size={d}", .{ usage.free, usage.total });
     }
     if (first) w.print("none", .{});
-}
-
-fn eq(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
 }
