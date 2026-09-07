@@ -28,6 +28,7 @@ const port = @import("../../arch/x86/port.zig");
 
 /// Controller commands that concern the second port.
 const ENABLE_AUX = 0xA8;
+const DISABLE_AUX = 0xA7;
 const WRITE_TO_AUX = 0xD4;
 
 /// Configuration byte bits. The clock bit is inverted: setting it *disables*
@@ -172,13 +173,25 @@ pub fn init() Kind {
 
     kbc.command(ENABLE_AUX);
 
-    var cfg = kbc.config();
+    var cfg = kbc.config() orelse {
+        console.warn("mouse: controller did not answer for its configuration; second port left off", .{});
+        kbc.command(DISABLE_AUX);
+        return .none;
+    };
     cfg.mouse_interrupt = true;
     cfg.mouse_clock_off = false;
     kbc.setConfig(cfg);
 
     if (!send(SET_DEFAULTS)) {
         console.info("mouse", "no device on the second port", .{});
+        // Undone, not abandoned: a port left enabled with its interrupt on
+        // and nobody to take it lets a late byte park in the shared output
+        // buffer, in front of every keystroke.
+        cfg.mouse_interrupt = false;
+        cfg.mouse_clock_off = true;
+        kbc.setConfig(cfg);
+        kbc.command(DISABLE_AUX);
+        kbc.drain();
         return .none;
     }
 
@@ -219,9 +232,13 @@ pub fn present() bool {
 
 fn onIrq(_: *idt.Frame) void {
     // Drain: the controller may hold more than one byte, and a single read per
-    // interrupt falls permanently behind a moving finger.
-    while (kbc.status().output_full) {
-        if (!kbc.status().from_aux) return;
+    // interrupt falls permanently behind a moving finger. Bounded by what the
+    // controller can hold, like the keyboard's: a stuck flag costs one pass.
+    var drained: u8 = 0;
+    while (drained < kbc.BUFFERED_MAX) : (drained += 1) {
+        const now = kbc.status();
+        if (!now.output_full) break;
+        if (!now.from_aux) return;
         feed(port.inb(kbc.DATA));
     }
 }

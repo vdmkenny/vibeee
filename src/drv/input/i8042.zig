@@ -80,9 +80,27 @@ pub const Config = packed struct(u8) {
     _reserved: u1 = 0,
 };
 
-pub fn config() Config {
+/// The controller's configuration byte, or null when the controller did
+/// not answer. A byte of zeros would be as good an answer as any, and
+/// writing it back with one bit changed would silently switch off the
+/// translation and the clocks the firmware set up.
+pub fn config() ?Config {
     command(0x20);
-    return @bitCast(readData() orelse 0);
+    return @bitCast(readData() orelse return null);
+}
+
+/// What the controller can physically hold in its output buffer. A drain
+/// that reads more than this is reading a stuck flag, and must cost one
+/// pass rather than the machine.
+pub const BUFFERED_MAX = 32;
+
+/// Throw away whatever is in the output buffer, up to what it can hold:
+/// what the firmware left there, or what a probe left half done.
+pub fn drain() void {
+    var drained: u32 = 0;
+    while (status().output_full and drained < BUFFERED_MAX) : (drained += 1) {
+        _ = port.inb(DATA);
+    }
 }
 
 pub fn setConfig(value: Config) void {
@@ -221,11 +239,13 @@ pub fn onKeyboardInterrupt() void {
     // Bounded by what the controller can physically buffer: a stuck flag with
     // nothing behind it must cost one interrupt, not the machine.
     var drained: u8 = 0;
-    while (status().output_full and drained < 32) : (drained += 1) {
+    while (drained < BUFFERED_MAX) : (drained += 1) {
+        const now = status();
+        if (!now.output_full) break;
         // Both devices share one output buffer. A byte flagged as coming from
         // the second port is the pointing device's, and reading it here would
         // consume half a movement packet.
-        if (status().from_aux) return;
+        if (now.from_aux) return;
 
         const byte = port.inb(DATA);
 
@@ -261,19 +281,21 @@ pub fn init() void {
 
     // Flush anything the BIOS left buffered, so the first real keystroke is not
     // preceded by a stale one.
-    var drained: u32 = 0;
-    while (status().output_full and drained < 32) : (drained += 1) {
-        _ = port.inb(DATA);
-    }
+    drain();
 
     // Enable the keyboard's interrupt in the controller's configuration byte.
     // The rest of the byte is left as the BIOS set it: it has already worked out
     // this machine's translation and clock settings, and second-guessing that
     // on hardware with no serial port risks a keyboard that cannot report why
-    // it is dead.
-    var cfg = config();
-    cfg.keyboard_interrupt = true;
-    setConfig(cfg);
+    // it is dead. A controller that does not say what it is set to is left
+    // as it is, and the keyboard's interrupt is whatever the firmware left.
+    if (config()) |read| {
+        var cfg = read;
+        cfg.keyboard_interrupt = true;
+        setConfig(cfg);
+    } else {
+        console.warn("kbd: controller did not answer for its configuration; left as it is", .{});
+    }
 
     idt.setHandler(idt.legacyVector(1), onIrq);
     idt.setIrqMask(1, false);
@@ -294,12 +316,12 @@ pub fn reassert() void {
     const flags = cpu.saveAndDisableInterrupts();
     defer cpu.restoreInterrupts(flags);
 
-    var drained: u32 = 0;
-    while (status().output_full and drained < 32) : (drained += 1) {
-        _ = port.inb(DATA);
-    }
+    drain();
 
-    var cfg = config();
+    var cfg = config() orelse {
+        console.warn("kbd: controller did not answer for its configuration; left as it is", .{});
+        return;
+    };
     if (cfg.keyboard_interrupt) {
         console.debug("kbd", "controller kept its interrupt enable", .{});
         return;
