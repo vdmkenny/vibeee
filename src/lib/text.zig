@@ -388,6 +388,19 @@ pub fn charWidth(text: []const u8, at: usize) usize {
     return @min(@as(usize, width), text.len - at);
 }
 
+/// The byte offset of the character before `at`.
+///
+/// The mirror of `charWidth`, and what a cursor moving left needs: a cursor
+/// that stopped between the two halves of an accented letter is one that can
+/// delete half of one. Continuation bytes begin nothing, so stepping back over
+/// them lands on a character's first byte.
+pub fn charBefore(text: []const u8, at: usize) usize {
+    if (at == 0) return 0;
+    var i = @min(at, text.len) - 1;
+    while (i > 0 and text[i] & 0xC0 == 0x80) i -= 1;
+    return i;
+}
+
 /// A window of characters out of a line: `count` of them starting at the
 /// `from`th, clipped to what is there.
 ///
@@ -459,6 +472,29 @@ fn scratch(bytes: []u8, index: []u32, from: []const u8) Document {
     var doc = Document{ .bytes = bytes, .line_at = index };
     doc.load(from);
     return doc;
+}
+
+test "stepping back lands on a character's first byte" {
+    // "aé" is three bytes: 'a', then two for the accented letter.
+    const both = "a\u{e9}";
+    try std.testing.expectEqual(@as(usize, 3), both.len);
+
+    // From the end, back over the accented letter to its first byte.
+    try std.testing.expectEqual(@as(usize, 1), charBefore(both, both.len));
+    // From that byte, back to the 'a'.
+    try std.testing.expectEqual(@as(usize, 0), charBefore(both, 1));
+    // At the start there is nowhere to go.
+    try std.testing.expectEqual(@as(usize, 0), charBefore(both, 0));
+
+    // An offset past the end is read as the end rather than trapping.
+    try std.testing.expectEqual(@as(usize, 1), charBefore(both, 99));
+}
+
+test "a truncated sequence is measured as what is there" {
+    // The first byte of a three-byte character, alone. Reading its declared
+    // width would slice past the end.
+    const cut = "\xE2";
+    try std.testing.expectEqual(@as(usize, 1), charWidth(cut, 0));
 }
 
 test "an empty document is one empty line with the cursor in it" {

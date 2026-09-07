@@ -100,8 +100,25 @@ fn here() *Pane {
 /// to rename a file.
 const Asking = enum { nothing, folder, confirm_delete };
 var asking: Asking = .nothing;
-var answer: [64]u8 = @splat(0);
-var answer_len: usize = 0;
+
+/// The question itself is the toolkit's, so it is the same sheet every other
+/// program in this system asks with, and its field takes whole characters:
+/// this machine's keyboard is Belgian AZERTY, where a folder called Élève is
+/// four keys and six bytes.
+var prompt: eui.prompt.Prompt = .{};
+
+const FOLDER_CHOICES = [_]eui.prompt.Choice{
+    .{ .label = "Make", .letter = 'm', .weight = .strong },
+    .{ .label = "Cancel", .letter = 'c' },
+};
+
+const DELETE_CHOICES = [_]eui.prompt.Choice{
+    .{ .label = "Delete", .letter = 'd', .weight = .strong },
+    .{ .label = "Keep", .letter = 'k' },
+};
+
+/// Room for the longest question this asks: the words, and the name in them.
+var question_words: [eui.prompt.QUESTION_MAX]u8 = undefined;
 
 /// What just happened, said in the footer until the next thing happens.
 var status: []const u8 = "";
@@ -135,16 +152,8 @@ fn key(code: proto.app.KeyCode, mods: proto.app.Modifiers) bool {
     // A question in the footer takes the keyboard until it is answered:
     // typing a folder's name into the listing behind it would move the
     // cursor instead.
-    if (asking != .nothing) {
-        switch (code) {
-            .escape => stopAsking(),
-            .enter => finishAsking(),
-            .backspace => {
-                if (answer_len > 0) answer_len -= 1;
-                ctx.damage();
-            },
-            else => {},
-        }
+    if (prompt.isOpen()) {
+        if (eui.prompt.key(&prompt, code)) |choice| answered(choice);
         return true;
     }
 
@@ -210,12 +219,12 @@ fn followCursor() void {
 }
 
 fn typed(codepoint: u32) bool {
-    if (asking == .nothing) return false;
-    if (codepoint < ' ' or codepoint >= 0x7F) return true;
-    if (answer_len == answer.len) return true;
-    answer[answer_len] = @intCast(codepoint);
-    answer_len += 1;
-    ctx.damage();
+    if (!prompt.isOpen()) return false;
+    // A question with a field takes every character; one with only buttons
+    // takes the letters that name them.
+    if (!prompt.takesText()) {
+        if (eui.prompt.letter(&prompt, codepoint)) |choice| answered(choice);
+    }
     return true;
 }
 
@@ -341,27 +350,60 @@ fn copyFile(from: []const u8, to: []const u8) bool {
 }
 
 fn startAsking(what: Asking) void {
-    if (what == .confirm_delete and here().current() == null) return;
+    const entry = here().current();
+    if (what == .confirm_delete and entry == null) return;
+
     asking = what;
-    answer_len = 0;
     status = "";
+    switch (what) {
+        .folder => prompt.askText("New folder", &FOLDER_CHOICES, .{ .hint = "a name" }),
+        .confirm_delete => {
+            // The name in the question rather than beside it: a question about
+            // a file should say which file.
+            var words = str.Builder{ .buf = &question_words };
+            words.text("Delete ");
+            words.text(entry.?.name);
+            words.byte('?');
+            prompt.ask(words.done(), &DELETE_CHOICES);
+        },
+        .nothing => {},
+    }
     ctx.damage();
 }
 
 fn stopAsking() void {
     asking = .nothing;
-    answer_len = 0;
+    prompt.dismiss();
     ctx.damage();
+}
+
+/// What the sheet was answered with. The last choice is always the way out.
+fn answered(choice: usize) void {
+    const words: []const eui.prompt.Choice = switch (asking) {
+        .folder => &FOLDER_CHOICES,
+        .confirm_delete => &DELETE_CHOICES,
+        .nothing => return,
+    };
+    if (choice == words.len - 1) return stopAsking();
+    finishAsking();
 }
 
 fn finishAsking() void {
     switch (asking) {
         .folder => {
-            const name = answer[0..answer_len];
+            var kept: [eui.prompt.TEXT_MAX]u8 = undefined;
+            const line = prompt.line();
+            @memcpy(kept[0..line.len], line);
+            const name = kept[0..line.len];
             if (name.len == 0) return stopAsking();
 
             var buf: [160]u8 = undefined;
-            const target = paths.join(here().path(), name, &buf);
+            // Refused rather than cut short: a folder made at a truncated path
+            // is a folder somewhere else.
+            const target = paths.joined(here().path(), name, &buf) orelse {
+                status = "That name is too long for where it would go.";
+                return stopAsking();
+            };
             status = if (sys.mkdir(target) >= 0) "Made." else "That did not work.";
         },
         .confirm_delete => {
@@ -785,7 +827,10 @@ const KEYS = [_]eui.keys.Key{
 
 /// The keys along the bottom, or the question that has taken their place.
 fn drawKeys(area: Rect) void {
-    if (asking != .nothing) return drawQuestion(area);
+    if (prompt.isOpen()) {
+        if (eui.prompt.run(ctx, area, &prompt)) |choice| answered(choice);
+        return;
+    }
 
     // The footer carries what just happened, or how much is in the pane, and
     // both change often enough that it is drawn every pass rather than being
@@ -795,40 +840,4 @@ fn drawKeys(area: Rect) void {
     // What just happened, if anything did. How much is in a pane is said in
     // that pane's own head, where it belongs to the pane it counts.
     eui.keys.bar(ctx.surface, area, &KEYS, status);
-}
-
-/// One line of the footer, borrowed to ask something. A question where the
-/// answer will land beats a window that covers what you were looking at.
-fn drawQuestion(area: Rect) void {
-    const t = theme.current();
-    ctx.addDamage(area);
-    ctx.surface.fill(area, t.bar);
-    ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
-
-    const baseline = area.y + @divTrunc(area.h - Surface.textHeight(), 2);
-    var x = area.x + t.menu_padding;
-
-    const question = switch (asking) {
-        .folder => "New folder:",
-        .confirm_delete => "Delete it? Enter to go on, Escape to stop:",
-        .nothing => "",
-    };
-    ctx.surface.text(x, baseline, question, t.bar_text);
-    x += Surface.textWidth(question) + t.gap;
-
-    if (asking == .folder) {
-        const typed_text = answer[0..answer_len];
-        ctx.surface.text(x, baseline, typed_text, t.accent_text);
-        ctx.surface.fill(.{
-            .x = x + Surface.textWidth(typed_text) + 2,
-            .y = baseline,
-            .w = 2,
-            .h = Surface.textHeight(),
-        }, t.accent_text);
-    } else {
-        var buf: [160]u8 = undefined;
-        if (here().currentPath(&buf)) |target| {
-            ctx.surface.clipped(area).text(x, baseline, target, t.warning);
-        }
-    }
 }

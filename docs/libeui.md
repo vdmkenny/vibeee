@@ -263,7 +263,6 @@ Editable text: a buffer, the lines it breaks into, and a control that edits it.
 
 | call | signature |
 |---|---|
-| `sequenceLength` | `fn (u8) usize` |
 | `lines` | `fn ([]const u8, *const font.Font, i32) text.Lines` |
 | `count` | `fn ([]const u8, *const font.Font, i32) usize` |
 | `positionOf` | `fn ([]const u8, *const font.Font, i32, usize) text.Position` |

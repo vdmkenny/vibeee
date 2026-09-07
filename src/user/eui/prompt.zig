@@ -47,10 +47,11 @@ pub const Amount = struct {
 /// The longest line a question takes.
 pub const TEXT_MAX = 128;
 
-/// The question standing in a window, or none.
-/// The longest question a prompt keeps. Longer than any this system asks,
-/// and short enough that a prompt is still a small value.
-const QUESTION_MAX = 96;
+/// The longest question a prompt keeps. Longer than any this system asks, and
+/// short enough that a prompt is still a small value. Public so a caller
+/// building a question out of a name can size its own buffer to it rather than
+/// find out here that the end was cut off.
+pub const QUESTION_MAX = 96;
 
 pub const Prompt = struct {
     /// The words of the question, copied rather than borrowed.

@@ -19,28 +19,13 @@ const draw = @import("draw.zig");
 const scroll = @import("scroll.zig");
 const eui_context_menu = @import("context_menu.zig");
 const str = @import("lib").str;
+const text_mod = @import("lib").text;
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
 const Rect = draw.Rect;
 const Surface = draw.Surface;
 const KeyCode = widget.KeyCode;
-
-/// How many bytes a UTF-8 sequence starting with this byte occupies.
-///
-/// Everything here moves by whole characters, because a cursor between the two
-/// halves of an accented letter is a cursor that can delete half of one.
-pub fn sequenceLength(first: u8) usize {
-    if (first < 0x80) return 1;
-    if (first & 0xE0 == 0xC0) return 2;
-    if (first & 0xF0 == 0xE0) return 3;
-    if (first & 0xF8 == 0xF0) return 4;
-    return 1;
-}
-
-fn isContinuation(byte: u8) bool {
-    return byte & 0xC0 == 0x80;
-}
 
 // ---------------------------------------------------------------------------
 // The buffer
@@ -91,16 +76,13 @@ pub const Buffer = struct {
 
     /// The offset of the character before `at`.
     pub fn before(self: *const Buffer, at: usize) usize {
-        if (at == 0) return 0;
-        var i = @min(at, self.len) - 1;
-        while (i > 0 and isContinuation(self.bytes[i])) i -= 1;
-        return i;
+        return text_mod.charBefore(self.bytes[0..self.len], at);
     }
 
     /// The offset of the character after `at`.
     pub fn after(self: *const Buffer, at: usize) usize {
         if (at >= self.len) return self.len;
-        return @min(at + sequenceLength(self.bytes[at]), self.len);
+        return at + text_mod.charWidth(self.bytes[0..self.len], at);
     }
 };
 
@@ -147,8 +129,8 @@ pub const Lines = struct {
                 return .{ .start = start, .end = i, .next = i + 1 };
             }
 
-            const n = sequenceLength(byte);
-            const advance: i32 = @intCast(self.font.measure(self.text[i..@min(i + n, self.text.len)]));
+            const n = text_mod.charWidth(self.text, i);
+            const advance: i32 = @intCast(self.font.measure(self.text[i..][0..n]));
 
             // Never breaks before the first character: a window narrower than
             // one glyph would otherwise produce lines that hold nothing and
@@ -236,8 +218,8 @@ pub fn offsetAt(text: []const u8, font: *const draw.Font, line: Line, x: i32) us
     var pen: i32 = 0;
 
     while (i < line.end) {
-        const n = sequenceLength(text[i]);
-        const advance: i32 = @intCast(font.measure(text[i..@min(i + n, text.len)]));
+        const n = text_mod.charWidth(text, i);
+        const advance: i32 = @intCast(font.measure(text[i..][0..n]));
         if (x < pen + @divTrunc(advance, 2)) return i;
         pen += advance;
         i += n;
@@ -814,8 +796,8 @@ fn paint(
         var i = line.start;
 
         while (i < line.end) {
-            const n = sequenceLength(text[i]);
-            const piece = text[i..@min(i + n, text.len)];
+            const n = text_mod.charWidth(text, i);
+            const piece = text[i..][0..n];
             const advance: i32 = @intCast(face().measure(piece));
             const selected = if (span) |sp| i >= sp.from and i < sp.to else false;
 

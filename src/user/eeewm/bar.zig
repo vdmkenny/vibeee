@@ -31,6 +31,7 @@ const strip = @import("eui").strip;
 const audio = @import("proto").audio;
 const eui_icon = @import("eui").icon;
 const eui_keys = @import("eui").keys;
+const eui_text = @import("eui").text;
 const graph = @import("lib").audiograph;
 const ipv4 = @import("lib").ipv4;
 const net = @import("proto").net;
@@ -192,45 +193,46 @@ pub const items = [_]Item{
     .{ .label = "Shut down", .category = .session, .mark = .power, .action = .power_off },
 };
 
-/// Whether a key produced a character somebody meant to type. Space counts;
-/// anything below it is a control key wearing a codepoint.
+/// Whether a key produced a character somebody meant to type.
+///
+/// Anything that is not a control character. This machine's own keyboard is
+/// Belgian AZERTY, where the accented letters are unshifted keys on the number
+/// row: a field that took only ASCII could not be typed into with the keys the
+/// machine has.
 fn printable(codepoint: u32) bool {
-    return codepoint >= ' ' and codepoint < 0x7F;
+    if (codepoint < ' ' or codepoint == 0x7F) return false;
+    // The C1 block, which no key means as text.
+    if (codepoint >= 0x80 and codepoint < 0xA0) return false;
+    return codepoint <= 0x10FFFF;
 }
 
 /// What has been typed into the launcher's field.
 ///
 /// Short on purpose: this is a name being narrowed down, not a sentence, and
-/// a field that can hold more than a name invites one.
-const Query = struct {
-    buf: [24]u8 = @splat(0),
-    len: usize = 0,
+/// a field that can hold more than a name invites one. The toolkit's buffer
+/// rather than a second one written here, so a character is a character and
+/// not a byte: on this keyboard one letter is often two of those.
+const QUERY_BYTES = 32;
+var query_storage: [QUERY_BYTES]u8 = @splat(0);
+var launcher_query: eui_text.Buffer = .{ .bytes = &query_storage };
 
-    fn slice(self: *const Query) []const u8 {
-        return self.buf[0..self.len];
-    }
+/// Append what a key produced, as UTF-8. False when it would not fit, which
+/// the caller has to notice: dropping what somebody typed without saying so is
+/// worse than refusing it.
+fn queryPush(codepoint: u32) bool {
+    const scalar = std.math.cast(u21, codepoint) orelse return false;
+    var utf8: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(scalar, &utf8) catch return false;
+    return launcher_query.insert(launcher_query.len, utf8[0..n]);
+}
 
-    fn clear(self: *Query) bool {
-        const had = self.len != 0;
-        self.len = 0;
-        return had;
-    }
-
-    fn push(self: *Query, c: u8) bool {
-        if (self.len == self.buf.len) return false;
-        self.buf[self.len] = c;
-        self.len += 1;
-        return true;
-    }
-
-    fn backspace(self: *Query) bool {
-        if (self.len == 0) return false;
-        self.len -= 1;
-        return true;
-    }
-};
-
-var launcher_query: Query = .{};
+/// Take back the last character, whole. Half of an accented letter is not a
+/// letter.
+fn queryBackspace() bool {
+    if (launcher_query.len == 0) return false;
+    launcher_query.remove(launcher_query.before(launcher_query.len), launcher_query.len);
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Finding
@@ -633,7 +635,7 @@ fn walk(where: []const u8, depth: u8) void {
 
 /// Open the applications menu, from the V button or a key.
 pub fn openLauncher(desktop: *const layout.Desktop) void {
-    _ = launcher_query.clear();
+    launcher_query.clear();
     gatherFiles();
     refreshFound(desktop);
     var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
@@ -651,7 +653,7 @@ pub fn openLauncher(desktop: *const layout.Desktop) void {
 fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
     var n: usize = 0;
 
-    if (launcher_query.slice().len == 0) {
+    if (launcher_query.len == 0) {
         for (items) |item| {
             if (n == out.len) break;
             if (item.category != launcher_category) continue;
@@ -687,7 +689,7 @@ fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
 /// found across every source. Which of them is on show decides what a row
 /// number means, and nothing else in here has to know that.
 fn launcherChoice(row: usize) ?Found.What {
-    if (launcher_query.slice().len != 0) {
+    if (launcher_query.len != 0) {
         if (row >= found_count) return null;
         return found[row].what;
     }
@@ -734,7 +736,7 @@ fn wantedHeight() i32 {
     const field_h = t.control_height + t.padding;
     const footer_h = Surface.textHeight() + t.padding * 2;
 
-    const shown: i32 = if (launcher_query.slice().len == 0)
+    const shown: i32 = if (launcher_query.len == 0)
         // Browsing, in columns: the rail is as long as the longest of them.
         @intCast(@max(perColumn(countIn(launcher_category)), std.enums.values(Category).len))
     else
@@ -800,7 +802,7 @@ fn launcherPanel(width: i32, height: i32) Launcher {
 /// Where the rows are drawn. A query takes the rail's room as well, because
 /// what is on show is then everything that matches rather than one category.
 fn launcherList(at: Launcher) Rect {
-    if (launcher_query.slice().len == 0) return at.list;
+    if (launcher_query.len == 0) return at.list;
     return .{ .x = at.rail.x, .y = at.rail.y, .w = at.panel.w, .h = at.rail.h };
 }
 
@@ -813,7 +815,7 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
     var said: [40]u8 = @splat(0);
     var line = str.Builder{ .buf = &said };
 
-    if (launcher_query.slice().len == 0) {
+    if (launcher_query.len == 0) {
         line.text(launcher_category.title());
         line.text(", ");
         line.number(countIn(launcher_category));
@@ -826,7 +828,7 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
         line.text(" match");
     }
 
-    const hints: []const eui_keys.Key = if (launcher_query.slice().len == 0)
+    const hints: []const eui_keys.Key = if (launcher_query.len == 0)
         &BROWSE_KEYS
     else if (highlightedIsFile())
         &FIND_FILE_KEYS
@@ -1108,7 +1110,7 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
 
             // Moving over a category shows it, which is what makes the rail
             // browsable rather than something to click through.
-            const on_rail = if (launcher_query.slice().len == 0) ui.Menu.rowAt(at.rail, cats, x, y) else null;
+            const on_rail = if (launcher_query.len == 0) ui.Menu.rowAt(at.rail, cats, x, y) else null;
             if (on_rail) |row| {
                 launcher_rail.selected = row;
                 if (Category.parse(cats[row].label)) |which| {
@@ -1193,7 +1195,7 @@ pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const l
             // The rail goes when a query does the choosing: what is on show is
             // then everything that matches, and a category highlighted beside
             // it would be pointing at the wrong thing.
-            if (launcher_query.slice().len == 0) {
+            if (launcher_query.len == 0) {
                 launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows));
             }
             launcher.paint(surface, launcherList(at), menuItems(&rows));
@@ -2228,7 +2230,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         .launcher => {
             var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
             const at = launcherPanel(width, height);
-            if (launcher_query.slice().len == 0 and at.rail.contains(x, y)) return .consumed;
+            if (launcher_query.len == 0 and at.rail.contains(x, y)) return .consumed;
             const chosen = launcher.itemAt(launcherList(at), menuItems(&rows), x, y);
             showing = .none;
             keyboard_focus = false;
@@ -2503,14 +2505,14 @@ fn launcherKey(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: 
     var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
 
     if (code == .backspace) {
-        if (launcher_query.backspace()) {
+        if (queryBackspace()) {
             launcher.selected = 0;
             refreshFound(desktop);
         }
         return .handled;
     }
     if (printable(codepoint)) {
-        if (launcher_query.push(@intCast(codepoint))) {
+        if (queryPush(codepoint)) {
             launcher.selected = 0;
             refreshFound(desktop);
         }
@@ -2519,7 +2521,8 @@ fn launcherKey(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: 
     // Escape clears a query before it closes the panel: one keystroke to
     // undo a search is what a person expects, and closing on the first
     // press throws away the panel as well.
-    if (code == .escape and launcher_query.clear()) {
+    if (code == .escape and launcher_query.len != 0) {
+        launcher_query.clear();
         launcher.selected = 0;
         refreshFound(desktop);
         return .handled;
@@ -2533,7 +2536,7 @@ fn launcherKey(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: 
     // one column before the next, so the down arrow that reaches the
     // bottom of the first column reaches the top of the second.
     const forward = code == .right or code == .tab;
-    if (launcher_query.slice().len == 0 and (forward or code == .left)) {
+    if (launcher_query.len == 0 and (forward or code == .left)) {
         const all = std.enums.values(Category);
         const at = @intFromEnum(launcher_category);
         const step: usize = if (forward) 1 else all.len - 1;
