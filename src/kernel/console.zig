@@ -179,7 +179,7 @@ const backend = struct {
             return .{ .cp = cell.cp, .fg = @enumFromInt(cell.fg), .bg = @enumFromInt(cell.bg) };
         }
         const cell = vgatext.cellAt(x, y);
-        return .{ .cp = cell.ch, .fg = cell.fg, .bg = cell.bg };
+        return .{ .cp = cell.character, .fg = cell.foreground, .bg = cell.background };
     }
 };
 

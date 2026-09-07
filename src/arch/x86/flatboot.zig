@@ -40,12 +40,18 @@ export fn _flat_start() linksection(".text.boot.entry") callconv(.naked) noretur
 /// physical address and depends on nothing else.
 export fn flatHandoffInvalid() linksection(".text.boot") callconv(.c) noreturn {
     const msg = "vibeee: stage2 handoff invalid - rebuild the image";
+
+    // The attribute byte, white on red, above the character. Named here
+    // rather than taken from the text driver: the shape it writes is that
+    // file's `Cell`, and this layer may not import from that one.
+    const WHITE_ON_RED: u16 = 0x4F00;
     const vga: [*]volatile u16 = @ptrFromInt(0xB8000);
+
     var i: usize = 0;
-    while (i < 80 * 25) : (i += 1) vga[i] = 0x4F20; // white on red
+    while (i < 80 * 25) : (i += 1) vga[i] = WHITE_ON_RED | ' ';
     for (msg, 0..) |c, n| {
         if (n >= 80) break;
-        vga[80 + 2 + n] = 0x4F00 | @as(u16, c);
+        vga[80 + 2 + n] = WHITE_ON_RED | @as(u16, c);
     }
     while (true) asm volatile ("cli; hlt");
 }

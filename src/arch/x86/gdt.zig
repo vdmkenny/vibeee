@@ -14,6 +14,7 @@
 //! thread's kernel stack.
 
 const std = @import("std");
+const cpu = @import("cpu.zig");
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
@@ -117,11 +118,6 @@ const IOPB_OFFSET: u16 = @offsetOf(Tss, "iopb");
 /// the CPU reads as "no bitmap", and therefore as deny.
 const IOPB_NONE: u16 = 0xFFFF;
 
-const Descriptor = extern struct {
-    limit: u16 align(1),
-    base: u32 align(1),
-};
-
 var gdt: [6]Entry align(8) = undefined;
 var tss: Tss align(16) = .{};
 
@@ -146,10 +142,9 @@ pub fn init(kernel_stack_top: u32) void {
     tss_entry.direction = false;
     gdt[5] = tss_entry;
 
-    const desc = Descriptor{
-        .limit = @sizeOf(@TypeOf(gdt)) - 1,
-        .base = @intFromPtr(&gdt),
-    };
+    // Loaded in the same breath as the segment reload below: the far jump has
+    // to be the next instruction the CPU runs, so this one cannot be a call.
+    const desc = cpu.TableRegister.of(&gdt);
 
     asm volatile (
         \\ lgdt (%[d])

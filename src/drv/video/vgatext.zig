@@ -39,18 +39,29 @@ const CRTC_DATA = 0x3D5;
 /// runs, and the identity mapping is gone.
 const cells: [*]volatile u16 = @ptrFromInt(hal.physToVirt(0xB8000));
 
-inline fn cell(ch: u8, fg: Color, bg: Color) u16 {
-    const attr = @as(u16, @intFromEnum(fg)) | (@as(u16, @intFromEnum(bg)) << 4);
-    return @as(u16, ch) | (attr << 8);
-}
+/// One cell of the text buffer: the character, then the two colours in the
+/// attribute byte above it.
+///
+/// A shape rather than the shifts on either side of it. What was packed in one
+/// place and taken apart in another is one cast each way now, and a third
+/// place that wrote the layout out as literals reads the same struct.
+pub const Cell = packed struct(u16) {
+    character: u8 = ' ',
+    foreground: Color = .light_grey,
+    background: Color = .black,
+};
 
 pub fn putAt(x: usize, y: usize, ch: u8, fg: Color, bg: Color) void {
     if (x >= WIDTH or y >= HEIGHT) return;
-    cells[y * WIDTH + x] = cell(ch, fg, bg);
+    cells[y * WIDTH + x] = @bitCast(Cell{
+        .character = ch,
+        .foreground = fg,
+        .background = bg,
+    });
 }
 
 pub fn fill(ch: u8, fg: Color, bg: Color) void {
-    const v = cell(ch, fg, bg);
+    const v: u16 = @bitCast(Cell{ .character = ch, .foreground = fg, .background = bg });
     var i: usize = 0;
     while (i < WIDTH * HEIGHT) : (i += 1) cells[i] = v;
 }
@@ -59,7 +70,7 @@ pub fn fill(ch: u8, fg: Color, bg: Color) void {
 pub fn scroll(fg: Color, bg: Color) void {
     var i: usize = 0;
     while (i < (HEIGHT - 1) * WIDTH) : (i += 1) cells[i] = cells[i + WIDTH];
-    const blank = cell(' ', fg, bg);
+    const blank: u16 = @bitCast(Cell{ .foreground = fg, .background = bg });
     while (i < HEIGHT * WIDTH) : (i += 1) cells[i] = blank;
 }
 
@@ -70,17 +81,10 @@ pub fn scroll(fg: Color, bg: Color) void {
 /// Bit 5 of the cursor-start register turns it off. What a full-screen program
 /// asks for while it redraws, so the cursor is not seen skating across a
 /// half-drawn screen on its way to where it belongs.
-/// What is in a cell, read back out of the text buffer. The attribute byte
-/// holds both colours: foreground low, background high.
-pub fn cellAt(x: usize, y: usize) struct { ch: u8, fg: Color, bg: Color } {
-    if (x >= WIDTH or y >= HEIGHT) return .{ .ch = ' ', .fg = .light_grey, .bg = .black };
-
-    const raw = cells[y * WIDTH + x];
-    return .{
-        .ch = @truncate(raw),
-        .fg = @enumFromInt(@as(u4, @truncate(raw >> 8))),
-        .bg = @enumFromInt(@as(u4, @truncate(raw >> 12))),
-    };
+/// What is in a cell, read back out of the text buffer.
+pub fn cellAt(x: usize, y: usize) Cell {
+    if (x >= WIDTH or y >= HEIGHT) return .{};
+    return @bitCast(cells[y * WIDTH + x]);
 }
 
 pub fn showCursor(visible: bool) void {

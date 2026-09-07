@@ -32,18 +32,38 @@ pub fn raiseInvalidOpcode() void {
     asm volatile ("ud2");
 }
 
+/// The operand `lgdt` and `lidt` take: how far the table reaches, one less
+/// than its size, and where it starts. Six bytes with nothing between them,
+/// which is what the alignment says.
+pub const TableRegister = extern struct {
+    limit: u16 align(1),
+    base: u32 align(1),
+
+    /// For a table in memory. Its size less one is what the CPU wants: the
+    /// limit is the last byte's offset, not the count.
+    pub fn of(table: anytype) TableRegister {
+        return .{
+            .limit = @sizeOf(@TypeOf(table.*)) - 1,
+            .base = @intFromPtr(table),
+        };
+    }
+};
+
+/// Point the CPU at an interrupt descriptor table.
+pub fn loadIdt(register: *const TableRegister) void {
+    asm volatile ("lidt (%[d])"
+        :
+        : [d] "r" (register),
+        : .{ .memory = true });
+}
+
 /// Reset by triple fault, the way that needs no chipset: an empty interrupt
 /// table makes the next trap unrecoverable, which every x86 answers with a
 /// reset.
 pub fn resetByTripleFault() noreturn {
-    const Descriptor = extern struct { limit: u16 align(1), base: u32 align(1) };
-    const empty = Descriptor{ .limit = 0, .base = 0 };
-    asm volatile (
-        \\ lidt (%[idt])
-        \\ int $3
-        :
-        : [idt] "r" (&empty),
-    );
+    const empty = TableRegister{ .limit = 0, .base = 0 };
+    loadIdt(&empty);
+    asm volatile ("int $3");
     halt();
 }
 

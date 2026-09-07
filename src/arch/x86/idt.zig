@@ -89,11 +89,6 @@ const Gate = packed struct(u64) {
     offset_high: u16,
 };
 
-const Descriptor = extern struct {
-    limit: u16 align(1),
-    base: u32 align(1),
-};
-
 var idt: [256]Gate align(8) = std.mem.zeroes([256]Gate);
 var handlers: [256]?Handler = .{null} ** 256;
 
@@ -222,14 +217,8 @@ pub fn init() void {
         setGate(vec, &stub(vec), dpl, .interrupt32);
     }
 
-    const desc = Descriptor{
-        .limit = @sizeOf(@TypeOf(idt)) - 1,
-        .base = @intFromPtr(&idt),
-    };
-    asm volatile ("lidt (%[d])"
-        :
-        : [d] "r" (&desc),
-        : .{ .memory = true });
+    const desc = cpu.TableRegister.of(&idt);
+    cpu.loadIdt(&desc);
 }
 
 pub fn setHandler(vec: u8, handler: Handler) void {

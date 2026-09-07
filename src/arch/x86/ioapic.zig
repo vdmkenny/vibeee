@@ -60,9 +60,9 @@ pub fn init(info: *irq.Routing) bool {
         const regs: [*]volatile u32 = @ptrFromInt(virt);
 
         controllers[count] = .{ .info = entry, .regs = regs };
-        // The input count is in the version register's second byte, one less
-        // than the number of entries. The table does not carry it.
-        const pin_count = ((read(&controllers[count], REG_VERSION) >> 16) & 0xFF) + 1;
+        // How many inputs there are is the controller's to say: the firmware's
+        // table does not carry it.
+        const pin_count = versionOf(&controllers[count]).inputs();
         controllers[count].info.inputs = pin_count;
         info.controllers.mutable()[i].inputs = pin_count;
 
@@ -175,8 +175,29 @@ pub fn version() u32 {
     if (count == 0) return 0;
     const was = hold();
     defer release(was);
-    return read(&controllers[0], REG_VERSION) & 0xFF;
+    return versionOf(&controllers[0]).version;
 }
+
+/// The version register, read as what it holds rather than shifted apart at
+/// each use: two callers wanted different halves of it and each took its own
+/// out by hand.
+fn versionOf(which: *Mapped) Version {
+    return @bitCast(read(which, REG_VERSION));
+}
+
+/// What the controller says about itself: which revision it is, and how far
+/// its redirection table reaches.
+const Version = packed struct(u32) {
+    version: u8,
+    _reserved: u8,
+    /// One less than the number of inputs, the way a limit always is here.
+    last_input: u8,
+    _high: u8,
+
+    fn inputs(self: Version) u32 {
+        return @as(u32, self.last_input) + 1;
+    }
+};
 
 pub fn setMask(gsi: u32, masked: bool) void {
     const owner = find(gsi) orelse return;

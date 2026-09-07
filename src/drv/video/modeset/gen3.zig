@@ -413,7 +413,7 @@ fn write(comptime T: type, w: Windows, offset: u32, value: T) void {
 
 /// A value for one of the masked registers, where the high half names which
 /// low bits the write may touch and the rest are left alone.
-fn masked(comptime bit: u4, on: bool) u32 {
+fn masked(bit: u4, on: bool) u32 {
     const b = @as(u32, 1) << bit;
     return (b << 16) | (if (on) b else 0);
 }
@@ -665,30 +665,45 @@ fn acknowledgeUnderrun(w: Windows, pipe: Pipe) void {
     write(PipeStat, w, pipe.stat, stat);
 }
 
-/// Whether the memory controller's display self refresh is on.
+/// Where the memory controller's display self refresh is switched.
 ///
-/// Where the switch lives moved between the parts, which is the whole reason
-/// these two functions exist.
+/// It moved between the parts, register and bit both. Said once per part, so
+/// the reading and the switching cannot come to name different bits: they were
+/// two switches over the same three parts, each typing the position again.
+const SelfRefresh = struct {
+    reg: u32,
+    bit: u5,
+    /// Whether the register takes a masked write, where the top half says
+    /// which bits the bottom half is about. Pineview's is a plain register,
+    /// read and written back.
+    masked_write: bool,
+
+    fn mask(self: SelfRefresh) u32 {
+        return @as(u32, 1) << self.bit;
+    }
+
+    fn of(part: Part) SelfRefresh {
+        return switch (part) {
+            .i915 => .{ .reg = INSTPM, .bit = 12, .masked_write = true },
+            .i945 => .{ .reg = FW_BLC_SELF, .bit = 15, .masked_write = true },
+            .pineview => .{ .reg = DSPFW3, .bit = 30, .masked_write = false },
+        };
+    }
+};
+
+/// Whether the memory controller's display self refresh is on.
 fn selfRefreshOn(w: Windows, part: Part) bool {
-    return switch (part) {
-        .i915 => read(u32, w, INSTPM) & (1 << 12) != 0,
-        .i945 => read(u32, w, FW_BLC_SELF) & (1 << 15) != 0,
-        .pineview => read(u32, w, DSPFW3) & (1 << 30) != 0,
-    };
+    const where = SelfRefresh.of(part);
+    return read(u32, w, where.reg) & where.mask() != 0;
 }
 
-/// Switch the memory controller's display self refresh. The older parts hold
-/// the switch in a masked register; Pineview holds it in a plain one.
+/// Switch the memory controller's display self refresh.
 fn setSelfRefresh(w: Windows, part: Part, on: bool) void {
-    switch (part) {
-        .i915 => write(u32, w, INSTPM, masked(12, on)),
-        .i945 => write(u32, w, FW_BLC_SELF, masked(15, on)),
-        .pineview => {
-            const bit = @as(u32, 1) << 30;
-            const now = read(u32, w, DSPFW3);
-            write(u32, w, DSPFW3, if (on) now | bit else now & ~bit);
-        },
-    }
+    const where = SelfRefresh.of(part);
+    if (where.masked_write) return write(u32, w, where.reg, masked(@intCast(where.bit), on));
+
+    const now = read(u32, w, where.reg);
+    write(u32, w, where.reg, if (on) now | where.mask() else now & ~where.mask());
 }
 
 /// A plane's fetch watermark, from the reference's small-buffer method: the
