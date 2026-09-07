@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 static int checks;
 
@@ -92,6 +94,16 @@ static void formatting(void)
 
     snprintf(b, sizeof b, "%e|%g|%g", 1234.5, 0.0001, 100000.0);
     say("printf.float.form", b);
+
+    /* The zero flag fills between the sign and the digits for a float as
+     * for an integer: its precision is already in the digits, so it does
+     * not stand in the way of padding. */
+    snprintf(b, sizeof b, "%08.2f|%010.3e|%08g|%08.2f", 3.5, 1234.5, 42.0, -3.5);
+    say("printf.float.zeropad", b);
+
+    /* The case of the verb is the case of what it spells. */
+    snprintf(b, sizeof b, "%E|%G|%e|%g", 1234.5, 0.00001234, 1234.5, 0.00001234);
+    say("printf.float.case", b);
 
     /* Exact halves, which are the cases the two rounding rules disagree
      * about. All of these are representable, so the tie is real rather
@@ -170,6 +182,23 @@ static void strings(void)
     strcpy(b, "abc");
     strncat(b, "defgh", 2);
     say("strncat", b);
+
+    /* A number too large for the type is the nearest limit, and says so. */
+    errno = 0;
+    long huge = strtol("99999999999999999999", NULL, 10);
+    sayn("strtol.over", huge == LONG_MAX ? 1 : 0);
+    sayn("strtol.over.errno", errno == ERANGE ? 1 : 0);
+    errno = 0;
+    long tiny = strtol("-99999999999999999999", NULL, 10);
+    sayn("strtol.under", tiny == LONG_MIN ? 1 : 0);
+    sayn("strtol.under.errno", errno == ERANGE ? 1 : 0);
+    errno = 0;
+    unsigned long past = strtoul("99999999999999999999", NULL, 10);
+    sayu("strtoul.over", past == ULONG_MAX ? 1 : 0);
+    sayn("strtoul.over.errno", errno == ERANGE ? 1 : 0);
+    errno = 0;
+    sayn("strtol.fits", strtol("123", NULL, 10));
+    sayn("strtol.fits.errno", errno == 0 ? 1 : 0);
 
     sayn("strcmp.order", strcmp("abc", "abd") < 0 ? -1 : 1);
     sayn("strncmp.equal", strncmp("abcx", "abcy", 3));

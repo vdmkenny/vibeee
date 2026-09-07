@@ -14,6 +14,9 @@ ssize_t read(int fd, void *buf, size_t count);
 ssize_t write(int fd, const void *buf, size_t count);
 off_t lseek(int fd, off_t offset, int whence);
 int unlink(const char *path);
+/* Remove an empty directory. This system makes directories and does not
+ * take them away, so this always fails: EPERM for a directory, ENOTDIR for
+ * anything else that is there, ENOENT for what is not. */
 int rmdir(const char *path);
 int chdir(const char *path);
 char *getcwd(char *buf, size_t size);

@@ -99,11 +99,12 @@ fn hasPlus(mode: [*:0]const u8) bool {
     return false;
 }
 
-/// Take a name away, whether it names a file or an empty directory.
+/// Take a name away.
 ///
-/// C's own removal, and the one ported code reaches for. One call does
-/// both here, because the kernel decides whether the thing named may go
-/// rather than making the caller say which kind it expected.
+/// C's own removal, and the one ported code reaches for. Files only: this
+/// system makes directories and does not take them away, so a directory is
+/// refused the way `rmdir` refuses it rather than reported as some other
+/// kind of failure.
 export fn remove(path: [*:0]const u8) callconv(.c) c_int {
     return @intCast(errno.wrap(sys.unlink(string.spanOf(path))));
 }

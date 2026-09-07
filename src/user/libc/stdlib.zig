@@ -38,11 +38,20 @@ fn parse(text: [*:0]const u8, end: ?*[*c]u8, base: c_int, comptime T: type) T {
         i += 2;
     }
 
-    var value: T = 0;
+    // Accumulated wider than the answer, so a number too large to hold is
+    // noticed rather than wrapped: C answers such a number with the nearest
+    // limit and `ERANGE`, and wrapping gave back a small number with
+    // nothing said. Every digit is read either way, since `end` has to
+    // point past the whole of what was a number.
+    var value: u64 = 0;
     var any = false;
+    var over = false;
+    const bound: u64 = if (negative) @as(u64, limitOf(T).low) else limitOf(T).high;
     while (digitOf(text[i], radix)) |digit| : (i += 1) {
         any = true;
-        value = value *% @as(T, radix) +% @as(T, digit);
+        if (over) continue;
+        value = value * radix + digit;
+        if (value > bound) over = true;
     }
 
     // Nothing was read, so nothing was consumed: `end` goes back to the start,
@@ -50,7 +59,26 @@ fn parse(text: [*:0]const u8, end: ?*[*c]u8, base: c_int, comptime T: type) T {
     if (end) |slot| slot.* = @ptrCast(@constCast(&text[if (any) i else 0]));
     if (!any) return 0;
 
-    return if (negative) 0 -% value else value;
+    // The answer's bits, negated as two's complement where the sign asks:
+    // the magnitude and the number are the same bits either way, and a
+    // signed type is that pattern read as a signed one.
+    const Bits = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const magnitude: Bits = if (over) blk: {
+        errno.set(errno.ERANGE);
+        // The nearest limit, which below zero is the one furthest from it.
+        break :blk @truncate(if (negative) limitOf(T).low else limitOf(T).high);
+    } else @truncate(value);
+
+    return @bitCast(if (negative) 0 -% magnitude else magnitude);
+}
+
+/// How far a number of this type reaches in each direction, as magnitudes:
+/// what a signed one holds below zero is one more than what it holds above.
+fn limitOf(comptime T: type) struct { low: u64, high: u64 } {
+    if (@typeInfo(T).int.signedness == .unsigned) {
+        return .{ .low = std.math.maxInt(T), .high = std.math.maxInt(T) };
+    }
+    return .{ .low = @as(u64, std.math.maxInt(T)) + 1, .high = std.math.maxInt(T) };
 }
 
 fn digitOf(c: u8, radix: u8) ?u8 {
@@ -145,10 +173,24 @@ export fn bsearch(
     return null;
 }
 
+/// Remove an empty directory.
+///
+/// This system makes directories and does not take them away: `unlink`
+/// says so of itself and `rm` documents it. Refused here rather than
+/// passed to `unlink`, which given a file would have deleted it, which is
+/// the one thing this call must never do.
 export fn rmdir(path: [*:0]const u8) callconv(.c) c_int {
-    // Directories are removed by the same call as files; the kernel decides
-    // whether the thing named may go.
-    return @intCast(errno.wrap(@import("sys").unlink(string.spanOf(path))));
+    return @intCast(errno.fail(refusalFor(string.spanOf(path))));
+}
+
+/// What refusing to remove a directory should say: that the path is not
+/// there, that it is not a directory, or that directories do not go.
+fn refusalFor(path: []const u8) c_int {
+    var record: [@import("sys").Dirent.HEADER + 256]u8 = undefined;
+    const n = @import("sys").stat(path, &record);
+    if (n <= 0) return errno.ENOENT;
+    const entry = @import("sys").Dirent.decode(&record, @intCast(n)) orelse return errno.ENOENT;
+    return if (entry.is_dir) errno.EPERM else errno.ENOTDIR;
 }
 
 // ---------------------------------------------------------------------------

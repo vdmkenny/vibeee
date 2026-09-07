@@ -53,7 +53,8 @@ int ferror(FILE *stream);
 void clearerr(FILE *stream);
 void perror(const char *prefix);
 
-/* Take a name away, whether it names a file or an empty directory. */
+/* Take a name away. Files only: this system makes directories and does not
+ * take them away, so a directory is refused. */
 int remove(const char *path);
 int rename(const char *from, const char *to);
 

@@ -141,7 +141,27 @@ fn readNumber(format: [*:0]const u8, i: *usize) usize {
 /// What a precision means for this conversion, which is not the same thing
 /// for a number as for a string: on a number it is a minimum digit count met
 /// with leading zeroes, and on a string it is a maximum length.
-const Kind = enum { number, text };
+const Kind = enum {
+    number,
+    text,
+    /// A float: its precision is already in the digits it produced, as a
+    /// string's is, and the zero flag fills between the sign and them, as a
+    /// number's does. Told apart from both, because it is each in one way.
+    real,
+
+    /// Whether the zero flag fills for this conversion. C leaves it
+    /// undefined on a string, and filling a name with zeroes is never what
+    /// anybody meant.
+    fn zeroFills(self: Kind) bool {
+        return self != .text;
+    }
+
+    /// Whether a precision counts digits that must be there, rather than
+    /// naming how many the conversion already produced.
+    fn precisionCountsDigits(self: Kind) bool {
+        return self == .number;
+    }
+};
 
 fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void {
     switch (verb) {
@@ -161,9 +181,11 @@ fn convert(out: anytype, verb: u8, spec: *Spec, args: *std.builtin.VaList) void 
             if (spec.precision) |limit| n = @min(n, limit);
             padded(out, text[0..n], spec, "", .text);
         },
-        'f', 'F' => real(out, @cVaArg(args, f64), spec, .decimal),
-        'e', 'E' => real(out, @cVaArg(args, f64), spec, .scientific),
-        'g', 'G' => general(out, @cVaArg(args, f64), spec),
+        // The case of the verb is the case of what it spells: `INF`, `NAN`
+        // and the `E` of an exponent follow the letter that asked for them.
+        'f', 'F' => real(out, @cVaArg(args, f64), spec, .decimal, verb == 'F'),
+        'e', 'E' => real(out, @cVaArg(args, f64), spec, .scientific, verb == 'E'),
+        'g', 'G' => general(out, @cVaArg(args, f64), spec, verb == 'G'),
         'p' => {
             const value = @intFromPtr(@cVaArg(args, ?*anyopaque));
             spec.alt = true;
@@ -184,15 +206,15 @@ const FLOAT_MAX = std.fmt.float.bufferSize(.decimal, f64) + 2;
 
 /// A float, written the way C writes one. The digits themselves are
 /// `std.fmt.float`'s; what is here is C's defaults and C's padding.
-fn real(out: anytype, value: f64, spec: *Spec, mode: std.fmt.float.Mode) void {
+fn real(out: anytype, value: f64, spec: *Spec, mode: std.fmt.float.Mode, upper: bool) void {
     var buf: [FLOAT_MAX]u8 = undefined;
-    padded(out, render(&buf, value, spec, mode), spec, signOf(value, spec), .text);
+    padded(out, render(&buf, value, spec, mode, upper), spec, signOf(value, spec), .real);
 }
 
-fn render(buf: []u8, value: f64, spec: *const Spec, mode: std.fmt.float.Mode) []const u8 {
+fn render(buf: []u8, value: f64, spec: *const Spec, mode: std.fmt.float.Mode, upper: bool) []const u8 {
     // Six places unless asked otherwise, which is what C promises when a
     // format says nothing.
-    return spell(buf, @abs(value), spec.precision orelse 6, mode);
+    return spell(buf, @abs(value), spec.precision orelse 6, mode, upper);
 }
 
 /// The digits themselves, at a given precision.
@@ -200,12 +222,13 @@ fn render(buf: []u8, value: f64, spec: *const Spec, mode: std.fmt.float.Mode) []
 /// Zig writes an exponent as short as it can, and C writes one with a
 /// sign and at least two figures. Rewriting the tail is cheaper and
 /// clearer than a second formatter.
-fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []const u8 {
+fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode, upper: bool) []const u8 {
     // Neither notation describes a value that is not a number. C spells
-    // these two out, and the digits below would otherwise expand the bit
-    // pattern as though it stood for an ordinary very large number.
-    if (std.math.isNan(magnitude)) return "nan";
-    if (std.math.isInf(magnitude)) return "inf";
+    // these two out, in the case of the verb that asked, and the digits
+    // below would otherwise expand the bit pattern as though it stood for
+    // an ordinary very large number.
+    if (std.math.isNan(magnitude)) return if (upper) "NAN" else "nan";
+    if (std.math.isInf(magnitude)) return if (upper) "INF" else "inf";
 
     // Fixed notation rounds the value itself, which is what C does. The
     // shortest decimal that reads back as a double is a different number,
@@ -233,7 +256,7 @@ fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []c
 
     var built = str.Builder{ .buf = buf };
     built.text(mantissa);
-    built.byte('e');
+    built.byte(if (upper) 'E' else 'e');
     built.byte(if (exponent < 0) '-' else '+');
     const size: u32 = @intCast(@abs(exponent));
     if (size < 10) built.byte('0');
@@ -248,7 +271,7 @@ fn spell(buf: []u8, magnitude: f64, places: usize, mode: std.fmt.float.Mode) []c
 /// exponent is below minus four or has reached the precision, decimal
 /// otherwise, and the precision counts significant figures rather than
 /// places after the point.
-fn general(out: anytype, value: f64, spec: *Spec) void {
+fn general(out: anytype, value: f64, spec: *Spec, upper: bool) void {
     const figures = @max(spec.precision orelse 6, 1);
     const magnitude = @abs(value);
 
@@ -256,11 +279,11 @@ fn general(out: anytype, value: f64, spec: *Spec) void {
     const exponent = exponentOf(magnitude);
 
     const text = if (exponent < -4 or exponent >= @as(i32, @intCast(figures)))
-        spell(&buf, magnitude, figures - 1, .scientific)
+        spell(&buf, magnitude, figures - 1, .scientific, upper)
     else
-        spell(&buf, magnitude, @intCast(@as(i32, @intCast(figures)) - 1 - exponent), .decimal);
+        spell(&buf, magnitude, @intCast(@as(i32, @intCast(figures)) - 1 - exponent), .decimal, upper);
 
-    padded(out, trimmed(text), spec, signOf(value, spec), .text);
+    padded(out, trimmed(text), spec, signOf(value, spec), .real);
 }
 
 /// The power of ten a number sits at, taken from the notation that names
@@ -349,10 +372,10 @@ fn padded(out: anytype, body: []const u8, spec: *Spec, prefix: []const u8, kind:
     // A precision on a number is a minimum digit count, met with zeroes that
     // sit inside the sign rather than outside it. On a string it is a maximum,
     // already applied by taking a shorter slice, and there is nothing to fill.
-    const zeroes = switch (kind) {
-        .number => if (spec.precision) |wanted| wanted -| body.len else 0,
-        .text => 0,
-    };
+    const zeroes = if (kind.precisionCountsDigits())
+        (if (spec.precision) |wanted| wanted -| body.len else 0)
+    else
+        0;
     const total = prefix.len + zeroes + body.len;
     const pad = spec.width -| total;
 
@@ -360,9 +383,8 @@ fn padded(out: anytype, body: []const u8, spec: *Spec, prefix: []const u8, kind:
     // and `00-7` is not. It gives way to a precision, which already said how
     // many digits there are to be, and to left alignment, which has nothing
     // to fill.
-    // The zero flag is a number's: on a string C leaves it undefined and
-    // filling a name with zeroes is never what anybody meant.
-    const zero_pad = kind == .number and spec.zero and !spec.left and spec.precision == null;
+    const zero_pad = kind.zeroFills() and spec.zero and !spec.left and
+        !(kind.precisionCountsDigits() and spec.precision != null);
 
     if (!spec.left and !zero_pad) write(out, ' ', pad);
     for (prefix) |byte| out.put(byte);
