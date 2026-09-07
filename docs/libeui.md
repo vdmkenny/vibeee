@@ -113,6 +113,7 @@ What a program calls around its controls, once each way.
 | `pressedThisPass` | `fn (*const widget.Context) bool` |
 | `releasedThisPass` | `fn (*const widget.Context) bool` |
 | `rightPressedThisPass` | `fn (*const widget.Context) bool` |
+| `takeRightPress` | `fn (*widget.Context) bool` |
 
 ## For control authors
 
@@ -172,6 +173,7 @@ another control.
 | `titleHeight` | `fn () i32` |
 | `besideTitle` | `fn (i32) i32` |
 | `textFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, u32) void` |
+| `titleFitted` | `fn (draw.Surface, i32, i32, i32, []const u8, u32) void` |
 | `textWidth` | `fn ([]const u8) i32` |
 | `textHeight` | `fn () i32` |
 | `textCentred` | `fn (draw.Surface, draw.Rect, []const u8, u32) void` |
@@ -322,6 +324,7 @@ The strip along the bottom of a window: what just happened on the left, what to 
 | `above` | `fn (draw.Rect) draw.Rect` |
 | `buttonWidth` | `fn ([]const u8) i32` |
 | `place` | `fn (draw.Rect, []const []const u8, []draw.Rect) []draw.Rect` |
+| `dropped` | `fn ([]const []const u8, []const draw.Rect) usize` |
 | `messageRect` | `fn (draw.Rect, []const draw.Rect) draw.Rect` |
 
 Numbers it owns:
@@ -363,7 +366,9 @@ A label and what it says, in two columns.
 |---|---|
 | `column` | `fn (draw.Rect) i32` |
 | `height` | `fn () i32` |
+| `heightWith` | `fn (draw.Rect, i32) i32` |
 | `heightIn` | `fn (draw.Rect) i32` |
+| `heightInFor` | `fn (draw.Rect, []const facts.Fact) i32` |
 | `one` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8) i32` |
 | `columnFor` | `fn (draw.Rect, []const facts.Fact) i32` |
 | `oneWith` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8, i32) i32` |
