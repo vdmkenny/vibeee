@@ -770,3 +770,75 @@ test "a field is what a command line means by a word" {
     try std.testing.expectEqual(@as(usize, 0), fieldBefore("one   ", 6));
     try std.testing.expectEqual(@as(usize, 0), fieldBefore("", 0));
 }
+
+/// A short name kept by value: the bytes and how many of them are real, so
+/// the struct holding one stays copyable and nothing dangles.
+///
+/// The length and which characters a name may hold are the caller's. A
+/// driver's name and an audio port's are both names of this shape and
+/// differ only in those two things, which is why neither owns the shape.
+/// A network name is not one of these: it carries whatever bytes an access
+/// point advertises, including none.
+pub fn Name(comptime max: usize, comptime allows: fn (u8) bool) type {
+    return struct {
+        const Self = @This();
+
+        text: [MAX]u8 = @splat(0),
+        len: u8 = 0,
+
+        pub const MAX = max;
+
+        /// The name, or null when it is empty, too long, or holds a
+        /// character this kind of name does not: a typo is better refused
+        /// than stored.
+        pub fn of(name: []const u8) ?Self {
+            if (name.len == 0 or name.len > MAX) return null;
+            for (name) |c| {
+                if (!allows(c)) return null;
+            }
+            var out = Self{ .len = @intCast(name.len) };
+            @memcpy(out.text[0..name.len], name);
+            return out;
+        }
+
+        pub fn slice(self: *const Self) []const u8 {
+            return self.text[0..@min(self.len, MAX)];
+        }
+
+        pub fn isEmpty(self: *const Self) bool {
+            return self.len == 0;
+        }
+
+        pub fn is(self: *const Self, other: []const u8) bool {
+            return std.mem.eql(u8, self.slice(), other);
+        }
+
+        pub fn eql(self: Self, other: Self) bool {
+            return std.mem.eql(u8, self.slice(), other.slice());
+        }
+    };
+}
+
+test "a name is kept whole, and one that does not fit the rules is refused" {
+    const Word = Name(4, struct {
+        fn allows(c: u8) bool {
+            return c >= 'a' and c <= 'z';
+        }
+    }.allows);
+
+    const kept = Word.of("abcd").?;
+    try std.testing.expectEqualStrings("abcd", kept.slice());
+    try std.testing.expect(kept.is("abcd"));
+    try std.testing.expect(!kept.is("abc"));
+    try std.testing.expect(kept.eql(Word.of("abcd").?));
+    try std.testing.expect(!kept.eql(Word.of("abc").?));
+
+    try std.testing.expectEqual(@as(?Word, null), Word.of(""));
+    try std.testing.expectEqual(@as(?Word, null), Word.of("abcde"));
+    try std.testing.expectEqual(@as(?Word, null), Word.of("ab1"));
+
+    // A name nothing has written is empty and answers to nothing.
+    const none = Word{};
+    try std.testing.expect(none.isEmpty());
+    try std.testing.expectEqualStrings("", none.slice());
+}

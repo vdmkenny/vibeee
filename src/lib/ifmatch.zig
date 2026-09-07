@@ -80,33 +80,12 @@ pub const Match = union(enum) {
     }
 };
 
-/// A bounded driver name: the bytes and how many of them are real, so the
-/// settings struct stays copyable and nothing dangles.
-pub const Name = struct {
-    text: [NAME_MAX]u8 = @splat(0),
-    len: u8 = 0,
-
-    pub fn of(name: []const u8) ?Name {
-        if (name.len == 0 or name.len > NAME_MAX) return null;
-        // A driver's name is letters, digits and the ordinal dot; anything
-        // else is a typo better refused than stored.
-        for (name) |c| {
-            const word = (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '.';
-            if (!word) return null;
-        }
-        var out = Name{ .len = @intCast(name.len) };
-        @memcpy(out.text[0..name.len], name);
-        return out;
+/// A driver's name: letters, digits and the ordinal dot, and nothing else.
+pub const Name = str.Name(NAME_MAX, struct {
+    fn allows(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '.';
     }
-
-    pub fn slice(self: *const Name) []const u8 {
-        return self.text[0..self.len];
-    }
-
-    pub fn is(self: *const Name, name: []const u8) bool {
-        return std.mem.eql(u8, self.slice(), name);
-    }
-};
+}.allows);
 
 /// What the binder needs to know about one live interface.
 pub const Iface = struct {

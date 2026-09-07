@@ -16,35 +16,17 @@
 //! the service, which is what keeps this pure and host-tested.
 
 const std = @import("std");
+const str = @import("str.zig");
 
 /// A name a node or port answers to, and what a person types to link one.
-pub const Name = struct {
-    text: [MAX]u8 = @splat(0),
-    len: u8 = 0,
-
-    pub const MAX = 15;
-
-    pub fn of(name: []const u8) ?Name {
-        if (name.len == 0 or name.len > MAX) return null;
-        for (name) |c| {
-            // Names are typed into a tool and split on a colon, so a colon
-            // inside one would make a port name unspellable.
-            const ok = (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-';
-            if (!ok) return null;
-        }
-        var out = Name{ .len = @intCast(name.len) };
-        @memcpy(out.text[0..name.len], name);
-        return out;
+/// Names are typed into a tool and split on a colon, so a colon inside one
+/// would make a port name unspellable.
+pub const Name = str.Name(15, struct {
+    fn allows(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or
+            c == '.' or c == '_' or c == '-';
     }
-
-    pub fn slice(self: *const Name) []const u8 {
-        return self.text[0..@min(self.len, MAX)];
-    }
-
-    pub fn is(self: *const Name, other: []const u8) bool {
-        return std.mem.eql(u8, self.slice(), other);
-    }
-};
+}.allows);
 
 /// Which way frames travel through a port.
 pub const Direction = enum(u8) {
