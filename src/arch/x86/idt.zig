@@ -17,7 +17,7 @@ const nmiwatch = @import("nmiwatch.zig");
 const ioapic = @import("ioapic.zig");
 const lapic = @import("lapic.zig");
 const irq_mod = @import("../../kernel/irq.zig");
-const port = @import("port.zig");
+const pic = @import("pic.zig");
 const gdt = @import("gdt.zig");
 
 pub const SYSCALL_VECTOR: u8 = 0x80;
@@ -177,9 +177,7 @@ export fn isrDispatch(frame: *Frame) callconv(.c) void {
     if (lapic.active()) {
         if (vector_triggers[vec] != null and !lapic.isEoiDeferred(vec)) lapic.eoi();
     } else if (vec >= IRQ_BASE and vec < IRQ_BASE + 16) {
-        const irq = vec - IRQ_BASE;
-        if (irq >= 8) port.outb(0xA0, 0x20);
-        port.outb(0x20, 0x20);
+        pic.endOfInterrupt(vec - IRQ_BASE);
     }
 
     console.interruptLeft(vec);
@@ -245,38 +243,6 @@ pub fn unsetHandler(vec: u8) void {
 /// Remap the 8259 PICs away from vectors 0-15, which collide with the CPU
 /// exception range.
 ///
-/// Done whether or not the IOAPIC is used. With it, the PICs are masked
-/// afterwards and this only ensures a stray legacy interrupt cannot
-/// masquerade as a fault; without it, they are what delivers everything.
-pub fn remapPic() void {
-    const PIC1_CMD = 0x20;
-    const PIC1_DATA = 0x21;
-    const PIC2_CMD = 0xA0;
-    const PIC2_DATA = 0xA1;
-
-    port.outb(PIC1_CMD, 0x11); // ICW1: init + ICW4 to follow
-    port.ioWait();
-    port.outb(PIC2_CMD, 0x11);
-    port.ioWait();
-    port.outb(PIC1_DATA, IRQ_BASE); // ICW2: vector offsets
-    port.ioWait();
-    port.outb(PIC2_DATA, IRQ_BASE + 8);
-    port.ioWait();
-    port.outb(PIC1_DATA, 0x04); // ICW3: slave on IRQ2
-    port.ioWait();
-    port.outb(PIC2_DATA, 0x02);
-    port.ioWait();
-    port.outb(PIC1_DATA, 0x01); // ICW4: 8086 mode
-    port.ioWait();
-    port.outb(PIC2_DATA, 0x01);
-    port.ioWait();
-}
-
-pub fn maskAllPic() void {
-    port.outb(0x21, 0xFF);
-    port.outb(0xA1, 0xFF);
-}
-
 /// Let an ISA interrupt through, or stop it.
 ///
 /// Named for the line a driver knows about rather than for the controller
@@ -287,7 +253,7 @@ pub fn setIrqMask(irq: u8, masked: bool) void {
         ioapic.setMask(routing.resolve(irq).gsi, masked);
         return;
     }
-    setPicMask(irq, masked);
+    pic.setMask(irq, masked);
 }
 
 fn vectorFor(irq: usize) u8 {
@@ -473,7 +439,7 @@ pub fn useIoApic(info: irq_mod.Routing) bool {
     }
 
     captureBootEntries();
-    maskAllPic();
+    pic.maskAll();
 
     // The routes as the controller itself reads them back, for the lines the
     // machine's diagnosis has turned on: what boot believes it wrote and what
@@ -509,21 +475,4 @@ pub fn captureBootEntries() void {
     while (gsi < pins) : (gsi += 1) {
         boot_entries[gsi] = ioapic.entryLow(gsi);
     }
-}
-
-fn setPicMask(irq: u8, masked: bool) void {
-    const p: u16 = if (irq < 8) 0x21 else 0xA1;
-    const bit: u3 = @truncate(irq & 7);
-    var mask = port.inb(p);
-    if (masked) {
-        mask |= (@as(u8, 1) << bit);
-    } else {
-        mask &= ~(@as(u8, 1) << bit);
-    }
-    port.outb(p, mask);
-
-    // The second PIC reaches the CPU through the first one's line 2. Unmasking
-    // a line on it achieves nothing while that cascade is masked, so it is
-    // opened here rather than left for every caller to remember.
-    if (!masked and irq >= 8) setPicMask(2, false);
 }

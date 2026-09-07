@@ -6,6 +6,7 @@ const fpu = @import("fpu.zig");
 const gdt = @import("gdt.zig");
 const console = @import("../../kernel/console.zig");
 const idt = @import("idt.zig");
+const pic = @import("pic.zig");
 const irq = @import("../../kernel/irq.zig");
 const lapic = @import("lapic.zig");
 const port = @import("port.zig");
@@ -142,8 +143,8 @@ pub const invokeSyscall = syscall_arch.invoke;
 /// still boots. Falling back rather than failing matters here, because there
 /// is no serial port to find out on.
 pub fn initInterruptController(routing: ?irq.Routing) void {
-    idt.remapPic();
-    idt.maskAllPic();
+    pic.remap(idt.IRQ_BASE);
+    pic.maskAll();
 
     const described = routing orelse return;
     if (idt.useIoApic(described)) {
