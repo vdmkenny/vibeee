@@ -491,7 +491,7 @@ test "a farewell says which kind it is and why" {
 /// Assemble a beacon frame for the scan tests: a header from the cell, then
 /// the fixed fields and the elements a real beacon carries.
 fn beaconFrame(into: []u8, capability: Capability, elements: []const u8) usize {
-    var head = Header{ .control = FrameControl.management(.beacon), .addr1 = @splat(0xFF), .addr2 = AP, .addr3 = AP };
+    var head = Header{ .control = FrameControl.management(.beacon), .addr1 = mac.broadcast, .addr2 = AP, .addr3 = AP };
     const wrote = head.write(into).?;
     std.mem.writeInt(u64, into[wrote..][0..8], 0x0102_0304_0506_0708, .little);
     std.mem.writeInt(u16, into[wrote + 8 ..][0..2], 100, .little);

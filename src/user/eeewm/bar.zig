@@ -255,56 +255,52 @@ const MAX_FOUND = 12;
 const MAX_LAUNCHER_ROWS = @max(MAX_FOUND, items.len);
 
 const Found = struct {
-    kind: Kind,
     label: []const u8,
     /// Where the row came from, in the words that place it: the category, the
     /// desktop, or the chord that does the same thing.
     note: []const u8,
     hit: ui.MenuItem.Run,
-    mark: ?eui_icon.Icon,
+    /// A picture of its own, for a row that has one. Everything else takes
+    /// the one its sort carries.
+    mark: ?eui_icon.Icon = null,
     score: i32,
     at: usize,
     what: What,
 
-    const Kind = enum {
-        app,
-        /// Something under /home, opened by whatever opens its sort of
-        /// thing rather than by being named a program.
-        file,
-        /// A place inside a program, which is drawn with that program's own
-        /// picture: what a result is inside is as much of the answer as what
-        /// it is called.
-        tab,
-        win,
-        run,
-
-        /// The picture for a row that has none of its own. A window is a
-        /// window whatever is in it, and something the keys can do is a key.
-        fn mark(self: Kind) eui_icon.Icon {
-            return switch (self) {
-                .app, .tab => .apps,
-                .win => .maximised,
-                .run => .keyboard,
-                // A file's picture comes from what it is, so a row that
-                // reaches here is one whose sort was not recognised.
-                .file => .document,
-            };
-        }
-    };
-
-    /// What choosing the row does.
+    /// What choosing the row does, and what sort of thing it is.
+    ///
+    /// One value for both: an enum saying which sort beside a union carrying
+    /// what to do named the same five things twice, and a row could be
+    /// labelled one sort while doing another.
     const What = union(enum) {
         /// The nth entry of `items`.
         entry: usize,
         /// A place inside a program: which program, and which of its places.
+        /// Drawn with that program's own picture, because what a result is
+        /// inside is as much of the answer as what it is called.
         place: struct { program: usize, anchor: usize },
         /// The nth window, which is focused and brought into view.
         window: usize,
         /// Something the manager can do, named by the same table the keys
         /// and the help pane read.
         verb: bindings.Action,
-        /// The nth of the files gathered when the launcher opened.
+        /// The nth of the files gathered when the launcher opened, opened by
+        /// whatever opens its sort of thing rather than by being named a
+        /// program.
         file: usize,
+
+        /// The picture for a row that has none of its own. A window is a
+        /// window whatever is in it, and something the keys can do is a key.
+        fn mark(self: What) eui_icon.Icon {
+            return switch (self) {
+                .entry, .place => .apps,
+                .window => .maximised,
+                .verb => .keyboard,
+                // A file's picture comes from what it is, so a row that
+                // reaches here is one whose sort was not recognised.
+                .file => .document,
+            };
+        }
     };
 };
 
@@ -372,7 +368,6 @@ fn refreshFound(desktop: *const layout.Desktop) void {
         seq += 1;
         const hit = lib.find.match(item.label, typed) orelse continue;
         offer(.{
-            .kind = .app,
             .label = item.label,
             .note = item.category.title(),
             .hit = runOf(hit),
@@ -392,7 +387,6 @@ fn refreshFound(desktop: *const layout.Desktop) void {
             seq += 1;
             const hit = lib.find.match(anchor.says, typed) orelse continue;
             offer(.{
-                .kind = .tab,
                 .label = anchor.says,
                 .note = program.name,
                 .hit = runOf(hit),
@@ -411,7 +405,6 @@ fn refreshFound(desktop: *const layout.Desktop) void {
         seq += 1;
         const hit = lib.find.match(one.name(), typed) orelse continue;
         offer(.{
-            .kind = .file,
             .label = one.name(),
             .note = one.what.says(),
             .hit = runOf(hit),
@@ -429,11 +422,9 @@ fn refreshFound(desktop: *const layout.Desktop) void {
         const name = desktop.windows[index].name();
         const hit = lib.find.match(name, typed) orelse continue;
         offer(.{
-            .kind = .win,
             .label = name,
             .note = desktopSaid(window.tag),
             .hit = runOf(hit),
-            .mark = Found.Kind.win.mark(),
             .score = hit.score,
             .at = seq,
             .what = .{ .window = index },
@@ -448,11 +439,9 @@ fn refreshFound(desktop: *const layout.Desktop) void {
         seq += 1;
         const hit = lib.find.match(binding.says, typed) orelse continue;
         offer(.{
-            .kind = .run,
             .label = binding.says,
             .note = binding.chord,
             .hit = runOf(hit),
-            .mark = Found.Kind.run.mark(),
             .score = hit.score,
             .at = seq,
             .what = .{ .verb = binding.action },
@@ -669,7 +658,7 @@ fn menuItems(out: []ui.MenuItem) []ui.MenuItem {
         if (n == out.len) break;
         out[n] = .{
             .label = one.label,
-            .mark = one.mark orelse one.kind.mark(),
+            .mark = one.mark orelse one.what.mark(),
             .hit = one.hit,
             .detail = one.note,
         };
@@ -843,7 +832,7 @@ fn paintLauncherFooter(surface: Surface, area: Rect) void {
 /// whether the keys along the bottom mention the second thing it can do.
 fn highlightedIsFile() bool {
     if (launcher.selected >= found_count) return false;
-    return found[launcher.selected].kind == .file;
+    return found[launcher.selected].what == .file;
 }
 
 const BROWSE_KEYS = [_]eui_keys.Key{
@@ -1351,8 +1340,7 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 // ---------------------------------------------------------------------------
 
 var net_menu: ui.Menu = .{};
-var ifaces: [MAX_IFACES]net.Iface = undefined;
-var iface_addrs: [MAX_IFACES]net.AddressInfo = undefined;
+var ifaces: [MAX_IFACES]net.Listed = undefined;
 var iface_texts: [MAX_IFACES][16]u8 = undefined;
 var iface_count: usize = 0;
 /// The first radio among them, and what it has heard.
@@ -1364,7 +1352,7 @@ var heard_count: usize = 0;
 var heard_total: usize = 0;
 var more_text: [24]u8 = undefined;
 
-const MAX_IFACES = 4;
+const MAX_IFACES = net.MAX_IFACES;
 /// How many networks the menu offers: the strongest few, since netd hands
 /// them over strongest first. A menu as long as the air is crowded is one
 /// that covers the screen in a busy place, and what somebody wants from the
@@ -1380,12 +1368,13 @@ fn netWidth() i32 {
 }
 
 fn readNetwork() void {
-    iface_count = @min(net.interfaceCount() orelse 0, MAX_IFACES);
+    iface_count = if (net.interfaces(&ifaces)) |listed| listed.len else 0;
     radio_index = null;
     for (0..iface_count) |i| {
-        ifaces[i] = net.interfaceAt(i) orelse .{};
-        iface_addrs[i] = net.addressOf(i) orelse .{};
-        if (radio_index == null and ifaces[i].kind == .radio) radio_index = i;
+        if (ifaces[i].iface.kind == .radio) {
+            radio_index = i;
+            break;
+        }
     }
     heard_count = 0;
     heard_total = 0;
@@ -1417,7 +1406,7 @@ pub fn begin() void {
 /// Whether anything is up and addressed, which is what the bar's icon says.
 fn networkUp() bool {
     for (0..iface_count) |i| {
-        if (ifaces[i].up != 0 and iface_addrs[i].addr != 0) return true;
+        if (ifaces[i].iface.up != 0 and ifaces[i].address.addr != 0) return true;
     }
     return false;
 }
@@ -1426,21 +1415,21 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
     var count: usize = 0;
     for (0..iface_count) |i| {
         if (count == into.len) break;
-        const address = iface_addrs[i].addr;
-        const radio = ifaces[i].kind == .radio;
+        const address = ifaces[i].address.addr;
+        const radio = ifaces[i].iface.kind == .radio;
         var detail: []const u8 = undefined;
         if (address != 0) {
             detail = ipv4.text(address, iface_texts[i][0..15]);
-        } else if (radio and ifaces[i].channel != 0) {
+        } else if (radio and ifaces[i].iface.channel != 0) {
             var spelled = str.Builder{ .buf = &iface_texts[i] };
             spelled.text("channel ");
-            spelled.number(ifaces[i].channel);
+            spelled.number(ifaces[i].iface.channel);
             detail = spelled.done();
         } else {
-            detail = if (ifaces[i].up != 0) "no address" else "no link";
+            detail = if (ifaces[i].iface.up != 0) "no address" else "no link";
         }
         into[count] = .{
-            .label = net.nameOf(&ifaces[i]),
+            .label = net.nameOf(&ifaces[i].iface),
             // The rows say what is; changing it is the settings' business.
             .kind = .disabled,
             .mark = if (radio) .wifi else .ethernet,

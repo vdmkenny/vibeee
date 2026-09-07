@@ -12,6 +12,7 @@
 pub const audio = @import("audio.zig");
 pub const audiograph = @import("audiograph.zig");
 pub const battery = @import("battery.zig");
+pub const bitmap = @import("bitmap.zig");
 pub const bounded = @import("bounded.zig");
 pub const span = @import("span.zig");
 pub const waitset = @import("waitset.zig");

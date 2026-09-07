@@ -77,8 +77,9 @@ comptime {
     }
 }
 
-/// How many interfaces a machine of this class can have behind one service.
-const MAX_IFACES = 4;
+/// How many interfaces this service holds, which is what its callers size
+/// their listings by.
+const MAX_IFACES = proto.MAX_IFACES;
 
 var ifaces: [MAX_IFACES]dev.NicDev = @splat(.{ .name = "", .ops = undefined, .location = .{ .bus = 0, .device = 0, .function = 0 } });
 var count: usize = 0;

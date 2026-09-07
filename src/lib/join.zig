@@ -361,7 +361,7 @@ pub const Join = struct {
             .ignored, .refused => .none,
             .reply => |len| blk: {
                 self.earned = shake.keys();
-                const written = eth.write(into, self.bssid(), self.station, ieee80211.Ethertype.eapol, self.scratch[0..len]) orelse break :blk .none;
+                const written = eth.write(into, self.bssid(), self.station, eth.EtherType.eapol, self.scratch[0..len]) orelse break :blk .none;
                 break :blk .{ .traffic = written };
             },
         };
@@ -452,7 +452,7 @@ pub const Join = struct {
         head.control.to_ds = true;
 
         const wrote = head.write(into) orelse return null;
-        const snap = ieee80211.Snap.write(into[wrote..], ieee80211.Ethertype.eapol) orelse return null;
+        const snap = ieee80211.Snap.write(into[wrote..], eth.EtherType.eapol) orelse return null;
         if (into.len < wrote + snap + payload.len) return null;
         @memcpy(into[wrote + snap ..][0..payload.len], payload);
         return wrote + snap + payload.len;
@@ -469,7 +469,7 @@ pub fn eapolOf(frame: []const u8) ?[]const u8 {
 
     const body = frame[head.len..];
     const ethertype = ieee80211.Snap.ethertypeOf(body) orelse return null;
-    if (ethertype != ieee80211.Ethertype.eapol) return null;
+    if (ethertype != eth.EtherType.eapol) return null;
     return body[ieee80211.Snap.BYTES..];
 }
 
@@ -503,7 +503,7 @@ const FakeAp = struct {
 
         const head = ieee80211.Header{
             .control = ieee80211.FrameControl.management(.beacon),
-            .addr1 = @splat(0xFF),
+            .addr1 = mac.broadcast,
             .addr2 = AP,
             .addr3 = AP,
         };
@@ -544,7 +544,7 @@ const FakeAp = struct {
         head.control = ieee80211.FrameControl.data(.data);
         head.control.from_ds = true;
         const wrote = head.write(into).?;
-        const snap = ieee80211.Snap.write(into[wrote..], ieee80211.Ethertype.eapol).?;
+        const snap = ieee80211.Snap.write(into[wrote..], eth.EtherType.eapol).?;
         @memcpy(into[wrote + snap ..][0..payload.len], payload);
         return wrote + snap + payload.len;
     }
@@ -751,7 +751,7 @@ test "a network this system cannot join is refused before anything is sent" {
     const named = ieee80211.writeElement(&elements, .ssid, SSID).?;
     const head = ieee80211.Header{
         .control = ieee80211.FrameControl.management(.beacon),
-        .addr1 = @splat(0xFF),
+        .addr1 = mac.broadcast,
         .addr2 = AP,
         .addr3 = AP,
     };
@@ -882,7 +882,7 @@ test "the cell's next group key is taken and answered as traffic" {
     // An Ethernet frame to the cell, from this station, carrying the answer.
     try testing.expectEqualSlices(u8, &AP, out[0..6]);
     try testing.expectEqualSlices(u8, &US, out[6..12]);
-    try testing.expectEqual(ieee80211.Ethertype.eapol, std.mem.readInt(u16, out[12..14], .big));
+    try testing.expectEqual(eth.EtherType.eapol, eth.carriedBy(&out));
     try testing.expect(wpa2.KeyFrame.parse(out[eth.HEADER..traffic]) != null);
 
     const after = join.keys().?;

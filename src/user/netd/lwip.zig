@@ -57,7 +57,7 @@ pub const Pbuf = extern struct {
     if_idx: u8,
 };
 
-pub const ETH_HEADER = 14;
+pub const ETH_HEADER = @import("lib").eth.HEADER;
 pub const IP_HEADER = 20;
 pub const TRANSPORT_HEADER = 20;
 

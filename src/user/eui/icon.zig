@@ -16,6 +16,7 @@
 
 const kind = @import("lib").kind;
 const std = @import("std");
+const bitmap = @import("lib").bitmap;
 
 pub const WIDTH: usize = 12;
 pub const HEIGHT: usize = 12;
@@ -793,8 +794,7 @@ const packed_bits = blk: {
             for (row, 0..) |cell, x| {
                 if (cell != '#' and cell != '.') @compileError("an icon row is hashes and dots");
                 if (cell != '#') continue;
-                const at = index * BYTES + y * ROW_BYTES + x / 8;
-                out[at] |= @as(u8, 0x80) >> @intCast(x % 8);
+                bitmap.light(out[index * BYTES + y * ROW_BYTES ..][0..ROW_BYTES], x);
             }
         }
     }
@@ -938,7 +938,7 @@ pub fn pack(comptime picture: [HEIGHT][]const u8) [BYTES]u8 {
     var out: [BYTES]u8 = @splat(0);
     inline for (picture, 0..) |row, y| {
         inline for (row, 0..) |cell, x| {
-            if (cell == '#') out[y * ROW_BYTES + x / 8] |= @as(u8, 0x80) >> @intCast(x % 8);
+            if (cell == '#') bitmap.light(out[y * ROW_BYTES ..][0..ROW_BYTES], x);
         }
     }
     return out;
@@ -960,9 +960,7 @@ const testing = std.testing;
 /// Whether a pixel is set, read back out of the packing the way the blitter
 /// reads it. The tests check the pictures against what they look like.
 fn lit(which: Icon, x: usize, y: usize) bool {
-    const bits = rows(which);
-    const byte = bits[y * ROW_BYTES + x / 8];
-    return byte & (@as(u8, 0x80) >> @intCast(x % 8)) != 0;
+    return bitmap.lit(rows(which)[y * ROW_BYTES ..][0..ROW_BYTES], x);
 }
 
 test "every icon is the same size, and there is one per name" {

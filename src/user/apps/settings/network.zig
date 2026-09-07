@@ -202,7 +202,7 @@ fn drawInterfaces(pane: eui.Rect, from: i32) i32 {
     var rows: [netconfig.MAX_IFACES]eui.table.Row = undefined;
     var cells: [netconfig.MAX_IFACES][2][64]u8 = undefined;
     for (0..model.count) |i| {
-        const iface = &model.ifaces[i];
+        const iface = &model.ifaces[i].iface;
         rows[i] = .{
             .cells = .{ net.nameOf(iface), stateOf(i, &cells[i][0]), addressOf(i, &cells[i][1]), "", "", "" },
             .icon = if (iface.kind == .radio) .wifi else .ethernet,
@@ -242,7 +242,7 @@ fn drawChosen(pane: eui.Rect, from: i32) i32 {
     // side, and a control that touches the next one reads as part of it.
     const laid = eui.row.place(row, .left, &.{ NAME_W, MODE_W }, &cells);
 
-    ctx.rowText(laid[0], net.nameOf(&model.ifaces[index]), theme.current().text);
+    ctx.rowText(laid[0], net.nameOf(&model.ifaces[index].iface), theme.current().text);
 
     const claimed = if (model.slotOf(index)) |slot| slot.address != null else false;
     const stored: Mode = if (claimed) .static else .dhcp;
@@ -270,7 +270,7 @@ fn drawChosen(pane: eui.Rect, from: i32) i32 {
 
 /// What the link is doing, in the words the rest of the system uses.
 fn stateOf(index: usize, buf: *[64]u8) []const u8 {
-    const iface = &model.ifaces[index];
+    const iface = &model.ifaces[index].iface;
     var line = str.Builder{ .buf = buf };
     if (iface.up != 0) {
         line.text("Connected, ");
@@ -284,7 +284,7 @@ fn stateOf(index: usize, buf: *[64]u8) []const u8 {
 
 /// The address the stack holds, and where it came from.
 fn addressOf(index: usize, buf: *[64]u8) []const u8 {
-    const address = &model.addresses[index];
+    const address = &model.ifaces[index].address;
     if (address.addr == 0) return "No IP address";
 
     var line = str.Builder{ .buf = buf };
@@ -377,7 +377,7 @@ fn drawWireless(pane: eui.Rect, from: i32, radio: usize) i32 {
     var status_buf: [64]u8 = undefined;
     var status = str.Builder{ .buf = &status_buf };
     const joined: ?wifi.Ssid = if (model.slotOf(radio)) |slot| (if (slot.ssid.len > 0) slot.ssid else null) else null;
-    const iface = &model.ifaces[radio];
+    const iface = &model.ifaces[radio].iface;
     if (joined) |ssid| {
         status.text(iface.joining.spellNaming());
         if (iface.joining.named()) status.text(ssid.slice());

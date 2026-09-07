@@ -14,6 +14,7 @@ const std = @import("std");
 const fontlib = @import("lib").font;
 const icons = @import("icon.zig");
 const theme = @import("theme.zig");
+const packed_bits = @import("lib").bitmap;
 
 pub const Color = theme.Color;
 
@@ -541,8 +542,7 @@ pub const Surface = struct {
 
                 var col = first_col;
                 while (col < last_col) : (col += 1) {
-                    const byte = bits[start + @as(usize, @intCast(col)) / 8];
-                    if (byte >> @intCast(7 - @as(u3, @intCast(@mod(col, 8)))) & 1 == 0) continue;
+                    if (!packed_bits.lit(bits[start..], @intCast(col))) continue;
 
                     const left = @max(target.x, x + col * times);
                     const right = @min(target.right(), x + col * times + times);
@@ -574,11 +574,7 @@ pub const Surface = struct {
 
             var col = target.x;
             while (col < target.right()) : (col += 1) {
-                // Rows are big-endian across bytes: bit 7 of the first byte
-                // is the leftmost pixel.
-                const bit = col - x;
-                const byte = bits[start + @as(usize, @intCast(bit)) / 8];
-                if (byte >> @intCast(7 - @as(u3, @intCast(@mod(bit, 8)))) & 1 == 0) continue;
+                if (!packed_bits.lit(bits[start..], @intCast(col - x))) continue;
                 line[@intCast(col)] = color;
             }
         }

@@ -410,8 +410,11 @@ pub const resolver = Endpoint(SERVICE, ResolveReq, Rep, Error);
 // machine is connected to needs the same three questions answered.
 // ---------------------------------------------------------------------------
 
-/// How many interfaces there are, or zero when nothing is serving the
-/// network.
+/// How many interfaces a machine of this class has behind one service. What
+/// a caller sizes its listing by, so the service's limit and the buffers its
+/// callers hand it are the same number.
+pub const MAX_IFACES = 4;
+
 /// How many interfaces the service has, or null when the service did not
 /// answer. The two are different things: a machine whose radio is switched
 /// off at the firmware has a service that answers, with nothing in it.
@@ -435,7 +438,6 @@ pub fn interfaceAt(index: usize) ?Iface {
     return reply.body.iface;
 }
 
-/// What the stack has made of that interface's addressing.
 /// An event handle that fires when any interface's address changes.
 ///
 /// Held by the service rather than made per caller, so every waiter ends up
@@ -452,25 +454,52 @@ pub fn watch() Error!u32 {
 
 /// Whether any interface has an address: whether there is a network to use.
 pub fn haveAddress() bool {
-    // One channel for the whole walk: the count and then every interface.
-    const channel = sys.svcConnect(SERVICE) catch return false;
-    defer sys.close(channel);
-
-    var counted = Rep{};
-    callOn(@intCast(channel), .{ .tag = .count }, &counted) catch return false;
-
-    for (0..counted.body.count) |index| {
-        var reply = Rep{};
-        callOn(@intCast(channel), .{ .tag = .address, .index = @intCast(index) }, &reply) catch continue;
-        if (reply.body.address.addr != 0) return true;
+    var listed: [MAX_IFACES]Listed = undefined;
+    for (interfaces(&listed) orelse return false) |one| {
+        if (one.address.addr != 0) return true;
     }
     return false;
 }
 
-pub fn addressOf(index: usize) ?AddressInfo {
-    var reply = Rep{};
-    call(.{ .tag = .address, .index = @intCast(index) }, &reply) catch return null;
-    return reply.body.address;
+/// One interface as a caller listing them wants it: what it is and what the
+/// stack has made of its addressing.
+pub const Listed = struct {
+    iface: Iface = .{},
+    address: AddressInfo = .{},
+};
+
+/// Every interface the service names, read over one connection.
+///
+/// One walk rather than one per caller. Three places wanted the whole list
+/// and each wrote the loop; two of them opened a connection, made a call and
+/// closed it once per interface, and once again for each of their addresses,
+/// which is four times the syscalls for the same answer.
+///
+/// Answers with what fits in `into`, or null when nothing is serving, which
+/// is not the same as a service that named no interfaces: a machine whose
+/// radio is switched off at the firmware answers with an empty slice.
+pub fn interfaces(into: []Listed) ?[]Listed {
+    const channel = sys.svcConnect(SERVICE) catch return null;
+    defer sys.close(channel);
+
+    var counted = Rep{};
+    callOn(channel, .{ .tag = .count }, &counted) catch return null;
+
+    const shown = @min(counted.body.count, into.len);
+    for (into[0..shown], 0..) |*one, index| {
+        one.* = .{};
+
+        var status = Rep{};
+        if (callOn(channel, .{ .tag = .status, .index = @intCast(index) }, &status)) |_| {
+            one.iface = status.body.iface;
+        } else |_| {}
+
+        var addressed = Rep{};
+        if (callOn(channel, .{ .tag = .address, .index = @intCast(index) }, &addressed)) |_| {
+            one.address = addressed.body.address;
+        } else |_| {}
+    }
+    return into[0..shown];
 }
 
 /// One network the radio has heard, by index, or null past the last or

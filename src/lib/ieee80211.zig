@@ -8,6 +8,7 @@
 //! which of them appear, not what this file is.
 
 const std = @import("std");
+const eth = @import("eth.zig");
 const mac = @import("mac.zig");
 
 /// A frame's kind. Two bits on the wire, and the discriminator for what
@@ -251,27 +252,18 @@ pub const Snap = struct {
     /// unnumbered information frame.
     const PREFIX = [_]u8{ 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
 
-    pub fn ethertypeOf(payload: []const u8) ?u16 {
+    pub fn ethertypeOf(payload: []const u8) ?eth.EtherType {
         if (payload.len < BYTES) return null;
         if (!std.mem.eql(u8, payload[0..PREFIX.len], &PREFIX)) return null;
-        return std.mem.readInt(u16, payload[6..8], .big);
+        return @enumFromInt(std.mem.readInt(u16, payload[6..8], .big));
     }
 
-    pub fn write(into: []u8, ethertype: u16) ?usize {
+    pub fn write(into: []u8, carries: eth.EtherType) ?usize {
         if (into.len < BYTES) return null;
         @memcpy(into[0..PREFIX.len], &PREFIX);
-        std.mem.writeInt(u16, into[6..8], ethertype, .big);
+        std.mem.writeInt(u16, into[6..8], @intFromEnum(carries), .big);
         return BYTES;
     }
-};
-
-/// The ethertypes this system tells apart before the stack sees them.
-pub const Ethertype = struct {
-    pub const ipv4: u16 = 0x0800;
-    pub const arp: u16 = 0x0806;
-    /// Authentication traffic, which belongs to the supplicant and never
-    /// reaches the stack.
-    pub const eapol: u16 = 0x888E;
 };
 
 /// An 802.11 data frame turned into the ethernet frame the stack expects:
@@ -290,15 +282,10 @@ pub fn toEthernet(frame: []const u8, into: []u8) ?usize {
     const ethertype = Snap.ethertypeOf(body) orelse return null;
     const payload = body[Snap.BYTES..];
 
-    const ETH_HEADER = 14;
-    if (into.len < ETH_HEADER + payload.len) return null;
-
+    // The header is the ethernet module's to write: what a frame looks like
+    // is that file's subject, and it is the one with the golden-bytes test.
     const ends = head.endpoints();
-    @memcpy(into[0..6], &ends.destination);
-    @memcpy(into[6..12], &ends.source);
-    std.mem.writeInt(u16, into[12..14], ethertype, .big);
-    @memcpy(into[ETH_HEADER..][0..payload.len], payload);
-    return ETH_HEADER + payload.len;
+    return eth.write(into, ends.destination, ends.source, ethertype, payload);
 }
 
 /// The reverse: an ethernet frame as a data frame addressed to the access
@@ -309,8 +296,7 @@ pub fn fromEthernet(
     sequence: SequenceControl,
     into: []u8,
 ) ?usize {
-    const ETH_HEADER = 14;
-    if (ethernet.len < ETH_HEADER) return null;
+    if (ethernet.len < eth.HEADER) return null;
 
     const head = Header{
         .control = blk: {
@@ -321,14 +307,14 @@ pub fn fromEthernet(
         // Addressed to the access point, from this station, for whoever
         // the ethernet frame named.
         .addr1 = bssid,
-        .addr2 = ethernet[6..12].*,
-        .addr3 = ethernet[0..6].*,
+        .addr2 = eth.sourceOf(ethernet),
+        .addr3 = eth.destinationOf(ethernet),
         .sequence = sequence,
     };
 
     const wrote = head.write(into) orelse return null;
-    const snap = Snap.write(into[wrote..], std.mem.readInt(u16, ethernet[12..14], .big)) orelse return null;
-    const payload = ethernet[ETH_HEADER..];
+    const snap = Snap.write(into[wrote..], eth.carriedBy(ethernet)) orelse return null;
+    const payload = ethernet[eth.HEADER..];
     if (into.len < wrote + snap + payload.len) return null;
     @memcpy(into[wrote + snap ..][0..payload.len], payload);
     return wrote + snap + payload.len;
@@ -536,7 +522,7 @@ test "a beacon parses as management with the cell it announces" {
     var frame: [Header.MIN]u8 = @splat(0);
     const head = Header{
         .control = FrameControl.management(.beacon),
-        .addr1 = @splat(0xFF),
+        .addr1 = mac.broadcast,
         .addr2 = AP,
         .addr3 = AP,
     };
@@ -589,7 +575,7 @@ test "a received data frame becomes the ethernet frame the stack reads" {
     var head = Header{ .control = FrameControl.data(.data), .addr1 = US, .addr2 = AP, .addr3 = PEER };
     head.control.from_ds = true;
     const wrote = head.write(&frame).?;
-    const snap = Snap.write(frame[wrote..], Ethertype.ipv4).?;
+    const snap = Snap.write(frame[wrote..], .ipv4).?;
     const payload = [_]u8{ 0x45, 0x00, 0xDE, 0xAD };
     @memcpy(frame[wrote + snap ..][0..payload.len], &payload);
 
@@ -599,7 +585,7 @@ test "a received data frame becomes the ethernet frame the stack reads" {
     try std.testing.expectEqual(@as(usize, 14 + payload.len), len);
     try std.testing.expectEqualSlices(u8, &US, ethernet[0..6]);
     try std.testing.expectEqualSlices(u8, &PEER, ethernet[6..12]);
-    try std.testing.expectEqual(Ethertype.ipv4, std.mem.readInt(u16, ethernet[12..14], .big));
+    try std.testing.expectEqual(eth.EtherType.ipv4, eth.carriedBy(&ethernet));
     try std.testing.expectEqualSlices(u8, &payload, ethernet[14..len]);
 }
 
@@ -607,7 +593,7 @@ test "an ethernet frame becomes a frame addressed to the access point" {
     var ethernet: [32]u8 = @splat(0);
     @memcpy(ethernet[0..6], &PEER);
     @memcpy(ethernet[6..12], &US);
-    std.mem.writeInt(u16, ethernet[12..14], Ethertype.arp, .big);
+    std.mem.writeInt(u16, ethernet[12..14], @intFromEnum(eth.EtherType.arp), .big);
     const payload = [_]u8{ 1, 2, 3, 4, 5, 6 };
     @memcpy(ethernet[14..20], &payload);
 
@@ -621,7 +607,7 @@ test "an ethernet frame becomes a frame addressed to the access point" {
     try std.testing.expectEqualSlices(u8, &US, &head.addr2);
     try std.testing.expectEqualSlices(u8, &PEER, &head.addr3);
     try std.testing.expectEqual(@as(u12, 7), head.sequence.sequence);
-    try std.testing.expectEqual(Ethertype.arp, Snap.ethertypeOf(frame[head.len..len]).?);
+    try std.testing.expectEqual(eth.EtherType.arp, Snap.ethertypeOf(frame[head.len..len]).?);
     try std.testing.expectEqualSlices(u8, &payload, frame[head.len + Snap.BYTES .. len]);
 }
 

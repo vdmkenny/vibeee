@@ -18,15 +18,15 @@ const net = proto.net;
 const settings = proto.settings;
 const wifi = lib.wifi;
 
-/// How many interfaces a surface shows. The service holds this many.
-pub const MAX_IFACES = 4;
+/// How many interfaces a surface shows: what the service holds, which the
+/// protocol names.
+pub const MAX_IFACES = net.MAX_IFACES;
 
 /// The slots, and the interfaces they are bound to.
 pub const Model = struct {
     cfg: settings.Net = .{},
     slots: [settings.NET_SLOTS]settings.NetSlot = undefined,
-    ifaces: [MAX_IFACES]net.Iface = undefined,
-    addresses: [MAX_IFACES]net.AddressInfo = undefined,
+    ifaces: [MAX_IFACES]net.Listed = undefined,
     count: usize = 0,
     /// Which slot speaks for each interface, or null when none does.
     bound: [MAX_IFACES]?u8 = @splat(null),
@@ -45,18 +45,9 @@ pub const Model = struct {
     /// Ask the service again for the interfaces and bind the slots to them.
     /// The configuration is left as it is.
     pub fn refresh(self: *Model) void {
-        // Asked once: each ask is a connection, a call and a close, and the
-        // answer cannot change between two of them. Whether the service
-        // answered is not whether it named any interface, which is the one
-        // case this field exists for: a machine whose radio is switched off
-        // at the firmware has a service that answers with nothing.
-        const named = net.interfaceCount();
-        self.serving = named != null;
-        self.count = @min(named orelse 0, MAX_IFACES);
-        for (0..self.count) |i| {
-            self.ifaces[i] = net.interfaceAt(i) orelse .{};
-            self.addresses[i] = net.addressOf(i) orelse .{};
-        }
+        const listed = net.interfaces(&self.ifaces);
+        self.serving = listed != null;
+        self.count = if (listed) |these| these.len else 0;
         self.bind();
     }
 
@@ -65,7 +56,7 @@ pub const Model = struct {
         for (&matches, self.slots) |*m, slot| m.* = slot.match;
 
         var described: [MAX_IFACES]ifmatch.Iface = undefined;
-        for (0..self.count) |i| described[i] = describe(&self.ifaces[i]);
+        for (0..self.count) |i| described[i] = describe(&self.ifaces[i].iface);
 
         ifmatch.bind(&matches, described[0..self.count], self.bound[0..self.count]);
     }
@@ -85,7 +76,7 @@ pub const Model = struct {
         if (iface >= self.count) return null;
         for (&self.slots, 0..) |*slot, i| {
             if (slot.match != .none) continue;
-            slot.* = .{ .match = .{ .driver = ifmatch.Name.of(net.nameOf(&self.ifaces[iface])) orelse return null } };
+            slot.* = .{ .match = .{ .driver = ifmatch.Name.of(net.nameOf(&self.ifaces[iface].iface)) orelse return null } };
             self.bound[iface] = @intCast(i);
             return slot;
         }
@@ -137,7 +128,7 @@ pub const Model = struct {
     /// The first radio, if there is one.
     pub fn radio(self: *const Model) ?usize {
         for (0..self.count) |i| {
-            if (self.ifaces[i].kind == .radio) return i;
+            if (self.ifaces[i].iface.kind == .radio) return i;
         }
         return null;
     }

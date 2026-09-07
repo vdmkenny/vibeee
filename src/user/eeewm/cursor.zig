@@ -9,6 +9,7 @@
 //! screen before the redraw catches up.
 
 const eui = @import("eui");
+const bitmap = @import("lib").bitmap;
 
 const Surface = eui.Surface;
 
@@ -90,7 +91,7 @@ pub fn show(screen: Surface, x: i32, y: i32) void {
         for (bits, 0..) |row, iy| {
             var ix: i32 = 0;
             while (ix < WIDTH) : (ix += 1) {
-                if (row >> @intCast(7 - @as(u3, @intCast(ix))) & 1 == 0) continue;
+                if (!bitmap.litIn(row, @intCast(ix))) continue;
                 screen.set(x + ix + pass.dx, y + @as(i32, @intCast(iy)) + pass.dy, pass.color);
             }
         }

@@ -12,12 +12,16 @@
 //! then pins the whole layout at compile time.
 
 const std = @import("std");
+const mac_mod = @import("mac.zig");
 
 /// An EtherType, the two bytes that say what a frame carries.
 pub const EtherType = enum(u16) {
     arp = 0x0806,
     ipv4 = 0x0800,
     ipv6 = 0x86DD,
+    /// Authentication traffic, which belongs to the supplicant and never
+    /// reaches the stack.
+    eapol = 0x888E,
     _,
 };
 
@@ -56,25 +60,44 @@ pub const HEADER: usize = @intFromEnum(At.htype);
 
 /// Write a whole frame carrying `payload` under `ether_type`, returning
 /// its length, or null when it does not fit.
-pub fn write(into: []u8, dst: [6]u8, src: [6]u8, ether_type: u16, payload: []const u8) ?usize {
+pub fn write(into: []u8, dst: mac_mod.Address, src: mac_mod.Address, carries: EtherType, payload: []const u8) ?usize {
     const len = HEADER + payload.len;
     if (into.len < len) return null;
-    @memcpy(into[@intFromEnum(At.mac_dst)..][0..6], &dst);
-    @memcpy(into[@intFromEnum(At.mac_src)..][0..6], &src);
-    std.mem.writeInt(u16, into[@intFromEnum(At.ether_type)..][0..2], ether_type, .big);
+    writeHeader(into, dst, src, carries);
     @memcpy(into[HEADER..][0..payload.len], payload);
     return len;
 }
 
+/// The header alone, for a caller that already has the payload where it
+/// wants it. Refuses a buffer too short to hold one.
+pub fn writeHeader(into: []u8, dst: mac_mod.Address, src: mac_mod.Address, carries: EtherType) void {
+    @memcpy(into[@intFromEnum(At.mac_dst)..][0..6], &dst);
+    @memcpy(into[@intFromEnum(At.mac_src)..][0..6], &src);
+    std.mem.writeInt(u16, into[@intFromEnum(At.ether_type)..][0..2], @intFromEnum(carries), .big);
+}
+
+/// Where a frame is going, where it came from, and what it carries.
+pub fn destinationOf(frame: []const u8) mac_mod.Address {
+    return frame[@intFromEnum(At.mac_dst)..][0..6].*;
+}
+
+pub fn sourceOf(frame: []const u8) mac_mod.Address {
+    return frame[@intFromEnum(At.mac_src)..][0..6].*;
+}
+
+pub fn carriedBy(frame: []const u8) EtherType {
+    return @enumFromInt(std.mem.readInt(u16, frame[@intFromEnum(At.ether_type)..][0..2], .big));
+}
+
 test "a frame written here reads back field by field" {
     var into: [32]u8 = undefined;
-    const len = write(&into, .{ 1, 2, 3, 4, 5, 6 }, .{ 7, 8, 9, 10, 11, 12 }, 0x888E, "key").?;
+    const len = write(&into, .{ 1, 2, 3, 4, 5, 6 }, .{ 7, 8, 9, 10, 11, 12 }, .eapol, "key").?;
     try std.testing.expectEqual(@as(usize, 17), len);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6 }, into[0..6]);
     try std.testing.expectEqualSlices(u8, &.{ 7, 8, 9, 10, 11, 12 }, into[6..12]);
-    try std.testing.expectEqual(@as(u16, 0x888E), std.mem.readInt(u16, into[12..14], .big));
+    try std.testing.expectEqual(EtherType.eapol, carriedBy(&into));
     try std.testing.expectEqualStrings("key", into[14..17]);
-    try std.testing.expectEqual(@as(?usize, null), write(into[0..10], .{0} ** 6, .{0} ** 6, 0, "key"));
+    try std.testing.expectEqual(@as(?usize, null), write(into[0..10], .{0} ** 6, .{0} ** 6, .arp, "key"));
 }
 
 comptime {
@@ -85,16 +108,12 @@ comptime {
 /// "who has `target`, tell `source`". The destination is everybody.
 pub fn arpRequest(
     out: *[FRAME]u8,
-    source_mac: [6]u8,
+    source_mac: mac_mod.Address,
     source_addr: u32,
     target_addr: u32,
 ) void {
-    @memset(out[@intFromEnum(At.mac_dst)..@intFromEnum(At.ether_type)], 0xFF); // broadcast
-    @memcpy(
-        out[@intFromEnum(At.mac_src)..@intFromEnum(At.ether_type)],
-        &source_mac,
-    );
-    write16(out, .ether_type, @intFromEnum(EtherType.arp));
+    // To everybody: an ARP request is a question the whole segment hears.
+    writeHeader(out, mac_mod.broadcast, source_mac, .arp);
 
     write16(out, .htype, 1); // ethernet
     write16(out, .ptype, 0x0800); // ipv4
