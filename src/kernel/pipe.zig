@@ -18,6 +18,7 @@ const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const wait = @import("wait.zig");
+const RefCount = @import("refcount.zig").RefCount;
 
 pub const Error = error{ OutOfMemory, Broken };
 
@@ -45,7 +46,7 @@ pub const Pipe = struct {
     /// Signalled while there is room.
     writable: event_mod.Event = .{},
 
-    refs: u32 = 0,
+    refs: RefCount = .{ .count = 0 },
 
     pub fn readableNow(self: *const Pipe) bool {
         return self.len > 0 or self.writers == 0;
@@ -131,7 +132,7 @@ pub const Pipe = struct {
 /// pair of handles the caller is about to be given.
 pub fn create() Error!*Pipe {
     const p = heap.allocator.create(Pipe) catch return error.OutOfMemory;
-    p.* = .{ .readers = 1, .writers = 1, .refs = 2 };
+    p.* = .{ .readers = 1, .writers = 1, .refs = .{ .count = 2 } };
     p.rearm();
     return p;
 }
@@ -140,7 +141,7 @@ pub fn retain(p: *Pipe, is_writer: bool) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
 
-    p.refs += 1;
+    p.refs.holdWithin();
     if (is_writer) p.writers += 1 else p.readers += 1;
     p.rearm();
 }
@@ -161,8 +162,7 @@ pub fn release(p: *Pipe, is_writer: bool) void {
     _ = p.readable.queue.wakeAll();
     _ = p.writable.queue.wakeAll();
 
-    p.refs -= 1;
-    const dead = p.refs == 0;
+    const dead = p.refs.dropWithin();
     hal.restoreInterrupts(flags);
 
     if (dead) heap.allocator.destroy(p);

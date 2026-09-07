@@ -17,6 +17,7 @@ const event_mod = @import("event.zig");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const irq = @import("irq.zig");
+const RefCount = @import("refcount.zig").RefCount;
 
 pub const Error = error{ OutOfMemory, Busy, Unsupported };
 
@@ -41,7 +42,7 @@ pub const IrqEvent = struct {
     /// How many interrupts have been delivered, which is the first thing
     /// anyone asks when a device has gone quiet.
     count: u64 = 0,
-    refs: u32 = 1,
+    refs: RefCount = .{},
 };
 
 /// How long a level line's completion may stay owed before the kernel
@@ -225,9 +226,7 @@ fn retire(self: *IrqEvent, line: *Line) void {
 }
 
 pub fn retain(self: *IrqEvent) void {
-    const flags = hal.saveAndDisableInterrupts();
-    defer hal.restoreInterrupts(flags);
-    self.refs += 1;
+    self.refs.hold();
 }
 
 /// Give the line back.
@@ -236,9 +235,11 @@ pub fn retain(self: *IrqEvent) void {
 /// still asserting, the unclaimed-vector path quarantines the next delivery
 /// rather than allowing an interrupt storm.
 pub fn release(self: *IrqEvent) void {
+    // The count and the teardown are one region: an interrupt arriving on
+    // this line between them would walk a table this event is being taken out
+    // of.
     const flags = hal.saveAndDisableInterrupts();
-    self.refs -= 1;
-    if (self.refs > 0) {
+    if (!self.refs.dropWithin()) {
         hal.restoreInterrupts(flags);
         return;
     }

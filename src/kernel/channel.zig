@@ -29,6 +29,7 @@ const handle = @import("handle.zig");
 const heap = @import("heap.zig");
 const sched = @import("sched.zig");
 const wait = @import("wait.zig");
+const RefCount = @import("refcount.zig").RefCount;
 
 pub const Error = error{
     OutOfMemory,
@@ -159,7 +160,7 @@ pub const Channel = struct {
     /// So a token is never reused while anything remembers the old one.
     next_generation: Token.Generation = 1,
 
-    refs: u32 = 1,
+    refs: RefCount = .{},
     /// Cleared when the serving end closes, which is what turns a client's
     /// block into an error instead of a hang.
     serving: bool = true,
@@ -376,7 +377,7 @@ pub fn create() Error!*Channel {
 }
 
 pub fn retain(ch: *Channel) void {
-    ch.refs += 1;
+    ch.refs.hold();
 }
 
 /// Stop serving, failing every call that is waiting on an answer.
@@ -407,10 +408,7 @@ pub fn stopServing(ch: *Channel) void {
 }
 
 pub fn release(ch: *Channel) void {
-    if (ch.refs > 1) {
-        ch.refs -= 1;
-        return;
-    }
+    if (!ch.refs.drop()) return;
     stopServing(ch);
     heap.allocator.destroy(ch);
 }

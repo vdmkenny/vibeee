@@ -19,6 +19,7 @@ const std = @import("std");
 const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const wait = @import("wait.zig");
+const RefCount = @import("refcount.zig").RefCount;
 
 pub const Error = error{
     OutOfMemory,
@@ -36,7 +37,7 @@ pub const Event = struct {
     /// wrapping to zero would turn it into a hang somewhere else entirely.
     count: u32 = 0,
     queue: wait.Queue = .{},
-    refs: u32 = 1,
+    refs: RefCount = .{},
 
     /// Release one waiter, or leave a count behind for the next one to arrive.
     pub fn signal(self: *Event) void {
@@ -115,15 +116,13 @@ pub fn create() Error!*Event {
 }
 
 pub fn retain(e: *Event) void {
-    e.refs += 1;
+    e.refs.hold();
 }
 
 /// Drop a reference, destroying the event when the last one goes.
 pub fn release(e: *Event) void {
-    if (e.refs > 1) {
-        e.refs -= 1;
-        return;
-    }
+    if (!e.refs.drop()) return;
+
     // Anything still blocked would never be woken again, so it is released
     // first. A waiter that comes back to a destroyed event sees its condition
     // unmet and its handle closed, which is the same answer by a shorter road.

@@ -32,6 +32,7 @@ const heap = @import("heap.zig");
 const pmm = @import("pmm.zig");
 const Bounded = @import("lib").bounded.Bounded;
 const span = @import("lib").span;
+const RefCount = @import("refcount.zig").RefCount;
 
 pub const Error = error{
     OutOfMemory,
@@ -69,7 +70,7 @@ pub const Segment = struct {
     /// Physical frames, in order. Not contiguous, and nothing may assume so.
     frames: []usize,
     size: usize,
-    refs: u32 = 1,
+    refs: RefCount = .{},
     /// Whether the frames came from the allocator and go back to it. False for
     /// a segment that describes memory belonging to a device, where freeing
     /// the frames would hand a graphics aperture to the page allocator.
@@ -180,24 +181,13 @@ pub fn wrapPhysical(base: usize, size: usize, options: Wrap) Error!*Segment {
     return seg;
 }
 
-/// The count changes under interrupts off: two holders letting go from
-/// either side of a preemption must not both read the count they started
-/// from and leave the segment alive with nobody holding it.
 pub fn retain(seg: *Segment) void {
-    const flags = hal.saveAndDisableInterrupts();
-    defer hal.restoreInterrupts(flags);
-    seg.refs += 1;
+    seg.refs.hold();
 }
 
 /// Drop a reference, freeing the frames when the last one goes.
 pub fn release(seg: *Segment) void {
-    const last = blk: {
-        const flags = hal.saveAndDisableInterrupts();
-        defer hal.restoreInterrupts(flags);
-        seg.refs -= 1;
-        break :blk seg.refs == 0;
-    };
-    if (!last) return;
+    if (!seg.refs.drop()) return;
     if (seg.owned) {
         for (seg.frames) |f| pmm.freeFrame(f);
     }
