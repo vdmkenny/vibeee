@@ -131,7 +131,7 @@ pub const Window = struct {
         if (proto.client.Connection.open(title)) |opened| {
             var connection = opened;
             const id = try connection.createWindow(
-                .{ .fullscreen = mode == .fullscreen },
+                if (mode == .fullscreen) .fullscreen else .tiled,
                 width,
                 height,
             );

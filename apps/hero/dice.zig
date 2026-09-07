@@ -179,7 +179,7 @@ pub const Window = struct {
             self.draw(connection);
             return;
         }
-        self.window = try connection.createWindow(.{ .dialog = true }, WIDTH, HEIGHT);
+        self.window = try connection.createWindow(.dialog, WIDTH, HEIGHT);
         try connection.setTitle(self.window, "Dice");
         self.showing = true;
     }

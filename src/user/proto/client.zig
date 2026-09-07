@@ -131,10 +131,10 @@ pub const Connection = struct {
     /// that picked its own size would be told a different one immediately.
     /// What the client asks for is a minimum, and what it gets is a
     /// `configure` event.
-    pub fn createWindow(self: *Connection, flags: wm.WinFlags, min_w: u16, min_h: u16) Error!u8 {
+    pub fn createWindow(self: *Connection, placement: wm.Placement, min_w: u16, min_h: u16) Error!u8 {
         var req = wm.Req{ .tag = .create_win };
         req.body = .{ .create = .{
-            .flags = flags,
+            .placement = placement,
             .min_w = min_w,
             .min_h = min_h,
             .tag_hint = 0,

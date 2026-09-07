@@ -78,7 +78,7 @@ fn etermMain() noreturn {
         sys.exit(1);
     };
 
-    window = connection.createWindow(.{}, 480, 320) catch sys.exit(1);
+    window = connection.createWindow(.tiled, 480, 320) catch sys.exit(1);
     connection.setTitle(window, "eTerm") catch {};
 
     startShell();

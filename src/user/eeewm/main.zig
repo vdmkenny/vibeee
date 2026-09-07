@@ -877,7 +877,7 @@ fn handlePointer(event: sys.PointerEvent) void {
 
     if (super_held and !buttons.left and event.buttons.left) {
         if (windowAt(event.x, event.y)) |index| {
-            if (desktop.windows[index].floating) {
+            if (desktop.windows[index].layer != .tiled) {
                 dragging = index;
                 desktop.focused = index;
                 buttons = event.buttons;
@@ -1109,23 +1109,32 @@ fn onHello(pid: u32, req: *const wire.Req) Answer {
     };
 }
 
+/// Where a client's asked-for placement puts its window.
+///
+/// A dialog floats: it centres over whatever raised it, which the tiling has
+/// nowhere to put, and a dialog that got tiled would split the window it was
+/// asked from in half.
+fn layerFor(placement: wire.Placement) layout.Layer {
+    return switch (placement) {
+        .floating, .dialog => .floating,
+        .fullscreen => .fullscreen,
+        // Anything this build does not know about is a window like any other.
+        .tiled, _ => .tiled,
+    };
+}
+
 fn onCreate(pid: u32, req: *const wire.Req) Answer {
     if (table.find(pid) == null) return refuse(.bad_request);
 
-    // A dialog floats too. It is a separate flag because it also centres and
-    // belongs to whatever raised it, but a dialog that got tiled would split
-    // the window it was asked from in half.
-    const flags = req.body.create.flags;
     const index = desktop.open(
         "",
-        flags.floating or flags.dialog or flags.fullscreen,
+        layerFor(req.body.create.placement),
         req.body.create.min_w,
         req.body.create.min_h,
     ) orelse return refuse(.no_room);
 
     const w = &desktop.windows[index];
-    w.fullscreen = flags.fullscreen;
-    if (w.fullscreen) desktop.arrange();
+    if (w.layer == .fullscreen) desktop.arrange();
     w.client_pid = pid;
     // The client's id for the window, which is per client rather than global:
     // the slot index is ours and would collide across clients.

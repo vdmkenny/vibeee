@@ -74,7 +74,7 @@ pub const FileDialog = struct {
         if (self.path_len == 0) self.setPath("/");
         self.reload();
 
-        self.window = try connection.createWindow(.{ .dialog = true }, 320, 240);
+        self.window = try connection.createWindow(.dialog, 320, 240);
         // Standing from here, whatever else fails: a window created and not
         // recorded as showing is one `hide` will never take down, and eight
         // of those are every window slot this program has.

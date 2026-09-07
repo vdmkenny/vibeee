@@ -26,6 +26,8 @@ const Rect = draw.Rect;
 /// Where a window sits in the stack, in the order the desktop is drawn: the
 /// tiles, then whatever floats above them, then a program that asked for the
 /// whole content area. The bar is outside this and stays the way back out.
+///
+/// Drawn in this order, so a window's layer is also its place in the stack.
 pub const Layer = enum { tiled, floating, fullscreen };
 
 /// Desktops are created as they are needed rather than fixed at four. A
@@ -70,20 +72,14 @@ pub const Window = struct {
     surface: compose.Surface = .{},
     damage: compose.Damage = .{},
     tag: u8 = 0,
-    /// Above the tiles, positioned by hand rather than by the layout.
-    floating: bool = false,
-    /// A floating window that occupies the desktop's whole content area.
-    fullscreen: bool = false,
+    /// Which layer it is drawn in, and the only thing that says so: a flag
+    /// per layer could hold two answers at once, and the one that lost had to
+    /// be flipped twice to have any effect.
+    layer: Layer = .tiled,
     /// Where it is now. Set by `arrange` for tiled windows and by dragging for
     /// floating ones.
     area: Rect = .{},
     used: bool = false,
-
-    /// Which layer it is drawn in.
-    pub fn layer(self: *const Window) Layer {
-        if (self.fullscreen) return .fullscreen;
-        return if (self.floating) .floating else .tiled;
-    }
 
     pub fn name(self: *const Window) []const u8 {
         return self.title[0..self.title_len];
@@ -159,24 +155,24 @@ pub const Desktop = struct {
     /// `want_w` and `want_h` are what the program asked for, which a tile
     /// ignores and a floating window is given: a tool that knows how big it
     /// needs to be is the only one who does.
-    pub fn open(self: *Desktop, title: []const u8, floating: bool, want_w: i32, want_h: i32) ?usize {
+    pub fn open(self: *Desktop, title: []const u8, layer: Layer, want_w: i32, want_h: i32) ?usize {
         for (&self.windows, 0..) |*w, i| {
             if (w.used) continue;
 
             w.* = .{
                 .id = self.next_id,
-                .tag = self.placementFor(floating),
-                .floating = floating,
+                .tag = self.tagFor(layer),
+                .layer = layer,
                 .used = true,
             };
             w.setName(title);
             self.next_id += 1;
 
-            // A floating window has no tile to be given, so it is placed
-            // centred once, at the size it asked for, and left where the user
-            // puts it thereafter. A window larger than the screen is cut to
-            // the screen: there is nowhere else for it to go.
-            if (floating) w.area = self.centred(
+            // A window above the tiles has no tile to be given, so it is
+            // placed centred once, at the size it asked for, and left where
+            // the user puts it thereafter. A window larger than the screen is
+            // cut to the screen: there is nowhere else for it to go.
+            if (layer != .tiled) w.area = self.centred(
                 @min(if (want_w > 0) want_w else FLOATING_DEFAULT_W, self.bounds.w),
                 @min(if (want_h > 0) want_h else FLOATING_DEFAULT_H, self.bounds.h),
             );
@@ -240,7 +236,7 @@ pub const Desktop = struct {
     fn gather(self: *const Desktop, layer: Layer, out: []usize, n: usize) usize {
         var count = n;
         for (&self.windows, 0..) |*w, i| {
-            if (!w.used or w.tag != self.tag or w.layer() != layer) continue;
+            if (!w.used or w.tag != self.tag or w.layer != layer) continue;
             if (count == out.len) break;
             out[count] = i;
             count += 1;
@@ -267,7 +263,7 @@ pub const Desktop = struct {
         // Fullscreen windows sit above the tiling but track the content area
         // when the bar or display geometry changes.
         for (&self.windows) |*w| {
-            if (w.used and w.tag == self.tag and w.fullscreen) w.area = self.bounds;
+            if (w.used and w.tag == self.tag and w.layer == .fullscreen) w.area = self.bounds;
         }
 
         var buf: [MAX_WINDOWS]usize = undefined;
@@ -540,14 +536,15 @@ pub const Desktop = struct {
         return out[0..n];
     }
 
-    /// Where a new window should go.
+    /// Which desktop a new window in `layer` should go on.
     ///
     /// Splitting is right until the tiles stop being usable. Past that a new
     /// desktop is better than four unreadable columns, which is the judgement
     /// a person would make and the one a tiling manager should make for them.
-    pub fn placementFor(self: *Desktop, floating: bool) u8 {
-        // A dialog belongs with whatever raised it, whatever the crowding.
-        if (floating) return self.tag;
+    pub fn tagFor(self: *Desktop, layer: Layer) u8 {
+        // Anything above the tiles belongs with whatever raised it, whatever
+        // the crowding: it takes nothing from the tiles it sits over.
+        if (layer != .tiled) return self.tag;
 
         const here = self.countOn(self.tag);
         if (here == 0) return self.tag;
@@ -669,7 +666,7 @@ pub const Desktop = struct {
     pub fn moveFloating(self: *Desktop, index: usize, dx: i32, dy: i32) void {
         if (index >= self.windows.len) return;
         const w = &self.windows[index];
-        if (!w.used or !w.floating) return;
+        if (!w.used or w.layer == .tiled) return;
 
         w.area.x = penned(w.area.x + dx, self.bounds.x, self.bounds.right() - w.area.w);
         w.area.y = penned(w.area.y + dy, self.bounds.y, self.bounds.bottom() - w.area.h);
@@ -682,14 +679,27 @@ pub const Desktop = struct {
         return @min(@max(value, low), high);
     }
 
+    /// Dock the focused window into the tiling, or lift it out of it.
+    ///
+    /// A window is in one layer, so this is one move whatever layer it is in:
+    /// anything above the tiles comes down into them, and a tile goes up.
     pub fn toggleFloating(self: *Desktop) void {
         const index = self.focused orelse return;
         const w = &self.windows[index];
 
-        w.floating = !w.floating;
-        // Coming out of the tiling, it keeps the tile it had, shrunk a little
-        // so it reads as lifted off rather than merely still there.
-        if (w.floating) w.area = w.area.inset(16);
+        switch (w.layer) {
+            .tiled => {
+                // Coming out of the tiling, it keeps the tile it had, shrunk a
+                // little so it reads as lifted off rather than merely still
+                // there.
+                w.layer = .floating;
+                w.area = w.area.inset(16);
+            },
+            // Out of fullscreen it becomes a tile like any other, which is
+            // what the key is for: a program that asked for the whole screen
+            // and will not give it back is one this puts back.
+            .floating, .fullscreen => w.layer = .tiled,
+        }
         self.arrange();
     }
 

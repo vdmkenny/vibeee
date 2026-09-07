@@ -37,17 +37,25 @@ pub const Rect = extern struct {
     h: u16 = 0,
 };
 
-pub const WinFlags = packed struct(u8) {
-    /// Floats above the tiles instead of being tiled.
-    floating: bool = false,
-    /// A dialog: floats, and centres over its parent.
-    dialog: bool = false,
-    /// Refuses to be closed by the manager.
-    no_close: bool = false,
-    /// Occupies the desktop's content area above other windows. The desktop
-    /// bar remains available as the way back out.
-    fullscreen: bool = false,
-    _reserved: u4 = 0,
+/// Where a window asks to open.
+///
+/// One of these rather than a flag each: they name where the window sits, a
+/// window sits in one place, and a set of flags could ask for two at once and
+/// leave the manager to decide which it meant.
+pub const Placement = enum(u8) {
+    /// In the tiling, which is what a program that is a place to work wants.
+    tiled,
+    /// Above the tiles, positioned by hand. For a program that is a tool
+    /// rather than a place to work: a calculator sits over what it is being
+    /// used on rather than taking half the screen from it.
+    floating,
+    /// Floats, and centres over whatever raised it. A dialog that got tiled
+    /// would split the window it was asked from in half.
+    dialog,
+    /// The desktop's whole content area, above everything else. The bar
+    /// remains available as the way back out.
+    fullscreen,
+    _,
 };
 
 // ---------------------------------------------------------------------------
@@ -87,7 +95,7 @@ pub const Req = extern struct {
             app_name: [16]u8,
         },
         create: extern struct {
-            flags: WinFlags,
+            placement: Placement,
             min_w: u16,
             min_h: u16,
             tag_hint: u8,

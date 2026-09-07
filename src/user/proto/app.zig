@@ -71,12 +71,9 @@ pub const Hooks = struct {
     wakes: []const u32 = &.{},
     woken: ?*const fn (index: usize) bool = null,
 
-    /// Opens above the tiling rather than in it. For a program that is a
-    /// tool rather than a place to work: a calculator wants to sit over
-    /// what it is being used on, not take half the screen from it. Only
-    /// where it starts, because Super+F docks it into the tiling and lifts
-    /// it out again whatever it asked for.
-    floating: bool = false,
+    /// Where the window opens. Only where it starts, because Super+F docks
+    /// it into the tiling and lifts it out again whatever it asked for.
+    opens: wm.Placement = .tiled,
 };
 
 var hooks: Hooks = undefined;
@@ -130,11 +127,7 @@ pub fn run(
         sys.exit(1);
     };
 
-    window = connection.createWindow(
-        .{ .floating = with.floating },
-        width,
-        height,
-    ) catch sys.exit(1);
+    window = connection.createWindow(with.opens, width, height) catch sys.exit(1);
     connection.setTitle(window, title) catch {};
 
     // Cut, copy and paste reach the manager's one clipboard, so text crosses

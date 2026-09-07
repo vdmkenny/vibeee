@@ -112,7 +112,7 @@ export fn _start() callconv(.c) noreturn {
         .draw = draw,
         .key = key,
         .text = typed,
-        .floating = true,
+        .opens = .floating,
     });
 }
 
