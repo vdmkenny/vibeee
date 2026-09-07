@@ -39,9 +39,11 @@ const KERNEL_MAX_SECTORS = 8192 - KERNEL_LBA;
 const ROOTFS_LBA = 8192; // 4 MiB
 const ROOTFS_MAX_SECTORS = 32768 - ROOTFS_LBA; // up to 12 MiB
 
-/// Where the partitions begin: everything below is read by sector number
-/// alone, because at that point in the boot there is no filesystem driver.
-const PART1_LBA = 32768; // 16 MiB
+/// How large the reserved region is when the caller does not say, in
+/// mebibytes: everything below it is read by sector number alone, because
+/// at that point in the boot there is no filesystem driver. The build says
+/// it, and says it once; this is what it says.
+const DEFAULT_RESERVED_MB = 16;
 
 const DEFAULT_IMAGE_MB = 64;
 /// What each partition gets when the caller does not say. Mirrored by the
@@ -66,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print(
             \\usage: mkimage <stage1.bin> <stage2.bin> <kernel.bin> <out.img>
             \\               [size_mb] [cmdline] [rootfs.img] [p1_mb] [cfg_mb] [home_mb]
-            \\               [WIDTHxHEIGHT]
+            \\               [reserved_mb] [WIDTHxHEIGHT]
             \\
         , .{});
         return error.Usage;
@@ -75,6 +77,23 @@ pub fn main(init: std.process.Init) !void {
     var part_mb = DEFAULT_PART_MB;
     for (&part_mb, 0..) |*mb, i| {
         if (args.len >= 9 + i) mb.* = try std.fmt.parseInt(usize, args[8 + i], 10);
+    }
+
+    // Where the partitions begin. Taken from the caller rather than fixed
+    // here: the build works the mount offsets out from the same number, and
+    // a table saying one thing while the filesystems sit at another is an
+    // image that mounts nothing.
+    const reserved_mb: usize = if (args.len >= 12)
+        try std.fmt.parseInt(usize, args[11], 10)
+    else
+        DEFAULT_RESERVED_MB;
+    const part1_lba = reserved_mb * 1024 * 1024 / SECTOR;
+    if (part1_lba < ROOTFS_LBA + ROOTFS_MAX_SECTORS) {
+        std.debug.print(
+            "the reserved region is {d} MiB; the loader, the kernel and the root filesystem need {d}.\n",
+            .{ reserved_mb, (ROOTFS_LBA + ROOTFS_MAX_SECTORS) * SECTOR / (1024 * 1024) },
+        );
+        return error.ReservedTooSmall;
     }
 
     const size_mb: usize = if (args.len >= 6)
@@ -99,7 +118,7 @@ pub fn main(init: std.process.Init) !void {
     const rootfs_sectors = divCeil(rootfs.len, SECTOR);
     if (rootfs_sectors > ROOTFS_MAX_SECTORS) {
         std.debug.print(
-            "rootfs is {d} KiB; the reserved region holds {d} KiB. Raise PART1_LBA.\n",
+            "rootfs is {d} KiB; the reserved region holds {d} KiB. Raise RESERVED_MB.\n",
             .{ rootfs.len / 1024, ROOTFS_MAX_SECTORS * SECTOR / 1024 },
         );
         return error.RootfsTooLarge;
@@ -113,7 +132,7 @@ pub fn main(init: std.process.Init) !void {
     const stage2_sectors = divCeil(stage2.len, SECTOR);
     if (stage2_sectors > STAGE2_MAX_SECTORS) {
         std.debug.print(
-            "stage2 is {d} sectors; the reserved gap holds {d}. Move the kernel start LBA.\n",
+            "stage2 is {d} sectors; the gap before the kernel holds {d}. Move the kernel start LBA.\n",
             .{ stage2_sectors, STAGE2_MAX_SECTORS },
         );
         return error.Stage2TooLarge;
@@ -121,7 +140,7 @@ pub fn main(init: std.process.Init) !void {
     const kernel_sectors = divCeil(kernel.len, SECTOR);
     if (kernel_sectors > KERNEL_MAX_SECTORS) {
         std.debug.print(
-            "kernel is {d} KiB; the reserved region holds {d} KiB. Raise PART1_LBA.\n",
+            "kernel is {d} KiB; the reserved region holds {d} KiB. Raise RESERVED_MB.\n",
             .{ kernel.len / 1024, KERNEL_MAX_SECTORS * SECTOR / 1024 },
         );
         return error.KernelTooLarge;
@@ -135,13 +154,13 @@ pub fn main(init: std.process.Init) !void {
 
     // MBR: stage1 code, then partition table, then the boot signature.
     @memcpy(image[0..stage1.len], stage1);
-    writeMbr(image[0..SECTOR], total_sectors, part_mb);
+    writeMbr(image[0..SECTOR], total_sectors, part1_lba, part_mb);
 
     // stage2, with its header patched to say where the kernel lives.
     const s2_off = STAGE2_LBA * SECTOR;
     @memcpy(image[s2_off..][0..stage2.len], stage2);
     const cmdline: []const u8 = if (args.len >= 7) args[6] else "";
-    const wanted = if (args.len >= 12) parseSize(args[11]) else null;
+    const wanted = if (args.len >= 13) parseSize(args[12]) else null;
     try patchStage2(image[s2_off..][0..stage2.len], .{
         .kernel_sectors = kernel_sectors,
         .kernel_bytes = kernel.len,
@@ -178,11 +197,11 @@ pub fn main(init: std.process.Init) !void {
         kernel.len,
         kernel_sectors,
         KERNEL_LBA,
-        PART1_LBA,
+        part1_lba,
         part_mb[0],
-        PART1_LBA + part_mb[0] * 1024 * 1024 / SECTOR,
+        part1_lba + part_mb[0] * 1024 * 1024 / SECTOR,
         part_mb[1],
-        PART1_LBA + (part_mb[0] + part_mb[1]) * 1024 * 1024 / SECTOR,
+        part1_lba + (part_mb[0] + part_mb[1]) * 1024 * 1024 / SECTOR,
         part_mb[2],
         size_mb,
         rootfs.len,
@@ -275,7 +294,7 @@ fn writeEntry(entry: []u8, kind: u8, bootable: bool, lba: usize, sectors: usize)
     std.mem.writeInt(u32, entry[12..][0..4], @intCast(sectors), .little);
 }
 
-fn writeMbr(mbr: []u8, total_sectors: usize, part_mb: [3]usize) void {
+fn writeMbr(mbr: []u8, total_sectors: usize, part1_lba: usize, part_mb: [3]usize) void {
     // Disk signature at 0x1B8. Fixed rather than random so an image build is
     // reproducible; the installer rewrites it per-medium.
     std.mem.writeInt(u32, mbr[0x1B8..][0..4], 0x0EEE_0001, .little);
@@ -283,7 +302,7 @@ fn writeMbr(mbr: []u8, total_sectors: usize, part_mb: [3]usize) void {
     // The first partition is the bootable one; the rest carry what has to
     // survive a reboot. A size of zero leaves its entry empty rather than
     // writing a partition of nothing.
-    var lba: usize = PART1_LBA;
+    var lba: usize = part1_lba;
     for (part_mb, 0..) |mb, i| {
         var sectors = mb * 1024 * 1024 / SECTOR;
         if (lba >= total_sectors) sectors = 0;

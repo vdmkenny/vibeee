@@ -69,7 +69,9 @@ IMAGE    := $(BUILD)/vibeee.img
 #
 # Everything below RESERVED_MB is read by sector number alone, because at that
 # point in the boot there is no filesystem driver: the loader, the kernel and
-# the root filesystem live there. The partitions follow.
+# the root filesystem live there. The partitions follow, and `mkimage` is told
+# where they begin rather than assuming: the table it writes and the offsets
+# below are then the same number, whatever that number is.
 RESERVED_MB   ?= 16
 PART1_MB      ?= 16
 CFG_MB        ?= 16
@@ -198,9 +200,16 @@ $(MKIMAGE): tools/mkimage.zig | $(BUILD)
 # build graph: a port arrives as a Makefile expecting a compiler, and `eeecc`
 # is what it should find.
 #
+# Every one of them, because an example that is not built is an example
+# that has stopped compiling and nobody has been told.
+EXAMPLES := $(patsubst examples/%.c,$(BUILD)/%,$(wildcard examples/*.c))
+
+$(BUILD)/%: examples/%.c | $(BUILD)
+	@tools/eeecc -o $@ $<
+
 .PHONY: examples
-examples: kernel
-	@tools/eeecc -o $(BUILD)/greet examples/greet.c
+examples: kernel $(EXAMPLES)
+	@echo "examples: $(words $(EXAMPLES)) built"
 
 # Things that are not part of the system, built separately and installed
 # into `home/`. See apps/README.md.
@@ -296,7 +305,7 @@ ifeq ($(ARCH),arm)
 	$(error $(IMAGE) is x86-only today; for arm use: make qemu)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $@ $(IMAGE_MB) "$(CMDLINE)" $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(HOME_MB)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB) $(RESERVED_MB)
 	@$(MAKE) --no-print-directory populate IMG=$@
 endif
 
@@ -304,7 +313,10 @@ endif
 # because formatting FAT is exactly the kind of thing not worth reimplementing:
 # mtools is proven, and it needs neither root nor a loopback mount.
 .PHONY: populate
-populate: kernel
+# Nothing from the build graph: this formats the volumes in an image that
+# already exists and copies files into them. Both callers have built the
+# kernel by the time they ask.
+populate: | $(BUILD)
 	@$(MFORMAT) -i $(IMG)@@$(PART1_OFFSET) -F -T $(PART1_SECTORS) -v VIBEEE ::
 	@echo "vibeee $(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/version.txt
 	@$(MCOPY) -i $(IMG)@@$(PART1_OFFSET) -o $(BUILD)/version.txt ::/version.txt
@@ -358,7 +370,7 @@ ifeq ($(ARCH),arm)
 	$(error $(DEV_IMAGE) is x86-only today; for arm use: make qemu)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(DEV_IMAGE) $(IMAGE_MB) "$(DEV_CMDLINE)" $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(HOME_MB) $(DEV_PANEL)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB) $(RESERVED_MB) $(DEV_PANEL)
 	@$(MAKE) --no-print-directory populate IMG=$(DEV_IMAGE)
 endif
 
@@ -519,7 +531,7 @@ ifeq ($(ARCH),arm)
 	$(error qemu-panic is x86-only today)
 else
 	@$(MKIMAGE) $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(BUILD)/vibeee-panic.img $(IMAGE_MB) panictest $(ROOTFS_IMG) \
-		$(PART1_MB) $(CFG_MB) $(HOME_MB)
+		$(PART1_MB) $(CFG_MB) $(HOME_MB) $(RESERVED_MB)
 	@$(MAKE) --no-print-directory populate IMG=$(BUILD)/vibeee-panic.img
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(BUILD)/vibeee-panic.img
 endif

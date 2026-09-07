@@ -57,10 +57,11 @@ float asinf(float x);
 float acosf(float x);
 
 /* A value that is not equal to itself, and one that is larger than every
- * number. Written through the functions above, because neither can be
- * spelled as a constant. */
-#define NAN       nan("")
-#define INFINITY  (1.0 / 0.0)
+ * number. Both are constant expressions, which is what lets them stand in
+ * a static initialiser and cost nothing where they are used: written as a
+ * call, neither could do either. */
+#define NAN       (__builtin_nanf(""))
+#define INFINITY  (__builtin_inff())
 #define HUGE_VAL  INFINITY
 
 #define isnan(x)    __isnan((double)(x))
