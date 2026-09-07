@@ -206,9 +206,15 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *Prompt) ?usize {
     }
     ctx.label(message, state.question());
 
+    // A bar too narrow for every answer holds the ones nearest its edge, so
+    // what came back is the tail of what was asked for. Paired by that
+    // rather than by position: the two lists are not the same length, and
+    // walking them together read past the end of the shorter one.
+    const missing = footer.dropped(labels[0..state.choices.len], placed);
     var chosen: ?usize = if (chosen_by_field) 0 else null;
-    for (placed, state.choices, 0..) |cell, choice, i| {
-        if (ctx.buttonAs(cell, choice.label, choice.weight)) chosen = i;
+    for (placed, 0..) |cell, i| {
+        const choice = state.choices[missing + i];
+        if (ctx.buttonAs(cell, choice.label, choice.weight)) chosen = missing + i;
     }
     return chosen;
 }

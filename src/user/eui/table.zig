@@ -125,8 +125,15 @@ pub fn run(
     };
     const visible = @max(@as(usize, @intCast(@max(@divTrunc(body.h, row_h), 0))), 1);
 
-    const hovered: ?usize = if (act.over and body.contains(ctx.pointer_x, ctx.pointer_y)) blk: {
-        const index = state.scroll + @as(usize, @intCast(@divTrunc(ctx.pointer_y - body.y, row_h)));
+    // Where the rows are: the body, less the column the scrollbar takes when
+    // there is one. Worked out once, because the hit test, the painter and
+    // `rowRect` must all mean the same rectangle: asked of the full width,
+    // the hit test put a press on the scrollbar on the row beside it too,
+    // and a second such press opened it.
+    const listed = rowsRect(body, rows.len, visible);
+
+    const hovered: ?usize = if (act.over and listed.contains(ctx.pointer_x, ctx.pointer_y)) blk: {
+        const index = state.scroll + @as(usize, @intCast(@divTrunc(ctx.pointer_y - listed.y, row_h)));
         break :blk if (index < rows.len) index else null;
     } else null;
 
@@ -200,7 +207,7 @@ pub fn run(
     if (ctx.needsPaint(entry, .idle) or entry.detail != signature) {
         entry.detail = signature;
         entry.visual = .idle;
-        paint(ctx.surface, area, body, columns, rows, state, hovered, act.focused, visible);
+        paint(ctx.surface, area, listed, columns, rows, state, hovered, act.focused, visible);
         ctx.addDamage(area);
     }
 
@@ -236,14 +243,22 @@ pub fn rowRect(area: Rect, state: *const State, index: usize, rows: usize) ?Rect
 
     if (index < state.scroll or index >= state.scroll + visible or index >= rows) return null;
 
-    const width = if (rows > visible) area.w - scroll.WIDTH else area.w;
+    const body = Rect{ .x = area.x, .y = area.y + header_h, .w = area.w, .h = body_h };
+    const listed = rowsRect(body, rows, visible);
     const step: i32 = @intCast(index - state.scroll);
     return .{
-        .x = area.x,
-        .y = area.y + header_h + step * row_h,
-        .w = width,
+        .x = listed.x,
+        .y = listed.y + step * row_h,
+        .w = listed.w,
         .h = row_h,
     };
+}
+
+/// Where the rows are drawn and answered for: the body, less the column
+/// the scrollbar takes when the rows do not all fit.
+fn rowsRect(body: Rect, rows: usize, visible: usize) Rect {
+    if (rows <= visible) return body;
+    return .{ .x = body.x, .y = body.y, .w = body.w - scroll.WIDTH, .h = body.h };
 }
 
 fn columnAt(columns: []const Column, area: Rect, x: i32) ?usize {
@@ -296,7 +311,7 @@ fn fingerprint(
 fn paint(
     surface: Surface,
     area: Rect,
-    body_full: Rect,
+    body: Rect,
     columns: []const Column,
     rows: []const Row,
     state: *const State,
@@ -306,11 +321,6 @@ fn paint(
 ) void {
     const t = theme.current();
     const row_h = rowHeight();
-    // The rows stop where the scrollbar starts, so nothing is drawn under it.
-    const body = if (rows.len > visible)
-        Rect{ .x = body_full.x, .y = body_full.y, .w = body_full.w - scroll.WIDTH, .h = body_full.h }
-    else
-        body_full;
 
     surface.fill(area, t.surface);
 

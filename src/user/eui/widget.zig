@@ -134,6 +134,13 @@ pub const Context = struct {
     /// button comes back up, which is what lets someone press a button, drag
     /// away and release without activating it.
     pressed: ?usize = null,
+    /// Whether the other button's press has been acted on already. A press
+    /// that opened something must not also be the press that answers it,
+    /// and what a pass opens is drawn later in the same pass: the control
+    /// that opens takes the press, and what runs after sees none. The
+    /// keyboard's way to the same menus clears `pending_key` for exactly
+    /// this reason.
+    right_press_taken: bool = false,
 
     /// Keyboard state for this pass. A key is consumed by whichever control
     /// has focus, so a pass sees it at most once.
@@ -219,6 +226,7 @@ pub const Context = struct {
 
         self.previous = self.buttons;
         self.buttons = buttons;
+        self.right_press_taken = false;
         self.pointer_moved = x != self.pointer_x or y != self.pointer_y;
         self.pointer_x = x;
         self.pointer_y = y;
@@ -381,7 +389,15 @@ pub const Context = struct {
 
     /// The other button, which opens things rather than choosing them.
     pub fn rightPressedThisPass(self: *const Context) bool {
-        return self.buttons.right and !self.previous.right;
+        return self.buttons.right and !self.previous.right and !self.right_press_taken;
+    }
+
+    /// The same, taken: the caller has acted on the press, and nothing
+    /// later in this pass sees one.
+    pub fn takeRightPress(self: *Context) bool {
+        if (!self.rightPressedThisPass()) return false;
+        self.right_press_taken = true;
+        return true;
     }
 
     // -----------------------------------------------------------------------

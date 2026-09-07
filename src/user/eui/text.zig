@@ -433,7 +433,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     // The other button offers what can be done to the text, wherever the
     // pointer is: over a selection or not, the rows are the same and the ones
     // that do not apply do nothing.
-    if (act.over and ctx.rightPressedThisPass()) {
+    if (act.over and ctx.takeRightPress()) {
         eui_context_menu.open(ctx, entry_index, &MENU_ROWS);
         ctx.again();
     }

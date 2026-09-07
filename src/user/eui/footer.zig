@@ -33,9 +33,11 @@ pub fn strip(area: Rect) Rect {
     return .{ .x = area.x, .y = area.bottom() - h, .w = area.w, .h = h };
 }
 
-/// What is left of the window once the strip is taken.
+/// What is left of the window once the strip is taken. Never less than
+/// nothing: a window shorter than one strip has no body, rather than a
+/// body of negative height.
 pub fn above(area: Rect) Rect {
-    return .{ .x = area.x, .y = area.y, .w = area.w, .h = area.h - height() };
+    return .{ .x = area.x, .y = area.y, .w = area.w, .h = @max(0, area.h - height()) };
 }
 
 pub fn buttonWidth(label: []const u8) i32 {
@@ -48,7 +50,12 @@ pub fn place(bar: Rect, labels: []const []const u8, into: []Rect) []Rect {
     const t = theme.current();
     var widths: [8]i32 = undefined;
     const count = @min(labels.len, widths.len);
-    for (labels[0..count], 0..) |label, i| widths[i] = buttonWidth(label);
+    // The air after a button is part of what it takes, so what fits is
+    // decided with the air included. Added afterwards instead, a row that
+    // only just fitted was pushed left out of the bar it was placed in.
+    for (labels[0..count], 0..) |label, i| {
+        widths[i] = buttonWidth(label) + if (i + 1 < count) t.gap else 0;
+    }
 
     const inner = Rect{
         .x = bar.x + t.menu_padding,
@@ -57,12 +64,20 @@ pub fn place(bar: Rect, labels: []const []const u8, into: []Rect) []Rect {
         .h = t.control_height,
     };
     const cells = row.place(inner, .right, widths[0..count], into);
-    // `row` packs cells hard against each other; buttons want air between.
+    // Each cell holds a button and the air after it; the button is the
+    // left of it, and the last one has no air to give back.
     for (cells, 0..) |*cell, i| {
-        const from_edge = @as(i32, @intCast(cells.len - 1 - i));
-        cell.x -= from_edge * t.gap;
+        if (i + 1 < cells.len) cell.w -= t.gap;
     }
     return cells;
+}
+
+/// How many of `labels` `place` had to leave out, given what it placed.
+/// The cells are packed against the right edge, so what a bar too narrow
+/// for all of them drops is the front of the list: a caller pairing cells
+/// with what it asked for starts here.
+pub fn dropped(labels: []const []const u8, placed: []const Rect) usize {
+    return labels.len - placed.len;
 }
 
 /// The room the message gets: everything left of the buttons.
