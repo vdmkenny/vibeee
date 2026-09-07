@@ -91,23 +91,6 @@ pub const Pipe = struct {
         return n;
     }
 
-    /// Take what is there without blocking. For a caller that is waiting on
-    /// several things at once and has already been told this one is ready.
-    pub fn readNow(self: *Pipe, out: []u8) usize {
-        const flags = hal.saveAndDisableInterrupts();
-        defer hal.restoreInterrupts(flags);
-
-        const n = @min(out.len, self.len);
-        for (0..n) |i| {
-            out[i] = self.buf[(self.head + i) % CAPACITY];
-        }
-        self.head = (self.head + n) % CAPACITY;
-        self.len -= n;
-
-        self.rearm();
-        return n;
-    }
-
     /// Write all of `bytes`, blocking while the ring is full.
     ///
     /// All or nothing on the caller's behalf rather than a short write: every

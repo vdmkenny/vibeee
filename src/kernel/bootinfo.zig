@@ -111,14 +111,6 @@ pub const BootInfo = extern struct {
     pub fn hasFramebuffer(self: *const BootInfo) bool {
         return self.fb_addr != 0 and self.fb_width != 0 and self.fb_height != 0;
     }
-
-    pub fn usableBytes(self: *const BootInfo) u64 {
-        var total: u64 = 0;
-        for (self.memoryMap()) |r| {
-            if (r.kind == .usable) total += r.len;
-        }
-        return total;
-    }
 };
 
 // This struct is written by 16-bit assembly (boot/stage2.asm) using hardcoded

@@ -234,15 +234,6 @@ pub fn eachFrom(text: []const u8, into: anytype) usize {
     return count;
 }
 
-/// Write several records back, a blank line between them.
-pub fn renderEach(records: anytype, into: *str.Builder) void {
-    for (records, 0..) |record, index| {
-        if (index != 0) into.text("\n");
-        var one = record;
-        render(&one, into);
-    }
-}
-
 pub fn load(path: []const u8, target: anytype, buffer: []u8) bool {
     const n = file.readWhole(path, buffer) orelse return false;
     if (n == 0) return false;

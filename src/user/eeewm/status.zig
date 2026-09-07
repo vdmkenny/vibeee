@@ -45,15 +45,6 @@ pub const Indicator = enum {
             .clock => numberWidth("00:00") + pad * 2,
         };
     }
-
-    /// Whether pressing it opens something. All of them do: the bar has room
-    /// for an icon and a number, and everything else each of these has to say
-    /// is in the panel behind it.
-    pub fn opensMenu(self: Indicator) bool {
-        return switch (self) {
-            .network, .sound, .battery, .clock => true,
-        };
-    }
 };
 
 /// How wide a reading is, measured in the face it is drawn in rather than

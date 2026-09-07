@@ -52,14 +52,6 @@ pub fn read8(loc: Location, register: u8) u8 {
     return @truncate(dword >> @intCast((register & 3) * 8));
 }
 
-/// One byte written into configuration space.
-pub fn write8(loc: Location, register: u8, value: u8) void {
-    const shift: u5 = @intCast((register & 3) * 8);
-    const mask: u32 = ~@as(u32, @as(u8, 0xFF) << shift);
-    const dword = read(loc, register);
-    write(loc, register, (dword & mask) | (@as(u32, value) << shift));
-}
-
 /// A BAR at the given index, zero when the device reports none there.
 /// The physical base of a memory window, or null when the slot holds
 /// something unmappable: an I/O window, nothing the firmware assigned an

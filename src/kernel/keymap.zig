@@ -45,10 +45,6 @@ pub fn layoutCount() usize {
     return layouts.len;
 }
 
-pub fn activeIndex() usize {
-    return active;
-}
-
 pub fn setLayout(index: usize) void {
     if (index < layouts.len) active = index;
 }

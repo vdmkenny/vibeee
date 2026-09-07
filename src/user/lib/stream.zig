@@ -188,22 +188,4 @@ pub const Stream = struct {
         }
         return n;
     }
-
-    /// One line into `into`, without the newline. Null at the end of the
-    /// stream with nothing read.
-    ///
-    /// A line longer than the buffer is cut, and the rest of it is the next
-    /// line: a caller with a fixed buffer has no better answer available, and
-    /// silently dropping the tail would be worse than returning it.
-    pub fn readLine(self: *Stream, into: []u8) ?[]u8 {
-        var n: usize = 0;
-        while (n < into.len) {
-            const byte = self.readByte() orelse break;
-            if (byte == '\n') return into[0..n];
-
-            into[n] = byte;
-            n += 1;
-        }
-        return if (n == 0) null else into[0..n];
-    }
 };

@@ -52,16 +52,6 @@ pub fn heightWith(area: Rect, label_w: i32) i32 {
     return if (crampedWith(area, label_w)) height() + draw.Surface.textHeight() else height();
 }
 
-/// The same for a single row, whose column is the pane's usual share.
-pub fn heightIn(area: Rect) i32 {
-    return heightWith(area, column(area));
-}
-
-/// The same for a list, whose column is measured from its labels.
-pub fn heightInFor(area: Rect, list: []const Fact) i32 {
-    return heightWith(area, columnFor(area, list));
-}
-
 /// One row. Returns where the next one goes.
 pub fn one(
     ctx: *widget.Context,

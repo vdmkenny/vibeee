@@ -31,10 +31,6 @@ export var handoff_ptr: u32 linksection(".bootdata") = 0;
 export var mb_boot_info: bootinfo.BootInfo linksection(".bootdata") =
     std.mem.zeroes(bootinfo.BootInfo);
 
-pub fn stackTop() usize {
-    return @intFromPtr(&boot_stack) + boot_stack.len;
-}
-
 /// Turn on paging and continue at `highEntry` in the kernel window.
 ///
 /// The jump has to be indirect through a register holding the *virtual*

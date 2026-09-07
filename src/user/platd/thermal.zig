@@ -48,12 +48,6 @@ pub fn read(index: u8, into: *proto.Thermal) proto.Status {
     return .ok;
 }
 
-/// How many zones this machine has.
-pub fn zoneCount() usize {
-    locate();
-    return count;
-}
-
 fn value(node: *Node, method: [*:0]const u8) i32 {
     var reading: u64 = 0;
     if (uacpi.uacpi_eval_simple_integer(node, method, &reading) != .ok) {

@@ -31,11 +31,6 @@ pub fn configRead32(addr: Address, offset: u8) u32 {
     return pcicfg.read(selectorFor(addr, offset));
 }
 
-pub fn configRead16(addr: Address, offset: u8) u16 {
-    const v = configRead32(addr, offset);
-    return @truncate(v >> (@as(u5, @truncate(offset & 2)) * 8));
-}
-
 pub fn configRead8(addr: Address, offset: u8) u8 {
     const v = configRead32(addr, offset);
     return @truncate(v >> (@as(u5, @truncate(offset & 3)) * 8));

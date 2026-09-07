@@ -12,7 +12,7 @@
 //! the cursor went and the kernel must not draw over it.
 //!
 //! The rules live in `Discipline`, which knows nothing about where keys come
-//! from or where echo goes, so they are checked on the host. The module's one
+//! from or where what is typed goes, so they are checked on the host. The one
 //! instance is fed from the input core and echoes to the console.
 
 const std = @import("std");
@@ -162,19 +162,13 @@ pub const Discipline = struct {
 
 var discipline: Discipline = .{};
 
-var echo = true;
-
-pub fn setEcho(on: bool) void {
-    echo = on;
-}
-
 /// Choose the mode, returning the one that was in effect.
 pub fn setMode(wanted: abi.TtyMode) abi.TtyMode {
     return discipline.setMode(wanted);
 }
 
 fn emit(bytes: []const u8) void {
-    if (echo and bytes.len > 0) console.writeString(bytes);
+    if (bytes.len > 0) console.writeString(bytes);
 }
 
 /// Consume pending key events into the line discipline.

@@ -134,11 +134,6 @@ pub const Model = struct {
         try settings.save("net", self.cfg);
     }
 
-    /// Whether an interface is a radio.
-    pub fn isRadio(self: *const Model, iface: usize) bool {
-        return iface < self.count and self.ifaces[iface].kind == .radio;
-    }
-
     /// The first radio, if there is one.
     pub fn radio(self: *const Model) ?usize {
         for (0..self.count) |i| {

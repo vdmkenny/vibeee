@@ -77,7 +77,3 @@ pub fn realtimeMicros() i64 {
 pub fn realtimeSeconds() i64 {
     return @divFloor(realtimeMicros(), 1_000_000);
 }
-
-pub fn nowCivil() civil.Civil {
-    return civil.fromEpoch(realtimeSeconds());
-}

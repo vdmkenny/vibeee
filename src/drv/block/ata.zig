@@ -365,7 +365,3 @@ pub fn init() void {
         }
     }
 }
-
-pub fn driveCount() usize {
-    return drive_count;
-}

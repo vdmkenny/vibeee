@@ -334,15 +334,6 @@ pub fn placeOf(text: []const u8, offset: usize) Place {
     return at;
 }
 
-/// How many lines the document has.
-pub fn lineCount(text: []const u8) usize {
-    var n: usize = 1;
-    for (text) |byte| {
-        if (byte == '\n') n += 1;
-    }
-    return n;
-}
-
 /// The inside of a text area: its frame and padding taken off.
 /// How wide the mark that says where typing goes is. One pixel: on a panel
 /// this dense a wider one is a block sitting in the words.

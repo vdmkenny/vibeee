@@ -77,7 +77,6 @@ const QUEUE_SIZE = 64;
 var queue: [QUEUE_SIZE]Event = undefined;
 var head: usize = 0;
 var tail: usize = 0;
-var dropped: u32 = 0;
 
 var mods: Modifiers = .{};
 
@@ -234,7 +233,6 @@ pub fn post(event: Event) void {
     if (next == head) {
         // Drop the newest rather than the oldest: losing the end of a burst is
         // less confusing than losing what was typed first.
-        dropped += 1;
         return;
     }
     queue[tail] = event;
@@ -258,14 +256,6 @@ pub fn poll() ?Event {
     const event = queue[head];
     head = (head + 1) % QUEUE_SIZE;
     return event;
-}
-
-pub fn hasEvents() bool {
-    return head != tail;
-}
-
-pub fn droppedCount() u32 {
-    return dropped;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +337,6 @@ pub fn postPointer(report: PointerReport) void {
     pointer_x = clamp(pointer_x + report.dx, pointer_max_x);
     pointer_y = clamp(pointer_y + report.dy, pointer_max_y);
 
-    last_buttons = report.buttons;
-
     const event = PointerEvent{
         .x = pointer_x,
         .y = pointer_y,
@@ -389,14 +377,6 @@ pub fn pollPointer() ?PointerEvent {
 pub fn hasPointerEvents() bool {
     return pointer_head != pointer_tail;
 }
-
-/// Where the pointer is now, for a consumer that wants position without
-/// draining the queue.
-pub fn pointerPosition() struct { x: i16, y: i16, buttons: Buttons } {
-    return .{ .x = pointer_x, .y = pointer_y, .buttons = last_buttons };
-}
-
-var last_buttons: Buttons = .{};
 
 /// Signalled whenever a pointer event is queued, so a reader can block instead
 /// of polling. Counting, so an event delivered just before a reader arrives is

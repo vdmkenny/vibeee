@@ -237,10 +237,6 @@ pub const Regs = struct {
         self.writeAt(offset, @bitCast(word));
     }
 
-    pub fn getAt(self: Regs, offset: usize, comptime Word: type) Word {
-        return @bitCast(self.readAt(offset));
-    }
-
     pub fn readAt(self: Regs, offset: usize) u32 {
         return self.window.readAt(offset);
     }

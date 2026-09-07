@@ -474,12 +474,6 @@ pub const Modifiers = packed struct(u8) {
     caps_lock: bool = false,
     num_lock: bool = false,
     _reserved: u1 = 0,
-
-    /// Whether a letter should come out uppercase. Caps Lock and Shift cancel
-    /// rather than compound.
-    pub fn letterShifted(self: Modifiers) bool {
-        return self.shift != self.caps_lock;
-    }
 };
 
 /// Which pointer buttons are held. Defined here because the driver, the

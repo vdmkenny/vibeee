@@ -339,11 +339,6 @@ pub const AddressSpace = struct {
         return if (entry.present) entry.address() else null;
     }
 
-    /// Whether a user address has a page behind it.
-    pub fn mappedAt(self: *const AddressSpace, virt: usize) bool {
-        return self.physicalOf(virt) != null;
-    }
-
     /// The page table a user address falls in, if one has been made.
     fn tableOf(self: *const AddressSpace, virt: usize) ?*Table {
         const dir: *Table = @ptrFromInt(physToVirt(self.pd_phys));
@@ -448,9 +443,4 @@ pub fn mapMmio(phys: usize, len: usize, caching: Caching) MmioError!usize {
     // The address of the requested byte, not of the entry it happens to fall
     // in: an aperture is rarely at the start of four megabytes.
     return window.at;
-}
-
-/// Typed view of a physical address in the linear map.
-pub fn physPtr(comptime T: type, phys: usize) T {
-    return @ptrFromInt(physToVirt(phys));
 }

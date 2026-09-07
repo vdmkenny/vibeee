@@ -280,13 +280,6 @@ pub const PartitionType = enum(u8) {
     efi_system = 0xEF,
     _,
 
-    pub fn isFat(self: PartitionType) bool {
-        return switch (self) {
-            .fat16, .fat32_chs, .fat32_lba, .fat16_lba => true,
-            else => false,
-        };
-    }
-
     /// Why a partition of this type holds nothing this can mount. Null when it
     /// is one that can be.
     pub fn whyUnreadable(self: PartitionType) ?[]const u8 {
@@ -447,15 +440,6 @@ pub fn partitionOf(part: *const Device) ?Partition {
 
 pub fn isMountCandidate(index: usize) bool {
     return table.isMountCandidate(index);
-}
-
-pub fn partitionTypeOf(disk: *const Device, index: usize) ?PartitionType {
-    var sector: [SECTOR_SIZE]u8 = undefined;
-    disk.read(0, &sector) catch return null;
-    if (std.mem.readInt(u16, sector[510..512], .little) != MBR_SIGNATURE) return null;
-    if (index >= 4) return null;
-    const raw: *align(1) const RawEntry = @ptrCast(&sector[PARTITION_TABLE_OFFSET + index * 16]);
-    return @enumFromInt(raw.type);
 }
 
 // ---------------------------------------------------------------------------
