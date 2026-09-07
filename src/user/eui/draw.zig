@@ -510,21 +510,47 @@ pub const Surface = struct {
         if (times != 1) {
             // A pixel of the face becomes a square of them. Whole numbers
             // only: the face is a bitmap, and anything that is not a whole
-            // number of pixels is a blurred letter. The squares go through
-            // `fill`, which clips them.
-            var row: i32 = 0;
-            while (row < @as(i32, @intCast(height))) : (row += 1) {
+            // number of pixels is a blurred letter.
+            //
+            // The clip is settled once here, as it is below, and the squares
+            // are written rather than asked for one call each: at a
+            // magnification that turns this on, every glyph and every
+            // picture on the screen comes through here, and a letter
+            // scrolled off the edge cost a call per lit pixel to find that
+            // out.
+            const target = self.clip.intersect(.{
+                .x = x,
+                .y = y,
+                .w = @as(i32, @intCast(width)) * times,
+                .h = @as(i32, @intCast(height)) * times,
+            });
+            if (target.isEmpty()) return;
+
+            // Only the rows and columns of the face that land inside it.
+            const first_row = @max(0, @divFloor(target.y - y, times));
+            const last_row = @min(@as(i32, @intCast(height)), @divFloor(target.bottom() - 1 - y, times) + 1);
+            const first_col = @max(0, @divFloor(target.x - x, times));
+            const last_col = @min(@as(i32, @intCast(width)), @divFloor(target.right() - 1 - x, times) + 1);
+
+            var row = first_row;
+            while (row < last_row) : (row += 1) {
                 const start = @as(usize, @intCast(row)) * row_bytes;
-                var col: i32 = 0;
-                while (col < @as(i32, @intCast(width))) : (col += 1) {
+                // Every square in this row of the face spans the same lines.
+                const top = @max(target.y, y + row * times);
+                const bottom = @min(target.bottom(), y + row * times + times);
+
+                var col = first_col;
+                while (col < last_col) : (col += 1) {
                     const byte = bits[start + @as(usize, @intCast(col)) / 8];
                     if (byte >> @intCast(7 - @as(u3, @intCast(@mod(col, 8)))) & 1 == 0) continue;
-                    self.fill(.{
-                        .x = x + col * times,
-                        .y = y + row * times,
-                        .w = times,
-                        .h = times,
-                    }, color);
+
+                    const left = @max(target.x, x + col * times);
+                    const right = @min(target.right(), x + col * times + times);
+                    var line_y = top;
+                    while (line_y < bottom) : (line_y += 1) {
+                        const line = self.pixels + @as(usize, @intCast(line_y * self.stride));
+                        @memset(line[@intCast(left)..@intCast(right)], color);
+                    }
                 }
             }
             return;

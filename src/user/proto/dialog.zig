@@ -113,6 +113,8 @@ pub const FileDialog = struct {
     }
 
     fn reload(self: *FileDialog) void {
+        // The rows the panel draws are built from these, once per load.
+        self.panel.reloaded();
         self.entry_count = 0;
         dir.read(self.path[0..self.path_len], &self.names, &self.listing) catch {
             self.listing = .{};

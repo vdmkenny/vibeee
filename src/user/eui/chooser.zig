@@ -76,6 +76,15 @@ pub const Chooser = struct {
     /// refills it and typing over it is not undone on the next pass.
     filled_from: ?usize = null,
 
+    /// Which listing the rows were built from. Whoever loads the entries
+    /// bumps `listing`, and the rows are built once for each: a pass
+    /// triggered by nothing but the pointer moving would otherwise
+    /// reformat every size in the directory, up to a hundred of them, for
+    /// a picture that has not changed.
+    listing: u32 = 0,
+    built_from: ?u32 = null,
+    built: usize = 0,
+
     /// The rows as the table wants them, rebuilt each pass.
     ///
     /// Here rather than on the stack because it is six kilobytes and a process
@@ -86,6 +95,13 @@ pub const Chooser = struct {
     /// What the size column says, which the rows above point into.
     sizes: [MAX_ROWS][12]u8 = undefined,
 
+    /// Say the entries have been loaded again, so the rows are built from
+    /// them on the next pass. Called by whoever owns the listing, since
+    /// only it knows when what it holds has changed.
+    pub fn reloaded(self: *Chooser) void {
+        self.listing +%= 1;
+    }
+
     /// Set once, because `name` has to point at `name_storage` and a struct
     /// cannot point at itself before it exists.
     pub fn init(self: *Chooser, purpose: Purpose, initial: []const u8, heading: []const u8) void {
@@ -93,6 +109,7 @@ pub const Chooser = struct {
         // The name given was typed by the caller, not picked from the list, so
         // nothing should overwrite it until the selection actually moves.
         self.filled_from = 0;
+        self.listing +%= 1;
         self.name.init(.{ .initial = initial });
     }
 
@@ -139,7 +156,11 @@ pub fn run(
     const name_y = buttons_y - row - 6;
     const list_top = top + 20;
 
-    const shown = fill(entries, &state.rows, &state.sizes);
+    if (state.built_from != state.listing) {
+        state.built_from = state.listing;
+        state.built = fill(entries, &state.rows, &state.sizes);
+    }
+    const shown = state.built;
 
     var outcome = Outcome.none;
 
