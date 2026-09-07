@@ -36,10 +36,6 @@ pub fn sys_open(a: Args) Result {
     var path_buf: [path_mod.MAX]u8 = undefined;
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
 
-    const table = currentHandles() orelse return Errno.nomem.value();
-    const slot = table.alloc() orelse return Errno.nomem.value();
-    const h = &table.entries[slot];
-
     const flags = openFlags(a.a2);
 
     if (flags.directory) {
@@ -48,14 +44,14 @@ pub fn sys_open(a: Args) Result {
             vfs.close(dir.lease);
             return Errno.nomem.value();
         };
-        h.* = .{
+        const slot = ctx.installHandle(.{
             .rights = .{ .read = true },
             .data = .{ .directory = .{
                 .lease = dir.lease,
                 .iterator = iterator,
                 .at_root = dir.at_root,
             } },
-        };
+        }) orelse return Errno.nomem.value();
         return @intCast(slot);
     }
 
@@ -64,7 +60,7 @@ pub fn sys_open(a: Args) Result {
         .truncate = flags.truncate and flags.write,
     }, clock.realtimeSeconds()) catch |err| return errnoFor(err);
 
-    h.* = .{
+    const slot = ctx.installHandle(.{
         .rights = .{ .read = true, .write = flags.write, .seek = true },
         .data = .{ .file = .{
             .lease = opened.lease,
@@ -73,7 +69,7 @@ pub fn sys_open(a: Args) Result {
             .append = flags.append,
             .dirty = false,
         } },
-    };
+    }) orelse return Errno.nomem.value();
     return @intCast(slot);
 }
 

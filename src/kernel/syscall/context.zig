@@ -99,11 +99,27 @@ pub fn currentHandles() ?*handles.Table {
 }
 
 /// Claim the lowest free handle for `h`.
+///
+/// The handle's reference is taken over either way: with no room for it,
+/// whatever it names is let go before this returns. A caller that took a
+/// reference to hand over does not then have to know how to put that
+/// particular kind of object back down, which was nine copies of the switch
+/// `handle.release` already is, one of them a copy of a two-step teardown.
 pub fn installHandle(h: handles.Handle) ?u32 {
-    const table = currentHandles() orelse return null;
-    const slot = table.alloc() orelse return null;
+    const table = currentHandles() orelse return dropped(h);
+    const slot = table.alloc() orelse return dropped(h);
     table.entries[slot] = h;
     return slot;
+}
+
+/// Let go of a handle that never reached a table, and say there is no slot.
+///
+/// Nothing can have written through it, so the only error `release` has is a
+/// file's record failing to reach the disk, and a handle that was never
+/// installed has no record to write.
+fn dropped(h: handles.Handle) ?u32 {
+    handles.release(h) catch {};
+    return null;
 }
 
 /// Give a handle back, for a handler unwinding a set it could not finish

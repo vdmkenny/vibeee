@@ -430,10 +430,7 @@ pub fn sys_watch(a: Args) Result {
     const slot = ctx.installHandle(.{
         .rights = .{ .read = true },
         .data = .{ .event = source },
-    }) orelse {
-        event_mod.release(source);
-        return Errno.nomem.value();
-    };
+    }) orelse return Errno.nomem.value();
     return @intCast(slot);
 }
 

@@ -99,10 +99,7 @@ pub fn sys_event_create(_: Args) Result {
     const slot = installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .event = e },
-    }) orelse {
-        event_mod.release(e);
-        return Errno.nomem.value();
-    };
+    }) orelse return Errno.nomem.value();
     return @intCast(slot);
 }
 
@@ -174,8 +171,8 @@ pub fn sys_svc_register(a: Args) Result {
         .rights = .{ .read = true, .write = true },
         .data = .{ .channel = .{ .channel = ch, .serving = true } },
     }) orelse {
+        // The registry's entry is not the handle's to drop.
         svc.unregister(buf[0..name.len]);
-        channel_mod.release(ch);
         return Errno.nomem.value();
     };
     return @intCast(slot);
@@ -189,10 +186,7 @@ pub fn sys_svc_connect(a: Args) Result {
     const slot = installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .channel = .{ .channel = ch, .serving = false } },
-    }) orelse {
-        channel_mod.release(ch);
-        return Errno.nomem.value();
-    };
+    }) orelse return Errno.nomem.value();
     return @intCast(slot);
 }
 
@@ -234,18 +228,17 @@ fn deliverHandles(msg: *channel_mod.Message, out: *abi.Message) bool {
     const table = currentHandles() orelse return false;
 
     var installed: usize = 0;
-    for (msg.handleSlice()) |item| {
-        const slot = table.alloc() orelse break;
-        table.entries[slot] = handles.fromTransfer(item);
+    for (msg.handleSlice(), 0..) |item, at| {
+        const slot = installHandle(handles.fromTransfer(item)) orelse {
+            // The one that would not fit went with the failed install; what
+            // is still held here is everything after it.
+            for (out.handles[0..installed]) |number| table.close(number) catch {};
+            for (msg.handleSlice()[at + 1 ..]) |left| handles.releaseTransfer(left);
+            msg.handle_count = 0;
+            return false;
+        };
         out.handles[installed] = slot;
         installed += 1;
-    }
-
-    if (installed < msg.handle_count) {
-        for (out.handles[0..installed]) |number| table.close(number) catch {};
-        for (msg.handleSlice()[installed..]) |item| handles.releaseTransfer(item);
-        msg.handle_count = 0;
-        return false;
     }
 
     out.handle_count = @intCast(installed);
@@ -388,10 +381,7 @@ pub fn sys_shm_create(a: Args) Result {
     const slot = installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = seg },
-    }) orelse {
-        shm.release(seg);
-        return Errno.nomem.value();
-    };
+    }) orelse return Errno.nomem.value();
     return @intCast(slot);
 }
 
@@ -430,11 +420,7 @@ pub fn sys_display_acquire(a: Args) Result {
     const slot = installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .display = segment },
-    }) orelse {
-        shm.release(segment);
-        display.release();
-        return Errno.nomem.value();
-    };
+    }) orelse return Errno.nomem.value();
 
     const geometry = display.describe();
     const record = abi.DisplayInfo{
@@ -453,31 +439,26 @@ pub fn sys_display_acquire(a: Args) Result {
 
 pub fn sys_pipe(a: Args) Result {
     const out = userWrite(a, a.a0, 2 * @sizeOf(u32)) orelse return Errno.fault.value();
-    const table = currentHandles() orelse return Errno.nomem.value();
 
-    const read_slot = table.alloc() orelse return Errno.nomem.value();
-    // Claimed before the second, so the first cannot be handed out twice. The
-    // kind is set now for the same reason: `alloc` finds the lowest free slot,
-    // and a slot still marked free would be found again.
-    table.entries[read_slot] = .{ .rights = .{}, .data = .console };
+    // Two handles onto one pipe, and the pipe is made counting both. Whichever
+    // half cannot be installed takes its own reference with it, so the other
+    // half's has to be let go by hand: half a pipe is nothing to hand back.
+    const p = pipe_mod.create() catch return Errno.nomem.value();
 
-    const write_slot = table.alloc() orelse {
-        table.entries[read_slot] = .{};
-        return Errno.nomem.value();
-    };
-
-    const p = pipe_mod.create() catch {
-        table.entries[read_slot] = .{};
-        return Errno.nomem.value();
-    };
-
-    table.entries[read_slot] = .{
+    const read_slot = installHandle(.{
         .rights = .{ .read = true },
         .data = .{ .pipe = .{ .pipe = p, .writer = false } },
+    }) orelse {
+        pipe_mod.release(p, true);
+        return Errno.nomem.value();
     };
-    table.entries[write_slot] = .{
+
+    const write_slot = installHandle(.{
         .rights = .{ .write = true },
         .data = .{ .pipe = .{ .pipe = p, .writer = true } },
+    }) orelse {
+        ctx.closeHandle(read_slot);
+        return Errno.nomem.value();
     };
 
     std.mem.writeInt(u32, out[0..4], read_slot, .little);

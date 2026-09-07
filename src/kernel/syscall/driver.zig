@@ -111,10 +111,7 @@ pub fn sys_dma_alloc(a: Args) Result {
     const slot = ctx.installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = seg },
-    }) orelse {
-        shm.release(seg);
-        return Errno.nomem.value();
-    };
+    }) orelse return Errno.nomem.value();
 
     // The address is the hardware's, not the process's: two mappings of the
     // same segment differ, and a DMA engine does not care about mapping.
@@ -125,9 +122,6 @@ pub fn sys_dma_alloc(a: Args) Result {
 pub fn sys_irq_attach(a: Args) Result {
     if (ctx.require(.{ .driver = true })) |denied| return denied;
 
-    const table = currentHandles() orelse return Errno.nomem.value();
-    const slot = table.alloc() orelse return Errno.nomem.value();
-
     // The caller's number is the firmware's: a table said 9, and where 9
     // actually arrives is this machine's business, not the driver's.
     if (a.a0 > std.math.maxInt(u32)) return Errno.inval.value();
@@ -135,19 +129,16 @@ pub fn sys_irq_attach(a: Args) Result {
     const wired = hal.resolveIrq(irq_number);
     if (wired.gsi != a.a0) console.debug("irq", "{d} arrives on line {d}", .{ a.a0, wired.gsi });
 
-    const line = irqevent.attach(wired.gsi) catch |err| {
-        table.entries[slot] = .{};
-        return switch (err) {
-            error.Busy => Errno.busy.value(),
-            error.Unsupported => Errno.inval.value(),
-            error.OutOfMemory => Errno.nomem.value(),
-        };
+    const line = irqevent.attach(wired.gsi) catch |err| return switch (err) {
+        error.Busy => Errno.busy.value(),
+        error.Unsupported => Errno.inval.value(),
+        error.OutOfMemory => Errno.nomem.value(),
     };
 
-    table.entries[slot] = .{
+    const slot = ctx.installHandle(.{
         .rights = .{ .read = true },
         .data = .{ .irq = line },
-    };
+    }) orelse return Errno.nomem.value();
     return @intCast(slot);
 }
 
@@ -309,10 +300,7 @@ fn handOver(pieces: ublk.Parts) error{NoRoom}!Given {
     const data = ctx.installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .shm = pieces.data },
-    }) orelse {
-        shm.release(pieces.data);
-        return error.NoRoom;
-    };
+    }) orelse return error.NoRoom;
     // The handle owns that reference now, so unwinding goes through the table
     // rather than around it.
     errdefer ctx.closeHandle(data);
@@ -321,10 +309,7 @@ fn handOver(pieces: ublk.Parts) error{NoRoom}!Given {
     const doorbell = ctx.installHandle(.{
         .rights = .{ .read = true, .write = true },
         .data = .{ .event = pieces.doorbell },
-    }) orelse {
-        event.release(pieces.doorbell);
-        return error.NoRoom;
-    };
+    }) orelse return error.NoRoom;
 
     return .{ .data = data, .doorbell = doorbell };
 }

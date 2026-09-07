@@ -335,6 +335,9 @@ pub const Table = struct {
     ///
     /// Lowest rather than any: it is what shells rely on when they close a
     /// standard handle and immediately reopen it to redirect.
+    /// The lowest free slot. Only `installHandle` calls this: a handle
+    /// reaches a table one way, and a caller poking `entries` around it is a
+    /// caller that can leave a slot claimed with nothing in it.
     pub fn alloc(self: *Table) ?u32 {
         for (self.entries[FIRST_FREE..], FIRST_FREE..) |*h, i| {
             if (h.data == .none) return @intCast(i);
