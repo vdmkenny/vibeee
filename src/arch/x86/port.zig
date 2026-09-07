@@ -49,6 +49,34 @@ pub inline fn inl(port: u16) u32 {
 
 /// Write to an unused port to burn ~1 microsecond. Needed between writes to
 /// slow legacy hardware (PIC, CMOS) that cannot accept back-to-back commands.
+/// Read `buf.len / 2` words from `port` straight into `buf`, one string
+/// instruction: what a sector's worth of PIO costs when the CPU is the
+/// transfer engine. Whole words only.
+pub inline fn insw(port: u16, buf: []u8) void {
+    var dst: [*]u8 = undefined;
+    var left: usize = undefined;
+    asm volatile ("rep insw"
+        : [dst] "={edi}" (dst),
+          [left] "={ecx}" (left),
+        : [port] "{dx}" (port),
+          [dst_in] "{edi}" (buf.ptr),
+          [count_in] "{ecx}" (buf.len / 2),
+        : .{ .memory = true });
+}
+
+/// Write `buf.len / 2` words from `buf` to `port`, one string instruction.
+pub inline fn outsw(port: u16, buf: []const u8) void {
+    var src: [*]const u8 = undefined;
+    var left: usize = undefined;
+    asm volatile ("rep outsw"
+        : [src] "={esi}" (src),
+          [left] "={ecx}" (left),
+        : [port] "{dx}" (port),
+          [src_in] "{esi}" (buf.ptr),
+          [count_in] "{ecx}" (buf.len / 2),
+        : .{ .memory = true });
+}
+
 pub inline fn ioWait() void {
     outb(0x80, 0);
 }

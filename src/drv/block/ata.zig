@@ -15,6 +15,7 @@
 //! Constraints of the real device, from docs/research: ATA-4, **28-bit LBA
 //! only** (no LBA48) and **no READ/WRITE MULTIPLE**. Nothing here uses either.
 
+const std = @import("std");
 const bcache = @import("../../kernel/bcache.zig");
 const block = @import("../../kernel/block.zig");
 const console = @import("../../kernel/console.zig");
@@ -72,7 +73,14 @@ const Command = enum(u8) {
 
 /// Generous: a spun-down or confused drive can take seconds, and failing early
 /// on a slow device is worse than waiting.
+/// How long a transfer is waited for. Generous, because a drive spinning
+/// up or recovering a sector takes seconds, and it is there.
 const TIMEOUT_US: u64 = 5_000_000;
+/// How long a drive is given to answer an identify with data. A drive that
+/// is there answers within a moment once it is not busy; a slave that is
+/// not there leaves the channel showing its master's status forever, and a
+/// boot that waited a transfer's worth for that would stall for nothing.
+const IDENTIFY_PATIENCE_US: u64 = 100_000;
 
 const Channel = struct {
     io: u16,
@@ -131,7 +139,11 @@ fn waitWhileBusy(ch: Channel) block.Error!Status {
 /// "failed", a drive that sets ERR and never sets DRQ would otherwise look
 /// like a timeout.
 fn waitForData(ch: Channel) block.Error!void {
-    const deadline = hal.monotonicMicros() + TIMEOUT_US;
+    return waitForDataWithin(ch, TIMEOUT_US);
+}
+
+fn waitForDataWithin(ch: Channel, patience_us: u64) block.Error!void {
+    const deadline = hal.monotonicMicros() + patience_us;
     while (true) {
         const status = readStatus(ch);
         if (!status.busy) {
@@ -190,10 +202,10 @@ fn identify(ch: Channel, slave: bool) ?Drive {
     // and high registers instead of data.
     if (port.inb(ch.io + REG_LBA_MID) != 0 or port.inb(ch.io + REG_LBA_HIGH) != 0) return null;
 
-    waitForData(ch) catch return null;
+    waitForDataWithin(ch, IDENTIFY_PATIENCE_US) catch return null;
 
     var words: [256]u16 = undefined;
-    for (&words) |*w| w.* = port.inw(ch.io + REG_DATA);
+    port.insw(ch.io + REG_DATA, std.mem.sliceAsBytes(&words));
 
     // Words 60-61 hold the 28-bit LBA capacity. This is the only capacity
     // field used: the target device is ATA-4 and has no LBA48 field to read.
@@ -249,12 +261,7 @@ fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
 
         for (0..batch) |_| {
             try waitForData(ch);
-            var i: usize = 0;
-            while (i < block.SECTOR_SIZE) : (i += 2) {
-                const w = port.inw(ch.io + REG_DATA);
-                buf[offset + i] = @truncate(w);
-                buf[offset + i + 1] = @truncate(w >> 8);
-            }
+            port.insw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
             offset += block.SECTOR_SIZE;
         }
 
@@ -277,11 +284,7 @@ fn writeSectors(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
 
         for (0..batch) |_| {
             try waitForData(ch);
-            var i: usize = 0;
-            while (i < block.SECTOR_SIZE) : (i += 2) {
-                const w = @as(u16, buf[offset + i]) | (@as(u16, buf[offset + i + 1]) << 8);
-                port.outw(ch.io + REG_DATA, w);
-            }
+            port.outsw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
             offset += block.SECTOR_SIZE;
         }
 
