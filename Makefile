@@ -96,6 +96,12 @@ CMDLINE  ?=
 # image at a byte offset with the @@ syntax, which is how the filesystem gets
 # created inside the partition without loopback mounts or root.
 ROOTFS_IMG    := $(BUILD)/rootfs.img
+# What goes into it that is built rather than committed. Named here, above
+# the rule that lists them: make expands a rule's prerequisites as it reads
+# it, so a name defined further down expands to nothing and the image is
+# built without ever depending on the file it copies in.
+FONT_PACK     := $(BUILD)/fonts.pack
+CA_STORE      := $(BUILD)/ca.store
 # Small on purpose: the whole of it is read over the BIOS's slow USB path at
 # boot, so every kilobyte is time on the target machine. What sets the size is
 # the certificate store, which is a hundred and thirty kilobytes of authorities
@@ -482,9 +488,7 @@ athtables: $(BUILD)/mkathtables
 
 # The interface faces, packed into the one file every window draws from. Built
 # rather than committed: it is the same glyphs as `src/lib/fonts/`, in the shape
-# a program maps.
-FONT_PACK := $(BUILD)/fonts.pack
-
+# a program maps. Its name is above, with the rest of what the image holds.
 $(BUILD)/mkfontpack: tools/mkfontpack.zig $(wildcard src/lib/fonts/*.zig) src/lib/font.zig | $(BUILD)
 	$(ZIG) build-exe -O ReleaseSafe --name mkfontpack -femit-bin=$@ \
 		--dep lib -Mroot=tools/mkfontpack.zig -Mlib=src/lib/lib.zig
@@ -494,8 +498,6 @@ $(FONT_PACK): $(BUILD)/mkfontpack
 
 # The certificate authorities a TLS connection is checked against, decoded
 # from the vendored bundle once here rather than at every connection.
-CA_STORE := $(BUILD)/ca.store
-
 $(BUILD)/mkcastore: tools/mkcastore.zig src/lib/castore.zig | $(BUILD)
 	$(ZIG) build-exe -O ReleaseSafe --name mkcastore -femit-bin=$@ \
 		--dep lib -Mroot=tools/mkcastore.zig -Mlib=src/lib/lib.zig
