@@ -400,16 +400,15 @@ fn reportStorage() void {
 /// its extended capabilities: the operating system asks, the BIOS releases,
 /// and a BIOS that will not is dispossessed, which is the sequence every
 /// operating system performs before touching the controller.
-fn handOverUsb(addr: pci.Address, prog_if: u8) void {
+fn handOverUsb(addr: libpci.Location, prog_if: u8) void {
     switch (prog_if) {
         0x00 => { // UHCI
             const LEGSUP: u8 = 0xC0;
             const RELEASED: u32 = 0x8F00; // enables zero, statuses cleared
             const kept = pci.configRead32(addr, LEGSUP) & 0xFFFF_0000;
             pci.configWrite32(addr, LEGSUP, kept | RELEASED);
-            console.debug("usb", "uhci at {x:0>2}:{x:0>2}.{d} handed over", .{
-                addr.bus, addr.slot, addr.func,
-            });
+            var where: [8]u8 = undefined;
+            console.debug("usb", "uhci at {s} handed over", .{libpci.spell(addr, &where)});
         },
         0x20 => { // EHCI
             const bar = pci.configRead32(addr, pci.BAR0_OFFSET) & ~@as(u32, 0xF);
@@ -438,9 +437,8 @@ fn handOverUsb(addr: pci.Address, prog_if: u8) void {
 
             // And the trap enables behind it, off; their statuses, cleared.
             pci.configWrite32(addr, eecp + 4, 0xE000_0000);
-            console.debug("usb", "ehci at {x:0>2}:{x:0>2}.{d} handed over", .{
-                addr.bus, addr.slot, addr.func,
-            });
+            var where: [8]u8 = undefined;
+            console.debug("usb", "ehci at {s} handed over", .{libpci.spell(addr, &where)});
         },
         else => {},
     }
@@ -451,7 +449,7 @@ fn handOverUsb(addr: pci.Address, prog_if: u8) void {
 /// thing a driver should ever be handed, so its range is published next to
 /// the FADT's account of the same territory.
 fn lpcPmBase() ?u16 {
-    const lpc = pci.Address{ .bus = 0, .slot = 31, .func = 0 };
+    const lpc = libpci.Location{ .bus = 0, .device = 31, .function = 0 };
     const id = pci.configRead32(lpc, 0);
     if (id & 0xFFFF != 0x8086) return null;
     const code: libpci.ClassCode = @bitCast(pci.configRead32(lpc, libpci.ClassCode.OFFSET));
@@ -499,18 +497,18 @@ fn walkAgain() void {
 /// The USB controllers already taken from the firmware. A later walk of
 /// the bus meets them again, and must leave them to the driver that has
 /// them by then: handing one over twice resets a controller in use.
-var handed_over: Bounded(pci.Address, 16) = .{};
+var handed_over: Bounded(libpci.Location, 16) = .{};
 
-fn handedOver(addr: pci.Address) bool {
+fn handedOver(addr: libpci.Location) bool {
     for (handed_over.slice()) |done| {
-        if (std.meta.eql(done, addr)) return true;
+        if (done.eql(addr)) return true;
     }
     return false;
 }
 
 fn enumeratePci() void {
     pci.enumerate(struct {
-        fn found(addr: pci.Address, vendor: u16, device: u16) void {
+        fn found(addr: libpci.Location, vendor: u16, device: u16) void {
             const code: libpci.ClassCode = @bitCast(pci.configRead32(addr, libpci.ClassCode.OFFSET));
 
             // The firmware runs USB keyboard emulation from system
@@ -522,15 +520,16 @@ fn enumeratePci() void {
             // but the trap.
             if (code.class == .serial_bus and code.subclass == libpci.Subclass.usb and !handedOver(addr)) {
                 handOverUsb(addr, code.interface);
+                var where: [8]u8 = undefined;
                 handed_over.append(addr) catch console.warn(
-                    "usb: more controllers than are remembered; {x:0>2}:{x:0>2}.{d} is handed over on every walk",
-                    .{ addr.bus, addr.slot, addr.func },
+                    "usb: more controllers than are remembered; {s} is handed over on every walk",
+                    .{libpci.spell(addr, &where)},
                 );
             }
 
             probe.consider(.{
                 .bus = "pci",
-                .location = .{ addr.bus, addr.slot, addr.func },
+                .location = addr,
                 .vendor = vendor,
                 .device = device,
                 .class = @intFromEnum(code.class),

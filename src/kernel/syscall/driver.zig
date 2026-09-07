@@ -72,7 +72,7 @@ pub fn sys_claim_device(a: Args) Result {
 
     const t = sched.currentThread() orelse return Errno.perm.value();
     const location = lib.pci.Location.fromComponents(a.a0, a.a1, a.a2) orelse return Errno.inval.value();
-    probe.claimDevice(.{ location.bus, location.device, location.function }, t.id) catch |err| return switch (err) {
+    probe.claimDevice(location, t.id) catch |err| return switch (err) {
         error.NotFound => Errno.noent.value(),
         error.Busy => Errno.busy.value(),
     };
@@ -84,7 +84,7 @@ pub fn sys_release_device(a: Args) Result {
 
     const t = sched.currentThread() orelse return Errno.perm.value();
     const location = lib.pci.Location.fromComponents(a.a0, a.a1, a.a2) orelse return Errno.inval.value();
-    return if (probe.releaseDevice(.{ location.bus, location.device, location.function }, t.id)) 0 else Errno.noent.value();
+    return if (probe.releaseDevice(location, t.id)) 0 else Errno.noent.value();
 }
 
 /// Look at the bus again.

@@ -293,8 +293,14 @@ export fn platd_pci_open(
     // The handle is the kernel's packed location; the kernel owns the
     // configuration ports, because this process is not the only one that
     // reads them and the pair cannot serve two selectors at once.
-    const location = (@as(u32, bus) << 8) | (@as(u32, device & 0x1F) << 3) | (function & 0x7);
-    out_handle.* = @ptrFromInt(location | HANDLE_MARK);
+    //
+    // Refused rather than masked. A `_ADR` naming device 33 is a table this
+    // build should not act on, and folding it onto device 1 would read some
+    // other device's configuration and report it as the one that was asked
+    // for.
+    const at = lib.pci.Location.fromComponents(bus, device, function) orelse
+        return Status.not_found.value();
+    out_handle.* = @ptrFromInt(@as(usize, at.encode()) | HANDLE_MARK);
     return Status.ok.value();
 }
 
@@ -357,19 +363,6 @@ fn locationOf(handle: ?*anyopaque) u32 {
 fn shiftFor(offset: usize) u5 {
     return @intCast((offset & 3) * 8);
 }
-
-/// The address register, as the mechanism lays it out. The low two bits of an
-/// offset select a byte within the dword the port returns, so they are not
-/// part of the address written.
-const Selector = packed struct(u32) {
-    _byte: u2 = 0,
-    register: u6 = 0,
-    function: u3 = 0,
-    device: u5 = 0,
-    bus: u8 = 0,
-    _reserved: u7 = 0,
-    enable: bool = false,
-};
 
 // ---------------------------------------------------------------------------
 // Time

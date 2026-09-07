@@ -9,44 +9,37 @@ const console = @import("../../kernel/console.zig");
 const pcicfg = @import("../../kernel/pcicfg.zig");
 const lib = @import("lib");
 
-pub const Address = struct {
-    bus: u8,
-    slot: u5,
-    func: u3,
-};
-
 /// Through the kernel's one owner of the pair: an access split by an
 /// interrupt, or raced by another process, lands its data on whatever the
 /// other selected.
-fn selectorFor(addr: Address, offset: u8) pcicfg.Selector {
+fn selectorFor(at: lib.pci.Location, offset: u8) pcicfg.Selector {
     return .{
-        .bus = addr.bus,
-        .device = addr.slot,
-        .function = addr.func,
+        .bus = at.bus,
+        .device = at.device,
+        .function = at.function,
         .register = @truncate(offset >> 2),
     };
 }
 
-pub fn configRead32(addr: Address, offset: u8) u32 {
-    return pcicfg.read(selectorFor(addr, offset));
+pub fn configRead32(at: lib.pci.Location, offset: u8) u32 {
+    return pcicfg.read(selectorFor(at, offset));
 }
 
-pub fn configRead8(addr: Address, offset: u8) u8 {
-    const v = configRead32(addr, offset);
+pub fn configRead8(at: lib.pci.Location, offset: u8) u8 {
+    const v = configRead32(at, offset);
     return @truncate(v >> (@as(u5, @truncate(offset & 3)) * 8));
 }
 
-pub fn configWrite32(addr: Address, offset: u8, value: u32) void {
-    pcicfg.write(selectorFor(addr, offset), value);
+pub fn configWrite32(at: lib.pci.Location, offset: u8, value: u32) void {
+    pcicfg.write(selectorFor(at, offset), value);
 }
 
 /// Stop a userspace-owned PCI function before its DMA mappings are reclaimed.
-pub fn quiesce(location: [3]u16) void {
-    const loc = lib.pci.Location.fromComponents(location[0], location[1], location[2]) orelse return;
+pub fn quiesce(at: lib.pci.Location) void {
     const selector = pcicfg.Selector{
-        .bus = loc.bus,
-        .device = loc.device,
-        .function = loc.function,
+        .bus = at.bus,
+        .device = at.device,
+        .function = at.function,
         .register = lib.pci.COMMAND_OFFSET / @sizeOf(u32),
     };
     var command: lib.pci.Command = @bitCast(@as(u16, @truncate(pcicfg.read(selector))));
@@ -64,17 +57,15 @@ pub fn quiesce(location: [3]u16) void {
 /// lines and the bus is pulled up. The one question a table of devices has to
 /// be able to ask again: a part that was switched off is gone from the bus
 /// without anything saying so.
-pub fn answers(location: [3]u16) bool {
-    const loc = lib.pci.Location.fromComponents(location[0], location[1], location[2]) orelse return false;
-    const addr = Address{ .bus = loc.bus, .slot = loc.device, .func = loc.function };
-    return @as(u16, @truncate(configRead32(addr, 0x00))) != lib.pci.NO_DEVICE;
+pub fn answers(at: lib.pci.Location) bool {
+    return @as(u16, @truncate(configRead32(at, 0x00))) != lib.pci.NO_DEVICE;
 }
 
 pub const HEADER_TYPE_OFFSET = lib.pci.HEADER_TYPE_OFFSET;
 pub const BAR0_OFFSET = lib.pci.BAR0_OFFSET;
 pub const INTERRUPT_LINE_OFFSET = lib.pci.INTERRUPT_LINE_OFFSET;
 
-pub const Callback = *const fn (addr: Address, vendor: u16, device: u16) void;
+pub const Callback = *const fn (at: lib.pci.Location, vendor: u16, device: u16) void;
 
 /// Brute-force scan of all 256 buses. Recursive bridge-following would be
 /// tidier, but on a machine whose entire topology is known and tiny the flat
@@ -90,7 +81,7 @@ pub fn enumerate(cb: Callback) void {
 }
 
 fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
-    const base = Address{ .bus = bus, .slot = slot, .func = 0 };
+    const base = lib.pci.Location{ .bus = bus, .device = slot, .function = 0 };
     const id = configRead32(base, 0x00);
     const vendor: u16 = @truncate(id);
     if (vendor == lib.pci.NO_DEVICE) return;
@@ -104,7 +95,7 @@ fn scanSlot(bus: u8, slot: u5, cb: Callback) void {
 
     var func: u8 = 1;
     while (func < 8) : (func += 1) {
-        const a = Address{ .bus = bus, .slot = slot, .func = @truncate(func) };
+        const a = lib.pci.Location{ .bus = bus, .device = slot, .function = @truncate(func) };
         const fid = configRead32(a, 0x00);
         const fvendor: u16 = @truncate(fid);
         if (fvendor == lib.pci.NO_DEVICE) continue;
@@ -127,7 +118,7 @@ pub fn quietBridgeAspm() void {
     while (slot < 32) : (slot += 1) {
         var func: u8 = 0;
         while (func < 8) : (func += 1) {
-            const a = Address{ .bus = 0, .slot = @truncate(slot), .func = @truncate(func) };
+            const a = lib.pci.Location{ .bus = 0, .device = @truncate(slot), .function = @truncate(func) };
             const id = configRead32(a, 0x00);
             if (@as(u16, @truncate(id)) == lib.pci.NO_DEVICE) continue;
 
@@ -152,7 +143,7 @@ pub fn quietBridgeAspm() void {
 /// The capability chain is walked by the library, which owns the layout
 /// and the bound: a chain that points at itself is silicon nobody should
 /// spin on, and this runs at boot across every function of the bus.
-fn clearAspm(a: Address) void {
+fn clearAspm(a: lib.pci.Location) void {
     const at = lib.pci.capabilityAt(a, configRead32, .pcie) orelse return;
     const reg = lib.pci.fieldAt(at, lib.pci.PcieLinkControl.OFFSET) orelse return;
 
@@ -161,9 +152,8 @@ fn clearAspm(a: Address) void {
 
     link.aspm = 0;
     configWrite32(a, reg, @bitCast(link));
-    console.debug("pci", "{x:0>2}:{x:0>2}.{d} root port aspm cleared", .{
-        a.bus, a.slot, a.func,
-    });
+    var where: [8]u8 = undefined;
+    console.debug("pci", "{s} root port aspm cleared", .{lib.pci.spell(a, &where)});
 }
 
 /// Human-readable class name, for the probe table. Covers the classes that

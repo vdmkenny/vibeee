@@ -58,7 +58,7 @@ pub const Driver = struct {
 /// bus driver is responsible for filling it in and for the description.
 pub const Device = struct {
     bus: []const u8,
-    location: [3]u16,
+    location: lib.pci.Location,
     vendor: u16,
     device: u16,
     class: u8,
@@ -67,7 +67,7 @@ pub const Device = struct {
     description: []const u8,
     /// Bus-owned shutdown used before resources held by a userspace driver are
     /// reclaimed. Null for devices that cannot initiate independent transfers.
-    quiesce: ?*const fn (location: [3]u16) void = null,
+    quiesce: ?*const fn (location: lib.pci.Location) void = null,
 };
 
 pub const Binding = struct {
@@ -105,12 +105,10 @@ var binding_count: usize = 0;
 /// otherwise read a driven device as free.
 pub const ClaimError = error{ NotFound, Busy };
 
-pub fn claimDevice(location: [3]u16, claimer: u32) ClaimError!void {
+pub fn claimDevice(location: lib.pci.Location, claimer: u32) ClaimError!void {
     for (bindings[0..binding_count]) |*b| {
         if (!std.mem.eql(u8, b.dev.bus, "pci")) continue;
-        if (b.dev.location[0] != location[0] or
-            b.dev.location[1] != location[1] or
-            b.dev.location[2] != location[2]) continue;
+        if (!b.dev.location.eql(location)) continue;
 
         if (b.attached and b.claimed_by != claimer) return error.Busy;
         b.attached = true;
@@ -120,12 +118,10 @@ pub fn claimDevice(location: [3]u16, claimer: u32) ClaimError!void {
     return error.NotFound;
 }
 
-pub fn releaseDevice(location: [3]u16, claimer: u32) bool {
+pub fn releaseDevice(location: lib.pci.Location, claimer: u32) bool {
     for (bindings[0..binding_count]) |*b| {
         if (!std.mem.eql(u8, b.dev.bus, "pci")) continue;
-        if (b.dev.location[0] != location[0] or
-            b.dev.location[1] != location[1] or
-            b.dev.location[2] != location[2]) continue;
+        if (!b.dev.location.eql(location)) continue;
         if (b.claimed_by != claimer) return false;
 
         quiesce(b);
@@ -187,7 +183,7 @@ pub fn rescan() bool {
 /// The question is the bus driver's to answer and the table is this file's to
 /// change, which is why it is asked rather than told. Walked backwards so that
 /// filling a hole with the last entry cannot skip the entry that moved.
-pub fn sweep(bus: []const u8, present: *const fn (location: [3]u16) bool) void {
+pub fn sweep(bus: []const u8, present: *const fn (location: lib.pci.Location) bool) void {
     var i = binding_count;
     while (i > 0) {
         i -= 1;
@@ -244,15 +240,15 @@ fn bound(dev: Device) Binding {
 
 /// Where the entry for one place on one bus is, or null when nothing is
 /// recorded there.
-fn indexOf(bus: []const u8, location: [3]u16) ?usize {
+fn indexOf(bus: []const u8, location: lib.pci.Location) ?usize {
     for (bindings[0..binding_count], 0..) |b, i| {
         if (!std.mem.eql(u8, b.dev.bus, bus)) continue;
-        if (std.mem.eql(u16, &b.dev.location, &location)) return i;
+        if (b.dev.location.eql(location)) return i;
     }
     return null;
 }
 
-fn find(bus: []const u8, location: [3]u16) ?*Binding {
+fn find(bus: []const u8, location: lib.pci.Location) ?*Binding {
     return &bindings[indexOf(bus, location) orelse return null];
 }
 
@@ -261,7 +257,7 @@ fn find(bus: []const u8, location: [3]u16) ?*Binding {
 /// Stopped before it is forgotten: the entry is what says a userspace driver
 /// holds it, so once the row is gone nothing is left to quiesce it by, and a
 /// part still mastering the bus would keep doing so with nobody accountable.
-pub fn forget(bus: []const u8, location: [3]u16) bool {
+pub fn forget(bus: []const u8, location: lib.pci.Location) bool {
     const index = indexOf(bus, location) orelse return false;
     quiesce(&bindings[index]);
 
@@ -333,8 +329,9 @@ pub fn report() void {
 
     for (bindings[0..binding_count]) |b| {
         console.setColor(console.colourOf(.dim), .black);
-        console.printf("  {x:0>2}:{x:0>2}.{d} {x:0>4}:{x:0>4} ", .{
-            b.dev.location[0], b.dev.location[1], b.dev.location[2], b.dev.vendor, b.dev.device,
+        var where: [8]u8 = undefined;
+        console.printf("  {s} {x:0>4}:{x:0>4} ", .{
+            lib.pci.spell(b.dev.location, &where), b.dev.vendor, b.dev.device,
         });
 
         if (b.driver) |d| {
@@ -361,7 +358,7 @@ const testing = std.testing;
 fn testDevice(slot: u16, vendor: u16, device: u16) Device {
     return .{
         .bus = "pci",
-        .location = .{ 0, slot, 0 },
+        .location = .{ .bus = 0, .device = @intCast(slot), .function = 0 },
         .vendor = vendor,
         .device = device,
         .class = 0x02,
@@ -398,11 +395,11 @@ test "a walk that runs again over an unchanged machine changes nothing" {
 test "a device that was claimed keeps its claim across a walk" {
     begin(&.{}, null);
     consider(testDevice(1, 0x8086, 0x100E));
-    try claimDevice(.{ 0, 1, 0 }, 42);
+    try claimDevice(.{ .bus = 0, .device = 1, .function = 0 }, 42);
 
     consider(testDevice(1, 0x8086, 0x100E));
 
-    const held = find("pci", .{ 0, 1, 0 }).?;
+    const held = find("pci", .{ .bus = 0, .device = 1, .function = 0 }).?;
     try testing.expect(held.attached);
     try testing.expectEqual(@as(u32, 42), held.claimed_by);
 }
@@ -410,14 +407,14 @@ test "a device that was claimed keeps its claim across a walk" {
 test "different hardware in the same place replaces the entry" {
     begin(&.{}, null);
     consider(testDevice(1, 0x8086, 0x100E));
-    try claimDevice(.{ 0, 1, 0 }, 42);
+    try claimDevice(.{ .bus = 0, .device = 1, .function = 0 }, 42);
 
     consider(testDevice(1, 0x168C, 0x001C));
     try testing.expectEqual(@as(usize, 1), testCount());
 
     // The claim was on what was there, not on the place: a card swapped for
     // another must not be handed the first one's driver as if nothing moved.
-    const now = find("pci", .{ 0, 1, 0 }).?;
+    const now = find("pci", .{ .bus = 0, .device = 1, .function = 0 }).?;
     try testing.expectEqual(@as(u16, 0x168C), now.dev.vendor);
     try testing.expect(!now.attached);
     try testing.expectEqual(@as(u32, 0), now.claimed_by);
@@ -432,15 +429,15 @@ test "a device that stopped answering is dropped, and the rest stay" {
     // The middle one, so that filling the hole with the last entry is what
     // has to keep the other two.
     sweep("pci", struct {
-        fn present(location: [3]u16) bool {
-            return location[1] != 2;
+        fn present(location: lib.pci.Location) bool {
+            return location.device != 2;
         }
     }.present);
 
     try testing.expectEqual(@as(usize, 2), testCount());
-    try testing.expect(find("pci", .{ 0, 1, 0 }) != null);
-    try testing.expect(find("pci", .{ 0, 2, 0 }) == null);
-    try testing.expect(find("pci", .{ 0, 3, 0 }) != null);
+    try testing.expect(find("pci", .{ .bus = 0, .device = 1, .function = 0 }) != null);
+    try testing.expect(find("pci", .{ .bus = 0, .device = 2, .function = 0 }) == null);
+    try testing.expect(find("pci", .{ .bus = 0, .device = 3, .function = 0 }) != null);
 }
 
 test "a sweep leaves another bus alone" {
@@ -453,13 +450,13 @@ test "a sweep leaves another bus alone" {
 
     // Nothing on pci answers, and the usb entry is not pci's to remove.
     sweep("pci", struct {
-        fn present(_: [3]u16) bool {
+        fn present(_: lib.pci.Location) bool {
             return false;
         }
     }.present);
 
     try testing.expectEqual(@as(usize, 1), testCount());
-    try testing.expect(find("usb", .{ 0, 1, 0 }) != null);
+    try testing.expect(find("usb", .{ .bus = 0, .device = 1, .function = 0 }) != null);
 }
 
 test "the driver that recognised the part names it; one that guessed does not" {
@@ -495,13 +492,13 @@ test "the driver that recognised the part names it; one that guessed does not" {
     // The part whose class says one thing and whose driver knows another.
     try testing.expectEqualStrings(
         "wireless controller",
-        find("pci", .{ 0, 1, 0 }).?.dev.description,
+        find("pci", .{ .bus = 0, .device = 1, .function = 0 }).?.dev.description,
     );
 
     // The one nothing recognised exactly keeps what the bus called it, so a
     // generic driver cannot rename every device it half matched.
     try testing.expectEqualStrings(
         "test device",
-        find("pci", .{ 0, 2, 0 }).?.dev.description,
+        find("pci", .{ .bus = 0, .device = 2, .function = 0 }).?.dev.description,
     );
 }

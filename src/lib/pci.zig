@@ -21,16 +21,6 @@ pub const Location = packed struct(u16) {
     /// 0..255.
     bus: u8,
 
-    /// The mechanism-one address `register` answers at. Register addresses are
-    /// dword-granular, so the low two bits do not exist and are not sent.
-    pub fn address(self: Location, register: u8) u32 {
-        return 0x8000_0000 |
-            (@as(u32, self.bus) << 16) |
-            (@as(u32, self.device) << 11) |
-            (@as(u32, self.function) << 8) |
-            (@as(u32, register) & 0xFC);
-    }
-
     /// The compact BDF form used by the userspace PCI syscalls.
     pub fn encode(self: Location) u16 {
         return @bitCast(self);
@@ -393,12 +383,8 @@ test "a memory window is reachable by its width and its placement" {
     try std.testing.expectEqual(@as(?u32, null), memoryWindowBase(@bitCast(@as(u32, 0x0000_0004)), 0));
 }
 
-test "the lanes of a location are the ones mechanism one expects" {
+test "a location is one word, laid out as the syscalls carry it" {
     const loc = Location{ .bus = 0x21, .device = 0x0F, .function = 5 };
-
-    // Bit 31 selects configuration space, and the bus, device and function
-    // lanes are laid out per the specification.
-    try testing.expectEqual(@as(u32, 0x8000_0000 | (0x21 << 16) | (0x0F << 11) | (5 << 8)), loc.address(0));
     try testing.expectEqual(@as(u16, 0x217D), loc.encode());
 }
 
@@ -407,14 +393,6 @@ test "location components are range checked" {
     try testing.expect(Location.fromComponents(256, 0, 0) == null);
     try testing.expect(Location.fromComponents(0, 32, 0) == null);
     try testing.expect(Location.fromComponents(0, 0, 8) == null);
-}
-
-test "register addresses are dword-granular" {
-    const loc = Location{ .bus = 0, .device = 3, .function = 0 };
-
-    // The low two bits of a register do not exist in mechanism one.
-    try testing.expectEqual(loc.address(0x10), loc.address(0x13));
-    try testing.expectEqual(@as(u32, 0x8000_00FC | (3 << 11)), loc.address(0xFC));
 }
 
 test "a location parses from its printed form" {

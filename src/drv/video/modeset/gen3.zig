@@ -355,15 +355,9 @@ const Bar = packed struct(u32) {
 
 /// The adapter's base registers, all six, read once.
 fn bars(dev: probe.Device) [6]Bar {
-    const addr = pci.Address{
-        .bus = @truncate(dev.location[0]),
-        .slot = @truncate(dev.location[1]),
-        .func = @truncate(dev.location[2]),
-    };
-
     var out: [6]Bar = undefined;
     for (&out, 0..) |*bar, i| {
-        bar.* = @bitCast(pci.configRead32(addr, pci.BAR0_OFFSET + @as(u8, @intCast(i)) * 4));
+        bar.* = @bitCast(pci.configRead32(dev.location, pci.BAR0_OFFSET + @as(u8, @intCast(i)) * 4));
     }
     return out;
 }

@@ -155,7 +155,7 @@ const std = @import("std");
 fn adapter(vendor: u16, device: u16) probe.Device {
     return .{
         .bus = "pci",
-        .location = .{ 0, 2, 0 },
+        .location = .{ .bus = 0, .device = 2, .function = 0 },
         .vendor = vendor,
         .device = device,
         .class = 0x03,
