@@ -266,7 +266,12 @@ fn resize(w: u16, h: u16) void {
     connection.attach(window, w, h) catch return;
     const surface = connection.surfaceOf(window) orelse return;
 
-    ctx = eui.Context.init(surface.*);
+    // The surface is replaced, not the context: what the program told the
+    // context about itself, the clipboard above all, belongs to the program
+    // and not to the size of its window. A configure arrives before the
+    // first draw, so building it again here undid every such setting before
+    // anything could use it.
+    ctx.surface = surface.*;
     ctx.damageNow();
     paint();
     connection.map(window) catch {};

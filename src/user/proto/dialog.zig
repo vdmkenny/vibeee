@@ -194,7 +194,9 @@ pub const FileDialog = struct {
             .configure => {
                 connection.attach(self.window, event.body.configure.w, event.body.configure.h) catch return false;
                 const surface = connection.surfaceOf(self.window) orelse return false;
-                self.ctx = eui.Context.init(surface.*);
+                // The surface is replaced, not the context: what the dialog
+                // was told about itself is not a property of its size.
+                self.ctx.surface = surface.*;
                 self.ctx.damageNow();
                 self.draw(connection);
                 connection.map(self.window) catch {};

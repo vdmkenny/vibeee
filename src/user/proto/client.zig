@@ -28,6 +28,11 @@ pub const Error = error{
     NoRoom,
 };
 
+/// The largest surface a window may be given. A screen's worth on this
+/// machine is under a megabyte and a half; the cap is what stops a size
+/// the server sent from asking for memory nothing has.
+const MAX_SURFACE_BYTES: u64 = 16 * 1024 * 1024;
+
 pub const Window = struct {
     id: u8 = 0,
     /// Where the client draws. Valid until the next `configure` changes the
@@ -37,7 +42,21 @@ pub const Window = struct {
     height: u16 = 0,
     /// The segment behind the surface, kept so it can be released on resize.
     handle: u32 = 0,
+    /// Where that segment is mapped, kept for the same reason: the mapping
+    /// holds the segment as much as the handle does, so closing the handle
+    /// alone leaves the frames where they are and the window's addresses
+    /// spent. A program that resizes for as long as it runs would run out
+    /// of both.
+    pixels: ?[*]u8 = null,
     used: bool = false,
+
+    /// Let go of the surface: the mapping first, then the handle.
+    fn dropSurface(self: *Window) void {
+        if (self.pixels) |at| _ = sys.shmUnmap(at);
+        if (self.handle != 0) _ = sys.close(self.handle);
+        self.pixels = null;
+        self.handle = 0;
+    }
 };
 
 pub const Connection = struct {
@@ -185,29 +204,48 @@ pub const Connection = struct {
         // Stride rounded to 16 pixels: the compositor's blit wants 64-byte
         // alignment, and a client that ignored it would force the slow path on
         // every row.
-        const stride: u16 = (w + 15) & ~@as(u16, 15);
-        const bytes = @as(usize, stride) * h * 4;
+        //
+        // Worked out in sixty-four bits from a width and a height the server
+        // sent: a `usize` here is thirty-two, and a size near the top of the
+        // sixteen bits they arrive in would wrap to something small, leaving
+        // a surface that says it is large backed by a segment that is not.
+        const stride: u32 = (@as(u32, w) + 15) & ~@as(u32, 15);
+        const bytes = @as(u64, stride) * h * 4;
+        if (bytes == 0 or bytes > MAX_SURFACE_BYTES) return error.Refused;
 
-        const handle = sys.shmCreate(bytes);
+        const handle = sys.shmCreate(@intCast(bytes));
         if (handle < 0) return error.OutOfMemory;
+        // Nothing half done: what this made is given back on every way out
+        // that is not the one where the window takes it.
+        var taken = false;
+        defer if (!taken) {
+            _ = sys.close(@intCast(handle));
+        };
 
         const pixels = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse
             return error.OutOfMemory;
+        var mapped = true;
+        defer if (!taken and mapped) {
+            _ = sys.shmUnmap(pixels);
+        };
 
         var req = wm.Req{ .tag = .attach, .win = id };
-        req.body = .{ .attach = .{ .w = w, .h = h, .stride_px = stride } };
+        req.body = .{ .attach = .{ .w = w, .h = h, .stride_px = @intCast(stride) } };
 
         const rep = try self.request(&req, &.{@intCast(handle)});
         if (rep.status != .ok) return error.Refused;
 
-        const previous = window.handle;
+        // The server has the replacement, so the one it replaces goes: the
+        // mapping as well as the handle, since either alone keeps the
+        // frames.
+        window.dropSurface();
+        taken = true;
+        mapped = false;
         window.handle = @intCast(handle);
+        window.pixels = pixels;
         window.width = w;
         window.height = h;
-        window.surface = eui.Surface.init(@ptrCast(@alignCast(pixels)), w, h, stride);
-
-        // Released only once the server has the replacement.
-        if (previous != 0) _ = sys.close(previous);
+        window.surface = eui.Surface.init(@ptrCast(@alignCast(pixels)), w, h, @intCast(stride));
     }
 
     /// Tell the server what changed. It reads the surface and composites.
@@ -254,7 +292,10 @@ pub const Connection = struct {
         var req = wm.Req{ .tag = .destroy_win, .win = id };
         _ = try self.request(&req, &.{});
 
-        if (self.find(id)) |window| window.* = .{};
+        if (self.find(id)) |window| {
+            window.dropSurface();
+            window.* = .{};
+        }
     }
 
     /// Take the next event, or null if there are none waiting.
