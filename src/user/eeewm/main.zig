@@ -194,7 +194,12 @@ fn paint() void {
 
     bar.paint(screen, info.width, info.height, &desktop);
 
-    for (visible) |index| {
+    // Only what will still be visible when the last one is drawn. A window
+    // that something later covers completely is a whole surface blitted
+    // and then blitted over: with a fullscreen window on a tag that also
+    // holds tiles, that is the tiles' pixels written for nothing.
+    for (visible, 0..) |index, order| {
+        if (coveredBy(visible[order + 1 ..], desktop.windows[index].area)) continue;
         paintWindow(index, desktop.focused == index);
     }
 
@@ -215,9 +220,15 @@ fn paintCommitted() void {
     const visible = desktop.visible(&buf);
 
     var lifted = false;
-    // Windows that something below them has just drawn over, and which
-    // therefore have to be put back on top.
-    var restore: [layout.MAX_WINDOWS]bool = @splat(false);
+    // What a window above has to have put back: the part of it something
+    // below just drew over, and no more. Taken from the pixels that were
+    // actually painted rather than from the two windows' whole areas: a
+    // fullscreen window overlaps every tile, so a terminal under it
+    // committing one line had the whole fullscreen surface blitted again.
+    var restore: [layout.MAX_WINDOWS]Rect = @splat(.{});
+    // Everything this pass drew, so what floats above it can be asked
+    // whether any of it was underneath.
+    var touched = Rect{};
 
     for (visible, 0..) |index, order| {
         const damage = &desktop.windows[index].damage;
@@ -228,38 +239,63 @@ fn paintCommitted() void {
             lifted = true;
         }
 
-        if (damage.all) {
+        const painted = if (damage.all) blk: {
             paintWindow(index, desktop.focused == index);
-        } else {
-            refreshWindow(index, damage.rects[0..damage.count]);
-        }
+            break :blk desktop.windows[index].area;
+        } else refreshWindow(index, damage.rects[0..damage.count]);
         damage.clear();
+        if (painted.isEmpty()) continue;
+        touched = touched.unite(painted);
 
         // `visible` is in drawing order, so anything after this one is above
         // it. A dialog floating over a window that redrew part of itself has
         // just been painted over.
         for (visible[order + 1 ..]) |above| {
-            const overlap = desktop.windows[above].area.intersect(desktop.windows[index].area);
-            if (!overlap.isEmpty()) restore[above] = true;
+            const overlap = desktop.windows[above].area.intersect(painted);
+            if (!overlap.isEmpty()) restore[above] = restore[above].unite(overlap);
         }
     }
 
     for (visible) |index| {
-        if (restore[index]) paintWindow(index, desktop.focused == index);
+        if (restore[index].isEmpty()) continue;
+        restorePart(index, restore[index]);
+        touched = touched.unite(restore[index]);
     }
 
-    // A menu floats over the tiles, so anything repainted underneath one has
-    // to be covered again.
-    if (bar.menuOpen()) bar.paintOverlay(screen, info.width, info.height, &desktop);
+    // A menu floats over the tiles, so anything repainted underneath one
+    // has to be covered again. Only when something was: a window printing
+    // lines somewhere else on the screen has not touched the panel, and
+    // rebuilding and redrawing it for each of them is work nobody sees.
+    if (bar.menuOpen()) {
+        const panel = bar.panelArea(info.width, info.height, &desktop);
+        if (!panel.intersect(touched).isEmpty()) {
+            bar.paintOverlay(screen, info.width, info.height, &desktop);
+        }
+    }
     if (lifted) cursor.show(screen, pointer_x, pointer_y);
 }
 
+/// Whether any one of `above` covers the whole of `area`.
+///
+/// One window, not several between them: two windows that together hide a
+/// third is a shape this does not have to reason about, and a tiling
+/// desktop does not make one.
+fn coveredBy(above: []const usize, area: Rect) bool {
+    for (above) |index| {
+        const w = &desktop.windows[index];
+        if (!w.mapped or !w.surface.valid()) continue;
+        if (std.meta.eql(w.area.intersect(area), area)) return true;
+    }
+    return false;
+}
+
 /// Bring the parts of a window that changed up to date, and nothing else.
-fn refreshWindow(index: usize, damage: []const Rect) void {
+fn refreshWindow(index: usize, damage: []const Rect) Rect {
     const w = &desktop.windows[index];
-    if (!w.mapped or !desktop.windows[index].surface.valid()) return;
+    if (!w.mapped or !desktop.windows[index].surface.valid()) return .{};
 
     const content = w.area.inset(borderWidth());
+    var painted = Rect{};
 
     for (damage) |r| {
         // The client counts from its own top left, which sits at the content
@@ -273,6 +309,32 @@ fn refreshWindow(index: usize, damage: []const Rect) void {
         if (on_screen.isEmpty()) continue;
 
         clients.blit(screen, desktop.windows[index].surface, content, on_screen);
+        painted = painted.unite(on_screen);
+    }
+    return painted;
+}
+
+/// Put one rectangle of a window back, for a window something below it
+/// drew over. Its border comes with it where the rectangle reaches one:
+/// the frame is part of the window and is drawn over like the rest of it.
+fn restorePart(index: usize, area: Rect) void {
+    const w = &desktop.windows[index];
+    if (!w.mapped or !w.surface.valid()) {
+        paintWindow(index, desktop.focused == index);
+        return;
+    }
+
+    const content = w.area.inset(borderWidth());
+    const inside = area.intersect(content);
+    if (!inside.isEmpty()) clients.blit(screen, w.surface, content, inside);
+
+    // The frame only when the part reaches outside the content, which is
+    // the only way it could have been drawn over.
+    if (!std.meta.eql(area.intersect(content), area)) {
+        const focused = desktop.focused == index;
+        const alone = desktop.aloneOnTag();
+        const width = if (focused and !alone) theme.current().border_width_focused else theme.current().border_width;
+        screen.borderInset(w.area, width, borderColour(focused, alone));
     }
 }
 

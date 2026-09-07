@@ -1108,6 +1108,22 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
     return false;
 }
 
+/// Where whatever is open sits, or nothing when nothing is.
+///
+/// So that a caller repainting the desktop under a panel can ask whether
+/// it went anywhere near it: without that, a terminal printing lines with
+/// the launcher open rebuilt and redrew the whole panel on every line.
+pub fn panelArea(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
+    var at = Rect{};
+    if (menu_tab) |tab| at = at.unite(menuRect(width, height, desktop, tab));
+    if (launcher.open) at = at.unite(launcherPanel(width, height).panel);
+    if (sound_open) at = at.unite(soundPanel(width, height));
+    if (net_open) at = at.unite(netPanel(width, height));
+    if (power_open) at = at.unite(powerPanel(width, height));
+    if (clock_open) at = at.unite(clockPanel(width, height));
+    return at;
+}
+
 pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     if (menu_tab) |tab| {
         var buf: [layout.MAX_WINDOWS]usize = undefined;
