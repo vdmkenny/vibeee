@@ -309,13 +309,21 @@ pub fn sys_stop_all(_: Args) Result {
 
     const self = sched.currentThread() orelse return 0;
     const left = sched.stopAllBut(self.id);
-    if (left > 0) {
-        var names: [8][]const u8 = @splat("");
-        const n = sched.liveThreadNames(self.id, names[0..]);
-        if (n > 0) console.info("shutdown", "still running after the stop: {s}", .{names[0]});
-    }
+    if (left > 0) sched.forEachLive(self.id, Leftover{ .quiet_devices = false }, Leftover.note);
     return @intCast(left);
 }
+
+/// What is said and done about a thread that would not stop: named in the
+/// log, and in a shutdown parted from its devices, before anything is
+/// flushed or powered.
+const Leftover = struct {
+    quiet_devices: bool,
+
+    fn note(self: Leftover, t: *sched.Thread) void {
+        console.info("shutdown", "still running after the stop: {s}", .{t.name()});
+        if (self.quiet_devices) probe.dropClaims(t.id);
+    }
+};
 
 pub fn sys_shutdown(a: Args) Result {
     if (ctx.require(.{ .power = true })) |denied| return denied;
@@ -335,15 +343,7 @@ pub fn sys_shutdown(a: Args) Result {
     // not leave running.
     if (sched.currentThread()) |self| {
         const left = sched.stopAllBut(self.id);
-        if (left > 0) {
-            var names: [8][]const u8 = @splat("");
-            const n = sched.liveThreadNames(self.id, names[0..]);
-            if (n > 0) {
-                console.info("shutdown", "still running after the stop: {s}", .{names[0]});
-            }
-            var live = sched.liveThreads(self.id);
-            while (live.next()) |t| probe.dropClaims(t.id);
-        }
+        if (left > 0) sched.forEachLive(self.id, Leftover{ .quiet_devices = true }, Leftover.note);
     }
 
     shutdown_mod.shutdown(action);

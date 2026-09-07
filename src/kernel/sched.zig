@@ -170,7 +170,8 @@ fn create(
     errdefer gpa.free(stack);
 
     t.* = .{
-        .id = next_id,
+        // Numbered below, with the registry.
+        .id = undefined,
         .priority = @intFromEnum(priority),
         .slice_left = sliceFor(@intFromEnum(priority)),
         .stack = stack,
@@ -182,12 +183,19 @@ fn create(
     t.cwd_buf[0] = '/';
     t.cwd_len = 1;
     t.parent_id = if (current) |c| c.id else 0;
-    thread_mod.register(t);
     hal.initFpuState(&t.fpu);
     // Kernel space until something gives it one of its own.
     t.space = hal.kernelAddressSpace();
-    next_id += 1;
-    thread_count += 1;
+    {
+        // The number and the registry change together, and the tick's
+        // collection unlinks corpses from the same registry.
+        const flags = hal.saveAndDisableInterrupts();
+        defer hal.restoreInterrupts(flags);
+        t.id = next_id;
+        next_id += 1;
+        thread_count += 1;
+        thread_mod.register(t);
+    }
     return t;
 }
 
@@ -709,7 +717,9 @@ pub fn currentName() []const u8 {
     return t.name();
 }
 
-pub const find = thread_mod.find;
+/// A thread by number, for a caller holding interrupts off: the pointer is
+/// good for exactly as long as the tick cannot collect the thread behind it.
+const find = thread_mod.find;
 
 /// Ask a thread to end.
 ///
@@ -720,6 +730,8 @@ pub const find = thread_mod.find;
 /// way. One that is blocked or sleeping is woken so that return happens now
 /// rather than whenever the thing it was waiting for arrives.
 pub fn kill(id: u32) error{ NotFound, Refused }!void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     const t = find(id) orelse return error.NotFound;
     if (t.state == .dead) return error.NotFound;
 
@@ -741,10 +753,12 @@ pub fn kill(id: u32) error{ NotFound, Refused }!void {
 /// watches nothing cannot be asked, and the caller decides what to do about
 /// that; the kernel never ends a process on a request that was only an ask.
 pub fn askToEnd(id: u32) error{ NotFound, NotListening }!void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     const t = find(id) orelse return error.NotFound;
     if (t.state == .dead) return error.NotFound;
     const asked = t.quit_event orelse return error.NotListening;
-    asked.signal();
+    asked.signalLocked();
 }
 
 /// Whether the running thread has been asked to end.
@@ -759,6 +773,8 @@ pub fn currentKilled() bool {
 /// "exists" alone would not do: the whole point of the question is usually
 /// to let go of something that was released by an exit.
 pub fn threadAlive(id: u32) bool {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     const t = find(id) orelse return false;
     return t.state != .dead;
 }
@@ -795,63 +811,48 @@ pub fn stopAllBut(self_id: u32) usize {
 /// the first round is still exiting.
 fn killSweep(self_id: u32) usize {
     var left: usize = 0;
-    var live = liveThreads(self_id);
-    while (live.next()) |t| {
-        left += 1;
-        if (!t.killed) {
-            t.killed = true;
-            unblock(t);
+    forEachLive(self_id, &left, struct {
+        fn mark(count: *usize, t: *Thread) void {
+            count.* += 1;
+            if (!t.killed) {
+                t.killed = true;
+                unblock(t);
+            }
         }
-    }
+    }.mark);
     return left;
 }
 
-/// The userspace threads still with us but one: what a stop sweeps and
-/// what a shutdown names or quiets. Kernel threads have no return to
+/// Visit the userspace threads still with us but one: what a stop sweeps
+/// and what a shutdown names or quiets. Interrupts are off for the whole
+/// walk, so the registry cannot change under it and a thread visited is
+/// there for as long as the visit. Kernel threads have no return to
 /// userspace, which is the only place an end is acted on, and the idle
 /// thread must live, so neither is among them.
-pub const LiveThreads = struct {
-    but: u32,
-    node: ?*Thread,
+pub fn forEachLive(but: u32, context: anytype, comptime visit: fn (@TypeOf(context), *Thread) void) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
 
-    pub fn next(self: *LiveThreads) ?*Thread {
-        while (self.node) |t| {
-            self.node = t.all_next;
-            if (t.state == .dead or t.id == self.but) continue;
-            if (t.space.pd_phys == 0) continue;
-            if (idle_thread) |idle| {
-                if (t == idle) continue;
-            }
-            return t;
+    var node = thread_mod.first();
+    while (node) |t| : (node = t.all_next) {
+        if (t.state == .dead or t.id == but or t.space.pd_phys == 0) continue;
+        if (idle_thread) |idle| {
+            if (t == idle) continue;
         }
-        return null;
+        visit(context, t);
     }
-};
-
-pub fn liveThreads(but: u32) LiveThreads {
-    return .{ .but = but, .node = thread_mod.first() };
 }
 
 /// How long a shutdown waits for the last services to exit.
 const STOP_DEADLINE_US = 2_000_000;
-
-/// The names of the userspace threads still with us, excluding `self_id`,
-/// which is who a shutdown names when some would not leave.
-pub fn liveThreadNames(self_id: u32, into: [][]const u8) usize {
-    var n: usize = 0;
-    var live = liveThreads(self_id);
-    while (live.next()) |t| {
-        if (n < into.len) into[n] = t.name();
-        n += 1;
-    }
-    return n;
-}
 
 /// Called from the timer interrupt. Only accounting here, the actual switch
 /// happens at interrupt exit, after the controller has been acknowledged.
 /// Whether `id` is `ancestor` or one of its descendants, by the parent
 /// chain. Bounded: a chain deeper than the thread table is a cycle.
 pub fn descendsFrom(id: u32, ancestor: u32) bool {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     var at = id;
     var hops: u8 = 0;
     while (hops < 32) : (hops += 1) {

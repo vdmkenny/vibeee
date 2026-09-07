@@ -188,6 +188,10 @@ pub const Thread = struct {
 /// collected. Threads are found by id through this, a supervisor naming a
 /// child, a `wait` naming a process, and a corpse is invisible to a search of
 /// the run queues, which is exactly when it most needs to be found.
+/// Every thread there is, corpses included until they are collected. The
+/// tick's collection unlinks from this list, so whoever reads or edits it
+/// holds interrupts off for the whole of the read or edit, and a pointer
+/// taken from it is good for no longer than that.
 var all: ?*Thread = null;
 
 pub fn register(t: *Thread) void {
@@ -214,7 +218,6 @@ pub fn find(id: u32) ?*Thread {
     return null;
 }
 
-/// Walk every thread. The caller holds interrupts off.
 pub fn first() ?*Thread {
     return all;
 }
