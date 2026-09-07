@@ -68,7 +68,7 @@ pub fn run(_: []const []const u8) void {
     // reader wants to see.
     const uptime = info.ask("uptime", &buf);
     if (uptime.len > 0) {
-        const seconds = str.toUnsigned(uptime);
+        const seconds = str.unsigned(uptime) orelse 0;
         out.byte(' ');
         ink.write(.key, "uptime   ");
         writeDuration(seconds);

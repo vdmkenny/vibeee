@@ -77,8 +77,8 @@ fn request(spec: []const u8) void {
         return;
     };
 
-    const width = str.toUnsigned(spec[0..cross]);
-    const height = str.toUnsigned(spec[cross + 1 ..]);
+    const width = str.unsigned(spec[0..cross]) orelse 0;
+    const height = str.unsigned(spec[cross + 1 ..]) orelse 0;
 
     if (width == 0 or height == 0) {
         out.text("display: not a size\n");

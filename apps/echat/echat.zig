@@ -42,6 +42,14 @@ pub const VERSION = "0.1";
 pub const PORT: u16 = 6697;
 pub const PLAIN_PORT: u16 = 6667;
 
+/// A port from what somebody typed, or nothing when it is not one. Zero is
+/// not a port, and neither is a number too large to be one.
+fn portOf(text: []const u8) ?u16 {
+    const value = lib.str.unsigned(text) orelse return null;
+    if (value == 0) return null;
+    return std.math.cast(u16, value);
+}
+
 /// How long between passes that have nothing to draw: what the keepalive
 /// needs, and nothing finer.
 const TICK_US: usize = 5_000_000;
@@ -220,7 +228,10 @@ fn reach(where: []const u8) void {
 fn reachFromShell(where: []const u8) noreturn {
     const colon = std.mem.lastIndexOfScalar(u8, where, ':');
     const host = if (colon) |at| where[0..at] else where;
-    const port: u16 = if (colon) |at| @intCast(lib.str.toUnsigned(where[at + 1 ..])) else PORT;
+    const port: u16 = if (colon) |at|
+        portOf(where[at + 1 ..]) orelse return leave("echat: that is not a port", 1)
+    else
+        PORT;
     if (host.len == 0) return leave("echat: name a network to reach", 1);
 
     const address = sock.addressOf(host) catch return leave("could not find that name", 1);
@@ -276,8 +287,8 @@ fn connect(where: []const u8) void {
     if (colon) |at| {
         const given = where[at + 1 ..];
         sealed = given.len != 0 and given[0] == '+';
-        port = @intCast(lib.str.toUnsigned(if (sealed) given[1..] else given));
-        if (port == 0) port = if (sealed) PORT else PLAIN_PORT;
+        port = portOf(if (sealed) given[1..] else given) orelse
+            if (sealed) PORT else PLAIN_PORT;
     }
     if (host.len == 0) return say("that is not a network to connect to");
 

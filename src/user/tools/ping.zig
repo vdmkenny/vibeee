@@ -24,7 +24,7 @@ pub fn run(args: []const []const u8) void {
     while (at < args.len) : (at += 1) {
         if (std.mem.eql(u8, args[at], "-c") and at + 1 < args.len) {
             at += 1;
-            rounds = @max(1, str.toUnsigned(args[at]));
+            rounds = @max(1, str.unsigned(args[at]) orelse 1);
         } else if (args[at].len > 0 and args[at][0] != '-') {
             target = sock.addressOf(args[at]) catch {
                 out.text("ping: ");

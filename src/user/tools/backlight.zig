@@ -11,7 +11,11 @@ const platform = @import("proto").platform;
 const str = @import("ulib").str;
 
 pub fn run(args: []const []const u8) void {
-    const asked = if (args.len > 0) str.toUnsigned(args[0]) else null;
+    const asked: ?usize = if (args.len > 0) str.unsigned(args[0]) orelse {
+        out.text("backlight: that is not a level\n");
+        out.flush();
+        return;
+    } else null;
     const panel = (if (asked) |level| platform.setBacklight(level) else platform.backlight()) orelse {
         out.text("this machine offers no way to set the backlight\n");
         out.flush();

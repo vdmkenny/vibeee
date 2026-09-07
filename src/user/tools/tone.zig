@@ -20,8 +20,8 @@ const sys = @import("sys");
 pub fn run(args: []const []const u8) void {
     var hertz: u32 = 440;
     var ms: u32 = 1000;
-    if (args.len > 0) hertz = @intCast(@min(str.toUnsigned(args[0]), 20000));
-    if (args.len > 1) ms = @intCast(@min(str.toUnsigned(args[1]), 10_000));
+    if (args.len > 0) hertz = @intCast(@min(str.unsigned(args[0]) orelse 0, 20000));
+    if (args.len > 1) ms = @intCast(@min(str.unsigned(args[1]) orelse 0, 10_000));
     if (hertz == 0 or ms == 0) {
         say("usage: tone [hertz] [milliseconds]\n");
         return;

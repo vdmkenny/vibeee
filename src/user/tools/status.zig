@@ -74,7 +74,7 @@ pub fn top(args: []const []const u8) void {
     // A fixed number of refreshes, and Ctrl+C to end them early: the wait
     // between rounds is a wait on the stop event, so a reading nobody
     // wants any more costs the rest of one second and no more.
-    const rounds = if (args.len > 0) @max(str.toUnsigned(args[0]), 1) else 1;
+    const rounds = if (args.len > 0) @max(str.unsigned(args[0]) orelse 1, 1) else 1;
     const stop = sys.watch(.stop);
 
     var buf: [1024]u8 = [_]u8{0} ** 1024;
@@ -152,7 +152,12 @@ pub fn kill(args: []const []const u8) void {
     }
 
     for (args) |arg| {
-        const pid = str.toUnsigned(arg);
+        const pid = str.unsigned(arg) orelse {
+            out.text("kill: ");
+            out.text(arg);
+            out.text(": that is not a process\n");
+            continue;
+        };
         const result = sys.kill(@intCast(pid), .now);
         if (result < 0) {
             out.text("kill: ");
@@ -230,7 +235,7 @@ fn writeDiskRow(row: []const u8, rung: ?tree.Rung) void {
         width -= tree.WIDTH;
     }
     out.pad(name, width);
-    out.decimalRight(str.toUnsigned(size) / (1024 * 1024), 6);
+    out.decimalRight((str.unsigned(size) orelse 0) / (1024 * 1024), 6);
     out.text(" MiB   ");
     out.text(note);
     out.byte('\n');

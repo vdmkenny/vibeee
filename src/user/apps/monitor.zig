@@ -430,8 +430,8 @@ fn readHome() void {
         var free: usize = 0;
         var size: usize = 0;
         for (words[0..words_n]) |word| {
-            if (std.mem.startsWith(u8, word, "free=")) free = str.toUnsigned(word["free=".len..]);
-            if (std.mem.startsWith(u8, word, "size=")) size = str.toUnsigned(word["size=".len..]);
+            if (std.mem.startsWith(u8, word, "free=")) free = str.unsigned(word["free=".len..]) orelse 0;
+            if (std.mem.startsWith(u8, word, "size=")) size = str.unsigned(word["size=".len..]) orelse 0;
         }
         if (size == 0) return;
 

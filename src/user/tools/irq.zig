@@ -15,7 +15,12 @@ pub fn irq(args: []const []const u8) void {
         list();
         return;
     }
-    take(str.toUnsigned(args[0]));
+    const line = str.unsigned(args[0]) orelse {
+        out.text("irq: that is not a line\n");
+        out.flush();
+        return;
+    };
+    take(line);
 }
 
 fn list() void {
@@ -35,17 +40,17 @@ fn list() void {
         if (line.len == 0) continue;
         var it = str.fields(line);
 
-        out.decimalRight(str.toUnsigned(it.next() orelse "0"), 4);
+        out.decimalRight(str.unsigned(it.next() orelse "") orelse 0, 4);
         out.text("  ");
         out.pad(it.next() orelse "", 8);
         out.pad(it.next() orelse "", 9);
-        out.decimalRight(str.toUnsigned(it.next() orelse "0"), 6);
+        out.decimalRight(str.unsigned(it.next() orelse "") orelse 0, 6);
         out.text("  ");
-        out.decimal(str.toUnsigned(it.next() orelse "0"));
+        out.decimal(str.unsigned(it.next() orelse "") orelse 0);
 
         // Zero on a healthy machine, so it is only said when it is news: a
         // forced completion names a driver that stopped answering.
-        const forced = str.toUnsigned(it.next() orelse "0");
+        const forced = str.unsigned(it.next() orelse "") orelse 0;
         if (forced > 0) {
             out.text("  forced ");
             out.decimal(forced);
@@ -54,7 +59,7 @@ fn list() void {
         // Only on a line more than one device shares, because that is the
         // only kind that has them: each one woke every other owner of the
         // line to read a device that had nothing to say.
-        const cascades = str.toUnsigned(it.next() orelse "0");
+        const cascades = str.unsigned(it.next() orelse "") orelse 0;
         if (cascades > 0) {
             out.text("  woke the neighbours ");
             out.decimal(cascades);

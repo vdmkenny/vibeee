@@ -68,11 +68,11 @@ pub const Scan = struct {
 
             var fields = str.fields(line);
             const at = fields.next() orelse continue;
-            const vendor = str.fromHex(fields.next() orelse continue);
-            const device = str.fromHex(fields.next() orelse continue);
-            const class = str.fromHex(fields.next() orelse continue);
-            const subclass = str.fromHex(fields.next() orelse continue);
-            const interface = str.fromHex(fields.next() orelse continue);
+            const vendor = str.hex(fields.next() orelse continue) orelse continue;
+            const device = str.hex(fields.next() orelse continue) orelse continue;
+            const class = str.hex(fields.next() orelse continue) orelse continue;
+            const subclass = str.hex(fields.next() orelse continue) orelse continue;
+            const interface = str.hex(fields.next() orelse continue) orelse continue;
             _ = fields.next() orelse continue; // what the kernel bound
             const state = fields.next() orelse continue;
 

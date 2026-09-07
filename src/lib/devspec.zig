@@ -26,8 +26,7 @@ pub const Spec = struct {
     /// names less than it was asked about, and names nothing here.
     pub fn is(self: *Spec, value: u32) bool {
         const field = str.trim(self.fields.next() orelse return false);
-        if (field.len == 0) return false;
-        return str.fromHex(field) == value;
+        return str.hex(field) == value;
     }
 
     /// Whether the next field is this number, or is not there at all: the
@@ -37,7 +36,7 @@ pub const Spec = struct {
     pub fn isOrAbsent(self: *Spec, value: u32) bool {
         const field = str.trim(self.fields.next() orelse return true);
         if (field.len == 0) return true;
-        return str.fromHex(field) == value;
+        return str.hex(field) == value;
     }
 };
 

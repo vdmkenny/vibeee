@@ -59,7 +59,11 @@ pub fn log(args: []const []const u8) void {
     var tail: usize = 0;
     var needle: []const u8 = "";
     if (args.len >= 2 and std.mem.eql(u8, args[0], "-n")) {
-        tail = str.toUnsigned(args[1]);
+        tail = str.unsigned(args[1]) orelse {
+            out.text("klog: -n wants a number of lines\n");
+            out.flush();
+            return;
+        };
         needle = if (args.len > 2) args[2] else "";
     } else if (args.len > 0) {
         needle = args[0];

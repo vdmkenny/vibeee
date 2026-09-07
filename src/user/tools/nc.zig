@@ -41,7 +41,7 @@ pub fn run(args: []const []const u8) void {
         say("usage: nc <host> <port> | nc -l <port>; -u for datagrams\n");
         return;
     }
-    const port: u16 = @truncate(str.toUnsigned(positional[wanted - 1]));
+    const port = std.math.cast(u16, str.unsigned(positional[wanted - 1]) orelse 0) orelse 0;
     if (port == 0) {
         say("nc: that is not a port\n");
         return;

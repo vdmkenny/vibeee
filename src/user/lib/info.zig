@@ -18,10 +18,11 @@ pub fn ask(key: []const u8, buf: []u8) []const u8 {
     return if (n > 0) buf[0..@intCast(n)] else "";
 }
 
-/// The value of `key` as a number, or zero.
+/// The value of `key` as a number, or zero when the kernel has nothing to say
+/// under that name.
 pub fn askNumber(key: []const u8) usize {
     var buf: [32]u8 = @splat(0);
-    return str.toUnsigned(ask(key, &buf));
+    return str.unsigned(ask(key, &buf)) orelse 0;
 }
 
 /// Whether `name` appears in a newline-separated list the kernel returned.

@@ -97,23 +97,10 @@ fn forBool(value: []const u8) ?bool {
     return null;
 }
 
-/// Digits only, and within range. A number the type cannot hold is a value
+/// A number the field's own type holds. One it cannot hold is a value
 /// somebody meant differently, not one to clamp on their behalf.
 fn forInt(comptime T: type, value: []const u8) ?T {
-    if (value.len == 0) return null;
-    for (value) |c| {
-        if (c < '0' or c > '9') return null;
-    }
-    // Parsed here rather than through `str.toUnsigned`, which is lenient by
-    // design and accumulates with a plain multiply: a number past what a
-    // word holds wrapped, and the range check below then ran on the wrapped
-    // one, so a setting far too large was assigned as something small.
-    var n: u64 = 0;
-    for (value) |c| {
-        n = std.math.add(u64, std.math.mul(u64, n, 10) catch return null, c - '0') catch return null;
-        if (n > std.math.maxInt(T)) return null;
-    }
-    return @intCast(n);
+    return std.fmt.parseInt(T, value, 10) catch null;
 }
 
 /// Every key this schema has, as a comptime list, for a caller listing or

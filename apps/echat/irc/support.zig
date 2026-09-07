@@ -298,7 +298,7 @@ pub const Support = struct {
         // which every caller reads as no limit.
         inline for (.{ "nicklen", "channellen", "topiclen", "linelen", "modes", "monitor" }) |number| {
             if (lib.str.eqlFold(name, number)) {
-                @field(self, number) = @intCast(lib.str.toUnsigned(value));
+                @field(self, number) = std.math.cast(u16, lib.str.unsigned(value) orelse 0) orelse 0;
                 return;
             }
         }

@@ -191,7 +191,10 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
             say("net: channel needs a number, or 0 to scan every channel\n");
             return;
         }
-        const number = str.toUnsigned(args[1]);
+        const number = str.unsigned(args[1]) orelse {
+            say("net: that is not a channel number\n");
+            return;
+        };
         if (number > lib.wifi.ghz2_channels[lib.wifi.ghz2_channels.len - 1]) {
             say("net: no channel of that number\n");
             return;

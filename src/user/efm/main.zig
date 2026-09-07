@@ -590,8 +590,8 @@ fn readVolume(words: []const []const u8, store: *[16]u8) Volume {
     var free: ?usize = null;
     var size: ?usize = null;
     for (words) |word| {
-        if (std.mem.startsWith(u8, word, "free=")) free = str.toUnsigned(word["free=".len..]);
-        if (std.mem.startsWith(u8, word, "size=")) size = str.toUnsigned(word["size=".len..]);
+        if (std.mem.startsWith(u8, word, "free=")) free = str.unsigned(word["free=".len..]) orelse 0;
+        if (std.mem.startsWith(u8, word, "size=")) size = str.unsigned(word["size=".len..]) orelse 0;
     }
 
     const total = size orelse return out;

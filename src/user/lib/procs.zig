@@ -69,17 +69,22 @@ pub fn read(buf: []u8) Table {
     while (lines.next()) |line| {
         if (line.len == 0 or count >= MAX) continue;
 
+        // A row whose first two fields are not numbers is not a row: without
+        // a process to name and a parent to hang it from there is nothing to
+        // place in the tree, and a row of zeroes would claim to be one.
         var it = str.fields(line);
+        const pid = str.unsigned(it.next() orelse "") orelse continue;
+        const parent = str.unsigned(it.next() orelse "") orelse continue;
         flat[count] = .{
-            .pid = str.toUnsigned(it.next() orelse continue),
-            .parent = str.toUnsigned(it.next() orelse continue),
+            .pid = pid,
+            .parent = parent,
             .state = it.next() orelse "",
-            .priority = str.toUnsigned(it.next() orelse ""),
-            .ticks = str.toUnsigned(it.next() orelse ""),
+            .priority = str.unsigned(it.next() orelse "") orelse 0,
+            .ticks = str.unsigned(it.next() orelse "") orelse 0,
             .name = it.next() orelse "",
-            .current = str.toUnsigned(it.next() orelse "") != 0,
-            .bytes = str.toUnsigned(it.next() orelse ""),
-            .uptime_s = str.toUnsigned(it.next() orelse ""),
+            .current = (str.unsigned(it.next() orelse "") orelse 0) != 0,
+            .bytes = str.unsigned(it.next() orelse "") orelse 0,
+            .uptime_s = str.unsigned(it.next() orelse "") orelse 0,
         };
         count += 1;
     }

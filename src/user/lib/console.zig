@@ -44,8 +44,8 @@ pub fn size() Size {
     var buf: [64]u8 = @splat(0);
     var it = str.split(info.ask("console", &buf), 'x');
 
-    const columns = str.toUnsigned(it.next() orelse "");
-    const rows = str.toUnsigned(it.next() orelse "");
+    const columns = str.unsigned(it.next() orelse "") orelse return Size.fallback;
+    const rows = str.unsigned(it.next() orelse "") orelse return Size.fallback;
     if (columns == 0 or rows == 0) return Size.fallback;
 
     return .{ .columns = columns, .rows = rows };
@@ -114,9 +114,9 @@ pub fn reportInFront(bytes: []const u8) Front {
     const end = std.mem.indexOfScalarPos(u8, bytes, 2, 't') orelse return .partial;
 
     var it = str.split(bytes[2..end], ';');
-    if (str.toUnsigned(it.next() orelse "") != 8) return .none;
-    const rows = str.toUnsigned(it.next() orelse "");
-    const columns = str.toUnsigned(it.next() orelse "");
+    if (str.unsigned(it.next() orelse "") != 8) return .none;
+    const rows = str.unsigned(it.next() orelse "") orelse return .none;
+    const columns = str.unsigned(it.next() orelse "") orelse return .none;
     if (rows == 0 or columns == 0) return .none;
 
     return .{ .size = .{ .dimensions = .{ .columns = columns, .rows = rows }, .length = end + 1 } };

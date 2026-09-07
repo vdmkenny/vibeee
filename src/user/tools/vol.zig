@@ -36,11 +36,14 @@ pub fn run(args: []const []const u8) void {
     if (std.mem.eql(u8, arg, "mute")) {
         mute = !mute;
     } else if (arg.len > 1 and (arg[0] == '+' or arg[0] == '-')) {
-        const step: u32 = @intCast(str.toUnsigned(arg[1..]));
+        const step: u32 = @intCast(@min(str.unsigned(arg[1..]) orelse {
+            say("usage: vol [percent | +n | -n | mute]\n");
+            return;
+        }, 100));
         wanted = if (arg[0] == '+') @min(wanted + step, 100) else wanted -| step;
         mute = false;
-    } else if (arg.len > 0 and arg[0] >= '0' and arg[0] <= '9') {
-        wanted = @intCast(@min(str.toUnsigned(arg), 100));
+    } else if (str.unsigned(arg)) |percent| {
+        wanted = @intCast(@min(percent, 100));
         mute = false;
     } else {
         say("usage: vol [percent | +n | -n | mute]\n");

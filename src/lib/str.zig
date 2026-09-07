@@ -35,31 +35,23 @@ pub fn before(a: []const u8, b: []const u8) bool {
     return std.ascii.lessThanIgnoreCase(a, b);
 }
 
-pub fn toUnsigned(text: []const u8) usize {
-    var value: usize = 0;
-    for (text) |c| {
-        if (c < '0' or c > '9') break;
-        value = value * 10 + (c - '0');
-    }
-    return value;
+/// A decimal number, or nothing when the text is not one.
+///
+/// Nothing rather than zero. "off" and "0" are different answers, and a reader
+/// that gives zero for both turns a word it did not understand into an
+/// instruction: `backlight off` set the panel to its lowest step. A run of
+/// digits too long for the machine's word is not a number either, and this is
+/// a thirty-two bit machine.
+pub fn unsigned(text: []const u8) ?usize {
+    return std.fmt.parseInt(usize, text, 10) catch null;
 }
 
-/// A hexadecimal number, stopping at the first character that is not one.
+/// A hexadecimal number, or nothing when the text is not one.
 ///
-/// Lenient in the same way `toUnsigned` is: hardware tables are full of hex and
-/// a caller reading one wants the number, not a diagnosis of the text.
-pub fn fromHex(text: []const u8) usize {
-    var out: usize = 0;
-    for (text) |c| {
-        const digit: usize = switch (c) {
-            '0'...'9' => c - '0',
-            'a'...'f' => c - 'a' + 10,
-            'A'...'F' => c - 'A' + 10,
-            else => break,
-        };
-        out = out *| 16 +| digit;
-    }
-    return out;
+/// No prefix: these are the fields of a hardware table and of a driver's match
+/// line, where a number is written as its digits alone.
+pub fn hex(text: []const u8) ?usize {
+    return std.fmt.parseInt(usize, text, 16) catch null;
 }
 
 /// Whether a byte is part of a word, for the movement and the deletion that
@@ -485,13 +477,30 @@ test "a size larger than a tenth of the address space still reads as itself" {
     try std.testing.expectEqualStrings("999", tiny.done());
 }
 
-test "hex reads both cases and stops at the first character that is not one" {
-    try std.testing.expectEqual(@as(usize, 0x8086), fromHex("8086"));
-    try std.testing.expectEqual(@as(usize, 0x100e), fromHex("100e"));
-    try std.testing.expectEqual(@as(usize, 0x100E), fromHex("100E"));
-    try std.testing.expectEqual(@as(usize, 0x1f), fromHex("1f:extra"));
-    try std.testing.expectEqual(@as(usize, 0), fromHex(""));
-    try std.testing.expectEqual(@as(usize, 0), fromHex("zz"));
+test "hex reads both cases, and anything else is not a number" {
+    try std.testing.expectEqual(@as(?usize, 0x8086), hex("8086"));
+    try std.testing.expectEqual(@as(?usize, 0x100e), hex("100e"));
+    try std.testing.expectEqual(@as(?usize, 0x100E), hex("100E"));
+    try std.testing.expectEqual(@as(?usize, null), hex("1f:extra"));
+    try std.testing.expectEqual(@as(?usize, null), hex(""));
+    try std.testing.expectEqual(@as(?usize, null), hex("zz"));
+}
+
+test "a word that is not a number reads as none rather than as zero" {
+    try std.testing.expectEqual(@as(?usize, 0), unsigned("0"));
+    try std.testing.expectEqual(@as(?usize, 42), unsigned("42"));
+
+    // The distinction the whole thing is for: `backlight off` asks for
+    // something this cannot answer, and zero is an answer.
+    try std.testing.expectEqual(@as(?usize, null), unsigned("off"));
+    try std.testing.expectEqual(@as(?usize, null), unsigned(""));
+    try std.testing.expectEqual(@as(?usize, null), unsigned("12abc"));
+    try std.testing.expectEqual(@as(?usize, null), unsigned("-1"));
+
+    // Too long for the machine's word is not a number either. This one is
+    // twenty digits, which no thirty-two bit and no sixty-four bit usize
+    // holds, so the answer is the same on the host as on the target.
+    try std.testing.expectEqual(@as(?usize, null), unsigned("99999999999999999999"));
 }
 
 test "collapseSpaces trims the ends and reduces every internal run to one" {

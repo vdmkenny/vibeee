@@ -29,7 +29,11 @@ pub fn run(args: []const []const u8) void {
         return setDefault(args[1]);
     }
     if (std.mem.eql(u8, args[0], "vol") and args.len == 3) {
-        return setVolume(args[1], @intCast(@min(str.toUnsigned(args[2]), 100)), null);
+        const percent = str.unsigned(args[2]) orelse {
+            say("patch: that is not a level\n");
+            return;
+        };
+        return setVolume(args[1], @intCast(@min(percent, 100)), null);
     }
     if (std.mem.eql(u8, args[0], "mute") and args.len == 2) {
         return setVolume(args[1], null, null);
