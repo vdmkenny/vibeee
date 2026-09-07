@@ -295,7 +295,14 @@ export fn getdelim(into: *?[*]u8, capacity: *usize, delimiter: c_int, file: *Fil
         // buffer still has to end with one.
         if (n + 1 >= capacity.*) {
             const wider = capacity.* * 2;
-            buffer = @ptrCast(heap.resize(buffer, wider) orelse return -1);
+            buffer = @ptrCast(heap.resize(buffer, wider) orelse {
+                // The caller's pointer names the block either way: given
+                // back unwritten, a block this call had just allocated
+                // became unreachable and the caller was left with a null
+                // pointer beside a capacity that said otherwise.
+                into.* = buffer;
+                return @intCast(errno.fail(errno.ENOMEM));
+            });
             capacity.* = wider;
         }
 

@@ -22,6 +22,13 @@
 
 static int checks;
 
+static int by_key(const void *a, const void *b)
+{
+    int x = *(const int *)a;
+    int y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
 static void say(const char *what, const char *got)
 {
     printf("%03d %-22s %s\n", ++checks, what, got);
@@ -182,6 +189,16 @@ static void strings(void)
     strcpy(b, "abc");
     strncat(b, "defgh", 2);
     say("strncat", b);
+
+    /* An element wider than any scratch still sorts. */
+    struct wide { int key; char pad[400]; };
+    static struct wide many[4];
+    for (int k = 0; k < 4; k++) { many[k].key = 4 - k; many[k].pad[0] = (char)('a' + k); }
+    qsort(many, 4, sizeof many[0], by_key);
+    snprintf(b, sizeof b, "%d%d%d%d|%c%c%c%c",
+             many[0].key, many[1].key, many[2].key, many[3].key,
+             many[0].pad[0], many[1].pad[0], many[2].pad[0], many[3].pad[0]);
+    say("qsort.wide", b);
 
     /* Nothing to read is end of input, which is not the same as nothing
      * matched: the usual loop is written against the difference. */

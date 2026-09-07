@@ -121,36 +121,41 @@ export fn labs(value: c_long) callconv(.c) c_long {
 
 /// Insertion sort, and named as such rather than hidden behind the C name.
 ///
-/// The array is a byte run of unknown element type, so every swap is a
-/// three-way copy through a scratch element and every comparison is an
-/// indirect call. That cost dwarfs the algorithm at the sizes a program on
-/// this machine sorts, and insertion needs no scratch beyond one element and
-/// no recursion at all.
+/// The array is a byte run of unknown element type and every comparison is
+/// an indirect call. That cost dwarfs the algorithm at the sizes a program
+/// on this machine sorts, and insertion needs no recursion at all.
+///
+/// Neighbours are exchanged in place rather than rotated through a scratch
+/// element, so an element of any width sorts. A scratch element of fixed
+/// size made this do nothing whatever for anything wider than it, silently,
+/// and a caller sorting a struct of three hundred bytes got its array back
+/// in the order it came.
 export fn qsort(
     base: [*]u8,
     count: usize,
     size: usize,
     compare: *const fn (?*const anyopaque, ?*const anyopaque) callconv(.c) c_int,
 ) callconv(.c) void {
-    if (count < 2 or size == 0 or size > SWAP_MAX) return;
-
-    var held: [SWAP_MAX]u8 = undefined;
+    if (count < 2 or size == 0) return;
 
     var i: usize = 1;
     while (i < count) : (i += 1) {
-        @memcpy(held[0..size], base[i * size ..][0..size]);
-
         var j = i;
-        while (j > 0 and compare(base + (j - 1) * size, &held) > 0) : (j -= 1) {
-            @memcpy(base[j * size ..][0..size], base[(j - 1) * size ..][0..size]);
+        while (j > 0 and compare(base + (j - 1) * size, base + j * size) > 0) : (j -= 1) {
+            exchange(base + (j - 1) * size, base + j * size, size);
         }
-        @memcpy(base[j * size ..][0..size], held[0..size]);
     }
 }
 
-/// Widest element `qsort` will move. Past it the scratch would have to be
-/// allocated, which is a failure mode C's signature has nowhere to report.
-const SWAP_MAX = 256;
+/// Exchange two elements, byte by byte. No scratch, so no width is too
+/// wide, which is what lets `qsort` sort anything a caller hands it.
+fn exchange(a: [*]u8, b: [*]u8, size: usize) void {
+    for (0..size) |k| {
+        const held = a[k];
+        a[k] = b[k];
+        b[k] = held;
+    }
+}
 
 export fn bsearch(
     key: *const anyopaque,

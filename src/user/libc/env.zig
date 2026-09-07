@@ -9,6 +9,7 @@
 //! change after that works on the copy. A program that only reads pays
 //! nothing for the possibility.
 
+const errno = @import("errno.zig");
 const heap = @import("ulib").heap;
 const string = @import("string.zig");
 
@@ -74,46 +75,53 @@ export fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) ca
     // caller passed.
     const wanted = string.spanOf(name);
     const setting = string.spanOf(value);
-    if (wanted.len == 0 or indexOfByte(wanted, '=') != null) return -1;
+    // Every way out that is not success says which way it was: a caller
+    // reading `errno` after a failure was reading whatever the last call
+    // left there.
+    if (wanted.len == 0 or indexOfByte(wanted, '=') != null) {
+        return @intCast(errno.fail(errno.EINVAL));
+    }
 
     // The list is made ours before anything is looked up in it. Finding
     // an index first and taking the list afterwards means the index was
     // into a list that no longer exists, and the write lands somewhere
     // that is nobody's: what looked like an overwrite becomes a second
     // entry with the same name, and the first one goes on answering.
-    if (!take()) return -1;
+    if (!take()) return @intCast(errno.fail(errno.ENOMEM));
 
     if (find(wanted)) |at| {
         if (overwrite == 0) return 0;
-        entries[at] = join(wanted, setting) orelse return -1;
+        entries[at] = join(wanted, setting) orelse return @intCast(errno.fail(errno.ENOMEM));
         return 0;
     }
 
-    const made = join(wanted, setting) orelse return -1;
-    return if (append(made)) 0 else -1;
+    const made = join(wanted, setting) orelse return @intCast(errno.fail(errno.ENOMEM));
+    return if (append(made)) 0 else @intCast(errno.fail(errno.ENOMEM));
 }
 
 /// C's older way in, where the caller's own string becomes the entry.
 /// Taken at its word: the string is not copied, so a caller that frees it
 /// has removed something from its own environment.
 export fn putenv(entry: [*c]u8) callconv(.c) c_int {
-    if (entry == null) return -1;
+    if (entry == null) return @intCast(errno.fail(errno.EINVAL));
     const text = string.spanOf(@as([*:0]const u8, @ptrCast(entry)));
-    const split = indexOfByte(text, '=') orelse return -1;
+    const split = indexOfByte(text, '=') orelse return @intCast(errno.fail(errno.EINVAL));
 
-    if (!take()) return -1;
+    if (!take()) return @intCast(errno.fail(errno.ENOMEM));
     if (find(text[0..split])) |at| {
         entries[at] = entry;
         return 0;
     }
-    return if (append(entry)) 0 else -1;
+    return if (append(entry)) 0 else @intCast(errno.fail(errno.ENOMEM));
 }
 
 export fn unsetenv(name: [*:0]const u8) callconv(.c) c_int {
     const wanted = string.spanOf(name);
-    if (wanted.len == 0 or indexOfByte(wanted, '=') != null) return -1;
+    if (wanted.len == 0 or indexOfByte(wanted, '=') != null) {
+        return @intCast(errno.fail(errno.EINVAL));
+    }
 
-    if (!take()) return -1;
+    if (!take()) return @intCast(errno.fail(errno.ENOMEM));
     const at = find(wanted) orelse return 0;
 
     // The last entry moves into the gap. Order is not something an
