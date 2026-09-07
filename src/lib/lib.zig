@@ -20,6 +20,7 @@ pub const calc = @import("calc.zig");
 pub const civil = @import("civil.zig");
 pub const cmdline = @import("cmdline.zig");
 pub const decimal = @import("decimal.zig");
+pub const devspec = @import("devspec.zig");
 pub const castore = @import("castore.zig");
 pub const font = @import("font.zig");
 pub const framemap = @import("framemap.zig");

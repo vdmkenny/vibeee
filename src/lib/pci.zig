@@ -11,7 +11,7 @@
 //! or a channel and be reconstituted without string parsing at the far end.
 
 const std = @import("std");
-const str = @import("str.zig");
+const devspec = @import("devspec.zig");
 
 pub const Location = packed struct(u16) {
     /// 0..7. The PCI way of saying there are eight "functions" behind a device.
@@ -372,45 +372,25 @@ pub const Signature = struct {
     /// Whether a match line names this exact part: `pci:vendor:device`,
     /// in hex. The line may list several, separated by commas.
     pub fn matchesPart(self: Signature, match: []const u8) bool {
-        return anySpec(self, match, part);
+        return devspec.any(match, self, part);
     }
 
     /// Whether it names this device's family: `pci-class:class:subclass`,
     /// with an optional interface. A line that names no interface fits
     /// every interface of that subclass.
     pub fn matchesClass(self: Signature, match: []const u8) bool {
-        return anySpec(self, match, class_);
-    }
-
-    fn anySpec(
-        self: Signature,
-        match: []const u8,
-        comptime one: fn (Signature, []const u8) bool,
-    ) bool {
-        var specs = str.split(match, ',');
-        while (specs.next()) |spec| {
-            const trimmed = str.trim(spec);
-            if (trimmed.len != 0 and one(self, trimmed)) return true;
-        }
-        return false;
+        return devspec.any(match, self, class_);
     }
 
     fn part(self: Signature, spec: []const u8) bool {
-        var it = str.split(spec, ':');
-        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "pci")) return false;
-        const vendor = str.fromHex(str.trim(it.next() orelse return false));
-        const device = str.fromHex(str.trim(it.next() orelse return false));
-        return vendor == self.vendor and device == self.device;
+        var fields = devspec.Spec.under(spec, "pci") orelse return false;
+        return fields.is(self.vendor) and fields.is(self.device);
     }
 
     fn class_(self: Signature, spec: []const u8) bool {
-        var it = str.split(spec, ':');
-        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "pci-class")) return false;
-        if (str.fromHex(str.trim(it.next() orelse return false)) != self.class) return false;
-        if (str.fromHex(str.trim(it.next() orelse return false)) != self.subclass) return false;
-        const rest = str.trim(it.next() orelse return true);
-        if (rest.len == 0) return true;
-        return str.fromHex(rest) == self.interface;
+        var fields = devspec.Spec.under(spec, "pci-class") orelse return false;
+        return fields.is(self.class) and fields.is(self.subclass) and
+            fields.isOrAbsent(self.interface);
     }
 };
 

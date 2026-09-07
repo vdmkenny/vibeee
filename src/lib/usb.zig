@@ -11,7 +11,7 @@
 //! sixteen-bit field at an odd offset is ordinary here.
 
 const std = @import("std");
-const str = @import("str.zig");
+const devspec = @import("devspec.zig");
 
 /// How fast a port negotiated. The controller decides this, not the
 /// device, and it decides what a packet may be.
@@ -545,47 +545,24 @@ pub const Signature = struct {
     /// by commas: one driver and one program can serve several devices,
     /// and saying so once beats a manifest each.
     pub fn matchesPart(self: Signature, match: []const u8) bool {
-        return anySpec(self, match, part);
+        return devspec.any(match, self, part);
     }
 
     /// Whether it names this device's class: `usb-class:class:subclass`,
     /// with an optional protocol, and again a comma-separated list.
     pub fn matchesClass(self: Signature, match: []const u8) bool {
-        return anySpec(self, match, class_);
-    }
-
-    fn anySpec(
-        self: Signature,
-        match: []const u8,
-        comptime one: fn (Signature, []const u8) bool,
-    ) bool {
-        var specs = str.split(match, ',');
-        while (specs.next()) |spec| {
-            const trimmed = str.trim(spec);
-            if (trimmed.len != 0 and one(self, trimmed)) return true;
-        }
-        return false;
+        return devspec.any(match, self, class_);
     }
 
     fn part(self: Signature, spec: []const u8) bool {
-        var it = str.split(spec, ':');
-        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "usb")) return false;
-        const vendor = str.fromHex(str.trim(it.next() orelse return false));
-        const product = str.fromHex(str.trim(it.next() orelse return false));
-        return vendor == self.vendor and product == self.product;
+        var fields = devspec.Spec.under(spec, "usb") orelse return false;
+        return fields.is(self.vendor) and fields.is(self.product);
     }
 
-    /// A manifest that names no protocol fits every protocol of that
-    /// subclass, which is how one driver serves a whole family without
-    /// listing its members.
     fn class_(self: Signature, spec: []const u8) bool {
-        var it = str.split(spec, ':');
-        if (!std.mem.eql(u8, str.trim(it.next() orelse return false), "usb-class")) return false;
-        if (str.fromHex(str.trim(it.next() orelse return false)) != @intFromEnum(self.class)) return false;
-        if (str.fromHex(str.trim(it.next() orelse return false)) != self.subclass) return false;
-        const rest = str.trim(it.next() orelse return true);
-        if (rest.len == 0) return true;
-        return str.fromHex(rest) == self.protocol;
+        var fields = devspec.Spec.under(spec, "usb-class") orelse return false;
+        return fields.is(@intFromEnum(self.class)) and fields.is(self.subclass) and
+            fields.isOrAbsent(self.protocol);
     }
 };
 
