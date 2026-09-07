@@ -282,7 +282,13 @@ fn transfer(what: Transfer) void {
     }
 
     var to_buf: [160]u8 = undefined;
-    const to = paths.join(destination.path(), entry.name, &to_buf);
+    // A path cut short names something else: the copy would land somewhere
+    // nobody asked for, and the move would unlink the original afterwards.
+    const to = paths.joined(destination.path(), entry.name, &to_buf) orelse {
+        status = "That name is too long for where it is going.";
+        ctx.damage();
+        return;
+    };
 
     // The same file on both sides is not a transfer. Copying one onto
     // itself opens the destination for writing, which empties it, and then

@@ -33,7 +33,7 @@ pub const Port = struct {
 
         // Linked to wherever sound goes by default; a caller that wants
         // another sink unlinks and relinks through the graph verbs.
-        const sink = try defaultPort(.sink);
+        const sink = try defaultPortOn(port.channel, .sink);
         var req = proto.Req{ .tag = .link, .a = port.id, .b = sink };
         var reply = proto.Rep{};
         try proto.callOn(port.channel, req, &reply, null);
@@ -47,7 +47,7 @@ pub const Port = struct {
         var port = try open(node_name, port_name, .sink);
         errdefer port.close();
 
-        const source = try defaultPort(.source);
+        const source = try defaultPortOn(port.channel, .source);
         const req = proto.Req{ .tag = .link, .a = source, .b = port.id };
         var reply = proto.Rep{};
         try proto.callOn(port.channel, req, &reply, null);
@@ -133,10 +133,20 @@ pub const Port = struct {
 /// The default port in a direction, from the listing: the port flagged
 /// default whose direction matches.
 pub fn defaultPort(direction: graph.Direction) Error!u32 {
+    const channel = sys.svcConnect(proto.SERVICE);
+    if (channel < 0) return error.NoService;
+    defer _ = sys.close(@intCast(channel));
+    return defaultPortOn(@intCast(channel), direction);
+}
+
+/// The same on a channel the caller already holds: a program opening a
+/// port asks this immediately afterwards, and a connection and a close per
+/// slot of the graph is three syscalls a slot to ask one service one thing.
+pub fn defaultPortOn(channel: u32, direction: graph.Direction) Error!u32 {
     var index: u32 = 0;
     while (true) : (index += 1) {
         var reply = proto.Rep{};
-        proto.call(.{ .tag = .get_port, .a = index }, &reply) catch |err| switch (err) {
+        proto.callOn(channel, .{ .tag = .get_port, .a = index }, &reply, null) catch |err| switch (err) {
             error.End => return error.Refused,
             else => return err,
         };

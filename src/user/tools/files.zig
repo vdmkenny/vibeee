@@ -97,7 +97,14 @@ pub fn mv(args: []const []const u8) void {
 
     for (sources) |from| {
         var buf: [256]u8 = undefined;
-        const to = if (into) paths.join(destination, paths.base(from), &buf) else destination;
+        // A path cut short names something else, and renaming onto it
+        // would move the file somewhere nobody asked for.
+        const to = if (into) paths.joined(destination, paths.base(from), &buf) orelse {
+            out.text("mv: ");
+            out.text(from);
+            out.text(": the path is too long\n");
+            continue;
+        } else destination;
         if (sys.rename(from, to) < 0) {
             out.text("mv: ");
             out.text(from);

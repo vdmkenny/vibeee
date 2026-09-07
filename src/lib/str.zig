@@ -331,9 +331,15 @@ pub fn lowerName(name: []u8) void {
 pub const Builder = struct {
     buf: []u8,
     len: usize = 0,
+    /// Something written did not fit. A builder truncates rather than
+    /// failing, which is right for a line of output and wrong for a path: a
+    /// caller that has to know asks here rather than comparing lengths and
+    /// guessing.
+    cut: bool = false,
 
     pub fn text(self: *Builder, s: []const u8) void {
         const n = @min(s.len, self.buf.len - self.len);
+        if (n < s.len) self.cut = true;
         @memcpy(self.buf[self.len..][0..n], s[0..n]);
         self.len += n;
     }
@@ -342,11 +348,15 @@ pub const Builder = struct {
         if (self.len < self.buf.len) {
             self.buf[self.len] = c;
             self.len += 1;
+        } else {
+            self.cut = true;
         }
     }
 
     pub fn number(self: *Builder, value: usize) void {
+        const at = self.len;
         self.len += decimal(self.buf[self.len..], value);
+        if (self.len == at) self.cut = true;
     }
 
     /// A fixed width of hexadecimal digits, zero-padded. What every
@@ -440,6 +450,12 @@ pub const Builder = struct {
         }
         self.number(seconds % 60);
         self.byte('s');
+    }
+
+    /// Whether everything written fits. A caller building a path asks
+    /// this: a path cut short names something else.
+    pub fn whole(self: *const Builder) bool {
+        return !self.cut;
     }
 
     pub fn done(self: *const Builder) []const u8 {
