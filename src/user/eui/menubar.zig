@@ -363,12 +363,11 @@ fn dropdown(ctx: *widget.Context, title: Rect, state: *State, menu: Menu) ?u16 {
         return menu.items[row].id;
     }
 
-    if (ctx.pending_key != 0) {
-        const code: KeyCode = @enumFromInt(ctx.pending_key);
-        if (code == .enter or code == .space) {
+    if (ctx.pending_key != .none) {
+        if (ctx.pending_key == .enter or ctx.pending_key == .space) {
             const row = @min(state.list.selected, menu.items.len - 1);
             if (menu.items[row].kind == .item) {
-                ctx.pending_key = 0;
+                ctx.pending_key = .none;
                 close(state);
                 return menu.items[row].id;
             }

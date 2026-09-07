@@ -205,11 +205,11 @@ pub fn run(
                 redraw();
             },
             .key => {
-                if (event.body.key.down == 0) continue;
-                const code: KeyCode = @enumFromInt(event.body.key.code);
-                const mods: Modifiers = @bitCast(event.body.key.mods);
+                if (!event.body.key.pressed) continue;
+                const code = event.body.key.code;
+                const mods = event.body.key.mods;
                 const taken = if (hooks.key) |own| own(code, mods) else false;
-                if (!taken) ctx.postKey(@intCast(event.body.key.code), mods);
+                if (!taken) ctx.postKey(code, mods);
                 // The same press, as the character it typed. A shortcut and a
                 // text field want different halves of one event, and a key
                 // that named a command typed nothing.

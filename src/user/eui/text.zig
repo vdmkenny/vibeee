@@ -442,10 +442,10 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     // that has this picture on it, and the chord for a keyboard without one.
     // A menu reachable only by pointer is a menu that stops working when the
     // touchpad does.
-    const asked_for_menu = ctx.pending_key == @intFromEnum(KeyCode.menu) or
-        (ctx.pending_key == @intFromEnum(KeyCode.f10) and ctx.key_mods.shift);
+    const asked_for_menu = ctx.pending_key == .menu or
+        (ctx.pending_key == .f10 and ctx.key_mods.shift);
     if (ctx.focus == entry_index and asked_for_menu) {
-        ctx.pending_key = 0;
+        ctx.pending_key = .none;
         const here = positionOf(visible, face(), box.w, state.cursor);
         const row: i32 = @intCast(here.line -| state.scroll);
         eui_context_menu.openAt(box.x + here.x, box.y + (row + 1) * line_height, entry_index, &MENU_ROWS);
@@ -453,7 +453,7 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     }
 
     if (ctx.takeKeyFor(entry)) |code| {
-        if (key(state, buffer, @enumFromInt(code), ctx.key_mods, box.w, rows, ctx.clipboard)) changed = true;
+        if (key(state, buffer, code, ctx.key_mods, box.w, rows, ctx.clipboard)) changed = true;
     }
     if (ctx.takeTextFor(entry)) |codepoint| {
         if (insert(state, buffer, codepoint)) changed = true;
@@ -934,10 +934,9 @@ pub fn field(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) 
     const entry = ctx.slotFor(area) orelse return false;
     var accepted = false;
 
-    if (ctx.focus == ctx.indexOf(entry) and ctx.pending_key != 0) {
-        const code: KeyCode = @enumFromInt(ctx.pending_key);
-        if (code == .enter or code == .kp_enter) {
-            ctx.pending_key = 0;
+    if (ctx.focus == ctx.indexOf(entry)) {
+        if (ctx.pending_key == .enter or ctx.pending_key == .kp_enter) {
+            ctx.pending_key = .none;
             accepted = true;
         }
     }

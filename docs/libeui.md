@@ -101,7 +101,7 @@ What a program calls around its controls, once each way.
 | `initOn` | `fn (draw.Surface, Context.Ground) widget.Context` |
 | `begin` | `fn (*widget.Context, i32, i32, syscalls.Buttons) void` |
 | `bounds` | `fn (*const widget.Context) draw.Rect` |
-| `postKey` | `fn (*widget.Context, u8, syscalls.Modifiers) void` |
+| `postKey` | `fn (*widget.Context, syscalls.KeyCode, syscalls.Modifiers) void` |
 | `postScroll` | `fn (*widget.Context, i8) void` |
 | `postText` | `fn (*widget.Context, u32) void` |
 | `damageList` | `fn (*const widget.Context) []const draw.Rect` |
@@ -129,7 +129,7 @@ that means it has to be painted again.
 | `takeTextFor` | `fn (*widget.Context, *const widget.Entry) ?u32` |
 | `slotFor` | `fn (*widget.Context, draw.Rect) ?*widget.Entry` |
 | `indexOf` | `fn (*const widget.Context, *const widget.Entry) usize` |
-| `takeKeyFor` | `fn (*widget.Context, *const widget.Entry) ?u8` |
+| `takeKeyFor` | `fn (*widget.Context, *const widget.Entry) ?syscalls.KeyCode` |
 | `focusAt` | `fn (*widget.Context, draw.Rect) void` |
 | `interact` | `fn (*widget.Context, *widget.Entry, draw.Rect) Context.Interaction` |
 | `activatedByKey` | `fn (*widget.Context, *const widget.Entry) bool` |

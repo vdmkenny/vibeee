@@ -172,7 +172,7 @@ fn typed(device: *Device, bytes: []const u8) void {
         const code = hid.keyFor(change.usage);
         if (code == .none) continue;
         if (count >= keys.len) break;
-        keys[count] = .{ .code = code, .pressed = @intFromBool(change.pressed) };
+        keys[count] = .{ .code = code, .pressed = change.pressed };
         count += 1;
     }
 
@@ -203,7 +203,7 @@ fn moved_by(device: *Device, bytes: []const u8) void {
             .right = motion.buttons.right,
             .middle = motion.buttons.middle,
         },
-        .buttons_changed = @intFromBool(changed),
+        .buttons_changed = changed,
     };
     _ = sys.pointerPost(&.{report});
 }
@@ -219,7 +219,7 @@ fn release(device: *Device) void {
     while (walk.next()) |change| {
         const code = hid.keyFor(change.usage);
         if (code == .none or count >= keys.len) continue;
-        keys[count] = .{ .code = code, .pressed = 0 };
+        keys[count] = .{ .code = code, .pressed = false };
         count += 1;
     }
     if (count != 0) _ = sys.keyPost(keys[0..count]);

@@ -394,20 +394,7 @@ pub fn sys_pointer_read(a: Args) Result {
     var written: usize = 0;
     while (written < capacity) : (written += 1) {
         const event = input.pollPointer() orelse break;
-        const record = abi.PointerEvent{
-            .x = event.x,
-            .y = event.y,
-            .dx = event.dx,
-            .dy = event.dy,
-            .wheel = event.wheel,
-            .buttons = .{
-                .left = event.buttons.left,
-                .right = event.buttons.right,
-                .middle = event.buttons.middle,
-            },
-            .buttons_changed = @intFromBool(event.buttons_changed),
-        };
-        @memcpy(out[written * size ..][0..size], std.mem.asBytes(&record));
+        @memcpy(out[written * size ..][0..size], std.mem.asBytes(&event));
     }
 
     return @intCast(written * size);
@@ -496,13 +483,7 @@ pub fn sys_key_read(a: Args) Result {
     var written: usize = 0;
     while (written < capacity) : (written += 1) {
         const event = input.pollKey() orelse break;
-        const record = abi.KeyEvent{
-            .code = @intFromEnum(event.code),
-            .pressed = @intFromBool(event.pressed),
-            .modifiers = @bitCast(event.mods),
-            .codepoint = event.codepoint,
-        };
-        @memcpy(out[written * size ..][0..size], std.mem.asBytes(&record));
+        @memcpy(out[written * size ..][0..size], std.mem.asBytes(&event));
     }
 
     return @intCast(written * size);

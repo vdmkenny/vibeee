@@ -286,10 +286,10 @@ fn handle(event: proto.wm.Ev) void {
     switch (event.tag) {
         .configure => resize(event.body.configure.w, event.body.configure.h),
         .key => {
-            if (event.body.key.down == 0) return;
+            if (!event.body.key.pressed) return;
             var buf: [keys.MAX]u8 = undefined;
-            const code: abi.KeyCode = @enumFromInt(event.body.key.code);
-            const mods: abi.Modifiers = @bitCast(event.body.key.mods);
+            const code = event.body.key.code;
+            const mods = event.body.key.mods;
 
             // Which key it was first: an arrow, a function key or Enter is
             // named by the key rather than by what the layout puts on it.

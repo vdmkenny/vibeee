@@ -413,8 +413,7 @@ pub const Prompt = struct {
     }
 
     pub fn key(self: *Prompt, event: sys.KeyEvent) Answer {
-        const code: sys.KeyCode = @enumFromInt(event.code);
-        switch (code) {
+        switch (event.code) {
             .enter => return .accepted,
             .escape => return .cancelled,
             .backspace => _ = self.line.backspace(),
@@ -478,7 +477,7 @@ pub fn input() Input {
     while (true) {
         const raw = sys.keyRead(&events, sys.FOREVER) orelse return fromTerminal();
         for (raw) |event| {
-            if (event.pressed != 0) return .{ .press = event };
+            if (event.pressed) return .{ .press = event };
         }
     }
 }
@@ -538,10 +537,10 @@ fn fromTerminal() Input {
                 .got => |press| {
                     take(press.took);
                     return .{ .press = .{
-                        .code = @intFromEnum(press.code),
+                        .code = press.code,
                         .codepoint = press.codepoint,
-                        .modifiers = @bitCast(press.mods),
-                        .pressed = 1,
+                        .mods = press.mods,
+                        .pressed = true,
                     } };
                 },
                 .skip => |n| {
@@ -678,7 +677,7 @@ fn meaning(event: sys.KeyEvent) Command {
         ' ' => return .page_down,
         else => {},
     }
-    return switch (@as(sys.KeyCode, @enumFromInt(event.code))) {
+    return switch (event.code) {
         .escape => .quit,
         .down, .enter => .down,
         .up => .up,

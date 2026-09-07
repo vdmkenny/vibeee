@@ -179,7 +179,7 @@ fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
 
         if (woke == 1) {
             for (sys.keyRead(&events, sys.POLL) orelse break) |event| {
-                if (event.pressed == 0) continue;
+                if (!event.pressed) continue;
                 switch (handleKey(s, datagrams, event, &line, &len)) {
                     .keep_going => {},
                     .no_more_input => typing = false,
@@ -209,7 +209,7 @@ fn handleKey(
     const CTRL_C = 3;
     const CTRL_D = 4;
 
-    if (event.code == @intFromEnum(sys.KeyCode.backspace)) {
+    if (event.code == .backspace) {
         if (len.* > 0) {
             len.* -= 1;
             out.text("\x08 \x08");

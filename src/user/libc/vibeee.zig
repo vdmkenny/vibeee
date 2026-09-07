@@ -158,10 +158,13 @@ export fn vb_window_key_read(into: ?[*]Key, count: c_int, timeout_us: c_uint) c_
         const timeout: usize = if (used == 0) timeout_us else 0;
         const event = window.next(timeout) orelse break;
         switch (event.tag) {
+            // Spelled out rather than copied: this is the C boundary, where
+            // an enum is a byte and a bool is a byte, and the header says so
+            // in C's own words.
             .key => out[used] = .{
-                .code = @truncate(event.body.key.code),
-                .pressed = event.body.key.down,
-                .modifiers = event.body.key.mods,
+                .code = @intFromEnum(event.body.key.code),
+                .pressed = @intFromBool(event.body.key.pressed),
+                .modifiers = @bitCast(event.body.key.mods),
                 .codepoint = event.body.key.codepoint,
             },
             .close_req => return if (used == 0) -1 else @intCast(used),

@@ -188,12 +188,7 @@ pub const Window = struct {
         return .{
             .tag = .key,
             .t_us = @truncate(sys.clockMicros()),
-            .body = .{ .key = .{
-                .code = taken[0].code,
-                .down = taken[0].pressed,
-                .mods = taken[0].modifiers,
-                .codepoint = taken[0].codepoint,
-            } },
+            .body = .{ .key = taken[0] },
         };
     }
 

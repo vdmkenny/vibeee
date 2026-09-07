@@ -230,10 +230,10 @@ pub const Window = struct {
             },
             .scroll => self.ctx.postScroll(event.body.scroll.dy),
             .key => {
-                if (event.body.key.down == 0) return;
+                if (!event.body.key.pressed) return;
                 // Escape leaves. Enter is the strong button: the roll, and
                 // once one has landed, done. Up and down nudge the bonus.
-                const code = std.enums.fromInt(sys.KeyCode, event.body.key.code);
+                const code = event.body.key.code;
                 if (code == .escape or (code == .enter and self.outcome != null)) {
                     self.wish = .close;
                     return;
@@ -245,8 +245,8 @@ pub const Window = struct {
                 } else if (code == .down) {
                     self.setup.bonus -|= 1;
                 } else {
-                    const mods: sys.Modifiers = @bitCast(event.body.key.mods);
-                    self.ctx.postKey(@intCast(event.body.key.code), mods);
+                    const mods = event.body.key.mods;
+                    self.ctx.postKey(event.body.key.code, mods);
 
                     // The letters of the modes, and R to roll again, as the
                     // prompt sheet's choices answer to theirs.

@@ -177,7 +177,7 @@ pub fn run(
 
     if (ctx.takeKeyFor(entry)) |code| {
         const before = state.selected;
-        switch (@as(KeyCode, @enumFromInt(code))) {
+        switch (code) {
             .up => state.selected -|= 1,
             .down => state.selected += 1,
             .page_up => state.selected -|= visible,

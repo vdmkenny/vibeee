@@ -121,16 +121,15 @@ pub fn end(ctx: *widget.Context, state: *State, view: View, content_h: i32) void
     // The page keys, if nothing inside wanted them. Drawn contents get first
     // refusal because this runs after them, so a document that scrolls itself
     // still does.
-    if (ctx.pending_key != 0) {
-        const code: widget.KeyCode = @enumFromInt(ctx.pending_key);
+    if (ctx.pending_key != .none) {
         const page: i32 = @max(view.area.h - theme.enlarged(STEP), theme.enlarged(STEP));
-        const moved: ?i32 = switch (code) {
+        const moved: ?i32 = switch (ctx.pending_key) {
             .page_down => @min(state.offset + page, limit),
             .page_up => @max(state.offset - page, 0),
             else => null,
         };
         if (moved) |to| {
-            ctx.pending_key = 0;
+            ctx.pending_key = .none;
             if (to != state.offset) {
                 state.offset = to;
                 ctx.damage();

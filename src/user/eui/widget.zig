@@ -143,8 +143,9 @@ pub const Context = struct {
     right_press_taken: bool = false,
 
     /// Keyboard state for this pass. A key is consumed by whichever control
-    /// has focus, so a pass sees it at most once.
-    pending_key: u8 = 0,
+    /// has focus, so a pass sees it at most once. `.none` is the ABI's own
+    /// word for no key, which is what an unconsumed pass has.
+    pending_key: KeyCode = .none,
     key_mods: Modifiers = .{},
 
     /// Wheel notches this pass, negative for away from the user. Consumed by
@@ -261,8 +262,8 @@ pub const Context = struct {
 
     /// Offer a key to this pass. Tab and Shift+Tab move focus; anything else
     /// is left for the focused control to act on.
-    pub fn postKey(self: *Context, code: u8, mods: Modifiers) void {
-        if (code == @intFromEnum(KeyCode.tab)) {
+    pub fn postKey(self: *Context, code: KeyCode, mods: Modifiers) void {
+        if (code == .tab) {
             self.moveFocus(if (mods.shift) .backward else .forward);
             return;
         }
@@ -348,7 +349,7 @@ pub const Context = struct {
         self.focus_wanted = false;
 
         self.damaged = false;
-        self.pending_key = 0;
+        self.pending_key = .none;
         self.pending_wheel = 0;
         self.pending_text = 0;
 
@@ -460,10 +461,10 @@ pub const Context = struct {
         return cp;
     }
 
-    fn takeKey(self: *Context, index: usize) ?u8 {
-        if (self.focus != index or self.pending_key == 0) return null;
+    fn takeKey(self: *Context, index: usize) ?KeyCode {
+        if (self.focus != index or self.pending_key == .none) return null;
         const code = self.pending_key;
-        self.pending_key = 0;
+        self.pending_key = .none;
         return code;
     }
 
@@ -486,7 +487,7 @@ pub const Context = struct {
         return (@intFromPtr(entry) - @intFromPtr(&self.entries)) / @sizeOf(Entry);
     }
 
-    pub fn takeKeyFor(self: *Context, entry: *const Entry) ?u8 {
+    pub fn takeKeyFor(self: *Context, entry: *const Entry) ?KeyCode {
         return self.takeKey(self.indexOf(entry));
     }
 
@@ -564,13 +565,10 @@ pub const Context = struct {
     /// Takes the key only when it is one of the two that mean "press this", so
     /// a control that reads the rest itself still gets them.
     pub fn activatedByKey(self: *Context, entry: *const Entry) bool {
-        if (self.focus != self.indexOf(entry) or self.pending_key == 0) return false;
+        if (self.focus != self.indexOf(entry)) return false;
+        if (self.pending_key != .enter and self.pending_key != .space) return false;
 
-        const code = self.pending_key;
-        if (code != @intFromEnum(KeyCode.enter) and code != @intFromEnum(KeyCode.space)) {
-            return false;
-        }
-        self.pending_key = 0;
+        self.pending_key = .none;
         return true;
     }
 
@@ -750,14 +748,17 @@ pub const Context = struct {
             handed = range.clamp(value);
         }
 
-        if (it.focused and self.pending_key != 0) {
-            const code = self.pending_key;
-            if (code == @intFromEnum(KeyCode.left)) {
-                next = range.clamp(next - bar.step(range));
-                self.pending_key = 0;
-            } else if (code == @intFromEnum(KeyCode.right)) {
-                next = range.clamp(next + bar.step(range));
-                self.pending_key = 0;
+        if (it.focused) {
+            switch (self.pending_key) {
+                .left => {
+                    next = range.clamp(next - bar.step(range));
+                    self.pending_key = .none;
+                },
+                .right => {
+                    next = range.clamp(next + bar.step(range));
+                    self.pending_key = .none;
+                },
+                else => {},
             }
         }
 
@@ -1215,14 +1216,13 @@ pub const Context = struct {
         if (it.clicked) {
             if (tally.at(area, count, self.pointer_x, self.pointer_y)) |index| next = tally.pressed(next, index);
         }
-        if (it.focused and self.pending_key != 0) {
-            const code = self.pending_key;
-            if (code == @intFromEnum(KeyCode.left) and next > 0) {
+        if (it.focused) {
+            if (self.pending_key == .left and next > 0) {
                 next -= 1;
-                self.pending_key = 0;
-            } else if (code == @intFromEnum(KeyCode.right) and next < count) {
+                self.pending_key = .none;
+            } else if (self.pending_key == .right and next < count) {
                 next += 1;
-                self.pending_key = 0;
+                self.pending_key = .none;
             }
         }
 

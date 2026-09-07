@@ -14,7 +14,6 @@
 const std = @import("std");
 const client = @import("client.zig");
 const eui = @import("eui");
-const sys = @import("sys");
 const ulib = @import("ulib");
 const wm = @import("wm.zig");
 
@@ -223,15 +222,15 @@ pub const FileDialog = struct {
             },
             .scroll => self.ctx.postScroll(event.body.scroll.dy),
             .key => {
-                if (event.body.key.down == 0) return false;
+                if (!event.body.key.pressed) return false;
                 // Escape leaves, which is what every dialog does and the first
                 // thing anyone tries.
-                if (event.body.key.code == @intFromEnum(sys.KeyCode.escape)) {
+                if (event.body.key.code == .escape) {
                     self.result = .cancelled;
                     return true;
                 }
-                const mods: sys.Modifiers = @bitCast(event.body.key.mods);
-                self.ctx.postKey(@intCast(event.body.key.code), mods);
+                const mods = event.body.key.mods;
+                self.ctx.postKey(event.body.key.code, mods);
                 if (keys.typed(event.body.key.codepoint, mods)) |character| {
                     self.ctx.postText(character);
                 }

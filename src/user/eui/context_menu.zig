@@ -111,23 +111,22 @@ pub fn run(ctx: *widget.Context) ?usize {
         return chosen;
     }
 
-    if (ctx.pending_key != 0) {
-        const code: widget.KeyCode = @enumFromInt(ctx.pending_key);
-        switch (menu.key(code, items[0..count])) {
+    if (ctx.pending_key != .none) {
+        switch (menu.key(ctx.pending_key, items[0..count])) {
             .chosen => {
                 chosen = menu.selected;
-                ctx.pending_key = 0;
+                ctx.pending_key = .none;
                 close();
                 ctx.damage();
                 return chosen;
             },
             .cancelled => {
-                ctx.pending_key = 0;
+                ctx.pending_key = .none;
                 close();
                 ctx.damage();
                 return null;
             },
-            .moved => ctx.pending_key = 0,
+            .moved => ctx.pending_key = .none,
             .ignored => {},
         }
     }

@@ -208,8 +208,8 @@ fn save() void {
 fn handle(event: sys.KeyEvent) bool {
     if (asking != .nothing) return answer(event);
 
-    const code: sys.KeyCode = @enumFromInt(event.code);
-    const held = event.mods();
+    const code = event.code;
+    const held = event.mods;
 
     // Anything but a second quit clears a pending one: asking to leave and
     // then typing means the answer was no.

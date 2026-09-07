@@ -379,7 +379,7 @@ pub fn sys_key_post(a: Args) Result {
     for (0..a.a1) |i| {
         var report: lib.syscalls.KeyReport = undefined;
         @memcpy(std.mem.asBytes(&report), bytes[i * @sizeOf(lib.syscalls.KeyReport) ..][0..@sizeOf(lib.syscalls.KeyReport)]);
-        input.postKey(report.code, report.pressed != 0);
+        input.postKey(report.code, report.pressed);
     }
     return @intCast(a.a1);
 }
@@ -395,13 +395,7 @@ pub fn sys_pointer_post(a: Args) Result {
     for (0..a.a1) |i| {
         var report: lib.syscalls.PointerReport = undefined;
         @memcpy(std.mem.asBytes(&report), bytes[i * @sizeOf(lib.syscalls.PointerReport) ..][0..@sizeOf(lib.syscalls.PointerReport)]);
-        input.postPointer(.{
-            .dx = report.dx,
-            .dy = report.dy,
-            .wheel = report.wheel,
-            .buttons = report.buttons,
-            .buttons_changed = report.buttons_changed != 0,
-        });
+        input.postPointer(report);
     }
     return @intCast(a.a1);
 }

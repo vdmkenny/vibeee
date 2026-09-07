@@ -277,7 +277,7 @@ pub const DisplayInfo = extern struct {
 /// every keyboard's keys are worked out, which is not in the driver.
 pub const KeyReport = extern struct {
     code: KeyCode,
-    pressed: u8 = 0,
+    pressed: bool = false,
     _pad: [2]u8 = @splat(0),
 };
 
@@ -501,10 +501,15 @@ pub const PointerReport = extern struct {
     wheel: i8 = 0,
     buttons: Buttons = .{},
     /// Whether this report changed a button, as opposed to only moving.
-    buttons_changed: u8 = 0,
+    buttons_changed: bool = false,
     _pad: u8 = 0,
 };
 
+/// A pointer event, with the position already accumulated.
+///
+/// Position as well as delta because every consumer wants the position and
+/// only some want the delta, and accumulating it in one place means they
+/// cannot disagree about where the pointer is.
 pub const PointerEvent = extern struct {
     x: i16 = 0,
     y: i16 = 0,
@@ -513,12 +518,14 @@ pub const PointerEvent = extern struct {
     /// Positive scrolls up.
     wheel: i8 = 0,
     buttons: Buttons = .{},
-    buttons_changed: u8 = 0,
+    buttons_changed: bool = false,
     _pad: u8 = 0,
 
-    /// Motion with a button held.
+    /// Motion with a button held: the thing a consumer needs to distinguish
+    /// from a click and from a hover, and the reason button state travels on
+    /// every event rather than being polled separately.
     pub fn isDrag(self: PointerEvent) bool {
-        return self.buttons_changed == 0 and self.buttons.any() and
+        return !self.buttons_changed and self.buttons.any() and
             (self.dx != 0 or self.dy != 0);
     }
 };
@@ -529,22 +536,14 @@ pub const PointerEvent = extern struct {
 /// a shortcut wants which key was pressed regardless of what it produces on
 /// the current layout. Sending only one would make one of the two impossible.
 pub const KeyEvent = extern struct {
-    /// Layout-independent key identity, matching kernel/input.zig KeyCode.
-    code: u8 = 0,
-    pressed: u8 = 0,
-    modifiers: u8 = 0,
+    /// Layout-independent key identity.
+    code: KeyCode = .none,
+    pressed: bool = false,
+    mods: Modifiers = .{},
     _pad: u8 = 0,
     /// Unicode codepoint the layout produced, or 0 for a key that produces no
     /// character.
     codepoint: u32 = 0,
-
-    pub fn mods(self: KeyEvent) Modifiers {
-        return @bitCast(self.modifiers);
-    }
-
-    pub fn isPress(self: KeyEvent) bool {
-        return self.pressed != 0;
-    }
 };
 
 /// A channel message as it crosses the boundary.

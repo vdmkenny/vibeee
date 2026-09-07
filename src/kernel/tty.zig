@@ -87,7 +87,7 @@ pub const Discipline = struct {
     /// Take one key press, returning what it echoes: nothing, a character
     /// just typed, or the sequence for erasing one. The bytes are static or
     /// in the line buffer, and stand until the next call.
-    pub fn feed(self: *Discipline, code: abi.KeyCode, codepoint: u21) []const u8 {
+    pub fn feed(self: *Discipline, code: abi.KeyCode, codepoint: u32) []const u8 {
         // Raw mode has nothing to edit: every keystroke goes straight through,
         // as its character or as the sequence that stands for it.
         if (self.mode == .raw) {
@@ -98,7 +98,8 @@ pub const Discipline = struct {
             if (codepoint == 0) return "";
 
             var utf8: [4]u8 = undefined;
-            const n = std.unicode.utf8Encode(codepoint, &utf8) catch return "";
+            const scalar = std.math.cast(u21, codepoint) orelse return "";
+            const n = std.unicode.utf8Encode(scalar, &utf8) catch return "";
             _ = self.deliver(utf8[0..n]);
             return "";
         }
@@ -135,7 +136,8 @@ pub const Discipline = struct {
         }
 
         var utf8: [4]u8 = undefined;
-        const n = std.unicode.utf8Encode(codepoint, &utf8) catch return "";
+        const scalar = std.math.cast(u21, codepoint) orelse return "";
+        const n = std.unicode.utf8Encode(scalar, &utf8) catch return "";
         // The newline Enter adds has to fit as well.
         if (self.line_len + n >= LINE_MAX) return "";
 

@@ -470,8 +470,8 @@ fn run() noreturn {
         for (keys) |event| {
             // The number chips in the bar follow the modifier itself, both
             // edges: they appear when Super goes down and leave with it.
-            super_held = event.mods().super;
-            if (bar.setSuperHeld(event.mods().super)) paintBar();
+            super_held = event.mods.super;
+            if (bar.setSuperHeld(event.mods.super)) paintBar();
 
             // While the bar holds focus it takes everything, so plain arrows
             // walk tabs instead of reaching a window. Otherwise a chord with
@@ -482,26 +482,18 @@ fn run() noreturn {
             stirred();
 
             if (bar.hasFocus()) {
-                if (event.isPress()) handleKey(event);
-            } else if (event.mods().super) {
-                if (event.isPress()) handleKey(event);
-            } else if (event.code == @intFromEnum(KeyCode.f1) and desktop.focused == null) {
+                if (event.pressed) handleKey(event);
+            } else if (event.mods.super) {
+                if (event.pressed) handleKey(event);
+            } else if (event.code == .f1 and desktop.focused == null) {
                 // Help, where every desktop has put it. Only with nothing
                 // focused: a window on screen owns the key, and a program
                 // with its own help would never see it otherwise.
-                if (event.isPress()) {
+                if (event.pressed) {
                     _ = sys.spawnDetached("/bin/settings", &.{ "settings", "help" });
                 }
             } else {
-                postToFocused(.{
-                    .tag = .key,
-                    .body = .{ .key = .{
-                        .code = event.code,
-                        .down = event.pressed,
-                        .mods = event.modifiers,
-                        .codepoint = event.codepoint,
-                    } },
-                });
+                postToFocused(.{ .tag = .key, .body = .{ .key = event } });
             }
             acted = true;
         }
@@ -746,8 +738,8 @@ fn untilTheClockTurns() usize {
 /// keyboard, and binding by symbol would move every one of them when the
 /// layout changes between US and AZERTY. design/10-gui.md §4.5.
 fn handleKey(event: sys.KeyEvent) void {
-    const mods = event.mods();
-    const code: KeyCode = @enumFromInt(event.code);
+    const mods = event.mods;
+    const code = event.code;
 
     // The bar takes every key while it has focus, so arrows walk tabs rather
     // than reaching a window. Everything it can be told by pointer it can be
@@ -1504,7 +1496,7 @@ fn postPointer(event: sys.PointerEvent, pressed: bool) void {
     const local_y: i16 = @intCast(event.y - inner.y);
     const now: u32 = @truncate(sys.clockMicros());
 
-    if (event.buttons_changed != 0) {
+    if (event.buttons_changed) {
         client.post(.{
             .tag = .ptr_button,
             .win = w.client_win,

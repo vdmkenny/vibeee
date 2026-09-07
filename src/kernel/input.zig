@@ -19,57 +19,19 @@ const console = @import("console.zig");
 const display = @import("display.zig");
 const keymap = @import("keymap.zig");
 
-pub const KeyCode = @import("lib").syscalls.KeyCode;
+// One definition of each, shared with userspace through the ABI: the events
+// themselves and not only the bits inside them. The driver below and the
+// toolkit above have to agree on what an event is, and a copy kept here would
+// have to be converted on the way out, which is where it would drift from the
+// one they read.
+const abi = @import("lib").syscalls;
 
-/// One definition, shared with userspace through the ABI.
-pub const Modifiers = @import("lib").syscalls.Modifiers;
-
-pub const Event = struct {
-    code: KeyCode,
-    pressed: bool,
-    mods: Modifiers,
-    /// Unicode codepoint, or 0 for a key that produces no character. Filled in
-    /// by the keymap layer.
-    codepoint: u21 = 0,
-};
-
-/// One definition, shared with userspace through the ABI: the driver below and
-/// the toolkit above must agree on which bit is which.
-pub const Buttons = @import("lib").syscalls.Buttons;
-
-/// What a pointing device reports, after the driver has turned the wire format
-/// into something device-independent.
-pub const PointerReport = struct {
-    dx: i16 = 0,
-    dy: i16 = 0,
-    /// Positive scrolls up. Zero on a device with no wheel.
-    wheel: i8 = 0,
-    buttons: Buttons = .{},
-    /// Whether this report changed a button, as opposed to only moving.
-    buttons_changed: bool = false,
-};
-
-/// A pointer event, with the position already accumulated.
-///
-/// Position as well as delta because every consumer wants the position and
-/// only some want the delta, and accumulating it in one place means they
-/// cannot disagree about where the pointer is.
-pub const PointerEvent = struct {
-    x: i16 = 0,
-    y: i16 = 0,
-    dx: i16 = 0,
-    dy: i16 = 0,
-    wheel: i8 = 0,
-    buttons: Buttons = .{},
-    buttons_changed: bool = false,
-
-    /// Motion with a button held: the thing a consumer needs to distinguish
-    /// from a click and from a hover, and the reason button state travels on
-    /// every event rather than being polled separately.
-    pub fn isDrag(self: PointerEvent) bool {
-        return !self.buttons_changed and self.buttons.any() and (self.dx != 0 or self.dy != 0);
-    }
-};
+pub const KeyCode = abi.KeyCode;
+pub const Modifiers = abi.Modifiers;
+pub const Buttons = abi.Buttons;
+pub const Event = abi.KeyEvent;
+pub const PointerReport = abi.PointerReport;
+pub const PointerEvent = abi.PointerEvent;
 
 /// Event ring. Sized so a burst of typing during a slow operation is not lost,
 /// but small enough that stale input cannot pile up unboundedly.

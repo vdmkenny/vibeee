@@ -19,10 +19,12 @@
 //! Everything here is `extern` and little-endian: it crosses a process
 //! boundary between separately compiled programs.
 
+const abi = @import("lib").syscalls;
+
 /// Bumped when a change would make an old client misread a new server. The
 /// server rejects a mismatch at `hello` rather than failing later in a way
 /// that looks like a client bug.
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 
 pub const MAX_WINDOWS_PER_CLIENT = 8;
 
@@ -252,14 +254,10 @@ pub const Ev = extern struct {
     t_us: u32 = 0,
 
     body: extern union {
-        key: extern struct {
-            code: u16,
-            down: u8,
-            mods: u8,
-            /// What the layout produced, after dead keys and composition.
-            /// Zero for a key that types nothing, such as an arrow.
-            codepoint: u32,
-        },
+        /// The kernel's own key event, unchanged. The manager reads one and
+        /// hands it on, and a shape of its own here would be a third spelling
+        /// of the same eight bytes for it to translate into.
+        key: abi.KeyEvent,
         motion: extern struct { x: i16, y: i16 },
         button: extern struct { btn: u8, down: u8, x: i16, y: i16 },
         scroll: extern struct { dy: i8, dx: i8 },
