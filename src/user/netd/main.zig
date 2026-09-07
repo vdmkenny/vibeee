@@ -444,8 +444,14 @@ fn serve(channel: u32) noreturn {
             sys.FOREVER;
         const woke = sys.waitMany(sources.slice(), timeout);
         load.wakes +%= 1;
-        stack.tick();
-        station.tick();
+        // What woke the loop first, and only then what the clock owes.
+        //
+        // A radio wakes this loop when a frame lands, and the frame is
+        // read out of the card by its handler below. Running the timers
+        // first is running them against a reply that is already here and
+        // has not been looked at: an exchange on its last attempt gives
+        // up, and the answer it was waiting for is drained a moment later
+        // into a join that no longer exists.
         if (woke catch null) |index| dispatch: {
             if (index >= sources.len) break :dispatch;
             const handle = sources.slice()[index];
@@ -490,6 +496,9 @@ fn serve(channel: u32) noreturn {
             }
             sys.irqAck(handle, found);
         }
+
+        stack.tick();
+        station.tick();
 
         // Whatever this pass queued for the machine itself is delivered
         // before the loop sleeps: loopback never waits for a wake.

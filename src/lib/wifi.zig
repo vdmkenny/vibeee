@@ -446,6 +446,24 @@ pub const Psk = union(enum) {
         return .{ .passphrase = Passphrase.of(text) orelse return null };
     }
 
+    /// Whether two configured secrets are the same secret. Compared by
+    /// what they say rather than by their bytes: a passphrase is held in
+    /// a buffer longer than itself, and what is past its end is not part
+    /// of it.
+    pub fn eql(self: Psk, other: Psk) bool {
+        return switch (self) {
+            .none => other == .none,
+            .passphrase => |words| switch (other) {
+                .passphrase => |theirs| std.mem.eql(u8, words.slice(), theirs.slice()),
+                else => false,
+            },
+            .key => |key| switch (other) {
+                .key => |theirs| std.mem.eql(u8, &key, &theirs),
+                else => false,
+            },
+        };
+    }
+
     pub fn spell(self: Psk, into: *str.Builder) void {
         switch (self) {
             .none => {},

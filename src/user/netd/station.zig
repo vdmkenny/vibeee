@@ -68,6 +68,16 @@ const STIR_MICROS: u64 = 1_000_000;
 /// second.
 const LONG_CAL_MICROS: u64 = 30_000_000;
 
+/// How often the radio's own upkeep runs: the short calibration, and the
+/// judgement of how willing the baseband should be to decide a signal has
+/// begun.
+///
+/// Its own cadence, not the sweep's. A joined radio sits on one channel
+/// for hours and needs both as much as a sweeping one does: what drifts
+/// is the silicon's, and a room's noise does not hold still because a
+/// station stopped moving.
+const UPKEEP_MICROS: u64 = DWELL_MICROS;
+
 const State = struct {
     radio: ?*dev_mod.NicDev = null,
     plan: wifi.Regulatory = .conservative,
@@ -78,9 +88,6 @@ const State = struct {
     ordered: bool = false,
     /// Which of the band's channels the radio is on.
     channel_index: usize = 0,
-    /// The network configuration last named, so being unable to join it is
-    /// said once rather than at every pass of the settings.
-    asked: wifi.Ssid = .{},
     /// The channel configuration holds the radio on, or null to sweep.
     /// A radio told where to listen stays there: what a sweep is for is
     /// finding out what is in earshot, and a person who already knows has
@@ -91,8 +98,14 @@ const State = struct {
     /// had its chance and is worth asking about.
     hops: usize = 0,
     next_hop_at: u64 = 0,
+    next_upkeep_at: u64 = 0,
     next_stir_at: u64 = 0,
     next_long_cal_at: u64 = 0,
+    /// Whether the configuration says this radio is to be doing anything.
+    /// A slot switched off is a radio that does not sweep, does not join
+    /// and does not listen: what somebody switched off is the radio, not
+    /// one interface's addressing.
+    on: bool = true,
     full_said: bool = false,
     /// The join in hand, or none while no network is named.
     join: ?join_mod.Join = null,
@@ -232,27 +245,30 @@ pub fn network(index: usize) ?mlme.Bss {
 /// Microseconds until the station next needs the loop, for the wait
 /// deadline. Null while there is no radio.
 pub fn nextDeadline() ?u64 {
-    if (state.radio == null) return null;
+    if (state.radio == null or !state.on) return null;
     // Something a frame asked for is owed now.
     if (state.pending != null) return 0;
     const now = sys.clockMicros();
     const hop_in: u64 = if (state.next_hop_at > now) state.next_hop_at - now else 0;
+    // The upkeep is owed whatever else is happening.
+    const upkeep_in: u64 = if (state.next_upkeep_at > now) state.next_upkeep_at - now else 0;
 
     const attempt = state.join orelse {
         // Nothing in hand: the sweep, or the moment a failed join is due
         // to be tried again, whichever comes first.
-        if (state.wanted == null) return hop_in;
+        if (state.wanted == null) return @min(upkeep_in, hop_in);
         const retry_in: u64 = if (state.retry_at > now) state.retry_at - now else 0;
-        return @min(hop_in, retry_in);
+        return @min(upkeep_in, @min(hop_in, retry_in));
     };
     const owed = owedIn(attempt, now);
 
     // A join still looking rides the sweep, so whichever comes first. One
     // that has found its network owns the radio and the sweep is not
-    // happening, so its deadline is not one to wake for; a join waiting on
-    // nothing at all asks for no wake, and the traffic wakes it instead.
-    if (sweeping(attempt)) return if (owed) |soon| @min(hop_in, soon) else hop_in;
-    return owed;
+    // happening, so the sweep's deadline is not one to wake for.
+    if (sweeping(attempt)) {
+        return @min(upkeep_in, if (owed) |soon| @min(hop_in, soon) else hop_in);
+    }
+    return if (owed) |soon| @min(upkeep_in, soon) else upkeep_in;
 }
 
 /// Whether the join still leaves the radio free to sweep the band. Read
@@ -286,7 +302,8 @@ fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
 
 /// Run whatever the station owes: a hop when the dwell is over.
 pub fn tick() void {
-    const now = sys.clockMicros();
+    if (!state.on) return;
+    var now = sys.clockMicros();
 
     // What the radio has heard, handed to the machine's pool. The kernel sees
     // every interrupt and no radio; this is the one process that sees one, so
@@ -301,7 +318,14 @@ pub fn tick() void {
     if (state.pending) |what| {
         state.pending = null;
         act(what);
+        // Tuning resets the radio and waits for it, which takes as long as
+        // it takes. A deadline dated from before that is short by however
+        // long it was, and the step it belongs to gives up early.
+        now = sys.clockMicros();
     }
+
+    // The radio's own upkeep, whether or not it is sweeping.
+    maintain(now);
 
     // A join that failed comes round again on its own. The next attempt
     // is dated first and unconditionally: a deadline left in the past is
@@ -453,7 +477,6 @@ fn forget(nic: *dev_mod.NicDev) void {
     state.hops = 0;
     state.networks.clear();
     state.ordered = true;
-    state.asked = .{};
     if (dev_mod.changed) |tell| tell();
 }
 
@@ -466,13 +489,30 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     const moved = !std.meta.eql(state.plan, role.regdomain) or state.held != held;
     state.plan = role.regdomain;
     state.held = held;
+
+    // A slot switched off is a radio that stops: a station that went on
+    // sweeping, authenticating and retrying through it would be doing
+    // exactly what somebody switched off.
+    const was_on = state.on;
+    state.on = role.enabled;
+    if (!state.on) {
+        if (was_on) {
+            leave(nic, ops);
+            state.networks.clear();
+            state.ordered = true;
+            if (dev_mod.changed) |tell| tell();
+        }
+        ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
+        return;
+    }
+
     if (held) |number| _ = ops.tune(nic, .{ .number = number });
 
-    // A network named is one to be on; named nothing is one to leave.
-    // Acted on when the name changes, so a settings pass that says the
-    // same thing again does not restart a join that is already running.
-    if (!std.mem.eql(u8, state.asked.slice(), role.ssid.slice())) {
-        state.asked = role.ssid;
+    // What is wanted is a name and the secret to join it with. Acted on
+    // when either changes, so a settings pass saying the same thing again
+    // does not restart a join that is already running, and a password
+    // corrected for the network already being tried is tried with.
+    if (!was_on or !sameConnection(state.wanted, role)) {
         leave(nic, ops);
         if (role.ssid.len != 0) seek(nic, role);
     }
@@ -486,6 +526,25 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
         if (ops.watchAgain) |again| again(nic);
     }
     ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
+}
+
+/// The network this radio is on, or trying to be on, for saying so. One
+/// name, from the one place that holds it.
+fn wantedName() []const u8 {
+    const want = state.wanted orelse return "";
+    return want.ssid.slice();
+}
+
+/// Whether a slot asks for the connection already in hand.
+///
+/// Only what decides a join counts. A ceiling or a regulatory plan
+/// changing is not a reason to drop a connection and build it again; a
+/// password is, and one compared by the network's name alone is a
+/// correction that never takes, since the name it corrects is the name it
+/// already had.
+fn sameConnection(want: ?settings.NetSlot, role: settings.NetSlot) bool {
+    const have = want orelse return role.ssid.len == 0;
+    return std.mem.eql(u8, have.ssid.slice(), role.ssid.slice()) and have.psk.eql(role.psk);
 }
 
 /// Unpredictable bytes for anything that asks, and whether they are worth
@@ -614,7 +673,7 @@ fn act(what: join_mod.Action) void {
             }
             log.begin(it.nic.name, .warn);
             out.text("could not join \"");
-            out.text(state.asked.slice());
+            out.text(wantedName());
             out.text("\": ");
             out.text(why.spell());
             out.text(" while ");
@@ -697,14 +756,34 @@ fn settle(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, won: join_mod.Joined) voi
 
     log.begin(nic.name, .key);
     out.text("joined \"");
-    out.text(state.asked.slice());
+    out.text(wantedName());
     out.text("\" on ");
     out.text(&lib.mac.text(won.bssid));
     log.end();
 }
 
-/// Move to the next channel the plan allows, taking the noise floor the
-/// last dwell measured on the way.
+/// Re-measure what drifts, and re-fit the receiver to the room.
+///
+/// On its own cadence rather than the sweep's, because it is owed whether
+/// or not the radio is moving: a station that has joined a network sits on
+/// one channel for hours, and calibration that stopped when it found the
+/// network is calibration it spends the whole connection without.
+fn maintain(now: u64) void {
+    if (now < state.next_upkeep_at) return;
+    state.next_upkeep_at = now + UPKEEP_MICROS;
+
+    const it = radio() orelse return;
+    // The short calibration every period, the long one on its own cadence.
+    const long = now >= state.next_long_cal_at;
+    if (long) state.next_long_cal_at = now + LONG_CAL_MICROS;
+    it.ops.calibrate(it.nic, long);
+    // What the period's failures came to. Judged over this length because
+    // it is long enough for a count to mean something and short enough to
+    // follow a room that changes.
+    it.ops.adapt(it.nic);
+}
+
+/// Move to the next channel the plan allows.
 fn hop() void {
     // Before anything that can return early: this is what says the dwell
     // is not over, and a pass that leaves it in the past is a loop that
@@ -713,15 +792,6 @@ fn hop() void {
     state.next_hop_at = now + DWELL_MICROS;
 
     const it = radio() orelse return;
-
-    // The short calibration every dwell, the long one on its own cadence.
-    const long = now >= state.next_long_cal_at;
-    if (long) state.next_long_cal_at = now + LONG_CAL_MICROS;
-    it.ops.calibrate(it.nic, long);
-    // What the last dwell's failures came to. Asked here because a dwell
-    // is the period the radio is judged over: long enough for a count to
-    // mean something, short enough to follow a room that changes.
-    it.ops.adapt(it.nic);
 
     // As long as a sweep would have taken, whether one was made or not: a
     // radio held on one channel has heard as much of that channel by now
@@ -746,6 +816,9 @@ fn hop() void {
 /// account; a network heard again is refreshed, a new one is said.
 fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wifi.Legacy) void {
     _ = rate;
+    // A radio switched off in the configuration is one whose hearing is
+    // nobody's business, whatever is still reaching its antenna.
+    if (!state.on) return;
     // The join sees every frame: the beacons that tell it where its
     // network is, and the replies that carry the exchange forward.
     if (state.join) |*attempt| {
