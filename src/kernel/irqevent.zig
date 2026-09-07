@@ -160,7 +160,7 @@ pub fn arm(self: *IrqEvent) void {
     // the attach-to-first-wait race without touching the IOAPIC at runtime.
     if (!self.held and hal.irqAwaitingAck(self.token) and lineOf(self.gsi).owed == 0) {
         self.held = true;
-        lineOf(self.gsi).owed = 1;
+        owe(lineOf(self.gsi));
         self.count += 1;
         if (self.count == 1) console.debug("irq", "line {d} adopted a waiting delivery", .{self.gsi});
         self.ready.signalLocked();
@@ -169,6 +169,15 @@ pub fn arm(self: *IrqEvent) void {
 
 fn lineOf(gsi: u32) *Line {
     return &lines[gsi];
+}
+
+/// One more completion owed on a level line. The deferral's clock starts
+/// with the first owed, for the watchdog that completes a delivery whose
+/// owner has stopped answering: however a deferral begins, it is timed
+/// from when it began.
+fn owe(line: *Line) void {
+    if (line.owed == 0) line.held_since_us = hal.monotonicMicros();
+    line.owed += 1;
 }
 
 /// The driver has finished a service pass; `found` says whether the pass
@@ -331,11 +340,10 @@ fn onInterrupt(frame: *hal.InterruptFrame) void {
 
         hal.deferIrq(line.token);
         const level = line.token.trigger == .level;
-        if (level and line.owed == 0) line.held_since_us = hal.monotonicMicros();
         for (line.events) |maybe| {
             const self = maybe orelse continue;
             self.held = level;
-            if (level) line.owed += 1;
+            if (level) owe(line);
             self.count += 1;
             if (self.count == 1) console.debug("irq", "line {d} delivered its first", .{self.gsi});
 
