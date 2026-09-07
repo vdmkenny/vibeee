@@ -31,6 +31,7 @@ const hal = @import("hal.zig");
 const heap = @import("heap.zig");
 const pmm = @import("pmm.zig");
 const Bounded = @import("lib").bounded.Bounded;
+const span = @import("lib").span;
 
 pub const Error = error{
     OutOfMemory,
@@ -73,6 +74,9 @@ pub const Segment = struct {
     /// a segment that describes memory belonging to a device, where freeing
     /// the frames would hand a graphics aperture to the page allocator.
     owned: bool = true,
+    /// Mapped with caching off, which a device's registers need: a write
+    /// that sat in the cache would never reach the device.
+    uncached: bool = false,
 
     pub fn pageCount(self: *const Segment) usize {
         return self.frames.len;
@@ -157,7 +161,11 @@ pub fn physBase(self: *const Segment) usize {
 /// Same object and same mapping path as allocated memory, so a device aperture
 /// can be handed to a process through the ordinary handle and `shm_map` route
 /// rather than a second mechanism that does the same thing.
-pub fn wrapPhysical(base: usize, size: usize) Error!*Segment {
+pub const Wrap = struct {
+    uncached: bool = false,
+};
+
+pub fn wrapPhysical(base: usize, size: usize, options: Wrap) Error!*Segment {
     if (size == 0) return error.BadSize;
 
     const pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -168,20 +176,28 @@ pub fn wrapPhysical(base: usize, size: usize) Error!*Segment {
     const frames = heap.allocator.alloc(usize, pages) catch return error.OutOfMemory;
     for (frames, 0..) |*f, i| f.* = base + i * PAGE_SIZE;
 
-    seg.* = .{ .frames = frames, .size = size, .owned = false };
+    seg.* = .{ .frames = frames, .size = size, .owned = false, .uncached = options.uncached };
     return seg;
 }
 
+/// The count changes under interrupts off: two holders letting go from
+/// either side of a preemption must not both read the count they started
+/// from and leave the segment alive with nobody holding it.
 pub fn retain(seg: *Segment) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
     seg.refs += 1;
 }
 
 /// Drop a reference, freeing the frames when the last one goes.
 pub fn release(seg: *Segment) void {
-    if (seg.refs > 1) {
+    const last = blk: {
+        const flags = hal.saveAndDisableInterrupts();
+        defer hal.restoreInterrupts(flags);
         seg.refs -= 1;
-        return;
-    }
+        break :blk seg.refs == 0;
+    };
+    if (!last) return;
     if (seg.owned) {
         for (seg.frames) |f| pmm.freeFrame(f);
     }
@@ -208,6 +224,7 @@ pub fn mapAt(seg: *Segment, space: *hal.AddressSpace, virt: usize, writable: boo
             // The mark that stops address-space teardown from freeing a frame
             // another process is still using.
             .shared = true,
+            .uncached = seg.uncached,
         }) catch return error.OutOfMemory;
         mapped = i + 1;
     }
@@ -221,19 +238,17 @@ pub const Mapping = struct {
 
 /// How many segments one process may have mapped at once. A compositor
 /// maps a surface per window and the screen; a client maps its surfaces,
-/// the clipboard and a ring or two. Addresses are never reused, so a
-/// process that outgrows this is one that maps without end.
+/// the clipboard and a ring or two. A mapping taken out gives its place
+/// back, so this bounds what is mapped now, not what was ever mapped.
 pub const MAX_MAPPINGS = 64;
 
 /// One process's shared-memory window: which addresses are taken, and
 /// which segments the pages there hold.
 ///
-/// Addresses are handed out by bumping, never reused. A window of 768 MiB
-/// against an 8 MiB per-segment cap means a process would have to map
-/// ninety-six full-size segments before running out, and a process doing
-/// that has a different problem.
+/// A mapping goes at the lowest address with room for it, and a mapping
+/// taken out leaves its addresses for the next, so a process that maps
+/// and unmaps for as long as it runs stays within the window.
 pub const Mapper = struct {
-    next: usize = WINDOW_BASE,
     held: Bounded(Mapping, MAX_MAPPINGS) = .{},
 
     /// Map a segment where the window has room, holding it for as long as
@@ -241,8 +256,7 @@ pub const Mapper = struct {
     pub fn map(self: *Mapper, seg: *Segment, space: *hal.AddressSpace, writable: bool) Error!usize {
         if (self.held.isFull()) return error.TooManyMappings;
 
-        const at = try self.reserve(seg.size);
-        errdefer self.unreserve(at);
+        const at = try self.room(seg.pageCount() * PAGE_SIZE);
         try mapAt(seg, space, at, writable);
 
         retain(seg);
@@ -250,20 +264,29 @@ pub const Mapper = struct {
         return at;
     }
 
-    pub fn reserve(self: *Mapper, size: usize) Error!usize {
-        const pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-        const bytes = pages * PAGE_SIZE;
-
-        if (self.next + bytes > WINDOW_END) return error.NoAddressSpace;
-        const at = self.next;
-        self.next += bytes;
-        return at;
+    /// The lowest address in the window with `bytes` free after it.
+    fn room(self: *const Mapper, bytes: usize) Error!usize {
+        var taken: [MAX_MAPPINGS]span.Span = undefined;
+        for (self.held.slice(), 0..) |m, i| {
+            taken[i] = .{ .at = m.at, .len = m.seg.pageCount() * PAGE_SIZE };
+        }
+        return span.firstFit(taken[0..self.held.len], bytes, WINDOW_BASE, WINDOW_END) orelse error.NoAddressSpace;
     }
 
-    /// Give the last reservation back, before anything else has taken from
-    /// the window: what a mapping that failed does with its addresses.
-    pub fn unreserve(self: *Mapper, at: usize) void {
-        self.next = at;
+    /// Take out the mapping that holds `at`, any address within it: the
+    /// pages stop naming the frames, the addresses are free for the next
+    /// mapping, and the segment goes on for as long as anything else holds
+    /// it.
+    pub fn unmap(self: *Mapper, at: usize, space: *hal.AddressSpace) error{NotMapped}!void {
+        for (self.held.slice(), 0..) |mapping, i| {
+            const pages = mapping.seg.pageCount();
+            if (at < mapping.at or at >= mapping.at + pages * PAGE_SIZE) continue;
+            for (0..pages) |page| space.unmap(mapping.at + page * PAGE_SIZE);
+            self.held.swapRemove(i);
+            release(mapping.seg);
+            return;
+        }
+        return error.NotMapped;
     }
 
     /// Take every mapping of `seg` out of the space and let the segment go:

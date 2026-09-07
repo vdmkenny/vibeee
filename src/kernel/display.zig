@@ -167,7 +167,7 @@ pub fn acquire() Error!*shm.Segment {
     if (owner != null) return error.Busy;
     const taker = sched.currentThread() orelse return error.Busy;
 
-    const segment = shm.wrapPhysical(phys_base, info.bytes) catch |err| {
+    const segment = shm.wrapPhysical(phys_base, info.bytes, .{}) catch |err| {
         return switch (err) {
             error.BadSize => error.NoDisplay,
             else => error.OutOfMemory,

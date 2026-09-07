@@ -535,7 +535,7 @@ Map a segment into the calling process.
 - `EBADF`, the handle is not open in this process
 - `ENOMEM`, no handle slots free, or the buffer is too small
 
-Mapping the same segment twice returns two addresses onto the same memory. Addresses are not reused, so a process that maps repeatedly will eventually run out of window rather than silently aliasing.
+Mapping the same segment twice returns two addresses onto the same memory. A mapping goes at the lowest address with room for it, and one taken out with shm_unmap leaves its addresses for the next.
 
 ## `unlink`  <sub>#30</sub>
 
@@ -767,7 +767,7 @@ Map a device's registers into this process.
 - `EINVAL`, an argument is out of range
 - `ENOMEM`, no handle slots free, or the buffer is too small
 
-Needs the driver capability. Mapped uncached, since a write to a register that sat in the cache would never reach the device, and marked as belonging elsewhere so ending the process unmaps it without handing device memory to the page allocator. There is no unmap: a driver that has finished with its device is a driver that should exit. What it maps is any physical range the page allocator does not own, on the driver's word: an aperture above RAM, or the firmware's tables inside it. That is the contract rather than a bounded window, because a driver that could only map what the kernel had enumerated could not bring up a device the kernel does not know. The trust is the capability's, held by the first-party drivers in etc/services and nothing else.
+Needs the driver capability. Mapped uncached, since a write to a register that sat in the cache would never reach the device, and marked as belonging elsewhere so ending the process unmaps it without handing device memory to the page allocator. The mapping is taken out with shm_unmap, like any other. What it maps is any physical range the page allocator does not own, on the driver's word: an aperture above RAM, or the firmware's tables inside it. That is the contract rather than a bounded window, because a driver that could only map what the kernel had enumerated could not bring up a device the kernel does not know. The trust is the capability's, held by the first-party drivers in etc/services and nothing else.
 
 ## `tty_mode`  <sub>#42</sub>
 
@@ -1260,6 +1260,22 @@ Add to the pool the machine's randomness is drawn from.
 
 Requires Caps.driver. For a server holding a source the kernel cannot see: a radio hears the exact moment a frame lands, and the frames it could not decode at all are the band's noise. Nothing stirred in can make the pool worse, so the kernel does not judge what it is given, and a caller with nothing surprising to offer only wastes its own time. What one driver hears improves what every program draws.
 
+## `shm_unmap`  <sub>#70</sub>
+
+Take a mapping out of the calling process.
+
+| arg | type | meaning |
+|---|---|---|
+| `at` | uint | Any address within the mapping. |
+
+**Returns:** 0
+
+**Errors:**
+
+- `EINVAL`, an argument is out of range
+
+The pages stop naming the segment's frames and the addresses are free for the next mapping. The segment lives on for as long as anything else holds it: a handle, or another mapping. A device aperture from map_device is taken out the same way.
+
 ---
 
-70 calls defined.
+71 calls defined.

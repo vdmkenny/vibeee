@@ -49,6 +49,7 @@ const CASES = [_]Case{
     .{ .says = "signalling an event only given to read", .run = &readOnlyEvent, .want = .perm },
     .{ .says = "a program whose bytes reach past its file", .run = &crookedProgram, .want = .inval },
     .{ .says = "a keyboard another program is holding", .run = &heldKeyboard, .want = .busy },
+    .{ .says = "an address no mapping of its own holds, to unmap", .run = &strayUnmap, .want = .inval },
 };
 
 pub fn run(args: []const []const u8) void {
@@ -294,6 +295,11 @@ fn readOnly() isize {
     const page = onePage(false);
     if (page == 0) return NOT_RUN;
     return sys.statRaw("/", page, 64);
+}
+
+/// Somewhere in the window no mapping holds, offered to be unmapped.
+fn strayUnmap() isize {
+    return sys.shmUnmap(@ptrFromInt(UNMAPPED));
 }
 
 /// What a case answers when the machinery it needs was unavailable, so a

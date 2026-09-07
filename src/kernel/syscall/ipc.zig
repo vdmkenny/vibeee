@@ -409,6 +409,12 @@ pub fn sys_shm_map(a: Args) Result {
     return @intCast(at);
 }
 
+pub fn sys_shm_unmap(a: Args) Result {
+    const t = sched.currentThread() orelse return Errno.inval.value();
+    t.shm_window.unmap(a.a0, &t.space) catch return Errno.inval.value();
+    return 0;
+}
+
 pub fn sys_display_acquire(a: Args) Result {
     if (ctx.require(.{ .display = true })) |denied| return denied;
 

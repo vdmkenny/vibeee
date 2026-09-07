@@ -225,25 +225,12 @@ pub fn sys_map_device(a: Args) Result {
     // allocator believes it still owns.
     if (pmm.isManaged(base, end)) return Errno.inval.value();
 
-    const at = t.shm_window.reserve(end - base) catch return Errno.nomem.value();
-
-    var offset: usize = 0;
-    while (offset < end - base) : (offset += hal.PAGE_SIZE) {
-        t.space.map(at + offset, base + offset, .{
-            .writable = true,
-            // The frames are the device's, so tearing the address space down
-            // must unmap them without freeing them.
-            .shared = true,
-            .uncached = true,
-        }) catch {
-            // Nothing half done: the pages mapped so far go, and the window
-            // takes its addresses back, since nothing else has taken from it.
-            var back: usize = 0;
-            while (back < offset) : (back += hal.PAGE_SIZE) t.space.unmap(at + back);
-            t.shm_window.unreserve(at);
-            return Errno.nomem.value();
-        };
-    }
+    // Held as a segment like any other mapping, so the window knows the
+    // addresses are taken and gives them back when the mapping goes.
+    const seg = shm.wrapPhysical(base, end - base, .{ .uncached = true }) catch return Errno.nomem.value();
+    // The mapping holds the segment from here on; this reference only made it.
+    defer shm.release(seg);
+    const at = t.shm_window.map(seg, &t.space, true) catch return Errno.nomem.value();
 
     // The page the aperture starts in, plus how far into it the caller asked.
     return @intCast(at + (phys - base));

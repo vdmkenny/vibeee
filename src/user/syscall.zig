@@ -745,3 +745,9 @@ pub fn shmMap(handle: usize, flags: MapFlags) ?[*]u8 {
     if (at < 0) return null;
     return @ptrFromInt(@as(usize, @intCast(at)));
 }
+
+/// Take a mapping out of this process, by any address within it. The
+/// segment lives on for as long as a handle or another mapping holds it.
+pub fn shmUnmap(at: [*]const u8) isize {
+    return syscall1(abi.number("shm_unmap"), @intFromPtr(at));
+}
