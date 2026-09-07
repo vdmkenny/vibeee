@@ -155,6 +155,11 @@ const Volume = struct {
     /// Where waiters queue when every slot is busy. One place rather than
     /// a spin: the depth is small and a burst of readers is normal.
     room: wait.Queue = .{},
+    /// Callers inside a transfer. The server tears a volume down, and the
+    /// last caller out lets its resources go: what a transfer reads out of
+    /// the shared area has to be there until it has been read, and the
+    /// index is not given to another volume while anyone is on this one.
+    users: u32 = 0,
 
     fn nameSlice(self: *const Volume) []const u8 {
         return self.name[0..@min(self.name_len, self.name.len)];
@@ -404,10 +409,9 @@ pub fn detach(index: usize, server: u32) void {
         volume.published = null;
     }
 
-    if (volume.doorbell) |bell| event.release(bell);
-    if (volume.data) |seg| shm.release(seg);
-    volume.doorbell = null;
-    volume.data = null;
+    // Let go now if nobody is on the volume; otherwise the last caller
+    // out does, once it has read what it came for.
+    if (volume.users == 0) letGo(volume);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,6 +433,8 @@ fn writeBlocks(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
 
 fn flushVolume(ctx: *anyopaque) block.Error!void {
     const volume: *Volume = @ptrCast(@alignCast(ctx));
+    try enter(volume);
+    defer leave(volume);
     const slot_index = try claim(volume);
     defer freeSlot(volume, slot_index);
     volume.slots[slot_index].request = .{ .op = .flush, .offset = @intCast(slot_index * SLOT_BYTES) };
@@ -448,6 +454,9 @@ fn each(
 ) block.Error!void {
     const sector = volume.sector_bytes;
     if (sector == 0 or bytes % sector != 0) return block.Error.NotSupported;
+
+    try enter(volume);
+    defer leave(volume);
 
     const per_slot = SLOT_BYTES / sector;
     var at: usize = 0;
@@ -540,9 +549,36 @@ fn run(volume: *Volume, index: usize, patience_us: u64) block.Error!void {
     return errorFor(slot.status);
 }
 
+/// Come onto a volume for a transfer, or be told it has gone.
+fn enter(volume: *Volume) block.Error!void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+    if (!volume.live) return block.Error.IoError;
+    volume.users += 1;
+}
+
+/// Leave a volume. The last one off a volume its server has torn down is
+/// who lets its resources go.
+fn leave(volume: *Volume) void {
+    const flags = hal.saveAndDisableInterrupts();
+    defer hal.restoreInterrupts(flags);
+    volume.users -= 1;
+    if (!volume.live and volume.users == 0) letGo(volume);
+}
+
+/// Give back what a volume held, once nobody is on it. Interrupts are off.
+fn letGo(volume: *Volume) void {
+    if (volume.doorbell) |bell| event.release(bell);
+    if (volume.data) |seg| shm.release(seg);
+    volume.doorbell = null;
+    volume.data = null;
+}
+
+/// An index for a new volume: one nothing is on. A dead volume with a
+/// caller still reading out of it keeps its index until the caller leaves.
 fn freeVolume() ?usize {
     for (&volumes, 0..) |*volume, i| {
-        if (!volume.live) return i;
+        if (!volume.live and volume.users == 0) return i;
     }
     return null;
 }
