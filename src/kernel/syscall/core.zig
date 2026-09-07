@@ -277,8 +277,7 @@ pub fn sys_log(a: Args) Result {
     // Recorded, never printed: display is write()'s business, and this is the
     // way a service's line reaches the ring even when the boot is quiet. What
     // is said here shows up in `log`, which is the point.
-    klog.append(buf);
-    klog.append("\n");
+    klog.appendLine(buf);
     return 0;
 }
 
