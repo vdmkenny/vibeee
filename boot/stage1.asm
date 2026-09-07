@@ -16,7 +16,11 @@ ORG 0x7C00
 STAGE2_SEG      equ 0x0000
 STAGE2_OFF      equ 0x8000      ; stage2 loads at linear 0x8000
 STAGE2_LBA      equ 1           ; immediately after this sector
-STAGE2_SECTORS  equ 32          ; 16 KiB ceiling; mkimage checks the real size
+; 16 KiB, and the whole of what stage2 may be: mkimage refuses a stage2
+; larger than this, because one is loaded short and jumped into. The gap
+; before the kernel at LBA 64 holds twice as much, so raising this is a
+; matter of raising it in both places.
+STAGE2_SECTORS  equ 32
 
 ; How many times a read is asked for before the boot gives up. The medium is
 ; an SD card behind the BIOS's USB-HDD emulation, and such a reader answers

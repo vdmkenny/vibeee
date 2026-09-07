@@ -27,7 +27,11 @@ const std = @import("std");
 
 const SECTOR = 512;
 const STAGE2_LBA = 1;
-const STAGE2_MAX_SECTORS = 63;
+/// How many sectors of stage2 stage1 actually reads (`STAGE2_SECTORS` in
+/// boot/stage1.asm). The gap before the kernel holds more, but a stage2
+/// larger than this is loaded short and jumped into, which is a boot that
+/// stops with nothing said.
+const STAGE2_MAX_SECTORS = 32;
 const KERNEL_LBA = 64;
 const KERNEL_MAX_SECTORS = 8192 - KERNEL_LBA;
 
@@ -132,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
     const stage2_sectors = divCeil(stage2.len, SECTOR);
     if (stage2_sectors > STAGE2_MAX_SECTORS) {
         std.debug.print(
-            "stage2 is {d} sectors; the gap before the kernel holds {d}. Move the kernel start LBA.\n",
+            "stage2 is {d} sectors; stage1 reads {d}. Raise STAGE2_SECTORS in boot/stage1.asm, and the kernel's start with it.\n",
             .{ stage2_sectors, STAGE2_MAX_SECTORS },
         );
         return error.Stage2TooLarge;
