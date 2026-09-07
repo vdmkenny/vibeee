@@ -314,9 +314,7 @@ fn drain() void {
 }
 
 fn handle(message: *const sys.Message, token: u32) void {
-    const bytes = message.bytes();
-    if (bytes.len < @sizeOf(proto.Req)) return refuse(token);
-    const req: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+    const req = proto.requestIn(message) orelse return refuse(token);
 
     switch (req.tag) {
         .count => {
@@ -417,8 +415,7 @@ fn replyBody(token: u32, body: proto.Body) void {
 }
 
 fn replyWith(token: u32, reply: *const proto.Rep) void {
-    var answer = sys.Message.init(std.mem.asBytes(reply), &.{});
-    _ = sys.replyMsg(service, token, &answer);
+    proto.answer(service, token, reply);
 }
 
 comptime {

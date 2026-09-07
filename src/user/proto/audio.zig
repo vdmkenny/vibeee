@@ -10,8 +10,8 @@ const audio = @import("lib").audio;
 /// The graph's shared vocabulary: directions, name bounds, the sentinel.
 /// Public because a client naming a direction is naming the graph's.
 pub const graph = @import("lib").audiograph;
-const std = @import("std");
 const sys = @import("sys");
+const Endpoint = @import("endpoint.zig").Endpoint;
 
 pub const SERVICE = "audio";
 
@@ -53,6 +53,14 @@ pub const Status = enum(u8) {
     refused,
     /// Nothing at that index: how a walker finds the end of a table.
     end,
+
+    pub fn check(self: Status) Error!void {
+        return switch (self) {
+            .ok => {},
+            .refused => error.Refused,
+            .end => error.End,
+        };
+    }
 };
 
 pub const Req = extern struct {
@@ -193,41 +201,13 @@ pub const View = struct {
 pub const Error = error{ NoService, Refused, End };
 
 /// One request, one reply, no handles: the plain half of the protocol.
-pub fn call(request: Req, into: *Rep) Error!void {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-    return callOn(@intCast(channel), request, into, null);
-}
-
-/// The same, on a channel the caller keeps open, optionally keeping the
-/// reply's handles.
-pub fn callOn(
-    channel: u32,
-    request: Req,
-    into: *Rep,
-    take_handles: ?*[GRANT_HANDLES]u32,
-) Error!void {
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-    var answer = sys.Message{};
-    if (sys.callMsg(channel, &message, &answer) < 0) return error.Refused;
-
-    const bytes = answer.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Refused;
-    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
-
-    switch (into.status) {
-        .ok => {},
-        .end => return error.End,
-        .refused => return error.Refused,
-    }
-
-    if (take_handles) |handles| {
-        const got = answer.handleSlice();
-        if (got.len < GRANT_HANDLES) return error.Refused;
-        @memcpy(handles, got[0..GRANT_HANDLES]);
-    }
-}
+pub const link = Endpoint(SERVICE, Req, Rep, Error);
+pub const call = link.call;
+pub const callOn = link.callOn;
+pub const callTaking = link.callTaking;
+pub const requestIn = link.requestIn;
+pub const answer = link.answer;
+pub const answerWith = link.answerWith;
 
 comptime {
     if (@sizeOf(Req) > sys.MAX_PAYLOAD) @compileError("an audio request must fit one payload");
@@ -247,7 +227,6 @@ comptime {
 pub fn levels() ?LevelInfo {
     var reply = Rep{};
     call(.{ .tag = .get_levels }, &reply) catch return null;
-    if (reply.status != .ok) return null;
     return reply.body.levels;
 }
 
@@ -255,7 +234,6 @@ pub fn levels() ?LevelInfo {
 pub fn master() ?VolumeInfo {
     var reply = Rep{};
     call(.{ .tag = .get_master }, &reply) catch return null;
-    if (reply.status != .ok) return null;
     return reply.body.volume;
 }
 
@@ -268,7 +246,7 @@ pub fn setMaster(percent: u8, muted: bool) bool {
         .b = percent,
         .dir = @intFromBool(muted),
     }, &reply) catch return false;
-    return reply.status == .ok;
+    return true;
 }
 
 /// Every port the graph holds, in table order, as far as `into` has room.
@@ -288,12 +266,11 @@ pub fn ports(into: []PortInfo) []PortInfo {
     var index: u32 = 0;
     while (count < into.len and index < graph.MAX_PORTS) : (index += 1) {
         var reply = Rep{};
-        callOn(@intCast(channel), .{ .tag = .get_port, .a = index }, &reply, null) catch break;
-        // Past the last slot the service says so; a slot inside the table
-        // that nothing is using answers with no identity, and is skipped
-        // rather than listed as a port with no name.
-        if (reply.status != .ok) break;
+        // Past the last slot the service says so, and that ends the walk.
+        callOn(@intCast(channel), .{ .tag = .get_port, .a = index }, &reply) catch break;
 
+        // A slot inside the table that nothing is using answers with no
+        // identity, and is skipped rather than listed as a port with no name.
         const info = reply.body.port_info;
         if (info.id == graph.NONE) continue;
 
@@ -308,7 +285,7 @@ pub fn ports(into: []PortInfo) []PortInfo {
 pub fn makeDefault(port: u16) bool {
     var reply = Rep{};
     call(.{ .tag = .set_default, .a = port }, &reply) catch return false;
-    return reply.status == .ok;
+    return true;
 }
 
 /// A port's name, which the protocol carries as bytes and a length.

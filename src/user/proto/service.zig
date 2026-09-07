@@ -6,8 +6,7 @@
 //! registers nothing and is therefore invisible there, and that is exactly the
 //! one somebody is looking for.
 
-const std = @import("std");
-const sys = @import("sys");
+const Endpoint = @import("endpoint.zig").Endpoint;
 
 pub const SERVICE = "init";
 
@@ -102,7 +101,7 @@ pub const Entry = extern struct {
 /// How a request turned out. Richer than "did it work" because the reasons
 /// call for different answers: a name nobody has is a typo, and a store that
 /// will not remember is a fact about the machine.
-pub const Result = enum(u8) {
+pub const Status = enum(u8) {
     ok,
     /// Nothing is called that.
     unknown,
@@ -113,15 +112,29 @@ pub const Result = enum(u8) {
     end,
     /// It could not be done.
     failed,
+
+    pub fn check(self: Status) Error!void {
+        return switch (self) {
+            .ok => {},
+            .unknown => error.Unknown,
+            .not_kept => error.NotKept,
+            .end => error.End,
+            .failed => error.Failed,
+        };
+    }
 };
 
 pub const Rep = extern struct {
-    result: Result = .ok,
+    status: Status = .ok,
     _reserved: [3]u8 = @splat(0),
     entry: Entry = .{},
 };
 
 pub const Error = error{ NoService, Unknown, NotKept, End, Failed, TooLong };
+
+pub const link = Endpoint(SERVICE, Req, Rep, Error);
+pub const requestIn = link.requestIn;
+pub const answer = link.answer;
 
 /// Ask about, or act on, one service.
 ///
@@ -129,34 +142,12 @@ pub const Error = error{ NoService, Unknown, NotKept, End, Failed, TooLong };
 /// handful of questions and exits; holding a channel open across that would be
 /// a handle to remember to close and nothing gained.
 pub fn ask(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-
     var request = Req.init(tag, name) orelse return error.TooLong;
     request.index = index;
-
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-
-    var reply = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Failed;
-
-    const bytes = reply.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Failed;
-
-    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
-
-    return switch (into.result) {
-        .ok => {},
-        .unknown => error.Unknown,
-        .not_kept => error.NotKept,
-        .end => error.End,
-        .failed => error.Failed,
+    link.call(request, into) catch |err| return switch (err) {
+        // The conversation itself failing is one of the ways it could not be
+        // done: this service has no separate word for a channel that broke.
+        error.Refused => error.Failed,
+        else => |kept| kept,
     };
-}
-
-comptime {
-    if (@sizeOf(Rep) > sys.MAX_PAYLOAD or @sizeOf(Req) > sys.MAX_PAYLOAD) {
-        @compileError("a service message must fit in one channel payload");
-    }
 }

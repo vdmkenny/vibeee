@@ -143,26 +143,23 @@ fn drain(channel: u32) void {
         var message = sys.Message{};
         const request = sys.recv(channel, &message, sys.POLL) orelse return;
 
-        // Built as a message rather than a payload, because one of these
-        // answers with a handle and the rest would otherwise need a second
+        // One of these answers with a handle and the rest with nothing, so
+        // the handle comes back beside the status rather than as a second
         // way out of here.
-        var reply = sys.Message{};
-
+        var granted: ?u32 = null;
         var body = proto.Rep{};
-        body.status = answer(&message, &body, &reply);
+        body.status = answer(&message, &body, &granted);
 
-        @memcpy(reply.data[0..@sizeOf(proto.Rep)], std.mem.asBytes(&body));
-        reply.len = @sizeOf(proto.Rep);
-
-        _ = sys.replyMsg(channel, request.token, &reply);
+        if (granted) |handle| {
+            proto.answerWith(channel, request.token, &body, &.{handle});
+        } else {
+            proto.answer(channel, request.token, &body);
+        }
     }
 }
 
-fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) proto.Status {
-    const bytes = message.bytes();
-    if (bytes.len < @sizeOf(proto.Req)) return .unknown;
-
-    const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+fn answer(message: *const sys.Message, body: *proto.Rep, granted: *?u32) proto.Status {
+    const request = proto.requestIn(message) orelse return .unknown;
 
     // Everything here is the firmware's to answer, so with no firmware there
     // is nothing to say but no.
@@ -179,7 +176,7 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
         .backlight_set => backlight.write(request.param, &body.body.backlight),
         .pci_route => route.answer(@bitCast(request.param), &body.body.route),
         .hotkey => hotkey.take(&body.body.press),
-        .hotkey_watch => hotkey.subscribe(reply),
+        .hotkey_watch => hotkey.subscribe(granted),
         .feature => featureRead(request.param, &body.body.feature),
         .feature_set => featureWrite(request.param, &body.body.feature),
     };

@@ -276,12 +276,11 @@ pub fn take(into: *proto.Press) proto.Status {
 
 /// Hand back the event, so a caller hears of the next press rather than having
 /// to ask whether there was one.
-pub fn subscribe(reply: *sys.Message) proto.Status {
+pub fn subscribe(granted: *?u32) proto.Status {
     if (event == 0) return .refused;
 
     // Sending retains rather than consumes, so this stays ours and every
     // watcher ends up holding the same event.
-    reply.handles[0] = event;
-    reply.handle_count = 1;
+    granted.* = event;
     return .ok;
 }

@@ -6,8 +6,8 @@
 
 const lib = @import("lib");
 const socket = @import("socket.zig");
-const std = @import("std");
 const sys = @import("sys");
+const Endpoint = @import("endpoint.zig").Endpoint;
 
 pub const SERVICE = "net";
 
@@ -109,6 +109,15 @@ pub const Status = enum(u8) {
     end,
     /// The deadline passed before an answer did.
     timed_out,
+
+    pub fn check(self: Status) Error!void {
+        return switch (self) {
+            .ok => {},
+            .refused => error.Refused,
+            .end => error.End,
+            .timed_out => error.TimedOut,
+        };
+    }
 };
 
 pub const Duplex = enum(u8) {
@@ -382,39 +391,17 @@ comptime {
 
 pub const Error = error{ NoService, Refused, End, TimedOut };
 
-pub fn call(tag: Tag, index: u32, param: u32, into: *Rep) Error!void {
-    return callWith(tag, index, param, 0, into);
-}
+pub const link = Endpoint(SERVICE, Req, Rep, Error);
+pub const call = link.call;
+pub const callOn = link.callOn;
+pub const callTaking = link.callTaking;
+pub const requestIn = link.requestIn;
+pub const answer = link.answer;
 
-pub fn callWith(tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error!void {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-    return callOn(@intCast(channel), tag, index, param, param2, into);
-}
-
-/// The same, on a channel the caller keeps open: what a walk of the
-/// interfaces uses, so asking the same service the same question once per
-/// interface is not a connection and a close per interface as well.
-pub fn callOn(channel: u32, tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error!void {
-    var request = Req{ .tag = tag, .index = index, .param = param, .param2 = param2 };
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-
-    var reply = sys.Message{};
-    if (sys.callMsg(channel, &message, &reply) < 0) return error.Refused;
-
-    const bytes = reply.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Refused;
-
-    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
-
-    return switch (into.status) {
-        .ok => {},
-        .end => error.End,
-        .timed_out => error.TimedOut,
-        else => error.Refused,
-    };
-}
+/// The resolver's end of the same service. One question there carries a name
+/// rather than numbers, so it has its own request shape; the reply and the
+/// statuses are the service's own.
+pub const resolver = Endpoint(SERVICE, ResolveReq, Rep, Error);
 
 // ---------------------------------------------------------------------------
 // What a caller asks about the interfaces
@@ -430,24 +417,21 @@ pub fn callOn(channel: u32, tag: Tag, index: u32, param: u32, param2: u32, into:
 /// off at the firmware has a service that answers, with nothing in it.
 pub fn interfaceCount() ?usize {
     var reply = Rep{};
-    call(.count, 0, 0, &reply) catch return null;
-    if (reply.status != .ok) return null;
+    call(.{ .tag = .count }, &reply) catch return null;
     return reply.body.count;
 }
 
 /// What the service's loop has been woken for since it started.
 pub fn serviceLoad() ?Load {
     var reply = Rep{};
-    call(.load, 0, 0, &reply) catch return null;
-    if (reply.status != .ok) return null;
+    call(.{ .tag = .load }, &reply) catch return null;
     return reply.body.load;
 }
 
 /// One interface, by index.
 pub fn interfaceAt(index: usize) ?Iface {
     var reply = Rep{};
-    call(.status, @intCast(index), 0, &reply) catch return null;
-    if (reply.status != .ok) return null;
+    call(.{ .tag = .status, .index = @intCast(index) }, &reply) catch return null;
     return reply.body.iface;
 }
 
@@ -461,13 +445,9 @@ pub fn watch() Error!u32 {
     if (channel < 0) return error.NoService;
     defer _ = sys.close(@intCast(channel));
 
-    const req = Req{ .tag = .watch };
-    const message = sys.Message.init(std.mem.asBytes(&req), &.{});
-    var answer = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &answer) < 0) return error.NoService;
-
-    const handles = answer.handleSlice();
-    if (handles.len == 0) return error.Refused;
+    var reply = Rep{};
+    var handles: [1]u32 = undefined;
+    try link.callTaking(@intCast(channel), .{ .tag = .watch }, &reply, &handles);
     return handles[0];
 }
 
@@ -479,13 +459,11 @@ pub fn haveAddress() bool {
     defer _ = sys.close(@intCast(channel));
 
     var counted = Rep{};
-    callOn(@intCast(channel), .count, 0, 0, 0, &counted) catch return false;
-    if (counted.status != .ok) return false;
+    callOn(@intCast(channel), .{ .tag = .count }, &counted) catch return false;
 
     for (0..counted.body.count) |index| {
         var reply = Rep{};
-        callOn(@intCast(channel), .address, @intCast(index), 0, 0, &reply) catch continue;
-        if (reply.status != .ok) continue;
+        callOn(@intCast(channel), .{ .tag = .address, .index = @intCast(index) }, &reply) catch continue;
         if (reply.body.address.addr != 0) return true;
     }
     return false;
@@ -493,8 +471,7 @@ pub fn haveAddress() bool {
 
 pub fn addressOf(index: usize) ?AddressInfo {
     var reply = Rep{};
-    call(.address, @intCast(index), 0, &reply) catch return null;
-    if (reply.status != .ok) return null;
+    call(.{ .tag = .address, .index = @intCast(index) }, &reply) catch return null;
     return reply.body.address;
 }
 
@@ -502,7 +479,7 @@ pub fn addressOf(index: usize) ?AddressInfo {
 /// when nothing is serving.
 pub fn networkAt(index: usize) ?Network {
     var reply = Rep{};
-    call(.wifi_scan, @intCast(index), 0, &reply) catch return null;
+    call(.{ .tag = .wifi_scan, .index = @intCast(index) }, &reply) catch return null;
     return reply.body.network;
 }
 

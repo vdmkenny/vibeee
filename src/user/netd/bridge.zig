@@ -84,9 +84,7 @@ pub fn init(channel: u32) ?u32 {
 /// One request from the channel. Everything socket-shaped lands here; the
 /// reply goes out now or when the network answers.
 pub fn handle(message: *const sys.Message, token: u32) void {
-    const bytes = message.bytes();
-    if (bytes.len < @sizeOf(proto.Req)) return refuse(token);
-    const req: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+    const req = proto.requestIn(message) orelse return refuse(token);
 
     switch (req.tag) {
         .tcp_connect => tcpConnect(req, token),
@@ -94,7 +92,7 @@ pub fn handle(message: *const sys.Message, token: u32) void {
         .tcp_accept => tcpAccept(req, token),
         .udp_open => udpOpen(req, token),
         .sock_close => sockClose(req, token),
-        .resolve => resolve(bytes, token),
+        .resolve => resolve(message, token),
         else => refuse(token),
     }
 }
@@ -302,9 +300,10 @@ fn sockClose(req: *const proto.Req, token: u32) void {
     replyPlain(token, &reply);
 }
 
-fn resolve(bytes: []const u8, token: u32) void {
-    if (bytes.len < @sizeOf(proto.ResolveReq)) return refuse(token);
-    const req: *const proto.ResolveReq = @ptrCast(@alignCast(bytes.ptr));
+fn resolve(message: *const sys.Message, token: u32) void {
+    // The one question on this service that carries a name rather than
+    // numbers, so it is read as its own shape.
+    const req = proto.resolver.requestIn(message) orelse return refuse(token);
     const name = req.slice();
     if (name.len == 0) return refuse(token);
 
@@ -758,8 +757,7 @@ fn refuse(token: u32) void {
 }
 
 fn replyPlain(token: u32, reply: *const proto.Rep) void {
-    var message = sys.Message.init(std.mem.asBytes(reply), &.{});
-    _ = sys.replyMsg(service, token, &message);
+    proto.answer(service, token, reply);
 }
 
 fn sayPeer(s: *Sock, what: []const u8) void {

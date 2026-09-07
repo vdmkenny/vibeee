@@ -36,7 +36,7 @@ pub const Port = struct {
         const sink = try defaultPortOn(port.channel, .sink);
         var req = proto.Req{ .tag = .link, .a = port.id, .b = sink };
         var reply = proto.Rep{};
-        try proto.callOn(port.channel, req, &reply, null);
+        try proto.callOn(port.channel, req, &reply);
         _ = &req;
         return port;
     }
@@ -50,7 +50,7 @@ pub const Port = struct {
         const source = try defaultPortOn(port.channel, .source);
         const req = proto.Req{ .tag = .link, .a = source, .b = port.id };
         var reply = proto.Rep{};
-        try proto.callOn(port.channel, req, &reply, null);
+        try proto.callOn(port.channel, req, &reply);
         return port;
     }
 
@@ -61,7 +61,7 @@ pub const Port = struct {
 
         var node_req = proto.Req.named(.node_create, node_name) orelse return error.Refused;
         var reply = proto.Rep{};
-        try proto.callOn(@intCast(channel), node_req, &reply, null);
+        try proto.callOn(@intCast(channel), node_req, &reply);
         const node = reply.body.id;
         _ = &node_req;
 
@@ -69,7 +69,7 @@ pub const Port = struct {
         port_req.a = node;
         port_req.dir = @intFromEnum(direction);
         var handles: [proto.GRANT_HANDLES]u32 = undefined;
-        try proto.callOn(@intCast(channel), port_req, &reply, &handles);
+        try proto.callTaking(@intCast(channel), port_req, &reply, &handles);
 
         const base = sys.shmMap(handles[0], .{ .writable = true }) orelse {
             // The handles the service installed are this process's now, and
@@ -77,7 +77,7 @@ pub const Port = struct {
             // failed open must not leave one standing in the graph.
             for (handles) |handle| _ = sys.close(handle);
             var drop = proto.Rep{};
-            proto.callOn(@intCast(channel), .{ .tag = .port_drop, .a = reply.body.port }, &drop, null) catch {};
+            proto.callOn(@intCast(channel), .{ .tag = .port_drop, .a = reply.body.port }, &drop) catch {};
             return error.Refused;
         };
         return .{
@@ -120,7 +120,7 @@ pub const Port = struct {
     pub fn close(self: *const Port) void {
         var reply = proto.Rep{};
         const req = proto.Req{ .tag = .port_drop, .a = self.id };
-        proto.callOn(self.channel, req, &reply, null) catch {};
+        proto.callOn(self.channel, req, &reply) catch {};
         // The mapping as well as the handle: either alone keeps the segment.
         _ = sys.shmUnmap(self.base);
         _ = sys.close(self.shm);
@@ -146,7 +146,7 @@ pub fn defaultPortOn(channel: u32, direction: graph.Direction) Error!u32 {
     var index: u32 = 0;
     while (true) : (index += 1) {
         var reply = proto.Rep{};
-        proto.callOn(channel, .{ .tag = .get_port, .a = index }, &reply, null) catch |err| switch (err) {
+        proto.callOn(channel, .{ .tag = .get_port, .a = index }, &reply) catch |err| switch (err) {
             error.End => return error.Refused,
             else => return err,
         };

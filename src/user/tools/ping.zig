@@ -59,7 +59,8 @@ pub fn run(args: []const []const u8) void {
         if (stop >= 0 and sys.eventWait(@intCast(stop), sys.POLL) >= 0) break;
         const started = sys.clockMicros();
         var reply = net.Rep{};
-        if (net.callWith(.ping, 0, addr, TIMEOUT_MS, &reply)) |_| {
+        const asked = net.Req{ .tag = .ping, .param = addr, .param2 = TIMEOUT_MS };
+        if (net.call(asked, &reply)) |_| {
             answered += 1;
             out.text("answer from ");
             out.text(lib.ipv4.text(addr, &field));

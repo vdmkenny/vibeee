@@ -111,7 +111,7 @@ pub const Sock = struct {
     /// Finish the conversation and give the handles back.
     pub fn close(self: *const Sock) void {
         var reply = proto.Rep{};
-        callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply, &.{}, null) catch {};
+        asked(proto.callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply)) catch {};
         // The mapping as well as the handle: either alone keeps the segment,
         // and a mapping is one of the sixty-four a process may hold. A
         // program that opens a socket per attempt could otherwise open its
@@ -137,7 +137,7 @@ pub const Listener = struct {
 
         var reply = proto.Rep{};
         var handles: [1]u32 = undefined;
-        try callOn(channel, .{ .tag = .tcp_listen, .param = port, .param2 = 1 }, &reply, &.{}, &handles);
+        try asked(proto.callTaking(channel, .{ .tag = .tcp_listen, .param = port, .param2 = 1 }, &reply, &handles));
         return .{ .channel = channel, .id = reply.body.listener, .ready = handles[0] };
     }
 
@@ -151,13 +151,13 @@ pub const Listener = struct {
     pub fn accept(self: *const Listener) Error!Sock {
         var reply = proto.Rep{};
         var handles: [proto.GRANT_HANDLES]u32 = undefined;
-        try callOn(self.channel, .{ .tag = .tcp_accept, .index = self.id }, &reply, &.{}, &handles);
+        try asked(proto.callTaking(self.channel, .{ .tag = .tcp_accept, .index = self.id }, &reply, &handles));
         return fromGrant(try serviceChannel(), &reply, handles[0..proto.GRANT_HANDLES].*);
     }
 
     pub fn close(self: *const Listener) void {
         var reply = proto.Rep{};
-        callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply, &.{}, null) catch {};
+        asked(proto.callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply)) catch {};
         _ = sys.close(self.ready);
         _ = sys.close(self.channel);
     }
@@ -174,14 +174,8 @@ pub fn addressOf(name: []const u8) Error!u32 {
 /// A name to an address: the hosts table first, then DNS, netd asking.
 pub fn resolve(name: []const u8) Error!proto.Resolved {
     const req = proto.ResolveReq.of(name) orelse return error.Refused;
-    const channel = try serviceChannel();
-    defer _ = sys.close(channel);
-
-    const message = sys.Message.init(std.mem.asBytes(&req), &.{});
-    var answer = sys.Message{};
-    if (sys.callMsg(channel, &message, &answer) < 0) return error.Refused;
-    const reply = repOf(&answer) orelse return error.Refused;
-    if (reply.status != .ok) return error.Refused;
+    var reply = proto.Rep{};
+    try asked(proto.resolver.call(req, &reply));
     return reply.body.resolved;
 }
 
@@ -195,13 +189,12 @@ fn granted(tag: proto.Tag, index: u32, param: u32, param2: u32) Error!Sock {
 
     var reply = proto.Rep{};
     var handles: [proto.GRANT_HANDLES]u32 = undefined;
-    try callOn(
+    try asked(proto.callTaking(
         channel,
         .{ .tag = tag, .index = index, .param = param, .param2 = param2 },
         &reply,
-        &.{},
         &handles,
-    );
+    ));
     return fromGrant(channel, &reply, handles);
 }
 
@@ -233,35 +226,13 @@ fn serviceChannel() Error!u32 {
     return @intCast(channel);
 }
 
-/// One request, one reply, the handles kept when the caller wants them:
-/// however many the caller's slice asks for, in the order the reply sent.
-fn callOn(
-    channel: u32,
-    request: proto.Req,
-    reply: *proto.Rep,
-    send_handles: []const u32,
-    take_handles: ?[]u32,
-) Error!void {
-    const message = sys.Message.init(std.mem.asBytes(&request), send_handles);
-    var answer = sys.Message{};
-    if (sys.callMsg(channel, &message, &answer) < 0) return error.Refused;
-
-    reply.* = (repOf(&answer) orelse return error.Refused).*;
-    switch (reply.status) {
-        .ok => {},
-        .timed_out => return error.TimedOut,
-        else => return error.Refused,
-    }
-
-    if (take_handles) |into| {
-        const got = answer.handleSlice();
-        if (got.len < into.len) return error.Refused;
-        @memcpy(into, got[0..into.len]);
-    }
-}
-
-fn repOf(answer: *const sys.Message) ?*const proto.Rep {
-    const bytes = answer.bytes();
-    if (bytes.len < @sizeOf(proto.Rep)) return null;
-    return @ptrCast(@alignCast(bytes.ptr));
+/// The service's answer as this module's.
+///
+/// A socket verb names one socket rather than walking a table, so there is no
+/// end to reach: an `end` from the service is it refusing.
+fn asked(outcome: proto.Error!void) Error!void {
+    outcome catch |err| return switch (err) {
+        error.End => error.Refused,
+        else => |kept| kept,
+    };
 }

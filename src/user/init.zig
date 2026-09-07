@@ -736,20 +736,17 @@ fn answerAll(channel: u32) void {
 }
 
 fn answer(message: *const sys.Message, reply: *proto.Rep) void {
-    const bytes = message.bytes();
-    if (bytes.len < @sizeOf(proto.Req)) {
-        reply.result = .failed;
+    const request = proto.requestIn(message) orelse {
+        reply.status = .failed;
         return;
-    }
-
-    const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+    };
     switch (request.tag) {
         .list => describe(request.index, reply),
-        .start => reply.result = resume_(request.named()),
-        .stop => reply.result = halt(request.named()),
-        .restart => reply.result = restartOne(request.named()),
-        .enable => reply.result = setEnabled(request.named(), true),
-        .disable => reply.result = setEnabled(request.named(), false),
+        .start => reply.status = resume_(request.named()),
+        .stop => reply.status = halt(request.named()),
+        .restart => reply.status = restartOne(request.named()),
+        .enable => reply.status = setEnabled(request.named(), true),
+        .disable => reply.status = setEnabled(request.named(), false),
     }
 }
 
@@ -757,7 +754,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) void {
 /// caller walking the table learns where it stops.
 fn describe(index: u8, reply: *proto.Rep) void {
     if (index >= service_count) {
-        reply.result = .end;
+        reply.status = .end;
         return;
     }
 
@@ -779,7 +776,7 @@ fn describe(index: u8, reply: *proto.Rep) void {
     @memcpy(reply.entry.name[0..reply.entry.name_len], name[0..reply.entry.name_len]);
 }
 
-fn resume_(name: []const u8) proto.Result {
+fn resume_(name: []const u8) proto.Status {
     const state = byName(name) orelse return .unknown;
     if (state.phase.alive()) return .ok;
 
@@ -796,7 +793,7 @@ fn resume_(name: []const u8) proto.Result {
 ///
 /// A service that is not running is simply started: somebody asking for a
 /// restart wants it running afterwards either way.
-fn restartOne(name: []const u8) proto.Result {
+fn restartOne(name: []const u8) proto.Status {
     const state = byName(name) orelse return .unknown;
     if (!state.phase.alive()) return resume_(name);
 
@@ -808,7 +805,7 @@ fn restartOne(name: []const u8) proto.Result {
     return .failed;
 }
 
-fn halt(name: []const u8) proto.Result {
+fn halt(name: []const u8) proto.Status {
     const state = byName(name) orelse return .unknown;
 
     // Marked first. The child's death arrives through the same loop, and a
@@ -836,7 +833,7 @@ const DISABLED = "/etc/disabled";
 /// until there is somewhere persistent to mount over it, so writing here works
 /// and is forgotten, and a caller told it worked would be told something
 /// misleading.
-fn setEnabled(name: []const u8, enabled: bool) proto.Result {
+fn setEnabled(name: []const u8, enabled: bool) proto.Status {
     const state = byName(name) orelse return .unknown;
 
     state.enabled = enabled;

@@ -68,7 +68,7 @@ pub fn run(args: []const []const u8) void {
     }
 
     var count = net.Rep{};
-    net.call(.count, 0, 0, &count) catch |err| {
+    net.call(.{ .tag = .count }, &count) catch |err| {
         say(switch (err) {
             error.NoService => "net: the network service is not answering\n",
             else => "net: the network service did not answer\n",
@@ -89,7 +89,7 @@ pub fn run(args: []const []const u8) void {
     while (i < count.body.count) : (i += 1) {
         if (probe) {
             var sent = net.Rep{};
-            net.call(.arp_probe, i, ask, &sent) catch {
+            net.call(.{ .tag = .arp_probe, .index = i, .param = ask }, &sent) catch {
                 continue;
             };
             var spelled_field: [15]u8 = @splat(0);
@@ -100,7 +100,7 @@ pub fn run(args: []const []const u8) void {
         }
 
         var reply = net.Rep{};
-        net.call(.status, i, 0, &reply) catch |err| {
+        net.call(.{ .tag = .status, .index = i }, &reply) catch |err| {
             if (err == error.End) break;
             continue;
         };
@@ -108,7 +108,7 @@ pub fn run(args: []const []const u8) void {
         printInterface(&reply.body.iface, named);
 
         var addressed = net.Rep{};
-        if (net.call(.address, i, 0, &addressed)) |_| {
+        if (net.call(.{ .tag = .address, .index = i }, &addressed)) |_| {
             printAddress(&addressed.body.address);
         } else |_| {}
     }
@@ -289,7 +289,7 @@ fn interfaceExists(matcher: lib.ifmatch.Match) ?bool {
     var i: u32 = 0;
     while (true) : (i += 1) {
         var reply = net.Rep{};
-        net.call(.status, i, 0, &reply) catch |err| switch (err) {
+        net.call(.{ .tag = .status, .index = i }, &reply) catch |err| switch (err) {
             error.NoService => return null,
             else => return false,
         };

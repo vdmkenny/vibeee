@@ -7,8 +7,8 @@
 //! asks for. Either way the knowledge of vendors and devices is in the
 //! manifests, and nowhere else.
 
-const std = @import("std");
 const sys = @import("sys");
+const Endpoint = @import("endpoint.zig").Endpoint;
 
 pub const SERVICE = "devices";
 
@@ -39,7 +39,16 @@ pub const Tag = enum(u8) {
 pub const Status = enum(u8) {
     ok,
     refused,
+    /// Nothing at that index: how a walker finds the end of the table.
     end,
+
+    pub fn check(self: Status) Error!void {
+        return switch (self) {
+            .ok => {},
+            .refused => error.Refused,
+            .end => error.End,
+        };
+    }
 };
 
 pub const Req = extern struct {
@@ -120,25 +129,10 @@ pub const Body = extern union {
 
 pub const Error = error{ NoService, Refused, End };
 
-pub fn call(request: Req, into: *Rep) Error!void {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-    var answer = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &answer) < 0) return error.Refused;
-
-    const bytes = answer.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Refused;
-    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
-
-    return switch (into.status) {
-        .ok => {},
-        .end => error.End,
-        .refused => error.Refused,
-    };
-}
+pub const link = Endpoint(SERVICE, Req, Rep, Error);
+pub const call = link.call;
+pub const requestIn = link.requestIn;
+pub const answer = link.answer;
 
 /// A service's claim walk, waiting out the manager's own startup: the
 /// manager binds the bus once at boot, and a service racing it should ask

@@ -6,9 +6,9 @@
 //! battery means evaluating `_BST` over the embedded controller. None of that
 //! can be worked out from outside, and an interpreter belongs in a process.
 
-const std = @import("std");
 const lib = @import("lib");
 const sys = @import("sys");
+const Endpoint = @import("endpoint.zig").Endpoint;
 
 pub const SERVICE = "platform";
 
@@ -149,6 +149,14 @@ pub const Status = enum(u8) {
     unknown,
     /// Nothing at that position. How a caller walking a list finds the end.
     end,
+
+    pub fn check(self: Status) Error!void {
+        return switch (self) {
+            .ok => {},
+            .end => error.End,
+            .refused, .unknown => error.Refused,
+        };
+    }
 };
 
 /// The battery as the firmware describes it.
@@ -483,6 +491,11 @@ comptime {
 
 pub const Error = error{ NoService, Refused, End };
 
+pub const link = Endpoint(SERVICE, Req, Rep, Error);
+pub const requestIn = link.requestIn;
+pub const answer = link.answer;
+pub const answerWith = link.answerWith;
+
 /// The next press, or `error.End` once there are none waiting.
 ///
 /// Collected rather than delivered: a caller waits on the event and then takes
@@ -500,14 +513,9 @@ pub fn watchHotkeys() Error!u32 {
     if (channel < 0) return error.NoService;
     defer _ = sys.close(@intCast(channel));
 
-    var request = Req{ .tag = .hotkey_watch };
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-
-    var reply = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
-
-    const handles = reply.handleSlice();
-    if (handles.len == 0) return error.Refused;
+    var reply = Rep{};
+    var handles: [1]u32 = undefined;
+    try link.callTaking(@intCast(channel), .{ .tag = .hotkey_watch }, &reply, &handles);
     return handles[0];
 }
 
@@ -540,50 +548,14 @@ pub fn routePci(question: RouteAsk) Error!u32 {
 
 /// The same as `call`, carrying an argument word.
 pub fn callWith(tag: Tag, param: u32, into: *Rep) Error!void {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-
-    var request = Req{ .tag = tag, .param = param };
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-
-    var reply = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
-
-    const bytes = reply.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Refused;
-    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
-
-    return switch (into.status) {
-        .ok => {},
-        .end => error.End,
-        else => error.Refused,
-    };
+    return link.call(.{ .tag = tag, .param = param }, into);
 }
 
 pub fn callUnder(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-
     var request = Req{ .tag = tag, .index = index };
-    @memcpy(request.name[0..@min(name.len, 4)], name[0..@min(name.len, 4)]);
-
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-
-    var reply = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
-
-    const bytes = reply.bytes();
-    if (bytes.len < @sizeOf(Rep)) return error.Refused;
-
-    into.* = @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).*;
-
-    return switch (into.status) {
-        .ok => {},
-        .end => error.End,
-        else => error.Refused,
-    };
+    const kept = @min(name.len, request.name.len);
+    @memcpy(request.name[0..kept], name[0..kept]);
+    return link.call(request, into);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,7 +571,6 @@ pub fn callUnder(tag: Tag, name: []const u8, index: u8, into: *Rep) Error!void {
 pub fn battery() ?Battery {
     var reply = Rep{};
     call(.battery, &reply) catch return null;
-    if (reply.status != .ok) return null;
 
     const pack = reply.body.battery;
     return if (pack.present != 0) pack else null;
@@ -609,7 +580,6 @@ pub fn battery() ?Battery {
 pub fn thermal(index: u8) ?Thermal {
     var reply = Rep{};
     callAt(.thermal, index, &reply) catch return null;
-    if (reply.status != .ok) return null;
     return reply.body.thermal;
 }
 
@@ -630,7 +600,6 @@ pub fn hottest() ?Thermal {
 pub fn backlight() ?Backlight {
     var reply = Rep{};
     call(.backlight, &reply) catch return null;
-    if (reply.status != .ok) return null;
 
     const panel = reply.body.backlight;
     return if (panel.isPresent()) panel else null;
@@ -646,7 +615,6 @@ pub fn setBacklight(level: u32) ?Backlight {
     // fifty-five steps had the level it was set to cut short, and asking
     // for step two hundred and fifty-six switched it off.
     callWith(.backlight_set, level, &reply) catch return null;
-    if (reply.status != .ok) return null;
 
     const panel = reply.body.backlight;
     return if (panel.isPresent()) panel else null;
@@ -679,7 +647,6 @@ fn featureCall(tag: Tag, which: Feature, where: ?lib.pci.Location, on: bool) Fea
 
     var reply = Rep{};
     callWith(tag, @bitCast(question), &reply) catch return .{};
-    if (reply.status != .ok) return .{};
     return reply.body.feature;
 }
 

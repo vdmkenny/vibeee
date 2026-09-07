@@ -28,6 +28,7 @@ const config = @import("ulib").config;
 const str = @import("lib").str;
 const sys = @import("sys");
 const theme = @import("eui").theme;
+const Endpoint = @import("endpoint.zig").Endpoint;
 
 pub const SERVICE = "cfg";
 
@@ -172,6 +173,15 @@ pub const Status = enum(u8) {
     bad_value,
     /// The store could not be written.
     failed,
+
+    pub fn check(self: Status) Error!void {
+        return switch (self) {
+            .ok => {},
+            .no_such_key => error.NoSuchKey,
+            .bad_value => error.BadValue,
+            .failed => error.Failed,
+        };
+    }
 };
 
 pub const Rep = extern struct {
@@ -184,6 +194,19 @@ pub const Rep = extern struct {
 // ---------------------------------------------------------------------------
 
 pub const Error = error{ NoService, NoSuchKey, BadValue, Failed };
+
+pub const link = Endpoint(SERVICE, Req, Rep, Error);
+pub const requestIn = link.requestIn;
+pub const answer = link.answer;
+
+/// The conversation itself failing is one of the ways a setting could not be
+/// stored: this service has no separate word for a channel that broke.
+fn asked(outcome: link.CallError!void) Error!void {
+    outcome catch |err| return switch (err) {
+        error.Refused => error.Failed,
+        else => |kept| kept,
+    };
+}
 
 /// A domain, read from its file.
 ///
@@ -231,11 +254,10 @@ pub fn watch(domain: []const u8) Error!u32 {
     const channel = connect() orelse return error.NoService;
     defer _ = sys.close(channel);
 
-    var reply = sys.Message{};
-    try send(channel, .watch, domain, "", &reply);
-
-    const handles = reply.handleSlice();
-    if (handles.len == 0) return error.Failed;
+    const request = Req.init(.watch, domain, "") orelse return error.BadValue;
+    var reply = Rep{};
+    var handles: [1]u32 = undefined;
+    try asked(link.callTaking(channel, request, &reply, &handles));
     return handles[0];
 }
 
@@ -264,35 +286,12 @@ pub fn save(comptime domain: []const u8, value: Domain(domain)) Error!void {
 }
 
 fn ask(tag: Tag, key: []const u8, value: []const u8) Error!void {
-    const channel = connect() orelse return error.NoService;
-    defer _ = sys.close(channel);
-
-    var reply = sys.Message{};
-    return send(channel, tag, key, value, &reply);
-}
-
-/// One exchange, and the status turned back into an error. Every request goes
-/// through here so the reply is judged in one place.
-fn send(channel: u32, tag: Tag, key: []const u8, value: []const u8, reply: *sys.Message) Error!void {
     const request = Req.init(tag, key, value) orelse return error.BadValue;
-    const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-    if (sys.callMsg(channel, &message, reply) < 0) return error.Failed;
-
-    return switch (statusOf(reply)) {
-        .ok => {},
-        .no_such_key => error.NoSuchKey,
-        .bad_value => error.BadValue,
-        .failed => error.Failed,
-    };
+    var reply = Rep{};
+    return asked(link.call(request, &reply));
 }
 
 fn connect() ?u32 {
     const channel = sys.svcConnect(SERVICE);
     return if (channel < 0) null else @intCast(channel);
-}
-
-fn statusOf(reply: *const sys.Message) Status {
-    const bytes = reply.bytes();
-    if (bytes.len < @sizeOf(Rep)) return .failed;
-    return @as(*const Rep, @ptrCast(@alignCast(bytes.ptr))).status;
 }

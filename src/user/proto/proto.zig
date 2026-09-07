@@ -8,6 +8,7 @@
 //! where, who has focus, what a tag means. That belongs to the window manager.
 
 pub const dialog = @import("dialog.zig");
+pub const Endpoint = @import("endpoint.zig").Endpoint;
 pub const FileDialog = dialog.FileDialog;
 pub const net = @import("net.zig");
 pub const platform = @import("platform.zig");

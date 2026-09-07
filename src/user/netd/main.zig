@@ -733,10 +733,7 @@ fn pingLate() void {
 }
 
 fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
-    const bytes = message.bytes();
-    if (bytes.len < @sizeOf(proto.Req)) return .refused;
-
-    const request: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+    const request = proto.requestIn(message) orelse return .refused;
 
     if (request.tag == .load) {
         reply.body = .{ .load = load };
