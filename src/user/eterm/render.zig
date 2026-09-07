@@ -210,7 +210,12 @@ fn drawCell(
     } else if (arrowFor(cell.ch)) |which| {
         drawArrow(surface, box, which, fg);
     } else {
-        surface.glyphIn(eui.draw.mono_font, box.x, box.y, @intCast(cell.ch), fg);
+        // Clipped to its own cell, as the bold pass below already is: the
+        // mono face is wider than a cell advance, so a character whose own
+        // width fills the face paints into the cell beside it, and the
+        // shadow records only the cell that was drawn, so the damage stays
+        // until the neighbour changes for a reason of its own.
+        surface.clipped(box).glyphIn(eui.draw.mono_font, box.x, box.y, @intCast(cell.ch), fg);
     }
 
     // Bold is drawn a second time one pixel right, which is what a bitmap face

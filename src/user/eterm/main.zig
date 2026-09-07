@@ -397,13 +397,33 @@ fn resize(w: u16, h: u16) void {
         toShell(terminal.sizeReport(&buf));
     }
 
+    paintEdges();
     redraw();
     connection.map(window) catch {};
 }
 
-fn redraw() void {
+/// The strip below and right of the last whole cell.
+///
+/// Once per resize, which is what its own comment always claimed: nothing
+/// ever draws there, and painted every pass it also fell outside the damage
+/// the paint reports, so the work went to the compositor's floor.
+fn paintEdges() void {
     const surface = connection.surfaceOf(window) orelse return;
     const t = eui.theme.current();
+    const grid = terminal.active();
+
+    const used_w = @as(i32, @intCast(grid.cols)) * render.cellWidth();
+    const used_h = @as(i32, @intCast(grid.rows)) * render.cellHeight();
+    if (used_w < surface.width) {
+        surface.fill(.{ .x = used_w, .y = 0, .w = surface.width - used_w, .h = surface.height }, t.terminal_ground);
+    }
+    if (used_h < surface.height) {
+        surface.fill(.{ .x = 0, .y = used_h, .w = surface.width, .h = surface.height - used_h }, t.terminal_ground);
+    }
+}
+
+fn redraw() void {
+    const surface = connection.surfaceOf(window) orelse return;
 
     if (terminal.title_changed) {
         connection.setTitle(window, terminal.title[0..terminal.title_len]) catch {};
@@ -411,18 +431,6 @@ fn redraw() void {
     }
 
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
-    const grid = terminal.active();
-
-    // The strip below and right of the last whole cell. Painted once per
-    // resize rather than per pass, since nothing ever draws there.
-    const used_w = @as(i32, @intCast(grid.cols)) * render.cellWidth();
-    const used_h = @as(i32, @intCast(grid.rows)) * render.cellHeight();
-    if (used_w < area.w) {
-        surface.fill(.{ .x = used_w, .y = 0, .w = area.w - used_w, .h = area.h }, t.terminal_ground);
-    }
-    if (used_h < area.h) {
-        surface.fill(.{ .x = 0, .y = used_h, .w = area.w, .h = area.h - used_h }, t.terminal_ground);
-    }
 
     const damage = render.paint(surface.*, area, &terminal, &shadow) orelse return;
     terminal.dirty = false;
