@@ -28,6 +28,10 @@ var jitter: lib.entropy.Jitter = .{};
 var pool: lib.entropy.Pool = .{};
 var csprng: std.Random.DefaultCsprng = undefined;
 var seeded = false;
+/// The pool's turn the cipher was last seeded from. A draw between two
+/// stirrings is the cipher's alone: seeding again from a pool that has
+/// heard nothing new would cost a turn of the hash for nothing.
+var seeded_turn: u32 = 0;
 
 /// Said once, when the pool first has enough in it to answer for a secret.
 /// A machine that never says it is a machine whose randomness nothing can
@@ -77,6 +81,12 @@ pub fn fill(into: []u8) bool {
 fn draw(into: []u8) bool {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
+
+    if (seeded and pool.turns == seeded_turn) {
+        csprng.fill(into);
+        return pool.ready();
+    }
+    seeded_turn = pool.turns;
 
     var seed: [std.Random.DefaultCsprng.secret_seed_length]u8 = undefined;
     const ready = pool.draw(&seed);

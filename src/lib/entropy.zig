@@ -36,6 +36,10 @@ pub const Pool = struct {
     /// honest kind: nothing here can measure what it was told.
     heard: u32 = 0,
     drawn: u64 = 0,
+    /// How many times something has been mixed in from outside. What a
+    /// cipher seeded from the pool compares against its own count, to seed
+    /// again only when there is something new to seed from.
+    turns: u32 = 0,
 
     /// Mix something in, worth whatever a source with no estimate is worth.
     /// Anything may be stirred in: nothing that goes in can make the pool
@@ -48,11 +52,17 @@ pub const Pool = struct {
     /// how many of its own bits are hard to guess says so here, which is what
     /// lets one that hears a lot at once count for a lot at once.
     pub fn credit(self: *Pool, bytes: []const u8, bits: u32) void {
+        self.absorb(bytes);
+        self.heard +|= bits;
+        self.turns +%= 1;
+    }
+
+    /// Fold `bytes` into the state.
+    fn absorb(self: *Pool, bytes: []const u8) void {
         var hash = Hash.init(.{});
         hash.update(&self.state);
         hash.update(bytes);
         hash.final(&self.state);
-        self.heard +|= bits;
     }
 
     /// Whether enough has been heard for a draw to mean anything.
@@ -84,12 +94,26 @@ pub const Pool = struct {
         }
 
         // Move the pool on, so what was drawn cannot be worked back to what
-        // is left. Worth nothing: this is the pool's own state, and a pool
-        // that credited itself for reading itself would climb on its own.
-        self.credit(&self.state, 0);
+        // is left. Not a turn, and worth nothing: this is the pool's own
+        // state, and a pool that counted reading itself as news would have
+        // every reader seed again for nothing.
+        self.absorb(&self.state);
         return true;
     }
 };
+
+test "a stirring is a turn of the pool, and a draw is not" {
+    var pool = Pool{};
+    try std.testing.expectEqual(@as(u32, 0), pool.turns);
+    pool.stir("something heard");
+    try std.testing.expectEqual(@as(u32, 1), pool.turns);
+    pool.credit("a lot heard", Pool.ENOUGH);
+    try std.testing.expectEqual(@as(u32, 2), pool.turns);
+
+    var out: [8]u8 = undefined;
+    try std.testing.expect(pool.draw(&out));
+    try std.testing.expectEqual(@as(u32, 2), pool.turns);
+}
 
 /// Interrupt timing, collected where hashing would cost too much.
 ///
