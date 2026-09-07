@@ -47,7 +47,7 @@ pub const Error = error{NotFound};
 pub fn isDirectory(path: []const u8) bool {
     const handle = sys.open(path, .{ .directory = true });
     if (handle < 0) return false;
-    _ = sys.close(@intCast(handle));
+    sys.close(@intCast(handle));
     return true;
 }
 
@@ -60,7 +60,7 @@ pub fn isDirectory(path: []const u8) bool {
 pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
     const handle = sys.open(path, .{ .directory = true });
     if (handle < 0) return error.NotFound;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     out.* = .{};
     var used: usize = 0;

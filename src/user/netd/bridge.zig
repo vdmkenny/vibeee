@@ -75,9 +75,7 @@ const Resolve = struct {
 /// the doorbell for the event loop's wait set.
 pub fn init(channel: u32) ?u32 {
     service = channel;
-    const bell = sys.eventCreate();
-    if (bell < 0) return null;
-    doorbell = @intCast(bell);
+    doorbell = sys.eventCreate() catch return null;
     return doorbell;
 }
 
@@ -184,9 +182,7 @@ fn tcpListen(req: *const proto.Req, token: u32) void {
 /// like the segment.
 fn slotEvent(s: *Sock) ?u32 {
     if (s.ev_app == 0) {
-        const ev = sys.eventCreate();
-        if (ev < 0) return null;
-        s.ev_app = @intCast(ev);
+        s.ev_app = sys.eventCreate() catch return null;
     }
     return s.ev_app;
 }
@@ -617,7 +613,7 @@ fn slotView(s: *Sock, kind: socket.Kind) ?socket.View {
         const created = sys.shmCreate(socket.shmBytes(.tcp));
         if (created < 0) return null;
         const base = sys.shmMap(@intCast(created), .{ .writable = true }) orelse {
-            _ = sys.close(@intCast(created));
+            sys.close(@intCast(created));
             return null;
         };
         if (slotEvent(s) == null) return null;
@@ -745,7 +741,7 @@ fn answerResolve(slot: *Resolve, addr: u32) void {
 fn readHosts(buf: []u8) ?[]const u8 {
     const file = sys.open(HOSTS_PATH, .{});
     if (file < 0) return null;
-    defer _ = sys.close(@intCast(file));
+    defer sys.close(@intCast(file));
     const n = sys.read(@intCast(file), buf);
     if (n <= 0) return null;
     return buf[0..@intCast(n)];

@@ -98,7 +98,7 @@ export fn opendir(path: [*:0]const u8) callconv(.c) ?*Dir {
     }
 
     const block = heap.alloc(@sizeOf(Dir)) orelse {
-        _ = sys.close(@intCast(handle));
+        sys.close(@intCast(handle));
         _ = errno.fail(errno.ENOMEM);
         return null;
     };
@@ -128,7 +128,7 @@ export fn readdir(dir: ?*Dir) callconv(.c) ?*Dirent {
 
 export fn closedir(dir: ?*Dir) callconv(.c) c_int {
     const open = dir orelse return -1;
-    _ = sys.close(@intCast(open.handle));
+    sys.close(@intCast(open.handle));
     heap.release(@ptrCast(open));
     return 0;
 }

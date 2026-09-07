@@ -22,7 +22,7 @@ pub fn ls(args: []const []const u8) void {
         out.flush();
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     // Read once, outside the loop: every row is compared against it, and a
     // listing whose rows disagreed about what "now" is would be worse than one
@@ -129,7 +129,7 @@ pub fn cat(args: []const []const u8) void {
             out.text(": cannot open\n");
             continue;
         }
-        defer _ = sys.close(@intCast(handle));
+        defer sys.close(@intCast(handle));
 
         var buf: [4096]u8 = [_]u8{0} ** 4096;
         while (true) {
@@ -156,7 +156,7 @@ pub fn hexdump(args: []const []const u8) void {
         out.flush();
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     var buf: [16]u8 = [_]u8{0} ** 16;
     var offset: usize = 0;

@@ -355,12 +355,12 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     }
     const dma_handle: u32 = @intCast(handle);
     if (phys.addr() % @alignOf(Arena) != 0) {
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         log.fail("rtl8139", "DMA memory is not aligned for the adapter");
         return false;
     }
     const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         log.fail("rtl8139", "cannot map DMA rings");
         return false;
     };
@@ -472,7 +472,7 @@ pub fn stop(nic: *NicDev) void {
     device.tx_at = 0;
     device.pending = @splat(false);
     pci.disableInterruptAndMaster(nic.location);
-    if (device.dma_handle) |handle| _ = sys.close(handle);
+    if (device.dma_handle) |handle| sys.close(handle);
     device.dma_handle = null;
     device.rx_phys = .none;
     device.tx_phys = @splat(0);

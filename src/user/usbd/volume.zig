@@ -89,7 +89,7 @@ pub fn withdraw(address: u7) void {
     for (&offers) |*slot| {
         if (!slot.live or slot.address != address) continue;
         sys.volumeDetach(slot.volume);
-        _ = sys.close(slot.doorbell);
+        sys.close(slot.doorbell);
         log.begin("usbd", .key);
         out.text(slot.nameSlice());
         out.text(" is gone");

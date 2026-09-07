@@ -347,7 +347,7 @@ fn releaseIrq(iface: *dev.NicDev) void {
     }
 
     _ = sources.remove(handle);
-    if (owned) _ = sys.close(handle);
+    if (owned) sys.close(handle);
 }
 
 /// Which line this adapter's interrupt arrives on.
@@ -388,11 +388,10 @@ fn serve(channel: u32) noreturn {
     sources = .{};
     _ = sources.add(channel);
 
-    const event = sys.eventCreate();
-    if (event >= 0) {
-        address_event = @intCast(event);
+    if (sys.eventCreate()) |event| {
+        address_event = event;
         stack.announce = addressChanged;
-    }
+    } else |_| {}
 
     for (ifaces[0..count]) |*iface| watchLine(iface);
 

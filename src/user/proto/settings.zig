@@ -256,7 +256,7 @@ pub fn reset(key: []const u8) Error!void {
 /// event loop, so this joins the handles it was waiting on anyway.
 pub fn watch(domain: []const u8) Error!u32 {
     const channel = connect() orelse return error.NoService;
-    defer _ = sys.close(channel);
+    defer sys.close(channel);
 
     const request = Req.init(.watch, domain, "") orelse return error.BadValue;
     var reply = Rep{};
@@ -296,6 +296,5 @@ fn ask(tag: Tag, key: []const u8, value: []const u8) Error!void {
 }
 
 fn connect() ?u32 {
-    const channel = sys.svcConnect(SERVICE);
-    return if (channel < 0) null else @intCast(channel);
+    return sys.svcConnect(SERVICE) catch null;
 }

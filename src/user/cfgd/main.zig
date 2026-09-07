@@ -36,8 +36,7 @@ export fn _start() callconv(.c) noreturn {
 
 fn cfgdMain() noreturn {
     for (&events) |*event| {
-        const handle = sys.eventCreate();
-        if (handle >= 0) event.* = @intCast(handle);
+        if (sys.eventCreate()) |handle| event.* = handle else |_| {}
     }
 
     // What is stored is what the machine should already be doing, and at
@@ -203,7 +202,7 @@ fn write(to: []const u8, current: anytype) bool {
 fn put(where: []const u8, body: []const u8) bool {
     const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true });
     if (handle < 0) return false;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     return sys.write(@intCast(handle), body) == @as(isize, @intCast(body.len));
 }

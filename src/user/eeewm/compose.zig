@@ -32,7 +32,7 @@ pub const Surface = struct {
     /// client that exited left its last surface there for good.
     pub fn release(self: *Surface) void {
         if (self.pixels) |at| _ = sys.shmUnmap(@ptrCast(at));
-        if (self.handle != 0) _ = sys.close(self.handle);
+        if (self.handle != 0) sys.close(self.handle);
         self.* = .{};
     }
 };

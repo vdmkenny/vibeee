@@ -74,8 +74,7 @@ pub fn listen() void {
         if (owners[i] != null) heard += 1;
     }
 
-    const handle = sys.eventCreate();
-    if (handle >= 0) event = @intCast(handle);
+    if (sys.eventCreate()) |handle| event = handle else |_| {}
 
     // On the root rather than on each of them. A handler there receives every
     // notification, which is what makes a device nobody thought of still

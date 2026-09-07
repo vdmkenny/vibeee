@@ -87,7 +87,7 @@ fn take(gsi: usize) void {
         out.flush();
         return;
     };
-    defer _ = sys.close(handle);
+    defer sys.close(handle);
 
     out.text("irq ");
     out.decimal(gsi);

@@ -28,7 +28,7 @@ pub fn run(args: []const []const u8) void {
         out.flush();
         return;
     };
-    defer _ = sys.close(event);
+    defer sys.close(event);
 
     out.text("listening; nothing here reaches the keyboard\n");
     out.flush();

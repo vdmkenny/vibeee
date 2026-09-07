@@ -132,7 +132,7 @@ fn load() void {
         notice = "new file";
         return;
     }
-    defer _ = sys.close(@intCast(file));
+    defer sys.close(@intCast(file));
 
     var filled: usize = 0;
     while (filled < storage.len) {
@@ -182,7 +182,7 @@ fn save() void {
         notice = "not saved: cannot open the file for writing";
         return;
     }
-    defer _ = sys.close(@intCast(file));
+    defer sys.close(@intCast(file));
 
     const whole = doc.contents();
     var written: usize = 0;

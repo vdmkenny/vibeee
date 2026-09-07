@@ -53,7 +53,7 @@ pub const Window = struct {
     /// Let go of the surface: the mapping first, then the handle.
     fn dropSurface(self: *Window) void {
         if (self.pixels) |at| _ = sys.shmUnmap(at);
-        if (self.handle != 0) _ = sys.close(self.handle);
+        if (self.handle != 0) sys.close(self.handle);
         self.pixels = null;
         self.handle = 0;
     }
@@ -79,10 +79,8 @@ pub const Connection = struct {
 
     /// Connect and introduce ourselves.
     pub fn open(name: []const u8) Error!Connection {
-        const channel = sys.svcConnect(wm.SERVICE);
-        if (channel < 0) return error.NoServer;
-
-        var self = Connection{ .channel = @intCast(channel) };
+        const channel = sys.svcConnect(wm.SERVICE) catch return error.NoServer;
+        var self = Connection{ .channel = channel };
 
         var req = wm.Req{ .tag = .hello };
         req.body = .{ .hello = .{ .proto = wm.VERSION, .app_name = @splat(0) } };
@@ -223,7 +221,7 @@ pub const Connection = struct {
         // that is not the one where the window takes it.
         var taken = false;
         defer if (!taken) {
-            _ = sys.close(@intCast(handle));
+            sys.close(@intCast(handle));
         };
 
         const pixels = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse
@@ -415,7 +413,7 @@ pub const Connection = struct {
         if (got.len < into.len) {
             // Handles the server did send are this process's now, and a
             // caller that is being told the call failed will not close them.
-            for (got) |handle| _ = sys.close(handle);
+            for (got) |handle| sys.close(handle);
             return error.Refused;
         }
         @memcpy(into, got[0..into.len]);

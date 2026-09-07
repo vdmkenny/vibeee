@@ -117,10 +117,10 @@ pub const Sock = struct {
         // program that opens a socket per attempt could otherwise open its
         // last one an hour into trying.
         _ = sys.shmUnmap(self.base);
-        _ = sys.close(self.shm);
-        _ = sys.close(self.ev_app);
-        _ = sys.close(self.doorbell);
-        _ = sys.close(self.channel);
+        sys.close(self.shm);
+        sys.close(self.ev_app);
+        sys.close(self.doorbell);
+        sys.close(self.channel);
     }
 };
 
@@ -133,7 +133,7 @@ pub const Listener = struct {
 
     pub fn listen(port: u16) Error!Listener {
         const channel = try serviceChannel();
-        errdefer _ = sys.close(channel);
+        errdefer sys.close(channel);
 
         var reply = proto.Rep{};
         var handles: [1]u32 = undefined;
@@ -158,8 +158,8 @@ pub const Listener = struct {
     pub fn close(self: *const Listener) void {
         var reply = proto.Rep{};
         asked(proto.callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply)) catch {};
-        _ = sys.close(self.ready);
-        _ = sys.close(self.channel);
+        sys.close(self.ready);
+        sys.close(self.channel);
     }
 };
 
@@ -185,7 +185,7 @@ pub fn resolve(name: []const u8) Error!proto.Resolved {
 
 fn granted(tag: proto.Tag, index: u32, param: u32, param2: u32) Error!Sock {
     const channel = try serviceChannel();
-    errdefer _ = sys.close(channel);
+    errdefer sys.close(channel);
 
     var reply = proto.Rep{};
     var handles: [proto.GRANT_HANDLES]u32 = undefined;
@@ -203,7 +203,7 @@ fn fromGrant(channel: u32, reply: *const proto.Rep, handles: [proto.GRANT_HANDLE
     const base = sys.shmMap(handles[0], .{ .writable = true }) orelse {
         // The handles the service installed are this process's now, and a
         // caller being told the socket failed will not close them.
-        for (handles) |handle| _ = sys.close(handle);
+        for (handles) |handle| sys.close(handle);
         return error.Refused;
     };
     return .{
@@ -221,9 +221,7 @@ fn fromGrant(channel: u32, reply: *const proto.Rep, handles: [proto.GRANT_HANDLE
 }
 
 fn serviceChannel() Error!u32 {
-    const channel = sys.svcConnect(proto.SERVICE);
-    if (channel < 0) return error.NoService;
-    return @intCast(channel);
+    return sys.svcConnect(proto.SERVICE) catch error.NoService;
 }
 
 /// The service's answer as this module's.

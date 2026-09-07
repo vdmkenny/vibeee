@@ -27,8 +27,7 @@ var dropped = false;
 pub var event: u32 = 0;
 
 pub fn init() void {
-    const handle = sys.eventCreate();
-    if (handle >= 0) event = @intCast(handle);
+    if (sys.eventCreate()) |handle| event = handle else |_| {}
 }
 
 /// Called from inside uACPI's dispatch. Queues and wakes; nothing more.

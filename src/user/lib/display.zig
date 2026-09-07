@@ -29,7 +29,7 @@ pub const Screen = struct {
         // The mapping as well as the handle: a display given back and taken
         // again would otherwise spend a mapping each time.
         _ = sys.shmUnmap(@ptrCast(self.pixels));
-        _ = sys.close(self.handle);
+        sys.close(self.handle);
         self.handle = 0;
     }
 };
@@ -40,7 +40,7 @@ pub fn take() Error!Screen {
     const handle = try sys.displayAcquire(&info);
 
     const pixels = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        _ = sys.close(@intCast(handle));
+        sys.close(@intCast(handle));
         return error.Unmappable;
     };
 

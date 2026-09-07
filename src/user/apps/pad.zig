@@ -258,7 +258,7 @@ fn open() void {
         ctx.damage();
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     document.clear();
     while (true) {
@@ -291,7 +291,7 @@ fn save() void {
         ctx.damage();
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     const written = sys.write(@intCast(handle), document.slice());
     if (written < 0 or @as(usize, @intCast(written)) != document.len) {

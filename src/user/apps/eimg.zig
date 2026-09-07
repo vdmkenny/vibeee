@@ -127,7 +127,7 @@ fn load() void {
         trouble = "No such file.";
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     // What the file is, before reading it: a file too large to hold is
     // refused for the room it would have taken rather than after taking it.

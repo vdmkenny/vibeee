@@ -55,13 +55,12 @@ pub const Port = struct {
     }
 
     fn open(node_name: []const u8, port_name: []const u8, direction: graph.Direction) Error!Port {
-        const channel = sys.svcConnect(proto.SERVICE);
-        if (channel < 0) return error.NoService;
-        errdefer _ = sys.close(@intCast(channel));
+        const channel = sys.svcConnect(proto.SERVICE) catch return error.NoService;
+        errdefer sys.close(channel);
 
         var node_req = proto.Req.named(.node_create, node_name) orelse return error.Refused;
         var reply = proto.Rep{};
-        try proto.callOn(@intCast(channel), node_req, &reply);
+        try proto.callOn(channel, node_req, &reply);
         const node = reply.body.id;
         _ = &node_req;
 
@@ -75,7 +74,7 @@ pub const Port = struct {
             // The handles the service installed are this process's now, and
             // the node and port it made are this program's to drop: a
             // failed open must not leave one standing in the graph.
-            for (handles) |handle| _ = sys.close(handle);
+            for (handles) |handle| sys.close(handle);
             var drop = proto.Rep{};
             proto.callOn(@intCast(channel), .{ .tag = .port_drop, .a = reply.body.port }, &drop) catch {};
             return error.Refused;
@@ -123,20 +122,19 @@ pub const Port = struct {
         proto.callOn(self.channel, req, &reply) catch {};
         // The mapping as well as the handle: either alone keeps the segment.
         _ = sys.shmUnmap(self.base);
-        _ = sys.close(self.shm);
-        _ = sys.close(self.ev);
-        _ = sys.close(self.doorbell);
-        _ = sys.close(self.channel);
+        sys.close(self.shm);
+        sys.close(self.ev);
+        sys.close(self.doorbell);
+        sys.close(self.channel);
     }
 };
 
 /// The default port in a direction, from the listing: the port flagged
 /// default whose direction matches.
 pub fn defaultPort(direction: graph.Direction) Error!u32 {
-    const channel = sys.svcConnect(proto.SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
-    return defaultPortOn(@intCast(channel), direction);
+    const channel = sys.svcConnect(proto.SERVICE) catch return error.NoService;
+    defer sys.close(channel);
+    return defaultPortOn(channel, direction);
 }
 
 /// The same on a channel the caller already holds: a program opening a

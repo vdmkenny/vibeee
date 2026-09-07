@@ -38,7 +38,7 @@ pub fn run(args: []const []const u8) void {
         out.flush();
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     var filled: usize = 0;
     while (filled < text.len) {

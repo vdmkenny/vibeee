@@ -448,13 +448,12 @@ var token: u8 = 0;
 /// carried as one more than itself: null would otherwise be indistinguishable
 /// from a valid event.
 export fn uacpi_kernel_create_event() callconv(.c) ?*anyopaque {
-    const handle = sys.eventCreate();
-    if (handle < 0) return null;
-    return @ptrFromInt(@as(usize, @intCast(handle)) + 1);
+    const handle = sys.eventCreate() catch return null;
+    return @ptrFromInt(@as(usize, handle) + 1);
 }
 
 export fn uacpi_kernel_free_event(event: ?*anyopaque) callconv(.c) void {
-    if (handleOf(event)) |handle| _ = sys.close(handle);
+    if (handleOf(event)) |handle| sys.close(handle);
 }
 
 export fn uacpi_kernel_signal_event(event: ?*anyopaque) callconv(.c) void {
@@ -631,7 +630,7 @@ export fn uacpi_kernel_install_interrupt_handler(
 export fn uacpi_kernel_uninstall_interrupt_handler(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) u32 {
     if (sci.event != 0) {
         _ = sys.irqAck(sci.event, true);
-        _ = sys.close(sci.event);
+        sys.close(sci.event);
     }
     sci = .{};
     return Status.ok.value();

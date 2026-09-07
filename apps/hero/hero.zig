@@ -646,7 +646,7 @@ fn save() void {
         return;
     }
     const wrote = sys.write(@intCast(handle), storage[0..text_len]);
-    _ = sys.close(@intCast(handle));
+    sys.close(@intCast(handle));
     if (wrote < 0 or @as(usize, @intCast(wrote)) != text_len) {
         say("Only part of it was written.");
         return;

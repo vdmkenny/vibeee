@@ -441,22 +441,20 @@ pub fn interfaceAt(index: usize) ?Iface {
 /// Held by the service rather than made per caller, so every waiter ends up
 /// on the same event and a lease arriving wakes all of them at once.
 pub fn watch() Error!u32 {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
+    const channel = sys.svcConnect(SERVICE) catch return error.NoService;
+    defer sys.close(channel);
 
     var reply = Rep{};
     var handles: [1]u32 = undefined;
-    try link.callTaking(@intCast(channel), .{ .tag = .watch }, &reply, &handles);
+    try link.callTaking(channel, .{ .tag = .watch }, &reply, &handles);
     return handles[0];
 }
 
 /// Whether any interface has an address: whether there is a network to use.
 pub fn haveAddress() bool {
     // One channel for the whole walk: the count and then every interface.
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return false;
-    defer _ = sys.close(@intCast(channel));
+    const channel = sys.svcConnect(SERVICE) catch return false;
+    defer sys.close(channel);
 
     var counted = Rep{};
     callOn(@intCast(channel), .{ .tag = .count }, &counted) catch return false;

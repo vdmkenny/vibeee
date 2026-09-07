@@ -1253,13 +1253,13 @@ fn buildRings() bool {
     const owned: u32 = @intCast(handle);
 
     if (!Chain.addressable(phys.addr()) or phys.addr() % @alignOf(Rings) != 0) {
-        _ = sys.close(owned);
+        sys.close(owned);
         log.fail(name, "the descriptor chains are unaligned or out of reach");
         return false;
     }
 
     const mapped = sys.shmMap(owned, .{ .writable = true }) orelse {
-        _ = sys.close(owned);
+        sys.close(owned);
         log.fail(name, "cannot map the descriptor chains");
         return false;
     };
@@ -1284,7 +1284,7 @@ fn buildRings() bool {
 
 fn releaseRings() void {
     const handle = device.dma_handle orelse return;
-    _ = sys.close(handle);
+    sys.close(handle);
     device.dma_handle = null;
     device.rings = null;
     device.phys = .none;

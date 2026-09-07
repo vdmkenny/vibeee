@@ -59,7 +59,7 @@ fn load(from: []const u8) bool {
         return false;
     };
     defer if (handle != sys.STDIN) {
-        _ = sys.close(handle);
+        sys.close(handle);
     };
 
     // Everything at once, before the screen is taken. A pager that read as it

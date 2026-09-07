@@ -75,6 +75,37 @@ pub const Syscall = struct {
 
 /// Standard error numbers. Returned as negative values in the result register,
 /// so a caller tests `result < 0`.
+/// Why a call refused.
+///
+/// One name per errno, so a caller on this side of the boundary says which
+/// reason it is handling rather than comparing a number against a table. The
+/// number itself stays reachable through the raw stubs, which is what the C
+/// library needs and nothing else does.
+///
+/// Named for what it is rather than `Error`, because several types here have
+/// their own errors and a bare one would be whichever was nearest.
+pub const Refusal = error{
+    NotPermitted,
+    NoSuchFile,
+    DeviceFailed,
+    BadHandle,
+    NoChild,
+    NoMemory,
+    BadAddress,
+    Busy,
+    Exists,
+    NoDevice,
+    Invalid,
+    NoSpace,
+    BrokenPipe,
+    NotImplemented,
+    NotConnected,
+    TimedOut,
+    /// A number this build has no name for. A kernel and a program built
+    /// together cannot produce one; a mismatched pair can.
+    Unknown,
+};
+
 pub const Errno = enum(i32) {
     perm = 1,
     noent = 2,
@@ -103,6 +134,31 @@ pub const Errno = enum(i32) {
     pub fn of(result: isize) ?Errno {
         if (result >= 0) return null;
         return std.enums.fromInt(Errno, -result);
+    }
+
+    /// The same reason as something a caller can switch on and propagate.
+    ///
+    /// Beside the errno rather than in the stubs, so the number and the name
+    /// are one table: a reason added here without a name would not compile.
+    pub fn toError(self: Errno) Refusal {
+        return switch (self) {
+            .perm => error.NotPermitted,
+            .noent => error.NoSuchFile,
+            .io => error.DeviceFailed,
+            .badf => error.BadHandle,
+            .child => error.NoChild,
+            .nomem => error.NoMemory,
+            .fault => error.BadAddress,
+            .busy => error.Busy,
+            .exists => error.Exists,
+            .nodev => error.NoDevice,
+            .inval => error.Invalid,
+            .nospace => error.NoSpace,
+            .pipe => error.BrokenPipe,
+            .nosys => error.NotImplemented,
+            .notconn => error.NotConnected,
+            .timedout => error.TimedOut,
+        };
     }
 
     /// What it means, for a person reading a tool's output.

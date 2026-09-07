@@ -19,6 +19,19 @@ const keymaps = @import("keymaps");
 
 /// Re-exported so call sites say `sys.STDOUT` rather than reaching two modules
 /// deep for a constant. One definition, still; this is only the local name.
+/// Why a call refused, from the one table that also holds the numbers.
+pub const Refusal = abi.Refusal;
+
+/// A call's answer: what it returned, or why it would not.
+///
+/// The boundary between the two conventions. Below this the answer is a
+/// signed word with a negative errno in it, which is what the instruction
+/// carries; above it every caller says `try`.
+fn checked(result: isize) Refusal!usize {
+    if (result >= 0) return @intCast(result);
+    return (abi.Errno.of(result) orelse return error.Unknown).toError();
+}
+
 pub const STDIN = abi.STDIN;
 pub const STDOUT = abi.STDOUT;
 pub const STDERR = abi.STDERR;
@@ -239,7 +252,18 @@ pub fn unlink(path: []const u8) isize {
     return syscall2(abi.number("unlink"), @intFromPtr(path.ptr), path.len);
 }
 
-pub fn close(handle: usize) isize {
+/// Give a handle back.
+///
+/// No answer to act on: the handle is gone whether or not the last write
+/// reached the disk, and every caller here closes in a `defer`, where there is
+/// nothing to be done about it either way. The C library, which has to hand
+/// the number back, and the self-test, which closes a handle nobody holds on
+/// purpose, use `closeRaw`.
+pub fn close(handle: usize) void {
+    _ = closeRaw(handle);
+}
+
+pub fn closeRaw(handle: usize) isize {
     return syscall1(abi.number("close"), handle);
 }
 
@@ -558,8 +582,8 @@ pub fn watch(what: abi.Watchable) isize {
     return syscall1(abi.number("watch"), @intFromEnum(what));
 }
 
-pub fn eventCreate() isize {
-    return syscall0(abi.number("event_create"));
+pub fn eventCreate() Refusal!u32 {
+    return @intCast(try checked(syscall0(abi.number("event_create"))));
 }
 
 pub fn eventSignal(handle: usize) isize {
@@ -582,8 +606,9 @@ pub fn svcRegister(name: []const u8) isize {
     return syscall2(abi.number("svc_register"), @intFromPtr(name.ptr), name.len);
 }
 
-pub fn svcConnect(name: []const u8) isize {
-    return syscall2(abi.number("svc_connect"), @intFromPtr(name.ptr), name.len);
+/// A channel to the service registered under `name`.
+pub fn svcConnect(name: []const u8) Refusal!u32 {
+    return @intCast(try checked(syscall2(abi.number("svc_connect"), @intFromPtr(name.ptr), name.len)));
 }
 
 pub const Message = abi.Message;

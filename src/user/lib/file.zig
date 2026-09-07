@@ -16,7 +16,7 @@ const sys = @import("sys");
 pub fn readWhole(path: []const u8, into: []u8) ?usize {
     const handle = sys.open(path, .{});
     if (handle < 0) return null;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
     const filled = fill(@intCast(handle), into);
     return if (filled.failed) null else filled.read;
 }
@@ -30,7 +30,7 @@ pub const EntireError = error{ NoFile, TooBig, Unreadable };
 pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
     const handle = sys.open(path, .{});
     if (handle < 0) return error.NoFile;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
     const filled = fill(@intCast(handle), into);
     if (filled.failed) return error.Unreadable;
     const read = filled.read;

@@ -332,11 +332,11 @@ fn transfer(what: Transfer) void {
 fn copyFile(from: []const u8, to: []const u8) bool {
     const source = sys.open(from, .{});
     if (source < 0) return false;
-    defer _ = sys.close(@intCast(source));
+    defer sys.close(@intCast(source));
 
     const destination = sys.open(to, .{ .write = true, .create = true, .truncate = true });
     if (destination < 0) return false;
-    defer _ = sys.close(@intCast(destination));
+    defer sys.close(@intCast(destination));
 
     while (true) {
         var chunk: [1024]u8 = undefined;

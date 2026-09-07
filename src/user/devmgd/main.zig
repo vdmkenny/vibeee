@@ -155,7 +155,7 @@ fn readOne(name: []const u8) void {
 
     const file = sys.open(path.done(), .{});
     if (file < 0) return;
-    defer _ = sys.close(@intCast(file));
+    defer sys.close(@intCast(file));
 
     // Read into the tail of the shared buffer: the parsed fields are slices
     // of it, so every manifest's text has to stay where it was put.

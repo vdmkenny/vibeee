@@ -537,12 +537,12 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     const dma_handle: u32 = @intCast(handle);
     const last_offset: u32 = @intCast(@sizeOf(Arena) - 1);
     if (phys.addr() % @alignOf(Arena) != 0 or phys.plus(last_offset) == null) {
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         log.fail("atl2", "DMA memory is not aligned for the adapter");
         return false;
     }
     const mapped = sys.shmMap(dma_handle, .{ .writable = true }) orelse {
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         log.fail("atl2", "cannot map DMA rings");
         return false;
     };
@@ -557,7 +557,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         // mastering before the backing allocation can be returned.
         pci.disableInterruptAndMaster(loc);
         keep_pci_enabled = true;
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         device.dma_handle = null;
         device.phys = .none;
         return false;
@@ -861,7 +861,7 @@ pub fn stop(nic: *NicDev) void {
     _ = resetController();
     pci.disableInterruptAndMaster(nic.location);
     resetRings();
-    if (device.dma_handle) |handle| _ = sys.close(handle);
+    if (device.dma_handle) |handle| sys.close(handle);
     device.dma_handle = null;
     device.phys = .none;
     device.opened = false;

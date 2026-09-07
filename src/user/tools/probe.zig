@@ -106,24 +106,22 @@ fn balance() void {
     }
 
     // The server has to have published its name before the first connect.
-    const channel = connect();
-    if (channel < 0) {
+    const channel = connect() orelse {
         out.text("  ..   handles over a channel: nobody answered\n");
         return;
-    }
+    };
 
     const before = held();
     for (0..ROUNDS) |_| {
-        const e = sys.eventCreate();
-        if (e < 0) break;
-        const msg = abi.Message.init("x", &.{@intCast(e)});
+        const e = sys.eventCreate() catch break;
+        const msg = abi.Message.init("x", &.{e});
         var answer: abi.Message = .{};
-        _ = sys.callMsg(@intCast(channel), &msg, &answer);
-        _ = sys.close(@intCast(e));
+        _ = sys.callMsg(channel, &msg, &answer);
+        sys.close(e);
     }
     const after = held();
 
-    _ = sys.close(@intCast(channel));
+    sys.close(channel);
 
     // Some growth is the rest of the machine, and a leak is proportional to
     // the number of rounds: an event is tens of bytes, so a reference kept per
@@ -158,13 +156,12 @@ fn held() usize {
 
 /// Wait for the server's name to appear. It is a program that has to be
 /// scheduled, loaded and run before it registers anything.
-fn connect() isize {
+fn connect() ?u32 {
     for (0..200) |_| {
-        const got = sys.svcConnect(ECHO);
-        if (got >= 0) return got;
+        if (sys.svcConnect(ECHO)) |got| return got else |_| {}
         sys.sleepMicros(1000);
     }
-    return -1;
+    return null;
 }
 
 const ECHO = "probe.echo";
@@ -176,7 +173,7 @@ fn hold() void {
     if (sys.keyRead(&events, abi.Timeout.poll) == null) return;
 
     const said = sys.open(HOLDING, .{ .write = true, .create = true, .truncate = true });
-    if (said >= 0) _ = sys.close(@intCast(said));
+    if (said >= 0) sys.close(@intCast(said));
 
     // Long enough for the case to be asked and answered, and no longer: a
     // program holding the keyboard is a program nothing else can read from.
@@ -202,7 +199,7 @@ fn echo() void {
             continue;
         };
         idle = 0;
-        for (msg.handleSlice()) |number| _ = sys.close(number);
+        for (msg.handleSlice()) |number| sys.close(number);
         _ = sys.reply(@intCast(channel), got.token, "");
     }
 }
@@ -311,7 +308,7 @@ fn kernelPath() isize {
 }
 
 fn strayHandle() isize {
-    return sys.close(4095);
+    return sys.closeRaw(4095);
 }
 
 /// A program image whose one segment says its bytes start near the top of the
@@ -333,7 +330,7 @@ fn crookedProgram() isize {
     const file = sys.open(CROOKED, .{ .write = true, .create = true, .truncate = true });
     if (file < 0) return NOT_RUN;
     const wrote = sys.write(@intCast(file), &image);
-    _ = sys.close(@intCast(file));
+    sys.close(@intCast(file));
     if (wrote != image.len) return NOT_RUN;
 
     return sys.spawn(CROOKED, &.{CROOKED});
@@ -421,7 +418,7 @@ fn waitFor(path: []const u8) bool {
     for (0..500) |_| {
         const file = sys.open(path, .{});
         if (file >= 0) {
-            _ = sys.close(@intCast(file));
+            sys.close(@intCast(file));
             return true;
         }
         sys.sleepMicros(1000);

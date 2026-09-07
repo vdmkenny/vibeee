@@ -114,7 +114,7 @@ fn widthOf(class: u32) usize {
 fn fromKernel(bytes: usize) ?[*]u8 {
     const handle = sys.shmCreate(bytes);
     if (handle < 0) return null;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
     return sys.shmMap(@intCast(handle), .{ .writable = true });
 }
 

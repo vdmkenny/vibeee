@@ -381,7 +381,7 @@ fn runLine(words: []const []const u8) void {
         runPipeline(stages[0..count], @intCast(handle));
     }
 
-    _ = sys.close(@intCast(handle));
+    sys.close(@intCast(handle));
 }
 
 /// Run every stage at once, each reading what the one before it writes.
@@ -410,8 +410,8 @@ fn runPipeline(stages: []const []const []const u8, last_out: i32) void {
 
         const pid = spawnStage(stage, feed, sink);
 
-        if (feed != sys.Spawn.INHERIT) _ = sys.close(@intCast(feed));
-        if (!last) _ = sys.close(@intCast(sink));
+        if (feed != sys.Spawn.INHERIT) sys.close(@intCast(feed));
+        if (!last) sys.close(@intCast(sink));
         feed = next_feed;
 
         if (pid) |id| {
@@ -420,13 +420,13 @@ fn runPipeline(stages: []const []const []const u8, last_out: i32) void {
         } else if (!last) {
             // Nothing will read what the rest write, so stop here rather than
             // leaving stages blocked on a pipe with no other end.
-            _ = sys.close(@intCast(feed));
+            sys.close(@intCast(feed));
             feed = sys.Spawn.INHERIT;
             break;
         }
     }
 
-    if (feed != sys.Spawn.INHERIT) _ = sys.close(@intCast(feed));
+    if (feed != sys.Spawn.INHERIT) sys.close(@intCast(feed));
 
     // Every stage is waited for, so none is left behind as a zombie and the
     // prompt does not come back while output is still arriving. A pipeline is

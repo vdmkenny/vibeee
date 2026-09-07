@@ -95,8 +95,8 @@ fn startShell() void {
         return;
     };
     const output = sys.pipe() orelse {
-        _ = sys.close(input.read);
-        _ = sys.close(input.write);
+        sys.close(input.read);
+        sys.close(input.write);
         show("eterm: cannot create a pipe\r\n");
         return;
     };
@@ -114,8 +114,8 @@ fn startShell() void {
     // The child has its own references now. Keeping these would mean the pipe
     // never reports end of file, because this process would still be counted
     // as a writer of the shell's output.
-    _ = sys.close(input.read);
-    _ = sys.close(output.write);
+    sys.close(input.read);
+    sys.close(output.write);
 
     if (pid < 0) {
         show("eterm: cannot start ");
@@ -277,8 +277,8 @@ fn drain() void {
 /// the way a terminal has always closed on its shell's last word.
 fn shellExited() void {
     running = false;
-    _ = sys.close(from_shell);
-    _ = sys.close(to_shell);
+    sys.close(from_shell);
+    sys.close(to_shell);
     sys.exit(0);
 }
 

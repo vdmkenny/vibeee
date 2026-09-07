@@ -35,10 +35,9 @@ pub fn Endpoint(
 
         /// Ask, opening a channel for this one question.
         pub fn call(request: Req, into: *Rep) CallError!void {
-            const channel = sys.svcConnect(SERVICE);
-            if (channel < 0) return error.NoService;
-            defer _ = sys.close(@intCast(channel));
-            return callOn(@intCast(channel), request, into);
+            const channel = sys.svcConnect(SERVICE) catch return error.NoService;
+            defer sys.close(channel);
+            return callOn(channel, request, into);
         }
 
         /// Ask on a channel the caller keeps open, which is what a walk over a

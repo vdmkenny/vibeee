@@ -55,7 +55,7 @@ export fn creat(path: [*:0]const u8, mode: c_uint) callconv(.c) c_int {
 
 pub export fn close(fd: c_int) callconv(.c) c_int {
     if (fd < 0) return @intCast(errno.fail(errno.EBADF));
-    return @intCast(errno.wrap(sys.close(@intCast(fd))));
+    return @intCast(errno.wrap(sys.closeRaw(@intCast(fd))));
 }
 
 pub export fn read(fd: c_int, buf: [*]u8, count: usize) callconv(.c) isize {

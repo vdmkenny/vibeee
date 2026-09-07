@@ -268,7 +268,7 @@ fn loadConfig() void {
         useFallback("no /etc/services");
         return;
     }
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     // Read in a loop: a short read is normal, and treating one as the whole
     // file is how a table loses its tail.
@@ -872,7 +872,7 @@ fn writeDisabled() bool {
 
     const handle = sys.open(DISABLED, .{ .write = true, .create = true, .truncate = true });
     if (handle < 0) return false;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     const written = body.done();
     return sys.write(@intCast(handle), written) == @as(isize, @intCast(written.len));
@@ -884,7 +884,7 @@ fn readDisabled() void {
 
     const handle = sys.open(DISABLED, .{});
     if (handle < 0) return;
-    defer _ = sys.close(@intCast(handle));
+    defer sys.close(@intCast(handle));
 
     const n = sys.read(@intCast(handle), &text);
     if (n <= 0) return;

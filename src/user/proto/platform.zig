@@ -509,13 +509,12 @@ pub fn nextHotkey(into: *Press) Error!void {
 
 /// An event that fires whenever the firmware reports another one.
 pub fn watchHotkeys() Error!u32 {
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return error.NoService;
-    defer _ = sys.close(@intCast(channel));
+    const channel = sys.svcConnect(SERVICE) catch return error.NoService;
+    defer sys.close(channel);
 
     var reply = Rep{};
     var handles: [1]u32 = undefined;
-    try link.callTaking(@intCast(channel), .{ .tag = .hotkey_watch }, &reply, &handles);
+    try link.callTaking(channel, .{ .tag = .hotkey_watch }, &reply, &handles);
     return handles[0];
 }
 

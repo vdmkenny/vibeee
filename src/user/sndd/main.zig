@@ -94,12 +94,10 @@ fn snddMain() noreturn {
         log.warn("sndd", "the device manager assigned no sound hardware");
     }
 
-    const bell = sys.eventCreate();
-    if (bell < 0) {
+    doorbell = sys.eventCreate() catch {
         log.fail("sndd", "no doorbell; giving up");
         sys.exit(1);
-    }
-    doorbell = @intCast(bell);
+    };
 
     serve();
 }
@@ -490,17 +488,16 @@ fn portCreate(req: *const proto.Req, sender: u32, token: u32) void {
             return refuse(token);
         }
         const base = sys.shmMap(@intCast(created), .{ .writable = true }) orelse {
-            _ = sys.close(@intCast(created));
+            sys.close(@intCast(created));
             graph.removePort(port);
             return refuse(token);
         };
-        const ev = sys.eventCreate();
-        if (ev < 0) {
+        const ev = sys.eventCreate() catch {
             graph.removePort(port);
             return refuse(token);
-        }
+        };
         ring.shm = @intCast(created);
-        ring.ev = @intCast(ev);
+        ring.ev = ev;
         ring.view = proto.View.of(base);
     }
     ring.view.?.ctrl.* = .{};

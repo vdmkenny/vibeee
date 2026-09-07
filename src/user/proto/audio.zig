@@ -258,9 +258,8 @@ pub fn ports(into: []PortInfo) []PortInfo {
     // One channel for the whole walk. A connection, a call and a close per
     // slot is three syscalls a slot for a listing that asks the same
     // service the same question thirty-two times.
-    const channel = sys.svcConnect(SERVICE);
-    if (channel < 0) return into[0..0];
-    defer _ = sys.close(@intCast(channel));
+    const channel = sys.svcConnect(SERVICE) catch return into[0..0];
+    defer sys.close(channel);
 
     var count: usize = 0;
     var index: u32 = 0;

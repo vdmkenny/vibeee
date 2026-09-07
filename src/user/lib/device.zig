@@ -31,7 +31,7 @@ pub fn Dma(comptime T: type) type {
             // The handle goes as soon as the memory is mapped: the mapping
             // holds the segment as much as the handle does, and a handle is
             // one of the sixty-four a process has.
-            defer _ = sys.close(@intCast(handle));
+            defer sys.close(@intCast(handle));
 
             const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
                 log.fail(tag, "cannot map DMA memory");

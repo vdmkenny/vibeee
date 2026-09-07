@@ -35,7 +35,7 @@ pub fn run(args: []const []const u8) void {
                 continue;
             }
             grepHandle(@intCast(handle), pattern, path, show_names);
-            _ = sys.close(@intCast(handle));
+            sys.close(@intCast(handle));
         }
     }
     out.flush();

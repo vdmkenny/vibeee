@@ -378,12 +378,12 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // A run that leaves the addresses this machine has is one the engine
     // would walk off the end of.
     if (phys.addr() % @alignOf(Rings) != 0 or phys.plus(last_offset) == null) {
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         log.fail("e1000", "DMA rings are unaligned or cross 4 GiB");
         return false;
     }
     const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        _ = sys.close(dma_handle);
+        sys.close(dma_handle);
         log.fail("e1000", "cannot map DMA rings");
         return false;
     };
@@ -595,7 +595,7 @@ pub fn stop(nic: *NicDev) void {
     _ = device.regs.read(.icr);
 
     pci.disableInterruptAndMaster(nic.location);
-    if (device.dma_handle) |handle| _ = sys.close(handle);
+    if (device.dma_handle) |handle| sys.close(handle);
     device.dma_handle = null;
     device.phys = .none;
     device.rx_next = 0;
