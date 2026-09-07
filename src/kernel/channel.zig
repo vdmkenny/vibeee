@@ -34,8 +34,6 @@ pub const Error = error{
     OutOfMemory,
     /// The far end is gone: no server has this channel open.
     Disconnected,
-    /// Too many calls already in flight on this channel.
-    Busy,
     /// The token does not name a live call.
     BadToken,
     TimedOut,
@@ -310,16 +308,10 @@ pub fn recv(ch: *Channel, deadline_us: ?u64) Error!Received {
     defer hal.restoreInterrupts(flags);
 
     while (true) {
-        if (ch.popPending()) |c| {
-            const slot = freeSlot(ch) orelse {
-                // No room to track the reply. Failing the caller is better
-                // than holding a request nobody can answer.
-                c.failed = true;
-                c.done = true;
-                _ = c.queue.wakeAll();
-                return error.Busy;
-            };
-
+        // A request is taken only when there is room to track its reply. A
+        // server with every slot in use is busy, not gone: the caller waits
+        // its turn in the queue, and is heard once a reply frees a slot.
+        if (freeSlot(ch)) |slot| if (ch.popPending()) |c| {
             const generation = ch.next_generation;
             ch.next_generation +%= 1;
             if (ch.next_generation == 0) ch.next_generation = 1;
@@ -332,7 +324,7 @@ pub fn recv(ch: *Channel, deadline_us: ?u64) Error!Received {
             // path it wakes on discards what it owns: leaving it owning these
             // too would have it give back references the server is holding.
             return .{ .token = token, .message = c.request.take() };
-        }
+        };
 
         _ = wait.blockOn(&.{&ch.recv_queue}, deadline_us) catch return error.TimedOut;
     }
@@ -359,6 +351,8 @@ pub fn reply(
     try c.reply.attach(send_handles);
 
     ch.inflight[named.slot] = null;
+    // A slot freed is what a server waiting on a full table waits for.
+    _ = ch.recv_queue.wakeOne();
 
     c.done = true;
     _ = c.queue.wakeAll();

@@ -318,7 +318,6 @@ pub fn sys_recv(a: Args) Result {
     var got = channel_mod.recv(ch, deadlineFrom(a.a3)) catch |err| {
         return switch (err) {
             error.TimedOut => Errno.timedout.value(),
-            error.Busy => Errno.nomem.value(),
             else => Errno.io.value(),
         };
     };
