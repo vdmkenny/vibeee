@@ -438,7 +438,7 @@ Send a request and block until the server replies.
 - `EINVAL`, an argument is out of range
 - `EPIPE`, the far end of the channel has closed
 
-Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a shared ring, and the message carries the handle to that ring. Up to four handles travel with a message; the receiver gets fresh numbers for the same objects. EPIPE means the serving end closed.
+A payload is at most `MAX_PAYLOAD` bytes: anything larger is bulk data and belongs in a shared ring, and the message carries the handle to that ring. Up to four handles travel with a message; the receiver gets fresh numbers for the same objects. EPIPE means the serving end closed.
 
 ## `recv`  <sub>#25</sub>
 

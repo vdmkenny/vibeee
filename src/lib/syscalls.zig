@@ -1201,7 +1201,7 @@ pub const table = [_]Syscall{
         },
         .returns = "bytes of reply payload",
         .errors = &.{ E.badf, E.fault, E.inval, E.pipe },
-        .notes = "Payloads are capped at 64 bytes: anything larger is bulk data and belongs in a " ++
+        .notes = "A payload is at most `MAX_PAYLOAD` bytes: anything larger is bulk data and belongs in a " ++
             "shared ring, and the message carries the handle to that ring. Up to four handles " ++
             "travel with a message; the receiver gets fresh numbers for the same objects. " ++
             "EPIPE means the serving end closed.",

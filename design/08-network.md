@@ -349,45 +349,64 @@ before it reaches the driver; what arrives is opened and undressed the same
 way. Doing it here rather than in a key cache means the cipher is the same
 whichever radio is underneath, at the cost of the processor doing the work.
 
+What arrives is judged by the association and not by the frame. On a
+protected network every data frame is opened or dropped: a frame's own
+protected bit saying otherwise is a frame anybody in earshot could have sent.
+The one exception is the key exchange's own frames before the cell has shown
+it holds the keys, because an access point that did not hear the last frame
+of an exchange sends its own again and sends it in the clear. Every accepted
+frame's packet number is remembered, per traffic class under this station's
+key and per index under the room's, so a recorded frame played back is not
+delivered a second time; a group key arrives with the number its access point
+had reached under it, and a key replaced under an index that already had one
+starts its count again while the key it replaced is read until a frame
+arrives under the new one.
+
 How fast to speak comes from `lib/rates.zig`, which keeps a smoothed account
 per rate of how often a frame arrived and ranks rates by that chance over the
 air each takes. The hardware works down a series of four, and every step it
 worked past is reported as a rate that did not get through, so a fast rate
-rescued by its fallback is not credited for the rescue.
+rescued by its fallback is not credited for the rescue. Each step is reported
+with the number of goes it actually had, since what the account holds is the
+chance one go gets through and what it weighs that against is the air one go
+costs.
 
 ### 5.4 What the rest of the milestone owes
 
-- **The exchange itself.** The access point answers the authentication request
-  with sequence two, a success status and the cell address being joined, which
-  is every test `sawAuth` applies, and the join does not act on it. Three
-  attempts are made and two frames go out, which is one short and probably the
-  same fault: both follow from the exchange not being on the step it is thought
-  to be on when the service next runs it. The station reports the step it gave
-  up on and the step it was on when the answer arrived; those two settle it.
+- **The exchange, on the machine.** The access point answers the authentication
+  request with sequence two, a success status and the cell address being
+  joined, which is every test `sawAuth` applies, and the answer was not acted
+  on; three attempts were made and two frames went out. Two ordering faults
+  that would produce exactly that have been fixed: the service ran the join's
+  timers before reading what woke it, so an answer already in the card's memory
+  was drained into a join the timers had just given up on, and a deadline dated
+  before a blocking retune was short by however long the retune took. Neither
+  is confirmed as the cause, because none of this can be exercised in an
+  emulator and the machine has not been run since.
+- **Duration.** Every frame this station sends carries a duration of zero, so
+  no other station sets its virtual carrier sense for the acknowledgement that
+  follows. It needs the rate the frame will go at, which is chosen after the
+  frame is built, so the field is written where the two meet.
 - **Association applied at association.** The radio is told the cell's address
   before authenticating, and the number the cell gives this station only once
   the key exchange finishes. The access point considers the station associated
   from its association response onward, so the hardware should be told then.
-- **The last frame of the key exchange.** The join reports itself joined on the
-  pass after it hands over the fourth key frame, without waiting for that frame
-  to be sent, let alone acknowledged. The radio reports what became of every
-  frame, so acknowledgement is available to wait on.
-- **Beacon tracking.** A software beacon-miss timer as the authority on whether
-  the cell is still there.
+- **The security element inside message three** is not compared with the one
+  the network advertised. Under a pre-shared key the comparison buys little,
+  since nobody without the key can produce that message and anybody with it can
+  make both halves agree; it is owed for the day this station speaks anything
+  but a pre-shared key.
+- **Fragments and aggregates** are refused rather than reassembled, both ways.
+  A cell that fragments is a cell this station cannot talk to.
 - **Hardware CCMP** through the key cache where the store permits it, with the
   software cipher as fallback and oracle. What runs now is the software cipher
   for all traffic, which costs the processor and is the same whichever radio is
   underneath.
-- **Per-rate transmit power.** The amplifier's own table is programmed from the
-  store's curves; the four registers that cap power per rate are not, so those
-  caps stand at whatever the reset leaves. The spur-immunity settings a 5.3
-  store carries, and the self-test the reference runs at attach, are owed with
-  them.
+- **The spur-immunity settings a 5.3 store carries**, and the self-test the
+  reference runs at attach. The amplifier's table and the per-rate power
+  registers are programmed; these are what is left of that section.
 - **The control rate for acknowledgements**, which is taken from the register as
   the reset left it rather than chosen from the cell's basic rates.
-- **Transmit end-of-list and underrun** are neither asked for nor acted on. A
-  queue that reaches the end of its chain between a frame being linked on and
-  the queue being told is a queue that can stall.
 - **Kill switch**: the hot-unplug is recognised; the replug that re-runs the
   whole pipeline from power-on state is not yet wired to the device manager's
   rescan.
