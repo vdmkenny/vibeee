@@ -390,7 +390,9 @@ const EndpointCapabilities = packed struct(u32) {
     complete_mask: u8 = 0,
     hub_address: u7 = 0,
     port: u7 = 0,
-    /// Transactions per microframe; one is the only value used here.
+    /// Transactions per microframe, as the endpoint's descriptor asked for
+    /// it. One for everything but a high-speed endpoint wanting more
+    /// bandwidth than a single packet a microframe gives it.
     multiplier: u2 = 1,
 };
 
@@ -511,11 +513,11 @@ fn speedOf(speed: usb.Speed) EndpointSpeed {
 /// full speed and comes back later for the answer. Naming the hub and its
 /// port is the whole of what this side has to do about it.
 fn reach(pipe: usb.Pipe) EndpointCapabilities {
-    if (!pipe.route.splits(pipe.speed, .high)) return .{ .multiplier = 1 };
+    if (!pipe.route.splits(pipe.speed, .high)) return .{ .multiplier = pipe.per_microframe };
     return .{
         .hub_address = pipe.route.hub,
         .port = pipe.route.port,
-        .multiplier = 1,
+        .multiplier = pipe.per_microframe,
     };
 }
 

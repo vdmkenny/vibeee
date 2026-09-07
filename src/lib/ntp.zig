@@ -17,10 +17,28 @@ pub const EPOCH_DELTA: u64 = 2_208_988_800;
 
 pub const PORT: u16 = 123;
 
+/// The first byte: which mode this packet is, which version of the protocol
+/// wrote it, and whether the server is warning of a leap second.
+///
+/// Named rather than a byte with three accessors reading it back out. The
+/// fields are what the protocol defines; the byte is only how they travel.
+pub const Flags = packed struct(u8) {
+    mode: u3 = 0,
+    version: u3 = 0,
+    leap: u2 = 0,
+};
+
+/// The version this asks in and the highest it accepts an answer in.
+pub const VERSION: u3 = 4;
+/// A question from a client, and an answer from a server.
+pub const CLIENT_MODE: u3 = 3;
+pub const SERVER_MODE: u3 = 4;
+/// The leap indicator a server sets when its own clock is not synchronised.
+pub const ALARM: u2 = 3;
+
 /// The packet, which is the same shape in both directions.
 pub const Packet = extern struct {
-    /// Leap indicator, version and mode, packed into one byte.
-    flags: u8 = 0,
+    flags: Flags = .{},
     stratum: u8 = 0,
     poll: i8 = 0,
     precision: i8 = 0,
@@ -36,21 +54,9 @@ pub const Packet = extern struct {
 
     pub const BYTES = 48;
 
-    /// A client's question: version 4, mode 3, and nothing else worth saying.
+    /// A client's question: nothing to say beyond who is asking.
     pub fn request() Packet {
-        return .{ .flags = (4 << 3) | 3 };
-    }
-
-    pub fn mode(self: Packet) u3 {
-        return @truncate(self.flags);
-    }
-
-    pub fn version(self: Packet) u3 {
-        return @truncate(self.flags >> 3);
-    }
-
-    pub fn leap(self: Packet) u2 {
-        return @truncate(self.flags >> 6);
+        return .{ .flags = .{ .version = VERSION, .mode = CLIENT_MODE } };
     }
 
     pub fn bytes(self: *const Packet) []const u8 {
@@ -121,9 +127,9 @@ pub fn why(refusal: Refusal) []const u8 {
 pub fn timeFrom(datagram: []const u8) Refusal!i64 {
     const packet = Packet.parse(datagram) orelse return error.TooShort;
 
-    if (packet.mode() != 4) return error.NotAServer;
-    if (packet.version() < 3 or packet.version() > 4) return error.WrongVersion;
-    if (packet.leap() == 3) return error.Alarm;
+    if (packet.flags.mode != SERVER_MODE) return error.NotAServer;
+    if (packet.flags.version < 3 or packet.flags.version > VERSION) return error.WrongVersion;
+    if (packet.flags.leap == ALARM) return error.Alarm;
     if (packet.stratum == 0 or packet.stratum > 15) return error.Unsynchronised;
 
     return packet.transmit.micros() orelse error.NoTimestamp;
@@ -135,7 +141,7 @@ pub fn timeFrom(datagram: []const u8) Refusal!i64 {
 
 const testing = std.testing;
 
-fn answer(stratum: u8, seconds: u32, fraction: u32, flags: u8) [Packet.BYTES]u8 {
+fn answer(stratum: u8, seconds: u32, fraction: u32, flags: Flags) [Packet.BYTES]u8 {
     var packet = Packet{ .flags = flags, .stratum = stratum };
     packet.transmit = .{ .seconds = @byteSwap(seconds), .fraction = @byteSwap(fraction) };
     var raw: [Packet.BYTES]u8 = undefined;
@@ -145,21 +151,21 @@ fn answer(stratum: u8, seconds: u32, fraction: u32, flags: u8) [Packet.BYTES]u8 
 
 test "a question says what it is" {
     const asked = Packet.request();
-    try testing.expectEqual(@as(u3, 4), asked.version());
-    try testing.expectEqual(@as(u3, 3), asked.mode());
+    try testing.expectEqual(@as(u3, VERSION), asked.flags.version);
+    try testing.expectEqual(@as(u3, CLIENT_MODE), asked.flags.mode);
     try testing.expectEqual(@as(usize, 48), asked.bytes().len);
 }
 
 test "an answer becomes microseconds since 1970" {
     // 2024-01-01 00:00:00 UTC is 1704067200 in Unix time.
-    const raw = answer(2, @intCast(1_704_067_200 + EPOCH_DELTA), 0, (4 << 3) | 4);
+    const raw = answer(2, @intCast(1_704_067_200 + EPOCH_DELTA), 0, .{ .version = VERSION, .mode = SERVER_MODE });
     const when = try timeFrom(&raw);
     try testing.expectEqual(@as(i64, 1_704_067_200 * 1_000_000), when);
 }
 
 test "the fraction is a fraction of a second" {
     // Half a second is the top bit of the fraction.
-    const raw = answer(2, @intCast(1_704_067_200 + EPOCH_DELTA), 1 << 31, (4 << 3) | 4);
+    const raw = answer(2, @intCast(1_704_067_200 + EPOCH_DELTA), 1 << 31, .{ .version = VERSION, .mode = SERVER_MODE });
     const when = try timeFrom(&raw);
     try testing.expectEqual(@as(i64, 1_704_067_200 * 1_000_000 + 500_000), when);
 }
@@ -169,17 +175,25 @@ test "a server that does not know the time is not believed" {
 
     // Stratum zero: the server is telling us it is unsynchronised, however
     // plausible its timestamp looks.
-    try testing.expectError(error.Unsynchronised, timeFrom(&answer(0, good, 0, (4 << 3) | 4)));
+    const server = Flags{ .version = VERSION, .mode = SERVER_MODE };
+    try testing.expectError(error.Unsynchronised, timeFrom(&answer(0, good, 0, server)));
 
     // Leap indicator 3: the alarm condition, which means the same thing.
-    try testing.expectError(error.Alarm, timeFrom(&answer(2, good, 0, (3 << 6) | (4 << 3) | 4)));
+    try testing.expectError(error.Alarm, timeFrom(&answer(2, good, 0, .{
+        .leap = ALARM,
+        .version = VERSION,
+        .mode = SERVER_MODE,
+    })));
 
     // Mode 3 is a question, not an answer: a reply that is somebody else's
     // request is not a reply.
-    try testing.expectError(error.NotAServer, timeFrom(&answer(2, good, 0, (4 << 3) | 3)));
+    try testing.expectError(error.NotAServer, timeFrom(&answer(2, good, 0, .{
+        .version = VERSION,
+        .mode = CLIENT_MODE,
+    })));
 
     // A timestamp before the NTP epoch is not a time.
-    try testing.expectError(error.NoTimestamp, timeFrom(&answer(2, 0, 0, (4 << 3) | 4)));
+    try testing.expectError(error.NoTimestamp, timeFrom(&answer(2, 0, 0, server)));
 }
 
 test "a short datagram is refused rather than read past" {

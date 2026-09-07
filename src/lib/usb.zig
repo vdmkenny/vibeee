@@ -37,6 +37,22 @@ pub const Direction = enum(u1) {
     in = 1,
 };
 
+/// An endpoint's address as the wire writes it: the number, and the direction
+/// in the top bit.
+///
+/// A struct rather than the two halves put together by hand at each use. Three
+/// places built this byte with the same shift, and the one with a test was not
+/// the one that ran on hardware.
+pub const EndpointAddress = packed struct(u8) {
+    number: u4 = 0,
+    _reserved: u3 = 0,
+    direction: Direction = .out,
+
+    pub fn byte(self: EndpointAddress) u8 {
+        return @bitCast(self);
+    }
+};
+
 pub const RequestKind = enum(u2) {
     standard = 0,
     class = 1,
@@ -357,12 +373,27 @@ pub const TransferKind = enum(u2) {
     }
 };
 
+/// The packet-size word of an endpoint descriptor.
+///
+/// The size is eleven bits; the two above it say how many transactions a
+/// high-speed device wants per microframe, counted from zero. Kept as a shape
+/// rather than masked off, because the controller that schedules the polling
+/// has a field for it and could only ever fill it with one.
+pub const MaxPacket = packed struct(u16) {
+    size: u11 = 0,
+    per_microframe: u2 = 0,
+    _reserved: u3 = 0,
+};
+
 pub const Endpoint = struct {
     /// The endpoint's number, without the direction bit.
     number: u4 = 0,
     direction: Direction = .out,
     kind: TransferKind = .control,
     max_packet: u16 = 0,
+    /// How many transactions per microframe this endpoint wants, one for
+    /// everything but a high-speed device asking for more.
+    per_microframe: u2 = 1,
     /// Frames between polls, for the kinds that are polled.
     interval: u8 = 0,
 
@@ -371,21 +402,20 @@ pub const Endpoint = struct {
     pub fn parse(bytes: []const u8) ?Endpoint {
         if (bytes.len < BYTES) return null;
         if (bytes[1] != @intFromEnum(DescriptorType.endpoint)) return null;
+        const packet: MaxPacket = @bitCast(std.mem.readInt(u16, bytes[4..6], .little));
         return .{
             .number = @truncate(bytes[2]),
             .direction = if (bytes[2] & 0x80 != 0) .in else .out,
             .kind = @enumFromInt(@as(u2, @truncate(bytes[3]))),
-            // The top bits carry the transactions per microframe on a
-            // high-speed device; the size is the low eleven.
-            .max_packet = std.mem.readInt(u16, bytes[4..6], .little) & 0x7FF,
+            .max_packet = packet.size,
+            .per_microframe = packet.per_microframe + 1,
             .interval = bytes[6],
         };
     }
 
-    /// The address as the wire writes it: number, with the direction in
-    /// the top bit.
-    pub fn address(self: Endpoint) u8 {
-        return @as(u8, self.number) | (@as(u8, @intFromEnum(self.direction)) << 7);
+    /// The address as the wire writes it.
+    pub fn address(self: Endpoint) EndpointAddress {
+        return .{ .number = self.number, .direction = self.direction };
     }
 
     /// The pipe this endpoint becomes once a device owns it, which is
@@ -397,6 +427,7 @@ pub const Endpoint = struct {
             .direction = self.direction,
             .speed = speed,
             .max_packet = self.max_packet,
+            .per_microframe = self.per_microframe,
             .route = route,
         };
     }
@@ -485,6 +516,10 @@ pub const Pipe = struct {
     direction: Direction = .in,
     speed: Speed = .high,
     max_packet: u16 = 512,
+    /// How many transactions per microframe this endpoint asked for. One for
+    /// everything but a high-speed endpoint that wants more bandwidth than a
+    /// single packet a microframe gives it.
+    per_microframe: u2 = 1,
     toggle: bool = false,
     /// The hub this device hangs off, if any.
     route: Route = .{},
@@ -508,6 +543,12 @@ pub const Pipe = struct {
     pub fn resetToggle(self: *Pipe) void {
         self.toggle = false;
     }
+
+    /// The address as the wire writes it, which is what a request naming this
+    /// endpoint carries.
+    pub fn address_on_wire(self: Pipe) EndpointAddress {
+        return .{ .number = self.number, .direction = self.direction };
+    }
 };
 
 pub const Signature = struct {
@@ -518,25 +559,48 @@ pub const Signature = struct {
     product: u16 = 0,
 
     /// The signature as the two numbers a device-manager request carries.
-    /// Packed and unpacked in one place so the bus and the manager cannot
-    /// disagree about which byte is which.
+    ///
+    /// One shape for each word rather than a pair of functions built from
+    /// shifts: the packing runs in the bus service and the unpacking in the
+    /// device manager, across a channel, so a shift changed on one side would
+    /// compile, link, and bind the wrong driver. A cast between a struct and
+    /// its own bits cannot come apart that way.
     pub fn pack(self: Signature) Packed {
         return .{
-            .kind = @as(u32, @intFromEnum(self.class)) << 16 |
-                @as(u32, self.subclass) << 8 | self.protocol,
-            .part = @as(u32, self.vendor) << 16 | self.product,
+            .kind = @bitCast(Kind{
+                .protocol = self.protocol,
+                .subclass = self.subclass,
+                .class = self.class,
+            }),
+            .part = @bitCast(Part{ .product = self.product, .vendor = self.vendor }),
         };
     }
 
     pub fn unpack(numbers: Packed) Signature {
+        const kind: Kind = @bitCast(numbers.kind);
+        const part_of: Part = @bitCast(numbers.part);
         return .{
-            .class = @enumFromInt(@as(u8, @truncate(numbers.kind >> 16))),
-            .subclass = @truncate(numbers.kind >> 8),
-            .protocol = @truncate(numbers.kind),
-            .vendor = @truncate(numbers.part >> 16),
-            .product = @truncate(numbers.part),
+            .class = kind.class,
+            .subclass = kind.subclass,
+            .protocol = kind.protocol,
+            .vendor = part_of.vendor,
+            .product = part_of.product,
         };
     }
+
+    /// What a device is, in one word.
+    pub const Kind = packed struct(u32) {
+        protocol: u8 = 0,
+        subclass: u8 = 0,
+        class: Class = .per_interface,
+        _reserved: u8 = 0,
+    };
+
+    /// Which device it is, in the other.
+    pub const Part = packed struct(u32) {
+        product: u16 = 0,
+        vendor: u16 = 0,
+    };
 
     pub const Packed = struct { kind: u32, part: u32 };
 
@@ -951,10 +1015,10 @@ test "a configuration walks to its interface and its endpoints" {
     try std.testing.expectEqual(@as(u4, 1), endpoints[0].number);
     try std.testing.expectEqual(TransferKind.bulk, endpoints[0].kind);
     try std.testing.expectEqual(@as(u16, 512), endpoints[0].max_packet);
-    try std.testing.expectEqual(@as(u8, 0x81), endpoints[0].address());
+    try std.testing.expectEqual(@as(u8, 0x81), endpoints[0].address().byte());
 
     try std.testing.expectEqual(Direction.out, endpoints[1].direction);
-    try std.testing.expectEqual(@as(u8, 0x02), endpoints[1].address());
+    try std.testing.expectEqual(@as(u8, 0x02), endpoints[1].address().byte());
 }
 
 test "a device that says nothing is described by its interface" {
@@ -1145,7 +1209,7 @@ test "a descriptor's endpoint opens into a pipe on a device" {
     try std.testing.expectEqual(Direction.in, descriptor.direction);
     try std.testing.expectEqual(TransferKind.bulk, descriptor.kind);
     try std.testing.expectEqual(@as(u16, 512), descriptor.max_packet);
-    try std.testing.expectEqual(@as(u8, 0x81), descriptor.address());
+    try std.testing.expectEqual(@as(u8, 0x81), descriptor.address().byte());
 
     const pipe = descriptor.open(3, .high, .{});
     try std.testing.expectEqual(@as(u7, 3), pipe.address);

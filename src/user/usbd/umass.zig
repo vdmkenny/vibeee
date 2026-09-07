@@ -332,8 +332,7 @@ fn status(disk: *Disk, tag: u32) hc.Error!scsi.Verdict {
 /// Take a pipe out of its halt, and put the toggle back where the device
 /// has just put its own.
 fn clearHalt(disk: *Disk, pipe: *usb.Pipe) void {
-    const address = @as(u8, pipe.number) | (@as(u8, @intFromEnum(pipe.direction)) << 7);
-    hc.command(disk.ops, disk.zero(), usb.Setup.clearHalt(address)) catch {};
+    hc.command(disk.ops, disk.zero(), usb.Setup.clearHalt(pipe.address_on_wire().byte())) catch {};
     pipe.resetToggle();
 }
 
