@@ -86,6 +86,9 @@ pub const Terminal = struct {
 
     /// Set whenever anything changed, so a caller knows to redraw. Cleared by
     /// whoever acts on it.
+    /// Something changed that the screen has not been shown yet. Cleared
+    /// by whoever draws: a loop that woke on a timer with nothing to do
+    /// would otherwise walk every cell of the screen to find that out.
     dirty: bool = false,
     /// A scroll of the active screen since the last paint, so the renderer
     /// can move the pixels it already has rather than drawing every cell of
@@ -156,6 +159,7 @@ pub const Terminal = struct {
     // -----------------------------------------------------------------------
 
     pub fn write(self: *Terminal, bytes: []const u8) void {
+        if (bytes.len != 0) self.dirty = true;
         for (bytes) |byte| {
             if (self.state.next(byte)) |action| self.apply(action);
         }

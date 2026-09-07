@@ -63,6 +63,9 @@ export fn _start() callconv(.c) noreturn {
 fn forgetScreen() void {
     shadow.invalidate();
     terminal.scrolled = null;
+    // Nothing on the screen is what the shadow says, so it has to be drawn
+    // again whether or not anything was written.
+    terminal.dirty = true;
 }
 
 fn etermMain() noreturn {
@@ -229,7 +232,7 @@ fn run() noreturn {
         while (connection.poll()) |event| handle(event);
         // Anything the shell would not take earlier goes now, if it will.
         flushToShell();
-        redraw();
+        if (terminal.dirty) redraw();
     }
 }
 
