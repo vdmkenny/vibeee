@@ -8,6 +8,7 @@
 //! neither imports the other, and this file introduces them.
 
 const std = @import("std");
+const Bounded = @import("lib").bounded.Bounded;
 const console = @import("kernel/console.zig");
 const display = @import("kernel/display.zig");
 const input = @import("kernel/input.zig");
@@ -31,7 +32,7 @@ const block = @import("kernel/block.zig");
 const pci = @import("drv/bus/pci.zig");
 const sched = @import("kernel/sched.zig");
 const usermode = @import("arch/x86/usermode.zig");
-const elf = @import("kernel/elf.zig");
+const exec = @import("kernel/exec.zig");
 const heap = @import("kernel/heap.zig");
 const vfs = @import("kernel/vfs.zig");
 const hal = @import("kernel/hal.zig");
@@ -377,25 +378,6 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
 }
 
 /// Read a file into freshly allocated memory.
-fn readFile(path: []const u8) ?[]u8 {
-    const entry = vfs.stat(path) catch |err| {
-        console.warn("vfs: {s}: {s}", .{ path, @errorName(err) });
-        return null;
-    };
-
-    const buf = heap.allocator.alloc(u8, entry.size) catch {
-        console.warn("vfs: no memory for {s} ({d} bytes)", .{ path, entry.size });
-        return null;
-    };
-
-    const n = vfs.readFile(path, buf) catch |err| {
-        console.warn("vfs: reading {s}: {s}", .{ path, @errorName(err) });
-        heap.allocator.free(buf);
-        return null;
-    };
-    return buf[0..n];
-}
-
 fn reportStorage() void {
     const devs = block.list();
     if (devs.len == 0) {
@@ -512,6 +494,18 @@ fn walkAgain() void {
     probe.attachAll();
 }
 
+/// The USB controllers already taken from the firmware. A later walk of
+/// the bus meets them again, and must leave them to the driver that has
+/// them by then: handing one over twice resets a controller in use.
+var handed_over: Bounded(pci.Address, 16) = .{};
+
+fn handedOver(addr: pci.Address) bool {
+    for (handed_over.slice()) |done| {
+        if (std.meta.eql(done, addr)) return true;
+    }
+    return false;
+}
+
 fn enumeratePci() void {
     pci.enumerate(struct {
         fn found(addr: pci.Address, vendor: u16, device: u16) void {
@@ -523,10 +517,15 @@ fn enumeratePci() void {
             // management mode, polled on a periodic trap that shares its
             // interrupt plumbing with whatever else sits on those pins:
             // unmasking such a pin with the emulation live is a machine that
-            // stops. Handed over at boot; this machine's own keyboard is not
-            // USB, so nothing is lost but the trap.
-            if (class == 0x0C and subclass == 0x03) {
+            // stops. Handed over once, when the controller is first met;
+            // this machine's own keyboard is not USB, so nothing is lost
+            // but the trap.
+            if (class == 0x0C and subclass == 0x03 and !handedOver(addr)) {
                 handOverUsb(addr, @truncate((class_reg >> 8) & 0xFF));
+                handed_over.append(addr) catch console.warn(
+                    "usb: more controllers than are remembered; {x:0>2}:{x:0>2}.{d} is handed over on every walk",
+                    .{ addr.bus, addr.slot, addr.func },
+                );
             }
 
             probe.consider(.{
@@ -551,25 +550,10 @@ fn enumeratePci() void {
 /// back into the kernel is a trap. Runs from a thread so its kernel stack is the
 /// one the CPU switches to on that trap.
 pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
-    const image = readFile(path) orelse {
-        console.fail("user: cannot read {s}", .{path});
-        sched.exit();
-    };
-
-    var space = hal.AddressSpace.create() catch {
-        console.fail("user: cannot create address space", .{});
-        sched.exit();
-    };
-
-    const loaded = elf.load(&space, image) catch |err| {
-        console.fail("user: {s} loading {d}-byte image", .{ @errorName(err), image.len });
-        sched.exit();
-    };
-
     // The first program is started with nothing told to it: init is what
     // decides what the environment says, and it has not run yet.
-    const stack_top = usermode.setupStack(&space, args, &.{}) catch {
-        console.fail("user: cannot set up stack", .{});
+    var loaded = exec.load(path, args, &.{}) catch |err| {
+        console.fail("user: {s} loading {s}", .{ @errorName(err), path });
         sched.exit();
     };
 
@@ -578,7 +562,7 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
         sched.exit();
     };
 
-    console.debug("user", "entry {x:0>8}, {d} bytes", .{ loaded.entry, image.len });
+    console.debug("user", "entry {x:0>8}", .{loaded.entry});
 
     // This thread becomes process 1. Recording that is what lets the kernel
     // re-parent orphans onto it: a process whose parent has died still has
@@ -588,13 +572,13 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
 
     // From here the low half of the address space belongs to the process. The
     // thread records it too, so the scheduler restores it after any switch.
-    sched.setAddressSpace(t, space);
-    space.activate();
-    sched.noteAddressSpace(space.pd_phys);
+    sched.setAddressSpace(t, loaded.space);
+    loaded.space.activate();
+    sched.noteAddressSpace(loaded.space.pd_phys);
 
     usermode.enter(
         loaded.entry,
-        stack_top,
+        loaded.stack_top,
         @intFromPtr(t.stack.ptr) + t.stack.len,
     );
 }

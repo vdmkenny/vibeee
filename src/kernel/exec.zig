@@ -69,14 +69,17 @@ pub fn spawnAsync(
     return child.id;
 }
 
-/// Load a program and put it on the run queue.
-fn start(
-    path: []const u8,
-    args: []const []const u8,
-    env: []const []const u8,
-    stdio: Stdio,
-    caps: abi.Caps,
-) Error!*sched.Thread {
+/// A program read into an address space of its own, with its arguments
+/// and environment on the stack: everything a thread needs to enter it.
+pub const Loaded = struct {
+    space: hal.AddressSpace,
+    entry: usize,
+    stack_top: usize,
+};
+
+/// Read `path` into a fresh address space. The file is held only while it
+/// is being laid out: what the loader copied out is the program.
+pub fn load(path: []const u8, args: []const []const u8, env: []const []const u8) Error!Loaded {
     const entry = vfs.stat(path) catch return error.NotFound;
     if (entry.is_dir or entry.size == 0) return error.BadImage;
 
@@ -88,11 +91,24 @@ fn start(
     var space = hal.AddressSpace.create() catch return error.OutOfMemory;
     errdefer space.destroy();
 
-    const loaded = elf.load(&space, image[0..n]) catch return error.BadImage;
+    const laid_out = elf.load(&space, image[0..n]) catch return error.BadImage;
     const stack_top = hal.setupUserStack(&space, args, env) catch return error.OutOfMemory;
+    return .{ .space = space, .entry = laid_out.entry, .stack_top = stack_top };
+}
+
+/// Load a program and put it on the run queue.
+fn start(
+    path: []const u8,
+    args: []const []const u8,
+    env: []const []const u8,
+    stdio: Stdio,
+    caps: abi.Caps,
+) Error!*sched.Thread {
+    var loaded = try load(path, args, env);
+    errdefer loaded.space.destroy();
 
     const request = heap.allocator.create(Request) catch return error.OutOfMemory;
-    request.* = .{ .entry = loaded.entry, .stack_top = stack_top, .space = space };
+    request.* = .{ .entry = loaded.entry, .stack_top = loaded.stack_top, .space = loaded.space };
 
     const child = sched.spawnAwaited(nameOf(path), .normal, childEntry, @intFromPtr(request), 16384) catch {
         heap.allocator.destroy(request);
