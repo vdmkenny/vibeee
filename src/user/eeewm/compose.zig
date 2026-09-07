@@ -8,6 +8,7 @@
 //! table have to be reordered in step with it, and once they were not: two
 //! windows drew each other's pixels.
 
+const sys = @import("sys");
 const eui = @import("eui");
 
 const Rect = eui.Rect;
@@ -17,11 +18,22 @@ pub const Surface = struct {
     width: u16 = 0,
     height: u16 = 0,
     stride: u16 = 0,
-    /// Held so the mapping survives; released when the window goes.
+    /// The client's segment, held so the compositor may read it.
     handle: u32 = 0,
 
     pub fn valid(self: Surface) bool {
         return self.pixels != null and self.width > 0 and self.height > 0;
+    }
+
+    /// Let the client's pixels go: the mapping first, then the handle.
+    ///
+    /// Both, because either alone keeps the frames. A window resized often
+    /// enough left a megabyte and a half behind on every attach, and a
+    /// client that exited left its last surface there for good.
+    pub fn release(self: *Surface) void {
+        if (self.pixels) |at| _ = sys.shmUnmap(@ptrCast(at));
+        if (self.handle != 0) _ = sys.close(self.handle);
+        self.* = .{};
     }
 };
 

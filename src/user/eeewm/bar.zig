@@ -50,11 +50,23 @@ const Surface = draw.Surface;
 /// because the bar's position appears in painting, in hit testing, in where a
 /// menu drops and in how much room the tiles get, and four copies of that
 /// arithmetic is four chances to disagree.
-pub fn band(screen_h: i32) Rect {
+pub fn band(screen_w: i32, screen_h: i32) Rect {
+    const at = edge(screen_h);
+    // As wide as the screen, because that is what it is: given no width, a
+    // caller cutting the band out of the desktop cut nothing, and the strip
+    // was filled with the wallpaper on every repaint and covered again a
+    // moment later, which on a panel with one buffer is a flash of the
+    // desktop colour across the bar.
+    return .{ .x = 0, .y = at.y, .w = screen_w, .h = at.h };
+}
+
+/// How tall the strip is and where its top edge sits: the band without its
+/// width, for the questions that are only about the vertical.
+fn edge(screen_h: i32) struct { y: i32, h: i32 } {
     const height = theme.current().bar_height;
     return switch (settings.current().bar) {
-        .top => .{ .x = 0, .y = 0, .w = 0, .h = height },
-        .bottom => .{ .x = 0, .y = screen_h - height, .w = 0, .h = height },
+        .top => .{ .y = 0, .h = height },
+        .bottom => .{ .y = screen_h - height, .h = height },
     };
 }
 
@@ -72,8 +84,8 @@ pub fn contentArea(screen_w: i32, screen_h: i32) Rect {
 
 /// Whether a point is on the bar. Vertical only: the strip spans the width.
 pub fn contains(y: i32, screen_h: i32) bool {
-    const area = band(screen_h);
-    return y >= area.y and y < area.y + area.h;
+    const at = edge(screen_h);
+    return y >= at.y and y < at.y + at.h;
 }
 
 /// Widest a tab gets. Narrow enough that several fit, wide enough that a name
@@ -718,7 +730,7 @@ fn launcherPanel(width: i32, height: i32) Launcher {
     // than the machine it is on is a panel with its right half missing.
     const margin = t.menu_padding * 2;
     const panel_w = @min(theme.enlarged(LAUNCHER_WIDTH), width - margin);
-    const most = @min(theme.enlarged(LAUNCHER_HEIGHT), height - band(height).h - margin);
+    const most = @min(theme.enlarged(LAUNCHER_HEIGHT), height - edge(height).h - margin);
 
     // As tall as what it is showing, and never taller than the design's own
     // size. The top stays where the tallest panel's top would be, so a list
@@ -883,29 +895,48 @@ pub fn unfocus() void {
 // next to the one that was clicked.
 // ---------------------------------------------------------------------------
 
-fn tabWidth(width: i32, height: i32, count: u8) i32 {
-    var buf: [status.MAX]status.Slot = undefined;
-    const slots = statusSlots(width, height, &buf);
-    const available = status.leftEdge(.{ .x = 0, .y = 0, .w = width, .h = 0 }, slots) -
-        launchWidth() - addWidth();
-    const each = @divTrunc(available, @as(i32, count));
-    return @max(tabMinWidth(), @min(each, tabMaxWidth()));
-}
+/// Where the tabs sit, worked out once.
+///
+/// Every answer runs the whole status layout, which measures the clock and
+/// the battery reading: asked per tab, one repaint of a bar with nine
+/// desktops laid the status strip out eleven times and measured the same
+/// two strings twenty-two times.
+const Tabs = struct {
+    each: i32,
+    y: i32,
+    h: i32,
+
+    fn measure(width: i32, height: i32, count: u8) Tabs {
+        const t = theme.current();
+        var buf: [status.MAX]status.Slot = undefined;
+        const slots = statusSlots(width, height, &buf);
+        const available = status.leftEdge(.{ .x = 0, .y = 0, .w = width, .h = 0 }, slots) -
+            launchWidth() - addWidth();
+        const each = @divTrunc(available, @as(i32, @max(count, 1)));
+        return .{
+            .each = @max(tabMinWidth(), @min(each, tabMaxWidth())),
+            .y = edge(height).y,
+            .h = t.bar_height - 1,
+        };
+    }
+
+    fn at(self: Tabs, index: u8) Rect {
+        return .{
+            .x = launchWidth() + @as(i32, index) * self.each,
+            .y = self.y,
+            .w = self.each,
+            .h = self.h,
+        };
+    }
+};
 
 fn launchRect(screen_h: i32) Rect {
     const t = theme.current();
-    return .{ .x = 0, .y = band(screen_h).y, .w = launchWidth(), .h = t.bar_height - 1 };
+    return .{ .x = 0, .y = edge(screen_h).y, .w = launchWidth(), .h = t.bar_height - 1 };
 }
 
 fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
-    const t = theme.current();
-    const each = tabWidth(width, height, count);
-    return .{
-        .x = launchWidth() + @as(i32, index) * each,
-        .y = band(height).y,
-        .w = each,
-        .h = t.bar_height - 1,
-    };
+    return Tabs.measure(width, height, count).at(index);
 }
 
 // ---------------------------------------------------------------------------
@@ -914,7 +945,8 @@ fn tabRect(width: i32, height: i32, count: u8, index: u8) Rect {
 
 pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
     const t = theme.current();
-    const area = band(height);
+    const at = edge(height);
+    const area = Rect{ .x = 0, .y = at.y, .w = width, .h = at.h };
     const top = settings.current().bar == .top;
 
     surface.fill(.{ .x = 0, .y = area.y, .w = width, .h = t.bar_height }, t.bar);
@@ -931,13 +963,9 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
 
     var tags: [layout.MAX_DESKTOPS]u8 = undefined;
     const shown = desktop.activeList(&tags);
+    const tabs = Tabs.measure(width, height, @intCast(shown.len));
     for (shown, 0..) |tag, position| {
-        paintTab(
-            surface,
-            tabRect(width, height, @intCast(shown.len), @intCast(position)),
-            desktop,
-            tag,
-        );
+        paintTab(surface, tabs.at(@intCast(position)), desktop, tag);
     }
 
     paintAdd(surface, width, height, desktop);
@@ -949,7 +977,7 @@ pub fn paint(surface: Surface, width: i32, height: i32, desktop: *const layout.D
 /// One list, read by the painter and by the hit test, so a screen too narrow
 /// for all of them drops the same one from both.
 pub fn statusSlots(width: i32, height: i32, into: []status.Slot) []status.Slot {
-    const area = Rect{ .x = 0, .y = band(height).y, .w = width, .h = theme.current().bar_height };
+    const area = Rect{ .x = 0, .y = edge(height).y, .w = width, .h = theme.current().bar_height };
     var wanted: [status.MAX]status.Indicator = undefined;
     return status.place(area, shownNow(&wanted), into);
 }
@@ -999,7 +1027,7 @@ fn addRect(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
     var tags: [layout.MAX_DESKTOPS]u8 = undefined;
     const shown = desktop.activeList(&tags);
     const last = tabRect(width, height, @intCast(shown.len), @intCast(shown.len - 1));
-    return .{ .x = last.right(), .y = band(height).y, .w = addWidth(), .h = t.bar_height - 1 };
+    return .{ .x = last.right(), .y = edge(height).y, .w = addWidth(), .h = t.bar_height - 1 };
 }
 
 /// A plus, drawn rather than lettered: at this size two strokes read better
@@ -1421,7 +1449,7 @@ fn netPanel(width: i32, height: i32) Rect {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
 
-    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
+    var anchor = Rect{ .x = width, .y = edge(height).y, .w = 0, .h = theme.current().bar_height };
     for (slots) |slot| {
         if (slot.which == .network) anchor = slot.area;
     }
@@ -1687,7 +1715,7 @@ fn powerPanel(width: i32, height: i32) Rect {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
 
-    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
+    var anchor = Rect{ .x = width, .y = edge(height).y, .w = 0, .h = theme.current().bar_height };
     for (slots) |slot| {
         if (slot.which == .battery) anchor = slot.area;
     }
@@ -1817,7 +1845,7 @@ fn soundPanel(width: i32, height: i32) Rect {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
 
-    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
+    var anchor = Rect{ .x = width, .y = edge(height).y, .w = 0, .h = theme.current().bar_height };
     for (slots) |slot| {
         if (slot.which == .sound) anchor = slot.area;
     }
@@ -2022,7 +2050,7 @@ fn clockPanel(width: i32, height: i32) Rect {
     var buf: [status.MAX]status.Slot = undefined;
     const slots = statusSlots(width, height, &buf);
 
-    var anchor = Rect{ .x = width, .y = band(height).y, .w = 0, .h = theme.current().bar_height };
+    var anchor = Rect{ .x = width, .y = edge(height).y, .w = 0, .h = theme.current().bar_height };
     for (slots) |slot| {
         if (slot.which == .clock) anchor = slot.area;
     }
@@ -2249,29 +2277,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
 
     var status_buf: [status.MAX]status.Slot = undefined;
     if (status.at(statusSlots(width, height, &status_buf), x, y)) |which| {
-        switch (which) {
-            .sound => {
-                readSound();
-                sound_open = true;
-                sound_menu.show();
-            },
-            .network => {
-                readNetwork();
-                net_open = true;
-                net_menu.show();
-            },
-            .battery => {
-                readPower();
-                power_open = true;
-                power_menu.show();
-            },
-            .clock => {
-                readClock();
-                readClockSource();
-                clock_open = true;
-                clock_menu.show();
-            },
-        }
+        openStatus(which);
         return .consumed;
     }
 
@@ -2287,8 +2293,9 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
 
     var tags: [layout.MAX_DESKTOPS]u8 = undefined;
     const shown = desktop.activeList(&tags);
+    const tabs = Tabs.measure(width, height, @intCast(shown.len));
     for (shown, 0..) |tag, position| {
-        const area = tabRect(width, height, @intCast(shown.len), @intCast(position));
+        const area = tabs.at(@intCast(position));
         if (!area.contains(x, y)) continue;
 
         // Right-click closes the desktop; the marker opens its menu; the rest
@@ -2604,6 +2611,10 @@ fn menuKey(code: sys.KeyCode, desktop: *layout.Desktop, tab: u8) KeyResult {
 
     switch (window_menu.key(code, rows[0..list.len])) {
         .chosen => {
+            // Against the list as it is now: a window on this tab can exit
+            // while its menu stands, and the highlight is not moved when it
+            // does, so the chosen row could name a window past the end.
+            if (window_menu.selected >= list.len) return .ignored;
             desktop.viewWindow(list[window_menu.selected]);
             unfocus();
             return .released;

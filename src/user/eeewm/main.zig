@@ -187,7 +187,7 @@ fn paint() void {
     // buffer. What the windows do not cover is arithmetic, so it is done
     // before anything is painted rather than paid for in pixels.
     var bare = region.Region.of(.{ .x = 0, .y = 0, .w = info.width, .h = info.height });
-    bare.subtract(bar.band(info.height));
+    bare.subtract(bar.band(info.width, info.height));
     for (visible) |index| bare.subtract(desktop.windows[index].area);
     const wall = wallpaper();
     for (bare.items()) |piece| screen.fill(piece, wall);
@@ -432,10 +432,15 @@ fn run() noreturn {
         }
 
         const moves = sys.pointerRead(&pointer_events, sys.POLL);
+        // Only a pointer that actually went somewhere: erasing and redrawing
+        // the cursor is a read of the framebuffer and up to two writes per
+        // pixel of it, and a button press or a wheel notch moves nothing.
         var moved = false;
         for (moves) |event| {
+            const was_x = pointer_x;
+            const was_y = pointer_y;
             handlePointer(event);
-            moved = true;
+            if (pointer_x != was_x or pointer_y != was_y) moved = true;
         }
 
         if (dirty) {
@@ -627,11 +632,16 @@ fn checkPack() void {
 /// Repaint the bar and nothing else. It fills its own band, so nothing has
 /// to be cleared first; only the cursor has to be lifted if it is in the way.
 fn paintBar() void {
-    const band = bar.band(info.height);
-    const covered = cursor.covers(.{ .x = 0, .y = band.y, .w = info.width, .h = band.h });
+    // A panel reaches well outside the strip, so with one open the pointer
+    // is lifted whatever it is over. Tested against the strip alone, a
+    // clock menu redrawn once a second painted over the pointer where it
+    // stood, and the next motion stamped the stale pixels under it back
+    // into the menu.
+    const panelled = bar.menuOpen();
+    const covered = panelled or cursor.covers(bar.band(info.width, info.height));
     if (covered) cursor.hide(screen);
     bar.paint(screen, info.width, info.height, &desktop);
-    if (bar.menuOpen()) bar.paintOverlay(screen, info.width, info.height, &desktop);
+    if (panelled) bar.paintOverlay(screen, info.width, info.height, &desktop);
     if (covered) cursor.show(screen, pointer_x, pointer_y);
 }
 
@@ -669,7 +679,21 @@ fn handleKey(event: sys.KeyEvent) void {
     // told by keyboard, which is the point of it holding focus at all.
     if (bar.hasFocus()) {
         switch (bar.key(code, event.codepoint, mods, &desktop)) {
-            .handled, .released => {
+            // Still in the bar: the panel and the pointer, as a menu
+            // following the pointer already does. A character typed into
+            // the launcher or a highlight moved one row repainted the
+            // desktop, every window on it, the bar and the overlay.
+            .handled => {
+                apply(bar.takePending());
+                // The bar and its panel, which is all a key it handled can
+                // have changed: a character typed into the launcher or a
+                // highlight moved one row repainted the desktop, every
+                // window on it, the bar and the overlay.
+                paintBar();
+                return;
+            },
+            // Done with: what it was in front of has to come back.
+            .released => {
                 apply(bar.takePending());
                 dirty = true;
                 return;
@@ -1057,7 +1081,7 @@ fn onAttach(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
 
     // The previous surface is released only now, so there is never a moment
     // with nothing to composite from.
-    if (desktop.windows[index].surface.handle != 0) _ = sys.close(desktop.windows[index].surface.handle);
+    desktop.windows[index].surface.release();
     desktop.windows[index].surface = surface;
     dirty = true;
 
@@ -1099,8 +1123,7 @@ fn onMap(pid: u32, req: *const wire.Req) Answer {
 fn onDestroy(pid: u32, req: *const wire.Req) Answer {
     const index = desktop.byClient(pid, req.win) orelse return refuse(.no_window);
 
-    if (desktop.windows[index].surface.handle != 0) _ = sys.close(desktop.windows[index].surface.handle);
-    desktop.windows[index].surface = .{};
+    desktop.windows[index].surface.release();
     desktop.close(index);
     dirty = true;
 
@@ -1304,8 +1327,7 @@ fn forgetClient(pid: u32) void {
 /// Take a window away without asking. For a client that has gone, or one that
 /// refused to.
 fn dropWindow(index: usize) void {
-    if (desktop.windows[index].surface.handle != 0) _ = sys.close(desktop.windows[index].surface.handle);
-    desktop.windows[index].surface = .{};
+    desktop.windows[index].surface.release();
     desktop.close(index);
     dirty = true;
 }

@@ -109,6 +109,7 @@ pub const Table = struct {
 
             const header: *volatile ring.Header = @ptrCast(@alignCast(base));
             c.events = ring.Ring.init(header, base[4096 .. 4096 + wm.EVENT_RING_BYTES]) catch {
+                _ = sys.shmUnmap(base);
                 _ = sys.close(@intCast(handle));
                 c.* = .{};
                 return null;
@@ -116,6 +117,7 @@ pub const Table = struct {
 
             const signal = sys.eventCreate();
             if (signal < 0) {
+                _ = sys.shmUnmap(base);
                 _ = sys.close(@intCast(handle));
                 c.* = .{};
                 return null;
@@ -133,6 +135,10 @@ pub const Table = struct {
     pub fn evict(self: *Table, pid: u32) void {
         const c = self.find(pid) orelse return;
 
+        // The ring's mapping as well as its handle: either alone keeps the
+        // frames, so a session of programs opening and closing left a ring
+        // behind for each of them.
+        if (c.ready) _ = sys.shmUnmap(@ptrFromInt(@intFromPtr(c.events.header)));
         if (c.events_handle != 0) _ = sys.close(c.events_handle);
         if (c.signal != 0) _ = sys.close(c.signal);
         c.* = .{};
