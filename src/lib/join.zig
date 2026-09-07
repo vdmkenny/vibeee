@@ -24,6 +24,16 @@ const wpa2 = @import("wpa2.zig");
 /// How long an answer is waited for before the step is tried again.
 pub const REPLY_MICROS: u64 = 300_000;
 
+/// How long a joined station goes without hearing its access point before
+/// it takes the connection for gone.
+///
+/// An access point beacons about ten times a second, and a station hears
+/// its own traffic besides. Silence this long is not a lost frame or two:
+/// it is an access point that has been switched off, moved out of earshot,
+/// or rebooted without saying goodbye. Waiting it out is what stops an
+/// interface standing connected with nothing on the other end.
+pub const SILENCE_MICROS: u64 = 6_000_000;
+
 /// How many times a step is tried before the join is given up. The air is
 /// lossy and a frame going missing is ordinary; an access point that has
 /// answered none of three is one that is not going to.
@@ -55,6 +65,14 @@ pub const Failure = enum {
     unsupported,
     /// It needs a key and none was configured.
     no_key,
+    /// A key is configured and the network offering that name has no
+    /// protection at all. A station that joined it anyway would put the
+    /// traffic somebody meant to protect into the clear.
+    unprotected,
+    /// The radio could not be pointed at the channel it was heard on.
+    untuned,
+    /// It was joined, and the access point ended it or stopped speaking.
+    disconnected,
     /// The access point refused.
     refused,
     /// It stopped answering.
@@ -68,6 +86,9 @@ pub const Failure = enum {
         return switch (self) {
             .unsupported => "its protection is not one this system speaks",
             .no_key => "it needs a key and none is set",
+            .unprotected => "it is open and a password is set for it",
+            .untuned => "the radio could not be tuned to its channel",
+            .disconnected => "the access point ended it",
             .refused => "the access point refused",
             .timed_out => "it stopped answering",
             .bad_key => "the key was not accepted",
@@ -125,6 +146,11 @@ pub const Join = struct {
     /// What is wanted, and what to join it with.
     want: wifi.Ssid = .{},
     psk: wifi.Psk = .none,
+    /// Where in the world the radio is, which decides the channels it may
+    /// be pointed at. A network heard on a channel outside the plan is one
+    /// this station does not answer: hearing a frame is not permission to
+    /// transmit one.
+    plan: wifi.Regulatory = .conservative,
     /// This station's nonce for the key exchange. Drawn by the caller,
     /// because a value cannot draw a random number and stay one.
     snonce: wpa2.Nonce = @splat(0),
@@ -150,7 +176,13 @@ pub const Join = struct {
     left: u8 = 0,
     /// The keys, once the exchange has finished, held until the caller is
     /// told to install them.
-    earned: ?wpa2.Handshake.Keys = null,
+    earned: ?wpa2.Keys = null,
+    /// Keys an exchange has proved but which are not in use yet. The frame
+    /// that proves them goes out under the keys the access point still
+    /// holds, so they are taken up once it has gone and not before: a
+    /// frame sealed with a key the far end has not acknowledged is a frame
+    /// nobody can read.
+    pending: ?wpa2.Keys = null,
     /// The last frame of the exchange has been handed over, so the join is
     /// finished on the next look.
     settling: bool = false,
@@ -159,14 +191,16 @@ pub const Join = struct {
 
     /// Ask to join a network. `snonce` is this station's nonce for the key
     /// exchange, which the caller draws.
-    pub fn wants(self: *Join, ssid: wifi.Ssid, psk: wifi.Psk, snonce: wpa2.Nonce) void {
+    pub fn wants(self: *Join, ssid: wifi.Ssid, psk: wifi.Psk, plan: wifi.Regulatory, snonce: wpa2.Nonce) void {
         self.want = ssid;
         self.psk = psk;
+        self.plan = plan;
         self.snonce = snonce;
         self.state = if (ssid.len == 0) .idle else .seeking;
         self.bss = null;
         self.handshake = null;
         self.earned = null;
+        self.pending = null;
         self.settling = false;
         self.aid = 0;
         self.left = TRIES;
@@ -183,8 +217,26 @@ pub const Join = struct {
     }
 
     /// The keys, once they have been earned.
-    pub fn keys(self: *const Join) ?wpa2.Handshake.Keys {
+    pub fn keys(self: *const Join) ?wpa2.Keys {
         return self.earned;
+    }
+
+    /// The frame the last pass asked for has gone, or has not.
+    ///
+    /// Nothing an exchange proved is taken up until the frame proving it
+    /// is away: until then the access point is still listening under the
+    /// keys it has, and a station that switched first would be answering
+    /// in a language the far end cannot read yet. A frame the radio
+    /// refused leaves the step where it was, to be asked again.
+    pub fn sent(self: *Join, gone: bool) void {
+        if (!gone) return;
+        const ready = self.pending orelse return;
+        self.pending = null;
+        const first_keys = self.earned == null;
+        self.earned = ready;
+        // The exchange that earns the first keys is the join, and it ends
+        // on this frame.
+        if (first_keys and self.state == .handshaking) self.settling = true;
     }
 
     // -----------------------------------------------------------------------
@@ -199,8 +251,20 @@ pub const Join = struct {
             .authenticating => self.sawAuth(frame, now, into),
             .associating => self.sawAssoc(frame, now, into),
             .handshaking => self.sawKey(frame, now, into),
+            .joined => self.sawJoined(frame, now),
             else => .none,
         };
+    }
+
+    /// A frame heard while joined. Two things matter after a join: that
+    /// the access point is still there, and that it has not ended the
+    /// association. Both are answered by the frames it sends, whatever
+    /// they carry.
+    fn sawJoined(self: *Join, frame: []const u8, now: u64) Action {
+        if (!self.fromCell(frame)) return .none;
+        self.deadline = now + SILENCE_MICROS;
+        if (mlme.Farewell.parse(frame) != null) return self.give(.disconnected);
+        return .none;
     }
 
     /// Time passed: send the step in hand, or try it again, or give up.
@@ -209,6 +273,7 @@ pub const Join = struct {
         if (self.settling) {
             self.settling = false;
             self.state = .joined;
+            self.deadline = now + SILENCE_MICROS;
             return .{ .joined = .{ .bssid = self.bssid(), .aid = self.aid } };
         }
 
@@ -219,8 +284,24 @@ pub const Join = struct {
                 if (now < self.deadline) return .none;
                 return self.retry(now, into);
             },
+            // Joined, and nothing has been heard from the cell for as long
+            // as anybody would wait.
+            .joined => {
+                if (now < self.deadline) return .none;
+                return self.give(.disconnected);
+            },
             else => return .none,
         }
+    }
+
+    /// The radio was pointed where the last pass asked, or could not be.
+    ///
+    /// A station that could not tune has heard nothing on that channel and
+    /// must not carry on as though it had: the frames it would send next
+    /// would go out wherever the radio still happens to be.
+    pub fn tuned(self: *Join, ok: bool) Action {
+        if (self.state != .tuning or ok) return .none;
+        return self.give(.untuned);
     }
 
     // -----------------------------------------------------------------------
@@ -235,6 +316,18 @@ pub const Join = struct {
         // exchanges that were never going to work.
         if (!seen.security.joinable()) return self.give(.unsupported);
         if (seen.security != .open and self.psk == .none) return self.give(.no_key);
+        // And what it must not join: a password is set for this name, so
+        // an open network answering to it is not the network somebody
+        // meant. Whether the traffic will be protected is the person's
+        // decision, taken when they set the password, not the access
+        // point's to take again.
+        if (seen.security == .open and self.psk != .none) return self.give(.unprotected);
+
+        // A network heard on a channel the plan does not allow is one this
+        // station may not transmit on, and one that named no channel is
+        // one there is nowhere to point the radio at. Hearing a frame is
+        // not permission to answer it.
+        if (seen.channel == 0 or !self.plan.allows(seen.channel)) return .none;
 
         self.bss = seen;
         self.state = .tuning;
@@ -256,9 +349,12 @@ pub const Join = struct {
     fn sawAuth(self: *Join, frame: []const u8, now: u64, into: []u8) Action {
         if (self.farewell(frame)) |ended| return ended;
         const answer = mlme.Auth.parse(frame) orelse return .none;
-        if (!self.fromAp(frame)) return .none;
+        if (!self.answeredUs(frame)) return .none;
         // The station's own request, heard back, is not an answer to it.
         if (answer.sequence != 2) return .none;
+        // And an answer in a scheme this station did not ask for is not an
+        // answer to what it asked.
+        if (answer.algorithm != .open_system) return .none;
         if (!answer.status.ok()) return self.give(.refused);
         self.left = TRIES;
         return self.sendAssoc(now, into);
@@ -282,16 +378,21 @@ pub const Join = struct {
         _ = into;
         if (self.farewell(frame)) |ended| return ended;
         const answer = mlme.AssocResponse.parse(frame) orelse return .none;
-        if (!self.fromAp(frame)) return .none;
+        if (!self.answeredUs(frame)) return .none;
         if (!answer.status.ok()) return self.give(.refused);
 
         self.aid = @truncate(answer.aid);
         const found = self.bss orelse return .none;
 
         // An open network is joined the moment it says so; a protected one
-        // has still to prove the key.
+        // has still to prove the key. An open one where a password is set
+        // is not joined at all, which the beacon already said and this
+        // says again: what was heard and what was associated with are two
+        // separate frames, and only one of them was checked.
         if (found.security == .open) {
+            if (self.psk != .none) return self.give(.unprotected);
             self.state = .joined;
+            self.deadline = now + SILENCE_MICROS;
             return .{ .joined = .{ .bssid = found.bssid, .aid = self.aid } };
         }
 
@@ -301,6 +402,7 @@ pub const Join = struct {
             .station = self.station,
             .ap = found.bssid,
             .snonce = self.snonce,
+            .seed = self.snonce,
             .rsn = &OFFERED_RSN_ELEMENT,
         };
         self.state = .handshaking;
@@ -318,7 +420,7 @@ pub const Join = struct {
     fn sawKey(self: *Join, frame: []const u8, now: u64, into: []u8) Action {
         if (self.farewell(frame)) |ended| return ended;
         const payload = eapolOf(frame) orelse return .none;
-        if (!self.fromAp(frame)) return .none;
+        if (!self.answeredUs(frame)) return .none;
         // A pointer into the field, not to a copy of it: the exchange's
         // state, the transient key above all, has to outlive this pass.
         if (self.handshake == null) return .none;
@@ -330,15 +432,12 @@ pub const Join = struct {
             .reply => |len| blk: {
                 const wrapped = self.wrapEapol(self.scratch[0..len], into) orelse break :blk .none;
                 // The exchange finishes on the frame this station sends
-                // last, and the keys are installed after it has gone: a
-                // frame enciphered with a key the access point has not
-                // acknowledged is a frame nobody can read.
-                // Latched once. The exchange's last frame can be asked
-                // for again, and answering it again is not a second
+                // last, and the keys go in once it has gone: `sent` says
+                // when. Latched once. The exchange's last frame can be
+                // asked for again, and answering it again is not a second
                 // joining.
                 if (self.earned == null and shake.keys() != null) {
-                    self.earned = shake.keys();
-                    self.settling = true;
+                    self.pending = shake.keys();
                 } else if (shake.keys() == null) {
                     self.deadline = now + REPLY_MICROS;
                     self.left = TRIES;
@@ -360,8 +459,10 @@ pub const Join = struct {
         return switch (shake.answer(payload, &self.scratch)) {
             .ignored, .refused => .none,
             .reply => |len| blk: {
-                self.earned = shake.keys();
                 const written = eth.write(into, self.bssid(), self.station, eth.EtherType.eapol, self.scratch[0..len]) orelse break :blk .none;
+                // Taken up once the answer has gone, not before: a key
+                // renewal is answered under the key being renewed.
+                self.pending = shake.keys();
                 break :blk .{ .traffic = written };
             },
         };
@@ -374,7 +475,7 @@ pub const Join = struct {
     /// The access point ending it, whichever way it said so.
     fn farewell(self: *Join, frame: []const u8) ?Action {
         if (mlme.Farewell.parse(frame) == null) return null;
-        if (!self.fromAp(frame)) return null;
+        if (!self.fromCell(frame)) return null;
         return self.give(.refused);
     }
 
@@ -436,13 +537,24 @@ pub const Join = struct {
         };
     }
 
-    /// Whether a frame came from the cell being joined, and is for this
-    /// station. A radio hears every cell on the channel.
-    fn fromAp(self: *const Join, frame: []const u8) bool {
+    /// Whether a frame was spoken by the cell being joined. A radio hears
+    /// every cell on the channel, and an access point's own frames are the
+    /// only ones that say anything about the join.
+    fn fromCell(self: *const Join, frame: []const u8) bool {
         const found = self.bss orelse return false;
         const head = ieee80211.Header.parse(frame) orelse return false;
-        return mac.eql(head.bssid(), found.bssid) and
-            (mac.eql(head.addr1, self.station) or mac.isGroup(head.addr1));
+        return mac.eql(head.bssid(), found.bssid) and mac.eql(head.addr2, found.bssid);
+    }
+
+    /// Whether it is that cell answering this station by name.
+    ///
+    /// An exchange between two stations is addressed to one of them. A
+    /// frame sent to the room says nothing about which station's request
+    /// it answers, so one is not an answer to this station's.
+    fn answeredUs(self: *const Join, frame: []const u8) bool {
+        if (!self.fromCell(frame)) return false;
+        const head = ieee80211.Header.parse(frame) orelse return false;
+        return mac.eql(head.addr1, self.station);
     }
 
     /// Wrap a key frame as a data frame to the access point.
@@ -488,6 +600,7 @@ const PASSPHRASE = "correct horse battery";
 /// The access point's side, enough of it to answer a join.
 const FakeAp = struct {
     protected: bool,
+    channel: u8 = CHANNEL,
     anonce: wpa2.Nonce = @splat(0xA1),
     replay: u64 = 1,
     gtk: wpa2.Gtk = .{ .index = 1, .key = @splat(0x5C) },
@@ -496,7 +609,7 @@ const FakeAp = struct {
         var elements: [96]u8 = @splat(0);
         var at: usize = 0;
         at += ieee80211.writeElement(elements[at..], .ssid, SSID).?;
-        at += ieee80211.writeElement(elements[at..], .ds_parameter, &.{CHANNEL}).?;
+        at += ieee80211.writeElement(elements[at..], .ds_parameter, &.{self.channel}).?;
         if (self.protected) {
             at += ieee80211.writeElement(elements[at..], .rsn, &ieee80211.Rsn.psk_ccmp).?;
         }
@@ -551,7 +664,12 @@ const FakeAp = struct {
 
     fn messageOne(self: FakeAp, into: []u8) usize {
         var key: [KEY_FRAME_MAX]u8 = @splat(0);
-        const len = wpa2.KeyFrame.write(&key, .{ .pairwise = true, .ack = true }, 16, self.replay, self.anonce, &.{}).?;
+        const len = wpa2.KeyFrame.write(&key, .{
+            .info = .{ .pairwise = true, .ack = true },
+            .key_length = 16,
+            .replay = self.replay,
+            .nonce = self.anonce,
+        }).?;
         return wrap(key[0..len], into);
     }
 
@@ -573,12 +691,17 @@ const FakeAp = struct {
 
         self.replay += 1;
         const len = wpa2.KeyFrame.write(into, .{
-            .ack = true,
-            .mic = true,
-            .secure = true,
-            .encrypted = true,
-            .key_index = gtk.index,
-        }, 16, self.replay, @splat(0), sealed).?;
+            .info = .{
+                .ack = true,
+                .mic = true,
+                .secure = true,
+                .encrypted = true,
+                .key_index = gtk.index,
+            },
+            .key_length = 16,
+            .replay = self.replay,
+            .data = sealed,
+        }).?;
         wpa2.KeyFrame.sign(into[0..len], ptk.kck);
         return len;
     }
@@ -602,13 +725,19 @@ const FakeAp = struct {
         self.replay += 1;
         var key: [KEY_FRAME_MAX]u8 = @splat(0);
         const len = wpa2.KeyFrame.write(&key, .{
-            .pairwise = true,
-            .ack = true,
-            .mic = true,
-            .install = true,
-            .secure = true,
-            .encrypted = true,
-        }, 16, self.replay, self.anonce, sealed).?;
+            .info = .{
+                .pairwise = true,
+                .ack = true,
+                .mic = true,
+                .install = true,
+                .secure = true,
+                .encrypted = true,
+            },
+            .key_length = 16,
+            .replay = self.replay,
+            .nonce = self.anonce,
+            .data = sealed,
+        }).?;
         wpa2.KeyFrame.sign(key[0..len], ptk.kck);
         return wrap(key[0..len], into);
     }
@@ -619,7 +748,7 @@ fn station() Join {
 }
 
 fn wanted(join: *Join) void {
-    join.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse(PASSPHRASE).?, @splat(0x5B));
+    join.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse(PASSPHRASE).?, .conservative, @splat(0x5B));
 }
 
 test "a protected network is found, authenticated, associated and proved" {
@@ -684,6 +813,11 @@ test "a protected network is found, authenticated, associated and proved" {
         else => return error.TestUnexpectedResult,
     };
     try testing.expect(eapolOf(out[0..four_len]) != null);
+    // And not before it has gone: the keys are not the join's to hand
+    // over until the frame that proves them is away.
+    try testing.expectEqual(@as(?wpa2.Keys, null), join.keys());
+    try testing.expectEqual(Action.none, join.tick(450, &out));
+    join.sent(true);
 
     // The join finishes on the look after the last frame has gone.
     switch (join.tick(500, &out)) {
@@ -691,12 +825,12 @@ test "a protected network is found, authenticated, associated and proved" {
             try testing.expectEqualSlices(u8, &AP, &done.bssid);
             try testing.expectEqual(@as(u14, 7), done.aid);
             const earned = join.keys() orelse return error.TestUnexpectedResult;
-            try testing.expectEqualSlices(u8, &ap.gtk.key, &earned.groupKey(ap.gtk.index).?);
+            try testing.expectEqualSlices(u8, &ap.gtk.key, &earned.groupKey(ap.gtk.index).?.bytes);
 
             // The pairwise key is the one both sides derive.
             const pmk = wpa2.derive(PASSPHRASE, SSID);
             const ptk = wpa2.ptkOf(pmk, AP, US, ap.anonce, join.snonce);
-            try testing.expectEqualSlices(u8, &ptk.tk, &earned.tk);
+            try testing.expectEqualSlices(u8, &ptk.tk, &earned.pairwise.bytes);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -706,7 +840,7 @@ test "a protected network is found, authenticated, associated and proved" {
 test "an open network is joined the moment it grants the association" {
     var ap = FakeAp{ .protected = false };
     var join = station();
-    join.wants(wifi.Ssid.of(SSID).?, .none, @splat(0));
+    join.wants(wifi.Ssid.of(SSID).?, .none, .conservative, @splat(0));
 
     var air: [512]u8 = @splat(0);
     var out: [512]u8 = @splat(0);
@@ -727,7 +861,7 @@ test "an open network is joined the moment it grants the association" {
     switch (join.heard(air[0..granted], .{}, 200, &out)) {
         .joined => |done| {
             try testing.expectEqual(@as(u14, 3), done.aid);
-            try testing.expectEqual(@as(?wpa2.Handshake.Keys, null), join.keys());
+            try testing.expectEqual(@as(?wpa2.Keys, null), join.keys());
         },
         else => return error.TestUnexpectedResult,
     }
@@ -740,7 +874,7 @@ test "a network this system cannot join is refused before anything is sent" {
     // Protected, but no key configured.
     var ap = FakeAp{ .protected = true };
     var join = station();
-    join.wants(wifi.Ssid.of(SSID).?, .none, @splat(0));
+    join.wants(wifi.Ssid.of(SSID).?, .none, .conservative, @splat(0));
     const beacon = ap.beacon(&air);
     try testing.expectEqual(Action{ .failed = .no_key }, join.heard(air[0..beacon], .{}, 0, &out));
 
@@ -810,7 +944,7 @@ test "the wrong key is told apart from a network that stopped answering" {
     var join = station();
     // The right words for a different network: the master key differs, so
     // the third message's code will not check out.
-    join.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse("a different secret").?, @splat(0x5B));
+    join.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse("a different secret").?, .conservative, @splat(0x5B));
 
     _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
     _ = join.tick(0, &out);
@@ -848,6 +982,7 @@ test "a cell that says goodbye as the exchange ends leaves nothing to settle" {
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    join.sent(true);
     try testing.expect(join.settling);
 
     // Between the last frame going out and the next look, the cell ends it.
@@ -869,6 +1004,7 @@ test "the cell's next group key is taken and answered as traffic" {
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    join.sent(true);
     try testing.expect(join.tick(500, &out) == .joined);
     const before = join.keys().?;
 
@@ -885,10 +1021,124 @@ test "the cell's next group key is taken and answered as traffic" {
     try testing.expectEqual(eth.EtherType.eapol, eth.carriedBy(&out));
     try testing.expect(wpa2.KeyFrame.parse(out[eth.HEADER..traffic]) != null);
 
+    // The renewed key is not in hand until that answer has gone: it is
+    // sealed under the keys the cell still holds.
+    try testing.expectEqual(@as(?wpa2.Key, null), join.keys().?.groupKey(2));
+    join.sent(true);
+
     const after = join.keys().?;
-    try testing.expectEqualSlices(u8, &before.tk, &after.tk);
-    try testing.expectEqualSlices(u8, &before.groupKey(1).?, &after.groupKey(1).?);
-    try testing.expectEqualSlices(u8, &renewed.key, &after.groupKey(2).?);
+    try testing.expectEqualSlices(u8, &before.pairwise.bytes, &after.pairwise.bytes);
+    try testing.expectEqualSlices(u8, &before.groupKey(1).?.bytes, &after.groupKey(1).?.bytes);
+    try testing.expectEqualSlices(u8, &renewed.key, &after.groupKey(2).?.bytes);
+}
+
+test "a password set for a name means that name is not joined without one" {
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+
+    // An open network answering to the name a password is set for. It may
+    // be the same network with its protection switched off, or somebody
+    // else's radio using the name; either way the traffic somebody meant
+    // to protect would go out in the clear.
+    var open = FakeAp{ .protected = false };
+    var join = station();
+    wanted(&join);
+    try testing.expectEqual(
+        Action{ .failed = .unprotected },
+        join.heard(air[0..open.beacon(&air)], .{ .dbm = -40 }, 0, &out),
+    );
+
+    // And again where the beacon said one thing and the association
+    // another: what was heard and what was associated with are two
+    // separate frames.
+    var ap = FakeAp{ .protected = true };
+    var second = station();
+    wanted(&second);
+    _ = second.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = second.tick(0, &out);
+    _ = second.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    second.bss.?.security = .open;
+    try testing.expectEqual(
+        Action{ .failed = .unprotected },
+        second.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out),
+    );
+}
+
+test "a joined station notices being put out, and being left in silence" {
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = join.tick(0, &out);
+    _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    join.sent(true);
+    try testing.expect(join.tick(500, &out) == .joined);
+
+    // The cell says goodbye. A station that ignored this would stand
+    // connected to an access point that has forgotten it.
+    try testing.expectEqual(
+        Action{ .failed = .disconnected },
+        join.heard(air[0..FakeAp.goodbye(&air)], .{}, 600, &out),
+    );
+
+    // And silence says the same thing more slowly.
+    var quiet = station();
+    wanted(&quiet);
+    _ = quiet.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = quiet.tick(0, &out);
+    _ = quiet.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = quiet.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = quiet.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    _ = quiet.heard(air[0..ap.messageThree(quiet.snonce, &air)], .{}, 400, &out);
+    quiet.sent(true);
+    try testing.expect(quiet.tick(500, &out) == .joined);
+    try testing.expectEqual(Action.none, quiet.tick(500 + SILENCE_MICROS - 1, &out));
+    // A beacon from the cell is the cell still being there.
+    _ = quiet.heard(air[0..ap.beacon(&air)], .{}, 500 + SILENCE_MICROS - 1, &out);
+    try testing.expectEqual(Action.none, quiet.tick(500 + SILENCE_MICROS, &out));
+    try testing.expectEqual(
+        Action{ .failed = .disconnected },
+        quiet.tick(500 + 2 * SILENCE_MICROS, &out),
+    );
+}
+
+test "a radio that could not be tuned does not carry on as though it had" {
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+    try testing.expect(join.heard(air[0..ap.beacon(&air)], .{}, 0, &out) == .tune);
+    try testing.expectEqual(Action{ .failed = .untuned }, join.tuned(false));
+    // Nothing goes out on whatever channel the radio is still on.
+    try testing.expectEqual(Action.none, join.tick(100, &out));
+}
+
+test "a network on a channel the plan does not allow is left alone" {
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+
+    // A network above what the narrowest plan permits transmitting on.
+    var ap = FakeAp{ .protected = true, .channel = 13 };
+    var join = station();
+    join.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse(PASSPHRASE).?, .conservative, @splat(0x5B));
+    try testing.expectEqual(Action.none, join.heard(air[0..ap.beacon(&air)], .{}, 0, &out));
+    try testing.expectEqual(State.seeking, join.state);
+
+    // And one whose beacon named no channel at all: there is nowhere to
+    // point the radio.
+    var unnamed = FakeAp{ .protected = true, .channel = 0 };
+    var second = station();
+    wanted(&second);
+    try testing.expectEqual(Action.none, second.heard(air[0..unnamed.beacon(&air)], .{}, 0, &out));
+    try testing.expectEqual(State.seeking, second.state);
 }
 
 test "frames from another cell on the channel are not mistaken for answers" {

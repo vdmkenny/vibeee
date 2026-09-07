@@ -147,6 +147,15 @@ const State = struct {
     /// twice under one key, so it only counts up and starts again with a
     /// new key.
     pn: lib.wpa2.Ccmp.Pn = 0,
+    /// Which installation of the pairwise key that number belongs to. A
+    /// key replaced under a station that stays joined is a fresh start,
+    /// and numbering on from where the last key left off is a number used
+    /// twice as far as anybody watching the air can tell.
+    pn_generation: u32 = 0,
+    /// Where the numbering under each of the cell's keys has got to, which
+    /// is what tells a frame that has arrived from one that is arriving
+    /// again.
+    numbering: lib.wpa2.Numbering = .{},
     /// What to be on, kept past the join that failed so it can be tried
     /// again without anybody asking twice, and when to try.
     wanted: ?settings.NetSlot = null,
@@ -267,8 +276,11 @@ fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
         // owed now.
         .tuning => 0,
         .authenticating, .associating, .handshaking => if (attempt.deadline > now) attempt.deadline - now else 0,
+        // Joined, and owed a look when the cell has been quiet for as long
+        // as anybody would wait for it.
+        .joined => if (attempt.deadline > now) attempt.deadline - now else 0,
         // Nothing owed: not started, still listening, finished either way.
-        .idle, .seeking, .joined, .failed => null,
+        .idle, .seeking, .failed => null,
     };
 }
 
@@ -322,7 +334,7 @@ fn cell() ?lib.mac.Address {
 
 /// The keys the join earned and keeps up to date, or none on an open
 /// network, or before there is a join.
-fn keysOf() ?lib.wpa2.Handshake.Keys {
+fn keysOf() ?lib.wpa2.Keys {
     const attempt = state.join orelse return null;
     return attempt.keys();
 }
@@ -350,9 +362,13 @@ fn send(nic: *dev_mod.NicDev, frame: []const u8) bool {
     // Otherwise sealed under this station's own key, with a number that
     // is never used twice.
     const head = lib.ieee80211.Header.parse(built) orelse return false;
+    if (state.pn_generation != keys.pairwise.generation) {
+        state.pn_generation = keys.pairwise.generation;
+        state.pn = 0;
+    }
     state.pn +%= 1;
     const sealed = lib.wpa2.Ccmp.protect(
-        keys.tk,
+        keys.pairwise.bytes,
         head,
         state.pn,
         0,
@@ -371,24 +387,31 @@ fn sent(_: *dev_mod.NicDev, outcome: lib.rates.Outcome) void {
 /// The reverse, for a frame the cell sent: undressed and handed to the
 /// stack, which knows nothing about radios.
 fn carry(nic: *dev_mod.NicDev, frame: []const u8) void {
-    if (cell() == null) return;
+    const bssid = cell() orelse return;
     const head = lib.ieee80211.Header.parse(frame) orelse return;
 
-    var plain = frame;
-    if (head.control.protected) {
-        const keys = keysOf() orelse return;
-        // A frame spoken to the room is sealed with the key the room
-        // shares, whichever of them the frame names; one spoken to this
-        // station, with this station's own.
-        const key = if (lib.mac.isGroup(head.addr1))
-            keys.groupKey(lib.wpa2.Ccmp.keyIndexOf(frame) orelse return) orelse return
-        else
-            keys.tk;
-        if (head.len >= state.opened.len) return;
+    // Traffic of this cell, spoken by its access point, addressed to this
+    // station or to the room. A radio hears every cell on the channel and
+    // every station in this one; what those say is somebody else's
+    // business, and a frame claiming to be the access point's from
+    // somewhere else is nobody's.
+    if (lib.ieee80211.Topology.of(head.control) != .from_ap) return;
+    if (!lib.mac.eql(head.addr2, bssid)) return;
+    if (!lib.mac.eql(head.addr1, nic.mac) and !lib.mac.isGroup(head.addr1)) return;
 
-        @memcpy(state.opened[0..head.len], frame[0..head.len]);
-        const got = lib.wpa2.Ccmp.unprotect(key, frame, state.opened[head.len..]) orelse return;
-        plain = state.opened[0 .. head.len + got.len];
+    var plain = frame;
+    if (keysOf()) |keys| {
+        // A protected network carries nothing in the clear. Whether a
+        // frame is protected is the association's to decide and not the
+        // frame's: taking the frame's word for it is what lets anybody in
+        // earshot put traffic on this machine's network without holding
+        // the key. What arrives unprotected here is either somebody
+        // else's or nobody's, and what arrives numbered where a frame has
+        // already been is one already delivered.
+        plain = state.numbering.open(keys, frame, &state.opened) orelse return;
+    } else if (head.control.protected) {
+        // And an open network has no key to open one with.
+        return;
     }
 
     // The cell's authentication traffic is the join's: the next group key,
@@ -508,7 +531,7 @@ fn seek(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     state.sent_joining = 0;
     state.last_auth = null;
     var attempt = join_mod.Join{ .station = nic.mac };
-    attempt.wants(role.ssid, role.psk, nonce(nic));
+    attempt.wants(role.ssid, role.psk, state.plan, nonce(nic));
     state.join = attempt;
 
     log.begin(nic.name, .key);
@@ -524,6 +547,7 @@ fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
     state.join = null;
     state.pending = null;
     state.wanted = null;
+    state.numbering.clear();
     // A different cell's distance and interference have nothing to do
     // with this one's.
     state.speed.forget();
@@ -538,19 +562,37 @@ fn act(what: join_mod.Action) void {
         .none => {},
         .send => |length| {
             state.sent_joining +|= 1;
-            _ = it.nic.ops.transmit(it.nic, state.frame[0..length]);
+            const gone = it.nic.ops.transmit(it.nic, state.frame[0..length]);
+            // Whether the frame is away is what says whether the exchange
+            // has moved: a queue that refused it leaves the step where it
+            // was, to be asked again.
+            if (state.join) |*attempt| attempt.sent(gone);
         },
-        .traffic => |length| _ = send(it.nic, state.frame[0..length]),
+        .traffic => |length| {
+            const gone = send(it.nic, state.frame[0..length]);
+            if (state.join) |*attempt| attempt.sent(gone);
+        },
         // The network was heard here, so the radio stops sweeping and
         // stays long enough for the exchange that follows.
         .tune => |channel| {
-            if (!it.ops.tune(it.nic, channel)) return;
-            state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
-            // The cell is known now, so the hardware is told to answer for
-            // it before anything is said to it. A frame that is not
-            // acknowledged is one the far end sends again and then stops
-            // sending, which reads exactly like a cell that never replied.
-            if (state.join) |attempt| it.ops.answerFor(it.nic, .{ .bssid = attempt.bssid() });
+            const on = it.ops.tune(it.nic, channel);
+            if (on) {
+                state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
+                // The cell is known now, so the hardware is told to answer
+                // for it before anything is said to it. A frame that is
+                // not acknowledged is one the far end sends again and then
+                // stops sending, which reads exactly like a cell that
+                // never replied.
+                if (state.join) |attempt| it.ops.answerFor(it.nic, .{ .bssid = attempt.bssid() });
+            }
+            // A radio that did not move is still wherever it was, and the
+            // next frame of the exchange would go out on the wrong
+            // channel. The join is told, and gives up rather than talking
+            // to nobody.
+            if (state.join) |*attempt| {
+                const after = attempt.tuned(on);
+                if (after != .none) state.pending = after;
+            }
         },
         .joined => |won| settle(it.nic, it.ops, won),
         .failed => |why| {
@@ -559,6 +601,9 @@ fn act(what: join_mod.Action) void {
                 state.stopped = switch (why) {
                     .unsupported => .unsupported,
                     .no_key => .needs_password,
+                    .unprotected => .unprotected,
+                    .untuned => .untuned,
+                    .disconnected => .disconnected,
                     .refused => .refused,
                     .bad_key => .wrong_password,
                     .unsent => .unsent,
@@ -608,8 +653,14 @@ fn act(what: join_mod.Action) void {
             // whether anything was actually said.
             if (it.ops.sayUnanswered) |ask| ask(it.nic);
             // And the radio stops answering for a cell it did not get
-            // into, which it was told to answer for in order to try.
+            // into, or has been put out of, which it was told to answer
+            // for in order to try.
             it.ops.answerFor(it.nic, null);
+            // Whatever was carried over it is not being carried now. Said
+            // here as well as when a radio is told to leave, because an
+            // association can end without anybody here asking.
+            dev_mod.deliverLink(it.nic, .{});
+            state.numbering.clear();
             state.join = null;
             // Kept, and tried again: a network out of earshot now may be
             // in earshot shortly, and nobody should have to ask twice.
@@ -621,7 +672,10 @@ fn act(what: join_mod.Action) void {
 /// Joined: answer for the cell, and say the carrier is up.
 fn settle(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, won: join_mod.Joined) void {
     ops.answerFor(nic, .{ .bssid = won.bssid, .association = won.aid });
+    // A new association numbers from the start, both ways.
     state.pn = 0;
+    state.pn_generation = 0;
+    state.numbering.clear();
 
     // What the cell said it can hear. One that named no rates is taken to
     // hear everything this station can say, and the account corrects that

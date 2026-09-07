@@ -175,7 +175,13 @@ pub const AssocRequest = struct {
         const head = managementHeader(header, .association_request);
         var at = head.write(into) orelse return null;
         if (into.len < at + FIXED) return null;
-        std.mem.writeInt(u16, into[at..][0..2], @bitCast(self.capability), .little);
+        // A request that offers a security element is a request to protect
+        // the association, and the capability word says the same thing.
+        // An access point that reads the two and finds them disagreeing is
+        // within its rights to refuse.
+        var capability = self.capability;
+        if (rsn.len > 0) capability.privacy = true;
+        std.mem.writeInt(u16, into[at..][0..2], @bitCast(capability), .little);
         std.mem.writeInt(u16, into[at + 2 ..][0..2], self.listen_interval, .little);
         at += FIXED;
 
@@ -374,8 +380,18 @@ fn ratesOf(elements: []const u8) wifi.Rates {
 fn securityOf(capability: Capability, elements: []const u8) wifi.Security {
     if (ieee80211.element(elements, .rsn)) |payload| {
         const rsn = ieee80211.Rsn.parse(payload) orelse return .unsupported;
+        // Everything this station needs, in the order that decides what
+        // to call the network: a pre-shared key it can hold, the cipher
+        // it speaks for its own frames and for the room's, and no demand
+        // for protection of management frames, which it does not offer.
+        //
+        // A network offering both a pre-shared key and the newer key
+        // agreement is one of the transition networks that are now
+        // ordinary, and it is joined by the half this station speaks.
+        const usable = rsn.psk and rsn.pairwise_ccmp and
+            rsn.group == .ccmp and !rsn.protected_management;
+        if (usable) return .wpa2_psk;
         if (rsn.sae) return .wpa3_sae;
-        if (rsn.psk and rsn.pairwise_ccmp) return .wpa2_psk;
         return .unsupported;
     }
     // A first-generation WPA network carries its parameters in a vendor

@@ -429,16 +429,21 @@ pub const Psk = union(enum) {
     pub const accepts = "a passphrase of 8 to 63 characters, or 64 hex digits";
 
     pub fn parse(text: []const u8) ?Psk {
-        const trimmed = str.trim(text);
-        if (trimmed.len == 0) return .none;
+        if (str.trim(text).len == 0) return .none;
 
         // A key is unambiguous: nothing else is exactly that many hex
         // digits, and a passphrase of that length would be unusual enough
-        // that reading it as a key is the safer guess.
+        // that reading it as a key is the safer guess. Spaces around one
+        // are not part of it, since a hex digit is not a space.
+        const trimmed = str.trim(text);
         if (trimmed.len == HEX_DIGITS) {
             if (decodeKey(trimmed)) |key| return .{ .key = key };
         }
-        return .{ .passphrase = Passphrase.of(trimmed) orelse return null };
+        // A passphrase is taken exactly as it was given. A space at
+        // either end of one is a character of the secret, and a station
+        // that trimmed it would derive a key that opens nothing and call
+        // the network's answer a wrong password.
+        return .{ .passphrase = Passphrase.of(text) orelse return null };
     }
 
     pub fn spell(self: Psk, into: *str.Builder) void {
@@ -847,6 +852,16 @@ test "words are words, and too few of them are refused" {
     try std.testing.expectEqual(@as(std.meta.Tag(Psk), .none), @as(std.meta.Tag(Psk), Psk.parse("").?));
     // Below the standard's floor is not a secret this can be used with.
     try std.testing.expectEqual(@as(?Psk, null), Psk.parse("short"));
+
+    // A space at either end of a passphrase is a character of it. One
+    // trimmed away derives a key that opens nothing, and the network's
+    // refusal reads as a wrong password rather than as a lost space.
+    const spaced = Psk.parse(" a secret word ") orelse return std.testing.expect(false);
+    try std.testing.expectEqualStrings(" a secret word ", spaced.passphrase.slice());
+    // Around a stored key there is nothing to lose: a hex digit is not a
+    // space.
+    const padded = Psk.parse("  " ++ "0123456789abcdef" ** 4 ++ " ") orelse return std.testing.expect(false);
+    try std.testing.expectEqual(@as(std.meta.Tag(Psk), .key), @as(std.meta.Tag(Psk), padded));
     // A key's length is one past what words may be, so a string that is
     // neither is refused rather than truncated into one of them.
     try std.testing.expectEqual(@as(?Psk, null), Psk.parse("z" ** 64));

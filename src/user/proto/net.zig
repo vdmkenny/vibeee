@@ -245,6 +245,13 @@ pub const Stopped = enum(u8) {
     /// This computer could not put the request together, which is a fault
     /// here rather than anything the network did.
     unsent = 7,
+    /// A password is set for that name and the network answering to it has
+    /// no protection at all.
+    unprotected = 8,
+    /// The radio could not be tuned to the channel it was heard on.
+    untuned = 9,
+    /// It was joined and the network ended it, or stopped answering.
+    disconnected = 10,
 
     /// What to put on a screen.
     pub fn spell(self: Stopped) []const u8 {
@@ -257,6 +264,9 @@ pub const Stopped = enum(u8) {
             .unsupported => "This system cannot join that kind of network",
             .needs_password => "That network needs a password",
             .unsent => "This computer could not build the request",
+            .unprotected => "That network is open and a password is set for it",
+            .untuned => "The radio could not tune to that network's channel",
+            .disconnected => "The network disconnected this computer",
         };
     }
 };

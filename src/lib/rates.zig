@@ -184,24 +184,32 @@ pub const Choice = struct {
     pub fn series(self: *Choice) Series {
         var steps = Series{};
         const reliable = self.offered.slowest() orelse return steps;
-        const best = self.bestOther(null) orelse reliable;
 
         self.since_sample +|= 1;
         if (self.sampled()) |trial| {
-            steps.append(.{ .rate = trial, .tries = SAMPLE_TRIES }) catch {};
-            steps.append(.{ .rate = best, .tries = FAST_TRIES }) catch {};
+            add(&steps, trial, SAMPLE_TRIES);
+            add(&steps, self.bestOther(trial) orelse reliable, FAST_TRIES);
         } else {
-            steps.append(.{ .rate = best, .tries = FAST_TRIES }) catch {};
-            if (self.bestOther(best)) |second| {
-                steps.append(.{ .rate = second, .tries = FALLBACK_TRIES }) catch {};
-            }
+            const best = self.bestOther(null) orelse reliable;
+            add(&steps, best, FAST_TRIES);
+            if (self.bestOther(best)) |second| add(&steps, second, FALLBACK_TRIES);
         }
 
-        // The last word, unless it is already the only one said.
-        if (steps.slice().len == 0 or steps.at(steps.slice().len - 1).?.rate != reliable) {
-            steps.append(.{ .rate = reliable, .tries = RELIABLE_TRIES }) catch {};
-        }
+        // The last word.
+        add(&steps, reliable, RELIABLE_TRIES);
         return steps;
+    }
+
+    /// Put a step in the series, unless that rate is already a step of it.
+    ///
+    /// What a series is for is somewhere to go when a rate does not get
+    /// through. A step repeating the rate before it is a step that has
+    /// already been shown not to work, spent while the frame ages.
+    fn add(steps: *Series, rate: wifi.Legacy, tries: u4) void {
+        for (steps.slice()) |step| {
+            if (step.rate == rate) return;
+        }
+        steps.append(.{ .rate = rate, .tries = tries }) catch {};
     }
 
     /// The rate this frame should measure, or none because this frame is
@@ -249,6 +257,23 @@ test "the series ends with the rate most likely to be heard, and does not repeat
         try testing.expect(choice.offered.has(step.rate));
         try testing.expect(step.tries > 0);
         for (steps[i + 1 ..]) |later| try testing.expect(later.rate != step.rate);
+    }
+}
+
+test "a series never spends a step on a rate it has already tried" {
+    var choice = Choice{};
+    choice.offer(wifi.Rates.all(), false);
+
+    // The rate being measured can be the best one known, or the one the
+    // series ends with, and either way it is one step and not two: a step
+    // repeating the rate before it has already been shown not to work.
+    for (0..3 * SAMPLE_EVERY) |_| {
+        const steps = choice.series();
+        for (steps.slice(), 0..) |step, i| {
+            for (steps.slice()[i + 1 ..]) |later| {
+                try std.testing.expect(step.rate != later.rate);
+            }
+        }
     }
 }
 

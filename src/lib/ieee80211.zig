@@ -277,6 +277,15 @@ pub fn toEthernet(frame: []const u8, into: []u8) ?usize {
     const head = Header.parse(frame) orelse return null;
     if (head.control.kind != .data) return null;
     if (!head.control.dataSubtype().hasPayload()) return null;
+    // One frame in, one frame out. A fragment is a piece of a frame and
+    // an aggregate is several of them, and neither is what follows the
+    // header here: reading either as though it were one payload hands the
+    // stack something that was never sent. Nothing in this system puts a
+    // frame back together, so they are refused rather than guessed at.
+    if (head.control.more_fragments or head.sequence.fragment != 0) return null;
+    if (head.qos) |qos| {
+        if (qos.amsdu) return null;
+    }
 
     const body = frame[head.len..];
     const ethertype = Snap.ethertypeOf(body) orelse return null;
@@ -448,8 +457,13 @@ pub const Rsn = struct {
     psk: bool,
     /// Simultaneous authentication of equals: the key management WPA3
     /// personal uses. Read only so a scan can name such a network; this
-    /// system does not join one.
+    /// system does not join one. A network offering it beside a
+    /// pre-shared key is joinable by the pre-shared key.
     sae: bool,
+    /// Management frames must be protected. A station that does not
+    /// protect them is not one such a network will keep, so it is not one
+    /// this system offers to join.
+    protected_management: bool = false,
 
     /// The element this station offers: version one, CCMP for the group
     /// and the pair, a pre-shared key, no capabilities.
@@ -490,6 +504,13 @@ pub const Rsn = struct {
             };
             at += 4;
         }
+
+        // The capabilities word, whose seventh bit is the one that says
+        // protection of management frames is required rather than merely
+        // offered.
+        if (payload.len < at + 2) return out;
+        const capabilities = std.mem.readInt(u16, payload[at..][0..2], .little);
+        out.protected_management = capabilities & 0x0040 != 0;
         return out;
     }
 
