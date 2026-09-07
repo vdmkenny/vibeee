@@ -277,11 +277,18 @@ pub fn setMaster(percent: u8, muted: bool) bool {
 /// is how a table with holes in it is read without the caller knowing there
 /// are holes.
 pub fn ports(into: []PortInfo) []PortInfo {
+    // One channel for the whole walk. A connection, a call and a close per
+    // slot is three syscalls a slot for a listing that asks the same
+    // service the same question thirty-two times.
+    const channel = sys.svcConnect(SERVICE);
+    if (channel < 0) return into[0..0];
+    defer _ = sys.close(@intCast(channel));
+
     var count: usize = 0;
     var index: u32 = 0;
     while (count < into.len and index < graph.MAX_PORTS) : (index += 1) {
         var reply = Rep{};
-        call(.{ .tag = .get_port, .a = index }, &reply) catch break;
+        callOn(@intCast(channel), .{ .tag = .get_port, .a = index }, &reply, null) catch break;
         // Past the last slot the service says so; a slot inside the table
         // that nothing is using answers with no identity, and is skipped
         // rather than listed as a port with no name.

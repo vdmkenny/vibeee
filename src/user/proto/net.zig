@@ -390,12 +390,18 @@ pub fn callWith(tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error
     const channel = sys.svcConnect(SERVICE);
     if (channel < 0) return error.NoService;
     defer _ = sys.close(@intCast(channel));
+    return callOn(@intCast(channel), tag, index, param, param2, into);
+}
 
+/// The same, on a channel the caller keeps open: what a walk of the
+/// interfaces uses, so asking the same service the same question once per
+/// interface is not a connection and a close per interface as well.
+pub fn callOn(channel: u32, tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error!void {
     var request = Req{ .tag = tag, .index = index, .param = param, .param2 = param2 };
     const message = sys.Message.init(std.mem.asBytes(&request), &.{});
 
     var reply = sys.Message{};
-    if (sys.callMsg(@intCast(channel), &message, &reply) < 0) return error.Refused;
+    if (sys.callMsg(channel, &message, &reply) < 0) return error.Refused;
 
     const bytes = reply.bytes();
     if (bytes.len < @sizeOf(Rep)) return error.Refused;
@@ -467,11 +473,20 @@ pub fn watch() Error!u32 {
 
 /// Whether any interface has an address: whether there is a network to use.
 pub fn haveAddress() bool {
-    var index: usize = 0;
-    const total = interfaceCount() orelse return false;
-    while (index < total) : (index += 1) {
-        const info = addressOf(index) orelse continue;
-        if (info.addr != 0) return true;
+    // One channel for the whole walk: the count and then every interface.
+    const channel = sys.svcConnect(SERVICE);
+    if (channel < 0) return false;
+    defer _ = sys.close(@intCast(channel));
+
+    var counted = Rep{};
+    callOn(@intCast(channel), .count, 0, 0, 0, &counted) catch return false;
+    if (counted.status != .ok) return false;
+
+    for (0..counted.body.count) |index| {
+        var reply = Rep{};
+        callOn(@intCast(channel), .address, @intCast(index), 0, 0, &reply) catch continue;
+        if (reply.status != .ok) continue;
+        if (reply.body.address.addr != 0) return true;
     }
     return false;
 }

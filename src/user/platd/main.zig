@@ -176,7 +176,7 @@ fn answer(message: *const sys.Message, body: *proto.Rep, reply: *sys.Message) pr
         .device => namespace.describe(request.index, &body.body.device),
         .child => namespace.describeChild(&request.name, request.index, &body.body.device),
         .backlight => backlight.read(&body.body.backlight),
-        .backlight_set => backlight.write(request.index, &body.body.backlight),
+        .backlight_set => backlight.write(request.param, &body.body.backlight),
         .pci_route => route.answer(@bitCast(request.param), &body.body.route),
         .hotkey => hotkey.take(&body.body.press),
         .hotkey_watch => hotkey.subscribe(reply),

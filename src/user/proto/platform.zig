@@ -641,7 +641,11 @@ pub fn backlight() ?Backlight {
 /// slider snaps back on the next pass and looks broken.
 pub fn setBacklight(level: u32) ?Backlight {
     var reply = Rep{};
-    callAt(.backlight_set, @truncate(level), &reply) catch return null;
+    // Carried in the argument word rather than the index, which is a
+    // byte: a panel whose firmware reports more than two hundred and
+    // fifty-five steps had the level it was set to cut short, and asking
+    // for step two hundred and fifty-six switched it off.
+    callWith(.backlight_set, level, &reply) catch return null;
     if (reply.status != .ok) return null;
 
     const panel = reply.body.backlight;
