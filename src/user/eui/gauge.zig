@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const draw = @import("draw.zig");
+const grid = @import("grid.zig");
 const theme = @import("theme.zig");
 const widget = @import("widget.zig");
 
@@ -75,17 +76,14 @@ pub fn height() i32 {
 /// glance rather than something to read a level off.
 pub const BAR_HEIGHT: i32 = 8;
 
-/// Where the nth of `count` cells sits.
+/// Where the nth of `count` cells sits: one row of a grid with no gap
+/// between its columns, which is the same tiling `grid` already answers,
+/// down to the divide-by-position that makes the last cell take the
+/// remainder rather than fall short.
 pub fn cellRect(area: Rect, count: usize, index: usize) Rect {
     if (count == 0) return .{ .x = area.x, .y = area.y, .w = 0, .h = area.h };
-
-    const n: i32 = @intCast(count);
-    const i: i32 = @intCast(index);
-    // Divided by position rather than by width, so the cells tile the row
-    // exactly and the last one takes the remainder instead of falling short.
-    const from = @divTrunc(area.w * i, n);
-    const to = @divTrunc(area.w * (i + 1), n);
-    return .{ .x = area.x + from, .y = area.y, .w = to - from, .h = area.h };
+    const tiled = grid.Grid{ .area = area, .columns = @intCast(count), .rows = 1, .gap = 0 };
+    return tiled.cell(@intCast(index), 0);
 }
 
 /// Where the bar inside a cell sits.

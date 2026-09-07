@@ -16,9 +16,14 @@ const widget = @import("widget.zig");
 
 const Rect = draw.Rect;
 
-/// How wide the labels are in `area`.
+/// How wide the labels are in `area`: a fifth of it, and never less than
+/// a floor.
+///
+/// A narrow pane must not give the whole of itself to labels, which the
+/// floor answers; a fifth rather than a third is what keeps a wide one
+/// from stranding its values halfway across the screen.
 pub fn column(area: Rect) i32 {
-    return @max(theme.enlarged(80), @min(@divTrunc(area.w, 5), @divTrunc(area.w, 3)));
+    return @max(theme.enlarged(80), @divTrunc(area.w, 5));
 }
 
 /// How tall one row is, so a caller can say how many will fit before it
@@ -27,17 +32,34 @@ pub fn height() i32 {
     return theme.current().menu_row_height;
 }
 
-/// Whether a pane is too narrow to say a label and a value side by side.
-/// Under this, a value has so few pixels left that most of them arrive cut
-/// in half, which is worse than a taller row.
-fn cramped(area: Rect) bool {
-    return area.w - column(area) < theme.enlarged(96);
+/// Whether a label column of `label_w` leaves a pane too narrow to say a
+/// label and a value side by side. Under this, a value has so few pixels
+/// left that most of them arrive cut in half, which is worse than a taller
+/// row.
+///
+/// Asked about the column that will actually be used, not the pane's usual
+/// share: a list whose widest label pushes the column out has less room
+/// left for its values than the share would suggest, and deciding from the
+/// share left those values ellipsised in a pane that had room to stack
+/// them.
+fn crampedWith(area: Rect, label_w: i32) bool {
+    return area.w - label_w < theme.enlarged(96);
 }
 
-/// How tall one row is in `area`, which is two lines where the pane is too
-/// narrow to hold them side by side.
+/// How tall one row is in `area` with a label column of `label_w`, which is
+/// two lines where the pane is too narrow to hold them side by side.
+pub fn heightWith(area: Rect, label_w: i32) i32 {
+    return if (crampedWith(area, label_w)) height() + draw.Surface.textHeight() else height();
+}
+
+/// The same for a single row, whose column is the pane's usual share.
 pub fn heightIn(area: Rect) i32 {
-    return if (cramped(area)) height() + draw.Surface.textHeight() else height();
+    return heightWith(area, column(area));
+}
+
+/// The same for a list, whose column is measured from its labels.
+pub fn heightInFor(area: Rect, list: []const Fact) i32 {
+    return heightWith(area, columnFor(area, list));
 }
 
 /// One row. Returns where the next one goes.
@@ -81,13 +103,13 @@ pub fn oneWith(
     // Side by side where there is room for both, and the label over the
     // value where there is not: a narrow pane would otherwise spend its
     // width on labels and cut every value in half.
-    if (cramped(area)) {
+    if (crampedWith(area, label_w)) {
         ctx.labelDim(.{ .x = area.x, .y = y, .w = area.w, .h = t.control_height }, label);
         ctx.label(
             .{ .x = area.x, .y = y + draw.Surface.textHeight(), .w = area.w, .h = t.control_height },
             value,
         );
-        return y + heightIn(area);
+        return y + heightWith(area, label_w);
     }
 
     ctx.labelDim(.{ .x = area.x, .y = y, .w = label_w, .h = t.control_height }, label);

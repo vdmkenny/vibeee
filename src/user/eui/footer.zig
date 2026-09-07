@@ -11,6 +11,7 @@
 //! given, which reads left to right as written.
 
 const std = @import("std");
+const chrome = @import("chrome.zig");
 const theme = @import("theme.zig");
 const draw = @import("draw.zig");
 const row = @import("row.zig");
@@ -28,16 +29,18 @@ pub fn height() i32 {
 }
 
 /// The strip at the bottom of a window.
+///
+/// The same cut `chrome` makes, asked for by the half a caller wants: a
+/// window is cut into its strips in one place, or the two answers differ
+/// at the edges and a window shorter than one strip gets a body of
+/// negative height from one and nothing from the other.
 pub fn strip(area: Rect) Rect {
-    const h = height();
-    return .{ .x = area.x, .y = area.bottom() - h, .w = area.w, .h = h };
+    return chrome.split(area, .{ .bottom = true }).bottom;
 }
 
-/// What is left of the window once the strip is taken. Never less than
-/// nothing: a window shorter than one strip has no body, rather than a
-/// body of negative height.
+/// What is left of the window once the strip is taken.
 pub fn above(area: Rect) Rect {
-    return .{ .x = area.x, .y = area.y, .w = area.w, .h = @max(0, area.h - height()) };
+    return chrome.split(area, .{ .bottom = true }).body;
 }
 
 pub fn buttonWidth(label: []const u8) i32 {
