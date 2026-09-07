@@ -49,15 +49,22 @@ pub fn resetByTripleFault() noreturn {
 
 /// Disable interrupts and return whether they were previously enabled, so
 /// critical sections can nest without a caller re-enabling them too early.
+/// The flags register, by the one bit read here.
+const Eflags = packed struct(u32) {
+    _0: u9,
+    interrupt: bool,
+    _10: u22,
+};
+
 pub inline fn saveAndDisableInterrupts() bool {
-    const flags = asm volatile (
+    const flags: Eflags = @bitCast(asm volatile (
         \\ pushfl
         \\ popl %[out]
         : [out] "=r" (-> u32),
         :
-        : .{ .memory = true });
+        : .{ .memory = true }));
     cli();
-    return (flags & 0x200) != 0;
+    return flags.interrupt;
 }
 
 pub inline fn restoreInterrupts(were_enabled: bool) void {
@@ -110,25 +117,101 @@ pub const Features = struct {
         const max_leaf = cpuid(0, 0).eax;
         if (max_leaf >= 1) {
             const r = cpuid(1, 0);
-            f.tsc = (r.edx & (1 << 4)) != 0;
-            f.msr = (r.edx & (1 << 5)) != 0;
-            f.pae = (r.edx & (1 << 6)) != 0;
-            f.apic = (r.edx & (1 << 9)) != 0;
-            f.sep = (r.edx & (1 << 11)) != 0;
-            f.mtrr = (r.edx & (1 << 12)) != 0;
-            f.clflush = (r.edx & (1 << 19)) != 0;
-            f.fxsr = (r.edx & (1 << 24)) != 0;
-            f.sse = (r.edx & (1 << 25)) != 0;
-            f.sse2 = (r.edx & (1 << 26)) != 0;
-            f.htt = (r.edx & (1 << 28)) != 0;
-            f.sse3 = (r.ecx & (1 << 0)) != 0;
-            f.est = (r.ecx & (1 << 7)) != 0;
+            const edx: Leaf1Edx = @bitCast(r.edx);
+            const ecx: Leaf1Ecx = @bitCast(r.ecx);
+            f.tsc = edx.tsc;
+            f.msr = edx.msr;
+            f.pae = edx.pae;
+            f.apic = edx.apic;
+            f.sep = edx.sep;
+            f.mtrr = edx.mtrr;
+            f.clflush = edx.clflush;
+            f.fxsr = edx.fxsr;
+            f.sse = edx.sse;
+            f.sse2 = edx.sse2;
+            f.htt = edx.htt;
+            f.sse3 = ecx.sse3;
+            f.est = ecx.est;
         }
         const max_ext = cpuid(0x8000_0000, 0).eax;
         if (max_ext >= 0x8000_0001) {
-            f.nx = (cpuid(0x8000_0001, 0).edx & (1 << 20)) != 0;
+            const ext: ExtendedLeaf1Edx = @bitCast(cpuid(0x8000_0001, 0).edx);
+            f.nx = ext.nx;
         }
         return f;
+    }
+};
+
+/// The feature words of the first leaf, bit by name. The names are the
+/// manual's; the positions are its too, and a position typed once here is
+/// a position never typed as a shift anywhere else.
+const Leaf1Edx = packed struct(u32) {
+    fpu: bool,
+    vme: bool,
+    de: bool,
+    pse: bool,
+    tsc: bool,
+    msr: bool,
+    pae: bool,
+    mce: bool,
+    cx8: bool,
+    apic: bool,
+    _10: u1,
+    sep: bool,
+    mtrr: bool,
+    pge: bool,
+    mca: bool,
+    cmov: bool,
+    pat: bool,
+    pse36: bool,
+    psn: bool,
+    clflush: bool,
+    _20: u1,
+    ds: bool,
+    acpi: bool,
+    mmx: bool,
+    fxsr: bool,
+    sse: bool,
+    sse2: bool,
+    ss: bool,
+    htt: bool,
+    tm: bool,
+    _30: u1,
+    pbe: bool,
+};
+
+const Leaf1Ecx = packed struct(u32) {
+    sse3: bool,
+    _1: u6,
+    est: bool,
+    _8: u24,
+};
+
+const ExtendedLeaf1Edx = packed struct(u32) {
+    _0: u20,
+    nx: bool,
+    _21: u11,
+};
+
+/// The processor signature the first leaf returns in EAX: the family and
+/// model each in a base field and an extension, added and joined the way
+/// the manual says.
+const Signature = packed struct(u32) {
+    stepping: u4,
+    model: u4,
+    family: u4,
+    kind: u2,
+    _14: u2,
+    extended_model: u4,
+    extended_family: u8,
+    _28: u4,
+
+    fn fullFamily(self: Signature) u32 {
+        return @as(u32, self.family) + self.extended_family;
+    }
+
+    fn fullModel(self: Signature) u32 {
+        return @as(u32, self.model) | (@as(u32, self.extended_model) << 4);
     }
 };
 
@@ -146,23 +229,20 @@ pub fn brandString(buf: *[49]u8) []const u8 {
         std.mem.writeInt(u32, vendor[0..4], v.ebx, .little);
         std.mem.writeInt(u32, vendor[4..8], v.edx, .little);
         std.mem.writeInt(u32, vendor[8..12], v.ecx, .little);
-        const sig = cpuid(1, 0).eax;
-        const family = ((sig >> 8) & 0xF) + ((sig >> 20) & 0xFF);
-        const model = ((sig >> 4) & 0xF) | (((sig >> 16) & 0xF) << 4);
+        const sig: Signature = @bitCast(cpuid(1, 0).eax);
         return std.fmt.bufPrint(buf, "{s} family {d} model {d} step {d}", .{
-            vendor, family, model, sig & 0xF,
+            vendor, sig.fullFamily(), sig.fullModel(), sig.stepping,
         }) catch "unknown cpu";
     }
+    // The string comes four bytes a register, least significant first,
+    // which is the order they sit in memory here.
     var i: usize = 0;
     var leaf: u32 = 0x8000_0002;
     while (leaf <= 0x8000_0004) : (leaf += 1) {
         const r = cpuid(leaf, 0);
         for ([_]u32{ r.eax, r.ebx, r.ecx, r.edx }) |word| {
-            var b: u5 = 0;
-            while (b < 4) : (b += 1) {
-                buf[i] = @truncate(word >> (@as(u5, b) * 8));
-                i += 1;
-            }
+            std.mem.writeInt(u32, buf[i..][0..4], word, .little);
+            i += 4;
         }
     }
     buf[48] = 0;

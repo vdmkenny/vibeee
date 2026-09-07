@@ -20,30 +20,15 @@ const VECTOR_PAGE_FAULT = 14;
 /// Returns only when the fault was repairable, which is the one case that is
 /// not a fault at all: a kernel-half address the running space has not been
 /// given yet. Everything else ends the program or the machine.
-pub fn onException(frame: *idt.Frame) void {
-    if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 == 0) {
-        if (paging.syncKernelMapping(cpu.readCr2())) return;
-    }
-
-    // A stack that reached further than it had been given. The pages go in
-    // and the instruction runs again, which is what makes a deep call cost
-    // memory only when it is actually made.
-    if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 != 0) {
-        if (sched.currentThread()) |t| {
-            if (t.space.pd_phys != 0 and usermode.growStack(&t.space, cpu.readCr2())) return;
-        }
-    }
-
+/// What a trap frame says about where the machine was standing, as a
+/// report: the one reading of a frame, for every trap that ends in one.
+pub fn reportOf(frame: *const idt.Frame) panic.Report {
     var r = panic.Report{
         .vector = frame.vector,
-        .error_code = frame.error_code,
         .pc = frame.eip,
         .fp = frame.ebp,
         .from_user = frame.cs & 3 != 0,
-        .decode_page_fault = frame.vector == VECTOR_PAGE_FAULT,
     };
-
-    if (r.decode_page_fault) r.fault_addr = cpu.readCr2();
 
     // Without a privilege change the CPU pushes no stack selector, so the
     // frame's user_esp slot holds whatever happened to be above it. The
@@ -58,6 +43,27 @@ pub fn onException(frame: *idt.Frame) void {
     r.addReg("edi", frame.edi);
     r.addReg("ebp", frame.ebp);
     r.addReg("efl", frame.eflags);
+    return r;
+}
+
+pub fn onException(frame: *idt.Frame) void {
+    if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 == 0) {
+        if (paging.syncKernelMapping(cpu.readCr2())) return;
+    }
+
+    // A stack that reached further than it had been given. The pages go in
+    // and the instruction runs again, which is what makes a deep call cost
+    // memory only when it is actually made.
+    if (frame.vector == VECTOR_PAGE_FAULT and frame.cs & 3 != 0) {
+        if (sched.currentThread()) |t| {
+            if (t.space.pd_phys != 0 and usermode.growStack(&t.space, cpu.readCr2())) return;
+        }
+    }
+
+    var r = reportOf(frame);
+    r.error_code = frame.error_code;
+    r.decode_page_fault = frame.vector == VECTOR_PAGE_FAULT;
+    if (r.decode_page_fault) r.fault_addr = cpu.readCr2();
 
     // A program's mistake stops the program. Only the kernel faulting is worth
     // stopping the machine for: a buggy application taking the desktop with it

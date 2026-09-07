@@ -17,6 +17,7 @@
 
 const console = @import("../../kernel/console.zig");
 const cpu = @import("cpu.zig");
+const fault = @import("fault.zig");
 const idt = @import("idt.zig");
 const lapic = @import("lapic.zig");
 const panic = @import("../../kernel/panic.zig");
@@ -95,19 +96,7 @@ pub fn onNmi(frame: *idt.Frame) bool {
 
     // No tick in an entire period: interrupts are dead and this NMI is the
     // only thing still running. Say where the machine was standing.
-    var r = panic.Report{
-        .vector = frame.vector,
-        .pc = frame.eip,
-        .sp = @intFromPtr(frame) + @sizeOf(idt.Frame),
-        .fp = frame.ebp,
-        .from_user = frame.cs & 3 == 3,
-        .message = "watchdog: the timer stopped ticking",
-    };
-    r.addReg("eax", frame.eax);
-    r.addReg("ebx", frame.ebx);
-    r.addReg("ecx", frame.ecx);
-    r.addReg("edx", frame.edx);
-    r.addReg("esi", frame.esi);
-    r.addReg("edi", frame.edi);
+    var r = fault.reportOf(frame);
+    r.message = "watchdog: the timer stopped ticking";
     panic.report(&r);
 }
