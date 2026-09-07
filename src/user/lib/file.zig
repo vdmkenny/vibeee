@@ -17,10 +17,11 @@ pub fn readWhole(path: []const u8, into: []u8) ?usize {
     const handle = sys.open(path, .{});
     if (handle < 0) return null;
     defer _ = sys.close(@intCast(handle));
-    return fill(@intCast(handle), into);
+    const filled = fill(@intCast(handle), into);
+    return if (filled.failed) null else filled.read;
 }
 
-pub const EntireError = error{ NoFile, TooBig };
+pub const EntireError = error{ NoFile, TooBig, Unreadable };
 
 /// Read the file at `path` into `into` entire, and say how long it is. A
 /// file with more in it than the room is refused rather than cut short, so
@@ -30,7 +31,9 @@ pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
     const handle = sys.open(path, .{});
     if (handle < 0) return error.NoFile;
     defer _ = sys.close(@intCast(handle));
-    const read = fill(@intCast(handle), into);
+    const filled = fill(@intCast(handle), into);
+    if (filled.failed) return error.Unreadable;
+    const read = filled.read;
     if (read < into.len) return read;
     // The room is full. One byte more tells a file that fits exactly from
     // one that goes on.
@@ -39,13 +42,23 @@ pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
     return read;
 }
 
+/// How much was read, and whether a read failed rather than ended.
+const Filled = struct { read: usize, failed: bool };
+
 /// Read from `handle` until the file or the room runs out.
-fn fill(handle: u32, into: []u8) usize {
+///
+/// A read that failed and a read that ended look alike to a loop that
+/// stops on "nothing more", and taking the first for the second is the
+/// mistake this module exists to make only once: a file half read would
+/// come back as a whole file that happened to be short, and settings half
+/// applied read as settings applied.
+fn fill(handle: u32, into: []u8) Filled {
     var read: usize = 0;
     while (read < into.len) {
         const n = sys.read(handle, into[read..]);
-        if (n <= 0) break;
+        if (n == 0) break;
+        if (n < 0) return .{ .read = read, .failed = true };
         read += @intCast(n);
     }
-    return read;
+    return .{ .read = read, .failed = false };
 }

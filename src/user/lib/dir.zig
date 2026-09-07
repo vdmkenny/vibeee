@@ -32,7 +32,7 @@ pub const Listing = struct {
     }
 };
 
-pub const Error = error{ NotFound, NoRoom };
+pub const Error = error{NotFound};
 
 /// Whether `path` names a directory.
 ///
@@ -66,7 +66,15 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
 
         const entry = sys.Dirent.decode(&record, @intCast(n)) orelse continue;
 
-        if (used + entry.name.len > names.len) return error.NoRoom;
+        // Out of room for names is the same kind of event as out of room
+        // for entries below: the listing is short, and it says so. Given
+        // back as a failure instead, it left the caller holding a
+        // half-filled listing in the order the filesystem happened to
+        // hold it, unsorted and with nothing saying anything was missing.
+        if (used + entry.name.len > names.len) {
+            out.truncated = true;
+            break;
+        }
 
         const stored = names[used..][0..entry.name.len];
         @memcpy(stored, entry.name);

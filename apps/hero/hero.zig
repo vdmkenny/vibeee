@@ -596,6 +596,7 @@ fn load() void {
     const read = file.readEntire(path(), &storage) catch |err| {
         switch (err) {
             error.NoFile => say("No such character."),
+            error.Unreadable => say("The journal could not be read."),
             error.TooBig => {
                 clearDocument();
                 say("Too big: a journal of up to sixty-four kilobytes.");
@@ -752,6 +753,7 @@ fn importPortrait(name: []const u8) void {
     const read = file.readEntire(full, &picture_file) catch |err| {
         say(switch (err) {
             error.NoFile => "No such picture.",
+            error.Unreadable => "The picture could not be read.",
             error.TooBig => "Too big: a picture of up to half a megabyte.",
         });
         return;

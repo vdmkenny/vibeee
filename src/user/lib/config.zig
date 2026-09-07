@@ -55,9 +55,14 @@ fn parse(comptime T: type, value: []const u8) ?T {
     if (T == []const u8) return value;
 
     if (@typeInfo(T) == .array and @typeInfo(T).array.child == u8) {
+        // Refused rather than cut short, like every other type here: a
+        // password one character too long was accepted and the client
+        // authenticated with a shorter secret than was written. The last
+        // byte is the terminator `format` reads back, so what fits is one
+        // less than the array holds.
         var out: T = @splat(0);
-        const n = @min(value.len, out.len);
-        @memcpy(out[0..n], value[0..n]);
+        if (value.len >= out.len) return null;
+        @memcpy(out[0..value.len], value);
         return out;
     }
 
@@ -99,8 +104,15 @@ fn forInt(comptime T: type, value: []const u8) ?T {
     for (value) |c| {
         if (c < '0' or c > '9') return null;
     }
-    const n = str.toUnsigned(value);
-    if (n > std.math.maxInt(T)) return null;
+    // Parsed here rather than through `str.toUnsigned`, which is lenient by
+    // design and accumulates with a plain multiply: a number past what a
+    // word holds wrapped, and the range check below then ran on the wrapped
+    // one, so a setting far too large was assigned as something small.
+    var n: u64 = 0;
+    for (value) |c| {
+        n = std.math.add(u64, std.math.mul(u64, n, 10) catch return null, c - '0') catch return null;
+        if (n > std.math.maxInt(T)) return null;
+    }
     return @intCast(n);
 }
 

@@ -78,7 +78,14 @@ pub const Prompt = struct {
         @memcpy(self.asked[0..room], words[0..room]);
         self.asked_len = @intCast(room);
         self.choices = choices;
+        // A question is what it asks and nothing of the last one: a plain
+        // question opened while a question with a field or a number still
+        // stood inherited that field, kept the keyboard in it so letters
+        // went there instead of choosing an answer, and gave back what had
+        // been typed into a question nobody was answering.
         self.amount = null;
+        self.has_text = false;
+        self.focus_text = false;
     }
 
     /// A question with a number in it: how much, how many, how far.
