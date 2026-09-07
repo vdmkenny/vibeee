@@ -641,14 +641,24 @@ pub const Surface = struct {
     /// reads as two values run together rather than as one too long. So
     /// anything drawn into a measured space comes through here.
     pub fn textFitted(self: Surface, x: i32, y: i32, room: i32, message: []const u8, color: Color) void {
+        self.fittedIn(ui_font, x, y, room, message, color);
+    }
+
+    /// The same in the title face, for the words a tile states rather than
+    /// the ones it labels.
+    pub fn titleFitted(self: Surface, x: i32, y: i32, room: i32, message: []const u8, color: Color) void {
+        self.fittedIn(title_font, x, y, room, message, color);
+    }
+
+    fn fittedIn(self: Surface, face: *const fontlib.Font, x: i32, y: i32, room: i32, message: []const u8, color: Color) void {
         const scale = theme.textScale();
         const room_glyphs: usize = @intCast(@max(@divTrunc(room, scale), 0));
-        const cut = ui_font.fit(message, room_glyphs);
+        const cut = face.fit(message, room_glyphs);
 
-        self.text(x, y, message[0..cut.len], color);
+        self.textScaled(face, x, y, message[0..cut.len], color, scale);
         if (cut.cut) {
-            const at = x + @as(i32, @intCast(ui_font.measure(message[0..cut.len]))) * scale;
-            self.glyphIn(ui_font, at, y, fontlib.glyphs.ellipsis, color);
+            const at = x + @as(i32, @intCast(face.measure(message[0..cut.len]))) * scale;
+            self.glyphIn(face, at, y, fontlib.glyphs.ellipsis, color);
         }
     }
 

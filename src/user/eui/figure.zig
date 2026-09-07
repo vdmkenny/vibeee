@@ -38,10 +38,12 @@ pub fn paint(surface: Surface, area: Rect, label: []const u8, value: []const u8,
         surface.picture(x, Surface.iconTopFor(label_y), g, t.text_dim);
         x += theme.enlarged(@as(i32, @intCast(icons.WIDTH)) + 4);
     }
-    surface.text(x, label_y, label, t.text_dim);
+    // Both fitted to the tile they are in: measured space is drawn into
+    // through the fitting, or the words run over the frame around them.
+    surface.textFitted(x, label_y, area.right() - theme.enlarged(PAD_X) - x, label, t.text_dim);
 
     const at = figureRect(area);
-    surface.title(at.x, at.y, value, t.text);
+    surface.titleFitted(at.x, at.y, at.w, value, t.text);
 }
 
 test "a tile holds its label and its figure with air around them" {

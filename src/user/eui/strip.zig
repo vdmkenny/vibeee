@@ -64,11 +64,16 @@ pub fn track(area: Rect, text: []const u8) Rect {
 /// Where the number goes, hard against the right edge.
 pub fn reading(area: Rect, text: []const u8) Rect {
     const t = theme.current();
+    // Measured once. Measuring decodes the text and looks up an advance per
+    // character, and this file's whole reason for existing is that the
+    // reading is measured rather than assumed.
+    const w = draw.Surface.textWidth(text);
+    const h = draw.Surface.textHeight();
     return .{
-        .x = area.right() - t.menu_padding - draw.Surface.textWidth(text),
-        .y = area.y + @divTrunc(area.h - draw.Surface.textHeight(), 2),
-        .w = draw.Surface.textWidth(text),
-        .h = draw.Surface.textHeight(),
+        .x = area.right() - t.menu_padding - w,
+        .y = area.y + @divTrunc(area.h - h, 2),
+        .w = w,
+        .h = h,
     };
 }
 

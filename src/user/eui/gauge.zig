@@ -111,9 +111,13 @@ pub fn paint(surface: Surface, area: Rect, readings: []const Reading) void {
         const ink = if (alarmed) t.warning else t.text;
 
         // The name on the left and the number on the right, which is what
-        // makes a row of these scannable down either edge.
-        surface.text(cell.x + t.padding, cell.y + t.padding, reading.label, t.text_dim);
-        surface.text(
+        // makes a row of these scannable down either edge. Both clipped to
+        // their own cell, like the note below them: five readings in a
+        // narrow window leave a long name running into its neighbour's
+        // column and across the hairline between them.
+        const within = surface.clipped(cell);
+        within.text(cell.x + t.padding, cell.y + t.padding, reading.label, t.text_dim);
+        within.text(
             cell.right() - t.padding - Surface.textWidth(reading.value),
             cell.y + t.padding,
             reading.value,
@@ -123,12 +127,7 @@ pub fn paint(surface: Surface, area: Rect, readings: []const Reading) void {
         widget.paintBar(surface, bar, reading.percent, inkFor(reading.percent, reading.alarm));
 
         if (reading.note.len > 0) {
-            surface.clipped(cell).text(
-                cell.x + t.padding,
-                bar.bottom() + t.gap,
-                reading.note,
-                t.text_dim,
-            );
+            within.text(cell.x + t.padding, bar.bottom() + t.gap, reading.note, t.text_dim);
         }
 
         // A hairline between cells, drawn by the cell on its left so the last

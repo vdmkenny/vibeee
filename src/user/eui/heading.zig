@@ -30,7 +30,8 @@ pub fn paint(surface: Surface, area: Rect, text: []const u8, picture: ?icons.Gly
         surface.picture(x, Surface.iconTopFor(area.y), g, t.text_dim);
         x += theme.enlarged(@as(i32, @intCast(icons.WIDTH)) + GAP);
     }
-    surface.text(x, area.y, text, t.text_dim);
+    // Fitted to the rule under it, which is as wide as the heading gets.
+    surface.textFitted(x, area.y, area.right() - x, text, t.text_dim);
     surface.fill(.{ .x = area.x, .y = area.y + Surface.textHeight() + 2, .w = area.w, .h = 1 }, t.line);
 }
 
