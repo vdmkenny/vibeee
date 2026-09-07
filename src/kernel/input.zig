@@ -10,6 +10,7 @@
 //! produces `a`.
 
 const event_mod = @import("event.zig");
+const Fifo = @import("lib").fifo.Fifo;
 
 /// Layout-independent key identity. Defined in the ABI because a shortcut is
 /// bound to a physical key, and the program binding it is on the far side of a
@@ -74,9 +75,7 @@ pub const PointerEvent = struct {
 /// but small enough that stale input cannot pile up unboundedly.
 const QUEUE_SIZE = 64;
 
-var queue: [QUEUE_SIZE]Event = undefined;
-var head: usize = 0;
-var tail: usize = 0;
+var line_queue: Fifo(Event, QUEUE_SIZE) = .{};
 
 var mods: Modifiers = .{};
 
@@ -131,7 +130,9 @@ pub fn claimKeys(owner: u32) bool {
 
 pub fn releaseKeys() void {
     key_owner = 0;
-    raw_head = raw_tail;
+    // What the claimant did not read was for the claimant. The next one to
+    // take the keyboard should not be handed keys pressed before it asked.
+    raw_queue.clear();
 }
 
 pub fn keyOwner() u32 {
@@ -140,9 +141,7 @@ pub fn keyOwner() u32 {
 
 /// Raw key events, for the claimant. Presses and releases both, where the line
 /// discipline only ever sees presses that produce characters.
-var raw_queue: [QUEUE_SIZE]Event = undefined;
-var raw_head: usize = 0;
-var raw_tail: usize = 0;
+var raw_queue: Fifo(Event, QUEUE_SIZE) = .{};
 var key_event: event_mod.Event = .{};
 
 pub fn keyReady() *event_mod.Event {
@@ -150,21 +149,17 @@ pub fn keyReady() *event_mod.Event {
 }
 
 pub fn pollKey() ?Event {
-    if (raw_head == raw_tail) return null;
-    const e = raw_queue[raw_head];
-    raw_head = (raw_head + 1) % QUEUE_SIZE;
-    return e;
+    return raw_queue.pop();
 }
 
 pub fn hasKeyEvents() bool {
-    return raw_head != raw_tail;
+    return !raw_queue.isEmpty();
 }
 
 fn postRaw(e: Event) void {
-    const next = (raw_tail + 1) % QUEUE_SIZE;
-    if (next == raw_head) return;
-    raw_queue[raw_tail] = e;
-    raw_tail = next;
+    // Refused rather than displacing: what was pressed first is what the
+    // claimant is waiting to read.
+    if (!raw_queue.push(e)) return;
     key_event.signalLocked();
 }
 
@@ -229,14 +224,10 @@ pub fn post(event: Event) void {
 
     if (event.pressed and event.codepoint == 3) stop_event.signalLocked();
 
-    const next = (tail + 1) % QUEUE_SIZE;
-    if (next == head) {
-        // Drop the newest rather than the oldest: losing the end of a burst is
-        // less confusing than losing what was typed first.
-        return;
-    }
-    queue[tail] = event;
-    tail = next;
+    // Drop the newest rather than the oldest: losing the end of a burst is
+    // less confusing than losing what was typed first.
+    if (!line_queue.push(event)) return;
+
     // Keys arrive from the interrupt handler and from a driver's syscall
     // alike, so the interrupt guard is taken here rather than assumed.
     line_event.signal();
@@ -252,10 +243,7 @@ pub fn lineReady() *event_mod.Event {
 }
 
 pub fn poll() ?Event {
-    if (head == tail) return null;
-    const event = queue[head];
-    head = (head + 1) % QUEUE_SIZE;
-    return event;
+    return line_queue.pop();
 }
 
 // ---------------------------------------------------------------------------
@@ -268,10 +256,7 @@ pub fn poll() ?Event {
 
 const POINTER_QUEUE_SIZE = 64;
 
-var pointer_queue: [POINTER_QUEUE_SIZE]PointerEvent = @splat(.{});
-var pointer_head: usize = 0;
-var pointer_tail: usize = 0;
-var pointer_dropped: u32 = 0;
+var pointer_queue: Fifo(PointerEvent, POINTER_QUEUE_SIZE) = .{};
 
 var pointer_x: i16 = 0;
 var pointer_y: i16 = 0;
@@ -347,35 +332,25 @@ pub fn postPointer(report: PointerReport) void {
         .buttons_changed = report.buttons_changed,
     };
 
-    const next = (pointer_tail + 1) % POINTER_QUEUE_SIZE;
-    if (next == pointer_head) {
-        // Motion may be dropped, a button transition may not: losing a press
-        // or a release leaves a consumer believing a button is in the state it
-        // is not, and a drag that never ends is worse than a jumpy pointer.
-        if (!report.buttons_changed) {
-            pointer_dropped += 1;
-            return;
-        }
-        pointer_head = (pointer_head + 1) % POINTER_QUEUE_SIZE;
-        pointer_dropped += 1;
+    // Motion may be dropped, a button transition may not: losing a press or a
+    // release leaves a consumer believing a button is in a state it is not,
+    // and a drag that never ends is worse than a jumpy pointer.
+    if (report.buttons_changed) {
+        pointer_queue.pushDropOldest(event);
+    } else if (!pointer_queue.push(event)) {
+        return;
     }
-
-    pointer_queue[pointer_tail] = event;
-    pointer_tail = next;
 
     // Signalled from the interrupt handler, so interrupts are already off.
     pointer_event.signalLocked();
 }
 
 pub fn pollPointer() ?PointerEvent {
-    if (pointer_head == pointer_tail) return null;
-    const event = pointer_queue[pointer_head];
-    pointer_head = (pointer_head + 1) % POINTER_QUEUE_SIZE;
-    return event;
+    return pointer_queue.pop();
 }
 
 pub fn hasPointerEvents() bool {
-    return pointer_head != pointer_tail;
+    return !pointer_queue.isEmpty();
 }
 
 /// Signalled whenever a pointer event is queued, so a reader can block instead

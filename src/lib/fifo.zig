@@ -47,6 +47,13 @@ pub fn Fifo(comptime T: type, comptime depth: usize) type {
         pub fn isEmpty(self: *const Self) bool {
             return self.count == 0;
         }
+
+        /// Throw away everything waiting. For a queue whose consumer has gone
+        /// and whose contents are that consumer's, not the next one's.
+        pub fn clear(self: *Self) void {
+            self.first = 0;
+            self.count = 0;
+        }
     };
 }
 
@@ -68,4 +75,14 @@ test "dropping push keeps the newest" {
     try std.testing.expectEqual(@as(?u8, 2), q.pop());
     try std.testing.expectEqual(@as(?u8, 3), q.pop());
     try std.testing.expect(q.isEmpty());
+}
+
+test "clearing empties the queue and leaves it usable" {
+    var q = Fifo(u8, 2){};
+    try std.testing.expect(q.push(1));
+    q.clear();
+    try std.testing.expect(q.isEmpty());
+    try std.testing.expectEqual(@as(?u8, null), q.pop());
+    try std.testing.expect(q.push(2));
+    try std.testing.expectEqual(@as(?u8, 2), q.pop());
 }
