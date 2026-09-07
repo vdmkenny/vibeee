@@ -214,28 +214,36 @@ pub fn newIterator(it: fat.Iterator) ?*fat.Iterator {
     return out;
 }
 
-/// Take a second reference to whatever a handle names.
+pub const RetainError = error{
+    /// The handle names something one process holds alone, so a second
+    /// handle to it would be two owners.
+    NotShareable,
+};
+
+/// Take a second reference to whatever a handle names, or say that it cannot
+/// be shared.
 ///
-/// Used when a handle is duplicated into another process over a channel: the
-/// number is new but the object is the same one, and it must not go away
-/// because the sender closed its copy.
-pub fn retain(h: Handle) Handle {
+/// Used when a handle is duplicated into another process, as a child's stdio
+/// is: the number is new but the object is the same one, and it must not go
+/// away because the first holder closed its copy. What can be shared is
+/// decided here, once, for every route a handle can take.
+pub fn retain(h: Handle) RetainError!Handle {
     switch (h.data) {
         // The count is owed to the slot rather than to the volume: it is what
         // keeps the slot from being given away while this handle names it,
         // whether or not the volume is still there.
         .file => h.data.file.lease.slotOf().open_files += 1,
-        // A directory handle owns its iterator, so duplicating one would need
-        // a copy of it. Nothing passes directories over a channel, and doing
-        // so would need that decided rather than defaulted.
-        .directory => h.data.directory.lease.slotOf().open_files += 1,
         .event => event_mod.retain(h.data.event),
         .channel => channel_mod.retain(h.data.channel.channel),
         .shm => shm_mod.retain(h.data.shm),
-        .display => shm_mod.retain(h.data.display),
         .pipe => pipe_mod.retain(h.data.pipe.pipe, h.data.pipe.writer),
-        .irq => irqevent.retain(h.data.irq),
         .none, .console => {},
+        // A directory handle owns its iterator: two handles over one
+        // iterator would free it twice. A line has one owner, because two
+        // servers cannot both answer a device. The display belongs to the
+        // process that took it: a second handle's close would hand the
+        // screen back from the wrong side.
+        .directory, .irq, .display => return error.NotShareable,
     }
     return h;
 }

@@ -55,7 +55,6 @@ pub fn sys_spawn(a: Args) Result {
 
     var stdio = exec.INHERIT;
     claimStdio(&options, &stdio) catch return Errno.badf.value();
-    errdefer releaseStdio(&stdio);
 
     // Never more than the caller has. A parent cannot hand out an authority it
     // was not given, which is what makes the tree below a process bounded by
@@ -90,21 +89,24 @@ fn claimStdio(options: *const abi.Spawn, out: *exec.Stdio) error{BadHandle}!void
     const table = currentHandles() orelse return error.BadHandle;
     const wanted = [_]i32{ options.stdin, options.stdout, options.stderr };
 
-    for (wanted, 0..) |number, i| {
-        const from: u32 = if (number == abi.Spawn.INHERIT)
-            @intCast(i)
-        else if (number < 0)
-            return error.BadHandle
-        else
-            @intCast(number);
+    // What was taken for one stream is given back if a later one cannot be.
+    errdefer releaseStdio(out);
 
-        // A caller with nothing on that number leaves the child the console it
-        // was given, which is what early boot and `init` rely on.
-        const h = table.get(from) orelse continue;
-        // An interrupt line has one process owner. Unlike pipes, IRQ handles
-        // are not an I/O stream and must never reach a child through stdio.
-        if (h.data == .irq) return error.BadHandle;
-        out[i] = handles.retain(h.*);
+    for (wanted, 0..) |number, i| {
+        if (number == abi.Spawn.INHERIT) {
+            // A caller with nothing on its own stream leaves the child the
+            // console it was given, which is what early boot and `init`
+            // rely on.
+            const h = table.get(@intCast(i)) orelse continue;
+            out[i] = handles.retain(h.*) catch return error.BadHandle;
+            continue;
+        }
+        // A stream named by number has to be there: a caller that asked for
+        // a handle it does not hold is wrong, and giving the child the
+        // console instead would hide that.
+        if (number < 0) return error.BadHandle;
+        const h = table.get(@intCast(number)) orelse return error.BadHandle;
+        out[i] = handles.retain(h.*) catch return error.BadHandle;
     }
 }
 

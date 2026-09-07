@@ -18,7 +18,6 @@ const hal = @import("../hal.zig");
 const input = @import("../input.zig");
 const event = @import("../event.zig");
 const irqevent = @import("../irqevent.zig");
-const ports = @import("../ports.zig");
 const pmm = @import("../pmm.zig");
 const pcicfg = @import("../pcicfg.zig");
 const probe = @import("../probe.zig");
@@ -186,11 +185,13 @@ pub fn sys_ioport_grant(a: Args) Result {
 
     const base = a.a0;
     const count = a.a1;
-    if (count == 0 or base + count > ports.COUNT) return Errno.inval.value();
+    if (count == 0) return Errno.inval.value();
 
     const t = sched.currentThread() orelse return Errno.perm.value();
     const set = sched.portsFor(t) orelse return Errno.nomem.value();
-    set.allow(base, count);
+    // Whether the range fits is the set's to decide, since the set is what
+    // would be indexed past its end.
+    set.allow(base, count) catch return Errno.inval.value();
 
     // The CPU reads the bitmap from inside the TSS, so the change has to be
     // copied there before the next instruction can benefit from it.

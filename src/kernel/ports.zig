@@ -19,15 +19,29 @@ pub const BYTES = COUNT / 8;
 pub const PortSet = struct {
     denied: std.StaticBitSet(COUNT) = std.StaticBitSet(COUNT).initFull(),
 
-    /// Let `count` ports through, starting at `base`.
-    pub fn allow(self: *PortSet, base: usize, count: usize) void {
-        if (count == 0) return;
-        self.denied.setRangeValue(.{ .start = base, .end = @min(base + count, COUNT) }, false);
+    pub const Error = error{
+        /// The range reaches past the last port. Refused whole rather than
+        /// clamped: a caller that asked for ports the machine does not have
+        /// has the wrong idea about its device, and a bitmap indexed past
+        /// its end is kernel memory.
+        OutOfRange,
+    };
+
+    /// The bits `count` ports from `base` occupy, or the error when they
+    /// would not all fit. Checked without adding the two, since the sum of
+    /// two words the caller chose can wrap back inside the range.
+    fn span(base: usize, count: usize) Error!std.bit_set.Range {
+        if (base >= COUNT or count > COUNT - base) return error.OutOfRange;
+        return .{ .start = base, .end = base + count };
     }
 
-    pub fn deny(self: *PortSet, base: usize, count: usize) void {
-        if (count == 0) return;
-        self.denied.setRangeValue(.{ .start = base, .end = @min(base + count, COUNT) }, true);
+    /// Let `count` ports through, starting at `base`.
+    pub fn allow(self: *PortSet, base: usize, count: usize) Error!void {
+        self.denied.setRangeValue(try span(base, count), false);
+    }
+
+    pub fn deny(self: *PortSet, base: usize, count: usize) Error!void {
+        self.denied.setRangeValue(try span(base, count), true);
     }
 
     pub fn allows(self: *const PortSet, port: usize) bool {
@@ -57,7 +71,7 @@ test "allowing a range leaves everything else denied" {
     var set = PortSet{};
     try std.testing.expect(!set.allows(0x80));
 
-    set.allow(0x80, 1);
+    try set.allow(0x80, 1);
     try std.testing.expect(set.allows(0x80));
     try std.testing.expect(!set.allows(0x7F));
     try std.testing.expect(!set.allows(0x81));
@@ -65,7 +79,7 @@ test "allowing a range leaves everything else denied" {
 
 test "a range crosses byte boundaries without gaps" {
     var set = PortSet{};
-    set.allow(0x1F0, 8);
+    try set.allow(0x1F0, 8);
 
     for (0x1F0..0x1F8) |port| try std.testing.expect(set.allows(port));
     try std.testing.expect(!set.allows(0x1EF));
@@ -74,8 +88,8 @@ test "a range crosses byte boundaries without gaps" {
 
 test "grants accumulate rather than replace" {
     var set = PortSet{};
-    set.allow(0x60, 1);
-    set.allow(0x64, 1);
+    try set.allow(0x60, 1);
+    try set.allow(0x64, 1);
 
     try std.testing.expect(set.allows(0x60));
     try std.testing.expect(set.allows(0x64));
@@ -84,7 +98,24 @@ test "grants accumulate rather than replace" {
 
 test "the lowest port is the lowest bit of the first byte" {
     var set = PortSet{};
-    set.allow(0, 1);
+    try set.allow(0, 1);
     // Denials are ones, so allowing port 0 clears bit 0.
     try std.testing.expectEqual(@as(u8, 0xFE), set.bytes()[0]);
+}
+
+test "a range past the last port is refused whole, wrapped sums included" {
+    var set = PortSet{};
+    try std.testing.expectError(error.OutOfRange, set.allow(COUNT, 1));
+    try std.testing.expectError(error.OutOfRange, set.allow(COUNT - 1, 2));
+    // A base and count whose sum wraps to a small number: the pair the
+    // check has to see through.
+    try std.testing.expectError(error.OutOfRange, set.allow(std.math.maxInt(usize) - 1, 2));
+    try std.testing.expect(!set.allows(0));
+    try std.testing.expect(!set.allows(COUNT - 1));
+
+    // The last port is reachable, and an empty range is nothing to do.
+    try set.allow(COUNT - 1, 1);
+    try std.testing.expect(set.allows(COUNT - 1));
+    try set.allow(0x80, 0);
+    try std.testing.expect(!set.allows(0x80));
 }
