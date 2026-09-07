@@ -29,16 +29,32 @@ comptime {
         \\.align 4
         \\.global arm_vectors_start
         \\arm_vectors_start:
-        \\  b vibeeeEntry        @ reset
-        \\  b .                  @ undefined instruction
-        \\  b .                  @ software interrupt
-        \\  b .                  @ prefetch abort
-        \\  b .                  @ data abort
-        \\  b .                  @ reserved
-        \\  b .                  @ irq
-        \\  b .                  @ fiq
+        \\  ldr pc, vector_reset
+        \\  ldr pc, vector_undefined
+        \\  ldr pc, vector_swi
+        \\  ldr pc, vector_prefetch
+        \\  ldr pc, vector_data
+        \\  ldr pc, vector_reserved
+        \\  ldr pc, vector_irq
+        \\  ldr pc, vector_fiq
+        \\@ The handlers' addresses, as words the entries load rather than
+        \\@ branches they take: a branch is relative to where it sits, and
+        \\@ this table sits somewhere else once it has been copied to zero.
+        \\@ The words are copied with it, so an entry finds its word at the
+        \\@ same distance wherever the table is.
+        \\vector_reset:     .word vibeeeEntry
+        \\vector_undefined: .word arm_hang
+        \\vector_swi:       .word arm_hang
+        \\vector_prefetch:  .word arm_hang
+        \\vector_data:      .word arm_hang
+        \\vector_reserved:  .word arm_hang
+        \\vector_irq:       .word arm_hang
+        \\vector_fiq:       .word arm_hang
         \\.global arm_vectors_end
         \\arm_vectors_end:
+        \\.global arm_hang
+        \\arm_hang:
+        \\  b arm_hang
         \\  .ltorg
         \\
         \\@ Entry. QEMU starts the machine in SVC mode with interrupts masked,
