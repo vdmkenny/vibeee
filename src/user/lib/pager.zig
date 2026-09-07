@@ -136,9 +136,14 @@ pub fn end(bar_text: []const u8) void {
     // screen.
     ink.plain();
     ink.reverse();
-    // Padded to one short of the width: filling the last cell would wrap the
-    // console onto another row and the bar would be two cells tall.
-    out.pad(bar_text, console.size().columns - 1);
+    // Padded to one short of the frame's own width: filling the last cell
+    // would wrap onto another row and the bar would be two cells tall.
+    // Measured against the machine's console instead, a viewer in a window
+    // narrower than the screen padded past its own edge, wrapped, and
+    // pushed the top line of the page off on every redraw. It is also a
+    // syscall and a parse for a number the frame already holds, once a
+    // keystroke.
+    out.pad(bar_text, frame().columns - 1);
     ink.plain();
     out.flush();
 }
@@ -357,18 +362,25 @@ pub fn follow(lines: Lines, top: usize, size: Frame, layout: Layout, at: Cell) u
     const margin = gutter(lines, layout);
     const width = if (size.columns > margin + 1) size.columns - margin - 1 else 1;
 
-    // Walk the window down until the cursor's line fits inside it. Bounded
-    // by the lines between: a screenful at worst, and usually one step.
-    var start = top;
-    while (start <= at.line) {
-        var rows: usize = 0;
-        var n = start;
-        while (n < at.line) : (n += 1) rows += heightOf(lines, n, layout, width);
-        rows += 1 + at.column / width;
-        if (rows <= size.window) return start;
-        start += 1;
+    // Walked back from the cursor, taking lines above it while they still
+    // fit: the highest one that does is where the window starts.
+    //
+    // Down from the top instead, the heights between were summed again for
+    // every step, so following a cursor that jumped to the end of a long
+    // document cost the square of the distance in line scans. On a document
+    // of the length this holds, that is minutes of a machine doing nothing
+    // else.
+    var rows = 1 + at.column / width;
+    if (rows >= size.window) return at.line;
+
+    var start = at.line;
+    while (start > top) {
+        const above = heightOf(lines, start - 1, layout, width);
+        if (rows + above > size.window) break;
+        rows += above;
+        start -= 1;
     }
-    return at.line;
+    return start;
 }
 
 /// A line typed into the status bar: a filename, a search, anything a
@@ -506,9 +518,16 @@ fn fromTerminal() Input {
                     take(size.length);
                     return .resized;
                 },
-                .partial => {
-                    asked_again = false;
+                // A report that might still be arriving. A lone escape is
+                // the front of one, so this is also what Escape pressed on
+                // its own looks like: asked about again only while more
+                // might come, and past that the bytes go to the key reader,
+                // which knows a lone escape is the key. Waited for either
+                // way, Escape did nothing until another key was pressed and
+                // the two were then read together as a chord.
+                .partial => if (!asked_again) {
                     if (fill()) |ended| return ended;
+                    asked_again = true;
                     continue;
                 },
                 .none => {},

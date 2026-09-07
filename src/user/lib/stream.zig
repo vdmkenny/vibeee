@@ -69,7 +69,19 @@ pub const Stream = struct {
     pub fn flush(self: *Stream) void {
         if (!self.writing or self.used == 0) return;
 
-        if (sys.write(self.handle, self.buffer[0..self.used]) < 0) self.failed = true;
+        // Written until it is all written or the write stops taking any:
+        // a write answers with how much it took, and a pipe whose reader
+        // closes mid-write takes only part. Counted as done, the tail was
+        // dropped and nothing said the stream had failed.
+        var at: usize = 0;
+        while (at < self.used) {
+            const n = sys.write(self.handle, self.buffer[at..self.used]);
+            if (n <= 0) {
+                self.failed = true;
+                break;
+            }
+            at += @intCast(n);
+        }
         self.used = 0;
     }
 
