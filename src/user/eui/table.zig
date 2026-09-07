@@ -256,6 +256,15 @@ pub fn rowRect(area: Rect, state: *const State, index: usize, rows: usize) ?Rect
 
 /// Where the rows are drawn and answered for: the body, less the column
 /// the scrollbar takes when the rows do not all fit.
+/// Whether any row carries a picture, which is what indents the first
+/// column for every row.
+fn anyPictured(rows: []const Row) bool {
+    for (rows) |row| {
+        if (row.icon != null) return true;
+    }
+    return false;
+}
+
 fn rowsRect(body: Rect, rows: usize, visible: usize) Rect {
     if (rows <= visible) return body;
     return .{ .x = body.x, .y = body.y, .w = body.w - scroll.WIDTH, .h = body.h };
@@ -303,7 +312,16 @@ fn fingerprint(
     for (rows[@min(state.scroll, rows.len)..last]) |row| {
         for (row.cells) |cell| h.text(cell);
         h.number(row.depth);
+        // What is drawn about a row besides its text: the accent it may be
+        // in, and the picture before it. Left out, a caller that moved the
+        // mark to another row without changing a word left the old row
+        // accented and the new one plain.
+        h.flag(row.marked);
+        h.number(if (row.icon) |picture| @intFromEnum(picture) + 1 else 0);
     }
+    // The first column is indented when any row in the table has a picture,
+    // so a picture arriving anywhere moves every row's text.
+    h.flag(anyPictured(rows));
 
     return h.done();
 }
@@ -360,10 +378,7 @@ fn paint(
 
     // One row with a picture indents them all, so the names line up whether
     // or not the row above has one.
-    var pictured = false;
-    for (rows) |row| {
-        if (row.icon != null) pictured = true;
-    }
+    const pictured = anyPictured(rows);
 
     const last = @min(state.scroll + visible, rows.len);
     var y = body.y;

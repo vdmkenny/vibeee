@@ -105,7 +105,11 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
             state.list.showAt(rowsOf(menu.items, &storage));
         }
 
-        if (is_open) chosen = dropdown(ctx, title, state, menu);
+        // Asked again rather than from before the click: a title clicked
+        // while its menu was open has closed it, and drawing the dropdown
+        // anyway left it on the screen with nothing behind it, standing
+        // until the next event happened to arrive.
+        if (state.open == index) chosen = dropdown(ctx, title, state, menu);
         x += width;
     }
 

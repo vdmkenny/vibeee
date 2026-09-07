@@ -27,7 +27,19 @@ const MIN_THUMB: i32 = 12;
 pub const State = struct {
     /// How far down the thumb the pointer went, so a drag moves the thumb with
     /// the pointer rather than snapping its top to it.
-    grab: ?i32 = null,
+    grab: ?Grab = null,
+};
+
+/// A thumb being dragged: where the pointer was when it was taken, and
+/// where the view stood then.
+///
+/// Both, rather than where in the thumb the pointer took hold: the thumb's
+/// position on screen is a rounded-down division, and mapping that pixel
+/// back multiplies its rounding by the whole length of the document. A
+/// grab that had not moved the pointer stepped the view backwards.
+const Grab = struct {
+    at_y: i32,
+    from: usize,
 };
 
 /// Draw a vertical scrollbar and run it. Returns where the view should be
@@ -47,7 +59,7 @@ pub fn vertical(
 ) usize {
     if (total <= visible or area.h <= 0) {
         state.grab = null;
-        return 0;
+        return scroll;
     }
 
     const limit = total - visible;
@@ -63,7 +75,7 @@ pub fn vertical(
 
     if (ctx.pressedThisPass() and over) {
         if (thumb.contains(ctx.pointer_x, ctx.pointer_y)) {
-            state.grab = ctx.pointer_y - thumb.y;
+            state.grab = .{ .at_y = ctx.pointer_y, .from = at };
         } else {
             // The track pages towards the pointer, which is what a click
             // beside the thumb has meant since scrollbars existed.
@@ -74,15 +86,39 @@ pub fn vertical(
     if (!ctx.buttons.left) state.grab = null;
 
     if (state.grab) |held| {
-        const wanted = ctx.pointer_y - held - area.y;
-        out = if (room <= 0) 0 else @intCast(std.math.clamp(
-            @divTrunc(wanted * @as(i32, @intCast(limit)) + @divTrunc(room, 2), room),
+        // Where the view stood when the thumb was taken, plus what the
+        // pointer has moved since, in the units the caller counts in.
+        const moved = ctx.pointer_y - held.at_y;
+        const shift: i32 = if (room <= 0) 0 else @divTrunc(moved * @as(i32, @intCast(limit)), room);
+        out = @intCast(std.math.clamp(
+            @as(i32, @intCast(held.from)) + shift,
             0,
             @as(i32, @intCast(limit)),
         ));
     }
 
-    paint(ctx, area, thumb, over or state.grab != null);
+    // The thumb where it will be, since that is what the caller draws next.
+    const shown = if (out == at) thumb else Rect{
+        .x = area.x,
+        .y = area.y + @divTrunc(room * @as(i32, @intCast(out)), @as(i32, @intCast(limit))),
+        .w = area.w,
+        .h = span,
+    };
+    const hot = over or state.grab != null;
+
+    // Repainted when it says something different: a bar refilled on every
+    // pass is the one thing dirtying a frame in which nothing moved, and on
+    // a panel this size that is a flush of the whole column for nothing.
+    if (ctx.slotFor(area)) |entry| {
+        const visual: widget.Visual = if (hot) .hot else .idle;
+        if (ctx.needsPaint(entry, visual) or entry.detail != shown.y) {
+            entry.visual = visual;
+            entry.detail = shown.y;
+            paint(ctx, area, shown, hot);
+        }
+    } else {
+        paint(ctx, area, shown, hot);
+    }
     return out;
 }
 
