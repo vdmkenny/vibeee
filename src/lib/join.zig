@@ -413,6 +413,10 @@ pub const Join = struct {
         self.failed_in = self.state;
         self.state = .failed;
         self.failure = why;
+        // A join that has failed is not about to finish, however far it
+        // had got: the last frame of an exchange may have gone out just
+        // before the cell said goodbye.
+        self.settling = false;
         return .{ .failed = why };
     }
 
@@ -528,6 +532,10 @@ const FakeAp = struct {
 
     fn refuse(into: []u8) usize {
         return mlme.AssocResponse.write(fromAp(), .{ .status = .denied_rates }, into).?;
+    }
+
+    fn goodbye(into: []u8) usize {
+        return mlme.Farewell.write(fromAp(), mlme.Farewell.deauthentication(.leaving), into).?;
     }
 
     /// Wrap a key frame as the access point sends one.
@@ -825,6 +833,27 @@ test "the wrong key is told apart from a network that stopped answering" {
         if (what != .none) ended = what;
     }
     try testing.expectEqual(Action{ .failed = .bad_key }, ended.?);
+}
+
+test "a cell that says goodbye as the exchange ends leaves nothing to settle" {
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = join.tick(0, &out);
+    _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    try testing.expect(join.settling);
+
+    // Between the last frame going out and the next look, the cell ends it.
+    try testing.expectEqual(Action{ .failed = .refused }, join.heard(air[0..FakeAp.goodbye(&air)], .{}, 450, &out));
+    try testing.expectEqual(Action.none, join.tick(500, &out));
+    try testing.expectEqual(State.failed, join.state);
 }
 
 test "the cell's next group key is taken and answered as traffic" {
