@@ -75,6 +75,13 @@ LOG="${OUT%.png}.log"
 # wait a moment and ask again rather than to guess how long is long enough
 # beforehand.
 start() {
+    # The socket file is what says it is running, so a previous attempt's
+    # must not be lying there: the emulator creates its monitor socket and
+    # then exits on the disk image's lock in the same instant, and the
+    # socket it left behind reads exactly like one that is being listened
+    # on. Cleared before every attempt.
+    rm -f "$SOCK"
+
     qemu-system-i386 -machine pc -cpu "$QEMU_CPU" -m "$QEMU_MEM" -no-reboot \
         -display none -vga none -device VGA,edid=on,xres=800,yres=600 -serial "file:$LOG" \
         -monitor "unix:$SOCK,server,nowait" "$@" &
@@ -89,7 +96,11 @@ start() {
         sleep 0.1
         i=$((i + 1))
     done
-    [ -S "$SOCK" ] && return 0
+    # Alive as well as listening: the socket appears a moment before an
+    # emulator that cannot take the image gives up, so a socket alone is
+    # not a machine that started.
+    if [ -S "$SOCK" ] && kill -0 "$QPID" 2>/dev/null; then return 0; fi
+    if ! kill -0 "$QPID" 2>/dev/null; then QPID=""; rm -f "$SOCK"; return 1; fi
 
     # Alive, but it never opened its monitor. Left running it would keep the
     # image's write lock, and every later attempt would fail to take it: the
