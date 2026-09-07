@@ -30,6 +30,10 @@ pub const Error = error{
     Exists,
     NotEmpty,
     NameTooLong,
+    /// The name is not text this filesystem can write: not UTF-8, or a
+    /// character outside the basic plane, which the long-name records here
+    /// do not carry.
+    BadName,
 } || table.Error;
 
 pub const Kind = table.Kind;
@@ -165,12 +169,29 @@ fn fatFromEpoch(seconds: i64) FatStamp {
 /// UTF-8 would make every directory step copy half a kilobyte.
 pub const MAX_NAME = 128;
 
+/// A record's position in its directory, with enough of the walk kept to
+/// carry on forward from it: the sector alone cannot say which sector comes
+/// next in a cluster chain.
+pub const Place = struct {
+    cluster: u32 = 0,
+    sector_in_cluster: u32 = 0,
+    sector: u32 = 0,
+    sectors_left: u32 = 0,
+    index: u32 = 0,
+};
+
 pub const Entry = struct {
     name: [MAX_NAME]u8,
     name_len: usize,
     is_dir: bool,
     size: u32,
     cluster: u32,
+    /// The first record of this entry's run and how many records the run
+    /// holds: the long-name fragments in front of the short record, and the
+    /// short record itself. What freeing the entry has to free. Zero records
+    /// for an entry no directory record stands behind.
+    run: Place = .{},
+    records: u32 = 0,
     /// Seconds since the Unix epoch, or 0 when the entry carries no date.
     /// Normalised here so nothing above this layer has to know FAT packs a
     /// timestamp into two 16-bit words with a 1980 epoch and 2-second
@@ -462,7 +483,7 @@ const LfnBuilder = struct {
 
             var buf: [3]u8 = undefined;
             const len = std.unicode.utf8Encode(unit, &buf) catch return null;
-            if (n + len >= out.len) return null;
+            if (n + len > out.len) return null;
             @memcpy(out[n..][0..len], buf[0..len]);
             n += len;
         }
@@ -527,6 +548,32 @@ pub const Iterator = struct {
     loaded: bool = false,
     done: bool = false,
     lfn: LfnBuilder = .{},
+    /// Where the long-name run being gathered began.
+    run_start: Place = .{},
+
+    /// An iterator standing at `place`, for walking forward from a record
+    /// whose position was kept.
+    pub fn at(vol: *Volume, place: Place) Iterator {
+        return .{
+            .vol = vol,
+            .cluster = place.cluster,
+            .sector_in_cluster = place.sector_in_cluster,
+            .sector = place.sector,
+            .sectors_left = place.sectors_left,
+            .index_in_sector = place.index,
+        };
+    }
+
+    /// The place of the record the cursor has just passed.
+    fn here(self: *const Iterator) Place {
+        return .{
+            .cluster = self.cluster,
+            .sector_in_cluster = self.sector_in_cluster,
+            .sector = self.sector,
+            .sectors_left = self.sectors_left,
+            .index = self.index_in_sector - 1,
+        };
+    }
 
     pub fn next(self: *Iterator) Error!?Entry {
         while (!self.done) {
@@ -554,8 +601,10 @@ pub const Iterator = struct {
                     continue;
                 }
 
-                // Long-name fragments precede the entry they describe.
+                // Long-name fragments precede the entry they describe. The
+                // one that begins a run is where the entry's records start.
                 if (raw.attr.isLongName()) {
+                    if (!self.lfn.valid) self.run_start = self.here();
                     self.lfn.add(@ptrCast(raw));
                     continue;
                 }
@@ -579,9 +628,19 @@ pub const Iterator = struct {
                 };
 
                 // Prefer the long name; fall back to 8.3 when there is none, or
-                // when the fragments do not check out against this entry.
-                entry.name_len = self.lfn.finish(&raw.name, &entry.name) orelse
-                    decodeName(&raw.name, &entry.name);
+                // when the fragments do not check out against this entry. The
+                // records that are the entry's own are the fragments that
+                // spelled its name and the short record; fragments that did
+                // not check out belong to nobody and are left alone.
+                if (self.lfn.finish(&raw.name, &entry.name)) |len| {
+                    entry.name_len = len;
+                    entry.run = self.run_start;
+                    entry.records = @intCast(self.lfn.count / LFN_CHARS + 1);
+                } else {
+                    entry.name_len = decodeName(&raw.name, &entry.name);
+                    entry.run = self.here();
+                    entry.records = 1;
+                }
                 self.lfn.reset();
 
                 return entry;
@@ -1169,10 +1228,102 @@ fn fitsShortName(name: []const u8) bool {
     return std.mem.eql(u8, back[0..n], name);
 }
 
+/// The short records of a directory, raw: every record that names a file or
+/// a directory, as the eleven bytes it holds. Long-name fragments, free
+/// records and the volume label are passed over.
+///
+/// A lookup by name never sees a short name that a long name stands in front
+/// of, so anything that has to know which short names are taken reads them
+/// from here.
+const ShortRecords = struct {
+    walk: Iterator,
+    buffer: [block.SECTOR_SIZE]u8 = undefined,
+    loaded: bool = false,
+    index: u32 = 0,
+
+    fn over(dir: Iterator) ShortRecords {
+        return .{ .walk = dir };
+    }
+
+    fn next(self: *ShortRecords) Error!?*const [11]u8 {
+        while (!self.walk.done) {
+            if (!self.loaded) {
+                self.walk.vol.dev.read(self.walk.sector, &self.buffer) catch return error.Io;
+                self.loaded = true;
+                self.index = 0;
+            }
+            while (self.index < RECORDS_PER_SECTOR) {
+                const raw: *align(1) const DirEntry = @ptrCast(&self.buffer[self.index * @sizeOf(DirEntry)]);
+                self.index += 1;
+                if (raw.name[0] == 0x00) {
+                    self.walk.done = true;
+                    return null;
+                }
+                if (raw.name[0] == 0xE5 or raw.attr.isLongName() or raw.attr.volume_id) continue;
+                return self.buffer[(self.index - 1) * @sizeOf(DirEntry) ..][0..11];
+            }
+            self.loaded = false;
+            try self.walk.advanceSector();
+        }
+        return null;
+    }
+};
+
+/// Whether `dir` already holds a record with exactly this short name.
+fn shortNameTaken(dir: Iterator, short: *const [11]u8) Error!bool {
+    var records = ShortRecords.over(dir);
+    while (try records.next()) |held| {
+        if (std.mem.eql(u8, held, short)) return true;
+    }
+    return false;
+}
+
+/// The number an alias record carries for `stem`, or null when `base` is not
+/// an alias of it: the stem's leading characters, then `~` and a number from
+/// one to ninety-nine, padded to eight with spaces. The stem is cut to make
+/// room for the number, so the tilde sits wherever that leaves it.
+fn aliasNumber(base: *const [8]u8, stem: []const u8) ?u32 {
+    const tilde = std.mem.indexOfScalar(u8, base, '~') orelse return null;
+    var n: u32 = 0;
+    var digits: usize = 0;
+    for (base[tilde + 1 ..]) |c| {
+        if (c == ' ') break;
+        if (!std.ascii.isDigit(c)) return null;
+        n = n * 10 + (c - '0');
+        digits += 1;
+    }
+    if (digits == 0 or n == 0 or n > ALIAS_MAX) return null;
+    for (base[tilde + 1 + digits ..]) |c| if (c != ' ') return null;
+    // The prefix is the stem cut to the room the number leaves, so a tilde
+    // anywhere else is a different name that happens to hold one.
+    const keep = @min(stem.len, 8 - (1 + digits));
+    if (tilde != keep) return null;
+    return if (std.mem.eql(u8, base[0..keep], stem[0..keep])) n else null;
+}
+
+/// `~1` through `~99`, which is as far as anything sensible goes. A directory
+/// holding a hundred names that all shorten alike is one where refusing is
+/// better than searching.
+const ALIAS_MAX = 99;
+
+/// Which alias numbers of `stem` and `ext` a directory already uses, read
+/// from the short records in one walk.
+fn aliasesTaken(dir: Iterator, stem: []const u8, ext: *const [3]u8) Error!std.bit_set.IntegerBitSet(ALIAS_MAX + 1) {
+    var taken = std.bit_set.IntegerBitSet(ALIAS_MAX + 1).initEmpty();
+    var records = ShortRecords.over(dir);
+    while (try records.next()) |held| {
+        if (!std.mem.eql(u8, held[8..11], ext)) continue;
+        if (aliasNumber(held[0..8], stem)) |n| taken.set(n);
+    }
+    return taken;
+}
+
 /// Invent a unique 8.3 alias for a long name: `LONGNA~1.TXT`.
 ///
 /// Every long name needs one, because that is what a system reading only 8.3
-/// will see, and two files in a directory cannot share it.
+/// will see, and two files in a directory cannot share it. Which are taken is
+/// read from the short records themselves: a lookup by name would answer with
+/// the long name standing in front of each and never see the alias.
 fn shortAlias(dir: Iterator, name: []const u8, out: *[11]u8) Error!void {
     @memset(out, ' ');
 
@@ -1205,11 +1356,10 @@ fn shortAlias(dir: Iterator, name: []const u8, out: *[11]u8) Error!void {
         }
     }
 
-    // `~1` through `~99`, which is as far as anything sensible goes. A
-    // directory holding a hundred names that all shorten alike is one where
-    // refusing is better than searching.
+    const taken = try aliasesTaken(dir, out[0..stem], out[8..11]);
     var n: u32 = 1;
-    while (n <= 99) : (n += 1) {
+    while (n <= ALIAS_MAX) : (n += 1) {
+        if (taken.isSet(n)) continue;
         var suffix: [3]u8 = undefined;
         var len: usize = 0;
         suffix[len] = '~';
@@ -1223,37 +1373,41 @@ fn shortAlias(dir: Iterator, name: []const u8, out: *[11]u8) Error!void {
 
         const at = @min(stem, 8 - len);
         @memcpy(out[at..][0..len], suffix[0..len]);
-
-        var back: [MAX_NAME]u8 = undefined;
-        const back_len = decodeName(out, &back);
-        _ = lookupIn(dir, back[0..back_len]) catch |err| switch (err) {
-            error.NotFound => return,
-            else => return err,
-        };
+        return;
     }
     return error.NoSpace;
 }
 
-/// How many long-name records a name needs.
-fn longNameRecords(name: []const u8) usize {
-    return (name.len + LFN_CHARS - 1) / LFN_CHARS;
+/// A name as the long-name records carry it: UTF-16 units, one per
+/// character. Refused when the bytes are not UTF-8, or when a character lies
+/// outside the basic plane, since the records here carry no surrogate pairs
+/// and a reader would refuse the name they spelled.
+fn nameUnits(name: []const u8, out: *[MAX_NAME]u16) Error![]const u16 {
+    const n = std.unicode.utf8ToUtf16Le(out, name) catch return error.BadName;
+    for (out[0..n]) |unit| {
+        if (unit >= 0xD800 and unit <= 0xDFFF) return error.BadName;
+    }
+    return out[0..n];
 }
 
-/// Build one long-name record: 13 characters of the name, in UTF-16.
+/// How many long-name records a name of this many units needs.
+fn longNameRecords(spelled: []const u16) usize {
+    return (spelled.len + LFN_CHARS - 1) / LFN_CHARS;
+}
+
+/// Build one long-name record: 13 units of the name.
 ///
 /// Unused positions after the terminator are 0xFFFF, which is what every
 /// implementation writes and what some of them check for.
-fn buildLongRecord(name: []const u8, index: usize, last: bool, checksum: u8) LfnEntry {
+fn buildLongRecord(spelled: []const u16, index: usize, last: bool, checksum: u8) LfnEntry {
     var chars: [LFN_CHARS]u16 = @splat(0xFFFF);
     const start = index * LFN_CHARS;
 
     for (0..LFN_CHARS) |i| {
         const at = start + i;
-        if (at < name.len) {
-            // Latin-1 into UTF-16 directly. Names above that need a decoder,
-            // and nothing here creates one yet.
-            chars[i] = name[at];
-        } else if (at == name.len) {
+        if (at < spelled.len) {
+            chars[i] = spelled[at];
+        } else if (at == spelled.len) {
             chars[i] = 0;
         }
     }
@@ -1321,12 +1475,22 @@ fn build(
 
     // A name that survives the 8.3 round trip is stored as itself. Anything
     // else, and that includes anything with lowercase in it, needs long-name
-    // records and an alias for systems that read only the short form.
+    // records and an alias for systems that read only the short form. Either
+    // way the short name has to be one the directory does not hold: a lookup
+    // by name compares long names and would not see a clash of short ones.
     var short: [11]u8 = undefined;
+    var units_buf: [MAX_NAME]u16 = undefined;
     const long = !fitsShortName(name);
-    if (long) try shortAlias(dir, name, &short) else try encodeShortName(name, &short);
+    var spelled: []const u16 = &.{};
+    if (long) {
+        spelled = try nameUnits(name, &units_buf);
+        try shortAlias(dir, name, &short);
+    } else {
+        try encodeShortName(name, &short);
+        if (try shortNameTaken(dir, &short)) return error.Exists;
+    }
 
-    const long_records = if (long) longNameRecords(name) else 0;
+    const long_records = if (long) longNameRecords(spelled) else 0;
     if (long_records > LFN_MAX_ENTRIES) return error.NameTooLong;
 
     // A directory's cluster is allocated before its record, so a failure part
@@ -1351,7 +1515,7 @@ fn build(
     // pieces in reverse and the short entry comes last.
     for (0..long_records) |i| {
         const index = long_records - 1 - i;
-        const record = buildLongRecord(name, index, index == long_records - 1, checksum);
+        const record = buildLongRecord(spelled, index, index == long_records - 1, checksum);
         @memcpy(&records[i], std.mem.asBytes(&record));
     }
 
@@ -1385,6 +1549,14 @@ fn build(
         .mtime = mtime,
         .dir_sector = slot.sector,
         .dir_index = slot.index,
+        .run = .{
+            .cluster = run.walk.cluster,
+            .sector_in_cluster = run.walk.sector_in_cluster,
+            .sector = run.walk.sector,
+            .sectors_left = run.walk.sectors_left,
+            .index = run.index,
+        },
+        .records = @intCast(total),
     };
 
     if (long) {
@@ -1455,15 +1627,26 @@ pub fn unlink(vol: *Volume, entry: Entry) Error!void {
 /// clusters the old name held are the ones the new name now holds, and freeing
 /// them would empty the file it just moved.
 fn forget(vol: *Volume, entry: Entry) Error!void {
-    var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
-    vol.dev.read(entry.dir_sector, &sector_buf) catch return error.Io;
-
-    // 0xE5 in the first byte is what marks a record free. Any long-name records
-    // in front of it are left behind: a reader checks their checksum against
-    // the short entry that follows, so orphans are ignored rather than
-    // attached to whatever record lands there next.
-    sector_buf[entry.dir_index * @sizeOf(DirEntry)] = 0xE5;
-    vol.dev.write(entry.dir_sector, &sector_buf) catch return error.Io;
+    // 0xE5 in the first byte is what marks a record free. Every record of the
+    // entry's run is marked: the long-name fragments in front of the short
+    // record are its own, and left standing they would be records nothing
+    // reads and nothing reuses, filling the directory with a name's worth of
+    // dead space each time it went.
+    var walk = Iterator.at(vol, entry.run);
+    var left = entry.records;
+    while (left > 0) {
+        vol.dev.read(walk.sector, &walk.buffer) catch return error.Io;
+        while (left > 0 and walk.index_in_sector < RECORDS_PER_SECTOR) : (walk.index_in_sector += 1) {
+            walk.buffer[walk.index_in_sector * @sizeOf(DirEntry)] = 0xE5;
+            left -= 1;
+        }
+        vol.dev.write(walk.sector, &walk.buffer) catch return error.Io;
+        if (left > 0) {
+            try walk.advanceSector();
+            walk.index_in_sector = 0;
+            if (walk.done) return error.NotFound;
+        }
+    }
 }
 
 /// Move `source` to `name` in `dir`, replacing whatever is already called that.
@@ -1760,4 +1943,62 @@ test "the checksum is the one the format specifies" {
     try testing.expectEqual(@as(u8, 0xF1), shortNameChecksum("HELLO   TXT"));
     try testing.expectEqual(@as(u8, 0xD4), shortNameChecksum("LONGFI~1TXT"));
     try testing.expectEqual(@as(u8, 0xF3), shortNameChecksum("README  MD "));
+}
+
+test "a long name is carried as the characters it spells, not the bytes" {
+    // Two bytes in UTF-8, one unit on the medium, and read back as written.
+    var units_buf: [MAX_NAME]u16 = undefined;
+    const spelled = try nameUnits("caf\u{e9}.txt", &units_buf);
+    try std.testing.expectEqual(@as(usize, 8), spelled.len);
+    try std.testing.expectEqual(@as(u16, 0xE9), spelled[3]);
+
+    const short: [11]u8 = "CAFE~1  TXT".*;
+    const sum = shortNameChecksum(&short);
+    var builder = LfnBuilder{};
+    const record = buildLongRecord(spelled, 0, true, sum);
+    builder.add(&record);
+    var name: [MAX_NAME]u8 = undefined;
+    const n = builder.finish(&short, &name) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("caf\u{e9}.txt", name[0..n]);
+}
+
+test "a name that is not text, or reaches outside the basic plane, is refused" {
+    var units_buf: [MAX_NAME]u16 = undefined;
+    try std.testing.expectError(error.BadName, nameUnits("\xff\xfe", &units_buf));
+    try std.testing.expectError(error.BadName, nameUnits("note \u{1F600}", &units_buf));
+}
+
+test "a name of exactly the longest length reads back whole" {
+    const longest = "n" ** MAX_NAME;
+    var units_buf: [MAX_NAME]u16 = undefined;
+    const spelled = try nameUnits(longest, &units_buf);
+    const short: [11]u8 = "NNNNNN~1   ".*;
+    const sum = shortNameChecksum(&short);
+    const count = longNameRecords(spelled);
+    var builder = LfnBuilder{};
+    // Fragments arrive last first, as a medium writes them.
+    var i: usize = count;
+    while (i > 0) {
+        i -= 1;
+        const record = buildLongRecord(spelled, i, i == count - 1, sum);
+        builder.add(&record);
+    }
+    var name: [MAX_NAME]u8 = undefined;
+    const n = builder.finish(&short, &name) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(longest, name[0..n]);
+}
+
+test "an alias record is known by the stem it cuts and the number after the tilde" {
+    try std.testing.expectEqual(@as(?u32, 1), aliasNumber("DOCUME~1", "DOCUME"));
+    try std.testing.expectEqual(@as(?u32, 12), aliasNumber("DOCUM~12", "DOCUME"));
+    try std.testing.expectEqual(@as(?u32, 3), aliasNumber("AB~3    ", "AB"));
+    // Another stem, a plain name, a number out of range, and a tilde in the
+    // wrong place are not this stem's aliases.
+    try std.testing.expectEqual(@as(?u32, null), aliasNumber("DOCUMX~1", "DOCUME"));
+    try std.testing.expectEqual(@as(?u32, null), aliasNumber("DOCUMENT", "DOCUME"));
+    try std.testing.expectEqual(@as(?u32, null), aliasNumber("DOCUME~0", "DOCUME"));
+    try std.testing.expectEqual(@as(?u32, null), aliasNumber("DOCU~100", "DOCUME"));
+    try std.testing.expectEqual(@as(?u32, null), aliasNumber("DOC~1   ", "DOCUME"));
+    // A longer stem is cut to make room, so the same record is its alias too.
+    try std.testing.expectEqual(@as(?u32, 1), aliasNumber("DOCUME~1", "DOCUMENT"));
 }

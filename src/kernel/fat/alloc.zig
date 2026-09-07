@@ -101,6 +101,11 @@ fn byteOffset(kind: Kind, cluster: u32) u32 {
 
 fn loadSector(t: *Table, sector: u32) Error!void {
     if (t.cache_sector == sector) return;
+    // The cache names no sector while a read is in flight: a read that fails
+    // part way leaves the bytes of neither sector, and a cache still naming
+    // the old one would hand those bytes out as its entries and write them
+    // back to every copy on the next store.
+    t.cache_sector = INVALID_SECTOR;
     t.dev.read(sector, &t.cache) catch return error.Io;
     t.cache_sector = sector;
 }
@@ -217,6 +222,14 @@ pub fn next(t: *Table, cluster: u32) Error!?u32 {
 /// volume fills roughly in order and a full one is detected in a single sweep
 /// rather than by scanning from cluster 2 every time.
 pub fn alloc(t: *Table) Error!u32 {
+    // The count the table keeps is the answer to whether a search can
+    // succeed. A full volume is told so from here rather than by walking the
+    // whole table to find out, which on a card behind a reader is seconds
+    // spent on every write that was going to fail.
+    if (t.free_known) |known| {
+        if (known == 0) return error.NoSpace;
+    }
+
     const total = t.cluster_count + 2;
     var scanned: u32 = 0;
     var candidate = @max(t.next_free_hint, 2);
@@ -256,7 +269,10 @@ pub fn freeChain(t: *Table, first: u32) Error!void {
         guard += 1;
         if (guard > t.cluster_count) return error.CorruptChain;
 
-        const following = get(t, cluster) catch break;
+        // A link that cannot be read ends the walk with the error, not with
+        // success: the rest of the chain is still allocated, and a caller
+        // told otherwise would forget it.
+        const following = try get(t, cluster);
         try set(t, cluster, 0);
         if (following >= endOfChain(t.kind) or following < 2) break;
         cluster = following;
@@ -379,4 +395,72 @@ test "a thirty-two bit table is counted in runs and past its last cluster nothin
     try testing.expectEqual(@as(u32, 998), try freeCount(&t));
     t.free_known = null;
     try testing.expectEqual(@as(u32, 998), try freeCount(&t));
+}
+
+test "a read that fails leaves the cache naming no sector" {
+    var memory = Memory{};
+    const dev = block.Device{ .name = "memory", .ctx = &memory, .ops = &Memory.ops, .sectors = 64 };
+    var t = tableOver(&memory, &dev, .fat16, 2, 300);
+    // Sector 1 of the table holds clusters up to 255; sector 2 the rest.
+    try set(&t, 2, 0xFFFF);
+    try testing.expectEqual(@as(u32, t.first_fat_sector), t.cache_sector);
+
+    // A device that answers nothing for the second sector.
+    const Failing = struct {
+        fn read(_: *anyopaque, _: u64, _: []u8) block.Error!void {
+            return error.IoError;
+        }
+    };
+    const broken_ops = block.Ops{ .read = Failing.read, .write = Memory.write };
+    const broken = block.Device{ .name = "broken", .ctx = &memory, .ops = &broken_ops, .sectors = 64 };
+    t.dev = &broken;
+    try testing.expectError(error.Io, get(&t, 280));
+    try testing.expectEqual(INVALID_SECTOR, t.cache_sector);
+
+    // Back on a working device, the first sector is read again rather than
+    // taken from a cache that might hold anything.
+    t.dev = &dev;
+    try testing.expectEqual(@as(u32, 0xFFFF), try get(&t, 2));
+}
+
+test "a full volume refuses a cluster without walking the table again" {
+    var memory = Memory{};
+    const dev = block.Device{ .name = "memory", .ctx = &memory, .ops = &Memory.ops, .sectors = 64 };
+    var t = tableOver(&memory, &dev, .fat16, 1, 4);
+    for (2..6) |c| try set(&t, @intCast(c), 0xFFFF);
+    try testing.expectEqual(@as(u32, 0), try freeCount(&t));
+
+    // Nothing is read: the count answers.
+    const Counting = struct {
+        var reads: u32 = 0;
+        fn read(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
+            reads += 1;
+            return Memory.read(ctx, lba, buf);
+        }
+    };
+    const counting_ops = block.Ops{ .read = Counting.read, .write = Memory.write };
+    const counted = block.Device{ .name = "counted", .ctx = &memory, .ops = &counting_ops, .sectors = 64 };
+    t.dev = &counted;
+    try testing.expectError(error.NoSpace, alloc(&t));
+    try testing.expectEqual(@as(u32, 0), Counting.reads);
+}
+
+test "a chain that cannot be read is reported rather than half freed and called done" {
+    var memory = Memory{};
+    const dev = block.Device{ .name = "memory", .ctx = &memory, .ops = &Memory.ops, .sectors = 64 };
+    var t = tableOver(&memory, &dev, .fat16, 2, 300);
+    try set(&t, 2, 280);
+    try set(&t, 280, 0xFFFF);
+
+    const Failing = struct {
+        fn read(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
+            // The second sector of the table cannot be read.
+            if (lba == 2) return error.IoError;
+            return Memory.read(ctx, lba, buf);
+        }
+    };
+    const failing_ops = block.Ops{ .read = Failing.read, .write = Memory.write };
+    const failing = block.Device{ .name = "failing", .ctx = &memory, .ops = &failing_ops, .sectors = 64 };
+    t.dev = &failing;
+    try testing.expectError(error.Io, freeChain(&t, 2));
 }

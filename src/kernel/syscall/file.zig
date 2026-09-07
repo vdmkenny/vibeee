@@ -103,7 +103,7 @@ fn errnoFor(err: anyerror) Result {
         error.NotFat, error.Unsupported => Errno.inval.value(),
         error.ReadOnly => Errno.perm.value(),
         error.NoSpace => Errno.nospace.value(),
-        error.IsDirectory, error.NotDirectory, error.BadPath, error.NameTooLong, error.CrossDevice => Errno.inval.value(),
+        error.IsDirectory, error.NotDirectory, error.BadPath, error.NameTooLong, error.BadName, error.CrossDevice => Errno.inval.value(),
         else => Errno.io.value(),
     };
 }
