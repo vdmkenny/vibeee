@@ -5,14 +5,18 @@
 //! u32 indices over a power-of-two capacity, the producer publishing head
 //! with a release store and the consumer publishing tail the same way. Each
 //! side stores only its own index, which is the whole locking story.
+//!
+//! The one byte ring there is. `ring.zig` keeps its indices in a header the
+//! two sides share, with a capacity and flags beside them, and moves its
+//! bytes through this.
 
 const std = @import("std");
 
 pub const Ring = struct {
     /// Written by the producer, read by the consumer.
-    head: *u32,
+    head: *volatile u32,
     /// Written by the consumer, read by the producer.
-    tail: *u32,
+    tail: *volatile u32,
     /// Power-of-two length, so free-running indices wrap by masking.
     data: []u8,
 
@@ -21,14 +25,13 @@ pub const Ring = struct {
     /// Clamped, because both indices live in memory the other side can write
     /// and neither is this side's to trust. A tail ahead of head subtracts to
     /// an enormous length, and `writable` then subtracts that from the
-    /// capacity and underflows in turn: the masking in `push` and `peek`
-    /// keeps every access inside the buffer, so what comes of it is a peer
+    /// capacity and underflows in turn: the masking in the copies keeps every
+    /// access inside the buffer, so what comes of a forged index is a peer
     /// reading and sending whatever the ring happens to hold rather than a
-    /// walk off the end. `ring.zig` has clamped for the same reason since it
-    /// was written; this one had not.
+    /// walk off the end.
     pub fn readable(self: Ring) u32 {
         const head = @atomicLoad(u32, self.head, .acquire);
-        const tail = @atomicLoad(u32, self.tail, .monotonic);
+        const tail = @atomicLoad(u32, self.tail, .acquire);
         return @min(head -% tail, self.capacity());
     }
 
@@ -47,13 +50,12 @@ pub const Ring = struct {
         const n: u32 = @min(room, @as(u32, @intCast(bytes.len)));
         if (n == 0) return 0;
 
-        const mask: u32 = @intCast(self.data.len - 1);
-        var head = @atomicLoad(u32, self.head, .monotonic);
-        for (bytes[0..n]) |b| {
-            self.data[head & mask] = b;
-            head +%= 1;
-        }
-        @atomicStore(u32, self.head, head, .release);
+        const head = @atomicLoad(u32, self.head, .monotonic);
+        self.copyIn(head, bytes[0..n]);
+        // Release: the payload must be visible before the count that claims
+        // it is. Without this the consumer may read the new head and copy
+        // out bytes the producer has not written yet.
+        @atomicStore(u32, self.head, head +% n, .release);
         return n;
     }
 
@@ -73,12 +75,8 @@ pub const Ring = struct {
         const n: u32 = @min(have - offset, @as(u32, @intCast(into.len)));
         if (n == 0) return 0;
 
-        const mask: u32 = @intCast(self.data.len - 1);
-        var at = @atomicLoad(u32, self.tail, .monotonic) +% offset;
-        for (into[0..n]) |*b| {
-            b.* = self.data[at & mask];
-            at +%= 1;
-        }
+        const tail = @atomicLoad(u32, self.tail, .monotonic);
+        self.copyOut(tail +% offset, into[0..n]);
         return n;
     }
 
@@ -86,6 +84,28 @@ pub const Ring = struct {
     pub fn skip(self: Ring, n: u32) void {
         const tail = @atomicLoad(u32, self.tail, .monotonic);
         @atomicStore(u32, self.tail, tail +% n, .release);
+    }
+
+    /// Where a free-running index falls in the buffer.
+    fn place(self: Ring, index: u32) usize {
+        return index & (self.capacity() - 1);
+    }
+
+    /// Copy `bytes` in from position `at`: one run, or two where the buffer
+    /// wraps under them. The only place wrapping is visible.
+    fn copyIn(self: Ring, at: u32, bytes: []const u8) void {
+        const start = self.place(at);
+        const first = @min(bytes.len, self.data.len - start);
+        @memcpy(self.data[start..][0..first], bytes[0..first]);
+        if (bytes.len > first) @memcpy(self.data[0 .. bytes.len - first], bytes[first..]);
+    }
+
+    /// Copy `into.len` bytes out from position `at`, the same way.
+    fn copyOut(self: Ring, at: u32, into: []u8) void {
+        const start = self.place(at);
+        const first = @min(into.len, self.data.len - start);
+        @memcpy(into[0..first], self.data[start..][0..first]);
+        if (into.len > first) @memcpy(into[first..], self.data[0 .. into.len - first]);
     }
 };
 

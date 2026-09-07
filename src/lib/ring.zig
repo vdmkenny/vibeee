@@ -27,6 +27,7 @@
 //! can hurt itself and one that can hurt the system.
 
 const std = @import("std");
+const spsc = @import("spsc.zig");
 
 /// Shared between the two sides. `extern` because it is written by a program
 /// compiled separately from the one reading it.
@@ -94,24 +95,20 @@ pub const Ring = struct {
         return .{ .header = header, .data = data };
     }
 
-    fn capacity(self: Ring) u32 {
-        return @intCast(self.data.len);
+    /// The bytes and the two indices, as the ring arithmetic sees them: the
+    /// header's own words, and the payload.
+    fn bytes(self: Ring) spsc.Ring {
+        return .{ .head = &self.header.head, .tail = &self.header.tail, .data = self.data };
     }
 
-    /// Bytes available to read.
-    ///
-    /// Clamped because `tail` belongs to the other side: a value ahead of
-    /// `head` would otherwise underflow into a gigantic length and walk the
-    /// reader off the end of the buffer.
+    /// Bytes available to read. Clamped, because `tail` belongs to the
+    /// other side; see `spsc.Ring.readable`.
     pub fn readable(self: Ring) u32 {
-        const head = @atomicLoad(u32, &self.header.head, .acquire);
-        const tail = @atomicLoad(u32, &self.header.tail, .acquire);
-        const used = head -% tail;
-        return @min(used, self.capacity());
+        return self.bytes().readable();
     }
 
     pub fn writable(self: Ring) u32 {
-        return self.capacity() - self.readable();
+        return self.bytes().writable();
     }
 
     pub fn isEmpty(self: Ring) bool {
@@ -163,40 +160,13 @@ pub const Ring = struct {
     /// Partial writes rather than all-or-nothing: a stream producer should be
     /// able to make progress against a nearly full ring, and a caller that
     /// needs atomicity can check `writable` first.
-    pub fn write(self: Ring, bytes: []const u8) u32 {
-        const space = self.writable();
-        const n = @min(@as(u32, @intCast(bytes.len)), space);
-        if (n == 0) return 0;
-
-        const head = @atomicLoad(u32, &self.header.head, .monotonic);
-        const start = head & (self.capacity() - 1);
-        // The payload may straddle the end of the buffer, in which case it
-        // takes two copies. This is the only place wrapping is visible.
-        const first = @min(n, self.capacity() - start);
-        @memcpy(self.data[start..][0..first], bytes[0..first]);
-        if (n > first) @memcpy(self.data[0 .. n - first], bytes[first..n]);
-
-        // Release: the payload must be visible before the count that claims it
-        // is. Without this the consumer may read the new head and copy out
-        // bytes the producer has not written yet.
-        @atomicStore(u32, &self.header.head, head +% n, .release);
-        return n;
+    pub fn write(self: Ring, payload: []const u8) u32 {
+        return self.bytes().push(payload);
     }
 
     /// Copy out up to `buf.len` bytes, returning how many were taken.
     pub fn read(self: Ring, buf: []u8) u32 {
-        const available = self.readable();
-        const n = @min(@as(u32, @intCast(buf.len)), available);
-        if (n == 0) return 0;
-
-        const tail = @atomicLoad(u32, &self.header.tail, .monotonic);
-        const start = tail & (self.capacity() - 1);
-        const first = @min(n, self.capacity() - start);
-        @memcpy(buf[0..first], self.data[start..][0..first]);
-        if (n > first) @memcpy(buf[first..n], self.data[0 .. n - first]);
-
-        @atomicStore(u32, &self.header.tail, tail +% n, .release);
-        return n;
+        return self.bytes().pop(buf);
     }
 };
 
