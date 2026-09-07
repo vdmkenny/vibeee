@@ -122,12 +122,11 @@ fn setPath(value: []const u8) void {
 fn load() void {
     forget();
 
-    const handle = sys.open(path(), .{});
-    if (handle < 0) {
+    const handle = sys.open(path(), .{}) catch {
         trouble = "No such file.";
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
     // What the file is, before reading it: a file too large to hold is
     // refused for the room it would have taken rather than after taking it.
@@ -157,7 +156,7 @@ fn load() void {
     const raw = @as([*]u8, @ptrCast(room))[0..entry.size];
     var read: usize = 0;
     while (read < raw.len) {
-        const n = sys.read(@intCast(handle), raw[read..]);
+        const n = sys.read(handle, raw[read..]);
         if (n <= 0) break;
         read += @intCast(n);
     }

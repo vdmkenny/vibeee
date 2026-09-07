@@ -45,7 +45,8 @@ fn openFlags(flags: c_int) sys.OpenFlags {
 }
 
 pub export fn open(path: [*:0]const u8, flags: c_int, ...) callconv(.c) c_int {
-    return @intCast(errno.wrap(sys.open(span(path), openFlags(flags))));
+    const named = span(path);
+    return @intCast(errno.wrap(sys.openRaw(@intFromPtr(named.ptr), named.len, openFlags(flags))));
 }
 
 export fn creat(path: [*:0]const u8, mode: c_uint) callconv(.c) c_int {

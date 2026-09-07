@@ -91,14 +91,13 @@ pub const Dir = extern struct {
 };
 
 export fn opendir(path: [*:0]const u8) callconv(.c) ?*Dir {
-    const handle = sys.open(string.spanOf(path), .{ .directory = true });
-    if (handle < 0) {
+    const handle = sys.open(string.spanOf(path), .{ .directory = true }) catch {
         _ = errno.fail(errno.ENOENT);
         return null;
-    }
+    };
 
     const block = heap.alloc(@sizeOf(Dir)) orelse {
-        sys.close(@intCast(handle));
+        sys.close(handle);
         _ = errno.fail(errno.ENOMEM);
         return null;
     };

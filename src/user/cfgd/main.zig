@@ -200,11 +200,10 @@ fn write(to: []const u8, current: anytype) bool {
 }
 
 fn put(where: []const u8, body: []const u8) bool {
-    const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true });
-    if (handle < 0) return false;
-    defer sys.close(@intCast(handle));
+    const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true }) catch return false;
+    defer sys.close(handle);
 
-    return sys.write(@intCast(handle), body) == @as(isize, @intCast(body.len));
+    return sys.write(handle, body) == @as(isize, @intCast(body.len));
 }
 
 /// Wake everyone watching this domain.

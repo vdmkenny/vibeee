@@ -14,10 +14,9 @@ const sys = @import("sys");
 /// much. Null for a file that cannot be opened; a file that is there but
 /// empty reads as nothing at all.
 pub fn readWhole(path: []const u8, into: []u8) ?usize {
-    const handle = sys.open(path, .{});
-    if (handle < 0) return null;
-    defer sys.close(@intCast(handle));
-    const filled = fill(@intCast(handle), into);
+    const handle = sys.open(path, .{}) catch return null;
+    defer sys.close(handle);
+    const filled = fill(handle, into);
     return if (filled.failed) null else filled.read;
 }
 
@@ -28,17 +27,16 @@ pub const EntireError = error{ NoFile, TooBig, Unreadable };
 /// what comes back is the file or nothing, and a document read this way is
 /// never written back shorter than it was.
 pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
-    const handle = sys.open(path, .{});
-    if (handle < 0) return error.NoFile;
-    defer sys.close(@intCast(handle));
-    const filled = fill(@intCast(handle), into);
+    const handle = sys.open(path, .{}) catch return error.NoFile;
+    defer sys.close(handle);
+    const filled = fill(handle, into);
     if (filled.failed) return error.Unreadable;
     const read = filled.read;
     if (read < into.len) return read;
     // The room is full. One byte more tells a file that fits exactly from
     // one that goes on.
     var more: [1]u8 = undefined;
-    if (sys.read(@intCast(handle), &more) > 0) return error.TooBig;
+    if (sys.read(handle, &more) > 0) return error.TooBig;
     return read;
 }
 

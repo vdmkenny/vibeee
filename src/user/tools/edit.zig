@@ -126,17 +126,16 @@ fn piped() bool {
 /// Read the named file, or start an empty document when there is none. A
 /// name that does not exist yet is how a new file is written, not an error.
 fn load() void {
-    const file = sys.open(path, .{});
-    if (file < 0) {
+    const file = sys.open(path, .{}) catch {
         doc.load("");
         notice = "new file";
         return;
-    }
-    defer sys.close(@intCast(file));
+    };
+    defer sys.close(file);
 
     var filled: usize = 0;
     while (filled < storage.len) {
-        const n = sys.read(@intCast(file), storage[filled..]);
+        const n = sys.read(file, storage[filled..]);
         if (n <= 0) break;
         filled += @intCast(n);
     }
@@ -177,17 +176,16 @@ fn save() void {
         return;
     }
 
-    const file = sys.open(path, .{ .write = true, .create = true, .truncate = true });
-    if (file < 0) {
+    const file = sys.open(path, .{ .write = true, .create = true, .truncate = true }) catch {
         notice = "not saved: cannot open the file for writing";
         return;
-    }
-    defer sys.close(@intCast(file));
+    };
+    defer sys.close(file);
 
     const whole = doc.contents();
     var written: usize = 0;
     while (written < whole.len) {
-        const n = sys.write(@intCast(file), whole[written..]);
+        const n = sys.write(file, whole[written..]);
         if (n <= 0) break;
         written += @intCast(n);
     }

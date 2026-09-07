@@ -27,15 +27,14 @@ pub fn run(args: []const []const u8) void {
         // file, which is what makes the output unambiguous without being noisy.
         const show_names = args.len > 2;
         for (args[1..]) |path| {
-            const handle = sys.open(path, .{});
-            if (handle < 0) {
+            const handle = sys.open(path, .{}) catch {
                 out.text("grep: ");
                 out.text(path);
                 out.text(": cannot open\n");
                 continue;
-            }
-            grepHandle(@intCast(handle), pattern, path, show_names);
-            sys.close(@intCast(handle));
+            };
+            grepHandle(handle, pattern, path, show_names);
+            sys.close(handle);
         }
     }
     out.flush();

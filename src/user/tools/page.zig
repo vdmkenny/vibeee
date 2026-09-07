@@ -79,8 +79,7 @@ fn load(from: []const u8) bool {
 fn open(from: []const u8) ?u32 {
     if (std.mem.eql(u8, from, STDIN)) return sys.STDIN;
 
-    const handle = sys.open(from, .{});
-    return if (handle < 0) null else @intCast(handle);
+    return sys.open(from, .{}) catch null;
 }
 
 fn say(what: []const u8) void {

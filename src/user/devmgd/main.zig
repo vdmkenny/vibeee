@@ -153,16 +153,15 @@ fn readOne(name: []const u8) void {
     path.byte('/');
     path.text(name);
 
-    const file = sys.open(path.done(), .{});
-    if (file < 0) return;
-    defer sys.close(@intCast(file));
+    const file = sys.open(path.done(), .{}) catch return;
+    defer sys.close(file);
 
     // Read into the tail of the shared buffer: the parsed fields are slices
     // of it, so every manifest's text has to stay where it was put.
     const room = manifest_text[manifest_used..];
     if (room.len == 0) return;
 
-    const n = sys.read(@intCast(file), room);
+    const n = sys.read(file, room);
     if (n <= 0) return;
 
     const text = room[0..@intCast(n)];

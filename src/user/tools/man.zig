@@ -30,19 +30,18 @@ pub fn run(args: []const []const u8) void {
     path.byte('/');
     path.text(args[0]);
 
-    const handle = sys.open(path.done(), .{});
-    if (handle < 0) {
+    const handle = sys.open(path.done(), .{}) catch {
         out.text("man: no page called ");
         out.text(args[0]);
         out.text("; `man` alone lists them\n");
         out.flush();
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
     var filled: usize = 0;
     while (filled < text.len) {
-        const n = sys.read(@intCast(handle), text[filled..]);
+        const n = sys.read(handle, text[filled..]);
         if (n <= 0) break;
         filled += @intCast(n);
     }

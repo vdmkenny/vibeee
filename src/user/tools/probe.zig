@@ -172,8 +172,9 @@ fn hold() void {
     var events: [8]abi.KeyEvent = undefined;
     if (sys.keyRead(&events, abi.Timeout.poll) == null) return;
 
-    const said = sys.open(HOLDING, .{ .write = true, .create = true, .truncate = true });
-    if (said >= 0) sys.close(@intCast(said));
+    if (sys.open(HOLDING, .{ .write = true, .create = true, .truncate = true })) |said| {
+        sys.close(said);
+    } else |_| {}
 
     // Long enough for the case to be asked and answered, and no longer: a
     // program holding the keyboard is a program nothing else can read from.
@@ -327,10 +328,9 @@ fn crookedProgram() isize {
     var image: [Elf.SIZE]u8 = @splat(0);
     Elf.write(&image, .{ .offset = 0xFFFF_F000, .filesz = 0x1000 });
 
-    const file = sys.open(CROOKED, .{ .write = true, .create = true, .truncate = true });
-    if (file < 0) return NOT_RUN;
-    const wrote = sys.write(@intCast(file), &image);
-    sys.close(@intCast(file));
+    const file = sys.open(CROOKED, .{ .write = true, .create = true, .truncate = true }) catch return NOT_RUN;
+    const wrote = sys.write(file, &image);
+    sys.close(file);
     if (wrote != image.len) return NOT_RUN;
 
     return sys.spawn(CROOKED, &.{CROOKED});
@@ -416,11 +416,10 @@ const HOLDING = "/tmp/probe-holding";
 
 fn waitFor(path: []const u8) bool {
     for (0..500) |_| {
-        const file = sys.open(path, .{});
-        if (file >= 0) {
-            sys.close(@intCast(file));
+        if (sys.open(path, .{})) |file| {
+            sys.close(file);
             return true;
-        }
+        } else |_| {}
         sys.sleepMicros(1000);
     }
     return false;

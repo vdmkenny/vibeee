@@ -252,18 +252,17 @@ fn open() void {
         return;
     }
 
-    const handle = sys.open(where, .{});
-    if (handle < 0) {
+    const handle = sys.open(where, .{}) catch {
         status = "No such file.";
         ctx.damage();
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
     document.clear();
     while (true) {
         var chunk: [512]u8 = undefined;
-        const n = sys.read(@intCast(handle), &chunk);
+        const n = sys.read(handle, &chunk);
         if (n <= 0) break;
         if (!document.insert(document.len, chunk[0..@intCast(n)])) {
             status = "Only part of it fits.";
@@ -285,15 +284,14 @@ fn save() void {
         return;
     }
 
-    const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true });
-    if (handle < 0) {
+    const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true }) catch {
         status = "Cannot write there.";
         ctx.damage();
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
-    const written = sys.write(@intCast(handle), document.slice());
+    const written = sys.write(handle, document.slice());
     if (written < 0 or @as(usize, @intCast(written)) != document.len) {
         status = "Only part of it was written.";
         ctx.damage();

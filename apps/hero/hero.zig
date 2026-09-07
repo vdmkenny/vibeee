@@ -640,13 +640,12 @@ fn save() void {
         return;
     };
 
-    const handle = sys.open(temp, .{ .write = true, .create = true, .truncate = true });
-    if (handle < 0) {
+    const handle = sys.open(temp, .{ .write = true, .create = true, .truncate = true }) catch {
         say("Cannot write there.");
         return;
-    }
-    const wrote = sys.write(@intCast(handle), storage[0..text_len]);
-    sys.close(@intCast(handle));
+    };
+    const wrote = sys.write(handle, storage[0..text_len]);
+    sys.close(handle);
     if (wrote < 0 or @as(usize, @intCast(wrote)) != text_len) {
         say("Only part of it was written.");
         return;

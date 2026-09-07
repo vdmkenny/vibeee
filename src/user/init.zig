@@ -263,18 +263,17 @@ const LATE_GRACE_US: u64 = 30_000_000;
 /// supervise and no way to tell anyone about it; a shell is what makes it
 /// repairable from the machine itself.
 fn loadConfig() void {
-    const handle = sys.open(CONFIG_PATH, .{});
-    if (handle < 0) {
+    const handle = sys.open(CONFIG_PATH, .{}) catch {
         useFallback("no /etc/services");
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
     // Read in a loop: a short read is normal, and treating one as the whole
     // file is how a table loses its tail.
     var held: usize = 0;
     while (held < config_buf.len) {
-        const n = sys.read(@intCast(handle), config_buf[held..]);
+        const n = sys.read(handle, config_buf[held..]);
         if (n <= 0) break;
         held += @intCast(n);
     }
@@ -870,23 +869,21 @@ fn writeDisabled() bool {
         body.byte('\n');
     }
 
-    const handle = sys.open(DISABLED, .{ .write = true, .create = true, .truncate = true });
-    if (handle < 0) return false;
-    defer sys.close(@intCast(handle));
+    const handle = sys.open(DISABLED, .{ .write = true, .create = true, .truncate = true }) catch return false;
+    defer sys.close(handle);
 
     const written = body.done();
-    return sys.write(@intCast(handle), written) == @as(isize, @intCast(written.len));
+    return sys.write(handle, written) == @as(isize, @intCast(written.len));
 }
 
 /// Read it back at start-up, before anything is started.
 fn readDisabled() void {
     var text: [512]u8 = @splat(0);
 
-    const handle = sys.open(DISABLED, .{});
-    if (handle < 0) return;
-    defer sys.close(@intCast(handle));
+    const handle = sys.open(DISABLED, .{}) catch return;
+    defer sys.close(handle);
 
-    const n = sys.read(@intCast(handle), &text);
+    const n = sys.read(handle, &text);
     if (n <= 0) return;
 
     var lines = str.lines(text[0..@intCast(n)]);

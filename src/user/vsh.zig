@@ -363,14 +363,13 @@ fn runLine(words: []const []const u8) void {
         .create = true,
         .truncate = !redirect.append,
         .append = redirect.append,
-    });
-    if (handle < 0) {
+    }) catch {
         out.text("vsh: ");
         out.text(redirect.path);
         out.text(": cannot open for writing\n");
         out.flush();
         return;
-    }
+    };
 
     // The file is the last stage's output, whether there is one stage or six.
     if (count == 1) {
@@ -381,7 +380,7 @@ fn runLine(words: []const []const u8) void {
         runPipeline(stages[0..count], @intCast(handle));
     }
 
-    sys.close(@intCast(handle));
+    sys.close(handle);
 }
 
 /// Run every stage at once, each reading what the one before it writes.

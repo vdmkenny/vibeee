@@ -45,9 +45,8 @@ pub const Error = error{NotFound};
 /// Asked by opening it as one, which is the same question the kernel would
 /// answer, put the way a caller can put it.
 pub fn isDirectory(path: []const u8) bool {
-    const handle = sys.open(path, .{ .directory = true });
-    if (handle < 0) return false;
-    sys.close(@intCast(handle));
+    const handle = sys.open(path, .{ .directory = true }) catch return false;
+    sys.close(handle);
     return true;
 }
 
@@ -58,16 +57,15 @@ pub fn isDirectory(path: []const u8) bool {
 /// parent sorts to the very top, where a person looking for the way out of a
 /// directory will look for it.
 pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
-    const handle = sys.open(path, .{ .directory = true });
-    if (handle < 0) return error.NotFound;
-    defer sys.close(@intCast(handle));
+    const handle = sys.open(path, .{ .directory = true }) catch return error.NotFound;
+    defer sys.close(handle);
 
     out.* = .{};
     var used: usize = 0;
 
     while (true) {
         var record: [512]u8 = undefined;
-        const n = sys.readdir(@intCast(handle), &record);
+        const n = sys.readdir(handle, &record);
         if (n <= 0) break;
 
         const entry = sys.Dirent.decode(&record, @intCast(n)) orelse continue;

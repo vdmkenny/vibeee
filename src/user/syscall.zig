@@ -239,13 +239,8 @@ fn syscall2(nr: u32, a0: usize, a1: usize) isize {
     return enter(nr, a0, a1, 0, 0, 0);
 }
 
-pub fn open(path: []const u8, flags: OpenFlags) isize {
-    return syscall3(
-        abi.number("open"),
-        @intFromPtr(path.ptr),
-        path.len,
-        @as(u32, @bitCast(flags)),
-    );
+pub fn open(path: []const u8, flags: OpenFlags) Refusal!u32 {
+    return @intCast(try checked(openRaw(@intFromPtr(path.ptr), path.len, flags)));
 }
 
 pub fn unlink(path: []const u8) isize {

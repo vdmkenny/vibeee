@@ -14,15 +14,14 @@ pub fn ls(args: []const []const u8) void {
     // argument means, and the kernel resolves "." against it.
     const path = if (args.len > 0) args[0] else ".";
 
-    const handle = sys.open(path, .{ .directory = true });
-    if (handle < 0) {
+    const handle = sys.open(path, .{ .directory = true }) catch {
         out.text("ls: ");
         out.text(path);
         out.text(": cannot open\n");
         out.flush();
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
     // Read once, outside the loop: every row is compared against it, and a
     // listing whose rows disagreed about what "now" is would be worse than one
@@ -34,7 +33,7 @@ pub fn ls(args: []const []const u8) void {
     var total: usize = 0;
 
     while (true) {
-        const n = sys.readdir(@intCast(handle), &buf);
+        const n = sys.readdir(handle, &buf);
         if (n <= 0) break;
         const count: usize = @intCast(n);
 
@@ -122,18 +121,17 @@ pub fn cat(args: []const []const u8) void {
     }
 
     for (args) |path| {
-        const handle = sys.open(path, .{});
-        if (handle < 0) {
+        const handle = sys.open(path, .{}) catch {
             out.text("cat: ");
             out.text(path);
             out.text(": cannot open\n");
             continue;
-        }
-        defer sys.close(@intCast(handle));
+        };
+        defer sys.close(handle);
 
         var buf: [4096]u8 = [_]u8{0} ** 4096;
         while (true) {
-            const n = sys.read(@intCast(handle), &buf);
+            const n = sys.read(handle, &buf);
             if (n <= 0) break;
             out.text(buf[0..@intCast(n)]);
         }
@@ -148,21 +146,20 @@ pub fn hexdump(args: []const []const u8) void {
         return;
     }
 
-    const handle = sys.open(args[0], .{});
-    if (handle < 0) {
+    const handle = sys.open(args[0], .{}) catch {
         out.text("hexdump: ");
         out.text(args[0]);
         out.text(": cannot open\n");
         out.flush();
         return;
-    }
-    defer sys.close(@intCast(handle));
+    };
+    defer sys.close(handle);
 
     var buf: [16]u8 = [_]u8{0} ** 16;
     var offset: usize = 0;
 
     while (true) {
-        const n = sys.read(@intCast(handle), &buf);
+        const n = sys.read(handle, &buf);
         if (n <= 0) break;
         const count: usize = @intCast(n);
 

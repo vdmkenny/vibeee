@@ -330,21 +330,19 @@ fn transfer(what: Transfer) void {
 /// One file's bytes, a chunk at a time. The chunk is what the stack can hold
 /// on a machine with this much memory, not what a disk would like.
 fn copyFile(from: []const u8, to: []const u8) bool {
-    const source = sys.open(from, .{});
-    if (source < 0) return false;
-    defer sys.close(@intCast(source));
+    const source = sys.open(from, .{}) catch return false;
+    defer sys.close(source);
 
-    const destination = sys.open(to, .{ .write = true, .create = true, .truncate = true });
-    if (destination < 0) return false;
-    defer sys.close(@intCast(destination));
+    const destination = sys.open(to, .{ .write = true, .create = true, .truncate = true }) catch return false;
+    defer sys.close(destination);
 
     while (true) {
         var chunk: [1024]u8 = undefined;
-        const read = sys.read(@intCast(source), &chunk);
+        const read = sys.read(source, &chunk);
         if (read < 0) return false;
         if (read == 0) return true;
 
-        const written = sys.write(@intCast(destination), chunk[0..@intCast(read)]);
+        const written = sys.write(destination, chunk[0..@intCast(read)]);
         if (written != read) return false;
     }
 }
