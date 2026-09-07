@@ -339,6 +339,7 @@ fn paint(
 ) void {
     const t = theme.current();
     const row_h = rowHeight();
+    const widths = Widths.measure(columns, area.w);
 
     surface.fill(area, t.surface);
 
@@ -350,7 +351,7 @@ fn paint(
     var x = area.x + 2;
     for (columns, 0..) |column, i| {
         if (!state.headings) break;
-        const w = columnWidth(columns, i, area.w);
+        const w = widths.of[i];
         const ordered = if (state.sort) |by| by.column == i else false;
         const head_ink = if (state.head_accent)
             t.accent_text
@@ -360,7 +361,7 @@ fn paint(
             t.text_dim;
 
         const title_x = if (column.right)
-            x + columnWidth(columns, i, area.w) - INSET - Surface.textWidth(column.title)
+            x + w - INSET - Surface.textWidth(column.title)
         else
             x + INSET;
         surface.text(title_x, area.y + 2, column.title, head_ink);
@@ -407,7 +408,7 @@ fn paint(
 
         var cx = line.x + 2;
         for (columns, 0..) |column, i| {
-            const w = columnWidth(columns, i, area.w);
+            const w = widths.of[i];
             const cell = row.cells[i];
             const indent: i32 = (if (column.tree) @as(i32, row.depth) * 10 else 0) +
                 (if (i == 0 and pictured) Surface.iconSize() + 4 else 0);
@@ -430,6 +431,21 @@ fn paint(
 
     surface.frame(area, if (focused) t.accent else t.line);
 }
+
+/// Every column's width, worked out once.
+///
+/// Each answer runs the whole list twice over, and asking per column per
+/// row made a repaint rederive the same handful of numbers a few hundred
+/// times on a machine that has better uses for the cycles.
+const Widths = struct {
+    of: [MAX_COLUMNS]i32 = @splat(0),
+
+    fn measure(columns: []const Column, total: i32) Widths {
+        var out = Widths{};
+        for (columns, 0..) |_, i| out.of[i] = columnWidth(columns, i, total);
+        return out;
+    }
+};
 
 /// The last column absorbs the leftover width, so a table always fills its area
 /// however the caller sized the ones before it.

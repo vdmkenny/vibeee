@@ -65,6 +65,12 @@ pub const State = struct {
     /// Where the dropdown was painted last pass, so the ground under it is
     /// put back when it moves along the strip or goes.
     shown: ?Rect = null,
+    /// How wide the open menu's rows are, measured when it opened. Measuring
+    /// decodes every label and every shortcut and looks up an advance per
+    /// character, and nothing about a menu changes while it stands: measured
+    /// per pass, a ten-item menu with shortcuts remeasured a hundred and
+    /// fifty characters a frame to arrive at the same number.
+    width: i32 = 0,
 };
 
 /// Draw the bar and run whatever is open. Returns the id chosen this pass.
@@ -95,14 +101,12 @@ pub fn run(ctx: *widget.Context, area: Rect, state: *State, menus: []const Menu)
             if (is_open) {
                 close(state);
             } else {
-                state.open = index;
-                state.list.showAt(rowsOf(menu.items, &storage));
+                dropDown(state, index, menu, &storage);
             }
         } else if (state.open != null and !is_open and hovering(ctx, title)) {
             // With one menu open, moving across the strip opens the next. What
             // every menu bar does, and what makes browsing them possible.
-            state.open = index;
-            state.list.showAt(rowsOf(menu.items, &storage));
+            dropDown(state, index, menu, &storage);
         }
 
         // Asked again rather than from before the click: a title clicked
@@ -246,6 +250,12 @@ pub fn isOpen(state: *const State) bool {
     return state.open != null;
 }
 
+fn dropDown(state: *State, index: usize, menu: Menu, storage: *[MAX_ITEMS]widget.MenuItem) void {
+    state.open = index;
+    state.width = widest(menu);
+    state.list.showAt(rowsOf(menu.items, storage));
+}
+
 fn close(state: *State) void {
     state.open = null;
     state.list.hide();
@@ -326,7 +336,7 @@ fn dropdown(ctx: *widget.Context, title: Rect, state: *State, menu: Menu) ?u16 {
     var storage: [MAX_ITEMS]widget.MenuItem = undefined;
     const rows = rowsOf(menu.items, &storage);
 
-    const width = @max(widest(menu) + theme.current().padding * 6, title.w);
+    const width = @max(state.width + theme.current().padding * 6, title.w);
     var area = widget.Menu.sizeFor(rows, width);
     area.x = title.x;
     area.y = title.bottom();
