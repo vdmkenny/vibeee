@@ -74,7 +74,7 @@ pub fn terminalSize() ?Size {
     var have: usize = 0;
     while (have < buf.len) {
         // A short wait: a terminal answers at once, and the console never will.
-        if (sys.waitMany(&[_]u32{sys.STDIN}, 200_000) < 0) return null;
+        _ = sys.waitMany(&[_]u32{sys.STDIN}, 200_000) catch return null;
         const n = sys.read(sys.STDIN, buf[have..]) catch return null;
         if (n == 0) return null;
         have += @intCast(n);

@@ -28,10 +28,10 @@ pub fn run(args: []const []const u8) void {
     // `page` at the prompt would otherwise sit reading the console forever,
     // showing nothing, with no way out.
     if (args.len == 0) {
-        if (sys.waitMany(&[_]u32{sys.STDIN}, sys.FOREVER) < 0) {
+        _ = sys.waitMany(&[_]u32{sys.STDIN}, sys.FOREVER) catch {
             say("page: nothing to read; name a file or pipe something in\n");
             return;
-        }
+        };
     }
 
     if (!load(from)) return;

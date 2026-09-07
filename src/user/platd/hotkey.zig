@@ -142,7 +142,7 @@ fn sleepPressed(_: ?*anyopaque) callconv(.c) u32 {
 /// knows nothing about sessions: it holds the firmware, not the policy.
 fn pressed(which: proto.Hotkey) u32 {
     push(.{ .hotkey = which });
-    if (event != 0) _ = sys.eventSignal(event);
+    if (event != 0) sys.eventSignal(event);
     return uacpi.INTERRUPT_HANDLED;
 }
 
@@ -195,7 +195,7 @@ fn arrived(_: ?*anyopaque, node: ?*uacpi.Node, value: u64) callconv(.c) uacpi.St
     owe(press.hotkey);
     push(press);
 
-    if (event != 0) _ = sys.eventSignal(event);
+    if (event != 0) sys.eventSignal(event);
     return .ok;
 }
 

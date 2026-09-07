@@ -16,6 +16,12 @@ const sys = @import("sys");
 const ROUNDS_DEFAULT = 4;
 const TIMEOUT_MS = 1000;
 
+/// Whether `event` has been signalled since it was last asked.
+fn woke(event: u32) bool {
+    sys.eventWait(event, sys.POLL) catch return false;
+    return true;
+}
+
 pub fn run(args: []const []const u8) void {
     var target: ?u32 = null;
     var rounds: usize = ROUNDS_DEFAULT;
@@ -56,7 +62,7 @@ pub fn run(args: []const []const u8) void {
     while (round < rounds) : (round += 1) {
         // A round that timed out spent its whole second inside the call,
         // so the press is looked for here as well as in the pause.
-        if (stop != null and sys.eventWait(stop.?, sys.POLL) >= 0) break;
+        if (stop != null and woke(stop.?)) break;
         const started = sys.clockMicros();
         var reply = net.Rep{};
         const asked = net.Req{ .tag = .ping, .param = addr, .param2 = TIMEOUT_MS };
@@ -89,7 +95,7 @@ pub fn run(args: []const []const u8) void {
             if (spent < 1_000_000) {
                 const pause = 1_000_000 - @as(usize, @intCast(spent));
                 if (stop) |handle| {
-                    if (sys.eventWait(handle, pause) >= 0) break;
+                    if (sys.eventWait(handle, pause)) |_| break else |_| {}
                 } else {
                     sys.sleepMicros(pause);
                 }

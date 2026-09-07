@@ -521,7 +521,7 @@ fn awaitReady(state: *State) void {
         if (elapsed >= READY_WINDOW_US) break;
         const remaining: usize = @intCast(READY_WINDOW_US - elapsed);
         if (registry_event) |event| {
-            _ = sys.waitMany(&.{event}, remaining);
+            _ = sys.waitMany(&.{event}, remaining) catch {};
         } else {
             sys.sleepMicros(@min(remaining, 20_000));
         }
@@ -601,7 +601,7 @@ fn supervise() noreturn {
         // Bounded by the next moment something is due: the held-late
         // service's start or grace, or a stop deadline. Unbounded once
         // nothing is pending.
-        _ = sys.waitMany(sources[0..count], nextDeadline());
+        _ = sys.waitMany(sources[0..count], nextDeadline()) catch {};
     }
 }
 

@@ -94,14 +94,14 @@ pub const Port = struct {
     /// As much of `frames` as the ring takes, doorbell rung when any.
     pub fn write(self: *const Port, frames: []const u8) u32 {
         const n = self.view.frames.push(frames);
-        if (n != 0) _ = sys.eventSignal(self.doorbell);
+        if (n != 0) sys.eventSignal(self.doorbell);
         return n;
     }
 
     /// As much as `into` holds, doorbell rung when room was made.
     pub fn read(self: *const Port, into: []u8) u32 {
         const n = self.view.frames.pop(into);
-        if (n != 0) _ = sys.eventSignal(self.doorbell);
+        if (n != 0) sys.eventSignal(self.doorbell);
         return n;
     }
 
@@ -121,7 +121,7 @@ pub const Port = struct {
         const req = proto.Req{ .tag = .port_drop, .a = self.id };
         proto.callOn(self.channel, req, &reply) catch {};
         // The mapping as well as the handle: either alone keeps the segment.
-        _ = sys.shmUnmap(self.base);
+        sys.shmUnmap(self.base);
         sys.close(self.shm);
         sys.close(self.ev);
         sys.close(self.doorbell);

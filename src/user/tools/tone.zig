@@ -50,7 +50,7 @@ pub fn run(args: []const []const u8) void {
             sent += n;
             // A full ring waits for the engine, never spins: the service
             // signals the port event as each period drains.
-            if (n == 0) _ = sys.eventWait(port.waitHandle(), sys.FOREVER);
+            if (n == 0) sys.eventWait(port.waitHandle(), sys.FOREVER) catch {};
         }
         left -= want;
     }
@@ -58,7 +58,7 @@ pub fn run(args: []const []const u8) void {
     // Written is not heard: the ring drains at the speed of sound. The
     // wait is the tail of the tone.
     while (!port.drained()) {
-        _ = sys.eventWait(port.waitHandle(), 200_000);
+        sys.eventWait(port.waitHandle(), 200_000) catch {};
     }
 }
 

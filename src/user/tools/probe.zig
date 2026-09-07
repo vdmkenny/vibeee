@@ -295,7 +295,7 @@ fn readOnly() isize {
 
 /// Somewhere in the window no mapping holds, offered to be unmapped.
 fn strayUnmap() isize {
-    return sys.shmUnmap(@ptrFromInt(UNMAPPED));
+    return sys.shmUnmapRaw(@ptrFromInt(UNMAPPED));
 }
 
 /// What a case answers when the machinery it needs was unavailable, so a
@@ -428,7 +428,7 @@ fn waitFor(path: []const u8) bool {
 /// signal it would wake every window on the machine whenever it liked.
 fn readOnlyEvent() isize {
     const watched = sys.watch(.keys) catch return NOT_RUN;
-    return sys.eventSignal(@intCast(watched));
+    return sys.eventSignalRaw(@intCast(watched));
 }
 
 /// The name the settings store answers to. A program that took it would be

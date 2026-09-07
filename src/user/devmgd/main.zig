@@ -360,8 +360,7 @@ fn serve() noreturn {
     }
 
     while (true) {
-        const woke = sys.waitMany(sources[0..count], sys.FOREVER);
-        if (woke < 0) continue;
+        const woke = sys.waitMany(sources[0..count], sys.FOREVER) catch continue;
         switch (kinds[@intCast(woke)]) {
             .quit => sys.exit(0),
             .child => while (sys.wait(0, sys.POLL)) |exited| noteEnded(exited.pid),

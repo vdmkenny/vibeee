@@ -36,7 +36,7 @@ pub fn run(args: []const []const u8) void {
     while (true) {
         _ = drain();
         out.flush();
-        _ = sys.waitMany(&.{event}, sys.FOREVER);
+        _ = sys.waitMany(&.{event}, sys.FOREVER) catch {};
     }
 }
 

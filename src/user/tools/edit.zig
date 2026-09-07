@@ -103,7 +103,7 @@ fn name(what: []const u8) bool {
 /// not, which is the whole of the question: `log | edit` opens the log,
 /// and a bare `edit` at the prompt opens nothing and waits for no one.
 fn piped() bool {
-    if (sys.waitMany(&[_]u32{sys.STDIN}, sys.FOREVER) < 0) return false;
+    _ = sys.waitMany(&[_]u32{sys.STDIN}, sys.FOREVER) catch return false;
 
     var filled: usize = 0;
     while (filled < storage.len) {

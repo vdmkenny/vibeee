@@ -271,7 +271,8 @@ export fn vb_sound_room() c_int {
 /// drain it, which on one core is how a tone comes out full of holes.
 export fn vb_sound_wait(timeout_us: c_uint) c_int {
     const port = &(speaking orelse return -1);
-    return if (sys.eventWait(port.waitHandle(), timeout_us) < 0) -1 else 0;
+    sys.eventWait(port.waitHandle(), timeout_us) catch return -1;
+    return 0;
 }
 
 /// Whether everything handed over has been played.

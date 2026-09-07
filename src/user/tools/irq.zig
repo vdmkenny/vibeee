@@ -97,9 +97,9 @@ fn take(gsi: usize) void {
     // Waiting is what unmasks it. Nothing arriving is the ordinary answer for
     // a device nobody has told to do anything.
     var lines = [_]u32{handle};
-    const fired = sys.waitMany(&lines, 1_000_000) >= 0;
+    const fired = if (sys.waitMany(&lines, 1_000_000)) |_| true else |_| false;
 
     out.text(if (fired) "  an interrupt arrived\n" else "  quiet\n");
-    if (fired) _ = sys.irqAck(handle, false);
+    if (fired) sys.irqAck(handle, false);
     out.flush();
 }

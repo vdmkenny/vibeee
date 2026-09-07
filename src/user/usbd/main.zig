@@ -212,8 +212,7 @@ fn serve() noreturn {
         source_count = watchList(&sources);
         // Nothing is due at any particular time: a bus with nothing
         // being plugged into it waits here indefinitely.
-        const woke = sys.waitMany(sources[0..source_count], sys.FOREVER);
-        if (woke < 0) continue;
+        const woke = sys.waitMany(sources[0..source_count], sys.FOREVER) catch continue;
 
         const index: usize = @intCast(woke);
         // The supervisor's request to go. The volumes go with the process:
@@ -253,7 +252,7 @@ fn serve() noreturn {
             for (CLASSES) |driver| {
                 if (driver.ops.woke) |look| look();
             }
-            _ = sys.irqAck(controller.irq, outcome != .quiet);
+            sys.irqAck(controller.irq, outcome != .quiet);
             out.flush();
             continue;
         }

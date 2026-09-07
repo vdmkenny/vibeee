@@ -613,14 +613,14 @@ fn idle() void {
     // Only the bar is repainted for it. Setting `dirty` here redrew the
     // desktop and every window to move a five character clock, which on the
     // panel was a visible full-screen wipe once a minute.
-    if (sys.waitMany(waiting[0..count], untilSomethingIsDue()) < 0) {
+    _ = sys.waitMany(waiting[0..count], untilSomethingIsDue()) catch {
         // A timeout means nothing happened: the clock turned, or the machine
         // has now been alone long enough for something to be done about it.
         settleIdle();
         checkPack();
         bar.refresh();
         paintBar();
-    }
+    };
 }
 
 /// How long the one wait may last: whichever of the clock and the idle
@@ -1230,9 +1230,16 @@ var network_event: u32 = 0;
 /// The network service said something changed. Only the bar has anything to
 /// show for it, so only the bar is repainted: setting the whole desktop dirty
 /// to move one icon is the full-screen wipe this path exists to avoid.
+/// Whether `event` has been signalled since it was last asked. A poll that
+/// finds nothing refuses, which is what "not since last time" is.
+fn woke(event: u32) bool {
+    _ = sys.waitMany(&.{event}, sys.POLL) catch return false;
+    return true;
+}
+
 fn networkChanged() bool {
     if (network_event == 0) return false;
-    if (sys.waitMany(&.{network_event}, sys.POLL) < 0) return false;
+    _ = sys.waitMany(&.{network_event}, sys.POLL) catch return false;
     bar.networkChanged();
     paintBar();
     return true;
@@ -1245,20 +1252,20 @@ fn networkChanged() bool {
 fn settingsChanged() bool {
     // The keyboard is somebody else's to apply; all this has to do is redraw
     // the two letters in the bar that say which one it is.
-    if (keyboard_event != 0 and sys.waitMany(&.{keyboard_event}, sys.POLL) >= 0) {
+    if (keyboard_event != 0 and woke(keyboard_event)) {
         if (config.reloadKeyboard()) dirty = true;
     }
 
     // What to do when the machine is left alone. Taken up as soon as it is
     // chosen, so somebody setting it to never does not have to wait out the
     // old interval to find out whether it worked.
-    if (power_event != 0 and sys.waitMany(&.{power_event}, sys.POLL) >= 0) {
+    if (power_event != 0 and woke(power_event)) {
         power_settings = proto.settings.load("power");
         stirred();
     }
 
     if (settings_event == 0) return false;
-    if (sys.waitMany(&.{settings_event}, sys.POLL) < 0) return false;
+    if (!woke(settings_event)) return false;
     if (!config.reload()) return false;
 
     const wanted = config.current();
@@ -1337,7 +1344,7 @@ fn apply(action: bar.Action) void {
 /// Whether the supervisor asked the desktop to go.
 fn askedToQuit() bool {
     const handle = sources[@intFromEnum(Source.quit)];
-    return handle != 0 and sys.waitMany(&.{handle}, sys.POLL) >= 0;
+    return handle != 0 and woke(handle);
 }
 
 /// End the session: ask every client to go, give the display back, and exit.

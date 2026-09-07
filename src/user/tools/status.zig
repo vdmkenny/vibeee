@@ -108,7 +108,7 @@ pub fn top(args: []const []const u8) void {
             // The pause is a wait on the stop event, so Ctrl+C lands in it
             // rather than being noticed a second later.
             if (stop) |handle| {
-                if (sys.eventWait(handle, 1_000_000) >= 0) break;
+                if (sys.eventWait(handle, 1_000_000)) |_| break else |_| {}
             } else {
                 sys.sleepMicros(1_000_000);
             }

@@ -67,7 +67,7 @@ pub fn run(args: []const []const u8) void {
         // listener nobody ever connects to.
         const stop = sys.watch(.stop) catch null;
         var doors: [2]u32 = .{ gate.waitHandle(), if (stop) |handle| handle else gate.waitHandle() };
-        const woke = sys.waitMany(doors[0..if (stop != null) 2 else 1], sys.FOREVER);
+        const woke = sys.waitMany(doors[0..if (stop != null) 2 else 1], sys.FOREVER) catch return;
         if (woke != 0) return;
 
         const s = gate.accept() catch |err| {
@@ -108,13 +108,15 @@ fn converse(s: *const sock.Sock, datagrams: bool) void {
     // its keystrokes are taken as key events instead. A ready answer
     // consumed the pipe's pending signal, so readiness travels into the
     // loop instead of being waited for again.
-    const probe = sys.waitMany(&[_]u32{sys.STDIN}, sys.POLL);
-    const console = probe == -@as(isize, @intFromEnum(sys.Errno.badf));
+    // A console has no handle to wait on, which is how this tells one from a
+    // pipe: the wait refuses the handle rather than timing out on it.
+    const ready = if (sys.waitMany(&[_]u32{sys.STDIN}, sys.POLL)) |_| true else |_| false;
+    const console = if (sys.waitMany(&[_]u32{sys.STDIN}, sys.POLL)) |_| false else |why| why == error.BadHandle;
 
     if (console) {
         converseConsole(s, datagrams);
     } else {
-        conversePiped(s, datagrams, probe >= 0);
+        conversePiped(s, datagrams, ready);
     }
 }
 
@@ -136,8 +138,7 @@ fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
         // The stop event only when it exists, standard input only while it
         // still feeds; the fixed order keeps the indices meaningful.
         const n: usize = if (fed) 3 else if (stop != null) 2 else 1;
-        const woke = sys.waitMany(sources[0..n], sys.FOREVER);
-        if (woke < 0) continue;
+        const woke = sys.waitMany(sources[0..n], sys.FOREVER) catch continue;
 
         if (woke == 1 and stop != null) return;
         if (woke == 2) {
@@ -173,8 +174,7 @@ fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
 
     while (true) {
         var sources: [2]u32 = .{ s.waitHandle(), @intCast(keys) };
-        const woke = sys.waitMany(sources[0..if (typing) 2 else 1], sys.FOREVER);
-        if (woke < 0) continue;
+        const woke = sys.waitMany(sources[0..if (typing) 2 else 1], sys.FOREVER) catch continue;
 
         if (woke == 1) {
             for (sys.keyRead(&events, sys.POLL) orelse break) |event| {
@@ -287,7 +287,7 @@ fn sendAll(s: *const sock.Sock, bytes: []const u8) void {
         sent += n;
         if (n == 0) {
             if (s.state() == .closed) return;
-            _ = sys.eventWait(s.waitHandle(), sys.FOREVER);
+            sys.eventWait(s.waitHandle(), sys.FOREVER) catch {};
         }
     }
 }

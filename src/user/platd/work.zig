@@ -40,7 +40,7 @@ pub fn submit(run: *const fn (?*anyopaque) callconv(.c) void, context: ?*anyopaq
         return false;
     }
 
-    if (event != 0) _ = sys.eventSignal(event);
+    if (event != 0) sys.eventSignal(event);
     return true;
 }
 

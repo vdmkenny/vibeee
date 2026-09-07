@@ -46,7 +46,7 @@ pub fn Dma(comptime T: type) type {
             // first one's memory for the life of the process.
             if (phys.addr() % @alignOf(T) != 0) {
                 log.fail(tag, "DMA memory is not aligned for the device");
-                _ = sys.shmUnmap(mapped);
+                sys.shmUnmap(mapped);
                 return null;
             }
             return .{ .at = @ptrCast(@alignCast(mapped)), .phys = phys };

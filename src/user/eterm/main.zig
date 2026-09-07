@@ -166,7 +166,8 @@ fn toShell(bytes: []const u8) void {
 /// because the answer is the difference between a write and a wait.
 fn writable() bool {
     var one: [1]u32 = .{to_shell};
-    return sys.waitMany(&one, sys.POLL) >= 0;
+    _ = sys.waitMany(&one, sys.POLL) catch return false;
+    return true;
 }
 
 /// Push what is queued, as far as the pipe will take it.
@@ -219,7 +220,7 @@ fn run() noreturn {
         // waiting on it with nothing to send would be a loop that never
         // sleeps.
         const count: usize = if (!running) 1 else if (pending_len > 0) 3 else 2;
-        const woke = sys.waitMany(sources[0..count], 500_000);
+        const woke = sys.waitMany(sources[0..count], 500_000) catch continue;
 
         // Read the shell's output only when it is what woke us. The wake is
         // the proof there is something there, and it is the only proof: the
@@ -243,7 +244,8 @@ fn run() noreturn {
 /// not spent by the wait that began the drain.
 fn moreToRead() bool {
     var one: [1]u32 = .{from_shell};
-    return sys.waitMany(&one, sys.POLL) >= 0;
+    _ = sys.waitMany(&one, sys.POLL) catch return false;
+    return true;
 }
 
 var chunk: [1024]u8 = @splat(0);

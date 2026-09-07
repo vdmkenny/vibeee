@@ -432,7 +432,7 @@ const SocketReader = struct {
                 return got;
             }
             if (self.socket.state() == .closed) return error.EndOfStream;
-            if (sys.eventWait(self.socket.waitHandle(), sys.FOREVER) < 0) return error.ReadFailed;
+            sys.eventWait(self.socket.waitHandle(), sys.FOREVER) catch return error.ReadFailed;
         }
     }
 };
@@ -472,7 +472,7 @@ const SocketWriter = struct {
                 continue;
             }
             if (self.socket.state() == .closed) return error.WriteFailed;
-            if (sys.eventWait(self.socket.waitHandle(), sys.FOREVER) < 0) return error.WriteFailed;
+            sys.eventWait(self.socket.waitHandle(), sys.FOREVER) catch return error.WriteFailed;
         }
         return at;
     }

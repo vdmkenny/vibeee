@@ -171,7 +171,7 @@ fn tcpListen(req: *const proto.Req, token: u32) void {
         s.kind = .free;
         return refuse(token);
     }
-    while (sys.eventWait(s.ev_app, sys.POLL) >= 0) {}
+    while (true) sys.eventWait(s.ev_app, sys.POLL) catch break;
 
     var reply = proto.Rep{ .body = .{ .listener = indexOf(s) } };
     var message = sys.Message.init(std.mem.asBytes(&reply), &.{s.ev_app});
@@ -365,7 +365,7 @@ fn recvCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, p: ?*lwip.Pbuf, err: lwip.Err) ca
         // The peer finished sending; what is already in the ring stays
         // readable, and the state says why nothing more will follow.
         if (view.ctrl.state == .established) view.ctrl.state = .peer_closed;
-        _ = sys.eventSignal(s.ev_app);
+        sys.eventSignal(s.ev_app);
         return .ok;
     };
 
@@ -387,7 +387,7 @@ fn sentCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, len: u16) callconv(.c) lwip.Err {
     // Acknowledged bytes freed send-queue room: move more of the ring,
     // and tell the client, whose push may have been refused.
     drainTcpTx(s);
-    _ = sys.eventSignal(s.ev_app);
+    sys.eventSignal(s.ev_app);
     return .ok;
 }
 
@@ -411,7 +411,7 @@ fn errCb(arg: ?*anyopaque, err: lwip.Err) callconv(.c) void {
         refuse(s.pending_token);
         s.kind = .free;
     }
-    _ = sys.eventSignal(s.ev_app);
+    sys.eventSignal(s.ev_app);
 }
 
 fn acceptCb(arg: ?*anyopaque, newpcb: ?*lwip.TcpPcb, err: lwip.Err) callconv(.c) lwip.Err {
@@ -427,7 +427,7 @@ fn acceptCb(arg: ?*anyopaque, newpcb: ?*lwip.TcpPcb, err: lwip.Err) callconv(.c)
     for (&s.backlog) |*held| {
         if (held.* == null) {
             held.* = pcb;
-            _ = sys.eventSignal(s.ev_app);
+            sys.eventSignal(s.ev_app);
             return .ok;
         }
     }
@@ -464,7 +464,7 @@ fn udpRecvCb(
     const zeros: [8]u8 = @splat(0);
     _ = view.rx.push(zeros[0..pad]);
 
-    _ = sys.eventSignal(s.ev_app);
+    sys.eventSignal(s.ev_app);
 }
 
 fn dnsFoundCb(name: [*:0]const u8, addr: ?*const lwip.Ip4Addr, arg: ?*anyopaque) callconv(.c) void {
@@ -502,7 +502,7 @@ fn drainTcpTx(s: *Sock) void {
     if (moved) {
         _ = lwip.tcp_output(pcb);
         // Consumed ring bytes are room the client may be waiting for.
-        _ = sys.eventSignal(s.ev_app);
+        sys.eventSignal(s.ev_app);
     }
 }
 
@@ -526,7 +526,7 @@ fn drainHeldRx(s: *Sock) void {
 
     if (entered != 0) {
         if (s.tcp) |pcb| lwip.tcp_recved(pcb, entered);
-        _ = sys.eventSignal(s.ev_app);
+        sys.eventSignal(s.ev_app);
     }
     if (s.held_at >= pb.tot_len) {
         _ = lwip.pbuf_free(pb);
@@ -569,7 +569,7 @@ fn drainUdpTx(s: *Sock) void {
         view.tx.skip(span);
         moved = true;
     }
-    if (moved) _ = sys.eventSignal(s.ev_app);
+    if (moved) sys.eventSignal(s.ev_app);
 }
 
 /// A pbuf chain into a ring, from `from`, at most `len` bytes.

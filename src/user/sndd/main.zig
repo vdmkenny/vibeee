@@ -216,7 +216,7 @@ fn serve() noreturn {
         // deadline is only the stall watchdog. A silent machine waits
         // forever and costs nothing.
         const timeout: usize = if (anyRunning()) 150_000 else sys.FOREVER;
-        const woke = sys.waitMany(sources[0..source_count], timeout);
+        const woke = sys.waitMany(sources[0..source_count], timeout) catch continue;
 
         if (woke < 0) {
             recoverStall();
@@ -238,7 +238,7 @@ fn serve() noreturn {
             const device = &devices[index - 2];
             const done = device.ops.irq();
             if (done.any()) advance(device, done);
-            _ = sys.irqAck(device.irq, done.any());
+            sys.irqAck(device.irq, done.any());
         }
     }
 }
@@ -370,7 +370,7 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
             continue;
         }
         heard = true;
-        _ = sys.eventSignal(rings[feeder].ev);
+        sys.eventSignal(rings[feeder].ev);
 
         const volume = audio.Volume{ .percent = port.volume, .muted = port.muted };
         const samples: []i16 = @alignCast(std.mem.bytesAsSlice(i16, buf[0..got]));
@@ -429,7 +429,7 @@ fn pourPeriod(device: *dev.PcmDev, source: graph_mod.PortId) void {
             for (samples, 0..) |sample, i| scaled[i] = volume.apply(sample);
             _ = ring.frames.push(std.mem.sliceAsBytes(&scaled));
         }
-        _ = sys.eventSignal(rings[sink].ev);
+        sys.eventSignal(rings[sink].ev);
     }
 }
 

@@ -59,12 +59,12 @@ pub const Client = struct {
         // dropped on the way to saying "a record was dropped" told nobody.
         if (self.events.writable() < bytes.len) {
             self.events.markOverflow();
-            _ = sys.eventSignal(self.signal);
+            sys.eventSignal(self.signal);
             return;
         }
 
         _ = self.events.write(bytes);
-        _ = sys.eventSignal(self.signal);
+        sys.eventSignal(self.signal);
     }
 };
 
@@ -108,14 +108,14 @@ pub const Table = struct {
 
             const header: *volatile ring.Header = @ptrCast(@alignCast(base));
             c.events = ring.Ring.init(header, base[4096 .. 4096 + wm.EVENT_RING_BYTES]) catch {
-                _ = sys.shmUnmap(base);
+                sys.shmUnmap(base);
                 sys.close(@intCast(handle));
                 c.* = .{};
                 return null;
             };
 
             const signal = sys.eventCreate() catch {
-                _ = sys.shmUnmap(base);
+                sys.shmUnmap(base);
                 sys.close(@intCast(handle));
                 c.* = .{};
                 return null;
@@ -136,7 +136,7 @@ pub const Table = struct {
         // The ring's mapping as well as its handle: either alone keeps the
         // frames, so a session of programs opening and closing left a ring
         // behind for each of them.
-        if (c.ready) _ = sys.shmUnmap(@ptrFromInt(@intFromPtr(c.events.header)));
+        if (c.ready) sys.shmUnmap(@ptrFromInt(@intFromPtr(c.events.header)));
         if (c.events_handle != 0) sys.close(c.events_handle);
         if (c.signal != 0) sys.close(c.signal);
         c.* = .{};

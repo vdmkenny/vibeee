@@ -832,8 +832,8 @@ const REST_US: u32 = 50_000;
 
 fn rest(self: *Unit) void {
     if (self.controller.irq != 0) {
-        _ = sys.eventWait(self.controller.irq, REST_US);
-        _ = sys.irqAck(self.controller.irq, serviceIrq(self) != .quiet);
+        sys.eventWait(self.controller.irq, REST_US) catch {};
+        sys.irqAck(self.controller.irq, serviceIrq(self) != .quiet);
     } else {
         sys.sleepMicros(REST_US);
     }

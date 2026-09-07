@@ -464,8 +464,8 @@ pub fn ioportGrant(base: u16, count: usize) isize {
 /// Say the device has been serviced, so its line may fire again.
 /// End a service pass. `found` says whether the pass serviced anything,
 /// which on a shared line is what wakes the other owners to look again.
-pub fn irqAck(handle: u32, found: bool) isize {
-    return syscall2(abi.number("irq_ack"), handle, @intFromBool(found));
+pub fn irqAck(handle: u32, found: bool) void {
+    _ = syscall2(abi.number("irq_ack"), handle, @intFromBool(found));
 }
 
 pub const Pipe = struct { read: u32, write: u32 };
@@ -591,19 +591,33 @@ pub fn eventCreate() Refusal!u32 {
     return @intCast(try checked(syscall0(abi.number("event_create"))));
 }
 
-pub fn eventSignal(handle: usize) isize {
+/// Wake whoever is waiting on it.
+///
+/// No answer: the only way this refuses is a handle that is not an event or
+/// is not this process's, which is a mistake in the program rather than a
+/// condition to act on. The self-test, which signals one it may only read,
+/// asks for the number.
+pub fn eventSignal(handle: u32) void {
+    _ = eventSignalRaw(handle);
+}
+
+pub fn eventSignalRaw(handle: usize) isize {
     return syscall1(abi.number("event_signal"), handle);
 }
 
 /// Block until one of `handles` is signalled; returns which. This is the only
 /// way a program stops running without spinning.
-pub fn waitMany(handles: []const u32, timeout_us: usize) isize {
-    return syscall3(abi.number("wait_many"), @intFromPtr(handles.ptr), handles.len, timeout_us);
+/// Which of `handles` woke, by its place in the list. Refuses when the wait
+/// timed out with nothing signalled, which is the answer a caller polling
+/// several things acts on most.
+pub fn waitMany(handles: []const u32, timeout_us: usize) Refusal!usize {
+    return checked(syscall3(abi.number("wait_many"), @intFromPtr(handles.ptr), handles.len, timeout_us));
 }
 
-pub fn eventWait(handle: u32, timeout_us: usize) isize {
+/// Wait on one event. Refuses when the wait ran out with nothing signalled.
+pub fn eventWait(handle: u32, timeout_us: usize) Refusal!void {
     const one = [_]u32{handle};
-    return waitMany(&one, timeout_us);
+    _ = try waitMany(&one, timeout_us);
 }
 
 /// Publish a service under `name`, returning the serving end of its channel.
@@ -779,6 +793,14 @@ pub fn shmMap(handle: usize, flags: MapFlags) ?[*]u8 {
 
 /// Take a mapping out of this process, by any address within it. The
 /// segment lives on for as long as a handle or another mapping holds it.
-pub fn shmUnmap(at: [*]const u8) isize {
+/// Give a mapping back. No answer: the address was this process's mapping or
+/// it was not, and a caller unmapping what it mapped cannot be told anything
+/// it can act on. The self-test, which unmaps an address nobody mapped, asks
+/// for the number.
+pub fn shmUnmap(at: [*]const u8) void {
+    _ = shmUnmapRaw(at);
+}
+
+pub fn shmUnmapRaw(at: [*]const u8) isize {
     return syscall1(abi.number("shm_unmap"), @intFromPtr(at));
 }

@@ -65,7 +65,7 @@ fn serve(channel: u32) noreturn {
     }
 
     while (true) {
-        const woke = sys.waitMany(sources[0..count], sys.FOREVER);
+        const woke = sys.waitMany(sources[0..count], sys.FOREVER) catch continue;
         if (woke == 1) sys.exit(0);
 
         var message = sys.Message{};
@@ -208,6 +208,6 @@ fn put(where: []const u8, body: []const u8) bool {
 /// Wake everyone watching this domain.
 fn announce(domain: []const u8) void {
     if (eventFor(domain)) |event| {
-        if (event != 0) _ = sys.eventSignal(event);
+        if (event != 0) sys.eventSignal(event);
     }
 }

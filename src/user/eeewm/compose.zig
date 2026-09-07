@@ -31,7 +31,7 @@ pub const Surface = struct {
     /// enough left a megabyte and a half behind on every attach, and a
     /// client that exited left its last surface there for good.
     pub fn release(self: *Surface) void {
-        if (self.pixels) |at| _ = sys.shmUnmap(@ptrCast(at));
+        if (self.pixels) |at| sys.shmUnmap(@ptrCast(at));
         if (self.handle != 0) sys.close(self.handle);
         self.* = .{};
     }

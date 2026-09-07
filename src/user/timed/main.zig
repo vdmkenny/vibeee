@@ -146,7 +146,7 @@ fn waitForReply(s: sock.Sock, from: u32, buf: []u8) ?sock.Sock.Datagram {
             log.warn("timed", "no reply in time");
             return null;
         }
-        _ = sys.waitMany(&one, @intCast(deadline - now));
+        _ = sys.waitMany(&one, @intCast(deadline - now)) catch {};
     }
 }
 
@@ -201,8 +201,8 @@ fn waitAWhile(events: []const u32, micros: usize) void {
         sys.sleepMicros(@intCast(micros));
         return;
     }
-    const woke = sys.waitMany(sources[0..count], micros);
-    if (woke >= 0 and asked != 0 and sources[@intCast(woke)] == asked) sys.exit(0);
+    const woke = sys.waitMany(sources[0..count], micros) catch return;
+    if (asked != 0 and sources[woke] == asked) sys.exit(0);
 }
 
 /// The request to go, taken once: null until asked for, zero when refused.

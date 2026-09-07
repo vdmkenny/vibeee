@@ -44,7 +44,7 @@ pub const Sock = struct {
     /// As much of `bytes` as the tx ring takes, doorbell rung when any.
     pub fn send(self: *const Sock, bytes: []const u8) u32 {
         const n = self.view.tx.push(bytes);
-        if (n != 0) _ = sys.eventSignal(self.doorbell);
+        if (n != 0) sys.eventSignal(self.doorbell);
         return n;
     }
 
@@ -52,7 +52,7 @@ pub const Sock = struct {
     /// which the doorbell tells the service about.
     pub fn recv(self: *const Sock, into: []u8) u32 {
         const n = self.view.rx.pop(into);
-        if (n != 0) _ = sys.eventSignal(self.doorbell);
+        if (n != 0) sys.eventSignal(self.doorbell);
         return n;
     }
 
@@ -69,7 +69,7 @@ pub const Sock = struct {
         _ = self.view.tx.push(bytes);
         const zeros: [8]u8 = @splat(0);
         _ = self.view.tx.push(zeros[0 .. span - @sizeOf(socket.DatagramHead) - len]);
-        _ = sys.eventSignal(self.doorbell);
+        sys.eventSignal(self.doorbell);
         return true;
     }
 
@@ -86,7 +86,7 @@ pub const Sock = struct {
         const take: u16 = @intCast(@min(head.len, into.len));
         _ = self.view.rx.peek(into[0..take], @sizeOf(socket.DatagramHead));
         self.view.rx.skip(span);
-        _ = sys.eventSignal(self.doorbell);
+        sys.eventSignal(self.doorbell);
         return .{ .addr = head.addr, .port = head.port, .len = take };
     }
 
@@ -116,7 +116,7 @@ pub const Sock = struct {
         // and a mapping is one of the sixty-four a process may hold. A
         // program that opens a socket per attempt could otherwise open its
         // last one an hour into trying.
-        _ = sys.shmUnmap(self.base);
+        sys.shmUnmap(self.base);
         sys.close(self.shm);
         sys.close(self.ev_app);
         sys.close(self.doorbell);

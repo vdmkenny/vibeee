@@ -1350,8 +1350,8 @@ const REST_US: u32 = 50_000;
 /// wait on but the clock.
 fn rest() void {
     if (controller.irq != 0) {
-        _ = sys.eventWait(controller.irq, REST_US);
-        _ = sys.irqAck(controller.irq, serviceIrq() != .quiet);
+        sys.eventWait(controller.irq, REST_US) catch {};
+        sys.irqAck(controller.irq, serviceIrq() != .quiet);
     } else {
         sys.sleepMicros(REST_US);
     }

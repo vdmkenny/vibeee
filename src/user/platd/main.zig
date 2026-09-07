@@ -126,7 +126,7 @@ fn serve(channel: u32) noreturn {
             sources[count] = quit_event;
             count += 1;
         }
-        const woke = sys.waitMany(sources[0..count], sys.FOREVER);
+        const woke = sys.waitMany(sources[0..count], sys.FOREVER) catch continue;
         if (sci_index) |index| {
             if (woke == @as(isize, @intCast(index))) glue.sci.service();
         }

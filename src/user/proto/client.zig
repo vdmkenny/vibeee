@@ -52,7 +52,7 @@ pub const Window = struct {
 
     /// Let go of the surface: the mapping first, then the handle.
     fn dropSurface(self: *Window) void {
-        if (self.pixels) |at| _ = sys.shmUnmap(at);
+        if (self.pixels) |at| sys.shmUnmap(at);
         if (self.handle != 0) sys.close(self.handle);
         self.pixels = null;
         self.handle = 0;
@@ -227,7 +227,7 @@ pub const Connection = struct {
             return error.OutOfMemory;
         var mapped = true;
         defer if (!taken and mapped) {
-            _ = sys.shmUnmap(pixels);
+            sys.shmUnmap(pixels);
         };
 
         var req = wm.Req{ .tag = .attach, .win = id };
@@ -359,14 +359,13 @@ pub const Connection = struct {
     pub fn nextOrWake(self: *Connection, wakes: []const u32, timeout_us: usize) Next {
         if (self.poll()) |event| return .{ .event = event };
         if (wakes.len == 0) {
-            if (sys.eventWait(self.event_signal, timeout_us) < 0) return .timed_out;
+            sys.eventWait(self.event_signal, timeout_us) catch return .timed_out;
         } else {
             var handles: [WAKE_MAX + 1]u32 = undefined;
             handles[0] = self.event_signal;
             const count = @min(wakes.len, WAKE_MAX);
             @memcpy(handles[1..][0..count], wakes[0..count]);
-            const fired = sys.waitMany(handles[0 .. count + 1], timeout_us);
-            if (fired < 0) return .timed_out;
+            const fired = sys.waitMany(handles[0 .. count + 1], timeout_us) catch return .timed_out;
             if (fired > 0) return .{ .woke = @intCast(fired - 1) };
         }
         return if (self.poll()) |event| .{ .event = event } else .timed_out;

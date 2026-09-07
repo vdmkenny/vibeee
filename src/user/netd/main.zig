@@ -445,8 +445,7 @@ fn serve(channel: u32) noreturn {
         load.wakes +%= 1;
         stack.tick();
         station.tick();
-        if (woke >= 0) dispatch: {
-            const index = @as(usize, @intCast(woke));
+        if (woke catch null) |index| dispatch: {
             if (index >= sources.len) break :dispatch;
             const handle = sources.slice()[index];
 
@@ -488,7 +487,7 @@ fn serve(channel: u32) noreturn {
                 load.irqs +%= 1;
                 if (!found) load.unclaimed +%= 1;
             }
-            _ = sys.irqAck(handle, found);
+            sys.irqAck(handle, found);
         }
 
         // Whatever this pass queued for the machine itself is delivered
@@ -661,7 +660,7 @@ fn drain(channel: u32) void {
 var address_event: u32 = 0;
 
 fn addressChanged() void {
-    if (address_event != 0) _ = sys.eventSignal(address_event);
+    if (address_event != 0) sys.eventSignal(address_event);
 }
 
 /// Hand back the address event, so a caller learns the network arrived

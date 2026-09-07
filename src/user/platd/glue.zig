@@ -450,7 +450,7 @@ export fn uacpi_kernel_free_event(event: ?*anyopaque) callconv(.c) void {
 }
 
 export fn uacpi_kernel_signal_event(event: ?*anyopaque) callconv(.c) void {
-    if (handleOf(event)) |handle| _ = sys.eventSignal(handle);
+    if (handleOf(event)) |handle| sys.eventSignal(handle);
 }
 
 /// A counting event has nothing to reset: an unconsumed signal is a signal
@@ -491,14 +491,14 @@ export fn uacpi_kernel_wait_for_event(event: ?*anyopaque, millis: u16) callconv(
     // the release was holding up.
     if (!sci.attached()) {
         sci.poll();
-        if (sys.waitMany(&.{handle}, slice) == 0) {
+        if ((sys.waitMany(&.{handle}, slice) catch null) == 0) {
             spent = 0;
             return true;
         }
         return false;
     }
 
-    const woke = sys.waitMany(&.{ handle, sci.event }, slice);
+    const woke = sys.waitMany(&.{ handle, sci.event }, slice) catch null;
     if (woke == 0) {
         // Got it. Whatever this was waiting for has happened, so the next
         // thing to wait starts with the full budget.
@@ -509,7 +509,7 @@ export fn uacpi_kernel_wait_for_event(event: ?*anyopaque, millis: u16) callconv(
     // The interrupt, or nothing. Servicing it is what may signal the event
     // this is waiting for, so it is done here rather than left for a loop
     // this call is standing in front of.
-    if (woke > 0) sci.service();
+    if ((woke orelse 0) > 0) sci.service();
     return false;
 }
 
@@ -592,13 +592,13 @@ pub const Line = struct {
     /// The same, and tell the kernel the line may fire again.
     pub fn service(self: Line) void {
         self.poll();
-        _ = sys.irqAck(self.event, true);
+        sys.irqAck(self.event, true);
     }
 
     /// Consume and service a pending delivery without blocking. Used between
     /// ordinary requests so a busy client cannot hold level completion open.
     pub fn servicePending(self: Line) bool {
-        if (sys.waitMany(&.{self.event}, sys.POLL) != 0) return false;
+        if ((sys.waitMany(&.{self.event}, sys.POLL) catch null) != 0) return false;
         self.service();
         return true;
     }
@@ -622,7 +622,7 @@ export fn uacpi_kernel_install_interrupt_handler(
 
 export fn uacpi_kernel_uninstall_interrupt_handler(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) u32 {
     if (sci.event != 0) {
-        _ = sys.irqAck(sci.event, true);
+        sys.irqAck(sci.event, true);
         sys.close(sci.event);
     }
     sci = .{};
