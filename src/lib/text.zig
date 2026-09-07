@@ -206,13 +206,19 @@ pub const Document = struct {
 
     /// Put one character where the cursor is, and step over it.
     pub fn insert(self: *Document, codepoint: u21) Change {
+        // A newline splits the line rather than sitting in it, and the
+        // cursor belongs at the start of the line it made: stepping over it
+        // within the line it left would put the cursor past the end of a
+        // line that is now shorter.
+        if (codepoint == '\n') return self.newline();
+
         var encoded: [4]u8 = undefined;
         const width = std.unicode.utf8Encode(codepoint, &encoded) catch return .none;
         if (!self.make(self.offset(), encoded[0..width])) return .none;
 
         self.cursor.column += width;
         self.wanted = self.column();
-        return if (codepoint == '\n') .lines else .line;
+        return .line;
     }
 
     /// Split the line at the cursor.

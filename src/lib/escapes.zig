@@ -109,6 +109,11 @@ pub const Parser = struct {
 
     params: [MAX_PARAMS]u32 = @splat(0),
     param_count: usize = 0,
+    /// The sequence in hand named more parameters than are held. Read to
+    /// its end and then dropped: what it asked for cannot be known, and a
+    /// sequence acted on with its last parameter holding the digits of
+    /// several would move the cursor somewhere nobody asked for.
+    too_many: bool = false,
     private: bool = false,
     intermediate: u8 = 0,
 
@@ -235,6 +240,8 @@ pub const Parser = struct {
                 if (self.param_count < MAX_PARAMS) {
                     self.param_count += 1;
                     self.params[self.param_count - 1] = 0;
+                } else {
+                    self.too_many = true;
                 }
                 return null;
             },
@@ -251,6 +258,7 @@ pub const Parser = struct {
             },
             0x40...0x7E => {
                 self.state = .ground;
+                if (self.too_many) return null;
                 return .{ .csi = .{
                     .params = self.params,
                     .count = self.param_count,
@@ -319,9 +327,85 @@ pub const Parser = struct {
     fn reset(self: *Parser) void {
         self.params = @splat(0);
         self.param_count = 0;
+        self.too_many = false;
         self.private = false;
         self.intermediate = 0;
         self.string_len = 0;
         self.string_escape = false;
     }
 };
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// Everything the parser completed while reading `text`.
+fn readAll(parser: *Parser, text: []const u8, into: []Action) []const Action {
+    var n: usize = 0;
+    for (text) |byte| {
+        if (parser.next(byte)) |action| {
+            if (n < into.len) into[n] = action;
+            n += 1;
+        }
+    }
+    return into[0..@min(n, into.len)];
+}
+
+test "a sequence's parameters come back in the places it named them" {
+    var parser = Parser{};
+    var actions: [4]Action = undefined;
+    const got = readAll(&parser, "\x1b[3;5H", &actions);
+
+    try testing.expectEqual(@as(usize, 1), got.len);
+    const csi = got[0].csi;
+    try testing.expectEqual(@as(u8, 'H'), csi.final);
+    try testing.expectEqual(@as(usize, 2), csi.count);
+    try testing.expectEqual(@as(u32, 3), csi.get(0, 1));
+    try testing.expectEqual(@as(u32, 5), csi.get(1, 1));
+    // An omitted parameter still occupies its place.
+    const missing = readAll(&parser, "\x1b[;5H", &actions);
+    try testing.expectEqual(@as(usize, 2), missing[0].csi.count);
+    try testing.expectEqual(@as(u32, 1), missing[0].csi.get(0, 1));
+    try testing.expectEqual(@as(u32, 5), missing[0].csi.get(1, 1));
+}
+
+test "a sequence naming more parameters than are held is dropped whole" {
+    var parser = Parser{};
+    var actions: [4]Action = undefined;
+
+    // Exactly as many as there are places for is a sequence like any other.
+    var full: [64]u8 = undefined;
+    var w = std.Io.Writer.fixed(&full);
+    try w.print("\x1b[", .{});
+    for (0..MAX_PARAMS) |i| {
+        if (i != 0) try w.print(";", .{});
+        try w.print("{d}", .{i + 1});
+    }
+    try w.print("m", .{});
+    const held = readAll(&parser, full[0..w.end], &actions);
+    try testing.expectEqual(@as(usize, 1), held.len);
+    try testing.expectEqual(MAX_PARAMS, held[0].csi.count);
+    try testing.expectEqual(@as(u32, MAX_PARAMS), held[0].csi.raw(MAX_PARAMS - 1));
+
+    // One more is a sequence this parser cannot say what it asked for, so
+    // it is read to its end and nothing is acted on. The digits after the
+    // last separator do not land in the parameter before them.
+    const over = readAll(&parser, "\x1b[1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17m", &actions);
+    try testing.expectEqual(@as(usize, 0), over.len);
+
+    // And the next sequence is read as itself.
+    const after = readAll(&parser, "\x1b[7m", &actions);
+    try testing.expectEqual(@as(usize, 1), after.len);
+    try testing.expectEqual(@as(u32, 7), after[0].csi.raw(0));
+}
+
+test "a control inside a sequence is acted on where it stands" {
+    var parser = Parser{};
+    var actions: [4]Action = undefined;
+    const got = readAll(&parser, "\x1b[3\x0d;5H", &actions);
+    try testing.expectEqual(@as(usize, 2), got.len);
+    try testing.expectEqual(@as(u8, 0x0d), got[0].control);
+    try testing.expectEqual(@as(u32, 5), got[1].csi.get(1, 1));
+}

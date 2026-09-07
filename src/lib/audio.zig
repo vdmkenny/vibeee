@@ -54,24 +54,36 @@ pub const Shape = struct {
         return self.format.bytesPerSample() * self.channels;
     }
 
+    /// Worked out in sixty-four bits, because a `usize` here is thirty-two:
+    /// a rate times a duration in milliseconds passes four billion at a
+    /// minute and a half of audio, and the answer would wrap.
     pub fn framesPerMs(self: Shape, ms: u32) usize {
-        return (@as(usize, self.rate.hertz()) * ms) / 1000;
+        return @intCast((@as(u64, self.rate.hertz()) * ms) / 1000);
     }
 
     pub fn bytesPerMs(self: Shape, ms: u32) usize {
         return self.framesPerMs(ms) * self.bytesPerFrame();
     }
 
-    /// How long a run of frames lasts, in milliseconds.
+    /// How long a run of frames lasts, in milliseconds. In sixty-four bits
+    /// for the same reason as `framesPerMs`.
     pub fn msOfFrames(self: Shape, frames: usize) u32 {
         if (self.rate.hertz() == 0) return 0;
-        return @intCast((frames * 1000) / self.rate.hertz());
+        return @intCast((@as(u64, frames) * 1000) / self.rate.hertz());
     }
 
     pub fn valid(self: Shape) bool {
         return (self.channels == 1 or self.channels == 2) and Rate.of(self.rate.hertz()) != null;
     }
 };
+
+test "a duration long enough to pass four billion frame-hertz still converts" {
+    const shape = Shape{ .rate = .hz48000, .channels = 2 };
+    // A minute and a half at 48 kHz: the product of rate and milliseconds
+    // is past what thirty-two bits hold.
+    try std.testing.expectEqual(@as(usize, 48000 * 90), shape.framesPerMs(90_000));
+    try std.testing.expectEqual(@as(u32, 90_000), shape.msOfFrames(48000 * 90));
+}
 
 /// Loudness as a whole number of percent, which is what a tool prints, a
 /// setting stores and a hardware step map is built against.
