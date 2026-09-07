@@ -82,11 +82,10 @@ export fn _start() callconv(.c) noreturn {
 }
 
 fn snddMain() noreturn {
-    const channel = sys.svcRegister(proto.SERVICE);
-    if (channel < 0) {
+    const channel = sys.svcRegister(proto.SERVICE) catch {
         log.note("sndd", "already serving; letting this instance stand down");
         sys.exit(0);
-    }
+    };
     service = @intCast(channel);
 
     probe();
@@ -482,11 +481,10 @@ fn portCreate(req: *const proto.Req, sender: u32, token: u32) void {
 
     const ring = &rings[port];
     if (ring.view == null) {
-        const created = sys.shmCreate(proto.shmBytes());
-        if (created < 0) {
+        const created = sys.shmCreate(proto.shmBytes()) catch {
             graph.removePort(port);
             return refuse(token);
-        }
+        };
         const base = sys.shmMap(@intCast(created), .{ .writable = true }) orelse {
             sys.close(@intCast(created));
             graph.removePort(port);

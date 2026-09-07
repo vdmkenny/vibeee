@@ -95,11 +95,10 @@ export fn _start() callconv(.c) noreturn {
 fn netdMain() noreturn {
     // The claim, before the hardware: a second instance started for a second
     // adapter must stand down cleanly, not duel the first.
-    const channel = sys.svcRegister(proto.SERVICE);
-    if (channel < 0) {
+    const channel = sys.svcRegister(proto.SERVICE) catch {
         log.note("netd", "already serving; letting this instance stand down");
         sys.exit(0);
-    }
+    };
 
     // The hooks before the hardware. A driver is started by the adopting
     // below, and starting is when it reports itself up; a radio says that

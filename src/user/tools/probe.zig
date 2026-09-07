@@ -185,12 +185,11 @@ fn hold() void {
 /// and answer. Closing them is the point, because a handle nobody closes tells
 /// nothing about whether the kernel would have let it go.
 fn echo() void {
-    const channel = sys.svcRegister(ECHO);
-    if (channel < 0) {
+    const channel = sys.svcRegister(ECHO) catch {
         out.text("probe: echo could not publish itself\n");
         out.flush();
         return;
-    }
+    };
 
     var idle: usize = 0;
     while (idle < 500) {
@@ -270,8 +269,7 @@ fn wrapping() isize {
 /// would be caught by nothing and prove nothing. A freshly mapped segment ends
 /// where the mapping ends.
 fn onePage(writable: bool) usize {
-    const handle = sys.shmCreate(PAGE);
-    if (handle < 0) return 0;
+    const handle = sys.shmCreate(PAGE) catch return 0;
     const at = sys.shmMap(@intCast(handle), .{ .writable = writable }) orelse return 0;
     return @intFromPtr(at);
 }
@@ -429,8 +427,7 @@ fn waitFor(path: []const u8) bool {
 /// write. Everything waiting on keys waits on this one: a program that could
 /// signal it would wake every window on the machine whenever it liked.
 fn readOnlyEvent() isize {
-    const watched = sys.watch(.keys);
-    if (watched < 0) return NOT_RUN;
+    const watched = sys.watch(.keys) catch return NOT_RUN;
     return sys.eventSignal(@intCast(watched));
 }
 
@@ -438,7 +435,11 @@ fn readOnlyEvent() isize {
 /// asked every question about what this machine is set to, and would answer
 /// them. It is held back for whatever is actually the settings store.
 fn reservedName() isize {
-    return sys.svcRegister("cfg");
+    _ = sys.svcRegister("cfg") catch |why| return abi.Errno.value(switch (why) {
+        error.NotPermitted => .perm,
+        else => .inval,
+    });
+    return 0;
 }
 
 /// A message at an address it could never be laid out at. The kernel treats
@@ -451,8 +452,7 @@ fn misalignedMessage() isize {
     // A channel of this program's own, because a handle that is not a channel
     // is refused before the message is looked at and the case would then say
     // nothing about the message.
-    const channel = sys.svcRegister("probe");
-    if (channel < 0) return NOT_RUN;
+    const channel = sys.svcRegister("probe") catch return NOT_RUN;
 
     return sys.recvRaw(@intCast(channel), page + 1, page + 8);
 }

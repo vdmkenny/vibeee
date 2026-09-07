@@ -497,8 +497,7 @@ fn start(state: *State) void {
 const READY_WINDOW_US: u64 = 5_000_000;
 
 fn listenForNames() void {
-    const handle = sys.watch(.registry);
-    registry_event = if (handle < 0) null else @intCast(handle);
+    registry_event = sys.watch(.registry) catch null;
 }
 
 /// Wait for the name a service promised to appear in `/svc`, and judge it
@@ -575,14 +574,13 @@ fn supervise() noreturn {
     // Two things to listen to and one call that listens to both. A child
     // exiting and somebody asking about the table are unrelated, arrive
     // whenever they arrive, and neither is worth waking up to check for.
-    const children = sys.watch(.children);
-    const channel = sys.svcRegister(proto.SERVICE);
+    const channel = sys.svcRegister(proto.SERVICE) catch null;
 
     var sources: [2]u32 = undefined;
     var count: usize = 0;
-    for ([_]isize{ children, channel }) |handle| {
-        if (handle >= 0) {
-            sources[count] = @intCast(handle);
+    for ([_]?u32{ sys.watch(.children) catch null, channel }) |asked| {
+        if (asked) |handle| {
+            sources[count] = handle;
             count += 1;
         }
     }
@@ -590,7 +588,7 @@ fn supervise() noreturn {
     while (true) {
         collect();
         enforceStops();
-        if (channel >= 0) answerAll(@intCast(channel));
+        if (channel) |handle| answerAll(handle);
         serviceAfterBoot();
         serviceLate();
         maybeReportBoot();

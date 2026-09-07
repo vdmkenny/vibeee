@@ -86,19 +86,17 @@ fn wmMain() noreturn {
     // own gui name takes a capability init has and a shell does not. Asked
     // before the display is taken, a refusal is said on the console the
     // program was started from, rather than on a screen that has just gone.
-    const registered = sys.svcRegister(proto.wm.SERVICE);
-    if (registered < 0) {
-        out.text(switch (std.enums.fromInt(sys.Errno, -registered) orelse .inval) {
-            .perm => "eeewm: the gui service is not this program's to publish.\n" ++
+    service = sys.svcRegister(proto.wm.SERVICE) catch |why| {
+        out.text(switch (why) {
+            error.NotPermitted => "eeewm: the gui service is not this program's to publish.\n" ++
                 "       start the desktop with: svc start eeewm\n",
-            .exists => "eeewm: a desktop is already running.\n",
-            .nomem => "eeewm: the service registry is full.\n",
+            error.Exists => "eeewm: a desktop is already running.\n",
+            error.NoMemory => "eeewm: the service registry is full.\n",
             else => "eeewm: cannot publish the gui service.\n",
         });
         out.flush();
         sys.exit(1);
-    }
-    service = @intCast(registered);
+    };
 
     // The faces every window draws with, read once into one segment that each
     // client maps. Before the display, because a desktop that cannot draw
@@ -137,10 +135,16 @@ fn wmMain() noreturn {
     power_event = proto.settings.watch("power") catch 0;
     keyboard_event = proto.settings.watch("input") catch 0;
     network_event = proto.net.watch() catch 0;
-    listenTo(.keys, sys.watch(.keys));
-    listenTo(.pointer, sys.watch(.pointer));
-    listenTo(.children, sys.watch(.children));
-    listenTo(.quit, sys.watch(.quit));
+    // The four the kernel answers for directly, each landing in the slot it
+    // is named after.
+    for ([_]struct { which: Source, what: sys.Watchable }{
+        .{ .which = .keys, .what = .keys },
+        .{ .which = .pointer, .what = .pointer },
+        .{ .which = .children, .what = .children },
+        .{ .which = .quit, .what = .quit },
+    }) |source| {
+        listenTo(source.which, sys.watch(source.what) catch continue);
+    }
     listenTo(.wm_settings, @intCast(settings_event));
     listenTo(.keyboard_settings, @intCast(keyboard_event));
     listenTo(.power_settings, @intCast(power_event));
@@ -156,7 +160,7 @@ fn wmMain() noreturn {
     pointer_x = @divTrunc(info.width, 2);
     pointer_y = @divTrunc(info.height, 2);
 
-    listenTo(.channel, registered);
+    listenTo(.channel, service);
 
     run();
 }
@@ -574,9 +578,8 @@ var listening: usize = 0;
 
 /// Remember a source's event, if the kernel gave us one. A source that failed
 /// is left out of the wait rather than waited on as handle zero.
-fn listenTo(which: Source, handle: isize) void {
-    if (handle < 0) return;
-    sources[@intFromEnum(which)] = @intCast(handle);
+fn listenTo(which: Source, handle: u32) void {
+    sources[@intFromEnum(which)] = handle;
     listening += 1;
 }
 
@@ -999,8 +1002,7 @@ fn clipboardHead() ?*wire.ClipHead {
 }
 
 fn openClipboard() void {
-    const handle = sys.shmCreate(wire.CLIPBOARD_BYTES);
-    if (handle < 0) return;
+    const handle = sys.shmCreate(wire.CLIPBOARD_BYTES) catch return;
     const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse return;
 
     clipboard_handle = @intCast(handle);
@@ -1065,8 +1067,7 @@ fn openFonts() !void {
     const entry = sys.Dirent.decode(&record, @intCast(told)) orelse return error.NoFile;
     if (entry.size == 0 or entry.size > FONTS_MAX) return error.BadFile;
 
-    const created = sys.shmCreate(entry.size);
-    if (created < 0) return error.NoMemory;
+    const created = sys.shmCreate(entry.size) catch return error.NoMemory;
     fonts_handle = @intCast(created);
 
     const at = sys.shmMap(fonts_handle, .{ .writable = true }) orelse return error.NoMemory;

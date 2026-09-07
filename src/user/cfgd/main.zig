@@ -43,12 +43,11 @@ fn cfgdMain() noreturn {
     // startup it is not yet: the kernel is on whichever layout it compiled in.
     settings.applyInput();
 
-    const channel = sys.svcRegister(settings.SERVICE);
-    if (channel < 0) {
-        log.failed("cfgd", "cannot register", channel);
+    const channel = sys.svcRegister(settings.SERVICE) catch |why| {
+        log.refused("cfgd", "cannot register", why);
         out.flush();
         sys.exit(1);
-    }
+    };
 
     serve(@intCast(channel));
 }

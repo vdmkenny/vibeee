@@ -12,6 +12,5 @@ const sys = @import("sys");
 /// kernel would not give one, in which case the program is ended when its
 /// time comes rather than asked.
 pub fn event() u32 {
-    const handle = sys.watch(.quit);
-    return if (handle < 0) 0 else @intCast(handle);
+    return sys.watch(.quit) catch 0;
 }

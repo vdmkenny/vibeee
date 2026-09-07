@@ -75,7 +75,7 @@ pub fn top(args: []const []const u8) void {
     // between rounds is a wait on the stop event, so a reading nobody
     // wants any more costs the rest of one second and no more.
     const rounds = if (args.len > 0) @max(str.unsigned(args[0]) orelse 1, 1) else 1;
-    const stop = sys.watch(.stop);
+    const stop = sys.watch(.stop) catch null;
 
     var buf: [1024]u8 = [_]u8{0} ** 1024;
 
@@ -107,8 +107,8 @@ pub fn top(args: []const []const u8) void {
             out.flush();
             // The pause is a wait on the stop event, so Ctrl+C lands in it
             // rather than being noticed a second later.
-            if (stop >= 0) {
-                if (sys.eventWait(@intCast(stop), 1_000_000) >= 0) break;
+            if (stop) |handle| {
+                if (sys.eventWait(handle, 1_000_000) >= 0) break;
             } else {
                 sys.sleepMicros(1_000_000);
             }

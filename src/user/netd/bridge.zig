@@ -610,8 +610,7 @@ fn takeSlot(kind: Kind) ?*Sock {
 /// for this use: fresh indices, opening state.
 fn slotView(s: *Sock, kind: socket.Kind) ?socket.View {
     if (s.view == null) {
-        const created = sys.shmCreate(socket.shmBytes(.tcp));
-        if (created < 0) return null;
+        const created = sys.shmCreate(socket.shmBytes(.tcp)) catch return null;
         const base = sys.shmMap(@intCast(created), .{ .writable = true }) orelse {
             sys.close(@intCast(created));
             return null;

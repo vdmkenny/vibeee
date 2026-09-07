@@ -65,9 +65,9 @@ pub fn run(args: []const []const u8) void {
 
         // The wait is here rather than inside accept, so Ctrl+C can end a
         // listener nobody ever connects to.
-        const stop = sys.watch(.stop);
-        var doors: [2]u32 = .{ gate.waitHandle(), if (stop >= 0) @intCast(stop) else gate.waitHandle() };
-        const woke = sys.waitMany(doors[0..if (stop >= 0) 2 else 1], sys.FOREVER);
+        const stop = sys.watch(.stop) catch null;
+        var doors: [2]u32 = .{ gate.waitHandle(), if (stop) |handle| handle else gate.waitHandle() };
+        const woke = sys.waitMany(doors[0..if (stop != null) 2 else 1], sys.FOREVER);
         if (woke != 0) return;
 
         const s = gate.accept() catch |err| {
@@ -119,7 +119,7 @@ fn converse(s: *const sock.Sock, datagrams: bool) void {
 }
 
 fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
-    const stop = sys.watch(.stop);
+    const stop = sys.watch(.stop) catch null;
     var fed = true;
 
     if (stdin_ready) {
@@ -130,16 +130,16 @@ fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
     while (true) {
         var sources: [3]u32 = .{
             s.waitHandle(),
-            if (stop >= 0) @intCast(stop) else s.waitHandle(),
+            if (stop) |handle| handle else s.waitHandle(),
             sys.STDIN,
         };
         // The stop event only when it exists, standard input only while it
         // still feeds; the fixed order keeps the indices meaningful.
-        const n: usize = if (fed) 3 else if (stop >= 0) 2 else 1;
+        const n: usize = if (fed) 3 else if (stop != null) 2 else 1;
         const woke = sys.waitMany(sources[0..n], sys.FOREVER);
         if (woke < 0) continue;
 
-        if (woke == 1 and stop >= 0) return;
+        if (woke == 1 and stop != null) return;
         if (woke == 2) {
             if (!feed(s, datagrams)) fed = false;
         }
@@ -153,11 +153,10 @@ fn conversePiped(s: *const sock.Sock, datagrams: bool, stdin_ready: bool) void {
 /// echo. Ctrl+C is a key here, not the stop event, because a claimed
 /// keyboard bypasses the line discipline entirely.
 fn converseConsole(s: *const sock.Sock, datagrams: bool) void {
-    const keys = sys.watch(.keys);
-    if (keys < 0) {
+    const keys = sys.watch(.keys) catch {
         say("nc: no keyboard to read\n");
         return;
-    }
+    };
 
     // The first read claims the keyboard: from here every key goes to this
     // process and wakes the keys event, instead of feeding the shell's

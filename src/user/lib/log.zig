@@ -97,6 +97,15 @@ pub fn failed(key: []const u8, message: []const u8, result: isize) void {
     end();
 }
 
+/// The same for a call that answered with why rather than with a number.
+pub fn refused(key: []const u8, message: []const u8, why: anyerror) void {
+    begin(key, .bad);
+    out.text(message);
+    out.text(": ");
+    out.text(@errorName(why));
+    end();
+}
+
 /// Start a line whose message is built from several pieces. What follows is
 /// written with `out` until `end`.
 ///

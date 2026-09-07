@@ -69,11 +69,10 @@ fn platdMain() noreturn {
     // of a service already in its serve loop, never of one mid-transition:
     // on this firmware the transition is exactly when an outside touch of
     // the buses wedges the machine.
-    const channel = sys.svcRegister(proto.SERVICE);
-    if (channel < 0) {
-        log.failed("platd", "cannot register", channel);
+    const channel = sys.svcRegister(proto.SERVICE) catch |why| {
+        log.refused("platd", "cannot register", why);
         sys.exit(1);
-    }
+    };
 
     serve(@intCast(channel));
 }

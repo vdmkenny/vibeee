@@ -90,11 +90,10 @@ fn devmgdMain() noreturn {
     readManifests();
     bindDevices();
 
-    const channel = sys.svcRegister(proto.SERVICE);
-    if (channel < 0) {
+    const channel = sys.svcRegister(proto.SERVICE) catch {
         log.note("devmgd", "already serving; letting this instance stand down");
         sys.exit(0);
-    }
+    };
     service = @intCast(channel);
 
     // Driver processes start after registration, because a driver's first act
@@ -354,9 +353,8 @@ fn serve() noreturn {
         kinds[count] = .quit;
         count += 1;
     }
-    const children = sys.watch(.children);
-    if (children >= 0) {
-        sources[count] = @intCast(children);
+    if (sys.watch(.children) catch null) |children| {
+        sources[count] = children;
         kinds[count] = .child;
         count += 1;
     }

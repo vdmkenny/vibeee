@@ -112,8 +112,7 @@ fn widthOf(class: u32) usize {
 /// every block a program grows into and leave a program that had memory
 /// unable to open a file.
 fn fromKernel(bytes: usize) ?[*]u8 {
-    const handle = sys.shmCreate(bytes);
-    if (handle < 0) return null;
+    const handle = sys.shmCreate(bytes) catch return null;
     defer sys.close(@intCast(handle));
     return sys.shmMap(@intCast(handle), .{ .writable = true });
 }

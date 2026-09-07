@@ -98,8 +98,7 @@ fn usbdMain() noreturn {
     // the boot is waiting for. A name published at the top of this function
     // says the process started, which is not the same thing: the machine
     // would report a finished boot with its own disks still undiscovered.
-    const channel = sys.svcRegister(proto.SERVICE);
-    if (channel < 0) standDown();
+    const channel = sys.svcRegister(proto.SERVICE) catch standDown();
     service = @intCast(channel);
     out.flush();
 

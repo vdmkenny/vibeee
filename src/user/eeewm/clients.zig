@@ -95,11 +95,10 @@ pub const Table = struct {
             // One page for the header, the rest for events, so both sides
             // agree on the layout without exchanging anything but the segment.
             const bytes = 4096 + wm.EVENT_RING_BYTES;
-            const handle = sys.shmCreate(bytes);
-            if (handle < 0) {
+            const handle = sys.shmCreate(bytes) catch {
                 c.* = .{};
                 return null;
-            }
+            };
 
             const base = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
                 sys.close(@intCast(handle));

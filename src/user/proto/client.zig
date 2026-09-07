@@ -215,8 +215,7 @@ pub const Connection = struct {
         const bytes = @as(u64, stride) * h * 4;
         if (bytes == 0 or bytes > MAX_SURFACE_BYTES) return error.Refused;
 
-        const handle = sys.shmCreate(@intCast(bytes));
-        if (handle < 0) return error.OutOfMemory;
+        const handle = sys.shmCreate(@intCast(bytes)) catch return error.OutOfMemory;
         // Nothing half done: what this made is given back on every way out
         // that is not the one where the window takes it.
         var taken = false;

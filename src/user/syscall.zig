@@ -573,8 +573,10 @@ pub fn rename(from: []const u8, to: []const u8) isize {
 
 /// An event that fires when something happens, for a program with more than
 /// one thing to listen to and no business asking each in turn.
-pub fn watch(what: abi.Watchable) isize {
-    return syscall1(abi.number("watch"), @intFromEnum(what));
+pub const Watchable = abi.Watchable;
+
+pub fn watch(what: Watchable) Refusal!u32 {
+    return @intCast(try checked(syscall1(abi.number("watch"), @intFromEnum(what))));
 }
 
 pub fn eventCreate() Refusal!u32 {
@@ -597,8 +599,9 @@ pub fn eventWait(handle: u32, timeout_us: usize) isize {
 }
 
 /// Publish a service under `name`, returning the serving end of its channel.
-pub fn svcRegister(name: []const u8) isize {
-    return syscall2(abi.number("svc_register"), @intFromPtr(name.ptr), name.len);
+/// The serving end of a channel under `name`, for whoever registers it.
+pub fn svcRegister(name: []const u8) Refusal!u32 {
+    return @intCast(try checked(syscall2(abi.number("svc_register"), @intFromPtr(name.ptr), name.len)));
 }
 
 /// A channel to the service registered under `name`.
@@ -755,8 +758,8 @@ pub fn sync() bool {
 }
 
 /// Allocate a shared-memory segment. Pass the handle over a channel to share it.
-pub fn shmCreate(size: usize) isize {
-    return syscall1(abi.number("shm_create"), size);
+pub fn shmCreate(size: usize) Refusal!u32 {
+    return @intCast(try checked(syscall1(abi.number("shm_create"), size)));
 }
 
 /// Map a segment into this process, returning its address.
