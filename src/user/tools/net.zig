@@ -393,8 +393,11 @@ fn printNetwork(network: *const net.Network) void {
 fn printInterface(iface: *const net.Iface, named: []const u8) void {
     ink.write(.key, labelOf(&iface.driver));
 
-    out.text(if (iface.up != 0) "  up    " else "  down  ");
-    if (iface.up != 0) {
+    // What a person switched off, then what the wire is doing. The two
+    // are separate answers, and "off" is the one that explains why there
+    // is no address.
+    out.text(if (iface.enabled == 0) "  off   " else if (iface.up != 0) "  up    " else "  down  ");
+    if (iface.enabled != 0 and iface.up != 0) {
         out.decimal(iface.mbps);
         out.text(" Mbit ");
         out.text(switch (iface.duplex) {
@@ -402,7 +405,7 @@ fn printInterface(iface: *const net.Iface, named: []const u8) void {
             .full => "full",
             else => "unknown",
         });
-    } else if (iface.kind == .radio and iface.channel != 0) {
+    } else if (iface.enabled != 0 and iface.kind == .radio and iface.channel != 0) {
         out.text("channel ");
         out.decimal(iface.channel);
     } else {

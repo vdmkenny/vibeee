@@ -808,6 +808,7 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
             .tx_pkts = @truncate(iface.stats.tx_pkts),
             .tx_bytes = @truncate(iface.stats.tx_bytes),
             .arp_replies = @truncate(iface.stats.rx_arp),
+            .enabled = @intFromBool(stack.isUp(iface)),
             .kind = if (iface.class == .wifi) .radio else .wire,
             .channel = iface.radio_channel,
             // Only a radio joins anything, so a wire reports nothing about it.

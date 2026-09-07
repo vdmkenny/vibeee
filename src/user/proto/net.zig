@@ -158,7 +158,13 @@ pub const Iface = extern struct {
     /// what is happening without a second call.
     joining: Joining = .idle,
     stopped: Stopped = .none,
-    _pad: [2]u8 = @splat(0),
+    /// Whether the slot speaking for it is switched on. Not the same as
+    /// the link: an interface with a cable in it and no address may be
+    /// one nobody has plugged anything into at the other end, or one
+    /// somebody switched off, and a listing that cannot tell them apart
+    /// leaves the person who switched it off with nothing to look at.
+    enabled: u8 = 1,
+    _pad: [1]u8 = @splat(0),
 };
 
 /// What the service's loop has been woken for since it started.

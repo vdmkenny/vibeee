@@ -122,12 +122,8 @@ fn spellPort(id: u16) void {
     const port = reply.body.port_info;
     if (port.id == graph.NONE) return out.text("?");
 
-    var node_reply = proto.Rep{};
-    proto.call(.{ .tag = .get_node, .a = port.node }, &node_reply) catch return out.text("?");
-    const node = node_reply.body.node;
-    out.text(node.name[0..node.name_len]);
-    out.byte(':');
-    out.text(port.name[0..port.name_len]);
+    var spelled: [proto.PORT_SPELLED_MAX]u8 = undefined;
+    out.text(proto.spellPort(&port, &spelled));
 }
 
 // ---------------------------------------------------------------------------

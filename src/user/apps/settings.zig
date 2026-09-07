@@ -667,7 +667,8 @@ fn drawPorts(pane: eui.Rect, from: i32, direction: sound.graph.Direction, title:
         }
 
         const at = eui.Rect{ .x = pane.x, .y = y, .w = pane.w, .h = t.menu_row_height };
-        if (ctx.toggle(at, sound.nameOf(port), port.default != 0) and port.default == 0) {
+        var spelled: [sound.PORT_SPELLED_MAX]u8 = undefined;
+        if (ctx.toggle(at, sound.spellPort(port, &spelled), port.default != 0) and port.default == 0) {
             if (sound.makeDefault(port.id)) {
                 readVolume();
                 ctx.damage();

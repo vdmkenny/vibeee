@@ -1418,7 +1418,9 @@ fn netItems(into: []ui.MenuItem) []ui.MenuItem {
         const address = ifaces[i].address.addr;
         const radio = ifaces[i].iface.kind == .radio;
         var detail: []const u8 = undefined;
-        if (address != 0) {
+        if (ifaces[i].iface.enabled == 0) {
+            detail = "off";
+        } else if (address != 0) {
             detail = ipv4.text(address, iface_texts[i][0..15]);
         } else if (radio and ifaces[i].iface.channel != 0) {
             var spelled = str.Builder{ .buf = &iface_texts[i] };
@@ -1566,6 +1568,12 @@ var level_before_silence: u8 = 50;
 var row_ports: [MAX_PORTS + 4]u16 = @splat(graph.NONE);
 var sound_ports: [MAX_PORTS]audio.PortInfo = undefined;
 var sound_port_count: usize = 0;
+/// Each port's name with the device it belongs to in front of it, spelled
+/// once when the ports are read: a machine with two sound cards has two
+/// ports called "out", and a menu offering two rows of that names neither.
+/// Kept here because a row's label is a slice and has to outlive the menu.
+var sound_port_names: [MAX_PORTS][audio.PORT_SPELLED_MAX]u8 = undefined;
+var sound_port_name_len: [MAX_PORTS]u8 = @splat(0);
 
 /// Enough for the outputs and inputs a machine of this size has, plus the
 /// programs playing through them.
@@ -1843,6 +1851,9 @@ fn paintPowerMenu(surface: Surface, width: i32, height: i32) void {
 fn readSound() void {
     level = audio.master() orelse .{ .percent = 0, .muted = 0 };
     sound_port_count = audio.ports(&sound_ports).len;
+    for (sound_ports[0..sound_port_count], 0..) |*port, i| {
+        sound_port_name_len[i] = @intCast(audio.spellPort(port, &sound_port_names[i]).len);
+    }
 }
 
 /// Whether the machine is making no sound, whichever way it was silenced.
@@ -1885,14 +1896,14 @@ fn soundItems(into: []ui.MenuItem) []ui.MenuItem {
         var any = false;
         // By pointer: the name is a slice into the table, and a slice into a
         // copy that goes out of scope with the loop is a row with no label.
-        for (sound_ports[0..sound_port_count]) |*port| {
+        for (sound_ports[0..sound_port_count], 0..) |*port, i| {
             if (port.direction != want) continue;
             // A rule between the groups, never above the first: the strip
             // above them is already a boundary.
             if (!any and count > 0) put(into, &count, .{ .kind = .separator }, graph.NONE);
             any = true;
             put(into, &count, .{
-                .label = audio.nameOf(port),
+                .label = sound_port_names[i][0..sound_port_name_len[i]],
                 // The tick says which one the machine is using; the others
                 // carry nothing, and the column keeps them lined up.
                 .mark = if (port.default != 0) .check else null,

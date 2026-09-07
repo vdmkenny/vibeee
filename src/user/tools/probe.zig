@@ -52,6 +52,15 @@ const CASES = [_]Case{
     .{ .says = "an address no mapping of its own holds, to unmap", .run = &strayUnmap, .want = .inval },
 };
 
+/// How wide the description column is: the longest thing said in it and a
+/// space, proved rather than counted by eye, since a name that outgrows the
+/// column runs into the answer beside it.
+const SAYS = blk: {
+    var longest: usize = "handles sent over a channel are given back".len;
+    for (CASES) |case| longest = @max(longest, case.says.len);
+    break :blk longest + 2;
+};
+
 pub fn run(args: []const []const u8) void {
     // Started with `echo` this program is the other end of its own channel:
     // the handle cases need something to call, and a server that answers is
@@ -68,7 +77,7 @@ pub fn run(args: []const []const u8) void {
         if (ok) passed += 1;
 
         out.text(if (ok) "  ok   " else "  FAIL ");
-        out.pad(case.says, 44);
+        out.pad(case.says, SAYS);
         say(got, case.want);
         out.byte('\n');
     }
@@ -129,7 +138,7 @@ fn balance() void {
     const room = ROUNDS * @sizeOf(usize);
 
     out.text(if (grew < room) "  ok   " else "  FAIL ");
-    out.pad("handles sent over a channel are given back", 44);
+    out.pad("handles sent over a channel are given back", SAYS);
     if (grew < room) {
         out.text("nothing left behind");
     } else {
@@ -220,15 +229,11 @@ fn say(got: isize, want: abi.Errno) void {
     }
 }
 
+/// What a refusal is called, in the words every other tool uses for it.
+/// Spelled here as well and the two would drift: this file's business is
+/// whether the kernel refused, not what a refusal is called.
 fn name(which: abi.Errno) []const u8 {
-    return switch (which) {
-        .fault => "refused (fault)",
-        .badf => "refused (bad handle)",
-        .perm => "refused (not allowed)",
-        .inval => "refused (not a program)",
-        .busy => "refused (somebody has it)",
-        else => "refused",
-    };
+    return which.reason();
 }
 
 // ---------------------------------------------------------------------------

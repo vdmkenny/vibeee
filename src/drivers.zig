@@ -166,6 +166,23 @@ pub const table = [_]probe.Driver{
         }.f,
     },
 
+    .{
+        // The AC'97 controller of the Intel chipset line, which is what an
+        // emulator gives a machine and what a great deal of the era's
+        // hardware carried. The target has the newer one above; this table
+        // and the driver manifests must name the same set either way, or a
+        // listing says a device nobody drives while a driver drives it.
+        .name = "ac97",
+        .kind = .audio,
+        .match = &.{.{ .pci_class = .{ .class = 0x04, .subclass = 0x01 } }},
+        .probe = &struct {
+            fn f(dev: Device) Confidence {
+                if (dev.vendor == 0x8086 and dev.device == 0x2415) return .exact;
+                return if (dev.class == 0x04 and dev.subclass == 0x01) .strong else .no;
+            }
+        }.f,
+    },
+
     // -- Network ---------------------------------------------------------
     .{
         .name = "atl2",

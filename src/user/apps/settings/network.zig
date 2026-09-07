@@ -272,7 +272,9 @@ fn drawChosen(pane: eui.Rect, from: i32) i32 {
 fn stateOf(index: usize, buf: *[64]u8) []const u8 {
     const iface = &model.ifaces[index].iface;
     var line = str.Builder{ .buf = buf };
-    if (iface.up != 0) {
+    if (iface.enabled == 0) {
+        line.text("Off");
+    } else if (iface.up != 0) {
         line.text("Connected, ");
         line.number(iface.mbps);
         line.text(" Mbit/s");

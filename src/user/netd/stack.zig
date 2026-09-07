@@ -516,8 +516,20 @@ pub const AddressView = struct {
     lease_remaining_s: u32 = 0,
 };
 
+/// Whether the slot speaking for this interface is switched on. An
+/// interface no slot claims is not one anybody asked for.
+pub fn isUp(nic: *dev.NicDev) bool {
+    const slot = slotOf(nic) orelse return false;
+    return slot.mode != .down;
+}
+
 pub fn addressOf(nic: *dev.NicDev) AddressView {
     const slot = slotOf(nic) orelse return .{};
+    // An interface that has been taken down has no address, whatever
+    // number is still sitting in its netif: showing the one it had while
+    // it was up is showing somebody the address of something switched off.
+    if (slot.mode == .down) return .{};
+
     var view = AddressView{
         .addr = lwip.fromWire(slot.netif.ip_addr),
         .prefix = prefixOf(lwip.fromWire(slot.netif.netmask)),

@@ -291,3 +291,39 @@ pub fn makeDefault(port: u16) bool {
 pub fn nameOf(port: *const PortInfo) []const u8 {
     return port.name[0..@min(port.name_len, graph.Name.MAX)];
 }
+
+/// One node, by index, or null when nothing is serving or the slot is empty.
+pub fn nodeAt(index: u16) ?NodeInfo {
+    var reply = Rep{};
+    call(.{ .tag = .get_node, .a = index }, &reply) catch return null;
+    if (reply.body.node.name_len == 0) return null;
+    return reply.body.node;
+}
+
+/// A node's name, carried the same way a port's is.
+pub fn nodeNameOf(node: *const NodeInfo) []const u8 {
+    return node.name[0..@min(node.name_len, graph.Name.MAX)];
+}
+
+/// How long a spelled port can be: both names and the colon between them.
+pub const PORT_SPELLED_MAX = graph.Name.MAX * 2 + 1;
+
+/// A port as a person reads it: the device it belongs to, then the port's
+/// own name.
+///
+/// A machine with two sound cards has two ports called "out", and a list
+/// naming each of them "out" names neither. Spelled once, here, because
+/// the graph listing and the settings pane are two ways of showing the
+/// same ports and they should call them the same thing.
+pub fn spellPort(port: *const PortInfo, into: *[PORT_SPELLED_MAX]u8) []const u8 {
+    const own = nameOf(port);
+    const node = nodeAt(port.node) orelse return own;
+    const device = nodeNameOf(&node);
+    if (device.len == 0) return own;
+
+    @memcpy(into[0..device.len], device);
+    into[device.len] = ':';
+    const at = device.len + 1;
+    @memcpy(into[at..][0..own.len], own);
+    return into[0 .. at + own.len];
+}

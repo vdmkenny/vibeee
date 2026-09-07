@@ -24,12 +24,18 @@ pub fn mount(args: []const []const u8) void {
     const volume = rest[0];
     const where = rest[1];
 
-    // Said before the attempt rather than guessed from the failure: a mount
-    // point that is not there yet is the ordinary mistake, and "no such file"
+    // Said before the attempt rather than guessed from the failure: a path
+    // whose parent is not there is the ordinary mistake, and "no such file"
     // from a call naming two paths does not say which one.
-    if (!dir.isDirectory(where)) {
+    //
+    // The last part of the path need not exist. A mount takes a name in its
+    // parent, which is how the kernel's own automatic mounts arrive, and a
+    // tool that insisted on a directory already being there would make a
+    // volume unmountable back to where it came from.
+    const parent = parentOf(where);
+    if (!dir.isDirectory(parent)) {
         out.text("mount: ");
-        out.text(where);
+        out.text(parent);
         out.text(": not a directory\n");
         out.flush();
         return;
@@ -60,6 +66,14 @@ fn report(tool: []const u8, subject: []const u8, outcome: sys.Refusal!void) void
         out.byte('\n');
         out.flush();
     };
+}
+
+/// The directory a path names something in. The root's parent is itself,
+/// and a path with no separator names something in the working directory.
+fn parentOf(path: []const u8) []const u8 {
+    const trimmed = if (path.len > 1 and path[path.len - 1] == '/') path[0 .. path.len - 1] else path;
+    const cut = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return ".";
+    return if (cut == 0) "/" else trimmed[0..cut];
 }
 
 fn usage() void {
