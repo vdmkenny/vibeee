@@ -1229,11 +1229,27 @@ fn reapTx(nic: *NicDev) void {
         // last one tried is a rate whose failures are always paid for by
         // the step behind it, and the account would go on choosing it.
         const speeds: family.TxControl3 = @bitCast(desc.body.tx.control3);
+        const given: family.TxControl2 = @bitCast(desc.body.tx.control2);
         const final = report.status1.final_series;
+
+        // How many goes each step had. The hardware counts the whole
+        // descriptor's retries rather than each step's, and a step the
+        // hardware worked past is one that spent everything it was given,
+        // so what is left over belongs to the step it stopped on. Without
+        // this a step tried four times counts as one attempt, and the
+        // account rates it as though the air it spent were a quarter of
+        // what it was.
+        var spent: u16 = 0;
+        for (0..@as(usize, final)) |step| spent += family.triesOfStep(given, @intCast(step));
+        const total: u16 = @as(u16, report.status0.data_failures) + 1;
+        const left: u16 = if (total > spent) total - spent else 1;
+
         for (0..@as(usize, final) + 1) |step| {
             const carried = family.rateOfStep(speeds, @intCast(step)).rate() orelse continue;
+            const goes: u16 = if (step == final) left else family.triesOfStep(given, @intCast(step));
             dev_mod.deliverTxDone(nic, .{
                 .rate = carried,
+                .tries = @intCast(@min(goes, std.math.maxInt(u8))),
                 .sent = step == final and report.status0.sent,
             });
         }

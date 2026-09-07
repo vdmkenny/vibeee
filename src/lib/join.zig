@@ -575,14 +575,9 @@ pub const Join = struct {
 /// carries something else. What the supplicant reads and the stack never
 /// sees.
 pub fn eapolOf(frame: []const u8) ?[]const u8 {
-    const head = ieee80211.Header.parse(frame) orelse return null;
-    if (head.control.kind != .data) return null;
-    if (!head.control.dataSubtype().hasPayload()) return null;
-
-    const body = frame[head.len..];
-    const ethertype = ieee80211.Snap.ethertypeOf(body) orelse return null;
-    if (ethertype != eth.EtherType.eapol) return null;
-    return body[ieee80211.Snap.BYTES..];
+    const carried = ieee80211.carriedBy(frame) orelse return null;
+    if (carried.ethertype != eth.EtherType.eapol) return null;
+    return carried.payload;
 }
 
 // ---------------------------------------------------------------------------

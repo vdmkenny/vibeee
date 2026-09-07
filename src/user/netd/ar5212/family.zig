@@ -112,6 +112,14 @@ pub fn rateOfStep(word: TxControl3, step: u2) RateCode {
     unreachable;
 }
 
+/// How many goes a given step of the series was given.
+pub fn triesOfStep(word: TxControl2, step: u2) u4 {
+    inline for (0..rates.SERIES) |which| {
+        if (which == step) return @field(word, std.fmt.comptimePrint("tries{d}", .{which}));
+    }
+    unreachable;
+}
+
 /// The first status word a completed transmission leaves behind.
 pub const TxStatus0 = packed struct(u32) {
     sent: bool = false,

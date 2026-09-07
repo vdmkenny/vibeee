@@ -51,6 +51,11 @@ pub fn only(rate: wifi.Legacy, tries: u4) Series {
 /// What became of a frame that went out.
 pub const Outcome = struct {
     rate: wifi.Legacy,
+    /// How many goes the frame had at this rate. A step of the series is
+    /// tried as many times as it was given before the next one is
+    /// reached, and each go is its own measurement of the rate.
+    tries: u8 = 1,
+    /// Whether the last of those goes got through.
     sent: bool,
 };
 
@@ -134,15 +139,27 @@ pub const Choice = struct {
     }
 
     /// Take what became of a frame.
+    ///
+    /// Counted a go at a time, because what the account holds is the
+    /// chance one go at this rate gets through, and what a rate is judged
+    /// on is that chance against the air one go costs. A step tried four
+    /// times and lost is four failures at that rate, not one; taken as
+    /// one, a rate that only ever arrives after three repeats would be
+    /// rated as highly as one that arrives first time, and chosen over it
+    /// for the air it appears not to spend.
     pub fn report(self: *Choice, outcome: Outcome) void {
         const index = indexOf(outcome.rate) orelse return;
         const record = &self.records[index];
+        const goes = @max(outcome.tries, 1);
 
-        record.tried +|= 1;
+        record.tried +|= goes;
         if (outcome.sent) record.won +|= 1;
 
-        const fresh: u32 = if (outcome.sent) FULL else 0;
-        record.chance = @intCast((@as(u32, record.chance) * (SCALE - WEIGHT) + fresh * WEIGHT) / SCALE);
+        for (0..goes) |go| {
+            const arrived = outcome.sent and go + 1 == goes;
+            const fresh: u32 = if (arrived) FULL else 0;
+            record.chance = @intCast((@as(u32, record.chance) * (SCALE - WEIGHT) + fresh * WEIGHT) / SCALE);
+        }
     }
 
     /// What a rate is worth on this link: the chance of arriving, over
@@ -372,6 +389,22 @@ test "now and then a frame is sent to find something out rather than to be quick
     }
     try testing.expect(samples >= 3);
     try testing.expect(samples <= 5);
+}
+
+test "a rate that only arrives after repeats is worth less than one that arrives first time" {
+    var patient = Choice{};
+    var quick = Choice{};
+    patient.offer(wifi.Rates.all(), false);
+    quick.offer(wifi.Rates.all(), false);
+
+    // The same rate, the same frames delivered, and the same number of
+    // them: one link needs four goes each time and the other needs one.
+    for (0..40) |_| {
+        patient.report(.{ .rate = .m11, .tries = 4, .sent = true });
+        quick.report(.{ .rate = .m11, .tries = 1, .sent = true });
+    }
+
+    try std.testing.expect(quick.worth(.m11) > patient.worth(.m11));
 }
 
 test "an outcome for a rate the cell never offered is worth nothing" {

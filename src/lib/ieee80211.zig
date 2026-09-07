@@ -266,6 +266,37 @@ pub const Snap = struct {
     }
 };
 
+/// The one whole payload a data frame carries, with the header that named
+/// it and what it says the payload is.
+pub const Carried = struct {
+    head: Header,
+    ethertype: eth.EtherType,
+    payload: []const u8,
+};
+
+/// What a data frame carries, or null when it carries nothing anybody
+/// here can read as one payload.
+///
+/// One frame in, one payload out. A fragment is a piece of a frame and an
+/// aggregate is several of them, and neither is what follows the header:
+/// reading either as though it were one payload hands the reader
+/// something that was never sent. Nothing in this system puts a frame
+/// back together or takes an aggregate apart, so both are refused rather
+/// than guessed at.
+pub fn carriedBy(frame: []const u8) ?Carried {
+    const head = Header.parse(frame) orelse return null;
+    if (head.control.kind != .data) return null;
+    if (!head.control.dataSubtype().hasPayload()) return null;
+    if (head.control.more_fragments or head.sequence.fragment != 0) return null;
+    if (head.qos) |qos| {
+        if (qos.amsdu) return null;
+    }
+
+    const body = frame[head.len..];
+    const ethertype = Snap.ethertypeOf(body) orelse return null;
+    return .{ .head = head, .ethertype = ethertype, .payload = body[Snap.BYTES..] };
+}
+
 /// An 802.11 data frame turned into the ethernet frame the stack expects:
 /// the fourteen-byte header written into `into`, the payload following it.
 /// Returns the whole ethernet frame's length.
@@ -274,27 +305,12 @@ pub const Snap = struct {
 /// neither length nor field order and the driver's receive slot is not
 /// ours to rewrite.
 pub fn toEthernet(frame: []const u8, into: []u8) ?usize {
-    const head = Header.parse(frame) orelse return null;
-    if (head.control.kind != .data) return null;
-    if (!head.control.dataSubtype().hasPayload()) return null;
-    // One frame in, one frame out. A fragment is a piece of a frame and
-    // an aggregate is several of them, and neither is what follows the
-    // header here: reading either as though it were one payload hands the
-    // stack something that was never sent. Nothing in this system puts a
-    // frame back together, so they are refused rather than guessed at.
-    if (head.control.more_fragments or head.sequence.fragment != 0) return null;
-    if (head.qos) |qos| {
-        if (qos.amsdu) return null;
-    }
-
-    const body = frame[head.len..];
-    const ethertype = Snap.ethertypeOf(body) orelse return null;
-    const payload = body[Snap.BYTES..];
+    const carried = carriedBy(frame) orelse return null;
 
     // The header is the ethernet module's to write: what a frame looks like
     // is that file's subject, and it is the one with the golden-bytes test.
-    const ends = head.endpoints();
-    return eth.write(into, ends.destination, ends.source, ethertype, payload);
+    const ends = carried.head.endpoints();
+    return eth.write(into, ends.destination, ends.source, carried.ethertype, carried.payload);
 }
 
 /// The reverse: an ethernet frame as a data frame addressed to the access
