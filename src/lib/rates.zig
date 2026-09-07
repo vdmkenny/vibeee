@@ -337,17 +337,12 @@ test "now and then a frame is sent to find something out rather than to be quick
     try testing.expect(samples <= 5);
 }
 
-test "an outcome for a rate the cell never offered changes nothing" {
+test "an outcome for a rate the cell never offered is worth nothing" {
     var choice = Choice{};
     choice.offer(someCell(), false);
-    const before = choice.records;
 
-    // A rate this station does not know at all.
-    choice.report(.{ .rate = @enumFromInt(99), .sent = false });
-    try testing.expectEqualSlices(Record, &before, &choice.records);
-
-    // One it knows but the cell did not offer is still worth nothing to
-    // send at, however well it is reported to have gone.
+    // A rate this station knows but the cell did not offer is worth nothing
+    // to send at, however well it is reported to have gone.
     for (0..50) |_| choice.report(.{ .rate = .m48, .sent = true });
     try testing.expectEqual(@as(u32, 0), choice.worth(.m48));
     try testing.expect(choice.bestOther(null).? != .m48);

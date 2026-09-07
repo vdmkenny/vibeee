@@ -602,7 +602,6 @@ pub const RateCode = enum(u5) {
             .m36 => .m36,
             .m48 => .m48,
             .m54 => .m54,
-            _ => .m1,
         };
     }
 

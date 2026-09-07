@@ -117,7 +117,6 @@ pub const Legacy = enum(u8) {
     m36 = 72,
     m48 = 96,
     m54 = 108,
-    _,
 
     pub fn kbps(self: Legacy) u32 {
         return @as(u32, @intFromEnum(self)) * 500;
@@ -132,8 +131,10 @@ pub const Legacy = enum(u8) {
 
     /// The rate a supported-rates element names, with the basic-rate flag
     /// stripped: the high bit says a rate is required, not which it is.
-    pub fn ofElement(byte: u8) Legacy {
-        return @enumFromInt(byte & 0x7F);
+    /// Null for a rate this station does not speak, a zero among them: a
+    /// rate of nothing is not a rate a frame can be timed at.
+    pub fn ofElement(byte: u8) ?Legacy {
+        return std.enums.fromInt(Legacy, byte & 0x7F);
     }
 
     pub fn isBasic(byte: u8) bool {
@@ -517,9 +518,14 @@ test "a legacy rate is its own wire encoding" {
 
     // A basic rate arrives with its high bit set and is the same rate.
     try std.testing.expect(Legacy.isBasic(0x82));
-    try std.testing.expectEqual(Legacy.m1, Legacy.ofElement(0x82));
+    try std.testing.expectEqual(@as(?Legacy, .m1), Legacy.ofElement(0x82));
     try std.testing.expect(!Legacy.isBasic(0x0C));
-    try std.testing.expectEqual(Legacy.m6, Legacy.ofElement(0x0C));
+    try std.testing.expectEqual(@as(?Legacy, .m6), Legacy.ofElement(0x0C));
+    // A rate of nothing, required or not, and a rate this station does not
+    // speak, are not rates.
+    try std.testing.expectEqual(@as(?Legacy, null), Legacy.ofElement(0x00));
+    try std.testing.expectEqual(@as(?Legacy, null), Legacy.ofElement(0x80));
+    try std.testing.expectEqual(@as(?Legacy, null), Legacy.ofElement(44));
 }
 
 test "high throughput rates follow the standard's tables" {

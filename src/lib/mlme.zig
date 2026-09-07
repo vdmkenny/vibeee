@@ -363,7 +363,9 @@ fn ratesOf(elements: []const u8) wifi.Rates {
     var rates = wifi.Rates{};
     inline for (.{ .supported_rates, .extended_rates }) |which| {
         if (ieee80211.element(elements, which)) |listed| {
-            for (listed) |byte| rates.add(wifi.Legacy.ofElement(byte));
+            for (listed) |byte| {
+                if (wifi.Legacy.ofElement(byte)) |rate| rates.add(rate);
+            }
         }
     }
     return rates;
