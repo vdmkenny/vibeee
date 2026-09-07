@@ -70,7 +70,6 @@ pub fn answers(location: [3]u16) bool {
     return @as(u16, @truncate(configRead32(addr, 0x00))) != lib.pci.NO_DEVICE;
 }
 
-pub const CLASS_OFFSET: u8 = 0x08;
 pub const HEADER_TYPE_OFFSET = lib.pci.HEADER_TYPE_OFFSET;
 pub const BAR0_OFFSET = lib.pci.BAR0_OFFSET;
 pub const INTERRUPT_LINE_OFFSET = lib.pci.INTERRUPT_LINE_OFFSET;
@@ -132,28 +131,12 @@ pub fn quietBridgeAspm() void {
             const id = configRead32(a, 0x00);
             if (@as(u16, @truncate(id)) == lib.pci.NO_DEVICE) continue;
 
-            const class = configRead32(a, CLASS_OFFSET);
-            const is_bridge = @as(u8, @truncate(class >> 24)) == 0x06 and
-                @as(u8, @truncate(class >> 16)) == 0x04;
+            const code: lib.pci.ClassCode = @bitCast(configRead32(a, lib.pci.ClassCode.OFFSET));
+            const is_bridge = code.class == .bridge and
+                code.subclass == lib.pci.Subclass.pci_bridge;
             if (!is_bridge) continue;
 
-            // Walk the capability list for PCI Express (id 0x10); Link
-            // Control sits sixteen bytes in, its low two bits are ASPM.
-            var at: u8 = @truncate(configRead32(a, 0x34) & 0xFF);
-            while (at != 0) {
-                const cap = configRead32(a, at);
-                if (@as(u8, @truncate(cap)) == 0x10) {
-                    const link = configRead32(a, at + 0x10);
-                    if (link & 0x3 != 0) {
-                        configWrite32(a, at + 0x10, link & ~@as(u32, 0x3));
-                        console.debug("pci", "{x:0>2}:{x:0>2}.{d} root port aspm cleared", .{
-                            a.bus, a.slot, a.func,
-                        });
-                    }
-                    break;
-                }
-                at = @truncate(cap >> 8);
-            }
+            clearAspm(a);
 
             if (func == 0) {
                 const header_type = configRead8(a, HEADER_TYPE_OFFSET);
@@ -163,44 +146,61 @@ pub fn quietBridgeAspm() void {
     }
 }
 
+/// Take a root port out of the link power states, which on this chipset
+/// hang the bridge under load.
+///
+/// The capability chain is walked by the library, which owns the layout
+/// and the bound: a chain that points at itself is silicon nobody should
+/// spin on, and this runs at boot across every function of the bus.
+fn clearAspm(a: Address) void {
+    const at = lib.pci.capabilityAt(a, configRead32, .pcie) orelse return;
+    const reg = lib.pci.fieldAt(at, lib.pci.PcieLinkControl.OFFSET) orelse return;
+
+    var link: lib.pci.PcieLinkControl = @bitCast(configRead32(a, reg));
+    if (link.aspm == 0) return;
+
+    link.aspm = 0;
+    configWrite32(a, reg, @bitCast(link));
+    console.debug("pci", "{x:0>2}:{x:0>2}.{d} root port aspm cleared", .{
+        a.bus, a.slot, a.func,
+    });
+}
+
 /// Human-readable class name, for the probe table. Covers the classes that
 /// appear on this machine plus the common ones; anything else prints its
 /// numeric class so an unfamiliar device is still identifiable.
-pub fn describe(class: u8, subclass: u8) []const u8 {
-    return switch (class) {
-        0x00 => "legacy device",
-        0x01 => switch (subclass) {
+pub fn describe(code: lib.pci.ClassCode) []const u8 {
+    const Subclass = lib.pci.Subclass;
+    return switch (code.class) {
+        .storage => switch (code.subclass) {
             0x01 => "IDE controller",
             0x06 => "SATA controller",
             0x08 => "NVMe controller",
             else => "mass storage controller",
         },
-        0x02 => switch (subclass) {
-            0x00 => "ethernet controller",
-            0x80 => "network controller",
-            else => "network controller",
-        },
-        0x03 => "display controller",
-        0x04 => switch (subclass) {
+        .network => "network controller",
+        .display => "display controller",
+        .multimedia => switch (code.subclass) {
             0x03 => "audio device (HDA)",
             else => "multimedia controller",
         },
-        0x05 => "memory controller",
-        0x06 => switch (subclass) {
+        .memory => "memory controller",
+        .bridge => switch (code.subclass) {
             0x00 => "host bridge",
-            0x01 => "ISA/LPC bridge",
-            0x04 => "PCI-to-PCI bridge",
+            Subclass.isa_bridge => "ISA/LPC bridge",
+            Subclass.pci_bridge => "PCI-to-PCI bridge",
             else => "bridge",
         },
-        0x07 => "communication controller",
-        0x08 => "system peripheral",
-        0x09 => "input device",
-        0x0C => switch (subclass) {
-            0x03 => "USB controller",
+        .communication => "communication controller",
+        .peripheral => "system peripheral",
+        .input => "input device",
+        .serial_bus => switch (code.subclass) {
+            Subclass.usb => "USB controller",
             0x05 => "SMBus controller",
             else => "serial bus controller",
         },
-        0x0D => "wireless controller",
+        .wireless => "wireless controller",
+        _ => if (@intFromEnum(code.class) == 0) "legacy device" else "unknown device",
         else => "unknown device",
     };
 }

@@ -139,21 +139,8 @@ pub fn bar(loc: Location, index: u8) u32 {
 /// silicon nobody should spin on, and configuration space has room for no
 /// more entries than this.
 pub fn capabilityAt(loc: Location, id: lib.pci.CapabilityId) ?u8 {
-    const head: CapabilityPointer = @bitCast(read(loc, CAPABILITIES_OFFSET));
-
-    var at = head.pointer;
-    var hops: u8 = 0;
-    while (at != 0 and hops < MAX_CAPABILITIES) : (hops += 1) {
-        const capability: Capability = @bitCast(read(loc, at));
-        if (capability.id == id) return at;
-        at = capability.next;
-    }
-    return null;
+    return lib.pci.capabilityAt(loc, read, id);
 }
-
-/// Configuration space is 256 bytes and a capability takes four, so a list
-/// longer than this is a list that loops.
-const MAX_CAPABILITIES = 64;
 
 /// Make the device deliver its interrupts on its pin, and say whether it
 /// had to be told to.

@@ -30,6 +30,7 @@ const mouse = @import("drv/input/ps2mouse.zig");
 const uart = @import("drv/serial/uart16550.zig");
 const block = @import("kernel/block.zig");
 const pci = @import("drv/bus/pci.zig");
+const libpci = @import("lib").pci;
 const sched = @import("kernel/sched.zig");
 const usermode = @import("arch/x86/usermode.zig");
 const exec = @import("kernel/exec.zig");
@@ -453,7 +454,8 @@ fn lpcPmBase() ?u16 {
     const lpc = pci.Address{ .bus = 0, .slot = 31, .func = 0 };
     const id = pci.configRead32(lpc, 0);
     if (id & 0xFFFF != 0x8086) return null;
-    if (pci.configRead32(lpc, pci.CLASS_OFFSET) >> 16 != 0x0601) return null;
+    const code: libpci.ClassCode = @bitCast(pci.configRead32(lpc, libpci.ClassCode.OFFSET));
+    if (code.class != .bridge or code.subclass != libpci.Subclass.isa_bridge) return null;
 
     const pmbase: u16 = @truncate(pci.configRead32(lpc, 0x40) & 0xFF80);
     return if (pmbase == 0) null else pmbase;
@@ -509,9 +511,7 @@ fn handedOver(addr: pci.Address) bool {
 fn enumeratePci() void {
     pci.enumerate(struct {
         fn found(addr: pci.Address, vendor: u16, device: u16) void {
-            const class_reg = pci.configRead32(addr, pci.CLASS_OFFSET);
-            const class: u8 = @truncate(class_reg >> 24);
-            const subclass: u8 = @truncate(class_reg >> 16);
+            const code: libpci.ClassCode = @bitCast(pci.configRead32(addr, libpci.ClassCode.OFFSET));
 
             // The firmware runs USB keyboard emulation from system
             // management mode, polled on a periodic trap that shares its
@@ -520,8 +520,8 @@ fn enumeratePci() void {
             // stops. Handed over once, when the controller is first met;
             // this machine's own keyboard is not USB, so nothing is lost
             // but the trap.
-            if (class == 0x0C and subclass == 0x03 and !handedOver(addr)) {
-                handOverUsb(addr, @truncate((class_reg >> 8) & 0xFF));
+            if (code.class == .serial_bus and code.subclass == libpci.Subclass.usb and !handedOver(addr)) {
+                handOverUsb(addr, code.interface);
                 handed_over.append(addr) catch console.warn(
                     "usb: more controllers than are remembered; {x:0>2}:{x:0>2}.{d} is handed over on every walk",
                     .{ addr.bus, addr.slot, addr.func },
@@ -533,10 +533,10 @@ fn enumeratePci() void {
                 .location = .{ addr.bus, addr.slot, addr.func },
                 .vendor = vendor,
                 .device = device,
-                .class = class,
-                .subclass = subclass,
-                .prog_if = @truncate(class_reg >> 8),
-                .description = pci.describe(class, subclass),
+                .class = @intFromEnum(code.class),
+                .subclass = code.subclass,
+                .prog_if = code.interface,
+                .description = pci.describe(code),
                 .quiesce = pci.quiesce,
             });
         }

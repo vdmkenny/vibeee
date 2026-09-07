@@ -179,6 +179,94 @@ pub const CapabilityId = enum(u8) {
     _,
 };
 
+/// What a device is, as configuration register 0x08 lays it out.
+///
+/// Named rather than shifted: the same dword was taken apart three
+/// different ways, and "a PCI-to-PCI bridge" was spelled once as two byte
+/// comparisons and once as a single magic halfword.
+pub const ClassCode = packed struct(u32) {
+    revision: u8,
+    /// Which of a subclass's programming interfaces this one presents: how
+    /// a USB controller says whether it is UHCI, EHCI or something else.
+    interface: u8,
+    subclass: u8,
+    class: Class,
+
+    /// Where it sits in configuration space.
+    pub const OFFSET: u8 = 0x08;
+};
+
+/// The top byte of the class code, for the classes this system knows by
+/// name. Anything else is still a number a person can look up.
+pub const Class = enum(u8) {
+    storage = 0x01,
+    network = 0x02,
+    display = 0x03,
+    multimedia = 0x04,
+    memory = 0x05,
+    bridge = 0x06,
+    communication = 0x07,
+    peripheral = 0x08,
+    input = 0x09,
+    dock = 0x0A,
+    processor = 0x0B,
+    serial_bus = 0x0C,
+    wireless = 0x0D,
+    _,
+};
+
+/// The subclasses named where something in this system acts on one.
+pub const Subclass = struct {
+    pub const pci_bridge: u8 = 0x04;
+    pub const isa_bridge: u8 = 0x01;
+    pub const usb: u8 = 0x03;
+};
+
+/// How much configuration space a device has, in bytes.
+pub const SPACE_BYTES: u16 = 256;
+
+/// The space is that many bytes and a capability takes four, so a list
+/// longer than this is a list that points back into itself.
+pub const MAX_CAPABILITIES = SPACE_BYTES / 4;
+
+/// Where the capability of `id` sits, or null when the device has none.
+///
+/// The list is a chain the device itself lays out, so it is walked under a
+/// bound: a chain that points at itself is silicon nobody should spin on,
+/// and the kernel does this at boot across every function of the bus with
+/// only its own panel to say what happened.
+///
+/// `read` is how this configuration space is reached, which differs
+/// between the kernel and a driver: both walk the same chain.
+pub fn capabilityAt(
+    context: anytype,
+    comptime read: fn (@TypeOf(context), u8) u32,
+    id: CapabilityId,
+) ?u8 {
+    const head: CapabilityPointer = @bitCast(read(context, CAPABILITIES_OFFSET));
+
+    var at = head.pointer;
+    var hops: usize = 0;
+    while (at != 0 and hops < MAX_CAPABILITIES) : (hops += 1) {
+        const capability: Capability = @bitCast(read(context, at));
+        if (capability.id == id) return at;
+        at = capability.next;
+    }
+    return null;
+}
+
+/// The register a capability's own field sits in, or null when the
+/// capability sits too near the end of the space to hold it.
+///
+/// Added wider than a register offset, because both are bytes: a
+/// capability near the top of the space plus its field's offset wraps, and
+/// the read then lands somewhere near the start of the device's own
+/// registers.
+pub fn fieldAt(capability: u8, offset: u8) ?u8 {
+    const at = @as(u16, capability) + offset;
+    return if (at + 4 <= SPACE_BYTES) @intCast(at) else null;
+}
+
 /// The message-signalled interrupt capability's control half.
 ///
 /// Only the enable matters to a driver that waits on a pin: a device with
@@ -393,6 +481,52 @@ pub const Signature = struct {
             fields.isOrAbsent(self.interface);
     }
 };
+
+test "a class code names its parts where a dword had them shifted" {
+    const bridge: ClassCode = @bitCast(@as(u32, 0x0604_00_01));
+    try testing.expectEqual(Class.bridge, bridge.class);
+    try testing.expectEqual(@as(u8, Subclass.pci_bridge), bridge.subclass);
+    try testing.expectEqual(@as(u8, 0), bridge.interface);
+    try testing.expectEqual(@as(u8, 1), bridge.revision);
+
+    const ehci: ClassCode = @bitCast(@as(u32, 0x0C03_20_00));
+    try testing.expectEqual(Class.serial_bus, ehci.class);
+    try testing.expectEqual(@as(u8, Subclass.usb), ehci.subclass);
+    try testing.expectEqual(@as(u8, 0x20), ehci.interface);
+}
+
+test "a capability chain is walked under a bound, and a field near the top does not wrap" {
+    // A device whose chain points back at itself: the walk ends rather than
+    // spinning on it.
+    const Loop = struct {
+        fn read(_: void, offset: u8) u32 {
+            if (offset == CAPABILITIES_OFFSET) return 0x40;
+            return @as(u32, 0x40) << 8 | 0x05; // id 5, next 0x40: itself
+        }
+    };
+    try testing.expectEqual(@as(?u8, 0x40), capabilityAt({}, Loop.read, .msi));
+    try testing.expectEqual(@as(?u8, null), capabilityAt({}, Loop.read, .pcie));
+
+    // A chain of two, the second of which is the one wanted.
+    const Pair = struct {
+        fn read(_: void, offset: u8) u32 {
+            return switch (offset) {
+                CAPABILITIES_OFFSET => 0x40,
+                0x40 => @as(u32, 0x60) << 8 | 0x01,
+                0x60 => @as(u32, 0) << 8 | 0x10,
+                else => 0,
+            };
+        }
+    };
+    try testing.expectEqual(@as(?u8, 0x60), capabilityAt({}, Pair.read, .pcie));
+
+    // A field is where it says, until the capability sits too near the end
+    // to hold one.
+    try testing.expectEqual(@as(?u8, 0x50), fieldAt(0x40, 0x10));
+    try testing.expectEqual(@as(?u8, 0xFC), fieldAt(0xFC, 0x00));
+    try testing.expectEqual(@as(?u8, null), fieldAt(0xF8, 0x10));
+    try testing.expectEqual(@as(?u8, null), fieldAt(0xFF, 0x04));
+}
 
 test "a manifest names a pci part exactly, or a family" {
     const ehci = Signature{ .vendor = 0x8086, .device = 0x265C, .class = 0x0C, .subclass = 0x03, .interface = 0x20 };
