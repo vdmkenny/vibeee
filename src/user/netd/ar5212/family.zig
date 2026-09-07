@@ -175,12 +175,6 @@ pub const Sent = struct {
     status0: TxStatus0,
     status1: TxStatus1,
 
-    /// Whether the hardware is finished with the descriptor. Until it is,
-    /// the rest of the words mean nothing.
-    pub fn done(self: Sent) bool {
-        return self.status1.done;
-    }
-
     /// Why the frame did not go, or null if it did.
     pub fn failure(self: Sent) ?Failure {
         if (self.status0.sent) return null;
@@ -224,13 +218,6 @@ pub const RxStatus0 = packed struct(u32) {
     antenna: u4 = 0,
 };
 
-/// Whether the hardware has finished with a receive descriptor, and what
-/// it thought of the frame.
-///
-/// `done` is the ownership bit in both directions: the driver clears it
-/// before handing a descriptor over and the hardware sets it when it is
-/// finished, so a descriptor with it clear belongs to the radio and must
-/// not be touched.
 /// Why the baseband gave up on a frame.
 ///
 /// The two families are the two modulations: a radio failing every OFDM
@@ -290,6 +277,13 @@ pub fn modulationOf(why: PhyError) Modulation {
     };
 }
 
+/// Whether the hardware has finished with a receive descriptor, and what
+/// it thought of the frame.
+///
+/// `done` is the ownership bit in both directions: the driver clears it
+/// before handing a descriptor over and the hardware sets it when it is
+/// finished, so a descriptor with it clear belongs to the radio and must
+/// not be touched.
 pub const RxStatus1 = packed struct(u32) {
     done: bool = false,
     received: bool = false,
@@ -303,10 +297,6 @@ pub const RxStatus1 = packed struct(u32) {
     timestamp: u15 = 0,
     key_cache_miss: bool = false,
 
-    /// Whether the frame is worth passing up. Anything the hardware
-    /// flagged is dropped: a radio hears a great deal that is not for it
-    /// and not intact, and the count of those belongs in statistics
-    /// rather than in the stack.
     /// Why the baseband gave up, or null for a frame it did not.
     ///
     /// The code sits where the key index goes, because the two never both
@@ -318,6 +308,10 @@ pub const RxStatus1 = packed struct(u32) {
         return @enumFromInt(low | (@as(u8, self.key_index) << 1));
     }
 
+    /// Whether the frame is worth passing up. Anything the hardware
+    /// flagged is dropped: a radio hears a great deal that is not for it
+    /// and not intact, and the count of those belongs in statistics
+    /// rather than in the stack.
     pub fn intact(self: RxStatus1) bool {
         return self.received and !self.check_sequence_error and
             !self.decrypt_check_error and !self.physical_error and
@@ -370,12 +364,20 @@ pub const Desc = extern struct {
     /// Hand a receive descriptor to the radio: the buffer's length, an
     /// interrupt when it fills, no status, and the ownership bit clear.
     ///
+    /// It names no successor. A descriptor handed over is the last one the
+    /// radio has been given, and the run it walks ends there until the
+    /// caller extends it by pointing the descriptor before it here. A run
+    /// joined into a circle would let a radio that has got ahead wrap into
+    /// descriptors whose frames nobody has read yet, and a finished
+    /// descriptor is no barrier to that: nothing in the hardware asks
+    /// whether anybody has read one.
+    ///
     /// Volatile, because a descriptor is shared with something that reads
     /// and writes it without being asked. A plain pointer coerces, so a
     /// caller holding ordinary memory needs no cast and gets the ordering
     /// it would want anyway.
-    pub fn armReceive(self: *volatile Desc, buffer_physical: u32, next_physical: u32, buffer_bytes: u12) void {
-        self.link = next_physical;
+    pub fn armReceive(self: *volatile Desc, buffer_physical: u32, buffer_bytes: u12) void {
+        self.link = 0;
         self.buffer = buffer_physical;
         self.body = .{ .rx = .{
             .control1 = @bitCast(RxControl1{ .buffer_length = buffer_bytes, .interrupt_request = true }),
@@ -419,7 +421,21 @@ pub const Desc = extern struct {
         } };
     }
 
-    /// What a transmission reports, both status words.
+    /// Whether the hardware has finished with this descriptor.
+    ///
+    /// The one question asked first, on its own, and answered from the
+    /// word that carries the ownership bit and nothing else. The hardware
+    /// can finish a descriptor between two reads of it, so a status word
+    /// read before this bit is one that belonged to the descriptor's last
+    /// use, and it stays wrong however carefully the rest is read
+    /// afterwards. The ordering barrier goes between this and `sent`.
+    pub fn sendFinished(self: *const volatile Desc) bool {
+        const status1: TxStatus1 = @bitCast(self.body.tx.status1);
+        return status1.done;
+    }
+
+    /// What a finished transmission reports. Asked after `sendFinished`
+    /// has said so and the barrier after it has run.
     pub fn sent(self: *const volatile Desc) Sent {
         return .{
             .status0 = @bitCast(self.body.tx.status0),
@@ -427,7 +443,13 @@ pub const Desc = extern struct {
         };
     }
 
-    /// What a reception reports, both status words.
+    /// The same question for a reception, and for the same reason.
+    pub fn receiveFinished(self: *const volatile Desc) bool {
+        const status1: RxStatus1 = @bitCast(self.body.rx.status1);
+        return status1.done;
+    }
+
+    /// What a finished reception reports.
     pub fn received(self: *const volatile Desc) struct { status0: RxStatus0, status1: RxStatus1 } {
         return .{
             .status0 = @bitCast(self.body.rx.status0),
@@ -534,6 +556,11 @@ pub fn Chain(comptime slots: usize) type {
         /// The slot after this one, wrapping at the end.
         pub fn next(index: usize) usize {
             return (index + 1) & mask;
+        }
+
+        /// The slot before this one, wrapping at the start.
+        pub fn previous(index: usize) usize {
+            return (index -% 1) & mask;
         }
 
         /// The physical address of one descriptor in a run of them laid
@@ -1070,6 +1097,69 @@ comptime {
     }
 }
 
+/// How many channels a band's list may hold. The 2.4 GHz bands measure
+/// fewer than the 5 GHz one, and the list is as long as the band allows
+/// whether or not it is filled.
+fn channelRoom(mode: StoreMode) usize {
+    return if (mode == .a) CalCurves.MAX_CHANNELS else 4;
+}
+
+/// How many gain settings a band's mask says were measured.
+fn gainsMeasured(store: *const Store, mode: StoreMode) usize {
+    var slots: [CalChannel.MAX_GAINS]u8 = @splat(0);
+    return gainSlots(store.sections[@intFromEnum(mode)].xgain, &slots);
+}
+
+/// The channels a dataset lists, ending at the first unwritten entry.
+/// Their frequencies go into `into` where one is given.
+fn readChannelList(source: anytype, at: u16, mode: StoreMode, into: ?*CalCurves) StoreError!usize {
+    const room = channelRoom(mode);
+    var word_at = at;
+    var listed: usize = 0;
+    walk: while (listed < room) {
+        const word = try readWord(source, word_at);
+        word_at += 1;
+        for ([_]u4{ 0, 8 }) |shift| {
+            const fbin: u8 = @truncate(word >> shift);
+            if (fbin == 0 or listed >= room) break :walk;
+            if (into) |curves| {
+                curves.megahertz[listed] = if (mode == .a) 4800 + @as(u16, fbin) * 5 else 2300 + @as(u16, fbin);
+            }
+            listed += 1;
+        }
+    }
+    return listed;
+}
+
+/// Where a band's dataset begins.
+///
+/// The store lays the datasets it holds end to end from one offset, in
+/// band order, and a band the board does not do is not there at all. A
+/// reader that starts at that offset whatever band it was asked for reads
+/// the first dataset every time: on a board that does 11b and 11g, asking
+/// for the g curves hands back the b ones, unpacked with g's gain mask,
+/// which is a different geometry as well as different numbers, and the
+/// amplifier is then programmed from a table drawn out of neither.
+fn datasetStart(source: anytype, store: *const Store, mode: StoreMode) StoreError!?u16 {
+    var at: u16 = store.power_cal_start;
+    for ([_]StoreMode{ .a, .b, .g }) |each| {
+        if (each == mode) return at;
+        const present = switch (each) {
+            .a => store.a_mode,
+            .b => store.b_mode,
+            .g => store.g_mode,
+        };
+        if (!present) continue;
+
+        const gains = gainsMeasured(store, each);
+        if (gains == 0) return null;
+        const listed = try readChannelList(source, at, each, null);
+        at += @intCast(channelRoom(each) / 2);
+        at += @intCast(listed * CURVE_WORDS[gains - 1]);
+    }
+    return null;
+}
+
 /// The curves the store measured for a band, or none where it holds none.
 ///
 /// A channel's curves are a run of words per measured channel, after a
@@ -1086,28 +1176,16 @@ pub fn readCurves(source: anytype, store: *const Store, mode: StoreMode) StoreEr
     const used = gainSlots(mask, &slots);
     if (used == 0) return null;
 
-    // The 2.4 GHz bands measure fewer channels than the 5 GHz one, and the
-    // list is as long as the band allows whether or not it is filled.
-    const room: usize = if (mode == .a) CalCurves.MAX_CHANNELS else 4;
+    const start = try datasetStart(source, store, mode) orelse return null;
+    const room = channelRoom(mode);
 
     var curves = CalCurves{};
-    var at: u16 = store.power_cal_start;
-    var listed: usize = 0;
-    walk: while (listed < room) {
-        const word = try readWord(source, at);
-        at += 1;
-        for ([_]u4{ 0, 8 }) |shift| {
-            const fbin: u8 = @truncate(word >> shift);
-            if (fbin == 0 or listed >= room) break :walk;
-            curves.megahertz[listed] = if (mode == .a) 4800 + @as(u16, fbin) * 5 else 2300 + @as(u16, fbin);
-            listed += 1;
-        }
-    }
+    const listed = try readChannelList(source, start, mode, &curves);
     if (listed == 0) return null;
     curves.channels = @intCast(listed);
 
     // The curves follow the whole of the channel list, filled or not.
-    var word_at: u16 = store.power_cal_start + @as(u16, @intCast(room / 2));
+    var word_at: u16 = start + @as(u16, @intCast(room / 2));
     const span = CURVE_WORDS[used - 1];
 
     for (0..listed) |channel| {
@@ -1820,19 +1898,21 @@ test "a run that would cross the address limit is refused" {
     try testing.expect(Eight.addressable(0xFFFF_FF00));
 }
 
-test "an armed receive descriptor belongs to the radio, names its buffer, and claims nothing" {
+test "an armed receive descriptor belongs to the radio, names its buffer, and ends the run" {
     var desc: Desc = .{};
-    desc.armReceive(0x0030_0000, 0x0020_0020, 2048);
+    desc.link = 0x0020_0020;
+    desc.armReceive(0x0030_0000, 2048);
 
-    try testing.expectEqual(@as(u32, 0x0020_0020), desc.link);
+    // The run the radio walks ends here until the caller extends it, so a
+    // radio that has got ahead cannot wrap into a buffer nobody has read.
+    try testing.expectEqual(@as(u32, 0), desc.link);
     try testing.expectEqual(@as(u32, 0x0030_0000), desc.buffer);
     const control: RxControl1 = @bitCast(desc.body.rx.control1);
     try testing.expectEqual(@as(u12, 2048), control.buffer_length);
     try testing.expect(control.interrupt_request);
 
-    const report = desc.received();
-    try testing.expect(!report.status1.done);
-    try testing.expectEqual(@as(u12, 0), report.status0.data_length);
+    try testing.expect(!desc.receiveFinished());
+    try testing.expectEqual(@as(u12, 0), desc.received().status0.data_length);
 }
 
 test "an armed transmit descriptor states the frame with its check bytes and the buffer without them" {
@@ -1855,7 +1935,7 @@ test "an armed transmit descriptor states the frame with its check bytes and the
 
     // Arming clears what the last frame left, so its outcome cannot be
     // read as this one's.
-    try testing.expect(!desc.sent().done());
+    try testing.expect(!desc.sendFinished());
 }
 
 test "a transmit descriptor names its key only when it has one, and asks for no answer to a group frame" {
@@ -1925,17 +2005,13 @@ test "a finished transmission tells a sent frame from each way of failing" {
     };
     for (cases) |case| {
         const report = Sent{ .status0 = case.status0, .status1 = .{ .done = true } };
-        try testing.expect(report.done());
         try testing.expectEqual(case.want, report.failure());
     }
-
-    // Nothing is known until the hardware says it is finished.
-    try testing.expect(!(Sent{ .status0 = .{}, .status1 = .{} }).done());
 }
 
 test "a completed reception reports its length, rate and signal, and whether it is worth keeping" {
     var desc: Desc = .{};
-    desc.armReceive(0x0030_0000, 0x0020_0020, 2048);
+    desc.armReceive(0x0030_0000, 2048);
     desc.body.rx.status0 = @bitCast(RxStatus0{ .data_length = 1500, .rate = .m54, .signal = 40 });
     desc.body.rx.status1 = @bitCast(RxStatus1{ .done = true, .received = true });
 
@@ -2205,12 +2281,6 @@ test "a channel's measured curves are read back off the bit stream that holds th
     const PIERS = 4;
     var image: [64]u16 = @splat(0);
 
-    // The channels measured, a byte each, in a list as long as the band
-    // allows however few are filled.
-    image[START] = 12 | (62 << 8);
-
-    // Their curves, least significant bit first, each channel starting on
-    // a word boundary.
     const Packer = struct {
         image: *[64]u16,
         base: usize,
@@ -2226,18 +2296,37 @@ test "a channel's measured curves are read back off the bit stream that holds th
         }
     };
 
-    const span = CURVE_WORDS[used - 1];
-    for (0..2) |channel| {
-        var packer = Packer{ .image = &image, .base = START + PIERS / 2 + channel * span };
-        for (0..used) |which| {
-            packer.put(CURVE_POWER_BITS, @intCast(3 + channel));
-            packer.put(CURVE_DETECTOR_BITS, @intCast(20 + channel));
-            for (1..curvePoints(which, used)) |_| {
-                packer.put(CURVE_POWER_STEP_BITS, 2);
-                packer.put(CURVE_DETECTOR_STEP_BITS, 7);
+    // A dataset: the channels measured, a byte each, in a list as long as
+    // the band allows however few are filled, and then their curves,
+    // least significant bit first, each channel starting on a word
+    // boundary. `from` is what the first power and detector reading of
+    // every gain start at, so one dataset can be told from another.
+    const Dataset = struct {
+        fn write(into: *[64]u16, at: u16, gains: usize, channels: [2]u8, from: u16) u16 {
+            into[at] = channels[0] | (@as(u16, channels[1]) << 8);
+            const words = CURVE_WORDS[gains - 1];
+            for (0..channels.len) |channel| {
+                var packer = Packer{ .image = into, .base = at + PIERS / 2 + channel * words };
+                for (0..gains) |which| {
+                    packer.put(CURVE_POWER_BITS, @intCast(from + channel));
+                    packer.put(CURVE_DETECTOR_BITS, @intCast(from + 17 + channel));
+                    for (1..curvePoints(which, gains)) |_| {
+                        packer.put(CURVE_POWER_STEP_BITS, 2);
+                        packer.put(CURVE_DETECTOR_STEP_BITS, 7);
+                    }
+                }
             }
+            return at + PIERS / 2 + @as(u16, @intCast(channels.len * words));
         }
-    }
+    };
+
+    // A board that does 11b and 11g writes both datasets end to end. The
+    // one wanted is the second, and a reader that starts where the first
+    // one does reads the wrong numbers with the wrong geometry.
+    const b_mask: u4 = 0b1000;
+    var b_slots: [CalChannel.MAX_GAINS]u8 = @splat(0);
+    const g_at = Dataset.write(&image, START, gainSlots(b_mask, &b_slots), .{ 1, 40 }, 9);
+    _ = Dataset.write(&image, g_at, used, .{ 12, 62 }, 3);
 
     const Image = struct {
         words: []const u16,
@@ -2262,6 +2351,7 @@ test "a channel's measured curves are read back off the bit stream that holds th
         .mac = @splat(0),
     };
     store.power_cal_start = START;
+    store.sections[@intFromEnum(StoreMode.b)].xgain = b_mask;
     store.sections[@intFromEnum(StoreMode.g)].xgain = mask;
 
     const curves = (try readCurves(Image{ .words = &image }, &store, .g)).?;
@@ -2288,7 +2378,7 @@ test "a channel's measured curves are read back off the bit stream that holds th
         // detector readings step by exactly what is written.
         for ([_]*const PdGain{ high, low }) |gain| {
             try testing.expectEqual(@as(i16, (3 + bump) * 4), gain.quarter_dbm[0]);
-            try testing.expectEqual(@as(u16, @intCast(20 + bump)), gain.vpd[0]);
+            try testing.expectEqual(@as(u16, @intCast(3 + 17 + bump)), gain.vpd[0]);
             for (1..gain.points) |step| {
                 try testing.expectEqual(gain.quarter_dbm[step - 1] + 4, gain.quarter_dbm[step]);
                 try testing.expectEqual(gain.vpd[step - 1] + 7, gain.vpd[step]);

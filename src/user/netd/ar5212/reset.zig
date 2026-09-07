@@ -272,6 +272,11 @@ pub fn chipReset(chip: *Chip, megahertz: ?u16) bool {
     const pll: regs_mod.PhyPll = .mhz44_5112;
     const current: regs_mod.PhyPll = @enumFromInt(regs.read(.phy_pll_control));
 
+    // The reference gives two orders and this is the second of them: the
+    // clock, then turbo, then the mode. The first, mode before clock, is
+    // for a channel that is CCK alone, where turbo has to be cleared
+    // before the clock may be moved. Every 2.4 GHz channel on this radio
+    // is dynamic, which is not that case.
     if (current != pll) {
         regs.write(.phy_pll_control, @intFromEnum(pll));
         pace.delay(PLL_SETTLE_MICROS);
@@ -313,6 +318,39 @@ fn setDeltaSlope(regs: Regs, megahertz: u16) void {
 pub fn descriptorPower(chip: *const Chip) u6 {
     const wanted = @as(i32, chip.self_power) + chip.power_offset;
     return @intCast(std.math.clamp(wanted, 0, MAX_RATE_POWER));
+}
+
+/// Put the power a person asked for where the hardware reads it.
+///
+/// Three places read a power and they must agree. A frame the service
+/// sends carries its own in the descriptor, but only if the descriptor's
+/// word is switched on, which the initialisation tables leave off. The
+/// frames the protocol unit sends itself, the acknowledgements and the
+/// clear-to-sends, take theirs from their own register. Everything else
+/// is bounded by the per-rate registers, which those tables leave at
+/// fixed figures of their own. So the ceiling reached none of them, and
+/// what a person set was a number the radio never saw.
+///
+/// Every rate is given the ceiling, moved to where the amplifier's table
+/// is indexed from, and the descriptor's word is switched on: a frame may
+/// then go out below the ceiling but never above it.
+pub fn applyPower(chip: *const Chip) void {
+    const regs = chip.regs;
+    const power = descriptorPower(chip);
+    const every: u32 = @as(u32, power) * 0x0101_0101;
+    regs.write(.phy_power_tx_rate1, every);
+    regs.write(.phy_power_tx_rate2, every);
+    regs.write(.phy_power_tx_rate3, every);
+    regs.write(.phy_power_tx_rate4, every);
+    regs.put(.phy_power_tx_rate_max, regs_mod.RateMaxPower{
+        .power = MAX_RATE_POWER,
+        .from_descriptor = true,
+    });
+    regs.put(.self_power, regs_mod.SelfPower{
+        .ack = power,
+        .cts = power,
+        .chirp = power,
+    });
 }
 
 /// Program the amplifier's table for this channel: what reading the
@@ -690,8 +728,13 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
 
     rf2425.setRfRegs(regs, &chip.banks, mode, chip.part, chip.store.bias_g);
     setDeltaSlope(regs, megahertz);
-    if (kind == .power_on) chip.immunity.begin(regs) else chip.immunity.restore(regs);
     setBoardValues(chip, megahertz);
+    // After the board's own values, not before them: both have an opinion
+    // about how much power a single tone may carry before the baseband
+    // disbelieves it, and what was learned in this room is the later
+    // word. Applied first, it is written over while the software goes on
+    // believing the radio is where it put it.
+    if (kind == .power_on) chip.immunity.begin(regs) else chip.immunity.restore(regs);
     setAmplifier(chip, megahertz);
 
     if (kind == .channel_change) regs.write(.sequence_number, saved_sequence);
@@ -739,10 +782,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     regs.put(.phy_agc_control, agc);
 
     if (chip.iq != .done) {
-        var timing4 = regs.get(.phy_timing_control4, regs_mod.PhyTimingControl4);
-        timing4.iq_calibration_log_count = IQ_CAL_LOG_COUNT_MAX;
-        timing4.do_iq_calibration = true;
-        regs.put(.phy_timing_control4, timing4);
+        startIq(regs);
         chip.iq = .running;
     } else {
         chip.iq = .inactive;
@@ -797,11 +837,9 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     regs.write(.qos_select, QOS_SELECT_VALUE);
     regs.put(.no_ack, regs_mod.NoAck{ .two_bit_value = 2, .bit_offset = 5, .byte_offset = 0 });
 
-    regs.put(.self_power, regs_mod.SelfPower{
-        .ack = chip.self_power,
-        .cts = chip.self_power,
-        .chirp = chip.self_power,
-    });
+    // Last, because the amplifier's table has been written by now and
+    // the offset a power is counted from is known.
+    applyPower(chip);
 }
 
 // ---------------------------------------------------------------------------
@@ -880,18 +918,33 @@ pub fn calibrate(chip: *Chip, long: bool) void {
             chip.iq = .done;
             chip.iq_measured = correction;
         }
-    } else if (chip.iq == .done and chip.iq_measured == null) {
-        var timing4 = regs.get(.phy_timing_control4, regs_mod.PhyTimingControl4);
-        timing4.iq_calibration_log_count = IQ_CAL_LOG_COUNT_MAX;
-        timing4.do_iq_calibration = true;
-        regs.put(.phy_timing_control4, timing4);
+    } else if (chip.iq == .inactive and chip.iq_measured == null) {
+        // Nothing measured on this channel: either a run gave numbers the
+        // arithmetic could make nothing of, or the channel has just
+        // changed. Either way the radio is running on the store's own
+        // figures rather than on this channel's, which is no reason to
+        // stop trying to measure them.
+        startIq(regs);
         chip.iq = .running;
     }
 
     if (long) loadNoiseFloor(chip);
 }
 
-/// What a channel change forgets: the correction measured on the last one.
+/// Ask the baseband to measure how far its two mixing paths are out of
+/// balance.
+fn startIq(regs: Regs) void {
+    var timing4 = regs.get(.phy_timing_control4, regs_mod.PhyTimingControl4);
+    timing4.iq_calibration_log_count = IQ_CAL_LOG_COUNT_MAX;
+    timing4.do_iq_calibration = true;
+    regs.put(.phy_timing_control4, timing4);
+}
+
+/// What a channel change forgets: the correction measured on the last one,
+/// and the fact that one was measured. A correction taken on another
+/// channel is not one this channel is calibrated by, so what is owed is a
+/// measurement rather than nothing.
 pub fn forgetChannel(chip: *Chip) void {
     chip.iq_measured = null;
+    chip.iq = .inactive;
 }

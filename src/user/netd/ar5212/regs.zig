@@ -147,6 +147,15 @@ pub const R = enum(usize) {
     phy_tx_power_adjust = 0x994C,
     /// How many gain settings the amplifier's table uses, and where each
     /// gives way to the next.
+    /// The power each rate goes out at, four rates to a word: the eight
+    /// OFDM rates in the first two, the CCK rates in the other two.
+    phy_power_tx_rate1 = 0x9934,
+    phy_power_tx_rate2 = 0x9938,
+    /// The ceiling on all of them, and the bit that makes a descriptor's
+    /// own power word count.
+    phy_power_tx_rate_max = 0x993C,
+    phy_power_tx_rate3 = 0xA234,
+    phy_power_tx_rate4 = 0xA238,
     phy_power_gains = 0xA258,
     phy_power_boundaries = 0xA26C,
     /// Where the amplifier's table itself is written, thirty-two words of
@@ -902,6 +911,18 @@ pub const Diagnostics = packed struct(u32) {
 };
 
 /// The power the protocol unit sends its own frames at, in half decibels.
+/// The ceiling on every rate, and whether a frame may name a power of its
+/// own.
+///
+/// Without the bit, the power word in a transmit descriptor is ignored and
+/// every frame goes out at its rate's fixed figure, so nothing a person
+/// asks for reaches the air.
+pub const RateMaxPower = packed struct(u32) {
+    power: u6 = 0,
+    from_descriptor: bool = false,
+    _7: u25 = 0,
+};
+
 pub const SelfPower = packed struct(u32) {
     ack: u6 = 0,
     _6: u2 = 0,
@@ -1280,6 +1301,7 @@ comptime {
     pinLayout(Diagnostics, .{ .phear_me = true }, 0x0080_0000);
     pinLayout(SelfPower, .{ .cts = 0x3F }, 0x0000_3F00);
     pinLayout(SelfPower, .{ .chirp = 0x3F }, 0x003F_0000);
+    pinLayout(RateMaxPower, .{ .from_descriptor = true }, 0x0000_0040);
     pinLayout(NoAck, .{ .bit_offset = 7 }, 0x0000_0070);
     pinLayout(NoAck, .{ .byte_offset = 3 }, 0x0000_0180);
     pinLayout(PhyTest, PhyTest.analog_access, 0x0000_0007);

@@ -136,6 +136,11 @@ const Device = struct {
     dma_handle: ?u32 = null,
     /// The next descriptor the service expects to find finished.
     rx_next: usize = 0,
+    /// Whether the descriptor before it said the frame carried on into
+    /// the next one. A frame spread over several descriptors is dropped
+    /// whole, and this is what remembers that the piece in hand is part
+    /// of one.
+    rx_spanning: bool = false,
     /// The next transmit descriptor the service will fill, the next it
     /// expects to find finished, and how many lie between them.
     tx_next: usize = 0,
@@ -362,27 +367,39 @@ fn sayListening() void {
 pub fn stop(_: *NicDev) void {
     if (!device.opened) return;
     device.started = false;
+    // A card that has vanished is writing nowhere, so its memory is safe
+    // to give back whatever its registers would say.
+    var quiescent = device.gone;
     if (device.chip) |*chip| {
         if (!device.gone) {
-            quiet(chip.regs);
+            quiescent = quiet(chip.regs);
             reset.sleep(chip.regs);
         }
     }
-    releaseRings();
+    if (quiescent) {
+        releaseRings();
+    } else {
+        // The memory is the radio's until the radio says otherwise. Handed
+        // back while an engine is still walking it, it becomes somebody
+        // else's memory with a bus master writing into it.
+        log.warn(name, "the radio would not stop; its descriptor memory is kept rather than handed back");
+    }
 }
 
-/// Silence the radio and let go of every address it holds.
+/// Silence the radio and let go of every address it holds, answering
+/// whether the engines actually stopped.
 ///
 /// Ordered so no register still names memory that is about to be handed
 /// back: the causes are masked, the engines stopped, and only then is the
 /// chain pointer cleared.
-fn quiet(regs: Regs) void {
+fn quiet(regs: Regs) bool {
     listenFor(regs, .{});
     regs.flush(.interrupt_status_clearing);
-    stopTransmit(regs);
-    stopReceive(regs);
+    const sending = stopTransmit(regs);
+    const listening = stopReceive(regs);
     regs.write(.rx_pointer, 0);
     regs.flush(.rx_pointer);
+    return sending and listening;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +413,11 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     const chip: *reset.Chip = if (device.chip) |*c| c else return false;
     const megahertz = channel.megahertz() orelse return false;
 
-    stopReceive(chip.regs);
+    // The reset that follows stops both engines whether they were
+    // stopping or not, so what matters here is that the service's own
+    // account of them is put back to nothing.
+    _ = stopReceive(chip.regs);
+    abandonTransmit(chip.regs);
     reset.forgetChannel(chip);
     const kind: reset.Kind = if (device.channel == null) .power_on else .channel_change;
     reset.reset(chip, megahertz, kind) catch |err| {
@@ -631,7 +652,7 @@ pub fn watchAgain(nic: *NicDev) void {
     said_unheard = false;
     phy_errors = 0;
     given_up = @splat(0);
-    judged = .{};
+    since_judged = .{};
     since = .{
         .woken = nic.irq_count,
         .handed_up = nic.stats.rx_pkts,
@@ -651,7 +672,16 @@ var phy_errors: usize = 0;
 /// failing all of one and none of the other is misconfigured for that
 /// modulation, and one failing both the same way is not listening to the
 /// right thing at all.
-var given_up: [GIVEN_UP_CODES]u16 = @splat(0);
+var given_up: [GIVEN_UP_CODES]u32 = @splat(0);
+
+/// What the two demodulators have given up on since the last judgement.
+///
+/// Kept apart from the tally above, which is a running total for the
+/// report and saturates in the end. What the adaptation asks is what a
+/// dwell came to, and a total that has stopped counting answers that with
+/// nothing however loud the room is: a radio in sustained interference
+/// would read as quiet and be made more willing to hear it, not less.
+var since_judged: Modulations = .{};
 
 /// The codes the silicon uses fit in six bits; anything wider than the
 /// list this build names is still counted under its own number.
@@ -669,31 +699,25 @@ pub fn adapt(_: *NicDev) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     if (!device.started or device.gone) return;
 
-    const now = givenUpByModulation();
-    if (chip.immunity.heard(chip.regs, now.ofdm -| judged.ofdm, now.cck -| judged.cck)) {
-        sayImmunity(chip);
-    }
-    judged = now;
+    const dwell = since_judged;
+    since_judged = .{};
+    if (chip.immunity.heard(chip.regs, dwell.ofdm, dwell.cck)) sayImmunity(chip);
 }
 
-/// What the counts stood at when the radio was last judged. The tally
-/// itself is the sweep's to report, so what a dwell came to is the
-/// difference rather than a count anybody clears.
-var judged: Modulations = .{};
-
+/// Failures split by which demodulator gave up. The two fail separately
+/// and are made harder to convince separately, and a radio failing all of
+/// one and none of the other is not configured for that modulation at
+/// all.
 const Modulations = struct { ofdm: u32 = 0, cck: u32 = 0 };
 
-/// The failures so far, split by which demodulator gave up. The two fail
-/// separately and are made harder to convince separately, and a radio
-/// failing all of one and none of the other is not configured for that
-/// modulation at all.
+/// The tally split that way, for the report.
 fn givenUpByModulation() Modulations {
     var totals = Modulations{};
     for (given_up, 0..) |times, code| {
         if (times == 0) continue;
         switch (family.modulationOf(@enumFromInt(@as(u8, @intCast(code))))) {
-            .ofdm => totals.ofdm += times,
-            .cck => totals.cck += times,
+            .ofdm => totals.ofdm +|= times,
+            .cck => totals.cck +|= times,
             .either => {},
         }
     }
@@ -827,12 +851,17 @@ fn commonestUnsent() ?Unsent {
 fn noteGivenUp(why: family.PhyError) void {
     const code = @intFromEnum(why);
     if (code < GIVEN_UP_CODES) given_up[code] +|= 1;
+    switch (family.modulationOf(why)) {
+        .ofdm => since_judged.ofdm +|= 1,
+        .cck => since_judged.cck +|= 1,
+        .either => {},
+    }
 }
 
 /// The reason the baseband gave most often, and how many times.
-fn commonestGivingUp() ?struct { why: family.PhyError, times: u16 } {
+fn commonestGivingUp() ?struct { why: family.PhyError, times: u32 } {
     var best: usize = 0;
-    var most: u16 = 0;
+    var most: u32 = 0;
     for (given_up, 0..) |times, code| {
         if (times <= most) continue;
         most = times;
@@ -855,11 +884,13 @@ pub fn calibrate(_: *NicDev, long: bool) void {
     reset.calibrate(chip, long);
 }
 
-/// The ceiling on the frames the protocol unit sends itself, from the
-/// regulatory plan. Applied at the next reset.
+/// The ceiling on everything this radio transmits, from the regulatory
+/// plan. Applied now, so a plan changed while the radio is running is a
+/// plan the next frame goes out under.
 pub fn setPower(_: *NicDev, half_dbm: u6) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     chip.self_power = half_dbm;
+    if (device.started and !device.gone) reset.applyPower(chip);
 }
 
 /// Point the radio at the chain and let the protocol unit pass frames:
@@ -916,16 +947,31 @@ fn startTransmit(regs: Regs) void {
     regs.putAt(regs_mod.dcuMisc(QUEUE), regs_mod.DcuMisc{ .wait_for_fragment = true });
 }
 
+/// Give up whatever the transmit queue was still working through.
+///
+/// A reset clears the pointer the queue reads its chain from, so the
+/// descriptors the service was waiting on become ones the hardware will
+/// never finish. Left as they were, the next frame is linked onto a chain
+/// nothing is walking, the queue is never pointed at it, and the reaping
+/// waits behind a descriptor that will not complete until the ring fills.
+/// So the queue is stopped, what was in it is counted as not sent, and
+/// the service starts again from an empty ring.
+fn abandonTransmit(regs: Regs) void {
+    if (device.nic) |nic| nic.stats.tx_failed += device.tx_filled;
+    _ = stopTransmit(regs);
+}
+
 /// Stop the queue and let go of whatever the service was still holding
-/// room for.
-fn stopTransmit(regs: Regs) void {
+/// room for, answering whether it stopped.
+fn stopTransmit(regs: Regs) bool {
     regs.holdQueues(@as(u10, 1) << QUEUE);
-    _ = pace.until(regs, .queue_enable, regs_mod.QueueMask, "queues", 0, pace.DEFAULT_TRIES);
+    const stopped = pace.until(regs, .queue_enable, regs_mod.QueueMask, "queues", 0, pace.DEFAULT_TRIES);
     regs.releaseQueues();
     device.tx_next = 0;
     device.tx_reap = 0;
     device.tx_filled = 0;
     device.tx_link = null;
+    return stopped;
 }
 
 /// What the receiver accepts. A station with no cell of its own has
@@ -970,13 +1016,17 @@ pub fn answerFor(_: *NicDev, cell: ?dev_mod.Cell) void {
 
 /// Stop the protocol unit passing frames and the engine fetching them,
 /// and wait long enough for the frame in flight to land.
-fn stopReceive(regs: Regs) void {
+fn stopReceive(regs: Regs) bool {
+    // The stream of descriptors breaks here, so a frame that was still
+    // arriving in pieces is not one whose next piece continues it.
+    device.rx_spanning = false;
     regs.set(.diagnostics, regs_mod.Diagnostics, "rx_disable", true);
     regs.put(.mib_control, regs_mod.MibControl{ .freeze = true, .clear = true });
     regs.put(.rx_filter, regs_mod.RxFilter{});
     regs.put(.control, regs_mod.Control{ .rx_disable = true });
-    _ = pace.until(regs, .control, regs_mod.Control, "rx_enable", false, pace.DEFAULT_TRIES);
+    const stopped = pace.until(regs, .control, regs_mod.Control, "rx_enable", false, pace.DEFAULT_TRIES);
     pace.delay(3000);
+    return stopped;
 }
 
 /// What the radio has to say. The clearing status register is read once
@@ -1043,23 +1093,27 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
     while (true) {
         const slot = device.rx_next;
         const desc: *const volatile Desc = &rings.rx_desc[slot];
-        const report = desc.received();
-        if (!report.status1.done) break;
-
-        // The chain's tail links back into it, so the hardware may have
-        // done this descriptor once and picked it up again: be sure it
-        // has moved on before believing the report.
-        const following: *const volatile Desc = &rings.rx_desc[Chain.next(slot)];
-        if (!following.received().status1.done and
-            chip.regs.read(.rx_pointer) == Chain.addressOf(chainBase("rx_desc"), slot)) break;
+        // The ownership bit first and on its own; everything else the
+        // descriptor says is read after the barrier, so no word of it can
+        // be one left over from the descriptor's last use.
+        if (!desc.receiveFinished()) break;
         dma.consume();
+        const report = desc.received();
+
+        // A frame longer than one buffer is spread over several
+        // descriptors, each but the last saying so. Nothing here puts one
+        // back together, so the whole of it goes: the last piece of a
+        // frame is not a frame, however whole it looks on its own.
+        const continued = device.rx_spanning;
+        device.rx_spanning = report.status0.more;
 
         // A length is the radio's word until it has been measured against
         // the buffer that holds it; the check sequence at the end is the
         // hardware's and not the frame's.
         const length: usize = report.status0.data_length;
         stirFrom(report, rings.rx_buffer[slot][0..@min(length, NOISE_BYTES)]);
-        if (report.status1.intact() and !report.status0.more and length > FCS_BYTES and length <= SLAB) {
+        const whole = !continued and !report.status0.more;
+        if (report.status1.intact() and whole and length > FCS_BYTES and length <= SLAB) {
             const frame = rings.rx_buffer[slot][0 .. length - FCS_BYTES];
             dev_mod.deliverRadio(nic, frame, signalOf(chip, report.status0.signal), report.status0.rate.rate());
         } else {
@@ -1076,7 +1130,6 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
         }
 
         armReceive(rings, slot);
-        dma.publish();
         device.rx_next = Chain.next(slot);
     }
 }
@@ -1164,9 +1217,9 @@ fn reapTx(nic: *NicDev) void {
     while (device.tx_filled != 0) {
         const slot = device.tx_reap;
         const desc: *const volatile Desc = &rings.tx_desc[slot];
-        const report = desc.sent();
-        if (!report.done()) break;
+        if (!desc.sendFinished()) break;
         dma.consume();
+        const report = desc.sent();
 
         // Which rates to credit and which to blame. The control words are
         // as they were written, so the frame says this about itself.
@@ -1228,15 +1281,18 @@ fn chainBase(comptime field: []const u8) u32 {
     return device.phys.addr() + @offsetOf(Rings, field);
 }
 
-/// Hand one receive descriptor back to the radio: its buffer, its
-/// successor, and no status at all.
+/// Hand one receive descriptor back to the radio, at the end of the run
+/// it is walking.
+///
+/// The run ends where the service's own descriptors begin, so the radio
+/// is given one more place to put a frame each time a place is freed and
+/// can never wrap into a buffer whose frame has not been read. The
+/// descriptor is made ready before anything points at it.
 fn armReceive(rings: *Rings, slot: usize) void {
     const buffers = chainBase("rx_buffer");
-    rings.rx_desc[slot].armReceive(
-        buffers + @as(u32, @intCast(slot * SLAB)),
-        Chain.linkFor(chainBase("rx_desc"), slot),
-        SLAB,
-    );
+    rings.rx_desc[slot].armReceive(buffers + @as(u32, @intCast(slot * SLAB)), SLAB);
+    dma.publish();
+    rings.rx_desc[Chain.previous(slot)].link = Chain.addressOf(chainBase("rx_desc"), slot);
 }
 
 /// One contiguous run for both chains and their buffers, chained into
@@ -1269,19 +1325,26 @@ fn buildRings() bool {
     device.dma_handle = owned;
     device.rx_next = 0;
 
-    // Receive descriptors are the radio's from the start; transmit ones
-    // are the service's until it has something to put in them, so they
-    // carry their links and nothing else.
-    for (0..RING_SLOTS) |slot| {
-        armReceive(rings, slot);
-        rings.tx_desc[slot].link = Chain.linkFor(chainBase("tx_desc"), slot);
-    }
+    // Receive descriptors are the radio's from the start, each handed
+    // over at the end of the run before it. Transmit ones are the
+    // service's until it has something to put in them, and name their
+    // successor when it does.
+    for (0..RING_SLOTS) |slot| armReceive(rings, slot);
     dma.publish();
     return true;
 }
 
+/// Hand the descriptor memory back.
+///
+/// Unmapped as well as closed: a mapping holds a reference of its own, so
+/// closing the handle alone leaves the segment standing and its slot
+/// taken, and a radio stopped and started often enough runs the machine
+/// out of both. Called only where the radio has been shown to have
+/// stopped, since what is handed back is memory a bus master was writing
+/// into.
 fn releaseRings() void {
     const handle = device.dma_handle orelse return;
+    if (device.rings) |rings| sys.shmUnmap(@ptrCast(rings));
     sys.close(handle);
     device.dma_handle = null;
     device.rings = null;
