@@ -765,8 +765,8 @@ pub const Ending = enum(u32) {
 pub const MountFlags = packed struct(u32) {
     /// Refuse every write. For a volume being inspected rather than used.
     read_only: bool = false,
-    /// The medium may leave without warning, which changes what an unmount is
-    /// entitled to expect of it.
+    /// The medium may leave without warning. The caller's word about it and
+    /// nothing more: every volume is treated as one that can leave.
     removable: bool = false,
     _reserved: u30 = 0,
 };

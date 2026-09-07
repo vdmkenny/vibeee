@@ -333,9 +333,8 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
     // preference but a necessity: the medium the machine booted from is behind
     // a USB reader and unreachable until usbd exists.
     if (registerRootfs(bi)) |rd| {
-        if (vfs.mount("/", rd, false)) |_| {
+        if (vfs.mount("/", rd, .{})) |_| {
             mounted_root = true;
-            reportMount("/", rd);
         } else |err| {
             console.warn("vfs: RAM root will not mount: {s}", .{@errorName(err)});
         }
@@ -348,14 +347,13 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
         if (vfs.placeOf(dev) != null) continue;
 
         if (!mounted_root) {
-            if (vfs.mount("/", dev, false)) |_| {
+            if (vfs.mount("/", dev, .{})) |_| {
                 mounted_root = true;
-                reportMount("/", dev);
                 continue;
             } else |_| {}
         }
 
-        if (vfs.mountMedia(dev)) |path| reportMount(path, dev);
+        vfs.mountMedia(dev);
     }
 
     if (!mounted_root) console.warn("vfs: no root filesystem", .{});
@@ -368,9 +366,7 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
     for (block.list(), 0..) |*dev, i| {
         if (!block.isMountCandidate(i)) continue;
         const where = vfs.placeOf(dev) orelse continue;
-        if (vfs.mount(where, dev, false)) |_| {
-            reportMount(where, dev);
-        } else |err| switch (err) {
+        if (vfs.mount(where, dev, .{})) |_| {} else |err| switch (err) {
             error.NotFat, error.Unsupported => console.warn(
                 "vfs: {s} holds no filesystem this can read; it stays unmounted",
                 .{dev.name},
@@ -378,17 +374,6 @@ fn mountFilesystems(bi: *const bootinfo.BootInfo) void {
             else => console.warn("vfs: cannot mount {s} on {s}: {s}", .{ dev.name, where, @errorName(err) }),
         }
     }
-}
-
-fn reportMount(path: []const u8, dev: *const block.Device) void {
-    const r = vfs.resolve(path) catch return;
-    const vol = &r.mount.volume;
-    console.info("mount", "{s} on {s} ({s}, {d} MiB)", .{
-        path,
-        dev.name,
-        @tagName(vol.kind),
-        @as(u64, vol.cluster_count) * vol.clusterSize() / (1024 * 1024),
-    });
 }
 
 /// Read a file into freshly allocated memory.

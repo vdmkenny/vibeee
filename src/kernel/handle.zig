@@ -229,10 +229,7 @@ pub const RetainError = error{
 /// decided here, once, for every route a handle can take.
 pub fn retain(h: Handle) RetainError!Handle {
     switch (h.data) {
-        // The count is owed to the slot rather than to the volume: it is what
-        // keeps the slot from being given away while this handle names it,
-        // whether or not the volume is still there.
-        .file => h.data.file.lease.slotOf().open_files += 1,
+        .file => vfs.share(h.data.file.lease),
         .event => event_mod.retain(h.data.event),
         .channel => channel_mod.retain(h.data.channel.channel),
         .shm => shm_mod.retain(h.data.shm),
@@ -267,15 +264,19 @@ pub fn release(h: Handle) vfs.Error!void {
             const file = h.data.file;
             // The mount is let go whatever the record said: the handle is
             // gone either way.
-            defer releaseMount(file.lease.slotOf());
-            // Only while the volume is still there: a size committed to a
-            // slot another volume has since taken would be written into it.
+            defer vfs.close(file.lease);
             if (file.dirty) {
-                if (file.lease.mount()) |m| try vfs.commit(m, file.entry, clock.realtimeSeconds());
+                vfs.commit(file.lease, file.entry, clock.realtimeSeconds()) catch |err| switch (err) {
+                    // A volume that has gone cannot take the record, and
+                    // nothing else in its slot should: the handle goes with
+                    // the volume.
+                    error.Gone => {},
+                    else => |e| return e,
+                };
             }
         },
         .directory => {
-            releaseMount(h.data.directory.lease.slotOf());
+            vfs.close(h.data.directory.lease);
             heap.allocator.destroy(h.data.directory.iterator);
         },
         .event => event_mod.release(h.data.event),
@@ -300,10 +301,6 @@ pub fn release(h: Handle) vfs.Error!void {
         .irq => irqevent.release(h.data.irq),
         .none, .console => {},
     }
-}
-
-fn releaseMount(m: *vfs.Mount) void {
-    if (m.open_files > 0) m.open_files -= 1;
 }
 
 comptime {

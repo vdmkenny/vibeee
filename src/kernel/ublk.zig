@@ -18,7 +18,6 @@
 
 const std = @import("std");
 const abi = @import("lib").volume;
-const console = @import("console.zig");
 const bcache = @import("bcache.zig");
 const block = @import("block.zig");
 const event = @import("event.zig");
@@ -330,9 +329,7 @@ fn survey(index: usize) callconv(.c) void {
         // the same place as one that was there at boot.
         for (block.list(), 0..) |*d, i| {
             if (d.ctx != dev.ctx or !block.isMountCandidate(i)) continue;
-            if (vfs.mountMedia(d)) |where| {
-                console.info("mount", "{s} on {s}", .{ where, d.name });
-            }
+            vfs.mountMedia(d);
         }
     }
     sched.exit();

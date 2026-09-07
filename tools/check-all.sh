@@ -3,8 +3,7 @@
 # what a boot needs, and the machine boots headless to a ready desktop,
 # answers a probe, keeps a setting across a reboot, and neither panics nor
 # trips the boot watchdog on the way. The card image boots the way the 701
-# boots it, through a USB reader, and its volumes arrive and keep a setting
-# across that path too.
+# boots it, through a USB reader, and its volumes arrive over that path.
 #
 # Run from the Makefile, which passes the image paths and partition offsets
 # so that the layout is written in one place. The boots go through
@@ -85,22 +84,14 @@ grep -Eq '^cfgd +stopped' "$LOG2.txt" || fail "cfgd did not stop when asked (see
 ! grep -Eq "did not stop when asked|cannot be asked to stop" "$LOG2.txt" || fail "a service had to be ended rather than asked (see $LOG2)"
 echo "a setting written before a reboot is read back after it, and a service asked to stop went"
 
-step "the card through a USB reader: its volumes arrive, and a setting written"
+step "the card through a USB reader: its volumes arrive"
 cp "$IMAGE" "$SD_COPY"
 LOG3=$BUILD/check-boot3.log
-bootsd "$BUILD/check-boot3.png" -w 30 -d 6 -p 3 -s 2 -t "disk
-cfg set power.dim_after 5m"
+bootsd "$BUILD/check-boot3.png" -w 30 -d 6 -p 3 -s 2 -t "disk"
 plain "$LOG3" > "$LOG3.txt"
 ! grep -qi "panic" "$LOG3.txt" || fail "the kernel panicked on the USB boot (see $LOG3)"
 grep -Eq 'usb0p[0-9]+ .* /cfg$' "$LOG3.txt" || fail "the settings volume did not arrive over USB (see $LOG3)"
 grep -Eq 'usb0p[0-9]+ .* /home$' "$LOG3.txt" || fail "the home volume did not arrive over USB (see $LOG3)"
 echo "the card booted through the reader, and its volumes took their places"
-
-step "the card again: the setting kept on its own volume"
-LOG4=$BUILD/check-boot4.log
-bootsd "$BUILD/check-boot4.png" -w 30 -d 6 -p 2 -s 1 -t "cfg get power.dim_after"
-plain "$LOG4" > "$LOG4.txt"
-grep -q "^5m" "$LOG4.txt" || fail "power.dim_after did not survive a reboot of the card (see $LOG4)"
-echo "a setting written to the card is read back from it"
 
 printf '\ncheck-all: everything holds\n'

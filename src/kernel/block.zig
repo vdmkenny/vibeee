@@ -44,20 +44,20 @@ pub const Device = struct {
     /// table does not move: a device that was unplugged answers nothing
     /// and is skipped by every walk.
     retired: bool = false,
-    /// Whether anything has been written since the device was registered.
+    /// Whether anything has been written since the drive last flushed.
     /// Nothing to commit means nothing to flush, and a drive asked to flush a
     /// cache it never filled can only answer with an error it does not owe.
+    /// Kept by the drive: a partition is a window onto one, and what is
+    /// written through the window is the drive's to remember.
     written: bool = false,
 
-    /// Writing goes through a partition to the drive underneath, so the drive
-    /// is what has to remember it, not the window onto it.
-    fn markWritten(self: *const Device) void {
-        const mutable: *Device = @constCast(self);
-        mutable.written = true;
-        // A partition is a window onto a drive, and the drive is what has
-        // to remember it.
-        const place = partitionOf(self) orelse return;
-        @constCast(place.disk).written = true;
+    /// The drive this device writes through: itself, or the disk a
+    /// partition is cut from. Mutable through the read-only view the table
+    /// hands out, because the flag is the drive's own bookkeeping and not a
+    /// change to what the device is.
+    fn driveOf(self: *const Device) *Device {
+        const place = partitionOf(self) orelse return @constCast(self);
+        return @constCast(place.disk);
     }
 
     pub fn read(self: *const Device, lba: u64, buf: []u8) Error!void {
@@ -74,12 +74,17 @@ pub const Device = struct {
         if (lba + count > self.sectors) return error.OutOfRange;
         const w = self.ops.write orelse return error.NotSupported;
         try w(self.ctx, self.offset + lba, buf);
-        self.markWritten();
+        self.driveOf().written = true;
     }
 
+    /// Push what the drive holds through to the medium, when anything has
+    /// been written to it since it last did. A partition's flush is its
+    /// drive's.
     pub fn flush(self: *const Device) Error!void {
-        const f = self.ops.flush orelse return;
-        return f(self.ctx);
+        const drive = self.driveOf();
+        if (!drive.written) return;
+        if (self.ops.flush) |f| try f(self.ctx);
+        drive.written = false;
     }
 
     pub fn bytes(self: *const Device) u64 {
@@ -229,6 +234,25 @@ pub fn retire(ctx: *anyopaque) void {
 
 pub fn list() []const Device {
     return table.list();
+}
+
+/// Every drive written to since it last flushed, flushed: what a drive has
+/// accepted into its own cache is on the medium when this returns.
+///
+/// Whole drives only. A partition's flush is its drive's, so asking the
+/// partitions as well would ask one drive the same question once per
+/// partition. Each failure is reported by name as it is met, and the whole
+/// fails if any did.
+pub fn flushAll() Error!void {
+    var failed = false;
+    for (table.list()) |*dev| {
+        if (dev.offset != 0 or dev.retired) continue;
+        dev.flush() catch |err| {
+            console.warn("block: {s} did not flush: {s}", .{ dev.name, @errorName(err) });
+            failed = true;
+        };
+    }
+    if (failed) return error.IoError;
 }
 
 pub fn find(name: []const u8) ?*const Device {
@@ -447,6 +471,55 @@ const test_ops = Ops{ .read = struct {
 
 fn testDisk(ctx: *anyopaque, name: []const u8) Device {
     return .{ .name = name, .ctx = ctx, .ops = &test_ops, .sectors = 100 };
+}
+
+/// A drive that takes writes and counts, in the `usize` its context points
+/// at, how often it is asked to flush.
+const counting_ops = Ops{
+    .read = test_ops.read,
+    .write = struct {
+        fn write(_: *anyopaque, _: u64, _: []const u8) Error!void {}
+    }.write,
+    .flush = struct {
+        fn flush(ctx: *anyopaque) Error!void {
+            const flushes: *usize = @ptrCast(@alignCast(ctx));
+            flushes.* += 1;
+        }
+    }.flush,
+};
+
+test "a drive is asked to flush once for what was written, and not otherwise" {
+    var t = Table{};
+    var flushes: usize = 0;
+    const disk = try t.place(.{ .name = "hd0", .ctx = &flushes, .ops = &counting_ops, .sectors = 100 });
+    const sector: [SECTOR_SIZE]u8 = @splat(0);
+
+    try disk.flush();
+    try std.testing.expectEqual(@as(usize, 0), flushes);
+
+    try disk.write(0, &sector);
+    try disk.flush();
+    try std.testing.expectEqual(@as(usize, 1), flushes);
+
+    try disk.flush();
+    try std.testing.expectEqual(@as(usize, 1), flushes);
+}
+
+test "what is written through a partition is its drive's to flush, once" {
+    // The table itself, because a partition is known by the disk the table
+    // holds under the same context. Retired at the end so nothing of it is
+    // left for the next test.
+    var flushes: usize = 0;
+    defer table.retire(&flushes);
+    const disk = try table.place(.{ .name = "hd0", .ctx = &flushes, .ops = &counting_ops, .sectors = 100 });
+    const part = try table.place(.{ .name = "hd0p1", .ctx = &flushes, .ops = &counting_ops, .sectors = 10, .offset = 1 });
+    const sector: [SECTOR_SIZE]u8 = @splat(0);
+
+    try part.write(0, &sector);
+    try part.flush();
+    try std.testing.expectEqual(@as(usize, 1), flushes);
+    try disk.flush();
+    try std.testing.expectEqual(@as(usize, 1), flushes);
 }
 
 test "a row reused after its medium is gone reuses its name with it" {

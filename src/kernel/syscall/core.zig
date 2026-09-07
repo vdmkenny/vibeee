@@ -7,6 +7,7 @@ const clock = @import("../clock.zig");
 const console = @import("../console.zig");
 const display = @import("../display.zig");
 const event_mod = @import("../event.zig");
+const file_calls = @import("file.zig");
 const handles = @import("../handle.zig");
 const vfs = @import("../vfs.zig");
 const ctx = @import("context.zig");
@@ -140,14 +141,8 @@ fn writeConsole(number: u32, buf: []const u8) Result {
 fn writeFile(file: *handles.File, buf: []const u8) Result {
     const at = if (file.append) file.entry.size else file.offset;
 
-    const m = file.lease.mount() orelse return Errno.nodev.value();
-    const written = vfs.writeAt(m, &file.entry, at, buf) catch |err| {
-        return switch (err) {
-            error.ReadOnly => Errno.perm.value(),
-            error.NoSpace => Errno.nospace.value(),
-            error.IsDirectory => Errno.inval.value(),
-            else => Errno.io.value(),
-        };
+    const written = vfs.writeAt(file.lease, &file.entry, at, buf) catch |err| {
+        return file_calls.errnoFor(err);
     };
 
     file.offset = at + written;
@@ -195,8 +190,7 @@ fn readConsole(buf: []u8) Result {
 }
 
 fn readFile(f: *handles.File, buf: []u8) Result {
-    const m = f.lease.mount() orelse return Errno.nodev.value();
-    const n = vfs.readAt(m, f.entry, f.offset, buf) catch return Errno.io.value();
+    const n = vfs.readAt(f.lease, f.entry, f.offset, buf) catch |err| return file_calls.errnoFor(err);
     f.offset += n;
     return @intCast(n);
 }

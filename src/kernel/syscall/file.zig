@@ -40,46 +40,34 @@ pub fn sys_open(a: Args) Result {
     const slot = table.alloc() orelse return Errno.nomem.value();
     const h = &table.entries[slot];
 
-    if (openFlags(a.a2).directory) {
-        const it = vfs.openDir(path) catch return Errno.noent.value();
-        const r = vfs.resolve(path) catch return Errno.noent.value();
+    const flags = openFlags(a.a2);
 
-        const iterator = handles.newIterator(it) orelse return Errno.nomem.value();
-        r.mount.open_files += 1;
+    if (flags.directory) {
+        const dir = vfs.openDir(path) catch |err| return errnoFor(err);
+        const iterator = handles.newIterator(dir.iterator) orelse {
+            vfs.close(dir.lease);
+            return Errno.nomem.value();
+        };
         h.* = .{
             .rights = .{ .read = true },
-            .data = .{
-                .directory = .{
-                    .lease = .{ .slot = r.mount, .generation = r.mount.generation },
-                    .iterator = iterator,
-                    // Nothing above a mount root, so nothing to report as its
-                    // parent. `resolve` leaves nothing over for one.
-                    .at_root = r.rest.len == 0,
-                },
-            },
+            .data = .{ .directory = .{
+                .lease = dir.lease,
+                .iterator = iterator,
+                .at_root = dir.at_root,
+            } },
         };
         return @intCast(slot);
     }
 
-    const flags = openFlags(a.a2);
-
-    var opened = vfs.open(path) catch |err| blk: {
-        // Only a missing file is worth creating; anything else is a real
-        // failure and creating a file on top of it would hide it.
-        if (err != error.NotFound or !flags.create) return errnoFor(err);
-        break :blk vfs.create(path, clock.realtimeSeconds()) catch |create_err| {
-            return errnoFor(create_err);
-        };
-    };
-
-    if (flags.truncate and flags.write) {
-        vfs.truncate(opened.mount, &opened.entry, clock.realtimeSeconds()) catch |err| return errnoFor(err);
-    }
+    const opened = vfs.open(path, .{
+        .create = flags.create,
+        .truncate = flags.truncate and flags.write,
+    }, clock.realtimeSeconds()) catch |err| return errnoFor(err);
 
     h.* = .{
         .rights = .{ .read = true, .write = flags.write, .seek = true },
         .data = .{ .file = .{
-            .lease = .{ .slot = opened.mount, .generation = opened.mount.generation },
+            .lease = opened.lease,
             .entry = opened.entry,
             .offset = if (flags.append) opened.entry.size else 0,
             .append = flags.append,
@@ -94,9 +82,10 @@ pub fn sys_open(a: Args) Result {
 /// One place, because the same handful of errors come back from open, create,
 /// write and unlink, and each mapping them separately is how a caller ends up
 /// being told ENOENT for a full disk.
-fn errnoFor(err: anyerror) Result {
+pub fn errnoFor(err: anyerror) Result {
     return switch (err) {
         error.NotFound, error.NotMounted => Errno.noent.value(),
+        error.Gone => Errno.nodev.value(),
         error.Exists, error.AlreadyMounted => Errno.exists.value(),
         error.Busy => Errno.busy.value(),
         error.TableFull => Errno.nomem.value(),
@@ -125,8 +114,7 @@ pub fn sys_ftruncate(a: Args) Result {
         .file => |*open| open,
         else => return Errno.inval.value(),
     };
-    const m = open.lease.mount() orelse return Errno.nodev.value();
-    vfs.resize(m, &open.entry, @truncate(a.a1), clock.realtimeSeconds()) catch |err| return errnoFor(err);
+    vfs.resize(open.lease, &open.entry, @truncate(a.a1), clock.realtimeSeconds()) catch |err| return errnoFor(err);
     return 0;
 }
 
@@ -143,8 +131,7 @@ pub fn sys_mount(a: Args) Result {
     const device = block.find(name) orelse return Errno.noent.value();
     const flags: abi.MountFlags = @bitCast(@as(u32, @truncate(a.a4)));
 
-    const attached = vfs.mount(path, device, flags.removable) catch |err| return errnoFor(err);
-    attached.read_only = flags.read_only;
+    _ = vfs.mount(path, device, .{ .read_only = flags.read_only }) catch |err| return errnoFor(err);
     return 0;
 }
 
@@ -219,11 +206,6 @@ pub fn sys_readdir(a: Args) Result {
         else => return Errno.badf.value(),
     };
 
-    // The iterator points into the volume the directory was opened on. A
-    // medium pulled out since would leave it pointing at whatever the slot
-    // holds next, so a dead lease ends the listing rather than continuing it.
-    const m = d.lease.mount() orelse return Errno.nodev.value();
-
     const out = userWrite(a, a.a1, a.a2) orelse return Errno.fault.value();
     if (d.exhausted) return 0;
 
@@ -243,7 +225,10 @@ pub fn sys_readdir(a: Args) Result {
     }
 
     while (true) {
-        const entry = (vfs.readDir(m, d.iterator) catch |err| return errnoFor(err)) orelse {
+        // The iterator points into the volume the directory was opened on;
+        // a medium pulled out since ends the listing rather than continuing
+        // it into whatever the slot holds next.
+        const entry = (vfs.readDir(d.lease, d.iterator) catch |err| return errnoFor(err)) orelse {
             d.exhausted = true;
             return 0;
         };
@@ -260,7 +245,7 @@ pub fn sys_readdir(a: Args) Result {
 
 /// Everything written so far, on its medium.
 pub fn sys_sync(_: Args) Result {
-    vfs.flushAll() catch return Errno.io.value();
+    block.flushAll() catch return Errno.io.value();
     return 0;
 }
 
@@ -269,7 +254,7 @@ pub fn sys_stat(a: Args) Result {
     const path = userPath(a, a.a0, a.a1, &path_buf) orelse return Errno.fault.value();
     const out = userWrite(a, a.a2, a.a3) orelse return Errno.fault.value();
 
-    const entry = vfs.stat(path) catch return Errno.noent.value();
+    const entry = vfs.stat(path) catch |err| return errnoFor(err);
     const n = writeDirent(out, entry) orelse return Errno.nomem.value();
     return @intCast(n);
 }

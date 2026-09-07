@@ -703,6 +703,18 @@ pub fn iterate(vol: *Volume, entry: Entry) Iterator {
     return directoryIterator(vol, entry.cluster);
 }
 
+/// The entry that stands for a volume's root, which has no record of its
+/// own: a directory, and nothing else a record would say.
+pub fn rootEntry(vol: *const Volume) Entry {
+    return .{
+        .name = undefined,
+        .name_len = 0,
+        .is_dir = true,
+        .size = 0,
+        .cluster = if (vol.kind == .fat32) vol.root_cluster else 0,
+    };
+}
+
 pub fn rootIterator(vol: *Volume) Iterator {
     if (vol.kind == .fat32) {
         return .{
@@ -1770,6 +1782,38 @@ fn units(comptime text: []const u8) [text.len]u16 {
 }
 
 const SHORT: [11]u8 = "HELLO   TXT".*;
+
+test "a volume's root stands as a directory entry that walks as the root does" {
+    var vol = Volume{
+        .dev = undefined,
+        .kind = .fat32,
+        .bytes_per_sector = 512,
+        .sectors_per_cluster = 1,
+        .first_fat_sector = 1,
+        .sectors_per_fat = 1,
+        .fat_count = 1,
+        .root_dir_sector = 0,
+        .root_dir_sectors = 0,
+        .root_cluster = 2,
+        .first_data_sector = 3,
+        .cluster_count = 8,
+    };
+    const root = rootEntry(&vol);
+    try std.testing.expect(root.is_dir);
+    try std.testing.expectEqual(@as(usize, 0), root.nameSlice().len);
+    try std.testing.expectEqual(rootIterator(&vol).sector, iterate(&vol, root).sector);
+
+    // The older layouts keep the root in a fixed run of sectors, which no
+    // cluster number names.
+    vol.kind = .fat16;
+    vol.root_dir_sector = 3;
+    vol.root_dir_sectors = 32;
+    vol.first_data_sector = 35;
+    const fixed = rootEntry(&vol);
+    try std.testing.expectEqual(@as(u32, 0), fixed.cluster);
+    try std.testing.expectEqual(rootIterator(&vol).sector, iterate(&vol, fixed).sector);
+    try std.testing.expectEqual(rootIterator(&vol).sectors_left, iterate(&vol, fixed).sectors_left);
+}
 
 test "a run in the order a medium writes it becomes the name it spells" {
     const sum = shortNameChecksum(&SHORT);
