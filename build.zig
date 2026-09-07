@@ -39,6 +39,82 @@ fn imageFormats(name: []const u8) ?*const [4][]const u8 {
     return null;
 }
 
+/// What every user program is built the same way from: the target, the
+/// modules it imports, and the pieces a program that opens pictures or
+/// calls C by name also needs.
+///
+/// A system program and an extra application differ in where they are
+/// installed and whether they ship, and in nothing about how they are
+/// built, which is why building one is written once.
+const UserBuild = struct {
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    imports: []const std.Build.Module.Import,
+    lib: *std.Build.Module,
+    sys: *std.Build.Module,
+    ulib: *std.Build.Module,
+
+    /// A program: freestanding, single-threaded, its own linker script,
+    /// entered at `_start`.
+    fn exe(self: UserBuild, name: []const u8, root: []const u8, strip: bool) *std.Build.Step.Compile {
+        const out = self.b.addExecutable(.{
+            .name = name,
+            .root_module = self.b.createModule(.{
+                .root_source_file = self.b.path(root),
+                .target = self.target,
+                .optimize = self.optimize,
+                .single_threaded = true,
+                .strip = strip,
+                .stack_check = false,
+                .stack_protector = false,
+                .imports = self.imports,
+            }),
+        });
+        out.setLinkerScript(self.b.path("src/user/linker.ld"));
+        out.entry = .{ .symbol_name = "_start" };
+        return out;
+    }
+
+    /// The libc's C-callable half, imported so its exports are emitted into
+    /// this binary. Not the archive, whose start code would collide with the
+    /// program's own.
+    fn addClibc(self: UserBuild, out: *std.Build.Step.Compile) void {
+        out.root_module.addImport("clibc", self.b.createModule(.{
+            .root_source_file = self.b.path("src/user/libc/freestanding.zig"),
+            .target = self.target,
+            .optimize = self.optimize,
+            .imports = &.{
+                .{ .name = "lib", .module = self.lib },
+                .{ .name = "sys", .module = self.sys },
+                .{ .name = "ulib", .module = self.ulib },
+            },
+        }));
+    }
+
+    /// The picture decoder, opening the formats named and no others: what
+    /// is not named is not in the binary at all.
+    fn addPictures(self: UserBuild, out: *std.Build.Step.Compile, formats: []const []const u8) void {
+        out.root_module.addIncludePath(self.b.path("third_party/stb"));
+        out.root_module.addIncludePath(self.b.path("include"));
+        out.root_module.addCSourceFiles(.{
+            .files = &.{"src/user/img/stb.c"},
+            .flags = self.cFlags(formats),
+        });
+        self.addClibc(out);
+    }
+
+    /// How C is compiled here, and whatever else this piece of it needs
+    /// said. Freestanding, because there is no host underneath.
+    fn cFlags(self: UserBuild, extra: []const []const u8) []const []const u8 {
+        const base = [_][]const u8{ "-std=c11", "-ffreestanding", "-fno-stack-protector" };
+        const flags = self.b.allocator.alloc([]const u8, base.len + extra.len) catch @panic("out of memory");
+        @memcpy(flags[0..base.len], &base);
+        @memcpy(flags[base.len..], extra);
+        return flags;
+    }
+};
+
 fn named(list: []const u8, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, list, ',');
     while (it.next()) |entry| {
@@ -320,6 +396,16 @@ pub fn build(b: *std.Build) void {
             .{ .name = "manual", .module = manual_mod },
         };
 
+        const user = UserBuild{
+            .b = b,
+            .target = user_target,
+            .optimize = optimize,
+            .imports = &user_imports,
+            .lib = user_lib,
+            .sys = sys_mod,
+            .ulib = ulib_mod,
+        };
+
         // Every user program is built identically; only its root file differs.
         // Listing them keeps adding one to a single line here.
         const USER_PROGRAMS = [_]struct { name: []const u8, root: []const u8 }{
@@ -406,86 +492,35 @@ pub fn build(b: *std.Build) void {
         var user_bins: [USER_PROGRAMS.len]*std.Build.Step.Compile = undefined;
 
         inline for (USER_PROGRAMS, 0..) |program, i| {
-            const exe = b.addExecutable(.{
-                .name = program.name,
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path(program.root),
-                    .target = user_target,
-                    .optimize = optimize,
-                    .single_threaded = true,
-                    .strip = !named(symbols, program.name),
-                    .stack_check = false,
-                    .stack_protector = false,
-                    .imports = &user_imports,
-                }),
-            });
+            const exe = user.exe(program.name, program.root, !named(symbols, program.name));
             if (comptime std.mem.eql(u8, program.name, "netd")) {
                 exe.root_module.addIncludePath(b.path("third_party/lwip/src/include"));
                 exe.root_module.addIncludePath(b.path("src/user/netd/lwipport"));
                 exe.root_module.addIncludePath(b.path("include"));
                 exe.root_module.addCSourceFiles(.{
                     .files = &lwip_sources,
-                    .flags = &.{
-                        "-std=c11",
-                        "-ffreestanding",
-                        "-fno-stack-protector",
-                    },
+                    .flags = user.cFlags(&.{}),
                 });
-                // For the routines lwIP's C calls by name: the libc's C-callable
-                // half, imported so its exports are emitted into this binary.
-                // Not the archive, whose start code would collide with netd's.
-                exe.root_module.addImport("clibc", b.createModule(.{
-                    .root_source_file = b.path("src/user/libc/freestanding.zig"),
-                    .target = user_target,
-                    .optimize = optimize,
-                    .imports = &.{
-                        .{ .name = "lib", .module = user_lib },
-                        .{ .name = "sys", .module = sys_mod },
-                        .{ .name = "ulib", .module = ulib_mod },
-                    },
-                }));
+                // For the routines lwIP's C calls by name.
+                user.addClibc(exe);
             }
             // Which formats a program can open. Named per program, so what
             // is not named is not in the binary at all.
             if (comptime imageFormats(program.name)) |formats| {
-                exe.root_module.addIncludePath(b.path("third_party/stb"));
-                exe.root_module.addIncludePath(b.path("include"));
-                exe.root_module.addCSourceFiles(.{
-                    .files = &.{"src/user/img/stb.c"},
-                    .flags = &([_][]const u8{
-                        "-std=c11",
-                        "-ffreestanding",
-                        "-fno-stack-protector",
-                    } ++ formats.*),
-                });
-                exe.root_module.addImport("clibc", b.createModule(.{
-                    .root_source_file = b.path("src/user/libc/freestanding.zig"),
-                    .target = user_target,
-                    .optimize = optimize,
-                    .imports = &.{
-                        .{ .name = "lib", .module = user_lib },
-                        .{ .name = "sys", .module = sys_mod },
-                        .{ .name = "ulib", .module = ulib_mod },
-                    },
-                }));
+                user.addPictures(exe, formats);
             }
 
             if (comptime std.mem.eql(u8, program.name, "platd")) {
                 exe.root_module.addIncludePath(b.path("third_party/uacpi/include"));
                 exe.root_module.addCSourceFiles(.{
                     .files = &(uacpi_sources ++ [_][]const u8{"src/user/platd/abi.c"}),
-                    .flags = &.{
-                        "-std=c11",
-                        "-ffreestanding",
-                        "-fno-stack-protector",
+                    .flags = user.cFlags(&.{
                         "-DUACPI_PHYS_ADDR_IS_32BITS",
                         "-DUACPI_SIZED_FREES=0",
-                    },
+                    }),
                 });
             }
 
-            exe.setLinkerScript(b.path("src/user/linker.ld"));
-            exe.entry = .{ .symbol_name = "_start" };
             b.installArtifact(exe);
             user_bins[i] = exe;
         }
@@ -497,65 +532,19 @@ pub fn build(b: *std.Build) void {
         // program is, the toolkit and the picture decoder included, because it
         // is one in every way but where it is installed and whether it ships.
         {
-            const hero = b.addExecutable(.{
-                .name = "hero",
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path("apps/hero/hero.zig"),
-                    .target = user_target,
-                    .optimize = optimize,
-                    .single_threaded = true,
-                    .strip = true,
-                    .stack_check = false,
-                    .stack_protector = false,
-                    .imports = &user_imports,
-                }),
+            const hero = user.exe("hero", "apps/hero/hero.zig", true);
+            user.addPictures(hero, &.{
+                "-DSTBI_ONLY_PNG",
+                "-DSTBI_ONLY_JPEG",
+                "-DSTBI_ONLY_BMP",
+                "-DSTBI_ONLY_GIF",
             });
-            hero.root_module.addIncludePath(b.path("third_party/stb"));
-            hero.root_module.addIncludePath(b.path("include"));
-            hero.root_module.addCSourceFiles(.{
-                .files = &.{"src/user/img/stb.c"},
-                .flags = &.{
-                    "-std=c11",
-                    "-ffreestanding",
-                    "-fno-stack-protector",
-                    "-DSTBI_ONLY_PNG",
-                    "-DSTBI_ONLY_JPEG",
-                    "-DSTBI_ONLY_BMP",
-                    "-DSTBI_ONLY_GIF",
-                },
-            });
-            hero.root_module.addImport("clibc", b.createModule(.{
-                .root_source_file = b.path("src/user/libc/freestanding.zig"),
-                .target = user_target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "lib", .module = user_lib },
-                    .{ .name = "sys", .module = sys_mod },
-                    .{ .name = "ulib", .module = ulib_mod },
-                },
-            }));
-            hero.setLinkerScript(b.path("src/user/linker.ld"));
-            hero.entry = .{ .symbol_name = "_start" };
 
             // Its own step, so the default build and the image never carry it.
             const hero_step = b.step("hero", "Build the Hero extra application into zig-out/bin");
             hero_step.dependOn(&b.addInstallArtifact(hero, .{}).step);
 
-            const echat = b.addExecutable(.{
-                .name = "echat",
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path("apps/echat/echat.zig"),
-                    .target = user_target,
-                    .optimize = optimize,
-                    .single_threaded = true,
-                    .strip = !named(symbols, "echat"),
-                    .stack_check = false,
-                    .stack_protector = false,
-                    .imports = &user_imports,
-                }),
-            });
-            echat.setLinkerScript(b.path("src/user/linker.ld"));
-            echat.entry = .{ .symbol_name = "_start" };
+            const echat = user.exe("echat", "apps/echat/echat.zig", !named(symbols, "echat"));
             const echat_step = b.step("echat", "Build the echat IRC client into zig-out/bin");
             echat_step.dependOn(&b.addInstallArtifact(echat, .{}).step);
 
