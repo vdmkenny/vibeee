@@ -131,9 +131,8 @@ fn load() void {
     // What the file is, before reading it: a file too large to hold is
     // refused for the room it would have taken rather than after taking it.
     var record: [512]u8 = undefined;
-    const told = sys.stat(path(), &record);
-    const about = if (told > 0) sys.Dirent.decode(&record, @intCast(told)) else null;
-    const entry = about orelse {
+    const told = sys.stat(path(), &record) catch 0;
+    const entry = sys.Dirent.decode(&record, told) orelse {
         trouble = "Cannot read it.";
         return;
     };

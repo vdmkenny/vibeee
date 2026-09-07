@@ -192,9 +192,8 @@ export fn rmdir(path: [*:0]const u8) callconv(.c) c_int {
 /// there, that it is not a directory, or that directories do not go.
 fn refusalFor(path: []const u8) c_int {
     var record: [@import("sys").Dirent.HEADER + 256]u8 = undefined;
-    const n = @import("sys").stat(path, &record);
-    if (n <= 0) return errno.ENOENT;
-    const entry = @import("sys").Dirent.decode(&record, @intCast(n)) orelse return errno.ENOENT;
+    const n = @import("sys").stat(path, &record) catch return errno.ENOENT;
+    const entry = @import("sys").Dirent.decode(&record, n) orelse return errno.ENOENT;
     return if (entry.is_dir) errno.EPERM else errno.ENOTDIR;
 }
 
@@ -361,8 +360,8 @@ fn indexOf(text: []const u8, byte: u8) ?usize {
 export fn system(command: ?[*:0]const u8) callconv(.c) c_int {
     const line = command orelse return 1;
 
-    const status = sys.spawn(SHELL, &.{ "vsh", "-c", string.spanOf(line) });
-    return if (status < 0) -1 else @intCast(status);
+    const status = sys.spawn(SHELL, &.{ "vsh", "-c", string.spanOf(line) }) catch return -1;
+    return @intCast(status);
 }
 
 const SHELL = "/bin/vsh";

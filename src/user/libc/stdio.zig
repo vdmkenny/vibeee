@@ -106,7 +106,7 @@ fn hasPlus(mode: [*:0]const u8) bool {
 /// refused the way `rmdir` refuses it rather than reported as some other
 /// kind of failure.
 export fn remove(path: [*:0]const u8) callconv(.c) c_int {
-    return @intCast(errno.wrap(sys.unlink(string.spanOf(path))));
+    return @intCast(errno.wrap(sys.unlinkRaw(string.spanOf(path))));
 }
 
 export fn fopen(path: [*:0]const u8, mode: [*:0]const u8) callconv(.c) ?*File {

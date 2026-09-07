@@ -315,7 +315,7 @@ fn transfer(what: Transfer) void {
         // Renaming is the whole operation when both sides are one volume,
         // and a copy followed by a removal when they are not. The kernel
         // says which by refusing the rename.
-        .move => sys.rename(from, to) >= 0 or (copyFile(from, to) and sys.unlink(from) >= 0),
+        .move => renamed(from, to) or (copyFile(from, to) and unlinked(from)),
     };
 
     status = if (done)
@@ -329,6 +329,18 @@ fn transfer(what: Transfer) void {
 
 /// One file's bytes, a chunk at a time. The chunk is what the stack can hold
 /// on a machine with this much memory, not what a disk would like.
+/// Whether the rename took. The kernel refuses one across volumes, which is
+/// how a move learns it has to copy and remove instead.
+fn renamed(from: []const u8, to: []const u8) bool {
+    sys.rename(from, to) catch return false;
+    return true;
+}
+
+fn unlinked(path: []const u8) bool {
+    sys.unlink(path) catch return false;
+    return true;
+}
+
 fn copyFile(from: []const u8, to: []const u8) bool {
     const source = sys.open(from, .{}) catch return false;
     defer sys.close(source);
@@ -401,7 +413,7 @@ fn finishAsking() void {
                 status = "That name is too long for where it would go.";
                 return stopAsking();
             };
-            status = if (sys.mkdir(target) >= 0) "Made." else "That did not work.";
+            status = if (sys.mkdir(target)) |_| "Made." else |_| "That did not work.";
         },
         .confirm_delete => {
             var buf: [160]u8 = undefined;
@@ -412,7 +424,7 @@ fn finishAsking() void {
             // in it is refused there rather than here, which is the right
             // place for the rule: this program does not know what a volume
             // considers empty.
-            status = if (sys.unlink(target) >= 0)
+            status = if (unlinked(target))
                 (if (entry.is_dir) "Removed." else "Deleted.")
             else
                 (if (entry.is_dir) "Only an empty directory can be removed." else "That did not work.");

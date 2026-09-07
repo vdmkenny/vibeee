@@ -274,9 +274,8 @@ fn end() void {
         return;
     };
 
-    status = switch (sys.kill(@intCast(pid), .now)) {
-        0 => "Ended.",
-        -1 => "That one cannot be ended.",
+    status = if (sys.kill(@intCast(pid), .now)) |_| "Ended." else |why| switch (why) {
+        error.NotPermitted => "That one cannot be ended.",
         else => "No longer running.",
     };
 

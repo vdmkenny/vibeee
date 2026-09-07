@@ -175,7 +175,7 @@ fn tcpListen(req: *const proto.Req, token: u32) void {
 
     var reply = proto.Rep{ .body = .{ .listener = indexOf(s) } };
     var message = sys.Message.init(std.mem.asBytes(&reply), &.{s.ev_app});
-    _ = sys.replyMsg(service, token, &message);
+    sys.replyMsg(service, token, &message) catch {};
 }
 
 /// The slot's event, made on first use and kept for the service's lifetime
@@ -687,11 +687,10 @@ fn grant(s: *Sock, token: u32, kind: socket.Kind) bool {
     } } };
 
     var message = sys.Message.init(std.mem.asBytes(&reply), &.{ s.shm, s.ev_app, doorbell });
-    const rc = sys.replyMsg(service, token, &message);
-    if (rc < 0) {
-        log.warn("netd", "the grant reply was refused");
-    } else {
+    if (sys.replyMsg(service, token, &message)) |_| {
         log.say("netd", .dim, "socket granted");
+    } else |_| {
+        log.warn("netd", "the grant reply was refused");
     }
     return true;
 }

@@ -166,11 +166,14 @@ fn open(loc: pci.Location) bool {
     device.mixer_base = @intCast(mixer_bar.base());
     device.bus_base = @intCast(bus_bar.base());
 
-    if (sys.ioportGrant(device.mixer_base, 256) < 0 or
-        sys.ioportGrant(device.bus_base, 64) < 0)
-    {
-        log.fail(name, "the port windows were refused");
-        return false;
+    for ([_]struct { base: u16, count: usize }{
+        .{ .base = device.mixer_base, .count = 256 },
+        .{ .base = device.bus_base, .count = 64 },
+    }) |window| {
+        sys.ioportGrant(window.base, window.count) catch {
+            log.fail(name, "the port windows were refused");
+            return false;
+        };
     }
     pci.enableIoAndMaster(loc);
 

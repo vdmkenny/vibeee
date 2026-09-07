@@ -54,7 +54,7 @@ pub fn start(path: []const u8) Outcome {
 
     const family = what.kind.family();
     const opener = openers.chosen(family, preferred(family)) orelse return .nobody_opens_it;
-    if (sys.spawnDetached(opener.path, &.{ opener.name, path }) < 0) return .would_not_start;
+    _ = sys.spawnDetached(opener.path, &.{ opener.name, path }) catch return .would_not_start;
     return .opened;
 }
 
@@ -65,6 +65,6 @@ fn run(path: []const u8) Outcome {
     const leaf = paths.base(path);
     const n = @min(leaf.len, name.len);
     @memcpy(name[0..n], leaf[0..n]);
-    if (sys.spawnDetached(path, &.{name[0..n]}) < 0) return .would_not_start;
+    _ = sys.spawnDetached(path, &.{name[0..n]}) catch return .would_not_start;
     return .opened;
 }

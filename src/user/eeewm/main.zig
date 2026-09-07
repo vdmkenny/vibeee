@@ -494,7 +494,7 @@ fn run() noreturn {
                 // focused: a window on screen owns the key, and a program
                 // with its own help would never see it otherwise.
                 if (event.pressed) {
-                    _ = sys.spawnDetached("/bin/settings", &.{ "settings", "help" });
+                    _ = sys.spawnDetached("/bin/settings", &.{ "settings", "help" }) catch {};
                 }
             } else {
                 postToFocused(.{ .tag = .key, .body = .{ .key = event } });
@@ -798,7 +798,7 @@ fn handleKey(event: sys.KeyEvent) void {
 /// list, and two of them would drift the first time one grew a row.
 fn perform(action: bindings.Action) void {
     switch (action) {
-        .terminal => _ = sys.spawnDetached("/bin/eterm", &.{"eterm"}),
+        .terminal => _ = sys.spawnDetached("/bin/eterm", &.{"eterm"}) catch {},
         .launcher => bar.openLauncher(&desktop),
         .focus_bar => bar.focus(&desktop),
 
@@ -953,7 +953,7 @@ fn serve() bool {
         const reply = dispatch(message.sender, req, &message);
 
         var answer = sys.Message.init(std.mem.asBytes(&reply.rep), reply.handles);
-        _ = sys.replyMsg(service, request.token, &answer);
+        sys.replyMsg(service, request.token, &answer) catch {};
     }
 
     return handled;
@@ -1062,9 +1062,8 @@ fn openFonts() !void {
     // What the file is before it is read, so a segment is asked for once and
     // at the right size.
     var record: [512]u8 = undefined;
-    const told = sys.stat(FONTS, &record);
-    if (told <= 0) return error.NoFile;
-    const entry = sys.Dirent.decode(&record, @intCast(told)) orelse return error.NoFile;
+    const told = sys.stat(FONTS, &record) catch return error.NoFile;
+    const entry = sys.Dirent.decode(&record, told) orelse return error.NoFile;
     if (entry.size == 0 or entry.size > FONTS_MAX) return error.BadFile;
 
     const created = sys.shmCreate(entry.size) catch return error.NoMemory;

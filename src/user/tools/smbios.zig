@@ -65,14 +65,13 @@ const string_fields = [_]StringField{
 var table: [8192]u8 = [_]u8{0} ** 8192;
 
 pub fn run(_: []const []const u8) void {
-    const n = sys.sysinfo("smbios", &table);
-    if (n <= 0) {
+    const n = sys.sysinfo("smbios", &table) catch {
         out.text("smbios: no SMBIOS table\n");
         out.flush();
         return;
-    }
+    };
 
-    const data = table[0..@intCast(n)];
+    const data = table[0..n];
     out.text("SMBIOS structure table, ");
     out.decimal(data.len);
     out.text(" bytes\n\n");

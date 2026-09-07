@@ -99,7 +99,7 @@ fn shellMain() noreturn {
     // The console stops being a broadcast and becomes this conversation:
     // from here on, only the shell and what it starts render; services'
     // lines go to the ring, where `log` reads them.
-    _ = sys.consoleClaim();
+    sys.consoleClaim() catch {};
 
     out.text("vibeee shell. 'help' for builtins, 'tools' for system tools.\n");
     out.flush();
@@ -109,7 +109,7 @@ fn shellMain() noreturn {
     // A session belongs where the user's things are. Not fatal if it is
     // missing: a shell that refused to start because a directory was gone
     // would be a shell that could not be used to put it back.
-    _ = sys.chdir(HOME);
+    sys.chdir(HOME) catch {};
 
     var cwd: [256]u8 = @splat(0);
     // Room for the path, the arrow's three bytes, and the escapes that colour
@@ -118,8 +118,7 @@ fn shellMain() noreturn {
 
     while (true) {
         var prompt = str.Builder{ .buf = &prompt_buf };
-        const dir_len = sys.getcwd(&cwd);
-        if (dir_len > 0) prompt.text(shortened(cwd[0..@intCast(dir_len)]));
+        if (sys.getcwd(&cwd)) |dir_len| prompt.text(shortened(cwd[0..dir_len])) else |_| {}
         prompt.byte(' ');
 
         // The one coloured mark on the line, and the only thing that says this
@@ -451,18 +450,16 @@ fn spawnStage(words: []const []const u8, from: i32, into: i32) ?u32 {
         return null;
     }
 
-    const status = spawnProgram(words, .{
+    return spawnProgram(words, .{
         .flags = @bitCast(sys.SpawnFlags{ .detached = true }),
         .stdin = from,
         .stdout = into,
-    });
-    if (status < 0) {
+    }) catch {
         out.text("vsh: ");
         out.text(words[0]);
         out.text(": not found\n");
         return null;
-    }
-    return @intCast(status);
+    };
 }
 
 /// Run a command, sending its output to `into`.
@@ -480,14 +477,17 @@ fn run(words: []const []const u8, into: i32) void {
         }
     }
 
-    const status = spawnProgram(words, .{ .stdout = into });
-    last_status = if (status < 0) NOT_FOUND else @truncate(@as(usize, @intCast(status)));
-
-    if (status < 0) {
+    const status = spawnProgram(words, .{ .stdout = into }) catch {
+        last_status = NOT_FOUND;
         out.text("vsh: ");
         out.text(words[0]);
         out.text(": not found\n");
-    } else if (status != 0) {
+        out.flush();
+        return;
+    };
+    last_status = @truncate(status);
+
+    if (status != 0) {
         // Reporting a non-zero status matters without a `$?` to inspect.
         out.text("vsh: exit status ");
         out.decimal(@intCast(status));
@@ -502,15 +502,16 @@ fn run(words: []const []const u8, into: i32) void {
 /// multicall binary. FAT has no symlinks, so the usual argv[0] trick is
 /// unavailable and the shell does the dispatch instead, which is cheaper than
 /// shipping a copy of the same image under every command name.
-fn spawnProgram(words: []const []const u8, streams: sys.Spawn) isize {
+fn spawnProgram(words: []const []const u8, streams: sys.Spawn) sys.Refusal!u32 {
     var path_buf: [MAX_LINE]u8 = undefined;
     const path = resolvePath(words[0], &path_buf);
 
     // A child is told what this shell was told. Nothing here adds to it:
     // the shell has no way to set a variable yet, so passing it on is the
     // whole of what it does with one.
-    const direct = sys.spawnEnv(path, words, env.all(), streams);
-    if (direct >= 0) return direct;
+    // The name as given first, then the same name inside the tools binary:
+    // every tool is one program, and the shell finds it either way.
+    if (sys.spawnEnv(path, words, env.all(), streams)) |started| return started else |_| {}
 
     var argv: [MAX_WORDS + 1][]const u8 = undefined;
     argv[0] = "tools";
@@ -562,22 +563,21 @@ fn cmdHelp(_: []const []const u8) u8 {
 fn cmdCd(words: []const []const u8) u8 {
     // Bare `cd` goes home, which is where a session starts.
     const target = if (words.len > 1) words[1] else HOME;
-    if (sys.chdir(target) < 0) {
+    sys.chdir(target) catch {
         out.text("cd: ");
         out.text(target);
         out.text(": no such directory\n");
         return 1;
-    }
+    };
     return 0;
 }
 
 fn cmdPwd(_: []const []const u8) u8 {
     var buf: [256]u8 = [_]u8{0} ** 256;
-    const n = sys.getcwd(&buf);
-    if (n > 0) {
-        out.text(buf[0..@intCast(n)]);
+    if (sys.getcwd(&buf)) |n| {
+        out.text(buf[0..n]);
         out.byte('\n');
-    }
+    } else |_| {}
     return 0;
 }
 

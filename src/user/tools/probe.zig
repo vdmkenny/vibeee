@@ -99,11 +99,10 @@ const ROUNDS = 200;
 
 fn balance() void {
     // Detached: the server outlives this call rather than being waited for.
-    const server = sys.spawnDetached("/bin/tools", &.{ "tools", "probe", "echo" });
-    if (server < 0) {
+    _ = sys.spawnDetached("/bin/tools", &.{ "tools", "probe", "echo" }) catch {
         out.text("  ..   handles over a channel: nothing to call\n");
         return;
-    }
+    };
 
     // The server has to have published its name before the first connect.
     const channel = connect() orelse {
@@ -116,7 +115,7 @@ fn balance() void {
         const e = sys.eventCreate() catch break;
         const msg = abi.Message.init("x", &.{e});
         var answer: abi.Message = .{};
-        _ = sys.callMsg(channel, &msg, &answer);
+        sys.callMsg(channel, &msg, &answer) catch {};
         sys.close(e);
     }
     const after = held();
@@ -145,11 +144,10 @@ fn balance() void {
 /// How many bytes the kernel is holding in objects right now.
 fn held() usize {
     var buf: [64]u8 = undefined;
-    const n = sys.sysinfo("heap", &buf);
-    if (n <= 0) return 0;
+    const n = sys.sysinfo("heap", &buf) catch return 0;
 
     // "<n> bytes live, <n> frames".
-    const said = buf[0..@intCast(n)];
+    const said = buf[0..n];
     const end = std.mem.indexOfScalar(u8, said, ' ') orelse return 0;
     return std.fmt.parseInt(usize, said[0..end], 10) catch 0;
 }
@@ -200,7 +198,7 @@ fn echo() void {
         };
         idle = 0;
         for (msg.handleSlice()) |number| sys.close(number);
-        _ = sys.reply(@intCast(channel), got.token, "");
+        sys.reply(@intCast(channel), got.token, "") catch {};
     }
 }
 
@@ -331,7 +329,11 @@ fn crookedProgram() isize {
     sys.close(file);
     if (wrote != image.len) return NOT_RUN;
 
-    return sys.spawn(CROOKED, &.{CROOKED});
+    _ = sys.spawn(CROOKED, &.{CROOKED}) catch |why| return abi.Errno.value(switch (why) {
+        error.Invalid => .inval,
+        else => .io,
+    });
+    return 0;
 }
 
 const CROOKED = "/tmp/crooked";
@@ -395,9 +397,8 @@ const Elf = struct {
 /// key, and would flush what it had not read on the way out: a program could
 /// take the desktop's keyboard by asking for it.
 fn heldKeyboard() isize {
-    _ = sys.unlink(HOLDING);
-    const holder = sys.spawnDetached("/bin/tools", &.{ "tools", "probe", "hold" });
-    if (holder < 0) return NOT_RUN;
+    sys.unlink(HOLDING) catch {};
+    _ = sys.spawnDetached("/bin/tools", &.{ "tools", "probe", "hold" }) catch return NOT_RUN;
 
     // Wait to be told the keyboard is taken. Asking before that would claim
     // it here, and the case would then be about which of the two went first

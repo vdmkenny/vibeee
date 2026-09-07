@@ -651,10 +651,10 @@ fn save() void {
         return;
     }
 
-    if (sys.rename(temp, path()) < 0) {
+    sys.rename(temp, path()) catch {
         say("Cannot replace the old file.");
         return;
-    }
+    };
     _ = sys.sync();
 
     saved_len = text_len;

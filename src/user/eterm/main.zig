@@ -104,7 +104,7 @@ fn startShell() void {
     to_shell = input.write;
     from_shell = output.read;
 
-    const pid = sys.spawnStreams(SHELL, &.{"vsh"}, .{
+    const started = sys.spawnStreams(SHELL, &.{"vsh"}, .{
         .flags = @bitCast(abi.SpawnFlags{ .detached = true }),
         .stdin = @intCast(input.read),
         .stdout = @intCast(output.write),
@@ -117,14 +117,14 @@ fn startShell() void {
     sys.close(input.read);
     sys.close(output.write);
 
-    if (pid < 0) {
+    const pid = started catch {
         show("eterm: cannot start ");
         show(SHELL);
         show("\r\n");
         return;
-    }
+    };
 
-    shell_pid = @intCast(pid);
+    shell_pid = pid;
     running = true;
 }
 

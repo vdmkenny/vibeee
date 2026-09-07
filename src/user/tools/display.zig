@@ -88,15 +88,17 @@ fn request(spec: []const u8) void {
 
     // Zero bits per pixel means whatever the adapter prefers, which for
     // everything here is 32.
-    const result = sys.setMode(@intCast(width), @intCast(height), 0);
-    out.text(switch (result) {
-        0 => "display: mode set\n",
-        -1 => "display: no driver can set modes on this adapter; " ++
-            "what the firmware left is what there is\n",
-        -16 => "display: something owns the screen; close it first\n",
-        -22 => "display: this adapter cannot do that size\n",
-        else => "display: the adapter refused\n",
-    });
+    if (sys.setMode(@intCast(width), @intCast(height), 0)) |_| {
+        out.text("display: mode set\n");
+    } else |why| {
+        out.text(switch (why) {
+            error.NotPermitted => "display: no driver can set modes on this adapter; " ++
+                "what the firmware left is what there is\n",
+            error.Busy => "display: something owns the screen; close it first\n",
+            error.Invalid => "display: this adapter cannot do that size\n",
+            else => "display: the adapter refused\n",
+        });
+    }
     out.flush();
 }
 

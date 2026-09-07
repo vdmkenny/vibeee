@@ -61,7 +61,7 @@ pub fn Endpoint(
 
         fn exchange(channel: u32, request: Req, into: *Rep, reply: *sys.Message) CallError!void {
             const message = sys.Message.init(std.mem.asBytes(&request), &.{});
-            if (sys.callMsg(channel, &message, reply) < 0) return error.Refused;
+            sys.callMsg(channel, &message, reply) catch return error.Refused;
 
             const bytes = reply.bytes();
             if (bytes.len < @sizeOf(Rep)) return error.Refused;
@@ -82,13 +82,13 @@ pub fn Endpoint(
         /// Answer one request.
         pub fn answer(channel: u32, token: u32, reply: *const Rep) void {
             var message = sys.Message.init(std.mem.asBytes(reply), &.{});
-            _ = sys.replyMsg(channel, token, &message);
+            sys.replyMsg(channel, token, &message) catch {};
         }
 
         /// Answer one request, handing over handles with it.
         pub fn answerWith(channel: u32, token: u32, reply: *const Rep, handles: []const u32) void {
             var message = sys.Message.init(std.mem.asBytes(reply), handles);
-            _ = sys.replyMsg(channel, token, &message);
+            sys.replyMsg(channel, token, &message) catch {};
         }
 
         comptime {

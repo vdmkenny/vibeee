@@ -284,17 +284,15 @@ fn startProcess(slot: *Bound) bool {
     const pid = sys.spawnStreams(manifest.binary, &.{manifest.name}, .{
         .flags = @bitCast(sys.SpawnFlags{ .detached = true }),
         .caps = capsFrom(manifest.caps),
-    });
-
-    if (pid < 0) {
+    }) catch {
         log.begin("devmgd", .bad);
         out.text(manifest.name);
         out.text(": cannot start");
         log.end();
         slot.state = .stopped;
         return false;
-    }
-    slot.pid = @intCast(pid);
+    };
+    slot.pid = pid;
     slot.state = .running;
     return true;
 }
@@ -490,7 +488,7 @@ fn control(req: *const proto.Req, token: u32, wanted: proto.DriverState) void {
             },
             .stopped => {
                 if (b.state != .running) return refuse(token);
-                _ = sys.kill(b.pid, .now);
+                sys.kill(b.pid, .now) catch {};
                 b.pid = 0;
                 b.state = .stopped;
             },
@@ -509,7 +507,7 @@ fn rescan(token: u32) void {
     // kernel's to say and it only finds out by looking, so a rescan that
     // read the manifests alone would rebind faithfully against a table
     // still describing the machine as it was at boot.
-    _ = sys.pciRescan();
+    sys.pciRescan() catch {};
     readManifests();
     bindDevices();
     replyBody(token, .{ .none = 0 });

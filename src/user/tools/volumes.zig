@@ -50,16 +50,16 @@ pub fn unmount(args: []const []const u8) void {
 /// Say what did not work and why. The kernel already knows the reason; a tool
 /// that swallowed it and said "cannot mount" would be throwing away the only
 /// part of the answer worth having.
-fn report(tool: []const u8, subject: []const u8, result: isize) void {
-    if (result >= 0) return;
-
-    out.text(tool);
-    out.text(": ");
-    out.text(subject);
-    out.text(": ");
-    out.text(sys.reasonFor(result));
-    out.byte('\n');
-    out.flush();
+fn report(tool: []const u8, subject: []const u8, outcome: sys.Refusal!void) void {
+    outcome catch |why| {
+        out.text(tool);
+        out.text(": ");
+        out.text(subject);
+        out.text(": ");
+        out.text(sys.reasonOf(why));
+        out.byte('\n');
+        out.flush();
+    };
 }
 
 fn usage() void {

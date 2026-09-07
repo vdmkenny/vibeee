@@ -89,7 +89,7 @@ pub const Connection = struct {
 
         var reply: sys.Message = .{};
         const message = sys.Message.init(std.mem.asBytes(&req), &.{});
-        if (sys.callMsg(self.channel, &message, &reply) < 0) return error.Refused;
+        sys.callMsg(self.channel, &message, &reply) catch return error.Refused;
 
         const rep: *const wm.Rep = @ptrCast(@alignCast(&reply.data));
         if (rep.status == .bad_version) return error.VersionMismatch;
@@ -397,7 +397,7 @@ pub const Connection = struct {
     ) Error!wm.Rep {
         var reply: sys.Message = .{};
         const message = sys.Message.init(std.mem.asBytes(req), handles);
-        if (sys.callMsg(self.channel, &message, &reply) < 0) return error.Refused;
+        sys.callMsg(self.channel, &message, &reply) catch return error.Refused;
 
         // A reply is what it says it holds. Read out of the buffer without
         // asking, a reply that carried nothing read as zeroes, and a status

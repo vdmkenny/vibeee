@@ -303,7 +303,7 @@ const Device = struct {
     /// "own" at reset is its own, and this process's is the truth it acts on.
     tx_at: usize = 0,
     pending: [TX_SLOTS]bool = @splat(false),
-    dma_handle: ?u32 = null,
+    handle: ?u32 = null,
     started: bool = false,
 };
 
@@ -335,10 +335,10 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         log.fail("rtl8139", "BAR0 is outside the x86 I/O port space");
         return false;
     }
-    if (sys.ioportGrant(@intCast(base), IO_PORTS) < 0) {
+    sys.ioportGrant(@intCast(base), IO_PORTS) catch {
         log.fail("rtl8139", "cannot reach its ports");
         return false;
-    }
+    };
     pci.enableIoAndMaster(loc);
     var keep_pci_enabled = false;
     defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
@@ -348,19 +348,17 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     readMac(dev);
 
     var phys: lib.Phys = .none;
-    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
-    if (handle < 0) {
-        log.failed("rtl8139", "cannot allocate DMA rings", handle);
+    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys) catch |why| {
+        log.refused("rtl8139", "cannot allocate DMA rings", why);
         return false;
-    }
-    const dma_handle: u32 = @intCast(handle);
+    };
     if (phys.addr() % @alignOf(Arena) != 0) {
-        sys.close(dma_handle);
+        sys.close(handle);
         log.fail("rtl8139", "DMA memory is not aligned for the adapter");
         return false;
     }
     const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        sys.close(dma_handle);
+        sys.close(handle);
         log.fail("rtl8139", "cannot map DMA rings");
         return false;
     };
@@ -377,7 +375,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     device.rx_at = 0;
     device.tx_at = 0;
     device.pending = @splat(false);
-    device.dma_handle = dma_handle;
+    device.handle = handle;
     device.started = false;
 
     attached = true;
@@ -472,8 +470,8 @@ pub fn stop(nic: *NicDev) void {
     device.tx_at = 0;
     device.pending = @splat(false);
     pci.disableInterruptAndMaster(nic.location);
-    if (device.dma_handle) |handle| sys.close(handle);
-    device.dma_handle = null;
+    if (device.handle) |handle| sys.close(handle);
+    device.handle = null;
     device.rx_phys = .none;
     device.tx_phys = @splat(0);
     attached = false;

@@ -80,9 +80,8 @@ pub const Roots = struct {
     /// decides which authorities have expired.
     pub fn open(gpa: std.mem.Allocator, now: i64) Error!Roots {
         var record: [512]u8 = undefined;
-        const told = sys.stat(STORE, &record);
-        if (told <= 0) return error.NoAuthorities;
-        const entry = sys.Dirent.decode(&record, @intCast(told)) orelse return error.NoAuthorities;
+        const told = sys.stat(STORE, &record) catch return error.NoAuthorities;
+        const entry = sys.Dirent.decode(&record, told) orelse return error.NoAuthorities;
         if (entry.size == 0 or entry.size > STORE_MAX) return error.NoAuthorities;
 
         const bytes = gpa.alloc(u8, entry.size) catch return error.OutOfMemory;

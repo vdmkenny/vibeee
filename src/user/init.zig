@@ -194,9 +194,8 @@ var after_boot_done = false;
 /// `netlate` stay as short names for the services they were coined for.
 fn holdFromCmdline() void {
     var buf: [256]u8 = @splat(0);
-    const n = sys.sysinfo("cmdline", &buf);
-    if (n <= 0) return;
-    const line = buf[0..@intCast(n)];
+    const n = sys.sysinfo("cmdline", &buf) catch return;
+    const line = buf[0..n];
 
     // Generic forms, so any service, today's and the next driver stack's,
     // can be held without init growing a token per service: `no.<name>` keeps
@@ -465,14 +464,13 @@ fn start(state: *State) void {
     const pid = sys.spawnEnv(state.service.binary, &.{state.service.name}, &ENVIRONMENT, .{
         .flags = @bitCast(sys.SpawnFlags{ .detached = true }),
         .caps = capsFrom(state.service.caps),
-    });
-    if (pid < 0) {
+    }) catch {
         report(state.service.name, "cannot start");
         state.phase = .failed;
         return;
-    }
+    };
 
-    state.pid = @intCast(pid);
+    state.pid = pid;
     state.started_us = sys.clockMicros();
 
     // A service that says what it registers is only up once the name is there.
@@ -536,17 +534,18 @@ fn awaitReady(state: *State) void {
 /// One that was asked has until its deadline; `enforceStops` ends it then.
 /// The caller sets the phase, which says why it is going.
 fn putDown(state: *State) bool {
-    const asked = sys.kill(state.pid, .ask);
-    if (asked >= 0) {
-        state.stop_deadline_us = sys.clockMicros() + STOP_WINDOW_US;
+    sys.kill(state.pid, .ask) catch |why| {
+        // Watching nothing, so it cannot be asked: ended, as one that does
+        // not answer would be at its deadline. Said, because a service that
+        // cannot be asked is a service to fix.
+        if (why != error.NotConnected) return false;
+        report(state.service.name, "cannot be asked to stop; ended");
+        sys.kill(state.pid, .now) catch return false;
         return true;
-    }
-    if (asked != lib.syscalls.Errno.notconn.value()) return false;
-    // Watching nothing, so it cannot be asked: ended, as one that does not
-    // answer would be at its deadline. Said, because a service that cannot
-    // be asked is a service to fix.
-    report(state.service.name, "cannot be asked to stop; ended");
-    return sys.kill(state.pid, .now) >= 0;
+    };
+
+    state.stop_deadline_us = sys.clockMicros() + STOP_WINDOW_US;
+    return true;
 }
 
 /// End what was asked to stop and has not gone by its deadline.
@@ -557,7 +556,7 @@ fn enforceStops() void {
         state.stop_deadline_us = 0;
         if (!state.phase.alive()) continue;
         report(state.service.name, "did not stop when asked; ended");
-        _ = sys.kill(state.pid, .now);
+        sys.kill(state.pid, .now) catch {};
     }
 }
 
@@ -617,10 +616,10 @@ fn maybeReportBoot() void {
 /// machine with no serial port, the milestone itself is the marker of where
 /// a boot that stops has stopped.
 fn reportBoot() void {
-    if (sys.bootOk() < 0) {
+    sys.bootOk() catch {
         report("init", "boot_ok refused; the boot watchdog stays armed");
         return;
-    }
+    };
     report("init", "boot reported done");
 }
 
@@ -728,7 +727,7 @@ fn answerAll(channel: u32) void {
 
         var reply = proto.Rep{};
         answer(&message, &reply);
-        _ = sys.reply(channel, request.token, std.mem.asBytes(&reply));
+        sys.reply(channel, request.token, std.mem.asBytes(&reply)) catch {};
     }
 }
 
@@ -903,10 +902,9 @@ fn readDisabled() void {
 /// edited.
 fn volatileRoot() bool {
     var buf: [512]u8 = @splat(0);
-    const n = sys.sysinfo("mounts", &buf);
-    if (n <= 0) return true;
+    const n = sys.sysinfo("mounts", &buf) catch return true;
 
-    var lines = str.lines(buf[0..@intCast(n)]);
+    var lines = str.lines(buf[0..n]);
     while (lines.next()) |line| {
         if (!std.mem.startsWith(u8, line, "/ on ")) continue;
         return (std.mem.indexOf(u8, line, "volatile") != null);

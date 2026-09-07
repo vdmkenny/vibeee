@@ -21,9 +21,8 @@ fn load() void {
     loaded = true;
 
     var buf: [48]u8 = undefined;
-    const n = sys.sysinfo("acpi.pm", &buf);
-    if (n <= 0) return;
-    const text = buf[0..@intCast(n)];
+    const n = sys.sysinfo("acpi.pm", &buf) catch return;
+    const text = buf[0..n];
 
     var words = std.mem.splitScalar(u8, text, ' ');
     while (words.next()) |base_word| {

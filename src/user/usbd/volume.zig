@@ -56,21 +56,20 @@ pub fn offer(disk: *umass.Disk) bool {
         .flags = .{ .removable = disk.inquiry.removable },
     };
 
-    const volume = sys.volumeAttach(slot.nameSlice(), &info);
-    if (volume < 0) {
+    const volume = sys.volumeAttach(slot.nameSlice(), &info) catch {
         log.warn("usbd", "the kernel would not take the volume");
         return false;
-    }
+    };
 
     const area = sys.shmMap(@intCast(info.data), .{ .writable = true }) orelse {
-        sys.volumeDetach(@intCast(volume));
+        sys.volumeDetach(volume);
         log.warn("usbd", "the volume's shared area would not map");
         return false;
     };
 
     slot.* = .{
         .live = true,
-        .volume = @intCast(volume),
+        .volume = volume,
         .address = disk.address,
         .doorbell = @intCast(info.doorbell),
         .area = area,

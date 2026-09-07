@@ -98,11 +98,11 @@ pub fn failed(key: []const u8, message: []const u8, result: isize) void {
 }
 
 /// The same for a call that answered with why rather than with a number.
-pub fn refused(key: []const u8, message: []const u8, why: anyerror) void {
+pub fn refused(key: []const u8, message: []const u8, why: syscalls.Refusal) void {
     begin(key, .bad);
     out.text(message);
     out.text(": ");
-    out.text(@errorName(why));
+    out.text(syscalls.reasonOf(why));
     end();
 }
 
@@ -173,7 +173,7 @@ fn tee() void {
     @memcpy(line[n..][0..take], segment[0..take]);
     n += take;
 
-    _ = sys.log(line[0..n]);
+    sys.log(line[0..n]) catch {};
 }
 
 pub fn end() void {

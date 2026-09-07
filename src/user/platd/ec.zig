@@ -211,8 +211,8 @@ pub fn bind() void {
         return;
     }
 
-    _ = sys.ioportGrant(data_port, 1);
-    _ = sys.ioportGrant(status_port, 1);
+    sys.ioportGrant(data_port, 1) catch {};
+    sys.ioportGrant(status_port, 1) catch {};
 
     var value: u64 = 0;
     if (uacpi.uacpi_eval_simple_integer(found, "_GPE", &value) == .ok) {
@@ -270,9 +270,8 @@ fn takePorts(_: ?*anyopaque, resource: *const uacpi.Resource) callconv(.c) uacpi
 /// made upstream, where the machine was identified.
 fn correctedPorts() ?[2]u16 {
     var buf: [16]u8 = undefined;
-    const n = sys.sysinfo("quirks.ec", &buf);
-    if (n <= 0) return null;
-    const text = buf[0..@intCast(n)];
+    const n = sys.sysinfo("quirks.ec", &buf) catch return null;
+    const text = buf[0..n];
 
     const sep = std.mem.indexOfScalar(u8, text, ' ') orelse return null;
     const data = std.fmt.parseUnsigned(u16, text[0..sep], 16) catch return null;

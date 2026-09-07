@@ -231,13 +231,13 @@ fn labelFor(driver_name: []const u8) lib.ifmatch.Name {
 
 /// Map, open and interrupt-wire one interface.
 fn attach(iface: *dev.NicDev) bool {
-    if (sys.claimDevice(iface.location) < 0) {
+    sys.claimDevice(iface.location) catch {
         log.warn("netd", "the adapter is already claimed");
         return false;
-    }
+    };
     var keep_claim = false;
     defer if (!keep_claim) {
-        _ = sys.releaseDevice(iface.location);
+        sys.releaseDevice(iface.location) catch {};
     };
 
     const line = routedLine(iface);
@@ -315,7 +315,7 @@ fn detach(iface: *dev.NicDev) void {
     dev.radioGone(iface);
     iface.ops.stop(iface);
     releaseIrq(iface);
-    _ = sys.releaseDevice(iface.location);
+    sys.releaseDevice(iface.location) catch {};
 }
 
 /// Stop waiting on an interface's line, and give the line back when that was
@@ -680,14 +680,14 @@ fn handWatch(channel: u32, token: u32) void {
     // every waiter ends up holding the same one.
     out_msg.handles[0] = address_event;
     out_msg.handle_count = 1;
-    _ = sys.replyMsg(channel, token, &out_msg);
+    sys.replyMsg(channel, token, &out_msg) catch {};
 }
 
 fn replyWith(channel: u32, token: u32, reply: *const proto.Rep) void {
     var out_msg = sys.Message{};
     @memcpy(out_msg.data[0..@sizeOf(proto.Rep)], std.mem.asBytes(reply));
     out_msg.len = @sizeOf(proto.Rep);
-    _ = sys.replyMsg(channel, token, &out_msg);
+    sys.replyMsg(channel, token, &out_msg) catch {};
 }
 
 /// The one echo in flight and who is owed its answer. The stack holds one

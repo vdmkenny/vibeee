@@ -179,7 +179,7 @@ fn typed(device: *Device, bytes: []const u8) void {
     // An overflowed report changes nothing, and `changes` says so by
     // walking against the old report; the old report is what stands.
     if (!now.overflowed()) device.was = now;
-    if (count != 0) _ = sys.keyPost(keys[0..count]);
+    if (count != 0) sys.keyPost(keys[0..count]) catch {};
 }
 
 /// One mouse report becomes one movement. Sent even when nothing moved if
@@ -205,7 +205,7 @@ fn moved_by(device: *Device, bytes: []const u8) void {
         },
         .buttons_changed = changed,
     };
-    _ = sys.pointerPost(&.{report});
+    sys.pointerPost(&.{report}) catch {};
 }
 
 /// Let go of everything a device was holding, because it is gone.
@@ -222,5 +222,5 @@ fn release(device: *Device) void {
         keys[count] = .{ .code = code, .pressed = false };
         count += 1;
     }
-    if (count != 0) _ = sys.keyPost(keys[0..count]);
+    if (count != 0) sys.keyPost(keys[0..count]) catch {};
 }

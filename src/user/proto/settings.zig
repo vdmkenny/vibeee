@@ -239,7 +239,7 @@ pub fn load(comptime domain: []const u8) Domain(domain) {
 /// doing it here means the one place that knows a setting has changed is the
 /// one place that says so.
 pub fn applyInput() void {
-    _ = sys.setKeymap(load("input").keymap);
+    sys.setKeymap(load("input").keymap) catch {};
 }
 
 pub fn set(key: []const u8, value: []const u8) Error!void {

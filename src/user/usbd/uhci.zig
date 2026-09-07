@@ -394,10 +394,14 @@ fn open(self: *Unit, loc: pci.Location) bool {
         return false;
     }
     const base = window.base();
-    if (base == 0 or sys.ioportGrant(@intCast(base), IO_BYTES) < 0) {
+    if (base == 0) {
         log.fail(name, "cannot reach the controller's registers");
         return false;
     }
+    sys.ioportGrant(@intCast(base), IO_BYTES) catch {
+        log.fail(name, "cannot reach the controller's registers");
+        return false;
+    };
 
     self.controller.base = @intCast(base);
     self.controller.location = loc;

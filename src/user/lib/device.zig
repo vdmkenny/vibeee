@@ -23,15 +23,14 @@ pub fn Dma(comptime T: type) type {
         /// that cannot get its rings has to say which driver it was.
         pub fn alloc(tag: []const u8) ?Self {
             var phys: lib.Phys = .none;
-            const handle = sys.dmaAlloc(@sizeOf(T), &phys);
-            if (handle < 0) {
+            const handle = sys.dmaAlloc(@sizeOf(T), &phys) catch {
                 log.fail(tag, "cannot allocate DMA memory");
                 return null;
-            }
+            };
             // The handle goes as soon as the memory is mapped: the mapping
             // holds the segment as much as the handle does, and a handle is
             // one of the sixty-four a process has.
-            defer sys.close(@intCast(handle));
+            defer sys.close(handle);
 
             const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
                 log.fail(tag, "cannot map DMA memory");

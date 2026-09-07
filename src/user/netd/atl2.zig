@@ -525,11 +525,10 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     };
 
     var phys: lib.Phys = .none;
-    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys);
-    if (handle < 0) {
-        log.failed("atl2", "cannot allocate DMA rings", handle);
+    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys) catch |why| {
+        log.refused("atl2", "cannot allocate DMA rings", why);
         return false;
-    }
+    };
     // DMA memory is page-granular, so the 128-byte alignment the receive
     // slots demand always holds. Checked rather than adjusted: an adjusted
     // physical base without the same shift on the mapping would have the CPU

@@ -78,7 +78,7 @@ fn serve(channel: u32) noreturn {
         @memcpy(reply.data[0..@sizeOf(settings.Rep)], std.mem.asBytes(&body));
         reply.len = @sizeOf(settings.Rep);
 
-        _ = sys.replyMsg(channel, request.token, &reply);
+        sys.replyMsg(channel, request.token, &reply) catch {};
     }
 }
 
@@ -190,7 +190,7 @@ fn write(to: []const u8, current: anytype) bool {
     staged.text(".new");
 
     if (!put(staged.done(), body.done())) return false;
-    if (sys.rename(staged.done(), to) < 0) return false;
+    sys.rename(staged.done(), to) catch return false;
     // The rename has repointed the name; the drive may still be holding the
     // sector that says so. A setting is acknowledged only once it is on the
     // medium, which is the whole of what makes it a setting rather than a

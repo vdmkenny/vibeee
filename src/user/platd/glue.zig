@@ -102,7 +102,7 @@ export fn uacpi_kernel_free(pointer: ?*anyopaque) callconv(.c) void {
 // a handle has to carry: the reads and writes that follow are offsets from it.
 
 export fn uacpi_kernel_io_map(base: u32, len: usize, out_handle: *?*anyopaque) callconv(.c) u32 {
-    if (sys.ioportGrant(@truncate(base), len) < 0) return Status.not_found.value();
+    sys.ioportGrant(@truncate(base), len) catch return Status.not_found.value();
 
     // Each range once, when it is first asked for. Which ports the bytecode
     // reaches is not knowable in advance, and the one named just before a

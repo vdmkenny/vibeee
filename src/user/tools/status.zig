@@ -158,12 +158,11 @@ pub fn kill(args: []const []const u8) void {
             out.text(": that is not a process\n");
             continue;
         };
-        const result = sys.kill(@intCast(pid), .now);
-        if (result < 0) {
+        sys.kill(@intCast(pid), .now) catch |why| {
             out.text("kill: ");
             out.decimal(pid);
-            out.text(if (result == -1) ": not allowed\n" else ": no such process\n");
-        }
+            out.text(if (why == error.NotPermitted) ": not allowed\n" else ": no such process\n");
+        };
     }
     out.flush();
 }

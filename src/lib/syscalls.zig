@@ -161,39 +161,38 @@ pub const Errno = enum(i32) {
         };
     }
 
-    /// What it means, for a person reading a tool's output.
-    ///
-    /// Separate from the `when` lines in the table below, which explain to
-    /// somebody writing against a call what that particular call means by an
-    /// error. This is what a tool prints when something did not work, and the
-    /// two are different sentences for different readers.
+    /// The same, for a caller holding a number rather than a refusal.
     pub fn reason(self: Errno) []const u8 {
-        return switch (self) {
-            .perm => "not allowed",
-            .noent => "no such file or directory",
-            .io => "the device failed",
-            .badf => "no such handle",
-            .nomem => "out of room",
-            .fault => "bad address",
-            .inval => "not a value that takes",
-            .exists => "already there",
-            .child => "no such child",
-            .busy => "in use",
-            .nodev => "the volume has been removed",
-            .notconn => "the process is not listening for the request",
-            .nospace => "the volume is full",
-            .pipe => "the other end has closed",
-            .nosys => "no such call",
-            .timedout => "timed out",
-        };
+        return reasonOf(self.toError());
     }
 };
 
-/// What a syscall result says went wrong, in words. Empty for a success, so a
-/// caller that got one has nothing to print.
-pub fn reasonFor(result: isize) []const u8 {
-    const err = Errno.of(result) orelse return "";
-    return err.reason();
+/// What a refusal means, for a person reading a tool's output.
+///
+/// Separate from the `when` lines in the table below, which explain to
+/// somebody writing against a call what that particular call means by an
+/// error. This is what a tool prints when something did not work, and the two
+/// are different sentences for different readers.
+pub fn reasonOf(why: Refusal) []const u8 {
+    return switch (why) {
+        error.NotPermitted => "not allowed",
+        error.NoSuchFile => "no such file or directory",
+        error.DeviceFailed => "the device failed",
+        error.BadHandle => "no such handle",
+        error.NoMemory => "out of room",
+        error.BadAddress => "bad address",
+        error.Invalid => "not a value that takes",
+        error.Exists => "already there",
+        error.NoChild => "no such child",
+        error.Busy => "in use",
+        error.NoDevice => "the volume has been removed",
+        error.NotConnected => "the process is not listening for the request",
+        error.NoSpace => "the volume is full",
+        error.BrokenPipe => "the other end has closed",
+        error.NotImplemented => "no such call",
+        error.TimedOut => "timed out",
+        error.Unknown => "the kernel gave a reason this build has no name for",
+    };
 }
 
 const E = struct {

@@ -215,7 +215,7 @@ fn powerOff() proto.Status {
     if (!stopEverything()) return .refused;
 
     log.note("platd", "power off: flushing done by the kernel");
-    if (sys.quiesce() < 0) return .refused;
+    sys.quiesce() catch return .refused;
 
     log.note("platd", "power off: asking the firmware to prepare");
     if (!step("_PTS", uacpi.uacpi_prepare_for_sleep_state(.soft_off))) return .refused;
@@ -234,7 +234,7 @@ fn restart() proto.Status {
     if (!stopEverything()) return .refused;
 
     log.note("platd", "reboot: flushing done by the kernel");
-    if (sys.quiesce() < 0) return .refused;
+    sys.quiesce() catch return .refused;
     if (uacpi.uacpi_reboot() != .ok) return .refused;
     return .refused;
 }
@@ -244,11 +244,10 @@ fn restart() proto.Status {
 /// the drivers, the shell, the supervisor, leaves first, releasing what
 /// only its exit releases.
 fn stopEverything() bool {
-    const left = sys.stopAll();
-    if (left < 0) {
-        log.failed("platd", "the kernel refused to stop the services", left);
+    const left = sys.stopAll() catch |why| {
+        log.refused("platd", "the kernel refused to stop the services", why);
         return false;
-    }
+    };
     if (left > 0) {
         var text: [64]u8 = undefined;
         const message = std.fmt.bufPrint(&text, "{d} thread(s) would not exit; carrying on", .{left}) catch

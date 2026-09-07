@@ -1245,12 +1245,10 @@ fn buildRings() bool {
     if (device.rings != null) return true;
 
     var phys: lib.Phys = .none;
-    const handle = sys.dmaAlloc(@sizeOf(Rings), &phys);
-    if (handle < 0) {
-        log.failed(name, "cannot allocate the descriptor chains", handle);
+    const owned = sys.dmaAlloc(@sizeOf(Rings), &phys) catch |why| {
+        log.refused(name, "cannot allocate the descriptor chains", why);
         return false;
-    }
-    const owned: u32 = @intCast(handle);
+    };
 
     if (!Chain.addressable(phys.addr()) or phys.addr() % @alignOf(Rings) != 0) {
         sys.close(owned);

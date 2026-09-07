@@ -71,33 +71,32 @@ pub export fn write(fd: c_int, buf: [*]const u8, count: usize) callconv(.c) isiz
 
 pub export fn lseek(fd: c_int, offset: c_long, whence: c_int) callconv(.c) c_long {
     if (fd < 0) return @intCast(errno.fail(errno.EBADF));
-    return @intCast(errno.wrap(sys.seek(@intCast(fd), offset, @intCast(whence))));
+    return @intCast(errno.wrap(sys.seekRaw(@intCast(fd), offset, @intCast(whence))));
 }
 
 export fn unlink(path: [*:0]const u8) callconv(.c) c_int {
-    return @intCast(errno.wrap(sys.unlink(span(path))));
+    return @intCast(errno.wrap(sys.unlinkRaw(span(path))));
 }
 
 export fn rename(from: [*:0]const u8, to: [*:0]const u8) callconv(.c) c_int {
-    return @intCast(errno.wrap(sys.rename(span(from), span(to))));
+    return @intCast(errno.wrap(sys.renameRaw(span(from), span(to))));
 }
 
 export fn mkdir(path: [*:0]const u8, mode: c_uint) callconv(.c) c_int {
     _ = mode;
-    return @intCast(errno.wrap(sys.mkdir(span(path))));
+    return @intCast(errno.wrap(sys.mkdirRaw(span(path))));
 }
 
 export fn chdir(path: [*:0]const u8) callconv(.c) c_int {
-    return @intCast(errno.wrap(sys.chdir(span(path))));
+    return @intCast(errno.wrap(sys.chdirRaw(span(path))));
 }
 
 export fn getcwd(buf: [*]u8, size: usize) callconv(.c) [*c]u8 {
-    const n = sys.getcwd(buf[0..size -| 1]);
-    if (n <= 0) {
+    const n = sys.getcwd(buf[0..size -| 1]) catch {
         _ = errno.fail(errno.EINVAL);
         return null;
-    }
-    buf[@intCast(n)] = 0;
+    };
+    buf[n] = 0;
     return buf;
 }
 
@@ -112,7 +111,7 @@ export fn getcwd(buf: [*]u8, size: usize) callconv(.c) [*c]u8 {
 /// buffering onto a terminal makes a program look like it has hung.
 pub export fn isatty(fd: c_int) callconv(.c) c_int {
     if (fd < 0) return 0;
-    if (sys.seek(@intCast(fd), 0, SEEK_CUR) >= 0) return 0;
+    if (sys.seekable(@intCast(fd))) return 0;
 
     // Asking left `errno` set from a call that was a question, not a failure.
     errno.set(0);

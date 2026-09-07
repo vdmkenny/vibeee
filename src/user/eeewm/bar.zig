@@ -1504,7 +1504,7 @@ fn heardAt(row: usize) ?usize {
 fn joinHeard(index: usize) void {
     const network = &heard[index];
     if (network.security != .open) {
-        _ = sys.spawnDetached("/bin/settings", &.{ "settings", "network" });
+        _ = sys.spawnDetached("/bin/settings", &.{ "settings", "network" }) catch {};
         return;
     }
     const radio = radio_index orelse return;
@@ -2423,9 +2423,9 @@ fn settingsFor(which: status.Indicator) ?panes.Section {
 /// opens on the wrong pane.
 fn openSettings(section: ?panes.Section) void {
     if (section) |which| {
-        _ = sys.spawnDetached("/bin/settings", &.{ "settings", @tagName(which) });
+        _ = sys.spawnDetached("/bin/settings", &.{ "settings", @tagName(which) }) catch {};
     } else {
-        _ = sys.spawnDetached("/bin/settings", &.{"settings"});
+        _ = sys.spawnDetached("/bin/settings", &.{"settings"}) catch {};
     }
 }
 
@@ -2439,7 +2439,7 @@ fn activate(choice: Found.What) Action {
             _ = sys.spawnDetached(
                 program.path,
                 &.{ program.name, program.anchors[where.anchor].arg },
-            );
+            ) catch {};
             break :blk .consumed;
         },
         .window => |index| .{ .focus_window = index },
@@ -2463,7 +2463,7 @@ fn reveal(choice: Found.What) Action {
 
     const path = files[which].pathSlice();
     const folder = path[0..@max(files[which].name_at -| 1, 1)];
-    _ = sys.spawnDetached("/bin/efm", &.{ "efm", folder });
+    _ = sys.spawnDetached("/bin/efm", &.{ "efm", folder }) catch {};
     return .consumed;
 }
 
@@ -2474,9 +2474,9 @@ fn activateEntry(index: usize) Action {
         .separator => .consumed,
         .run => |program| blk: {
             if (program.arg.len == 0) {
-                _ = sys.spawnDetached(program.path, &.{program.name});
+                _ = sys.spawnDetached(program.path, &.{program.name}) catch {};
             } else {
-                _ = sys.spawnDetached(program.path, &.{ program.name, program.arg });
+                _ = sys.spawnDetached(program.path, &.{ program.name, program.arg }) catch {};
             }
             break :blk .consumed;
         },

@@ -77,7 +77,7 @@ fn readInto(node: *Node, into: *proto.Battery) proto.Status {
 /// driver holds no machine knowledge of its own.
 fn percentLabelsCorrected() bool {
     var buf: [8]u8 = undefined;
-    return sys.sysinfo("quirks.battery", &buf) > 0;
+    return (sys.sysinfo("quirks.battery", &buf) catch 0) > 0;
 }
 
 /// Convert the fields the firmware reported as percentages into real

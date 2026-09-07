@@ -40,10 +40,10 @@ export fn stat(path: [*:0]const u8, into: ?*Stat) callconv(.c) c_int {
     const out = into orelse return @intCast(errno.fail(errno.EFAULT));
 
     var record: [512]u8 = undefined;
-    const n = sys.stat(string.spanOf(path), &record);
-    if (n <= 0) return @intCast(errno.fail(errno.ENOENT));
+    const n = sys.stat(string.spanOf(path), &record) catch
+        return @intCast(errno.fail(errno.ENOENT));
 
-    const entry = sys.Dirent.decode(&record, @intCast(n)) orelse
+    const entry = sys.Dirent.decode(&record, n) orelse
         return @intCast(errno.fail(errno.ENOENT));
 
     out.* = .{
@@ -60,7 +60,7 @@ export fn stat(path: [*:0]const u8, into: ?*Stat) callconv(.c) c_int {
 export fn access(path: [*:0]const u8, mode: c_int) callconv(.c) c_int {
     _ = mode;
     var record: [512]u8 = undefined;
-    if (sys.stat(string.spanOf(path), &record) <= 0) return @intCast(errno.fail(errno.ENOENT));
+    _ = sys.stat(string.spanOf(path), &record) catch return @intCast(errno.fail(errno.ENOENT));
     return 0;
 }
 

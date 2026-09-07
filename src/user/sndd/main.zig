@@ -133,10 +133,10 @@ fn probe() void {
 var assigned: usize = 0;
 
 fn attach(driver: Driver, location: pci.Location) void {
-    if (sys.claimDevice(location) < 0) {
+    sys.claimDevice(location) catch {
         log.warn("sndd", "the device is already claimed");
         return;
-    }
+    };
 
     var candidate = dev.PcmDev{
         .name = driver.name,
@@ -145,7 +145,7 @@ fn attach(driver: Driver, location: pci.Location) void {
     };
 
     if (!driver.ops.open(location)) {
-        _ = sys.releaseDevice(location);
+        sys.releaseDevice(location) catch {};
         return;
     }
 
@@ -163,12 +163,12 @@ fn attach(driver: Driver, location: pci.Location) void {
             out.text(" refused: ");
             out.text(@errorName(err));
             log.end();
-            _ = sys.releaseDevice(location);
+            sys.releaseDevice(location) catch {};
             return;
         }
     } else {
         log.warn("sndd", "no interrupt line; device unused");
-        _ = sys.releaseDevice(location);
+        sys.releaseDevice(location) catch {};
         return;
     }
 
@@ -502,7 +502,7 @@ fn portCreate(req: *const proto.Req, sender: u32, token: u32) void {
 
     var reply = proto.Rep{ .body = .{ .port = port } };
     var answer = sys.Message.init(std.mem.asBytes(&reply), &.{ ring.shm, ring.ev, doorbell });
-    _ = sys.replyMsg(service, token, &answer);
+    sys.replyMsg(service, token, &answer) catch {};
 }
 
 fn portDrop(req: *const proto.Req, sender: u32, token: u32) void {

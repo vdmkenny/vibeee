@@ -368,11 +368,10 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
 
     // One physically contiguous run for descriptors and buffers.
     var phys: lib.Phys = .none;
-    const handle = sys.dmaAlloc(@sizeOf(Rings), &phys);
-    if (handle < 0) {
-        log.failed("e1000", "cannot allocate DMA rings", handle);
+    const handle = sys.dmaAlloc(@sizeOf(Rings), &phys) catch |why| {
+        log.refused("e1000", "cannot allocate DMA rings", why);
         return false;
-    }
+    };
     const dma_handle: u32 = @intCast(handle);
     const last_offset: u32 = @intCast(@sizeOf(Rings) - 1);
     // A run that leaves the addresses this machine has is one the engine

@@ -166,8 +166,8 @@ pub fn readRaw(handle: u32, ptr: usize, len: usize) isize {
     return syscall3(abi.number("read"), handle, ptr, len);
 }
 
-pub fn log(bytes: []const u8) isize {
-    return syscall3(abi.number("log"), @intFromPtr(bytes.ptr), bytes.len, 0);
+pub fn log(bytes: []const u8) Refusal!void {
+    _ = try checked(syscall3(abi.number("log"), @intFromPtr(bytes.ptr), bytes.len, 0));
 }
 
 pub fn getpid() isize {
@@ -176,14 +176,16 @@ pub fn getpid() isize {
 
 /// Report that the boot reached a usable state. Init's call: it stands the
 /// kernel's boot watchdog down before it ends the boot with a panic screen.
-pub fn bootOk() isize {
-    return syscall0(abi.number("boot_ok"));
+pub fn bootOk() Refusal!void {
+    _ = try checked(syscall0(abi.number("boot_ok")));
 }
 
 /// End every other process and wait for them to exit. Returns how many
 /// threads were still exiting when the wait ended, or a negative errno.
-pub fn stopAll() isize {
-    return syscall0(abi.number("stop_all"));
+/// Ask the kernel to end every other process, answering with how many would
+/// not go.
+pub fn stopAll() Refusal!usize {
+    return checked(syscall0(abi.number("stop_all")));
 }
 
 pub fn yield() void {
@@ -250,7 +252,11 @@ pub fn open(path: []const u8, flags: OpenFlags) Refusal!u32 {
     return @intCast(try checked(openRaw(@intFromPtr(path.ptr), path.len, flags)));
 }
 
-pub fn unlink(path: []const u8) isize {
+pub fn unlink(path: []const u8) Refusal!void {
+    _ = try checked(unlinkRaw(path));
+}
+
+pub fn unlinkRaw(path: []const u8) isize {
     return syscall2(abi.number("unlink"), @intFromPtr(path.ptr), path.len);
 }
 
@@ -269,7 +275,12 @@ pub fn closeRaw(handle: usize) isize {
     return syscall1(abi.number("close"), handle);
 }
 
-pub fn seek(handle: usize, offset: isize, whence: usize) isize {
+/// Move within a file, answering with where it now is.
+pub fn seek(handle: u32, offset: isize, whence: usize) Refusal!usize {
+    return checked(seekRaw(handle, offset, whence));
+}
+
+pub fn seekRaw(handle: usize, offset: isize, whence: usize) isize {
     return syscall3(abi.number("seek"), handle, @bitCast(offset), whence);
 }
 
@@ -278,19 +289,32 @@ pub fn readdir(handle: u32, buf: []u8) Refusal!usize {
     return checked(syscall3(abi.number("readdir"), handle, @intFromPtr(buf.ptr), buf.len));
 }
 
-pub fn stat(path: []const u8, buf: []u8) isize {
-    return syscall4(abi.number("stat"), @intFromPtr(path.ptr), path.len, @intFromPtr(buf.ptr), buf.len);
+pub fn stat(path: []const u8, buf: []u8) Refusal!usize {
+    return checked(statRaw(path, @intFromPtr(buf.ptr), buf.len));
+}
+
+/// Where a seek starts from. One is the current place, which is what a
+/// caller asking only whether a handle can seek at all uses.
+pub const SEEK_SET: usize = 0;
+pub const SEEK_CUR: usize = 1;
+pub const SEEK_END: usize = 2;
+
+/// Whether a handle is something a seek can move within. A console is not,
+/// which is how a program tells one from a file.
+pub fn seekable(handle: u32) bool {
+    _ = seek(handle, 0, SEEK_CUR) catch return false;
+    return true;
 }
 
 /// Pack arguments and run a program, returning its exit status.
 var spawn_buf: [1024]u8 = undefined;
 
-pub fn spawn(path: []const u8, args: []const []const u8) isize {
+pub fn spawn(path: []const u8, args: []const []const u8) Refusal!u32 {
     return spawnWith(path, args, .{});
 }
 
 /// Start a program without waiting; returns its process id.
-pub fn spawnDetached(path: []const u8, args: []const []const u8) isize {
+pub fn spawnDetached(path: []const u8, args: []const []const u8) Refusal!u32 {
     return spawnWith(path, args, .{ .detached = true });
 }
 
@@ -315,10 +339,10 @@ pub fn spawnEnv(
     args: []const []const u8,
     environment: []const []const u8,
     options: abi.Spawn,
-) isize {
+) Refusal!u32 {
     var carried = options;
     if (environment.len != 0) {
-        const packed_bytes = abi.Argv.pack(environment, &env_buf) catch return -22;
+        const packed_bytes = abi.Argv.pack(environment, &env_buf) catch return error.Invalid;
         carried.env = @intFromPtr(&env_buf);
         carried.env_len = @intCast(packed_bytes);
     }
@@ -327,19 +351,24 @@ pub fn spawnEnv(
 
 var env_buf: [1024]u8 = undefined;
 
-pub fn spawnStreams(path: []const u8, args: []const []const u8, options: abi.Spawn) isize {
-    const n = abi.Argv.pack(args, &spawn_buf) catch return -22;
-    return syscall5(
+/// Start a program, answering with its process id.
+///
+/// Arguments that will not fit the block the kernel is handed are refused
+/// here, before the call: too many of them, or too long, is a request this
+/// side cannot make rather than one the kernel turned down.
+pub fn spawnStreams(path: []const u8, args: []const []const u8, options: abi.Spawn) Refusal!u32 {
+    const n = abi.Argv.pack(args, &spawn_buf) catch return error.Invalid;
+    return @intCast(try checked(syscall5(
         abi.number("spawn"),
         @intFromPtr(path.ptr),
         path.len,
         @intFromPtr(&spawn_buf),
         n,
         @intFromPtr(&options),
-    );
+    )));
 }
 
-fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) isize {
+fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) Refusal!u32 {
     return spawnStreams(path, args, .{ .flags = @bitCast(flags) });
 }
 
@@ -378,8 +407,8 @@ pub fn mapDevice(phys: lib.Phys, len: usize) ?[*]volatile u32 {
 /// and writes the physical base to `physOut`. Needs the driver capability.
 /// Become the console's foreground: from now on only this process and its
 /// children render there; other processes' lines go to the log ring alone.
-pub fn consoleClaim() isize {
-    return syscall1(abi.number("console_claim"), 0);
+pub fn consoleClaim() Refusal!void {
+    _ = try checked(syscall1(abi.number("console_claim"), 0));
 }
 
 /// One dword of PCI configuration space, read through the kernel: the two
@@ -395,34 +424,37 @@ pub fn pciWrite(location: u32, offset: u8, value: u32) void {
 
 /// Tell the kernel this process now drives the PCI device, so its table says
 /// driven rather than matched and nothing else probes it as free.
-pub fn claimDevice(location: lib.pci.Location) isize {
-    return syscall3(abi.number("claim_device"), location.bus, location.device, location.function);
+pub fn claimDevice(location: lib.pci.Location) Refusal!void {
+    _ = try checked(syscall3(abi.number("claim_device"), location.bus, location.device, location.function));
 }
 
-pub fn releaseDevice(location: lib.pci.Location) isize {
-    return syscall3(abi.number("release_device"), location.bus, location.device, location.function);
+pub fn releaseDevice(location: lib.pci.Location) Refusal!void {
+    _ = try checked(syscall3(abi.number("release_device"), location.bus, location.device, location.function));
 }
 
 /// Walk the PCI bus again, so the kernel's table says what is on it now.
 /// What a device switched on after the boot needs: the bus announces nothing,
 /// so somebody has to look.
-pub fn pciRescan() isize {
-    return syscall1(abi.number("pci_rescan"), 0);
+pub fn pciRescan() Refusal!void {
+    _ = try checked(syscall1(abi.number("pci_rescan"), 0));
 }
 
-pub fn dmaAlloc(size: usize, physOut: *lib.Phys) isize {
-    return syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut));
+/// A run of physically contiguous memory a device can be pointed at,
+/// answering with the handle and writing where it sits into `physOut`.
+pub fn dmaAlloc(size: usize, physOut: *lib.Phys) Refusal!u32 {
+    return @intCast(try checked(syscall2(abi.number("dma_alloc"), size, @intFromPtr(physOut))));
 }
 
 /// Offer a volume the kernel's filesystems can mount, served from here.
 /// `info` carries the geometry in and the handles back.
-pub fn volumeAttach(name: []const u8, info: *lib.volume.Attach) isize {
-    return syscall3(
+/// Offer the kernel a volume served from here, answering with its number.
+pub fn volumeAttach(name: []const u8, info: *lib.volume.Attach) Refusal!u32 {
+    return @intCast(try checked(syscall3(
         abi.number("volume_attach"),
         @intFromPtr(name.ptr),
         name.len,
         @intFromPtr(info),
-    );
+    )));
 }
 
 /// Take the next request on a volume this process serves, or answer that
@@ -446,19 +478,19 @@ pub const PointerReport = abi.PointerReport;
 
 /// Report keys from a keyboard this process drives. What they mean is
 /// worked out where every keyboard's keys are.
-pub fn keyPost(keys: []const abi.KeyReport) isize {
-    return syscall2(abi.number("key_post"), @intFromPtr(keys.ptr), keys.len);
+pub fn keyPost(keys: []const abi.KeyReport) Refusal!void {
+    _ = try checked(syscall2(abi.number("key_post"), @intFromPtr(keys.ptr), keys.len));
 }
 
 /// Report movement from a pointing device this process drives.
-pub fn pointerPost(reports: []const abi.PointerReport) isize {
-    return syscall2(abi.number("pointer_post"), @intFromPtr(reports.ptr), reports.len);
+pub fn pointerPost(reports: []const abi.PointerReport) Refusal!void {
+    _ = try checked(syscall2(abi.number("pointer_post"), @intFromPtr(reports.ptr), reports.len));
 }
 
 /// Allow this process to use a range of I/O ports directly. Needs the driver
 /// capability; grants last until the process exits.
-pub fn ioportGrant(base: u16, count: usize) isize {
-    return syscall3(abi.number("ioport_grant"), base, count, 0);
+pub fn ioportGrant(base: u16, count: usize) Refusal!void {
+    _ = try checked(syscall3(abi.number("ioport_grant"), base, count, 0));
 }
 
 /// Say the device has been serviced, so its line may fire again.
@@ -487,24 +519,39 @@ pub fn pipe() ?Pipe {
 }
 
 /// Ask the display adapter for a mode.
-pub fn setMode(width: u16, height: u16, bpp: u8) isize {
-    return syscall3(abi.number("set_mode"), width, height, bpp);
+pub fn setMode(width: u16, height: u16, bpp: u8) Refusal!void {
+    _ = try checked(syscall3(abi.number("set_mode"), width, height, bpp));
 }
 
-pub fn mkdir(path: []const u8) isize {
+pub fn mkdir(path: []const u8) Refusal!void {
+    _ = try checked(mkdirRaw(path));
+}
+
+pub fn mkdirRaw(path: []const u8) isize {
     return syscall3(abi.number("mkdir"), @intFromPtr(path.ptr), path.len, 0);
 }
 
-pub fn chdir(path: []const u8) isize {
+pub fn chdir(path: []const u8) Refusal!void {
+    _ = try checked(chdirRaw(path));
+}
+
+pub fn chdirRaw(path: []const u8) isize {
     return syscall3(abi.number("chdir"), @intFromPtr(path.ptr), path.len, 0);
 }
 
-pub fn getcwd(buf: []u8) isize {
+/// The working directory, as bytes written into `buf`.
+pub fn getcwd(buf: []u8) Refusal!usize {
+    return checked(getcwdRaw(buf));
+}
+
+pub fn getcwdRaw(buf: []u8) isize {
     return syscall3(abi.number("getcwd"), @intFromPtr(buf.ptr), buf.len, 0);
 }
 
-pub fn sysinfo(key: []const u8, buf: []u8) isize {
-    return syscall4(abi.number("sysinfo"), @intFromPtr(key.ptr), key.len, @intFromPtr(buf.ptr), buf.len);
+/// What the kernel says under `key`, as bytes written into `buf`. Refuses a
+/// key it has no answer for, which is a different thing from an empty one.
+pub fn sysinfo(key: []const u8, buf: []u8) Refusal!usize {
+    return checked(syscall4(abi.number("sysinfo"), @intFromPtr(key.ptr), key.len, @intFromPtr(buf.ptr), buf.len));
 }
 
 pub const POWER_OFF = 0;
@@ -516,8 +563,8 @@ pub const HALT = 2;
 /// For a caller that will finish the shutdown itself: entering a sleep state
 /// properly means evaluating the firmware's own methods, which is `platd`'s
 /// job. Nothing is mounted afterwards.
-pub fn quiesce() isize {
-    return syscall0(abi.number("quiesce"));
+pub fn quiesce() Refusal!void {
+    _ = try checked(syscall0(abi.number("quiesce")));
 }
 
 pub fn shutdown(action: usize) noreturn {
@@ -528,7 +575,11 @@ pub fn shutdown(action: usize) noreturn {
 /// End another process now, or ask it to end by raising the quit event it
 /// watches. Asking one that watches nothing fails with ENOTCONN, which is the
 /// caller's cue to end it.
-pub fn kill(pid: u32, how: abi.Ending) isize {
+pub fn kill(pid: u32, how: abi.Ending) Refusal!void {
+    _ = try checked(killRaw(pid, how));
+}
+
+pub fn killRaw(pid: u32, how: abi.Ending) isize {
     return syscall2(abi.number("kill"), pid, @intFromEnum(how));
 }
 
@@ -547,29 +598,35 @@ pub fn ftruncate(handle: usize, size: usize) isize {
 }
 
 /// Attach a volume at a path.
-pub fn mount(device: []const u8, path: []const u8, flags: abi.MountFlags) isize {
-    return syscall5(
+pub fn mount(device: []const u8, path: []const u8, flags: abi.MountFlags) Refusal!void {
+    _ = try checked(syscall5(
         abi.number("mount"),
         @intFromPtr(device.ptr),
         device.len,
         @intFromPtr(path.ptr),
         path.len,
         @as(u32, @bitCast(flags)),
-    );
+    ));
 }
 
 /// Detach the volume at a path, flushing it first.
-pub fn unmount(path: []const u8) isize {
-    return syscall2(abi.number("unmount"), @intFromPtr(path.ptr), path.len);
+pub fn unmount(path: []const u8) Refusal!void {
+    _ = try checked(syscall2(abi.number("unmount"), @intFromPtr(path.ptr), path.len));
 }
 
 /// Choose which keyboard layout the keys mean.
-pub fn setKeymap(layout: keymaps.Name) isize {
-    return syscall1(abi.number("set_keymap"), @intFromEnum(layout));
+pub fn setKeymap(layout: keymaps.Name) Refusal!void {
+    _ = try checked(syscall1(abi.number("set_keymap"), @intFromEnum(layout)));
 }
 
 /// Move a file, replacing whatever is at the destination. Within one volume.
-pub fn rename(from: []const u8, to: []const u8) isize {
+/// Give a file a different name, refusing when the two are not on one volume:
+/// a rename is a directory edit, and across volumes there is nothing to edit.
+pub fn rename(from: []const u8, to: []const u8) Refusal!void {
+    _ = try checked(renameRaw(from, to));
+}
+
+pub fn renameRaw(from: []const u8, to: []const u8) isize {
     return syscall4(
         abi.number("rename"),
         @intFromPtr(from.ptr),
@@ -637,13 +694,14 @@ pub const Message = abi.Message;
 ///
 /// `reply_out` receives the whole reply message, including any handles the
 /// server sent: a segment handle arrives as a number valid in this process.
-pub fn callMsg(handle: usize, request: *const Message, reply_out: *Message) isize {
-    return syscall3(
+/// Send a request and wait for its answer, which lands in `reply_out`.
+pub fn callMsg(handle: u32, request: *const Message, reply_out: *Message) Refusal!void {
+    _ = try checked(syscall3(
         abi.number("call"),
         handle,
         @intFromPtr(request),
         @intFromPtr(reply_out),
-    );
+    ));
 }
 
 /// The common case: bytes out, bytes back, no handles.
@@ -675,11 +733,14 @@ pub fn recv(handle: usize, msg: *Message, timeout_us: usize) ?Request {
     return .{ .len = @intCast(n), .token = token };
 }
 
-pub fn replyMsg(handle: usize, token: u32, msg: *const Message) isize {
-    return syscall3(abi.number("reply"), handle, token, @intFromPtr(msg));
+/// Answer a request. No value: what comes back is whether the channel took
+/// it, and a server that has already built its answer has nothing else to
+/// send if it did not.
+pub fn replyMsg(handle: u32, token: u32, msg: *const Message) Refusal!void {
+    _ = try checked(syscall3(abi.number("reply"), handle, token, @intFromPtr(msg)));
 }
 
-pub fn reply(handle: usize, token: u32, payload: []const u8) isize {
+pub fn reply(handle: u32, token: u32, payload: []const u8) Refusal!void {
     const msg = Message.init(payload, &.{});
     return replyMsg(handle, token, &msg);
 }
@@ -709,7 +770,7 @@ pub const KeyEvent = abi.KeyEvent;
 pub const MountFlags = abi.MountFlags;
 
 /// Why a syscall said no, for a tool that has to tell somebody.
-pub const reasonFor = abi.reasonFor;
+pub const reasonOf = abi.reasonOf;
 pub const Errno = abi.Errno;
 pub const KeyCode = abi.KeyCode;
 pub const Modifiers = abi.Modifiers;

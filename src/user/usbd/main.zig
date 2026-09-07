@@ -153,13 +153,13 @@ fn claim() void {
 const Attach = enum { settled, unit_busy };
 
 fn attach(driver: Driver, location: pci.Location) Attach {
-    if (sys.claimDevice(location) < 0) {
+    sys.claimDevice(location) catch {
         log.warn("usbd", "the controller is already claimed");
         return .settled;
-    }
+    };
 
     if (!driver.ops.open(location)) {
-        _ = sys.releaseDevice(location);
+        sys.releaseDevice(location) catch {};
         return .unit_busy;
     }
 
@@ -177,12 +177,12 @@ fn attach(driver: Driver, location: pci.Location) Attach {
             if (driver.listen) |tell| tell(taken);
         } else |_| {
             log.warn("usbd", "the interrupt line was refused; controller unused");
-            _ = sys.releaseDevice(location);
+            sys.releaseDevice(location) catch {};
             return .settled;
         }
     } else {
         log.warn("usbd", "no interrupt line; controller unused");
-        _ = sys.releaseDevice(location);
+        sys.releaseDevice(location) catch {};
         return .settled;
     }
 

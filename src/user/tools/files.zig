@@ -104,11 +104,11 @@ pub fn mv(args: []const []const u8) void {
             out.text(": the path is too long\n");
             continue;
         } else destination;
-        if (sys.rename(from, to) < 0) {
+        sys.rename(from, to) catch {
             out.text("mv: ");
             out.text(from);
             out.text(": cannot move\n");
-        }
+        };
     }
     out.flush();
 }
@@ -204,11 +204,11 @@ pub fn rm(args: []const []const u8) void {
     }
 
     for (args) |path| {
-        if (sys.unlink(path) < 0) {
+        sys.unlink(path) catch {
             out.text("rm: ");
             out.text(path);
             out.text(": cannot remove\n");
-        }
+        };
     }
     out.flush();
 }
@@ -222,18 +222,17 @@ pub fn mkdir(args: []const []const u8) void {
     }
 
     for (args) |path| {
-        const result = sys.mkdir(path);
-        if (result < 0) {
+        sys.mkdir(path) catch |why| {
             out.text("mkdir: ");
             out.text(path);
-            out.text(switch (result) {
-                -17 => ": already exists\n",
-                -2 => ": no such parent directory\n",
-                -28 => ": no space\n",
-                -1 => ": read-only volume\n",
+            out.text(switch (why) {
+                error.Exists => ": already exists\n",
+                error.NoSuchFile => ": no such parent directory\n",
+                error.NoSpace => ": no space\n",
+                error.NotPermitted => ": read-only volume\n",
                 else => ": cannot create\n",
             });
-        }
+        };
     }
     out.flush();
 }

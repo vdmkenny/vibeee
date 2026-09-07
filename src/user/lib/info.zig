@@ -14,8 +14,8 @@ const str = @import("lib").str;
 /// skip what it did not, and an error type would make each of them write the
 /// same two lines to decide that.
 pub fn ask(key: []const u8, buf: []u8) []const u8 {
-    const n = sys.sysinfo(key, buf);
-    return if (n > 0) buf[0..@intCast(n)] else "";
+    const n = sys.sysinfo(key, buf) catch return "";
+    return buf[0..n];
 }
 
 /// The value of `key` as a number, or zero when the kernel has nothing to say

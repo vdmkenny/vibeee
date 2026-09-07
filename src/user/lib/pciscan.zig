@@ -55,10 +55,10 @@ pub const Scan = struct {
 
     /// Ask the kernel once; iterate the answer with `next`.
     pub fn start(self: *Scan) bool {
-        const n = sys.sysinfo("pci", self.buf[0..]);
-        if (n <= 0) return false;
-        self.truncated = @as(usize, @intCast(n)) == self.buf.len;
-        self.lines = str.lines(self.buf[0..@intCast(n)]);
+        const n = sys.sysinfo("pci", self.buf[0..]) catch return false;
+        if (n == 0) return false;
+        self.truncated = n == self.buf.len;
+        self.lines = str.lines(self.buf[0..n]);
         return true;
     }
 
