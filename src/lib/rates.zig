@@ -89,6 +89,13 @@ const Record = struct {
     /// Whether anything has ever been sent at it, and how it went.
     tried: u32 = 0,
     won: u32 = 0,
+    /// How long a reference frame takes on the air at this rate, with the
+    /// preamble the cell allows. Worked out when the cell is taken rather
+    /// than per frame: it depends on the rate and the preamble and on
+    /// nothing that changes between frames, and ranking the rates divides
+    /// by it every time a frame goes out. Zero for a rate the cell does
+    /// not offer, which is what makes such a rate worth nothing.
+    air: u16 = 0,
 };
 
 pub const Choice = struct {
@@ -110,6 +117,12 @@ pub const Choice = struct {
     pub fn offer(self: *Choice, rates: wifi.Rates, short_preamble: bool) void {
         self.offered = rates;
         self.short_preamble = short_preamble;
+        for (wifi.known, 0..) |rate, index| {
+            self.records[index].air = if (rates.has(rate))
+                rate.airtime(REFERENCE_BYTES, short_preamble, true)
+            else
+                0;
+        }
     }
 
     /// Forget everything measured. For a different cell, whose distance
@@ -136,11 +149,10 @@ pub const Choice = struct {
     /// the air it takes to try. Zero for a rate the cell does not offer,
     /// so nothing that walks the rates has to check separately.
     pub fn worth(self: *const Choice, rate: wifi.Legacy) u32 {
-        if (!self.offered.has(rate)) return 0;
-        const air = rate.airtime(REFERENCE_BYTES, self.short_preamble, true);
-        if (air == 0) return 0;
         const index = indexOf(rate) orelse return 0;
-        return (@as(u32, self.records[index].chance) * 1000) / air;
+        const record = self.records[index];
+        if (record.air == 0) return 0;
+        return (@as(u32, record.chance) * 1000) / record.air;
     }
 
     /// The best rate the cell offers, ignoring `except`.

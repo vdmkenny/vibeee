@@ -173,23 +173,25 @@ pub const Font = struct {
     /// Cut on a character, never inside one: half a letter is a notdef box,
     /// which reads as a fault rather than as an abbreviation.
     pub fn fit(self: *const Font, text: []const u8, room: usize) struct { len: usize, cut: bool } {
-        if (self.measure(text) <= room) return .{ .len = text.len, .cut = false };
-
         const mark = self.advance(glyphs.ellipsis);
-        if (room <= mark) return .{ .len = 0, .cut = true };
-        const left = room - mark;
+        const left = if (room > mark) room - mark else 0;
 
-        var used: usize = 0;
-        var at: usize = 0;
-        while (at < text.len) {
-            const step = std.unicode.utf8ByteSequenceLength(text[at]) catch 1;
-            const next = @min(at + step, text.len);
-            const wide = self.measure(text[at..next]);
-            if (used + wide > left) break;
-            used += wide;
-            at = next;
+        // One walk answers both questions: how wide the whole of it is, and
+        // where it would have to stop to leave room for the mark.
+        var total: usize = 0;
+        var kept_at: usize = 0;
+        var it = codepoints(text);
+        while (it.next()) |cp| {
+            const wide = self.advance(cp);
+            if (total + wide <= left) kept_at = it.pos;
+            total += wide;
+            // Nothing past the room is worth measuring: what is left of the
+            // text cannot make it narrower.
+            if (total > room) break;
         }
-        return .{ .len = at, .cut = true };
+        if (total <= room) return .{ .len = text.len, .cut = false };
+        if (room <= mark) return .{ .len = 0, .cut = true };
+        return .{ .len = kept_at, .cut = true };
     }
 
     pub fn measure(self: *const Font, text: []const u8) usize {
@@ -394,6 +396,30 @@ pub const Codepoints = struct {
 
 pub fn codepoints(bytes: []const u8) Codepoints {
     return .{ .bytes = bytes };
+}
+
+test "a measurement and a cut are the same walk of the text" {
+    const face = &@import("fonts/ark_ui_12.zig").desc;
+    const text = "network settings";
+    const mark = face.advance(glyphs.ellipsis);
+
+    // Exactly the width of the text is not a cut; one pixel less is.
+    const exact = face.measure(text);
+    try std.testing.expect(!face.fit(text, exact).cut);
+    try std.testing.expectEqual(text.len, face.fit(text, exact).len);
+    try std.testing.expect(face.fit(text, exact - 1).cut);
+
+    // What is kept fits beside the mark, and one character more would not.
+    const cut = face.fit(text, exact - 1);
+    try std.testing.expect(face.measure(text[0..cut.len]) + mark <= exact - 1);
+    var after = codepoints(text[cut.len..]);
+    if (after.next()) |cp| {
+        try std.testing.expect(face.measure(text[0..cut.len]) + face.advance(cp) + mark > exact - 1);
+    }
+
+    // No room even for the mark is nothing kept at all.
+    try std.testing.expectEqual(@as(usize, 0), face.fit(text, mark).len);
+    try std.testing.expect(face.fit(text, mark).cut);
 }
 
 test "text is cut on a character, with room left for the mark that says so" {
