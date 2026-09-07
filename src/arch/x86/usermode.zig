@@ -44,7 +44,13 @@ pub const USER_STACK_GROW_PAGES = 16;
 /// The lowest address the stack may ever reach.
 pub const USER_STACK_LIMIT: usize = USER_STACK_TOP - USER_STACK_MAX_PAGES * paging.PAGE_SIZE;
 
-pub const Error = error{OutOfMemory};
+pub const Error = error{
+    OutOfMemory,
+    /// More arguments or environment strings than the stack's table has
+    /// places for. Refused whole rather than cut short: a program started
+    /// with fewer arguments than it was given would run as something else.
+    TooMany,
+};
 
 /// How this system's user stacks are shaped, for the arithmetic that decides
 /// what to map and what to hand back.
@@ -124,6 +130,8 @@ pub fn setupStack(
     args: []const []const u8,
     env: []const []const u8,
 ) Error!usize {
+    if (args.len > MAX_ARGS or env.len > MAX_ENV) return error.TooMany;
+
     // Track each page's kernel-visible address, so the stack can be written
     // before it is mapped anywhere the process can see.
     var frames: [USER_STACK_PAGES]usize = undefined;
@@ -151,8 +159,8 @@ pub fn setupStack(
 
     var arg_addrs: [MAX_ARGS]usize = undefined;
     var env_addrs: [MAX_ENV]usize = undefined;
-    const count = @min(args.len, MAX_ARGS);
-    const env_count = @min(env.len, MAX_ENV);
+    const count = args.len;
+    const env_count = env.len;
 
     // Strings first, downward from the top: the environment above the
     // arguments, though nothing depends on the order.
@@ -211,7 +219,7 @@ pub fn setupStack(
 }
 
 pub const MAX_ENV = @import("lib").syscalls.MAX_ENV;
-const MAX_ARGS = 16;
+pub const MAX_ARGS = @import("lib").syscalls.MAX_ARGS;
 
 /// The entry call's own bytes: a return address and one parameter, spaced so
 /// the parameter keeps the sixteen-byte boundary the compiler assumes.

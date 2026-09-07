@@ -23,6 +23,8 @@ pub const Error = error{
     NotFound,
     BadImage,
     OutOfMemory,
+    /// More arguments or environment strings than a program can be given.
+    TooManyArguments,
 };
 
 /// Both halves of the boundary have to agree on how many arguments a program
@@ -92,7 +94,10 @@ pub fn load(path: []const u8, args: []const []const u8, env: []const []const u8)
     errdefer space.destroy();
 
     const laid_out = elf.load(&space, image[0..n]) catch return error.BadImage;
-    const stack_top = hal.setupUserStack(&space, args, env) catch return error.OutOfMemory;
+    const stack_top = hal.setupUserStack(&space, args, env) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.TooMany => error.TooManyArguments,
+    };
     return .{ .space = space, .entry = laid_out.entry, .stack_top = stack_top };
 }
 

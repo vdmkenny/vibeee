@@ -115,4 +115,7 @@ pub fn onException(frame: *idt.Frame) void {
 /// 128 plus the number the same fate carries elsewhere: `spawn` returns a
 /// status and an error in one signed word, so a negative status would read as
 /// a program that never started.
-const FAULTED: i32 = 128 + 11;
+/// What a program that faulted reports as its exit status: what a shell
+/// shows for a segmentation fault, so a script telling the two apart
+/// needs no new number to learn.
+pub const FAULTED: i32 = 128 + 11;

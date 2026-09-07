@@ -121,7 +121,7 @@ fn releaseStdio(stdio: *exec.Stdio) void {
 fn spawnErrno(err: exec.Error) Result {
     return switch (err) {
         error.NotFound => Errno.noent.value(),
-        error.BadImage => Errno.inval.value(),
+        error.BadImage, error.TooManyArguments => Errno.inval.value(),
         error.OutOfMemory => Errno.nomem.value(),
     };
 }

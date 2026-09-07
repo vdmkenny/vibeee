@@ -13,6 +13,7 @@
 //! difference between the two paths.
 
 const std = @import("std");
+const fault = @import("fault.zig");
 const cpu = @import("cpu.zig");
 const gdt = @import("gdt.zig");
 const hal = @import("../../kernel/hal.zig");
@@ -215,8 +216,9 @@ export fn sysenterDispatch(frame: *Frame) callconv(.c) void {
 
 /// What a process reports when it enters the kernel with a stack pointer that
 /// cannot be one of its own. There is nothing to return an error to: the place
-/// a return would go is exactly what was wrong.
-const MALFORMED: i32 = -14;
+/// a return would go is exactly what was wrong, and a program that did that
+/// has faulted, whatever instruction it was on.
+const MALFORMED = fault.FAULTED;
 
 /// Issue a syscall from kernel mode, for self-tests.
 pub fn invoke(number: u32, a0: usize, a1: usize, a2: usize) isize {
