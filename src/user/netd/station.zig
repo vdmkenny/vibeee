@@ -101,10 +101,14 @@ const State = struct {
     next_upkeep_at: u64 = 0,
     next_stir_at: u64 = 0,
     next_long_cal_at: u64 = 0,
-    /// Whether the configuration says this radio is to be doing anything.
-    /// A slot switched off is a radio that does not sweep, does not join
-    /// and does not listen: what somebody switched off is the radio, not
-    /// one interface's addressing.
+    /// Whether the configuration says this interface is to be joining
+    /// anything.
+    ///
+    /// A slot switched off stops the joining and not the listening. What
+    /// somebody switched off is an interface, not the radio: the power is
+    /// the wireless key's business, and a radio that stopped hearing when
+    /// an interface went down is one nobody could scan with before
+    /// deciding to bring it up.
     on: bool = true,
     full_said: bool = false,
     /// The join in hand, or none while no network is named.
@@ -169,6 +173,10 @@ const State = struct {
     /// is what tells a frame that has arrived from one that is arriving
     /// again.
     numbering: lib.wpa2.Numbering = .{},
+    /// Whether the cell has shown it holds the keys, by sending one frame
+    /// under them. Until it has, the exchange that proves them is not
+    /// finished on its side however finished it is here.
+    cell_has_keys: bool = false,
     /// What to be on, kept past the join that failed so it can be tried
     /// again without anybody asking twice, and when to try.
     wanted: ?settings.NetSlot = null,
@@ -245,7 +253,7 @@ pub fn network(index: usize) ?mlme.Bss {
 /// Microseconds until the station next needs the loop, for the wait
 /// deadline. Null while there is no radio.
 pub fn nextDeadline() ?u64 {
-    if (state.radio == null or !state.on) return null;
+    if (state.radio == null) return null;
     // Something a frame asked for is owed now.
     if (state.pending != null) return 0;
     const now = sys.clockMicros();
@@ -302,7 +310,6 @@ fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
 
 /// Run whatever the station owes: a hop when the dwell is over.
 pub fn tick() void {
-    if (!state.on) return;
     var now = sys.clockMicros();
 
     // What the radio has heard, handed to the machine's pool. The kernel sees
@@ -330,7 +337,7 @@ pub fn tick() void {
     // A join that failed comes round again on its own. The next attempt
     // is dated first and unconditionally: a deadline left in the past is
     // a loop that never waits.
-    if (state.join == null and state.wanted != null and now >= state.retry_at) {
+    if (state.on and state.join == null and state.wanted != null and now >= state.retry_at) {
         state.retry_at = now + RETRY_MICROS;
         if (radio()) |it| seek(it.nic, state.wanted.?);
     }
@@ -432,7 +439,20 @@ fn carry(nic: *dev_mod.NicDev, frame: []const u8) void {
         // the key. What arrives unprotected here is either somebody
         // else's or nobody's, and what arrives numbered where a frame has
         // already been is one already delivered.
-        plain = state.numbering.open(keys, frame, &state.opened) orelse return;
+        if (state.numbering.open(keys, frame, &state.opened)) |opened| {
+            plain = opened;
+            state.cell_has_keys = true;
+        } else {
+            // One exception, and it closes for good the moment the cell
+            // shows it holds the keys: the key exchange's own frames
+            // before it does. An access point that did not hear the last
+            // frame of an exchange sends its own again, and sends it in
+            // the clear, because it has installed nothing yet. Refusing
+            // that leaves this station holding keys the cell does not
+            // have, with nothing to do but wait to be put out.
+            if (state.cell_has_keys or head.control.protected) return;
+            if (join_mod.eapolOf(frame) == null) return;
+        }
     } else if (head.control.protected) {
         // And an open network has no key to open one with.
         return;
@@ -490,29 +510,37 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     state.plan = role.regdomain;
     state.held = held;
 
-    // A slot switched off is a radio that stops: a station that went on
-    // sweeping, authenticating and retrying through it would be doing
-    // exactly what somebody switched off.
+    // A slot switched off stops the joining. What it leaves is the
+    // listening: a radio that went on authenticating and retrying through
+    // being switched off would be doing exactly what somebody switched
+    // off, and one that stopped hearing would leave nobody able to scan
+    // before deciding to switch it on.
     const was_on = state.on;
     state.on = role.enabled;
-    if (!state.on) {
-        if (was_on) {
-            leave(nic, ops);
-            state.networks.clear();
-            state.ordered = true;
-            if (dev_mod.changed) |tell| tell();
-        }
-        ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
-        return;
-    }
+    if (was_on and !state.on) leave(nic, ops);
 
-    if (held) |number| _ = ops.tune(nic, .{ .number = number });
+    // Where the radio may be pointed, and where it is held, are terms of
+    // a join. A station told to sit on a channel its cell is not on is
+    // not joined to that cell any longer, and one whose plan changed may
+    // no longer speak where it is standing. So a join in hand is given up
+    // and asked for again under what was just said, rather than left
+    // standing on terms nobody agreed to.
+    if (moved) {
+        if (state.join != null) leave(nic, ops);
+        // Only where something changed: a settings pass saying the same
+        // thing again would otherwise reset the radio and lose the dwell.
+        if (held) |number| {
+            if (!ops.tune(nic, .{ .number = number })) {
+                log.warn(nic.name, "the radio would not hold the channel the configuration names");
+            }
+        }
+    }
 
     // What is wanted is a name and the secret to join it with. Acted on
     // when either changes, so a settings pass saying the same thing again
     // does not restart a join that is already running, and a password
     // corrected for the network already being tried is tried with.
-    if (!was_on or !sameConnection(state.wanted, role)) {
+    if (state.on and (!was_on or !sameConnection(state.wanted, role))) {
         leave(nic, ops);
         if (role.ssid.len != 0) seek(nic, role);
     }
@@ -607,6 +635,7 @@ fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
     state.pending = null;
     state.wanted = null;
     state.numbering.clear();
+    state.cell_has_keys = false;
     // A different cell's distance and interference have nothing to do
     // with this one's.
     state.speed.forget();
@@ -720,6 +749,7 @@ fn act(what: join_mod.Action) void {
             // association can end without anybody here asking.
             dev_mod.deliverLink(it.nic, .{});
             state.numbering.clear();
+            state.cell_has_keys = false;
             state.join = null;
             // Kept, and tried again: a network out of earshot now may be
             // in earshot shortly, and nobody should have to ask twice.
@@ -731,10 +761,12 @@ fn act(what: join_mod.Action) void {
 /// Joined: answer for the cell, and say the carrier is up.
 fn settle(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, won: join_mod.Joined) void {
     ops.answerFor(nic, .{ .bssid = won.bssid, .association = won.aid });
-    // A new association numbers from the start, both ways.
+    // A new association numbers from the start, both ways, and the cell
+    // has not shown it holds anything yet.
     state.pn = 0;
     state.pn_generation = 0;
     state.numbering.clear();
+    state.cell_has_keys = false;
 
     // What the cell said it can hear. One that named no rates is taken to
     // hear everything this station can say, and the account corrects that
@@ -816,9 +848,6 @@ fn hop() void {
 /// account; a network heard again is refreshed, a new one is said.
 fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wifi.Legacy) void {
     _ = rate;
-    // A radio switched off in the configuration is one whose hearing is
-    // nobody's business, whatever is still reaching its antenna.
-    if (!state.on) return;
     // The join sees every frame: the beacons that tell it where its
     // network is, and the replies that carry the exchange forward.
     if (state.join) |*attempt| {
@@ -842,11 +871,20 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
             // fault from one that never came.
             if (mlme.Auth.parse(frame) != null) state.heard_auth +|= 1;
         }
-        // Held, not carried out: see `pending`. Where two frames of one
-        // walk both ask for something, the later one stands, which is the
-        // one an exchange is waiting on.
         const what = attempt.heard(frame, signal, sys.clockMicros(), &state.frame);
-        if (what != .none) state.pending = what;
+        switch (what) {
+            .none => {},
+            // A reply goes out where it was decided. Two frames of one
+            // walk can each ask for one, and a single slot kept for later
+            // would hold only the second: the first would be built and
+            // never sent, while whatever it staged was taken up on the
+            // strength of the other going out.
+            .send, .traffic => act(what),
+            // The rest wait for the loop: tuning resets the radio
+            // underneath the driver's walk of its receive ring, and
+            // finishing or abandoning a join takes the interface with it.
+            else => state.pending = what,
+        }
     }
 
     // Traffic, once there is a cell to have traffic with.

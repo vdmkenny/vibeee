@@ -9,7 +9,10 @@ net - the network interfaces
   net <iface> join <name> [<key>]
                          join a wireless network; the key is a passphrase
                          of 8 to 63 characters or 64 hex digits, and is
-                         left out for an open network
+                         left out for an open network. A passphrase with
+                         a space at either end is refused: the settings
+                         file cannot carry one, so such a network is
+                         joined by storing its derived key instead
   net <iface> default    send traffic with no route of its own this way
   net <iface> channel 6  hold the radio there; 0 sweeps the band
   net <iface> forget     stop joining it
@@ -49,13 +52,20 @@ which gives it to the wired slot without anyone saying so. This is what
 to set on a machine whose radio and wired port are both up and should
 not both be answering for the whole network.
 
+An interface that is switched off says `off` in the listing, in the
+Settings pane and in the bar's menu, which is a different thing from
+`down`: `down` is a cable nothing is on the other end of, and `off` is
+somebody's decision. A switched-off interface carries no address, and
+the one it had while it was up is not shown.
+
 `up` and `down` are about the interface and not about the hardware: a
-radio taken down here keeps its power, which is what leaves `net scan`
-able to hear anything. `hw wireless off` cuts the power, and the
-wireless key is wired to do both in the order that keeps them agreeing,
-for a machine whose firmware hands the key over (`man hotkeys`). A radio
-whose power is off is on no bus at all, so it is absent from `devices`
-rather than shown as an interface that is down.
+radio taken down here stops joining anything and keeps both its power and
+its listening, which is what leaves `net scan` able to hear anything.
+`hw wireless off` cuts the power, and the wireless key is wired to do
+both in the order that keeps them agreeing, for a machine whose firmware
+hands the key over (`man hotkeys`). A radio whose power is off is on no
+bus at all, so it is absent from `devices` rather than shown as an
+interface that is down.
 
 A radio scans whenever it is not joined, and the listing says which
 channel it is on. Every verb here has the same control in the
@@ -84,7 +94,7 @@ Settings, generated from the schema: net
   net.if0_ssid              unset
       a network name, up to 32 characters
   net.if0_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if0_channel           0
       a number
   net.if0_regdomain         conservative
@@ -106,7 +116,7 @@ Settings, generated from the schema: net
   net.if1_ssid              unset
       a network name, up to 32 characters
   net.if1_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if1_channel           0
       a number
   net.if1_regdomain         conservative
@@ -128,7 +138,7 @@ Settings, generated from the schema: net
   net.if2_ssid              unset
       a network name, up to 32 characters
   net.if2_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if2_channel           0
       a number
   net.if2_regdomain         conservative
@@ -150,7 +160,7 @@ Settings, generated from the schema: net
   net.if3_ssid              unset
       a network name, up to 32 characters
   net.if3_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if3_channel           0
       a number
   net.if3_regdomain         conservative

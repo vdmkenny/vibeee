@@ -426,23 +426,30 @@ pub const Psk = union(enum) {
     pub const KEY_BYTES = 32;
     const HEX_DIGITS = KEY_BYTES * 2;
 
-    pub const accepts = "a passphrase of 8 to 63 characters, or 64 hex digits";
+    pub const accepts = "a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits";
 
     pub fn parse(text: []const u8) ?Psk {
-        if (str.trim(text).len == 0) return .none;
+        const trimmed = str.trim(text);
+        if (trimmed.len == 0) return .none;
 
         // A key is unambiguous: nothing else is exactly that many hex
         // digits, and a passphrase of that length would be unusual enough
         // that reading it as a key is the safer guess. Spaces around one
         // are not part of it, since a hex digit is not a space.
-        const trimmed = str.trim(text);
         if (trimmed.len == HEX_DIGITS) {
             if (decodeKey(trimmed)) |key| return .{ .key = key };
         }
-        // A passphrase is taken exactly as it was given. A space at
-        // either end of one is a character of the secret, and a station
-        // that trimmed it would derive a key that opens nothing and call
-        // the network's answer a wrong password.
+
+        // A passphrase is taken exactly as it was given, and one with a
+        // space at either end is refused rather than trimmed. The
+        // standard allows such a passphrase; the settings file cannot
+        // carry one, because a line is split on its separator and both
+        // halves trimmed, and there is no spelling that would say the
+        // space was meant. Trimming it here instead would derive a key
+        // that opens nothing and report the network refusing a password
+        // that was in fact never tried. A network whose passphrase ends
+        // in a space is joined by storing its derived key.
+        if (trimmed.len != text.len) return null;
         return .{ .passphrase = Passphrase.of(text) orelse return null };
     }
 
@@ -871,11 +878,14 @@ test "words are words, and too few of them are refused" {
     // Below the standard's floor is not a secret this can be used with.
     try std.testing.expectEqual(@as(?Psk, null), Psk.parse("short"));
 
-    // A space at either end of a passphrase is a character of it. One
-    // trimmed away derives a key that opens nothing, and the network's
-    // refusal reads as a wrong password rather than as a lost space.
-    const spaced = Psk.parse(" a secret word ") orelse return std.testing.expect(false);
-    try std.testing.expectEqualStrings(" a secret word ", spaced.passphrase.slice());
+    // Spaces inside a passphrase are characters of it.
+    const inside = Psk.parse("a secret word") orelse return std.testing.expect(false);
+    try std.testing.expectEqualStrings("a secret word", inside.passphrase.slice());
+    // At either end they are refused rather than trimmed away: the file
+    // cannot carry them, and trimming would derive a key that opens
+    // nothing while reporting the network as refusing the password.
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse(" a secret word "));
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse("a secret word "));
     // Around a stored key there is nothing to lose: a hex digit is not a
     // space.
     const padded = Psk.parse("  " ++ "0123456789abcdef" ** 4 ++ " ") orelse return std.testing.expect(false);

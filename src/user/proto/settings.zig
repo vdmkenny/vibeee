@@ -129,9 +129,11 @@ pub fn split(key: []const u8) ?struct { domain: []const u8, field: []const u8 } 
 // The wire
 // ---------------------------------------------------------------------------
 
-/// Key and value share one span because the payload is 64 bytes and splitting
-/// it evenly would cap both at half of what either might need.
-pub const TEXT_MAX = 60;
+/// Key and value share one span because splitting the payload evenly would
+/// cap both at half of what either might need. What has to fit is the
+/// longest key the schema names and the longest value it accepts, which
+/// is a sixty-four digit network key.
+pub const TEXT_MAX = sys.MAX_PAYLOAD - 4;
 
 pub const Tag = enum(u8) {
     /// Give this key this value.
@@ -150,6 +152,16 @@ pub const Req = extern struct {
     _reserved: u8 = 0,
     /// The key, and then the value immediately after it.
     text: [TEXT_MAX]u8 = @splat(0),
+
+    comptime {
+        // What the store has to be able to carry: every key the schemas
+        // name, each with the longest value its own field accepts. A
+        // request that cannot hold one of them is a setting nobody can
+        // write, which reads exactly like a setting that did not take.
+        if (TEXT_MAX < schema.LONGEST_SETTING) {
+            @compileError("a settings request must carry the longest key and value together");
+        }
+    }
 
     pub fn init(tag: Tag, key: []const u8, value: []const u8) ?Req {
         if (key.len + value.len > TEXT_MAX) return null;

@@ -272,17 +272,17 @@ pub fn chipReset(chip: *Chip, megahertz: ?u16) bool {
     const pll: regs_mod.PhyPll = .mhz44_5112;
     const current: regs_mod.PhyPll = @enumFromInt(regs.read(.phy_pll_control));
 
-    // The reference gives two orders and this is the second of them: the
-    // clock, then turbo, then the mode. The first, mode before clock, is
-    // for a channel that is CCK alone, where turbo has to be cleared
-    // before the clock may be moved. Every 2.4 GHz channel on this radio
-    // is dynamic, which is not that case.
+    // The order the reference requires for a channel that carries CCK,
+    // which a dynamic one does: turbo cleared, then the mode, and the
+    // clock last. The clock may only be moved to forty-four megahertz
+    // while CCK or dynamic mode is set, and turbo may not be set with
+    // either, so the mode has to be in place before the clock follows it.
+    regs.put(.phy_turbo, regs_mod.PhyTurbo{});
+    regs.put(.phy_mode, mode);
     if (current != pll) {
         regs.write(.phy_pll_control, @intFromEnum(pll));
         pace.delay(PLL_SETTLE_MICROS);
     }
-    regs.put(.phy_turbo, regs_mod.PhyTurbo{});
-    regs.put(.phy_mode, mode);
     return true;
 }
 

@@ -307,7 +307,15 @@ pub const MAX_ENV = 16;
 
 /// Largest inline channel payload. Small on purpose: anything that does not fit
 /// is bulk data and belongs in a shared ring.
-pub const MAX_PAYLOAD = 64;
+/// The most one message carries.
+///
+/// A message is a control message; anything bulky goes through a shared
+/// segment instead, so this is small on purpose. It is as large as it is
+/// because the settings store has to carry one key and its value in one
+/// message, and the longest value the schema accepts is a sixty-four
+/// digit network key: at sixty-four bytes a key nobody could store was
+/// a key the system told people to prefer.
+pub const MAX_PAYLOAD = 96;
 
 /// What a display owner is told about the screen. Mirrors kernel/display.zig.
 pub const DisplayInfo = extern struct {

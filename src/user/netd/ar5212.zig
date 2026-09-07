@@ -436,6 +436,7 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     device.channel = channel;
     if (device.nic) |nic| nic.radio_channel = channel.number;
 
+    rebuildReceive();
     startReceive(chip.regs);
     startTransmit(chip.regs);
     listenFor(chip.regs, WANTED);
@@ -459,7 +460,24 @@ const WANTED = regs_mod.Interrupts{
     .rx_phy_error = true,
     .tx_ok = true,
     .tx_error = true,
+    // A queue that reached the end of the chain it was walking, and a
+    // frame the hardware started putting on the air before enough of it
+    // had arrived. Both are things the service can put right, and neither
+    // is visible any other way: a stalled queue looks like a cell that
+    // stopped answering, and an underrun looks like a frame the air ate.
+    .tx_end_of_list = true,
+    .tx_underrun = true,
 };
+
+/// How much of a frame the hardware waits for before asking for the air,
+/// in units of sixty-four bytes.
+///
+/// Raised a rung whenever it starts one it cannot finish. Every rung costs
+/// latency, so it starts at the lowest and climbs only as far as it has
+/// to, which is the reference's own ladder. The ceiling is the longest
+/// frame this radio sends, past which there is nothing left to wait for,
+/// or the widest the field holds, whichever comes first.
+const TRIGGER_CEILING: u6 = @min(SLAB / 64 + 1, std.math.maxInt(u6));
 
 /// Ask the radio to raise its line for exactly `causes`, and for nothing if
 /// there are none.
@@ -893,6 +911,23 @@ pub fn setPower(_: *NicDev, half_dbm: u6) void {
     if (device.started and !device.gone) reset.applyPower(chip);
 }
 
+/// Give the whole receive run back to the radio, from the start.
+///
+/// A reset stops the engine wherever it was, and the descriptors it had
+/// already filled hold frames from a channel this radio has left. Started
+/// again at the old cursor the hardware would write over those before
+/// anybody read them, and a frame that spanned two of them would have its
+/// tail read as a whole frame of its own. So the run is built again from
+/// nothing: what was heard on the channel just left is not what anybody
+/// asked for.
+fn rebuildReceive() void {
+    const rings = device.rings orelse return;
+    device.rx_next = 0;
+    device.rx_spanning = false;
+    for (0..RING_SLOTS) |slot| armReceive(rings, slot);
+    dma.publish();
+}
+
 /// Point the radio at the chain and let the protocol unit pass frames:
 /// beacons and probe responses for the scan, and everything addressed
 /// here or to everyone.
@@ -1058,7 +1093,15 @@ pub fn irq(nic: *NicDev) bool {
     if (!cause.any()) return false;
 
     if (cause.rx_ok or cause.rx_descriptor or cause.rx_error) reapRx(nic, chip);
-    if (cause.tx_ok or cause.tx_error) reapTx(nic);
+    if (cause.tx_ok or cause.tx_error or cause.tx_end_of_list) reapTx(nic);
+    // A frame started before enough of it had arrived. The one that
+    // failed is already accounted for by its own descriptor; what this
+    // asks for is that the next one waits longer.
+    if (cause.tx_underrun) waitLonger(regs);
+    // The queue walked off the end of its chain. Whatever the service
+    // still has outstanding is pointed at again: a frame linked on after
+    // the queue had already stopped is one nothing will fetch.
+    if (cause.tx_end_of_list) resumeTransmit(chip);
     if (cause.rx_overrun) nic.stats.rx_dropped += 1;
     if (cause.rx_phy_error) phy_errors +%= 1;
 
@@ -1209,6 +1252,23 @@ pub fn transmitAt(nic: *NicDev, frame: []const u8, series: lib.rates.Series) boo
     return true;
 }
 
+/// Ask the hardware to wait for one more sixty-fourth of a frame before
+/// it starts putting one on the air.
+fn waitLonger(regs: Regs) void {
+    var config = regs.get(.tx_config, regs_mod.TxConfig);
+    if (config.frame_trigger >= TRIGGER_CEILING) return;
+    config.frame_trigger += 1;
+    regs.put(.tx_config, config);
+}
+
+/// Point the queue at whatever the service still has outstanding.
+fn resumeTransmit(chip: *reset.Chip) void {
+    const oldest = device.tx_reap;
+    if (device.tx_filled == 0) return;
+    chip.regs.writeAt(regs_mod.txPointer(QUEUE), Chain.addressOf(chainBase("tx_desc"), oldest));
+    chip.regs.put(.queue_enable, regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
+}
+
 /// Take every finished transmit descriptor, in the order the radio
 /// worked through them, and account for what became of each frame.
 fn reapTx(nic: *NicDev) void {
@@ -1232,21 +1292,19 @@ fn reapTx(nic: *NicDev) void {
         const given: family.TxControl2 = @bitCast(desc.body.tx.control2);
         const final = report.status1.final_series;
 
-        // How many goes each step had. The hardware counts the whole
-        // descriptor's retries rather than each step's, and a step the
-        // hardware worked past is one that spent everything it was given,
-        // so what is left over belongs to the step it stopped on. Without
-        // this a step tried four times counts as one attempt, and the
-        // account rates it as though the air it spent were a quarter of
-        // what it was.
-        var spent: u16 = 0;
-        for (0..@as(usize, final)) |step| spent += family.triesOfStep(given, @intCast(step));
-        const total: u16 = @as(u16, report.status0.data_failures) + 1;
-        const left: u16 = if (total > spent) total - spent else 1;
-
+        // How many goes each step had. The count the hardware reports is
+        // the unanswered tries of the final series alone, so that step had
+        // those and the one that ended it; a step the hardware worked past
+        // spent everything it was given, which its own control word says.
+        // Without this a step tried four times counts as one attempt, and
+        // the account rates it as though the air it spent were a quarter
+        // of what it was.
         for (0..@as(usize, final) + 1) |step| {
             const carried = family.rateOfStep(speeds, @intCast(step)).rate() orelse continue;
-            const goes: u16 = if (step == final) left else family.triesOfStep(given, @intCast(step));
+            const goes: u16 = if (step == final)
+                @as(u16, report.status0.data_failures) + 1
+            else
+                family.triesOfStep(given, @intCast(step));
             dev_mod.deliverTxDone(nic, .{
                 .rate = carried,
                 .tries = @intCast(@min(goes, std.math.maxInt(u8))),

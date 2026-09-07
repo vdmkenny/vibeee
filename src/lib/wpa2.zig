@@ -534,6 +534,14 @@ pub const Key = struct {
 pub const Keys = struct {
     /// This station's own, which only it and the access point hold.
     pairwise: Key,
+    /// The one it replaced, kept until a frame arrives under the new one.
+    ///
+    /// A rekey finishes on a frame this station sends, and the access
+    /// point installs its own side only once that frame arrives. Anything
+    /// it sends in between, its own last message again among them, is
+    /// still under the key being replaced, and a station that had thrown
+    /// that key away could not read it.
+    previous: ?Key = null,
     /// The room's, by the index the access point gives each. A renewal
     /// brings the next index while frames under the last are still in the
     /// air, so both are kept.
@@ -562,7 +570,14 @@ pub const Numbering = struct {
     pub const CLASSES = 8;
 
     pairwise: [CLASSES]Seen = @splat(.{}),
+    /// The count under the key the current one replaced, kept apart from
+    /// it: two keys are numbered independently, and one set of counters
+    /// shared between them would have each frame reset the other's.
+    superseded: [CLASSES]Seen = @splat(.{}),
     group: [4]Seen = @splat(.{}),
+    /// Whether anything has yet arrived under the current pairwise key.
+    /// Once something has, the one it replaced is finished with.
+    current_heard: bool = false,
 
     const Seen = struct {
         generation: u32 = 0,
@@ -600,13 +615,34 @@ pub const Numbering = struct {
         const group = mac.isGroup(head.addr1);
         // The pairwise key is always the first: a frame to this station
         // naming another index is not one it has a key for.
-        const key = if (group) (keys.groupKey(named) orelse return null) else if (named == 0) keys.pairwise else return null;
+        if (!group and named != 0) return null;
 
         @memcpy(into[0..head.len], frame[0..head.len]);
-        const got = Ccmp.unprotect(key.bytes, frame, into[head.len..]) orelse return null;
+        if (group) {
+            const key = keys.groupKey(named) orelse return null;
+            const got = Ccmp.unprotect(key.bytes, frame, into[head.len..]) orelse return null;
+            if (!self.group[named].accept(key, got.pn)) return null;
+            return into[0 .. head.len + got.len];
+        }
 
-        const seen = if (group) &self.group[named] else &self.pairwise[classOf(head)];
-        if (!seen.accept(key, got.pn)) return null;
+        // This station's own key, and the one it replaced. A rekey
+        // finishes on a frame this station sends, so until one arrives
+        // under the new key the access point is still speaking under the
+        // old, its own last message among them. The moment one does, the
+        // old key is finished with for good.
+        const class = classOf(head);
+        if (Ccmp.unprotect(keys.pairwise.bytes, frame, into[head.len..])) |got| {
+            if (!self.pairwise[class].accept(keys.pairwise, got.pn)) return null;
+            if (!self.current_heard) {
+                self.current_heard = true;
+                self.superseded = @splat(.{});
+            }
+            return into[0 .. head.len + got.len];
+        }
+        if (self.current_heard) return null;
+        const before = keys.previous orelse return null;
+        const got = Ccmp.unprotect(before.bytes, frame, into[head.len..]) orelse return null;
+        if (!self.superseded[class].accept(before, got.pn)) return null;
         return into[0 .. head.len + got.len];
     }
 
@@ -699,6 +735,9 @@ pub const Handshake = struct {
     installs: u32 = 0,
     /// Which installation the pairwise key in hand is.
     pairwise_at: u32 = 0,
+    /// The pairwise key it replaced, for as long as the access point may
+    /// still be speaking under it.
+    was: ?Key = null,
     /// Whether the nonce is spent. Renewed between exchanges, not within
     /// one: an access point that did not hear the second message sends
     /// its first again and expects the same answer.
@@ -724,6 +763,7 @@ pub const Handshake = struct {
         if (!self.done) return null;
         return .{
             .pairwise = .{ .bytes = ptk.tk, .generation = self.pairwise_at },
+            .previous = self.was,
             .group = self.group,
         };
     }
@@ -801,11 +841,11 @@ pub const Handshake = struct {
         // Proved: the frame that checked out under the candidate is what
         // makes it the key.
         self.installs += 1;
+        self.was = if (self.ptk) |had| .{ .bytes = had.tk, .generation = self.pairwise_at } else null;
         self.pairwise_at = self.installs;
         self.ptk = ptk;
         self.candidate = null;
-        self.installs += 1;
-        self.group[gtk.index] = .{ .bytes = gtk.key, .generation = self.installs, .from = key.rsc };
+        self.putGroup(gtk.index, gtk.key, key.rsc);
         self.replay = key.replay;
         self.done = true;
         self.spent = true;
@@ -840,10 +880,26 @@ pub const Handshake = struct {
         var plain: [KEY_DATA_MAX]u8 = undefined;
         const data = unwrap(ptk.kek, key.data, &plain) orelse return .refused;
         const gtk = gtkOf(data) orelse return .refused;
-        self.installs += 1;
-        self.group[gtk.index] = .{ .bytes = gtk.key, .generation = self.installs, .from = key.rsc };
+        self.putGroup(gtk.index, gtk.key, key.rsc);
         self.replay = key.replay;
         return self.took(ptk, key, into);
+    }
+
+    /// Put a group key in under its index.
+    ///
+    /// A key is named by the installation it is, and a receiver that sees
+    /// a new name starts its count again from where the sender says it
+    /// has got to. So the same bytes handed over a second time must keep
+    /// the name they had: an access point renewing a key to the value it
+    /// already held is not starting again, and taking it as a fresh key
+    /// would wind the count back to where frames already delivered are,
+    /// and let every one of them be delivered again.
+    fn putGroup(self: *Handshake, index: u2, bytes: [16]u8, from: Ccmp.Pn) void {
+        if (self.group[index]) |had| {
+            if (std.crypto.timing_safe.eql([16]u8, had.bytes, bytes)) return;
+        }
+        self.installs += 1;
+        self.group[index] = .{ .bytes = bytes, .generation = self.installs, .from = from };
     }
 
     /// The answer to a group key: signed, secure, carrying nothing but the
@@ -1361,6 +1417,68 @@ test "a key frame is signed over what it said it was, not over what carried it" 
     @memset(frame[three..][0..6], 0xAA);
     try testing.expect(handshake.answer(frame[0 .. three + 6], &reply) == .reply);
     try testing.expect(handshake.keys() != null);
+}
+
+test "the same group key handed over again is the same key, not a fresh count" {
+    const cell = TestCell.home();
+    var handshake = cell.handshake();
+    var frame: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    var reply: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    const gtk = Gtk{ .index = 1, .key = hex("0f0e0d0c0b0a09080706050403020100") };
+
+    try testing.expect(handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply) == .reply);
+    try testing.expect(handshake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &reply) == .reply);
+    const installed = handshake.keys().?.groupKey(1).?;
+
+    // An access point renewing the key to the value it already held. Its
+    // message is authentic and its counter is fresh, so it is answered;
+    // what it must not do is name a new key, because a receiver told the
+    // key is new starts counting again from what the message says, which
+    // is behind every frame already delivered under it.
+    try testing.expect(handshake.answer(frame[0..cell.groupMessage(3, gtk, &frame)], &reply) == .reply);
+    const after = handshake.keys().?.groupKey(1).?;
+    try testing.expectEqual(installed.generation, after.generation);
+    try testing.expectEqualSlices(u8, &installed.bytes, &after.bytes);
+
+    // A different key under the same index is a different key.
+    const next = Gtk{ .index = 1, .key = hex("00112233445566778899aabbccddeeff") };
+    try testing.expect(handshake.answer(frame[0..cell.groupMessage(4, next, &frame)], &reply) == .reply);
+    try testing.expect(handshake.keys().?.groupKey(1).?.generation != installed.generation);
+}
+
+test "the key a rekey replaces is read until the new one is heard" {
+    const first = hex("000102030405060708090a0b0c0d0e0f");
+    const second = hex("0f0e0d0c0b0a09080706050403020100");
+    const keys = Keys{
+        .pairwise = .{ .bytes = second, .generation = 3 },
+        .previous = .{ .bytes = first, .generation = 1 },
+    };
+    const head = ieee80211.Header{
+        .control = .{ .kind = .data, .from_ds = true },
+        .addr1 = mac.Address{ 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B },
+        .addr2 = mac.Address{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 },
+        .addr3 = mac.Address{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 },
+    };
+    var frame: [128]u8 = undefined;
+    var opened: [128]u8 = undefined;
+    var numbering = Numbering{};
+
+    // The exchange that proves a new key finishes on a frame this station
+    // sends, and the access point installs its own side only when that
+    // frame arrives. Until then it is still speaking under the old key,
+    // its own last message among them.
+    const old_at_five = Ccmp.protect(first, head, 5, 0, "still the old key", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..old_at_five], &opened) != null);
+    // And the old key is numbered on its own: a frame it has already
+    // delivered is not delivered twice.
+    try testing.expectEqual(@as(?[]const u8, null), numbering.open(keys, frame[0..old_at_five], &opened));
+
+    // The moment one arrives under the new key, the old one is finished
+    // with for good.
+    const new_at_one = Ccmp.protect(second, head, 1, 0, "the new key", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..new_at_one], &opened) != null);
+    const old_at_six = Ccmp.protect(first, head, 6, 0, "too late", &frame).?;
+    try testing.expectEqual(@as(?[]const u8, null), numbering.open(keys, frame[0..old_at_six], &opened));
 }
 
 test "a key frame whose lengths run past sixteen bits is refused, not summed past them" {

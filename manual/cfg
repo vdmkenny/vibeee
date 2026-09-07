@@ -58,7 +58,7 @@ Settings, generated from the schema: all
   net.if0_ssid              unset
       a network name, up to 32 characters
   net.if0_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if0_channel           0
       a number
   net.if0_regdomain         conservative
@@ -80,7 +80,7 @@ Settings, generated from the schema: all
   net.if1_ssid              unset
       a network name, up to 32 characters
   net.if1_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if1_channel           0
       a number
   net.if1_regdomain         conservative
@@ -102,7 +102,7 @@ Settings, generated from the schema: all
   net.if2_ssid              unset
       a network name, up to 32 characters
   net.if2_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if2_channel           0
       a number
   net.if2_regdomain         conservative
@@ -124,7 +124,7 @@ Settings, generated from the schema: all
   net.if3_ssid              unset
       a network name, up to 32 characters
   net.if3_psk               unset
-      a passphrase of 8 to 63 characters, or 64 hex digits
+      a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits
   net.if3_channel           0
       a number
   net.if3_regdomain         conservative

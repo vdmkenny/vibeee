@@ -438,6 +438,27 @@ pub const Domains = struct {
 /// forgets the end of its own configuration.
 pub const FILE_MAX = 4096;
 
+/// The longest one setting is: the widest key any domain names, and the
+/// widest value any field accepts.
+///
+/// What it is for is the store's own message, which carries a key and its
+/// value together. A message too small for this is a setting nobody can
+/// write, which on a screen reads exactly like one that did not take.
+///
+/// The key half is derived from the schema. The value half is stated: a
+/// network key written out, which is the longest thing any field here
+/// holds and the form this system tells people to prefer over a
+/// passphrase.
+pub const LONGEST_SETTING = blk: {
+    var key: usize = 0;
+    for (std.meta.fields(Domains)) |domain| {
+        for (std.meta.fields(domain.type)) |field| {
+            key = @max(key, domain.name.len + 1 + field.name.len);
+        }
+    }
+    break :blk key + wifi.Psk.KEY_BYTES * 2;
+};
+
 /// Every domain's name, in declaration order. Derived rather than listed,
 /// so a domain added above is one this knows about.
 pub const DOMAIN_NAMES = names: {

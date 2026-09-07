@@ -917,6 +917,22 @@ pub const Diagnostics = packed struct(u32) {
 /// Without the bit, the power word in a transmit descriptor is ignored and
 /// every frame goes out at its rate's fixed figure, so nothing a person
 /// asks for reaches the air.
+/// The transmit configuration: how much of a frame must be in the
+/// hardware's own buffer before it starts putting one on the air.
+///
+/// Too little and the descriptor is read slower than the air needs it,
+/// which is what an underrun is. The level is raised a rung at a time
+/// when that happens, because every rung costs latency and the right one
+/// is the lowest that works.
+pub const TxConfig = packed struct(u32) {
+    dma_size: u3 = 0,
+    _3: u1 = 0,
+    /// In units of sixty-four bytes, with nought meaning the air is asked
+    /// for at once.
+    frame_trigger: u6 = 0,
+    _10: u22 = 0,
+};
+
 pub const RateMaxPower = packed struct(u32) {
     power: u6 = 0,
     from_descriptor: bool = false,
@@ -1302,6 +1318,7 @@ comptime {
     pinLayout(SelfPower, .{ .cts = 0x3F }, 0x0000_3F00);
     pinLayout(SelfPower, .{ .chirp = 0x3F }, 0x003F_0000);
     pinLayout(RateMaxPower, .{ .from_descriptor = true }, 0x0000_0040);
+    pinLayout(TxConfig, .{ .frame_trigger = 0x3F }, 0x0000_03F0);
     pinLayout(NoAck, .{ .bit_offset = 7 }, 0x0000_0070);
     pinLayout(NoAck, .{ .byte_offset = 3 }, 0x0000_0180);
     pinLayout(PhyTest, PhyTest.analog_access, 0x0000_0007);
