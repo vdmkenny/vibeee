@@ -65,9 +65,13 @@ comptime {
     if (std.meta.fields(Theme).len != theme.all.len) {
         @compileError("settings.Theme and eui.theme.all disagree about how many themes there are");
     }
-    for (std.meta.fields(Theme)) |field| {
-        if (theme.byName(field.name) == null) {
-            @compileError("settings.Theme names `" ++ field.name ++ "`, which eui has no theme for");
+    // Name for name and in order. The settings pane draws the themes in the
+    // array's order and reads back which one was pressed as the enum's, so a
+    // pair that agreed on the names but not on their order would apply the
+    // theme beside the one somebody chose.
+    for (std.meta.fields(Theme), theme.all) |field, candidate| {
+        if (!std.mem.eql(u8, field.name, candidate.name)) {
+            @compileError("settings.Theme and eui.theme.all disagree at `" ++ field.name ++ "`");
         }
     }
 }
