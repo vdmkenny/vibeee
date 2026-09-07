@@ -107,7 +107,7 @@ pub const Model = struct {
     }
 
     /// Claim an address; the gateway and the servers may be unset.
-    pub fn setStatic(self: *Model, iface: usize, address: ipv4.Cidr, gateway: ipv4.Maybe, dns: ipv4.Pair) bool {
+    pub fn setStatic(self: *Model, iface: usize, address: ipv4.Cidr, gateway: ?ipv4.Address, dns: ipv4.Pair) bool {
         const slot = self.claim(iface) orelse return false;
         slot.claimStatic(address, gateway, dns);
         return true;

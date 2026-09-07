@@ -244,7 +244,7 @@ fn drawChosen(pane: eui.Rect, from: i32) i32 {
 
     ctx.rowText(laid[0], net.nameOf(&model.ifaces[index]), theme.current().text);
 
-    const claimed = if (model.slotOf(index)) |slot| slot.address.isSet() else false;
+    const claimed = if (model.slotOf(index)) |slot| slot.address != null else false;
     const stored: Mode = if (claimed) .static else .dhcp;
     const mode = claims[index].picked orelse stored;
     const picked = ctx.choiceOf(laid[1], mode, &.{ "DHCP", "Static" });
@@ -303,10 +303,10 @@ fn fill(index: usize) void {
     var buf: [48]u8 = undefined;
     var spelled = str.Builder{ .buf = &buf };
     if (model.slotOf(index)) |slot| {
-        slot.address.spell(&spelled);
+        if (slot.address) |at| at.spell(&spelled);
         claim.address.set(spelled.done());
         spelled = .{ .buf = &buf };
-        slot.gateway.spell(&spelled);
+        if (slot.gateway) |at| at.spell(&spelled);
         claim.gateway.set(spelled.done());
         spelled = .{ .buf = &buf };
         slot.dns.spell(&spelled);
@@ -348,7 +348,7 @@ fn applyClaim(index: usize) void {
         return;
     };
     const gateway_text = claim.gateway.slice();
-    const gateway: ipv4.Maybe = if (gateway_text.len == 0) .{} else ipv4.Maybe.parse(gateway_text) orelse {
+    const gateway: ?ipv4.Address = if (gateway_text.len == 0) null else ipv4.Address.parse(gateway_text) orelse {
         note = "The gateway is not an address.";
         ctx.damage();
         return;

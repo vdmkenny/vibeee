@@ -373,14 +373,14 @@ fn applySlot(slot: *Slot, role: settings.NetSlot) void {
         return;
     }
 
-    if (role.address.isSet()) {
+    if (role.address) |claimed| {
         if (slot.mode == .dhcp) lwip.dhcp_release_and_stop(&slot.netif);
         // Mode first: the address write fires the status callback, which
         // reads the mode to say where the address came from.
         slot.mode = .static_claim;
-        const addr = lwip.toWire(role.address.addr);
-        const mask = lwip.toWire(role.address.mask());
-        const gw = lwip.toWire(role.gateway.addr);
+        const addr = lwip.toWire(claimed.addr);
+        const mask = lwip.toWire(claimed.mask());
+        const gw = lwip.toWire(if (role.gateway) |at| at.addr else 0);
         lwip.netif_set_addr(&slot.netif, &addr, &mask, &gw);
         lwip.netif_set_up(&slot.netif);
         return;

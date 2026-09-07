@@ -147,7 +147,7 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
             say("net: that is not an address/prefix\n");
             return;
         };
-        var gateway = lib.ipv4.Maybe{};
+        var gateway: ?lib.ipv4.Address = null;
         var dns = lib.ipv4.Pair{};
         var at: usize = 2;
         while (at < args.len) : (at += 2) {
@@ -156,7 +156,7 @@ fn configure(spelled: []const u8, matcher: lib.ifmatch.Match, args: []const []co
                 return;
             }
             if (std.mem.eql(u8, args[at], "gw")) {
-                gateway = lib.ipv4.Maybe.parse(args[at + 1]) orelse {
+                gateway = lib.ipv4.Address.parse(args[at + 1]) orelse {
                     say("net: that gateway is not an address\n");
                     return;
                 };

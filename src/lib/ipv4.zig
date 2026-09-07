@@ -15,10 +15,6 @@ pub const Cidr = packed struct(u40) {
     addr: u32 = 0,
     prefix: u8 = 0,
 
-    pub fn isSet(self: Cidr) bool {
-        return self.prefix != 0 and self.addr != 0;
-    }
-
     /// The network mask the prefix describes.
     pub fn mask(self: Cidr) u32 {
         if (self.prefix == 0) return 0;
@@ -37,7 +33,6 @@ pub const Cidr = packed struct(u40) {
     }
 
     pub fn spell(self: Cidr, into: *str.Builder) void {
-        if (!self.isSet()) return;
         var field: [15]u8 = undefined;
         into.text(text(self.addr, &field));
         into.byte('/');
@@ -45,25 +40,22 @@ pub const Cidr = packed struct(u40) {
     }
 };
 
-/// One optional address: "192.168.178.1", or nothing at all. The gateway's
-/// shape, and each half of a name-server pair.
-pub const Maybe = packed struct(u32) {
+/// One address as a setting spells it: "192.168.178.1".
+///
+/// A type rather than a bare word, because the file writes it dotted and the
+/// loader asks the type how. An address that may not have been chosen is
+/// `?Address`, so nothing written and something written wrong are two
+/// different answers rather than both being a zero.
+pub const Address = packed struct(u32) {
     addr: u32 = 0,
-
-    pub fn isSet(self: Maybe) bool {
-        return self.addr != 0;
-    }
 
     pub const accepts = "an address, a.b.c.d; unset takes what the lease offers";
 
-    pub fn parse(dotted: []const u8) ?Maybe {
-        if (str.trim(dotted).len == 0) return .{};
-        const addr = ipv4Parse(str.trim(dotted)) orelse return null;
-        return .{ .addr = addr };
+    pub fn parse(dotted: []const u8) ?Address {
+        return .{ .addr = ipv4Parse(str.trim(dotted)) orelse return null };
     }
 
-    pub fn spell(self: Maybe, into: *str.Builder) void {
-        if (!self.isSet()) return;
+    pub fn spell(self: Address, into: *str.Builder) void {
         var field: [15]u8 = undefined;
         into.text(text(self.addr, &field));
     }
@@ -210,10 +202,13 @@ test "a cidr refuses what is not one" {
     try std.testing.expectEqual(null, Cidr.parse("banana/24"));
 }
 
-test "a maybe address is empty or one address" {
-    try std.testing.expect(!Maybe.parse("").?.isSet());
-    try std.testing.expectEqual(@as(u32, 0xC0A8B201), Maybe.parse("192.168.178.1").?.addr);
-    try std.testing.expectEqual(null, Maybe.parse("not an address"));
+test "an address is one address, and nothing else is" {
+    try std.testing.expectEqual(@as(u32, 0xC0A8B201), Address.parse("192.168.178.1").?.addr);
+    try std.testing.expectEqual(null, Address.parse("not an address"));
+
+    // Nothing written is not an address either. Whether one was chosen is the
+    // field's question, asked as `?Address`, and not this one's.
+    try std.testing.expectEqual(null, Address.parse(""));
 }
 
 test "a pair holds one or two addresses" {

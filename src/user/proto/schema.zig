@@ -264,8 +264,8 @@ pub const NetSlot = struct {
     /// machine to choose, which it does in slot order.
     default: bool = false,
     /// Unset asks DHCP; "a.b.c.d/nn" claims the address statically.
-    address: ipv4.Cidr = .{},
-    gateway: ipv4.Maybe = .{},
+    address: ?ipv4.Cidr = null,
+    gateway: ?ipv4.Address = null,
     /// Up to two, comma separated. Unset defers to the DHCP offer.
     dns: ipv4.Pair = .{},
     /// The network a radio joins. Unset leaves it idle, which is what a
@@ -293,12 +293,12 @@ pub const NetSlot = struct {
     /// Clear any static claim: DHCP asks.
     pub fn askDhcp(self: *NetSlot) void {
         self.enabled = true;
-        self.address = .{};
-        self.gateway = .{};
+        self.address = null;
+        self.gateway = null;
     }
 
     /// Claim an address; the gateway and the servers may be unset.
-    pub fn claimStatic(self: *NetSlot, address: ipv4.Cidr, gateway: ipv4.Maybe, dns: ipv4.Pair) void {
+    pub fn claimStatic(self: *NetSlot, address: ipv4.Cidr, gateway: ?ipv4.Address, dns: ipv4.Pair) void {
         self.enabled = true;
         self.address = address;
         self.gateway = gateway;
@@ -371,7 +371,9 @@ fn NetSchema() type {
                 .psk => .none,
                 .regdomain => .conservative,
                 .txpower => .regulatory,
-                else => .{},
+                // Nothing chosen, for a field that may be left so, and the
+                // type's own empty value for the rest.
+                else => if (@typeInfo(field.type) == .optional) null else .{},
             };
             const at = machine_fields.len + slot * slot_fields.len + i;
             names[at] = std.fmt.comptimePrint("if{d}_{s}", .{ slot, field.name });
