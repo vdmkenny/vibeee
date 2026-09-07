@@ -106,23 +106,36 @@ export fn vb_window_open(
     flags: c_uint,
     into: ?*Display,
 ) ?[*]u8 {
-    if (virtual) |*window| return @ptrCast(window.surface().ptr);
+    // One per program, so a second call names the window that is open. It
+    // is described like the first, and refused when it asks for a shape
+    // the open one is not: there is no way to give it one, and handing
+    // back a framebuffer of a different size than was asked for is how a
+    // port draws off the end of its own pixels.
+    if (virtual) |*window| {
+        if (window.width != width or window.height != height) return null;
+        describe(into, window);
+        return @ptrCast(window.surface().ptr);
+    }
 
     const name = if (title) |text| std.mem.span(text) else "program";
     const mode: framebuffer.Mode = if (flags & WINDOW_FULLSCREEN != 0) .fullscreen else .windowed;
     var window = framebuffer.Window.open(name, width, height, mode) catch return null;
-    const pixels = window.surface();
 
-    if (into) |out| {
-        out.* = .{
-            .width = width,
-            .height = height,
-            .stride_px = width,
-            .bytes = @intCast(pixels.len * @sizeOf(u32)),
-        };
-    }
+    describe(into, &window);
     virtual = window;
-    return @ptrCast(pixels.ptr);
+    return @ptrCast(window.surface().ptr);
+}
+
+/// Fill in what the caller asked to be told about the framebuffer, for a
+/// caller that asked to be told.
+fn describe(into: ?*Display, window: *const framebuffer.Window) void {
+    const out = into orelse return;
+    out.* = .{
+        .width = window.width,
+        .height = window.height,
+        .stride_px = window.width,
+        .bytes = @intCast(window.pixels.len * @sizeOf(u32)),
+    };
 }
 
 /// Copy the logical framebuffer into the current compositor surface.

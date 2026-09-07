@@ -80,7 +80,12 @@ int vb_key_read(vb_key *into, int count, unsigned int timeout_us);
  * Returns NULL when neither a window nor the screen can be had, or when
  * memory cannot be allocated. `info` describes the fixed logical framebuffer
  * rather than the surface it is presented on, and may be NULL for a program
- * that already knows the shape it asked for. */
+ * that already knows the shape it asked for.
+ *
+ * One per program, so a second call names the window already open: it fills
+ * `info` as the first did and hands back the same pixels. A second call
+ * asking for a different width or height returns NULL, there being no way
+ * to give it what it asked for. */
 #define VB_WINDOW_FULLSCREEN 0x1u
 void *vb_window_open(const char *title, unsigned short width,
                      unsigned short height, unsigned int flags,
