@@ -362,6 +362,19 @@ fn paintWindow(index: usize, focused: bool) void {
     // has not draws the manager's own placeholder, which is what the desktop
     // looks like before anything has connected.
     if (w.mapped and desktop.windows[index].surface.valid()) {
+        // What the surface does not reach is filled first: a window that
+        // grew is told its new size and draws for it in its own time, and
+        // the strip its old surface does not cover would otherwise go on
+        // showing whatever was there, for as long as the client took to
+        // answer, or for ever if it never does.
+        const reaches = Rect{
+            .x = content.x,
+            .y = content.y,
+            .w = @min(content.w, @as(i32, w.surface.width)),
+            .h = @min(content.h, @as(i32, w.surface.height)),
+        };
+        if (!std.meta.eql(reaches, content)) screen.fill(content, t.surface);
+
         clients.blit(screen, desktop.windows[index].surface, content, content);
         screen.borderInset(area, width, borderColour(focused, alone));
         return;
