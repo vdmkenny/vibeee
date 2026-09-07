@@ -114,8 +114,8 @@ export fn readdir(dir: ?*Dir) callconv(.c) ?*Dirent {
     const open = dir orelse return null;
 
     var record: [512]u8 = undefined;
-    const n = sys.readdir(@intCast(open.handle), &record);
-    if (n <= 0) return null;
+    const n = sys.readdir(@intCast(open.handle), &record) catch return null;
+    if (n == 0) return null;
 
     const entry = sys.Dirent.decode(&record, @intCast(n)) orelse return null;
 

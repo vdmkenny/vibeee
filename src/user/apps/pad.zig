@@ -262,8 +262,8 @@ fn open() void {
     document.clear();
     while (true) {
         var chunk: [512]u8 = undefined;
-        const n = sys.read(handle, &chunk);
-        if (n <= 0) break;
+        const n = sys.read(handle, &chunk) catch break;
+        if (n == 0) break;
         if (!document.insert(document.len, chunk[0..@intCast(n)])) {
             status = "Only part of it fits.";
             break;
@@ -291,8 +291,8 @@ fn save() void {
     };
     defer sys.close(handle);
 
-    const written = sys.write(handle, document.slice());
-    if (written < 0 or @as(usize, @intCast(written)) != document.len) {
+    const written = sys.write(handle, document.slice()) catch 0;
+    if (written != document.len) {
         status = "Only part of it was written.";
         ctx.damage();
         return;

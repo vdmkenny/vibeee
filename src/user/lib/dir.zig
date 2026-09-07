@@ -65,8 +65,8 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
 
     while (true) {
         var record: [512]u8 = undefined;
-        const n = sys.readdir(handle, &record);
-        if (n <= 0) break;
+        const n = sys.readdir(handle, &record) catch break;
+        if (n == 0) break;
 
         const entry = sys.Dirent.decode(&record, @intCast(n)) orelse continue;
 

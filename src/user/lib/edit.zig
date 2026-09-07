@@ -135,7 +135,7 @@ pub const Editor = struct {
     fn nextByte(self: *Editor) ?u8 {
         _ = self;
         var byte: [1]u8 = undefined;
-        return if (sys.read(sys.STDIN, &byte) > 0) byte[0] else null;
+        return if ((sys.read(sys.STDIN, &byte) catch 0) > 0) byte[0] else null;
     }
 
     /// The most parameter bytes a sequence may carry before it is taken for

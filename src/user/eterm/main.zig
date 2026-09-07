@@ -174,11 +174,10 @@ fn flushToShell() void {
     while (running and pending_len > 0) {
         if (!writable()) return;
 
-        const wrote = sys.write(to_shell, pending[0..pending_len]);
-        if (wrote < 0) {
+        const wrote = sys.write(to_shell, pending[0..pending_len]) catch {
             running = false;
             return;
-        }
+        };
 
         const n: usize = @intCast(wrote);
         if (n == 0) return;
@@ -261,13 +260,13 @@ fn drain() void {
     while (rounds < 8) : (rounds += 1) {
         if (rounds > 0 and !moreToRead()) return;
 
-        const n = sys.read(from_shell, &chunk);
-        if (n <= 0) {
-            if (n == 0) shellExited();
+        const n = sys.read(from_shell, &chunk) catch return;
+        if (n == 0) {
+            shellExited();
             return;
         }
 
-        terminal.write(chunk[0..@intCast(n)]);
+        terminal.write(chunk[0..n]);
         const answer = terminal.takeReply();
         if (answer.len > 0) toShell(answer);
     }

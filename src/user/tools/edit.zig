@@ -107,8 +107,8 @@ fn piped() bool {
 
     var filled: usize = 0;
     while (filled < storage.len) {
-        const n = sys.read(sys.STDIN, storage[filled..]);
-        if (n <= 0) break;
+        const n = sys.read(sys.STDIN, storage[filled..]) catch break;
+        if (n == 0) break;
         filled += @intCast(n);
     }
     if (filled == 0) return false;
@@ -135,8 +135,8 @@ fn load() void {
 
     var filled: usize = 0;
     while (filled < storage.len) {
-        const n = sys.read(file, storage[filled..]);
-        if (n <= 0) break;
+        const n = sys.read(file, storage[filled..]) catch break;
+        if (n == 0) break;
         filled += @intCast(n);
     }
     take(filled);
@@ -185,8 +185,8 @@ fn save() void {
     const whole = doc.contents();
     var written: usize = 0;
     while (written < whole.len) {
-        const n = sys.write(file, whole[written..]);
-        if (n <= 0) break;
+        const n = sys.write(file, whole[written..]) catch break;
+        if (n == 0) break;
         written += @intCast(n);
     }
 

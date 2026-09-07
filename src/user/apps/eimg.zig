@@ -156,8 +156,8 @@ fn load() void {
     const raw = @as([*]u8, @ptrCast(room))[0..entry.size];
     var read: usize = 0;
     while (read < raw.len) {
-        const n = sys.read(handle, raw[read..]);
-        if (n <= 0) break;
+        const n = sys.read(handle, raw[read..]) catch break;
+        if (n == 0) break;
         read += @intCast(n);
     }
     if (read == 0) {

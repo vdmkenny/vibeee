@@ -273,9 +273,9 @@ fn loadConfig() void {
     // file is how a table loses its tail.
     var held: usize = 0;
     while (held < config_buf.len) {
-        const n = sys.read(handle, config_buf[held..]);
-        if (n <= 0) break;
-        held += @intCast(n);
+        const n = sys.read(handle, config_buf[held..]) catch break;
+        if (n == 0) break;
+        held += n;
     }
 
     if (held == 0) {
@@ -871,7 +871,7 @@ fn writeDisabled() bool {
     defer sys.close(handle);
 
     const written = body.done();
-    return sys.write(handle, written) == @as(isize, @intCast(written.len));
+    return (sys.write(handle, written) catch 0) == written.len;
 }
 
 /// Read it back at start-up, before anything is started.
@@ -881,10 +881,10 @@ fn readDisabled() void {
     const handle = sys.open(DISABLED, .{}) catch return;
     defer sys.close(handle);
 
-    const n = sys.read(handle, &text);
-    if (n <= 0) return;
+    const n = sys.read(handle, &text) catch return;
+    if (n == 0) return;
 
-    var lines = str.lines(text[0..@intCast(n)]);
+    var lines = str.lines(text[0..n]);
     while (lines.next()) |line| {
         const name = str.trim(line);
         if (name.len == 0) continue;

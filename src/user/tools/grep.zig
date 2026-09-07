@@ -46,8 +46,8 @@ fn grepHandle(handle: usize, pattern: []const u8, name: []const u8, show_name: b
     var line_len: usize = 0;
 
     while (true) {
-        const n = sys.read(handle, &chunk);
-        if (n <= 0) break;
+        const n = sys.read(handle, &chunk) catch break;
+        if (n == 0) break;
 
         for (chunk[0..@intCast(n)]) |c| {
             if (c == '\n') {

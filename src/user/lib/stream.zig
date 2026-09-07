@@ -75,12 +75,12 @@ pub const Stream = struct {
         // dropped and nothing said the stream had failed.
         var at: usize = 0;
         while (at < self.used) {
-            const n = sys.write(self.handle, self.buffer[at..self.used]);
-            if (n <= 0) {
+            const n = sys.write(self.handle, self.buffer[at..self.used]) catch 0;
+            if (n == 0) {
                 self.failed = true;
                 break;
             }
-            at += @intCast(n);
+            at += n;
         }
         self.used = 0;
     }
@@ -90,7 +90,9 @@ pub const Stream = struct {
 
         if (self.buffering == .none or self.buffer.len == 0) {
             const one = [_]u8{byte};
-            if (sys.write(self.handle, &one) < 0) self.failed = true;
+            _ = sys.write(self.handle, &one) catch {
+                self.failed = true;
+            };
             return;
         }
 
@@ -108,7 +110,9 @@ pub const Stream = struct {
     pub fn write(self: *Stream, bytes: []const u8) void {
         if (self.buffering == .none or self.buffer.len == 0) {
             self.beginWriting();
-            if (sys.write(self.handle, bytes) < 0) self.failed = true;
+            _ = sys.write(self.handle, bytes) catch {
+                self.failed = true;
+            };
             return;
         }
 
@@ -169,13 +173,16 @@ pub const Stream = struct {
     fn fill(self: *Stream) bool {
         if (self.buffer.len == 0) return false;
 
-        const n = sys.read(self.handle, self.buffer);
-        if (n <= 0) {
-            if (n == 0) self.at_end = true else self.failed = true;
+        const n = sys.read(self.handle, self.buffer) catch {
+            self.failed = true;
+            return false;
+        };
+        if (n == 0) {
+            self.at_end = true;
             return false;
         }
 
-        self.used = @intCast(n);
+        self.used = n;
         self.at = 0;
         return true;
     }

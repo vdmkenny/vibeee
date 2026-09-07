@@ -66,8 +66,8 @@ fn load(from: []const u8) bool {
     // scrolled could not say how many lines there are, and a pipe cannot be
     // rewound to count them later.
     while (filled < text.len) {
-        const n = sys.read(handle, text[filled..]);
-        if (n <= 0) break;
+        const n = sys.read(handle, text[filled..]) catch break;
+        if (n == 0) break;
         filled += @intCast(n);
     }
 

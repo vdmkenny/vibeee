@@ -267,8 +267,8 @@ fn sendDatagramBack(s: *const sock.Sock, bytes: []const u8) void {
 /// Standard input toward the peer. False when the pipe finished.
 fn feed(s: *const sock.Sock, datagrams: bool) bool {
     var buf: [512]u8 = undefined;
-    const n = sys.read(sys.STDIN, &buf);
-    if (n <= 0) return false;
+    const n = sys.read(sys.STDIN, &buf) catch return false;
+    if (n == 0) return false;
     const bytes = buf[0..@intCast(n)];
     if (datagrams) {
         sendDatagramBack(s, bytes);

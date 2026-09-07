@@ -36,7 +36,7 @@ pub fn readEntire(path: []const u8, into: []u8) EntireError!usize {
     // The room is full. One byte more tells a file that fits exactly from
     // one that goes on.
     var more: [1]u8 = undefined;
-    if (sys.read(handle, &more) > 0) return error.TooBig;
+    if ((sys.read(handle, &more) catch 0) > 0) return error.TooBig;
     return read;
 }
 
@@ -53,10 +53,9 @@ const Filled = struct { read: usize, failed: bool };
 fn fill(handle: u32, into: []u8) Filled {
     var read: usize = 0;
     while (read < into.len) {
-        const n = sys.read(handle, into[read..]);
+        const n = sys.read(handle, into[read..]) catch return .{ .read = read, .failed = true };
         if (n == 0) break;
-        if (n < 0) return .{ .read = read, .failed = true };
-        read += @intCast(n);
+        read += n;
     }
     return .{ .read = read, .failed = false };
 }

@@ -740,8 +740,8 @@ fn answerResolve(slot: *Resolve, addr: u32) void {
 fn readHosts(buf: []u8) ?[]const u8 {
     const file = sys.open(HOSTS_PATH, .{}) catch return null;
     defer sys.close(file);
-    const n = sys.read(file, buf);
-    if (n <= 0) return null;
+    const n = sys.read(file, buf) catch return null;
+    if (n == 0) return null;
     return buf[0..@intCast(n)];
 }
 

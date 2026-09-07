@@ -338,11 +338,10 @@ fn copyFile(from: []const u8, to: []const u8) bool {
 
     while (true) {
         var chunk: [1024]u8 = undefined;
-        const read = sys.read(source, &chunk);
-        if (read < 0) return false;
+        const read = sys.read(source, &chunk) catch return false;
         if (read == 0) return true;
 
-        const written = sys.write(destination, chunk[0..@intCast(read)]);
+        const written = sys.write(destination, chunk[0..read]) catch return false;
         if (written != read) return false;
     }
 }

@@ -160,8 +160,8 @@ fn readOne(name: []const u8) void {
     const room = manifest_text[manifest_used..];
     if (room.len == 0) return;
 
-    const n = sys.read(file, room);
-    if (n <= 0) return;
+    const n = sys.read(file, room) catch return;
+    if (n == 0) return;
 
     const text = room[0..@intCast(n)];
     manifest_used += @intCast(n);

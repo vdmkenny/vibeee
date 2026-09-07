@@ -61,12 +61,12 @@ pub export fn close(fd: c_int) callconv(.c) c_int {
 
 pub export fn read(fd: c_int, buf: [*]u8, count: usize) callconv(.c) isize {
     if (fd < 0) return errno.fail(errno.EBADF);
-    return errno.wrap(sys.read(@intCast(fd), buf[0..count]));
+    return errno.wrap(sys.readRaw(@intCast(fd), @intFromPtr(buf), count));
 }
 
 pub export fn write(fd: c_int, buf: [*]const u8, count: usize) callconv(.c) isize {
     if (fd < 0) return errno.fail(errno.EBADF);
-    return errno.wrap(sys.write(@intCast(fd), buf[0..count]));
+    return errno.wrap(sys.writeRaw(@intCast(fd), @intFromPtr(buf), count));
 }
 
 pub export fn lseek(fd: c_int, offset: c_long, whence: c_int) callconv(.c) c_long {

@@ -644,9 +644,9 @@ fn save() void {
         say("Cannot write there.");
         return;
     };
-    const wrote = sys.write(handle, storage[0..text_len]);
+    const wrote = sys.write(handle, storage[0..text_len]) catch 0;
     sys.close(handle);
-    if (wrote < 0 or @as(usize, @intCast(wrote)) != text_len) {
+    if (wrote != text_len) {
         say("Only part of it was written.");
         return;
     }

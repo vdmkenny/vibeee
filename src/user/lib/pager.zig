@@ -573,8 +573,8 @@ fn fill() ?Input {
         have = 0;
         return .ended;
     }
-    const n = sys.read(sys.STDIN, pending[have..]);
-    if (n <= 0) return .ended;
+    const n = sys.read(sys.STDIN, pending[have..]) catch return .ended;
+    if (n == 0) return .ended;
     have += @intCast(n);
     return null;
 }

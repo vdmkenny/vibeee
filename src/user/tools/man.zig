@@ -41,8 +41,8 @@ pub fn run(args: []const []const u8) void {
 
     var filled: usize = 0;
     while (filled < text.len) {
-        const n = sys.read(handle, text[filled..]);
-        if (n <= 0) break;
+        const n = sys.read(handle, text[filled..]) catch break;
+        if (n == 0) break;
         filled += @intCast(n);
     }
 

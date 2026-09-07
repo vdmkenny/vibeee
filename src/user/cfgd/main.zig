@@ -202,7 +202,7 @@ fn put(where: []const u8, body: []const u8) bool {
     const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true }) catch return false;
     defer sys.close(handle);
 
-    return sys.write(handle, body) == @as(isize, @intCast(body.len));
+    return (sys.write(handle, body) catch 0) == body.len;
 }
 
 /// Wake everyone watching this domain.

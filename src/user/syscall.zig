@@ -126,8 +126,9 @@ inline fn syscall5(nr: u32, a0: usize, a1: usize, a2: usize, a3: usize, a4: usiz
     return enter(nr, a0, a1, a2, a3, a4);
 }
 
-pub fn write(handle: u32, bytes: []const u8) isize {
-    return syscall3(abi.number("write"), handle, @intFromPtr(bytes.ptr), bytes.len);
+/// How many bytes were taken, which may be fewer than were offered.
+pub fn write(handle: u32, bytes: []const u8) Refusal!usize {
+    return checked(writeRaw(handle, @intFromPtr(bytes.ptr), bytes.len));
 }
 
 /// The same three calls, taking the pointer and the length as numbers.
@@ -155,8 +156,14 @@ pub fn recvRaw(handle: usize, msg: usize, token: usize) isize {
     return syscall4(abi.number("recv"), handle, msg, token, abi.Timeout.poll);
 }
 
-pub fn read(handle: u32, buf: []u8) isize {
-    return syscall3(abi.number("read"), handle, @intFromPtr(buf.ptr), buf.len);
+/// How many bytes arrived. Nought is the end of what there is to read, which
+/// is a different answer from a refusal and now says so.
+pub fn read(handle: u32, buf: []u8) Refusal!usize {
+    return checked(readRaw(handle, @intFromPtr(buf.ptr), buf.len));
+}
+
+pub fn readRaw(handle: u32, ptr: usize, len: usize) isize {
+    return syscall3(abi.number("read"), handle, ptr, len);
 }
 
 pub fn log(bytes: []const u8) isize {
@@ -266,8 +273,9 @@ pub fn seek(handle: usize, offset: isize, whence: usize) isize {
     return syscall3(abi.number("seek"), handle, @bitCast(offset), whence);
 }
 
-pub fn readdir(handle: usize, buf: []u8) isize {
-    return syscall3(abi.number("readdir"), handle, @intFromPtr(buf.ptr), buf.len);
+/// One entry's bytes, or nought once the listing has ended.
+pub fn readdir(handle: u32, buf: []u8) Refusal!usize {
+    return checked(syscall3(abi.number("readdir"), handle, @intFromPtr(buf.ptr), buf.len));
 }
 
 pub fn stat(path: []const u8, buf: []u8) isize {

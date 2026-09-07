@@ -327,7 +327,7 @@ fn crookedProgram() isize {
     Elf.write(&image, .{ .offset = 0xFFFF_F000, .filesz = 0x1000 });
 
     const file = sys.open(CROOKED, .{ .write = true, .create = true, .truncate = true }) catch return NOT_RUN;
-    const wrote = sys.write(file, &image);
+    const wrote = sys.write(file, &image) catch 0;
     sys.close(file);
     if (wrote != image.len) return NOT_RUN;
 

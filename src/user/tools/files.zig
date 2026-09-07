@@ -33,8 +33,8 @@ pub fn ls(args: []const []const u8) void {
     var total: usize = 0;
 
     while (true) {
-        const n = sys.readdir(handle, &buf);
-        if (n <= 0) break;
+        const n = sys.readdir(handle, &buf) catch break;
+        if (n == 0) break;
         const count: usize = @intCast(n);
 
         const entry = sys.Dirent.decode(&buf, count) orelse continue;
@@ -131,8 +131,8 @@ pub fn cat(args: []const []const u8) void {
 
         var buf: [4096]u8 = [_]u8{0} ** 4096;
         while (true) {
-            const n = sys.read(handle, &buf);
-            if (n <= 0) break;
+            const n = sys.read(handle, &buf) catch break;
+            if (n == 0) break;
             out.text(buf[0..@intCast(n)]);
         }
     }
@@ -159,8 +159,8 @@ pub fn hexdump(args: []const []const u8) void {
     var offset: usize = 0;
 
     while (true) {
-        const n = sys.read(handle, &buf);
-        if (n <= 0) break;
+        const n = sys.read(handle, &buf) catch break;
+        if (n == 0) break;
         const count: usize = @intCast(n);
 
         out.hex(offset, 8);
