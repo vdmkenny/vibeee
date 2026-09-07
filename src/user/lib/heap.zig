@@ -255,23 +255,20 @@ pub fn resize(pointer: ?*anyopaque, size: usize) ?*anyopaque {
     }
 
     const block: [*]u8 = @ptrCast(given);
-    const header: *Header = @ptrCast(@alignCast(block - @sizeOf(Header)));
 
-    // Growing within the class it already has is free, and shrinking always
-    // is: the block is the same size either way.
-    if (header.class != Header.OWN_SEGMENT) {
-        const width = widthOf(header.class);
-        if (size + @sizeOf(Header) <= width) return given;
-    }
+    // Growing within what the block already holds is free, and shrinking
+    // always is: the block is the same size either way. A block of its own
+    // segment answers this from the capacity it records, which is the same
+    // question `widthOfBlock` answers for the standard interface: asked
+    // only of the classes, a segment shrunk by a byte bought a new segment
+    // and copied itself into it.
+    if (size <= widthOfBlock(block)) return given;
 
     const bigger = alloc(size) orelse return null;
 
     // Never more than the old block held, whatever the new size is: growing an
     // allocation is not permission to read past the end of the old one.
-    const carry = if (header.class == Header.OWN_SEGMENT)
-        @min(size, header.capacity())
-    else
-        @min(size, widthOf(header.class) - @sizeOf(Header));
+    const carry = @min(size, widthOfBlock(block));
 
     @memcpy(@as([*]u8, @ptrCast(bigger))[0..carry], block[0..carry]);
     release(given);

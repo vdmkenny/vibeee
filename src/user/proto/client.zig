@@ -140,16 +140,20 @@ pub const Connection = struct {
             .tag_hint = 0,
         } };
 
+        // A slot on this side first: the server's window is a thing that
+        // exists once it is made, and one made with nowhere here to record
+        // it is a window nothing can name, take down, or draw into, still
+        // counting against what this client may have.
+        const slot = for (&self.windows) |*w| {
+            if (!w.used) break w;
+        } else return error.NoRoom;
+
         const rep = try self.request(&req, &.{});
         if (rep.status != .ok) return error.Refused;
 
         const id = rep.body.create.win;
-        for (&self.windows) |*w| {
-            if (w.used) continue;
-            w.* = .{ .id = id, .used = true };
-            return id;
-        }
-        return error.NoRoom;
+        slot.* = .{ .id = id, .used = true };
+        return id;
     }
 
     /// Allocate a surface of `w` by `h` and give the server a handle to it.

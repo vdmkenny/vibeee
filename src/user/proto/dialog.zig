@@ -75,11 +75,14 @@ pub const FileDialog = struct {
         self.reload();
 
         self.window = try connection.createWindow(.{ .dialog = true }, 320, 240);
-        try connection.setTitle(self.window, switch (purpose) {
+        // Standing from here, whatever else fails: a window created and not
+        // recorded as showing is one `hide` will never take down, and eight
+        // of those are every window slot this program has.
+        self.showing = true;
+        connection.setTitle(self.window, switch (purpose) {
             .open => "Open",
             .save => "Save as",
-        });
-        self.showing = true;
+        }) catch {};
     }
 
     pub fn hide(self: *FileDialog, connection: *client.Connection) void {
