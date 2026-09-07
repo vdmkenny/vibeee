@@ -19,6 +19,13 @@ pub fn eql(a: Address, b: Address) bool {
 
 /// Whether the address names a group rather than one station: the low bit
 /// of the first byte, which broadcast also carries.
+/// Whether a farewell was said to this station by name or to the room,
+/// as a phrase a sentence about one can carry. A cell that put one
+/// station out and a cell that cleared the room say the same word.
+pub fn spellIfGroup(address: Address) []const u8 {
+    return if (isGroup(address)) " to everyone on the cell" else " to this station";
+}
+
 pub fn isGroup(a: Address) bool {
     return a[0] & 1 != 0;
 }

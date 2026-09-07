@@ -61,7 +61,10 @@ pub const Editor = struct {
 
     /// Read one line. Null at end of input, which is how a closed pipe and a
     /// terminal that has gone away both look.
-    pub fn read(self: *Editor, prompt: []const u8) ?[]const u8 {
+    /// The line comes back writable: the words of a command are cut out of
+    /// it in place, since removing a quote leaves a word shorter than the
+    /// run it came from and there is no second buffer to put it in.
+    pub fn read(self: *Editor, prompt: []const u8) ?[]u8 {
         // The editor echoes and edits, so it asks its terminal to keep its own
         // line discipline out of the way: keys as they are pressed, nothing
         // drawn but what is drawn here. Sent in-band rather than through

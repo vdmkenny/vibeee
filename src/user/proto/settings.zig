@@ -295,6 +295,7 @@ pub fn save(comptime domain: []const u8, value: Domain(domain)) Error!void {
             var value_text: [TEXT_MAX]u8 = undefined;
             var written = str.Builder{ .buf = &value_text };
             config.format(&written, @field(value, field.name));
+            if (key.cut or written.cut) return error.BadValue;
 
             try set(key.done(), written.done());
         }
@@ -309,4 +310,39 @@ fn ask(tag: Tag, key: []const u8, value: []const u8) Error!void {
 
 fn connect() ?u32 {
     return sys.svcConnect(SERVICE) catch null;
+}
+
+test "all network slots retain maximum credentials beyond the old writer limit" {
+    const wifi = @import("lib").wifi;
+    var original = Net{};
+    inline for (0..NET_SLOTS) |slot| {
+        var value = netSlot(original, slot);
+        value.ssid = wifi.Ssid.of("\xff" ** wifi.Ssid.MAX).?;
+        value.psk = wifi.Psk.parse("\xff" ** wifi.Passphrase.MAX).?;
+        setNetSlot(&original, slot, value);
+    }
+    var buffer: [schema.FILE_MAX]u8 = undefined;
+    var body = str.Builder{ .buf = &buffer };
+    config.render(&original, &body);
+    try std.testing.expect(body.len > 1024);
+    try std.testing.expect(!body.cut);
+    var loaded = [_]Net{.{}};
+    try std.testing.expectEqual(@as(usize, 1), config.eachFrom(buffer[0..body.len], &loaded));
+    try std.testing.expectEqualDeep(original, loaded[0]);
+}
+
+test "settings wire carries exact whitespace credentials without file escaping" {
+    const wifi = @import("lib").wifi;
+    for ([_][]const u8{ " " ** wifi.Passphrase.MIN, " \"" ++ "\\" ** 59 ++ " ", "0123456789abcdef" ** 4 }) |secret| {
+        const request = Req.init(.set, "net.if3_psk", secret).?;
+        const parts = request.parts();
+        try std.testing.expectEqualStrings(secret, parts.value);
+        var value = Net{};
+        try std.testing.expectEqual(config.Outcome.assigned, config.assign(&value, "if3_psk", parts.value));
+        var buffer: [TEXT_MAX]u8 = undefined;
+        var text = str.Builder{ .buf = &buffer };
+        config.format(&text, value.if3_psk);
+        try std.testing.expect(!text.cut);
+        try std.testing.expectEqualStrings(secret, text.done());
+    }
 }

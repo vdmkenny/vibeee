@@ -71,8 +71,10 @@ pub const Failure = enum {
     unprotected,
     /// The radio could not be pointed at the channel it was heard on.
     untuned,
-    /// It was joined, and the access point ended it or stopped speaking.
+    /// It was joined, and the access point sent a farewell.
     disconnected,
+    /// It was joined, and no frame was heard before the silence deadline.
+    silence,
     /// The access point refused.
     refused,
     /// It stopped answering.
@@ -89,6 +91,7 @@ pub const Failure = enum {
             .unprotected => "it is open and a password is set for it",
             .untuned => "the radio could not be tuned to its channel",
             .disconnected => "the access point ended it",
+            .silence => "the access point went silent",
             .refused => "the access point refused",
             .timed_out => "it stopped answering",
             .bad_key => "the key was not accepted",
@@ -161,8 +164,13 @@ pub const Join = struct {
     /// only that nothing answered; which step nothing answered at is the
     /// thing worth knowing.
     failed_in: State = .idle,
-    /// The network being joined, once one has been heard.
+    /// The network being joined, once one has been heard, and the
+    /// security element it advertised.
     bss: ?mlme.Bss = null,
+    ap_rsn: ieee80211.Rsn.Transcript = .{},
+    held: ?u8 = null,
+    farewell_reason: ?mlme.Reason = null,
+    farewell_destination: mac.Address = @splat(0),
     /// What the access point granted.
     aid: u14 = 0,
 
@@ -177,12 +185,10 @@ pub const Join = struct {
     /// The keys, once the exchange has finished, held until the caller is
     /// told to install them.
     earned: ?wpa2.Keys = null,
-    /// Keys an exchange has proved but which are not in use yet. The frame
-    /// that proves them goes out under the keys the access point still
-    /// holds, so they are taken up once it has gone and not before: a
-    /// frame sealed with a key the far end has not acknowledged is a frame
-    /// nobody can read.
+    /// Keys staged for this response only. Enqueue permits local use, not
+    /// an assumption that the AP has received M4 or switched its keys.
     pending: ?wpa2.Keys = null,
+    response: ?wpa2.Handshake.Response = null,
     /// The last frame of the exchange has been handed over, so the join is
     /// finished on the next look.
     settling: bool = false,
@@ -201,6 +207,8 @@ pub const Join = struct {
         self.handshake = null;
         self.earned = null;
         self.pending = null;
+        self.response = null;
+        self.farewell_reason = null;
         self.settling = false;
         self.aid = 0;
         self.left = TRIES;
@@ -221,16 +229,29 @@ pub const Join = struct {
         return self.earned;
     }
 
-    /// The frame the last pass asked for has gone, or has not.
-    ///
-    /// Nothing an exchange proved is taken up until the frame proving it
-    /// is away: until then the access point is still listening under the
-    /// keys it has, and a station that switched first would be answering
-    /// in a language the far end cannot read yet. A frame the radio
-    /// refused leaves the step where it was, to be asked again.
-    pub fn sent(self: *Join, gone: bool) void {
-        if (!gone) return;
+    pub fn pairwiseHeard(self: *Join, generation: u32) void {
+        if (self.handshake) |*shake| {
+            if (generation == shake.pairwise_at) shake.confirmed = generation;
+        }
+    }
+
+    /// Protection for the current reply, not the current association.
+    pub fn responseKey(self: *const Join) ?wpa2.Key {
+        const response = self.response orelse return null;
+        const shake = self.handshake orelse return null;
+        if (response.kind == .m4 and shake.confirmed != response.generation) return shake.was;
+        return if (self.earned) |installed| installed.pairwise else null;
+    }
+
+    /// The identified reply was enqueued, not necessarily transmitted or
+    /// ACKed. Retain its original protection for retries until peer proof.
+    pub fn sent(self: *Join, response: wpa2.Handshake.Response, enqueued: bool) void {
+        const expected = self.response orelse return;
+        if (!std.meta.eql(expected, response)) return;
+        self.response = null;
+        if (!enqueued) return;
         const ready = self.pending orelse return;
+        if (response.kind == .m2 or response.generation != ready.pairwise.generation) return;
         self.pending = null;
         const first_keys = self.earned == null;
         self.earned = ready;
@@ -262,8 +283,8 @@ pub const Join = struct {
     /// they carry.
     fn sawJoined(self: *Join, frame: []const u8, now: u64) Action {
         if (!self.fromCell(frame)) return .none;
+        if (self.farewell(frame)) |ended| return ended;
         self.deadline = now + SILENCE_MICROS;
-        if (mlme.Farewell.parse(frame) != null) return self.give(.disconnected);
         return .none;
     }
 
@@ -279,7 +300,10 @@ pub const Join = struct {
 
         switch (self.state) {
             // The radio has been pointed at the channel; ask to authenticate.
-            .tuning => return self.sendAuth(now, into),
+            .tuning => {
+                if (!self.channelAllowed()) return self.give(.untuned);
+                return self.sendAuth(now, into);
+            },
             .authenticating, .associating, .handshaking => {
                 if (now < self.deadline) return .none;
                 return self.retry(now, into);
@@ -288,7 +312,7 @@ pub const Join = struct {
             // as anybody would wait.
             .joined => {
                 if (now < self.deadline) return .none;
-                return self.give(.disconnected);
+                return self.give(.silence);
             },
             else => return .none,
         }
@@ -300,8 +324,15 @@ pub const Join = struct {
     /// must not carry on as though it had: the frames it would send next
     /// would go out wherever the radio still happens to be.
     pub fn tuned(self: *Join, ok: bool) Action {
-        if (self.state != .tuning or ok) return .none;
+        if (self.state != .tuning) return .none;
+        if (ok and self.channelAllowed()) return .none;
         return self.give(.untuned);
+    }
+
+    pub fn channelAllowed(self: *const Join) bool {
+        const found = self.bss orelse return false;
+        return found.channel != 0 and self.plan.allows(found.channel) and
+            (self.held == null or self.held.? == found.channel);
     }
 
     // -----------------------------------------------------------------------
@@ -309,7 +340,8 @@ pub const Join = struct {
     // -----------------------------------------------------------------------
 
     fn sawBeacon(self: *Join, frame: []const u8, signal: wifi.Signal) Action {
-        const seen = mlme.Bss.fromBeacon(frame, signal) orelse return .none;
+        var advertised = ieee80211.Rsn.Transcript{};
+        const seen = mlme.Bss.fromBeacon(frame, signal, &advertised) orelse return .none;
         if (!seen.ssid.eql(self.want)) return .none;
 
         // What this system cannot join is said now rather than after three
@@ -327,9 +359,15 @@ pub const Join = struct {
         // station may not transmit on, and one that named no channel is
         // one there is nowhere to point the radio at. Hearing a frame is
         // not permission to answer it.
-        if (seen.channel == 0 or !self.plan.allows(seen.channel)) return .none;
+        if (seen.channel == 0 or !self.plan.allows(seen.channel) or
+            (self.held != null and self.held.? != seen.channel)) return .none;
 
         self.bss = seen;
+        // What the network said about its own protection, kept exactly as
+        // it said it: the key exchange's third message repeats it, and the
+        // two being the same is what says nobody talked the network down
+        // in between.
+        self.ap_rsn = advertised;
         self.state = .tuning;
         self.left = TRIES;
         return .{ .tune = .{ .number = seen.channel } };
@@ -404,6 +442,7 @@ pub const Join = struct {
             .snonce = self.snonce,
             .seed = self.snonce,
             .rsn = &OFFERED_RSN_ELEMENT,
+            .ap_rsn = self.ap_rsn,
         };
         self.state = .handshaking;
         // The access point speaks first here, so this is a wait rather than
@@ -419,12 +458,18 @@ pub const Join = struct {
 
     fn sawKey(self: *Join, frame: []const u8, now: u64, into: []u8) Action {
         if (self.farewell(frame)) |ended| return ended;
+        const head = ieee80211.Header.parse(frame) orelse return .none;
+        if (head.control.protected or ieee80211.Topology.of(head.control) != .from_ap) return .none;
         const payload = eapolOf(frame) orelse return .none;
         if (!self.answeredUs(frame)) return .none;
+        const key = wpa2.KeyFrame.parse(payload) orelse return .none;
+        if (!key.info.pairwise) return .none;
         // A pointer into the field, not to a copy of it: the exchange's
         // state, the transient key above all, has to outlive this pass.
         if (self.handshake == null) return .none;
         const shake = &self.handshake.?;
+        self.response = null;
+        self.pending = null;
 
         return switch (shake.answer(payload, &self.scratch)) {
             .ignored => .none,
@@ -436,9 +481,10 @@ pub const Join = struct {
                 // when. Latched once. The exchange's last frame can be
                 // asked for again, and answering it again is not a second
                 // joining.
-                if (self.earned == null and shake.keys() != null) {
+                self.response = shake.response;
+                if (shake.response.?.kind == .m4) {
                     self.pending = shake.keys();
-                } else if (shake.keys() == null) {
+                } else if (shake.response.?.kind == .m2) {
                     self.deadline = now + REPLY_MICROS;
                     self.left = TRIES;
                 }
@@ -455,14 +501,31 @@ pub const Join = struct {
         if (self.state != .joined) return .none;
         if (self.handshake == null) return .none;
         const shake = &self.handshake.?;
+        self.response = null;
+        self.pending = null;
+        const key = wpa2.KeyFrame.parse(payload) orelse return .none;
+        if (!key.info.pairwise and (self.earned == null or
+            self.earned.?.pairwise.generation != shake.pairwise_at)) return .none;
 
         return switch (shake.answer(payload, &self.scratch)) {
             .ignored, .refused => .none,
             .reply => |len| blk: {
+                const response = shake.response.?;
+                // A lost initial M4 is retried in the clear even after
+                // local carrier-up. A rekey M4 retains the old TX key.
+                if (response.kind == .m4 and shake.was == null and shake.confirmed != response.generation) {
+                    const written = self.wrapEapol(self.scratch[0..len], into) orelse break :blk .none;
+                    self.response = response;
+                    self.pending = shake.keys();
+                    break :blk .{ .send = written };
+                }
                 const written = eth.write(into, self.bssid(), self.station, eth.EtherType.eapol, self.scratch[0..len]) orelse break :blk .none;
                 // Taken up once the answer has gone, not before: a key
                 // renewal is answered under the key being renewed.
-                self.pending = shake.keys();
+                self.response = response;
+                if (response.kind == .m4 or (response.kind == .group2 and
+                    self.earned != null and self.earned.?.pairwise.generation == response.generation))
+                    self.pending = shake.keys();
                 break :blk .{ .traffic = written };
             },
         };
@@ -474,9 +537,13 @@ pub const Join = struct {
 
     /// The access point ending it, whichever way it said so.
     fn farewell(self: *Join, frame: []const u8) ?Action {
-        if (mlme.Farewell.parse(frame) == null) return null;
+        const ended = mlme.Farewell.parse(frame) orelse return null;
         if (!self.fromCell(frame)) return null;
-        return self.give(.refused);
+        const head = ieee80211.Header.parse(frame).?;
+        if (!mac.eql(head.addr1, self.station) and !mac.eql(head.addr1, mac.broadcast)) return null;
+        self.farewell_reason = ended.reason;
+        self.farewell_destination = head.addr1;
+        return self.give(if (self.state == .joined) .disconnected else .refused);
     }
 
     /// Try the step in hand again, or give up when there are no tries left.
@@ -518,6 +585,8 @@ pub const Join = struct {
         // had got: the last frame of an exchange may have gone out just
         // before the cell said goodbye.
         self.settling = false;
+        self.response = null;
+        self.pending = null;
         return .{ .failed = why };
     }
 
@@ -691,7 +760,6 @@ const FakeAp = struct {
                 .mic = true,
                 .secure = true,
                 .encrypted = true,
-                .key_index = gtk.index,
             },
             .key_length = 16,
             .replay = self.replay,
@@ -812,7 +880,7 @@ test "a protected network is found, authenticated, associated and proved" {
     // over until the frame that proves them is away.
     try testing.expectEqual(@as(?wpa2.Keys, null), join.keys());
     try testing.expectEqual(Action.none, join.tick(450, &out));
-    join.sent(true);
+    join.sent(join.response.?, true);
 
     // The join finishes on the look after the last frame has gone.
     switch (join.tick(500, &out)) {
@@ -977,7 +1045,7 @@ test "a cell that says goodbye as the exchange ends leaves nothing to settle" {
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
-    join.sent(true);
+    join.sent(join.response.?, true);
     try testing.expect(join.settling);
 
     // Between the last frame going out and the next look, the cell ends it.
@@ -999,7 +1067,7 @@ test "the cell's next group key is taken and answered as traffic" {
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
-    join.sent(true);
+    join.sent(join.response.?, true);
     try testing.expect(join.tick(500, &out) == .joined);
     const before = join.keys().?;
 
@@ -1019,7 +1087,7 @@ test "the cell's next group key is taken and answered as traffic" {
     // The renewed key is not in hand until that answer has gone: it is
     // sealed under the keys the cell still holds.
     try testing.expectEqual(@as(?wpa2.Key, null), join.keys().?.groupKey(2));
-    join.sent(true);
+    join.sent(join.response.?, true);
 
     const after = join.keys().?;
     try testing.expectEqualSlices(u8, &before.pairwise.bytes, &after.pairwise.bytes);
@@ -1072,7 +1140,7 @@ test "a joined station notices being put out, and being left in silence" {
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
-    join.sent(true);
+    join.sent(join.response.?, true);
     try testing.expect(join.tick(500, &out) == .joined);
 
     // The cell says goodbye. A station that ignored this would stand
@@ -1091,14 +1159,14 @@ test "a joined station notices being put out, and being left in silence" {
     _ = quiet.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
     _ = quiet.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     _ = quiet.heard(air[0..ap.messageThree(quiet.snonce, &air)], .{}, 400, &out);
-    quiet.sent(true);
+    quiet.sent(quiet.response.?, true);
     try testing.expect(quiet.tick(500, &out) == .joined);
     try testing.expectEqual(Action.none, quiet.tick(500 + SILENCE_MICROS - 1, &out));
     // A beacon from the cell is the cell still being there.
     _ = quiet.heard(air[0..ap.beacon(&air)], .{}, 500 + SILENCE_MICROS - 1, &out);
     try testing.expectEqual(Action.none, quiet.tick(500 + SILENCE_MICROS, &out));
     try testing.expectEqual(
-        Action{ .failed = .disconnected },
+        Action{ .failed = .silence },
         quiet.tick(500 + 2 * SILENCE_MICROS, &out),
     );
 }
@@ -1207,4 +1275,117 @@ test "a frame that will not fit ends the join instead of stalling it" {
         else => return error.TestUnexpectedResult,
     });
     try testing.expectEqual(State.failed, join.state);
+}
+
+test "failed M4 enqueue cannot be committed by M2 and initial M4 retries remain plaintext" {
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+    var air: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = join.tick(0, &out);
+    _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    var third: [512]u8 = undefined;
+    const three = ap.messageThree(join.snonce, &third);
+    _ = join.heard(third[0..three], .{}, 400, &out);
+    const m4 = join.response.?;
+    join.sent(m4, false);
+    try testing.expect(join.keys() == null);
+
+    ap.replay += 1;
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 410, &out);
+    try testing.expectEqual(.m2, join.response.?.kind);
+    join.sent(m4, true); // A stale completion is not this M2's completion.
+    try testing.expect(join.keys() == null);
+    join.sent(join.response.?, true);
+    try testing.expect(join.keys() == null);
+    try testing.expect(!join.settling);
+
+    _ = join.heard(third[0..three], .{}, 420, &out);
+    try testing.expectEqual(.m4, join.response.?.kind);
+    join.sent(join.response.?, true);
+    try testing.expect(join.tick(430, &out) == .joined);
+    const generation = join.keys().?.pairwise.generation;
+    const retry = join.carried(eapolOf(third[0..three]).?, &out);
+    try testing.expect(retry == .send);
+    try testing.expect(!ieee80211.Header.parse(out[0..retry.send]).?.control.protected);
+    try testing.expect(join.responseKey() == null);
+    try testing.expectEqual(.m4, join.response.?.kind);
+    join.sent(join.response.?, true);
+    try testing.expectEqual(generation, join.keys().?.pairwise.generation);
+    try testing.expect(!join.settling);
+}
+
+test "rekey M4 retries keep the old TX generation until new pairwise proof" {
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+    var air: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = join.tick(0, &out);
+    _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    join.sent(join.response.?, true);
+    _ = join.tick(500, &out);
+    const old = join.keys().?.pairwise;
+    join.pairwiseHeard(old.generation);
+
+    ap.anonce = @splat(0xA2);
+    ap.replay += 1;
+    const one = ap.messageOne(&air);
+    try testing.expect(join.carried(eapolOf(air[0..one]).?, &out) == .traffic);
+    const snonce = wpa2.KeyFrame.parse(out[eth.HEADER..]).?.nonce;
+    join.sent(join.response.?, true);
+    const three = ap.messageThree(snonce, &air);
+    try testing.expect(join.carried(eapolOf(air[0..three]).?, &out) == .traffic);
+    try testing.expectEqual(old.generation, join.responseKey().?.generation);
+    const m4 = join.response.?;
+    join.sent(m4, false);
+    var intervening: [512]u8 = undefined;
+    ap.replay += 1;
+    const other_one = ap.messageOne(&intervening);
+    try testing.expect(join.carried(eapolOf(intervening[0..other_one]).?, &out) == .traffic);
+    try testing.expectEqual(.m2, join.response.?.kind);
+    join.sent(join.response.?, true);
+    try testing.expectEqual(old.generation, join.keys().?.pairwise.generation);
+    try testing.expect(join.carried(eapolOf(air[0..three]).?, &out) == .traffic);
+    join.sent(join.response.?, true);
+    const fresh = join.keys().?.pairwise;
+    try testing.expect(fresh.generation != old.generation);
+    try testing.expectEqual(old.generation, join.keys().?.previous.?.generation);
+    try testing.expect(join.carried(eapolOf(air[0..three]).?, &out) == .traffic);
+    try testing.expectEqual(old.generation, join.responseKey().?.generation);
+    join.sent(join.response.?, true);
+    join.pairwiseHeard(fresh.generation);
+    try testing.expect(join.carried(eapolOf(air[0..three]).?, &out) == .traffic);
+    try testing.expectEqual(fresh.generation, join.responseKey().?.generation);
+}
+
+test "farewells for another station are ignored and tune boundaries recheck policy" {
+    var join = station();
+    var ap = FakeAp{ .protected = false };
+    var air: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    join.wants(wifi.Ssid.of(SSID).?, .none, .conservative, @splat(0));
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    join.held = 11;
+    try testing.expectEqual(Action{ .failed = .untuned }, join.tuned(true));
+
+    join.state = .joined;
+    join.deadline = SILENCE_MICROS;
+    var head = FakeAp.fromAp();
+    head.addr1[5] ^= 1;
+    const wrong = mlme.Farewell.write(head, mlme.Farewell.deauthentication(.inactivity), &air).?;
+    try testing.expectEqual(Action.none, join.heard(air[0..wrong], .{}, 1, &out));
+    try testing.expect(join.farewell_reason == null);
+    const right = FakeAp.goodbye(&air);
+    try testing.expectEqual(Action{ .failed = .disconnected }, join.heard(air[0..right], .{}, 2, &out));
+    try testing.expectEqual(mlme.Reason.leaving, join.farewell_reason.?);
+    try testing.expectEqualSlices(u8, &US, &join.farewell_destination);
 }

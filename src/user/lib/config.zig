@@ -5,9 +5,9 @@
 //! separate table of key names would be a second place to forget.
 //!
 //! Deliberately small. `key = value`, `#` comments, blank lines separating
-//! stanzas where a file holds several records. No sections, no nesting, no
-//! quoting: every one of those is a thing to get wrong in a file someone edits
-//! by hand on a machine with one text editor.
+//! stanzas where a file holds several records. Quoted values preserve exact
+//! bytes with escaped quotes, backslashes and hexadecimal octets. Unquoted
+//! values retain the original whitespace-trimming grammar.
 
 const std = @import("std");
 const str = @import("lib").str;
@@ -61,7 +61,7 @@ fn parse(comptime T: type, value: []const u8) ?T {
         // byte is the terminator `format` reads back, so what fits is one
         // less than the array holds.
         var out: T = @splat(0);
-        if (value.len >= out.len) return null;
+        if (value.len >= out.len or std.mem.indexOfScalar(u8, value, 0) != null) return null;
         @memcpy(out[0..value.len], value);
         return out;
     }
@@ -72,7 +72,7 @@ fn parse(comptime T: type, value: []const u8) ?T {
     // colour that means it.
     if (@typeInfo(T) == .optional) {
         const Inner = @typeInfo(T).optional.child;
-        if (str.trim(value).len == 0) return @as(T, null);
+        if (value.len == 0) return @as(T, null);
         return parse(Inner, value) orelse null;
     }
 
@@ -155,18 +155,20 @@ pub fn render(target: anytype, into: *str.Builder) void {
     inline for (std.meta.fields(T)) |field| {
         into.text(field.name);
         into.text(" = ");
+        const start = into.len;
         format(into, @field(target, field.name));
+        quoteValue(into, start);
         into.byte('\n');
     }
 }
 
-/// One value, written the way the file spells it. Public because a display is
-/// the same question as a file line, and answering it twice is how the two come
-/// to disagree.
+/// One exact value, for display or IPC. `render` adds file quoting around
+/// this spelling when needed; `assign` accepts it without interpreting quotes.
 pub fn format(into: *str.Builder, value: anytype) void {
     const T = @TypeOf(value);
+    if (T == []const u8 or T == []u8) return into.text(value);
     if (@typeInfo(T) == .array and @typeInfo(T).array.child == u8) {
-        return into.text(std.mem.span(@ptrCast(&value)));
+        return into.text(value[0 .. std.mem.indexOfScalar(u8, &value, 0) orelse value.len]);
     }
     // Unset writes nothing, which is how the file says nobody chose.
     if (@typeInfo(T) == .optional) {
@@ -180,6 +182,87 @@ pub fn format(into: *str.Builder, value: anytype) void {
         .int => into.number(value),
         else => {},
     }
+}
+
+/// Escape the spelling already in the builder, expanding backwards so no
+/// temporary buffer limits a value or lends a slice to its parsed result.
+fn quoteValue(into: *str.Builder, start: usize) void {
+    if (into.cut) return;
+    const value = into.buf[start..into.len];
+    var quoted = str.trim(value).len != value.len;
+    var extra: usize = 2;
+    for (value) |c| {
+        if (c == '"' or c == '\\') {
+            quoted = true;
+            extra += 1;
+        } else if (c < 0x20 or c >= 0x7f) {
+            quoted = true;
+            extra += 3;
+        }
+    }
+    if (!quoted) return;
+    if (extra > into.buf.len - into.len) {
+        into.cut = true;
+        return;
+    }
+    var read_at = into.len;
+    into.len += extra;
+    var write_at = into.len - 1;
+    into.buf[write_at] = '"';
+    while (read_at > start) {
+        read_at -= 1;
+        const c = into.buf[read_at];
+        if (c == '"' or c == '\\') {
+            write_at -= 2;
+            into.buf[write_at] = '\\';
+            into.buf[write_at + 1] = c;
+        } else if (c < 0x20 or c >= 0x7f) {
+            write_at -= 4;
+            into.buf[write_at] = '\\';
+            into.buf[write_at + 1] = 'x';
+            into.buf[write_at + 2] = std.fmt.digitToChar(c >> 4, .lower);
+            into.buf[write_at + 3] = std.fmt.digitToChar(c & 0xf, .lower);
+        } else {
+            write_at -= 1;
+            into.buf[write_at] = c;
+        }
+    }
+    into.buf[start] = '"';
+}
+
+/// Decode only file values. `assign` and `format` exchange exact values, not
+/// file syntax. The result borrows the caller's writable file buffer.
+fn unquote(value: []u8) ?[]const u8 {
+    if (value.len == 0 or value[0] != '"') return value;
+    var read_at: usize = 1;
+    var written: usize = 0;
+    while (read_at < value.len) {
+        var c = value[read_at];
+        read_at += 1;
+        if (c == '"') return if (read_at == value.len) value[0..written] else null;
+        if (c == '\\') {
+            if (read_at == value.len) return null;
+            c = value[read_at];
+            read_at += 1;
+            switch (c) {
+                '"', '\\' => {},
+                'n' => c = '\n',
+                'r' => c = '\r',
+                't' => c = '\t',
+                'x' => {
+                    if (value.len - read_at < 2) return null;
+                    const high = std.fmt.charToDigit(value[read_at], 16) catch return null;
+                    const low = std.fmt.charToDigit(value[read_at + 1], 16) catch return null;
+                    c = (high << 4) | low;
+                    read_at += 2;
+                },
+                else => return null,
+            }
+        }
+        value[written] = c;
+        written += 1;
+    }
+    return null;
 }
 
 /// Split a `key = value` line. Null for a comment, a blank line, or anything
@@ -207,13 +290,14 @@ pub fn pair(line: []const u8) ?struct { key: []const u8, value: []const u8 } {
 /// reads them. A file of one record is a file of one record, so a caller with
 /// a single stanza can use either.
 pub fn loadEach(path: []const u8, into: anytype, buffer: []u8) usize {
-    const n = file.readWhole(path, buffer) orelse return 0;
+    const n = file.readEntire(path, buffer) catch return 0;
     return eachFrom(buffer[0..n], into);
 }
 
 /// The same, from text already in hand. Split from the reading so the
-/// grammar can be exercised without a file to read.
-pub fn eachFrom(text: []const u8, into: anytype) usize {
+/// grammar can be exercised without a file to read. Quoted values decode in
+/// place; slice fields borrow `text` and must not outlive it.
+pub fn eachFrom(text: []u8, into: anytype) usize {
     if (text.len == 0) return 0;
 
     var count: usize = 0;
@@ -226,7 +310,9 @@ pub fn eachFrom(text: []const u8, into: anytype) usize {
                 started = true;
                 count += 1;
             }
-            _ = assign(&into[count - 1], kv.key, kv.value);
+            // pair only borrowed from our mutable text; no const input is changed.
+            const value = unquote(@constCast(kv.value)) orelse continue;
+            _ = assign(&into[count - 1], kv.key, value);
             continue;
         }
         // A blank line ends a record; a comment is not a line at all, so a
@@ -237,12 +323,119 @@ pub fn eachFrom(text: []const u8, into: anytype) usize {
 }
 
 pub fn load(path: []const u8, target: anytype, buffer: []u8) bool {
-    const n = file.readWhole(path, buffer) orelse return false;
+    const n = file.readEntire(path, buffer) catch return false;
     if (n == 0) return false;
 
     var lines = str.lines(buffer[0..n]);
     while (lines.next()) |line| {
-        if (pair(line)) |kv| _ = assign(target, kv.key, kv.value);
+        if (pair(line)) |kv| {
+            const value = unquote(@constCast(kv.value)) orelse continue;
+            _ = assign(target, kv.key, value);
+        }
     }
     return true;
+}
+
+test "file rendering preserves exact strings and typed spellings" {
+    const wifi = @import("lib").wifi;
+    const Schema = struct {
+        text: []const u8 = "",
+        fixed: [16]u8 = @splat(0),
+        ssid: wifi.Ssid = .{},
+        psk: wifi.Psk = .none,
+        number: u8 = 0,
+    };
+    var original = Schema{
+        .text = " \"\\\t\r\n\x00\xff# = ",
+        .ssid = wifi.Ssid.of(" \"\\\n\x00\xff ").?,
+        .psk = wifi.Psk.parse(" " ** 8).?,
+        .number = 42,
+    };
+    try std.testing.expectEqual(Outcome.assigned, assign(&original, "fixed", " spaced "));
+    var buffer: [512]u8 = undefined;
+    var body = str.Builder{ .buf = &buffer };
+    render(&original, &body);
+    try std.testing.expect(!body.cut);
+    var loaded = [_]Schema{.{}};
+    try std.testing.expectEqual(@as(usize, 1), eachFrom(buffer[0..body.len], &loaded));
+    try std.testing.expectEqualStrings(original.text, loaded[0].text);
+    try std.testing.expectEqualSlices(u8, &original.fixed, &loaded[0].fixed);
+    try std.testing.expect(original.ssid.eql(loaded[0].ssid));
+    try std.testing.expect(original.psk.eql(loaded[0].psk));
+    try std.testing.expectEqual(original.number, loaded[0].number);
+    // Borrowed strings still live in the caller's file buffer, not a token
+    // or decoder's stack frame. Owned types survive reuse of that buffer.
+    try std.testing.expect(@intFromPtr(loaded[0].text.ptr) >= @intFromPtr(&buffer));
+    try std.testing.expect(@intFromPtr(loaded[0].text.ptr) + loaded[0].text.len <= @intFromPtr(&buffer) + buffer.len);
+    @memset(&buffer, 0);
+    try std.testing.expect(original.ssid.eql(loaded[0].ssid));
+    try std.testing.expect(original.psk.eql(loaded[0].psk));
+}
+
+test "legacy unquoted values and quoted escapes share the file grammar" {
+    const Schema = struct { name: []const u8 = "", count: u8 = 0 };
+    var text = ("# comment\nname =  old # name  \ncount = 7\n\n" ++
+        "name = \" \\t\\r\\n\\x00\\xff\\\"\\\\ \"\ncount = \"8\"\n").*;
+    var rows = [_]Schema{ .{}, .{} };
+    try std.testing.expectEqual(@as(usize, 2), eachFrom(&text, &rows));
+    try std.testing.expectEqualStrings("old # name", rows[0].name);
+    try std.testing.expectEqual(@as(u8, 7), rows[0].count);
+    try std.testing.expectEqualStrings(" \t\r\n\x00\xff\"\\ ", rows[1].name);
+    try std.testing.expectEqual(@as(u8, 8), rows[1].count);
+}
+
+test "malformed quoted values leave the previous setting unchanged" {
+    const Schema = struct { name: []const u8 = "kept", after: bool = false };
+    for ([_][]const u8{ "\"unfinished", "\"bad\\q\"", "\"\\x0\"", "\"\\xzz\"", "\"ok\"junk", "\"tail\\" }) |bad| {
+        var buffer: [128]u8 = undefined;
+        var text = str.Builder{ .buf = &buffer };
+        text.text("name = ");
+        text.text(bad);
+        text.text("\nafter = true\n");
+        var rows = [_]Schema{.{}};
+        _ = eachFrom(buffer[0..text.len], &rows);
+        try std.testing.expectEqualStrings("kept", rows[0].name);
+        try std.testing.expect(rows[0].after);
+    }
+}
+
+test "quoting detects overflow including expansion and exact boundaries" {
+    const Schema = struct { v: []const u8 };
+    const value = Schema{ .v = "\n" };
+    const expected = "v = \"\\x0a\"\n";
+    var buffer: [expected.len + 1]u8 = undefined;
+    for (0..buffer.len + 1) |size| {
+        var body = str.Builder{ .buf = buffer[0..size] };
+        render(&value, &body);
+        try std.testing.expectEqual(size < expected.len, body.cut);
+        if (!body.cut) try std.testing.expectEqualStrings(expected, body.done());
+    }
+}
+
+test "every octet round trips through the quoted file spelling" {
+    var octets: [256]u8 = undefined;
+    for (&octets, 0..) |*octet, i| octet.* = @intCast(i);
+    const Schema = struct { value: []const u8 = "" };
+    const original = Schema{ .value = &octets };
+    var buffer: [1024]u8 = undefined;
+    var body = str.Builder{ .buf = &buffer };
+    render(&original, &body);
+    try std.testing.expect(!body.cut);
+    var loaded = [_]Schema{.{}};
+    _ = eachFrom(buffer[0..body.len], &loaded);
+    try std.testing.expectEqualSlices(u8, &octets, loaded[0].value);
+}
+
+test "raw assignment and formatting do not interpret file quotes" {
+    const Schema = struct { value: [32]u8 = @splat(0), optional: ?[]const u8 = null };
+    var row = Schema{};
+    const exact = " \"words\\n\" ";
+    try std.testing.expectEqual(Outcome.assigned, assign(&row, "value", exact));
+    var buffer: [32]u8 = undefined;
+    var body = str.Builder{ .buf = &buffer };
+    format(&body, row.value);
+    try std.testing.expectEqualStrings(exact, body.done());
+    try std.testing.expectEqual(Outcome.assigned, assign(&row, "optional", " "));
+    try std.testing.expectEqualStrings(" ", row.optional.?);
+    try std.testing.expectEqual(Outcome.bad_value, assign(&row, "value", "a\x00b"));
 }

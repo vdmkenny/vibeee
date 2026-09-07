@@ -7,6 +7,18 @@ commands. `tools` lists those; `help` lists the builtins.
   log | grep fail        pipe one command into another
   date > /tmp/when       write output to a file; >> appends
   kill 12                end a thread by the id `top` shows
+  echo "two  words"      one argument, spaces and all
+
+Whitespace separates arguments. Double quotes make what is inside them
+one argument, spaces at either end included, which is how a network
+password that has one is set. Inside quotes a backslash makes the next
+character ordinary, and is the only way to write a quote or a backslash
+itself; nowhere else is a backslash special. A quote that is never
+closed is refused rather than guessed at.
+
+On the US-International layout the quote is a dead key: press it and
+then space for a literal one, which is the same everywhere else on that
+layout. On Belgian AZERTY it is on the 3.
 
 Tab completes commands and paths. Up and down walk the history. The
 prompt arrow carries the last status: green succeeded, red did not.

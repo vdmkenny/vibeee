@@ -371,6 +371,16 @@ with the number of goes it actually had, since what the account holds is the
 chance one go gets through and what it weighs that against is the air one go
 costs.
 
+Nothing is transmitted until the radio knows what it may transmit at. The
+store's target powers and its conformance tables give a per-rate ceiling for the
+channel in use, the amplifier's own table is drawn from the board's measured
+curves, and both are read back from the registers before the transmit path
+opens. A board whose store this build cannot read is a radio that stays silent
+and says which of the reasons it was, because a radio that cannot establish its
+own limit cannot be held to one. Every frame carries the duration its
+acknowledgement will take, so the stations around it set their own carrier
+sense.
+
 ### 5.4 What the rest of the milestone owes
 
 - **The exchange, on the machine.** The access point answers the authentication
@@ -383,19 +393,10 @@ costs.
   before a blocking retune was short by however long the retune took. Neither
   is confirmed as the cause, because none of this can be exercised in an
   emulator and the machine has not been run since.
-- **Duration.** Every frame this station sends carries a duration of zero, so
-  no other station sets its virtual carrier sense for the acknowledgement that
-  follows. It needs the rate the frame will go at, which is chosen after the
-  frame is built, so the field is written where the two meet.
 - **Association applied at association.** The radio is told the cell's address
   before authenticating, and the number the cell gives this station only once
   the key exchange finishes. The access point considers the station associated
   from its association response onward, so the hardware should be told then.
-- **The security element inside message three** is not compared with the one
-  the network advertised. Under a pre-shared key the comparison buys little,
-  since nobody without the key can produce that message and anybody with it can
-  make both halves agree; it is owed for the day this station speaks anything
-  but a pre-shared key.
 - **Fragments and aggregates** are refused rather than reassembled, both ways.
   A cell that fragments is a cell this station cannot talk to.
 - **Hardware CCMP** through the key cache where the store permits it, with the
@@ -403,10 +404,7 @@ costs.
   for all traffic, which costs the processor and is the same whichever radio is
   underneath.
 - **The spur-immunity settings a 5.3 store carries**, and the self-test the
-  reference runs at attach. The amplifier's table and the per-rate power
-  registers are programmed; these are what is left of that section.
-- **The control rate for acknowledgements**, which is taken from the register as
-  the reset left it rather than chosen from the cell's basic rates.
+  reference runs at attach.
 - **Kill switch**: the hot-unplug is recognised; the replug that re-runs the
   whole pipeline from power-on state is not yet wired to the device manager's
   rescan.

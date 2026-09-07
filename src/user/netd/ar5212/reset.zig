@@ -9,10 +9,8 @@
 //! choice for these parts, which have no separate 11b path: a CCK channel
 //! is turned into a dynamic one before the sequence starts.
 //!
-//! What is not here, and is owed before the radio transmits: the transmit
-//! power tables, which need the store's calibration curves interpolated
-//! per channel, and the spur-immunity settings a 5.3 store carries. A
-//! receiver does not need either.
+//! Normal-width map2 11g transmission requires validated amplifier curves,
+//! CCK/OFDM targets, CTL edges and a supported EEPROM world-domain channel.
 
 const lib = @import("lib");
 const eeprom = @import("eeprom.zig");
@@ -21,6 +19,7 @@ const immunity_mod = @import("immunity.zig");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const pace = @import("pace.zig");
+const power = @import("power.zig");
 const regs_mod = @import("regs.zig");
 const rf2425 = @import("rf2425.zig");
 const std = @import("std");
@@ -41,6 +40,13 @@ pub const Chip = struct {
     /// section, and nothing in them changes with the channel.
     curves: ?family.CalCurves = null,
     curves_read: bool = false,
+    /// Why there are none, for saying so once.
+    curves_why: ?family.NoCurves = null,
+    amplifier_ready: bool = false,
+    power_limits: ?power.Limits = null,
+    power_read: bool = false,
+    power_ready: bool = false,
+    power_mhz: u16 = 0,
     version: regs_mod.MacVersion,
     revision: u4,
     phy_revision: u8,
@@ -78,6 +84,10 @@ pub const Chip = struct {
     pub fn isPcie(self: *const Chip) bool {
         return self.version.isPcie();
     }
+
+    pub fn txPermitted(self: *const Chip) bool {
+        return self.amplifier_ready and self.power_ready;
+    }
 };
 
 pub const IqState = enum { inactive, running, done };
@@ -92,6 +102,7 @@ pub const ResetError = error{
     ChipReset,
     /// The synthesizer refused the frequency.
     Synth,
+    RadioPolicy,
 };
 
 /// The reference's constants.
@@ -305,52 +316,106 @@ fn setDeltaSlope(regs: Regs, megahertz: u16) void {
     regs.put(.phy_timing3, timing);
 }
 
-/// The board's own values from the calibration store: antennas, the
-/// noise-floor threshold, the settling and gain figures, the amplifier
-/// timings, the false-detect backoff, and the I/Q correction.
-///
-/// The store's per-band pairs are indexed the reference's way: the second
-/// entry for anything at 2.4 GHz, which for the settling, attenuation and
-/// margin figures is what the 11b section holds.
-/// The power to put in a descriptor for a frame this station sends: what
-/// the regulatory plan allows, moved to where the amplifier's table is
-/// indexed from, and capped at what the field can hold.
-pub fn descriptorPower(chip: *const Chip) u6 {
-    const wanted = @as(i32, chip.self_power) + chip.power_offset;
-    return @intCast(std.math.clamp(wanted, 0, MAX_RATE_POWER));
-}
-
-/// Put the power a person asked for where the hardware reads it.
-///
-/// Three places read a power and they must agree. A frame the service
-/// sends carries its own in the descriptor, but only if the descriptor's
-/// word is switched on, which the initialisation tables leave off. The
-/// frames the protocol unit sends itself, the acknowledgements and the
-/// clear-to-sends, take theirs from their own register. Everything else
-/// is bounded by the per-rate registers, which those tables leave at
-/// fixed figures of their own. So the ceiling reached none of them, and
-/// what a person set was a number the radio never saw.
-///
-/// Every rate is given the ceiling, moved to where the amplifier's table
-/// is indexed from, and the descriptor's word is switched on: a frame may
-/// then go out below the ceiling but never above it.
-pub fn applyPower(chip: *const Chip) void {
+/// Called with DMA stopped and automatic responses inhibited. Per-rate power
+/// (HAL's default, descriptor TPC off) covers every retry's actual modulation.
+fn applyPower(chip: *Chip) void {
     const regs = chip.regs;
-    const power = descriptorPower(chip);
-    const every: u32 = @as(u32, power) * 0x0101_0101;
-    regs.write(.phy_power_tx_rate1, every);
-    regs.write(.phy_power_tx_rate2, every);
-    regs.write(.phy_power_tx_rate3, every);
-    regs.write(.phy_power_tx_rate4, every);
+    chip.power_ready = false;
+    regs.set(.diagnostics, regs_mod.Diagnostics, "ack_disable", true);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "cts_disable", true);
+    if (!chip.amplifier_ready) return;
+    if (!chip.power_read) {
+        chip.power_read = true;
+        chip.power_limits = power.read(eeprom.Port{ .regs = regs }, &chip.store) catch |err| {
+            log.begin(name, .bad);
+            out.text("the store does not say how much power this board may transmit at: ");
+            out.text(reasonFor(err));
+            out.text(". Nothing will be transmitted, because a radio that does not know its own limit cannot be held to one");
+            log.end();
+            return;
+        };
+    }
+    const limits = if (chip.power_limits) |*p| p else return;
+    const rates = power.rates(limits, &chip.store, chip.power_mhz, chip.self_power, chip.power_offset) catch |err| {
+        log.begin(name, .warn);
+        out.text("no power is approved for ");
+        out.decimal(chip.power_mhz);
+        out.text(" MHz: ");
+        out.text(reasonFor(err));
+        out.text(". Nothing will be transmitted here");
+        log.end();
+        return;
+    };
+    const words = rates.words();
+    const registers = [_]regs_mod.R{ .phy_power_tx_rate1, .phy_power_tx_rate2, .phy_power_tx_rate3, .phy_power_tx_rate4 };
+    for (registers, words) |register, value| regs.write(register, value);
     regs.put(.phy_power_tx_rate_max, regs_mod.RateMaxPower{
         .power = MAX_RATE_POWER,
-        .from_descriptor = true,
+        .from_descriptor = false,
     });
-    regs.put(.self_power, regs_mod.SelfPower{
-        .ack = power,
-        .cts = power,
-        .chirp = power,
-    });
+    const self = regs_mod.SelfPower{ .ack = rates.self_index, .cts = rates.self_index, .chirp = rates.self_index };
+    regs.put(.self_power, self);
+    for (registers, words) |register, value| {
+        if (regs.read(register) != value) {
+            log.fail(name, "the per-rate power registers did not take what they were given; nothing will be transmitted");
+            return;
+        }
+    }
+    if (regs.read(.self_power) != @as(u32, @bitCast(self)) or
+        regs.read(.phy_power_tx_rate_max) != MAX_RATE_POWER)
+    {
+        log.fail(name, "the power for the frames the radio sends itself did not take; nothing will be transmitted");
+        return;
+    }
+    chip.power_ready = true;
+
+    // The indices are counted from the lowest power the board was
+    // measured at, so the offset comes back off them to say what they are
+    // in decibel-milliwatts, which is the figure a person set and a
+    // regulator cares about.
+    var highest: u6 = 0;
+    for (rates.indices) |index| highest = @max(highest, index);
+    log.begin(name, .dim);
+    out.text("on ");
+    out.decimal(chip.power_mhz);
+    out.text(" MHz nothing goes out above ");
+    sayDbm(highest, chip.power_offset);
+    out.text(", and what the radio answers with goes out at ");
+    sayDbm(rates.self_index, chip.power_offset);
+    log.end();
+}
+
+/// A power index as decibel-milliwatts, to the half.
+fn sayDbm(index: u6, offset: i16) void {
+    const half = @as(i16, index) - offset;
+    out.signed(@intCast(@divTrunc(half, 2)));
+    if (@rem(half, 2) != 0) out.text(".5");
+    out.text(" dBm");
+}
+
+/// Why the board's power limits could not be worked out, in words rather
+/// than in the name of an error value.
+fn reasonFor(why: power.Error) []const u8 {
+    return switch (why) {
+        error.Unsupported => "the store is of a kind or a regulatory domain this build has not been checked against",
+        error.Invalid => "its conformance tables do not hold together",
+        error.Unreadable => "a word of it did not come back",
+        error.Channel => "the channel is not one the domain allows",
+        error.BelowCalibration => "the limit is below the lowest power the board was measured at",
+    };
+}
+
+/// Why the curves could not be read, in words rather than in the name of
+/// an error value. Read off a machine's log by whoever has the machine.
+fn whyNoCurves(why: ?family.NoCurves) []const u8 {
+    const named = why orelse return "for a reason this build has no name for";
+    return switch (named) {
+        error.Uncalibrated => "it was never calibrated for this band",
+        error.Layout => "it is of a version or a layout this build does not read",
+        error.Misplaced => "this band's dataset is not where the ones before it end",
+        error.Unreadable => "a word of it did not come back, or it reaches past what its own checksum covered",
+        error.Disordered => "its channels or its powers do not climb, which is not a curve",
+    };
 }
 
 /// Program the amplifier's table for this channel: what reading the
@@ -363,15 +428,24 @@ pub fn applyPower(chip: *const Chip) void {
 /// between the two nearest.
 fn setAmplifier(chip: *Chip, megahertz: u16) void {
     const regs = chip.regs;
+    chip.amplifier_ready = false;
+    chip.power_offset = 0;
 
     if (!chip.curves_read) {
-        chip.curves = eeprom.curves(regs, &chip.store, .g);
+        chip.curves = eeprom.curves(regs, &chip.store, .g) catch |why| blk: {
+            chip.curves_why = why;
+            break :blk null;
+        };
         chip.curves_read = true;
     }
     const curves = if (chip.curves) |*c| c else {
         if (!said_amplifier) {
             said_amplifier = true;
-            log.warn(name, "the store holds no amplifier curves; frames go out at whatever the reset left");
+            log.begin(name, .bad);
+            out.text("the store's amplifier curves cannot be read: ");
+            out.text(whyNoCurves(chip.curves_why));
+            out.text(". Nothing will be transmitted, because a radio that cannot set its own power cannot be held to a limit");
+            log.end();
         }
         return;
     };
@@ -379,7 +453,16 @@ fn setAmplifier(chip: *Chip, megahertz: u16) void {
     // How far the baseband is told the gain settings overlap is its own
     // setting, and the table has to be drawn to match it.
     const boundaries = regs.get(.phy_power_boundaries, regs_mod.PowerBoundaries);
-    const table = family.powerTable(curves, megahertz, boundaries.overlap) orelse return;
+    const table = family.powerTable(curves, megahertz, boundaries.overlap) orelse {
+        log.fail(name, "the store's amplifier curves do not make a table; nothing will be transmitted");
+        return;
+    };
+    for (table.boundaries) |boundary| {
+        if (boundary > std.math.maxInt(u6)) {
+            log.fail(name, "the store's amplifier curves reach past what the hardware's own fields hold; nothing will be transmitted");
+            return;
+        }
+    }
 
     regs.set(.phy_power_gains, regs_mod.PowerGains, "gains_less_one", @as(u2, @intCast(table.used - 1)));
 
@@ -393,19 +476,27 @@ fn setAmplifier(chip: *Chip, megahertz: u16) void {
             (@as(u32, table.pdadc[at + 3]) << 24));
     }
 
-    regs.put(.phy_power_boundaries, regs_mod.PowerBoundaries{
+    const programmed = regs_mod.PowerBoundaries{
         .overlap = boundaries.overlap,
-        .first = @truncate(table.boundaries[0]),
-        .second = @truncate(table.boundaries[1]),
-        .third = @truncate(table.boundaries[2]),
-        .fourth = @truncate(table.boundaries[3]),
-    });
+        .first = @intCast(table.boundaries[0]),
+        .second = @intCast(table.boundaries[1]),
+        .third = @intCast(table.boundaries[2]),
+        .fourth = @intCast(table.boundaries[3]),
+    };
+    regs.put(.phy_power_boundaries, programmed);
+    if (regs.read(.phy_power_boundaries) != @as(u32, @bitCast(programmed)) or
+        regs.get(.phy_power_gains, regs_mod.PowerGains).gains_less_one != table.used - 1)
+    {
+        log.fail(name, "the amplifier's registers did not take what they were given; nothing will be transmitted");
+        return;
+    }
 
     // A power in a descriptor is an index into the table that was just
     // written, counted from the lowest power the curves were measured at.
     // Kept beside the ceiling rather than folded into it: the ceiling is
     // what the regulatory plan allows and is nobody else's to move.
     chip.power_offset = -table.floor_half_dbm;
+    chip.amplifier_ready = true;
 
     // Said once. It is the same table on every channel of a band, and what
     // is worth knowing is that the amplifier is running on measured
@@ -673,6 +764,9 @@ fn watchRfKill(chip: *Chip) void {
 /// timers and the sleep state survive; on a power-on reset nothing does.
 pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     const regs = chip.regs;
+    chip.amplifier_ready = false;
+    chip.power_ready = false;
+    chip.power_mhz = megahertz;
     if (!wake(regs)) return ResetError.Asleep;
 
     // What a reset clears and the reference puts back afterwards.
@@ -694,6 +788,20 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     regs.put(.phy_test, regs_mod.PhyTest.analog_access);
     for (tables.family.modes) |row| regs.writeAt(row.register, row.value(mode));
     writeCommon(regs, kind);
+    // Software CCMP must receive the original IV/ciphertext/MIC. Zero keys
+    // alone select WEP40, not clear; use HAL ResetKeyCacheEntry's CLR type
+    // and invalid MAC, plus the explicit decrypt/encrypt bypass bits.
+    regs.set(.diagnostics, regs_mod.Diagnostics, "decrypt_disable", true);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "encrypt_disable", true);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "ack_disable", true);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "cts_disable", true);
+    const key_log2 = chip.store.capabilities.key_cache_entries_log2;
+    const key_entries: usize = if (key_log2 == 0) 128 else @min(@as(usize, 1) << key_log2, 128);
+    for (0..key_entries) |entry| {
+        const base = @intFromEnum(regs_mod.R.key_table_0) + entry * 32;
+        for (0..8) |word| regs.writeAt(base + word * 4, if (word == 5) 7 else 0);
+        if (regs.readAt(base + 20) != 7 or regs.readAt(base + 28) != 0) return ResetError.RadioPolicy;
+    }
     rf2425.writeRegs(regs, mode, band);
     if (kind == .power_on) sayUnkeptWrites(regs, mode, band);
 
@@ -724,8 +832,6 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
         if (regs.read(.phy_fast_adc) != fast) regs.write(.phy_fast_adc, fast);
     }
 
-    // Transmit power: owed. The receiver does not need it.
-
     rf2425.setRfRegs(regs, &chip.banks, mode, chip.part, chip.store.bias_g);
     setDeltaSlope(regs, megahertz);
     setBoardValues(chip, megahertz);
@@ -745,8 +851,8 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
         .base_rate_11b = saved_station.base_rate_11b,
         .use_default_antenna = saved_station.use_default_antenna,
         .rts_use_default_antenna = true,
-        .michael_enable = true,
-        // A station looks keys up by the frame's key index.
+        .michael_enable = false,
+        // HAL's station lookup mode; bypass and invalid CLR keys keep it inert.
         .key_search_mode = true,
     });
     regs.write(.bssid_mask_low, std.math.maxInt(u32));
@@ -809,7 +915,8 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     if (chip.store.rf_kill) watchRfKill(chip);
 
     if (!pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "calibrate", false, pace.DEFAULT_TRIES)) {
-        log.warn(name, "offset calibration did not complete; noisy surroundings?");
+        chip.amplifier_ready = false;
+        log.warn(name, "the gain calibration did not finish, which a loud room can do; nothing will be transmitted until it does");
     }
 
     // Only on the way up, and only once. The measurement is started beside
@@ -840,6 +947,12 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     // Last, because the amplifier's table has been written by now and
     // the offset a power is counted from is known.
     applyPower(chip);
+    const policy = regs.get(.diagnostics, regs_mod.Diagnostics);
+    if (!policy.decrypt_disable or !policy.encrypt_disable or
+        !policy.ack_disable or !policy.cts_disable) return ResetError.RadioPolicy;
+    if (kind == .power_on and chip.txPermitted()) {
+        log.note(name, "TX ready: map2 curves, CCK/OFDM targets, world CTLs and antenna limits validated");
+    }
 }
 
 // ---------------------------------------------------------------------------

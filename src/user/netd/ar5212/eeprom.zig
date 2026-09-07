@@ -35,6 +35,6 @@ pub fn read(regs: Regs) family.StoreError!family.Store {
 /// The amplifier's measured curves for a band, or none where the store
 /// holds none. Read once and kept, because it is a walk over the whole
 /// calibration section and nothing in it changes.
-pub fn curves(regs: Regs, store: *const family.Store, mode: family.StoreMode) ?family.CalCurves {
-    return family.readCurves(Port{ .regs = regs }, store, mode) catch null;
+pub fn curves(regs: Regs, store: *const family.Store, mode: family.StoreMode) family.NoCurves!family.CalCurves {
+    return family.readCurves(Port{ .regs = regs }, store, mode);
 }

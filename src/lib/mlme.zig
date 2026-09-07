@@ -331,7 +331,14 @@ pub const Bss = struct {
         return a.signal.dbm > b.signal.dbm;
     }
 
-    pub fn fromBeacon(frame: []const u8, signal: wifi.Signal) ?Bss {
+    /// Read a beacon or probe response.
+    ///
+    /// `keep_rsn`, where one is given, takes the security element exactly
+    /// as it was advertised, which is what the key exchange's third
+    /// message is compared against. It is asked for rather than kept in
+    /// every heard network, because only the one being joined is ever
+    /// compared and a scan holds dozens.
+    pub fn fromBeacon(frame: []const u8, signal: wifi.Signal, keep_rsn: ?*ieee80211.Rsn.Transcript) ?Bss {
         const head = Header.parse(frame) orelse return null;
         if (head.control.kind != .management) return null;
         const subtype = head.control.managementSubtype();
@@ -340,6 +347,21 @@ pub const Bss = struct {
         const beacon = ieee80211.Beacon.parse(frame[head.len..]) orelse return null;
         const name = ieee80211.element(beacon.elements, .ssid) orelse &.{};
         const ssid = wifi.Ssid.of(name) orelse return null;
+        var rsn = ieee80211.Rsn.Transcript{};
+        var rest = beacon.elements;
+        while (rest.len != 0) {
+            if (rest.len < 2 or rest[1] > rest.len - 2) return null;
+            const len: usize = rest[1];
+            if (rest[0] == @intFromEnum(ieee80211.ElementId.rsn)) {
+                // Twice is a beacon that says two different things about
+                // its own protection, and neither of them can be trusted.
+                if (rsn.len != 0 or len == 0) return null;
+                rsn = ieee80211.Rsn.Transcript.of(rest[2..][0..len]) orelse return null;
+            }
+            rest = rest[2 + len ..];
+        }
+
+        if (keep_rsn) |into| into.* = rsn;
 
         var channel: u8 = 0;
         if (ieee80211.element(beacon.elements, .ds_parameter)) |ds| {
@@ -562,7 +584,7 @@ test "a scan reads a protected network's name, channel, cell and security" {
     var frame: [128]u8 = @splat(0);
     const len = beaconFrame(&frame, .{ .ess = true, .privacy = true }, elements[0..at]);
 
-    const bss = Bss.fromBeacon(frame[0..len], .{ .dbm = -60 }).?;
+    const bss = Bss.fromBeacon(frame[0..len], .{ .dbm = -60 }, null).?;
     try testing.expectEqualStrings("cinaed's network", bss.ssid.slice());
     try testing.expectEqual(@as(u8, 6), bss.channel);
     try testing.expectEqualSlices(u8, &AP, &bss.bssid);
@@ -587,13 +609,13 @@ test "a scan names every protection, and joins only the two it can" {
     // An open network: no privacy bit, no security element.
     var open_els: [16]u8 = @splat(0);
     const open_len = beaconFrame(&frame, .{ .ess = true }, open_els[0..ieee80211.writeElement(&open_els, .ssid, "cafe").?]);
-    try testing.expectEqual(wifi.Security.open, Bss.fromBeacon(frame[0..open_len], .{}).?.security);
+    try testing.expectEqual(wifi.Security.open, Bss.fromBeacon(frame[0..open_len], .{}, null).?.security);
 
     // Privacy set but no robust-security element: the old cipher, named and
     // refused.
     var wep_els: [16]u8 = @splat(0);
     const wep_len = beaconFrame(&frame, .{ .ess = true, .privacy = true }, wep_els[0..ieee80211.writeElement(&wep_els, .ssid, "old").?]);
-    const wep = Bss.fromBeacon(frame[0..wep_len], .{}).?;
+    const wep = Bss.fromBeacon(frame[0..wep_len], .{}, null).?;
     try testing.expectEqual(wifi.Security.wep, wep.security);
     try testing.expect(!wep.security.joinable());
 
@@ -605,7 +627,28 @@ test "a scan names every protection, and joins only the two it can" {
     sae_at += ieee80211.writeElement(sae_els[sae_at..], .ssid, "new").?;
     sae_at += ieee80211.writeElement(sae_els[sae_at..], .rsn, &sae_payload).?;
     const sae_len = beaconFrame(&frame, .{ .ess = true, .privacy = true }, sae_els[0..sae_at]);
-    const sae = Bss.fromBeacon(frame[0..sae_len], .{}).?;
+    const sae = Bss.fromBeacon(frame[0..sae_len], .{}, null).?;
     try testing.expectEqual(wifi.Security.wpa3_sae, sae.security);
     try testing.expect(!sae.security.joinable());
+}
+
+test "what a network said about its protection is kept, not pointed at" {
+    var elements: [64]u8 = undefined;
+    var at = ieee80211.writeElement(&elements, .ssid, "home").?;
+    at += ieee80211.writeElement(elements[at..], .rsn, &ieee80211.Rsn.psk_ccmp).?;
+    var frame: [128]u8 = undefined;
+    const len = beaconFrame(&frame, .{ .ess = true, .privacy = true }, elements[0..at]);
+
+    var advertised = ieee80211.Rsn.Transcript{};
+    _ = Bss.fromBeacon(frame[0..len], .{}, &advertised).?;
+    // The receive buffer it came out of is the radio's to fill again, so
+    // what is compared later has to be a copy and not a view.
+    @memset(&frame, 0xFF);
+    try testing.expectEqualSlices(u8, &ieee80211.Rsn.psk_ccmp, advertised.slice());
+
+    // A beacon saying two different things about its own protection is
+    // one where neither can be relied on.
+    at += ieee80211.writeElement(elements[at..], .rsn, &ieee80211.Rsn.psk_ccmp).?;
+    const twice = beaconFrame(&frame, .{ .ess = true, .privacy = true }, elements[0..at]);
+    try testing.expectEqual(@as(?Bss, null), Bss.fromBeacon(frame[0..twice], .{}, null));
 }

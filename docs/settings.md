@@ -45,7 +45,7 @@ so an image ships with the first and a machine remembers the second.
 | `net.if0_gateway` | an address, a.b.c.d; unset takes what the lease offers | unset |
 | `net.if0_dns` | up to two addresses, comma separated | unset |
 | `net.if0_ssid` | a network name, up to 32 characters | unset |
-| `net.if0_psk` | a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits | unset |
+| `net.if0_psk` | a passphrase of 8 to 63 characters, or 64 hex digits | unset |
 | `net.if0_channel` | a number | `0` |
 | `net.if0_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if0_txpower` | regulatory \| max \| a number of dBm | `regulatory` |
@@ -56,7 +56,7 @@ so an image ships with the first and a machine remembers the second.
 | `net.if1_gateway` | an address, a.b.c.d; unset takes what the lease offers | unset |
 | `net.if1_dns` | up to two addresses, comma separated | unset |
 | `net.if1_ssid` | a network name, up to 32 characters | unset |
-| `net.if1_psk` | a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits | unset |
+| `net.if1_psk` | a passphrase of 8 to 63 characters, or 64 hex digits | unset |
 | `net.if1_channel` | a number | `0` |
 | `net.if1_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if1_txpower` | regulatory \| max \| a number of dBm | `regulatory` |
@@ -67,7 +67,7 @@ so an image ships with the first and a machine remembers the second.
 | `net.if2_gateway` | an address, a.b.c.d; unset takes what the lease offers | unset |
 | `net.if2_dns` | up to two addresses, comma separated | unset |
 | `net.if2_ssid` | a network name, up to 32 characters | unset |
-| `net.if2_psk` | a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits | unset |
+| `net.if2_psk` | a passphrase of 8 to 63 characters, or 64 hex digits | unset |
 | `net.if2_channel` | a number | `0` |
 | `net.if2_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if2_txpower` | regulatory \| max \| a number of dBm | `regulatory` |
@@ -78,7 +78,7 @@ so an image ships with the first and a machine remembers the second.
 | `net.if3_gateway` | an address, a.b.c.d; unset takes what the lease offers | unset |
 | `net.if3_dns` | up to two addresses, comma separated | unset |
 | `net.if3_ssid` | a network name, up to 32 characters | unset |
-| `net.if3_psk` | a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits | unset |
+| `net.if3_psk` | a passphrase of 8 to 63 characters, or 64 hex digits | unset |
 | `net.if3_channel` | a number | `0` |
 | `net.if3_regdomain` | conservative \| fcc \| etsi \| mkk \| unrestricted | `conservative` |
 | `net.if3_txpower` | regulatory \| max \| a number of dBm | `regulatory` |

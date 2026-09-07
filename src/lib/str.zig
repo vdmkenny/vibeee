@@ -103,13 +103,69 @@ pub fn isSpace(c: u8) bool {
 
 /// Split on runs of whitespace, writing into `words`. Returns how many.
 ///
-/// No quoting: it would need escaping rules, and nothing yet passes an
-/// argument containing a space.
+/// For text a program wrote, where a word never contains a space. A line a
+/// person typed goes through `splitCommand`, which also has quoting.
 pub fn splitWords(text: []const u8, into: [][]const u8) usize {
     var it = words(text);
     var count: usize = 0;
     while (count < into.len) : (count += 1) {
         into[count] = it.next() orelse break;
+    }
+    return count;
+}
+
+/// Split a line the way a person wrote it, writing the words into `into`
+/// and answering how many there are, or null for a line whose quoting
+/// does not close.
+///
+/// Runs of whitespace separate words. A word may be wrapped in double
+/// quotes, and then the whitespace inside it is part of it: a network
+/// password may have a space at either end, and a shell with no way to say
+/// so is a shell that cannot set one. Inside quotes a backslash makes the
+/// next character ordinary, which is the only way to write a quote or a
+/// backslash itself; nowhere else is a backslash special.
+///
+/// The words are cut out of `text` in place, because removing a quote
+/// leaves a word shorter than the run it came from and nothing here has a
+/// second buffer to put it in. A caller keeping the words is keeping
+/// slices of that buffer.
+pub fn splitCommand(text: []u8, into: [][]const u8) ?usize {
+    var count: usize = 0;
+    var at: usize = 0;
+    while (count < into.len) {
+        while (at < text.len and isSpace(text[at])) at += 1;
+        if (at == text.len) break;
+
+        // Written back over the word being read, which is never ahead of
+        // it: a quote or an escape removed is a byte the word does not
+        // have, so the writing point only ever falls behind the reading
+        // point.
+        const start = at;
+        var put = at;
+        var quoted = false;
+        while (at < text.len) : (at += 1) {
+            const c = text[at];
+            if (quoted and c == '\\' and at + 1 < text.len) {
+                at += 1;
+                text[put] = text[at];
+                put += 1;
+                continue;
+            }
+            if (c == '"') {
+                quoted = !quoted;
+                continue;
+            }
+            if (!quoted and isSpace(c)) break;
+            text[put] = c;
+            put += 1;
+        }
+        // A quote that never closed is a line whose words nobody can know,
+        // and guessing at them is how a password reaches the air with half
+        // of it missing.
+        if (quoted) return null;
+
+        into[count] = text[start..put];
+        count += 1;
     }
     return count;
 }
@@ -766,6 +822,45 @@ test "the word before the cursor crosses what is between them first" {
 
     // Trailing separators are crossed before the word is.
     try std.testing.expectEqual(@as(usize, 0), wordBefore("one   ", 6));
+}
+
+test "a quoted word keeps its spaces, and an unclosed quote is refused" {
+    var into: [8][]const u8 = undefined;
+
+    // A network password may have a space at either end. A shell with no
+    // way to say so cannot set one, and the settings file can carry it.
+    var spaced = "cfg set net.if1_psk \"  two words  \"".*;
+    const count = splitCommand(&spaced, &into).?;
+    try std.testing.expectEqual(@as(usize, 4), count);
+    try std.testing.expectEqualStrings("cfg", into[0]);
+    try std.testing.expectEqualStrings("net.if1_psk", into[2]);
+    try std.testing.expectEqualStrings("  two words  ", into[3]);
+
+    // A quote and a backslash are written with a backslash, and only
+    // inside quotes is a backslash anything but a character.
+    var escaped = "a \"say \\\"hi\\\" \\\\\" c:\\path".*;
+    const escaped_count = splitCommand(&escaped, &into).?;
+    try std.testing.expectEqual(@as(usize, 3), escaped_count);
+    try std.testing.expectEqualStrings("say \"hi\" \\", into[1]);
+    try std.testing.expectEqualStrings("c:\\path", into[2]);
+
+    // Quoting can start and stop inside one word.
+    var joined = "one\" two \"three".*;
+    try std.testing.expectEqual(@as(usize, 1), splitCommand(&joined, &into).?);
+    try std.testing.expectEqualStrings("one two three", into[0]);
+
+    // An empty word is a word: it is how a setting is cleared.
+    var empty = "cfg set net.if1_psk \"\"".*;
+    try std.testing.expectEqual(@as(usize, 4), splitCommand(&empty, &into).?);
+    try std.testing.expectEqualStrings("", into[3]);
+
+    // A quote that never closes is a line whose words nobody can know.
+    var unclosed = "cfg set net.if1_psk \"half a".*;
+    try std.testing.expectEqual(@as(?usize, null), splitCommand(&unclosed, &into));
+
+    // Nothing, and only blanks, are no words rather than an error.
+    var blanks = "   ".*;
+    try std.testing.expectEqual(@as(usize, 0), splitCommand(&blanks, &into).?);
 }
 
 test "the word after the cursor runs to the end of it" {

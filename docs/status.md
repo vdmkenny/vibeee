@@ -366,39 +366,40 @@ with Wi-Fi, the remaining platform work, and new applications.
   inside `Client.init` itself. Until both are cleared, `echat` reaches a network
   in the clear on 6667.
 
-- **The radio hears and speaks; it has not joined a network yet.** Scanning is
-  confirmed on the machine: `net wifi scan` lists the networks in earshot, and
-  transmission reaches the air, confirmed by an access point acknowledging an
-  authentication request. `ar5212` brings the AR2425 up, reads its store, runs
-  the transcribed reset and channel-set pipeline, works its transmit queue and
-  hands frames up; the station sweeps the plan, or holds a channel
-  configuration names, keeps what it hears, and drives `lib/join.zig` through
-  authentication, association and the four-way handshake.
+- **The radio joins a network; it does not stay in one yet.** Scanning and
+  joining are both confirmed on the machine: `net wifi scan` lists the networks
+  in earshot, and the station finds the one it was told to, authenticates,
+  associates, proves the key and reports itself joined on a home access point.
+  `ar5212` brings the AR2425 up, reads its store, runs the transcribed reset
+  and channel-set pipeline, establishes the power it may transmit at from the
+  board's own conformance tables, works its transmit queue and hands frames up;
+  the station sweeps the plan, or holds a channel configuration names, keeps
+  what it hears, and drives `lib/join.zig` through the whole exchange.
 
-  What did not work is the exchange. The access point answers the
-  authentication request correctly, and the join did not act on the answer:
-  it carries sequence two and a success status, and its cell address is the
-  one being joined, which is every test the join applies to it. Three attempts
-  were made and two frames went out, which is one short.
+  What does not work is staying joined: the access point ends the association
+  shortly after it is made, and why is the open question.
 
-  Two ordering faults that would produce exactly those symptoms have since
-  been found and fixed. The service ran the station's timers before reading
-  what had woken it, so on waking for a radio interrupt an exchange on its
-  last attempt gave up before the frame already sitting in the card's memory
-  was looked at. And a deadline dated from a clock read before a retune was
-  short by however long the retune took, because tuning resets the radio and
-  waits for it. Neither is confirmed as the cause: none of this can be
-  exercised in an emulator, and the machine has not been run since.
+  What has been put right since that run, any of which could bear on it: the
+  radio establishes the power it may transmit at from the board's own
+  conformance tables rather than running at whatever the reset left, and
+  transmits nothing at all until it has; every frame carries the duration its
+  acknowledgement takes, so the stations around it set their own carrier
+  sense; the key exchange's replies are bound to the response they answer
+  rather than to whichever was last; and the key a rekey replaces is read
+  until a frame arrives under the new one. None of that is confirmed against the
+  machine, which is the next thing to do.
 
-  The station still reports which step it gave up on and which step it was on
-  when the answer arrived, which is what settles it on the next run.
-
-  The station also counts frames heard while an exchange is in hand, how many
-  were addressed to this station, and how many were authentications; the radio
-  answers with what its queue did, what its registers hold, and how its drops
-  divide between frames the baseband could not read, frames the air damaged,
-  and frames of the wrong shape. On a channel shared with other cells most
-  drops are the first kind and say nothing about this station.
+  The station reports which step it gave up on, which step it was on when the
+  last answer arrived, and the reason the cell gave for ending it, which is
+  what the next run is read for. It also counts frames heard while an exchange
+  is in hand, how many were addressed to this station, and how many were
+  authentications; the radio answers with what its queue did, what its
+  registers hold, the descriptor it is waiting on, and how its drops divide
+  between frames the baseband could not read, frames the air damaged, frames
+  it could not open, frames whose integrity code did not check out, frames
+  naming a key it does not hold, and frames of the wrong shape. On a channel
+  shared with other cells most drops are the first kind and say nothing about
+  this station.
 
   None of the radio can be exercised in the emulator, which has no such radio.
   The pure halves are host-tested regardless: the join's state machine, the

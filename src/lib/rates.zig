@@ -212,7 +212,14 @@ pub const Choice = struct {
             if (self.bestOther(best)) |second| add(&steps, second, FALLBACK_TRIES);
         }
 
-        // The last word.
+        // Reserve the last word and its full budget even when it was picked
+        // as the best rate or the sample. Never retry it in two steps.
+        for (steps.slice(), 0..) |step, i| {
+            if (step.rate == reliable) {
+                steps.remove(i);
+                break;
+            }
+        }
         add(&steps, reliable, RELIABLE_TRIES);
         return steps;
     }
@@ -303,6 +310,37 @@ test "one rate offered is the whole series, said once" {
     const steps = choice.series().slice();
     try testing.expectEqual(@as(usize, 1), steps.len);
     try testing.expectEqual(wifi.Legacy.m11, steps[0].rate);
+    try testing.expectEqual(RELIABLE_TRIES, steps[0].tries);
+}
+
+test "the reliable rate keeps its final budget when ranked first or sampled" {
+    var choice = Choice{};
+    var offered = wifi.Rates{};
+    offered.add(.m1);
+    offered.add(.m54);
+    choice.offer(offered, false);
+    for (0..100) |_| {
+        choice.report(.{ .rate = .m54, .sent = false });
+        choice.report(.{ .rate = .m1, .sent = true });
+    }
+    try testing.expectEqual(wifi.Legacy.m1, choice.bestOther(null).?);
+    for (0..SAMPLE_EVERY * 3) |_| {
+        const steps = choice.series();
+        try testing.expectEqual(@as(usize, 2), steps.len);
+        try testing.expectEqual(wifi.Legacy.m54, steps.items[0].rate);
+        try testing.expectEqual(wifi.Legacy.m1, steps.items[1].rate);
+        try testing.expectEqual(RELIABLE_TRIES, steps.items[1].tries);
+    }
+}
+
+test "a multi-attempt report is the same ordered evidence as individual attempts" {
+    var together = Choice{};
+    var separate = Choice{};
+    for ([_]bool{ false, true }) |sent| {
+        together.report(.{ .rate = .m54, .tries = 4, .sent = sent });
+        for (0..4) |i| separate.report(.{ .rate = .m54, .sent = sent and i == 3 });
+        try testing.expectEqualDeep(separate.records, together.records);
+    }
 }
 
 test "a rate that keeps failing loses its place to one that does not" {

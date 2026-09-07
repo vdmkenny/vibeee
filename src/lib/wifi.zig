@@ -373,9 +373,7 @@ pub const Ssid = struct {
     /// Nothing written is no network named, which is how a slot says it
     /// has nothing to join rather than that it wants a hidden one.
     pub fn parse(text: []const u8) ?Ssid {
-        const trimmed = str.trim(text);
-        if (trimmed.len == 0) return Ssid{};
-        return of(trimmed);
+        return of(text);
     }
 
     pub fn spell(self: Ssid, into: *str.Builder) void {
@@ -426,30 +424,20 @@ pub const Psk = union(enum) {
     pub const KEY_BYTES = 32;
     const HEX_DIGITS = KEY_BYTES * 2;
 
-    pub const accepts = "a passphrase of 8 to 63 characters with no space at either end, or 64 hex digits";
+    pub const accepts = "a passphrase of 8 to 63 characters, or 64 hex digits";
 
     pub fn parse(text: []const u8) ?Psk {
-        const trimmed = str.trim(text);
-        if (trimmed.len == 0) return .none;
+        if (text.len == 0) return .none;
 
         // A key is unambiguous: nothing else is exactly that many hex
         // digits, and a passphrase of that length would be unusual enough
-        // that reading it as a key is the safer guess. Spaces around one
-        // are not part of it, since a hex digit is not a space.
-        if (trimmed.len == HEX_DIGITS) {
-            if (decodeKey(trimmed)) |key| return .{ .key = key };
+        // that reading it as a key is the safer guess.
+        if (text.len == HEX_DIGITS) {
+            if (decodeKey(text)) |key| return .{ .key = key };
         }
 
-        // A passphrase is taken exactly as it was given, and one with a
-        // space at either end is refused rather than trimmed. The
-        // standard allows such a passphrase; the settings file cannot
-        // carry one, because a line is split on its separator and both
-        // halves trimmed, and there is no spelling that would say the
-        // space was meant. Trimming it here instead would derive a key
-        // that opens nothing and report the network refusing a password
-        // that was in fact never tried. A network whose passphrase ends
-        // in a space is joined by storing its derived key.
-        if (trimmed.len != text.len) return null;
+        // Whitespace is part of the secret. File syntax is decoded by the
+        // config reader, not by a type also used for exact IPC values.
         return .{ .passphrase = Passphrase.of(text) orelse return null };
     }
 
@@ -854,6 +842,9 @@ test "a network name is a setting like any other" {
     // Nothing named is not the same as a hidden network being asked for.
     try std.testing.expect(Ssid.parse("").?.isHidden());
     try std.testing.expectEqual(@as(?Ssid, null), Ssid.parse("x" ** 33));
+    const spaced = Ssid.parse(" " ** Ssid.MAX).?;
+    try std.testing.expectEqualStrings(" " ** Ssid.MAX, spaced.slice());
+    try std.testing.expect(!spaced.isHidden());
 }
 
 test "a secret is read as a key when it can only be one" {
@@ -881,15 +872,17 @@ test "words are words, and too few of them are refused" {
     // Spaces inside a passphrase are characters of it.
     const inside = Psk.parse("a secret word") orelse return std.testing.expect(false);
     try std.testing.expectEqualStrings("a secret word", inside.passphrase.slice());
-    // At either end they are refused rather than trimmed away: the file
-    // cannot carry them, and trimming would derive a key that opens
-    // nothing while reporting the network as refusing the password.
-    try std.testing.expectEqual(@as(?Psk, null), Psk.parse(" a secret word "));
-    try std.testing.expectEqual(@as(?Psk, null), Psk.parse("a secret word "));
-    // Around a stored key there is nothing to lose: a hex digit is not a
-    // space.
-    const padded = Psk.parse("  " ++ "0123456789abcdef" ** 4 ++ " ") orelse return std.testing.expect(false);
-    try std.testing.expectEqual(@as(std.meta.Tag(Psk), .key), @as(std.meta.Tag(Psk), padded));
+    for ([_][]const u8{ " a secret word ", "a secret word ", " " ** 8, " " ** 63 }) |exact| {
+        const parsed = Psk.parse(exact) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(exact, parsed.passphrase.slice());
+        var buffer: [64]u8 = undefined;
+        var spelled = str.Builder{ .buf = &buffer };
+        parsed.spell(&spelled);
+        try std.testing.expectEqualStrings(exact, spelled.done());
+    }
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse(" " ** 7));
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse(" " ** 64));
+    try std.testing.expectEqual(@as(?Psk, null), Psk.parse("  " ++ "0123456789abcdef" ** 4 ++ " "));
     // A key's length is one past what words may be, so a string that is
     // neither is refused rather than truncated into one of them.
     try std.testing.expectEqual(@as(?Psk, null), Psk.parse("z" ** 64));

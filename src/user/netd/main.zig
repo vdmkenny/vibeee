@@ -24,7 +24,10 @@ const e1000 = @import("e1000.zig");
 // The routines lwIP's C calls by name, emitted into this binary from the
 // libc's own C-callable half: one implementation in the system, not two.
 comptime {
-    _ = @import("clibc");
+    if (!@import("builtin").is_test) {
+        _ = @import("clibc");
+        @export(&_start, .{ .name = "_start" });
+    }
 }
 const log = @import("ulib").log;
 const out = @import("ulib").out;
@@ -70,9 +73,11 @@ comptime {
     // the driver names one. A driver that calls itself a radio and brings
     // no table would be an interface the station could do nothing with,
     // so it is not one that compiles.
-    for (DRIVERS) |driver| {
-        if ((driver.class == .wifi) != (driver.ops.radio != null)) {
-            @compileError("`" ++ driver.name ++ "` disagrees with itself about being a radio");
+    if (!@import("builtin").is_test) {
+        for (DRIVERS) |driver| {
+            if ((driver.class == .wifi) != (driver.ops.radio != null)) {
+                @compileError("`" ++ driver.name ++ "` disagrees with itself about being a radio");
+            }
         }
     }
 }
@@ -89,7 +94,7 @@ var count: usize = 0;
 /// whether it is doing work or being disturbed.
 var load: proto.Load = .{};
 
-export fn _start() callconv(.c) noreturn {
+fn _start() callconv(.c) noreturn {
     netdMain();
 }
 
@@ -444,18 +449,12 @@ fn serve(channel: u32) noreturn {
             sys.FOREVER;
         const woke = sys.waitMany(sources.slice(), timeout);
         load.wakes +%= 1;
-        // What woke the loop first, and only then what the clock owes.
-        //
-        // A radio wakes this loop when a frame lands, and the frame is
-        // read out of the card by its handler below. Running the timers
-        // first is running them against a reply that is already here and
-        // has not been looked at: an exchange on its last attempt gives
-        // up, and the answer it was waiting for is drained a moment later
-        // into a join that no longer exists.
-        if (woke catch null) |index| dispatch: {
-            if (index >= sources.len) break :dispatch;
-            const handle = sources.slice()[index];
-
+        // Keep the handle, not its index: dispatch can remove a source.
+        const selected = if (woke catch null) |index|
+            (if (index < sources.len) sources.slice()[index] else null)
+        else
+            null;
+        if (selected) |handle| dispatch: {
             if (handle == channel) {
                 drain(channel);
                 break :dispatch;
@@ -476,27 +475,13 @@ fn serve(channel: u32) noreturn {
                 drainHotkeys();
                 break :dispatch;
             }
-            // An interrupt line. Which interface it belongs to is the match
-            // the attach made; the service runs its handler, then the ack,
-            // saying whether any of them found work: a line can carry more
-            // than one device, and a productive pass here may have been
-            // holding the shared wire across a neighbour's assertion.
-            var found = false;
-            var mine = false;
-            for (ifaces[0..count]) |*iface| {
-                if (iface.irq == handle) {
-                    mine = true;
-                    iface.irq_count += 1;
-                    if (iface.ops.irq(iface)) found = true;
-                }
-            }
-            if (mine) {
-                load.irqs +%= 1;
-                if (!found) load.unclaimed +%= 1;
-            }
-            sys.irqAck(handle, found);
         }
 
+        // waitMany consumes only the winning signal. IPC can win while a
+        // radio reply is already queued, so service every ready line before
+        // expiring exchanges. One pass per distinct line bounds the work;
+        // idle loops still block on the normal wait above.
+        drainReadyIrqs(ifaces[0..count], selected, sys);
         stack.tick();
         station.tick();
 
@@ -504,6 +489,90 @@ fn serve(channel: u32) noreturn {
         // before the loop sleeps: loopback never waits for a wake.
         stack.deliverLoopback();
     }
+}
+
+fn drainReadyIrqs(interfaces: []dev.NicDev, selected: ?u32, comptime io: type) void {
+    for (interfaces, 0..) |iface, i| {
+        const handle = iface.irq;
+        if (handle == 0) continue;
+        var duplicate = false;
+        for (interfaces[0..i]) |earlier| {
+            if (earlier.irq == handle) duplicate = true;
+        }
+        if (duplicate) continue;
+        // The main wait already consumed this line's signal if it won.
+        if (selected != handle) {
+            _ = io.waitMany(&.{handle}, sys.POLL) catch continue;
+        }
+        var found = false;
+        for (interfaces) |*other| {
+            if (other.irq != handle) continue;
+            other.irq_count += 1;
+            if (other.ops.irq(other)) found = true;
+        }
+        load.irqs +%= 1;
+        if (!found) load.unclaimed +%= 1;
+        // All devices sharing our handle must run before its single ack.
+        io.irqAck(handle, found);
+    }
+}
+
+test "ready IRQs precede expiry even when IPC wins, with one ack per shared line" {
+    const Fake = struct {
+        var polled: [4]u8 = @splat(0);
+        var acked: [4]u8 = @splat(0);
+        var claimed: [4]bool = @splat(false);
+        var serviced: usize = 0;
+        var before_ack: [4]usize = @splat(0);
+
+        pub fn waitMany(handles: []const u32, timeout: usize) error{TimedOut}!usize {
+            std.debug.assert(handles.len == 1 and timeout == sys.POLL);
+            const handle = handles[0];
+            polled[handle] += 1;
+            if (handle == 3) return error.TimedOut;
+            return 0;
+        }
+
+        pub fn irqAck(handle: u32, found: bool) void {
+            acked[handle] += 1;
+            claimed[handle] = found;
+            before_ack[handle] = serviced;
+        }
+
+        fn irq(iface: *dev.NicDev) bool {
+            serviced += 1;
+            return iface.class == .wifi;
+        }
+    };
+    var devices: [4]dev.NicDev = undefined;
+    for (&devices, [_]u32{ 1, 1, 2, 3 }, 0..) |*iface, handle, i| {
+        iface.* = .{
+            .name = "test",
+            .ops = undefined,
+            .location = .{ .bus = 0, .device = 0, .function = 0 },
+            .irq = handle,
+            .class = if (i == 1) .wifi else .ether,
+        };
+        iface.ops.irq = Fake.irq;
+    }
+    // IPC won; lines 1 and 2 are ready, and line 1 has two devices.
+    drainReadyIrqs(&devices, 99, Fake);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 1, 1 }, &Fake.polled);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 1, 0 }, &Fake.acked);
+    try std.testing.expect(Fake.claimed[1]);
+    try std.testing.expect(!Fake.claimed[2]);
+    try std.testing.expectEqual(@as(usize, 2), Fake.before_ack[1]);
+    try std.testing.expectEqual(@as(usize, 3), Fake.serviced);
+    try std.testing.expectEqual(@as(u64, 0), devices[3].irq_count);
+    // A selected IRQ's signal is already consumed: do not poll it again.
+    drainReadyIrqs(&devices, 1, Fake);
+    try std.testing.expectEqual(@as(u8, 1), Fake.polled[1]);
+    try std.testing.expectEqual(@as(u8, 2), Fake.acked[1]);
+    // A deadline-only wake must also check pending RX, rather than expiring
+    // an exchange just because no source was selected by the main wait.
+    drainReadyIrqs(&devices, null, Fake);
+    try std.testing.expectEqual(@as(u8, 2), Fake.polled[1]);
+    try std.testing.expectEqual(@as(u8, 3), Fake.acked[1]);
 }
 
 /// Everything the platform service has queued. The wireless key is the
@@ -630,7 +699,8 @@ fn soonest(a: ?u64, b: ?u64) ?u64 {
 }
 
 fn drain(channel: u32) void {
-    while (true) {
+    // A stream of callers must not hold off radio RX and protocol timers.
+    for (0..32) |_| {
         var message = sys.Message{};
         const request = sys.recv(channel, &message, sys.POLL) orelse return;
 

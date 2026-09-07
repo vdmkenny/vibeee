@@ -30,7 +30,11 @@ const quit = @import("ulib").quit;
 /// many waiters already means.
 var events: [settings.DOMAIN_NAMES.len]u32 = @splat(0);
 
-export fn _start() callconv(.c) noreturn {
+comptime {
+    if (!@import("builtin").is_test) @export(&_start, .{ .name = "_start" });
+}
+
+fn _start() callconv(.c) noreturn {
     cfgdMain();
 }
 
@@ -146,7 +150,7 @@ fn applyTo(comptime domain: []const u8, asked: anytype) settings.Status {
         .bad_value => return .bad_value,
     }
 
-    if (!write(settings.pathOf(domain), &current)) return .failed;
+    if (!write(settings.pathOf(domain), &current, sys)) return .failed;
 
     // The kernel holds the keyboard layout, so a change to it is not in effect
     // until somebody says so. Everything else is applied by whoever reads it.
@@ -179,30 +183,66 @@ fn reset(current: anytype, field: []const u8) config.Outcome {
 /// §6. FAT has no atomic anything, but a rename that replaces a file repoints
 /// the record already there in one sector write, so a power cut leaves the
 /// settings as they were or as they are meant to be and never half of each.
-fn write(to: []const u8, current: anytype) bool {
-    var text: [1024]u8 = @splat(0);
+fn write(to: []const u8, current: anytype, comptime io: type) bool {
+    var text: [settings.schema.FILE_MAX]u8 = undefined;
     var body = str.Builder{ .buf = &text };
     config.render(current, &body);
+    if (body.cut) return false;
 
     var name: [64]u8 = undefined;
     var staged = str.Builder{ .buf = &name };
     staged.text(to);
     staged.text(".new");
+    if (staged.cut) return false;
 
-    if (!put(staged.done(), body.done())) return false;
-    sys.rename(staged.done(), to) catch return false;
+    if (!put(staged.done(), body.done(), io)) return false;
+    io.rename(staged.done(), to) catch return false;
     // The rename has repointed the name; the drive may still be holding the
     // sector that says so. A setting is acknowledged only once it is on the
     // medium, which is the whole of what makes it a setting rather than a
     // suggestion the next power cut is free to take back.
-    return sys.sync();
+    return io.sync();
 }
 
-fn put(where: []const u8, body: []const u8) bool {
-    const handle = sys.open(where, .{ .write = true, .create = true, .truncate = true }) catch return false;
-    defer sys.close(handle);
+fn put(where: []const u8, body: []const u8, comptime io: type) bool {
+    const handle = io.open(where, .{ .write = true, .create = true, .truncate = true }) catch return false;
+    defer io.close(handle);
 
-    return (sys.write(handle, body) catch 0) == body.len;
+    return (io.write(handle, body) catch 0) == body.len;
+}
+
+test "overflow refuses the write before opening or replacing the old file" {
+    const Fake = struct {
+        var calls: usize = 0;
+
+        pub fn open(_: []const u8, _: anytype) error{Failed}!u32 {
+            calls += 1;
+            return error.Failed;
+        }
+        pub fn close(_: u32) void {
+            calls += 1;
+        }
+        pub fn write(_: u32, _: []const u8) error{Failed}!usize {
+            calls += 1;
+            return error.Failed;
+        }
+        pub fn rename(_: []const u8, _: []const u8) error{Failed}!void {
+            calls += 1;
+            return error.Failed;
+        }
+        pub fn sync() bool {
+            calls += 1;
+            return false;
+        }
+    };
+    const Schema = struct { value: []const u8 };
+    const overflow = Schema{ .value = "x" ** settings.schema.FILE_MAX };
+    try std.testing.expect(!write("/cfg/net.cfg", &overflow, Fake));
+    const escaped_overflow = Schema{ .value = "\n" ** (settings.schema.FILE_MAX / 4) };
+    try std.testing.expect(!write("/cfg/net.cfg", &escaped_overflow, Fake));
+    const small = Schema{ .value = "safe" };
+    try std.testing.expect(!write("x" ** 64, &small, Fake));
+    try std.testing.expectEqual(@as(usize, 0), Fake.calls);
 }
 
 /// Wake everyone watching this domain.

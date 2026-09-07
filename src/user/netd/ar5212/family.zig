@@ -25,6 +25,11 @@ const mac = lib.mac;
 const rates = lib.rates;
 const wifi = lib.wifi;
 
+test {
+    // Keep power-limit regression tests in the existing family host suite.
+    _ = @import("power.zig");
+}
+
 // ---------------------------------------------------------------------------
 // Descriptors
 // ---------------------------------------------------------------------------
@@ -165,6 +170,7 @@ pub const Send = struct {
     kind: FrameType = .normal,
     /// Cleared for the group addresses, which nothing answers.
     acknowledged: bool = true,
+    duration_update: bool = false,
     /// The key the body is ciphered with, or none to send it in clear.
     key: ?u7 = null,
     /// Which aerials the frame may leave by; zero leaves the choice made
@@ -326,6 +332,13 @@ pub const RxStatus1 = packed struct(u32) {
             !self.michael_error;
     }
 
+    /// Only with hardware decryption bypassed and the key cache cleared.
+    /// Key miss alone is expected for software crypto, not damaged ciphertext.
+    pub fn softwareIntact(self: RxStatus1) bool {
+        return (self.received or self.key_cache_miss) and !self.check_sequence_error and
+            !self.decrypt_check_error and !self.physical_error and !self.michael_error;
+    }
+
     /// The baseband's error code, which overlays the key index when the
     /// physical-error bit is set.
     pub fn physicalErrorCode(self: RxStatus1) u8 {
@@ -398,7 +411,7 @@ pub const Desc = extern struct {
     pub fn armTransmit(self: *volatile Desc, buffer_physical: u32, next_physical: u32, send: Send) void {
         // The four steps of the series into the four pairs of fields the
         // two words hold, by name, so the four are written once.
-        var tries = TxControl2{};
+        var tries = TxControl2{ .duration_update = send.duration_update };
         var speeds = TxControl3{};
         const steps = send.series.slice();
         inline for (0..rates.SERIES) |step| {
@@ -544,14 +557,46 @@ comptime {
 // Chains
 // ---------------------------------------------------------------------------
 
-/// Where a chain's descriptors sit, and what each one's link should say.
+/// HAL ar5212NumTxPending: neither TXE nor PFC alone proves ownership.
+pub fn txIdle(enabled: bool, pending: u2) bool {
+    return !enabled and pending == 0;
+}
+
+pub fn txStartable(queued: usize, active: bool, enabled: bool, pending: u2, held: bool) bool {
+    return queued != 0 and !active and !held and txIdle(enabled, pending);
+}
+
+/// Only a stopped receiver and a freshly armed descriptor permit RXDP reuse.
+pub fn rxRestartable(stopped: bool, done: bool) bool {
+    return stopped and !done;
+}
+
+/// Ordinary, unfragmented management/data exchanges only. Preserve Duration/ID
+/// on control frames, fragments and QoS policies whose exchanges we do not time.
+pub fn setDuration(frame: []u8, rate: wifi.Legacy) bool {
+    const head = lib.ieee80211.Header.parse(frame) orelse return false;
+    if (head.control.version != 0 or
+        (head.control.kind != .management and head.control.kind != .data) or
+        head.control.more_fragments or head.sequence.fragment != 0 or
+        head.duration & 0x8000 != 0) return false;
+    if (head.qos) |qos| if (qos.ack_policy != 0) return false;
+    const answered = !mac.isGroup(head.addr1);
+    const micros = if (answered) controlRate(rate).airtime(CONTROL_FRAME_BYTES, false, true) else 0;
+    std.mem.writeInt(u16, frame[2..4], micros, .little);
+    return answered;
+}
+
+/// Where a chain's descriptors sit, and which one comes after which.
 ///
-/// A chain here is a circle the hardware does not know is one: every
-/// descriptor names the next by physical address, and the last names the
-/// first. The count is a compile-time number because a chain whose size is
-/// not known until it runs is one whose wrap has to be checked at every
-/// step. It is a power of two so the wrap is a mask rather than a
-/// division, which is the only arithmetic on the packet path.
+/// A run of descriptors the service walks in a circle and the hardware
+/// walks in a line: each one the service hands over names nothing after
+/// it, and the one before it is then pointed at it, so the hardware stops
+/// where the service's own descriptors begin and can never write over a
+/// buffer nobody has read. The count is a compile-time number because a
+/// chain whose size is not known until it runs is one whose wrap has to be
+/// checked at every step. It is a power of two so the wrap is a mask
+/// rather than a division, which is the only arithmetic on the packet
+/// path.
 pub fn Chain(comptime slots: usize) type {
     if (slots < 2 or !std.math.isPowerOfTwo(slots)) {
         @compileError("a chain holds at least two descriptors, and a power of two of them");
@@ -575,13 +620,6 @@ pub fn Chain(comptime slots: usize) type {
         /// end to end from `base`.
         pub fn addressOf(base: u32, index: usize) u32 {
             return base + @as(u32, @intCast((index & mask) * DESC_BYTES));
-        }
-
-        /// What descriptor `index` should name as its successor. The last
-        /// names the first, so the hardware walking the chain never runs
-        /// off the end of it and never needs telling where to go back to.
-        pub fn linkFor(base: u32, index: usize) u32 {
-            return addressOf(base, next(index));
         }
 
         /// Whether a run of this many descriptors starting at `base` fits
@@ -1130,6 +1168,7 @@ fn readChannelList(source: anytype, at: u16, mode: StoreMode, into: ?*CalCurves)
         for ([_]u4{ 0, 8 }) |shift| {
             const fbin: u8 = @truncate(word >> shift);
             if (fbin == 0 or listed >= room) break :walk;
+            if (fbin == 0xFF) return StoreError.Unreadable;
             if (into) |curves| {
                 curves.megahertz[listed] = if (mode == .a) 4800 + @as(u16, fbin) * 5 else 2300 + @as(u16, fbin);
             }
@@ -1148,24 +1187,23 @@ fn readChannelList(source: anytype, at: u16, mode: StoreMode, into: ?*CalCurves)
 /// for the g curves hands back the b ones, unpacked with g's gain mask,
 /// which is a different geometry as well as different numbers, and the
 /// amplifier is then programmed from a table drawn out of neither.
-fn datasetStart(source: anytype, store: *const Store, mode: StoreMode) StoreError!?u16 {
+fn datasetStart(source: anytype, store: *const Store, mode: StoreMode) NoCurves!u16 {
     var at: u16 = store.power_cal_start;
     for ([_]StoreMode{ .a, .b, .g }) |each| {
-        if (each == mode) return at;
-        const present = switch (each) {
-            .a => store.a_mode,
-            .b => store.b_mode,
-            .g => store.g_mode,
-        };
+        const present = store.calibration_modes[@intFromEnum(each)];
+        if (each == mode) return if (present) at else NoCurves.Uncalibrated;
         if (!present) continue;
 
         const gains = gainsMeasured(store, each);
-        if (gains == 0) return null;
-        const listed = try readChannelList(source, at, each, null);
+        if (gains == 0) return NoCurves.Misplaced;
+        if (@as(usize, at) + channelRoom(each) / 2 > store.checked_end) return NoCurves.Unreadable;
+        const listed = readChannelList(source, at, each, null) catch return NoCurves.Unreadable;
+        if (listed == 0) return NoCurves.Misplaced;
         at += @intCast(channelRoom(each) / 2);
         at += @intCast(listed * CURVE_WORDS[gains - 1]);
+        if (at >= store.checked_end) return NoCurves.Unreadable;
     }
-    return null;
+    return NoCurves.Uncalibrated;
 }
 
 /// The curves the store measured for a band, or none where it holds none.
@@ -1175,31 +1213,37 @@ fn datasetStart(source: anytype, store: *const Store, mode: StoreMode) StoreErro
 /// what the amplifier does: at each gain setting, the detector's reading
 /// at a handful of powers, from which the table for any channel between
 /// two measured ones is drawn.
-pub fn readCurves(source: anytype, store: *const Store, mode: StoreMode) StoreError!?CalCurves {
-    if (store.power_cal_start == 0) return null;
-    if (!store.version.atLeast(.v5_0)) return null;
+pub fn readCurves(source: anytype, store: *const Store, mode: StoreMode) NoCurves!CalCurves {
+    if (store.power_cal_start == 0) return NoCurves.Uncalibrated;
+    if (!store.version.atLeast(.v5_0) or store.map != 2) return NoCurves.Layout;
 
     const mask = store.sections[@intFromEnum(mode)].xgain;
     var slots: [CalChannel.MAX_GAINS]u8 = @splat(0);
     const used = gainSlots(mask, &slots);
-    if (used == 0) return null;
+    if (used == 0) return NoCurves.Uncalibrated;
 
-    const start = try datasetStart(source, store, mode) orelse return null;
+    const start = try datasetStart(source, store, mode);
     const room = channelRoom(mode);
+    if (@as(usize, start) + room / 2 > store.checked_end) return NoCurves.Unreadable;
 
     var curves = CalCurves{};
-    const listed = try readChannelList(source, start, mode, &curves);
-    if (listed == 0) return null;
+    const listed = readChannelList(source, start, mode, &curves) catch return NoCurves.Unreadable;
+    if (listed == 0) return NoCurves.Uncalibrated;
     curves.channels = @intCast(listed);
 
     // The curves follow the whole of the channel list, filled or not.
     var word_at: u16 = start + @as(u16, @intCast(room / 2));
     const span = CURVE_WORDS[used - 1];
+    const end = @as(usize, word_at) + listed * span;
+    if (end > store.checked_end or (store.target_powers_start != 0 and end > store.target_powers_start)) return NoCurves.Unreadable;
+    for (1..listed) |i| {
+        if (curves.megahertz[i] <= curves.megahertz[i - 1]) return NoCurves.Disordered;
+    }
 
     for (0..listed) |channel| {
         var buffer: [CURVE_WORDS[CURVE_WORDS.len - 1]]u16 = @splat(0);
         for (0..span) |i| {
-            buffer[i] = try readWord(source, word_at);
+            buffer[i] = readWord(source, word_at) catch return NoCurves.Unreadable;
             word_at += 1;
         }
 
@@ -1214,6 +1258,7 @@ pub fn readCurves(source: anytype, store: *const Store, mode: StoreMode) StoreEr
                 gain.quarter_dbm[step] = gain.quarter_dbm[step - 1] +
                     @as(i16, bits.take(CURVE_POWER_STEP_BITS)) * 2;
                 gain.vpd[step] = gain.vpd[step - 1] + bits.take(CURVE_DETECTOR_STEP_BITS);
+                if (gain.quarter_dbm[step] <= gain.quarter_dbm[step - 1]) return NoCurves.Disordered;
             }
             curves.per_channel[channel].per_gain[slots[which]] = gain;
         }
@@ -1226,7 +1271,7 @@ pub fn readCurves(source: anytype, store: *const Store, mode: StoreMode) StoreEr
 /// `overlap_half_db` is how far the baseband is told the gain settings
 /// overlap, which it holds in a register of its own.
 pub fn powerTable(curves: *const CalCurves, megahertz: u16, overlap_half_db: u16) ?PowerTable {
-    if (curves.channels == 0) return null;
+    if (curves.channels == 0 or curves.channels > CalCurves.MAX_CHANNELS) return null;
     const near = bracket(u16, megahertz, curves.megahertz[0..curves.channels]);
     const left = &curves.per_channel[near.lo];
     const right = &curves.per_channel[near.hi];
@@ -1244,6 +1289,7 @@ pub fn powerTable(curves: *const CalCurves, megahertz: u16, overlap_half_db: u16
         const on_right = &right.per_gain[which];
         const points = on_left.points;
         if (points == 0) continue;
+        if (points < 2 or points > PdGain.MAX_POINTS or on_right.points != points) return null;
 
         const used = out.used;
         out.gains[used] = on_left.gain;
@@ -1253,6 +1299,9 @@ pub fn powerTable(curves: *const CalCurves, megahertz: u16, overlap_half_db: u16
             on_left.quarter_dbm[points - 1],
             on_right.quarter_dbm[points - 1],
         ), 2);
+        // Later extrapolation indexes span-1 and span-2 in this fixed table.
+        const width = @as(i32, ceiling[used]) - floor[used];
+        if (width < 2 or width > PWR_RANGE_HALF_DB) return null;
 
         var on_the_left: [PWR_RANGE_HALF_DB]u16 = @splat(0);
         var on_the_right: [PWR_RANGE_HALF_DB]u16 = @splat(0);
@@ -1505,10 +1554,8 @@ pub const ModeSection = struct {
     gain_i: u6 = 0,
 };
 
-/// What the driver keeps of the store: the header, and the few words
-/// outside it a reset or a join needs. The power calibration curves, the
-/// conformance limits and the spur table are not read; transmit power
-/// is what a later pass owes.
+/// EEPROM header. Curves are decoded by readCurves; target powers and CTLs
+/// by power.zig, using the original dataset flags and checked address range.
 pub const Store = struct {
     version: StoreVersion,
     protect: u16,
@@ -1516,6 +1563,9 @@ pub const Store = struct {
     a_mode: bool,
     b_mode: bool,
     g_mode: bool,
+    /// Dataset presence before HAL/runtime capability overrides.
+    calibration_modes: [3]bool = @splat(false),
+    checked_end: u16 = StoreAt.end,
     turbo2_disable: bool,
     turbo5_disable: bool,
     rf_kill: bool,
@@ -1527,6 +1577,7 @@ pub const Store = struct {
     /// Where the per-channel amplifier curves begin. Zero in a store that
     /// was never calibrated, and in one too old to carry them.
     power_cal_start: u12 = 0,
+    target_powers_start: u12 = 0,
     sections: [3]ModeSection = @splat(.{}),
     /// The bias each 2.4 GHz mode's section names, which the RF2425's
     /// sixth bank is patched with.
@@ -1554,6 +1605,27 @@ pub const Store = struct {
     pub fn section(self: *const Store, mode: StoreMode) *const ModeSection {
         return &self.sections[@intFromEnum(mode)];
     }
+};
+
+/// Why a board's amplifier curves could not be read.
+///
+/// Named apart rather than collapsed into "none", because a radio that
+/// cannot read them does not transmit at all, and the one machine this
+/// runs on has one store: a person looking at a silent radio needs the
+/// log to say which of these it was, not that it was one of seven.
+pub const NoCurves = error{
+    /// The store was never calibrated, or holds no section for this band.
+    Uncalibrated,
+    /// Of a version or a layout this build does not read.
+    Layout,
+    /// The band's dataset is not where the ones before it end.
+    Misplaced,
+    /// A word did not come back, or the dataset reaches past what the
+    /// store's own checksum covered.
+    Unreadable,
+    /// Its channels are not in ascending order, or its powers do not
+    /// climb, which is not a curve.
+    Disordered,
 };
 
 pub const StoreError = error{
@@ -1600,6 +1672,8 @@ pub fn readStore(source: anytype) StoreError!Store {
         .a_mode = modes.a_mode,
         .b_mode = modes.b_mode,
         .g_mode = modes.g_mode,
+        .calibration_modes = .{ modes.a_mode, modes.b_mode, modes.g_mode },
+        .checked_end = @intCast(StoreAt.atheros_base + words),
         .turbo2_disable = if (version.atLeast(.v4_0)) modes.turbo2_disable else true,
         .turbo5_disable = modes.turbo5_disable,
         .rf_kill = modes.rf_kill,
@@ -1619,6 +1693,7 @@ pub fn readStore(source: anytype) StoreError!Store {
         at += 1;
         store.map = mapping.map;
         const targets: TargetsWord = @bitCast(try readWord(source, at));
+        store.target_powers_start = targets.target_powers_start;
         store.crystal_32khz = targets.crystal_32khz;
         if (version.atLeast(.v5_0)) {
             const start: PowerCalWord = @bitCast(try readWord(source, at + 3));
@@ -1891,9 +1966,6 @@ test "descriptors sit one after another, and the last links back to the first" {
     try testing.expectEqual(base + DESC_BYTES, Eight.addressOf(base, 1));
     try testing.expectEqual(base + 7 * DESC_BYTES, Eight.addressOf(base, 7));
 
-    try testing.expectEqual(base + DESC_BYTES, Eight.linkFor(base, 0));
-    try testing.expectEqual(base, Eight.linkFor(base, 7));
-
     var at: usize = 3;
     for (0..Eight.count) |_| at = Eight.next(at);
     try testing.expectEqual(@as(usize, 3), at);
@@ -1928,7 +2000,7 @@ test "an armed transmit descriptor states the frame with its check bytes and the
     // Stale status from whatever went out of this slot last.
     desc.body = .{ .tx = .{ .status0 = 0xFFFF_FFFF, .status1 = 0xFFFF_FFFF } };
 
-    desc.armTransmit(0x0040_0000, 0, .{ .frame_bytes = 100, .series = rates.only(.m1, 4), .power = 30 });
+    desc.armTransmit(0x0040_0000, 0, .{ .frame_bytes = 100, .series = rates.only(.m1, 4), .power = 30, .duration_update = true });
 
     try testing.expectEqual(@as(u32, 0), desc.link);
     try testing.expectEqual(@as(u32, 0x0040_0000), desc.buffer);
@@ -1940,6 +2012,8 @@ test "an armed transmit descriptor states the frame with its check bytes and the
     try testing.expectEqual(@as(u6, 30), control0.transmit_power);
     try testing.expect(control0.interrupt_request);
     try testing.expect(!control1.more);
+    const control2: TxControl2 = @bitCast(desc.body.tx.control2);
+    try testing.expect(control2.duration_update);
 
     // Arming clears what the last frame left, so its outcome cannot be
     // read as this one's.
@@ -2214,6 +2288,7 @@ test "a synthetic calibration store reads back, word layouts and all" {
     try testing.expectEqual(@as(u4, 5), store.version.major());
     try testing.expectEqual(@as(u12, 4), store.version.minor());
     try testing.expect(store.b_mode and store.g_mode and !store.a_mode);
+    try testing.expectEqualDeep([_]bool{ false, true, true }, store.calibration_modes);
     try testing.expect(store.rf_kill and store.turbo2_disable and store.turbo5_disable);
     try testing.expectEqual(@as(u3, 5), store.device_type);
     try testing.expectEqual(@as(i8, 6), store.antenna_gain_2ghz);
@@ -2259,6 +2334,14 @@ test "a synthetic calibration store reads back, word layouts and all" {
     try testing.expectEqual(@as(u3, 3), store.rf_silent.gpio);
     try testing.expectEqual(@as(u1, 1), store.rf_silent.polarity);
     try testing.expect(store.talon);
+
+    // Regulatory capability repair must not invent an a calibration dataset.
+    const regcap: u16 = @bitCast(RegulatoryCapabilities{ .kk_new_11a = true });
+    image[StoreAt.regulatory_capabilities] = regcap;
+    image[StoreAt.end - 1] ^= regcap;
+    const repaired = try readStore(Image{ .words = &image });
+    try testing.expect(repaired.a_mode);
+    try testing.expect(!repaired.calibration_modes[0]);
 
     // A torn store, an old one, and one with no address, each refused.
     image[StoreAt.end - 1] ^= 1;
@@ -2359,10 +2442,12 @@ test "a channel's measured curves are read back off the bit stream that holds th
         .mac = @splat(0),
     };
     store.power_cal_start = START;
+    store.map = 2;
+    store.calibration_modes = .{ false, true, true };
     store.sections[@intFromEnum(StoreMode.b)].xgain = b_mask;
     store.sections[@intFromEnum(StoreMode.g)].xgain = mask;
 
-    const curves = (try readCurves(Image{ .words = &image }, &store, .g)).?;
+    const curves = try readCurves(Image{ .words = &image }, &store, .g);
 
     // The two channels, decoded from their byte form.
     try testing.expectEqual(@as(u8, 2), curves.channels);
@@ -2401,6 +2486,88 @@ test "a channel's measured curves are read back off the bit stream that holds th
     // And what all that is for: a table for a channel between the two.
     const table = powerTable(&curves, 2337, 0).?;
     try testing.expectEqual(@as(u8, 2), table.used);
+
+    // A g-only EEPROM stays g-only even when attach forces b capability on.
+    store.calibration_modes = .{ false, false, true };
+    store.power_cal_start = @intCast(g_at);
+    const g_only = try readCurves(Image{ .words = &image }, &store, .g);
+    try testing.expectEqualDeep(curves, g_only);
+
+    // And every way of having none says which way it was, because a radio
+    // that cannot read them does not transmit and somebody has to know why.
+    try testing.expectError(NoCurves.Uncalibrated, readCurves(Image{ .words = &image }, &store, .b));
+    for ([_]u2{ 0, 1, 3 }) |map| {
+        store.map = map;
+        try testing.expectError(NoCurves.Layout, readCurves(Image{ .words = &image }, &store, .g));
+    }
+    store.map = 2;
+    store.checked_end = g_at + 2;
+    try testing.expectError(NoCurves.Unreadable, readCurves(Image{ .words = &image }, &store, .g));
+    store.checked_end = StoreAt.end;
+    store.version = .v4_6;
+    try testing.expectError(NoCurves.Layout, readCurves(Image{ .words = &image }, &store, .g));
+    store.version = .v5_0;
+    // Two channels at the same frequency, and a curve whose power does
+    // not climb, are both stores that do not describe an amplifier.
+    image[g_at] = 0x0C0C;
+    try testing.expectError(NoCurves.Disordered, readCurves(Image{ .words = &image }, &store, .g));
+    image[g_at] = 0x3E0C;
+    image[g_at + 2] &= 0x0FFF;
+    try testing.expectError(NoCurves.Disordered, readCurves(Image{ .words = &image }, &store, .g));
+}
+
+test "DMA ownership needs both TX indicators and an available RX descriptor" {
+    try testing.expect(txIdle(false, 0));
+    try testing.expect(!txIdle(true, 0));
+    try testing.expect(!txIdle(false, 1));
+    try testing.expect(!txIdle(true, 3));
+    try testing.expect(txStartable(1, false, false, 0, false));
+    try testing.expect(!txStartable(0, false, false, 0, false));
+    try testing.expect(!txStartable(1, true, false, 0, false));
+    try testing.expect(!txStartable(1, false, true, 0, false));
+    try testing.expect(!txStartable(1, false, false, 1, false));
+    try testing.expect(!txStartable(1, false, false, 0, true));
+    try testing.expect(rxRestartable(true, false));
+    try testing.expect(!rxRestartable(false, false));
+    try testing.expect(!rxRestartable(true, true));
+}
+
+test "software crypto accepts key misses but never damaged or decrypted frames" {
+    var status = RxStatus1{ .done = true, .key_cache_miss = true };
+    try testing.expect(status.softwareIntact());
+    inline for (.{ "check_sequence_error", "decrypt_check_error", "physical_error", "michael_error" }) |field| {
+        var broken = status;
+        @field(broken, field) = true;
+        try testing.expect(!broken.softwareIntact());
+    }
+    status.key_cache_miss = false;
+    try testing.expect(!status.softwareIntact());
+    status.received = true;
+    try testing.expect(status.softwareIntact());
+}
+
+test "NAV updates are bounds safe and preserve special exchanges" {
+    var frame: [32]u8 = @splat(0);
+    for (0..24) |len| try testing.expect(!setDuration(frame[0..len], .m1));
+    frame[4] = 2;
+    try testing.expect(setDuration(frame[0..24], .m1));
+    try testing.expectEqual(@as(u16, 314), std.mem.readInt(u16, frame[2..4], .little));
+    frame[4] = 1;
+    try testing.expect(!setDuration(frame[0..24], .m1));
+    try testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, frame[2..4], .little));
+    frame[4] = 2;
+    frame[3] = 0x80;
+    try testing.expect(!setDuration(frame[0..24], .m1));
+    try testing.expectEqual(@as(u8, 0x80), frame[3]);
+    frame[3] = 0;
+    frame[1] = 4; // More fragments.
+    try testing.expect(!setDuration(frame[0..24], .m1));
+    frame[1] = 0;
+    frame[0] = 0xA4; // PS-Poll carries an AID, not a NAV duration.
+    try testing.expect(!setDuration(&frame, .m1));
+    frame[0] = 0x88; // QoS data with no-ACK policy.
+    frame[24] = 0x20;
+    try testing.expect(!setDuration(frame[0..26], .m1));
 }
 
 test "the reset's arithmetic: spur channels, the CCK adjustment, what survives a change" {
@@ -2516,6 +2683,12 @@ test "a table is refused where there is nothing measured to build one from" {
     var thin = CalCurves{ .channels = 1 };
     thin.megahertz[0] = 2412;
     thin.per_channel[0].per_gain[3] = .{ .gain = 3, .points = 1, .quarter_dbm = .{ 40, 0, 0, 0, 0 }, .vpd = .{ 20, 0, 0, 0, 0 } };
+    try testing.expectEqual(@as(?PowerTable, null), powerTable(&thin, 2412, 2));
+    thin.per_channel[0].per_gain[3].points = PdGain.MAX_POINTS + 1;
+    try testing.expectEqual(@as(?PowerTable, null), powerTable(&thin, 2412, 2));
+    thin.per_channel[0].per_gain[3] = .{ .gain = 3, .points = 2, .quarter_dbm = .{ 0, 200, 0, 0, 0 }, .vpd = .{ 0, 100, 0, 0, 0 } };
+    try testing.expectEqual(@as(?PowerTable, null), powerTable(&thin, 2412, 2));
+    thin.channels = CalCurves.MAX_CHANNELS + 1;
     try testing.expectEqual(@as(?PowerTable, null), powerTable(&thin, 2412, 2));
 }
 

@@ -168,6 +168,11 @@ pub const Header = struct {
             .len = MIN,
         };
 
+        if (head.control.version != 0) return null;
+        if (head.control.kind == .management and
+            (head.control.to_ds or head.control.from_ds or head.control.protected or
+                head.control.more_fragments or head.sequence.fragment != 0)) return null;
+
         if (Topology.of(head.control) == .bridged) {
             if (frame.len < head.len + 6) return null;
             head.addr4 = frame[head.len..][0..6].*;
@@ -450,6 +455,22 @@ pub fn writeElement(into: []u8, id: ElementId, payload: []const u8) ?usize {
 /// cell uses. Only the one combination this system joins with is read
 /// out in full; anything else is a cell it does not join.
 pub const Rsn = struct {
+    /// Owned beacon transcript, safe across RX buffer recycling and value copies.
+    pub const Transcript = struct {
+        bytes: [255]u8 = @splat(0),
+        len: u8 = 0,
+
+        pub fn of(payload: []const u8) ?Transcript {
+            if (payload.len > 255) return null;
+            var result = Transcript{ .len = @intCast(payload.len) };
+            @memcpy(result.bytes[0..payload.len], payload);
+            return result;
+        }
+
+        pub fn slice(self: *const Transcript) []const u8 {
+            return self.bytes[0..self.len];
+        }
+    };
     /// The cipher and key-management suites, under the standard's prefix.
     pub const Suite = enum(u8) {
         use_group = 0,
@@ -494,13 +515,16 @@ pub const Rsn = struct {
         // Each part is optional after the one before: a cell may say only
         // its version and mean the defaults for the rest.
         var out = Rsn{ .group = .ccmp, .pairwise_ccmp = true, .psk = false, .sae = false };
-        if (payload.len < at + 4) return out;
+        if (payload.len == at) return out;
+        if (payload.len < at + 4) return null;
         out.group = suiteOf(payload[at..][0..4]) orelse return null;
         at += 4;
 
         out.pairwise_ccmp = false;
-        if (payload.len < at + 2) return out;
+        if (payload.len == at) return out;
+        if (payload.len < at + 2) return null;
         const pairwise = std.mem.readInt(u16, payload[at..][0..2], .little);
+        if (pairwise == 0) return null;
         at += 2;
         for (0..pairwise) |_| {
             if (payload.len < at + 4) return null;
@@ -508,8 +532,10 @@ pub const Rsn = struct {
             at += 4;
         }
 
-        if (payload.len < at + 2) return out;
+        if (payload.len == at) return out;
+        if (payload.len < at + 2) return null;
         const akms = std.mem.readInt(u16, payload[at..][0..2], .little);
+        if (akms == 0) return null;
         at += 2;
         for (0..akms) |_| {
             if (payload.len < at + 4) return null;
@@ -524,9 +550,18 @@ pub const Rsn = struct {
         // The capabilities word, whose seventh bit is the one that says
         // protection of management frames is required rather than merely
         // offered.
-        if (payload.len < at + 2) return out;
+        if (payload.len == at) return out;
+        if (payload.len < at + 2) return null;
         const capabilities = std.mem.readInt(u16, payload[at..][0..2], .little);
         out.protected_management = capabilities & 0x0040 != 0;
+        at += 2;
+        if (payload.len == at) return out;
+        if (payload.len < at + 2) return null;
+        const pmkids: usize = std.mem.readInt(u16, payload[at..][0..2], .little);
+        at += 2;
+        if (pmkids > (payload.len - at) / 16) return null;
+        at += pmkids * 16;
+        if (payload.len != at and payload.len != at + 4) return null;
         return out;
     }
 
@@ -704,4 +739,28 @@ test "a cell with a different cipher or key management is not one this station j
     // A version this file does not know is refused.
     payload[0] = 2;
     try std.testing.expectEqual(@as(?Rsn, null), Rsn.parse(&payload));
+}
+
+test "unsupported management fragments and data aggregates cannot become payloads" {
+    var frame: [64]u8 = @splat(0);
+    var head = Header{ .control = FrameControl.management(.deauthentication) };
+    head.control.more_fragments = true;
+    _ = head.write(&frame);
+    try std.testing.expect(Header.parse(&frame) == null);
+    head.control.more_fragments = false;
+    head.sequence.fragment = 1;
+    _ = head.write(&frame);
+    try std.testing.expect(Header.parse(&frame) == null);
+    head = .{ .control = FrameControl.data(.qos_data), .qos = .{ .amsdu = true } };
+    const len = head.write(&frame).?;
+    _ = Snap.write(frame[len..], .eapol);
+    try std.testing.expect(carriedBy(&frame) == null);
+    head.qos.?.amsdu = false;
+    head.control.more_fragments = true;
+    _ = head.write(&frame);
+    try std.testing.expect(carriedBy(&frame) == null);
+    head.control.more_fragments = false;
+    head.sequence.fragment = 1;
+    _ = head.write(&frame);
+    try std.testing.expect(carriedBy(&frame) == null);
 }

@@ -262,12 +262,16 @@ pub const Ccmp = struct {
     /// was torn or sealed under another key.
     pub fn unprotect(tk: [16]u8, frame: []const u8, into: []u8) ?Opened {
         const head = ieee80211.Header.parse(frame) orelse return null;
-        if (!head.control.protected) return null;
+        if (!head.control.protected or head.control.kind != .data or
+            head.control.more_fragments or head.sequence.fragment != 0) return null;
+        if (head.qos) |qos| {
+            if (qos.amsdu) return null;
+        }
         if (frame.len < head.len + HEADER + MIC) return null;
 
         const cipher_head = frame[head.len..][0..HEADER];
         const key_byte: KeyByte = @bitCast(cipher_head[3]);
-        if (!key_byte.extended_iv) return null;
+        if (!key_byte.extended_iv or key_byte._0 != 0 or cipher_head[2] != 0) return null;
         const pn = pnOf(cipher_head);
 
         var bound: [BOUND_MAX]u8 = undefined;
@@ -417,6 +421,7 @@ pub const KeyFrame = struct {
 
     pub fn parse(frame: []const u8) ?KeyFrame {
         if (frame.len < HEAD) return null;
+        if (frame[At.version] != 1 and frame[At.version] != 2) return null;
         if (frame[At.packet_type] != KEY_PACKET or frame[At.descriptor] != RSN_DESCRIPTOR) return null;
         // One extent, checked once and used for everything after: the
         // frame is as long as its own header says, the key data fills the
@@ -517,11 +522,8 @@ pub const Gtk = struct {
 /// One installed key.
 pub const Key = struct {
     bytes: [16]u8,
-    /// Which installation this is. A key put in under an index another
-    /// key already had is a different key, and the numbering under it
-    /// starts again; a receiver tells the two apart by this rather than
-    /// by comparing bytes, since the same bytes handed over twice are
-    /// still a fresh start.
+    /// Replay identity: identical key bytes keep this generation, even
+    /// when installed under another group index.
     generation: u32,
     /// Where the sender's numbering had got to when it handed the key
     /// over: nought for the pairwise key, which this station proved and
@@ -554,6 +556,28 @@ pub const Keys = struct {
     }
 };
 
+/// Two live TX generations: changing to the new key must not forget the
+/// old key's last PN, since a rekey M4 retry still uses that key.
+pub const TxNumbering = struct {
+    current: struct { generation: u32 = 0, pn: Ccmp.Pn = 0 } = .{},
+    previous: struct { generation: u32 = 0, pn: Ccmp.Pn = 0 } = .{},
+
+    pub fn next(self: *TxNumbering, key: Key) ?Ccmp.Pn {
+        if (self.previous.generation == key.generation) {
+            if (self.previous.pn == std.math.maxInt(Ccmp.Pn)) return null;
+            self.previous.pn += 1;
+            return self.previous.pn;
+        }
+        if (self.current.generation != key.generation) {
+            self.previous = .{ .generation = self.current.generation, .pn = self.current.pn };
+            self.current = .{ .generation = key.generation };
+        }
+        if (self.current.pn == std.math.maxInt(Ccmp.Pn)) return null;
+        self.current.pn += 1;
+        return self.current.pn;
+    }
+};
+
 /// The numbering a receiver keeps under an association's keys.
 ///
 /// A packet number is never used twice under one key, so a frame numbered
@@ -577,7 +601,8 @@ pub const Numbering = struct {
     group: [4]Seen = @splat(.{}),
     /// Whether anything has yet arrived under the current pairwise key.
     /// Once something has, the one it replaced is finished with.
-    current_heard: bool = false,
+    current_heard: u32 = 0,
+    generation: u32 = 0,
 
     const Seen = struct {
         generation: u32 = 0,
@@ -588,6 +613,7 @@ pub const Numbering = struct {
         /// count again, from wherever its sender had got to.
         fn accept(self: *Seen, key: Key, pn: Ccmp.Pn) bool {
             if (self.generation != key.generation) self.* = .{ .generation = key.generation, .pn = key.from };
+            self.pn = @max(self.pn, key.from);
             if (pn <= self.pn) return false;
             self.pn = pn;
             return true;
@@ -610,6 +636,14 @@ pub const Numbering = struct {
     pub fn open(self: *Numbering, keys: Keys, frame: []const u8, into: []u8) ?[]const u8 {
         const head = ieee80211.Header.parse(frame) orelse return null;
         if (!head.control.protected or head.len >= into.len) return null;
+        if (self.generation != keys.pairwise.generation) {
+            // Move the actual counters, not just the key, across a rekey.
+            if (keys.previous) |before| {
+                if (before.generation == self.generation) self.superseded = self.pairwise;
+            } else self.superseded = @splat(.{});
+            self.pairwise = @splat(.{});
+            self.generation = keys.pairwise.generation;
+        }
 
         const named = Ccmp.keyIndexOf(frame) orelse return null;
         const group = mac.isGroup(head.addr1);
@@ -619,9 +653,29 @@ pub const Numbering = struct {
 
         @memcpy(into[0..head.len], frame[0..head.len]);
         if (group) {
+            const history = self.group;
+            for (keys.group, 0..) |slot, index| {
+                if (slot) |key| {
+                    for (history) |seen| {
+                        if (seen.generation == key.generation and
+                            (self.group[index].generation != key.generation or self.group[index].pn < seen.pn))
+                            self.group[index] = seen;
+                    }
+                }
+            }
             const key = keys.groupKey(named) orelse return null;
             const got = Ccmp.unprotect(key.bytes, frame, into[head.len..]) orelse return null;
+            // KeyID is not authenticated by CCMP. Aliases must share the
+            // highest accepted PN, including an index installed later.
+            for (self.group) |seen| {
+                if (seen.generation == key.generation and got.pn <= seen.pn) return null;
+            }
             if (!self.group[named].accept(key, got.pn)) return null;
+            for (keys.group, 0..) |slot, index| {
+                if (slot) |alias| {
+                    if (alias.generation == key.generation) self.group[index] = self.group[named];
+                }
+            }
             return into[0 .. head.len + got.len];
         }
 
@@ -633,13 +687,13 @@ pub const Numbering = struct {
         const class = classOf(head);
         if (Ccmp.unprotect(keys.pairwise.bytes, frame, into[head.len..])) |got| {
             if (!self.pairwise[class].accept(keys.pairwise, got.pn)) return null;
-            if (!self.current_heard) {
-                self.current_heard = true;
+            if (self.current_heard != keys.pairwise.generation) {
+                self.current_heard = keys.pairwise.generation;
                 self.superseded = @splat(.{});
             }
             return into[0 .. head.len + got.len];
         }
-        if (self.current_heard) return null;
+        if (self.current_heard == keys.pairwise.generation) return null;
         const before = keys.previous orelse return null;
         const got = Ccmp.unprotect(before.bytes, frame, into[head.len..]) orelse return null;
         if (!self.superseded[class].accept(before, got.pn)) return null;
@@ -668,14 +722,27 @@ const GtkFlags = packed struct(u8) {
 /// The group key from a key frame's unwrapped data, or null when none is
 /// there.
 pub fn gtkOf(data: []const u8) ?Gtk {
-    var it = ieee80211.elements(data);
-    while (it.next()) |element| {
-        if (element.id != .vendor or element.payload.len < 4 + 2 + 16) continue;
-        if (!std.mem.eql(u8, element.payload[0..3], &KDE_OUI) or element.payload[3] != KDE_GTK) continue;
-        const flags: GtkFlags = @bitCast(element.payload[4]);
-        return .{ .index = flags.key_id, .key = element.payload[6..22].* };
+    var rest = data;
+    var gtk: ?Gtk = null;
+    while (rest.len != 0) {
+        if (rest[0] == 0xDD and (rest.len == 1 or rest[1] == 0)) {
+            for (rest[1..]) |byte| if (byte != 0) return null;
+            break;
+        }
+        if (rest.len < 2 or rest[1] > rest.len - 2) return null;
+        const len: usize = rest[1];
+        const payload = rest[2..][0..len];
+        if (rest[0] == 0xDD and len >= 4 and
+            std.mem.eql(u8, payload[0..3], &KDE_OUI) and payload[3] == KDE_GTK)
+        {
+            if (gtk != null or len != 22) return null;
+            const flags: GtkFlags = @bitCast(payload[4]);
+            if (flags._3 != 0 or payload[5] != 0) return null;
+            gtk = .{ .index = flags.key_id, .key = payload[6..22].* };
+        }
+        rest = rest[2 + len ..];
     }
-    return null;
+    return gtk;
 }
 
 /// Write a group-key encapsulation, for an access point, or a test
@@ -715,6 +782,7 @@ pub const Handshake = struct {
     /// again in message two so the access point can see it was not
     /// changed.
     rsn: []const u8,
+    ap_rsn: ieee80211.Rsn.Transcript,
     /// The pairwise key the exchange has proved: the one a signed frame
     /// from the access point checked out under.
     ptk: ?Ptk = null,
@@ -724,6 +792,11 @@ pub const Handshake = struct {
     /// a third message verifies under it and names the same nonce.
     candidate: ?Ptk = null,
     candidate_anonce: Nonce = @splat(0),
+    candidate_replay: u64 = 0,
+    proved_anonce: Nonce = @splat(0),
+    third_data: [32]u8 = @splat(0),
+    third_rsc: Ccmp.Pn = 0,
+    last_group: ?[32]u8 = null,
     /// The group keys, by the index the access point gives each.
     group: [4]?Key = @splat(null),
     /// The highest counter an authenticated frame has carried. Only a
@@ -743,6 +816,15 @@ pub const Handshake = struct {
     /// its first again and expects the same answer.
     spent: bool = false,
     done: bool = false,
+    confirmed: u32 = 0,
+    /// Identifies exactly the reply in `into`, never a previous answer.
+    response: ?Response = null,
+
+    pub const Response = struct {
+        kind: enum { m2, m4, group2 },
+        replay: u64,
+        generation: u32,
+    };
 
     pub const Outcome = union(enum) {
         /// Not a frame of this handshake, one already answered, or one that
@@ -776,19 +858,34 @@ pub const Handshake = struct {
 
     /// Answer a key frame from the access point.
     pub fn answer(self: *Handshake, frame: []const u8, into: []u8) Outcome {
+        self.response = null;
         const key = KeyFrame.parse(frame) orelse return .ignored;
-        if (!key.info.ack or key.info.version != 2) return .ignored;
+        if (!key.info.ack or key.info.version != 2 or key.info.key_index != 0 or key.info.err or key.info.request or
+            key.info.smk or key.info._14 != 0) return .ignored;
+        if (!std.mem.allEqual(u8, frame[KeyFrame.At.iv..KeyFrame.At.rsc], 0) or
+            !std.mem.allEqual(u8, frame[KeyFrame.At.rsc + 6 .. KeyFrame.At.mic], 0)) return .ignored;
+        if (!key.info.mic and (!std.mem.allEqual(u8, &key.mic, 0) or key.rsc != 0)) return .ignored;
 
         // The group key handshake stands apart from the pairwise one.
         // Message one: the access point's nonce, and nothing signed yet.
         // Message three: signed, with the keys to install inside it.
         if (!key.info.pairwise) return self.renewal(frame, key, into);
-        if (!key.info.mic) return self.first(key, into);
-        if (key.info.install) return self.third(frame, key, into);
+        if (!key.info.mic and !key.info.install and !key.info.secure and !key.info.encrypted)
+            return self.first(key, into);
+        if (key.info.mic and key.info.install and key.info.secure and key.info.encrypted)
+            return self.third(frame, key, into);
         return .ignored;
     }
 
     fn first(self: *Handshake, key: KeyFrame, into: []u8) Outcome {
+        if (key.key_length != 16 or key.replay <= self.replay or
+            std.mem.allEqual(u8, &key.nonce, 0)) return .ignored;
+        // M1 may carry only the optional PMKID KDE, not arbitrary key data.
+        if (key.data.len != 0 and (key.data.len != 22 or
+            !std.mem.eql(u8, key.data[0..6], &.{ 0xDD, 20, 0, 0x0F, 0xAC, 4 }))) return .ignored;
+        if (self.candidate != null and key.replay < self.candidate_replay) return .ignored;
+        if (self.candidate != null and key.replay == self.candidate_replay and
+            !std.mem.eql(u8, &key.nonce, &self.candidate_anonce)) return .ignored;
         if (self.spent) {
             self.installs += 1;
             self.snonce = nonceAfter(self.seed, self.installs);
@@ -797,9 +894,9 @@ pub const Handshake = struct {
         const candidate = ptkOf(self.pmk, self.ap, self.station, key.nonce, self.snonce);
         self.candidate = candidate;
         self.candidate_anonce = key.nonce;
+        self.candidate_replay = key.replay;
 
-        // The counter is echoed, not taken: this frame carries no proof of
-        // where it came from, so nothing it says is remembered.
+        // Echo the proposal counter without advancing authenticated replay.
         const len = KeyFrame.write(into, .{
             .info = .{ .pairwise = true, .mic = true },
             .replay = key.replay,
@@ -807,6 +904,7 @@ pub const Handshake = struct {
             .data = self.rsn,
         }) orelse return .refused;
         KeyFrame.sign(into[0..len], candidate.kck);
+        self.response = .{ .kind = .m2, .replay = key.replay, .generation = self.pairwise_at };
         return .{ .reply = len };
     }
 
@@ -817,19 +915,18 @@ pub const Handshake = struct {
         // installed a second time: reinstalling a key that is in use
         // restarts the numbering underneath it, which is exactly what an
         // attacker replaying this frame is fishing for.
-        if (self.ptk) |ptk| {
-            if (key.replay >= self.replay and key.verify(frame, ptk.kck)) {
-                self.replay = key.replay;
-                return fourth(ptk, key, into);
-            }
-        }
-        if (key.replay <= self.replay) return .ignored;
-        const ptk = self.candidate orelse return .ignored;
+        const repeat = if (self.ptk) |ptk| key.verify(frame, ptk.kck) else false;
+        // Only two pairwise generations can be live. Do not retire the
+        // previous one on the strength of another exchange alone.
+        if (!repeat and self.done and self.confirmed != self.pairwise_at) return .ignored;
+        if (key.replay < self.replay or (!repeat and key.replay == self.replay)) return .ignored;
+        const ptk = if (repeat) self.ptk.? else self.candidate orelse return .ignored;
         if (!key.verify(frame, ptk.kck)) return .ignored;
         // The nonce this message names must be the one the exchange was
         // opened with: a signed third message belonging to some other
         // exchange is not an answer to this one.
-        if (!std.crypto.timing_safe.eql(Nonce, key.nonce, self.candidate_anonce)) return .ignored;
+        if (!std.crypto.timing_safe.eql(Nonce, key.nonce, if (repeat) self.proved_anonce else self.candidate_anonce)) return .ignored;
+        if (!repeat and key.replay <= self.candidate_replay) return .ignored;
         if (!key.info.encrypted) return .refused;
         // The only cipher this station offers takes a sixteen-byte key.
         if (key.key_length != 16) return .refused;
@@ -837,6 +934,29 @@ pub const Handshake = struct {
         var plain: [KEY_DATA_MAX]u8 = undefined;
         const data = unwrap(ptk.kek, key.data, &plain) orelse return .refused;
         const gtk = gtkOf(data) orelse return .refused;
+        var it = ieee80211.elements(data);
+        var found_rsn = false;
+        while (it.next()) |element| {
+            if (element.id != .rsn) continue;
+            if (found_rsn or self.ap_rsn.len == 0 or
+                !std.mem.eql(u8, element.payload, self.ap_rsn.slice())) return .refused;
+            found_rsn = true;
+        }
+        if (!found_rsn) return .refused;
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+        if (repeat) {
+            if (self.last_group != null or key.rsc != self.third_rsc or
+                !std.mem.eql(u8, &digest, &self.third_data)) return .ignored;
+            self.replay = key.replay;
+            return self.fourth(ptk, key, into);
+        }
+        if (self.ptk) |had| {
+            if (std.crypto.timing_safe.eql([16]u8, had.tk, ptk.tk)) return .ignored;
+        }
+        if (self.was) |had| {
+            if (std.crypto.timing_safe.eql([16]u8, had.bytes, ptk.tk)) return .ignored;
+        }
 
         // Proved: the frame that checked out under the candidate is what
         // makes it the key.
@@ -844,21 +964,26 @@ pub const Handshake = struct {
         self.was = if (self.ptk) |had| .{ .bytes = had.tk, .generation = self.pairwise_at } else null;
         self.pairwise_at = self.installs;
         self.ptk = ptk;
+        self.proved_anonce = key.nonce;
+        self.third_data = digest;
+        self.third_rsc = key.rsc;
+        self.last_group = null;
         self.candidate = null;
         self.putGroup(gtk.index, gtk.key, key.rsc);
         self.replay = key.replay;
         self.done = true;
         self.spent = true;
-        return fourth(ptk, key, into);
+        return self.fourth(ptk, key, into);
     }
 
     /// The last frame of the exchange: signed, secure, carrying nothing.
-    fn fourth(ptk: Ptk, key: KeyFrame, into: []u8) Outcome {
+    fn fourth(self: *Handshake, ptk: Ptk, key: KeyFrame, into: []u8) Outcome {
         const len = KeyFrame.write(into, .{
             .info = .{ .pairwise = true, .mic = true, .secure = true },
             .replay = key.replay,
         }) orelse return .refused;
         KeyFrame.sign(into[0..len], ptk.kck);
+        self.response = .{ .kind = .m4, .replay = key.replay, .generation = self.pairwise_at };
         return .{ .reply = len };
     }
 
@@ -868,20 +993,29 @@ pub const Handshake = struct {
     /// to the one still in use.
     fn renewal(self: *Handshake, frame: []const u8, key: KeyFrame, into: []u8) Outcome {
         if (!self.done) return .ignored;
-        if (!key.info.mic or !key.info.secure or !key.info.encrypted) return .ignored;
+        if (!key.info.mic or !key.info.secure or !key.info.encrypted or key.info.install or
+            key.key_length != 16) return .ignored;
         const ptk = self.ptk.?;
         if (!key.verify(frame, ptk.kck)) return .ignored;
 
         // One the access point is sending again because it did not hear
         // the answer is answered again, and nothing is installed twice.
-        if (key.replay == self.replay) return self.took(ptk, key, into);
         if (key.replay < self.replay) return .ignored;
+
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(frame[0..key.len], &digest, .{});
+        if (key.replay == self.replay) {
+            const last = self.last_group orelse return .ignored;
+            if (!std.mem.eql(u8, &last, &digest)) return .ignored;
+            return self.took(ptk, key, into);
+        }
 
         var plain: [KEY_DATA_MAX]u8 = undefined;
         const data = unwrap(ptk.kek, key.data, &plain) orelse return .refused;
         const gtk = gtkOf(data) orelse return .refused;
         self.putGroup(gtk.index, gtk.key, key.rsc);
         self.replay = key.replay;
+        self.last_group = digest;
         return self.took(ptk, key, into);
     }
 
@@ -895,21 +1029,33 @@ pub const Handshake = struct {
     /// would wind the count back to where frames already delivered are,
     /// and let every one of them be delivered again.
     fn putGroup(self: *Handshake, index: u2, bytes: [16]u8, from: Ccmp.Pn) void {
-        if (self.group[index]) |had| {
-            if (std.crypto.timing_safe.eql([16]u8, had.bytes, bytes)) return;
+        for (self.group) |slot| {
+            if (slot) |had| {
+                if (std.crypto.timing_safe.eql([16]u8, had.bytes, bytes)) {
+                    var same = had;
+                    same.from = @max(had.from, from);
+                    for (&self.group) |*alias| {
+                        if (alias.*) |key| {
+                            if (key.generation == had.generation) alias.* = same;
+                        }
+                    }
+                    self.group[index] = same;
+                    return;
+                }
+            }
         }
         self.installs += 1;
         self.group[index] = .{ .bytes = bytes, .generation = self.installs, .from = from };
     }
 
-    /// The answer to a group key: signed, secure, carrying nothing but the
-    /// index of the key it is about.
-    fn took(_: *Handshake, ptk: Ptk, key: KeyFrame, into: []u8) Outcome {
+    /// The answer to an RSN group key: signed, secure, with no key data.
+    fn took(self: *Handshake, ptk: Ptk, key: KeyFrame, into: []u8) Outcome {
         const len = KeyFrame.write(into, .{
-            .info = .{ .mic = true, .secure = true, .key_index = key.info.key_index },
+            .info = .{ .mic = true, .secure = true },
             .replay = key.replay,
         }) orelse return .refused;
         KeyFrame.sign(into[0..len], ptk.kck);
+        self.response = .{ .kind = .group2, .replay = key.replay, .generation = self.pairwise_at };
         return .{ .reply = len };
     }
 };
@@ -1053,7 +1199,7 @@ test "the handshake, with the test playing the access point" {
     const snonce: Nonce = @splat(0x5B);
     const rsn = [_]u8{ 0x30, 0x14 } ++ ieee80211.Rsn.psk_ccmp;
 
-    var handshake = Handshake{ .pmk = pmk, .station = station, .ap = ap, .snonce = snonce, .seed = snonce, .rsn = &rsn };
+    var handshake = Handshake{ .pmk = pmk, .station = station, .ap = ap, .snonce = snonce, .seed = snonce, .rsn = &rsn, .ap_rsn = ieee80211.Rsn.Transcript.of(rsn[2..]).? };
     var frame: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
     var reply: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
 
@@ -1166,7 +1312,7 @@ const TestCell = struct {
     }
 
     fn handshake(self: *const TestCell) Handshake {
-        return .{ .pmk = self.pmk, .station = self.station, .ap = self.ap, .snonce = self.snonce, .seed = self.snonce, .rsn = &self.rsn };
+        return .{ .pmk = self.pmk, .station = self.station, .ap = self.ap, .snonce = self.snonce, .seed = self.snonce, .rsn = &self.rsn, .ap_rsn = ieee80211.Rsn.Transcript.of(self.rsn[2..]).? };
     }
 
     fn messageOne(self: TestCell, replay: u64, into: []u8) usize {
@@ -1180,7 +1326,11 @@ const TestCell = struct {
 
     fn messageThree(self: TestCell, replay: u64, gtk: Gtk, into: []u8) usize {
         var wrapped: [72]u8 = undefined;
-        const sealed = wrappedGtk(self.ptk().kek, gtk, &wrapped);
+        var data: [48]u8 = @splat(0);
+        @memcpy(data[0..self.rsn.len], &self.rsn);
+        const used = self.rsn.len + writeGtk(data[self.rsn.len..], gtk).?;
+        data[used] = 0xDD;
+        const sealed = wrap(self.ptk().kek, &data, &wrapped).?;
         const len = KeyFrame.write(into, .{
             .info = .{ .pairwise = true, .ack = true, .mic = true, .install = true, .secure = true, .encrypted = true },
             .key_length = 16,
@@ -1196,7 +1346,7 @@ const TestCell = struct {
         var wrapped: [72]u8 = undefined;
         const sealed = wrappedGtk(self.ptk().kek, gtk, &wrapped);
         const len = KeyFrame.write(into, .{
-            .info = .{ .ack = true, .mic = true, .secure = true, .encrypted = true, .key_index = gtk.index },
+            .info = .{ .ack = true, .mic = true, .secure = true, .encrypted = true },
             .key_length = 16,
             .replay = replay,
             .data = sealed,
@@ -1251,11 +1401,12 @@ test "the group key is renewed after the exchange, and the one in use is kept" {
         .reply => |n| n,
         else => return error.TestUnexpectedResult,
     };
-    // Answered under the pairwise key, naming the index taken.
+    // Answered under the pairwise key. RSN reserves KeyInfo's index bits;
+    // the GTK index belongs only in the authenticated KDE.
     const said = KeyFrame.parse(reply[0..len]).?;
     try testing.expect(said.verify(reply[0..len], cell.ptk().kck));
     try testing.expect(!said.info.pairwise and said.info.secure and said.info.mic);
-    try testing.expectEqual(@as(u2, 2), said.info.key_index);
+    try testing.expectEqual(@as(u2, 0), said.info.key_index);
 
     const keys = handshake.keys().?;
     try testing.expectEqualSlices(u8, &first.key, &keys.groupKey(1).?.bytes);
@@ -1295,7 +1446,7 @@ test "an unsigned first message cannot wind the counter back for a signed one" {
     // came from. One naming a counter far below the exchange's must not
     // make the recorded renewal fresh again, which would put a key the
     // access point has finished with back into use.
-    try testing.expect(handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply) == .reply);
+    try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply));
     try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(recorded[0..old], &reply));
 
     const after = handshake.keys().?;
@@ -1483,6 +1634,7 @@ test "the key a rekey replaces is read until the new one is heard" {
 
 test "a key frame whose lengths run past sixteen bits is refused, not summed past them" {
     var frame: [KeyFrame.HEAD]u8 = @splat(0);
+    frame[0] = 2;
     frame[1] = 3;
     frame[4] = 2;
     std.mem.writeInt(u16, frame[2..4], 0xFFFF, .big);
@@ -1492,4 +1644,194 @@ test "a key frame whose lengths run past sixteen bits is refused, not summed pas
     try testing.expectEqual(@as(?KeyFrame, null), KeyFrame.parse(&frame));
     std.mem.writeInt(u16, frame[97..99], 0, .big);
     try testing.expect(KeyFrame.parse(&frame) != null);
+}
+
+test "old RX history survives rekey and GTK does not prove the pairwise generation" {
+    const old = Key{ .bytes = @splat(1), .generation = 1 };
+    const fresh = Key{ .bytes = @splat(2), .generation = 3 };
+    const gtk = Key{ .bytes = @splat(3), .generation = 2 };
+    var keys = Keys{ .pairwise = old, .group = .{ null, gtk, null, null } };
+    var numbering = Numbering{};
+    var frame: [128]u8 = undefined;
+    var out: [128]u8 = undefined;
+    var head = ieee80211.Header{ .control = .{ .kind = .data, .from_ds = true }, .addr1 = @splat(2), .addr2 = @splat(4) };
+    var n = Ccmp.protect(old.bytes, head, 9, 0, "old", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+    keys.previous = old;
+    keys.pairwise = fresh;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) == null);
+    n = Ccmp.protect(old.bytes, head, 10, 0, "old", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+    head.addr1 = mac.broadcast;
+    n = Ccmp.protect(gtk.bytes, head, 1, 1, "group", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+    try testing.expect(numbering.current_heard != fresh.generation);
+    head.addr1 = @splat(2);
+    n = Ccmp.protect(old.bytes, head, 11, 0, "old", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+    n = Ccmp.protect(fresh.bytes, head, 1, 0, "new", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+    try testing.expectEqual(fresh.generation, numbering.current_heard);
+    n = Ccmp.protect(old.bytes, head, 12, 0, "old", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) == null);
+}
+
+test "TX numbering retains both generations across M4 retry and never wraps" {
+    var numbering = TxNumbering{};
+    const old = Key{ .bytes = @splat(1), .generation = 1 };
+    const fresh = Key{ .bytes = @splat(2), .generation = 2 };
+    try testing.expectEqual(@as(Ccmp.Pn, 1), numbering.next(old).?);
+    try testing.expectEqual(@as(Ccmp.Pn, 2), numbering.next(old).?);
+    try testing.expectEqual(@as(Ccmp.Pn, 1), numbering.next(fresh).?);
+    try testing.expectEqual(@as(Ccmp.Pn, 3), numbering.next(old).?);
+    try testing.expectEqual(@as(Ccmp.Pn, 2), numbering.next(fresh).?);
+    numbering.previous.pn = std.math.maxInt(Ccmp.Pn);
+    try testing.expect(numbering.next(old) == null);
+}
+
+test "GTK aliases cannot replay by changing the unauthenticated KeyID" {
+    const cell = TestCell.home();
+    var shake = cell.handshake();
+    var frame: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    var gtk = Gtk{ .index = 1, .key = @splat(7) };
+    _ = shake.answer(frame[0..cell.messageOne(1, &frame)], &out);
+    _ = shake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &out);
+    var numbering = Numbering{};
+    const head = ieee80211.Header{ .control = .{ .kind = .data, .from_ds = true }, .addr1 = mac.broadcast, .addr2 = cell.ap };
+    var recorded: [128]u8 = undefined;
+    const n = Ccmp.protect(gtk.key, head, 20, 1, "recorded", &recorded).?;
+    try testing.expect(numbering.open(shake.keys().?, recorded[0..n], &out) != null);
+    const generation = shake.keys().?.groupKey(1).?.generation;
+    gtk.index = 2;
+    _ = shake.answer(frame[0..cell.groupMessage(3, gtk, &frame)], &out);
+    try testing.expectEqual(generation, shake.keys().?.groupKey(2).?.generation);
+    recorded[ieee80211.Header.MIN + 3] = 0xA0;
+    try testing.expect(numbering.open(shake.keys().?, recorded[0..n], &out) == null);
+    // Replace the original index and receive on it before using the alias.
+    const next = Gtk{ .index = 1, .key = @splat(8) };
+    _ = shake.answer(frame[0..cell.groupMessage(4, next, &frame)], &out);
+    const fresh = Ccmp.protect(next.key, head, 1, 1, "replacement", &frame).?;
+    try testing.expect(numbering.open(shake.keys().?, frame[0..fresh], &out) != null);
+    try testing.expect(numbering.open(shake.keys().?, recorded[0..n], &out) == null);
+    const alias = Ccmp.protect(gtk.key, head, 21, 2, "fresh alias", &frame).?;
+    try testing.expect(numbering.open(shake.keys().?, frame[0..alias], &out) != null);
+}
+
+test "M3 validates retained AP RSN on first install and retransmission" {
+    const cell = TestCell.home();
+    var shake = cell.handshake();
+    var frame: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    const gtk = Gtk{ .index = 1, .key = @splat(7) };
+    _ = shake.answer(frame[0..cell.messageOne(1, &frame)], &out);
+    var changed = cell;
+    changed.rsn[changed.rsn.len - 1] ^= 1;
+    try testing.expectEqual(Handshake.Outcome.refused, shake.answer(frame[0..changed.messageThree(2, gtk, &frame)], &out));
+    try testing.expect(shake.keys() == null);
+    try testing.expect(shake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &out) == .reply);
+    const generation = shake.keys().?.pairwise.generation;
+    try testing.expectEqual(Handshake.Outcome.refused, shake.answer(frame[0..changed.messageThree(3, gtk, &frame)], &out));
+    try testing.expectEqual(generation, shake.keys().?.pairwise.generation);
+    const n = cell.messageThree(3, gtk, &frame);
+    frame[KeyFrame.At.nonce] ^= 1;
+    KeyFrame.sign(frame[0..n], cell.ptk().kck);
+    try testing.expectEqual(Handshake.Outcome.ignored, shake.answer(frame[0..n], &out));
+    _ = cell.messageThree(3, gtk, &frame);
+    frame[KeyFrame.At.key_length + 1] = 32;
+    KeyFrame.sign(frame[0..n], cell.ptk().kck);
+    try testing.expectEqual(Handshake.Outcome.refused, shake.answer(frame[0..n], &out));
+}
+
+test "GTK KDEs have exact lengths reserved bits and unique identity" {
+    var data: [64]u8 = @splat(0);
+    const n = writeGtk(&data, .{ .index = 1, .key = @splat(1) }).?;
+    try testing.expect(gtkOf(data[0..n]) != null);
+    data[1] += 1;
+    try testing.expect(gtkOf(data[0 .. n + 1]) == null);
+    data[1] -= 1;
+    data[7] = 1;
+    try testing.expect(gtkOf(data[0..n]) == null);
+    data[7] = 0;
+    data[6] |= 0x80;
+    try testing.expect(gtkOf(data[0..n]) == null);
+    data[6] &= 0x7F;
+    @memcpy(data[n..][0..n], data[0..n]);
+    try testing.expect(gtkOf(data[0 .. 2 * n]) == null);
+    data[n] = 0xDD;
+    data[n + 1] = 0;
+    data[n + 2] = 1;
+    try testing.expect(gtkOf(data[0 .. n + 3]) == null);
+}
+
+test "message types and equal-counter retransmits cannot be interchanged" {
+    const cell = TestCell.home();
+    const gtk = Gtk{ .index = 1, .key = @splat(7) };
+    var shake = cell.handshake();
+    var frame: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    const n = cell.messageOne(1, &frame);
+    frame[KeyFrame.At.info] |= 0x04; // Error flag, not M1.
+    try testing.expectEqual(Handshake.Outcome.ignored, shake.answer(frame[0..n], &out));
+    try testing.expect(!shake.begun());
+    _ = shake.answer(frame[0..cell.messageOne(1, &frame)], &out);
+    _ = shake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &out);
+    try testing.expectEqual(Handshake.Outcome.ignored, shake.answer(frame[0..cell.groupMessage(2, gtk, &frame)], &out));
+    _ = shake.answer(frame[0..cell.groupMessage(3, gtk, &frame)], &out);
+    const other = Gtk{ .index = 2, .key = @splat(8) };
+    try testing.expectEqual(Handshake.Outcome.ignored, shake.answer(frame[0..cell.groupMessage(3, other, &frame)], &out));
+    try testing.expectEqual(Handshake.Outcome.ignored, shake.answer(frame[0..cell.messageThree(3, gtk, &frame)], &out));
+}
+
+test "initial GTK traffic cannot certify PTK and malformed CCMP cannot consume replay" {
+    const keys = Keys{
+        .pairwise = .{ .bytes = @splat(1), .generation = 1 },
+        .group = .{ null, .{ .bytes = @splat(2), .generation = 2 }, null, null },
+    };
+    var numbering = Numbering{};
+    var head = ieee80211.Header{ .control = .{ .kind = .data, .from_ds = true }, .addr1 = mac.broadcast };
+    var frame: [128]u8 = undefined;
+    var out: [128]u8 = undefined;
+    var n = Ccmp.protect(keys.group[1].?.bytes, head, 1, 1, "group", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+    try testing.expectEqual(@as(u32, 0), numbering.current_heard);
+    head.addr1 = @splat(2);
+    head.control.more_fragments = true;
+    n = Ccmp.protect(keys.pairwise.bytes, head, 5, 0, "fragment", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) == null);
+    head.control.more_fragments = false;
+    head.control.subtype = @intFromEnum(ieee80211.DataSubtype.qos_data);
+    head.qos = .{ .amsdu = true };
+    n = Ccmp.protect(keys.pairwise.bytes, head, 5, 0, "aggregate", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) == null);
+    head.qos.?.amsdu = false;
+    n = Ccmp.protect(keys.pairwise.bytes, head, 5, 0, "valid", &frame).?;
+    try testing.expect(numbering.open(keys, frame[0..n], &out) != null);
+}
+
+test "AP transcript may differ from the station offer and is independently owned" {
+    var cell = TestCell.home();
+    cell.rsn[cell.rsn.len - 2] = 0x80; // AP offers optional PMF, station does not.
+    var shake = cell.handshake();
+    const offered = [_]u8{ 0x30, 0x14 } ++ ieee80211.Rsn.psk_ccmp;
+    shake.rsn = &offered;
+    var frame: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    const two = shake.answer(frame[0..cell.messageOne(1, &frame)], &out).reply;
+    try testing.expectEqualSlices(u8, &offered, KeyFrame.parse(out[0..two]).?.data);
+    try testing.expect(shake.answer(frame[0..cell.messageThree(2, .{ .index = 1, .key = @splat(7) }, &frame)], &out) == .reply);
+}
+
+test "idempotent GTK install can raise but never lower its replay floor" {
+    const cell = TestCell.home();
+    var shake = cell.handshake();
+    shake.putGroup(1, @splat(7), 10);
+    const generation = shake.group[1].?.generation;
+    shake.putGroup(2, @splat(7), 20);
+    shake.putGroup(1, @splat(7), 0);
+    try testing.expectEqual(generation, shake.group[2].?.generation);
+    try testing.expectEqual(@as(Ccmp.Pn, 20), shake.group[1].?.from);
+    var seen = Numbering.Seen{ .generation = generation, .pn = 15 };
+    try testing.expect(!seen.accept(shake.group[1].?, 19));
+    try testing.expect(seen.accept(shake.group[2].?, 21));
 }

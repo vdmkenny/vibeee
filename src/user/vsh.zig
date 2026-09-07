@@ -86,8 +86,22 @@ export fn _start(frame: [*]const u32) callconv(.c) noreturn {
 /// having a conversation, it is carrying out one instruction on behalf of
 /// something that could not take a line apart itself.
 fn once(line: [*:0]const u8) noreturn {
+    // Copied because the words are cut out of the line in place, and what
+    // was handed over is not this process's to write on.
+    const given = std.mem.span(line);
+    if (given.len > typed.len) {
+        out.text("vsh: that line is longer than this shell reads\n");
+        out.flush();
+        sys.exit(1);
+    }
+    @memcpy(typed[0..given.len], given);
+
     var words: [MAX_WORDS][]const u8 = undefined;
-    const count = str.splitWords(std.mem.span(line), &words);
+    const count = str.splitCommand(typed[0..given.len], &words) orelse {
+        out.text("vsh: a quote was opened and never closed\n");
+        out.flush();
+        sys.exit(1);
+    };
     if (count == 0) sys.exit(0);
 
     runLine(words[0..count]);
@@ -133,12 +147,21 @@ fn shellMain() noreturn {
         const text = editor.read(prompt.done()) orelse continue;
 
         var words: [MAX_WORDS][]const u8 = undefined;
-        const count = str.splitWords(text, &words);
+        const count = str.splitCommand(text, &words) orelse {
+            out.text("vsh: a quote was opened and never closed\n");
+            out.flush();
+            continue;
+        };
         if (count == 0) continue;
 
         runLine(words[0..count]);
     }
 }
+
+/// The line a single instruction arrives as, copied so its words can be cut
+/// out of it. As long as the one the editor reads, because both are lines
+/// somebody typed.
+var typed: [edit.LINE_MAX]u8 = @splat(0);
 
 /// The one line being edited, kept here because its history outlives any one
 /// prompt and it is far too large for a stack.

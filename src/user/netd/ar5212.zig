@@ -8,8 +8,8 @@
 //! whom, is software above this file. What this file does is bring the
 //! chip up, read its calibration store, run the reset and channel-set
 //! pipeline in `ar5212/reset.zig`, keep the receive chain fed, and hand
-//! every intact frame up with the signal it arrived at. It transmits
-//! nothing yet, and says so when asked.
+//! every intact frame up with the signal it arrived at. Transmission stays
+//! blocked until calibration and all board/regulatory power limits are proven.
 //!
 //! Nothing in this file allocates on a packet path, and no wait is
 //! unbounded: this runs in a service whose event loop must stay
@@ -134,6 +134,8 @@ const Device = struct {
     /// Where the run begins, as the radio addresses it.
     phys: lib.Phys = .none,
     dma_handle: ?u32 = null,
+    /// A failed stop never transfers descriptor ownership back to software.
+    dma_unsafe: bool = false,
     /// The next descriptor the service expects to find finished.
     rx_next: usize = 0,
     /// Whether the descriptor before it said the frame carried on into
@@ -146,10 +148,8 @@ const Device = struct {
     tx_next: usize = 0,
     tx_reap: usize = 0,
     tx_filled: usize = 0,
-    /// The descriptor the chain currently ends at, which a new frame is
-    /// linked onto. None while the queue has nothing outstanding, and the
-    /// radio has to be pointed at the frame rather than led to it.
-    tx_link: ?usize = null,
+    /// One hardware-owned TX descriptor; all others are software queued.
+    tx_active: ?usize = null,
     /// The channel tuned, or none yet.
     channel: ?wifi.Channel = null,
     /// The cell this station answers for, or none while it belongs to
@@ -188,6 +188,13 @@ pub const ops = dev_mod.NicOps{
 /// Bring the card out of whatever state the firmware left it in, prove
 /// which silicon it is, and read its store.
 pub fn open(loc: pci.Location, nic: *NicDev) bool {
+    if (device.opened or device.dma_handle != null) {
+        stop(nic);
+        if (device.dma_unsafe) {
+            log.fail(name, "the radio still holds descriptor memory from before; it will not be started again until the machine is");
+            return false;
+        }
+    }
     device = .{ .location = loc, .nic = nic };
 
     const aperture = pci.openAperture(loc, 0, MMIO_BYTES, name, "radio") orelse return false;
@@ -309,12 +316,22 @@ fn sayIdentity(chip: *const reset.Chip) void {
     if (chip.store.capabilities.aes_disabled) out.text(", software cipher only");
     if (chip.store.rf_kill) out.text(", kill switch wired");
     log.end();
+    log.begin(name, .key);
+    out.text("EEPROM map=");
+    out.decimal(chip.store.map);
+    out.text(" calibration a/b/g=");
+    for (chip.store.calibration_modes) |present| out.decimal(@intFromBool(present));
+    out.text(" curves=0x");
+    out.hex(chip.store.power_cal_start, 3);
+    out.text(" checked-end=0x");
+    out.hex(chip.store.checked_end, 3);
+    log.end();
 }
 
 /// Give the radio its chains, tune it to the first channel, and let it
 /// listen. The station above hops from here.
 pub fn start(nic: *NicDev) bool {
-    if (!device.opened or device.started) return false;
+    if (!device.opened or device.started or device.dma_unsafe or device.gone) return false;
 
     if (!buildRings()) {
         log.fail(name, "cannot lay out the descriptor chains");
@@ -366,18 +383,21 @@ fn sayListening() void {
 
 pub fn stop(_: *NicDev) void {
     if (!device.opened) return;
+    if (!device.started and !device.dma_unsafe and device.rings == null) return;
+    if (device.tx_filled != 0) sayTxDescriptor(device.tx_reap);
     device.started = false;
-    // A card that has vanished is writing nowhere, so its memory is safe
-    // to give back whatever its registers would say.
-    var quiescent = device.gone;
+    // All-ones MMIO can mean an inaccessible bus, not proven DMA shutdown.
+    var quiescent = false;
     if (device.chip) |*chip| {
         if (!device.gone) {
             quiescent = quiet(chip.regs);
-            reset.sleep(chip.regs);
+            if (quiescent) reset.sleep(chip.regs);
         }
     }
+    device.dma_unsafe = !quiescent;
     if (quiescent) {
         releaseRings();
+        device.channel = null;
     } else {
         // The memory is the radio's until the radio says otherwise. Handed
         // back while an engine is still walking it, it becomes somebody
@@ -393,13 +413,19 @@ pub fn stop(_: *NicDev) void {
 /// back: the causes are masked, the engines stopped, and only then is the
 /// chain pointer cleared.
 fn quiet(regs: Regs) bool {
+    // Interrupt masks do not stop PCU-generated responses.
+    regs.set(.diagnostics, regs_mod.Diagnostics, "ack_disable", true);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "cts_disable", true);
     listenFor(regs, .{});
     regs.flush(.interrupt_status_clearing);
     const sending = stopTransmit(regs);
     const listening = stopReceive(regs);
-    regs.write(.rx_pointer, 0);
-    regs.flush(.rx_pointer);
-    return sending and listening;
+    if (listening) {
+        regs.write(.rx_pointer, 0);
+        regs.flush(.rx_pointer);
+    }
+    const policy = regs.get(.diagnostics, regs_mod.Diagnostics);
+    return sending and listening and policy.ack_disable and policy.cts_disable;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,15 +438,30 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     if (!device.started or device.gone) return false;
     const chip: *reset.Chip = if (device.chip) |*c| c else return false;
     const megahertz = channel.megahertz() orelse return false;
+    if (!reset.wake(chip.regs)) {
+        device.dma_unsafe = true;
+        device.started = false;
+        device.channel = null;
+        log.fail(name, "the radio would not wake, so it stays on the channel it is on and keeps the memory it was given");
+        return false;
+    }
 
-    // The reset that follows stops both engines whether they were
-    // stopping or not, so what matters here is that the service's own
-    // account of them is put back to nothing.
-    _ = stopReceive(chip.regs);
-    abandonTransmit(chip.regs);
+    const abandoned = device.tx_filled;
+    if (!quiet(chip.regs)) {
+        device.dma_unsafe = true;
+        if (device.nic) |nic| sayUnanswered(nic);
+        device.started = false;
+        device.channel = null;
+        log.fail(name, "the engines would not stop, so the radio stays where it is and keeps the memory it is walking");
+        return false;
+    }
+    if (device.nic) |nic| nic.stats.tx_failed += abandoned;
     reset.forgetChannel(chip);
     const kind: reset.Kind = if (device.channel == null) .power_on else .channel_change;
     reset.reset(chip, megahertz, kind) catch |err| {
+        device.dma_unsafe = !quiet(chip.regs);
+        device.started = false;
+        device.channel = null;
         log.begin(name, .bad);
         out.text("channel ");
         out.decimal(channel.number);
@@ -429,6 +470,7 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
             error.Asleep => "the radio would not wake",
             error.ChipReset => "the reset did not complete",
             error.Synth => "the synthesizer refused the frequency",
+            error.RadioPolicy => "crypto bypass/TX inhibit did not hold; receiver not started",
         });
         log.end();
         return false;
@@ -437,7 +479,12 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     if (device.nic) |nic| nic.radio_channel = channel.number;
 
     rebuildReceive();
-    startReceive(chip.regs);
+    if (!startReceive(chip.regs)) {
+        device.dma_unsafe = !quiet(chip.regs);
+        device.started = false;
+        device.channel = null;
+        return false;
+    }
     startTransmit(chip.regs);
     listenFor(chip.regs, WANTED);
     return true;
@@ -498,9 +545,15 @@ fn listenFor(regs: Regs, causes: regs_mod.Interrupts) void {
     // A transmit cause asked for here is still silent until the queue it
     // belongs to is named in the secondary mask. The primary word says
     // what kind of news is wanted; these say whose.
-    const ours: u10 = if (causes.tx_ok or causes.tx_error) @as(u10, 1) << QUEUE else 0;
-    regs.put(.interrupt_mask_0, regs_mod.InterruptsS0{ .tx_ok = ours });
-    regs.put(.interrupt_mask_1, regs_mod.InterruptsS1{ .tx_error = ours });
+    const ours: u10 = @as(u10, 1) << QUEUE;
+    regs.put(.interrupt_mask_0, regs_mod.InterruptsS0{ .tx_ok = if (causes.tx_ok) ours else 0 });
+    regs.put(.interrupt_mask_1, regs_mod.InterruptsS1{
+        .tx_error = if (causes.tx_error) ours else 0,
+        .tx_end_of_list = if (causes.tx_end_of_list) ours else 0,
+    });
+    var secondary = regs.get(.interrupt_mask_2, regs_mod.InterruptsS2);
+    secondary.queue_underrun = if (causes.tx_underrun) ours else 0;
+    regs.put(.interrupt_mask_2, secondary);
 
     regs.put(.interrupt_mask, causes);
     if (!causes.any()) return;
@@ -757,9 +810,17 @@ fn sayImmunity(chip: *const reset.Chip) void {
 }
 
 /// Frames heard and thrown away for a reason other than the baseband
-/// failing to read them: damaged in the air, or the wrong shape to be
-/// handed up at all.
-var dropped_broken: u32 = 0;
+/// failing to read them, split by what was wrong with each. The four
+/// kinds are four different faults: a frame the air damaged, one the
+/// cipher could not open, one whose integrity code did not check out, and
+/// one naming a key this station does not hold. A count of "dropped"
+/// alone cannot tell a noisy room from a wrong key.
+var rx_crc: u32 = 0;
+var rx_decrypt: u32 = 0;
+var rx_mic: u32 = 0;
+var rx_key_miss: u32 = 0;
+/// And frames that were intact and still not worth handing up: the wrong
+/// length, or a piece of one this system does not put back together.
 var dropped_shape: u32 = 0;
 
 /// Unpredictable bytes, gathered from what the radio hears. The band is
@@ -828,19 +889,80 @@ pub fn sayUnanswered(nic: *NicDev) void {
     out.hex(regs.readAt(regs_mod.txPointer(QUEUE)), 8);
     out.text(", with ");
     out.decimal(status.pending_frames);
-    out.text(" frames pending. It heard ");
+    out.text(" frames pending");
+    log.end();
+
+    // Snapshot before reaping: a descriptor the hardware has finished with
+    // and nobody has taken is a different fault from one it never
+    // started. Never the frame's own bytes, and never a key.
+    if (device.tx_filled != 0) sayTxDescriptor(device.tx_reap);
+
+    log.begin(name, .warn);
+    out.text("what it heard: ");
     out.decimal(@intCast(nic.stats.rx_pkts));
-    out.text(" frames and dropped ");
+    out.text(" frames taken and ");
     out.decimal(@intCast(nic.stats.rx_dropped));
+    out.text(" dropped, ");
     // A frame the baseband could not decode was never a frame; one dropped
-    // for any other reason was, and is a different thing to be losing.
-    out.text(", ");
+    // for any other reason was, and each kind is a different thing to be
+    // losing.
     out.decimal(phy_errors);
     out.text(" of the drops being frames it could not decode, ");
-    out.decimal(dropped_broken);
-    out.text(" damaged in the air and ");
+    out.decimal(rx_crc);
+    out.text(" damaged in the air, ");
+    out.decimal(rx_decrypt);
+    out.text(" it could not open, ");
+    out.decimal(rx_mic);
+    out.text(" whose integrity code did not check out, ");
+    out.decimal(rx_key_miss);
+    out.text(" naming a key it does not hold and ");
     out.decimal(dropped_shape);
     out.text(" the wrong shape");
+    log.end();
+}
+
+/// The oldest frame the service is still waiting on, as the hardware and
+/// the ring have it.
+///
+/// Three things separate the ways a queue stops. A descriptor the hardware
+/// has finished with is one nobody reaped; one it has not finished with,
+/// on a queue that is idle, is one it never started; and a descriptor
+/// whose link names nothing is the end of a chain the queue may have
+/// walked off. The frame's own bytes are never said, and neither is a key.
+fn sayTxDescriptor(slot: usize) void {
+    const rings = device.rings orelse return;
+    const desc: *const volatile Desc = &rings.tx_desc[slot];
+    const done = desc.sendFinished();
+    dma.consume();
+
+    log.begin(name, .warn);
+    out.text("the frame it is waiting on is in slot ");
+    out.decimal(slot);
+    out.text(if (device.tx_active == slot) ", which the queue was pointed at" else ", which is not where the queue was pointed");
+    out.text(if (done) ", and the hardware has finished with it" else ", and the hardware has not finished with it");
+    out.text(". It names ");
+    if (desc.link == 0) out.text("nothing after it") else {
+        out.text("0x");
+        out.hex(desc.link, 8);
+        out.text(" after it");
+    }
+    out.text(", and reports 0x");
+    out.hex(desc.body.tx.status0, 8);
+    out.byte(' ');
+    out.hex(desc.body.tx.status1, 8);
+
+    // What the frame was asked to be, which says whether the fault is in
+    // what was written or in what became of it.
+    const control: family.TxControl1 = @bitCast(desc.body.tx.control1);
+    const frame = rings.tx_buffer[slot][0..@min(control.buffer_length, SLAB)];
+    if (lib.ieee80211.Header.parse(frame)) |head| {
+        out.text(". It is a ");
+        out.text(@tagName(head.control.kind));
+        out.text(" frame, number ");
+        out.decimal(head.sequence.sequence);
+        out.text(", addressed to ");
+        out.text(&lib.mac.text(head.addr1));
+    }
     log.end();
 }
 
@@ -896,19 +1018,27 @@ pub fn tuned(_: *NicDev) ?wifi.Channel {
 
 /// The periodic calibration: I/Q on a short call, the noise floor too on
 /// a long one.
-pub fn calibrate(_: *NicDev, long: bool) void {
+pub fn calibrate(nic: *NicDev, long: bool) void {
     if (!device.started or device.gone) return;
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    // A completion interrupt may precede TXE becoming idle. The existing
+    // maintenance tick retries that handoff without recycling a live slot.
+    reapTx(nic);
+    resumeTransmit(chip);
     reset.calibrate(chip, long);
 }
 
 /// The ceiling on everything this radio transmits, from the regulatory
 /// plan. Applied now, so a plan changed while the radio is running is a
 /// plan the next frame goes out under.
-pub fn setPower(_: *NicDev, half_dbm: u6) void {
+pub fn setPower(nic: *NicDev, half_dbm: u6) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    if (chip.self_power == half_dbm) return;
     chip.self_power = half_dbm;
-    if (device.started and !device.gone) reset.applyPower(chip);
+    // Reprogram only after quiescence, never beneath an in-flight retry.
+    if (device.started and !device.gone) {
+        if (device.channel) |channel| _ = tune(nic, channel);
+    }
 }
 
 /// Give the whole receive run back to the radio, from the start.
@@ -931,8 +1061,20 @@ fn rebuildReceive() void {
 /// Point the radio at the chain and let the protocol unit pass frames:
 /// beacons and probe responses for the scan, and everything addressed
 /// here or to everyone.
-fn startReceive(regs: Regs) void {
-    if (device.rings == null) return;
+fn startReceive(regs: Regs) bool {
+    if (device.rings == null) return false;
+    const permitted = if (device.chip) |*chip| chip.txPermitted() else false;
+    regs.set(.diagnostics, regs_mod.Diagnostics, "ack_disable", !permitted);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "cts_disable", !permitted);
+    const policy = regs.get(.diagnostics, regs_mod.Diagnostics);
+    if (policy.ack_disable != !permitted or policy.cts_disable != !permitted or
+        !policy.decrypt_disable or !policy.encrypt_disable)
+    {
+        regs.set(.diagnostics, regs_mod.Diagnostics, "ack_disable", true);
+        regs.set(.diagnostics, regs_mod.Diagnostics, "cts_disable", true);
+        log.fail(name, "the receiver was not set to answer and to leave the deciphering to this system; it stays off");
+        return false;
+    }
     regs.write(.rx_pointer, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
     dma.publish();
     regs.put(.control, regs_mod.Control{ .rx_enable = true });
@@ -951,6 +1093,7 @@ fn startReceive(regs: Regs) void {
     // willing to write nothing at all. Asking for them without this is
     // asking for a report that cannot be delivered.
     regs.set(.rx_config, regs_mod.RxConfig, "zero_length_dma", @as(u32, @bitCast(errors)) != 0);
+    return true;
 }
 
 /// Set the queue up to send: one scheduler feeding one arbiter, waiting
@@ -982,31 +1125,36 @@ fn startTransmit(regs: Regs) void {
     regs.putAt(regs_mod.dcuMisc(QUEUE), regs_mod.DcuMisc{ .wait_for_fragment = true });
 }
 
-/// Give up whatever the transmit queue was still working through.
-///
-/// A reset clears the pointer the queue reads its chain from, so the
-/// descriptors the service was waiting on become ones the hardware will
-/// never finish. Left as they were, the next frame is linked onto a chain
-/// nothing is walking, the queue is never pointed at it, and the reaping
-/// waits behind a descriptor that will not complete until the ring fills.
-/// So the queue is stopped, what was in it is counted as not sent, and
-/// the service starts again from an empty ring.
-fn abandonTransmit(regs: Regs) void {
-    if (device.nic) |nic| nic.stats.tx_failed += device.tx_filled;
-    _ = stopTransmit(regs);
-}
-
 /// Stop the queue and let go of whatever the service was still holding
 /// room for, answering whether it stopped.
 fn stopTransmit(regs: Regs) bool {
     regs.holdQueues(@as(u10, 1) << QUEUE);
-    const stopped = pace.until(regs, .queue_enable, regs_mod.QueueMask, "queues", 0, pace.DEFAULT_TRIES);
+    var stopped = false;
+    for (0..pace.DEFAULT_TRIES) |_| {
+        if (txIdle(regs)) {
+            stopped = true;
+            break;
+        }
+        pace.delay(10);
+    }
+    // Keep TXD asserted and the software ownership ledger on failure.
+    if (!stopped) {
+        pace.exhausted +%= 1;
+        return false;
+    }
+    regs.writeAt(regs_mod.txPointer(QUEUE), 0);
+    regs.flush(.queue_enable);
     regs.releaseQueues();
     device.tx_next = 0;
     device.tx_reap = 0;
     device.tx_filled = 0;
-    device.tx_link = null;
+    device.tx_active = null;
     return stopped;
+}
+
+fn txIdle(regs: Regs) bool {
+    const status: regs_mod.QueueStatus = @bitCast(regs.readAt(regs_mod.queueStatus(QUEUE)));
+    return family.txIdle(regs.get(.queue_enable, regs_mod.QueueMask).queues & (@as(u10, 1) << QUEUE) != 0, status.pending_frames);
 }
 
 /// What the receiver accepts. A station with no cell of its own has
@@ -1052,16 +1200,18 @@ pub fn answerFor(_: *NicDev, cell: ?dev_mod.Cell) void {
 /// Stop the protocol unit passing frames and the engine fetching them,
 /// and wait long enough for the frame in flight to land.
 fn stopReceive(regs: Regs) bool {
-    // The stream of descriptors breaks here, so a frame that was still
-    // arriving in pieces is not one whose next piece continues it.
-    device.rx_spanning = false;
+    regs.set(.diagnostics, regs_mod.Diagnostics, "ack_disable", true);
+    regs.set(.diagnostics, regs_mod.Diagnostics, "cts_disable", true);
+    // Preserve spanning state while draining RXEOL; only a rebuilt chain
+    // discards the previous channel's fragment history.
     regs.set(.diagnostics, regs_mod.Diagnostics, "rx_disable", true);
     regs.put(.mib_control, regs_mod.MibControl{ .freeze = true, .clear = true });
     regs.put(.rx_filter, regs_mod.RxFilter{});
     regs.put(.control, regs_mod.Control{ .rx_disable = true });
     const stopped = pace.until(regs, .control, regs_mod.Control, "rx_enable", false, pace.DEFAULT_TRIES);
     pace.delay(3000);
-    return stopped;
+    const policy = regs.get(.diagnostics, regs_mod.Diagnostics);
+    return stopped and policy.ack_disable and policy.cts_disable;
 }
 
 /// What the radio has to say. The clearing status register is read once
@@ -1093,24 +1243,31 @@ pub fn irq(nic: *NicDev) bool {
     if (!cause.any()) return false;
 
     if (cause.rx_ok or cause.rx_descriptor or cause.rx_error) reapRx(nic, chip);
-    if (cause.tx_ok or cause.tx_error or cause.tx_end_of_list) reapTx(nic);
+    if (cause.tx_ok or cause.tx_error or cause.tx_end_of_list or cause.tx_underrun) {
+        reapTx(nic);
+        resumeTransmit(chip);
+    }
     // A frame started before enough of it had arrived. The one that
     // failed is already accounted for by its own descriptor; what this
     // asks for is that the next one waits longer.
     if (cause.tx_underrun) waitLonger(regs);
-    // The queue walked off the end of its chain. Whatever the service
-    // still has outstanding is pointed at again: a frame linked on after
-    // the queue had already stopped is one nothing will fetch.
-    if (cause.tx_end_of_list) resumeTransmit(chip);
     if (cause.rx_overrun) nic.stats.rx_dropped += 1;
     if (cause.rx_phy_error) phy_errors +%= 1;
 
-    // A chain that ran to its end was starved rather than broken: it is
-    // circular, so pointing the radio back at the slot the service is
-    // waiting on is all the repair there is.
+    // RXEOL need not arrive with RXOK. Stop, drain, and only restart on an
+    // armed descriptor, never over a completed frame awaiting delivery.
     if (cause.rx_end_of_list) {
-        regs.write(.rx_pointer, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
-        regs.put(.control, regs_mod.Control{ .rx_enable = true });
+        const stopped = stopReceive(regs);
+        if (stopped) reapRx(nic, chip);
+        const rings = device.rings orelse return true;
+        const desc: *const volatile Desc = &rings.rx_desc[device.rx_next];
+        dma.publish();
+        if (!family.rxRestartable(stopped, desc.receiveFinished()) or !startReceive(regs)) {
+            device.dma_unsafe = true;
+            device.started = false;
+            listenFor(regs, .{});
+            log.fail(name, "the receiver ran off the end of its run and cannot be pointed back at it while the hardware still owns it");
+        }
     }
     if (cause.bus_error and !device.bus_error_said) {
         log.warn(name, "the card reported a bus error");
@@ -1133,7 +1290,7 @@ fn goneAway(nic: *NicDev) void {
 fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
     const rings = device.rings orelse return;
 
-    while (true) {
+    for (0..RING_SLOTS) |_| {
         const slot = device.rx_next;
         const desc: *const volatile Desc = &rings.rx_desc[slot];
         // The ownership bit first and on its own; everything else the
@@ -1142,6 +1299,15 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
         if (!desc.receiveFinished()) break;
         dma.consume();
         const report = desc.received();
+        if (report.status1.key_cache_miss) rx_key_miss +|= 1;
+        // HAL suppresses spurious MIC errors when CRC/decrypt already failed.
+        if (report.status1.check_sequence_error) {
+            rx_crc +|= 1;
+        } else if (report.status1.decrypt_check_error) {
+            rx_decrypt +|= 1;
+        } else if (report.status1.michael_error) {
+            rx_mic +|= 1;
+        }
 
         // A frame longer than one buffer is spread over several
         // descriptors, each but the last saying so. Nothing here puts one
@@ -1156,18 +1322,14 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
         const length: usize = report.status0.data_length;
         stirFrom(report, rings.rx_buffer[slot][0..@min(length, NOISE_BYTES)]);
         const whole = !continued and !report.status0.more;
-        if (report.status1.intact() and whole and length > FCS_BYTES and length <= SLAB) {
+        if (report.status1.softwareIntact() and whole and length > FCS_BYTES and length <= SLAB) {
             const frame = rings.rx_buffer[slot][0 .. length - FCS_BYTES];
             dev_mod.deliverRadio(nic, frame, signalOf(chip, report.status0.signal), report.status0.rate.rate());
         } else {
             nic.stats.rx_dropped += 1;
             if (report.status1.phyError()) |why| {
                 noteGivenUp(why);
-            } else if (!report.status1.intact()) {
-                // Heard, decoded, and wrong by its own check: a frame the
-                // air damaged rather than one the baseband could not read.
-                dropped_broken +%= 1;
-            } else {
+            } else if (report.status1.softwareIntact()) {
                 dropped_shape +%= 1;
             }
         }
@@ -1206,6 +1368,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
 pub fn transmitAt(nic: *NicDev, frame: []const u8, series: lib.rates.Series) bool {
     if (!device.started or device.gone) return refused(nic);
     const chip: *reset.Chip = if (device.chip) |*c| c else return refused(nic);
+    if (device.dma_unsafe or !chip.txPermitted()) return refused(nic);
     const rings = device.rings orelse return refused(nic);
     if (series.slice().len == 0) return refused(nic);
     if (frame.len == 0 or frame.len > SLAB) return refused(nic);
@@ -1222,33 +1385,21 @@ pub fn transmitAt(nic: *NicDev, frame: []const u8, series: lib.rates.Series) boo
     // frame is worth retrying. A group address is spoken to the room.
     const head = lib.ieee80211.Header.parse(frame);
     const answered = if (head) |h| !lib.mac.isGroup(h.addr1) else false;
+    const duration_update = family.setDuration(rings.tx_buffer[slot][0..frame.len], series.slice()[0].rate);
 
     const desc: *volatile Desc = &rings.tx_desc[slot];
     desc.armTransmit(chainBase("tx_buffer") + @as(u32, @intCast(slot * SLAB)), 0, .{
         .frame_bytes = @intCast(frame.len),
         .series = series,
-        .power = reset.descriptorPower(chip),
+        .power = 0, // Descriptor TPC is off; the rate table controls every retry.
         .acknowledged = answered,
+        .duration_update = duration_update,
     });
     dma.publish();
 
-    const address = Chain.addressOf(chainBase("tx_desc"), slot);
-    if (device.tx_link) |tail| {
-        // The queue is already running: put this frame on the end of the
-        // chain it is working through.
-        rings.tx_desc[tail].link = address;
-        dma.publish();
-    } else {
-        chip.regs.writeAt(regs_mod.txPointer(QUEUE), address);
-    }
-    device.tx_link = slot;
     device.tx_next = Chain.next(slot);
     device.tx_filled += 1;
-
-    // Said every time, not only when the chain was empty: a queue that
-    // reached the old end and stopped before the link was written needs
-    // telling that there is more.
-    chip.regs.put(.queue_enable, regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
+    resumeTransmit(chip);
     return true;
 }
 
@@ -1263,9 +1414,16 @@ fn waitLonger(regs: Regs) void {
 
 /// Point the queue at whatever the service still has outstanding.
 fn resumeTransmit(chip: *reset.Chip) void {
+    if (!device.started or device.gone or device.dma_unsafe or !chip.txPermitted()) return;
     const oldest = device.tx_reap;
-    if (device.tx_filled == 0) return;
+    const mask: u10 = @as(u10, 1) << QUEUE;
+    const status: regs_mod.QueueStatus = @bitCast(chip.regs.readAt(regs_mod.queueStatus(QUEUE)));
+    if (!family.txStartable(device.tx_filled, device.tx_active != null, chip.regs.get(.queue_enable, regs_mod.QueueMask).queues & mask != 0, status.pending_frames, chip.regs.get(.queue_disable, regs_mod.QueueMask).queues & mask != 0)) return;
+    // No live link updates: one descriptor per hardware chain eliminates the
+    // enqueue/EOL fetch race. TXDP is legal only after both idle indicators.
+    dma.publish();
     chip.regs.writeAt(regs_mod.txPointer(QUEUE), Chain.addressOf(chainBase("tx_desc"), oldest));
+    device.tx_active = oldest;
     chip.regs.put(.queue_enable, regs_mod.QueueMask{ .queues = @as(u10, 1) << QUEUE });
 }
 
@@ -1273,6 +1431,17 @@ fn resumeTransmit(chip: *reset.Chip) void {
 /// worked through them, and account for what became of each frame.
 fn reapTx(nic: *NicDev) void {
     const rings = device.rings orelse return;
+    const chip = if (device.chip) |*c| c else return;
+    if (device.tx_filled == 0) return;
+    const first: *const volatile Desc = &rings.tx_desc[device.tx_reap];
+    if (!first.sendFinished()) return;
+    // DONE can precede TXE clearing. Do not recycle the DMA slot yet.
+    // Give EOL time to settle even when its interrupt preceded TXE clearing.
+    for (0..100) |_| {
+        if (txIdle(chip.regs)) break;
+        pace.delay(10);
+    }
+    if (!txIdle(chip.regs)) return;
 
     while (device.tx_filled != 0) {
         const slot = device.tx_reap;
@@ -1313,6 +1482,7 @@ fn reapTx(nic: *NicDev) void {
         }
 
         if (report.failure()) |why| {
+            sayTxDescriptor(slot);
             nic.stats.tx_failed += 1;
             noteUnsent(why);
         } else {
@@ -1326,10 +1496,9 @@ fn reapTx(nic: *NicDev) void {
 
         device.tx_reap = Chain.next(slot);
         device.tx_filled -= 1;
-        // The chain ends where the service stopped filling it. With
-        // nothing outstanding there is no end to add to, and the next
-        // frame is one the radio has to be pointed at.
-        if (device.tx_filled == 0) device.tx_link = null;
+        // Only this descriptor was handed to hardware; the next is still
+        // software queued and can be started by resumeTransmit.
+        device.tx_active = null;
     }
 }
 
@@ -1337,7 +1506,7 @@ fn reapTx(nic: *NicDev) void {
 /// on a faster rate than the one the band obliges every station to
 /// understand, so that is what it runs at.
 pub fn link(_: *NicDev) dev_mod.Link {
-    if (device.cell == null) return .{};
+    if (!device.started or device.gone or device.dma_unsafe or device.cell == null) return .{};
     const channel = device.channel orelse return .{};
     return .{
         .up = true,
@@ -1366,7 +1535,9 @@ fn armReceive(rings: *Rings, slot: usize) void {
     const buffers = chainBase("rx_buffer");
     rings.rx_desc[slot].armReceive(buffers + @as(u32, @intCast(slot * SLAB)), SLAB);
     dma.publish();
-    rings.rx_desc[Chain.previous(slot)].link = Chain.addressOf(chainBase("rx_desc"), slot);
+    const previous: *volatile Desc = &rings.rx_desc[Chain.previous(slot)];
+    previous.link = Chain.addressOf(chainBase("rx_desc"), slot);
+    dma.publish();
 }
 
 /// One contiguous run for both chains and their buffers, chained into
