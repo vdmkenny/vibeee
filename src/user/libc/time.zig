@@ -6,6 +6,7 @@
 //! because breaking a timestamp into fields is arithmetic, and that much is
 //! worth having.
 
+const std = @import("std");
 const civil = @import("lib").civil;
 const errno = @import("errno.zig");
 const sys = @import("sys");
@@ -63,7 +64,13 @@ export fn time(out: ?*c_long) callconv(.c) c_long {
 }
 
 export fn nanosleep(wanted: *const Timespec, left: ?*Timespec) callconv(.c) c_int {
-    sys.sleepMicros(@intCast(wanted.tv_sec * 1_000_000 + @divTrunc(wanted.tv_nsec, 1000)));
+    // Worked out in sixty-four bits: a `time_t` here is thirty-two, and
+    // any sleep from about half an hour up wrapped to a negative count of
+    // microseconds. Whatever the kernel can be asked to wait for is the
+    // ceiling, since a sleep longer than that is one nobody comes back
+    // from anyway.
+    const micros = @as(i64, wanted.tv_sec) * 1_000_000 + @divTrunc(wanted.tv_nsec, 1000);
+    if (micros > 0) sys.sleepMicros(@intCast(@min(micros, std.math.maxInt(usize))));
     // Nothing interrupts a sleep here, so none of it is ever left.
     if (left) |slot| slot.* = .{ .tv_sec = 0, .tv_nsec = 0 };
     return 0;

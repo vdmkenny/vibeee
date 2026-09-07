@@ -11,6 +11,7 @@
 //! move a handle and it has no call for that. Nothing here needs it yet, and
 //! adding the call is a smaller thing than carrying a table against the day.
 
+const std = @import("std");
 const errno = @import("errno.zig");
 const string = @import("string.zig");
 const sys = @import("sys");
@@ -122,7 +123,11 @@ export fn getpid() callconv(.c) c_int {
 }
 
 export fn sleep(seconds: c_uint) callconv(.c) c_uint {
-    sys.sleepMicros(@as(usize, seconds) * 1_000_000);
+    // In sixty-four bits, then bounded: a `usize` here is thirty-two, and
+    // an hour and a quarter's worth of seconds wrapped to a few
+    // milliseconds while reporting that the whole sleep had happened.
+    const micros = @as(u64, seconds) * 1_000_000;
+    sys.sleepMicros(@intCast(@min(micros, std.math.maxInt(usize))));
     return 0;
 }
 

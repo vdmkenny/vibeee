@@ -484,7 +484,7 @@ export fn vsscanf(text: [*:0]const u8, format: [*:0]const u8, args: std.builtin.
         }
 
         if (format[i] != '%') {
-            if (text[at] != format[i]) return stored;
+            if (text[at] != format[i]) return failed(stored, text[at]);
             at += 1;
             continue;
         }
@@ -504,9 +504,22 @@ export fn vsscanf(text: [*:0]const u8, format: [*:0]const u8, args: std.builtin.
         const width = readNumber(format, &i);
         const length = Length.read(format, &i);
 
-        if (!scanOne(text, &at, format[i], width, length, discard, &taken)) return stored;
+        if (!scanOne(text, &at, format[i], width, length, discard, &taken)) {
+            return failed(stored, text[at]);
+        }
         if (!discard) stored += 1;
     }
+    return stored;
+}
+
+/// What a conversion that did not happen answers with: how many did, or
+/// end of input when none did and there was nothing left to read.
+///
+/// C requires the two to be told apart, and the usual loop is written
+/// `while (sscanf(...) != EOF)`: answering zero for an empty input made
+/// that loop run for ever.
+fn failed(stored: c_int, next: u8) c_int {
+    if (stored == 0 and next == 0) return -1;
     return stored;
 }
 

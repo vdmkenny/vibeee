@@ -183,6 +183,18 @@ static void strings(void)
     strncat(b, "defgh", 2);
     say("strncat", b);
 
+    /* Nothing to read is end of input, which is not the same as nothing
+     * matched: the usual loop is written against the difference. */
+    int scanned = 0;
+    sayn("sscanf.empty", sscanf("", "%d", &scanned));
+    sayn("sscanf.nomatch", sscanf("abc", "%d", &scanned));
+    sayn("sscanf.one", sscanf("42", "%d", &scanned));
+
+    sayn("iscntrl.eof", iscntrl(EOF) ? 1 : 0);
+    sayn("iscntrl.nul", iscntrl(0) ? 1 : 0);
+    sayn("iscntrl.del", iscntrl(0x7F) ? 1 : 0);
+    sayn("iscntrl.letter", iscntrl('a') ? 1 : 0);
+
     /* A number too large for the type is the nearest limit, and says so. */
     errno = 0;
     long huge = strtol("99999999999999999999", NULL, 10);

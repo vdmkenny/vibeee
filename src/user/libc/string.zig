@@ -231,7 +231,10 @@ export fn isgraph(c: c_int) callconv(.c) c_int {
     return yes(c > 0x20 and c < 0x7F);
 }
 export fn iscntrl(c: c_int) callconv(.c) c_int {
-    return yes(c < 0x20 or c == 0x7F);
+    // Zero and above, like every other classifier here: `EOF` is negative
+    // and is not a control character, and a filter that classified before
+    // testing for it took the wrong branch at the end of every stream.
+    return yes((c >= 0 and c < 0x20) or c == 0x7F);
 }
 export fn ispunct(c: c_int) callconv(.c) c_int {
     return yes(isgraph(c) != 0 and isalnum(c) == 0);
