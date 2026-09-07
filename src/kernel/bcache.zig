@@ -96,47 +96,69 @@ pub const Cache = struct {
         line.used_at = self.clock;
     }
 
-    fn readSector(self: *Cache, lba: u64, out: []u8) block.Error!void {
-        // Held for the whole operation, backing read included: picking a
-        // line and filling it are two steps around a wait for the medium,
-        // and a second caller let in between them can pick the very line
-        // the first is still filling, for a different sector entirely.
+    /// Read `count` sectors from `lba`, a run at a time. What the cache
+    /// holds is copied out; the sectors between hits are read from the
+    /// backing in one call per run rather than one per sector, which on a
+    /// card behind a USB reader is one round trip instead of many.
+    ///
+    /// Held for the whole operation, backing reads included: picking a
+    /// line and filling it are two steps around a wait for the medium, and
+    /// a second caller let in between them can pick the very line the
+    /// first is still filling, for a different sector entirely.
+    fn readRun(self: *Cache, lba: u64, out: []u8) block.Error!void {
         self.lock.hold() catch return block.Error.IoError;
         defer self.lock.release();
 
-        if (self.find(lba)) |line| {
-            self.stats.hits += 1;
-            self.touch(line);
-            @memcpy(out, &line.data);
-            return;
+        const count = out.len / block.SECTOR_SIZE;
+        var i: usize = 0;
+        while (i < count) {
+            if (self.find(lba + i)) |line| {
+                self.stats.hits += 1;
+                self.touch(line);
+                @memcpy(out[i * block.SECTOR_SIZE ..][0..block.SECTOR_SIZE], &line.data);
+                i += 1;
+                continue;
+            }
+
+            // The misses from here to the next sector the cache holds.
+            var run: usize = 1;
+            while (i + run < count and self.find(lba + i + run) == null) : (run += 1) {}
+            self.stats.misses += run;
+
+            // The caller's buffer is filled first, then the lines from it:
+            // a read that fails leaves the lines as they were rather than
+            // holding stale data under new numbers.
+            const bytes = out[i * block.SECTOR_SIZE ..][0 .. run * block.SECTOR_SIZE];
+            try self.backing.ops.read(self.backing.ctx, lba + i, bytes);
+            for (0..run) |k| {
+                self.fill(lba + i + k, bytes[k * block.SECTOR_SIZE ..][0..block.SECTOR_SIZE]);
+            }
+            i += run;
         }
-
-        self.stats.misses += 1;
-        const line = self.victim(lba);
-
-        // Fill the caller's buffer first, then the cache line from it: if the
-        // read fails the line is left invalid rather than holding stale data
-        // under a new LBA.
-        try self.backing.ops.read(self.backing.ctx, lba, out);
-
-        @memcpy(&line.data, out);
-        line.lba = lba;
-        line.valid = true;
-        self.touch(line);
     }
 
-    fn writeSector(self: *Cache, lba: u64, in: []const u8) block.Error!void {
+    /// Write `count` sectors from `lba` through to the backing in one call,
+    /// and keep the cache coherent with what was written, so a read-back
+    /// sees the new contents.
+    fn writeRun(self: *Cache, lba: u64, in: []const u8) block.Error!void {
         self.lock.hold() catch return block.Error.IoError;
         defer self.lock.release();
 
         const w = self.backing.ops.write orelse return error.NotSupported;
         try w(self.backing.ctx, lba, in);
-        self.stats.writes += 1;
 
-        // Keep the cache coherent with what was just written, so a read-back
-        // sees the new contents.
+        const count = in.len / block.SECTOR_SIZE;
+        self.stats.writes += count;
+        for (0..count) |k| {
+            self.fill(lba + k, in[k * block.SECTOR_SIZE ..][0..block.SECTOR_SIZE]);
+        }
+    }
+
+    /// Put a sector's contents in the cache: over its own line if it has
+    /// one, otherwise over the line its set can best spare.
+    fn fill(self: *Cache, lba: u64, data: *const [block.SECTOR_SIZE]u8) void {
         const line = self.find(lba) orelse self.victim(lba);
-        @memcpy(&line.data, in);
+        @memcpy(&line.data, data);
         line.lba = lba;
         line.valid = true;
         self.touch(line);
@@ -158,22 +180,12 @@ pub const Cache = struct {
 
 fn read(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
     const self: *Cache = @ptrCast(@alignCast(ctx));
-    var offset: usize = 0;
-    var current = lba;
-    while (offset < buf.len) : (offset += block.SECTOR_SIZE) {
-        try self.readSector(current, buf[offset..][0..block.SECTOR_SIZE]);
-        current += 1;
-    }
+    return self.readRun(lba, buf);
 }
 
 fn write(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
     const self: *Cache = @ptrCast(@alignCast(ctx));
-    var offset: usize = 0;
-    var current = lba;
-    while (offset < buf.len) : (offset += block.SECTOR_SIZE) {
-        try self.writeSector(current, buf[offset..][0..block.SECTOR_SIZE]);
-        current += 1;
-    }
+    return self.writeRun(lba, buf);
 }
 
 fn flush(ctx: *anyopaque) block.Error!void {
