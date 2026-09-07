@@ -95,26 +95,58 @@ pub fn init() void {
 /// bytes, numbered from one, terminated by a second NUL. Index zero means "no
 /// string", which is why the numbering starts at one.
 pub fn stringOf(structure_type: u8, index: u8) ?[]const u8 {
-    const i = info orelse return null;
     if (index == 0) return null;
-
-    var offset: usize = 0;
-    while (offset + @sizeOf(Header) <= i.table.len) {
-        const hdr: *align(1) const Header = @ptrCast(&i.table[offset]);
-        if (hdr.length < @sizeOf(Header)) return null;
-
-        // End-of-table marker.
-        if (hdr.type == 127) return null;
-
-        const strings_start = offset + hdr.length;
-        if (hdr.type == structure_type) {
-            return nthString(i.table, strings_start, index);
-        }
-
-        offset = endOfStrings(i.table, strings_start) orelse return null;
+    var walk = Walk.over(info orelse return null);
+    while (walk.next()) |it| {
+        if (it.header.type == structure_type) return nthString(walk.table, it.strings, index);
     }
     return null;
 }
+
+/// One structure the table holds: its header, its formatted area, and where
+/// the strings after it begin.
+const Structure = struct {
+    header: Header,
+    fields: []const u8,
+    strings: usize,
+};
+
+/// A walk over the table's structures.
+///
+/// One walk rather than the three that were here, each re-deriving where a
+/// structure ends and each deciding for itself what a header too short to be
+/// one means. They had already come to differ about that.
+const Walk = struct {
+    table: []const u8,
+    at: usize = 0,
+
+    fn over(i: Info) Walk {
+        return .{ .table = i.table };
+    }
+
+    fn next(self: *Walk) ?Structure {
+        if (self.at + @sizeOf(Header) > self.table.len) return null;
+
+        const header: Header = @bitCast(self.table[self.at..][0..@sizeOf(Header)].*);
+        // A header shorter than a header, or the end-of-table marker: either
+        // way there is nothing after this one.
+        if (header.length < @sizeOf(Header) or header.type == END_OF_TABLE) return null;
+        if (self.at + header.length > self.table.len) return null;
+
+        const strings = self.at + header.length;
+        const it = Structure{
+            .header = header,
+            .fields = self.table[self.at..strings],
+            .strings = strings,
+        };
+
+        self.at = endOfStrings(self.table, strings) orelse self.table.len;
+        return it;
+    }
+};
+
+/// The structure type that says the table has ended.
+const END_OF_TABLE: u8 = 127;
 
 fn nthString(table: []const u8, start: usize, index: u8) ?[]const u8 {
     var pos = start;
@@ -192,35 +224,67 @@ pub const MemoryHardware = struct {
     }
 };
 
+/// One fitted module, as the firmware describes it. Named fields rather than
+/// offsets counted out at each read: the offsets are the specification's, and
+/// counting them again per field is how one comes to be off by a byte.
+const MemoryDevice = extern struct {
+    header: Header,
+    array_handle: u16 align(1),
+    error_handle: u16 align(1),
+    total_width: u16 align(1),
+    data_width: u16 align(1),
+    /// Megabytes, or kilobytes when the top bit is set. Zero is an empty slot
+    /// and all ones is a size the firmware does not know.
+    size: u16 align(1),
+    form_factor: u8,
+    device_set: u8,
+    device_locator: u8,
+    bank_locator: u8,
+    kind: u8,
+    detail: u16 align(1),
+    speed_mhz: u16 align(1),
+
+    const KILOBYTES: u16 = 0x8000;
+    const UNKNOWN_SIZE: u16 = 0xFFFF;
+
+    fn megabytes(self: MemoryDevice) u32 {
+        if (self.size & KILOBYTES == 0) return self.size;
+        return @as(u32, self.size & ~KILOBYTES) / 1024;
+    }
+};
+
+/// The structure type a fitted module is described by.
+const MEMORY_DEVICE: u8 = 17;
+
+comptime {
+    // The offsets are the specification's, so the struct has to sit at them
+    // with nothing added between: 0x0C is the size and 0x15 the speed.
+    if (@offsetOf(MemoryDevice, "size") != 0x0C or
+        @offsetOf(MemoryDevice, "kind") != 0x12 or
+        @offsetOf(MemoryDevice, "speed_mhz") != 0x15)
+    {
+        @compileError("a Memory Device's fields have moved off the offsets SMBIOS gives them");
+    }
+}
+
 pub fn memoryHardware() ?MemoryHardware {
-    const i = info orelse return null;
     var result = MemoryHardware{};
+    var walk = Walk.over(info orelse return null);
 
-    var offset: usize = 0;
-    while (offset + @sizeOf(Header) <= i.table.len) {
-        const hdr: *align(1) const Header = @ptrCast(&i.table[offset]);
-        if (hdr.length < @sizeOf(Header) or hdr.type == 127) break;
+    while (walk.next()) |it| {
+        if (it.header.type != MEMORY_DEVICE) continue;
+        // A firmware that stops the structure short of a field has not
+        // described it, and reading past what it wrote is reading the next
+        // structure's bytes.
+        if (it.fields.len < @sizeOf(MemoryDevice)) continue;
 
-        if (hdr.type == 17 and hdr.length > 0x0D) {
-            const raw = @as(u16, i.table[offset + 0x0C]) | (@as(u16, i.table[offset + 0x0D]) << 8);
-            // 0 means the slot is empty, 0xFFFF that the size is unknown.
-            if (raw != 0 and raw != 0xFFFF) {
-                // Bit 15 set means the value is kilobytes rather than megabytes.
-                result.total_mb += if (raw & 0x8000 != 0)
-                    @as(u32, raw & 0x7FFF) / 1024
-                else
-                    raw;
-                result.devices += 1;
+        const module: MemoryDevice = @bitCast(it.fields[0..@sizeOf(MemoryDevice)].*);
+        if (module.size == 0 or module.size == MemoryDevice.UNKNOWN_SIZE) continue;
 
-                if (hdr.length > 0x12 and result.kind == 0) result.kind = i.table[offset + 0x12];
-                if (hdr.length > 0x16 and result.speed_mhz == 0) {
-                    result.speed_mhz = @as(u16, i.table[offset + 0x15]) |
-                        (@as(u16, i.table[offset + 0x16]) << 8);
-                }
-            }
-        }
-
-        offset = endOfStrings(i.table, offset + hdr.length) orelse break;
+        result.total_mb += module.megabytes();
+        result.devices += 1;
+        if (result.kind == 0) result.kind = module.kind;
+        if (result.speed_mhz == 0) result.speed_mhz = module.speed_mhz;
     }
 
     return if (result.devices > 0) result else null;
@@ -228,18 +292,11 @@ pub fn memoryHardware() ?MemoryHardware {
 
 /// Read one byte from a structure's formatted area.
 fn fieldAt(structure_type: u8, field_offset: usize) ?u8 {
-    const i = info orelse return null;
-
-    var offset: usize = 0;
-    while (offset + @sizeOf(Header) <= i.table.len) {
-        const hdr: *align(1) const Header = @ptrCast(&i.table[offset]);
-        if (hdr.length < @sizeOf(Header) or hdr.type == 127) return null;
-
-        if (hdr.type == structure_type) {
-            if (field_offset >= hdr.length) return null;
-            return i.table[offset + field_offset];
-        }
-        offset = endOfStrings(i.table, offset + hdr.length) orelse return null;
+    var walk = Walk.over(info orelse return null);
+    while (walk.next()) |it| {
+        if (it.header.type != structure_type) continue;
+        if (field_offset >= it.fields.len) return null;
+        return it.fields[field_offset];
     }
     return null;
 }
