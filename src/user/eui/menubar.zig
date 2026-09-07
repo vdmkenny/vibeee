@@ -182,12 +182,12 @@ pub fn key(state: *State, code: KeyCode, mods: widget.Modifiers, menus: []const 
     switch (code) {
         .left => {
             state.open = if (index == 0) menus.len - 1 else index - 1;
-            state.list.showAt(rowsOf(menus[state.open.?].items, &storage));
+            state.list.selectFirst(rowsOf(menus[state.open.?].items, &storage));
             return .taken;
         },
         .right => {
             state.open = if (index + 1 == menus.len) 0 else index + 1;
-            state.list.showAt(rowsOf(menus[state.open.?].items, &storage));
+            state.list.selectFirst(rowsOf(menus[state.open.?].items, &storage));
             return .taken;
         },
         else => return .ignored,
@@ -232,7 +232,7 @@ pub fn altKey(state: *State, letter: u21, menus: []const Menu) bool {
 
         var storage: [MAX_ITEMS]widget.MenuItem = undefined;
         state.open = index;
-        state.list.showAt(rowsOf(menu.items, &storage));
+        state.list.selectFirst(rowsOf(menu.items, &storage));
         return true;
     }
     return false;
@@ -243,7 +243,7 @@ pub fn focus(state: *State, menus: []const Menu) void {
     if (menus.len == 0) return;
     state.open = 0;
     var storage: [MAX_ITEMS]widget.MenuItem = undefined;
-    state.list.showAt(rowsOf(menus[0].items, &storage));
+    state.list.selectFirst(rowsOf(menus[0].items, &storage));
 }
 
 pub fn isOpen(state: *const State) bool {
@@ -253,12 +253,11 @@ pub fn isOpen(state: *const State) bool {
 fn dropDown(state: *State, index: usize, menu: Menu, storage: *[MAX_ITEMS]widget.MenuItem) void {
     state.open = index;
     state.width = widest(menu);
-    state.list.showAt(rowsOf(menu.items, storage));
+    state.list.selectFirst(rowsOf(menu.items, storage));
 }
 
 fn close(state: *State) void {
     state.open = null;
-    state.list.hide();
 }
 
 // ---------------------------------------------------------------------------

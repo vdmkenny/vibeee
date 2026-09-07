@@ -1883,7 +1883,6 @@ pub const Menu = struct {
     /// Which row is highlighted. Survives between passes: a menu that forgot
     /// where the selection was every frame could not be driven by keyboard.
     selected: usize = 0,
-    open: bool = false,
     /// What the rows sit on. A role rather than a colour, so it follows the
     /// theme: a column of categories beside a list reads as a separate place
     /// when it is a shade darker, and as one long list when it is not.
@@ -1898,13 +1897,24 @@ pub const Menu = struct {
     /// two says nothing.
     columns: u8 = 1,
 
-    pub fn show(self: *Menu) void {
-        self.open = true;
+    /// Put the highlight on the first row that can be chosen.
+    ///
+    /// Called when a menu goes on the screen. One that opened where the
+    /// highlight was left last time highlights a row nobody pointed at, and
+    /// one that opened on row zero highlights a heading in any list that
+    /// starts with one.
+    ///
+    /// Whether a menu is on the screen at all is the caller's, not held
+    /// here: the caller is what decides to paint it, and a second answer
+    /// kept beside that decision is one that can disagree with it.
+    pub fn selectFirst(self: *Menu, items: []const MenuItem) void {
         self.selected = 0;
-    }
-
-    pub fn hide(self: *Menu) void {
-        self.open = false;
+        for (items, 0..) |item, i| {
+            if (item.selectable()) {
+                self.selected = i;
+                return;
+            }
+        }
     }
 
     /// How large a menu needs to be, so a caller can place it before drawing
@@ -2085,10 +2095,7 @@ pub const Menu = struct {
             .enter, .space => {
                 return if (items[@min(self.selected, items.len - 1)].selectable()) .chosen else .ignored;
             },
-            .escape => {
-                self.hide();
-                return .cancelled;
-            },
+            .escape => return .cancelled,
             else => return .ignored,
         }
     }
@@ -2106,18 +2113,6 @@ pub const Menu = struct {
             at = @mod(at + direction + count, count);
             if (items[@intCast(at)].selectable()) {
                 self.selected = @intCast(at);
-                return;
-            }
-        }
-    }
-
-    /// Start on the first row that can actually be chosen.
-    pub fn showAt(self: *Menu, items: []const MenuItem) void {
-        self.open = true;
-        self.selected = 0;
-        for (items, 0..) |item, i| {
-            if (item.selectable()) {
-                self.selected = i;
                 return;
             }
         }

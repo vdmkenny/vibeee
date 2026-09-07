@@ -271,7 +271,6 @@ Editable text: a buffer, the lines it breaks into, and a control that edits it.
 | `offsetAt` | `fn ([]const u8, *const font.Font, text.Line, i32) usize` |
 | `face` | `fn () *const font.Font` |
 | `placeOf` | `fn ([]const u8, usize) text.Place` |
-| `lineCount` | `fn ([]const u8) usize` |
 | `inner` | `fn (draw.Rect) draw.Rect` |
 | `rowsIn` | `fn (draw.Rect) usize` |
 | `shown` | `fn (*const text.Editor, *const text.Buffer, *[128]u8) []const u8` |
@@ -367,8 +366,6 @@ A label and what it says, in two columns.
 | `column` | `fn (draw.Rect) i32` |
 | `height` | `fn () i32` |
 | `heightWith` | `fn (draw.Rect, i32) i32` |
-| `heightIn` | `fn (draw.Rect) i32` |
-| `heightInFor` | `fn (draw.Rect, []const facts.Fact) i32` |
 | `one` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8) i32` |
 | `columnFor` | `fn (draw.Rect, []const facts.Fact) i32` |
 | `oneWith` | `fn (*widget.Context, draw.Rect, i32, []const u8, []const u8, i32) i32` |

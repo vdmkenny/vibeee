@@ -35,6 +35,7 @@ const graph = @import("lib").audiograph;
 const ipv4 = @import("lib").ipv4;
 const net = @import("proto").net;
 const netconfig = @import("ulib").netconfig;
+const panes = @import("proto").panes;
 const platform = @import("proto").platform;
 const sys = @import("sys");
 const theme = @import("eui").theme;
@@ -506,9 +507,34 @@ fn categoryItems(into: []ui.MenuItem) []ui.MenuItem {
 /// is which entry of `items`.
 var launcher: ui.Menu = .{ .columns = LAUNCHER_COLUMNS };
 
-/// Which tab's menu is open, if any. Held here because it is the bar's own
-/// state: nothing else needs to know a menu exists.
-var menu_tab: ?u8 = null;
+/// What the bar has put over the screen, if anything.
+///
+/// One at a time. Opening any of these puts away whatever stood before it,
+/// which is a thing this shape says and a flag per panel cannot: with a flag
+/// each, every place that paints, hit tests, moves a highlight or puts a
+/// panel away has to name all of them, and the one left out is the panel the
+/// pointer stops following.
+const Panel = union(enum) {
+    none,
+    /// The programs this machine can start.
+    launcher,
+    /// The windows on one tab, named by that tab.
+    windows: u8,
+    /// What one of the readings at the right end has to say.
+    status: status.Indicator,
+
+    /// Which reading is open, when one is. The four status panels are the
+    /// same kind of thing to their callers: a reading that opens from its
+    /// icon and closes on the next click.
+    fn reading(self: Panel) ?status.Indicator {
+        return switch (self) {
+            .status => |which| which,
+            else => null,
+        };
+    }
+};
+
+var showing: Panel = .none;
 var window_menu: ui.Menu = .{};
 /// The bar has keyboard focus, so arrows move between tabs rather than
 /// reaching whatever window is focused.
@@ -518,7 +544,11 @@ var focus_tab: u8 = 0;
 /// the last tab. The bar is one traversal from the button at one end to the
 /// clock at the other: a reading reachable only by pointer is a reading that
 /// stops working when the touchpad does.
-var focus_status: ?usize = null;
+///
+/// Named rather than numbered, and walked along the list that is drawn: a
+/// machine with no pack and no lamp shows no battery, and a number counting
+/// every reading there could be would stop on it anyway.
+var focus_status: ?status.Indicator = null;
 
 pub fn hasFocus() bool {
     return keyboard_focus;
@@ -529,8 +559,7 @@ pub fn hasFocus() bool {
 /// be drawn again, and one left out is one that disappears on the next
 /// repaint.
 pub fn menuOpen() bool {
-    return menu_tab != null or launcher.open or sound_open or net_open or
-        power_open or clock_open;
+    return showing != .none;
 }
 
 /// The files a person might be looking for, gathered when the launcher
@@ -608,8 +637,8 @@ pub fn openLauncher(desktop: *const layout.Desktop) void {
     gatherFiles();
     refreshFound(desktop);
     var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-    launcher.showAt(menuItems(&rows));
-    menu_tab = null;
+    launcher.selectFirst(menuItems(&rows));
+    showing = .launcher;
     keyboard_focus = true;
 }
 
@@ -878,13 +907,13 @@ pub fn focus(desktop: *const layout.Desktop) void {
     keyboard_focus = true;
     focus_tab = desktop.tag;
     focus_status = null;
-    menu_tab = null;
+    showing = .none;
 }
 
 pub fn unfocus() void {
     keyboard_focus = false;
     focus_status = null;
-    menu_tab = null;
+    showing = .none;
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,8 +1035,9 @@ fn paintStatus(surface: Surface, width: i32, height: i32) void {
     for (statusSlots(width, height, &buf)) |slot| {
         switch (slot.which) {
             .clock => {
-                if (clock_open) surface.fill(slot.area, t.accent);
-                paintClock(surface, slot.area, clock_open);
+                const open = showing.reading() == .clock;
+                if (open) surface.fill(slot.area, t.accent);
+                paintClock(surface, slot.area, open);
             },
             .network => paintNetwork(surface, slot.area),
             .sound => paintSound(surface, slot.area),
@@ -1015,9 +1045,8 @@ fn paintStatus(surface: Surface, width: i32, height: i32) void {
         }
 
         // Where the keyboard is, said the way every other control says it.
-        if (keyboard_focus and focus_status != null) {
-            const at = std.enums.values(status.Indicator)[focus_status.?];
-            if (at == slot.which) ui.paintFocusRing(surface, slot.area.inset(1), t.accent);
+        if (keyboard_focus and focus_status == slot.which) {
+            ui.paintFocusRing(surface, slot.area.inset(1), t.accent);
         }
     }
 }
@@ -1054,58 +1083,70 @@ fn paintAdd(surface: Surface, width: i32, height: i32, desktop: *const layout.De
 /// True when it changed, so the manager knows to repaint. Motion does not
 /// otherwise repaint anything, which is what keeps moving the pointer cheap.
 pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Desktop) bool {
-    if (menu_tab) |tab| {
-        var buf: [layout.MAX_WINDOWS]usize = undefined;
-        const list = desktop.windowsOn(tab, &buf);
+    switch (showing) {
+        .none => return false,
 
-        var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
-        for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+        .windows => |tab| {
+            var buf: [layout.MAX_WINDOWS]usize = undefined;
+            const list = desktop.windowsOn(tab, &buf);
 
-        const before = window_menu.selected;
-        window_menu.hover(menuRect(width, height, desktop, tab), rows[0..list.len], x, y);
-        return window_menu.selected != before;
-    }
+            var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+            for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
 
-    if (launcher.open) {
-        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-        const before = launcher.selected;
-        const at = launcherPanel(width, height);
+            const before = window_menu.selected;
+            window_menu.hover(menuRect(width, height, desktop, tab), rows[0..list.len], x, y);
+            return window_menu.selected != before;
+        },
 
-        var cat_rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-        const cats = categoryItems(&cat_rows);
+        .launcher => {
+            var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
+            const before = launcher.selected;
+            const at = launcherPanel(width, height);
 
-        // Moving over a category shows it, which is what makes the rail
-        // browsable rather than something to click through.
-        const on_rail = if (launcher_query.slice().len == 0) ui.Menu.rowAt(at.rail, cats, x, y) else null;
-        if (on_rail) |row| {
-            launcher_rail.selected = row;
-            if (Category.parse(cats[row].label)) |which| {
-                if (which != launcher_category) {
-                    launcher_category = which;
-                    launcher.selected = 0;
+            var cat_rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
+            const cats = categoryItems(&cat_rows);
+
+            // Moving over a category shows it, which is what makes the rail
+            // browsable rather than something to click through.
+            const on_rail = if (launcher_query.slice().len == 0) ui.Menu.rowAt(at.rail, cats, x, y) else null;
+            if (on_rail) |row| {
+                launcher_rail.selected = row;
+                if (Category.parse(cats[row].label)) |which| {
+                    if (which != launcher_category) {
+                        launcher_category = which;
+                        launcher.selected = 0;
+                    }
                 }
+                return true;
             }
-            return true;
-        }
-        launcher.hover(launcherList(at), menuItems(&rows), x, y);
-        return launcher.selected != before;
-    }
+            launcher.hover(launcherList(at), menuItems(&rows), x, y);
+            return launcher.selected != before;
+        },
 
-    if (net_open) {
-        var rows: [NET_ROWS]ui.MenuItem = undefined;
-        const before = net_menu.selected;
-        net_menu.hover(netPanel(width, height), netItems(&rows), x, y);
-        return net_menu.selected != before;
+        .status => |which| switch (which) {
+            .network => {
+                var rows: [NET_ROWS]ui.MenuItem = undefined;
+                const before = net_menu.selected;
+                net_menu.hover(netPanel(width, height), netItems(&rows), x, y);
+                return net_menu.selected != before;
+            },
+            .sound => {
+                var rows: [SOUND_ROWS]ui.MenuItem = undefined;
+                const before = sound_menu.selected;
+                sound_menu.hover(strip.below(soundPanel(width, height)), soundItems(&rows), x, y);
+                return sound_menu.selected != before;
+            },
+            .battery => {
+                var rows: [POWER_ROWS]ui.MenuItem = undefined;
+                const before = power_menu.selected;
+                power_menu.hover(powerRows(powerPanel(width, height)), powerItems(&rows), x, y);
+                return power_menu.selected != before;
+            },
+            // Nothing in the clock's panel can be chosen, so there is no
+            // highlight for the pointer to move.
+            .clock => return false,
+        },
     }
-
-    if (sound_open) {
-        var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
-        const before = sound_menu.selected;
-        sound_menu.hover(strip.below(soundPanel(width, height)), soundItems(&rows), x, y);
-        return sound_menu.selected != before;
-    }
-
-    return false;
 }
 
 /// Where whatever is open sits, or nothing when nothing is.
@@ -1114,53 +1155,62 @@ pub fn hover(x: i32, y: i32, width: i32, height: i32, desktop: *const layout.Des
 /// it went anywhere near it: without that, a terminal printing lines with
 /// the launcher open rebuilt and redrew the whole panel on every line.
 pub fn panelArea(width: i32, height: i32, desktop: *const layout.Desktop) Rect {
-    var at = Rect{};
-    if (menu_tab) |tab| at = at.unite(menuRect(width, height, desktop, tab));
-    if (launcher.open) at = at.unite(launcherPanel(width, height).panel);
-    if (sound_open) at = at.unite(soundPanel(width, height));
-    if (net_open) at = at.unite(netPanel(width, height));
-    if (power_open) at = at.unite(powerPanel(width, height));
-    if (clock_open) at = at.unite(clockPanel(width, height));
-    return at;
+    return switch (showing) {
+        .none => .{},
+        .windows => |tab| menuRect(width, height, desktop, tab),
+        .launcher => launcherPanel(width, height).panel,
+        .status => |which| switch (which) {
+            .network => netPanel(width, height),
+            .sound => soundPanel(width, height),
+            .battery => powerPanel(width, height),
+            .clock => clockPanel(width, height),
+        },
+    };
 }
 
 pub fn paintOverlay(surface: Surface, width: i32, height: i32, desktop: *const layout.Desktop) void {
-    if (menu_tab) |tab| {
-        var buf: [layout.MAX_WINDOWS]usize = undefined;
-        const list = desktop.windowsOn(tab, &buf);
+    switch (showing) {
+        .none => {},
 
-        var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
-        for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+        .windows => |tab| {
+            var buf: [layout.MAX_WINDOWS]usize = undefined;
+            const list = desktop.windowsOn(tab, &buf);
 
-        window_menu.paint(surface, menuRect(width, height, desktop, tab), rows[0..list.len]);
+            var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+            for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+
+            window_menu.paint(surface, menuRect(width, height, desktop, tab), rows[0..list.len]);
+        },
+
+        .launcher => {
+            const t = theme.current();
+            var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
+            const at = launcherPanel(width, height);
+
+            paintLauncherField(surface, at.field);
+
+            var cat_rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
+            // The rail goes when a query does the choosing: what is on show is
+            // then everything that matches, and a category highlighted beside
+            // it would be pointing at the wrong thing.
+            if (launcher_query.slice().len == 0) {
+                launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows));
+            }
+            launcher.paint(surface, launcherList(at), menuItems(&rows));
+            paintLauncherFooter(surface, at.footer);
+
+            // One edge around the whole panel, drawn last so the parts inside
+            // it cannot paint over it.
+            surface.frame(at.panel, t.bar_line);
+        },
+
+        .status => |which| switch (which) {
+            .network => paintNetMenu(surface, width, height),
+            .sound => paintSoundMenu(surface, width, height),
+            .battery => paintPowerMenu(surface, width, height),
+            .clock => paintClockMenu(surface, width, height),
+        },
     }
-
-    if (launcher.open) {
-        const t = theme.current();
-        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-        const at = launcherPanel(width, height);
-
-        paintLauncherField(surface, at.field);
-
-        var cat_rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-        // The rail goes when a query does the choosing: what is on show is
-        // then everything that matches, and a category highlighted beside it
-        // would be pointing at the wrong thing.
-        if (launcher_query.slice().len == 0) {
-            launcher_rail.paint(surface, at.rail, categoryItems(&cat_rows));
-        }
-        launcher.paint(surface, launcherList(at), menuItems(&rows));
-        paintLauncherFooter(surface, at.footer);
-
-        // One edge around the whole panel, drawn last so the parts inside it
-        // cannot paint over it.
-        surface.frame(at.panel, t.bar_line);
-    }
-
-    if (sound_open) paintSoundMenu(surface, width, height);
-    if (net_open) paintNetMenu(surface, width, height);
-    if (power_open) paintPowerMenu(surface, width, height);
-    if (clock_open) paintClockMenu(surface, width, height);
 }
 
 /// The launcher button, which carries the system's own mark.
@@ -1168,12 +1218,13 @@ fn paintLaunch(surface: Surface, height: i32) void {
     const t = theme.current();
     const area = launchRect(height);
 
-    if (launcher.open) surface.fill(area, t.accent);
+    const open = showing == .launcher;
+    if (open) surface.fill(area, t.accent);
     surface.icon(
         area.x + @divTrunc(area.w - Surface.iconSize(), 2),
         area.y + @divTrunc(area.h - Surface.iconSize(), 2),
         .logo,
-        if (launcher.open) t.accent_text else t.bar_text,
+        if (open) t.accent_text else t.bar_text,
     );
     surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
@@ -1298,7 +1349,6 @@ fn paintStackMarker(surface: Surface, area: Rect, color: draw.Color) void {
 // ---------------------------------------------------------------------------
 
 var net_menu: ui.Menu = .{};
-var net_open = false;
 var ifaces: [MAX_IFACES]net.Iface = undefined;
 var iface_addrs: [MAX_IFACES]net.AddressInfo = undefined;
 var iface_texts: [MAX_IFACES][16]u8 = undefined;
@@ -1484,11 +1534,12 @@ fn netPanel(width: i32, height: i32) Rect {
 
 fn paintNetwork(surface: Surface, area: Rect) void {
     const t = theme.current();
-    const ink = if (net_open)
+    const open = showing.reading() == .network;
+    const ink = if (open)
         t.accent_text
     else if (networkUp()) t.bar_text else t.text_dim;
 
-    if (net_open) surface.fill(area, t.accent);
+    if (open) surface.fill(area, t.accent);
     // A machine with a radio is one whose network is the air, whichever
     // interface happens to carry the address.
     surface.icon(
@@ -1514,7 +1565,6 @@ fn paintNetMenu(surface: Surface, width: i32, height: i32) void {
 // ---------------------------------------------------------------------------
 
 var sound_menu: ui.Menu = .{};
-var sound_open = false;
 var level: audio.VolumeInfo = .{ .percent = 0, .muted = 0 };
 /// What to go back to. Silence is a level of zero rather than a flag beside
 /// one, so unmuting has to remember what it was before it was nothing.
@@ -1529,6 +1579,8 @@ var sound_port_count: usize = 0;
 /// Enough for the outputs and inputs a machine of this size has, plus the
 /// programs playing through them.
 const MAX_PORTS = 12;
+/// Every port, and the headings and the settings row around them.
+const SOUND_ROWS = MAX_PORTS + 4;
 fn soundWidth() i32 {
     return theme.enlarged(224);
 }
@@ -1561,8 +1613,9 @@ fn readBattery() void {
 
 fn paintBattery(surface: Surface, area: Rect) void {
     const t = theme.current();
+    const open = showing.reading() == .battery;
 
-    if (power_open) surface.fill(area, t.accent);
+    if (open) surface.fill(area, t.accent);
 
     // No pack, but a lamp: the picture says what the menu is about rather
     // than drawing an empty battery on a machine that has none.
@@ -1572,7 +1625,7 @@ fn paintBattery(surface: Surface, area: Rect) void {
             area.x + @divTrunc(area.w - Surface.iconSize(), 2),
             area.y + @divTrunc(area.h - Surface.iconSize(), 2),
             .display,
-            if (power_open) t.accent_text else t.bar_text,
+            if (open) t.accent_text else t.bar_text,
         );
         return;
     };
@@ -1584,7 +1637,7 @@ fn paintBattery(surface: Surface, area: Rect) void {
     // is the firmware's own threshold rather than a number chosen here.
     const low = p.low != 0 and p.remaining != platform.Battery.UNKNOWN and p.remaining <= p.low;
     const critical = p.critical != 0 or low;
-    const ink = if (power_open)
+    const ink = if (open)
         t.accent_text
     else if (critical)
         t.warning
@@ -1624,7 +1677,6 @@ fn paintBattery(surface: Surface, area: Rect) void {
 // often enough to want it two clicks away: how bright the panel is.
 // ---------------------------------------------------------------------------
 
-var power_open = false;
 var power_menu: ui.Menu = .{};
 var lamp: ?platform.Backlight = null;
 
@@ -1666,6 +1718,9 @@ fn toggleDim() void {
         setLamp(if (lamp_was > 1) lamp_was else panel.max);
     }
 }
+
+/// The pack's state and what is left of it, the lamp, and the settings row.
+const POWER_ROWS = 8;
 
 fn powerItems(into: []ui.MenuItem) []ui.MenuItem {
     var count: usize = 0;
@@ -1736,7 +1791,7 @@ fn powerPanel(width: i32, height: i32) Rect {
         if (slot.which == .battery) anchor = slot.area;
     }
 
-    var rows: [8]ui.MenuItem = undefined;
+    var rows: [POWER_ROWS]ui.MenuItem = undefined;
     const rows_high = ui.Menu.sizeFor(powerItems(&rows), powerWidth()).h;
 
     return popover.place(
@@ -1790,7 +1845,7 @@ fn paintPowerMenu(surface: Surface, width: i32, height: i32) void {
         surface.text(number.x, number.y, spelled, t.text);
     }
 
-    var rows: [8]ui.MenuItem = undefined;
+    var rows: [POWER_ROWS]ui.MenuItem = undefined;
     power_menu.paint(surface, powerRows(panel), powerItems(&rows));
 }
 
@@ -1866,7 +1921,7 @@ fn soundPanel(width: i32, height: i32) Rect {
         if (slot.which == .sound) anchor = slot.area;
     }
 
-    var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+    var rows: [SOUND_ROWS]ui.MenuItem = undefined;
     const list = soundItems(&rows);
     const rows_high = ui.Menu.sizeFor(list, soundWidth()).h;
 
@@ -1882,7 +1937,7 @@ fn soundPanel(width: i32, height: i32) Rect {
 fn paintSound(surface: Surface, area: Rect) void {
     const t = theme.current();
     const which = eui_icon.volume(level.percent, level.muted != 0);
-    const inside = sound_open;
+    const inside = showing.reading() == .sound;
 
     if (inside) surface.fill(area, t.accent);
     surface.icon(
@@ -1920,7 +1975,7 @@ fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {
     const number = strip.reading(bar_area, spelled);
     surface.text(number.x, number.y, spelled, t.text);
 
-    var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
+    var rows: [SOUND_ROWS]ui.MenuItem = undefined;
     sound_menu.paint(surface, strip.below(panel), soundItems(&rows));
 }
 
@@ -1960,7 +2015,6 @@ fn percentText(buf: []u8, value: u8) []const u8 {
 // the clock actually wants to know.
 // ---------------------------------------------------------------------------
 
-var clock_open = false;
 var clock_menu: ui.Menu = .{};
 
 /// The lines, held rather than built into the rows: a menu item borrows the
@@ -1973,7 +2027,7 @@ var clock_source: [40]u8 = @splat(0);
 var clock_source_len: usize = 0;
 
 pub fn clockOpen() bool {
-    return clock_open;
+    return showing.reading() == .clock;
 }
 
 /// Read the clock and spell it out. Called whenever the menu is drawn, since
@@ -2040,6 +2094,9 @@ fn readClockSource() void {
     clock_source_len = line.done().len;
 }
 
+/// The date, the time, a rule and where the clock is set from.
+const CLOCK_ROWS = 4;
+
 fn clockItems(into: []ui.MenuItem) []ui.MenuItem {
     var n: usize = 0;
 
@@ -2071,7 +2128,7 @@ fn clockPanel(width: i32, height: i32) Rect {
         if (slot.which == .clock) anchor = slot.area;
     }
 
-    var rows: [4]ui.MenuItem = undefined;
+    var rows: [CLOCK_ROWS]ui.MenuItem = undefined;
     const shown = clockItems(&rows);
     const size = ui.Menu.sizeFor(shown, clockWidth(shown));
 
@@ -2100,7 +2157,7 @@ fn clockWidth(rows: []const ui.MenuItem) i32 {
 
 fn paintClockMenu(surface: Surface, width: i32, height: i32) void {
     readClock();
-    var rows: [4]ui.MenuItem = undefined;
+    var rows: [CLOCK_ROWS]ui.MenuItem = undefined;
     clock_menu.paint(surface, clockPanel(width, height), clockItems(&rows));
 }
 
@@ -2163,130 +2220,46 @@ pub const Action = union(enum) {
 
 pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *layout.Desktop) Action {
 
-    // A menu is modal while open: a click outside dismisses it rather than
-    // doing two things at once.
-    if (launcher.open) {
-        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-        const at = launcherPanel(width, height);
-        if (launcher_query.slice().len == 0 and at.rail.contains(x, y)) return .consumed;
-        const chosen = launcher.itemAt(launcherList(at), menuItems(&rows), x, y);
-        launcher.hide();
-        keyboard_focus = false;
-        // The row is the nth of the category being shown, not the nth of
-        // everything: the mapping is the one the list was built with.
-        if (chosen) |row| {
-            if (launcherChoice(row)) |choice| return activate(choice);
-        }
-        return .consumed;
-    }
+    // A panel is modal while it is open: a click outside dismisses it rather
+    // than doing two things at once.
+    switch (showing) {
+        .none => {},
 
-    if (menu_tab) |tab| {
-        var buf: [layout.MAX_WINDOWS]usize = undefined;
-        const list = desktop.windowsOn(tab, &buf);
-        const area = menuRect(width, height, desktop, tab);
-
-        var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
-        for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
-
-        if (ui.Menu.rowAt(area, rows[0..list.len], x, y)) |row| {
-            menu_tab = null;
-            // Right-click closes the window the row names; left-click goes to
-            // it. Two verbs, one list, no second menu.
-            if (right) return .{ .close_window = list[row] };
-            desktop.viewWindow(list[row]);
-            return .consumed;
-        }
-        menu_tab = null;
-        return .consumed;
-    }
-
-    if (net_open) {
-        var rows: [NET_ROWS]ui.MenuItem = undefined;
-        const list = netItems(&rows);
-        const chosen = ui.Menu.rowAt(netPanel(width, height), list, x, y);
-        net_open = false;
-        // A heard network joins; the last row is where the settings are.
-        if (chosen) |row| {
-            if (list[row].kind == .item) {
-                if (heardAt(row)) |index| {
-                    joinHeard(index);
-                } else {
-                    _ = sys.spawnDetached("/bin/settings", &.{ "settings", "network" });
-                }
+        .launcher => {
+            var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
+            const at = launcherPanel(width, height);
+            if (launcher_query.slice().len == 0 and at.rail.contains(x, y)) return .consumed;
+            const chosen = launcher.itemAt(launcherList(at), menuItems(&rows), x, y);
+            showing = .none;
+            keyboard_focus = false;
+            // The row is the nth of the category being shown, not the nth of
+            // everything: the mapping is the one the list was built with.
+            if (chosen) |row| {
+                if (launcherChoice(row)) |choice| return activate(choice);
             }
-        }
-        return .consumed;
-    }
-
-    // Nothing in the clock's menu acts. It is a reading, and any click puts
-    // it away.
-    if (clock_open) {
-        clock_open = false;
-        return .consumed;
-    }
-
-    if (power_open) {
-        const panel = powerPanel(width, height);
-
-        if (lamp) |panel_light| {
-            const bar_area = strip.of(panel);
-            if (strip.button(bar_area).contains(x, y)) {
-                toggleDim();
-                return .consumed;
-            }
-
-            var buf: [16]u8 = @splat(0);
-            const groove = strip.track(bar_area, lampText(&buf));
-            if (groove.contains(x, y)) {
-                const range = slider.Range{ .min = 1, .max = @intCast(panel_light.max) };
-                setLamp(@intCast(slider.valueAt(groove, range, x)));
-                return .consumed;
-            }
-        }
-
-        var rows: [8]ui.MenuItem = undefined;
-        const list = powerItems(&rows);
-        const chosen = ui.Menu.rowAt(powerRows(panel), list, x, y);
-        power_open = false;
-        // The one row that acts is the last: where the settings are.
-        if (chosen) |row| {
-            if (list[row].kind == .item) {
-                _ = sys.spawnDetached("/bin/settings", &.{ "settings", "power" });
-            }
-        }
-        return .consumed;
-    }
-
-    if (sound_open) {
-        const panel = soundPanel(width, height);
-
-        const bar_area = strip.of(panel);
-        if (strip.button(bar_area).contains(x, y)) {
-            toggleSilence();
             return .consumed;
-        }
+        },
 
-        // The groove: dragging the level is the thing this menu is opened
-        // for most often, and it stays open while it is done. Setting a
-        // level on a silenced machine is asking to hear that level, so it
-        // stops being silent and keeps where the pointer put it.
-        var text: [5]u8 = @splat(0);
-        const groove = strip.track(bar_area, percentText(&text, level.percent));
-        if (groove.contains(x, y)) {
-            const wanted = slider.valueAt(groove, .{ .min = 0, .max = 100 }, x);
-            if (audio.setMaster(@intCast(wanted), false)) readSound();
+        .windows => |tab| {
+            var buf: [layout.MAX_WINDOWS]usize = undefined;
+            const list = desktop.windowsOn(tab, &buf);
+            const area = menuRect(width, height, desktop, tab);
+
+            var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+            for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+
+            const chosen = ui.Menu.rowAt(area, rows[0..list.len], x, y);
+            showing = .none;
+            if (chosen) |row| {
+                // Right-click closes the window the row names; left-click goes
+                // to it. Two verbs, one list, no second menu.
+                if (right) return .{ .close_window = list[row] };
+                desktop.viewWindow(list[row]);
+            }
             return .consumed;
-        }
+        },
 
-        var rows: [MAX_PORTS + 4]ui.MenuItem = undefined;
-        const list = soundItems(&rows);
-        if (ui.Menu.rowAt(strip.below(panel), list, x, y)) |row| {
-            chooseSound(row);
-            return .consumed;
-        }
-
-        sound_open = false;
-        return .consumed;
+        .status => |which| return statusClick(which, x, y, width, height),
     }
 
     if (!contains(y, height)) return .none;
@@ -2319,8 +2292,7 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
         if (right) return .{ .close_desktop = tag };
 
         if (desktop.countOn(tag) > 1 and x >= area.right() - markerWidth()) {
-            menu_tab = tag;
-            window_menu.show();
+            openWindows(tag, desktop);
         } else {
             desktop.view(tag);
         }
@@ -2328,6 +2300,131 @@ pub fn click(x: i32, y: i32, width: i32, height: i32, right: bool, desktop: *lay
     }
 
     return .consumed;
+}
+
+/// A click while one of the readings is open.
+///
+/// These panels read rather than act, bar the row that leads to the settings
+/// and the sliders two of them carry. Any other click puts the panel away,
+/// which is what makes them modal.
+fn statusClick(which: status.Indicator, x: i32, y: i32, width: i32, height: i32) Action {
+    switch (which) {
+        .network => {
+            var rows: [NET_ROWS]ui.MenuItem = undefined;
+            const list = netItems(&rows);
+            const chosen = ui.Menu.rowAt(netPanel(width, height), list, x, y);
+            showing = .none;
+            // A heard network joins; the last row is where the settings are.
+            if (chosen) |row| {
+                if (list[row].kind == .item) {
+                    if (heardAt(row)) |index| {
+                        joinHeard(index);
+                    } else {
+                        openSettings(settingsFor(which));
+                    }
+                }
+            }
+        },
+
+        .sound => {
+            const at = soundPanel(width, height);
+            const bar_area = strip.of(at);
+            if (strip.button(bar_area).contains(x, y)) {
+                toggleSilence();
+                return .consumed;
+            }
+
+            // The groove: dragging the level is the thing this menu is opened
+            // for most often, and it stays open while it is done. Setting a
+            // level on a silenced machine is asking to hear that level, so it
+            // stops being silent and keeps where the pointer put it.
+            var text: [5]u8 = @splat(0);
+            const groove = strip.track(bar_area, percentText(&text, level.percent));
+            if (groove.contains(x, y)) {
+                const wanted = slider.valueAt(groove, .{ .min = 0, .max = 100 }, x);
+                if (audio.setMaster(@intCast(wanted), false)) readSound();
+                return .consumed;
+            }
+
+            var rows: [SOUND_ROWS]ui.MenuItem = undefined;
+            const list = soundItems(&rows);
+            if (ui.Menu.rowAt(strip.below(at), list, x, y)) |row| {
+                chooseSound(row);
+                return .consumed;
+            }
+            showing = .none;
+        },
+
+        .battery => {
+            const at = powerPanel(width, height);
+
+            if (lamp) |panel_light| {
+                const bar_area = strip.of(at);
+                if (strip.button(bar_area).contains(x, y)) {
+                    toggleDim();
+                    return .consumed;
+                }
+
+                var buf: [16]u8 = @splat(0);
+                const groove = strip.track(bar_area, lampText(&buf));
+                if (groove.contains(x, y)) {
+                    const range = slider.Range{ .min = 1, .max = @intCast(panel_light.max) };
+                    setLamp(@intCast(slider.valueAt(groove, range, x)));
+                    return .consumed;
+                }
+            }
+
+            var rows: [POWER_ROWS]ui.MenuItem = undefined;
+            const list = powerItems(&rows);
+            const chosen = ui.Menu.rowAt(powerRows(at), list, x, y);
+            showing = .none;
+            // The one row that acts is the last: where the settings are.
+            if (chosen) |row| {
+                if (list[row].kind == .item) openSettings(settingsFor(which));
+            }
+        },
+
+        // Nothing in the clock's panel acts. It is a reading, and any click
+        // puts it away.
+        .clock => showing = .none,
+    }
+    return .consumed;
+}
+
+/// Open the menu of the windows on `tab`.
+fn openWindows(tab: u8, desktop: *const layout.Desktop) void {
+    var buf: [layout.MAX_WINDOWS]usize = undefined;
+    const list = desktop.windowsOn(tab, &buf);
+
+    var rows: [layout.MAX_WINDOWS]ui.MenuItem = undefined;
+    for (list, 0..) |index, k| rows[k] = .{ .label = desktop.windows[index].name() };
+
+    showing = .{ .windows = tab };
+    window_menu.selectFirst(rows[0..list.len]);
+}
+
+/// Which settings section a reading belongs to. The clock has none of its
+/// own, so for that one the application opens where it opens.
+fn settingsFor(which: status.Indicator) ?panes.Section {
+    return switch (which) {
+        .network => .network,
+        .sound => .audio,
+        .battery => .power,
+        .clock => null,
+    };
+}
+
+/// Open the settings, at a section when one is named.
+///
+/// Named by the enum the application parses rather than by a string written
+/// here, so a section renamed there is a build error rather than a row that
+/// opens on the wrong pane.
+fn openSettings(section: ?panes.Section) void {
+    if (section) |which| {
+        _ = sys.spawnDetached("/bin/settings", &.{ "settings", @tagName(which) });
+    } else {
+        _ = sys.spawnDetached("/bin/settings", &.{"settings"});
+    }
 }
 
 /// Carry out a menu choice. Spawning happens here; anything that ends the
@@ -2399,83 +2496,90 @@ pub fn takePending() Action {
     return action;
 }
 
+/// A key while the launcher is open. Most of them go into the query: this
+/// panel is for reaching a program by naming it, which is the difference
+/// between a launcher and a menu.
+fn launcherKey(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: *layout.Desktop) KeyResult {
+    var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
+
+    if (code == .backspace) {
+        if (launcher_query.backspace()) {
+            launcher.selected = 0;
+            refreshFound(desktop);
+        }
+        return .handled;
+    }
+    if (printable(codepoint)) {
+        if (launcher_query.push(@intCast(codepoint))) {
+            launcher.selected = 0;
+            refreshFound(desktop);
+        }
+        return .handled;
+    }
+    // Escape clears a query before it closes the panel: one keystroke to
+    // undo a search is what a person expects, and closing on the first
+    // press throws away the panel as well.
+    if (code == .escape and launcher_query.clear()) {
+        launcher.selected = 0;
+        refreshFound(desktop);
+        return .handled;
+    }
+
+    // Left and right walk the categories, and so does tab, which is
+    // what the drawings show: the rail is a list too, and a launcher
+    // reachable only by pointer stops working when the touchpad does.
+    //
+    // The list itself needs no left and right. Its rows are dealt down
+    // one column before the next, so the down arrow that reaches the
+    // bottom of the first column reaches the top of the second.
+    const forward = code == .right or code == .tab;
+    if (launcher_query.slice().len == 0 and (forward or code == .left)) {
+        const all = std.enums.values(Category);
+        const at = @intFromEnum(launcher_category);
+        const step: usize = if (forward) 1 else all.len - 1;
+        launcher_category = all[(at + step) % all.len];
+        launcher_rail.selected = @intFromEnum(launcher_category);
+        launcher.selected = 0;
+        return .handled;
+    }
+
+    switch (launcher.key(code, menuItems(&rows))) {
+        .chosen => {
+            const chosen = launcher.selected;
+            showing = .none;
+            keyboard_focus = false;
+            if (launcherChoice(chosen)) |choice| {
+                // Held with shift, a file opens where it lives rather
+                // than in whatever opens it: the answer to "where is
+                // that?" as often as to "show me that".
+                pending = if (mods.shift) reveal(choice) else activate(choice);
+            }
+            return .released;
+        },
+        .cancelled => {
+            showing = .none;
+            keyboard_focus = false;
+            return .released;
+        },
+        .moved => return .handled,
+        .ignored => return .ignored,
+    }
+}
+
 /// Drive the bar from the keyboard. Everything the mouse can do here, the
 /// keyboard can: a taskbar reachable only by pointer is a taskbar that stops
 /// working the moment the touchpad does.
 pub fn key(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: *layout.Desktop) KeyResult {
     if (!keyboard_focus) return .ignored;
 
-    if (launcher.open) {
-        var rows: [MAX_LAUNCHER_ROWS]ui.MenuItem = undefined;
-
-        // Typing narrows the list. This is what the panel is for: reaching a
-        // program by naming it rather than by finding it, which is the whole
-        // difference between a launcher and a menu.
-        if (code == .backspace) {
-            if (launcher_query.backspace()) {
-                launcher.selected = 0;
-                refreshFound(desktop);
-            }
-            return .handled;
-        }
-        if (printable(codepoint)) {
-            if (launcher_query.push(@intCast(codepoint))) {
-                launcher.selected = 0;
-                refreshFound(desktop);
-            }
-            return .handled;
-        }
-        // Escape clears a query before it closes the panel: one keystroke to
-        // undo a search is what a person expects, and closing on the first
-        // press throws away the panel as well.
-        if (code == .escape and launcher_query.clear()) {
-            launcher.selected = 0;
-            refreshFound(desktop);
-            return .handled;
-        }
-
-        // Left and right walk the categories, and so does tab, which is
-        // what the drawings show: the rail is a list too, and a launcher
-        // reachable only by pointer stops working when the touchpad does.
-        //
-        // The list itself needs no left and right. Its rows are dealt down
-        // one column before the next, so the down arrow that reaches the
-        // bottom of the first column reaches the top of the second.
-        const forward = code == .right or code == .tab;
-        if (launcher_query.slice().len == 0 and (forward or code == .left)) {
-            const all = std.enums.values(Category);
-            const at = @intFromEnum(launcher_category);
-            const step: usize = if (forward) 1 else all.len - 1;
-            launcher_category = all[(at + step) % all.len];
-            launcher_rail.selected = @intFromEnum(launcher_category);
-            launcher.selected = 0;
-            return .handled;
-        }
-
-        switch (launcher.key(code, menuItems(&rows))) {
-            .chosen => {
-                const chosen = launcher.selected;
-                launcher.hide();
-                keyboard_focus = false;
-                if (launcherChoice(chosen)) |choice| {
-                    // Held with shift, a file opens where it lives rather
-                    // than in whatever opens it: the answer to "where is
-                    // that?" as often as to "show me that".
-                    pending = if (mods.shift) reveal(choice) else activate(choice);
-                }
-                return .released;
-            },
-            .cancelled => {
-                keyboard_focus = false;
-                return .released;
-            },
-            .moved => return .handled,
-            .ignored => return .ignored,
-        }
+    // Whatever is open takes the keys while it stands, the way it takes the
+    // clicks: one panel, one place that drives it.
+    switch (showing) {
+        .launcher => return launcherKey(code, codepoint, mods, desktop),
+        .windows => |tab| return menuKey(code, desktop, tab),
+        .status => |which| return statusMenuKey(code, which),
+        .none => {},
     }
-
-    if (menu_tab) |tab| return menuKey(code, desktop, tab);
-    if (statusMenuOpen()) return statusMenuKey(code);
     if (focus_status) |which| return statusKey(code, desktop, which);
 
     switch (code) {
@@ -2492,16 +2596,15 @@ pub fn key(code: sys.KeyCode, codepoint: u32, mods: sys.Modifiers, desktop: *lay
         // end of the same traversal.
         .right => {
             if (onLastTab(desktop)) {
-                focus_status = 0;
+                var buf: [status.MAX]status.Indicator = undefined;
+                const readings = shownNow(&buf);
+                if (readings.len > 0) focus_status = readings[0];
             } else {
                 focus_tab = neighbourTab(desktop, focus_tab, 1);
             }
         },
         .down => {
-            if (desktop.countOn(focus_tab) > 1) {
-                menu_tab = focus_tab;
-                window_menu.show();
-            }
+            if (desktop.countOn(focus_tab) > 1) openWindows(focus_tab, desktop);
         },
         .enter, .space => {
             desktop.view(focus_tab);
@@ -2525,18 +2628,29 @@ fn onLastTab(desktop: *const layout.Desktop) bool {
 }
 
 /// The keyboard is on one of the readings at the right end.
-fn statusKey(code: sys.KeyCode, desktop: *layout.Desktop, which: usize) KeyResult {
+///
+/// Along the readings this machine actually shows, so the walk cannot stop on
+/// a reading that is not drawn.
+fn statusKey(code: sys.KeyCode, desktop: *layout.Desktop, which: status.Indicator) KeyResult {
+    var buf: [status.MAX]status.Indicator = undefined;
+    const readings = shownNow(&buf);
+    const at = std.mem.indexOfScalar(status.Indicator, readings, which) orelse 0;
+
     switch (code) {
         .left => {
-            if (which == 0) {
+            if (at == 0) {
                 focus_status = null;
                 focus_tab = desktop.tag;
             } else {
-                focus_status = which - 1;
+                focus_status = readings[at - 1];
             }
         },
-        .right => focus_status = @min(which + 1, status.MAX - 1),
-        .enter, .space, .down => openStatus(std.enums.values(status.Indicator)[which]),
+        // The last reading is the end of the walk: there is nothing to the
+        // right of the clock.
+        .right => {
+            if (at + 1 < readings.len) focus_status = readings[at + 1];
+        },
+        .enter, .space, .down => openStatus(which),
         .escape => {
             unfocus();
             return .released;
@@ -2546,31 +2660,47 @@ fn statusKey(code: sys.KeyCode, desktop: *layout.Desktop, which: usize) KeyResul
     return .handled;
 }
 
-/// Open whatever a reading has to say, whichever way it was asked.
+/// Open whatever a reading has to say, whichever way it was asked. The
+/// reading is taken here rather than where the panel is drawn, so what goes
+/// up is what the machine said at the moment it was asked for.
 fn openStatus(which: status.Indicator) void {
-    switch (which) {
-        .sound => {
+    var rows: [MAX_PANEL_ROWS]ui.MenuItem = undefined;
+    const list = switch (which) {
+        .sound => blk: {
             readSound();
-            sound_open = true;
-            sound_menu.show();
+            break :blk soundItems(rows[0..SOUND_ROWS]);
         },
-        .network => {
+        .network => blk: {
             readNetwork();
-            net_open = true;
-            net_menu.show();
+            break :blk netItems(rows[0..NET_ROWS]);
         },
-        .battery => {
+        .battery => blk: {
             readPower();
-            power_open = true;
-            power_menu.show();
+            break :blk powerItems(rows[0..POWER_ROWS]);
         },
-        .clock => {
+        .clock => blk: {
             readClock();
             readClockSource();
-            clock_open = true;
-            clock_menu.show();
+            break :blk clockItems(rows[0..CLOCK_ROWS]);
         },
-    }
+    };
+
+    showing = .{ .status = which };
+    menuFor(which).selectFirst(list);
+}
+
+/// The most rows any of the readings' panels holds. One buffer serves all
+/// four, since only one of them is ever open.
+const MAX_PANEL_ROWS = @max(SOUND_ROWS, NET_ROWS, POWER_ROWS, CLOCK_ROWS);
+
+/// The menu holding the highlight for a reading's panel.
+fn menuFor(which: status.Indicator) *ui.Menu {
+    return switch (which) {
+        .sound => &sound_menu,
+        .network => &net_menu,
+        .battery => &power_menu,
+        .clock => &clock_menu,
+    };
 }
 
 /// The pack has reached the level somebody asked to be told about.
@@ -2578,44 +2708,34 @@ fn openStatus(which: status.Indicator) void {
 /// The warning is the reading itself, opened where the reading lives: a
 /// message that said "battery low" and nothing else would send somebody to
 /// this panel anyway.
+///
+/// Not over something already open. This arrives on a timer rather than from
+/// anything the person at the machine did, and taking away the panel they
+/// are reading to say the battery is low is worse than saying it a minute
+/// later when they have closed it.
 pub fn warnBattery() void {
-    if (power_open) return;
+    if (menuOpen()) return;
     openStatus(.battery);
-}
-
-fn statusMenuOpen() bool {
-    return sound_open or net_open or power_open or clock_open;
 }
 
 /// Every one of these panels reads rather than acts, bar the one row that
 /// leads to the settings, so the keys they take are the ones that put them
 /// away and the one that follows that row.
-fn statusMenuKey(code: sys.KeyCode) KeyResult {
+fn statusMenuKey(code: sys.KeyCode, which: status.Indicator) KeyResult {
     switch (code) {
         .escape, .left => {
-            closeStatusMenus();
+            showing = .none;
             return .handled;
         },
         .enter, .space => {
-            const to = if (power_open) "power" else if (sound_open) "audio" else "";
-            closeStatusMenus();
-            if (to.len == 0) {
-                _ = sys.spawnDetached("/bin/settings", &.{"settings"});
-            } else {
-                _ = sys.spawnDetached("/bin/settings", &.{ "settings", to });
-            }
+            const section = settingsFor(which);
+            showing = .none;
+            openSettings(section);
             unfocus();
             return .released;
         },
         else => return .ignored,
     }
-}
-
-fn closeStatusMenus() void {
-    sound_open = false;
-    net_open = false;
-    power_open = false;
-    clock_open = false;
 }
 
 fn menuKey(code: sys.KeyCode, desktop: *layout.Desktop, tab: u8) KeyResult {
@@ -2636,7 +2756,7 @@ fn menuKey(code: sys.KeyCode, desktop: *layout.Desktop, tab: u8) KeyResult {
             return .released;
         },
         .cancelled => {
-            menu_tab = null;
+            showing = .none;
             return .handled;
         },
         .moved => return .handled,

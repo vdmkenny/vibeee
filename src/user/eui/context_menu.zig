@@ -33,11 +33,11 @@ var at_y: i32 = 0;
 var owner: ?usize = null;
 
 pub fn isOpen() bool {
-    return menu.open;
+    return owner != null;
 }
 
 pub fn openedBy(entry: usize) bool {
-    return menu.open and owner == entry;
+    return owner == entry;
 }
 
 /// Open at the pointer, listing `rows`. The rows are copied: a menu outlives
@@ -55,12 +55,10 @@ pub fn openAt(x: i32, y: i32, entry: usize, rows: []const widget.MenuItem) void 
     at_x = x;
     at_y = y;
     owner = entry;
-    menu.selected = 0;
-    menu.show();
+    menu.selectFirst(items[0..count]);
 }
 
 pub fn close() void {
-    menu.hide();
     owner = null;
 }
 
@@ -95,7 +93,7 @@ fn widthOf() i32 {
 /// Called last in a pass, like any menu: it reaches over what is under it, and
 /// anything drawn afterwards would draw over the menu instead.
 pub fn run(ctx: *widget.Context) ?usize {
-    if (!menu.open) return null;
+    if (owner == null) return null;
 
     const where = area(ctx.surface);
     var chosen: ?usize = null;
