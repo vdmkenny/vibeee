@@ -1284,7 +1284,7 @@ fn netWidth() i32 {
 }
 
 fn readNetwork() void {
-    iface_count = @min(net.interfaceCount(), MAX_IFACES);
+    iface_count = @min(net.interfaceCount() orelse 0, MAX_IFACES);
     radio_index = null;
     for (0..iface_count) |i| {
         ifaces[i] = net.interfaceAt(i) orelse .{};

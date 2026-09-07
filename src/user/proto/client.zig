@@ -399,12 +399,24 @@ pub const Connection = struct {
         const message = sys.Message.init(std.mem.asBytes(req), handles);
         if (sys.callMsg(self.channel, &message, &reply) < 0) return error.Refused;
 
+        // A reply is what it says it holds. Read out of the buffer without
+        // asking, a reply that carried nothing read as zeroes, and a status
+        // of zero is the one that means it worked: a window created from
+        // one is numbered nought, and every later request names a window
+        // the server does not have.
+        const bytes = reply.bytes();
+        if (bytes.len < @sizeOf(wm.Rep)) return error.Refused;
+
         const got = reply.handleSlice();
-        if (got.len < into.len) return error.Refused;
+        if (got.len < into.len) {
+            // Handles the server did send are this process's now, and a
+            // caller that is being told the call failed will not close them.
+            for (got) |handle| _ = sys.close(handle);
+            return error.Refused;
+        }
         @memcpy(into, got[0..into.len]);
 
-        const rep: *const wm.Rep = @ptrCast(@alignCast(&reply.data));
-        return rep.*;
+        return @as(*const wm.Rep, @ptrCast(@alignCast(bytes.ptr))).*;
     }
 };
 

@@ -349,7 +349,7 @@ fn scan(only: ?lib.ifmatch.Match) void {
         if (iface.kind == .radio) has_radio = true else named_a_wire = true;
     }
     if (!has_radio) {
-        say(if (net.interfaceCount() == 0)
+        say(if ((net.interfaceCount() orelse 0) == 0)
             "net: the network service is not answering\n"
         else if (only == null)
             "no wireless adapter in this computer\n"

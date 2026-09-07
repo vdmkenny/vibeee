@@ -419,10 +419,13 @@ pub fn callWith(tag: Tag, index: u32, param: u32, param2: u32, into: *Rep) Error
 
 /// How many interfaces there are, or zero when nothing is serving the
 /// network.
-pub fn interfaceCount() usize {
+/// How many interfaces the service has, or null when the service did not
+/// answer. The two are different things: a machine whose radio is switched
+/// off at the firmware has a service that answers, with nothing in it.
+pub fn interfaceCount() ?usize {
     var reply = Rep{};
-    call(.count, 0, 0, &reply) catch return 0;
-    if (reply.status != .ok) return 0;
+    call(.count, 0, 0, &reply) catch return null;
+    if (reply.status != .ok) return null;
     return reply.body.count;
 }
 
@@ -465,7 +468,7 @@ pub fn watch() Error!u32 {
 /// Whether any interface has an address: whether there is a network to use.
 pub fn haveAddress() bool {
     var index: usize = 0;
-    const total = interfaceCount();
+    const total = interfaceCount() orelse return false;
     while (index < total) : (index += 1) {
         const info = addressOf(index) orelse continue;
         if (info.addr != 0) return true;

@@ -45,8 +45,14 @@ pub const Model = struct {
     /// Ask the service again for the interfaces and bind the slots to them.
     /// The configuration is left as it is.
     pub fn refresh(self: *Model) void {
-        self.count = @min(net.interfaceCount(), MAX_IFACES);
-        self.serving = self.count > 0 or net.interfaceCount() > 0;
+        // Asked once: each ask is a connection, a call and a close, and the
+        // answer cannot change between two of them. Whether the service
+        // answered is not whether it named any interface, which is the one
+        // case this field exists for: a machine whose radio is switched off
+        // at the firmware has a service that answers with nothing.
+        const named = net.interfaceCount();
+        self.serving = named != null;
+        self.count = @min(named orelse 0, MAX_IFACES);
         for (0..self.count) |i| {
             self.ifaces[i] = net.interfaceAt(i) orelse .{};
             self.addresses[i] = net.addressOf(i) orelse .{};
