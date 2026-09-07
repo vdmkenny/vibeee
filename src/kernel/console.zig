@@ -787,11 +787,7 @@ fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: an
     writeString(key);
     setColor(saved, bg);
 
-    // At least one space, so a key exactly KEY_WIDTH long does not run into
-    // its value.
-    var n = key.len;
-    while (n < KEY_WIDTH) : (n += 1) putChar(' ');
-    if (key.len >= KEY_WIDTH) putChar(' ');
+    for (0..keyPadding(key.len)) |_| putChar(' ');
 
     printf(fmt, args);
     putChar('\n');
@@ -839,13 +835,19 @@ fn recordLine(key: []const u8, comptime fmt: []const u8, args: anytype) void {
     klog.append(composeLine(&scratch, key, fmt, args));
 }
 
+/// The spaces between a key and its message: up to the key column's width,
+/// and at least one, so a key as wide as the column does not run into its
+/// value. The screen and the record pad by this alone, so they agree.
+fn keyPadding(key_len: usize) usize {
+    return if (key_len >= KEY_WIDTH) 1 else KEY_WIDTH - key_len;
+}
+
 /// One boot-log line, formatted the way both the record and the mirror
 /// carry it: padded key, message, newline.
 fn composeLine(buf: []u8, key: []const u8, comptime fmt: []const u8, args: anytype) []const u8 {
     var w = std.Io.Writer.fixed(buf);
     w.print("{s}", .{key}) catch {};
-    var n = key.len;
-    while (n < KEY_WIDTH) : (n += 1) w.print(" ", .{}) catch {};
+    for (0..keyPadding(key.len)) |_| w.print(" ", .{}) catch {};
     w.print(fmt, args) catch {};
     w.print("\n", .{}) catch {};
     return buf[0..w.end];
