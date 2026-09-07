@@ -27,7 +27,10 @@ pub const MAX_DIGITS = 1080;
 /// point. Digits are characters, because everything downstream wants
 /// them that way and turning them back would be a second copy.
 pub const Expansion = struct {
-    digits: [MAX_DIGITS]u8 = @splat('0'),
+    /// Zero-filled rather than filled with the digit zero: only `len` of
+    /// them are ever read, and a working space of a thousand bytes that
+    /// starts at anything but zero is a thousand bytes of the image.
+    digits: [MAX_DIGITS]u8 = @splat(0),
     len: usize = 0,
     /// How many of `digits` are the whole part. The rest are the
     /// fraction, so a point would go here.
@@ -74,7 +77,7 @@ const Parts = struct {
 var working: Expansion = .{};
 var whole_digits: Number = .{};
 var frac_digits: Number = .{};
-var built: [MAX_DIGITS + 2]u8 = @splat('0');
+var built: [MAX_DIGITS + 2]u8 = @splat(0);
 
 /// Write a value out exactly, into the shared working space. The result
 /// stands until the next call, which is the same promise `getenv` makes

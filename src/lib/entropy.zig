@@ -154,14 +154,29 @@ pub const Jitter = struct {
         return self.since >= SAMPLES;
     }
 
-    /// Whether the samples differ from each other at all.
+    /// How many of the samples differ from the one that arrived before
+    /// them, which is what the batch is worth in bits.
     ///
-    /// A timer firing on an exact division of a counter gives the same gap
-    /// every time, which is a batch that looks like evidence and is not. Real
-    /// hardware varies because interrupt latency depends on what the machine
-    /// was doing; an emulated one need not.
-    pub fn varied(self: Jitter) bool {
-        return !std.mem.allEqual(Sample, &self.ring, self.ring[0]);
+    /// A gap identical to the one before it says nothing, whatever the rest
+    /// of the ring did: a timer firing on an exact division of a counter
+    /// gives the same gap every time, and a batch of those looks like
+    /// evidence and is not. Real hardware varies because interrupt latency
+    /// depends on what the machine was doing; an emulated one need not, and
+    /// one that varies once in a batch is worth the once.
+    ///
+    /// A bit an interrupt is the most one is worth: what is hard to guess
+    /// about when it landed is a fraction of the gap's low bits, and a whole
+    /// bit for each is already generous. The oldest sample has no
+    /// predecessor in the batch and counts for nothing, which errs the way
+    /// an estimate of surprise should.
+    pub fn surprises(self: Jitter) u32 {
+        var n: u32 = 0;
+        for (1..SAMPLES) |i| {
+            const now = self.ring[(self.at + i) % SAMPLES];
+            const before = self.ring[(self.at + i - 1) % SAMPLES];
+            if (now != before) n += 1;
+        }
+        return n;
     }
 
     /// Stir a batch into a pool and start counting again, and say whether one
@@ -175,16 +190,14 @@ pub const Jitter = struct {
     /// claim a randomness it does not have.
     pub fn drain(self: *Jitter, pool: *Pool) bool {
         if (!self.full()) return false;
-        if (!self.varied()) {
+        const heard = self.surprises();
+        if (heard == 0) {
             // Start again rather than testing the same samples at every
             // interrupt from here.
             self.since = 0;
             return false;
         }
-        // A bit an interrupt: what is hard to guess about when one landed is
-        // a fraction of the gap's low bits, and claiming a whole bit for each
-        // is already generous.
-        pool.credit(std.mem.sliceAsBytes(self.ring[0..]), SAMPLES);
+        pool.credit(std.mem.sliceAsBytes(self.ring[0..]), heard);
         self.since = 0;
         return true;
     }
@@ -348,15 +361,18 @@ test "enough interrupts make a pool ready to draw on" {
     var pool = Pool{};
 
     var ticks: u64 = 0;
-    for (0..Pool.ENOUGH / Jitter.SAMPLES) |round| {
+    var rounds: usize = 0;
+    while (!pool.ready()) : (rounds += 1) {
         for (0..Jitter.SAMPLES) |i| {
-            ticks += 4000 + (round * 13 + i * 7) % 97;
+            ticks += 4000 + (rounds * 13 + i * 7) % 97;
             jitter.sample(ticks);
         }
         try testing.expect(jitter.drain(&pool));
     }
 
-    try testing.expect(pool.ready());
+    // Every gap in these batches differs from the one before it but the
+    // oldest, so each is worth one short of the ring.
+    try testing.expectEqual(Pool.ENOUGH / (Jitter.SAMPLES - 1) + 1, rounds);
     var bytes: [32]u8 = undefined;
     try testing.expect(pool.draw(&bytes));
 }
@@ -388,7 +404,9 @@ test "a batch that is all one value is not evidence of anything" {
     }
     try testing.expectEqual(@as(u32, 0), pool.heard);
 
-    // One interrupt that landed late is enough to make the batch worth having.
+    // One interrupt that landed late is worth having, and worth exactly
+    // itself: the gap that differs from the one before it is the only thing
+    // in the batch that said anything.
     for (0..Jitter.SAMPLES - 1) |_| {
         ticks += 11_931;
         jitter.sample(ticks);
@@ -396,7 +414,18 @@ test "a batch that is all one value is not evidence of anything" {
     ticks += 11_940;
     jitter.sample(ticks);
     try testing.expect(jitter.drain(&pool));
-    try testing.expectEqual(@as(u32, Jitter.SAMPLES), pool.heard);
+    try testing.expectEqual(@as(u32, 1), pool.heard);
+
+    // A batch where every gap differs from the one before it is worth one
+    // for each, but for the oldest, which has nothing in the batch before it.
+    var lively = Jitter{};
+    var busy = Pool{};
+    for (0..Jitter.SAMPLES) |i| {
+        ticks += 11_931 + i;
+        lively.sample(ticks);
+    }
+    try testing.expect(lively.drain(&busy));
+    try testing.expectEqual(@as(u32, Jitter.SAMPLES - 1), busy.heard);
 }
 
 test "a pool is ready once it has seen a bit an interrupt for the size of a seed" {
@@ -412,5 +441,9 @@ test "a pool is ready once it has seen a bit an interrupt for the size of a seed
         jitter.sample(ticks);
         _ = jitter.drain(&pool);
     }
-    try testing.expectEqual(Pool.ENOUGH, seen);
+    // A gap the same as the one before it is worth nothing, and this timing
+    // repeats one gap in every thirteen, so it takes a few more interrupts
+    // than there are bits wanted.
+    try testing.expect(seen >= Pool.ENOUGH);
+    try testing.expect(seen < Pool.ENOUGH * 2);
 }
