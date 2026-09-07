@@ -362,8 +362,23 @@ fn unsigned(out: anytype, value: u64, spec: *Spec, base: u8, upper: bool) void {
 /// The digits, from the one place that turns a number into them. Every
 /// length is widened to sixty-four bits first, so there is one caller here
 /// rather than one per C type.
+///
+/// The four bases C spells are named rather than passed as a number, because
+/// the formatter that writes the digits takes the base as part of what it is
+/// writing: `%o`, `%u`, `%x` and `%X` are four conversions, not one with an
+/// argument.
 fn decimal(into: *[24]u8, value: u64, base: u8, upper: bool) []const u8 {
-    return str.wide(into, value, base, if (upper) .upper else .lower);
+    const written = switch (base) {
+        8 => std.fmt.bufPrint(into, "{o}", .{value}),
+        16 => if (upper)
+            std.fmt.bufPrint(into, "{X}", .{value})
+        else
+            std.fmt.bufPrint(into, "{x}", .{value}),
+        else => std.fmt.bufPrint(into, "{d}", .{value}),
+    };
+    // Twenty-four bytes holds every sixty-four bit value in every base here,
+    // so there is no short answer to give.
+    return written catch into[0..0];
 }
 
 /// Lay a converted value out: the sign or prefix, then the padding, then the

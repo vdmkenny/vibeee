@@ -495,74 +495,57 @@ fn unescape(value: []u8) []u8 {
 /// empty or contain spaces. An earlier parameter that would need one is an
 /// error, since it would parse back as a different line.
 pub fn render(buf: []u8, line: Line) Error![]const u8 {
-    var out: Out = .{ .buf = buf };
+    var out = lib.str.Builder{ .buf = buf };
 
     for (line.tags.slice(), 0..) |item, i| {
-        try out.byte(if (i == 0) '@' else ';');
-        try out.text(item.key);
+        out.byte(if (i == 0) '@' else ';');
+        out.text(item.key);
         // An empty value is written as a bare key, the shorter of the two
         // equivalent spellings.
         if (item.value.len != 0) {
-            try out.byte('=');
-            try out.escaped(item.value);
+            out.byte('=');
+            escaped(&out, item.value);
         }
     }
-    if (line.tags.len != 0) try out.byte(' ');
+    if (line.tags.len != 0) out.byte(' ');
 
     if (line.source) |from| {
-        try out.byte(':');
-        try out.text(from.full);
-        try out.byte(' ');
+        out.byte(':');
+        out.text(from.full);
+        out.byte(' ');
     }
 
     var room: [WORD_MAX]u8 = undefined;
-    try out.text(if (line.word.len != 0) line.word else line.command.spell(&room));
+    out.text(if (line.word.len != 0) line.word else line.command.spell(&room));
 
     for (line.params.slice(), 0..) |item, i| {
         const last = i + 1 == line.params.len;
         const trailing = (last and line.trail) or item.len == 0 or item[0] == ':' or
             std.mem.indexOfScalar(u8, item, ' ') != null;
         if (trailing and !last) return error.BadParam;
-        try out.byte(' ');
-        if (trailing) try out.byte(':');
-        try out.text(item);
+        out.byte(' ');
+        if (trailing) out.byte(':');
+        out.text(item);
     }
 
-    return out.written();
+    // Asked once, at the end. A line cut short is a different line, and every
+    // caller of this wants that answer rather than a partial one.
+    if (!out.whole()) return error.NoRoom;
+    return out.done();
 }
 
-/// A bounds-checked write cursor.
-const Out = struct {
-    buf: []u8,
-    len: usize = 0,
-
-    fn byte(self: *Out, value: u8) Error!void {
-        if (self.len == self.buf.len) return error.NoRoom;
-        self.buf[self.len] = value;
-        self.len += 1;
-    }
-
-    fn text(self: *Out, value: []const u8) Error!void {
-        if (self.len + value.len > self.buf.len) return error.NoRoom;
-        @memcpy(self.buf[self.len..][0..value.len], value);
-        self.len += value.len;
-    }
-
-    fn escaped(self: *Out, value: []const u8) Error!void {
-        for (value) |ch| switch (ch) {
-            ';' => try self.text("\\:"),
-            ' ' => try self.text("\\s"),
-            '\\' => try self.text("\\\\"),
-            '\r' => try self.text("\\r"),
-            '\n' => try self.text("\\n"),
-            else => try self.byte(ch),
-        };
-    }
-
-    fn written(self: *const Out) []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+/// A tag's value, with the five bytes the protocol reserves written as their
+/// escapes. The one thing about building a line that is this file's own.
+fn escaped(out: *lib.str.Builder, value: []const u8) void {
+    for (value) |ch| switch (ch) {
+        ';' => out.text("\\:"),
+        ' ' => out.text("\\s"),
+        '\\' => out.text("\\\\"),
+        '\r' => out.text("\\r"),
+        '\n' => out.text("\\n"),
+        else => out.byte(ch),
+    };
+}
 
 const vectors = @import("vectors.zig");
 const expect = std.testing.expect;
@@ -643,17 +626,17 @@ test "command words parse as replies, verbs or unknown" {
 
 test "more tags than TAG_MAX sets crowded" {
     var buf: [MAX]u8 = undefined;
-    var out: Out = .{ .buf = &buf };
-    try out.byte('@');
+    var out = lib.str.Builder{ .buf = &buf };
+    out.byte('@');
     for (0..TAG_MAX + 4) |i| {
-        if (i != 0) try out.byte(';');
-        try out.text("t");
+        if (i != 0) out.byte(';');
+        out.text("t");
         var digits: [4]u8 = undefined;
-        try out.text(std.fmt.bufPrint(&digits, "{d}", .{i}) catch unreachable);
+        out.text(std.fmt.bufPrint(&digits, "{d}", .{i}) catch unreachable);
     }
-    try out.text(" PRIVMSG #room :hello");
+    out.text(" PRIVMSG #room :hello");
 
-    const line = try parse(buf[0..out.len]);
+    const line = try parse(out.done());
     try expect(line.crowded);
     try expect(line.tags.len == TAG_MAX);
     try expectEqualStrings("hello", line.text());

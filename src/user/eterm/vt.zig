@@ -180,7 +180,7 @@ pub const Terminal = struct {
 
     fn replyNumber(self: *Terminal, value: usize) void {
         var buf: [12]u8 = undefined;
-        self.reply(buf[0..str.decimal(&buf, value)]);
+        self.reply(str.decimal(&buf, value));
     }
 
     fn apply(self: *Terminal, action: parser.Action) void {

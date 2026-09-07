@@ -235,58 +235,15 @@ pub fn containsFold(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-pub const Case = enum { lower, upper };
-
-const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
-
-/// `value` in `base`, written into the tail of `buf` and returned as the slice
-/// it occupies.
+/// `value` in base ten, written into `buf` and returned as the slice it
+/// occupies, or as much of it as fits.
 ///
-/// The one place a number becomes digits. Backwards from the end because
-/// digits come out least significant first, so writing forward would mean
-/// generating them and then reversing them.
-pub fn number(buf: []u8, value: usize, base: u8, case: Case) []const u8 {
-    return render(buf, value, base, case);
-}
-
-/// The same for a value wider than a word, which is what C's `long long` is
-/// on a thirty-two-bit machine. Its own entry because a wide division is a
-/// call per digit there rather than an instruction, and a caller that has a
-/// word should not pay for it.
-pub fn wide(buf: []u8, value: u64, base: u8, case: Case) []const u8 {
-    return render(buf, value, base, case);
-}
-
-/// The loop behind both, compiled once per width it is asked for.
-fn render(buf: []u8, value: anytype, base: u8, case: Case) []const u8 {
-    if (buf.len == 0) return buf[0..0];
-
-    var at = buf.len;
-    var left = value;
-    while (true) {
-        at -= 1;
-        const digit = ALPHABET[@intCast(left % base)];
-        buf[at] = if (case == .upper) upperOf(digit) else digit;
-
-        left /= base;
-        if (left == 0 or at == 0) break;
-    }
-    return buf[at..];
-}
-
-fn upperOf(c: u8) u8 {
-    return if (c >= 'a' and c <= 'z') c - 32 else c;
-}
-
-/// The same in base ten, written from the *start* of `buf`, for a caller
-/// building a string forward. Returns how many bytes it used.
-pub fn decimal(buf: []u8, value: usize) usize {
-    var scratch: [24]u8 = undefined;
-    const written = number(&scratch, value, 10, .lower);
-
-    const n = @min(written.len, buf.len);
-    @memcpy(buf[0..n], written[0..n]);
-    return n;
+/// A number is not text until somebody writes it down, and this is where. The
+/// digits come from `std.fmt`, which knows how to make them; what is here is
+/// the answer a caller with a fixed buffer wants, which is a slice rather than
+/// an error to handle at every use.
+pub fn decimal(buf: []u8, value: usize) []const u8 {
+    return std.fmt.bufPrint(buf, "{d}", .{value}) catch buf[0..0];
 }
 
 /// Whether a short name is stored upper-cased because FAT had nowhere to record
@@ -345,21 +302,30 @@ pub const Builder = struct {
         }
     }
 
+    /// Everything numeric goes through here, and a caller composing something
+    /// this has no word for uses it directly.
+    ///
+    /// `std.Io.Writer` renders the digits; what this adds is the builder's own
+    /// answer to running out of room, which is to keep what fitted and
+    /// remember that the rest did not. A writer that returned an error instead
+    /// would put that decision at every call site rather than at the one place
+    /// that can act on it.
+    pub fn print(self: *Builder, comptime fmt: []const u8, args: anytype) void {
+        var writer = std.Io.Writer.fixed(self.buf[self.len..]);
+        writer.print(fmt, args) catch {
+            self.cut = true;
+        };
+        self.len += writer.end;
+    }
+
     pub fn number(self: *Builder, value: usize) void {
-        const at = self.len;
-        self.len += decimal(self.buf[self.len..], value);
-        if (self.len == at) self.cut = true;
+        self.print("{d}", .{value});
     }
 
     /// A fixed width of hexadecimal digits, zero-padded. What every
     /// hardware identifier is written as, so it is written once.
     pub fn hex(self: *Builder, value: usize, digits: usize) void {
-        var i = digits;
-        while (i > 0) {
-            i -= 1;
-            const nibble: u8 = @intCast((value >> @intCast(i * 4)) & 0xF);
-            self.byte(ALPHABET[nibble]);
-        }
+        self.print("{[value]x:0>[digits]}", .{ .value = value, .digits = digits });
     }
 
     /// A number and its unit, the pair that always travels together.
@@ -378,18 +344,13 @@ pub const Builder = struct {
 
     /// A number that may be negative, with a sign only when it is.
     pub fn integer(self: *Builder, value: isize) void {
-        if (value < 0) self.byte('-');
-        self.number(@abs(value));
+        self.print("{d}", .{value});
     }
 
     /// A count of hundredths as a number with two places, `5.00`: what a
     /// weight in pounds is kept as, so half a pound is exact.
     pub fn hundredths(self: *Builder, value: usize) void {
-        self.number(value / 100);
-        self.byte('.');
-        const rest = value % 100;
-        if (rest < 10) self.byte('0');
-        self.number(rest);
+        self.print("{d}.{d:0>2}", .{ value / 100, value % 100 });
     }
 
     pub fn bytes(self: *Builder, value: usize) void {
@@ -442,6 +403,15 @@ pub const Builder = struct {
         }
         self.number(seconds % 60);
         self.byte('s');
+    }
+
+    /// Hand the unused tail to something that formats for itself, and take up
+    /// however much of it was used. For a value whose shape belongs to whoever
+    /// holds it rather than to this.
+    pub fn delegate(self: *Builder, f: *const fn (*std.Io.Writer) void) void {
+        var stream = std.Io.Writer.fixed(self.buf[self.len..]);
+        f(&stream);
+        self.len += stream.end;
     }
 
     /// Whether everything written fits. A caller building a path asks
@@ -524,15 +494,15 @@ test "collapseSpaces trims the ends and reduces every internal run to one" {
     try std.testing.expectEqualStrings("x", collapseSpaces(&single));
 }
 
-test "a number is written in full whether it is a word or wider" {
+test "a number becomes its digits, and a buffer too small gives none" {
     var buf: [24]u8 = undefined;
-    try std.testing.expectEqualStrings("0", number(&buf, 0, 10, .lower));
-    try std.testing.expectEqualStrings("255", number(&buf, 255, 10, .lower));
-    try std.testing.expectEqualStrings("ff", number(&buf, 255, 16, .lower));
-    try std.testing.expectEqualStrings("0", wide(&buf, 0, 10, .lower));
-    try std.testing.expectEqualStrings("18446744073709551615", wide(&buf, std.math.maxInt(u64), 10, .lower));
-    try std.testing.expectEqualStrings("FFFFFFFFFFFFFFFF", wide(&buf, std.math.maxInt(u64), 16, .upper));
-    try std.testing.expectEqualStrings("1777777777777777777777", wide(&buf, std.math.maxInt(u64), 8, .lower));
+    try std.testing.expectEqualStrings("0", decimal(&buf, 0));
+    try std.testing.expectEqualStrings("255", decimal(&buf, 255));
+
+    // Nothing rather than the first few: half a number reads as a different
+    // number, where half a label still reads as the label.
+    var tiny: [2]u8 = undefined;
+    try std.testing.expectEqualStrings("", decimal(&tiny, 12345));
 }
 
 test "the builder writes hardware identifiers at a fixed width" {

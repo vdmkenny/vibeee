@@ -332,10 +332,9 @@ fn wallpaper(area: eui.Rect) i32 {
         };
 
         var reading: [4]u8 = undefined;
-        const digits = str.decimal(&reading, channel.*);
         ctx.label(
             .{ .x = at.right() + pad, .y = top + 4, .w = value_w, .h = 16 },
-            reading[0..digits],
+            str.decimal(&reading, channel.*),
         );
 
         const wanted = ctx.slider(at, .{ .min = 0, .max = 255 }, channel.*, .{ .fill = tints[i] });

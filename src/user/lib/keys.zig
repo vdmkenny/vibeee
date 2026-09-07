@@ -124,7 +124,7 @@ fn formOf(code: KeyCode) ?Form {
 /// arrive as `SS3 A` and cannot be confused with a literal `Escape [ A` typed
 /// by hand.
 pub fn key(code: KeyCode, mods: Modifiers, application: bool, out: []u8) []const u8 {
-    var w = Writer{ .buf = out };
+    var w = Writer{ .out = .{ .buf = out } };
     const form = formOf(code) orelse return w.done();
 
     switch (form) {
@@ -161,7 +161,7 @@ pub fn typed(codepoint: u32, mods: Modifiers) ?u32 {
 /// Control chords are decided here rather than from the keycode, so `Ctrl+C`
 /// is the key printed `C` whatever the layout puts there.
 pub fn text(codepoint: u32, mods: Modifiers, out: []u8) []const u8 {
-    var w = Writer{ .buf = out };
+    var w = Writer{ .out = .{ .buf = out } };
 
     if (mods.control) {
         const code = controlFor(codepoint) orelse return w.done();
@@ -443,24 +443,26 @@ fn ended(ending: u8, took: usize, number: u32, mods: Modifiers) Reading {
     return .{ .skip = took };
 }
 
+/// The escape sequence being built, and the two things a key turns into that
+/// only this file knows about.
+///
+/// The bytes are `str.Builder`'s: a fixed buffer that keeps what fits and
+/// remembers what did not is what every one of these is, and one written here
+/// grew its own digits, its own bounds check and its own idea of what running
+/// out means.
 const Writer = struct {
-    buf: []u8,
-    len: usize = 0,
+    out: str.Builder,
 
     fn byte(self: *Writer, c: u8) void {
-        if (self.len < self.buf.len) {
-            self.buf[self.len] = c;
-            self.len += 1;
-        }
+        self.out.byte(c);
     }
 
     fn text(self: *Writer, s: []const u8) void {
-        for (s) |c| self.byte(c);
+        self.out.text(s);
     }
 
     fn number(self: *Writer, value: u32) void {
-        var buf: [12]u8 = undefined;
-        self.text(buf[0..str.decimal(&buf, value)]);
+        self.out.number(value);
     }
 
     fn codepoint(self: *Writer, cp: u32) void {
@@ -495,7 +497,7 @@ const Writer = struct {
     }
 
     fn done(self: *const Writer) []const u8 {
-        return self.buf[0..self.len];
+        return self.out.done();
     }
 };
 

@@ -1360,9 +1360,9 @@ fn askLevelUp() void {
 
 fn levelUp(hp: i32) void {
     var level_text: [4]u8 = @splat(0);
-    append(hero.writeFact(&line_buffer, .level, str.number(&level_text, sheet.level + 1, 10, .lower)));
+    append(hero.writeFact(&line_buffer, .level, str.decimal(&level_text, sheet.level + 1)));
     var hp_text: [6]u8 = @splat(0);
-    append(hero.writeFact(&line_buffer, .hp, str.number(&hp_text, @intCast(@max(hp, 1)), 10, .lower)));
+    append(hero.writeFact(&line_buffer, .hp, str.decimal(&hp_text, @intCast(@max(hp, 1)))));
 }
 
 /// Take back the last line written since the last save. Nothing on the
@@ -2005,7 +2005,7 @@ fn drawAbility(surface: Surface, box: Rect, ability: hero.Ability) void {
     }
 
     var num: [4]u8 = @splat(0);
-    eui.figure.paint(surface, box, ability.word(), str.number(&num, sheet.scores.get(ability), 10, .lower), null);
+    eui.figure.paint(surface, box, ability.word(), str.decimal(&num, sheet.scores.get(ability)), null);
 
     // The modifier beside the score, and the save under it with a pip filled
     // when it is proficient.
@@ -2077,9 +2077,9 @@ fn drawCombat(area: Rect) void {
     var ac_text: [8]u8 = @splat(0);
     var init_text: [8]u8 = @splat(0);
     var speed_text: [8]u8 = @splat(0);
-    eui.figure.paint(surface, .{ .x = area.x, .y = area.y, .w = tile_w, .h = tile_h }, "Armour class", str.number(&ac_text, sheet.ac, 10, .lower), &shield);
+    eui.figure.paint(surface, .{ .x = area.x, .y = area.y, .w = tile_w, .h = tile_h }, "Armour class", str.decimal(&ac_text, sheet.ac), &shield);
     eui.figure.paint(surface, .{ .x = area.x + tile_w + gap, .y = area.y, .w = tile_w, .h = tile_h }, "Initiative", signedText(&init_text, sheet.modifier(.dex)), &bolt);
-    eui.figure.paint(surface, .{ .x = area.x + (tile_w + gap) * 2, .y = area.y, .w = tile_w, .h = tile_h }, "Speed", str.number(&speed_text, sheet.speed, 10, .lower), &pace);
+    eui.figure.paint(surface, .{ .x = area.x + (tile_w + gap) * 2, .y = area.y, .w = tile_w, .h = tile_h }, "Speed", str.decimal(&speed_text, sheet.speed), &pace);
 
     // Two columns: what keeps the character standing, and what happens when
     // it stops.
@@ -2342,7 +2342,7 @@ fn drawGear(area: Rect) void {
     for (list, 0..) |it, i| {
         var row = eui.table.Row{};
         row.cells[0] = it.name;
-        row.cells[1] = str.number(&item_cells[i][0], it.quantity, 10, .lower);
+        row.cells[1] = str.decimal(&item_cells[i][0], it.quantity);
         row.cells[2] = pounds(&item_cells[i][1], @as(u32, it.quantity) * it.weight_cp);
         item_rows[i] = row;
     }

@@ -11,6 +11,7 @@
 //! plumbing rather than the meaning.
 
 const std = @import("std");
+const str = @import("lib").str;
 const block = @import("block.zig");
 const console = @import("console.zig");
 const display = @import("display.zig");
@@ -81,33 +82,33 @@ pub const Error = error{ UnknownKey, NoSpace };
 
 /// Write the value for `key` into `buf`, returning the number of bytes.
 pub fn query(key: []const u8, buf: []u8) Error!usize {
-    var w = Writer{ .buf = buf };
+    var w = str.Builder{ .buf = buf };
 
     if (eq(key, "kernel")) {
-        try w.print("vibeee {s}", .{VERSION});
+        w.print("vibeee {s}", .{VERSION});
     } else if (eq(key, "cmdline")) {
         if (platform.cmdline.len == 0) return error.UnknownKey;
-        try w.print("{s}", .{platform.cmdline});
+        w.print("{s}", .{platform.cmdline});
     } else if (eq(key, "log.verbose")) {
         // The two gates services log under, so their lines follow the
         // kernel's own: one `verbose` on the command line decides for the
         // whole boot, and one `debug` for the fault-chasing tier beneath it.
-        try w.print("{d}", .{@intFromBool(console.isVerbose())});
+        w.print("{d}", .{@intFromBool(console.isVerbose())});
     } else if (eq(key, "log.debug")) {
-        try w.print("{d}", .{@intFromBool(console.isDebug())});
+        w.print("{d}", .{@intFromBool(console.isDebug())});
     } else if (eq(key, "arch")) {
-        try w.print("{s}", .{@tagName(@import("builtin").cpu.arch)});
+        w.print("{s}", .{@tagName(@import("builtin").cpu.arch)});
     } else if (eq(key, "cpu")) {
         const info = hal.cpuInfo();
-        try w.print("{s}", .{info.brand});
+        w.print("{s}", .{info.brand});
     } else if (eq(key, "syscall")) {
         // What the kernel armed, not what the CPU can do. A stub that chose
         // from CPUID alone would use a fast path whose MSRs were never
         // programmed, and jump to nothing.
-        try w.print("{s}", .{if (hal.fastSyscallArmed()) "sysenter" else "int80"});
+        w.print("{s}", .{if (hal.fastSyscallArmed()) "sysenter" else "int80"});
     } else if (eq(key, "cpu.features")) {
         const info = hal.cpuInfo();
-        try w.print("{s}, {s}", .{
+        w.print("{s}, {s}", .{
             if (info.fast_syscall) "sysenter" else "int80",
             if (info.freq_scaling) "freq scaling" else "fixed clock",
         });
@@ -115,46 +116,46 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         const m = pmm.stats();
         const total = m.totalBytes() / (1024 * 1024);
         const used = (m.totalBytes() - m.freeBytes()) / (1024 * 1024);
-        try w.print("{d} MiB used / {d} MiB", .{ used, total });
+        w.print("{d} MiB used / {d} MiB", .{ used, total });
 
         // The firmware's figure is worth showing when it differs: the gap is
         // memory the map reserved, and seeing it beats wondering where it went.
         if (platform.ram_total_mb != 0 and platform.ram_total_mb != total) {
-            try w.print(" ({d} MiB fitted)", .{platform.ram_total_mb});
+            w.print(" ({d} MiB fitted)", .{platform.ram_total_mb});
         }
     } else if (eq(key, "mem.dma")) {
         // The fragmentation reading: free bytes say how much there is, and
         // this says how much of it the things that need one piece can use.
         // A refusal count above zero is the event the band exists to prevent.
         const m = pmm.stats();
-        try w.print("largest run {d} KiB, band {d} of {d} KiB free, {d} refusals", .{
+        w.print("largest run {d} KiB, band {d} of {d} KiB free, {d} refusals", .{
             pmm.largestRunBytes() / 1024,
             pmm.bandFreeBytes() / 1024,
             pmm.bandBytes() / 1024,
             m.contig_refusals,
         });
     } else if (eq(key, "mem.total")) {
-        try w.print("{d}", .{pmm.stats().totalBytes()});
+        w.print("{d}", .{pmm.stats().totalBytes()});
     } else if (eq(key, "mem.free")) {
-        try w.print("{d}", .{pmm.stats().freeBytes()});
+        w.print("{d}", .{pmm.stats().freeBytes()});
     } else if (eq(key, "heap")) {
         const h = heap.stats();
-        try w.print("{d} bytes live, {d} frames", .{ h.live_bytes, h.frames });
+        w.print("{d} bytes live, {d} frames", .{ h.live_bytes, h.frames });
     } else if (eq(key, "uptime")) {
-        try w.print("{d}", .{clock.monotonicMicros() / 1_000_000});
+        w.print("{d}", .{clock.monotonicMicros() / 1_000_000});
     } else if (eq(key, "svc")) {
         try writeServices(&w);
     } else if (eq(key, "clock")) {
         if (!clock.valid()) return error.UnknownKey;
-        try w.print("{s}", .{clock.sourceName()});
+        w.print("{s}", .{clock.sourceName()});
     } else if (eq(key, "threads")) {
-        try w.print("{d}", .{sched.stats().threads});
+        w.print("{d}", .{sched.stats().threads});
     } else if (eq(key, "mem.hardware")) {
         if (platform.ram_devices == 0) return error.UnknownKey;
-        try w.print("{d} MiB", .{platform.ram_total_mb});
-        if (platform.ram_type.len > 0) try w.print(" {s}", .{platform.ram_type});
-        if (platform.ram_speed_mhz != 0) try w.print("-{d}", .{platform.ram_speed_mhz});
-        try w.print(", {d} module{s}", .{
+        w.print("{d} MiB", .{platform.ram_total_mb});
+        if (platform.ram_type.len > 0) w.print(" {s}", .{platform.ram_type});
+        if (platform.ram_speed_mhz != 0) w.print("-{d}", .{platform.ram_speed_mhz});
+        w.print(", {d} module{s}", .{
             platform.ram_devices,
             if (platform.ram_devices == 1) "" else "s",
         });
@@ -166,18 +167,18 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         const owned = display.describe();
         const px = console.pixelSize();
         if (owned.width != 0 and display.isOwned()) {
-            try w.print("{d}x{d} 32bpp, composited", .{ owned.width, owned.height });
+            w.print("{d}x{d} 32bpp, composited", .{ owned.width, owned.height });
         } else if (px.width != 0) {
-            try w.print("{d}x{d} 32bpp", .{ px.width, px.height });
+            w.print("{d}x{d} 32bpp", .{ px.width, px.height });
         } else {
-            try w.print("text mode", .{});
+            w.print("text mode", .{});
         }
     } else if (eq(key, "display.adapter")) {
         const a = display.describeAdapter();
         if (a.backend.len == 0) {
-            try w.print("unrecognised, using the firmware's mode", .{});
+            w.print("unrecognised, using the firmware's mode", .{});
         } else {
-            try w.print("{s} ({s}), {s}", .{
+            w.print("{s} ({s}), {s}", .{
                 a.backend,
                 a.family,
                 if (a.can_set) "can set modes" else "no modeset yet",
@@ -185,27 +186,27 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         }
     } else if (eq(key, "display.panel")) {
         if (display.panelMode()) |p| {
-            try w.print("{d}x{d}", .{ p.width, p.height });
+            w.print("{d}x{d}", .{ p.width, p.height });
         }
     } else if (eq(key, "display.registers")) {
         if (display.registerReporter()) |f| {
             w.delegate(f);
         } else {
-            try w.print("no adapter that reports registers", .{});
+            w.print("no adapter that reports registers", .{});
         }
     } else if (eq(key, "console")) {
-        try w.print("{d}x{d} cells", .{ console.width(), console.height() });
+        w.print("{d}x{d} cells", .{ console.width(), console.height() });
     } else if (eq(key, "font")) {
-        try w.print("{s}", .{console.fontName()});
+        w.print("{s}", .{console.fontName()});
     } else if (eq(key, "keymap")) {
-        try w.print("{s}", .{keymap.current().name});
+        w.print("{s}", .{keymap.current().name});
     } else if (eq(key, "board")) {
-        try w.print("{s} {s}", .{
+        w.print("{s} {s}", .{
             platform.system_manufacturer orelse "unknown",
             platform.system_product orelse "",
         });
     } else if (eq(key, "bios")) {
-        try w.print("{s} {s}", .{
+        w.print("{s} {s}", .{
             platform.bios_vendor orelse "unknown",
             platform.bios_version orelse "",
         });
@@ -213,16 +214,16 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         const list = quirks.appliedQuirks();
         if (list.len == 0) return error.UnknownKey;
         for (list, 0..) |quirk, i| {
-            if (i > 0) try w.print("\n", .{});
-            try w.print("{s}: {s}", .{ quirk.name, quirk.why });
+            if (i > 0) w.print("\n", .{});
+            w.print("{s}: {s}", .{ quirk.name, quirk.why });
         }
     } else if (eq(key, "quirks.ec")) {
         const c = quirks.get();
         if (c.ec_data_port == null or c.ec_status_port == null) return error.UnknownKey;
-        try w.print("{x} {x}", .{ c.ec_data_port.?, c.ec_status_port.? });
+        w.print("{x} {x}", .{ c.ec_data_port.?, c.ec_status_port.? });
     } else if (eq(key, "quirks.battery")) {
         if (!quirks.get().battery_percent_mislabel) return error.UnknownKey;
-        try w.print("1", .{});
+        w.print("1", .{});
     } else if (eq(key, "mtrr")) {
         // The memory-type map, straight off the registers: when the boot log
         // says the firmware already typed the framebuffer, this says with
@@ -233,18 +234,18 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         var shown = false;
         for (0..count) |slot| {
             const range = hal.impl.mtrrRangeAt(slot) orelse continue;
-            if (shown) try w.print("\n", .{});
+            if (shown) w.print("\n", .{});
             shown = true;
-            try w.print("{x:0>8} +{x:0>8} {s}", .{ range.base, range.size, range.typeName() });
+            w.print("{x:0>8} +{x:0>8} {s}", .{ range.base, range.size, range.typeName() });
         }
-        if (!shown) try w.print("no ranges programmed", .{});
+        if (!shown) w.print("no ranges programmed", .{});
     } else if (eq(key, "irq")) {
         try writeIrqs(&w);
     } else if (eq(key, "apic")) {
         // The controller's own account: the gate value, then the vectors in
         // service, requested-but-waiting, and marked level. What software
         // state cannot substitute for when a delivery is late.
-        try w.print("ppr {x}", .{hal.interruptPriority()});
+        w.print("ppr {x}", .{hal.interruptPriority()});
         var vectors: [16]u8 = undefined;
         const groups = [_]struct { name: []const u8, read: *const fn ([]u8) usize }{
             .{ .name = " isr", .read = hal.interruptsInService },
@@ -252,24 +253,24 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
             .{ .name = " tmr", .read = hal.interruptsLevel },
         };
         for (groups) |group| {
-            try w.print("{s}", .{group.name});
+            w.print("{s}", .{group.name});
             const n = group.read(&vectors);
-            for (vectors[0..n]) |vector| try w.print(" {x}", .{vector});
+            for (vectors[0..n]) |vector| w.print(" {x}", .{vector});
         }
     } else if (eq(key, "threads.list")) {
-        try writeThreads(&w);
+        writeThreads(&w);
     } else if (eq(key, "acpi")) {
         // Where the tables begin, for the process that interprets them. A
         // physical address rather than anything mapped: what to do with it is
         // the asker's business, and it needs the driver capability to do it.
-        try w.print("{x}", .{platform.acpi_rsdp});
+        w.print("{x}", .{platform.acpi_rsdp});
     } else if (eq(key, "acpi.pm")) {
         // The power management block's ranges, base and length pairs, in
         // hex. What must never be driven, asked of the firmware's own table
         // and of the chipset rather than guessed.
         if (platform.pm1a_event_len == 0 and platform.pm1a_control_len == 0 and
             platform.pm_block_len == 0) return error.UnknownKey;
-        try w.print("{x} {x} {x} {x} {x} {x}", .{
+        w.print("{x} {x} {x} {x} {x} {x}", .{
             platform.pm1a_event,   platform.pm1a_event_len,
             platform.pm1a_control, platform.pm1a_control_len,
             platform.pm_block,     platform.pm_block_len,
@@ -277,11 +278,11 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
     } else if (eq(key, "pci")) {
         try writeDevices(&w);
     } else if (eq(key, "disks")) {
-        try writeDisks(&w);
+        writeDisks(&w);
     } else if (eq(key, "storage")) {
-        try writeStorage(&w);
+        writeStorage(&w);
     } else if (eq(key, "mounts")) {
-        try writeMounts(&w);
+        writeMounts(&w);
     } else if (eq(key, "log")) {
         // The whole ring, copied straight out rather than formatted: it is
         // already text, and the ring is larger than the writer's idea of a
@@ -298,17 +299,21 @@ pub fn query(key: []const u8, buf: []u8) Error!usize {
         return error.UnknownKey;
     }
 
-    return w.len;
+    // Asked once, at the end. A report that did not fit is a report the
+    // caller must not read as complete, and finding that out at each of the
+    // fifty places one is written would put the same `try` on every line.
+    if (!w.whole()) return error.NoSpace;
+    return w.done().len;
 }
 
 /// One line per registered service. The registry is the map of what is running
 /// and answerable, which is the first thing worth knowing when something that
 /// should respond does not.
-fn writeServices(w: *Writer) Error!void {
+fn writeServices(w: *str.Builder) Error!void {
     var first = true;
     for (svc.list()) |name| {
-        if (!first) try w.print("\n", .{});
-        try w.print("{s}", .{name});
+        if (!first) w.print("\n", .{});
+        w.print("{s}", .{name});
         first = false;
     }
     if (first) return error.UnknownKey;
@@ -319,13 +324,16 @@ fn writeServices(w: *Writer) Error!void {
 /// The parent is included so a display can draw the process tree. Which
 /// process started which is most of what a supervisor's user wants to know,
 /// and it is knowable only here.
-fn writeThreads(w: *Writer) Error!void {
+fn writeThreads(w: *str.Builder) void {
     const Ctx = struct {
-        w: *Writer,
-        failed: bool = false,
+        w: *str.Builder,
 
         fn visit(self: *@This(), t: sched.Snapshot) void {
-            if (self.failed) return;
+            // Stops at the first line that does not fit rather than carrying
+            // on and leaving a hole in the middle of the listing: a reader can
+            // act on one that stops short, and cannot act on one missing
+            // something from the middle.
+            if (!self.w.whole()) return;
             self.w.print("{d}\t{d}\t{s}\t{d}\t{d}\t{s}\t{d}\t{d}\t{d}\n", .{
                 t.id,
                 t.parent_id,
@@ -336,11 +344,7 @@ fn writeThreads(w: *Writer) Error!void {
                 @intFromBool(t.is_current),
                 t.bytes,
                 t.uptime_s,
-            }) catch {
-                // Truncate rather than fail: a partial list is more use than
-                // none, and the caller can ask for a bigger buffer.
-                self.failed = true;
-            };
+            });
         }
     };
 
@@ -351,19 +355,15 @@ fn writeThreads(w: *Writer) Error!void {
 /// One line per device on the bus: where it is, what it is, and what claimed
 /// it. The table the device manager matches its manifests against, and the one
 /// anyone porting to an unfamiliar machine reads first.
-fn writeDevices(w: *Writer) Error!void {
+fn writeDevices(w: *str.Builder) Error!void {
     const Ctx = struct {
-        w: *Writer,
+        w: *str.Builder,
         any: bool = false,
 
-        /// Set once a line did not fit, so the walk stops rather than
-        /// carrying on and leaving a hole in the middle of the listing: a
-        /// reader can act on a listing that stops short, and cannot act on
-        /// one that is missing something from the middle.
-        full: bool = false,
-
         fn visit(self: *@This(), b: probe.Binding) void {
-            if (self.full) return;
+            // Stops at the first line that does not fit rather than leaving a
+            // hole in the middle of the listing.
+            if (!self.w.whole()) return;
             self.any = true;
             // The driver is named whatever became of it, with the state
             // beside it saying which. A caller that only wants what is running
@@ -381,9 +381,7 @@ fn writeDevices(w: *Writer) Error!void {
                 if (b.driver == null) "-" else b.driverName(),
                 @tagName(b.state()),
                 b.dev.description,
-            }) catch {
-                self.full = true;
-            };
+            });
         }
     };
 
@@ -396,9 +394,9 @@ fn writeDevices(w: *Writer) Error!void {
 ///
 /// The map of which device is being served from outside the kernel, which is
 /// the first thing worth knowing when one has gone quiet.
-fn writeIrqs(w: *Writer) Error!void {
+fn writeIrqs(w: *str.Builder) Error!void {
     const Ctx = struct {
-        w: *Writer,
+        w: *str.Builder,
         any: bool = false,
 
         fn visit(self: *@This(), line: irqevent.Snapshot) void {
@@ -415,7 +413,7 @@ fn writeIrqs(w: *Writer) Error!void {
                 line.count,
                 line.forced,
                 line.cascades,
-            }) catch {};
+            });
         }
     };
 
@@ -426,14 +424,14 @@ fn writeIrqs(w: *Writer) Error!void {
 
 /// Storage described the way a person would ask about it, not the way the
 /// block layer stores it: each whole disk, then the volumes on it.
-fn writeDisks(w: *Writer) Error!void {
+fn writeDisks(w: *str.Builder) void {
     for (block.list()) |*dev| {
         if (dev.offset != 0 or dev.retired) continue;
 
         // A medium with a filesystem written straight onto it is mounted
         // as the whole disk, which is how most sticks and cards arrive.
         // Saying where it went beats saying whether it could be written.
-        try w.print("{s}\t{d}\t{s}\n", .{
+        w.print("{s}\t{d}\t{s}\n", .{
             dev.name,
             dev.bytes(),
             mountOf(dev.name) orelse if (dev.read_only) "read-only" else "read-write",
@@ -445,7 +443,7 @@ fn writeDisks(w: *Writer) Error!void {
             if (part.offset == 0 or part.retired) continue;
             if (!std.mem.startsWith(u8, part.name, dev.name)) continue;
 
-            try w.print("  {s}\t{d}\t{s}\n", .{ part.name, part.bytes(), mountOf(part.name) orelse "" });
+            w.print("  {s}\t{d}\t{s}\n", .{ part.name, part.bytes(), mountOf(part.name) orelse "" });
         }
     }
 }
@@ -459,59 +457,38 @@ fn mountOf(name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn writeStorage(w: *Writer) Error!void {
+fn writeStorage(w: *str.Builder) void {
     var first = true;
     for (block.list()) |*dev| {
         if (dev.offset != 0) continue; // whole devices only
-        if (!first) try w.print("\n", .{});
+        if (!first) w.print("\n", .{});
         first = false;
-        try w.print("{s} {d} MiB", .{ dev.name, dev.bytes() / (1024 * 1024) });
+        w.print("{s} {d} MiB", .{ dev.name, dev.bytes() / (1024 * 1024) });
     }
-    if (first) try w.print("none", .{});
+    if (first) w.print("none", .{});
 }
 
-fn writeMounts(w: *Writer) Error!void {
+fn writeMounts(w: *str.Builder) void {
     var first = true;
     for (vfs.list(), 0..) |*m, index| {
         if (!m.in_use) continue;
-        if (!first) try w.print("\n", .{});
+        if (!first) w.print("\n", .{});
         first = false;
-        try w.print("{s} on {s}", .{ m.path(), m.device.name });
+        w.print("{s} on {s}", .{ m.path(), m.device.name });
         // Said plainly, because a caller deciding whether a write is worth
         // making has no other way to find out.
-        if (m.device.is_volatile) try w.print(" volatile", .{});
+        if (m.device.is_volatile) w.print(" volatile", .{});
 
         // How full it is, in bytes, named so a reader takes them by name
         // rather than by position: this line is read by a shell command and
         // by a file manager, and the two must not disagree about which number
         // is which.
         const usage = vfs.usageAt(index);
-        try w.print(" free={d} size={d}", .{ usage.free, usage.total });
+        w.print(" free={d} size={d}", .{ usage.free, usage.total });
     }
-    if (first) try w.print("none", .{});
+    if (first) w.print("none", .{});
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
-
-/// Bounded writer: truncating a report is better than failing it, but the
-/// caller still needs to know the buffer was too small for `smbios`.
-const Writer = struct {
-    buf: []u8,
-    len: usize = 0,
-
-    /// Hand the unused tail to something that formats for itself, and take up
-    /// however much of it was used.
-    fn delegate(self: *Writer, f: *const fn (*std.Io.Writer) void) void {
-        var stream = std.Io.Writer.fixed(self.buf[self.len..]);
-        f(&stream);
-        self.len += stream.end;
-    }
-
-    fn print(self: *Writer, comptime fmt: []const u8, args: anytype) Error!void {
-        var stream = std.Io.Writer.fixed(self.buf[self.len..]);
-        stream.print(fmt, args) catch return error.NoSpace;
-        self.len += stream.end;
-    }
-};

@@ -67,14 +67,13 @@ pub fn pad(s: []const u8, width: usize) void {
 
 /// A number in a left-aligned field, the numeric counterpart of `pad`.
 pub fn padNumber(value: usize, width: usize) void {
-    var buf: [20]u8 = @splat(0);
-    const n = str.decimal(&buf, value);
-    pad(buf[0..n], width);
+    var buf: [20]u8 = undefined;
+    pad(str.decimal(&buf, value), width);
 }
 
 pub fn decimal(value: usize) void {
     var buf: [24]u8 = undefined;
-    text(str.number(&buf, value, 10, .lower));
+    text(str.decimal(&buf, value));
 }
 
 /// Exactly `digits` hex digits, zero-filled. Fixed width rather than minimal,
@@ -82,11 +81,9 @@ pub fn decimal(value: usize) void {
 /// what makes a column of them readable.
 pub fn hex(value: usize, digits: usize) void {
     var buf: [24]u8 = undefined;
-    const written = str.number(&buf, value, 16, .lower);
-
-    var leading = digits -| written.len;
-    while (leading > 0) : (leading -= 1) byte('0');
-    text(written);
+    var writer = std.Io.Writer.fixed(&buf);
+    writer.print("{[value]x:0>[digits]}", .{ .value = value, .digits = digits }) catch {};
+    text(buf[0..writer.end]);
 }
 
 /// Write `value` right-aligned in `width` columns. Used for size columns,
@@ -100,19 +97,9 @@ pub fn signed(value: i32) void {
 }
 
 pub fn decimalRight(value: usize, width: usize) void {
-    var buf: [20]u8 = [_]u8{0} ** 20;
-    var i = buf.len;
-    var v = value;
-    if (v == 0) {
-        i -= 1;
-        buf[i] = '0';
-    }
-    while (v > 0) : (v /= 10) {
-        i -= 1;
-        buf[i] = '0' + @as(u8, @intCast(v % 10));
-    }
-    const digits = buf.len - i;
-    var w = digits;
+    var buf: [20]u8 = undefined;
+    const digits = str.decimal(&buf, value);
+    var w = digits.len;
     while (w < width) : (w += 1) byte(' ');
-    text(buf[i..]);
+    text(digits);
 }

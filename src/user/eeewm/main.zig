@@ -432,11 +432,11 @@ var checked = true;
 /// "800x458", so the tiling is legible without a ruler.
 fn describe(buf: []u8, area: Rect) []const u8 {
     const str = @import("ulib").str;
-    var n = str.decimal(buf, @intCast(@max(area.w, 0)));
-    buf[n] = 'x';
-    n += 1;
-    n += str.decimal(buf[n..], @intCast(@max(area.h, 0)));
-    return buf[0..n];
+    var built = str.Builder{ .buf = buf };
+    built.number(@intCast(@max(area.w, 0)));
+    built.byte('x');
+    built.number(@intCast(@max(area.h, 0)));
+    return built.done();
 }
 
 // ---------------------------------------------------------------------------

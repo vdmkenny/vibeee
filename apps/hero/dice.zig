@@ -437,7 +437,7 @@ pub const Window = struct {
                 } else {
                     surface.frame(box, t.line);
                 }
-                const value = str.number(&num, o.values[i], 10, .lower);
+                const value = str.decimal(&num, o.values[i]);
                 const ink = if (dropped) t.text_dim else t.text;
                 surface.title(box.x + @divTrunc(box.w - Surface.titleWidth(value), 2), box.y + 6, value, ink);
                 if (o.isTest() and o.mode != .normal) {
