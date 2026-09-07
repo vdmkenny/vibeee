@@ -112,10 +112,8 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
     // Start with everything marked used; free only what the memory map says is
     // usable. Defaulting to "used" means an incomplete or absent memory map
     // fails safe (no memory) rather than unsafe (hand out MMIO as RAM).
-    map = framemap.Map.init(&bitmap, FLOOR_FRAME, BAND_CAP, MAX_FRAMES);
+    map = framemap.Map.init(&bitmap, FLOOR_FRAME);
     contig_refusals = 0;
-
-    var highest: usize = 0;
 
     usable_count = 0;
 
@@ -133,16 +131,12 @@ pub fn init(bi: *const bootinfo.BootInfo) void {
         var f: usize = @intCast(first);
         while (f < @as(usize, @intCast(last)) and f < MAX_FRAMES) : (f += 1) {
             map.release(f);
-            if (f > highest) highest = f;
         }
     }
 
-    // The map's edge is what the machine has, not what the bitmap could
-    // hold, and the band is sized to the machine now that its size is known.
-    map.limit = highest + 1;
-    map.band = @max(map.floor, framemap.bandFrames(map.limit, BAND_CAP));
-    if (map.band > map.limit) map.band = map.limit;
-    map.hint = map.band;
+    // The band is sized to the machine now that the walk has said how
+    // large it is.
+    map.settle(BAND_CAP);
 
     // Carve out the regions that are usable per E820 but must never be handed
     // out. Reserving the first megabyte wholesale costs 256 frames and saves a

@@ -21,6 +21,8 @@ const std = @import("std");
 
 pub const Word = u32;
 pub const BITS_PER_WORD = @bitSizeOf(Word);
+/// One word's bits as a set, for the operations that work a word at a time.
+const WordBits = std.bit_set.IntegerBitSet(BITS_PER_WORD);
 
 /// Who is asking for a contiguous run, which decides where it goes.
 pub const Origin = enum {
@@ -58,17 +60,27 @@ pub const Map = struct {
     /// does not rescan from the band every time.
     hint: usize = 0,
 
-    /// Everything starts taken; the caller releases what the memory map says
-    /// is usable. Defaulting to "used" means an absent map fails safe.
-    pub fn init(words: []Word, floor: usize, band: usize, limit: usize) Map {
+    /// Everything starts taken, and the map ends at its floor: the boot
+    /// walk releases what the memory map says is usable, which is what
+    /// extends the map's edge, and settles the band once the edge is known.
+    /// Defaulting to "used" means an absent map fails safe.
+    pub fn init(words: []Word, floor: usize) Map {
         @memset(words, ~@as(Word, 0));
         return .{
             .words = words,
             .floor = floor,
-            .band = @max(band, floor),
-            .limit = @min(limit, words.len * BITS_PER_WORD),
-            .hint = @max(band, floor),
+            .band = floor,
+            .limit = floor,
+            .hint = floor,
         };
+    }
+
+    /// Size the band to the machine, once the walk has said how large the
+    /// machine is: never past the edge, and never below the floor. The
+    /// rove starts above the band.
+    pub fn settle(self: *Map, band_cap: usize) void {
+        self.band = @max(self.floor, @min(self.limit, bandFrames(self.limit, band_cap)));
+        self.hint = self.band;
     }
 
     pub fn isUsed(self: *const Map, frame: usize) bool {
@@ -92,11 +104,15 @@ pub const Map = struct {
         self.free -= 1;
     }
 
-    /// The opposite: a frame the memory map says may be used.
+    /// The opposite, for the boot walk: a frame the memory map says may be
+    /// used. The map's edge moves up to cover it, so the edge ends up at the
+    /// highest frame the machine has rather than at what the bitmap could
+    /// hold.
     pub fn release(self: *Map, frame: usize) void {
         if (frame >= self.words.len * BITS_PER_WORD or !self.isUsed(frame)) return;
         self.clear(frame);
         self.free += 1;
+        self.limit = @max(self.limit, frame + 1);
     }
 
     /// One frame, from wherever the rove is.
@@ -119,8 +135,11 @@ pub const Map = struct {
         return frame;
     }
 
+    /// A frame given back. Nothing past the edge was ever handed out, so
+    /// nothing past it is taken back: a bit there is set for good, and
+    /// clearing it would count a frame the machine does not have as free.
     pub fn give(self: *Map, frame: usize) void {
-        if (frame >= self.words.len * BITS_PER_WORD) return;
+        if (frame >= self.limit) return;
         if (!self.isUsed(frame)) return; // double free: ignore, not corrupt
         self.clear(frame);
         self.free += 1;
@@ -142,21 +161,57 @@ pub const Map = struct {
         };
     }
 
+    /// The first run of `count` free frames in [from, top), taken. Whole
+    /// words are skipped or counted at once, both on the way to a free
+    /// frame and along the run from it: the kernel heap asks this with
+    /// interrupts off, so what it costs is what everything else waits.
     fn findRun(self: *Map, from: usize, top: usize, count: usize) ?usize {
         var f = from;
         while (f + count <= top) {
-            var length: usize = 0;
-            while (length < count and !self.isUsed(f + length)) : (length += 1) {}
+            const start = self.findFree(f, top) orelse return null;
+            if (start + count > top) return null;
+            const length = self.freeRunFrom(start, start + count);
             if (length == count) {
-                for (0..count) |i| {
-                    self.mark(f + i);
-                }
+                self.markRun(start, count);
                 self.free -= count;
-                return f;
+                return start;
             }
-            f += length + 1;
+            // The frame after the taken one that ended the run.
+            f = start + length + 1;
         }
         return null;
+    }
+
+    /// How many frames from `from` are free, counting no further than `to`.
+    fn freeRunFrom(self: *const Map, from: usize, to: usize) usize {
+        var f = from;
+        while (f < to) {
+            const bit = f % BITS_PER_WORD;
+            // The word's frames from `f` up, brought down to start at bit
+            // zero: the first taken one is how many free ones come first.
+            const above = WordBits{ .mask = std.math.shr(Word, self.words[f / BITS_PER_WORD], bit) };
+            const taken = above.findFirstSet() orelse {
+                f += BITS_PER_WORD - bit;
+                continue;
+            };
+            f += taken;
+            break;
+        }
+        return @min(f, to) - from;
+    }
+
+    /// Mark `count` frames from `from` taken, a word at a time.
+    fn markRun(self: *Map, from: usize, count: usize) void {
+        var f = from;
+        const to = from + count;
+        while (f < to) {
+            const bit = f % BITS_PER_WORD;
+            const n = @min(BITS_PER_WORD - bit, to - f);
+            var word = WordBits{ .mask = self.words[f / BITS_PER_WORD] };
+            word.setRangeValue(.{ .start = bit, .end = bit + n }, true);
+            self.words[f / BITS_PER_WORD] = word.mask;
+            f += n;
+        }
     }
 
     /// The longest unbroken free run below `ceiling`, in frames.
@@ -240,9 +295,54 @@ const testing = std.testing;
 
 /// A small machine: 1024 frames, floor at 8, band to 64.
 fn smallMap(words: []Word) Map {
-    var map = Map.init(words, 8, 64, 1024);
+    var map = Map.init(words, 8);
     for (8..1024) |f| map.release(f);
+    map.settle(64);
     return map;
+}
+
+test "a run is found across word boundaries and past the frame that ends a shorter one" {
+    var words: [32]Word = undefined;
+    var map = smallMap(&words);
+    // Frames 8..40 taken, 40..45 free, 45 taken, everything from 46 free.
+    for (8..40) |f| map.reserve(f);
+    map.reserve(45);
+    const before = map.free;
+
+    try testing.expectEqual(@as(?usize, 40), map.run(5, 1024, .device));
+    try testing.expectEqual(@as(?usize, 46), map.run(6, 1024, .device));
+    try testing.expectEqual(@as(?usize, null), map.run(1000, 1024, .device));
+    try testing.expectEqual(before - 11, map.free);
+    for (40..52) |f| try testing.expect(map.isUsed(f));
+    try testing.expect(!map.isUsed(52));
+
+    // A general ask starts above the band.
+    try testing.expectEqual(@as(?usize, 64), map.run(100, 1024, .general));
+    // A run that ends exactly at the top is a run; one frame more is not.
+    try testing.expectEqual(@as(?usize, null), map.run(861, 1024, .device));
+    try testing.expectEqual(@as(?usize, 164), map.run(860, 1024, .device));
+}
+
+test "the edge is the highest frame the walk released, and nothing past it is given back" {
+    var words: [32]Word = undefined;
+    var map = Map.init(&words, 8);
+    for (8..100) |f| map.release(f);
+    map.settle(64);
+    try testing.expectEqual(@as(usize, 100), map.limit);
+    try testing.expectEqual(@as(usize, 92), map.free);
+
+    map.give(200);
+    try testing.expectEqual(@as(usize, 92), map.free);
+    // So small a machine gets a band no larger than a sixteenth of it,
+    // which is below the floor: a general ask starts at the floor.
+    try testing.expectEqual(map.floor, map.band);
+    try testing.expectEqual(@as(?usize, 8), map.run(1, 1024, .general));
+    try testing.expectEqual(@as(usize, 91), map.free);
+
+    // Turning the band off puts the rove at the floor.
+    map.settle(0);
+    try testing.expectEqual(map.floor, map.band);
+    try testing.expectEqual(map.floor, map.hint);
 }
 
 test "the band is a fixed budget with a guard for small machines" {
@@ -356,8 +456,9 @@ test "the largest run is what a contiguous ask could actually get" {
 
 test "the largest run reads the same across word boundaries" {
     var words: [4]Word = undefined;
-    var map = Map.init(&words, 0, 0, 128);
+    var map = Map.init(&words, 0);
     for (0..128) |f| map.release(f);
+    map.settle(0);
 
     // A run that starts mid-word, crosses two whole words and ends mid-word.
     for (0..20) |f| map.reserve(f);
@@ -386,10 +487,11 @@ const Stress = struct {
     managed: usize,
 
     fn init(gpa: std.mem.Allocator, words: []Word, seed: u64) Stress {
-        var map = Map.init(words, STRESS_FLOOR, STRESS_BAND, STRESS_FRAMES);
+        var map = Map.init(words, STRESS_FLOOR);
+        for (STRESS_FLOOR..STRESS_FRAMES) |f| map.release(f);
+        map.settle(STRESS_BAND);
         // The kernel image sits inside the band on the real machine, so it
         // does here: frames 256..640, reserved before anything runs.
-        for (STRESS_FLOOR..STRESS_FRAMES) |f| map.release(f);
         for (256..640) |f| map.reserve(f);
 
         return .{
@@ -514,8 +616,9 @@ test "a checkerboard above the band cannot break a device ask" {
     // other frame above the band taken, so the largest run up there is one
     // frame and a sixteen-frame ask has nowhere to go but down.
     var words: [STRESS_FRAMES / BITS_PER_WORD]Word = undefined;
-    var map = Map.init(&words, STRESS_FLOOR, STRESS_BAND, STRESS_FRAMES);
+    var map = Map.init(&words, STRESS_FLOOR);
     for (STRESS_FLOOR..STRESS_FRAMES) |f| map.release(f);
+    map.settle(STRESS_BAND);
 
     var f: usize = STRESS_BAND;
     while (f < STRESS_FRAMES) : (f += 2) map.reserve(f);
@@ -549,8 +652,7 @@ test "without the band the same churn breaks the low region" {
     var words: [STRESS_FRAMES / BITS_PER_WORD]Word = undefined;
     var stress = Stress.init(testing.allocator, &words, 0x0701);
     defer stress.deinit();
-    stress.map.band = stress.map.floor;
-    stress.map.hint = stress.map.floor;
+    stress.map.settle(0);
 
     var i: usize = 0;
     while (i < 200_000) : (i += 1) try stress.churn();
@@ -566,8 +668,9 @@ test "without the band the same churn breaks the low region" {
 
 test "under pressure every frame is reachable and everything comes back" {
     var words: [64]Word = undefined;
-    var map = Map.init(&words, 4, 32, 2048);
+    var map = Map.init(&words, 4);
     for (4..2048) |f| map.release(f);
+    map.settle(32);
     const all = map.free;
 
     // Take absolutely everything as singles: the band does not strand a
