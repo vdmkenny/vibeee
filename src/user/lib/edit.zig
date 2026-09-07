@@ -138,25 +138,43 @@ pub const Editor = struct {
         return if (sys.read(sys.STDIN, &byte) > 0) byte[0] else null;
     }
 
-    /// An escape sequence, which is how every key without a character arrives.
+    /// The most parameter bytes a sequence may carry before it is taken for
+    /// something that is not one. A key sends a handful; a stream of digits
+    /// with no end to them is a terminal saying something else entirely, and
+    /// waiting for its end would be waiting forever.
+    const MAX_PARAMETER_BYTES = 16;
+
+    /// An escape sequence, which is how every key without a character
+    /// arrives.
+    ///
+    /// A sequence is its parameter bytes and then the one byte that ends
+    /// it, anything from 0x40 to 0x7E. Read to a tilde instead, a sequence
+    /// carrying a modifier never ended: Ctrl and an arrow key send
+    /// `ESC [ 1 ; 5 D`, and the editor sat in a read eating every keystroke
+    /// until somebody happened to type a tilde.
     fn escape(self: *Editor, prompt: []const u8) void {
         if (self.nextByte() != @as(?u8, '[')) return;
-        const what = self.nextByte() orelse return;
 
-        switch (what) {
+        var first: u8 = 0;
+        var seen: usize = 0;
+        const final = while (self.nextByte()) |b| {
+            if (b >= 0x40 and b <= 0x7E) break b;
+            if (seen == 0) first = b;
+            seen += 1;
+            if (seen > MAX_PARAMETER_BYTES) return;
+        } else return;
+
+        switch (final) {
             'A' => self.recall(prompt, .back),
             'B' => self.recall(prompt, .forward),
             'C' => self.moveTo(prompt, @min(self.cursor + 1, self.len)),
             'D' => self.moveTo(prompt, self.cursor -| 1),
             'H' => self.moveTo(prompt, 0),
             'F' => self.moveTo(prompt, self.len),
-            // The sequences carrying a number end with a tilde, which has to
-            // be consumed or it lands in the line.
-            '0'...'9' => {
-                while (self.nextByte()) |b| {
-                    if (b == '~') break;
-                }
-                if (what == '3' and self.cursor < self.len) {
+            // The sequences that end with a tilde are named by their first
+            // parameter: the fourth is the one that deletes.
+            '~' => {
+                if (first == '3' and self.cursor < self.len) {
                     self.removeAtCursor();
                     self.redraw(prompt);
                 }

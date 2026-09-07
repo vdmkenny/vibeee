@@ -28,6 +28,11 @@ pub fn Dma(comptime T: type) type {
                 log.fail(tag, "cannot allocate DMA memory");
                 return null;
             }
+            // The handle goes as soon as the memory is mapped: the mapping
+            // holds the segment as much as the handle does, and a handle is
+            // one of the sixty-four a process has.
+            defer _ = sys.close(@intCast(handle));
+
             const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
                 log.fail(tag, "cannot map DMA memory");
                 return null;
@@ -36,9 +41,12 @@ pub fn Dma(comptime T: type) type {
             // Every descriptor this system hands a device is a physical
             // address the device reads directly, so an arena the hardware
             // cannot address at all is refused here rather than discovered
-            // as silence later.
+            // as silence later. Given back rather than left mapped: a driver
+            // that probes two devices and fails the first must not carry the
+            // first one's memory for the life of the process.
             if (phys.addr() % @alignOf(T) != 0) {
                 log.fail(tag, "DMA memory is not aligned for the device");
+                _ = sys.shmUnmap(mapped);
                 return null;
             }
             return .{ .at = @ptrCast(@alignCast(mapped)), .phys = phys };

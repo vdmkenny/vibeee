@@ -104,22 +104,27 @@ fn widthOf(class: u32) usize {
 }
 
 /// Ask the kernel for `bytes`, rounded up to whatever it deals in.
+///
+/// The handle goes as soon as the segment is mapped. The mapping holds the
+/// segment as much as the handle does, so the memory stays; the handle is
+/// one of the sixty-four a process has, and nothing here ever gives a
+/// segment back to the kernel, so keeping it would spend a handle for
+/// every block a program grows into and leave a program that had memory
+/// unable to open a file.
 fn fromKernel(bytes: usize) ?[*]u8 {
     const handle = sys.shmCreate(bytes);
     if (handle < 0) return null;
-
-    // The segment stays mapped for the life of the process. Closing the handle
-    // after mapping would be tidier, but a block returned to the kernel needs
-    // the handle to say which one, so it is kept in the header of its own
-    // block instead. For arenas nothing is ever returned, so the handle is
-    // simply let go.
+    defer _ = sys.close(@intCast(handle));
     return sys.shmMap(@intCast(handle), .{ .writable = true });
 }
 
 pub fn alloc(size: usize) ?*anyopaque {
     if (size == 0) return null;
 
-    const wanted = size + @sizeOf(Header);
+    // A size near the top of the address space plus a header is a size that
+    // wraps, and a request for four gibibytes would be served with sixteen
+    // bytes: refused instead, since nothing has that much to give.
+    const wanted = std.math.add(usize, size, @sizeOf(Header)) catch return null;
     const class = classFor(wanted) orelse return ownSegment(wanted);
 
     const width = widthOf(class);
