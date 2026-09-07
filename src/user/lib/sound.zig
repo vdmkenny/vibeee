@@ -19,6 +19,9 @@ pub const Port = struct {
     node: u32,
     id: u32,
     shm: u32,
+    /// Where the segment is mapped, kept so the mapping can be given back:
+    /// it holds the segment as much as the handle does.
+    base: [*]u8,
     ev: u32,
     doorbell: u32,
     view: proto.View,
@@ -68,12 +71,21 @@ pub const Port = struct {
         var handles: [proto.GRANT_HANDLES]u32 = undefined;
         try proto.callOn(@intCast(channel), port_req, &reply, &handles);
 
-        const base = sys.shmMap(handles[0], .{ .writable = true }) orelse return error.Refused;
+        const base = sys.shmMap(handles[0], .{ .writable = true }) orelse {
+            // The handles the service installed are this process's now, and
+            // the node and port it made are this program's to drop: a
+            // failed open must not leave one standing in the graph.
+            for (handles) |handle| _ = sys.close(handle);
+            var drop = proto.Rep{};
+            proto.callOn(@intCast(channel), .{ .tag = .port_drop, .a = reply.body.port }, &drop, null) catch {};
+            return error.Refused;
+        };
         return .{
             .channel = @intCast(channel),
             .node = node,
             .id = reply.body.port,
             .shm = handles[0],
+            .base = base,
             .ev = handles[1],
             .doorbell = handles[2],
             .view = proto.View.of(base),
@@ -109,6 +121,8 @@ pub const Port = struct {
         var reply = proto.Rep{};
         const req = proto.Req{ .tag = .port_drop, .a = self.id };
         proto.callOn(self.channel, req, &reply, null) catch {};
+        // The mapping as well as the handle: either alone keeps the segment.
+        _ = sys.shmUnmap(self.base);
         _ = sys.close(self.shm);
         _ = sys.close(self.ev);
         _ = sys.close(self.doorbell);

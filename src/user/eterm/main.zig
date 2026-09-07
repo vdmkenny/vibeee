@@ -135,13 +135,17 @@ var pending_len: usize = 0;
 fn toShell(bytes: []const u8) void {
     if (!running or bytes.len == 0) return;
 
-    const room = pending.len - pending_len;
-    const n = @min(bytes.len, room);
-    @memcpy(pending[pending_len..][0..n], bytes[0..n]);
-    pending_len += n;
     // Past a kilobyte of unread typing the oldest is dropped rather than the
-    // newest: what somebody is typing now is what they meant.
-    if (n < bytes.len) pending_len = pending.len;
+    // newest: what somebody is typing now is what they meant. Written as a
+    // shift, because filling from the front and stopping keeps the oldest
+    // and loses exactly the characters just typed.
+    const take = @min(bytes.len, pending.len);
+    const keep = @min(pending_len, pending.len - take);
+    if (keep < pending_len) {
+        std.mem.copyForwards(u8, pending[0..keep], pending[pending_len - keep ..][0..keep]);
+    }
+    @memcpy(pending[keep..][0..take], bytes[bytes.len - take ..]);
+    pending_len = keep + take;
 
     flushToShell();
 }
@@ -344,7 +348,10 @@ fn send(bytes: []const u8, code: abi.KeyCode, mods: abi.Modifiers) void {
                 if (line_len < line.len) {
                     line[line_len] = byte;
                     line_len += 1;
-                    echo(bytes[0..1]);
+                    // The byte being stored, not the first of what arrived:
+                    // a letter that takes two bytes was echoed as its lead
+                    // byte twice, and showed as a replacement character.
+                    echo(line[line_len - 1 ..][0..1]);
                 }
             },
         }

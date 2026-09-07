@@ -19,6 +19,9 @@ pub const Sock = struct {
     channel: u32,
     id: u32,
     shm: u32,
+    /// Where the segment is mapped, kept so the mapping can be given back:
+    /// it holds the segment as much as the handle does.
+    base: [*]u8,
     ev_app: u32,
     doorbell: u32,
     view: socket.View,
@@ -109,6 +112,11 @@ pub const Sock = struct {
     pub fn close(self: *const Sock) void {
         var reply = proto.Rep{};
         callOn(self.channel, .{ .tag = .sock_close, .index = self.id }, &reply, &.{}, null) catch {};
+        // The mapping as well as the handle: either alone keeps the segment,
+        // and a mapping is one of the sixty-four a process may hold. A
+        // program that opens a socket per attempt could otherwise open its
+        // last one an hour into trying.
+        _ = sys.shmUnmap(self.base);
         _ = sys.close(self.shm);
         _ = sys.close(self.ev_app);
         _ = sys.close(self.doorbell);
@@ -199,11 +207,17 @@ fn granted(tag: proto.Tag, index: u32, param: u32, param2: u32) Error!Sock {
 
 fn fromGrant(channel: u32, reply: *const proto.Rep, handles: [proto.GRANT_HANDLES]u32) Error!Sock {
     const grant = reply.body.sock;
-    const base = sys.shmMap(handles[0], .{ .writable = true }) orelse return error.Refused;
+    const base = sys.shmMap(handles[0], .{ .writable = true }) orelse {
+        // The handles the service installed are this process's now, and a
+        // caller being told the socket failed will not close them.
+        for (handles) |handle| _ = sys.close(handle);
+        return error.Refused;
+    };
     return .{
         .channel = channel,
         .id = grant.sock,
         .shm = handles[0],
+        .base = base,
         .ev_app = handles[1],
         .doorbell = handles[2],
         .view = socket.View.of(base, grant.kind),

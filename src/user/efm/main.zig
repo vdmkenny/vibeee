@@ -280,6 +280,17 @@ fn transfer(what: Transfer) void {
     var to_buf: [160]u8 = undefined;
     const to = paths.join(destination.path(), entry.name, &to_buf);
 
+    // The same file on both sides is not a transfer. Copying one onto
+    // itself opens the destination for writing, which empties it, and then
+    // reads nothing from the source it has just emptied: the file is gone
+    // and the report says it was copied. Moving one onto itself ends the
+    // same way and then unlinks what is left.
+    if (std.mem.eql(u8, from, to)) {
+        status = "That is where it already is.";
+        ctx.damage();
+        return;
+    }
+
     const done = switch (what) {
         .copy => copyFile(from, to),
         // Renaming is the whole operation when both sides are one volume,

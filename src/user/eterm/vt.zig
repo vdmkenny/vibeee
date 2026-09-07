@@ -33,8 +33,11 @@ pub const Terminal = struct {
     on_alternate: bool = false,
 
     cursor: screen.Cursor = .{},
-    /// Where DECSC put it. One slot per screen, because switching screens
-    /// saves and restores as well.
+    /// Where a save put it, one slot per screen: switching screens saves
+    /// and restores as well, and a program that saved on the alternate
+    /// screen must not hand its position to the shell underneath when it
+    /// quits. Reached through `savedHere`, so which slot is which is
+    /// answered in one place.
     saved: screen.Cursor = .{},
     saved_alternate: screen.Cursor = .{},
 
@@ -252,7 +255,7 @@ pub const Terminal = struct {
 
     fn escape(self: *Terminal, final: u8) void {
         switch (final) {
-            '7' => self.saved = self.cursor,
+            '7' => self.savedHere().* = self.cursor,
             '8' => self.restoreCursor(),
             'D' => self.lineFeed(),
             'E' => {
@@ -269,9 +272,14 @@ pub const Terminal = struct {
         }
     }
 
+    /// The save slot belonging to the screen in use.
+    fn savedHere(self: *Terminal) *screen.Cursor {
+        return if (self.on_alternate) &self.saved_alternate else &self.saved;
+    }
+
     fn restoreCursor(self: *Terminal) void {
         const g = self.active();
-        self.cursor = self.saved;
+        self.cursor = self.savedHere().*;
         self.cursor.row = @min(self.cursor.row, g.rows - 1);
         self.cursor.col = @min(self.cursor.col, g.cols - 1);
     }
@@ -335,7 +343,7 @@ pub const Terminal = struct {
             'n' => self.report(seq),
             't' => self.windowReport(seq),
             'r' => self.setRegion(seq),
-            's' => self.saved = self.cursor,
+            's' => self.savedHere().* = self.cursor,
             'u' => self.restoreCursor(),
             else => {},
         }
@@ -351,14 +359,13 @@ pub const Terminal = struct {
     }
 
     fn moveDown(self: *Terminal, count: u32) void {
-        const n: usize = @intCast(count);
         const limit = if (self.cursor.row <= self.bottom) self.bottom else self.active().rows - 1;
-        self.cursor.row = @min(self.cursor.row + n, limit);
+        self.cursor.row = @min(self.cursor.row +| @as(usize, count), limit);
         self.cursor.wrap_pending = false;
     }
 
     fn moveRight(self: *Terminal, count: u32) void {
-        self.cursor.col = @min(self.cursor.col + @as(usize, @intCast(count)), self.active().cols - 1);
+        self.cursor.col = @min(self.cursor.col +| @as(usize, count), self.active().cols - 1);
         self.cursor.wrap_pending = false;
     }
 

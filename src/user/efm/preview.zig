@@ -119,6 +119,18 @@ fn cachedPath() []const u8 {
     return picture_of[0..picture_of_len];
 }
 
+/// The decoded picture, when it is the one being shown.
+///
+/// One is kept under the path it came from, so arrowing off a photograph
+/// and back does not decode it again. What is kept is not what is shown:
+/// asked without this, a text file selected after a photograph reported
+/// the photograph's size, colour and camera as facts about itself and held
+/// its megabytes for as long as the selection stayed there.
+fn shownPicture() ?img.Picture {
+    if (!std.mem.eql(u8, cachedPath(), shownPath())) return null;
+    return picture;
+}
+
 /// Show `entry`, which lives in `folder`.
 ///
 /// Called whenever the cursor moves, so the first thing it does is notice
@@ -323,7 +335,7 @@ fn drawPicture(ctx: *eui.widget.Context, area: Rect, from: i32) i32 {
 
     ctx.surface.fill(room, t.desktop);
 
-    const held = picture orelse {
+    const held = shownPicture() orelse {
         ctx.rowText(
             .{ .x = room.x + t.menu_padding, .y = room.y + t.padding, .w = room.w, .h = 16 },
             if (trouble.len > 0) trouble else "Cannot show it.",
@@ -365,7 +377,7 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
         y = eui.facts.one(ctx, inset(area), y, "Modified", time.stamp(&when, entry.mtime));
     }
 
-    if (picture) |held| {
+    if (shownPicture()) |held| {
         var shape: [16]u8 = @splat(0);
         var said = str.Builder{ .buf = &shape };
         const upright = eui.thumb.uprightSize(held.width, held.height, facing);
@@ -379,7 +391,7 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
     // The camera's own words, where there are any. Above the file's own
     // facts in importance and below them on the page: what a photograph is of
     // is the picture, and this is who took it.
-    if (camera.maker().len > 0 or camera.camera().len > 0) {
+    if (shownPicture() != null and (camera.maker().len > 0 or camera.camera().len > 0)) {
         var by: [96]u8 = @splat(0);
         var said = str.Builder{ .buf = &by };
         said.text(camera.maker());
@@ -387,8 +399,10 @@ fn drawFacts(ctx: *eui.widget.Context, area: Rect, from: i32, entry: dir.Entry, 
         said.text(camera.camera());
         y = eui.facts.one(ctx, inset(area), y, "Camera", said.done());
     }
-    if (camera.when().len > 0) y = eui.facts.one(ctx, inset(area), y, "Taken", camera.when());
-    if (camera.orientation_known and facing != .up) {
+    if (shownPicture() != null and camera.when().len > 0) {
+        y = eui.facts.one(ctx, inset(area), y, "Taken", camera.when());
+    }
+    if (shownPicture() != null and camera.orientation_known and facing != .up) {
         y = eui.facts.one(ctx, inset(area), y, "Held", "sideways, shown upright");
     }
 

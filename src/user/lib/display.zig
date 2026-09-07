@@ -26,6 +26,9 @@ pub const Screen = struct {
     /// Give it back. The console gets the screen, which is what a program
     /// leaving should leave behind.
     pub fn release(self: *Screen) void {
+        // The mapping as well as the handle: a display given back and taken
+        // again would otherwise spend a mapping each time.
+        _ = sys.shmUnmap(@ptrCast(self.pixels));
         _ = sys.close(self.handle);
         self.handle = 0;
     }

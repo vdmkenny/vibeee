@@ -59,8 +59,9 @@ var device_ports: [MAX_DEVICES]DevicePorts = @splat(.{});
 var graph = graph_mod.Graph{};
 
 /// The ring behind a client port, kept by port slot. A slot's segment is
-/// made once and handed to each successive port on it, because segments
-/// cannot be unmapped: churn allocates nothing.
+/// made once and handed to each successive port on it: a program that opens
+/// and drops a port repeatedly then costs nothing, and what is held is
+/// bounded by the number of slots rather than by how often they turn over.
 const ClientRing = struct {
     shm: u32 = 0,
     ev: u32 = 0,
