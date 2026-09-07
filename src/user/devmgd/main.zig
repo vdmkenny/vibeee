@@ -192,9 +192,14 @@ fn readOne(name: []const u8) void {
 // Matching
 // ---------------------------------------------------------------------------
 
+/// The bus listing, here rather than on the stack: it is room for every
+/// device the kernel's table can hold, which is more than a user stack
+/// should carry in one frame.
+var scan: pciscan.Scan = .{};
+
 fn bindDevices() void {
-    var scan = pciscan.Scan{};
     if (!scan.start()) return;
+    if (scan.truncated) log.warn("devmgd", "the bus listing did not fit; some devices are not seen");
 
     var matched: usize = 0;
     while (scan.next()) |entry| {

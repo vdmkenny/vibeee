@@ -356,7 +356,14 @@ fn writeDevices(w: *Writer) Error!void {
         w: *Writer,
         any: bool = false,
 
+        /// Set once a line did not fit, so the walk stops rather than
+        /// carrying on and leaving a hole in the middle of the listing: a
+        /// reader can act on a listing that stops short, and cannot act on
+        /// one that is missing something from the middle.
+        full: bool = false,
+
         fn visit(self: *@This(), b: probe.Binding) void {
+            if (self.full) return;
             self.any = true;
             // The driver is named whatever became of it, with the state
             // beside it saying which. A caller that only wants what is running
@@ -374,7 +381,9 @@ fn writeDevices(w: *Writer) Error!void {
                 if (b.driver == null) "-" else b.driverName(),
                 @tagName(b.state()),
                 b.dev.description,
-            }) catch {};
+            }) catch {
+                self.full = true;
+            };
         }
     };
 

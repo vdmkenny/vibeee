@@ -36,14 +36,28 @@ pub const Entry = struct {
     }
 };
 
+/// Room for every device the kernel's table can hold, at the longest a
+/// line of one runs to.
+///
+/// Sized rather than guessed: a listing that did not fit is cut, and the
+/// devices past the cut are invisible to every driver that walks it, with
+/// nothing to say they were there. Sixty-four rows is what `probe` holds,
+/// and a hundred and sixty bytes is a location, five numbers, a driver
+/// name, a state and the longest description any of them carries.
+const ROOM = 64 * 160;
+
 pub const Scan = struct {
-    buf: [2048]u8 = @splat(0),
+    buf: [ROOM]u8 = @splat(0),
     lines: str.Splitter = .{ .text = "", .separator = '\n' },
+    /// The answer filled the buffer exactly, so there may have been more.
+    /// Kept for a caller that has to know it saw everything.
+    truncated: bool = false,
 
     /// Ask the kernel once; iterate the answer with `next`.
     pub fn start(self: *Scan) bool {
         const n = sys.sysinfo("pci", self.buf[0..]);
         if (n <= 0) return false;
+        self.truncated = @as(usize, @intCast(n)) == self.buf.len;
         self.lines = str.lines(self.buf[0..@intCast(n)]);
         return true;
     }
