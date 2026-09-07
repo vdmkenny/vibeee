@@ -50,6 +50,33 @@ pub const At = enum(u8) {
 /// A whole frame's worth: 14 bytes of header, 28 of ARP.
 pub const FRAME: usize = @intFromEnum(At.end);
 
+/// The header every frame starts with: where it goes, where it is from,
+/// and what it carries.
+pub const HEADER: usize = @intFromEnum(At.htype);
+
+/// Write a whole frame carrying `payload` under `ether_type`, returning
+/// its length, or null when it does not fit.
+pub fn write(into: []u8, dst: [6]u8, src: [6]u8, ether_type: u16, payload: []const u8) ?usize {
+    const len = HEADER + payload.len;
+    if (into.len < len) return null;
+    @memcpy(into[@intFromEnum(At.mac_dst)..][0..6], &dst);
+    @memcpy(into[@intFromEnum(At.mac_src)..][0..6], &src);
+    std.mem.writeInt(u16, into[@intFromEnum(At.ether_type)..][0..2], ether_type, .big);
+    @memcpy(into[HEADER..][0..payload.len], payload);
+    return len;
+}
+
+test "a frame written here reads back field by field" {
+    var into: [32]u8 = undefined;
+    const len = write(&into, .{ 1, 2, 3, 4, 5, 6 }, .{ 7, 8, 9, 10, 11, 12 }, 0x888E, "key").?;
+    try std.testing.expectEqual(@as(usize, 17), len);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6 }, into[0..6]);
+    try std.testing.expectEqualSlices(u8, &.{ 7, 8, 9, 10, 11, 12 }, into[6..12]);
+    try std.testing.expectEqual(@as(u16, 0x888E), std.mem.readInt(u16, into[12..14], .big));
+    try std.testing.expectEqualStrings("key", into[14..17]);
+    try std.testing.expectEqual(@as(?usize, null), write(into[0..10], .{0} ** 6, .{0} ** 6, 0, "key"));
+}
+
 comptime {
     if (@intFromEnum(At.end) != 42) @compileError("an ARP frame is 42 bytes");
 }

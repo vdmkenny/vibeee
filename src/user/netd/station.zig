@@ -143,10 +143,9 @@ const State = struct {
     /// that walk, which leaves the ring and the hardware disagreeing
     /// about where it is.
     pending: ?join_mod.Action = null,
-    /// The keys the join earned, where it earned any, and the number the
-    /// next sealed frame carries. A number is never used twice under one
-    /// key, so it only counts up and starts again with a new key.
-    keys: ?lib.wpa2.Handshake.Keys = null,
+    /// The number the next sealed frame carries. A number is never used
+    /// twice under one key, so it only counts up and starts again with a
+    /// new key.
     pn: lib.wpa2.Ccmp.Pn = 0,
     /// What to be on, kept past the join that failed so it can be tried
     /// again without anybody asking twice, and when to try.
@@ -321,6 +320,13 @@ fn cell() ?lib.mac.Address {
     return attempt.bssid();
 }
 
+/// The keys the join earned and keeps up to date, or none on an open
+/// network, or before there is a join.
+fn keysOf() ?lib.wpa2.Handshake.Keys {
+    const attempt = state.join orelse return null;
+    return attempt.keys();
+}
+
 /// One ordinary frame, dressed as the cell expects and handed to the
 /// radio.
 fn send(nic: *dev_mod.NicDev, frame: []const u8) bool {
@@ -339,7 +345,7 @@ fn send(nic: *dev_mod.NicDev, frame: []const u8) bool {
     const series = state.speed.series();
 
     // An open network takes the frame as it stands.
-    const keys = state.keys orelse return radio_ops.transmitAt(nic, built, series);
+    const keys = keysOf() orelse return radio_ops.transmitAt(nic, built, series);
 
     // Otherwise sealed under this station's own key, with a number that
     // is never used twice.
@@ -370,15 +376,26 @@ fn carry(nic: *dev_mod.NicDev, frame: []const u8) void {
 
     var plain = frame;
     if (head.control.protected) {
-        const keys = state.keys orelse return;
+        const keys = keysOf() orelse return;
         // A frame spoken to the room is sealed with the key the room
-        // shares; one spoken to this station, with this station's own.
-        const key = if (lib.mac.isGroup(head.addr1)) keys.gtk.key else keys.tk;
+        // shares, whichever of them the frame names; one spoken to this
+        // station, with this station's own.
+        const key = if (lib.mac.isGroup(head.addr1))
+            keys.groupKey(lib.wpa2.Ccmp.keyIndexOf(frame) orelse return) orelse return
+        else
+            keys.tk;
         if (head.len >= state.opened.len) return;
 
         @memcpy(state.opened[0..head.len], frame[0..head.len]);
         const got = lib.wpa2.Ccmp.unprotect(key, frame, state.opened[head.len..]) orelse return;
         plain = state.opened[0 .. head.len + got.len];
+    }
+
+    // The cell's authentication traffic is the join's: the next group key,
+    // handed out for as long as the station stays. The stack never sees it.
+    if (join_mod.eapolOf(plain)) |payload| {
+        if (state.join) |*attempt| act(attempt.carried(payload, &state.frame));
+        return;
     }
 
     const length = lib.ieee80211.toEthernet(plain, &state.undressed) orelse return;
@@ -408,7 +425,6 @@ fn forget(nic: *dev_mod.NicDev) void {
     state.radio = null;
     state.join = null;
     state.pending = null;
-    state.keys = null;
     state.wanted = null;
     state.held = null;
     state.hops = 0;
@@ -507,7 +523,6 @@ fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
     if (state.join) |*attempt| attempt.stop();
     state.join = null;
     state.pending = null;
-    state.keys = null;
     state.wanted = null;
     // A different cell's distance and interference have nothing to do
     // with this one's.
@@ -525,6 +540,7 @@ fn act(what: join_mod.Action) void {
             state.sent_joining +|= 1;
             _ = it.nic.ops.transmit(it.nic, state.frame[0..length]);
         },
+        .traffic => |length| _ = send(it.nic, state.frame[0..length]),
         // The network was heard here, so the radio stops sweeping and
         // stays long enough for the exchange that follows.
         .tune => |channel| {
@@ -605,7 +621,6 @@ fn act(what: join_mod.Action) void {
 /// Joined: answer for the cell, and say the carrier is up.
 fn settle(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps, won: join_mod.Joined) void {
     ops.answerFor(nic, .{ .bssid = won.bssid, .association = won.aid });
-    state.keys = won.keys;
     state.pn = 0;
 
     // What the cell said it can hear. One that named no rates is taken to

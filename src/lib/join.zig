@@ -14,6 +14,7 @@
 //! already tested against the standard's own vectors.
 
 const std = @import("std");
+const eth = @import("eth.zig");
 const ieee80211 = @import("ieee80211.zig");
 const mac = @import("mac.zig");
 const mlme = @import("mlme.zig");
@@ -79,8 +80,12 @@ pub const Failure = enum {
 pub const Action = union(enum) {
     /// Nothing to do.
     none,
-    /// Send this many bytes of the buffer that was passed in.
+    /// Send this many bytes of the buffer that was passed in, as they are.
     send: usize,
+    /// Send this many bytes of the buffer as traffic to the cell: an
+    /// Ethernet frame, dressed and sealed the way every frame after the
+    /// join is.
+    traffic: usize,
     /// Point the radio here first: the network was heard on this channel.
     tune: wifi.Channel,
     /// Joined. What to install, and what the cell is.
@@ -89,12 +94,12 @@ pub const Action = union(enum) {
     failed: Failure,
 };
 
-/// The end of a join: the cell, the identifier it gave, and the keys, which
-/// an open network does not have.
+/// The end of a join: the cell, and the identifier it gave. The keys, where
+/// the network has any, are the join's to keep, since the cell renews them
+/// for as long as the station stays.
 pub const Joined = struct {
     bssid: mac.Address,
     aid: u14,
-    keys: ?wpa2.Handshake.Keys = null,
 };
 
 /// The security element this station offers, and the one the key exchange is
@@ -204,7 +209,7 @@ pub const Join = struct {
         if (self.settling) {
             self.settling = false;
             self.state = .joined;
-            return .{ .joined = .{ .bssid = self.bssid(), .aid = self.aid, .keys = self.earned } };
+            return .{ .joined = .{ .bssid = self.bssid(), .aid = self.aid } };
         }
 
         switch (self.state) {
@@ -287,7 +292,7 @@ pub const Join = struct {
         // has still to prove the key.
         if (found.security == .open) {
             self.state = .joined;
-            return .{ .joined = .{ .bssid = found.bssid, .aid = self.aid, .keys = null } };
+            return .{ .joined = .{ .bssid = found.bssid, .aid = self.aid } };
         }
 
         const pmk = wpa2.pmkOf(self.psk, self.want) orelse return self.give(.no_key);
@@ -343,6 +348,25 @@ pub const Join = struct {
         };
     }
 
+    /// An authentication payload that arrived as traffic after the join:
+    /// the cell handing out its next group key. Answered as traffic too,
+    /// since everything after the join is sealed, and the keys are kept
+    /// up to date for whoever asks for them.
+    pub fn carried(self: *Join, payload: []const u8, into: []u8) Action {
+        if (self.state != .joined) return .none;
+        if (self.handshake == null) return .none;
+        const shake = &self.handshake.?;
+
+        return switch (shake.answer(payload, &self.scratch)) {
+            .ignored, .refused => .none,
+            .reply => |len| blk: {
+                self.earned = shake.keys();
+                const written = eth.write(into, self.bssid(), self.station, ieee80211.Ethertype.eapol, self.scratch[0..len]) orelse break :blk .none;
+                break :blk .{ .traffic = written };
+            },
+        };
+    }
+
     // -----------------------------------------------------------------------
     // Going wrong
     // -----------------------------------------------------------------------
@@ -357,7 +381,7 @@ pub const Join = struct {
     /// Try the step in hand again, or give up when there are no tries left.
     fn retry(self: *Join, now: u64, into: []u8) Action {
         self.left -|= 1;
-        if (self.left == 0) return self.give(.timed_out);
+        if (self.left == 0) return self.give(self.unanswered());
 
         return switch (self.state) {
             // The two steps this station speaks first are asked again.
@@ -372,6 +396,17 @@ pub const Join = struct {
             },
             else => .none,
         };
+    }
+
+    /// What it means that nothing more came. An exchange the access point
+    /// opened and never finished is a key it did not accept: its third
+    /// message is the first thing it signs, and a station whose secret is
+    /// wrong cannot verify it, nor sign the second message so that the
+    /// access point would send it.
+    fn unanswered(self: *const Join) Failure {
+        if (self.state != .handshaking) return .timed_out;
+        const shake = self.handshake orelse return .timed_out;
+        return if (shake.begun()) .bad_key else .timed_out;
     }
 
     fn give(self: *Join, why: Failure) Action {
@@ -512,6 +547,34 @@ const FakeAp = struct {
         return wrap(key[0..len], into);
     }
 
+    /// The group key handshake's first message, sealed under the pairwise
+    /// key, as the key frame alone: after the join it travels as traffic,
+    /// which the station undresses before the join sees it.
+    fn groupMessage(self: *FakeAp, snonce: wpa2.Nonce, gtk: wpa2.Gtk, into: []u8) usize {
+        const pmk = wpa2.derive(PASSPHRASE, SSID);
+        const ptk = wpa2.ptkOf(pmk, AP, US, self.anonce, snonce);
+
+        var data: [64]u8 = @splat(0);
+        var used = wpa2.writeGtk(&data, gtk).?;
+        if (used % 8 != 0) {
+            data[used] = 0xDD;
+            used += 8 - used % 8;
+        }
+        var wrapped: [128]u8 = @splat(0);
+        const sealed = wpa2.wrap(ptk.kek, data[0..used], &wrapped).?;
+
+        self.replay += 1;
+        const len = wpa2.KeyFrame.write(into, .{
+            .ack = true,
+            .mic = true,
+            .secure = true,
+            .encrypted = true,
+            .key_index = gtk.index,
+        }, 16, self.replay, @splat(0), sealed).?;
+        wpa2.KeyFrame.sign(into[0..len], ptk.kck);
+        return len;
+    }
+
     fn messageThree(self: *FakeAp, snonce: wpa2.Nonce, into: []u8) usize {
         const pmk = wpa2.derive(PASSPHRASE, SSID);
         const ptk = wpa2.ptkOf(pmk, AP, US, self.anonce, snonce);
@@ -619,8 +682,8 @@ test "a protected network is found, authenticated, associated and proved" {
         .joined => |done| {
             try testing.expectEqualSlices(u8, &AP, &done.bssid);
             try testing.expectEqual(@as(u14, 7), done.aid);
-            const earned = done.keys orelse return error.TestUnexpectedResult;
-            try testing.expectEqualSlices(u8, &ap.gtk.key, &earned.gtk.key);
+            const earned = join.keys() orelse return error.TestUnexpectedResult;
+            try testing.expectEqualSlices(u8, &ap.gtk.key, &earned.groupKey(ap.gtk.index).?);
 
             // The pairwise key is the one both sides derive.
             const pmk = wpa2.derive(PASSPHRASE, SSID);
@@ -656,7 +719,7 @@ test "an open network is joined the moment it grants the association" {
     switch (join.heard(air[0..granted], .{}, 200, &out)) {
         .joined => |done| {
             try testing.expectEqual(@as(u14, 3), done.aid);
-            try testing.expectEqual(@as(?wpa2.Handshake.Keys, null), done.keys);
+            try testing.expectEqual(@as(?wpa2.Handshake.Keys, null), join.keys());
         },
         else => return error.TestUnexpectedResult,
     }
@@ -746,12 +809,57 @@ test "the wrong key is told apart from a network that stopped answering" {
     _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
 
-    // The first message is answered whatever the key is; the third is where
-    // a wrong one is found out, because it is the first the access point
-    // signs.
+    // The first message is answered whatever the key is. The third is
+    // signed, and one that does not check out says nothing on its own:
+    // anyone could have sent it. What says the key is wrong is an exchange
+    // the access point opened and never finished.
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
     const three = ap.messageThree(join.snonce, &air);
-    try testing.expectEqual(Action{ .failed = .bad_key }, join.heard(air[0..three], .{}, 400, &out));
+    try testing.expectEqual(Action.none, join.heard(air[0..three], .{}, 400, &out));
+    try testing.expectEqual(State.handshaking, join.state);
+
+    var ended: ?Action = null;
+    var waits: usize = 0;
+    while (ended == null and waits < 10) : (waits += 1) {
+        const what = join.tick(join.deadline, &out);
+        if (what != .none) ended = what;
+    }
+    try testing.expectEqual(Action{ .failed = .bad_key }, ended.?);
+}
+
+test "the cell's next group key is taken and answered as traffic" {
+    var air: [512]u8 = @splat(0);
+    var out: [512]u8 = @splat(0);
+
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    wanted(&join);
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = join.tick(0, &out);
+    _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    try testing.expect(join.tick(500, &out) == .joined);
+    const before = join.keys().?;
+
+    // Before the join, or from a cell that is not this one, nothing.
+    const renewed = wpa2.Gtk{ .index = 2, .key = .{ 0xC0, 0xFF, 0xEE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } };
+    const len = ap.groupMessage(join.snonce, renewed, &air);
+    const traffic = switch (join.carried(air[0..len], &out)) {
+        .traffic => |n| n,
+        else => return error.TestUnexpectedResult,
+    };
+    // An Ethernet frame to the cell, from this station, carrying the answer.
+    try testing.expectEqualSlices(u8, &AP, out[0..6]);
+    try testing.expectEqualSlices(u8, &US, out[6..12]);
+    try testing.expectEqual(ieee80211.Ethertype.eapol, std.mem.readInt(u16, out[12..14], .big));
+    try testing.expect(wpa2.KeyFrame.parse(out[eth.HEADER..traffic]) != null);
+
+    const after = join.keys().?;
+    try testing.expectEqualSlices(u8, &before.tk, &after.tk);
+    try testing.expectEqualSlices(u8, &before.groupKey(1).?, &after.groupKey(1).?);
+    try testing.expectEqualSlices(u8, &renewed.key, &after.groupKey(2).?);
 }
 
 test "frames from another cell on the channel are not mistaken for answers" {

@@ -249,6 +249,15 @@ pub const Ccmp = struct {
         return written + HEADER + sealed;
     }
 
+    /// Which key a protected frame names, so the caller can pick it
+    /// before opening the frame.
+    pub fn keyIndexOf(frame: []const u8) ?u2 {
+        const head = ieee80211.Header.parse(frame) orelse return null;
+        if (!head.control.protected or frame.len < head.len + HEADER) return null;
+        const key_byte: KeyByte = @bitCast(frame[head.len + 3]);
+        return key_byte.key_index;
+    }
+
     /// The plaintext of a protected frame, into `into`, or null for one that
     /// was torn or sealed under another key.
     pub fn unprotect(tk: [16]u8, frame: []const u8, into: []u8) ?Opened {
@@ -393,9 +402,11 @@ pub const KeyFrame = struct {
     pub fn parse(frame: []const u8) ?KeyFrame {
         if (frame.len < HEAD) return null;
         if (frame[At.packet_type] != KEY_PACKET or frame[At.descriptor] != RSN_DESCRIPTOR) return null;
-        const body_len = std.mem.readInt(u16, frame[At.body_length..][0..2], .big);
+        // Lengths off the air, summed wider than they are: a length near
+        // the top of sixteen bits must fail the check, not wrap past it.
+        const body_len: usize = std.mem.readInt(u16, frame[At.body_length..][0..2], .big);
         if (body_len + At.descriptor > frame.len) return null;
-        const data_len = std.mem.readInt(u16, frame[At.data_length..][0..2], .big);
+        const data_len: usize = std.mem.readInt(u16, frame[At.data_length..][0..2], .big);
         if (HEAD + data_len > frame.len) return null;
         return .{
             .info = @bitCast(std.mem.readInt(u16, frame[At.info..][0..2], .big)),
@@ -500,9 +511,11 @@ pub fn writeGtk(into: []u8, gtk: Gtk) ?usize {
 // The handshake
 // ---------------------------------------------------------------------------
 
-/// The four-way handshake, from the station's side. Given each key frame
-/// the access point sends, it answers with the frame to send back, and at
-/// the end holds the keys to install.
+/// The key exchange, from the station's side. Given each key frame the
+/// access point sends, it answers with the frame to send back, and holds
+/// the keys to install: the pairwise key the four-way exchange proves, and
+/// the group keys, which the access point renews for as long as the
+/// station stays.
 pub const Handshake = struct {
     pmk: Pmk,
     station: mac.Address,
@@ -513,82 +526,140 @@ pub const Handshake = struct {
     /// in message two so the access point can see it was not changed.
     rsn: []const u8,
 
+    /// The pairwise key the exchange has proved: the one a signed frame
+    /// from the access point checked out under.
     ptk: ?Ptk = null,
-    gtk: ?Gtk = null,
+    /// The pairwise key the latest first message proposes. A first message
+    /// is unsigned, so anyone can send one, and nothing is taken on its
+    /// word: it becomes the key once a third message verifies under it.
+    candidate: ?Ptk = null,
+    /// The group keys, by the index the access point gives each. A renewal
+    /// brings the next index while frames under the last are still in the
+    /// air, so both are kept.
+    group: [4]?[16]u8 = @splat(null),
     replay: u64 = 0,
     done: bool = false,
 
     pub const Outcome = union(enum) {
-        /// Not a frame of this handshake, or one already answered.
+        /// Not a frame of this handshake, one already answered, or one that
+        /// did not verify: nothing an unverified frame says changes
+        /// anything, and refusing on its word would let anyone end a join.
         ignored,
-        /// The frame to send back, this long, in the buffer given.
+        /// The frame to send back, this long, in the buffer given. The keys
+        /// may have changed with it.
         reply: usize,
-        /// The access point failed the handshake: a wrong key, a torn
-        /// frame, a replay. The keys are not to be used.
+        /// A verified frame that carried nothing this station can use. The
+        /// keys are not to be used.
         refused,
     };
 
-    /// The keys, once the handshake is done.
-    pub const Keys = struct { tk: [16]u8, gtk: Gtk };
+    /// The keys, once the exchange is done.
+    pub const Keys = struct {
+        tk: [16]u8,
+        group: [4]?[16]u8,
+
+        /// The group key a frame names, if the access point has given one
+        /// under that index.
+        pub fn groupKey(self: Keys, index: u2) ?[16]u8 {
+            return self.group[index];
+        }
+    };
 
     pub fn keys(self: *const Handshake) ?Keys {
         if (!self.done) return null;
-        return .{ .tk = self.ptk.?.tk, .gtk = self.gtk orelse return null };
+        return .{ .tk = self.ptk.?.tk, .group = self.group };
+    }
+
+    /// Whether the access point has opened the exchange. An exchange
+    /// opened and never finished is what a wrong key looks like.
+    pub fn begun(self: *const Handshake) bool {
+        return self.candidate != null or self.ptk != null;
     }
 
     /// Answer a key frame from the access point.
     pub fn answer(self: *Handshake, frame: []const u8, into: []u8) Outcome {
         const key = KeyFrame.parse(frame) orelse return .ignored;
-        if (!key.info.pairwise or !key.info.ack) return .ignored;
-        if (key.info.version != 2) return .refused;
+        if (!key.info.ack or key.info.version != 2) return .ignored;
 
+        // The group key handshake stands apart from the pairwise one.
         // Message one: the access point's nonce, and nothing signed yet.
         // Message three: signed, with the keys to install inside it.
+        if (!key.info.pairwise) return self.renewal(frame, key, into);
         if (!key.info.mic) return self.first(key, into);
         if (key.info.install) return self.third(frame, key, into);
         return .ignored;
     }
 
     fn first(self: *Handshake, key: KeyFrame, into: []u8) Outcome {
-        self.ptk = ptkOf(self.pmk, self.ap, self.station, key.nonce, self.snonce);
+        const candidate = ptkOf(self.pmk, self.ap, self.station, key.nonce, self.snonce);
+        self.candidate = candidate;
         self.replay = key.replay;
-        self.done = false;
 
         const len = KeyFrame.write(into, .{ .pairwise = true, .mic = true }, 0, key.replay, self.snonce, self.rsn) orelse return .refused;
-        KeyFrame.sign(into[0..len], self.ptk.?.kck);
+        KeyFrame.sign(into[0..len], candidate.kck);
         return .{ .reply = len };
     }
 
     fn third(self: *Handshake, frame: []const u8, key: KeyFrame, into: []u8) Outcome {
-        const ptk = self.ptk orelse return .ignored;
         // An access point that did not hear the answer sends its frame
         // again. Most carry a fresh counter for it; one that reuses the
-        // counter it already spent is answered rather than refused, since
-        // refusing reports a wrong key for a network whose key was right.
+        // counter it already spent is answered rather than ignored, since
+        // ignoring it leaves the access point waiting for an answer.
         //
         // Answered, and no more than that: the keys are not derived again
         // and nothing is installed a second time. Reinstalling a key that
         // is already in use restarts the numbering underneath it, which is
         // exactly what an attacker replaying this frame is fishing for.
-        const again = self.done and key.replay == self.replay;
-        if (!again and key.replay <= self.replay) return .refused;
-        if (again) {
-            if (!KeyFrame.verify(frame, ptk.kck)) return .refused;
-            const said = KeyFrame.write(into, .{ .pairwise = true, .mic = true, .secure = true }, 0, key.replay, @splat(0), &.{}) orelse return .refused;
-            KeyFrame.sign(into[0..said], ptk.kck);
-            return .{ .reply = said };
+        if (self.done and key.replay == self.replay) {
+            const ptk = self.ptk.?;
+            if (!KeyFrame.verify(frame, ptk.kck)) return .ignored;
+            return fourth(ptk, key, into);
         }
-        if (!KeyFrame.verify(frame, ptk.kck)) return .refused;
+        if (key.replay <= self.replay) return .ignored;
+        const ptk = self.candidate orelse return .ignored;
+        if (!KeyFrame.verify(frame, ptk.kck)) return .ignored;
         if (!key.info.encrypted) return .refused;
 
         var plain: [KEY_DATA_MAX]u8 = undefined;
         const data = unwrap(ptk.kek, key.data, &plain) orelse return .refused;
-        self.gtk = gtkOf(data) orelse return .refused;
-        self.replay = key.replay;
+        const gtk = gtkOf(data) orelse return .refused;
 
+        // Proved: the frame that checked out under the candidate is what
+        // makes it the key.
+        self.ptk = ptk;
+        self.candidate = null;
+        self.group[gtk.index] = gtk.key;
+        self.replay = key.replay;
+        self.done = true;
+        return fourth(ptk, key, into);
+    }
+
+    /// The last frame of the exchange: signed, secure, carrying nothing.
+    fn fourth(ptk: Ptk, key: KeyFrame, into: []u8) Outcome {
         const len = KeyFrame.write(into, .{ .pairwise = true, .mic = true, .secure = true }, 0, key.replay, @splat(0), &.{}) orelse return .refused;
         KeyFrame.sign(into[0..len], ptk.kck);
-        self.done = true;
+        return .{ .reply = len };
+    }
+
+    /// The group key handshake, after the exchange: the access point sends
+    /// its next group key under the pairwise one, and is answered so that it
+    /// knows the key was taken. The key goes in under its own index, next
+    /// to the one still in use.
+    fn renewal(self: *Handshake, frame: []const u8, key: KeyFrame, into: []u8) Outcome {
+        if (!self.done) return .ignored;
+        if (!key.info.mic or !key.info.secure or !key.info.encrypted) return .ignored;
+        if (key.replay <= self.replay) return .ignored;
+        const ptk = self.ptk.?;
+        if (!KeyFrame.verify(frame, ptk.kck)) return .ignored;
+
+        var plain: [KEY_DATA_MAX]u8 = undefined;
+        const data = unwrap(ptk.kek, key.data, &plain) orelse return .refused;
+        const gtk = gtkOf(data) orelse return .refused;
+        self.group[gtk.index] = gtk.key;
+        self.replay = key.replay;
+
+        const len = KeyFrame.write(into, .{ .mic = true, .secure = true, .key_index = key.info.key_index }, 0, key.replay, @splat(0), &.{}) orelse return .refused;
+        KeyFrame.sign(into[0..len], ptk.kck);
         return .{ .reply = len };
     }
 };
@@ -754,8 +825,8 @@ test "the handshake, with the test playing the access point" {
 
     const keys = handshake.keys().?;
     try testing.expectEqualSlices(u8, &ptk.tk, &keys.tk);
-    try testing.expectEqualSlices(u8, &gtk.key, &keys.gtk.key);
-    try testing.expectEqual(@as(u2, 1), keys.gtk.index);
+    try testing.expectEqualSlices(u8, &gtk.key, &keys.groupKey(1).?);
+    try testing.expectEqual(@as(?[16]u8, null), keys.groupKey(2));
 
     // The same message three again is answered again, because an access
     // point that did not hear the answer is waiting for one. What it is
@@ -764,9 +835,143 @@ test "the handshake, with the test playing the access point" {
     try testing.expect(handshake.answer(frame[0..three], &reply) == .reply);
     const after = handshake.keys().?;
     try testing.expectEqualSlices(u8, &before.tk, &after.tk);
-    try testing.expectEqualSlices(u8, &before.gtk.key, &after.gtk.key);
-    // A message three signed with the wrong key is refused.
+    try testing.expectEqualSlices(u8, &before.groupKey(1).?, &after.groupKey(1).?);
+    // A message three signed with the wrong key says nothing: it is not
+    // the access point's to say, and the keys stay.
     var forged = frame;
     forged[9 + 7] = 9;
-    try testing.expectEqual(Handshake.Outcome.refused, handshake.answer(forged[0..three], &reply));
+    try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(forged[0..three], &reply));
+    try testing.expect(handshake.keys() != null);
+}
+
+/// Key data carrying `gtk` alone, wrapped under `kek` the way a key frame
+/// carries it.
+fn wrappedGtk(kek: [16]u8, gtk: Gtk, into: []u8) []const u8 {
+    var data: [64]u8 = @splat(0);
+    var used = writeGtk(&data, gtk).?;
+    if (used % 8 != 0) {
+        data[used] = 0xDD;
+        used += 8 - used % 8;
+    }
+    return wrap(kek, data[0..used], into).?;
+}
+
+/// A cell the test plays: it opens the exchange with message one and
+/// finishes it with message three, so a station arrives past its exchange.
+const TestCell = struct {
+    pmk: Pmk,
+    ap: mac.Address = .{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 },
+    station: mac.Address = .{ 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B },
+    anonce: Nonce = @splat(0xA1),
+    snonce: Nonce = @splat(0x5B),
+    rsn: [2 + ieee80211.Rsn.psk_ccmp.len]u8 = [_]u8{ 0x30, 0x14 } ++ ieee80211.Rsn.psk_ccmp,
+
+    /// Derived at run time: the derivation is deliberately slow, and far
+    /// too slow for the compiler's comptime budget.
+    fn home() TestCell {
+        return .{ .pmk = derive("correct horse battery", "home network") };
+    }
+
+    fn ptk(self: TestCell) Ptk {
+        return ptkOf(self.pmk, self.ap, self.station, self.anonce, self.snonce);
+    }
+
+    fn handshake(self: *const TestCell) Handshake {
+        return .{ .pmk = self.pmk, .station = self.station, .ap = self.ap, .snonce = self.snonce, .rsn = &self.rsn };
+    }
+
+    fn messageOne(self: TestCell, replay: u64, into: []u8) usize {
+        return KeyFrame.write(into, .{ .pairwise = true, .ack = true }, 16, replay, self.anonce, &.{}).?;
+    }
+
+    fn messageThree(self: TestCell, replay: u64, gtk: Gtk, into: []u8) usize {
+        var wrapped: [72]u8 = undefined;
+        const sealed = wrappedGtk(self.ptk().kek, gtk, &wrapped);
+        const len = KeyFrame.write(into, .{ .pairwise = true, .ack = true, .mic = true, .install = true, .secure = true, .encrypted = true }, 16, replay, self.anonce, sealed).?;
+        KeyFrame.sign(into[0..len], self.ptk().kck);
+        return len;
+    }
+
+    fn groupMessage(self: TestCell, replay: u64, gtk: Gtk, into: []u8) usize {
+        var wrapped: [72]u8 = undefined;
+        const sealed = wrappedGtk(self.ptk().kek, gtk, &wrapped);
+        const len = KeyFrame.write(into, .{ .ack = true, .mic = true, .secure = true, .encrypted = true, .key_index = gtk.index }, 16, replay, @splat(0), sealed).?;
+        KeyFrame.sign(into[0..len], self.ptk().kck);
+        return len;
+    }
+};
+
+test "a first message anyone could have sent does not unseat the exchange" {
+    const cell = TestCell.home();
+    var handshake = cell.handshake();
+    var frame: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    var reply: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    const gtk = Gtk{ .index = 1, .key = hex("0f0e0d0c0b0a09080706050403020100") };
+
+    try testing.expect(handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply) == .reply);
+    try testing.expect(handshake.begun());
+    // Somebody else's first message, with a nonce of their own: answered,
+    // since nothing tells it apart, but the real third message will not
+    // check out under the key it proposes.
+    var other = cell;
+    other.anonce = @splat(0xEE);
+    try testing.expect(handshake.answer(frame[0..other.messageOne(5, &frame)], &reply) == .reply);
+    try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &reply));
+    try testing.expectEqual(@as(?Handshake.Keys, null), handshake.keys());
+
+    // The access point, unanswered, opens the exchange again, and this
+    // time it goes through.
+    try testing.expect(handshake.answer(frame[0..cell.messageOne(6, &frame)], &reply) == .reply);
+    try testing.expect(handshake.answer(frame[0..cell.messageThree(7, gtk, &frame)], &reply) == .reply);
+    const keys = handshake.keys().?;
+    try testing.expectEqualSlices(u8, &cell.ptk().tk, &keys.tk);
+    try testing.expectEqualSlices(u8, &gtk.key, &keys.groupKey(1).?);
+}
+
+test "the group key is renewed after the exchange, and the one in use is kept" {
+    const cell = TestCell.home();
+    var handshake = cell.handshake();
+    var frame: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    var reply: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    const first = Gtk{ .index = 1, .key = hex("0f0e0d0c0b0a09080706050403020100") };
+    const next = Gtk{ .index = 2, .key = hex("00112233445566778899aabbccddeeff") };
+
+    // Before the exchange is done a group message is nobody's to send.
+    try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(frame[0..cell.groupMessage(1, next, &frame)], &reply));
+
+    try testing.expect(handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply) == .reply);
+    try testing.expect(handshake.answer(frame[0..cell.messageThree(2, first, &frame)], &reply) == .reply);
+
+    const len = switch (handshake.answer(frame[0..cell.groupMessage(3, next, &frame)], &reply)) {
+        .reply => |n| n,
+        else => return error.TestUnexpectedResult,
+    };
+    // Answered under the pairwise key, naming the index taken.
+    try testing.expect(KeyFrame.verify(reply[0..len], cell.ptk().kck));
+    const said = KeyFrame.parse(reply[0..len]).?;
+    try testing.expect(!said.info.pairwise and said.info.secure and said.info.mic);
+    try testing.expectEqual(@as(u2, 2), said.info.key_index);
+
+    const keys = handshake.keys().?;
+    try testing.expectEqualSlices(u8, &first.key, &keys.groupKey(1).?);
+    try testing.expectEqualSlices(u8, &next.key, &keys.groupKey(2).?);
+
+    // A renewal replayed, or one signed by somebody else, changes nothing.
+    try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(frame[0..cell.groupMessage(3, next, &frame)], &reply));
+    var other = cell;
+    other.anonce = @splat(0xEE);
+    try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(frame[0..other.groupMessage(4, next, &frame)], &reply));
+}
+
+test "a key frame whose lengths run past sixteen bits is refused, not summed past them" {
+    var frame: [KeyFrame.HEAD]u8 = @splat(0);
+    frame[1] = 3;
+    frame[4] = 2;
+    std.mem.writeInt(u16, frame[2..4], 0xFFFF, .big);
+    try testing.expectEqual(@as(?KeyFrame, null), KeyFrame.parse(&frame));
+    std.mem.writeInt(u16, frame[2..4], KeyFrame.HEAD - 4, .big);
+    std.mem.writeInt(u16, frame[97..99], 0xFFFF, .big);
+    try testing.expectEqual(@as(?KeyFrame, null), KeyFrame.parse(&frame));
+    std.mem.writeInt(u16, frame[97..99], 0, .big);
+    try testing.expect(KeyFrame.parse(&frame) != null);
 }
