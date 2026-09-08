@@ -788,9 +788,41 @@ pub fn adapt(_: *NicDev) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     if (!device.started or device.gone) return;
 
+    keepReceiving(chip);
+
     const dwell = since_judged;
     since_judged = .{};
     if (chip.immunity.heard(chip.regs, dwell.ofdm, dwell.cck)) sayImmunity(chip);
+}
+
+/// Start the receiver again if it has stopped and nothing has noticed.
+///
+/// The reaping restarts one that stopped because it filled its run, which
+/// is the ordinary way, and it works because a frame arriving is what
+/// calls it. A receiver that stopped for any other reason arrives at the
+/// same place by a road nobody is watching: no frame lands, so no
+/// interrupt comes, so nothing reaps, so nothing starts it, and the radio
+/// is deaf until something else resets it. Liveness cannot depend on an
+/// interrupt that only arrives while the thing is already alive.
+///
+/// Asked on the same cadence the room is judged on, which is often enough
+/// that a stop costs a fraction of one dwell and rare enough to be two
+/// register reads.
+fn keepReceiving(chip: *reset.Chip) void {
+    if (device.dma_unsafe) return;
+    const rings = device.rings orelse return;
+    if (chip.regs.get(.control, regs_mod.Control).rx_enable) return;
+
+    // Only onto a descriptor the radio owns. The oldest one the service
+    // has not taken is armed by construction: everything before it was
+    // armed as it was reaped, and it is where the walk will resume.
+    const desc: *const volatile Desc = &rings.rx_desc[device.rx_next];
+    if (desc.receiveFinished()) return;
+
+    chip.regs.write(.rx_pointer, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
+    dma.publish();
+    chip.regs.put(.control, regs_mod.Control{ .rx_enable = true });
+    rx_restarts +|= 1;
 }
 
 /// Failures split by which demodulator gave up. The two fail separately
