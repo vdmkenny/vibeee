@@ -150,8 +150,17 @@ const Device = struct {
     tx_filled: usize = 0,
     /// One hardware-owned TX descriptor; all others are software queued.
     tx_active: ?usize = null,
-    /// The channel tuned, or none yet.
+    /// The channel the radio is on and hearing, or none while it is on
+    /// none.
     channel: ?wifi.Channel = null,
+    /// The channel the service asked for, which outlives a tune that did
+    /// not take. A radio puts its own receiver right by tuning again, and
+    /// one that forgot what it was asked for has nowhere to tune to.
+    asked: ?wifi.Channel = null,
+    /// Consecutive looks that found the receive engine stopped with no
+    /// finished descriptor to account for it. One is a read that caught
+    /// the hardware mid-step; two is an engine that is not coming back.
+    rx_stopped_for: u8 = 0,
     /// The cell this station answers for, or none while it belongs to
     /// nothing.
     cell: ?dev_mod.Cell = null,
@@ -398,6 +407,7 @@ pub fn stop(_: *NicDev) void {
     if (quiescent) {
         releaseRings();
         device.channel = null;
+        device.asked = null;
     } else {
         // The memory is the radio's until the radio says otherwise. Handed
         // back while an engine is still walking it, it becomes somebody
@@ -457,15 +467,36 @@ fn unmoved(why: []const u8) bool {
     return false;
 }
 
-pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
+/// The longest a retune has taken, in microseconds. A dwell is time spent
+/// listening and a retune is not part of it, so a retune that grew to a
+/// large part of one is a sweep hearing every other beacon.
+var slowest_tune: u32 = 0;
+
+pub fn tune(nic: *NicDev, channel: wifi.Channel) bool {
+    const began = sys.clockMicros();
+    defer {
+        const took = sys.clockMicros() - began;
+        if (took > slowest_tune) slowest_tune = @intCast(@min(took, std.math.maxInt(u32)));
+    }
+    return tuneTo(nic, channel);
+}
+
+fn tuneTo(_: *NicDev, channel: wifi.Channel) bool {
     if (!device.started or device.gone) return false;
     const chip: *reset.Chip = if (device.chip) |*c| c else return false;
     const megahertz = channel.megahertz() orelse return false;
+    // Before anything that can fail: what a later repair tunes back to.
+    device.asked = channel;
     if (!reset.wake(chip.regs)) return unmoved("the radio would not wake");
 
     const abandoned = device.tx_filled;
     if (!quiet(chip.regs)) {
-        if (device.nic) |nic| sayUnanswered(nic);
+        // Once, beside the warning it belongs to. A radio the repair keeps
+        // failing to put right is asked again five times a second, and a
+        // queue dump on each of those is the whole log.
+        if (!said_unmoved) {
+            if (device.nic) |nic| sayUnanswered(nic);
+        }
         return unmoved("the engines would not stop");
     }
     // Both stopped, so whatever a earlier attempt left running has since
@@ -492,6 +523,7 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
         return false;
     };
     device.channel = channel;
+    device.rx_stopped_for = 0;
     if (device.nic) |nic| nic.radio_channel = channel.number;
 
     rebuildReceive();
@@ -710,8 +742,12 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.text(if (regs.get(.phy_active, regs_mod.PhyActive).enable) "active" else "idle");
     out.text(", accepting 0x");
     out.hex(@as(u32, @bitCast(regs.get(.rx_filter, regs_mod.RxFilter))), 4);
-    out.text(", started again ");
+    out.text(", slowest retune ");
+    out.decimal(slowest_tune);
+    out.text(" us, started again ");
     out.decimal(rx_restarts);
+    out.text(" times and reset over ");
+    out.decimal(rx_repairs);
     out.text(" times, engine ");
     out.text(if (regs.get(.control, regs_mod.Control).rx_enable) "running" else "stopped");
     out.text(", walking 0x");
@@ -740,6 +776,8 @@ pub fn watchAgain(nic: *NicDev) void {
     said_unheard = false;
     phy_errors = 0;
     rx_restarts = 0;
+    rx_repairs = 0;
+    slowest_tune = 0;
     given_up = @splat(0);
     since_judged = .{};
     since = .{
@@ -795,7 +833,14 @@ pub fn adapt(nic: *NicDev) void {
     if (chip.immunity.heard(chip.regs, dwell.ofdm, dwell.cck)) sayImmunity(chip);
 }
 
-/// Take anything the radio has finished with that no interrupt came for.
+/// How many looks in a row have to find the engine stopped before the
+/// radio resets itself over it. One can catch the hardware between a
+/// frame and the descriptor that records it; two, a fifth of a second
+/// apart, cannot.
+const STOPPED_LOOKS = 2;
+
+/// Keep the radio hearing, which is the radio's own business and nobody
+/// else's.
 ///
 /// The line this radio is on is shared and edge triggered, and an edge
 /// raised while the line is already asserted is an edge nobody sees. A
@@ -804,17 +849,50 @@ pub fn adapt(nic: *NicDev) void {
 /// the service's descriptors begin it costs everything, because the
 /// hardware stops at the end and only the reaping puts it back to work.
 ///
-/// So a finished descriptor nobody has taken is the signal, and it cannot
-/// be anything else: an interrupt that arrived would have taken it. The
-/// reaping does the rest, including starting the engine again. Nothing
-/// here reads or writes a control register, because a watch that decides
-/// from a flag can be wrong about a healthy engine and drag its walk back
-/// to the beginning five times a second.
+/// Three things can be wrong, and each has one repair:
+///
+/// The run ended and nobody reaped it. A finished descriptor nobody has
+/// taken says so and can say nothing else, because an interrupt that
+/// arrived would have taken it. The reaping puts it right, engine and
+/// all.
+///
+/// The engine stopped without finishing anything: an overrun it gave up
+/// on, or a stop that did not take. Where it stopped is written down
+/// nowhere, so there is no walk to resume and no descriptor to point it
+/// at, and pointing it at one anyway is how a healthy engine gets dragged
+/// back to the beginning. The only honest repair is the whole one.
+///
+/// The descriptor memory is not the service's to read. Nothing short of
+/// the whole reset makes it so.
+///
+/// The whole repair is a tune to the channel the radio was asked for, and
+/// it is here rather than in the station because a receiver's health is
+/// not a thing a sweep should be quietly providing: a station that joins
+/// a network stops sweeping and would otherwise stay deaf for good the
+/// first time one of these went wrong.
 fn keepReceiving(nic: *NicDev, chip: *reset.Chip) void {
-    if (device.dma_unsafe) return;
+    if (device.dma_unsafe or device.channel == null) return repair(nic);
+
     const rings = device.rings orelse return;
-    if (!rings.rx_desc[device.rx_next].receiveFinished()) return;
-    reapRx(nic, chip);
+    if (rings.rx_desc[device.rx_next].receiveFinished()) {
+        device.rx_stopped_for = 0;
+        reapRx(nic, chip);
+        return;
+    }
+
+    if (chip.regs.get(.control, regs_mod.Control).rx_enable) {
+        device.rx_stopped_for = 0;
+        return;
+    }
+    device.rx_stopped_for +|= 1;
+    if (device.rx_stopped_for >= STOPPED_LOOKS) repair(nic);
+}
+
+/// Put the radio back on the channel it was asked for, from a reset.
+fn repair(nic: *NicDev) void {
+    const on = device.asked orelse return;
+    device.rx_stopped_for = 0;
+    if (tune(nic, on)) rx_repairs +|= 1;
 }
 
 /// Failures split by which demodulator gave up. The two fail separately
@@ -1409,6 +1487,10 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
 /// pointed back at the start of it. A radio in a busy room does this
 /// often; one that never does either hears nothing or is keeping up.
 var rx_restarts: u32 = 0;
+
+/// How often the receiver had stopped in a way no walk could be resumed
+/// from and the radio reset itself over it. A healthy one never does.
+var rx_repairs: u32 = 0;
 
 /// The signal a frame arrived at: the baseband's margin over its noise
 /// floor, and the absolute figure that margin and the calibrated floor
