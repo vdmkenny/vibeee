@@ -375,6 +375,16 @@ fn applyPower(chip: *Chip) void {
     // regulator cares about.
     var highest: u6 = 0;
     for (rates.indices) |index| highest = @max(highest, index);
+
+    // Only when it changes. A channel change happens five times a second
+    // while the radio sweeps, and a line per change is not a report but a
+    // flood: it pushes the boot, and anything else worth reading, out of
+    // the log ring before anybody can look at it.
+    if (said_power) |before| {
+        if (before.highest == highest and before.self == rates.self_index) return;
+    }
+    said_power = .{ .highest = highest, .self = rates.self_index };
+
     log.begin(name, .dim);
     out.text("on ");
     out.decimal(chip.power_mhz);
@@ -384,6 +394,9 @@ fn applyPower(chip: *Chip) void {
     sayDbm(rates.self_index, chip.power_offset);
     log.end();
 }
+
+/// What the last such line said, so the same thing is not said again.
+var said_power: ?struct { highest: u6, self: u6 } = null;
 
 /// A power index as decibel-milliwatts, to the half.
 fn sayDbm(index: u6, offset: i16) void {

@@ -1174,15 +1174,33 @@ pub fn syncLink(nic: *NicDev) void {
     nic.state = state;
     applyLinkState(state);
 
+    // Only when one of them moves. This is asked on every look at the
+    // link, and a line each time is a flood that pushes everything else
+    // out of the log ring.
+    const now = Registers{
+        .mac_ctrl = device.regs.rd32(.mac_ctrl),
+        .imr = device.regs.rd32(.imr),
+        .isr = device.regs.rd32(.isr),
+    };
+    if (said_registers) |before| {
+        if (std.meta.eql(before, now)) return;
+    }
+    said_registers = now;
+
     log.begin("atl2", .dim);
     out.text("sync mac_ctrl 0x");
-    out.hex(device.regs.rd32(.mac_ctrl), 8);
+    out.hex(now.mac_ctrl, 8);
     out.text(" imr 0x");
-    out.hex(device.regs.rd32(.imr), 8);
+    out.hex(now.imr, 8);
     out.text(" isr 0x");
-    out.hex(device.regs.rd32(.isr), 8);
+    out.hex(now.isr, 8);
     log.end();
 }
+
+const Registers = struct { mac_ctrl: u32, imr: u32, isr: u32 };
+
+/// What the last such line said, so the same thing is not said again.
+var said_registers: ?Registers = null;
 
 fn applyLinkState(state: dev_mod.Link) void {
     // The whole register, flat, as the vendor's driver writes it. Every one
