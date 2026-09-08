@@ -561,7 +561,12 @@ pub const Rsn = struct {
         at += 2;
         if (pmkids > (payload.len - at) / 16) return null;
         at += pmkids * 16;
-        if (payload.len != at and payload.len != at + 4) return null;
+        // Whatever follows the fields this build reads is that network's
+        // business. Every field taken above had to be whole, so nothing
+        // here was misread; refusing a network because its element carries
+        // something this build has no name for would refuse the ones a
+        // later amendment adds a field to, and the element is compared
+        // byte for byte later regardless of what was understood of it.
         return out;
     }
 
@@ -739,6 +744,22 @@ test "a cell with a different cipher or key management is not one this station j
     // A version this file does not know is refused.
     payload[0] = 2;
     try std.testing.expectEqual(@as(?Rsn, null), Rsn.parse(&payload));
+
+    // Fields past the ones this build reads are that network's business:
+    // everything read was whole, so nothing was misread, and refusing the
+    // element would refuse the networks a later amendment adds a field to.
+    const trailing = Rsn.psk_ccmp ++ [_]u8{ 0x00, 0x00 } ++ [_]u8{ 0x00, 0x0F, 0xAC, 0x06 } ++ [_]u8{ 0xDE, 0xAD };
+    const later = Rsn.parse(&trailing) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(later.psk and later.pairwise_ccmp);
+
+    // A count that reaches past the element is a misreading, and is not.
+    const overrun = Rsn.psk_ccmp ++ [_]u8{ 0x09, 0x00 };
+    try std.testing.expectEqual(@as(?Rsn, null), Rsn.parse(&overrun));
+    // Nor is a suite list cut off in the middle of a suite. Ending
+    // cleanly after one, on the other hand, is an element that simply
+    // stops there.
+    try std.testing.expectEqual(@as(?Rsn, null), Rsn.parse(Rsn.psk_ccmp[0..16]));
+    try std.testing.expect(Rsn.parse(Rsn.psk_ccmp[0..18]) != null);
 }
 
 test "unsupported management fragments and data aggregates cannot become payloads" {

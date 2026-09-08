@@ -347,18 +347,26 @@ pub const Bss = struct {
         const beacon = ieee80211.Beacon.parse(frame[head.len..]) orelse return null;
         const name = ieee80211.element(beacon.elements, .ssid) orelse &.{};
         const ssid = wifi.Ssid.of(name) orelse return null;
+        // What the network says about its own protection, kept exactly as
+        // it said it, for the key exchange to be held to later.
+        //
+        // The walk ends at an element that does not fit rather than
+        // throwing the beacon away. A beacon is written by somebody else
+        // and carries whatever that access point puts in it; a station
+        // that refused the whole frame for a tail it does not understand
+        // would not see the network at all, which is a worse answer than
+        // not reading one element of it. What is read is read exactly, and
+        // what is not read is not acted on.
         var rsn = ieee80211.Rsn.Transcript{};
-        var rest = beacon.elements;
-        while (rest.len != 0) {
-            if (rest.len < 2 or rest[1] > rest.len - 2) return null;
-            const len: usize = rest[1];
-            if (rest[0] == @intFromEnum(ieee80211.ElementId.rsn)) {
-                // Twice is a beacon that says two different things about
-                // its own protection, and neither of them can be trusted.
-                if (rsn.len != 0 or len == 0) return null;
-                rsn = ieee80211.Rsn.Transcript.of(rest[2..][0..len]) orelse return null;
-            }
-            rest = rest[2 + len ..];
+        var seen_rsn = false;
+        var it = ieee80211.elements(beacon.elements);
+        while (it.next()) |found| {
+            if (found.id != .rsn) continue;
+            // Twice is a beacon that says two different things about its
+            // own protection, and neither of them can be relied on.
+            if (seen_rsn or found.payload.len == 0) return null;
+            seen_rsn = true;
+            rsn = ieee80211.Rsn.Transcript.of(found.payload) orelse return null;
         }
 
         if (keep_rsn) |into| into.* = rsn;
@@ -630,6 +638,35 @@ test "a scan names every protection, and joins only the two it can" {
     const sae = Bss.fromBeacon(frame[0..sae_len], .{}, null).?;
     try testing.expectEqual(wifi.Security.wpa3_sae, sae.security);
     try testing.expect(!sae.security.joinable());
+}
+
+test "a beacon whose tail is torn is still a network that was heard" {
+    var elements: [96]u8 = @splat(0);
+    var at = ieee80211.writeElement(&elements, .ssid, "home").?;
+    at += ieee80211.writeElement(elements[at..], .ds_parameter, &.{6}).?;
+    at += ieee80211.writeElement(elements[at..], .rsn, &ieee80211.Rsn.psk_ccmp).?;
+
+    // A beacon is written by somebody else. Past the elements this station
+    // reads there is whatever that access point puts there, and the last of
+    // it can be cut short by a length the radio reported or by the access
+    // point itself. A station that threw the whole beacon away for it would
+    // not see the network at all, which is worse than not understanding one
+    // element of it.
+    elements[at] = @intFromEnum(ieee80211.ElementId.vendor);
+    elements[at + 1] = 40;
+    at += 4;
+
+    var frame: [160]u8 = @splat(0);
+    const len = beaconFrame(&frame, .{ .ess = true, .privacy = true }, elements[0..at]);
+
+    var advertised = ieee80211.Rsn.Transcript{};
+    const bss = Bss.fromBeacon(frame[0..len], .{ .dbm = -50 }, &advertised) orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("home", bss.ssid.slice());
+    try testing.expectEqual(@as(u8, 6), bss.channel);
+    try testing.expectEqual(wifi.Security.wpa2_psk, bss.security);
+    // And what it did say about its protection is kept exactly.
+    try testing.expectEqualSlices(u8, &ieee80211.Rsn.psk_ccmp, advertised.slice());
 }
 
 test "what a network said about its protection is kept, not pointed at" {
