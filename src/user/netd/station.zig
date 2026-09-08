@@ -578,6 +578,37 @@ fn configure(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     ops.setPower(nic, role.txpower.resolve(role.regdomain).half_dbm);
 }
 
+/// One frame of the key exchange, as the standard names its fields.
+///
+/// Bounded protocol metadata and nothing else: no nonce, no integrity
+/// code, no key data, nothing derived from the secret. What it is for is
+/// an exchange that ends without the far end finishing it, where the
+/// question is whether the frames on the air are the frames the standard
+/// describes, and neither end's own reading of them can answer that.
+///
+/// A whole exchange is four frames, so this says four things and stops.
+fn sayKeyFrame(nic: *dev_mod.NicDev, way: []const u8, payload: []const u8) void {
+    const key = lib.wpa2.KeyFrame.parse(payload) orelse {
+        log.note(nic.name, "a key frame that does not parse");
+        return;
+    };
+    log.begin(nic.name, .dim);
+    out.text("key frame ");
+    out.text(way);
+    out.text(": info 0x");
+    out.hex(@as(u16, @bitCast(key.info)), 4);
+    out.text(", counter ");
+    out.decimal(@intCast(key.replay & 0xFFFF));
+    out.text(", key length ");
+    out.decimal(key.key_length);
+    out.text(", key data ");
+    out.decimal(key.data.len);
+    out.text(" of ");
+    out.decimal(key.len);
+    out.text(" bytes");
+    log.end();
+}
+
 /// The network this radio is on, or trying to be on, for saying so. One
 /// name, from the one place that holds it.
 fn wantedName() []const u8 {
@@ -687,6 +718,7 @@ fn act(what: join_mod.Action) void {
         .none => {},
         .send => |length| {
             state.sent_joining +|= 1;
+            if (join_mod.eapolOf(state.frame[0..length])) |payload| sayKeyFrame(it.nic, "to the cell", payload);
             const response = if (state.join) |attempt| attempt.response else null;
             // Whether the queue took it, which is not whether the far
             // end heard it: what retires a key is the cell speaking under
@@ -927,6 +959,7 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
             // fault from one that never came.
             if (mlme.Auth.parse(frame) != null) state.heard_auth +|= 1;
         }
+        if (join_mod.eapolOf(frame)) |payload| sayKeyFrame(nic, "from the cell", payload);
         const what = attempt.heard(frame, signal, sys.clockMicros(), &state.frame);
         switch (what) {
             .none => {},
