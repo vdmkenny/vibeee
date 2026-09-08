@@ -161,6 +161,8 @@ const Device = struct {
     /// finished descriptor to account for it. One is a read that caught
     /// the hardware mid-step; two is an engine that is not coming back.
     rx_stopped_for: u8 = 0,
+    /// When the receiver may be reset over again.
+    repair_after: u64 = 0,
     /// The cell this station answers for, or none while it belongs to
     /// nothing.
     cell: ?dev_mod.Cell = null,
@@ -888,9 +890,19 @@ fn keepReceiving(nic: *NicDev, chip: *reset.Chip) void {
     if (device.rx_stopped_for >= STOPPED_LOOKS) repair(nic);
 }
 
+/// The least time between two repairs. A repair is a reset, and a reset
+/// spends its patience waiting on engines to stop: a radio that is really
+/// broken would otherwise spend half of every dwell on one, and so would
+/// a healthy radio this ever reads wrongly. Well inside how long a
+/// station waits before it decides its cell has gone quiet.
+const REPAIR_INTERVAL_MICROS: u64 = 1_000_000;
+
 /// Put the radio back on the channel it was asked for, from a reset.
 fn repair(nic: *NicDev) void {
     const on = device.asked orelse return;
+    const now = sys.clockMicros();
+    if (now < device.repair_after) return;
+    device.repair_after = now + REPAIR_INTERVAL_MICROS;
     device.rx_stopped_for = 0;
     if (tune(nic, on)) rx_repairs +|= 1;
 }
