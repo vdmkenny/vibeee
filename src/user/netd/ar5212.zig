@@ -784,11 +784,11 @@ const GIVEN_UP_CODES = 64;
 /// middle has nothing listening for it. So how hard it is to convince is
 /// raised while it is giving up too often and lowered when it is not,
 /// and the counts it is judged on are the ones it reported itself.
-pub fn adapt(_: *NicDev) void {
+pub fn adapt(nic: *NicDev) void {
     const chip: *reset.Chip = if (device.chip) |*c| c else return;
     if (!device.started or device.gone) return;
 
-    keepReceiving(chip);
+    keepReceiving(nic, chip);
 
     const dwell = since_judged;
     since_judged = .{};
@@ -808,14 +808,21 @@ pub fn adapt(_: *NicDev) void {
 /// Asked on the same cadence the room is judged on, which is often enough
 /// that a stop costs a fraction of one dwell and rare enough to be two
 /// register reads.
-fn keepReceiving(chip: *reset.Chip) void {
+fn keepReceiving(nic: *NicDev, chip: *reset.Chip) void {
     if (device.dma_unsafe) return;
     const rings = device.rings orelse return;
     if (chip.regs.get(.control, regs_mod.Control).rx_enable) return;
 
-    // Only onto a descriptor the radio owns. The oldest one the service
-    // has not taken is armed by construction: everything before it was
-    // armed as it was reaped, and it is where the walk will resume.
+    // Stopped. Take whatever it finished before it stopped, which is what
+    // the interrupt would have done and is the only thing that makes the
+    // oldest descriptor the radio's again. Refusing here because that
+    // descriptor holds a frame is refusing in exactly the case that needs
+    // this: nothing else is going to come and take it.
+    reapRx(nic, chip);
+    if (chip.regs.get(.control, regs_mod.Control).rx_enable) return;
+
+    // Nothing was there to take, so the run is already the radio's from
+    // the oldest descriptor on, and that one is armed by construction.
     const desc: *const volatile Desc = &rings.rx_desc[device.rx_next];
     if (desc.receiveFinished()) return;
 
