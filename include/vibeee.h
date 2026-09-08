@@ -144,4 +144,46 @@ int vb_sound_drained(void);
 
 void vb_sound_close(void);
 
+/* ---- mixing several sounds into that one stream ---------------------- */
+
+/* A stream carries one thing. A program that makes sounds rather than plays
+ * a file makes several at once and has to add them together, and the adding
+ * is the same work whoever does it. These do it: each sound goes in a slot,
+ * is read at whatever rate it was recorded, and is scaled for each ear.
+ *
+ * Sixteen slots. A caller picks one per sound and reuses it, which is what
+ * lets it change or stop a sound it started without holding anything. */
+#define VB_MIX_VOICES 16
+
+/* Loudness on one side, in two hundred and fifty-sixths: 0 is silent and
+ * VB_MIX_FULL is as loud as the sample. */
+#define VB_MIX_FULL 255
+
+/* Start `count` samples in `slot`, recorded at `rate` frames a second.
+ * `bits` is 8 for unsigned samples with silence at 128, which is how sounds
+ * of that age are stored, or 16 for signed ones. The samples stay yours and
+ * are read while the sound plays, so they must outlive it. Anything already
+ * in the slot is replaced. Returns 0, or -1 for a slot or a shape that is
+ * not one of these. */
+int vb_mix_start(int slot, const void *samples, int count, unsigned int rate,
+                 int bits, unsigned char left, unsigned char right,
+                 int looping);
+
+/* How loud a sound already playing is. A slot that has finished is left
+ * alone: a sound that ended is not made louder. */
+void vb_mix_gain(int slot, unsigned char left, unsigned char right);
+
+void vb_mix_stop(int slot);
+void vb_mix_stop_all(void);
+int  vb_mix_playing(int slot);
+
+/* The first slot with nothing in it, or -1 when they are all busy. */
+int  vb_mix_free(void);
+
+/* Mix what the stream has room for and hand it over; returns the frames
+ * written, or -1 without a stream. Silence counts: a stream that stops
+ * being fed runs dry and the next sound starts with a click, so call this
+ * on a regular beat whether or not anything is playing. */
+int  vb_mix_pump(void);
+
 #endif /* _VIBEEE_H */

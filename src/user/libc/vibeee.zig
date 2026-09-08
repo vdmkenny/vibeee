@@ -281,3 +281,123 @@ export fn vb_sound_close() void {
     if (speaking) |port| port.close();
     speaking = null;
 }
+
+// ---------------------------------------------------------------------------
+// Mixing several sounds into the one stream
+// ---------------------------------------------------------------------------
+
+/// How many sounds a C program may have going at once.
+///
+/// A budget rather than a limit somebody ran into: a program that makes
+/// sounds picks a slot for each and reuses it, and past a dozen or so
+/// nobody can pick one out of the others anyway. The bank costs its own
+/// size and nothing else, since the samples stay where the caller put them.
+const MIX_VOICES = 16;
+
+var bank: audio.Mixer(MIX_VOICES) = .{};
+
+/// Where frames are put together before being handed over.
+///
+/// One pass fills this much and the pump goes round again, so the size is
+/// how much work happens between two checks of the ring rather than a
+/// ceiling on anything.
+var mixed: [512]i16 = @splat(0);
+
+/// Start a sound in `slot`, at the rate it was recorded.
+///
+/// `bits` is 8 for unsigned samples with silence at the middle, which is
+/// what sounds of that age are stored as, or 16 for signed ones. The
+/// samples stay the caller's and are read while the sound plays, so they
+/// have to outlive it. Answers 0, or -1 for a slot or a shape this does
+/// not have.
+export fn vb_mix_start(
+    slot: c_int,
+    samples: ?*const anyopaque,
+    count: c_int,
+    rate: c_uint,
+    bits: c_int,
+    left: u8,
+    right: u8,
+    looping: c_int,
+) c_int {
+    if (slot < 0 or slot >= MIX_VOICES or count <= 0) return -1;
+    const from: [*]const u8 = @ptrCast(samples orelse return -1);
+    const n: usize = @intCast(count);
+
+    const source: audio.Samples = switch (bits) {
+        8 => .{ .eight = from[0..n] },
+        16 => .{ .sixteen = @as([*]const i16, @ptrCast(@alignCast(from)))[0..n] },
+        else => return -1,
+    };
+
+    const out = audio.Shape{};
+    bank.start(@intCast(slot), .{
+        .samples = source,
+        .step = audio.stepFor(rate, out.rate.hertz()),
+        .left = left,
+        .right = right,
+        .looping = looping != 0,
+    });
+    return 0;
+}
+
+/// How loud a sound already playing is on each side. A slot that has
+/// finished is left alone: a sound that ended is not made louder.
+export fn vb_mix_gain(slot: c_int, left: u8, right: u8) void {
+    if (slot < 0) return;
+    bank.setGain(@intCast(slot), left, right);
+}
+
+export fn vb_mix_stop(slot: c_int) void {
+    if (slot < 0) return;
+    bank.stop(@intCast(slot));
+}
+
+export fn vb_mix_stop_all() void {
+    bank.stopAll();
+}
+
+export fn vb_mix_playing(slot: c_int) c_int {
+    if (slot < 0) return 0;
+    return @intFromBool(bank.playing(@intCast(slot)));
+}
+
+/// The first slot with nothing in it, or -1 when they are all busy.
+export fn vb_mix_free() c_int {
+    const slot = bank.free() orelse return -1;
+    return @intCast(slot);
+}
+
+/// Mix what the stream has room for and hand it over.
+///
+/// Silence counts: a stream that stops being fed runs dry and the next
+/// sound starts with a click, so a program with nothing playing still
+/// pumps and still keeps the stream moving. Answers the frames written,
+/// or -1 without a stream.
+export fn vb_mix_pump() c_int {
+    const port = &(speaking orelse return -1);
+    const shape = audio.Shape{};
+    const per_frame = shape.bytesPerFrame();
+    const at_once = mixed.len / shape.channels;
+
+    // What there is room for, measured once and then worked through. The
+    // service is draining the ring while this runs, so a loop that asked
+    // again each time round would keep being told there is room and would
+    // never come back: a pump is one pass, and the beat is the caller's.
+    var left = port.view.frames.writable() / per_frame;
+    var written: usize = 0;
+    while (left != 0) {
+        // Widened deliberately: `@min` gives back the narrowest type that
+        // can hold its answer, and a count of frames multiplied out to
+        // samples in that type is a product that does not fit it.
+        const frames: usize = @min(left, at_once);
+        const wanted = mixed[0 .. frames * shape.channels];
+        bank.fill(wanted);
+
+        const taken = port.write(std.mem.sliceAsBytes(wanted)) / per_frame;
+        written += taken;
+        if (taken < frames) break;
+        left -= taken;
+    }
+    return @intCast(written);
+}

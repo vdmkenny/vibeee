@@ -37,4 +37,10 @@ DATA_FROM := https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad
 # machine.
 DOOM_RESX ?= 800
 DOOM_RESY ?= 480
-CFLAGS := -DNORMALUNIX -DLINUX -DDOOMGENERIC_RESX=$(DOOM_RESX) -DDOOMGENERIC_RESY=$(DOOM_RESY)
+# FEATURE_SOUND is what makes the engine look for a sound and a music
+# module rather than run silent. Both are in the glue: the effects go
+# through the system's mixer, and the music module declines, there being
+# no sequencer to play a score with.
+CFLAGS := -DNORMALUNIX -DLINUX -DFEATURE_SOUND \
+	-I$(ROOT)/apps/doom/shim \
+	-DDOOMGENERIC_RESX=$(DOOM_RESX) -DDOOMGENERIC_RESY=$(DOOM_RESY)

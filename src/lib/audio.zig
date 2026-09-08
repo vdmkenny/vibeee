@@ -369,3 +369,320 @@ test "a peak rises at once and comes down a step at a time" {
     try std.testing.expectEqual(@as(u8, 0), falling(3, 0, 5));
     try std.testing.expectEqual(@as(u8, 0), falling(0, 0, 5));
 }
+
+// ---------------------------------------------------------------------------
+// Playing several sounds at once
+//
+// A stream carries one thing. A program that makes sounds rather than plays a
+// file makes several at a time and has to add them together itself, and the
+// adding is the same work whoever is doing it: read each source at whatever
+// rate it was recorded, scale it for each ear, sum, and hand over one stream.
+// ---------------------------------------------------------------------------
+
+/// Where a voice's samples come from.
+///
+/// Kept in the shape the file had rather than widened on the way in. Sounds
+/// recorded eight bits deep are what a game of that age ships, and widening
+/// every one of them at load time spends the memory of the whole set at once
+/// to save a subtraction per sample.
+pub const Samples = union(enum) {
+    /// Unsigned, silence at the middle of the range.
+    eight: []const u8,
+    /// Signed, silence at zero, which is what everything else here uses.
+    sixteen: []const i16,
+
+    pub fn count(self: Samples) usize {
+        return switch (self) {
+            .eight => |s| s.len,
+            .sixteen => |s| s.len,
+        };
+    }
+
+    /// The sample at `index`, as the rest of this module counts them.
+    /// Silence past the end, so a caller that has not yet noticed a voice
+    /// finished reads nothing rather than another voice's memory.
+    pub fn at(self: Samples, index: usize) i16 {
+        return switch (self) {
+            .eight => |s| if (index < s.len)
+                (@as(i16, s[index]) - 128) << 8
+            else
+                0,
+            .sixteen => |s| if (index < s.len) s[index] else 0,
+        };
+    }
+};
+
+/// How loud a voice is on one side, in two hundred and fifty-sixths.
+///
+/// Full is 255 rather than 256 so that the whole range fits a byte and
+/// silence is zero. That leaves the loudest a voice can be a two hundred
+/// and fifty-sixth under the sample it came from, which is a thirtieth of
+/// a decibel and audible to nobody.
+pub const Gain = u8;
+pub const FULL_GAIN: Gain = 255;
+
+/// How many bits of a source position are the fraction.
+///
+/// The position is counted in source samples, and a source recorded at a
+/// rate the output does not divide advances by a fraction of one per
+/// output frame. Sixteen bits of fraction put the error in a step at one
+/// part in sixty-five thousand, which over the longest sound anybody plays
+/// this way is a small part of one sample.
+const STEP_BITS: u6 = 16;
+const STEP_ONE: u64 = 1 << STEP_BITS;
+
+/// One sound being played: where it is, how fast it moves, how loud.
+pub const Voice = struct {
+    samples: Samples,
+    /// Where the next output frame is read from, in source samples, with
+    /// `STEP_BITS` of fraction.
+    at: u64 = 0,
+    /// How far `at` moves per output frame, in the same fixed point.
+    step: u64 = STEP_ONE,
+    left: Gain = FULL_GAIN,
+    right: Gain = FULL_GAIN,
+    /// Whether reaching the end starts it again rather than ending it.
+    looping: bool = false,
+
+    /// A voice reading `samples` recorded at `from` hertz and played into
+    /// a stream running at `to`.
+    pub fn resampled(samples: Samples, from: u32, to: u32) Voice {
+        return .{ .samples = samples, .step = stepFor(from, to) };
+    }
+
+    /// Whether it has run off the end of what it was given.
+    ///
+    /// A voice with no samples is finished however it was asked to loop:
+    /// going round nothing is not going round.
+    pub fn finished(self: Voice) bool {
+        const total = self.samples.count();
+        if (total == 0) return true;
+        return !self.looping and (self.at >> STEP_BITS) >= total;
+    }
+};
+
+/// How far a source advances per output frame, in the fixed point above.
+///
+/// Worked out in sixty-four bits: a rate shifted by sixteen passes what
+/// thirty-two hold at anything above about sixty-five kilohertz, and a
+/// rate is a number somebody can configure.
+pub fn stepFor(from: u32, to: u32) u64 {
+    if (to == 0) return STEP_ONE;
+    return (@as(u64, from) << STEP_BITS) / to;
+}
+
+/// Several voices summed into one interleaved stereo stream.
+///
+/// The count is a compile-time number because it is a budget: a program
+/// decides how many sounds may be going at once, and one that decided at
+/// runtime would be one that allocates on the path a sound comes out of.
+/// Voices are addressed by slot, which is what lets a caller change or
+/// stop one it started without holding a handle to it.
+pub fn Mixer(comptime slots: usize) type {
+    return struct {
+        const Self = @This();
+
+        pub const count = slots;
+
+        voices: [slots]?Voice = @splat(null),
+
+        pub fn start(self: *Self, slot: usize, voice: Voice) void {
+            if (slot >= slots) return;
+            self.voices[slot] = voice;
+        }
+
+        pub fn stop(self: *Self, slot: usize) void {
+            if (slot >= slots) return;
+            self.voices[slot] = null;
+        }
+
+        pub fn stopAll(self: *Self) void {
+            self.voices = @splat(null);
+        }
+
+        pub fn playing(self: *const Self, slot: usize) bool {
+            if (slot >= slots) return false;
+            return self.voices[slot] != null;
+        }
+
+        /// How loud a voice already playing is, on each side. Nothing when
+        /// that slot is silent: a sound that finished is not made louder.
+        pub fn setGain(self: *Self, slot: usize, left: Gain, right: Gain) void {
+            if (slot >= slots) return;
+            if (self.voices[slot]) |*voice| {
+                voice.left = left;
+                voice.right = right;
+            }
+        }
+
+        /// The first slot with nothing in it, or none when all are busy.
+        pub fn free(self: *const Self) ?usize {
+            for (self.voices, 0..) |voice, slot| {
+                if (voice == null) return slot;
+            }
+            return null;
+        }
+
+        /// Fill `out` with every voice summed, and forget the ones that
+        /// finished doing it.
+        ///
+        /// `out` is interleaved stereo and is replaced rather than added
+        /// to, so a caller need not clear it first. Summed in a wider
+        /// number and brought back once at the end: clipping each addition
+        /// as it goes turns a pair of loud sounds into a different sound,
+        /// where clipping the total only flattens what was over the top.
+        pub fn fill(self: *Self, out: []i16) void {
+            @memset(out, 0);
+
+            for (&self.voices) |*maybe| {
+                const voice = if (maybe.*) |*v| v else continue;
+                self.render(voice, out);
+                if (voice.finished()) maybe.* = null;
+            }
+        }
+
+        fn render(_: *Self, voice: *Voice, out: []i16) void {
+            const total = voice.samples.count();
+            if (total == 0) return;
+
+            var frame: usize = 0;
+            while (frame + 1 < out.len) : (frame += 2) {
+                var index = voice.at >> STEP_BITS;
+                if (index >= total) {
+                    if (!voice.looping) return;
+                    // Back to the start, keeping the fraction: a loop that
+                    // rounded to a whole sample each turn would drift.
+                    voice.at %= @as(u64, total) << STEP_BITS;
+                    index = voice.at >> STEP_BITS;
+                }
+
+                const sample: i32 = voice.samples.at(@intCast(index));
+                out[frame] = mix(out[frame], @intCast((sample * voice.left) >> 8));
+                out[frame + 1] = mix(out[frame + 1], @intCast((sample * voice.right) >> 8));
+                voice.at += voice.step;
+            }
+        }
+    };
+}
+
+test "an eight bit sample reads as the signed one it stands for" {
+    const quiet = Samples{ .eight = &.{ 128, 129, 127 } };
+    try std.testing.expectEqual(@as(i16, 0), quiet.at(0));
+    try std.testing.expectEqual(@as(i16, 256), quiet.at(1));
+    try std.testing.expectEqual(@as(i16, -256), quiet.at(2));
+    // Past the end is silence, not somebody else's memory.
+    try std.testing.expectEqual(@as(i16, 0), quiet.at(3));
+    try std.testing.expectEqual(@as(usize, 3), quiet.count());
+}
+
+test "a source at the output's own rate advances one sample a frame" {
+    try std.testing.expectEqual(STEP_ONE, stepFor(48000, 48000));
+    // Half the rate advances half as fast, and the fraction is exact.
+    try std.testing.expectEqual(STEP_ONE / 2, stepFor(24000, 48000));
+    try std.testing.expectEqual(STEP_ONE * 2, stepFor(96000, 48000));
+    // A rate nothing divides still gives a step under one.
+    const doom = stepFor(11025, 48000);
+    try std.testing.expect(doom > 0 and doom < STEP_ONE);
+    // A stream running at nothing is not a reason to divide by zero.
+    try std.testing.expectEqual(STEP_ONE, stepFor(11025, 0));
+}
+
+test "one voice comes out on both sides at what it was scaled to" {
+    var mixer = Mixer(4){};
+    const source = Samples{ .sixteen = &.{ 1000, 2000 } };
+    mixer.start(0, .{ .samples = source, .left = FULL_GAIN, .right = 0 });
+
+    var out: [4]i16 = @splat(0);
+    mixer.fill(&out);
+    // Left carries it a two hundred and fifty-sixth under, right is silent.
+    try std.testing.expectEqual(@as(i16, (1000 * 255) >> 8), out[0]);
+    try std.testing.expectEqual(@as(i16, 0), out[1]);
+    try std.testing.expectEqual(@as(i16, (2000 * 255) >> 8), out[2]);
+    try std.testing.expectEqual(@as(i16, 0), out[3]);
+}
+
+test "a voice that ran out is forgotten rather than read past" {
+    var mixer = Mixer(2){};
+    mixer.start(1, .{ .samples = .{ .sixteen = &.{ 100, 200 } } });
+    try std.testing.expect(mixer.playing(1));
+
+    var out: [8]i16 = @splat(0);
+    mixer.fill(&out);
+    try std.testing.expect(!mixer.playing(1));
+    // Two frames of sound, then silence rather than whatever came next.
+    try std.testing.expect(out[0] != 0 and out[2] != 0);
+    try std.testing.expectEqual(@as(i16, 0), out[4]);
+    try std.testing.expectEqual(@as(i16, 0), out[6]);
+}
+
+test "a looping voice keeps going and keeps its fraction" {
+    var mixer = Mixer(1){};
+    mixer.start(0, .{
+        .samples = .{ .sixteen = &.{ 1000, -1000 } },
+        .step = STEP_ONE,
+        .looping = true,
+    });
+
+    var out: [16]i16 = @splat(0);
+    mixer.fill(&out);
+    try std.testing.expect(mixer.playing(0));
+    // It alternates the whole way through rather than stopping at two.
+    var frame: usize = 0;
+    while (frame < out.len) : (frame += 4) {
+        try std.testing.expect(out[frame] > 0);
+        try std.testing.expect(out[frame + 2] < 0);
+    }
+}
+
+test "voices are summed, and a total over the top is flattened rather than wrapped" {
+    var mixer = Mixer(4){};
+    const loud = Samples{ .sixteen = &.{ 30000, 30000 } };
+    mixer.start(0, .{ .samples = loud });
+    mixer.start(1, .{ .samples = loud });
+    mixer.start(2, .{ .samples = loud });
+
+    var out: [4]i16 = @splat(0);
+    mixer.fill(&out);
+    // Three of those is past full scale, and it comes out held there.
+    try std.testing.expectEqual(@as(i16, std.math.maxInt(i16)), out[0]);
+    try std.testing.expectEqual(@as(i16, std.math.maxInt(i16)), out[1]);
+}
+
+test "a slot that is silent takes no gain, and a slot that is not is not disturbed" {
+    var mixer = Mixer(2){};
+    mixer.setGain(0, 10, 10);
+    try std.testing.expect(!mixer.playing(0));
+
+    mixer.start(0, .{ .samples = .{ .sixteen = &.{ 1000, 1000 } } });
+    mixer.setGain(0, 0, FULL_GAIN);
+    var out: [2]i16 = @splat(0);
+    mixer.fill(&out);
+    try std.testing.expectEqual(@as(i16, 0), out[0]);
+    try std.testing.expect(out[1] > 0);
+
+    // A slot nobody has is neither played nor a crash.
+    mixer.start(9, .{ .samples = .{ .sixteen = &.{1000} } });
+    mixer.setGain(9, 1, 1);
+    mixer.stop(9);
+    try std.testing.expect(!mixer.playing(9));
+}
+
+test "the first free slot is the one a caller is given, and none when full" {
+    var mixer = Mixer(2){};
+    try std.testing.expectEqual(@as(?usize, 0), mixer.free());
+    mixer.start(0, .{ .samples = .{ .sixteen = &.{1000} } });
+    try std.testing.expectEqual(@as(?usize, 1), mixer.free());
+    mixer.start(1, .{ .samples = .{ .sixteen = &.{1000} } });
+    try std.testing.expectEqual(@as(?usize, null), mixer.free());
+    mixer.stopAll();
+    try std.testing.expectEqual(@as(?usize, 0), mixer.free());
+}
+
+test "a voice with nothing in it ends instead of dividing by zero" {
+    var mixer = Mixer(1){};
+    mixer.start(0, .{ .samples = .{ .sixteen = &.{} }, .looping = true });
+    var out: [4]i16 = @splat(0);
+    mixer.fill(&out);
+    try std.testing.expect(!mixer.playing(0));
+    try std.testing.expectEqual(@as(i16, 0), out[0]);
+}
