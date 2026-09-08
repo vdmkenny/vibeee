@@ -434,33 +434,49 @@ fn quiet(regs: Regs) bool {
 
 /// Tune to a channel: the whole reset, with the protocol unit's timers
 /// kept after the first, then receive again.
+/// A retune that could not be made: the radio is where it was, and the
+/// memory it may still be walking stays its own.
+///
+/// Not the end of the interface. A hop happens five times a second, and a
+/// wait that ran out on one of them says nothing about the next; retiring
+/// the radio on the first would leave a machine that heard everything a
+/// moment ago hearing nothing for the rest of the boot, with one line to
+/// explain it. Transmission is held off until a later attempt gets both
+/// engines stopped, which is what makes the memory safe again.
+var said_unmoved = false;
+
+fn unmoved(why: []const u8) bool {
+    device.dma_unsafe = true;
+    if (!said_unmoved) {
+        said_unmoved = true;
+        log.begin(name, .warn);
+        out.text(why);
+        out.text(", so the radio stays on the channel it is on and keeps the memory it was given. It will be asked again");
+        log.end();
+    }
+    return false;
+}
+
 pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     if (!device.started or device.gone) return false;
     const chip: *reset.Chip = if (device.chip) |*c| c else return false;
     const megahertz = channel.megahertz() orelse return false;
-    if (!reset.wake(chip.regs)) {
-        device.dma_unsafe = true;
-        device.started = false;
-        device.channel = null;
-        log.fail(name, "the radio would not wake, so it stays on the channel it is on and keeps the memory it was given");
-        return false;
-    }
+    if (!reset.wake(chip.regs)) return unmoved("the radio would not wake");
 
     const abandoned = device.tx_filled;
     if (!quiet(chip.regs)) {
-        device.dma_unsafe = true;
         if (device.nic) |nic| sayUnanswered(nic);
-        device.started = false;
-        device.channel = null;
-        log.fail(name, "the engines would not stop, so the radio stays where it is and keeps the memory it is walking");
-        return false;
+        return unmoved("the engines would not stop");
     }
+    // Both stopped, so whatever a earlier attempt left running has since
+    // been brought to a halt and the memory is the service's again.
+    device.dma_unsafe = false;
+    said_unmoved = false;
     if (device.nic) |nic| nic.stats.tx_failed += abandoned;
     reset.forgetChannel(chip);
     const kind: reset.Kind = if (device.channel == null) .power_on else .channel_change;
     reset.reset(chip, megahertz, kind) catch |err| {
         device.dma_unsafe = !quiet(chip.regs);
-        device.started = false;
         device.channel = null;
         log.begin(name, .bad);
         out.text("channel ");
@@ -481,7 +497,6 @@ pub fn tune(_: *NicDev, channel: wifi.Channel) bool {
     rebuildReceive();
     if (!startReceive(chip.regs)) {
         device.dma_unsafe = !quiet(chip.regs);
-        device.started = false;
         device.channel = null;
         return false;
     }
@@ -1263,10 +1278,12 @@ pub fn irq(nic: *NicDev) bool {
         const desc: *const volatile Desc = &rings.rx_desc[device.rx_next];
         dma.publish();
         if (!family.rxRestartable(stopped, desc.receiveFinished()) or !startReceive(regs)) {
+            // The next hop resets the radio and builds the run again, so
+            // this is a pass without a receiver rather than the end of
+            // one. Retiring the interface here would make one crowded
+            // moment on one channel the last thing it ever heard.
             device.dma_unsafe = true;
-            device.started = false;
-            listenFor(regs, .{});
-            log.fail(name, "the receiver ran off the end of its run and cannot be pointed back at it while the hardware still owns it");
+            _ = unmoved("the receiver ran off the end of its run and could not be pointed back at it");
         }
     }
     if (cause.bus_error and !device.bus_error_said) {
