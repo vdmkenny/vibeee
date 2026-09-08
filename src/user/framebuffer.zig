@@ -18,8 +18,6 @@ const proto = @import("proto");
 const std = @import("std");
 const sys = @import("sys");
 
-pub const Mode = enum { windowed, fullscreen };
-
 pub const Error = error{ InvalidSize, NoMemory, Closed } ||
     proto.client.Error || display.Error;
 
@@ -45,7 +43,16 @@ pub const Window = struct {
     /// The desktop first, because a program started from a desktop belongs in
     /// it. Without one the screen itself, which is how a machine that boots to
     /// a shell still runs the program.
-    pub fn open(title: []const u8, width: u16, height: u16, mode: Mode) Error!Window {
+    ///
+    /// A program says the size it draws at and nothing else. Where it runs
+    /// decides how that is shown: a window among the others on a desktop,
+    /// and the whole screen where there is no desktop, the screen being the
+    /// only place there is. Filling the display on a desktop is a person's
+    /// choice about a window somebody is looking at, so the manager offers
+    /// it and a program never asks: one that opened over everything else
+    /// because it thought it should have would be doing that to somebody
+    /// who was using something else at the time.
+    pub fn open(title: []const u8, width: u16, height: u16) Error!Window {
         if (width == 0 or height == 0) return error.InvalidSize;
         const count = std.math.mul(usize, width, height) catch return error.InvalidSize;
         const pixels = heap.allocator.alloc(eui.Color, count) catch return error.NoMemory;
@@ -53,7 +60,7 @@ pub const Window = struct {
         @memset(pixels, .{});
 
         var window = Window{
-            .shown = try showSomewhere(title, width, height, mode),
+            .shown = try showSomewhere(title, width, height),
             .pixels = pixels,
             .width = width,
             .height = height,
@@ -127,14 +134,10 @@ pub const Window = struct {
         }
     }
 
-    fn showSomewhere(title: []const u8, width: u16, height: u16, mode: Mode) Error!Shown {
+    fn showSomewhere(title: []const u8, width: u16, height: u16) Error!Shown {
         if (proto.client.Connection.open(title)) |opened| {
             var connection = opened;
-            const id = try connection.createWindow(
-                if (mode == .fullscreen) .fullscreen else .tiled,
-                width,
-                height,
-            );
+            const id = try connection.createWindow(.tiled, width, height);
             errdefer connection.destroyWindow(id) catch {};
             try connection.setTitle(id, title);
             return .{ .desktop = .{ .connection = connection, .id = id } };

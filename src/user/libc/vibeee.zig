@@ -95,15 +95,12 @@ comptime {
 /// `framebuffer.Window` itself and are not restricted by this C convenience.
 var virtual: ?framebuffer.Window = null;
 
-pub const WINDOW_FULLSCREEN: c_uint = 1;
-
 /// Open a fixed logical framebuffer inside the compositor. Unlike
 /// `vb_display_acquire`, this neither needs nor takes the physical display.
 export fn vb_window_open(
     title: ?[*:0]const u8,
     width: u16,
     height: u16,
-    flags: c_uint,
     into: ?*Display,
 ) ?[*]u8 {
     // One per program, so a second call names the window that is open. It
@@ -118,8 +115,7 @@ export fn vb_window_open(
     }
 
     const name = if (title) |text| std.mem.span(text) else "program";
-    const mode: framebuffer.Mode = if (flags & WINDOW_FULLSCREEN != 0) .fullscreen else .windowed;
-    var window = framebuffer.Window.open(name, width, height, mode) catch return null;
+    var window = framebuffer.Window.open(name, width, height) catch return null;
 
     describe(into, &window);
     virtual = window;

@@ -74,9 +74,11 @@ int vb_key_read(vb_key *into, int count, unsigned int timeout_us);
  * framebuffer is open per C program; native Zig programs use
  * framebuffer.Window directly and may own more.
  *
- * Passing VB_WINDOW_FULLSCREEN asks for the desktop content area above other
- * windows. The desktop bar remains available. Without it the window follows
- * the normal tiling policy. On the bare screen the flag makes no difference.
+ * A program says the size it draws at and nothing else. Where it runs
+ * decides how that is shown, and filling the display on a desktop is the
+ * person's choice about a window they are looking at rather than the
+ * program's about itself.
+ *
  * Returns NULL when neither a window nor the screen can be had, or when
  * memory cannot be allocated. `info` describes the fixed logical framebuffer
  * rather than the surface it is presented on, and may be NULL for a program
@@ -86,10 +88,8 @@ int vb_key_read(vb_key *into, int count, unsigned int timeout_us);
  * `info` as the first did and hands back the same pixels. A second call
  * asking for a different width or height returns NULL, there being no way
  * to give it what it asked for. */
-#define VB_WINDOW_FULLSCREEN 0x1u
 void *vb_window_open(const char *title, unsigned short width,
-                     unsigned short height, unsigned int flags,
-                     vb_display *info);
+                     unsigned short height, vb_display *info);
 
 /* Scale and present the virtual framebuffer. Returns 0 on success, or -1
  * when the desktop window has closed or cannot be presented. */

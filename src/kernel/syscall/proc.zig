@@ -53,6 +53,19 @@ pub fn sys_spawn(a: Args) Result {
             return Errno.inval.value();
     }
 
+    // Where the child starts, if the caller said. Checked here rather than
+    // taken on trust: a directory that is not one is a program started
+    // somewhere it cannot read from, which looks like the program failing.
+    var cwd_buf: [path_mod.MAX]u8 = undefined;
+    var in: ?[]const u8 = null;
+    if (options.cwd != 0 and options.cwd_len != 0) {
+        const where = userPath(a, options.cwd, options.cwd_len, &cwd_buf) orelse
+            return Errno.fault.value();
+        const entry = vfs.stat(where) catch return Errno.noent.value();
+        if (!entry.is_dir) return Errno.inval.value();
+        in = where;
+    }
+
     var stdio = exec.INHERIT;
     claimStdio(&options, &stdio) catch return Errno.badf.value();
 
@@ -64,13 +77,13 @@ pub fn sys_spawn(a: Args) Result {
     const flags: abi.SpawnFlags = @bitCast(options.flags);
 
     if (flags.detached) {
-        const id = exec.spawnAsync(path, slices[0..count], env_slices[0..env_count], stdio, caps) catch |err| {
+        const id = exec.spawnAsync(path, slices[0..count], env_slices[0..env_count], stdio, caps, in) catch |err| {
             releaseStdio(&stdio);
             return spawnErrno(err);
         };
         return @intCast(id);
     }
-    return exec.spawn(path, slices[0..count], env_slices[0..env_count], stdio, caps) catch |err| {
+    return exec.spawn(path, slices[0..count], env_slices[0..env_count], stdio, caps, in) catch |err| {
         releaseStdio(&stdio);
         return spawnErrno(err);
     };

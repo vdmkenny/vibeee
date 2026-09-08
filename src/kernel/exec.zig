@@ -54,8 +54,9 @@ pub fn spawn(
     env: []const []const u8,
     stdio: Stdio,
     caps: abi.Caps,
+    in: ?[]const u8,
 ) Error!i32 {
-    const child = try start(path, args, env, stdio, caps);
+    const child = try start(path, args, env, stdio, caps, in);
     return sched.waitFor(child);
 }
 
@@ -66,8 +67,9 @@ pub fn spawnAsync(
     env: []const []const u8,
     stdio: Stdio,
     caps: abi.Caps,
+    in: ?[]const u8,
 ) Error!u32 {
-    const child = try start(path, args, env, stdio, caps);
+    const child = try start(path, args, env, stdio, caps, in);
     return child.id;
 }
 
@@ -108,6 +110,7 @@ fn start(
     env: []const []const u8,
     stdio: Stdio,
     caps: abi.Caps,
+    in: ?[]const u8,
 ) Error!*sched.Thread {
     var loaded = try load(path, args, env);
     errdefer loaded.space.destroy();
@@ -119,7 +122,7 @@ fn start(
         heap.allocator.destroy(request);
         return error.OutOfMemory;
     };
-    sched.inheritCwd(child);
+    sched.startCwd(child, in);
     child.caps = caps;
 
     // Before the child can run: it gets the console on all three by default,

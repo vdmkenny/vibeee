@@ -949,9 +949,19 @@ pub fn setCwd(path: []const u8) bool {
     return true;
 }
 
-/// A child starts where its parent was, which is what makes `cd` then run a
-/// program behave the way anyone expects.
-pub fn inheritCwd(child: *Thread) void {
+/// Where a child starts: the directory it was given, or its parent's.
+///
+/// Its parent's is what makes `cd` then run a program behave the way anyone
+/// expects. A directory of its own is for a program that was opened rather
+/// than run from a prompt, which belongs where it was opened from.
+pub fn startCwd(child: *Thread, in: ?[]const u8) void {
+    if (in) |where| {
+        if (where.len != 0 and where.len <= child.cwd_buf.len) {
+            @memcpy(child.cwd_buf[0..where.len], where);
+            child.cwd_len = where.len;
+            return;
+        }
+    }
     const t = current orelse return;
     @memcpy(child.cwd_buf[0..t.cwd_len], t.cwd_buf[0..t.cwd_len]);
     child.cwd_len = t.cwd_len;

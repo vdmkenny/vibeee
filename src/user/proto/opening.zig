@@ -60,11 +60,19 @@ pub fn start(path: []const u8) Outcome {
 
 /// Run a program as itself, with nothing after its name: what a file manager
 /// or a launcher can say about how to run something is nothing.
+///
+/// In the folder it lives in, because that is where a program opened rather
+/// than typed keeps whatever it needs beside itself: its data, its save
+/// files, the wad a game reads its maps from. Started in the folder whoever
+/// opened it happened to be in, a program that reads a file next to itself
+/// finds nothing and exits, which reads as the program being broken.
 fn run(path: []const u8) Outcome {
     var name: [64]u8 = undefined;
     const leaf = paths.base(path);
     const n = @min(leaf.len, name.len);
     @memcpy(name[0..n], leaf[0..n]);
-    _ = sys.spawnDetached(path, &.{name[0..n]}) catch return .would_not_start;
+
+    const folder = paths.parent(path);
+    _ = sys.spawnDetachedIn(path, &.{name[0..n]}, folder) catch return .would_not_start;
     return .opened;
 }

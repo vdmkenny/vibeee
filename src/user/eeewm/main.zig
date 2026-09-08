@@ -123,6 +123,7 @@ fn wmMain() noreturn {
 
     const wanted = config.load();
     desktop.bounds = bar.contentArea(info.width, info.height);
+    desktop.display = .{ .x = 0, .y = 0, .w = info.width, .h = info.height };
     desktop.mfact = @splat(wanted.masterFraction());
 
     // Signalled by cfgd when anything in the wm domain changes, so a theme
@@ -806,6 +807,7 @@ fn perform(action: bindings.Action) void {
         .focus_previous => desktop.focusNext(-1),
         .zoom => desktop.zoom(),
         .maximise => _ = desktop.toggleMaximised(),
+        .fill_display => if (desktop.toggleFullscreen()) ctx.damage(),
         .floating => desktop.toggleFloating(),
         // A step rather than a pixel: a window is put where it is wanted by
         // pressing a key a few times, not by holding one down.
@@ -1109,8 +1111,11 @@ fn onHello(pid: u32, req: *const wire.Req) Answer {
 fn layerFor(placement: wire.Placement) layout.Layer {
     return switch (placement) {
         .floating, .dialog => .floating,
-        .fullscreen => .fullscreen,
         // Anything this build does not know about is a window like any other.
+        // Filling the display is among those: it is a person's choice about a
+        // window in front of them, made here, and a program that could ask
+        // for it would be making that choice for whoever was using something
+        // else at the time.
         .tiled, _ => .tiled,
     };
 }
@@ -1269,7 +1274,10 @@ fn settingsChanged() bool {
 
     const wanted = config.current();
     desktop.mfact = @splat(wanted.masterFraction());
-    desktop.setBounds(bar.contentArea(info.width, info.height));
+    desktop.setBounds(
+        bar.contentArea(info.width, info.height),
+        .{ .x = 0, .y = 0, .w = info.width, .h = info.height },
+    );
 
     // The theme is the desktop's, not this process's: a client draws its own
     // window and has to be told what changed under it.

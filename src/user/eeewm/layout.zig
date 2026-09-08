@@ -76,6 +76,11 @@ pub const Window = struct {
     /// per layer could hold two answers at once, and the one that lost had to
     /// be flipped twice to have any effect.
     layer: Layer = .tiled,
+    /// Which layer it came from, so a window that stops filling the display
+    /// goes back to where it was rather than to the tiling: a floating tool
+    /// that was made to fill and then let go would otherwise split the
+    /// window somebody was using.
+    unfilled: Layer = .tiled,
     /// Where it is now. Set by `arrange` for tiled windows and by dragging for
     /// floating ones.
     area: Rect = .{},
@@ -125,6 +130,11 @@ pub const Desktop = struct {
 
     /// The whole area windows may occupy, below the bar.
     bounds: Rect = .{},
+    /// The whole display, which is what a window filling it gets. The bar
+    /// is inside this and outside `bounds`: a window told to fill the
+    /// display covers the bar, which is the difference between filling it
+    /// and showing one window at a time.
+    display: Rect = .{},
 
     /// Whether this desktop is showing one window at full size rather than
     /// the tiling it would otherwise have.
@@ -253,17 +263,18 @@ pub const Desktop = struct {
     /// One call rather than two, because the two have to happen together: a
     /// bar that moves to the bottom while the windows keep the rectangles
     /// they had at the top is a bar drawn underneath them.
-    pub fn setBounds(self: *Desktop, area: Rect) void {
+    pub fn setBounds(self: *Desktop, area: Rect, whole: Rect) void {
         self.bounds = area;
+        self.display = whole;
         self.arrange();
     }
 
     /// Give every tiled window on the current tag its rectangle.
     pub fn arrange(self: *Desktop) void {
-        // Fullscreen windows sit above the tiling but track the content area
-        // when the bar or display geometry changes.
+        // A window filling the display sits above everything and takes the
+        // whole of it, tracking the geometry when it changes.
         for (&self.windows) |*w| {
-            if (w.used and w.tag == self.tag and w.layer == .fullscreen) w.area = self.bounds;
+            if (w.used and w.tag == self.tag and w.layer == .fullscreen) w.area = self.display;
         }
 
         var buf: [MAX_WINDOWS]usize = undefined;
@@ -299,6 +310,28 @@ pub const Desktop = struct {
 
     pub fn isMaximised(self: *const Desktop) bool {
         return self.maximised[self.tag];
+    }
+
+    /// Have the focused window fill the display, or put it back where it
+    /// came from.
+    ///
+    /// The manager's to offer and nobody else's: a window covering the bar
+    /// and every other window is a thing done to whoever is at the machine,
+    /// so it is done by them. The key that turns it on turns it off, which
+    /// is the way back out now that the bar is underneath.
+    pub fn toggleFullscreen(self: *Desktop) bool {
+        const which = self.focused orelse return false;
+        const w = &self.windows[which];
+        if (!w.used or w.tag != self.tag) return false;
+
+        if (w.layer == .fullscreen) {
+            w.layer = w.unfilled;
+        } else {
+            w.unfilled = w.layer;
+            w.layer = .fullscreen;
+        }
+        self.arrange();
+        return true;
     }
 
     const Axis = enum { vertical, horizontal };

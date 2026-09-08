@@ -755,6 +755,14 @@ pub const Spawn = extern struct {
     /// caller that has nothing to say passes.
     env: u32 = 0,
     env_len: u32 = 0,
+    /// Where the child starts, or zero for wherever its parent is. A
+    /// program is often opened from somewhere rather than run from a
+    /// prompt, and one opened from a folder belongs in that folder: it
+    /// keeps its data beside itself, and a launcher that started it in
+    /// its own directory would be starting it somewhere it has never
+    /// been.
+    cwd: u32 = 0,
+    cwd_len: u32 = 0,
 };
 
 pub const STDIN: u32 = 0;
@@ -1065,7 +1073,7 @@ pub const table = [_]Syscall{
             .{ .name = "path_len", .kind = .len, .desc = "Length of the path." },
             .{ .name = "argv", .kind = .cptr, .desc = "Packed arguments: u16 count, then each as u16 length followed by bytes." },
             .{ .name = "argv_len", .kind = .len, .desc = "Length of the packed block." },
-            .{ .name = "options", .kind = .cptr, .desc = "A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. Its `env` and `env_len` name a packed block of NAME=value strings, in the same shape as `argv`." },
+            .{ .name = "options", .kind = .cptr, .desc = "A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. Its `env` and `env_len` name a packed block of NAME=value strings, in the same shape as `argv`. Its `cwd` and `cwd_len` name the directory the child starts in, which is its parent's when they are zero." },
         },
         .returns = "the program's exit status",
         .errors = &.{ E.fault, E.noent, E.inval, E.nomem },

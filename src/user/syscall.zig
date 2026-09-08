@@ -372,6 +372,20 @@ fn spawnWith(path: []const u8, args: []const []const u8, flags: SpawnFlags) Refu
     return spawnStreams(path, args, .{ .flags = @bitCast(flags) });
 }
 
+/// Start a program in a directory of the caller's choosing, and do not wait.
+///
+/// For a program that was opened rather than typed: it belongs where it was
+/// opened from, which is where whatever it keeps beside itself is. Refused
+/// when `where` is not a directory, rather than started somewhere it cannot
+/// read from, which would look like the program itself failing.
+pub fn spawnDetachedIn(path: []const u8, args: []const []const u8, where: []const u8) Refusal!u32 {
+    return spawnStreams(path, args, .{
+        .flags = @bitCast(SpawnFlags{ .detached = true }),
+        .cwd = @intFromPtr(where.ptr),
+        .cwd_len = @intCast(where.len),
+    });
+}
+
 pub const IrqError = error{
     /// The caller is not a driver. Capabilities come down the process tree,
     /// so this means nothing above it granted one.

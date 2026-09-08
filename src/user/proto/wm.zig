@@ -55,9 +55,6 @@ pub const Placement = enum(u8) {
     /// Floats, and centres over whatever raised it. A dialog that got tiled
     /// would split the window it was asked from in half.
     dialog,
-    /// The desktop's whole content area, above everything else. The bar
-    /// remains available as the way back out.
-    fullscreen,
     _,
 };
 

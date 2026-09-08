@@ -71,8 +71,11 @@ pub const Hooks = struct {
     wakes: []const u32 = &.{},
     woken: ?*const fn (index: usize) bool = null,
 
-    /// Where the window opens. Only where it starts, because Super+F docks
-    /// it into the tiling and lifts it out again whatever it asked for.
+    /// Where the window opens. Only where it starts, because the manager's
+    /// own keys dock it into the tiling, lift it out again and fill the
+    /// display with it, whatever it asked for. Filling the display is not
+    /// among the placements for that reason: it is a person's choice about
+    /// a window in front of them rather than a program's about itself.
     opens: wm.Placement = .tiled,
 };
 

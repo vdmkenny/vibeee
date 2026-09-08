@@ -29,7 +29,7 @@ void DG_Init(void)
      * scales it and puts it in the middle. Its shape is the engine's, so
      * there is nothing to be told back about it. */
     void *surface = vb_window_open("Doom", DOOMGENERIC_RESX, DOOMGENERIC_RESY,
-                                   VB_WINDOW_FULLSCREEN, NULL);
+                                   NULL);
     if (surface == NULL) {
         fprintf(stderr, "doom: there is nowhere to draw\n");
         exit(1);

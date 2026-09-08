@@ -264,7 +264,7 @@ Load and run a program, and wait for it to finish.
 | `path_len` | len | Length of the path. |
 | `argv` | const ptr | Packed arguments: u16 count, then each as u16 length followed by bytes. |
 | `argv_len` | len | Length of the packed block. |
-| `options` | const ptr | A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. Its `env` and `env_len` name a packed block of NAME=value strings, in the same shape as `argv`. |
+| `options` | const ptr | A Spawn struct, or 0 for defaults. Bit 0 of its flags returns immediately with the child's id instead of waiting. Its `env` and `env_len` name a packed block of NAME=value strings, in the same shape as `argv`. Its `cwd` and `cwd_len` name the directory the child starts in, which is its parent's when they are zero. |
 
 **Returns:** the program's exit status
 
