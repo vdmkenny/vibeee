@@ -710,7 +710,9 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.text(if (regs.get(.phy_active, regs_mod.PhyActive).enable) "active" else "idle");
     out.text(", accepting 0x");
     out.hex(@as(u32, @bitCast(regs.get(.rx_filter, regs_mod.RxFilter))), 4);
-    out.text(", engine ");
+    out.text(", started again ");
+    out.decimal(rx_restarts);
+    out.text(" times, engine ");
     out.text(if (regs.get(.control, regs_mod.Control).rx_enable) "running" else "stopped");
     out.text(", walking 0x");
     out.hex(regs.read(.rx_pointer), 8);
@@ -737,6 +739,7 @@ var since = Since{};
 pub fn watchAgain(nic: *NicDev) void {
     said_unheard = false;
     phy_errors = 0;
+    rx_restarts = 0;
     given_up = @splat(0);
     since_judged = .{};
     since = .{
@@ -1307,6 +1310,7 @@ fn goneAway(nic: *NicDev) void {
 fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
     const rings = device.rings orelse return;
 
+    var reaped: usize = 0;
     for (0..RING_SLOTS) |_| {
         const slot = device.rx_next;
         const desc: *const volatile Desc = &rings.rx_desc[slot];
@@ -1353,8 +1357,34 @@ fn reapRx(nic: *NicDev, chip: *reset.Chip) void {
 
         armReceive(rings, slot);
         device.rx_next = Chain.next(slot);
+        reaped += 1;
+    }
+
+    // The run ends where the service's own descriptors begin, so a radio
+    // that filled it stops at the end and stays stopped: writing a link
+    // into the descriptor after it does not start an engine that has
+    // already finished with the one before. Freeing descriptors is the
+    // moment there is somewhere to send it again, and this is where that
+    // happens, so it is pointed at the oldest of them and started here.
+    //
+    // The end-of-list report says the same thing, and is a notification
+    // rather than the only thing that knows: a receiver whose life
+    // depends on one interrupt arriving is a receiver that goes deaf for
+    // good when it does not.
+    if (reaped != 0 and !chip.regs.get(.control, regs_mod.Control).rx_enable) {
+        // The oldest is armed, because the walk above just armed it, so
+        // this can never point the hardware at a frame nobody has read.
+        chip.regs.write(.rx_pointer, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
+        dma.publish();
+        chip.regs.put(.control, regs_mod.Control{ .rx_enable = true });
+        rx_restarts +|= 1;
     }
 }
+
+/// How often the receiver had reached the end of its run and had to be
+/// pointed back at the start of it. A radio in a busy room does this
+/// often; one that never does either hears nothing or is keeping up.
+var rx_restarts: u32 = 0;
 
 /// The signal a frame arrived at: the baseband's margin over its noise
 /// floor, and the absolute figure that margin and the calibrated floor
