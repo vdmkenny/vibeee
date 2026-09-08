@@ -283,16 +283,44 @@ pub fn chipReset(chip: *Chip, megahertz: ?u16) bool {
     const pll: regs_mod.PhyPll = .mhz44_5112;
     const current: regs_mod.PhyPll = @enumFromInt(regs.read(.phy_pll_control));
 
-    // The order the reference requires for a channel that carries CCK,
-    // which a dynamic one does: turbo cleared, then the mode, and the
-    // clock last. The clock may only be moved to forty-four megahertz
-    // while CCK or dynamic mode is set, and turbo may not be set with
-    // either, so the mode has to be in place before the clock follows it.
-    regs.put(.phy_turbo, regs_mod.PhyTurbo{});
-    regs.put(.phy_mode, mode);
+    // The clock first, then turbo, then the mode.
+    //
+    // The reference gives two orders and takes the other one for a channel
+    // carrying CCK, which by its own macro a dynamic channel does: turbo,
+    // mode, clock. That order is what the constraints it states are for,
+    // turbo not being set beside CCK and the clock only moving to
+    // forty-four megahertz while CCK or dynamic is set, and both orders
+    // end at the same three register values.
+    //
+    // This part does not agree. Given the mode while the synthesiser is
+    // still on whatever the chip reset left, and the clock moved
+    // underneath it afterwards, its baseband keeps the timing it latched:
+    // every OFDM frame it starts on fails on timing, its CCK demodulator
+    // records neither a success nor a failure, and the radio hears nothing
+    // at all. Clock first, and it hears the room.
     if (current != pll) {
         regs.write(.phy_pll_control, @intFromEnum(pll));
         pace.delay(PLL_SETTLE_MICROS);
+    }
+    regs.put(.phy_turbo, regs_mod.PhyTurbo{});
+    regs.put(.phy_mode, mode);
+
+    // Read back, because everything downstream is timed by this and
+    // nothing else says it went wrong. A baseband clocked for the five
+    // gigahertz band while listening to this one is a tenth out on every
+    // symbol and chip boundary: both demodulators start on what they hear
+    // and both give up on the timing, which reads as a radio in a silent
+    // room. Set again if the mode write moved it, and said plainly if it
+    // will not hold.
+    const settled: regs_mod.PhyPll = @enumFromInt(regs.read(.phy_pll_control));
+    if (settled != pll) {
+        regs.write(.phy_pll_control, @intFromEnum(pll));
+        pace.delay(PLL_SETTLE_MICROS);
+        const again: regs_mod.PhyPll = @enumFromInt(regs.read(.phy_pll_control));
+        if (again != pll) {
+            sayClock(again);
+            return false;
+        }
     }
     return true;
 }
@@ -397,6 +425,21 @@ fn applyPower(chip: *Chip) void {
 
 /// What the last such line said, so the same thing is not said again.
 var said_power: ?struct { highest: u6, self: u6 } = null;
+
+/// What clock the baseband is running on, when it is not the one the band
+/// needs. Said once: a radio that cannot be clocked for the band it is in
+/// hears nothing, and nothing else in the log would say why.
+var said_clock = false;
+
+fn sayClock(got: regs_mod.PhyPll) void {
+    if (said_clock) return;
+    said_clock = true;
+    log.begin(name, .bad);
+    out.text("the baseband will not take the 44 MHz clock this band runs at; it reads 0x");
+    out.hex(@intFromEnum(got), 8);
+    out.text(", and at any other figure both demodulators give up on the timing of every frame");
+    log.end();
+}
 
 /// A power index as decibel-milliwatts, to the half.
 fn sayDbm(index: u6, offset: i16) void {
