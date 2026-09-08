@@ -795,41 +795,26 @@ pub fn adapt(nic: *NicDev) void {
     if (chip.immunity.heard(chip.regs, dwell.ofdm, dwell.cck)) sayImmunity(chip);
 }
 
-/// Start the receiver again if it has stopped and nothing has noticed.
+/// Take anything the radio has finished with that no interrupt came for.
 ///
-/// The reaping restarts one that stopped because it filled its run, which
-/// is the ordinary way, and it works because a frame arriving is what
-/// calls it. A receiver that stopped for any other reason arrives at the
-/// same place by a road nobody is watching: no frame lands, so no
-/// interrupt comes, so nothing reaps, so nothing starts it, and the radio
-/// is deaf until something else resets it. Liveness cannot depend on an
-/// interrupt that only arrives while the thing is already alive.
+/// The line this radio is on is shared and edge triggered, and an edge
+/// raised while the line is already asserted is an edge nobody sees. A
+/// lost one used to cost nothing: the chain was a circle, so the hardware
+/// carried on and the reaping merely ran late. With a run that ends where
+/// the service's descriptors begin it costs everything, because the
+/// hardware stops at the end and only the reaping puts it back to work.
 ///
-/// Asked on the same cadence the room is judged on, which is often enough
-/// that a stop costs a fraction of one dwell and rare enough to be two
-/// register reads.
+/// So a finished descriptor nobody has taken is the signal, and it cannot
+/// be anything else: an interrupt that arrived would have taken it. The
+/// reaping does the rest, including starting the engine again. Nothing
+/// here reads or writes a control register, because a watch that decides
+/// from a flag can be wrong about a healthy engine and drag its walk back
+/// to the beginning five times a second.
 fn keepReceiving(nic: *NicDev, chip: *reset.Chip) void {
     if (device.dma_unsafe) return;
     const rings = device.rings orelse return;
-    if (chip.regs.get(.control, regs_mod.Control).rx_enable) return;
-
-    // Stopped. Take whatever it finished before it stopped, which is what
-    // the interrupt would have done and is the only thing that makes the
-    // oldest descriptor the radio's again. Refusing here because that
-    // descriptor holds a frame is refusing in exactly the case that needs
-    // this: nothing else is going to come and take it.
+    if (!rings.rx_desc[device.rx_next].receiveFinished()) return;
     reapRx(nic, chip);
-    if (chip.regs.get(.control, regs_mod.Control).rx_enable) return;
-
-    // Nothing was there to take, so the run is already the radio's from
-    // the oldest descriptor on, and that one is armed by construction.
-    const desc: *const volatile Desc = &rings.rx_desc[device.rx_next];
-    if (desc.receiveFinished()) return;
-
-    chip.regs.write(.rx_pointer, Chain.addressOf(chainBase("rx_desc"), device.rx_next));
-    dma.publish();
-    chip.regs.put(.control, regs_mod.Control{ .rx_enable = true });
-    rx_restarts +|= 1;
 }
 
 /// Failures split by which demodulator gave up. The two fail separately
