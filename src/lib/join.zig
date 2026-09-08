@@ -79,8 +79,12 @@ pub const Failure = enum {
     refused,
     /// It stopped answering.
     timed_out,
-    /// The key exchange failed: the wrong secret, or a torn exchange.
+    /// The key exchange failed: the access point opened it and never
+    /// finished, which is what a secret it does not share looks like.
     bad_key,
+    /// It answered, and this station could not make that answer check
+    /// out. Told apart from the one above because the fault is here.
+    unverified,
     /// The frame could not be built, which trying again would not change.
     unsent,
 
@@ -95,6 +99,7 @@ pub const Failure = enum {
             .refused => "the access point refused",
             .timed_out => "it stopped answering",
             .bad_key => "the key was not accepted",
+            .unverified => "the access point answered the key exchange and this station could not check its answer",
             .unsent => "the request could not be built",
         };
     }
@@ -574,7 +579,13 @@ pub const Join = struct {
     fn unanswered(self: *const Join) Failure {
         if (self.state != .handshaking) return .timed_out;
         const shake = self.handshake orelse return .timed_out;
-        return if (shake.begun()) .bad_key else .timed_out;
+        if (!shake.begun()) return .timed_out;
+        // An exchange the access point opened and never answered is a
+        // secret it does not share. One it answered and this station
+        // could not check is a fault on this side, and saying the first
+        // where the second is true sends somebody to retype a password
+        // that was right all along.
+        return if (shake.answered()) .unverified else .bad_key;
     }
 
     fn give(self: *Join, why: Failure) Action {
@@ -999,37 +1010,53 @@ test "a refusal ends the join, and so does silence after three tries" {
     try testing.expectEqual(Action{ .failed = .timed_out }, quiet.tick(now, &out));
 }
 
-test "the wrong key is told apart from a network that stopped answering" {
+test "a secret the network does not share is told apart from an answer this station cannot check" {
     var air: [512]u8 = @splat(0);
     var out: [512]u8 = @splat(0);
 
+    // The right words for a different network. An access point cannot
+    // check this station's second message under a key it does not share,
+    // so it sends no third message at all: the exchange it opened and
+    // never finished is the whole of what says the secret is wrong.
     var ap = FakeAp{ .protected = true };
     var join = station();
-    // The right words for a different network: the master key differs, so
-    // the third message's code will not check out.
     join.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse("a different secret").?, .conservative, @splat(0x5B));
 
     _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
     _ = join.tick(0, &out);
     _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
     _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
-
-    // The first message is answered whatever the key is. The third is
-    // signed, and one that does not check out says nothing on its own:
-    // anyone could have sent it. What says the key is wrong is an exchange
-    // the access point opened and never finished.
     _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
-    const three = ap.messageThree(join.snonce, &air);
-    try testing.expectEqual(Action.none, join.heard(air[0..three], .{}, 400, &out));
     try testing.expectEqual(State.handshaking, join.state);
 
-    var ended: ?Action = null;
+    try testing.expectEqual(Action{ .failed = .bad_key }, waitOut(&join, &out));
+
+    // A third message that arrives and does not check out is a different
+    // answer: the network did reply, and this station could not make its
+    // reply hold. Saying the first where this is true sends somebody to
+    // retype a password that was right all along.
+    var second = FakeAp{ .protected = true };
+    var refusing = station();
+    refusing.wants(wifi.Ssid.of(SSID).?, wifi.Psk.parse("a different secret").?, .conservative, @splat(0x5B));
+    _ = refusing.heard(air[0..second.beacon(&air)], .{}, 0, &out);
+    _ = refusing.tick(0, &out);
+    _ = refusing.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = refusing.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = refusing.heard(air[0..second.messageOne(&air)], .{}, 300, &out);
+
+    const three = second.messageThree(refusing.snonce, &air);
+    try testing.expectEqual(Action.none, refusing.heard(air[0..three], .{}, 400, &out));
+    try testing.expectEqual(Action{ .failed = .unverified }, waitOut(&refusing, &out));
+}
+
+/// Run the clock until the join gives up, and say how.
+fn waitOut(join: *Join, out: []u8) Action {
     var waits: usize = 0;
-    while (ended == null and waits < 10) : (waits += 1) {
-        const what = join.tick(join.deadline, &out);
-        if (what != .none) ended = what;
+    while (waits < 10) : (waits += 1) {
+        const what = join.tick(join.deadline, out);
+        if (what != .none) return what;
     }
-    try testing.expectEqual(Action{ .failed = .bad_key }, ended.?);
+    return .none;
 }
 
 test "a cell that says goodbye as the exchange ends leaves nothing to settle" {

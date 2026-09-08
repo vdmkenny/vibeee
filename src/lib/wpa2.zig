@@ -815,6 +815,12 @@ pub const Handshake = struct {
     /// one: an access point that did not hear the second message sends
     /// its first again and expects the same answer.
     spent: bool = false,
+    /// Whether a third message has ever arrived, whatever became of it.
+    /// An exchange that ended without one ended at the far end, which is
+    /// what a secret the access point does not share looks like; one that
+    /// ended with several is this station refusing them, which is a fault
+    /// on this side and a different thing to be told.
+    seen_third: bool = false,
     done: bool = false,
     confirmed: u32 = 0,
     /// Identifies exactly the reply in `into`, never a previous answer.
@@ -854,6 +860,12 @@ pub const Handshake = struct {
     /// opened and never finished is what a wrong key looks like.
     pub fn begun(self: *const Handshake) bool {
         return self.candidate != null or self.ptk != null;
+    }
+
+    /// Whether the access point ever answered this station's second
+    /// message.
+    pub fn answered(self: *const Handshake) bool {
+        return self.seen_third;
     }
 
     /// Answer a key frame from the access point.
@@ -909,6 +921,7 @@ pub const Handshake = struct {
     }
 
     fn third(self: *Handshake, frame: []const u8, key: KeyFrame, into: []u8) Outcome {
+        self.seen_third = true;
         // An access point that did not hear the answer sends its message
         // again, with the counter it spent or with the next one. Either
         // way it is answered under the key already proved, and nothing is

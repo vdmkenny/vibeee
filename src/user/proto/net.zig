@@ -258,6 +258,9 @@ pub const Stopped = enum(u8) {
     untuned = 9,
     /// It was joined and the network ended it, or stopped answering.
     disconnected = 10,
+    /// The network answered the key exchange and this computer could not
+    /// check its answer, which is a fault here rather than a password.
+    unverified = 11,
 
     /// What to put on a screen.
     pub fn spell(self: Stopped) []const u8 {
@@ -273,6 +276,7 @@ pub const Stopped = enum(u8) {
             .unprotected => "That network is open and a password is set for it",
             .untuned => "The radio could not tune to that network's channel",
             .disconnected => "The network disconnected this computer",
+            .unverified => "This computer could not check the network's answer",
         };
     }
 };

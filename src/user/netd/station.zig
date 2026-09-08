@@ -741,6 +741,7 @@ fn act(what: join_mod.Action) void {
                     .disconnected, .silence => .disconnected,
                     .refused => .refused,
                     .bad_key => .wrong_password,
+                    .unverified => .unverified,
                     .unsent => .unsent,
                     // Nothing answered. Which step it was on says whether
                     // the network was ever there to answer.
