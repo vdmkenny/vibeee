@@ -929,7 +929,16 @@ fn hop() void {
         index = (index + 1) % wifi.ghz2_channels.len;
         if (state.plan.allows(wifi.ghz2_channels[index])) break;
     }
-    if (it.ops.tune(it.nic, .{ .number = wifi.ghz2_channels[index] })) state.channel_index = index;
+    if (!it.ops.tune(it.nic, .{ .number = wifi.ghz2_channels[index] })) return;
+    state.channel_index = index;
+
+    // Dated again now the radio is listening. A tune resets the radio and
+    // waits for it, and a dwell measured from before that is the reset's
+    // time as much as the channel's: at two hundred milliseconds against a
+    // beacon roughly every hundred, a reset long enough to eat half the
+    // dwell is a channel whose beacon is heard every other pass. What the
+    // number means is time spent listening.
+    state.next_hop_at = sys.clockMicros() + DWELL_MICROS;
 }
 
 /// A frame from the radio. Beacons and probe responses become the scan's
