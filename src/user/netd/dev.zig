@@ -125,6 +125,10 @@ pub const RadioOps = struct {
     /// Say what that account came to, where a stretch has passed with
     /// nothing heard at all.
     sayIfUnheard: ?*const fn (dev: *NicDev) void = null,
+    /// Say what the receiver is doing. Asked where something that should
+    /// have been heard was not, because a receiver that stopped and one
+    /// running in a room with nothing in it look the same from here.
+    sayReceiver: ?*const fn (dev: *NicDev) void = null,
 };
 
 /// The cell a station belongs to: which one, and the number it was given

@@ -155,6 +155,12 @@ var line_gate: Gate = .info;
 var muted = false;
 var muted_from: usize = 0;
 
+/// What a line cut to the ceiling ends with, so a reader can tell one that
+/// was cut from one that finished. A line that stops mid-sentence looks
+/// like the whole of what there was to say, and a report read as complete
+/// when its last clause is missing is worse than one that was never kept.
+const TRUNCATED = "...";
+
 /// Send the completed line into the kernel's log ring.
 ///
 /// Skipped for a muted `debug` line: unasked-for detail is the one thing a
@@ -169,9 +175,17 @@ fn tee() void {
     n = @min(tee_key.len, line.len);
     @memcpy(line[0..n], tee_key[0..n]);
     const room = line.len -| n;
-    const take = @min(segment.len, room);
-    @memcpy(line[n..][0..take], segment[0..take]);
-    n += take;
+    if (segment.len <= room) {
+        @memcpy(line[n..][0..segment.len], segment);
+        n += segment.len;
+    } else {
+        const take = room -| TRUNCATED.len;
+        @memcpy(line[n..][0..take], segment[0..take]);
+        n += take;
+        const mark = @min(TRUNCATED.len, line.len -| n);
+        @memcpy(line[n..][0..mark], TRUNCATED[0..mark]);
+        n += mark;
+    }
 
     sys.log(line[0..n]) catch {};
 }

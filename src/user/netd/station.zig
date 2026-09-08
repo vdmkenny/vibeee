@@ -132,6 +132,11 @@ const State = struct {
     /// was not accepted.
     heard_for_us: u32 = 0,
     heard_auth: u32 = 0,
+    /// Frames from the cell heard after the join was finished, which is a
+    /// different question from how the exchange went: an association that
+    /// ends in silence with none of these never heard its cell again, and
+    /// one that ends with many was hearing it until it stopped.
+    heard_joined: u32 = 0,
     /// Frames the exchange asked to have sent. Against what the radio
     /// reports sending, this says whether anything was lost between
     /// deciding to speak and speaking.
@@ -682,6 +687,7 @@ fn seek(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     state.stopped = .none;
     state.heard_for_us = 0;
     state.heard_auth = 0;
+    state.heard_joined = 0;
     state.sent_joining = 0;
     state.last_auth = null;
     var attempt = join_mod.Join{ .station = nic.mac };
@@ -797,25 +803,6 @@ fn act(what: join_mod.Action) void {
                     out.text(lib.mac.spellIfGroup(attempt.farewell_destination));
                 }
             }
-            out.text("; ");
-            out.decimal(state.heard_joining);
-            out.text(" frames heard while it was trying, ");
-            out.decimal(state.heard_for_us);
-            out.text(" addressed to this station, ");
-            out.decimal(state.heard_auth);
-            out.text(" of them authentications; it asked to send ");
-            out.decimal(state.sent_joining);
-            if (state.last_auth) |answer| {
-                out.text(". The last authentication meant for it said sequence ");
-                out.decimal(answer.sequence);
-                out.text(", status ");
-                out.decimal(answer.status);
-                out.text(if (answer.from_cell) ", from the cell it is joining" else ", from some other cell");
-                out.text(", and reached it while ");
-                out.text(std.enums.tagName(join_mod.State, answer.state_then) orelse "somewhere");
-            } else {
-                out.text(". No authentication was addressed to it");
-            }
             if (it.ops.tuned(it.nic)) |on| {
                 out.text(", on channel ");
                 out.decimal(on.number);
@@ -827,9 +814,41 @@ fn act(what: join_mod.Action) void {
                 }
             }
             log.end();
-            // Nothing answered, so the next thing worth knowing is
-            // whether anything was actually said.
+
+            // A line of its own, because the ring keeps a line and cuts
+            // what runs over: an account that spends its length on what
+            // happened has none left for where it happened, and where it
+            // happened is the half that says which fault this is.
+            log.begin(it.nic.name, .warn);
+            out.text("the attempt: ");
+            out.decimal(state.heard_joining);
+            out.text(" frames heard, ");
+            out.decimal(state.heard_for_us);
+            out.text(" addressed to this station, ");
+            out.decimal(state.heard_auth);
+            out.text(" of them authentications; it asked to send ");
+            out.decimal(state.sent_joining);
+            out.text(", and heard ");
+            out.decimal(state.heard_joined);
+            out.text(" from the cell once joined");
+            if (state.last_auth) |answer| {
+                out.text(". The last authentication meant for it said sequence ");
+                out.decimal(answer.sequence);
+                out.text(", status ");
+                out.decimal(answer.status);
+                out.text(if (answer.from_cell) ", from the cell it is joining" else ", from some other cell");
+                out.text(", and reached it while ");
+                out.text(std.enums.tagName(join_mod.State, answer.state_then) orelse "somewhere");
+            } else {
+                out.text(". No authentication was addressed to it");
+            }
+            log.end();
+
+            // Nothing answered, so the next things worth knowing are
+            // whether anything was actually said, and whether the radio
+            // was in any state to hear the answer.
             if (it.ops.sayUnanswered) |ask| ask(it.nic);
+            if (it.ops.sayReceiver) |ask| ask(it.nic);
             // And the radio stops answering for a cell it did not get
             // into, or has been put out of, which it was told to answer
             // for in order to try.
@@ -967,6 +986,12 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
             // answer that arrived and was turned down is a different
             // fault from one that never came.
             if (mlme.Auth.parse(frame) != null) state.heard_auth +|= 1;
+
+            if (attempt.state == .joined) {
+                if (lib.ieee80211.Header.parse(frame)) |head| {
+                    if (lib.mac.eql(head.bssid(), attempt.bssid())) state.heard_joined +|= 1;
+                }
+            }
         }
         if (join_mod.eapolOf(frame)) |payload| sayKeyFrame(nic, "from the cell", payload);
         const what = attempt.heard(frame, signal, sys.clockMicros(), &state.frame);

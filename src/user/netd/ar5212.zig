@@ -189,6 +189,7 @@ pub const ops = dev_mod.NicOps{
         .sayUnanswered = sayUnanswered,
         .watchAgain = watchAgain,
         .sayIfUnheard = sayIfUnheard,
+        .sayReceiver = sayReceiver,
     },
 };
 
@@ -669,7 +670,7 @@ pub fn sayIfUnheard(nic: *NicDev) void {
     }
     log.end();
 
-    sayReceivePath(chip);
+    sayReceivePath(chip, .dim);
     if (woken != 0) return;
 
     const regs = chip.regs;
@@ -709,11 +710,11 @@ pub fn sayIfUnheard(nic: *NicDev) void {
 /// The engine and where it is pointed are said next to it because those are
 /// the other way a chain completes nothing: an engine that is not running,
 /// or one walking descriptors that are not the ones this service reads.
-fn sayReceivePath(chip: *reset.Chip) void {
+fn sayReceivePath(chip: *reset.Chip, level: lib.style.Role) void {
     const regs = chip.regs;
 
-    log.begin(name, .dim);
-    out.text("the receive path: noise floor ");
+    log.begin(name, level);
+    out.text("the room it is in: noise floor ");
     out.signed(chip.noise.current);
     out.text(" dBm");
     if (chip.noise.settling) out.text(" (not settled)");
@@ -736,11 +737,14 @@ fn sayReceivePath(chip: *reset.Chip) void {
         out.text(", waits that ran out ");
         out.decimal(pace.exhausted);
     }
+    log.end();
+
     // Read back rather than assumed. Everything above says what the radio
     // was told; these say what it is holding, and a setting that did not
     // survive whatever came after it looks exactly like one that was never
     // written.
-    out.text(", baseband ");
+    log.begin(name, level);
+    out.text("the receive path: baseband ");
     out.text(if (regs.get(.phy_active, regs_mod.PhyActive).enable) "active" else "idle");
     out.text(", accepting 0x");
     out.hex(@as(u32, @bitCast(regs.get(.rx_filter, regs_mod.RxFilter))), 4);
@@ -757,6 +761,18 @@ fn sayReceivePath(chip: *reset.Chip) void {
     out.text(" of 0x");
     out.hex(Chain.addressOf(chainBase("rx_desc"), 0), 8);
     log.end();
+}
+
+/// What the receiver is doing, said because something went wrong.
+///
+/// The same account the sweep report carries, at the level a fault is
+/// read at: a join that ended without a word from the cell is answered
+/// either by a receiver that stopped or by one that is running and
+/// hearing nothing, and those are not the same fault.
+pub fn sayReceiver(_: *NicDev) void {
+    if (!device.started or device.gone) return;
+    const chip: *reset.Chip = if (device.chip) |*c| c else return;
+    sayReceivePath(chip, .warn);
 }
 
 var said_unheard = false;
@@ -1041,9 +1057,17 @@ pub fn sayUnanswered(nic: *NicDev) void {
     out.decimal(phy_errors);
     out.text(" of the drops being frames it could not decode, ");
     out.decimal(rx_crc);
-    out.text(" damaged in the air, ");
+    out.text(" damaged in the air");
+    log.end();
+
+    // Its own line, because the ring keeps a line and cuts what runs over,
+    // and these four are the ones a key exchange that went wrong shows up
+    // in: an account cut before them says nothing about the fault it was
+    // written for.
+    log.begin(name, .warn);
+    out.text("what it could not open: ");
     out.decimal(rx_decrypt);
-    out.text(" it could not open, ");
+    out.text(" deciphered wrongly, ");
     out.decimal(rx_mic);
     out.text(" whose integrity code did not check out, ");
     out.decimal(rx_key_miss);
