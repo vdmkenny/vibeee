@@ -97,7 +97,14 @@ pub const Length = enum {
     }
 
     /// The next argument, read as the type this length names and widened.
-    pub fn take(self: Length, comptime sign: Sign, args: *std.builtin.VaList) sign.Wide() {
+    ///
+    /// Compiled into whatever calls it, because reading from a `va_list`
+    /// is part of the variadic function that started one rather than
+    /// something a helper can be handed. Where a `va_list` is a plain
+    /// pointer the difference does not show; where it is a structure of
+    /// its own, as on x86-64, a separate function is refused for a
+    /// calling convention that cannot carry varargs.
+    pub inline fn take(self: Length, comptime sign: Sign, args: *std.builtin.VaList) sign.Wide() {
         switch (self) {
             inline else => |length| {
                 const T = length.Type(sign);

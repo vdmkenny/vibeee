@@ -123,6 +123,18 @@ fn named(list: []const u8, name: []const u8) bool {
     return false;
 }
 
+/// Make `step` actually build `compiled`.
+///
+/// Depending on a compile step alone leaves it with nothing to produce,
+/// so it reports success without having read a line. Asking for the
+/// binary is what makes it compile, and the binary itself is not wanted:
+/// this is for checking that something builds for a machine that is not
+/// this one, which cannot run what it produces anyway.
+fn demand(step: *std.Build.Step, compiled: *std.Build.Step.Compile) void {
+    _ = compiled.getEmittedBin();
+    step.dependOn(&compiled.step);
+}
+
 pub fn build(b: *std.Build) void {
     const optimize = b.option(
         std.builtin.OptimizeMode,
@@ -690,6 +702,35 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Verify the module layering and import rules");
     check.dependOn(&layering.step);
     check.dependOn(&imports.step);
+
+    // The host tests, compiled for another host as well as this one.
+    //
+    // `zig build test` builds for whatever machine it is run on, so code
+    // that compiles on one and not another passes here and fails wherever
+    // the tests are run next. The libc's `va_list` is the case that
+    // matters: it is a plain pointer on aarch64 and a structure of its own
+    // on x86_64, and a function reading one is accepted on the first and
+    // refused on the second. Compiled and not run, because a binary for
+    // another machine is a binary this one cannot run: what is being
+    // checked is that it builds.
+    {
+        const elsewhere = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux });
+        const cross_lib = b.createModule(.{
+            .root_source_file = b.path("src/lib/lib.zig"),
+            .target = elsewhere,
+            .optimize = .Debug,
+        });
+        for ([_][]const u8{ "src/tests.zig", "src/user/eui/eui.zig" }) |root| {
+            const built = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path(root),
+                .target = elsewhere,
+                .optimize = .Debug,
+                .imports = &.{.{ .name = "lib", .module = cross_lib }},
+            }) });
+            demand(check, built);
+        }
+        demand(check, b.addTest(.{ .root_module = cross_lib }));
+    }
 
     // ---------------------------------------------------------------------
     // Syscall reference, generated from the same table the dispatcher is built

@@ -192,6 +192,12 @@ beside the driver that is the only thing reading them, and its tests run from
   queues, calendar, ring buffer, battery arithmetic and its mislabeled-percent correction,
   the quirk registry's family matching, command-line flag matching, the terminal emulator
   and its key encoding, text wrapping and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
+- The host tests are compiled for a second machine as well as this one. `zig build
+  test` builds for whatever it is run on, so code that compiles on one host and not
+  another passes here and fails wherever the tests run next: the libc's `va_list` is
+  a plain pointer on aarch64 and a structure of its own on x86-64. `zig build check`
+  builds them for x86-64 Linux and does not run them, a binary for another machine
+  being one this one cannot run.
 - The kernel's own boundary is tested the same way, which is what the split files are
   for: `arch/x86/pagetable.zig` holds the page-table format and the walk that decides
   whether a user buffer may be touched, with no instructions in it, so it can be asked
