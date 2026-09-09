@@ -115,13 +115,15 @@ pub const Info = struct {
     }
 };
 
-/// Read what a JPEG says about itself.
+/// Read what a photograph says about itself.
 ///
-/// Anything that is not a JPEG, or a JPEG with nothing in it, reads as a
-/// photograph with nothing to say rather than as an error: a viewer showing a
-/// picture has no use for a complaint about its metadata.
+/// A JPEG carries its tables in an APP1 marker and a raw file is those tables
+/// with the picture attached, so both arrive here and the same walk reads
+/// them. Anything else, or a photograph with nothing in it, reads as one with
+/// nothing to say rather than as an error: a viewer showing a picture has no
+/// use for a complaint about its metadata.
 pub fn read(bytes: []const u8) Info {
-    const block = exifBlock(bytes) orelse return .{};
+    const block = tiffBlock(bytes) orelse return .{};
     return fromTiff(block);
 }
 
@@ -279,14 +281,6 @@ fn text(
     for (said) |byte| into.append(byte) catch break;
 }
 
-/// A number from the block, or zero when it is not all there.
-/// The camera's own small copy of the picture, or nothing where it wrote none.
-///
-/// It sits in the block's second table as a whole JPEG a couple of hundred
-/// pixels on a side. Decoding that costs a fraction of decoding the
-/// photograph, which on a machine like this is the difference between a
-/// contact sheet that fills in and one that is waited for. Whoever asks is
-/// expected to decode the picture itself when this answers nothing.
 /// The tables, wherever this kind of file keeps them.
 ///
 /// A JPEG carries them in an APP1 block; a raw file out of a camera is itself
@@ -298,11 +292,16 @@ fn tiffBlock(bytes: []const u8) ?[]const u8 {
     return null;
 }
 
-/// One picture a file carries beside its own data.
-const Carried = struct { at: usize = 0, len: usize = 0 };
+/// Where a picture a file carries sits, counted from the start of the tables.
+///
+/// A span rather than the bytes, because for a raw file the tables are at the
+/// front and the picture they name is megabytes further in: a caller with the
+/// head of a file in hand can read exactly the picture instead of the file.
+/// `preview` is this plus the slicing, for a caller that already holds it all.
+pub const Carried = struct { at: usize = 0, len: usize = 0 };
 
-/// The largest picture a file carries beside its own data, or nothing where
-/// it carries none.
+/// Where the largest picture a file carries beside its own data is, or
+/// nothing where it carries none.
 ///
 /// A photograph out of a camera has a whole JPEG a few hundred pixels on a
 /// side written into its tables, and a raw file has a larger one again, meant
@@ -311,10 +310,10 @@ const Carried = struct { at: usize = 0, len: usize = 0 };
 /// which on a machine like this is the difference between a contact sheet
 /// that fills in and one that is waited for.
 ///
-/// Whoever asks is expected to decode the picture itself when this answers
-/// nothing. For a raw file there is nothing else to fall back to: this system
-/// has no demosaicer, so a raw file with no preview in it cannot be shown.
-pub fn preview(bytes: []const u8) ?[]const u8 {
+/// The span is what the tags say and may lie past the bytes given, which is
+/// the ordinary case for a raw file read a head at a time. Whether it names
+/// anything is the caller's to check once it has the bytes.
+pub fn carried(bytes: []const u8) ?Carried {
     const block = tiffBlock(bytes) orelse return null;
     if (block.len < 8) return null;
 
@@ -327,13 +326,35 @@ pub fn preview(bytes: []const u8) ?[]const u8 {
 
     var best = Carried{};
     largest(block, readInt(u32, block, 4, endian), endian, 0, &best);
-    if (best.len == 0 or best.at + best.len > block.len) return null;
+    if (best.len == 0) return null;
 
-    // The tags are sometimes written for a picture the file does not actually
-    // carry, so what they name is checked before it is handed to anything.
-    const found = block[best.at..][0..best.len];
-    if (found.len < 4 or found[0] != 0xFF or found[1] != 0xD8) return null;
-    return found;
+    // Counted from the start of the file rather than from the tables, since
+    // that is what a caller about to seek has to give the kernel. In a JPEG
+    // the tables sit inside an APP1 block some way in; in a raw file they are
+    // the start of it.
+    best.at += @intFromPtr(block.ptr) - @intFromPtr(bytes.ptr);
+    return best;
+}
+
+/// Whether `bytes` is the picture the tags named, rather than whatever
+/// happened to sit at that offset.
+///
+/// The tags are sometimes written for a picture a file does not actually
+/// carry, so what they name is checked before it is handed to anything.
+pub fn isPicture(bytes: []const u8) bool {
+    return bytes.len >= 4 and bytes[0] == 0xFF and bytes[1] == 0xD8;
+}
+
+/// The picture a file carries, for a caller holding the whole of it.
+///
+/// For a raw file there is nothing else to fall back to: this system has no
+/// demosaicer, so a raw file with no picture written into it cannot be shown.
+pub fn preview(bytes: []const u8) ?[]const u8 {
+    const span = carried(bytes) orelse return null;
+    if (span.at + span.len > bytes.len) return null;
+
+    const found = bytes[span.at..][0..span.len];
+    return if (isPicture(found)) found else null;
 }
 
 /// Walk one table, the tables it points at and the one after it, keeping the
@@ -391,6 +412,7 @@ fn largest(
     }
 }
 
+/// A number from the block, or zero when it is not all there.
 fn readInt(comptime T: type, block: []const u8, at: usize, endian: std.builtin.Endian) T {
     const size = @sizeOf(T);
     if (at + size > block.len) return 0;
@@ -605,6 +627,14 @@ test "the camera's own picture is found in the second table" {
     try testing.expectEqual(@as(u8, 0xFF), found[0]);
     try testing.expectEqual(@as(u8, 0xD8), found[1]);
 
+    // The same answer as a span, counted from the start of the file rather
+    // than from the tables inside it: the tables sit twelve bytes in here,
+    // and a caller about to seek needs the offset the kernel understands.
+    const span = carried(&file).?;
+    try testing.expectEqual(@as(usize, 12 + 56), span.at);
+    try testing.expectEqual(@as(usize, 4), span.len);
+    try testing.expectEqualSlices(u8, found, file[span.at..][0..span.len]);
+
     // The first table still reads: nothing about it moved.
     try testing.expectEqual(Orientation.up, read(&file).orientation);
 
@@ -672,6 +702,16 @@ test "a raw file's larger preview wins over its thumbnail" {
     try testing.expectEqual(@as(usize, 12), found.len);
     try testing.expectEqual(@as(u8, 0xFF), found[0]);
     try testing.expectEqual(@as(u8, 0xD8), found[1]);
+
+    // The head of the file says where the picture is even though the picture
+    // is not in it, which is what a caller with a head in hand acts on: the
+    // tables of a raw file are at its front and the picture they name is
+    // megabytes further in.
+    const span = carried(raw[0..100]).?;
+    try testing.expectEqual(@as(usize, 116), span.at);
+    try testing.expectEqual(@as(usize, 12), span.len);
+    try testing.expectEqual(@as(?[]const u8, null), preview(raw[0..100]));
+    try testing.expectEqualSlices(u8, found, raw[span.at..][0..span.len]);
 
     // With nothing pointing at the sub-table, the small one is what is left.
     // The entry is renamed rather than removed: a table's tail sits after its

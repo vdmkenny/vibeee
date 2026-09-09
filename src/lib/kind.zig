@@ -60,6 +60,10 @@ pub const Kind = enum {
     tiff,
     webp,
     icon,
+    /// A camera's own file, which is a TIFF holding sensor readings rather
+    /// than a picture. Nothing here develops one; what it also holds is a
+    /// finished picture the camera wrote beside them.
+    raw,
 
     /// A program, for this machine or another. `Reading` says which.
     program,
@@ -116,6 +120,13 @@ pub const Kind = enum {
         };
     }
 
+    /// Whether a picture can be got out of it at all: by opening it, or by
+    /// taking the one it carries. A raw file is the second kind, and the
+    /// difference matters to whoever is about to try.
+    pub fn viewable(self: Kind) bool {
+        return self.opens() or self == .raw;
+    }
+
     /// Whether it can be shown as words.
     pub fn isText(self: Kind) bool {
         return self == .text;
@@ -125,7 +136,7 @@ pub const Kind = enum {
     pub fn family(self: Kind) Family {
         return switch (self) {
             .directory => .directory,
-            .png, .jpeg, .bmp, .gif, .tiff, .webp, .icon => .picture,
+            .png, .jpeg, .bmp, .gif, .tiff, .webp, .icon, .raw => .picture,
             .text => .text,
             .program, .dos_program, .java_class => .program,
             .zip, .gzip, .bzip2, .xz, .seven_zip, .rar, .tar, .ar => .archive,
@@ -153,6 +164,7 @@ pub const Kind = enum {
             .tiff => "tiff image",
             .webp => "webp image",
             .icon => "icon image",
+            .raw => "raw photograph",
 
             .program => "program",
             .dos_program => "dos or windows program",
@@ -382,6 +394,9 @@ const suffixes = [_]struct { suffix: []const u8, kind: Kind }{
     .{ .suffix = "jpeg", .kind = .jpeg },
     .{ .suffix = "bmp", .kind = .bmp },
     .{ .suffix = "gif", .kind = .gif },
+    // A raw file is a TIFF by its first bytes, so only its name tells it
+    // apart from one.
+    .{ .suffix = "nef", .kind = .raw },
     .{ .suffix = "wad", .kind = .wad },
     .{ .suffix = "bdf", .kind = .font },
     .{ .suffix = "hero", .kind = .hero },
@@ -579,4 +594,18 @@ test "a kind says what it is, and a reading with no more to add says the same" {
     try std.testing.expectEqualStrings("png image", fromBytes("\x89PNG\r\n\x1a\n").says(&room));
     try std.testing.expectEqualStrings("text", fromBytes("words").says(&room));
     try std.testing.expectEqualStrings("empty", fromBytes("").says(&room));
+}
+
+test "a raw file is a picture that has to be opened the other way" {
+    try std.testing.expectEqual(@as(?Kind, .raw), fromName("DSC_0341.NEF"));
+    try std.testing.expectEqual(Family.picture, Kind.raw.family());
+
+    // Nothing here develops one, so nothing should point a decoder at it.
+    try std.testing.expect(!Kind.raw.opens());
+    // What it carries can still be shown.
+    try std.testing.expect(Kind.raw.viewable());
+
+    // A TIFF is neither: no decoder here opens one and it carries nothing.
+    try std.testing.expect(!Kind.tiff.viewable());
+    try std.testing.expect(Kind.jpeg.viewable());
 }
