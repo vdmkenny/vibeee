@@ -37,6 +37,7 @@ pub const grid = @import("grid.zig");
 pub const heading = @import("heading.zig");
 pub const Grid = grid.Grid;
 pub const pips = @import("pips.zig");
+pub const places = @import("places.zig");
 pub const popover = @import("popover.zig");
 pub const prompt = @import("prompt.zig");
 pub const rail = @import("rail.zig");

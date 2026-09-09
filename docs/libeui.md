@@ -411,6 +411,17 @@ Numbers it owns:
 - `SIZE` = 10
 - `GAP` = 4
 
+### `eui.places`
+
+The row of volumes across the top of a window.
+
+| call | signature |
+|---|---|
+| `height` | `fn () i32` |
+| `below` | `fn (draw.Rect) draw.Rect` |
+| `strip` | `fn (*widget.Context, draw.Rect, *const mounts.List, ?usize, []const keys.Key) places.Pass` |
+| `width` | `fn (mounts.Volume) i32` |
+
 ### `eui.popover`
 
 Where a panel anchored to something goes.
@@ -784,6 +795,20 @@ check
       ####  ####          
         ######            
           ##              
+                          
+                          
+
+cross
+                          
+                          
+      ##            ##    
+      ####        ####    
+        ####    ####      
+          ########        
+          ########        
+        ####    ####      
+      ####        ####    
+      ##            ##    
                           
                           
 

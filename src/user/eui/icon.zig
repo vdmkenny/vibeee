@@ -79,6 +79,8 @@ pub const Icon = enum {
     power,
     /// A tick, for the chosen row of a list that has one.
     check,
+    /// The other answer: what was looked at and not kept.
+    cross,
     /// One window filling its frame: a desktop showing one of its windows at
     /// full size rather than the tiling it would otherwise have.
     maximised,
@@ -454,6 +456,23 @@ const art = [_]Picture{
             "..##.##.....",
             "...###......",
             "....#.......",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .cross,
+        .rows = .{
+            "............",
+            "............",
+            "..#......#..",
+            "..##....##..",
+            "...##..##...",
+            "....####....",
+            "....####....",
+            "...##..##...",
+            "..##....##..",
+            "..#......#..",
             "............",
             "............",
         },

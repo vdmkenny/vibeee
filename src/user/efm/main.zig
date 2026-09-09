@@ -27,6 +27,7 @@ comptime {
     _ = @import("clibc");
 }
 const info = @import("ulib").info;
+const mounts = @import("lib").mounts;
 const paths = @import("ulib").paths;
 const str = @import("ulib").str;
 
@@ -440,21 +441,18 @@ fn finishAsking() void {
 // Drawing
 // ---------------------------------------------------------------------------
 
-/// The strip along the top: what is mounted, from the kernel's own list.
-const VOLUMES_HEIGHT: i32 = 26;
-
 fn draw() void {
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
 
     // The volumes above, the keys below, the panes between.
     const parts = eui.chrome.split(area, .{ .top = true, .bottom = true });
-    const places = parts.top;
+    const strip = parts.top;
     const keys = parts.bottom;
     const body = parts.body;
 
     followCursor();
-    drawPlaces(places);
+    drawPlaces(strip);
 
     const half = @divTrunc(body.w, 2);
     const left = Rect{ .x = 0, .y = body.y, .w = half, .h = body.h };
@@ -475,54 +473,16 @@ fn draw() void {
     drawKeys(keys);
 }
 
-/// The volumes across the top: what is mounted, how full, and how much is
-/// left, with the one you are in filled in the accent.
-///
-/// Pressing one sends the pane you are in there. A row of mount lines said
-/// what is mounted without saying what to do about it, and a name on its own
-/// says nothing about whether there is room for what you are about to copy.
 /// What is mounted, read when something happens rather than while painting:
 /// a paint happens whenever the pointer moves, and the mount table changes
 /// only when a medium comes or goes, which is one of the moments the panes
 /// are read again anyway.
-var volumes: [8]Volume = @splat(.{});
-var place_path: [8][64]u8 = @splat(@splat(0));
-var place_path_len: [8]u8 = @splat(0);
-var place_count: usize = 0;
-
-/// The mount table as it last read, so a pass that changes nothing costs a
-/// comparison rather than a repaint.
-var mounts_seen: [512]u8 = @splat(0);
-var mounts_len: usize = 0;
+var places: mounts.List = .{};
 
 /// Read what is mounted. Says whether anything changed.
 fn readPlaces() bool {
-    var buf: [512]u8 = undefined;
-    const mounted = info.ask("mounts", &buf);
-    if (mounted.len == mounts_len and std.mem.eql(u8, mounted, mounts_seen[0..mounts_len])) return false;
-    mounts_len = @min(mounted.len, mounts_seen.len);
-    @memcpy(mounts_seen[0..mounts_len], mounted[0..mounts_len]);
-
-    place_count = 0;
-    var lines = str.lines(mounts_seen[0..mounts_len]);
-    while (lines.next()) |line| {
-        if (place_count == volumes.len) break;
-        const text = str.trim(line);
-        if (text.len == 0) continue;
-
-        // "<path> on <device> free=<n> size=<n>": the path is what pressing
-        // it goes to, and the numbers are how full it is.
-        var words: [8][]const u8 = undefined;
-        const n = str.splitWords(text, &words);
-        const where = if (n > 0) words[0] else "";
-        if (where.len == 0 or where.len > place_path[place_count].len) continue;
-
-        @memcpy(place_path[place_count][0..where.len], where);
-        place_path_len[place_count] = @intCast(where.len);
-        volumes[place_count] = readVolume(words[0..n], &volume_store[place_count]);
-        place_count += 1;
-    }
-    return true;
+    var buf: [mounts.TEXT]u8 = undefined;
+    return places.read(info.ask("mounts", &buf));
 }
 
 /// A medium can arrive while the window is open, and nothing tells a
@@ -532,10 +492,6 @@ fn tick() bool {
     return readPlaces();
 }
 
-fn placePath(index: usize) []const u8 {
-    return place_path[index][0..place_path_len[index]];
-}
-
 /// Everything the window shows that comes from outside it: both panes'
 /// listings, and the volumes they sit on.
 fn refreshAll() void {
@@ -543,198 +499,21 @@ fn refreshAll() void {
     _ = readPlaces();
 }
 
-fn drawPlaces(area: Rect) void {
-    const t = theme.current();
-    // The strip is a picture of what is mounted and which of them is being
-    // looked at: nothing else about it changes, so it is drawn when one of
-    // those does. Drawn every pass, and a pass arrives for every movement
-    // of the pointer anywhere in the window, it refilled and re-sent every
-    // cell for a picture nobody had changed.
-    const shape = placesFingerprint();
-    const entry = ctx.slotFor(area) orelse {
-        paintPlaces(area);
-        return;
-    };
-    if (!ctx.needsPaint(entry, .idle) and entry.detail == shape) {
-        takePlacePresses(area);
-        return;
-    }
-    entry.visual = .idle;
-    entry.detail = shape;
-
-    ctx.surface.fill(area, t.surface_pressed);
-    ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
-    ctx.addDamage(area);
-    paintPlaces(area);
-}
-
-/// What the strip would draw: which volumes there are, how full each is,
-/// and which one is being looked at.
-fn placesFingerprint() i32 {
-    var h = eui.widget.Fingerprint{};
-    h.number(place_count);
-    for (volumes[0..place_count], 0..) |volume, index| {
-        h.text(volume.name);
-        h.text(volume.free);
-        h.flag(volume.known);
-        h.flag(std.mem.eql(u8, here().path(), placePath(index)));
-    }
-    return h.done();
-}
-
-/// A press on a place, for the passes that draw nothing.
-fn takePlacePresses(area: Rect) void {
-    var x = area.x;
-    for (volumes[0..place_count], 0..) |volume, index| {
-        const width = volumeWidth(volume);
-        if (x + width > area.right()) break;
-        const cell = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
-        if (pressed(cell)) goTo(placePath(index));
-        x += width;
-    }
-}
-
-fn paintPlaces(area: Rect) void {
-    const t = theme.current();
-    var x = area.x;
-    for (volumes[0..place_count], 0..) |volume, index| {
-        const width = volumeWidth(volume);
-        if (x + width > area.right()) break;
-
-        const where = placePath(index);
-        const cell = Rect{ .x = x, .y = area.y, .w = width, .h = area.h - 1 };
-        const current = std.mem.eql(u8, here().path(), where);
-        if (pressed(cell)) goTo(where);
-        paintVolume(cell, volume, current);
-
-        x += width;
-        ctx.surface.fill(.{ .x = x - 1, .y = cell.y, .w = 1, .h = cell.h }, t.line);
-    }
-
-    // What the key does to whatever is under the cursor, at the far end where
-    // the row stops being a list of places.
-    const hint = [_]eui.keys.Key{.{ .key = "e", .label = "eject" }};
-    var placed: [eui.keys.MAX]eui.keys.Placed = undefined;
-    eui.keys.drawPlaced(
-        ctx.surface,
-        eui.keys.placeRight(area, &hint, .plain, &placed),
-        area,
-        .plain,
-        t.text_dim,
-    );
-}
-
-/// What a volume says about itself. The name is the last part of where it is
-/// mounted, because that is what somebody calls it: "home", not "/home".
-const Volume = struct {
-    name: []const u8 = "",
-    free: []const u8 = "",
-    percent: u8 = 0,
-    known: bool = false,
-};
-
-var volume_store: [8][16]u8 = @splat(@splat(0));
-
-fn readVolume(words: []const []const u8, store: *[16]u8) Volume {
-    var out = Volume{ .name = shortName(words[0]) };
-
-    var free: ?usize = null;
-    var size: ?usize = null;
-    for (words) |word| {
-        if (std.mem.startsWith(u8, word, "free=")) free = str.unsigned(word["free=".len..]) orelse 0;
-        if (std.mem.startsWith(u8, word, "size=")) size = str.unsigned(word["size=".len..]) orelse 0;
-    }
-
-    const total = size orelse return out;
-    const left = free orelse return out;
-    if (total == 0) return out;
-
-    var line = str.Builder{ .buf = store };
-    line.bytes(left);
-    out.free = line.done();
-    out.percent = @intCast(@min((total -| left) * 100 / total, 100));
-    out.known = true;
-    return out;
-}
-
-/// The last part of a path, which is what a volume is called. The root has no
-/// last part and is the machine itself.
-fn shortName(path: []const u8) []const u8 {
-    if (std.mem.eql(u8, path, "/")) return "system";
-    var at = path.len;
-    while (at > 0) : (at -= 1) {
-        if (path[at - 1] == '/') return path[at..];
-    }
-    return path;
-}
-
-fn volumeWidth(volume: Volume) i32 {
-    const t = theme.current();
-    var w = eui.Surface.textWidth(volume.name) + t.menu_padding * 2;
-    if (volume.known) {
-        w += t.gap + GAUGE_WIDTH + t.gap + eui.Surface.textWidth(volume.free);
-    }
-    return w;
-}
-
-/// One volume: its name, how full it is, and what is left.
+/// The row of volumes, drawn by the toolkit and answered here.
 ///
-/// The gauge is the same width whatever the volume is called, so two of them
-/// can be compared at a glance; a bar as wide as its cell would give every
-/// volume a scale of its own.
-fn paintVolume(cell: Rect, volume: Volume, current: bool) void {
-    const t = theme.current();
-    const ink = if (current) t.accent_text else t.text;
-
-    ctx.surface.fill(cell, if (current) t.accent else t.surface_pressed);
-
-    const baseline = cell.y + @divTrunc(cell.h - eui.Surface.textHeight(), 2);
-    var x = cell.x + t.menu_padding;
-    // Measured once: `volumeWidth` asked the same question a moment ago,
-    // and measuring decodes the name and looks up an advance per letter.
-    const named = eui.Surface.textWidth(volume.name);
-    ctx.surface.text(x, baseline, volume.name, ink);
-    x += named + t.gap;
-
-    if (volume.known) {
-        const gauge = Rect{
-            .x = x,
-            .y = cell.y + @divTrunc(cell.h - GAUGE_HEIGHT, 2),
-            .w = GAUGE_WIDTH,
-            .h = GAUGE_HEIGHT,
-        };
-
-        // On the chosen volume the ground is already the accent, so the bar
-        // is drawn in the ink that reads on it.
-        const fill = if (current)
-            t.accent_text
-        else if (eui.gauge.alarming(volume.percent, .when_full))
-            t.warning
-        else
-            t.accent;
-
-        ctx.surface.fill(gauge, if (current) t.accent else t.surface);
-        ctx.surface.fill(
-            .{ .x = gauge.x, .y = gauge.y, .w = eui.widget.filledWidth(gauge, volume.percent), .h = gauge.h },
-            fill,
-        );
-        ctx.surface.frame(gauge, if (current) t.accent_text else t.border);
-
-        x += GAUGE_WIDTH + t.gap;
-        ctx.surface.text(x, baseline, volume.free, if (current) ink else t.text_dim);
-    }
-
-    ctx.addDamage(cell);
+/// Pressing one sends the pane you are in there. What the row is for and how
+/// it looks belong to whichever window has one; where the pane goes belongs
+/// here.
+fn drawPlaces(area: Rect) void {
+    const hint = [_]eui.keys.Key{.{ .key = "e", .label = "eject" }};
+    const pass = eui.places.strip(ctx, area, &places, places.holding(here().path()), &hint);
+    if (pass.chose) |index| goTo(places.slice()[index].path());
 }
 
 /// Whether a press landed in `area` this pass.
 fn pressed(area: Rect) bool {
     return ctx.pressedThisPass() and area.contains(ctx.pointer_x, ctx.pointer_y);
 }
-
-/// The gauge beside a volume's name, the same size for every one of them.
-const GAUGE_WIDTH: i32 = 38;
-const GAUGE_HEIGHT: i32 = 7;
 
 fn goTo(where: []const u8) void {
     const pane = here();
