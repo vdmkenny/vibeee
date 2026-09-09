@@ -50,6 +50,17 @@
 #define LWIP_NETIF_API 0
 #define LWIP_NUM_NETIF_CLIENT_DATA 0
 
+/* The timeout pool.
+ *
+ * Left alone this is exactly LWIP_NUM_SYS_TIMEOUT_INTERNAL, and lwIP spends
+ * all of it: five cyclic timeouts registered by sys_timeouts_init (reassembly,
+ * ARP, the two DHCP ones, DNS) and a sixth taken by tcp_timer_needed as soon
+ * as any TCP pcb exists. The next sys_timeout -- the one the ping op arms --
+ * then fails its allocation and, because this port's assert path exits, ends
+ * the service rather than the ping. Four more than the internal count is the
+ * difference between "no timers left" and "always room for one more". */
+#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
+
 /* Memory: static pools, no libc heap. Sixty-four kilobytes of heap for TCP
  * segments and DHCP/DNS state, forty-eight pool buffers for frames. This is
  * a 512 MB machine serving a 100 Mbit port; exhaustion drops packets and
@@ -65,16 +76,38 @@
 #define MEMP_NUM_UDP_PCB 8
 #define MEMP_NUM_TCP_PCB 16
 #define MEMP_NUM_TCP_PCB_LISTEN 4
-/* At least TCP_SND_QUEUELEN, which the send buffer derives at four segments
- * of headroom per buffered byte range; lwIP's own sanity check holds this. */
-#define MEMP_NUM_TCP_SEG 48
+/* Two connections' worth of queued segments, not one.
+ *
+ * TCP_SND_QUEUELEN derives from the send buffer ((4 * TCP_SND_BUF + MSS - 1)
+ * / MSS), so at a 16 KB buffer a single pcb can hold 45 of the 48 segments
+ * lwIP's own sanity check asks for -- one bulk upload starves every other
+ * connection's retransmits and still passes the check, which only requires
+ * the pool to cover one pcb. The pool is sized for the pcbs that actually
+ * exist instead. */
+#define MEMP_NUM_TCP_SEG 96
 
-/* TCP sized for LAN bulk on a 630 MHz core: MSS 1460, 16 KB windows,
- * NewReno as shipped. Window scaling and SACK wait for a workload that
- * needs them. */
+/* TCP sized for LAN bulk on a 630 MHz core: MSS 1460, NewReno as shipped.
+ * Window scaling and SACK wait for a workload that needs them.
+ *
+ * Windows and buffers are eight segments rather than eleven: sixteen
+ * connections advertising 16 KB each promise 256 KB of receive window
+ * against 48 pool buffers holding 73 KB, and the send buffer is copied into
+ * the same 64 KB heap everything else shares. A window this machine can
+ * actually fill beats one it can only advertise. */
 #define TCP_MSS 1460
-#define TCP_WND (16 * 1024)
-#define TCP_SND_BUF (16 * 1024)
+#define TCP_WND (8 * TCP_MSS)
+#define TCP_SND_BUF (8 * TCP_MSS)
+
+/* Out-of-order segments are bounded. Both limits default to zero, meaning
+ * unlimited, so a peer sending nothing but out-of-order data pins the whole
+ * pool in a queue it will never drain. */
+#define TCP_OOSEQ_MAX_PBUFS 8
+#define TCP_OOSEQ_MAX_BYTES (4 * TCP_MSS)
+
+/* The listen backlog the bridge asks for is real. Undefined, it is compiled
+ * out of tcp_listen_with_backlog, and half-open connections then spend
+ * MEMP_NUM_TCP_PCB directly -- a handful of SYNs evict working connections. */
+#define TCP_LISTEN_BACKLOG 1
 
 /* Every checksum in software: no controller here offloads any. */
 #define LWIP_CHECKSUM_CTRL_PER_NETIF 0

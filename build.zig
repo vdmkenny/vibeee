@@ -511,12 +511,23 @@ pub fn build(b: *std.Build) void {
         inline for (USER_PROGRAMS, 0..) |program, i| {
             const exe = user.exe(program.name, program.root, !named(symbols, program.name));
             if (comptime std.mem.eql(u8, program.name, "netd")) {
+                // lwIP's own asserts are a debugging aid, not a production
+                // policy: this port routes one to a handler that exits, so an
+                // invariant a malformed packet trips would take every
+                // connection on the machine down with it. Kept where the
+                // handler's message is the point, dropped where a stack that
+                // degrades is worth more than one that dies loudly.
+                const lwip_flags: []const []const u8 = if (optimize == .Debug)
+                    &.{}
+                else
+                    &.{"-DLWIP_NOASSERT"};
+
                 exe.root_module.addIncludePath(b.path("third_party/lwip/src/include"));
                 exe.root_module.addIncludePath(b.path("src/user/netd/lwipport"));
                 exe.root_module.addIncludePath(b.path("include"));
                 exe.root_module.addCSourceFiles(.{
                     .files = &lwip_sources,
-                    .flags = user.cFlags(&.{}),
+                    .flags = user.cFlags(lwip_flags),
                 });
                 // For the routines lwIP's C calls by name.
                 user.addClibc(exe);

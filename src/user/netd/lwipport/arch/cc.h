@@ -28,6 +28,15 @@
 unsigned int netd_lwip_rand(void);
 #define LWIP_RAND() ((u32_t)netd_lwip_rand())
 
+/* Initial sequence numbers come from here rather than from lwIP's default,
+ * which walks a counter seeded with 6510 and stepped by tcp_ticks -- a
+ * number anybody who can guess our uptime can reproduce, and therefore a
+ * connection anybody off-path can reset or inject into. */
+unsigned int netd_tcp_isn(const void *local_ip, unsigned short local_port,
+                          const void *remote_ip, unsigned short remote_port);
+#define LWIP_HOOK_TCP_ISN(local_ip, local_port, remote_ip, remote_port) \
+    ((u32_t)netd_tcp_isn((local_ip), (local_port), (remote_ip), (remote_port)))
+
 void netd_lwip_assert(const char *message);
 #define LWIP_PLATFORM_ASSERT(x) netd_lwip_assert(x)
 

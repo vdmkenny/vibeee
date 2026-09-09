@@ -331,6 +331,9 @@ pub extern fn dns_setserver(index: u8, server: *const Ip4Addr) void;
 
 pub extern fn raw_new(proto: u8) ?*RawPcb;
 pub extern fn raw_bind(pcb: *RawPcb, addr: *const Ip4Addr) Err;
+/// Give a raw pcb back. What a pcb that could not be bound needs, or four
+/// failed pings leave the pool empty and the op refuses forever after.
+pub extern fn raw_remove(pcb: *RawPcb) void;
 pub extern fn raw_recv(pcb: *RawPcb, handler: RawRecvFn, arg: ?*anyopaque) void;
 pub extern fn raw_sendto(pcb: *RawPcb, p: *Pbuf, addr: *const Ip4Addr) Err;
 
@@ -373,13 +376,51 @@ export fn sys_now() callconv(.c) u32 {
     return @truncate(@as(u64, @intCast(sys.clockMicros())) / 1000);
 }
 
-/// For DHCP transaction ids and TCP sequence numbers, from the machine's own
-/// pool. A sequence number somebody else can work out is a connection somebody
-/// else can interfere with, and the clock is not a secret.
+/// For DHCP transaction ids and DNS transaction ids, from the machine's own
+/// pool. A number somebody else can work out is a connection somebody else can
+/// interfere with, and the clock is not a secret.
+///
+/// A short pool is answered with the clock rather than with whatever the
+/// buffer happened to hold: `undefined` read back is illegal behaviour, and
+/// this value feeds every transaction id on the wire.
 export fn netd_lwip_rand() callconv(.c) c_uint {
     var bytes: [@sizeOf(c_uint)]u8 = undefined;
-    _ = sys.random(&bytes);
-    return @bitCast(bytes);
+    if (sys.random(&bytes)) return @as(c_uint, @bitCast(bytes));
+    return withoutEntropy();
+}
+
+/// What a draw answers with when the pool has nothing to give: the clock
+/// stirred into a counter, so two failures in a row do not agree. Weaker than
+/// the real thing and named as such, because a value that looks random and is
+/// not is worse than one the reader knows is a fallback.
+fn withoutEntropy() c_uint {
+    stale_random +%= 0x9E3779B9;
+    return stale_random ^ @as(c_uint, @truncate(@as(u64, @intCast(sys.clockMicros()))));
+}
+
+/// Stirred by every draw the pool could not serve.
+var stale_random: c_uint = 0x85EBCA6B;
+
+/// One TCP connection's first sequence number.
+///
+/// lwIP's own is a counter stepped by its timer ticks, which is to say a
+/// number derived from our uptime: an off-path host that guesses it can forge
+/// a RST or inject data into a connection it cannot see. The ports are mixed
+/// in so two connections drawn in the same tick do not share one.
+export fn netd_tcp_isn(
+    _: ?*const anyopaque,
+    local_port: u16,
+    _: ?*const anyopaque,
+    remote_port: u16,
+) callconv(.c) c_uint {
+    var bytes: [@sizeOf(c_uint)]u8 = undefined;
+    var value: u32 = if (sys.random(&bytes)) @as(u32, @bitCast(bytes)) else withoutEntropy();
+    // The four-tuple is mixed in so two connections drawn from the same
+    // value, in the same tick, do not open with the same sequence number.
+    value +%= @as(u32, local_port) << 16;
+    value +%= @as(u32, remote_port) << 3;
+    value +%= @truncate(@as(u64, @intCast(sys.clockMicros())));
+    return value;
 }
 
 /// A failed stack invariant. The stack's state is not trustworthy past this
