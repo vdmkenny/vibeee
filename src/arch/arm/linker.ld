@@ -22,7 +22,7 @@ SECTIONS
     }
 
     .text.boot : {
-        *(.text.boot)
+        KEEP(*(.text.boot))
     }
 
     .text : {

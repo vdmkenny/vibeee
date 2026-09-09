@@ -660,11 +660,10 @@ pub fn build(b: *std.Build) void {
     // first by name, the arm layout puts the vector table and boot text where
     // QEMU's versatilepb expects them (design/12-arm-port.md §4.1).
     kernel.setLinkerScript(b.path(if (is_arm) "src/arch/arm/linker.ld" else "src/arch/x86/linker.ld"));
-    if (!is_arm) {
-        // Sections must not be reordered or GC'd: the linker script places the
-        // Multiboot2 header first by name.
-        kernel.link_gc_sections = false;
-    }
+    // The boot sections the linker script places by name are wrapped in KEEP,
+    // so collecting the rest is safe and takes the soft-float and libm that
+    // compiler-rt exports and the kernel never calls: a third of the image.
+    kernel.link_gc_sections = true;
     kernel.entry = .{ .symbol_name = "_start" };
 
     b.installArtifact(kernel);
