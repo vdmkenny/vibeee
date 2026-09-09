@@ -12,3 +12,11 @@ home/*
 # Editor / OS noise
 .DS_Store
 *.swp
+
+# The design canvas: working files and the seeded page the editor is baked
+# into, which is megabytes of generated payload. The published canvas is the
+# record; what it decided is written down beside the code it describes.
+.design/
+
+# Python's own cache, from the fixture generator.
+__pycache__/

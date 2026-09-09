@@ -104,6 +104,73 @@ def photo(path, width, height, orientation, model="Eee PC 701"):
     stored.save(path, quality=82, exif=exif)
 
 
+def entry(tag, kind, count, value):
+    """One twelve-byte table entry. Anything four bytes or shorter sits in the
+    entry; anything longer is an offset to where it really is."""
+    return struct.pack("<HHI", tag, kind, count) + struct.pack("<I", value)
+
+
+def raw(path, width, height, orientation, filler=300000):
+    """A raw file, as a camera writes one.
+
+    A raw photograph is a TIFF whose tables carry a whole JPEG of the picture
+    beside the sensor data. Nothing here develops sensor data, so that JPEG is
+    the only picture such a file can show, and it sits past the head a viewer
+    reads first: the point of the fixture is that finding it means reading the
+    tables, learning where the picture is, and going there.
+
+    The sensor data is filler. What is being tested is the tables and the
+    picture they name, and a fixture carrying somebody's real sensor readings
+    would be a fixture nobody could redistribute.
+    """
+    import io
+    from PIL import Image
+
+    upright = scene(Image.new("RGB", (width, height)))
+    stored = {
+        1: lambda im: im,
+        3: lambda im: im.rotate(180),
+        6: lambda im: im.rotate(90, expand=True),
+        8: lambda im: im.rotate(-90, expand=True),
+    }[orientation](upright)
+
+    carried = io.BytesIO()
+    stored.save(carried, format="JPEG", quality=82)
+    picture = carried.getvalue()
+
+    make = b"NIKON CORPORATION\x00"
+    model = b"NIKON D90\x00"
+
+    # Laid out front to back: the header, the first table, the sub-table the
+    # first one points at, the two strings, the filler standing in for sensor
+    # data, and the picture at the end of it.
+    ifd0_at = 8
+    sub_at = ifd0_at + 2 + 4 * 12 + 4
+    make_at = sub_at + 2 + 2 * 12 + 4
+    model_at = make_at + len(make)
+    picture_at = model_at + len(model) + filler
+
+    out = b"II" + struct.pack("<HI", 42, ifd0_at)
+    out += struct.pack("<H", 4)
+    out += entry(0x010F, 2, len(make), make_at)
+    out += entry(0x0110, 2, len(model), model_at)
+    out += struct.pack("<HHI", 0x0112, 3, 1) + struct.pack("<HH", orientation, 0)
+    out += entry(0x014A, 4, 1, sub_at)
+    out += struct.pack("<I", 0)
+
+    out += struct.pack("<H", 2)
+    out += entry(0x0201, 4, 1, picture_at)
+    out += entry(0x0202, 4, 1, len(picture))
+    out += struct.pack("<I", 0)
+
+    out += make + model
+    assert len(out) == model_at + len(model), "the strings did not land where the tables say"
+    out += b"\x00" * filler
+    out += picture
+    assert len(out) == picture_at + len(picture), "the picture did not land where the tables say"
+    open(path, "wb").write(out)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
 
@@ -129,6 +196,10 @@ def main():
     photo(os.path.join(OUT, "sideways.jpg"), 240, 320, 6)
     photo(os.path.join(OUT, "upside-down.jpg"), 320, 240, 3)
     photo(os.path.join(OUT, "other-way.jpg"), 240, 320, 8)
+
+    # A raw photograph, whose picture is not the file: the tables at the front
+    # say where it is, and it is past the head anything reads first.
+    raw(os.path.join(OUT, "dsc_0042.nef"), 320, 240, 6)
 
     # Something this build cannot open, for the preview that has to say so.
     open(os.path.join(OUT, "unknown.dat"), "wb").write(bytes(range(256)) * 4)

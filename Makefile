@@ -154,7 +154,7 @@ STAGE1_BIN := $(BUILD)/stage1.bin
 STAGE2_BIN := $(BUILD)/stage2.bin
 MKIMAGE    := $(BUILD)/mkimage
 
-.PHONY: all clean image qemu qemu-sd run test tools sd update-sd help apps app hero echat fmt check check-all
+.PHONY: all clean image qemu qemu-sd run test tools sd update-sd help apps app hero echat roll fmt check check-all
 
 all: image
 
@@ -169,6 +169,7 @@ help:
 	@echo "  make hero             build the Hero character journal into home/"
 	@echo "  make echat            build the echat IRC client into home/"
 	@echo "  make eeemod           build the eeemod tracker player into home/"
+	@echo "  make roll             build the Roll contact sheet into home/"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make check            module layering and import rules"
@@ -226,7 +227,7 @@ examples: kernel $(EXAMPLES)
 
 # Things that are not part of the system, built separately and installed
 # into `home/bin/`. See apps/README.md.
-apps: hero echat eeemod
+apps: hero echat eeemod roll
 	@$(MAKE) --no-print-directory -C apps
 
 # Hero, the character journal: a first-party program that is not part of the
@@ -260,6 +261,17 @@ eeemod:
 	@mkdir -p home/bin
 	@cp zig-out/bin/eeemod home/bin/eeemod
 	@echo "  ready   home/bin/eeemod, on the machine at the next image build"
+
+# The contact sheet. Its model is host-tested first: which picture is current,
+# what a page holds and what a filter leaves is arithmetic over a list, and
+# none of it needs a card in the reader.
+.PHONY: roll
+roll:
+	@$(ZIG) build test-roll
+	@$(ZIG) build roll
+	@mkdir -p home/bin
+	@cp zig-out/bin/roll home/bin/roll
+	@echo "  ready   home/bin/roll, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
@@ -480,7 +492,7 @@ qemu-ide: $(IMAGE)
 # the target is still on demand: that is the expensive half.
 test: qr-verify
 	$(ZIG) build test
-	$(ZIG) build test-hero test-echat test-eeemod
+	$(ZIG) build test-hero test-echat test-eeemod test-roll
 
 # The tree is formatted, as `zig fmt` formats it. Checked rather than
 # assumed: the one file a hand-aligned table exempts is the one that drifts.
