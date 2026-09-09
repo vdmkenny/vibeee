@@ -77,6 +77,11 @@ const QUEUE: u4 = 0;
 /// says as much as the whole of it.
 const NOISE_BYTES = 64;
 
+/// How long a finished descriptor is given for the transmit engine to go
+/// idle behind it. DONE can precede TXE clearing, and the slot must not be
+/// recycled until it has.
+const TX_SETTLE_MICROS: u32 = 1000;
+
 /// How a station waits its turn: the window it backs off within, in
 /// slots, and the fixed space it leaves ahead of that. The distributed
 /// access defaults, which every station in a cell shares.
@@ -1285,19 +1290,8 @@ fn startTransmit(regs: Regs) void {
 /// room for, answering whether it stopped.
 fn stopTransmit(regs: Regs) bool {
     regs.holdQueues(@as(u10, 1) << QUEUE);
-    var stopped = false;
-    for (0..pace.DEFAULT_TRIES) |_| {
-        if (txIdle(regs)) {
-            stopped = true;
-            break;
-        }
-        pace.delay(10);
-    }
     // Keep TXD asserted and the software ownership ledger on failure.
-    if (!stopped) {
-        pace.exhausted +%= 1;
-        return false;
-    }
+    if (!pace.looking(regs, txIdle, pace.DEFAULT_MICROS)) return false;
     regs.writeAt(regs_mod.txPointer(QUEUE), 0);
     regs.flush(.queue_enable);
     regs.releaseQueues();
@@ -1305,7 +1299,7 @@ fn stopTransmit(regs: Regs) bool {
     device.tx_reap = 0;
     device.tx_filled = 0;
     device.tx_active = null;
-    return stopped;
+    return true;
 }
 
 fn txIdle(regs: Regs) bool {
@@ -1364,7 +1358,7 @@ fn stopReceive(regs: Regs) bool {
     regs.put(.mib_control, regs_mod.MibControl{ .freeze = true, .clear = true });
     regs.put(.rx_filter, regs_mod.RxFilter{});
     regs.put(.control, regs_mod.Control{ .rx_disable = true });
-    const stopped = pace.until(regs, .control, regs_mod.Control, "rx_enable", false, pace.DEFAULT_TRIES);
+    const stopped = pace.until(regs, .control, regs_mod.Control, "rx_enable", false, pace.DEFAULT_MICROS);
     pace.delay(3000);
     const policy = regs.get(.diagnostics, regs_mod.Diagnostics);
     return stopped and policy.ack_disable and policy.cts_disable;
@@ -1626,11 +1620,7 @@ fn reapTx(nic: *NicDev) void {
     if (!first.sendFinished()) return;
     // DONE can precede TXE clearing. Do not recycle the DMA slot yet.
     // Give EOL time to settle even when its interrupt preceded TXE clearing.
-    for (0..100) |_| {
-        if (txIdle(chip.regs)) break;
-        pace.delay(10);
-    }
-    if (!txIdle(chip.regs)) return;
+    if (!pace.looking(chip.regs, txIdle, TX_SETTLE_MICROS)) return;
 
     while (device.tx_filled != 0) {
         const slot = device.tx_reap;

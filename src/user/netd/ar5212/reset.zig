@@ -242,16 +242,20 @@ fn setResetReg(chip: *Chip, wanted: regs_mod.ResetControl) bool {
     // At least 128 clocks before a read when resetting the bus.
     pace.delay(15);
 
-    var settled = false;
-    var looked: u32 = 0;
-    while (looked < pace.DEFAULT_TRIES) : (looked += 1) {
-        const now = regs.get(.reset_control, regs_mod.ResetControl);
-        if (now.mac == mask.mac and now.baseband == mask.baseband) {
-            settled = true;
-            break;
+    const Settled = struct {
+        regs: Regs,
+        mask: regs_mod.ResetControl,
+
+        fn ready(self: @This()) bool {
+            const now = self.regs.get(.reset_control, regs_mod.ResetControl);
+            return now.mac == self.mask.mac and now.baseband == self.mask.baseband;
         }
-        pace.delay(10);
-    }
+    };
+    const settled = pace.looking(
+        Settled{ .regs = regs, .mask = mask },
+        Settled.ready,
+        pace.DEFAULT_MICROS,
+    );
 
     if (!mask.mac) {
         // Descriptors are read as the host writes them: no swapping.
@@ -970,7 +974,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
 
     if (chip.store.rf_kill) watchRfKill(chip);
 
-    if (!pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "calibrate", false, pace.DEFAULT_TRIES)) {
+    if (!pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "calibrate", false, pace.DEFAULT_MICROS)) {
         chip.amplifier_ready = false;
         log.warn(name, "the gain calibration did not finish, which a loud room can do; nothing will be transmitted until it does");
     }
@@ -982,7 +986,7 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     // nothing to measure. Waited for here rather than on every channel
     // change, where the waiting would cost every hop the whole timeout.
     if (kind == .power_on and
-        !pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "noise_floor", false, pace.DEFAULT_TRIES))
+        !pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "noise_floor", false, pace.DEFAULT_MICROS))
     {
         log.warn(name, "the noise floor never measured; the receiver hears nothing to measure");
     }
@@ -1044,7 +1048,7 @@ fn loadNoiseFloor(chip: *Chip) void {
     agc.no_update_noise_floor = false;
     agc.noise_floor = true;
     regs.put(.phy_agc_control, agc);
-    _ = pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "noise_floor", false, pace.DEFAULT_TRIES);
+    _ = pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "noise_floor", false, pace.DEFAULT_MICROS);
 
     // A high ceiling again, so the next measurement is not capped by the
     // median just loaded.

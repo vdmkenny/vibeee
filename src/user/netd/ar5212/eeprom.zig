@@ -17,14 +17,17 @@ pub const Port = struct {
         self.regs.write(.eeprom_address, offset);
         self.regs.put(.eeprom_command, regs_mod.EepromCommand{ .read = true });
 
-        var looked: u32 = 0;
-        while (looked < pace.DEFAULT_TRIES) : (looked += 1) {
-            const status = self.regs.get(.eeprom_status, regs_mod.EepromStatus);
-            if (status.read_error) return null;
-            if (status.read_complete) return @truncate(self.regs.read(.eeprom_data));
-            pace.delay(10);
-        }
-        return null;
+        const Answered = struct {
+            regs: Regs,
+
+            fn ready(port: @This()) bool {
+                const status = port.regs.get(.eeprom_status, regs_mod.EepromStatus);
+                return status.read_error or status.read_complete;
+            }
+        };
+        if (!pace.looking(Answered{ .regs = self.regs }, Answered.ready, pace.DEFAULT_MICROS)) return null;
+        if (self.regs.get(.eeprom_status, regs_mod.EepromStatus).read_error) return null;
+        return @truncate(self.regs.read(.eeprom_data));
     }
 };
 

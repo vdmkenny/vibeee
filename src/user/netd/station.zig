@@ -259,8 +259,10 @@ pub fn nextDeadline() ?u64 {
 
     const attempt = state.join orelse {
         // Nothing in hand: the sweep, or the moment a failed join is due
-        // to be tried again, whichever comes first.
-        if (state.wanted == null) return @min(upkeep_in, hop_in);
+        // to be tried again, whichever comes first. The retry counts only
+        // where the tick would act on it, which is the same condition:
+        // a deadline nothing advances is a loop that never waits.
+        if (!state.on or state.wanted == null) return @min(upkeep_in, hop_in);
         const retry_in: u64 = if (state.retry_at > now) state.retry_at - now else 0;
         return @min(upkeep_in, @min(hop_in, retry_in));
     };
