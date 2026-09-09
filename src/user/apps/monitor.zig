@@ -13,6 +13,7 @@ const eui = @import("eui");
 const proto = @import("proto");
 const sys = @import("sys");
 const info = @import("ulib").info;
+const mounts = @import("lib").mounts;
 const out = @import("ulib").out;
 const procs = @import("ulib").procs;
 const str = @import("ulib").str;
@@ -117,10 +118,8 @@ const Column = enum(usize) { pid = 0, name = 1, state = 2, cpu = 3, memory = 4, 
 /// hand moving over it.
 var pack: ?proto.platform.Battery = null;
 var hottest: ?proto.platform.Thermal = null;
-var home_used: u8 = 0;
-var home_free: usize = 0;
-var home_known = false;
-var mounts_buffer: [512]u8 = @splat(0);
+var home: ?mounts.Volume = null;
+var mounted: mounts.List = .{};
 
 fn sample() void {
     if (cpu_name.len == 0) cpu_name = info.ask("cpu", &cpu_name_buffer);
@@ -411,52 +410,43 @@ const HOME = "/home";
 /// How full the volume home is on. The one a person fills up: the root is
 /// the system's and a machine of this size has nowhere else to put anything.
 fn storageReading(at: usize) usize {
-    if (!home_known) return 0;
+    if (home == null) return 0;
     return homeGauge(at);
 }
 
 /// How full home is, asked of the kernel once a sample rather than once a
 /// paint.
 fn readHome() void {
-    home_known = false;
-    var lines = str.lines(info.ask("mounts", &mounts_buffer));
-    while (lines.next()) |line| {
-        const text = str.trim(line);
-        if (!std.mem.startsWith(u8, text, HOME ++ " ")) continue;
+    home = null;
 
-        var words: [8][]const u8 = undefined;
-        const words_n = str.splitWords(text, &words);
-        var free: usize = 0;
-        var size: usize = 0;
-        for (words[0..words_n]) |word| {
-            if (std.mem.startsWith(u8, word, "free=")) free = str.unsigned(word["free=".len..]) orelse 0;
-            if (std.mem.startsWith(u8, word, "size=")) size = str.unsigned(word["size=".len..]) orelse 0;
-        }
-        if (size == 0) return;
-
-        home_free = free;
-        home_used = @intCast(@min((size -| free) * 100 / size, 100));
-        home_known = true;
+    var buf: [mounts.TEXT]u8 = undefined;
+    _ = mounted.read(info.ask("mounts", &buf));
+    for (mounted.slice()) |volume| {
+        if (!std.mem.eql(u8, volume.path(), HOME) or !volume.known()) continue;
+        home = volume;
         return;
     }
 }
 
 /// The gauge for it, built where every other gauge is built.
 fn homeGauge(at: usize) usize {
+    // Only reached with a volume in hand; `storageReading` asked first.
+    const volume = home orelse return 0;
+
     var value = str.Builder{ .buf = &gauge_values[at] };
-    value.number(home_used);
+    value.number(volume.percent());
     value.byte('%');
 
     var note = str.Builder{ .buf = &gauge_notes[at] };
     note.text(HOME);
     note.text(", ");
-    note.bytes(home_free);
+    note.bytes(volume.free);
     note.text(" free");
 
     gauge_rows[at] = .{
         .label = "storage",
         .value = value.done(),
-        .percent = home_used,
+        .percent = volume.percent(),
         .note = note.done(),
     };
     return 1;

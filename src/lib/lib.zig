@@ -30,6 +30,7 @@ pub const ipv4 = @import("ipv4.zig");
 pub const join = @import("join.zig");
 pub const kind = @import("kind.zig");
 pub const mac = @import("mac.zig");
+pub const mounts = @import("mounts.zig");
 pub const mlme = @import("mlme.zig");
 pub const mmio = @import("mmio.zig");
 pub const pci = @import("pci.zig");
