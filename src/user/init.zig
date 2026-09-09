@@ -22,6 +22,7 @@ const lib = @import("lib");
 const sys = @import("sys");
 const log = @import("ulib").log;
 const out = @import("ulib").out;
+const command = @import("ulib").command;
 const config = @import("ulib").config;
 const info = @import("ulib").info;
 const str = @import("ulib").str;
@@ -446,7 +447,9 @@ fn capsFrom(list: []const u8) u32 {
 /// environment does.
 const ENVIRONMENT = [_][]const u8{
     "HOME=/home",
-    "PATH=/bin",
+    // Extra applications live under home and come first, so a machine's
+    // own copy of a program wins over the one it shipped with.
+    "PATH=" ++ command.DEFAULT_PATH,
 };
 
 fn start(state: *State) void {

@@ -224,7 +224,7 @@ examples: kernel $(EXAMPLES)
 	@echo "examples: $(words $(EXAMPLES)) built"
 
 # Things that are not part of the system, built separately and installed
-# into `home/`. See apps/README.md.
+# into `home/bin/`. See apps/README.md.
 apps: hero echat eeemod
 	@$(MAKE) --no-print-directory -C apps
 
@@ -236,9 +236,9 @@ apps: hero echat eeemod
 hero:
 	@$(ZIG) build test-hero
 	@$(ZIG) build hero
-	@mkdir -p home
-	@cp zig-out/bin/hero home/hero
-	@echo "  ready   home/hero, on the machine at the next image build"
+	@mkdir -p home/bin
+	@cp zig-out/bin/hero home/bin/hero
+	@echo "  ready   home/bin/hero, on the machine at the next image build"
 
 # The IRC client. Its engine and model are host-tested first: a protocol is
 # bytes in and bytes out, and none of it needs a screen to be checked.
@@ -246,9 +246,9 @@ hero:
 echat:
 	@$(ZIG) build test-echat
 	@$(ZIG) build echat
-	@mkdir -p home
-	@cp zig-out/bin/echat home/echat
-	@echo "  ready   home/echat, on the machine at the next image build"
+	@mkdir -p home/bin
+	@cp zig-out/bin/echat home/bin/echat
+	@echo "  ready   home/bin/echat, on the machine at the next image build"
 
 # The tracker player. Its format and sequencer are host-tested first: a
 # module is bytes in and notes out, and neither needs a sound card.
@@ -256,9 +256,9 @@ echat:
 eeemod:
 	@$(ZIG) build test-eeemod
 	@$(ZIG) build eeemod
-	@mkdir -p home
-	@cp zig-out/bin/eeemod home/eeemod
-	@echo "  ready   home/eeemod, on the machine at the next image build"
+	@mkdir -p home/bin
+	@cp zig-out/bin/eeemod home/bin/eeemod
+	@echo "  ready   home/bin/eeemod, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
@@ -349,6 +349,10 @@ populate: | $(BUILD)
 	@# have in it.
 	@$(MFORMAT) -i $(IMG)@@$(CFG_OFFSET) -F -T $(CFG_SECTORS) -v VIBEEECFG ::
 	@$(MFORMAT) -i $(IMG)@@$(HOME_OFFSET) -F -T $(HOME_SECTORS) -v VIBEEEHOME ::
+	@# Where the extra applications go, made whether or not any were built:
+	@# it is on the path, and a path naming a directory that is not there
+	@# is one more thing to explain.
+	@$(MMD) -i $(IMG)@@$(HOME_OFFSET) ::/bin
 	@printf "vibeee\nbuilt %s\n" "$(shell date -u +%Y-%m-%dT%H:%M:%SZ)" > $(BUILD)/readme.txt
 	@$(MCOPY) -i $(IMG)@@$(HOME_OFFSET) -o $(BUILD)/readme.txt ::/readme.txt
 	@# And whatever is staged for it. `home/` on this side is what /home

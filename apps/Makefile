@@ -9,7 +9,12 @@
 
 ROOT      := $(abspath ..)
 FETCHED   := $(ROOT)/build/apps
-STAGING   := $(ROOT)/home
+# Programs go under home's own bin, which is on the path ahead of the
+# system's: an app is then run by typing its name like anything else. What
+# an app reads is not a program and stays in home itself, where a person's
+# files are and where a program started from the desktop runs.
+STAGING   := $(ROOT)/home/bin
+HOME_DIR  := $(ROOT)/home
 EEECC     := $(ROOT)/tools/eeecc
 
 APPS := $(patsubst %/app.mk,%,$(wildcard */app.mk))
@@ -42,12 +47,12 @@ build: fetch
 	@mkdir -p $(STAGING)
 	@cd $(SRC) && $(EEECC) $(CFLAGS) -I$(SRC) -o $(STAGING)/$(APP) \
 		$(SOURCES) $(addprefix $(ROOT)/apps/$(APP)/,$(GLUE))
-	@echo "  ready   home/$(APP), on the machine at the next image build"
+	@echo "  ready   home/bin/$(APP), on the machine at the next image build"
 	@# An app may need data that is nobody's to redistribute. Say what is
 	@# missing and where it comes from, rather than fetching it on
 	@# somebody's behalf or failing with nothing to go on.
 	@for d in $(DATA); do \
-		[ -e $(STAGING)/$$d ] && continue; \
+		[ -e $(HOME_DIR)/$$d ] && continue; \
 		echo "  needs   home/$$d, which you fetch yourself:"; \
 		echo "            curl -L -o home/$$d $(DATA_FROM)"; \
 	done

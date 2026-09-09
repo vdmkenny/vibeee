@@ -8,6 +8,14 @@ somebody's choice, and choices belong where a person's things are. So an
 app here is built separately and installed into `/home`, where it sits
 beside the files it works on and survives a reboot like they do.
 
+## Where they go
+
+Programs go into `home/bin/`, which is on the search path ahead of the
+system's `/bin`: an app is run by typing its name like anything else, and
+a machine's own copy of a program wins over the one it shipped with. What
+an app reads is not a program and stays in `home/` with the rest of
+somebody's files.
+
 ## What is here
 
 | Program | Source | What it is |
@@ -47,7 +55,7 @@ builds and stages it, and `make apps` does so along with the rest.
     make echat                check echat's protocol engine
     make eeemod               build the tracker player
 
-An app builds into `home/`, and the image seeds `/home` from there. So
+An app builds into `home/bin/`, and the image seeds `/home` from there. So
 anything in `home/` is on the machine at the next boot, and rebuilding
 the image does not lose it: `home/` on this side is the source of truth,
 not the copy inside the image.
@@ -60,8 +68,9 @@ changing an app, build it before booting:
 
     make apps && make vnc
 
-Data files go in `home/` too, and you put them there yourself. An app
-recipe says what it needs and where to get it, and stops short of
-fetching it: what a program may be redistributed with is not something a
-build should decide for you. Drop the file beside the binary and it is
-there when the machine starts.
+Data files go in `home/` itself rather than beside the program, and you
+put them there yourself. An app recipe says what it needs and where to
+get it, and stops short of fetching it: what a program may be
+redistributed with is not something a build should decide for you. A
+program started from the desktop runs in `/home`, so a file dropped
+there is where it looks.

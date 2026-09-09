@@ -1,7 +1,10 @@
 vsh - the shell
 
-Runs what is named: builtins first, then /bin, then the tools binary's
-commands. `tools` lists those; `help` lists the builtins.
+Runs what is named: builtins first, then each directory on PATH in turn,
+then the tools binary's commands. PATH is /home/bin then /bin, so a
+program installed under home is run by typing its name and is found
+before one of the same name that shipped. `tools` lists the tool
+commands; `help` lists the builtins.
 
   cd <path>              change directory; `cd` alone goes home
   log | grep fail        pipe one command into another

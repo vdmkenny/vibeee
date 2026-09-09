@@ -6,7 +6,7 @@
 //! the connections, hands arriving bytes to the engine, writes what the engine
 //! makes of them into the model, and draws the model.
 //!
-//! Not part of the system. It is built into `home/` and versioned on its own.
+//! Not part of the system. It is built into `home/bin/` and versioned on its own.
 
 const std = @import("std");
 const eui = @import("eui");

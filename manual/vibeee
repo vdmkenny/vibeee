@@ -19,6 +19,8 @@ The filesystem:
   /etc       what the settings are when nobody has said otherwise
   /cfg       what was said otherwise; this is what outlives a reboot
   /home      user files, and where the shell starts
+  /home/bin  programs that are not part of the system, looked for
+             before /bin so a machine's own copy wins
   /doc       this manual
   /media     mounted volumes appear here
   /tmp       scratch, cleared at reboot

@@ -13,6 +13,7 @@ const kind = @import("lib").kind;
 const limits = @import("lib").limits;
 const openers = @import("lib").openers;
 const paths = @import("ulib").paths;
+const env = @import("ulib").env;
 const file = @import("ulib").file;
 const settings = @import("settings.zig");
 const sys = @import("sys");
@@ -95,25 +96,34 @@ pub fn start(path: []const u8) Outcome {
 
     const family = what.kind.family();
     const opener = openers.chosen(known(), family, preferred(family)) orelse return .nobody_opens_it;
-    _ = sys.spawnDetached(opener.path, &.{ opener.name, path }) catch return .would_not_start;
+    // In the folder the file is in, so a program handed one document can
+    // reach whatever sits beside it.
+    _ = sys.spawnDetachedIn(opener.path, &.{ opener.name, path }, paths.parent(path)) catch
+        return .would_not_start;
     return .opened;
 }
 
 /// Run a program as itself, with nothing after its name: what a file manager
 /// or a launcher can say about how to run something is nothing.
 ///
-/// In the folder it lives in, because that is where a program opened rather
-/// than typed keeps whatever it needs beside itself: its data, its save
-/// files, the wad a game reads its maps from. Started in the folder whoever
-/// opened it happened to be in, a program that reads a file next to itself
-/// finds nothing and exits, which reads as the program being broken.
+/// In home, which is where a program's data is. Programs live in a
+/// directory of their own and keep nothing beside themselves; what one
+/// reads, a game's maps or a saved game, sits with the rest of somebody's
+/// files. Started in the folder whoever opened it happened to be standing
+/// in, a program looking for its own data would find none and exit, which
+/// reads as the program being broken.
 fn run(path: []const u8) Outcome {
     var name: [64]u8 = undefined;
     const leaf = paths.base(path);
     const n = @min(leaf.len, name.len);
     @memcpy(name[0..n], leaf[0..n]);
 
-    const folder = paths.parent(path);
-    _ = sys.spawnDetachedIn(path, &.{name[0..n]}, folder) catch return .would_not_start;
+    _ = sys.spawnDetachedIn(path, &.{name[0..n]}, home()) catch return .would_not_start;
     return .opened;
+}
+
+/// Where a program runs: what the environment says home is, and the usual
+/// place when it says nothing.
+fn home() []const u8 {
+    return env.get("HOME") orelse "/home";
 }

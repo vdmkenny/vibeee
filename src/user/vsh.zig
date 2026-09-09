@@ -34,7 +34,20 @@ const MAX_LINE = 256;
 const MAX_WORDS = 16;
 
 /// Where programs are looked up when a command has no path separator.
-const BIN_DIR = "/bin/";
+/// Where a bare command name is looked for, from the environment init
+/// handed down. A shell started without one falls back to the same list
+/// that init would have given it.
+fn searchPath() []const u8 {
+    const told = env.get("PATH") orelse return cmdword.DEFAULT_PATH;
+    return if (told.len == 0) cmdword.DEFAULT_PATH else told;
+}
+
+/// Whether a program is at a path, for the search.
+fn present(path: []const u8) bool {
+    const handle = sys.open(path, .{}) catch return false;
+    sys.close(handle);
+    return true;
+}
 
 /// The multicall binary, tried when no program of the given name exists.
 const TOOLS_PATH = "/bin/tools";
@@ -210,7 +223,15 @@ fn offerCommands(ctx: complete.Context, into: *complete.Collector) void {
 
     for (builtins) |b| into.offer(b.name);
     for (registry.names) |name| into.offer(name);
-    listInto(BIN_DIR, "", into, .any);
+
+    // Every place a bare name would be looked for, so what completes and
+    // what would run are the same answer.
+    var walk = cmdword.directories(searchPath());
+    var dir_buf: [128]u8 = undefined;
+    while (walk.next()) |dir| {
+        const with_slash = cmdword.joined(dir, "", &dir_buf) orelse continue;
+        listInto(with_slash, "", into, .any);
+    }
 }
 
 /// The names in the current directory, for the arguments that are files.
@@ -559,8 +580,11 @@ var short_buf: [256]u8 = @splat(0);
 
 /// Turn a bare command name into a path. A name with a slash in it is already
 /// one and is left alone; see `ulib.command`.
+///
+/// A name nothing on the path has comes back as typed, so what is reported
+/// is the word rather than a guess at where it should have been.
 fn resolvePath(name: []const u8, buf: []u8) []const u8 {
-    return cmdword.pathFor(name, BIN_DIR, buf) orelse name;
+    return cmdword.pathFor(name, searchPath(), buf, present) orelse name;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +600,7 @@ fn cmdHelp(_: []const []const u8) u8 {
         out.text("\n");
     }
     out.text("\nanything else runs as a program from ");
-    out.text(BIN_DIR);
+    out.text(searchPath());
     out.text(", or as a command in ");
     out.text(TOOLS_PATH);
     out.text("\n");

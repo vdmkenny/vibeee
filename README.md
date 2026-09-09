@@ -99,7 +99,8 @@ The launcher searches installed programs, open windows, and files under `/home`.
 ## Extra Applications
 
 Extra applications are installed into the persistent `/home` volume rather than the
-base system image.
+base system image: the programs into `/home/bin`, which is on the search path ahead
+of the system's `/bin`, and whatever they read into `/home` beside a person's files.
 
 Doom, the Hero character journal, the echat IRC client, and eeemod, which plays
 tracker modules. Each is built and versioned on its own, separately from the

@@ -1,7 +1,7 @@
 # Hero
 
 A character journal for Dungeons and Dragons on the 2024 rules: an optional
-application, not part of the system. `make hero` builds it into `home/`, where
+application, not part of the system. `make hero` builds it into `home/bin/`, where
 it is on the machine at the next image build; `make apps` builds it with the
 rest. It opens a `.hero` file from the launcher, or from its own File menu.
 

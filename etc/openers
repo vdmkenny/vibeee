@@ -16,7 +16,7 @@
 # A program declares itself here rather than being listed in the source of
 # something else, so adding one is the program and its stanza. A stanza
 # naming a program this machine does not carry fails the way any missing
-# program does, so the ones under /home can be declared whether or not
+# program does, so the ones under /home/bin can be declared whether or not
 # they were built.
 
 name    = eimg
@@ -27,13 +27,13 @@ name    = pad
 binary  = /bin/pad
 opens   = text
 
-# Not system programs: these live under /home with the rest of what is
+# Not system programs: these live under /home/bin with the rest of what is
 # somebody's choice, and are there only when they were built.
 
 name    = hero
-binary  = /home/hero
+binary  = /home/bin/hero
 opens   = document
 
 name    = eeemod
-binary  = /home/eeemod
+binary  = /home/bin/eeemod
 opens   = audio

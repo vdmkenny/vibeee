@@ -7,7 +7,8 @@
 # The game's data is not here and is not fetched for you. Doom reads its
 # maps, sprites and sounds from a WAD, and which WAD is your business:
 # the retail ones are bought, and the shareware one is free to pass
-# around. Fetch one and drop it in `home/`, beside the binary.
+# around. Fetch one and drop it in `home/`, where a program started from
+# the desktop runs and where the rest of a person's files are.
 
 SOURCE := https://github.com/ozkl/doomgeneric.git
 REF    := master
