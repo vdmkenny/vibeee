@@ -158,15 +158,18 @@ var here: Path = .{};
 /// in one folder rather than three.
 var where = eui.text.Field(paths.MAX){};
 
-/// The names the sheet points into. One block, because the sheet holds names
-/// for as long as the folder is open and the listing they came from does not.
-var names: [sheet_mod.MAX * 32]u8 = undefined;
-var names_len: usize = 0;
+/// Somewhere to read a folder into, sized for a card rather than for a
+/// window: a camera fills a card with hundreds of frames and the whole of
+/// what is on it is the thing being looked at.
+///
+/// The names the sheet points into are this listing's own. It is rewritten
+/// only by the next scan, which clears the sheet first, so what a shot is
+/// called lasts exactly as long as the shot does.
+var listing: dir.ListingOf(sheet_mod.MAX) = .{};
+var listing_names: [dir.namesFor(sheet_mod.MAX)]u8 = undefined;
 
-/// Somewhere to read a listing into, and the head of one file. Both are
-/// kilobytes, and only one of each is ever in use.
-var listing: dir.Listing = .{};
-var listing_names: [dir.NAMES]u8 = undefined;
+/// The front of one file, where its tables are. Beside the program rather
+/// than on a frame: the user stack is thirty-two kilobytes for everything.
 var head: [TABLES]u8 = undefined;
 
 /// Where the last listing was read from, and room for one folder under it.
@@ -282,7 +285,6 @@ fn soleFolder() ?[]const u8 {
 /// been looked at.
 fn scan(path: []const u8) void {
     sheet.clear();
-    names_len = 0;
     said = "";
     listed.set(path);
 
@@ -297,15 +299,7 @@ fn scan(path: []const u8) void {
         const what = kind.fromName(entry.name) orelse continue;
         if (!what.viewable()) continue;
 
-        if (names_len + entry.name.len > names.len) {
-            sheet.truncated = true;
-            break;
-        }
-        const kept = names[names_len..][0..entry.name.len];
-        @memcpy(kept, entry.name);
-        names_len += entry.name.len;
-
-        sheet.add(.{ .name = kept, .size = entry.size, .mtime = entry.mtime });
+        sheet.add(.{ .name = entry.name, .size = entry.size, .mtime = entry.mtime });
     }
 }
 
@@ -582,9 +576,11 @@ fn drawTally(area: Rect) void {
         line.text(" rejected");
     } else {
         line.number(seen.all);
+        // A plus rather than a sentence: the strip has a character to spare
+        // for "there are more of these" and not a phrase.
+        if (sheet.truncated) line.byte('+');
         line.text(if (seen.all == 1) " photo" else " photos");
     }
-    if (sheet.truncated) line.text(", more not listed");
 
     ctx.surface.fill(area, t.surface_pressed);
     ctx.addDamage(area);

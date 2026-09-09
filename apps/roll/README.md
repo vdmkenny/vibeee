@@ -12,7 +12,7 @@ develop anything.
 | File | What it holds |
 |---|---|
 | [`sheet.zig`](sheet.zig) | The roll: what is on the card, what has been marked, which of it is being looked at, and what a page holds. Pure, and host-tested. |
-| [`roll.zig`](roll.zig) | The window: the grid, the one-up view, and copying. The places row and the key strip are the toolkit's. |
+| [`roll.zig`](roll.zig) | The window: the grid, the one-up view, and copying. The places row and the key strip are the toolkit's, and the names come straight out of the listing. |
 
 The model is host-tested: which picture is current, what a filter
 leaves and which page something is on is arithmetic over a list, and
@@ -87,8 +87,10 @@ It does not develop a raw file. A raw file with no preview written into
 it cannot be shown here, which is a thing to say plainly rather than to
 work around.
 
-It shows ninety-six pictures at most, which is what one listing holds,
-and says so in the tally when a folder holds more.
+It shows a thousand and twenty-four pictures at most, which is a card's
+worth and then some. A folder with more shows a `+` on the count rather
+than a sentence, and which part of it you get is whichever part the
+filesystem handed over first.
 
 It copies the file, not the picture. Nothing here writes a photograph
 back out, so a turn is a way of looking at one and never a change to

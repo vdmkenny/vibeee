@@ -19,25 +19,46 @@ pub const Entry = struct {
     is_dir: bool = false,
 };
 
-/// Enough for a directory anyone will look at in one window. A listing that
-/// stopped early without saying so would be worse than one that is bounded.
+/// Enough for a directory anyone will look at in one window, which is what a
+/// caller with no reason to say otherwise takes. A listing that stopped early
+/// without saying so would be worse than one that is bounded.
 pub const MAX = 96;
 
-/// How much name storage a listing wants: room for every entry it holds at
-/// a length that covers what people actually call files. A caller with less
-/// gets a listing that says it is short rather than one that pretends to be
-/// whole, so this is a budget rather than a limit.
-pub const NAMES = MAX * 48;
+/// How much name storage a listing of `count` entries wants: room for every
+/// one of them at a length that covers what people actually call files. A
+/// caller with less gets a listing that says it is short rather than one that
+/// pretends to be whole, so this is a budget rather than a limit.
+pub fn namesFor(count: usize) usize {
+    return count * 48;
+}
 
-pub const Listing = struct {
-    entries: Bounded(Entry, MAX) = .{},
-    /// The directory held more than `MAX`, so what is here is not all of it.
-    truncated: bool = false,
+pub const NAMES = namesFor(MAX);
 
-    pub fn items(self: *const Listing) []const Entry {
-        return self.entries.slice();
-    }
-};
+/// A listing that holds `capacity` entries.
+///
+/// The bound belongs to whoever is reading, because what is enough differs by
+/// an order of magnitude: a file dialog shows a folder of documents, and a
+/// contact sheet shows a camera card, which holds as many frames as it holds.
+/// One number for both would either waste a window's worth of memory on every
+/// dialog or cut every card short.
+pub fn ListingOf(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        pub const CAPACITY = capacity;
+
+        entries: Bounded(Entry, capacity) = .{},
+        /// The directory held more than the room, so what is here is not all
+        /// of it, and which part of it is what the filesystem handed over
+        /// first rather than what sorts first.
+        truncated: bool = false,
+
+        pub fn items(self: *const Self) []const Entry {
+            return self.entries.slice();
+        }
+    };
+}
+
+pub const Listing = ListingOf(MAX);
 
 pub const Error = error{NotFound};
 
@@ -57,7 +78,7 @@ pub fn isDirectory(path: []const u8) bool {
 /// order the filesystem happens to hold it is a listing nobody can scan. The
 /// parent sorts to the very top, where a person looking for the way out of a
 /// directory will look for it.
-pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
+pub fn read(path: []const u8, names: []u8, out: anytype) Error!void {
     const handle = sys.open(path, .{ .directory = true }) catch return error.NotFound;
     defer sys.close(handle);
 
@@ -99,15 +120,17 @@ pub fn read(path: []const u8, names: []u8, out: *Listing) Error!void {
     sort(out.entries.mutable());
 }
 
-/// Insertion sort, named rather than left to `std.mem.sort`.
+/// Heapsort, named rather than left to `std.mem.sort`.
 ///
 /// `std.mem.sort` is a block sort, and a block sort keeps a `[512]T` cache in
 /// its own frame: for an entry of this size that is sixteen kilobytes of a
 /// thirty-two kilobyte user stack, which overflows the moment a caller reads
-/// one directory from inside another. Insertion sort needs no memory at all,
-/// and at `MAX` entries the comparisons are not worth counting.
+/// one directory from inside another. Heapsort needs no memory at all and no
+/// recursion, and it stays worth having as the bound grows: a card's worth of
+/// frames is a thousand names, and an insertion sort of those is a million
+/// comparisons of one string against another.
 fn sort(entries: []Entry) void {
-    std.sort.insertion(Entry, entries, {}, before);
+    std.sort.heap(Entry, entries, {}, before);
 }
 
 pub const PARENT = "..";

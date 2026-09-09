@@ -13,10 +13,15 @@
 const std = @import("std");
 const Bounded = @import("lib").Bounded;
 
-/// How many pictures one roll holds. The listing this is filled from is
-/// bounded too, and a roll that stopped without saying so would be worse than
-/// one that says it is short.
-pub const MAX = 96;
+/// How many pictures one roll holds.
+///
+/// A card, rather than a window's worth. A camera fills a card with hundreds
+/// of frames and a contact sheet that showed the first ninety-six of them
+/// would not be a contact sheet: the whole of what is on the card is the
+/// thing being looked at. The listing this is filled from is bounded to
+/// match, and a roll longer than this says it is short rather than stopping
+/// quietly.
+pub const MAX = 1024;
 
 /// How many fit on the panel at once: five across and three down at 800 by
 /// 480, once the bar, the places and the keys have had their rows. The
@@ -95,7 +100,14 @@ pub const Sheet = struct {
     }
 
     /// Where the nth shown picture sits in the whole roll.
+    ///
+    /// With no filter the two are the same number, which is worth saying
+    /// because the window asks this once per cell on every pass: walking a
+    /// thousand shots fifteen times over to answer what the index already
+    /// says is the whole roll counted afresh for every twitch of the pointer.
     pub fn at_nth(self: *const Sheet, nth: usize) ?usize {
+        if (!self.kept_only) return if (nth < self.shots.len) nth else null;
+
         var seen: usize = 0;
         for (self.shots.slice(), 0..) |shot, i| {
             if (self.kept_only and shot.mark != .keep) continue;
@@ -380,6 +392,21 @@ test "a roll longer than one holds says so rather than stopping quietly" {
 
     try testing.expectEqual(@as(usize, MAX), sheet.shots.len);
     try testing.expect(sheet.truncated);
+}
+
+test "unfiltered, a place in what is shown is a place in the roll" {
+    var sheet = rollOf(40);
+    sheet.shots.mutable()[7].mark = .keep;
+
+    try testing.expectEqual(@as(?usize, 0), sheet.at_nth(0));
+    try testing.expectEqual(@as(?usize, 39), sheet.at_nth(39));
+    try testing.expectEqual(@as(?usize, null), sheet.at_nth(40));
+
+    // And with the filter on it is the walk, which is the same answer for
+    // the one picture the filter leaves.
+    sheet.filter(true);
+    try testing.expectEqual(@as(?usize, 7), sheet.at_nth(0));
+    try testing.expectEqual(@as(?usize, null), sheet.at_nth(1));
 }
 
 test "the counts are of the whole roll, not of what is shown" {
