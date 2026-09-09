@@ -213,6 +213,34 @@ fn roundingFor(area: Rect, radius: i32, corners: Corners) i32 {
     return @min(radius, @min(@divTrunc(area.w, 2), @divTrunc(area.h, 2)));
 }
 
+/// How many pixels one move carries.
+///
+/// Thirty-two bytes: two SSE2 stores on the machine this targets, and an
+/// unrolled word loop where there is no vector unit. `@memcpy` and `@memset`
+/// are not used for this. In `ReleaseSmall` the compiler emits a call to
+/// compiler-rt's byte-at-a-time copy, and a pixel moved a byte at a time is
+/// four bus transactions where the framebuffer wanted one.
+const RUN = 8;
+const Run = @Vector(RUN, u32);
+
+/// Copy `count` pixels. The two ends do not overlap.
+fn copyRun(to: [*]Color, from: [*]const Color, count: usize) void {
+    var i: usize = 0;
+    while (i + RUN <= count) : (i += RUN) {
+        const chunk: Run = @bitCast(from[i..][0..RUN].*);
+        to[i..][0..RUN].* = @bitCast(chunk);
+    }
+    while (i < count) : (i += 1) to[i] = from[i];
+}
+
+/// Set `count` pixels to one colour.
+fn fillRun(to: [*]Color, count: usize, color: Color) void {
+    const wide: Run = @splat(@as(u32, @bitCast(color)));
+    var i: usize = 0;
+    while (i + RUN <= count) : (i += RUN) to[i..][0..RUN].* = @bitCast(wide);
+    while (i < count) : (i += 1) to[i] = color;
+}
+
 pub const Surface = struct {
     pixels: [*]Color,
     width: i32,
@@ -372,11 +400,9 @@ pub const Surface = struct {
 
         var y = r.y;
         while (y < r.bottom()) : (y += 1) {
-            // A row at a time, as one splat: no clipping test inside, and the
-            // compiler is free to widen the stores, which on a
-            // write-combining framebuffer is what fills a line in one burst.
+            // A row at a time, with no clipping test inside it.
             const row = self.pixels + @as(usize, @intCast(y * self.stride + r.x));
-            @memset(row[0..@intCast(r.w)], color);
+            fillRun(row, @intCast(r.w), color);
         }
     }
 
@@ -385,9 +411,7 @@ pub const Surface = struct {
     ///
     /// The compositor's whole job, so it is the one path that must not be
     /// written per pixel: every bound is settled before the loops, and each
-    /// row is one copy the compiler may widen. On a write-combining
-    /// framebuffer that is the difference between a repaint and a wipe you
-    /// can watch.
+    /// row is one run.
     pub fn copyFrom(self: Surface, source: Surface, at_x: i32, at_y: i32, limit: Rect) void {
         const target = copyTarget(self, source, at_x, at_y, limit) orelse return;
 
@@ -395,7 +419,7 @@ pub const Surface = struct {
         while (y < target.bottom()) : (y += 1) {
             const from = source.pixels + @as(usize, @intCast((y - at_y) * source.stride + (target.x - at_x)));
             const to = self.pixels + @as(usize, @intCast(y * self.stride + target.x));
-            @memcpy(to[0..@intCast(target.w)], from[0..@intCast(target.w)]);
+            copyRun(to, from, @intCast(target.w));
         }
     }
 
@@ -548,8 +572,8 @@ pub const Surface = struct {
                     const right = @min(target.right(), x + col * times + times);
                     var line_y = top;
                     while (line_y < bottom) : (line_y += 1) {
-                        const line = self.pixels + @as(usize, @intCast(line_y * self.stride));
-                        @memset(line[@intCast(left)..@intCast(right)], color);
+                        const line = self.pixels + @as(usize, @intCast(line_y * self.stride + left));
+                        fillRun(line, @intCast(right - left), color);
                     }
                 }
             }
