@@ -37,6 +37,7 @@ test {
     // a key that can be sent and not read is one that works on the machine's
     // own screen and does nothing inside a terminal window.
     _ = @import("user/lib/keys.zig");
+    _ = @import("user/lib/time.zig");
     _ = @import("user/lib/paths.zig");
     _ = @import("user/lib/console.zig");
     _ = @import("user/lib/table.zig");

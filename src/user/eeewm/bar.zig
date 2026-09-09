@@ -18,6 +18,7 @@ const bindings = @import("ulib").bindings;
 const anchors = @import("proto").anchors;
 const info = @import("ulib").info;
 const dir = @import("ulib").dir;
+const time = @import("ulib").time;
 const lib = @import("lib");
 const opening = @import("proto").opening;
 const paths = @import("ulib").paths;
@@ -2052,19 +2053,11 @@ fn readClock() void {
     date.number(@intCast(when.year));
     clock_date_len = date.done().len;
 
+    var face: [8]u8 = undefined;
     var clock = str.Builder{ .buf = &clock_time };
-    twoDigits(&clock, when.hour);
-    clock.byte(':');
-    twoDigits(&clock, when.minute);
-    clock.byte(':');
-    twoDigits(&clock, when.second);
+    clock.text(time.clockSeconds(&face, seconds));
     clock.text(" UTC");
     clock_time_len = clock.done().len;
-}
-
-fn twoDigits(into: *str.Builder, value: u8) void {
-    into.byte('0' + value / 10);
-    into.byte('0' + value % 10);
 }
 
 /// Where the reading came from, asked once when the menu opens.
@@ -2165,20 +2158,10 @@ fn paintClockMenu(surface: Surface, width: i32, height: i32) void {
 
 fn paintClock(surface: Surface, area: Rect, open: bool) void {
     const t = theme.current();
+    var buf: [8]u8 = undefined;
     const us = sys.realtimeMicros() orelse return;
-    const minutes = @divFloor(@divFloor(us, 1_000_000), 60);
-
-    var buf: [8]u8 = @splat(0);
-    const hour: usize = @intCast(@divFloor(@mod(minutes, 1440), 60));
-    const minute: usize = @intCast(@mod(minutes, 60));
-
-    buf[0] = '0' + @as(u8, @intCast(hour / 10));
-    buf[1] = '0' + @as(u8, @intCast(hour % 10));
-    buf[2] = ':';
-    buf[3] = '0' + @as(u8, @intCast(minute / 10));
-    buf[4] = '0' + @as(u8, @intCast(minute % 10));
-
-    surface.textCentred(area, buf[0..5], if (open) t.accent_text else t.bar_text);
+    const face = time.clock(&buf, @divFloor(us, 1_000_000));
+    surface.textCentred(area, face, if (open) t.accent_text else t.bar_text);
 }
 
 fn menuRect(width: i32, height: i32, desktop: *const layout.Desktop, tab: u8) Rect {

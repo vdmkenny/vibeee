@@ -21,6 +21,7 @@ const quit = @import("ulib").quit;
 const log = @import("ulib").log;
 const out = @import("ulib").out;
 const sock = @import("ulib").sock;
+const time = @import("ulib").time;
 
 const net = proto.net;
 const ntp = lib.ntp;
@@ -151,28 +152,12 @@ fn waitForReply(s: sock.Sock, from: u32, buf: []u8) ?sock.Sock.Datagram {
 }
 
 fn say(name: []const u8, epoch_us: i64) void {
-    const when = lib.civil.fromEpoch(@divFloor(epoch_us, 1_000_000));
+    var when: [24]u8 = undefined;
     log.begin("timed", .key);
-    out.decimal(@intCast(when.year));
-    out.byte('-');
-    twoDigits(when.month);
-    out.byte('-');
-    twoDigits(when.day);
-    out.byte(' ');
-    twoDigits(when.hour);
-    out.byte(':');
-    twoDigits(when.minute);
-    out.byte(':');
-    twoDigits(when.second);
+    out.text(time.stamp(&when, @divFloor(epoch_us, 1_000_000)));
     out.text(" UTC from ");
     out.text(name);
     log.end();
-}
-
-fn twoDigits(value: anytype) void {
-    const n: usize = @intCast(value);
-    if (n < 10) out.byte('0');
-    out.decimal(n);
 }
 
 /// Sleep until the next ask falls due, or until something worth waking for

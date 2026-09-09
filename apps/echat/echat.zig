@@ -1168,8 +1168,7 @@ fn drawFace(line: rooms.Line) *const eui.draw.Font {
 }
 
 fn spellTime(at: i64, room: *[8]u8) []const u8 {
-    const when = civil.fromEpoch(at);
-    return std.fmt.bufPrint(room, "{d:0>2}:{d:0>2}", .{ when.hour, when.minute }) catch "";
+    return ulib.time.clock(room, at);
 }
 
 var members_shown: [256]usize = undefined;
