@@ -1404,12 +1404,27 @@ pub fn begin() void {
     readNetwork();
 }
 
-/// Whether anything is up and addressed, which is what the bar's icon says.
-fn networkUp() bool {
+/// What the bar's icon shows: the interface actually carrying the network,
+/// and whether anything is.
+///
+/// A radio that is only listening is not a connection. Drawing the air's icon
+/// lit while a cable does the work says the opposite of what is happening, and
+/// a machine with a radio fitted has one fitted whether or not it has joined
+/// anything.
+fn networkFace() struct { icon: eui_icon.Icon, live: bool } {
+    var radio_carries = false;
     for (0..iface_count) |i| {
-        if (ifaces[i].iface.up != 0 and ifaces[i].address.addr != 0) return true;
+        if (ifaces[i].iface.up == 0 or ifaces[i].address.addr == 0) continue;
+        // A cable that is carrying is the connection, ahead of a radio that
+        // also is: it is the one somebody chose by plugging it in.
+        if (ifaces[i].iface.kind != .radio) return .{ .icon = .ethernet, .live = true };
+        radio_carries = true;
     }
-    return false;
+    if (radio_carries) return .{ .icon = .wifi, .live = true };
+
+    // Nothing is carrying. The icon says which way this machine goes when
+    // something does, so that joining a network is not a change of shape.
+    return .{ .icon = if (radio_index != null) .wifi else .ethernet, .live = false };
 }
 
 fn netItems(into: []ui.MenuItem) []ui.MenuItem {
@@ -1529,17 +1544,16 @@ fn netPanel(width: i32, height: i32) Rect {
 fn paintNetwork(surface: Surface, area: Rect) void {
     const t = theme.current();
     const open = showing.reading() == .network;
+    const face = networkFace();
     const ink = if (open)
         t.accent_text
-    else if (networkUp()) t.bar_text else t.text_dim;
+    else if (face.live) t.bar_text else t.text_dim;
 
     if (open) surface.fill(area, t.accent);
-    // A machine with a radio is one whose network is the air, whichever
-    // interface happens to carry the address.
     surface.icon(
         area.x + @divTrunc(area.w - Surface.iconSize(), 2),
         area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-        if (radio_index != null) .wifi else .ethernet,
+        face.icon,
         ink,
     );
 }
