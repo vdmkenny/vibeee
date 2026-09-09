@@ -14,6 +14,7 @@ const ctx = @import("context.zig");
 const input = @import("../input.zig");
 const keymap = @import("../keymap.zig");
 const klog = @import("../klog.zig");
+const lock_mod = @import("../lock.zig");
 const probe = @import("../probe.zig");
 const random = @import("../random.zig");
 const sched = @import("../sched.zig");
@@ -100,6 +101,10 @@ pub fn sys_console_claim(_: Args) Result {
     return 0;
 }
 
+/// Whose console write is being rendered. One at a time, waited for rather
+/// than fought over: see `writeConsole`.
+var console_lock: lock_mod.Lock = .{};
+
 fn writeConsole(number: u32, buf: []const u8) Result {
     // Once somebody owns the console, everyone else's lines stop rendering:
     // they are already in the kernel's ring by the log tee, which is where
@@ -123,11 +128,22 @@ fn writeConsole(number: u32, buf: []const u8) Result {
         }
     }
 
-    // One write comes out whole. Every process shares this console, and a
-    // write preempted mid-render leaves half a word from one program spliced
-    // into another's line.
-    sched.no_preempt = true;
-    defer sched.no_preempt = false;
+    // One write comes out whole, and the machine keeps answering while it
+    // does.
+    //
+    // Serialized with a lock rather than by holding the CPU: every process
+    // shares this console, and a write preempted mid-render would leave half
+    // a word from one program spliced into another's line -- but a write is
+    // bounded only by what the caller hands it, and a program pouring a page
+    // of text down a pipe is seconds of scrolling, each line a framebuffer
+    // the width of the display. Non-preemptible, that is a machine that has
+    // stopped: no clock, no keyboard, nothing but the scroll.
+    //
+    // Whoever holds it can be preempted, and a second writer waits its turn
+    // instead of taking the console in the gap. A thread asked to end while
+    // waiting gets nothing, which is the same answer every wait here gives.
+    console_lock.hold() catch return @intCast(buf.len);
+    defer console_lock.release();
 
     // Standard error is coloured so a failure stands out in a log that is
     // otherwise the only output this machine has.

@@ -172,6 +172,17 @@ const backend = struct {
         if (fbcon.active()) fbcon.showCursor(visible) else vgatext.showCursor(visible);
     }
 
+    /// Bring the screen up to date with everything written since the last
+    /// time. A no-op where writing already is drawing (text mode); the one
+    /// place rasterising happens where it is not.
+    ///
+    /// Called once per write and never per character: a console that drew as
+    /// it went spent a screen of glyphs on every scrolled line, which is a
+    /// machine that looks dead while a program pours text.
+    fn present() void {
+        if (fbcon.active()) fbcon.present();
+    }
+
     /// What is in a cell, for saving the screen before something draws over it.
     fn cellAt(x: usize, y: usize) Saved {
         if (fbcon.active()) {
@@ -614,6 +625,10 @@ fn draw(cp: u21) void {
 }
 
 pub fn putChar(c: u8) void {
+    defer {
+        backend.present();
+        backend.setCursor(col, row);
+    }
     if (mirror) |sink| sink(&[_]u8{c});
     if (Escape.take(c)) return repaintPulse();
 
@@ -650,11 +665,19 @@ pub fn putChar(c: u8) void {
 }
 
 pub fn writeString(s: []const u8) void {
+    // One write, one painting. Everything in between only changes the grid,
+    // so a page of text costs one screen of drawing rather than one per
+    // line: the difference between a program that can pour output and a
+    // machine that stops while it does.
+    defer {
+        backend.present();
+        backend.setCursor(col, row);
+    }
+
     switch (renderClaim()) {
         .own => {},
         .borrow => {
             for (s) |c| putChar(c);
-            backend.setCursor(col, row);
             return;
         },
         // Pixels belong to the interrupted writer; the serial mirror has
@@ -667,7 +690,6 @@ pub fn writeString(s: []const u8) void {
     render_busy = true;
     defer render_busy = false;
     for (s) |c| putChar(c);
-    backend.setCursor(col, row);
 }
 
 /// Optional second destination for everything written to the console.

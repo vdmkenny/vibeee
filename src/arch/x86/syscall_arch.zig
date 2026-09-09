@@ -82,6 +82,14 @@ pub fn setKernelStack(esp0: u32) void {
 // ---------------------------------------------------------------------------
 
 fn onSyscall(frame: *idt.Frame) void {
+    // Interrupts back on, the way the sysenter door leaves them: a gate
+    // clears IF on entry, and a syscall is not a thing to do with the
+    // machine's interrupts switched off. A write to the console, a read of
+    // a card behind a reader, a wait for a reply -- all of them are
+    // seconds of work behind a door that would otherwise hold the timer,
+    // every device line and the clock for as long as they take.
+    hal.enableInterrupts();
+
     const result = syscall.dispatch(frame.eax, .{
         .a0 = frame.ebx,
         .a1 = frame.ecx,

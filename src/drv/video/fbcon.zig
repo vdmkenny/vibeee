@@ -17,6 +17,7 @@
 //! written against those sixteen and gains nothing from more.
 
 const bootinfo = @import("../../kernel/bootinfo.zig");
+const std = @import("std");
 const fontlib = @import("lib").font;
 const hal = @import("../../kernel/hal.zig");
 
@@ -69,10 +70,65 @@ const MAX_ROWS = 48;
 
 var cells: [MAX_COLUMNS * MAX_ROWS]Cell = @splat(Cell{ .cp = ' ', .fg = 0, .bg = 0 });
 
-/// Whether the grid still describes the screen. `fillRect` paints pixels the
-/// grid cannot represent, so after it the next scroll repaints every cell
-/// rather than trusting a comparison.
-var trust_grid = true;
+/// What the screen is showing, cell for cell.
+///
+/// The pair of these is the whole design: `cells` is what the console has
+/// written, `shown` is what the framebuffer currently shows, and painting
+/// is the act of bringing the second up to date with the first. Drawing is
+/// therefore a difference, and a difference is only ever taken once per
+/// `present`, however much was written in between.
+///
+/// The alternative -- drawing each cell as it is written -- costs a full
+/// screen of glyph rasterising *per scrolled line*, because a scroll changes
+/// every row. A program pouring a page of text then spends seconds moving
+/// pixels and the machine looks dead while it does.
+var shown: [MAX_COLUMNS * MAX_ROWS]Cell = @splat(Cell{ .cp = ' ', .fg = 0, .bg = 0 });
+
+/// Whether `shown` can be trusted to name what is on the screen.
+///
+/// `fillRect` paints pixels the grid has no way to describe, so after it the
+/// screen is unknown and the next present repaints every cell it is asked
+/// about rather than comparing.
+var shown_known = true;
+
+/// Which columns of a row may differ from `painted`, as an inclusive range.
+///
+/// Rows rather than cells because a console writes in runs: a line of text
+/// is one row, a scroll is every row. Two bytes a row is the whole
+/// bookkeeping, which is what a machine with 512 MiB can spare.
+const Dirty = struct {
+    lo: u8 = 0,
+    hi: u8 = 0,
+    set: bool = false,
+
+    fn one(self: *Dirty, col: usize) void {
+        self.span(col, col);
+    }
+
+    fn span(self: *Dirty, lo: usize, hi: usize) void {
+        if (!self.set) {
+            self.lo = @as(u8, @truncate(lo));
+            self.hi = @as(u8, @truncate(hi));
+            self.set = true;
+            return;
+        }
+        self.lo = @min(self.lo, @as(u8, @truncate(lo)));
+        self.hi = @max(self.hi, @as(u8, @truncate(hi)));
+    }
+
+    /// The whole row: what a scroll or a fill leaves behind.
+    fn whole(self: *Dirty) void {
+        self.lo = 0;
+        self.hi = std.math.maxInt(u8);
+        self.set = true;
+    }
+
+    fn forget(self: *Dirty) void {
+        self.set = false;
+    }
+};
+
+var dirty: [MAX_ROWS]Dirty = @splat(.{});
 
 var phys: usize = 0;
 var pitch: usize = 0;
@@ -259,12 +315,10 @@ fn reflow(was_columns: usize, was_rows: usize) void {
         @memset(cells[below * columns ..][0..columns], blank);
     }
 
-    trust_grid = true;
-    var row: usize = 0;
-    while (row < rows) : (row += 1) {
-        var col: usize = 0;
-        while (col < columns) : (col += 1) drawCell(col, row, cells[row * columns + col]);
-    }
+    // The stride changed, so every row moved: the whole screen is suspect.
+    shown_known = false;
+    markWhole();
+    present();
 }
 
 pub fn dimensions() Grid {
@@ -311,8 +365,50 @@ pub fn putAt(col: usize, row: usize, cp: u21, fg: u4, bg: u4) void {
 
     const cell = Cell.of(cp, fg, bg);
     cells[row * columns + col] = cell;
+    dirty[row].one(col);
     if (col == Cursor.col and row == Cursor.row) Cursor.painted = false;
-    drawCell(col, row, cell);
+}
+
+/// Bring the screen up to date with the grid, once.
+///
+/// Everything that changes what the console shows ends here, and nothing else
+/// paints: writing a character records it, scrolling moves the record, and
+/// this is the one pass that rasterises what actually differs. Called at the
+/// end of a write rather than during it, so a write of four thousand lines
+/// costs one screen of drawing rather than four thousand.
+pub fn present() void {
+    if (!ready or suspended) return;
+    Cursor.lift();
+
+    var row: usize = 0;
+    while (row < rows) : (row += 1) {
+        const span = &dirty[row];
+        if (!span.set) continue;
+        span.forget();
+
+        const last = @min(@as(usize, span.hi), columns - 1);
+        var col: usize = span.lo;
+        while (col <= last) : (col += 1) {
+            const at = row * columns + col;
+            const cell = cells[at];
+            // Blank over blank is the common case and the cheap one: a mostly
+            // empty screen repaints a handful of glyphs and nothing else.
+            // Untaken while the screen is unknown, because the framebuffer
+            // then holds pixels this grid cannot name.
+            if (shown_known and shown[at].same(cell)) continue;
+            shown[at] = cell;
+            drawCell(col, row, cell);
+        }
+    }
+
+    shown_known = true;
+    Cursor.paint();
+}
+
+/// Every cell of every row may differ: what a scroll, a fill or a new
+/// geometry leaves behind.
+fn markWhole() void {
+    for (&dirty) |*span| span.whole();
 }
 
 /// Paint a cell, without touching the grid. The caller has already recorded it.
@@ -349,8 +445,10 @@ pub fn fillRect(x: usize, y: usize, w: usize, h: usize, colour_index: u4) void {
     Cursor.lift();
     if (!ready or suspended) return;
     // Pixels the grid has no way to describe, so it no longer speaks for the
-    // screen and the next scroll repaints unconditionally.
-    trust_grid = false;
+    // screen and the next present repaints what it is asked about rather
+    // than comparing.
+    shown_known = false;
+    markWhole();
     const colour = PALETTE[colour_index];
 
     const x_end = @min(x + w, pixel_width);
@@ -388,19 +486,18 @@ pub fn fill(ch: u21, fg: u4, bg: u4) void {
     // walk entirely, this runs on every clear and every panic.
     if (ch == ' ') {
         clearAll(PALETTE[bg]);
+        @memset(shown[0 .. columns * rows], Cell.of(' ', 0, bg));
+        shown_known = true;
+        for (&dirty) |*span| span.forget();
         return;
     }
-    var row: usize = 0;
-    while (row < rows) : (row += 1) {
-        var col: usize = 0;
-        while (col < columns) : (col += 1) drawCell(col, row, cell);
-    }
+    present();
 }
 
-/// Record `cell` in every position, and trust the grid again.
+/// Record `cell` in every position, and say the whole screen may differ.
 fn setAll(cell: Cell) void {
     @memset(cells[0 .. columns * rows], cell);
-    trust_grid = true;
+    markWhole();
 }
 
 /// Scroll up one text row.
@@ -409,33 +506,36 @@ fn setAll(cell: Cell) void {
 /// them. Copying costs a framebuffer read per pixel, and on hardware where the
 /// aperture is uncached those reads dominate everything else the console does.
 pub fn scroll(bg: u4) void {
-    if (!ready or suspended) return;
+    shift(bg, 1);
+}
+
+/// Move the text up `count` rows.
+///
+/// The framebuffer is written and never read: on hardware where the aperture
+/// is uncached a read is a full bus round trip, so moving text by copying
+/// pixels costs more than rasterising what changed. The record moves in RAM
+/// in one pass however many rows it moves, and the drawing happens once, in
+/// `present`, however much a single write scrolled.
+pub fn shift(bg: u4, count: usize) void {
+    if (!ready or suspended or count == 0) return;
     Cursor.lift();
 
-    // The text moves in RAM and only the cells whose contents actually changed
-    // are repainted, so the framebuffer is written and never read. A boot log
-    // leaves most of each line blank, and blank over blank repaints nothing.
-    var row: usize = 0;
-    while (row + 1 < rows) : (row += 1) {
-        var col: usize = 0;
-        while (col < columns) : (col += 1) {
-            const incoming = cells[(row + 1) * columns + col];
-            const at = &cells[row * columns + col];
-            if (trust_grid and incoming.same(at.*)) continue;
-            at.* = incoming;
-            drawCell(col, row, incoming);
-        }
+    if (count >= rows) {
+        setAll(Cell.of(' ', 0, bg));
+        return;
     }
 
-    const blank = Cell.of(' ', 0, bg);
-    var col: usize = 0;
-    while (col < columns) : (col += 1) {
-        const at = &cells[(rows - 1) * columns + col];
-        if (trust_grid and blank.same(at.*)) continue;
-        at.* = blank;
-        drawCell(col, rows - 1, blank);
+    const width = columns;
+    var row: usize = 0;
+    while (row + count < rows) : (row += 1) {
+        @memcpy(cells[row * width ..][0..width], cells[(row + count) * width ..][0..width]);
     }
-    trust_grid = true;
+    const blank = Cell.of(' ', 0, bg);
+    while (row < rows) : (row += 1) {
+        @memset(cells[row * width ..][0..width], blank);
+    }
+
+    markWhole();
 }
 
 /// No hardware cursor exists in a linear framebuffer. Drawing one would mean
