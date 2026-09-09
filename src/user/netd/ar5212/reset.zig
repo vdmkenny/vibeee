@@ -43,6 +43,11 @@ pub const Chip = struct {
     /// Why there are none, for saying so once.
     curves_why: ?family.NoCurves = null,
     amplifier_ready: bool = false,
+    /// Whether the baseband has finished the gain calibration the last reset
+    /// started. Separate from the table above because the two are learned at
+    /// different moments: the table is written during the reset, and the
+    /// calibration finishes whenever the room lets it.
+    gain_ready: bool = false,
     power_limits: ?power.Limits = null,
     power_read: bool = false,
     power_ready: bool = false,
@@ -86,7 +91,7 @@ pub const Chip = struct {
     }
 
     pub fn txPermitted(self: *const Chip) bool {
-        return self.amplifier_ready and self.power_ready;
+        return self.amplifier_ready and self.power_ready and self.gain_ready;
     }
 };
 
@@ -107,6 +112,10 @@ pub const ResetError = error{
 
 /// The reference's constants.
 const MAX_RATE_POWER: u6 = 63;
+/// How long a reset waits for the baseband's gain calibration. A quiet room
+/// finishes inside this; a loud one is left to the periodic calibration.
+const GAIN_MICROS: u32 = 5_000;
+
 const PLL_SETTLE_MICROS = 300;
 const BASE_ACTIVATE_MICROS = 100;
 const POWER_UP_MICROS = 2000;
@@ -825,6 +834,7 @@ fn watchRfKill(chip: *Chip) void {
 pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
     const regs = chip.regs;
     chip.amplifier_ready = false;
+    chip.gain_ready = false;
     chip.power_ready = false;
     chip.power_mhz = megahertz;
     if (!wake(regs)) return ResetError.Asleep;
@@ -974,10 +984,12 @@ pub fn reset(chip: *Chip, megahertz: u16, kind: Kind) ResetError!void {
 
     if (chip.store.rf_kill) watchRfKill(chip);
 
-    if (!pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "calibrate", false, pace.DEFAULT_MICROS)) {
-        chip.amplifier_ready = false;
-        log.warn(name, "the gain calibration did not finish, which a loud room can do; nothing will be transmitted until it does");
-    }
+    // Long enough for a quiet room, where this finishes at once, and no
+    // longer: a loud room does not finish it inside any patience worth
+    // spending, and every reset would spend the whole of it. What it does
+    // not finish here the periodic calibration picks up, so the wait costs
+    // milliseconds rather than the transmitter costing a whole interval.
+    chip.gain_ready = pace.until(regs, .phy_agc_control, regs_mod.PhyAgcControl, "calibrate", false, GAIN_MICROS);
 
     // Only on the way up, and only once. The measurement is started beside
     // the gain control above and read much later by the periodic
@@ -1099,6 +1111,13 @@ pub fn calibrate(chip: *Chip, long: bool) void {
         // stop trying to measure them.
         startIq(regs);
         chip.iq = .running;
+    }
+
+    // The gain calibration the reset started and did not wait out. Nothing
+    // is transmitted until it has finished, so this is what lets a radio
+    // that calibrated slowly start transmitting without another reset.
+    if (!chip.gain_ready and !regs.get(.phy_agc_control, regs_mod.PhyAgcControl).calibrate) {
+        chip.gain_ready = true;
     }
 
     if (long) loadNoiseFloor(chip);

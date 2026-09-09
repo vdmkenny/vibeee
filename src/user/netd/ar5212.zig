@@ -918,14 +918,22 @@ fn keepReceiving(nic: *NicDev, chip: *reset.Chip) void {
 /// station waits before it decides its cell has gone quiet.
 const REPAIR_INTERVAL_MICROS: u64 = 1_000_000;
 
+/// How long the radio rests afterwards, as a multiple of what the repair
+/// itself cost. A reset whose waits run out takes hundreds of milliseconds,
+/// and one dated from before it began would come round again while the
+/// machine was still paying for the last. With this, repairing can never
+/// take more than a fifth of the machine, however slowly a reset goes.
+const REPAIR_REST: u64 = 4;
+
 /// Put the radio back on the channel it was asked for, from a reset.
 fn repair(nic: *NicDev) void {
     const on = device.asked orelse return;
-    const now = sys.clockMicros();
-    if (now < device.repair_after) return;
-    device.repair_after = now + REPAIR_INTERVAL_MICROS;
+    const began = sys.clockMicros();
+    if (began < device.repair_after) return;
     device.rx_stopped_for = 0;
     if (tune(nic, on)) rx_repairs +|= 1;
+    const ended = sys.clockMicros();
+    device.repair_after = ended + @max(REPAIR_INTERVAL_MICROS, (ended - began) * REPAIR_REST);
 }
 
 /// Failures split by which demodulator gave up. The two fail separately
