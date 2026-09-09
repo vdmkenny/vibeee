@@ -41,4 +41,6 @@ pub const sound = @import("sound.zig");
 /// kernel can reach them too. Re-exported here because every program that
 /// wants `ulib` wants these.
 pub const str = @import("lib").str;
+pub const lines = @import("lines.zig");
+pub const walk = @import("walk.zig");
 pub const time = @import("time.zig");

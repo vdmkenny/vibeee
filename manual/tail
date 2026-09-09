@@ -1,0 +1,8 @@
+tail - the last lines of something
+
+  tail file              the last ten lines
+  tail -n 3 file         the last three
+  something | tail       the last ten of what comes in
+
+Read in one pass, keeping only as many lines as were asked for, so the
+length of what it reads costs nothing but the time to read it.

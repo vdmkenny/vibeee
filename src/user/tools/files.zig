@@ -1,8 +1,9 @@
-//! File utilities: ls, cat, hexdump.
+//! File utilities: ls, cp, mv, rm, mkdir, cat, hexdump.
 //!
 //! Small on purpose. Each is the thin layer over a syscall that a from-scratch
 //! system needs before anything else can be investigated from inside it.
 
+const std = @import("std");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
 const out = @import("ulib").out;
@@ -15,9 +16,7 @@ pub fn ls(args: []const []const u8) void {
     const path = if (args.len > 0) args[0] else ".";
 
     const handle = sys.open(path, .{ .directory = true }) catch {
-        out.text("ls: ");
-        out.text(path);
-        out.text(": cannot open\n");
+        out.fault("ls", path, "cannot open");
         out.flush();
         return;
     };
@@ -72,45 +71,112 @@ pub fn ls(args: []const []const u8) void {
     out.flush();
 }
 
+/// Several sources and one destination, which is the shape both `mv` and `cp`
+/// are given and neither should work out for itself.
+const Onto = struct {
+    sources: []const []const u8,
+    destination: []const u8,
+    /// The destination is a directory, so each source keeps its own name
+    /// inside it rather than becoming it.
+    into: bool,
+
+    /// What was asked for, or nothing once the reason it cannot be has been
+    /// said.
+    fn of(tool: []const u8, args: []const []const u8) ?Onto {
+        if (args.len < 2) {
+            out.text("usage: ");
+            out.text(tool);
+            out.text(" <source>... <destination>\n");
+            out.flush();
+            return null;
+        }
+
+        const destination = args[args.len - 1];
+        const sources = args[0 .. args.len - 1];
+        const into = dir.isDirectory(destination);
+
+        // Several sources and a destination that is not a directory has no
+        // reading: the last one would land on top of the others.
+        if (sources.len > 1 and !into) {
+            out.fault(tool, destination, "not a directory");
+            out.flush();
+            return null;
+        }
+        return .{ .sources = sources, .destination = destination, .into = into };
+    }
+
+    /// Where `from` lands. Nothing when the path would be cut short, which
+    /// would name something else and put the file somewhere nobody asked for.
+    fn target(self: Onto, tool: []const u8, from: []const u8, buf: []u8) ?[]const u8 {
+        if (!self.into) return self.destination;
+        return paths.joined(self.destination, paths.base(from), buf) orelse {
+            out.fault(tool, from, "the path is too long");
+            return null;
+        };
+    }
+};
+
 /// Move or rename. Several sources are allowed when the last argument is a
 /// directory, which is the only reading of `mv a b c somewhere` that makes
 /// sense.
 pub fn mv(args: []const []const u8) void {
-    if (args.len < 2) {
-        out.text("usage: mv <source>... <destination>\n");
-        out.flush();
-        return;
-    }
+    const asked = Onto.of("mv", args) orelse return;
 
-    const destination = args[args.len - 1];
-    const sources = args[0 .. args.len - 1];
-    const into = dir.isDirectory(destination);
-
-    if (sources.len > 1 and !into) {
-        out.text("mv: ");
-        out.text(destination);
-        out.text(": not a directory\n");
-        out.flush();
-        return;
-    }
-
-    for (sources) |from| {
-        var buf: [256]u8 = undefined;
-        // A path cut short names something else, and renaming onto it
-        // would move the file somewhere nobody asked for.
-        const to = if (into) paths.joined(destination, paths.base(from), &buf) orelse {
-            out.text("mv: ");
-            out.text(from);
-            out.text(": the path is too long\n");
-            continue;
-        } else destination;
-        sys.rename(from, to) catch {
-            out.text("mv: ");
-            out.text(from);
-            out.text(": cannot move\n");
-        };
+    for (asked.sources) |from| {
+        var buf: [PATH_MAX]u8 = undefined;
+        const to = asked.target("mv", from, &buf) orelse continue;
+        sys.rename(from, to) catch out.fault("mv", from, "cannot move");
     }
     out.flush();
+}
+
+/// The longest destination a move or a copy builds.
+const PATH_MAX = 256;
+
+/// How much is moved at once. A page, which is what the filesystem reads and
+/// writes in anyway, so a bigger buffer would buy nothing but memory.
+var block: [4096]u8 = undefined;
+
+/// Copy, which is what a move across volumes would have to be and deliberately
+/// is not: `mv` renames, and this is the different thing to ask for.
+///
+/// Files only. Copying a directory means walking it and creating as it goes,
+/// and half of that is worse than none.
+pub fn cp(args: []const []const u8) void {
+    const asked = Onto.of("cp", args) orelse return;
+
+    for (asked.sources) |from| {
+        var buf: [PATH_MAX]u8 = undefined;
+        const to = asked.target("cp", from, &buf) orelse continue;
+        copy(from, to);
+    }
+    out.flush();
+}
+
+fn copy(from: []const u8, to: []const u8) void {
+    // Onto itself would empty the file before a byte of it had been read.
+    if (std.mem.eql(u8, from, to)) return out.fault("cp", from, "is the destination");
+    if (dir.isDirectory(from)) return out.fault("cp", from, "is a directory");
+
+    const source = sys.open(from, .{}) catch return out.fault("cp", from, "cannot open");
+    defer sys.close(source);
+
+    const target = sys.open(to, .{ .write = true, .create = true, .truncate = true }) catch
+        return out.fault("cp", to, "cannot create");
+    defer sys.close(target);
+
+    while (true) {
+        const got = sys.read(source, &block) catch return out.fault("cp", from, "cannot read");
+        if (got == 0) break;
+        var put: usize = 0;
+        while (put < got) {
+            // A short write is not a failed one: what is left goes round again.
+            const wrote = sys.write(target, block[put..got]) catch
+                return out.fault("cp", to, "cannot write");
+            if (wrote == 0) return out.fault("cp", to, "no space");
+            put += wrote;
+        }
+    }
 }
 
 pub fn cat(args: []const []const u8) void {
@@ -122,9 +188,7 @@ pub fn cat(args: []const []const u8) void {
 
     for (args) |path| {
         const handle = sys.open(path, .{}) catch {
-            out.text("cat: ");
-            out.text(path);
-            out.text(": cannot open\n");
+            out.fault("cat", path, "cannot open");
             continue;
         };
         defer sys.close(handle);
@@ -147,9 +211,7 @@ pub fn hexdump(args: []const []const u8) void {
     }
 
     const handle = sys.open(args[0], .{}) catch {
-        out.text("hexdump: ");
-        out.text(args[0]);
-        out.text(": cannot open\n");
+        out.fault("hexdump", args[0], "cannot open");
         out.flush();
         return;
     };
@@ -204,11 +266,7 @@ pub fn rm(args: []const []const u8) void {
     }
 
     for (args) |path| {
-        sys.unlink(path) catch {
-            out.text("rm: ");
-            out.text(path);
-            out.text(": cannot remove\n");
-        };
+        sys.unlink(path) catch out.fault("rm", path, "cannot remove");
     }
     out.flush();
 }
@@ -223,14 +281,12 @@ pub fn mkdir(args: []const []const u8) void {
 
     for (args) |path| {
         sys.mkdir(path) catch |why| {
-            out.text("mkdir: ");
-            out.text(path);
-            out.text(switch (why) {
-                error.Exists => ": already exists\n",
-                error.NoSuchFile => ": no such parent directory\n",
-                error.NoSpace => ": no space\n",
-                error.NotPermitted => ": read-only volume\n",
-                else => ": cannot create\n",
+            out.fault("mkdir", path, switch (why) {
+                error.Exists => "already exists",
+                error.NoSuchFile => "no such parent directory",
+                error.NoSpace => "no space",
+                error.NotPermitted => "read-only volume",
+                else => "cannot create",
             });
         };
     }

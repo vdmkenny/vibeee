@@ -19,6 +19,7 @@ const battery = @import("battery.zig");
 const cfg = @import("cfg.zig");
 const date = @import("date.zig");
 const file_tool = @import("file.zig");
+const find_tool = @import("find.zig");
 const files = @import("files.zig");
 const grep = @import("grep.zig");
 const hotkeys = @import("hotkeys.zig");
@@ -39,6 +40,7 @@ const driver_tool = @import("driver.zig");
 const page = @import("page.zig");
 const status = @import("status.zig");
 const svc = @import("svc.zig");
+const text = @import("text.zig");
 const tree = @import("tree.zig");
 const usb_tool = @import("usb.zig");
 const volumes = @import("volumes.zig");
@@ -55,9 +57,15 @@ pub const commands = [_]Command{
     .{ .name = "cat", .summary = manual.summaryOf("cat"), .run = &files.cat },
     .{ .name = "rm", .summary = manual.summaryOf("rm"), .run = &files.rm },
     .{ .name = "mv", .summary = manual.summaryOf("mv"), .run = &files.mv },
+    .{ .name = "cp", .summary = manual.summaryOf("cp"), .run = &files.cp },
     .{ .name = "hexdump", .summary = manual.summaryOf("hexdump"), .run = &files.hexdump },
     .{ .name = "file", .summary = manual.summaryOf("file"), .run = &file_tool.run },
+    .{ .name = "find", .summary = manual.summaryOf("find"), .run = &find_tool.run },
     .{ .name = "grep", .summary = manual.summaryOf("grep"), .run = &grep.run },
+    .{ .name = "head", .summary = manual.summaryOf("head"), .run = &text.head },
+    .{ .name = "tail", .summary = manual.summaryOf("tail"), .run = &text.tail },
+    .{ .name = "wc", .summary = manual.summaryOf("wc"), .run = &text.wc },
+    .{ .name = "sort", .summary = manual.summaryOf("sort"), .run = &text.sort },
     .{ .name = "free", .summary = manual.summaryOf("free"), .run = &status.free },
     .{ .name = "battery", .summary = manual.summaryOf("battery"), .run = &battery.run },
     .{ .name = "backlight", .summary = manual.summaryOf("backlight"), .run = &backlight.run },

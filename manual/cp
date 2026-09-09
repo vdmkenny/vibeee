@@ -1,0 +1,10 @@
+cp - copy
+
+  cp one two             copy, under a new name
+  cp a b /home           copy several into a directory
+
+Files only: copying a directory means walking it and creating as it goes,
+and half of that is worse than none.
+
+This is the thing `mv` will not do. A move stays within one volume, because
+a move across one is a copy and a delete and should be asked for as one.

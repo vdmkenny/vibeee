@@ -4,11 +4,12 @@
 //! real matcher, and a half-implemented regex is worse than an honest
 //! substring search: it accepts patterns it then quietly mismatches.
 //!
-//! Reads a file when given one and standard input otherwise, so it already
-//! works as the receiving end of a pipeline once pipes exist.
+//! Reads a file when given one and standard input otherwise, so it sits at the
+//! receiving end of a pipeline.
 
 const std = @import("std");
 const sys = @import("sys");
+const lines = @import("ulib").lines;
 const out = @import("ulib").out;
 
 pub fn run(args: []const []const u8) void {
@@ -28,9 +29,7 @@ pub fn run(args: []const []const u8) void {
         const show_names = args.len > 2;
         for (args[1..]) |path| {
             const handle = sys.open(path, .{}) catch {
-                out.text("grep: ");
-                out.text(path);
-                out.text(": cannot open\n");
+                out.fault("grep", path, "cannot open");
                 continue;
             };
             grepHandle(handle, pattern, path, show_names);
@@ -40,32 +39,13 @@ pub fn run(args: []const []const u8) void {
     out.flush();
 }
 
-fn grepHandle(handle: usize, pattern: []const u8, name: []const u8, show_name: bool) void {
-    var chunk: [4096]u8 = [_]u8{0} ** 4096;
-    var line: [1024]u8 = [_]u8{0} ** 1024;
-    var line_len: usize = 0;
+/// Beside the other state rather than on the frame: a reader is kilobytes and
+/// the user stack is not many of them.
+var reader: lines.Reader = .{};
 
-    while (true) {
-        const n = sys.read(handle, &chunk) catch break;
-        if (n == 0) break;
-
-        for (chunk[0..@intCast(n)]) |c| {
-            if (c == '\n') {
-                emitIfMatch(line[0..line_len], pattern, name, show_name);
-                line_len = 0;
-                continue;
-            }
-            // A line longer than the buffer is truncated rather than dropped:
-            // losing the tail of a very long line beats losing the match.
-            if (line_len < line.len) {
-                line[line_len] = c;
-                line_len += 1;
-            }
-        }
-    }
-
-    // A final line with no trailing newline still counts.
-    if (line_len > 0) emitIfMatch(line[0..line_len], pattern, name, show_name);
+fn grepHandle(handle: u32, pattern: []const u8, name: []const u8, show_name: bool) void {
+    reader = lines.Reader.of(handle);
+    while (reader.next()) |line| emitIfMatch(line, pattern, name, show_name);
 }
 
 fn emitIfMatch(line: []const u8, pattern: []const u8, name: []const u8, show_name: bool) void {

@@ -1,0 +1,7 @@
+wc - count lines, words and bytes
+
+  wc file                lines, words and bytes of one file
+  wc a b c               each of them, and a total
+  something | wc         of what comes in
+
+A word is a run of anything that is not a space.

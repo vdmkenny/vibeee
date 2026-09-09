@@ -59,6 +59,23 @@ pub fn glyph(cp: u21) void {
 }
 
 /// Write `s` padded to `width`, for aligned columns.
+/// `mv: notes.txt: cannot move`, which is how every command says that
+/// something it was given did not work.
+///
+/// One shape, because a person reading a pipeline's output should be able to
+/// tell which command spoke and what it was talking about without learning a
+/// different arrangement per command.
+pub fn fault(tool: []const u8, what: []const u8, why: []const u8) void {
+    text(tool);
+    text(": ");
+    if (what.len != 0) {
+        text(what);
+        text(": ");
+    }
+    text(why);
+    byte('\n');
+}
+
 pub fn pad(s: []const u8, width: usize) void {
     text(s);
     var n = s.len;

@@ -1,0 +1,7 @@
+sort - put lines in order
+
+  sort file              in order
+  something | sort       what comes in, in order
+
+Capitals sort with their lowercase, so a file whose lines start with both
+does not come back in two groups.

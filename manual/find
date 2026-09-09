@@ -1,0 +1,9 @@
+find - where something is
+
+  find notes             everything under here whose name holds "notes"
+  find .mod /home        every module under /home
+
+Matches a piece of a name, not a pattern, and ignores case: a name written
+in capitals on a FAT volume is found by typing it in lowercase.
+
+Goes eight directories deep and says so when it stopped there.

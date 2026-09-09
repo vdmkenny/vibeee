@@ -1,0 +1,8 @@
+head - the first lines of something
+
+  head file              the first ten lines
+  head -n 3 file         the first three
+  something | head       the first ten of what comes in
+
+Given no file it reads what is piped into it, so it is the way to look at
+the start of something long without waiting for the rest.
