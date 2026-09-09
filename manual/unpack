@@ -1,0 +1,8 @@
+unpack - take an archive apart
+
+  unpack notes.tar                into the working directory
+  unpack notes.tar /home          into somewhere else
+  unpack -l notes.tar             say what is in it, and take nothing out
+
+Directories on the way to a file are made as they are needed. Kinds of
+entry this system has no use for are stepped over rather than guessed at.

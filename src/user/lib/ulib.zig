@@ -43,4 +43,5 @@ pub const sound = @import("sound.zig");
 pub const str = @import("lib").str;
 pub const lines = @import("lines.zig");
 pub const walk = @import("walk.zig");
+pub const ustar = @import("ustar.zig");
 pub const time = @import("time.zig");

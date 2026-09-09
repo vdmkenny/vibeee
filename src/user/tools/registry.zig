@@ -37,6 +37,7 @@ const tone = @import("tone.zig");
 const vol = @import("vol.zig");
 const patch = @import("patch.zig");
 const driver_tool = @import("driver.zig");
+const pack_tool = @import("pack.zig");
 const page = @import("page.zig");
 const status = @import("status.zig");
 const svc = @import("svc.zig");
@@ -92,6 +93,8 @@ pub const commands = [_]Command{
     .{ .name = "page", .summary = manual.summaryOf("page"), .run = &page.run },
     .{ .name = "edit", .summary = manual.summaryOf("edit"), .run = &edit_tool.run },
     .{ .name = "mkdir", .summary = manual.summaryOf("mkdir"), .run = &files.mkdir },
+    .{ .name = "pack", .summary = manual.summaryOf("pack"), .run = &pack_tool.pack },
+    .{ .name = "unpack", .summary = manual.summaryOf("unpack"), .run = &pack_tool.unpack },
     .{ .name = "tree", .summary = manual.summaryOf("tree"), .run = &tree.run },
     .{ .name = "cfg", .summary = manual.summaryOf("cfg"), .run = &cfg.run },
     .{ .name = "svc", .summary = manual.summaryOf("svc"), .run = &svc.run },

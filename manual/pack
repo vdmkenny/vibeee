@@ -1,0 +1,9 @@
+pack - a set of files as one file
+
+  pack notes.tar a.txt b.txt      two files into an archive
+  pack home.tar /home             a directory and everything under it
+
+The format is ustar, which is what every other machine reads, so what is
+packed here opens on whatever you carry it to. Nothing is compressed.
+
+`unpack` takes one apart.

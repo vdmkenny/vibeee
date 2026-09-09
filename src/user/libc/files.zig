@@ -49,7 +49,7 @@ export fn stat(path: [*:0]const u8, into: ?*Stat) callconv(.c) c_int {
     out.* = .{
         .st_mode = (if (entry.is_dir) S_IFDIR else S_IFREG) | RW,
         .st_size = @intCast(entry.size),
-        .st_mtime = @intCast(@divTrunc(entry.mtime, 1_000_000)),
+        .st_mtime = @intCast(entry.mtime),
     };
     return 0;
 }
