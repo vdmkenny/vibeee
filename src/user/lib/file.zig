@@ -23,6 +23,22 @@ pub fn readWhole(path: []const u8, into: []u8) ?usize {
     return if (filled.failed) null else filled.read;
 }
 
+/// Read `into.len` bytes of the file at `path` starting `from` bytes in, and
+/// say how much came back. Null for a file that cannot be opened or seeked.
+///
+/// What a caller with a head in hand and an offset out of it wants: a raw
+/// photograph keeps the picture it carries megabytes past its own tables, and
+/// reading that stretch is the difference between a preview and reading a
+/// twelve megabyte file to take one megabyte out of the middle.
+pub fn readAt(path: []const u8, from: usize, into: []u8) ?usize {
+    const handle = sys.open(path, .{}) catch return null;
+    defer sys.close(handle);
+
+    _ = sys.seek(handle, @intCast(from), sys.SEEK_SET) catch return null;
+    const filled = fill(handle, into);
+    return if (filled.failed) null else filled.read;
+}
+
 pub const EntireError = error{ NoFile, TooBig, Unreadable };
 
 /// Read the file at `path` into `into` entire, and say how long it is. A

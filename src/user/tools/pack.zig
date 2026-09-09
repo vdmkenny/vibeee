@@ -166,8 +166,8 @@ fn put(bytes: []const u8) void {
 // unpack
 // ---------------------------------------------------------------------------
 
-var name_buf: [walk.PATH_MAX]u8 = undefined;
-var where_buf: [walk.PATH_MAX]u8 = undefined;
+var name_buf: [paths.MAX]u8 = undefined;
+var where_buf: [paths.MAX]u8 = undefined;
 
 pub fn unpack(args: []const []const u8) void {
     if (args.len == 0) {
@@ -216,7 +216,7 @@ pub fn unpack(args: []const []const u8) void {
         };
 
         if (entry.kind == .directory) {
-            makeWay(to);
+            dir.makeWay(to);
             taken += 1;
             continue;
         }
@@ -226,7 +226,7 @@ pub fn unpack(args: []const []const u8) void {
             continue;
         }
 
-        makeWay(paths.parent(to));
+        dir.makeWay(paths.parent(to));
         if (take(source, to, entry.size)) taken += 1;
     }
 
@@ -237,15 +237,6 @@ pub fn unpack(args: []const []const u8) void {
         out.byte('\n');
     }
     out.flush();
-}
-
-/// The directories on the way to something, made as far as they are missing.
-/// An archive names a file under a directory it also carries, but not always
-/// before it.
-fn makeWay(path: []const u8) void {
-    if (path.len == 0 or dir.isDirectory(path)) return;
-    makeWay(paths.parent(path));
-    sys.mkdir(path) catch {};
 }
 
 fn take(source: u32, to: []const u8, size: u64) bool {

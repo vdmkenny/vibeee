@@ -1,4 +1,4 @@
-//! Reading a directory.
+//! Reading a directory, and making one.
 //!
 //! `readdir` hands back one packed record per call and leaves the decoding to
 //! whoever asked. Every caller was writing the same loop, and a file dialog
@@ -6,6 +6,7 @@
 
 const str = @import("lib").str;
 const std = @import("std");
+const paths = @import("paths.zig");
 const sys = @import("sys");
 const Bounded = @import("lib").Bounded;
 
@@ -110,6 +111,19 @@ fn sort(entries: []Entry) void {
 }
 
 pub const PARENT = "..";
+
+/// Make every directory on the way to `path`, as far as they are missing.
+///
+/// What a caller filing something somewhere wants: an archive names a file
+/// under a directory it also carries but not always before it, and somebody
+/// copying into a project folder means the folder to exist. A level that
+/// cannot be made is left to the open that follows, which is where the
+/// caller has a name and a complaint to attach it to.
+pub fn makeWay(path: []const u8) void {
+    if (path.len == 0 or path.len > paths.MAX or isDirectory(path)) return;
+    makeWay(paths.parent(path));
+    sys.mkdir(path) catch {};
+}
 
 fn before(_: void, a: Entry, b: Entry) bool {
     const a_parent = std.mem.eql(u8, a.name, PARENT);

@@ -123,15 +123,12 @@ pub fn mv(args: []const []const u8) void {
     const asked = Onto.of("mv", args) orelse return;
 
     for (asked.sources) |from| {
-        var buf: [PATH_MAX]u8 = undefined;
+        var buf: [paths.MAX]u8 = undefined;
         const to = asked.target("mv", from, &buf) orelse continue;
         sys.rename(from, to) catch out.fault("mv", from, "cannot move");
     }
     out.flush();
 }
-
-/// The longest destination a move or a copy builds.
-const PATH_MAX = 256;
 
 /// Copy, which is what a move across volumes would have to be and deliberately
 /// is not: `mv` renames, and this is the different thing to ask for.
@@ -142,7 +139,7 @@ pub fn cp(args: []const []const u8) void {
     const asked = Onto.of("cp", args) orelse return;
 
     for (asked.sources) |from| {
-        var buf: [PATH_MAX]u8 = undefined;
+        var buf: [paths.MAX]u8 = undefined;
         const to = asked.target("cp", from, &buf) orelse continue;
         copy(from, to);
     }

@@ -17,10 +17,6 @@ const str = @import("lib").str;
 /// How far down to go. A walk that stops says so in its summary.
 pub const MAX_DEPTH = 8;
 
-/// The longest path a walk builds. Past this a name is not reached, which is
-/// reported the same way an unreadable directory is.
-pub const PATH_MAX = 256;
-
 /// One name the walk reached.
 pub const Name = struct {
     /// What it is called, without where it is.
@@ -64,7 +60,7 @@ const Level = struct {
 
 pub const Walk = struct {
     levels: [MAX_DEPTH]Level = @splat(.{}),
-    path_buf: [PATH_MAX]u8 = @splat(0),
+    path_buf: [paths.MAX]u8 = @splat(0),
     path: str.Builder = undefined,
     summary: Summary = .{},
 
@@ -109,7 +105,7 @@ pub const Walk = struct {
             seen += 1;
 
             const was = self.path.len;
-            var below: [PATH_MAX]u8 = undefined;
+            var below: [paths.MAX]u8 = undefined;
             const full = paths.joined(self.path.done(), entry.name, &below) orelse {
                 visit(ctx, depth, .unreadable);
                 continue;

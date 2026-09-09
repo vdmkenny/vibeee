@@ -10,6 +10,15 @@ const str = @import("lib").str;
 
 pub const SEPARATOR = '/';
 
+/// The longest path anything here builds.
+///
+/// A budget rather than a rule the filesystem enforces: a program walking a
+/// tree, copying a file or naming a destination puts a path on its own
+/// storage, and every one of them was picking a number. Long enough for a
+/// card's own nesting under a mount point with room to spare, short enough
+/// that a few of them fit on the thirty-two kilobyte user stack.
+pub const MAX = 256;
+
 /// Where something is: the path without its last component, and the root
 /// for what is directly under it. A trailing slash is ignored, as `base`
 /// ignores it, so `parent("/home/pictures/")` is `/home`.
