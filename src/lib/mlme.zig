@@ -298,6 +298,20 @@ pub const Farewell = struct {
             .reason = @enumFromInt(std.mem.readInt(u16, body[0..2], .little)),
         };
     }
+
+    /// Whether one of these is addressed to this station by name.
+    ///
+    /// A farewell is unauthenticated here: this station offers no
+    /// protection of management frames, so what says the access point
+    /// sent it is the address in it, and an address is a claim anybody in
+    /// earshot can make. All that is left to go on is that a frame meant
+    /// for this station names it. One addressed to the room is a single
+    /// frame anybody can send to end every association on the channel,
+    /// and there is nothing in it to tell apart from the real one.
+    pub fn toUs(frame: []const u8, station: mac.Address) bool {
+        const head = Header.parse(frame) orelse return false;
+        return mac.eql(head.addr1, station) and !mac.isGroup(head.addr1);
+    }
 };
 
 // ---------------------------------------------------------------------------

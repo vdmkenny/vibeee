@@ -21,6 +21,19 @@ const wifi = @import("wifi.zig");
 const HmacSha1 = std.crypto.auth.hmac.HmacSha1;
 const Aes128 = std.crypto.core.aes.Aes128;
 
+/// Overwrite a value's bytes where it lies, so that whatever held a
+/// secret no longer does.
+///
+/// Not `@memset`, which a compiler is free to drop when it can see that
+/// nothing reads the bytes again: the whole point here is that something
+/// might, later, from a core dump, a reused buffer or a value the caller
+/// only thought it had finished with. Written over the value rather than
+/// over a slice of it because that is the mistake this kind of code makes:
+/// the field that was scrubbed is not the field that held the key.
+pub fn scrub(value: anytype) void {
+    std.crypto.secureZero(u8, @volatileCast(std.mem.asBytes(value)));
+}
+
 /// The pairwise master key: what the passphrase becomes, and what both
 /// sides hold before a word is exchanged. The same bytes configuration
 /// holds when a slot stores the derived key instead of the words.
@@ -554,6 +567,14 @@ pub const Keys = struct {
     pub fn groupKey(self: Keys, index: u2) ?Key {
         return self.group[index];
     }
+
+    /// Wipe the keys. An association that has ended leaves its keys in
+    /// whatever held them, and a value in a service's static state is not
+    /// a stack frame about to be reused: forgetting where a key was is
+    /// not the same as destroying it.
+    pub fn erase(self: *Keys) void {
+        scrub(self);
+    }
 };
 
 /// Two live TX generations: changing to the new key must not forget the
@@ -602,6 +623,14 @@ pub const Numbering = struct {
     /// Whether anything has yet arrived under the current pairwise key.
     /// Once something has, the one it replaced is finished with.
     current_heard: u32 = 0,
+    /// Whether anything at all has arrived sealed under a key of this
+    /// association, and which installation that was. This station's own
+    /// traffic counts, and so does the room's: the group key arrives
+    /// wrapped under the pairwise one, so a group frame that opens is as
+    /// much proof that the access point finished the exchange as a frame
+    /// addressed here. Once something has, nothing the cell says in the
+    /// clear is believed.
+    sealed_heard: u32 = 0,
     generation: u32 = 0,
 
     const Seen = struct {
@@ -676,6 +705,7 @@ pub const Numbering = struct {
                     if (alias.generation == key.generation) self.group[index] = self.group[named];
                 }
             }
+            self.sealed_heard = keys.pairwise.generation;
             return into[0 .. head.len + got.len];
         }
 
@@ -691,12 +721,14 @@ pub const Numbering = struct {
                 self.current_heard = keys.pairwise.generation;
                 self.superseded = @splat(.{});
             }
+            self.sealed_heard = keys.pairwise.generation;
             return into[0 .. head.len + got.len];
         }
         if (self.current_heard == keys.pairwise.generation) return null;
         const before = keys.previous orelse return null;
         const got = Ccmp.unprotect(before.bytes, frame, into[head.len..]) orelse return null;
         if (!self.superseded[class].accept(before, got.pn)) return null;
+        self.sealed_heard = keys.pairwise.generation;
         return into[0 .. head.len + got.len];
     }
 
@@ -815,6 +847,17 @@ pub const Handshake = struct {
     /// one: an access point that did not hear the second message sends
     /// its first again and expects the same answer.
     spent: bool = false,
+    /// Key frames that arrived signed and whose integrity code did not
+    /// check out under any key this station holds.
+    ///
+    /// Counted because such a frame is otherwise invisible: it is not
+    /// answered, it changes nothing, and the exchange it belongs to ends
+    /// in a timeout like any other. Yet it is the ordinary shape of the
+    /// commonest fault there is, a passphrase that is not the network's.
+    /// An exchange that ends with several of these and no keys is a
+    /// different thing from one where the access point never spoke, and
+    /// the person typing the password deserves to be told which.
+    mic_failures: u32 = 0,
     /// Whether a third message has ever arrived, whatever became of it.
     /// An exchange that ended without one ended at the far end, which is
     /// what a secret the access point does not share looks like; one that
@@ -860,6 +903,20 @@ pub const Handshake = struct {
     /// opened and never finished is what a wrong key looks like.
     pub fn begun(self: *const Handshake) bool {
         return self.candidate != null or self.ptk != null;
+    }
+
+    /// Wipe every secret this exchange holds: the master key, the
+    /// transient keys, the group keys, the nonces and the frames written
+    /// through them.
+    ///
+    /// An exchange that ends leaves its keys in the value that was
+    /// holding it, and that value is a service's static state rather than
+    /// a frame about to be reused, so setting it aside is not the same as
+    /// destroying what was in it. Called on every path that ends an
+    /// association, whether it ended well or badly. The erased handshake
+    /// is finished: it is not one that can be answered again.
+    pub fn erase(self: *Handshake) void {
+        scrub(self);
     }
 
     /// Whether the access point ever answered this station's second
@@ -934,7 +991,13 @@ pub const Handshake = struct {
         if (!repeat and self.done and self.confirmed != self.pairwise_at) return .ignored;
         if (key.replay < self.replay or (!repeat and key.replay == self.replay)) return .ignored;
         const ptk = if (repeat) self.ptk.? else self.candidate orelse return .ignored;
-        if (!key.verify(frame, ptk.kck)) return .ignored;
+        if (!key.verify(frame, ptk.kck)) {
+            // Signed, and not by anybody whose key this station holds.
+            // Counted, because from here to a timeout nothing else says
+            // that frames arrived at all.
+            self.mic_failures +|= 1;
+            return .ignored;
+        }
         // The nonce this message names must be the one the exchange was
         // opened with: a signed third message belonging to some other
         // exchange is not an answer to this one.
@@ -1009,7 +1072,11 @@ pub const Handshake = struct {
         if (!key.info.mic or !key.info.secure or !key.info.encrypted or key.info.install or
             key.key_length != 16) return .ignored;
         const ptk = self.ptk.?;
-        if (!key.verify(frame, ptk.kck)) return .ignored;
+        if (!key.verify(frame, ptk.kck)) {
+            // The room's key, signed by somebody who does not hold it.
+            self.mic_failures +|= 1;
+            return .ignored;
+        }
 
         // One the access point is sending again because it did not hear
         // the answer is answered again, and nothing is installed twice.
@@ -1292,6 +1359,33 @@ test "the handshake, with the test playing the access point" {
     try testing.expect(handshake.keys() != null);
 }
 
+test "a signed frame that does not check out is counted, not merely ignored" {
+    const cell = TestCell.home();
+    // This station holds a different secret from the cell's, which is
+    // what a mistyped passphrase is: it answers the first message under
+    // the key it derives, and nothing the cell signs after that checks
+    // out. From here to a timeout, these frames are the only evidence
+    // that anything arrived at all.
+    var mistyped = cell;
+    mistyped.pmk = derive("not the password", "home network");
+    var handshake = mistyped.handshake();
+    var frame: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    var reply: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    const gtk = Gtk{ .index = 1, .key = hex("0f0e0d0c0b0a09080706050403020100") };
+
+    try testing.expect(handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply) == .reply);
+    try testing.expectEqual(
+        Handshake.Outcome.ignored,
+        handshake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &reply),
+    );
+    try testing.expectEqual(@as(u32, 1), handshake.mic_failures);
+    try testing.expectEqual(@as(?Keys, null), handshake.keys());
+    // The exchange was opened and no keys came of it, which is the shape
+    // a wrong secret has on the air. The count is what separates it from
+    // a cell that never answered at all.
+    try testing.expect(handshake.begun());
+}
+
 /// Key data carrying `gtk` alone, wrapped under `kek` the way a key frame
 /// carries it.
 fn wrappedGtk(kek: [16]u8, gtk: Gtk, into: []u8) []const u8 {
@@ -1435,6 +1529,28 @@ test "the group key is renewed after the exchange, and the one in use is kept" {
     var other = cell;
     other.anonce = @splat(0xEE);
     try testing.expectEqual(Handshake.Outcome.ignored, handshake.answer(frame[0..other.groupMessage(4, next, &frame)], &reply));
+}
+
+test "an exchange that is erased leaves none of its keys behind" {
+    const cell = TestCell.home();
+    var handshake = cell.handshake();
+    var frame: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    var reply: [KeyFrame.HEAD + KEY_DATA_MAX]u8 = undefined;
+    const gtk = Gtk{ .index = 1, .key = hex("0f0e0d0c0b0a09080706050403020100") };
+
+    try testing.expect(handshake.answer(frame[0..cell.messageOne(1, &frame)], &reply) == .reply);
+    try testing.expect(handshake.answer(frame[0..cell.messageThree(2, gtk, &frame)], &reply) == .reply);
+    try testing.expect(handshake.keys() != null);
+    try testing.expect(!std.mem.allEqual(u8, std.mem.asBytes(&handshake), 0));
+
+    handshake.erase();
+
+    // Nothing of the master key, the transient keys, the group keys or
+    // the nonces survives: an exchange that has ended leaves a value
+    // behind, and a value in a service's static state is not a frame
+    // about to be reused.
+    try testing.expectEqual(@as(?Keys, null), handshake.keys());
+    try testing.expect(std.mem.allEqual(u8, std.mem.asBytes(&handshake), 0));
 }
 
 test "an unsigned first message cannot wind the counter back for a signed one" {

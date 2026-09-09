@@ -45,11 +45,24 @@ const DWELL_MICROS: u64 = 200_000;
 /// list for, in decibels. Below this the account is the same account.
 const SIGNAL_SLACK: u16 = 3;
 
+/// How many things heard frames may ask for ahead of the loop carrying
+/// them out. Two frames of one walk is the ordinary case; the queue takes
+/// a little more than that so a third does not have to decide which of
+/// the first two was less important.
+const DEFERRED = 4;
+
 /// How long to leave a network alone after failing to join it. Long
 /// enough not to hammer an access point that refused, short enough that
 /// one which was merely out of earshot is picked up again without anybody
 /// asking twice.
 const RETRY_MICROS: u64 = 10_000_000;
+
+/// How long to wait before asking again for the randomness a join needs.
+///
+/// Shorter than a failed join waits, because nothing went wrong: the
+/// machine had simply not heard enough yet to draw a number nobody can
+/// guess, and it may have heard enough a moment later.
+const NONCE_MICROS: u64 = 500_000;
 
 /// How often what the radio has heard is handed to the machine's pool. The
 /// kernel needs a seed's worth in total and the radio is a bonus on top of the
@@ -159,12 +172,17 @@ const State = struct {
     stopped: proto_net.Stopped = .none,
     /// Which step of the exchange it was on when it gave up.
     failed_in: join_mod.State = .idle,
-    /// What a heard frame asked for, carried out from the loop rather
+    /// What heard frames asked for, carried out from the loop rather
     /// than where it was decided. Deciding happens inside the driver's
     /// walk of its receive ring, and tuning resets the radio underneath
     /// that walk, which leaves the ring and the hardware disagreeing
     /// about where it is.
-    pending: ?join_mod.Action = null,
+    ///
+    /// A short queue rather than one slot: two frames of a single walk
+    /// can each ask for one, and a slot kept for the later one loses the
+    /// earlier, whose action was decided and never carried out while
+    /// whatever it staged was taken up on the strength of the other.
+    pending: lib.Bounded(join_mod.Action, DEFERRED) = .{},
     /// The number the next sealed frame carries. A number is never used
     /// twice under one key, so it only counts up and starts again with a
     /// new key.
@@ -177,6 +195,15 @@ const State = struct {
     /// again without anybody asking twice, and when to try.
     wanted: ?settings.NetSlot = null,
     retry_at: u64 = 0,
+    /// Whether the network that is wanted is waiting on a nonce this
+    /// machine could not draw yet. Nothing has gone wrong, and the join
+    /// is still what is wanted, so what the interface is doing is still
+    /// looking rather than having stopped.
+    awaiting_nonce: bool = false,
+    /// The last cell whose advertisement could not be joined with the
+    /// secret configured for that name. Said once: a cell that keeps
+    /// beaconing is not a new thing to say every time.
+    conflict_said: ?join_mod.Conflict = null,
     /// How fast to talk to the cell, and the account of how each rate
     /// has fared that decides it.
     speed: lib.rates.Choice = .{},
@@ -203,6 +230,9 @@ pub fn init() void {
 /// pane, the menu bar and `net` all say the same thing.
 pub fn joining() proto_net.Joining {
     const attempt = state.join orelse {
+        // Waiting on a nonce is still looking: the network is wanted and
+        // nothing has refused it.
+        if (state.awaiting_nonce) return .looking;
         return if (state.wanted != null) .stopped else .idle;
     };
     return switch (attempt.state) {
@@ -251,7 +281,7 @@ pub fn network(index: usize) ?mlme.Bss {
 pub fn nextDeadline() ?u64 {
     if (state.radio == null) return null;
     // Something a frame asked for is owed now.
-    if (state.pending != null) return 0;
+    if (!state.pending.isEmpty()) return 0;
     const now = sys.clockMicros();
     const hop_in: u64 = if (state.next_hop_at > now) state.next_hop_at - now else 0;
     // The upkeep is owed whatever else is happening.
@@ -297,13 +327,24 @@ fn owedIn(attempt: join_mod.Join, now: u64) ?u64 {
         // The radio has been pointed at the channel; the next step is
         // owed now.
         .tuning => 0,
-        .authenticating, .associating, .handshaking => if (attempt.deadline > now) attempt.deadline - now else 0,
+        // The name is being listened for, and the pass that is
+        // collecting what answers to it is counted in the join's own
+        // time. A pass that has not begun is nothing to wake for.
+        .seeking => if (attempt.seek_until == 0) null else owedFrom(now, attempt.seek_until),
+        .authenticating, .associating, .handshaking => owedFrom(now, attempt.deadline),
         // Joined, and owed a look when the cell has been quiet for as long
         // as anybody would wait for it.
-        .joined => if (attempt.deadline > now) attempt.deadline - now else 0,
-        // Nothing owed: not started, still listening, finished either way.
-        .idle, .seeking, .failed => null,
+        .joined => owedFrom(now, attempt.deadline),
+        // Nothing owed: not started, finished either way.
+        .idle, .failed => null,
     };
+}
+
+/// How long until a moment that has been waited for, or none at all when
+/// it is already here: a deadline in the past is owed now, not in a
+/// negative number of microseconds.
+fn owedFrom(now: u64, at: u64) u64 {
+    return if (at > now) at - now else 0;
 }
 
 /// Run whatever the station owes: a hop when the dwell is over.
@@ -318,10 +359,12 @@ pub fn tick() void {
         contribute();
     }
 
-    // Whatever a frame asked for, now that the driver is no longer in the
-    // middle of handing it over.
-    if (state.pending) |what| {
-        state.pending = null;
+    // Whatever frames asked for, now that the driver is no longer in the
+    // middle of handing them over. One at a time and oldest first, because
+    // an action decided second can be the one that ends the join, and
+    // carrying one out can ask for another.
+    for (0..DEFERRED) |_| {
+        const what = takeDeferred() orelse break;
         act(what);
         // Tuning resets the radio and waits for it, which takes as long as
         // it takes. A deadline dated from before that is short by however
@@ -342,6 +385,10 @@ pub fn tick() void {
 
     if (state.join) |*attempt| {
         act(attempt.tick(now, &state.frame));
+        // A cell that cannot be joined with the secret configured for
+        // this name is worth saying: the join is still looking, and why
+        // it has not found anything is the honest answer to give.
+        sayConflict();
         // A join that is still looking wants the sweep to carry on; one
         // that has found its network owns the channel it found it on.
         if (state.join) |a| {
@@ -350,6 +397,37 @@ pub fn tick() void {
     }
     if (state.radio == null or now < state.next_hop_at) return;
     hop();
+}
+
+/// Say, once, that a cell answering to the wanted name advertises it with
+/// protection this station cannot join it with.
+///
+/// Not a failure, and the join is still looking, so nothing else would
+/// say it: a name in the air with the wrong protection on it is the
+/// honest answer, and a timeout in its place sends somebody looking for a
+/// network that is standing next to them.
+fn sayConflict() void {
+    const attempt = state.join orelse return;
+    const conflict = attempt.conflict orelse return;
+    if (state.conflict_said) |said| {
+        if (std.meta.eql(said, conflict)) return;
+    }
+    state.conflict_said = conflict;
+    const it = radio() orelse return;
+
+    log.begin(it.nic.name, .warn);
+    out.text("\"");
+    out.text(wantedName());
+    out.text("\" is in the air from ");
+    out.text(&lib.mac.text(conflict.bssid));
+    out.text(" with ");
+    out.text(switch (conflict.kind) {
+        .unprotected => "no protection at all, and a password is set for that name",
+        .needs_key => "protection, and no password is set for it",
+        .unsupported => "protection this system does not speak",
+    });
+    out.text("; not joining it");
+    log.end();
 }
 
 /// The cell this station belongs to, or none while it belongs to none.
@@ -466,8 +544,19 @@ fn carry(nic: *dev_mod.NicDev, frame: []const u8) void {
             // the clear, because it has installed nothing yet. Refusing
             // that leaves this station holding keys the cell does not
             // have, with nothing to do but wait to be put out.
-            if (state.numbering.current_heard == keys.pairwise.generation or
-                keys.previous != null or head.control.protected or lib.mac.isGroup(head.addr1)) return;
+            //
+            // It closes on any frame the cell has sealed, not only on one
+            // addressed here: the room's key travels wrapped under this
+            // station's own, so a group frame that opens is the same
+            // proof that the access point finished the exchange. And it
+            // closes on time regardless, because a cell that has said
+            // nothing protected in all the while since this station's
+            // last frame is not one that missed it — on a quiet network
+            // nothing would ever arrive under the key, and the window
+            // would stand open for as long as the association did.
+            if (state.numbering.sealed_heard == keys.pairwise.generation or
+                keys.previous != null or head.control.protected or lib.mac.isGroup(head.addr1) or
+                !expectsClearEapol()) return;
             const payload = join_mod.eapolOf(frame) orelse return;
             const key = lib.wpa2.KeyFrame.parse(payload) orelse return;
             if (!key.info.pairwise or !key.info.install or !key.info.mic) return;
@@ -491,6 +580,14 @@ fn carry(nic: *dev_mod.NicDev, frame: []const u8) void {
     dev_mod.deliverRx(nic, .{ .frame = state.undressed[0..length], .ok = true });
 }
 
+/// Whether an unprotected key frame from the cell is still worth
+/// answering: only for a while after this station's own last frame of
+/// the exchange, and only while there is a join to ask.
+fn expectsClearEapol() bool {
+    const attempt = state.join orelse return false;
+    return attempt.expectsClearEapol(sys.clockMicros());
+}
+
 /// The radio and the table it answers through, or none while there is no
 /// radio or the interface is a wire.
 fn radio() ?struct { nic: *dev_mod.NicDev, ops: dev_mod.RadioOps } {
@@ -512,9 +609,11 @@ fn begin(nic: *dev_mod.NicDev) void {
 fn forget(nic: *dev_mod.NicDev) void {
     if (state.radio != nic) return;
     state.radio = null;
-    state.join = null;
-    state.pending = null;
-    state.wanted = null;
+    // Nothing to say to the cell: there is no radio left to say it with,
+    // which is the case `stop` on a join has to go on working for.
+    dropJoin();
+    forgetWanted();
+    state.pending.clear();
     state.held = null;
     state.hops = 0;
     state.networks.clear();
@@ -656,16 +755,31 @@ fn contribute() void {
     if (from(found.nic, &noise)) sys.randomStir(&noise);
 }
 
-/// A nonce for the key exchange.
+/// A nonce for the key exchange, or none when the machine has not heard
+/// enough to draw one.
 ///
 /// The radio's own noise is stirred in first where it has any, so a join on a
-/// machine that has been listening draws on what it heard.
-fn nonce(nic: *dev_mod.NicDev) lib.wpa2.Nonce {
+/// machine that has been listening draws on what it heard. None is an answer
+/// and not a failure to be papered over: a nonce anybody can predict is worse
+/// than a join that waits, because the whole of the key exchange hangs on it.
+/// The caller asks again later rather than going on without one.
+fn nonce() ?lib.wpa2.Nonce {
     var value: lib.wpa2.Nonce = @splat(0);
-    if (!draw(&value)) {
-        log.say(nic.name, .dim, "not enough heard yet; the key exchange nonce is unrepeatable rather than unguessable");
-    }
+    // Whatever is drawn is this process's to wipe: a nonce that has been
+    // spent is not a secret, but one that was never used is a number
+    // somebody may still be able to guess at.
+    defer lib.wpa2.scrub(&value);
+    if (!draw(&value)) return null;
     return value;
+}
+
+/// How long a name is listened for before one of the cells answering to it
+/// is chosen: a sweep of the band, so that "the strongest" means the
+/// strongest of everything in earshot rather than the first thing to
+/// speak. A radio held on one channel has nothing else to hear, so it
+/// need not wait.
+fn seekWindow() u64 {
+    return if (state.held != null) DWELL_MICROS else DWELL_MICROS * wifi.ghz2_channels.len;
 }
 
 /// Start looking for a network and joining it.
@@ -692,9 +806,27 @@ fn seek(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
     state.heard_joined = 0;
     state.sent_joining = 0;
     state.last_auth = null;
+    state.conflict_said = null;
+
+    // The exchange cannot be begun without a nonce nobody can guess, and
+    // a machine that has only just started listening may not have heard
+    // enough to draw one. So the join is not begun: the network stays
+    // wanted and the loop asks again, rather than going on with a number
+    // an attacker could predict and replay an old exchange into.
+    const snonce = nonce() orelse {
+        state.retry_at = sys.clockMicros() + NONCE_MICROS;
+        if (!state.awaiting_nonce) {
+            state.awaiting_nonce = true;
+            log.say(nic.name, .dim, "not enough heard yet; waiting for a nonce before asking to join");
+        }
+        return;
+    };
+    state.awaiting_nonce = false;
+
     var attempt = join_mod.Join{ .station = nic.mac };
-    attempt.wants(role.ssid, role.psk, state.plan, nonce(nic));
+    attempt.wants(role.ssid, role.psk, state.plan, snonce);
     attempt.held = state.held;
+    attempt.seek_for = seekWindow();
     state.join = attempt;
 
     log.begin(nic.name, .key);
@@ -705,11 +837,20 @@ fn seek(nic: *dev_mod.NicDev, role: settings.NetSlot) void {
 }
 
 /// Leave whatever the radio belongs to, and stop whatever it was joining.
+///
+/// Said to the cell first, where there is a cell to say it to. An
+/// association is a state at both ends, and a station that simply stopped
+/// answering leaves the access point holding one: it keeps the
+/// association, keeps the keys that go with it, and goes on sending
+/// frames to a station that is no longer listening. The farewell is
+/// unauthenticated, like every management frame here, so what it does is
+/// tell an access point that is listening; it is not something a station
+/// can insist on.
 fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
-    if (state.join) |*attempt| attempt.stop();
-    state.join = null;
-    state.pending = null;
-    state.wanted = null;
+    farewell(nic);
+    dropJoin();
+    forgetWanted();
+    state.pending.clear();
     state.numbering.clear();
     state.tx_numbering = .{};
     // A different cell's distance and interference have nothing to do
@@ -717,6 +858,68 @@ fn leave(nic: *dev_mod.NicDev, ops: dev_mod.RadioOps) void {
     state.speed.forget();
     ops.answerFor(nic, null);
     dev_mod.deliverLink(nic, .{});
+}
+
+/// Tell the cell this station is going.
+///
+/// Nothing is sent to a cell this station never got as far as naming, and
+/// nothing at all when the radio has gone: `stop` on the join has to work
+/// for a radio that is no longer there, which is the case this file's own
+/// `forget` handles without asking.
+fn farewell(nic: *dev_mod.NicDev) void {
+    const attempt = state.join orelse return;
+    const bssid = attempt.bssid();
+    if (lib.mac.eql(bssid, @splat(0))) return;
+    if (attempt.state != .authenticating and attempt.state != .associating and
+        attempt.state != .handshaking and attempt.state != .joined) return;
+
+    const head = lib.ieee80211.Header{
+        .control = lib.ieee80211.FrameControl.management(.deauthentication),
+        .addr1 = bssid,
+        .addr2 = nic.mac,
+        .addr3 = bssid,
+    };
+    const length = mlme.Farewell.write(head, mlme.Farewell.deauthentication(.leaving), &state.frame) orelse return;
+    _ = nic.ops.transmit(nic, state.frame[0..length]);
+}
+
+/// Drop the join, wiping what it was holding.
+///
+/// A join is a value in this service's static state, so setting it aside
+/// leaves the pairwise master key and every key the exchange earned where
+/// they were, in memory this process owns for as long as it runs.
+fn dropJoin() void {
+    if (state.join) |*attempt| attempt.erase();
+    state.join = null;
+}
+
+/// Forget the network this radio was told to join, wiping the secret that
+/// was configured for it.
+fn forgetWanted() void {
+    if (state.wanted) |*slot| {
+        lib.wpa2.scrub(&slot.psk);
+        slot.psk = .none;
+    }
+    state.wanted = null;
+    state.awaiting_nonce = false;
+}
+
+/// What a frame asked for, taken in the order it was decided.
+fn takeDeferred() ?join_mod.Action {
+    const what = state.pending.at(0) orelse return null;
+    state.pending.remove(0);
+    return what;
+}
+
+/// Put off until the loop what a frame asked for, because carrying it out
+/// here would happen inside the driver's walk of its receive ring.
+///
+/// A queue that is full drops the oldest rather than the newest: the
+/// newest is what is true of the join now, and one decided before it may
+/// belong to a join that has ended since.
+fn deferAction(what: join_mod.Action) void {
+    if (state.pending.isFull()) state.pending.remove(0);
+    state.pending.append(what) catch {};
 }
 
 /// Carry out what the join asked for.
@@ -766,7 +969,7 @@ fn act(what: join_mod.Action) void {
             // to nobody.
             if (state.join) |*current| {
                 const after = current.tuned(on);
-                if (after != .none) state.pending = after;
+                if (after != .none) deferAction(after);
             }
         },
         .joined => |won| settle(it.nic, it.ops, won),
@@ -833,6 +1036,18 @@ fn act(what: join_mod.Action) void {
             out.text(", and heard ");
             out.decimal(state.heard_joined);
             out.text(" from the cell once joined");
+            // Signed key frames that did not check out, which is the one
+            // thing that tells a secret that is not the network's from an
+            // access point that never answered. Without it every one of
+            // these ends in the same words: it stopped answering.
+            if (state.join) |attempt| {
+                const failed_mic = attempt.micFailures();
+                if (failed_mic != 0) {
+                    out.text(", and ");
+                    out.decimal(failed_mic);
+                    out.text(" key frames arrived signed and did not check out, which is what a password that is not this network's looks like");
+                }
+            }
             if (state.last_auth) |answer| {
                 out.text(". The last authentication meant for it said sequence ");
                 out.decimal(answer.sequence);
@@ -861,7 +1076,7 @@ fn act(what: join_mod.Action) void {
             dev_mod.deliverLink(it.nic, .{});
             state.numbering.clear();
             state.tx_numbering = .{};
-            state.join = null;
+            dropJoin();
             // Kept, and tried again: a network out of earshot now may be
             // in earshot shortly, and nobody should have to ask twice.
             state.retry_at = sys.clockMicros() + RETRY_MICROS;
@@ -999,16 +1214,14 @@ fn heard(nic: *dev_mod.NicDev, frame: []const u8, signal: wifi.Signal, rate: ?wi
         const what = attempt.heard(frame, signal, sys.clockMicros(), &state.frame);
         switch (what) {
             .none => {},
-            // A reply goes out where it was decided. Two frames of one
-            // walk can each ask for one, and a single slot kept for later
-            // would hold only the second: the first would be built and
-            // never sent, while whatever it staged was taken up on the
-            // strength of the other going out.
+            // A reply goes out where it was decided: it is a frame to
+            // this cell, and nothing about it touches the radio's walk.
             .send, .traffic => act(what),
             // The rest wait for the loop: tuning resets the radio
             // underneath the driver's walk of its receive ring, and
             // finishing or abandoning a join takes the interface with it.
-            else => state.pending = what,
+            // Queued, because one walk can decide several.
+            else => deferAction(what),
         }
     }
 
