@@ -11,6 +11,7 @@
 //! same walk `efm` uses for its thumbnails, so a picture is upright in both.
 
 const env = @import("ulib").env;
+const file = @import("ulib").file;
 const eui = @import("eui");
 const exif = @import("lib").exif;
 const heap = @import("ulib").heap;
@@ -130,15 +131,13 @@ fn load() void {
 
     // What the file is, before reading it: a file too large to hold is
     // refused for the room it would have taken rather than after taking it.
-    var record: [512]u8 = undefined;
-    const told = sys.stat(path(), &record) catch 0;
-    const entry = sys.Dirent.decode(&record, told) orelse {
+    const facts = file.factsOf(path()) orelse {
         trouble = "Cannot read it.";
         return;
     };
-    file_size = entry.size;
-    file_mtime = entry.mtime;
-    if (entry.size == 0 or entry.size > FILE_MAX) {
+    file_size = facts.size;
+    file_mtime = facts.mtime;
+    if (facts.size == 0 or facts.size > FILE_MAX) {
         trouble = "Larger than this machine will hold.";
         return;
     }
@@ -146,13 +145,13 @@ fn load() void {
     // Room for this one file, given back as soon as the pixels are out of
     // it: for a photograph that compressed well the file is the smaller of
     // the two, and holding both is what a machine this size cannot do.
-    const room = heap.alloc(entry.size) orelse {
+    const room = heap.alloc(facts.size) orelse {
         trouble = "Not enough memory to read it.";
         return;
     };
     defer heap.release(room);
 
-    const raw = @as([*]u8, @ptrCast(room))[0..entry.size];
+    const raw = @as([*]u8, @ptrCast(room))[0..facts.size];
     var read: usize = 0;
     while (read < raw.len) {
         const n = sys.read(handle, raw[read..]) catch break;

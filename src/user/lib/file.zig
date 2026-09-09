@@ -1,4 +1,4 @@
-//! Files read whole.
+//! Files read and written whole.
 //!
 //! What a program does with a file it is going to decode, show or parse:
 //! open it, read as much as fits, close it. Written once so the loop that
@@ -7,7 +7,8 @@
 //! be made only here. `readWhole` takes as much as fits, for a head or a
 //! caller that sizes its room from the file; `readEntire` refuses a file
 //! that does not fit, for a document that is read back and written again.
-//! `copy` is the other whole-file move: the same loop the other way round.
+//! `copy` and `put` are the whole-file moves the other way round: the same
+//! loop, writing.
 
 const std = @import("std");
 const dir = @import("dir.zig");
@@ -37,6 +38,24 @@ pub fn readAt(path: []const u8, from: usize, into: []u8) ?usize {
     _ = sys.seek(handle, @intCast(from), sys.SEEK_SET) catch return null;
     const filled = fill(handle, into);
     return if (filled.failed) null else filled.read;
+}
+
+/// What a file is, without reading any of it.
+pub const Facts = struct { size: usize, mtime: i64 };
+
+/// How large a file is and when it was written, or nothing for one that
+/// cannot be asked about.
+///
+/// What a program does before deciding whether to read a file at all: a
+/// picture too large to hold is refused for the room it would have taken
+/// rather than after taking it. The record the kernel answers with is decoded
+/// here, because the buffer it lands in is a frame nobody should be handing
+/// back a pointer into.
+pub fn factsOf(path: []const u8) ?Facts {
+    var record: [512]u8 = undefined;
+    const told = sys.stat(path, &record) catch return null;
+    const entry = sys.Dirent.decode(&record, told) orelse return null;
+    return .{ .size = entry.size, .mtime = entry.mtime };
 }
 
 pub const EntireError = error{ NoFile, TooBig, Unreadable };
@@ -79,6 +98,34 @@ fn fill(handle: u32, into: []u8) Filled {
     return .{ .read = read, .failed = false };
 }
 
+/// Write `bytes` as the whole of the file at `path`, creating it or
+/// replacing what was there.
+///
+/// The other end of `readEntire`: a program that read a small file, changed
+/// what it says and is putting it back. A short write is not a failed one, so
+/// the loop that finishes the job lives here rather than in whoever wanted it.
+pub fn put(path: []const u8, bytes: []const u8) CopyError!void {
+    const handle = sys.open(path, .{ .write = true, .create = true, .truncate = true }) catch
+        return error.CannotCreate;
+    defer sys.close(handle);
+
+    return writeAll(handle, bytes);
+}
+
+/// Write the whole of `bytes`, going round again for a short write.
+///
+/// A short write is not a failed one, and taking the first for the second is
+/// the writing half of the mistake this module exists to make only once: a
+/// file written short comes back as a file that was always that length.
+fn writeAll(handle: u32, bytes: []const u8) CopyError!void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+        const n = sys.write(handle, bytes[written..]) catch return error.NoSpace;
+        if (n == 0) return error.NoSpace;
+        written += n;
+    }
+}
+
 pub const CopyError = error{
     /// The source and the destination name the same file, which would empty
     /// it before a byte had been read.
@@ -117,13 +164,6 @@ pub fn copy(from: []const u8, to: []const u8) CopyError!void {
     while (true) {
         const got = sys.read(source, &block) catch return error.Unreadable;
         if (got == 0) return;
-
-        var put: usize = 0;
-        while (put < got) {
-            // A short write is not a failed one: what is left goes round again.
-            const wrote = sys.write(target, block[put..got]) catch return error.NoSpace;
-            if (wrote == 0) return error.NoSpace;
-            put += wrote;
-        }
+        try writeAll(target, block[0..got]);
     }
 }

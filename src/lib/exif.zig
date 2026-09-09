@@ -67,18 +67,23 @@ pub const Orientation = enum(u8) {
         };
     }
 
-    /// This orientation with another quarter turn clockwise asked of it.
+    /// This orientation with `turns` more quarter turns clockwise asked of it.
     ///
     /// What a viewer needs to turn a picture by hand: the file already says
-    /// which way up it was taken, and a hand turning it is one more quarter
-    /// on top of that rather than a second, separate idea of which way up
-    /// something is.
+    /// which way up it was taken, and a hand turning it is more quarters on
+    /// top of that rather than a second, separate idea of which way up
+    /// something is. A sheet keeping a turn per picture composes several at
+    /// once, which is this same sum rather than a loop over it.
+    pub fn turnedBy(self: Orientation, turns: u2) Orientation {
+        return of(self.quarters() +% turns, self.mirrored());
+    }
+
     pub fn turnedRight(self: Orientation) Orientation {
-        return of(self.quarters() +% 1, self.mirrored());
+        return self.turnedBy(1);
     }
 
     pub fn turnedLeft(self: Orientation) Orientation {
-        return of(self.quarters() -% 1, self.mirrored());
+        return self.turnedBy(3);
     }
 
     fn from(value: u32) ?Orientation {
@@ -551,6 +556,20 @@ test "a table pointing at itself is walked once, not forever" {
 
     const flat = photograph(looped);
     _ = read(&flat);
+}
+
+test "several quarters at once compose the same as one at a time" {
+    for (std.enums.values(Orientation)) |held| {
+        var by: u2 = 0;
+        while (true) {
+            var one = held;
+            var n: u2 = 0;
+            while (n < by) : (n += 1) one = one.turnedRight();
+            try testing.expectEqual(one, held.turnedBy(by));
+            if (by == 3) break;
+            by += 1;
+        }
+    }
 }
 
 test "a turn composes with the way the camera held it" {
