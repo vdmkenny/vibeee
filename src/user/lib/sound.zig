@@ -13,6 +13,10 @@ const sys = @import("sys");
 
 pub const Error = error{ NoService, Refused, End };
 
+/// How much a port holds. Named here as well as in the protocol, so a
+/// caller of this library needs nothing else to say which it wants.
+pub const Depth = proto.Depth;
+
 /// One port and its ring, producer or consumer decided by direction.
 pub const Port = struct {
     channel: u32,
@@ -27,8 +31,13 @@ pub const Port = struct {
     view: proto.View,
 
     /// An output: this program into the graph, linked to the default sink.
-    pub fn output(node_name: []const u8, port_name: []const u8) Error!Port {
-        var port = try open(node_name, port_name, .source);
+    ///
+    /// The depth is how much the port holds, and the program opening it
+    /// is the only one that can choose: sound answering for something
+    /// happening now wants little, and something already written wants as
+    /// much as it can have. See `proto.audio.Depth`.
+    pub fn output(node_name: []const u8, port_name: []const u8, depth: proto.Depth) Error!Port {
+        var port = try open(node_name, port_name, .source, depth);
         errdefer port.close();
 
         // Linked to wherever sound goes by default; a caller that wants
@@ -43,8 +52,8 @@ pub const Port = struct {
 
     /// An input: the graph into this program, linked from the default
     /// source.
-    pub fn input(node_name: []const u8, port_name: []const u8) Error!Port {
-        var port = try open(node_name, port_name, .sink);
+    pub fn input(node_name: []const u8, port_name: []const u8, depth: proto.Depth) Error!Port {
+        var port = try open(node_name, port_name, .sink, depth);
         errdefer port.close();
 
         const source = try defaultPortOn(port.channel, .source);
@@ -54,7 +63,12 @@ pub const Port = struct {
         return port;
     }
 
-    fn open(node_name: []const u8, port_name: []const u8, direction: graph.Direction) Error!Port {
+    fn open(
+        node_name: []const u8,
+        port_name: []const u8,
+        direction: graph.Direction,
+        depth: proto.Depth,
+    ) Error!Port {
         const channel = sys.svcConnect(proto.SERVICE) catch return error.NoService;
         errdefer sys.close(channel);
 
@@ -67,6 +81,7 @@ pub const Port = struct {
         var port_req = proto.Req.named(.port_create, port_name) orelse return error.Refused;
         port_req.a = node;
         port_req.dir = @intFromEnum(direction);
+        port_req.depth = @intFromEnum(depth);
         var handles: [proto.GRANT_HANDLES]u32 = undefined;
         try proto.callTaking(@intCast(channel), port_req, &reply, &handles);
 
@@ -87,7 +102,7 @@ pub const Port = struct {
             .base = base,
             .ev = handles[1],
             .doorbell = handles[2],
-            .view = proto.View.of(base),
+            .view = proto.View.of(base, depth),
         };
     }
 

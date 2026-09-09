@@ -70,7 +70,8 @@ pub const Req = extern struct {
     dir: u8 = 0,
     /// How many characters of `name` are real.
     name_len: u8 = 0,
-    _pad: u8 = 0,
+    /// How much a `port_create` wants held, from `Depth`.
+    depth: u8 = 0,
     a: u32 = 0,
     b: u32 = 0,
     name: [graph.Name.MAX]u8 = @splat(0),
@@ -166,32 +167,41 @@ pub const RingCtrl = extern struct {
 
 pub const CTRL_BYTES = 4096;
 
-/// Every ring carries this many frames. One shape in version one: stereo,
-/// sixteen-bit, forty-eight kilohertz; the shape type exists so a later
-/// version can carry others without re-plumbing.
+/// How much a port holds, which the program opening it chooses.
 ///
-/// A sixth of a second at that rate. A program that makes its sound on the
-/// same beat as its picture fills the ring once a frame, so a ring shorter
-/// than one of its frames is a ring that runs dry before the next one
-/// comes: at a twelfth of a second the previous depth left a gap in every
-/// frame, and a gap in a stream is a click.
-///
-/// It is also how far ahead of itself a program that fills the ring runs,
-/// since what is buffered is what is heard late, so the depth is the whole
-/// trade: a shallower ring answers sooner and clicks on any frame longer
-/// than it, and the frames that need answering for are the slow ones. This
-/// much survives a frame of a seventh of a second, which is what a game
-/// scaling its own picture twice on this machine takes. It costs
-/// thirty-two kilobytes a port.
-pub const RING_FRAMES = 8192;
+/// The depth is the whole trade and the two kinds of program want
+/// opposite ends of it. What is buffered is what is heard late, so a
+/// program answering for something happening now wants little of it; and
+/// what is buffered is also how long the program can go unrun without the
+/// sound breaking, so a program playing something already written wants
+/// as much as it can have. One depth for both would be short for one and
+/// late for the other.
+pub const Depth = enum(u8) {
+    /// A sixth of a second. For sound that answers for something: a game,
+    /// a notice, a tone. Long enough to survive a slow frame, short
+    /// enough that a sound asked for now is heard now.
+    prompt = 0,
+    /// A third of a second. For something already written, where nobody
+    /// can tell when it started and the machine may be busy with
+    /// somebody's typing for longer than a frame takes.
+    steady = 1,
+
+    pub fn frames(self: Depth) u32 {
+        return switch (self) {
+            .prompt => 8192,
+            .steady => 16384,
+        };
+    }
+};
+
 pub const SHAPE = audio.Shape{ .rate = .hz48000, .channels = 2, .format = .s16le };
 
-pub fn ringBytes() u32 {
-    return @intCast(RING_FRAMES * SHAPE.bytesPerFrame());
+pub fn ringBytes(depth: Depth) u32 {
+    return @intCast(depth.frames() * SHAPE.bytesPerFrame());
 }
 
-pub fn shmBytes() u32 {
-    return CTRL_BYTES + ringBytes();
+pub fn shmBytes(depth: Depth) u32 {
+    return CTRL_BYTES + ringBytes(depth);
 }
 
 /// Both halves of a mapped ring.
@@ -199,14 +209,14 @@ pub const View = struct {
     ctrl: *volatile RingCtrl,
     frames: @import("lib").spsc.Ring,
 
-    pub fn of(base: [*]u8) View {
+    pub fn of(base: [*]u8, depth: Depth) View {
         const ctrl: *volatile RingCtrl = @ptrCast(@alignCast(base));
         return .{
             .ctrl = ctrl,
             .frames = .{
                 .head = @volatileCast(&ctrl.head),
                 .tail = @volatileCast(&ctrl.tail),
-                .data = base[CTRL_BYTES..][0..ringBytes()],
+                .data = base[CTRL_BYTES..][0..ringBytes(depth)],
             },
         };
     }
@@ -226,7 +236,14 @@ pub const answerWith = link.answerWith;
 comptime {
     if (@sizeOf(Req) > sys.MAX_PAYLOAD) @compileError("an audio request must fit one payload");
     if (@sizeOf(Rep) > sys.MAX_PAYLOAD) @compileError("an audio reply must fit one payload");
-    if (RING_FRAMES & (RING_FRAMES - 1) != 0) @compileError("the ring must be a power of two");
+    // Every depth, since the ring wraps with a mask rather than a
+    // division and a depth added later has to answer for itself.
+    for (@typeInfo(Depth).@"enum".fields) |field| {
+        const frames = (@as(Depth, @enumFromInt(field.value))).frames();
+        if (frames == 0 or frames & (frames - 1) != 0) {
+            @compileError("every ring depth must be a power of two");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

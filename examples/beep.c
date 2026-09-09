@@ -14,7 +14,7 @@
 int main(void)
 {
     vb_sound shape;
-    if (vb_sound_open("beep", &shape) != 0) {
+    if (vb_sound_open("beep", VB_SOUND_PROMPT, &shape) != 0) {
         fprintf(stderr, "beep: no sound service\n");
         return 1;
     }

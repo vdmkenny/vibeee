@@ -22,7 +22,7 @@ int main(void)
     vb_sound shape;
     int i, done = 0, wanted;
 
-    if (vb_sound_open("mixing", &shape) != 0) {
+    if (vb_sound_open("mixing", VB_SOUND_PROMPT, &shape) != 0) {
         fprintf(stderr, "mixing: no sound service\n");
         return 1;
     }

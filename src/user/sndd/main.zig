@@ -479,9 +479,17 @@ fn portCreate(req: *const proto.Req, sender: u32, token: u32) void {
     const direction: graph_mod.Direction = if (req.dir == 0) .source else .sink;
     const port = graph.addPort(node, port_name, direction) catch return refuse(token);
 
+    // What the program asked to have held. A name this build does not
+    // know is the shallow one, which is the safe answer: sound that is
+    // late is worse than sound a program has to keep up with.
+    const depth: proto.Depth = if (req.depth == @intFromEnum(proto.Depth.steady))
+        .steady
+    else
+        .prompt;
+
     const ring = &rings[port];
     if (ring.view == null) {
-        const created = sys.shmCreate(proto.shmBytes()) catch {
+        const created = sys.shmCreate(proto.shmBytes(depth)) catch {
             graph.removePort(port);
             return refuse(token);
         };
@@ -496,7 +504,7 @@ fn portCreate(req: *const proto.Req, sender: u32, token: u32) void {
         };
         ring.shm = @intCast(created);
         ring.ev = ev;
-        ring.view = proto.View.of(base);
+        ring.view = proto.View.of(base, depth);
     }
     ring.view.?.ctrl.* = .{};
 

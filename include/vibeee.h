@@ -118,11 +118,21 @@ typedef struct {
     unsigned char _pad[2];
 } vb_sound;
 
+/* How much the stream holds, which the program opening it chooses.
+ *
+ * The depth is a trade and the two kinds of program want opposite ends of
+ * it. What is buffered is what is heard late, so sound answering for
+ * something happening now wants little of it; what is buffered is also how
+ * long the program can go unrun without the sound breaking, so something
+ * already written wants as much as it can have. */
+#define VB_SOUND_PROMPT 0   /* a sixth of a second: games, tones, notices */
+#define VB_SOUND_STEADY 1   /* a third: music, and anything already written */
+
 /* Join the sound graph as a node with one output, connected to wherever
  * sound goes. Returns 0, or -1 when there is no sound service. One output
  * per program: a program wanting two wants the graph itself, which is a
  * richer thing than a header should pretend to be. */
-int vb_sound_open(const char *name, vb_sound *shape);
+int vb_sound_open(const char *name, int holds, vb_sound *shape);
 
 /* Hand over frames; returns how many were taken. Fewer than asked means
  * the ring is full, and the rest should be offered again rather than

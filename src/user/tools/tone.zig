@@ -27,7 +27,7 @@ pub fn run(args: []const []const u8) void {
         return;
     }
 
-    const port = sound.Port.output("tone", "out") catch |err| {
+    const port = sound.Port.output("tone", "out", .prompt) catch |err| {
         say(switch (err) {
             error.NoService => "tone: the sound service is not answering\n",
             else => "tone: refused; is there a sound device?\n",

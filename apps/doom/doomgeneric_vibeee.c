@@ -393,7 +393,10 @@ static void vb_PrecacheSounds(sfxinfo_t *sounds, int num_sounds)
 static boolean vb_InitSound(boolean use_sfx_prefix)
 {
     sfx_prefix = use_sfx_prefix;
-    if (vb_sound_open("doom", NULL) < 0) {
+    // A game would rather answer at once, but this machine cannot draw a
+    // frame inside the time a prompt stream holds, and a gunshot a third
+    // of a second late is better than one broken in pieces.
+    if (vb_sound_open("doom", VB_SOUND_STEADY, NULL) < 0) {
         fprintf(stderr, "doom: no sound service; playing without it\n");
         return false;
     }

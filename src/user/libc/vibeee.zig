@@ -218,11 +218,16 @@ var speaking: ?ulib.sound.Port = null;
 /// One output per program, because a program that wants two wants the
 /// graph itself, and that is a richer thing than a header should pretend
 /// to be.
-export fn vb_sound_open(name: ?[*:0]const u8, shape: ?*Sound) c_int {
+export fn vb_sound_open(name: ?[*:0]const u8, holds: c_int, shape: ?*Sound) c_int {
     if (speaking != null) return 0;
 
+    const depth: ulib.sound.Depth = if (holds == @intFromEnum(ulib.sound.Depth.steady))
+        .steady
+    else
+        .prompt;
+
     const called = if (name) |given| std.mem.span(given) else "program";
-    speaking = ulib.sound.Port.output(called, "out") catch return -1;
+    speaking = ulib.sound.Port.output(called, "out", depth) catch return -1;
 
     if (shape) |out| {
         const wanted = audio.Shape{};

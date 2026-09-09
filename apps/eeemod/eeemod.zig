@@ -162,7 +162,7 @@ fn load(wanted: []const u8) void {
     // The sound is a separate matter from the song. A machine with no
     // sound service still opens the module and shows what is in it, and
     // says in one line why nothing is coming out.
-    const stream = sound.Port.output("eeemod", "out") catch {
+    const stream = sound.Port.output("eeemod", "out", .steady) catch {
         silent = true;
         return;
     };
@@ -203,6 +203,7 @@ fn forget() void {
     shown_page = -1;
     shown_place = -1;
     widest_gap_ms = 0;
+    widest_since = 0;
     fed_at = 0;
 }
 
@@ -248,13 +249,21 @@ fn moved() bool {
 /// The room is measured once and then worked through. Asking again each
 /// time round would never come back: the service drains the ring while
 /// this runs, so there would always be more room.
-/// The longest this went without handing frames over, in milliseconds.
+/// The longest this recently went without handing frames over, in
+/// milliseconds.
 ///
 /// The number a stutter turns on. The service wants a period every five
 /// milliseconds or so; if the gaps are that long and it still runs dry
 /// then it is what this program produces that is short, and if they are
 /// hundreds of milliseconds then it is not being woken.
+///
+/// Over the last few seconds rather than the whole song: a mark that only
+/// ever rises would still be showing the pause while the file was read
+/// minutes later, and what somebody watching wants to know is how it is
+/// doing now.
+const GAP_WINDOW_MICROS: u64 = 5_000_000;
 var widest_gap_ms: u32 = 0;
+var widest_since: u64 = 0;
 var fed_at: u64 = 0;
 
 fn feed() void {
@@ -263,6 +272,10 @@ fn feed() void {
     if (!running) return;
 
     const now = sys.clockMicros();
+    if (now -| widest_since > GAP_WINDOW_MICROS) {
+        widest_since = now;
+        widest_gap_ms = 0;
+    }
     if (fed_at != 0) {
         const gap: u32 = @intCast(@min((now - fed_at) / 1000, std.math.maxInt(u32)));
         if (gap > widest_gap_ms) widest_gap_ms = gap;
@@ -301,6 +314,12 @@ const CELL_TEXT = "C-2 05 vol";
 /// The gap between the column rule and the text either side of it.
 const COLUMN_PAD: i32 = 7;
 
+/// How many rows of a page are drawn between two looks at the stream.
+///
+/// Small enough that the longest the ring waits is a few rows' drawing,
+/// and large enough that a page turn is not mostly bookkeeping.
+const ROWS_PER_FEED: i32 = 4;
+
 fn draw() void {
     // Around the drawing, not only between passes. Painting a window is
     // the longest thing this program does, and on a slow machine it is
@@ -332,6 +351,7 @@ fn draw() void {
     // for a meter that moved is most of the work done for none of it.
     if (ctx.damaged) drawSong(head);
     drawPattern(.{ .x = area.x, .y = head.bottom(), .w = area.w, .h = meters.y - head.bottom() }, current);
+    feed();
     drawMeters(meters, current);
     drawStatus(status, current);
 }
@@ -466,6 +486,11 @@ fn drawPattern(area: Rect, current: *const play.Player) void {
             const which = page + at;
             if (which >= mod.ROWS) break;
             drawRow(area, top + at * line_height, columns, pattern, which, which == row);
+            // Through the painting, not only around it. A page of rows is
+            // the longest single thing this program does, and on a slow
+            // machine it takes longer than the stream holds: fed only
+            // before and after, the ring empties partway down the page.
+            if (@rem(at, ROWS_PER_FEED) == ROWS_PER_FEED - 1) feed();
         }
     } else {
         // The line the highlight left, and the one it arrived on.
