@@ -7,7 +7,7 @@
 //!
 //! **A picture of a picture, not the picture.** A frame out of a camera is
 //! twelve megapixels, which is fifty megabytes of pixels and seconds of this
-//! processor, and a sheet of fifteen of those is a wait rather than a sheet.
+//! processor, and a page of those is a wait rather than a sheet.
 //! Cameras write a small JPEG into the file's own tables for exactly this and
 //! `lib.exif` finds it; a raw file carries a larger one again, and for a raw
 //! file it is the only picture there is, since nothing here develops one.
@@ -19,8 +19,8 @@
 //!
 //! **What changed, not what is there.** A pass arrives for every movement of
 //! the pointer anywhere in the window, and this window's contents are
-//! expensive: fifteen plates blitted and a photograph resampled is most of
-//! the machine, spent on a picture nobody touched. So the page, each cell,
+//! expensive: a page of plates blitted and a photograph resampled is most
+//! of the machine, spent on a picture nobody touched. So the page, each cell,
 //! the large picture and the key row each hold a mark of what they last drew
 //! and draw only when it differs. Marking a photograph repaints two cells.
 //!
@@ -46,6 +46,7 @@ const time = ulib.time;
 const exif = @import("lib").exif;
 const kind = @import("lib").kind;
 const mounts = @import("lib").mounts;
+const Bounded = @import("lib").Bounded;
 const sheet_mod = @import("sheet.zig");
 
 const KeyCode = proto.app.KeyCode;
@@ -62,25 +63,42 @@ comptime {
     _ = @import("clibc");
 }
 
-/// Where volumes appear when the bus finds them, and where keepers go until
-/// somebody says otherwise.
-const MEDIA = "/media";
-const PICTURES = "/home/pictures";
+/// Where keepers go until somebody says otherwise.
+const PICTURES = mounts.HOME ++ "/pictures";
 
-/// One cell of the sheet. What goes inside sits at a fixed inset whether or
-/// not the cell is the current one: a plate that moved when the eye landed on
-/// it would read as a jump.
+/// What has been decided, written beside the pictures it is about.
 ///
-/// Sized so five go across this panel with room to spare rather than exactly:
-/// a window is the panel less whatever the desktop keeps for its own edges,
-/// and a grid that only fits at the full width of the screen is a grid that
-/// drops to four columns in every real window.
-const CELL_W = 147;
-const CELL_H = 118;
+/// Beside them rather than under home, because the decisions belong to the
+/// card: a card culled on one machine and carried to another arrives with
+/// what was decided about it, and a card whose pictures are deleted takes
+/// this with them.
+const MARKS = "roll.marks";
+
+/// The most a folder's decisions come to: every picture in a roll at a name's
+/// length, and the heading above them.
+const MARKS_MAX = sheet_mod.MAX * (paths.MAX / 4) + 512;
+
+/// The smallest a thumbnail is worth showing at.
+///
+/// As many as fit at this width go across, and then they are grown to fill
+/// the room exactly: a grid of fixed cells leaves a column's worth of nothing
+/// at one edge, and that space is better spent on the pictures. Chosen so
+/// five go across the 701's panel, which is the shape the sheet was drawn
+/// for.
+const CELL_LEAST = 140;
+
+/// What a plate's shape starts from before the room has its say: a
+/// photograph's own, near enough. The room decides the rest, and a picture is
+/// centred in whatever shape the plate ends up, so nothing is stretched.
+const PLATE_WIDE = 3;
+const PLATE_TALL = 2;
+
+/// What a cell holds besides its picture: the border it draws inside, and the
+/// strip its name sits on. What goes inside sits at a fixed inset whether or
+/// not the cell is the current one, because a plate that moved when the eye
+/// landed on it would read as a jump.
 const INSET = 2;
-const PLATE_W = CELL_W - INSET * 2;
-const PLATE_H = 96;
-const CAPTION_H = CELL_H - INSET * 2 - PLATE_H;
+const CAPTION_H = 18;
 
 /// What the facts take beside the picture when they are shown.
 const FACTS_W = 240;
@@ -105,7 +123,7 @@ const TABLES = 64 * 1024;
 const PREVIEW_MAX = 8 * 1024 * 1024;
 
 /// How large a file may be before it is not read whole to decode it, for one
-/// carrying no picture of its own to show instead. A plate is one of fifteen
+/// carrying no picture of its own to show instead. A plate is one of a page
 /// and waits for nobody; the picture being looked at is worth the whole
 /// machine for a moment.
 const PLATE_BUDGET = 2 * 1024 * 1024;
@@ -128,25 +146,7 @@ var said: []const u8 = "";
 /// A path held beside the program rather than on a frame: the user stack is
 /// thirty-two kilobytes for everything, and a few of these would be most of
 /// it.
-const Path = struct {
-    buf: [paths.MAX]u8 = @splat(0),
-    len: usize = 0,
-
-    fn of(value: []const u8) Path {
-        var out: Path = .{};
-        out.set(value);
-        return out;
-    }
-
-    fn slice(self: *const Path) []const u8 {
-        return self.buf[0..self.len];
-    }
-
-    fn set(self: *Path, value: []const u8) void {
-        self.len = @min(value.len, self.buf.len);
-        @memcpy(self.buf[0..self.len], value[0..self.len]);
-    }
-};
+const Path = Bounded(u8, paths.MAX);
 
 /// Where the pictures are.
 var here: Path = .{};
@@ -172,8 +172,7 @@ var listing_names: [dir.namesFor(sheet_mod.MAX)]u8 = undefined;
 /// than on a frame: the user stack is thirty-two kilobytes for everything.
 var head: [TABLES]u8 = undefined;
 
-/// Where the last listing was read from, and room for one folder under it.
-var listed: Path = .{};
+/// Room for the one folder a scan may descend into.
 var sole: Path = .{};
 
 /// What is mounted, which is where a card or a stick turns up: the bus
@@ -181,21 +180,48 @@ var sole: Path = .{};
 /// read again when nothing else is being asked of the disk.
 var places: mounts.List = .{};
 
-/// The pictures on the page, already shrunk. Held at the size they are drawn
-/// rather than as decoded photographs, which is the whole point of a sheet.
+/// One cell's picture, already shrunk, and which picture it is.
 ///
-/// Which picture each plate holds is recorded beside it rather than assumed
-/// from where it sits: a page turn is not the only thing that moves a picture
-/// out from under a slot, and a filter that reorders what is shown would
-/// otherwise leave every plate one place out.
-var plates: [sheet_mod.PER_PAGE][PLATE_W * PLATE_H]eui.Color = undefined;
-var plate_of: [sheet_mod.PER_PAGE]usize = @splat(0);
-var plate_ready: [sheet_mod.PER_PAGE]bool = @splat(false);
+/// Which one is recorded beside the pixels rather than assumed from where
+/// they sit: a page turn is not the only thing that moves a picture out from
+/// under a slot, and a filter that reorders what is shown would otherwise
+/// leave every plate one place out.
+const Plate = struct {
+    of: usize = 0,
+    ready: bool = false,
+    /// What the cell holding it last drew, or nothing where it has drawn
+    /// nothing yet. Kept here rather than in a control slot: a cell is not a
+    /// control, and a page of them would be most of what the toolkit has room
+    /// to remember about one window.
+    drawn: ?i32 = null,
+};
+
+/// A plate per cell the window has room for, at the size that window draws
+/// them, taken from the heap rather than fixed at either. How many fit and
+/// how large they are are both facts about the window, and a fixed store
+/// either leaves a large window's rows empty or keeps a large window's worth
+/// of pixels for a small one.
+var plates: []Plate = &.{};
+var plate_pixels: []eui.Color = &.{};
+var plate_w: i32 = 0;
+var plate_h: i32 = 0;
 
 /// The one picture being looked at large, decoded once and kept while it is.
+///
+/// Which one was last looked for is kept apart from whether one came back: a
+/// file this build cannot show would otherwise be read and refused again on
+/// every pass over it.
 var large: ?img.Picture = null;
-var large_of: usize = 0;
+var large_of: ?usize = null;
 var camera: exif.Info = .{};
+
+/// When it was written, worked out once.
+///
+/// A timestamp is a sixty-four bit count of seconds, and turning one into a
+/// date is ten divisions this processor has no instruction for. Once per
+/// picture rather than once per pass over it.
+var when: [24]u8 = undefined;
+var when_said: []const u8 = "";
 
 var dialog: proto.FileDialog = .{};
 var dialog_for: Asked = .where_from;
@@ -209,6 +235,7 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
         .key = key,
         .text = typed,
         .event = ownWindows,
+        .close = close,
         .tick = fillOne,
         // Short while there are pictures left to read. `fillOne` lengthens it
         // once there are not, so a finished sheet sleeps.
@@ -223,7 +250,7 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 /// Read what is mounted. Says whether anything changed.
 fn readPlaces() bool {
     var buf: [mounts.TEXT]u8 = undefined;
-    return places.read(info.ask("mounts", &buf));
+    return places.read(info.ask("mounts", &buf), .personal);
 }
 
 /// Where to start looking: a card with photographs on it, or the pictures
@@ -235,7 +262,7 @@ fn readPlaces() bool {
 fn start() void {
     _ = readPlaces();
     for (places.slice()) |volume| {
-        if (!std.mem.startsWith(u8, volume.path(), MEDIA ++ "/")) continue;
+        if (!std.mem.startsWith(u8, volume.path(), mounts.MEDIA ++ "/")) continue;
         open(volume.path());
         if (sheet.shots.len != 0) return;
     }
@@ -248,15 +275,17 @@ fn start() void {
 /// folder that holds nothing but one other folder is what saves pressing into
 /// it twice on every card.
 fn open(path: []const u8) void {
+    saveMarks();
     _ = readPlaces();
 
-    var wanted = Path.of(path);
+    var wanted: Path = .{};
+    _ = wanted.set(path);
     var down: usize = 0;
     while (down < 3) : (down += 1) {
         scan(wanted.slice());
         if (sheet.shots.len != 0) break;
-        const only = soleFolder() orelse break;
-        wanted.set(only);
+        const only = soleFolder(wanted.slice()) orelse break;
+        _ = wanted.set(only);
     }
 
     here = wanted;
@@ -265,7 +294,7 @@ fn open(path: []const u8) void {
 
 /// The one directory in the folder just listed, when it holds exactly one and
 /// no pictures.
-fn soleFolder() ?[]const u8 {
+fn soleFolder(from: []const u8) ?[]const u8 {
     var found: ?[]const u8 = null;
     for (listing.items()) |entry| {
         if (!entry.is_dir or std.mem.eql(u8, entry.name, dir.PARENT)) continue;
@@ -275,7 +304,7 @@ fn soleFolder() ?[]const u8 {
     }
 
     const name = found orelse return null;
-    return paths.joined(listed.slice(), name, &sole.buf);
+    return paths.joined(from, name, &sole.items);
 }
 
 /// Read one folder into the sheet: every picture in it, by name.
@@ -286,7 +315,7 @@ fn soleFolder() ?[]const u8 {
 fn scan(path: []const u8) void {
     sheet.clear();
     said = "";
-    listed.set(path);
+    ours = true;
 
     dir.read(path, &listing_names, &listing) catch {
         said = "That folder will not open.";
@@ -301,6 +330,63 @@ fn scan(path: []const u8) void {
 
         sheet.add(.{ .name = entry.name, .size = entry.size, .mtime = entry.mtime });
     }
+
+    loadMarks(path);
+}
+
+/// Whether the decisions beside these pictures are this program's to write.
+/// A file it cannot read is a file it must not replace.
+var ours = true;
+
+/// What was decided about this folder last time, if anything was.
+fn loadMarks(path: []const u8) void {
+    var buf: [paths.MAX]u8 = undefined;
+    const at = paths.joined(path, MARKS, &buf) orelse return;
+
+    // Asked about before any room is taken for it: most folders have none,
+    // and one that does says how much to ask for.
+    const facts = file.factsOf(at) orelse return;
+    if (facts.size == 0 or facts.size > MARKS_MAX) return;
+
+    const room = heap.allocator.alloc(u8, facts.size) catch return;
+    defer heap.allocator.free(room);
+
+    const read = file.readWhole(at, room) orelse return;
+    ours = sheet.readMarks(room[0..read]) == .taken;
+    if (!ours) said = "What was decided here was written by a later roll.";
+}
+
+/// Write down what has been decided, if anything has changed and the file is
+/// this program's to write.
+///
+/// Called where a decision would otherwise be lost: when the sheet has
+/// nothing left to read, when the folder is about to change, and when the
+/// window is asked to close. Not on every keystroke: that is a write to the
+/// card per picture, and a card is a slow thing to write to.
+fn saveMarks() void {
+    if (!sheet.dirty or !ours or sheet.shots.len == 0) return;
+
+    var buf: [paths.MAX]u8 = undefined;
+    const at = paths.joined(here.slice(), MARKS, &buf) orelse return;
+
+    const room = heap.allocator.alloc(u8, MARKS_MAX) catch return;
+    defer heap.allocator.free(room);
+
+    var written = str.Builder{ .buf = room };
+    sheet.writeMarks(&written);
+
+    if (!written.cut) {
+        if (file.put(at, written.done())) |_| {
+            sheet.dirty = false;
+            return;
+        } else |_| {}
+    }
+
+    // Said once, and not tried again: a card that is full or will not take a
+    // write does not take one on the next pass either, and a failing write a
+    // second is worse than a window that says so and stops.
+    said = "What was decided here could not be written down.";
+    ours = false;
 }
 
 fn pathOf(shot: sheet_mod.Shot, into: []u8) ?[]const u8 {
@@ -321,7 +407,7 @@ const Taken = struct { picture: img.Picture, camera: exif.Info = .{} };
 /// a raw file it is megabytes further in, so what the front gives is where it
 /// is and exactly that stretch is read. Reading a twelve megabyte file to
 /// take one megabyte out of the middle is the thing a contact sheet cannot
-/// afford fifteen times over.
+/// afford once per cell on the page.
 ///
 /// Only a file carrying no picture at all is decoded itself, and only up to
 /// `budget`: a raw file has nothing to fall back to, since there is no
@@ -397,19 +483,77 @@ fn sizeOf(path: []const u8) ?usize {
 // ---------------------------------------------------------------------------
 
 fn forgetPlates() void {
-    plate_ready = @splat(false);
+    for (plates) |*plate| plate.ready = false;
     forgetLarge();
+}
+
+/// Everything the cell in `slot` would draw, as one number.
+fn cellShape(shape: i32, slot: usize, which: usize, on: bool) i32 {
+    const shot = sheet.shots.slice()[which];
+    var mark = Fingerprint{};
+    mark.number(@as(u32, @bitCast(shape)));
+    mark.text(shot.name);
+    mark.number(@intFromEnum(shot.mark));
+    mark.number(shot.turn);
+    mark.flag(holds(slot, which));
+    mark.flag(on);
+    return mark.done();
+}
+
+/// Keep a plate per cell the window has room for, at the size it draws them.
+///
+/// Only on a change, which is a window being resized. Where only the count
+/// changed, what was already here keeps the picture it says it holds, since
+/// `holds` is what decides whether the page still wants it there: a window
+/// widened by a column should not read every picture on the page again for
+/// the one cell it gained. Where the size changed there is nothing to keep,
+/// because every plate holds pixels of the wrong shape.
+///
+/// A page that cannot be given its plates shows its names and no pictures,
+/// which is what the sheet looks like before any of them have been read
+/// anyway.
+fn fitPlates(g: eui.Grid) void {
+    const want = cellsIn(g);
+    const plate = plateIn(g.cell(0, 0));
+    const wide = @max(plate.w, 1);
+    const tall = @max(plate.h, 1);
+    if (plates.len == want and plate_w == wide and plate_h == tall) return;
+
+    const resized = plate_w != wide or plate_h != tall;
+    const held = if (resized) 0 else plates.len;
+
+    const room = heap.allocator.alloc(eui.Color, want * @as(usize, @intCast(wide * tall))) catch return;
+    const state = heap.allocator.alloc(Plate, want) catch {
+        heap.allocator.free(room);
+        return;
+    };
+
+    if (held != 0) {
+        const kept = @min(held, want) * @as(usize, @intCast(wide * tall));
+        @memcpy(room[0..kept], plate_pixels[0..kept]);
+        @memcpy(state[0..@min(held, want)], plates[0..@min(held, want)]);
+    }
+    for (state[@min(held, want)..]) |*fresh| fresh.* = .{};
+
+    if (plate_pixels.len != 0) heap.allocator.free(plate_pixels);
+    if (plates.len != 0) heap.allocator.free(plates);
+    plate_pixels = room;
+    plates = state;
+    plate_w = wide;
+    plate_h = tall;
 }
 
 /// Whether the plate in `slot` is the picture the page now wants there.
 fn holds(slot: usize, which: usize) bool {
-    return plate_ready[slot] and plate_of[slot] == which;
+    return slot < plates.len and plates[slot].ready and plates[slot].of == which;
 }
 
 fn forgetLarge() void {
-    if (large) |held| held.deinit();
+    if (large) |picture| picture.deinit();
     large = null;
+    large_of = null;
     camera = .{};
+    when_said = "";
 }
 
 /// Read one picture the page shows and has not got yet, and say whether
@@ -421,12 +565,12 @@ fn forgetLarge() void {
 fn fillOne() bool {
     const page = sheet.page();
     var slot: usize = 0;
-    while (page.from + slot < page.to and slot < plate_ready.len) : (slot += 1) {
+    while (page.from + slot < page.to and slot < plates.len) : (slot += 1) {
         const which = sheet.at_nth(page.from + slot) orelse continue;
         if (holds(slot, which)) continue;
 
-        plate_ready[slot] = true;
-        plate_of[slot] = which;
+        plates[slot].ready = true;
+        plates[slot].of = which;
         fillPlate(slot, sheet.shots.slice()[which]);
 
         // Something on screen changed, and there may be more behind it.
@@ -439,9 +583,10 @@ fn fillOne() bool {
     // waits before looking at what is mounted.
     proto.app.retick(1_000_000);
 
-    // A card put in while this is open is a new place. Looked for here,
-    // where nothing else is being asked of the reader, rather than only when
-    // somebody presses something.
+    // Nothing else is being asked of the reader, so this is the moment to
+    // write down what has been decided and to look for a card put in while
+    // the window was open.
+    saveMarks();
     return readPlaces();
 }
 
@@ -454,7 +599,7 @@ fn fillOne() bool {
 /// pass that has to redraw the cell.
 fn fillPlate(slot: usize, shot: sheet_mod.Shot) void {
     const plate = plateSurface(slot);
-    const whole = Rect{ .x = 0, .y = 0, .w = PLATE_W, .h = PLATE_H };
+    const whole = Rect{ .x = 0, .y = 0, .w = plate_w, .h = plate_h };
     const ground = theme.current().surface_pressed;
 
     var buf: [paths.MAX]u8 = undefined;
@@ -466,7 +611,8 @@ fn fillPlate(slot: usize, shot: sheet_mod.Shot) void {
 }
 
 fn plateSurface(slot: usize) eui.Surface {
-    return eui.Surface.init(&plates[slot], PLATE_W, PLATE_H, PLATE_W);
+    const span: usize = @intCast(plate_w * plate_h);
+    return eui.Surface.init(plate_pixels[slot * span ..].ptr, plate_w, plate_h, plate_w);
 }
 
 /// One picture, shrunk to fit `area`, stood upright, and the ground around it
@@ -476,7 +622,7 @@ fn plateSurface(slot: usize) eui.Surface {
 /// it rather than a second idea of which way up something is, which is what
 /// `eimg` does with the same two keys.
 fn paintPicture(surface: eui.Surface, area: Rect, got: Taken, turn: u2, ground: eui.Color) Rect {
-    const held = turned(got.camera.orientation, turn);
+    const held = got.camera.orientation.turnedBy(turn);
     const upright = eui.thumb.uprightSize(got.picture.width, got.picture.height, held);
     const into = eui.thumb.fit(area, upright.w, upright.h);
 
@@ -490,13 +636,6 @@ fn paintPicture(surface: eui.Surface, area: Rect, got: Taken, turn: u2, ground: 
         held,
     );
     return into;
-}
-
-fn turned(from: exif.Orientation, by: u2) exif.Orientation {
-    var out = from;
-    var n: u2 = 0;
-    while (n < by) : (n += 1) out = out.turnedRight();
-    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -538,37 +677,81 @@ fn stale(area: Rect, shape: i32) bool {
 /// is exactly what somebody about to copy onto it wants to know.
 fn drawPlaces(area: Rect) void {
     const t = theme.current();
-    const hint = [_]eui.keys.Key{.{ .key = "o", .label = "folder" }};
-    const pass = eui.places.strip(ctx, area, &places, places.holding(here.slice()), &hint);
+
+    // No key hint on the row: what the file manager names there is what its
+    // keyboard does to a volume, and choosing a folder is not about the row
+    // it would sit on. It is in the key strip with the rest of the commands.
+    const pass = eui.places.strip(ctx, area, &places, places.holding(here.slice()), &.{});
     if (pass.chose) |index| {
         open(places.slice()[index].path());
         ctx.damage();
     }
 
-    // What the roll comes to, in what the row left over. The hint the strip
-    // drew sits against the right edge, measured the same way it measured it.
+    // The whole height of the row less its rule, which is what the places
+    // beside it take, so what is said here sits on their line.
     const from = pass.after + t.padding;
-    const room = area.right() - eui.keys.width(hint[0], .plain) - t.padding - from;
-    drawTally(.{ .x = from, .y = area.y + t.padding, .w = room, .h = t.control_height });
+    drawWhere(
+        .{ .x = from, .y = area.y, .w = area.right() - t.menu_padding - from, .h = area.h - 1 },
+        pass.painted,
+    );
 }
 
-/// How the roll stands, against the right edge: what has been decided where
-/// anything has, and how many pictures there are where nothing has.
-fn drawTally(area: Rect) void {
+/// Where the pictures are and how the roll stands, in one line against the
+/// right edge: the folder, then what has been decided where anything has, or
+/// how many there are where nothing has.
+///
+/// One phrase rather than two things at either end of the strip, because it
+/// is one statement: this folder, this many. A message about the folder takes
+/// its place, since it is about the same thing and there is one place to look.
+fn drawWhere(area: Rect, over: bool) void {
     if (area.w <= 0) return;
     const t = theme.current();
     const seen = sheet.counts();
 
     var mark = Fingerprint{};
+    mark.text(here.slice());
+    mark.text(said);
     mark.number(seen.all);
     mark.number(seen.kept);
     mark.number(seen.rejected);
     mark.flag(sheet.truncated);
     mark.flag(sheet.kept_only);
-    if (!stale(area, mark.done())) return;
 
-    var buf: [64]u8 = undefined;
+    // Drawn again whenever the row beside it was, since the row paints the
+    // whole strip and this sits on the part of it the row does not use.
+    const fresh = stale(area, mark.done());
+    if (!fresh and !over) return;
+
+    ctx.surface.fill(area, t.surface_pressed);
+    ctx.addDamage(area);
+
+    const baseline = area.y + @divTrunc(area.h - eui.Surface.textHeight(), 2);
+    const right = area.right();
+
+    if (sheet.kept_only) {
+        const chip = Rect{
+            .x = area.x,
+            .y = area.y + @divTrunc(area.h - t.control_height, 2),
+            .w = eui.Surface.textWidth(KEPT_ONLY) + t.padding * 2,
+            .h = t.control_height,
+        };
+        ctx.surface.fillRounded(chip, t.corner_radius, .all, t.accent);
+        ctx.surface.textCentred(chip, KEPT_ONLY, t.accent_text);
+    }
+    const from = area.x + if (sheet.kept_only)
+        eui.Surface.textWidth(KEPT_ONLY) + t.padding * 3
+    else
+        0;
+
+    // A message is about this folder, so it stands where the folder does.
+    if (said.len != 0) {
+        ctx.surface.textFitted(from, baseline, right - from, said, t.text_dim);
+        return;
+    }
+
+    var buf: [48]u8 = undefined;
     var line = str.Builder{ .buf = &buf };
+    line.text(" \u{00B7} ");
     if (seen.kept != 0 or seen.rejected != 0) {
         line.number(seen.kept);
         line.text(" kept, ");
@@ -582,78 +765,94 @@ fn drawTally(area: Rect) void {
         line.text(if (seen.all == 1) " photo" else " photos");
     }
 
-    ctx.surface.fill(area, t.surface_pressed);
-    ctx.addDamage(area);
+    // Right-aligned where the two fit, and where they do not the folder is
+    // what gives way: a count half drawn says nothing, and a folder cut short
+    // still says which one it is.
+    const tail = line.done();
+    const tail_w = eui.Surface.textWidth(tail);
+    const folder = here.slice();
+    const folder_w = eui.Surface.textWidth(folder);
 
-    const text = line.done();
-    const w = eui.Surface.textWidth(text);
-    var right = area.right();
+    const room = right - from;
+    const whole = folder_w + tail_w;
+    const shown = @min(folder_w, room - tail_w);
+    if (shown <= 0) return;
 
-    if (sheet.kept_only) {
-        const chip_w = eui.Surface.textWidth("kept only") + t.padding * 2;
-        const chip = Rect{ .x = right - w - t.padding - chip_w, .y = area.y, .w = chip_w, .h = area.h };
-        if (chip.x >= area.x) {
-            ctx.surface.fillRounded(chip, t.corner_radius, .all, t.accent);
-            ctx.surface.textCentred(chip, "kept only", t.accent_text);
-            right = chip.x - t.padding;
-        }
-    }
-
-    const at = eui.Surface.textHeight();
-    if (right - w >= area.x) {
-        ctx.surface.text(right - w, area.y + @divTrunc(area.h - at, 2), text, t.text_dim);
-    }
+    const x = if (whole <= room) right - whole else from;
+    ctx.surface.textFitted(x, baseline, shown, folder, t.text_dim);
+    ctx.surface.text(x + shown, baseline, tail, t.text_dim);
 }
 
-/// How many cells fit in the room there is. Fixed cells and as many as go in
-/// rather than cells that stretch: a thumbnail is a size, and one stretched
-/// to fill a window is a blurry claim to detail the plate does not hold.
-const Grid = struct {
-    columns: usize,
-    rows: usize,
+const KEPT_ONLY = "kept only";
 
-    fn of(area: Rect) Grid {
-        const t = theme.current();
-        return .{
-            .columns = fits(area.w - t.padding * 2, CELL_W, t.gap),
-            .rows = @min(fits(area.h - t.padding * 2, CELL_H, t.gap), sheet_mod.PER_PAGE),
-        };
-    }
+/// The grid the sheet is laid out on: as many cells of at least `CELL_LEAST`
+/// as fit, grown to fill the room exactly.
+///
+/// The arithmetic is the toolkit's. What is decided here is the one thing it
+/// cannot know: how tall a cell wants to be for the width it was given, which
+/// is a plate at a photograph's shape with a name under it.
+fn gridOf(area: Rect) eui.Grid {
+    const t = theme.current();
+    const room = area.inset(t.padding);
 
-    fn fits(room: i32, side: i32, gap: i32) usize {
-        if (room < side) return 1;
-        return @intCast(@divTrunc(room + gap, side + gap));
-    }
+    var out = eui.Grid{
+        .area = room,
+        .columns = eui.Grid.fitting(room.w, CELL_LEAST, t.gap),
+        .rows = 1,
+        .gap = t.gap,
+    };
+    const wide = out.cell(0, 0).w - INSET * 2;
+    const wants = INSET * 2 + CAPTION_H + @divTrunc(wide * PLATE_TALL, PLATE_WIDE);
+    out.rows = eui.Grid.fitting(room.h, wants, t.gap);
+    return out;
+}
 
-    fn cells(self: Grid) usize {
-        return @min(self.columns * self.rows, sheet_mod.PER_PAGE);
-    }
+fn cellsIn(g: eui.Grid) usize {
+    return @intCast(@max(g.columns * g.rows, 0));
+}
 
-    /// Where the row of cells starts: centred in what it does not fill,
-    /// because a grid pinned to the left with a column's worth of nothing on
-    /// the right reads as a column that failed to draw.
-    fn from(self: Grid, area: Rect) i32 {
-        const across = @as(i32, @intCast(self.columns)) * (CELL_W + theme.current().gap) - theme.current().gap;
-        return area.x + @divTrunc(area.w - across, 2);
-    }
+fn cellAt(g: eui.Grid, slot: usize) Rect {
+    const at: i32 = @intCast(slot);
+    return g.cell(@mod(at, g.columns), @divTrunc(at, g.columns));
+}
 
-    fn at(self: Grid, area: Rect, slot: usize) Rect {
-        const t = theme.current();
-        return .{
-            .x = self.from(area) + @as(i32, @intCast(slot % self.columns)) * (CELL_W + t.gap),
-            .y = area.y + t.padding + @as(i32, @intCast(slot / self.columns)) * (CELL_H + t.gap),
-            .w = CELL_W,
-            .h = CELL_H,
-        };
-    }
-};
+/// The plate inside a cell: what is left once the border and the name have
+/// had theirs.
+fn plateIn(cell: Rect) Rect {
+    return .{
+        .x = cell.x + INSET,
+        .y = cell.y + INSET,
+        .w = cell.w - INSET * 2,
+        .h = cell.h - INSET * 2 - CAPTION_H,
+    };
+}
 
-var grid: Grid = .{ .columns = 5, .rows = 3 };
+var grid: eui.Grid = .{ .area = .{}, .columns = 1, .rows = 1 };
+
+/// Where the page sits in the roll, and a way to take hold of it.
+///
+/// The sheet still pages: this says where in a card of several hundred the
+/// page is, and lets somebody go somewhere else in it without walking every
+/// row between. It draws nothing at all when the whole roll is on one page,
+/// so a folder of a dozen photographs is the sheet and nothing else.
+var along: eui.scroll.State = .{};
 
 /// The page of thumbnails.
 fn drawRoll(area: Rect) void {
-    grid = Grid.of(area);
-    sheet.per_page = grid.cells();
+    const t = theme.current();
+
+    // The room the bar takes is kept whether or not it is drawn: a grid that
+    // relaid itself the moment a roll grew past one page would move every
+    // picture under the hand about to press one.
+    const cells = Rect{ .x = area.x, .y = area.y, .w = area.w - eui.scroll.WIDTH - t.padding, .h = area.h };
+    grid = gridOf(cells);
+    sheet.per_page = cellsIn(grid);
+    fitPlates(grid);
+
+    // Before anything is measured from it, since either can move the eye and
+    // what is drawn should be where the eye now is rather than a pass behind.
+    takeBar(area);
+    takeCellPresses(sheet.page());
 
     // What the page as a whole is showing. When this changes the ground under
     // it is no longer the right ground: a shorter page leaves cells behind,
@@ -664,14 +863,18 @@ fn drawRoll(area: Rect) void {
     mark.text(here.slice());
     mark.number(page.from);
     mark.number(page.to);
-    mark.number(grid.columns);
+    mark.number(@intCast(@max(grid.columns, 0)));
+    mark.number(@intCast(@max(grid.rows, 0)));
     mark.flag(sheet.kept_only);
     const shape = mark.done();
 
+    // The ground under the cells and not under the bar beside them: the bar
+    // draws itself only when what it says changes, so anything painting over
+    // it leaves it painted over.
     const fresh = stale(area, shape);
     if (fresh and !ctx.damaged) {
-        ctx.surface.fill(area, theme.current().surface);
-        ctx.addDamage(area);
+        ctx.surface.fill(cells, t.surface);
+        ctx.addDamage(cells);
     }
 
     if (sheet.count() == 0) {
@@ -679,16 +882,12 @@ fn drawRoll(area: Rect) void {
         return;
     }
 
-    // Before the cells rather than after them, so the ring lands on the
-    // picture that was pressed rather than a pass behind it.
-    takeCellPresses(area, page);
-
     var waiting = false;
     var slot: usize = 0;
-    while (page.from + slot < page.to and slot < plate_ready.len) : (slot += 1) {
+    while (page.from + slot < page.to) : (slot += 1) {
         const which = sheet.at_nth(page.from + slot) orelse break;
         if (!holds(slot, which)) waiting = true;
-        drawCell(grid.at(area, slot), shape, slot, which, page.from + slot == sheet.at);
+        drawCell(cellAt(grid, slot), shape, slot, which, page.from + slot == sheet.at);
     }
 
     // The reading is asked for by whoever notices something missing, so a
@@ -697,18 +896,39 @@ fn drawRoll(area: Rect) void {
     if (waiting) proto.app.retick(1_000);
 }
 
+/// Where the page sits in the roll. Dragged or pressed, it goes there.
+///
+/// A page rather than a row: the sheet has no half-drawn row to stop on, so
+/// whatever the bar lands on is taken as the page holding it.
+fn takeBar(area: Rect) void {
+    const t = theme.current();
+    const page = sheet.page();
+    const groove = Rect{
+        .x = area.right() - eui.scroll.WIDTH,
+        .y = area.y + t.padding,
+        .w = eui.scroll.WIDTH,
+        .h = area.h - t.padding * 2,
+    };
+
+    const to = ctx.scrollbar(groove, &along, page.from, sheet.count(), sheet.per_page);
+    if (to == page.from) return;
+
+    const per = @max(sheet.per_page, 1);
+    sheet.at = to - to % per;
+}
+
 /// A press in the page: the picture under it, or the one already under the
 /// eye opened large.
 ///
 /// Hit tested rather than made a control per cell, because a cell is not one:
-/// fifteen of them in the tab order is fifteen stops on the way to the one
+/// a page of them in the tab order is a page of stops on the way to the one
 /// button this window has.
-fn takeCellPresses(area: Rect, page: sheet_mod.Page) void {
+fn takeCellPresses(page: sheet_mod.Page) void {
     if (!ctx.pressedThisPass()) return;
 
     var slot: usize = 0;
-    while (page.from + slot < page.to and slot < plate_ready.len) : (slot += 1) {
-        if (!grid.at(area, slot).contains(ctx.pointer_x, ctx.pointer_y)) continue;
+    while (page.from + slot < page.to) : (slot += 1) {
+        if (!cellAt(grid, slot).contains(ctx.pointer_x, ctx.pointer_y)) continue;
 
         if (sheet.at == page.from + slot) {
             mode = .one;
@@ -724,17 +944,14 @@ fn drawCell(cell: Rect, shape: i32, slot: usize, which: usize, on: bool) void {
     const shot = sheet.shots.slice()[which];
     const ready = holds(slot, which);
 
-    var mark = Fingerprint{};
-    mark.number(@as(u32, @bitCast(shape)));
-    mark.text(shot.name);
-    mark.number(@intFromEnum(shot.mark));
-    mark.number(shot.turn);
-    mark.flag(ready);
-    mark.flag(on);
-    if (!stale(cell, mark.done())) return;
+    const drawing = cellShape(shape, slot, which, on);
+    if (slot < plates.len) {
+        if (!ctx.damaged and plates[slot].drawn == drawing) return;
+        plates[slot].drawn = drawing;
+    }
 
     const t = theme.current();
-    const plate = Rect{ .x = cell.x + INSET, .y = cell.y + INSET, .w = PLATE_W, .h = PLATE_H };
+    const plate = plateIn(cell);
 
     // Only what the plate does not cover: the border, and the strip the name
     // sits on. The plate itself is written once, below.
@@ -756,7 +973,7 @@ fn drawCell(cell: Rect, shape: i32, slot: usize, which: usize, on: bool) void {
     ctx.surface.textFitted(
         plate.x + 4,
         plate.bottom() + @divTrunc(CAPTION_H - eui.Surface.textHeight(), 2),
-        PLATE_W - 8,
+        plate.w - 8,
         shot.name,
         if (on) t.text else t.text_dim,
     );
@@ -815,7 +1032,7 @@ fn drawOne(area: Rect) void {
     // plate: a plate is a hundred and forty-seven pixels across, and blowing
     // that up would be a blurry claim to detail it does not hold.
     const which = sheet.at_nth(sheet.at) orelse 0;
-    if (large == null or large_of != which) {
+    if (large_of != which) {
         forgetLarge();
         var buf: [paths.MAX]u8 = undefined;
         if (pathOf(shot.*, &buf)) |path| {
@@ -825,6 +1042,7 @@ fn drawOne(area: Rect) void {
             }
         }
         large_of = which;
+        when_said = time.stamp(&when, shot.mtime);
     }
 
     var mark = Fingerprint{};
@@ -883,27 +1101,20 @@ fn drawFacts(area: Rect, shot: sheet_mod.Shot) void {
         turnHere(1);
     }
 
-    const naming = Rect{ .x = inner.x, .y = inner.y, .w = inner.w - turns - t.padding, .h = t.control_height };
-    if (stale(naming, eui.widget.fingerprint(shot.name))) {
-        ctx.surface.fill(naming, t.surface);
-        ctx.surface.clipped(naming).textFitted(
-            naming.x,
-            naming.y + @divTrunc(naming.h - eui.Surface.textHeight(), 2),
-            naming.w,
-            shot.name,
-            t.text,
-        );
-        ctx.addDamage(naming);
-    }
+    ctx.label(.{
+        .x = inner.x,
+        .y = inner.y + @divTrunc(t.control_height - eui.Surface.textHeight(), 2),
+        .w = inner.w - turns - t.padding,
+        .h = eui.Surface.textHeight(),
+    }, shot.name);
 
     var pixels: [24]u8 = undefined;
     var written: [24]u8 = undefined;
-    var when: [24]u8 = undefined;
     var made: [exif.TEXT_MAX * 2 + 1]u8 = undefined;
 
     var shape = str.Builder{ .buf = &pixels };
     if (large) |held| {
-        const upright = eui.thumb.uprightSize(held.width, held.height, turned(camera.orientation, shot.turn));
+        const upright = eui.thumb.uprightSize(held.width, held.height, camera.orientation.turnedBy(shot.turn));
         shape.number(upright.w);
         shape.text(" x ");
         shape.number(upright.h);
@@ -922,7 +1133,7 @@ fn drawFacts(area: Rect, shot: sheet_mod.Shot) void {
         .{ .label = "Kind", .value = what.says() },
         .{ .label = "Pixels", .value = orNothing(shape.done()) },
         .{ .label = "Size", .value = size.done() },
-        .{ .label = "Modified", .value = time.stamp(&when, shot.mtime) },
+        .{ .label = "Modified", .value = when_said },
         .{ .label = "Camera", .value = orNothing(maker.done()) },
         .{ .label = "Taken", .value = orNothing(camera.when()) },
         .{ .label = "Marked", .value = switch (shot.mark) {
@@ -956,22 +1167,25 @@ fn drawAsking(area: Rect) void {
     line.text(" kept to");
     const label = line.done();
 
-    if (stale(area, eui.widget.fingerprint(label))) {
-        ctx.surface.fill(area, t.surface);
+    // The ground is the window's own, which the frame paints whenever the
+    // question comes or goes; what is left is the rule separating the
+    // question from the work above it.
+    if (ctx.damaged) {
         ctx.surface.fill(.{ .x = area.x, .y = area.y, .w = area.w, .h = 1 }, t.line);
-        ctx.surface.text(
-            area.x + t.padding,
-            area.y + @divTrunc(area.h - eui.Surface.textHeight(), 2),
-            label,
-            t.text,
-        );
         ctx.addDamage(area);
     }
+
+    const label_w = eui.Surface.textWidth(label);
+    ctx.label(.{
+        .x = area.x + t.padding,
+        .y = area.y + @divTrunc(area.h - eui.Surface.textHeight(), 2),
+        .w = label_w,
+        .h = eui.Surface.textHeight(),
+    }, label);
 
     // The three buttons take their width from their words and the field
     // takes what is left, so a long path is scrolled inside the field rather
     // than pushing a button off the edge.
-    const label_w = eui.Surface.textWidth(label);
     const choose_w = eui.Surface.textWidth("Choose\u{2026}") + t.menu_padding * 2;
     const copy_w = eui.Surface.textWidth("Copy") + t.menu_padding * 2;
     const cancel_w = eui.Surface.textWidth("Cancel") + t.menu_padding * 2;
@@ -1012,6 +1226,7 @@ const ROLL_KEYS = [_]eui.keys.Key{
     .{ .key = "x", .label = "reject" },
     .{ .key = "f", .label = "kept only" },
     .{ .key = "c", .label = "copy kept" },
+    .{ .key = "o", .label = "folder" },
 };
 
 const ONE_KEYS = [_]eui.keys.Key{
@@ -1028,9 +1243,7 @@ fn drawKeys(area: Rect) void {
     var line = str.Builder{ .buf = &buf };
     const shown = sheet.count();
 
-    if (said.len != 0 and shown != 0) {
-        line.text(said);
-    } else if (shown == 0) {
+    if (shown == 0) {
         line.text(if (sheet.kept_only) "nothing kept yet" else "nothing here");
     } else if (mode == .roll) {
         const page = sheet.page();
@@ -1121,6 +1334,12 @@ fn key(code: KeyCode, mods: Modifiers) bool {
     return true;
 }
 
+/// Asked to close. What was decided goes down before the window does.
+fn close() bool {
+    saveMarks();
+    return true;
+}
+
 /// A character was typed.
 ///
 /// Only the question takes any, and not the one that opened it: a key is
@@ -1139,7 +1358,7 @@ fn turnHere(by: i2) void {
     sheet.turn(by);
 
     const slot = sheet.at - sheet.page().from;
-    if (slot < plate_ready.len) plate_ready[slot] = false;
+    if (slot < plates.len) plates[slot].ready = false;
     proto.app.retick(1_000);
 }
 

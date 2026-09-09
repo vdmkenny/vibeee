@@ -609,7 +609,7 @@ pub fn build(b: *std.Build) void {
             const echat_test_step = b.step("test-echat", "Test echat's engine and model on the host");
             echat_test_step.dependOn(&b.addRunArtifact(echat_test).step);
 
-            const roll = user.exe("roll", "apps/roll/roll.zig", true);
+            const roll = user.exe("roll", "apps/roll/roll.zig", !named(symbols, "roll"));
             user.addPictures(roll, &.{ "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_PNG" });
             const roll_step = b.step("roll", "Build the Roll photo sheet into zig-out/bin");
             roll_step.dependOn(&b.addInstallArtifact(roll, .{}).step);
