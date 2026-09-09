@@ -46,12 +46,17 @@ pub fn below(area: Rect) Rect {
     return .{ .x = area.x, .y = area.y + used, .w = area.w, .h = area.h - used };
 }
 
-/// What a caller gets back from a pass: which place was pressed, if any, and
-/// where the row stopped, so a caller with something else on the same strip
-/// knows what is left.
+/// What a caller gets back from a pass.
 pub const Pass = struct {
+    /// Which place was pressed, if any.
     chose: ?usize = null,
+    /// Where the row stopped, so a caller with something else on the same
+    /// strip knows what is left.
     after: i32 = 0,
+    /// The row painted its ground, which is the whole strip and not only the
+    /// part the places take. A caller drawing on the rest has to draw it
+    /// again, or what it drew is under this.
+    painted: bool = false,
 };
 
 /// Draw the row and take a press.
@@ -78,7 +83,10 @@ pub fn strip(
     ctx.surface.fill(area, t.surface_pressed);
     ctx.surface.fill(.{ .x = area.x, .y = area.bottom() - 1, .w = area.w, .h = 1 }, t.line);
     ctx.addDamage(area);
-    return paint(ctx, area, list, current, hint);
+
+    var out = paint(ctx, area, list, current, hint);
+    out.painted = true;
+    return out;
 }
 
 /// What the row would draw, as one number. What is not here cannot make it

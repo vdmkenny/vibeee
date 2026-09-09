@@ -59,6 +59,22 @@ pub const Grid = struct {
         if (rows <= 0) return 0;
         return rows * height + (rows - 1) * gap;
     }
+
+    /// How many tracks of at least `least` fit along `length`.
+    ///
+    /// The other half of filling a space: a caller asks this for its columns
+    /// and rows, builds a grid of that many, and the cells come out as large
+    /// as the room allows rather than at the size it asked for. A sheet of
+    /// thumbnails laid out at a fixed size leaves a column's worth of nothing
+    /// at one edge, and that room is better spent on the pictures.
+    ///
+    /// Never fewer than one. A space too small for a single cell gets a cell
+    /// too small, which is a thing somebody can see and resize; nothing at
+    /// all reads as a window that failed.
+    pub fn fitting(length: i32, least: i32, gap: i32) i32 {
+        if (length < least or least <= 0) return 1;
+        return @max(@divTrunc(length + gap, least + gap), 1);
+    }
 };
 
 test "the cells tile the area exactly" {
@@ -116,6 +132,22 @@ test "a grid with no gap leaves none" {
     const g = Grid{ .area = .{ .x = 0, .y = 0, .w = 100, .h = 20 }, .columns = 5, .rows = 1 };
     try std.testing.expectEqual(@as(i32, 20), g.cell(0, 0).w);
     try std.testing.expectEqual(g.cell(1, 0).x, g.cell(0, 0).right());
+}
+
+test "as many as fit, and never fewer than one" {
+    // Three of a hundred and forty with eight between them come to four
+    // hundred and thirty-six, so that is where the third starts fitting.
+    try std.testing.expectEqual(@as(i32, 3), Grid.fitting(436, 140, 8));
+    try std.testing.expectEqual(@as(i32, 2), Grid.fitting(435, 140, 8));
+    try std.testing.expectEqual(@as(i32, 1), Grid.fitting(140, 140, 8));
+    try std.testing.expectEqual(@as(i32, 1), Grid.fitting(4, 140, 8));
+    try std.testing.expectEqual(@as(i32, 1), Grid.fitting(-10, 140, 8));
+
+    // And what comes back fills the room it was measured against exactly.
+    const room = Rect{ .x = 0, .y = 0, .w = 500, .h = 40 };
+    const g = Grid{ .area = room, .columns = Grid.fitting(room.w, 140, 8), .rows = 1, .gap = 8 };
+    try std.testing.expectEqual(room.right(), g.cell(g.columns - 1, 0).right());
+    try std.testing.expect(g.cell(0, 0).w >= 140);
 }
 
 test "the height a grid needs is its rows and the gaps between them" {
