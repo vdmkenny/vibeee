@@ -21,6 +21,14 @@
 
 const abi = @import("lib").syscalls;
 const rgb = @import("lib").rgb;
+const endpoint = @import("endpoint.zig");
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+///
+/// A client writes the tag as a byte, and nothing on the way to the manager
+/// makes it one of the names above. The manager is the desktop: a value it
+/// does not recognise has to be answered, not switched on.
+pub const known = endpoint.known;
 
 /// Bumped when a change would make an old client misread a new server. The
 /// server rejects a mismatch at `hello` rather than failing later in a way

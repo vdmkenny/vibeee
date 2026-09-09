@@ -386,8 +386,15 @@ pub fn waitFor(child: *Thread) i32 {
     return status;
 }
 
-/// Create a thread whose status will be collected by its parent.
-pub fn spawnAwaited(
+/// Create a thread whose status will be collected by its parent, without
+/// making it runnable yet.
+///
+/// A process is not finished when it exists: it still has to be told what it
+/// may do, where it starts, and what sits on its three standard streams.
+/// Publishing it before that is done would put a thread on the CPU whose
+/// capabilities are still the default, which is the one thing the capability
+/// rule exists to make impossible. Call `publish` when it is ready.
+pub fn createAwaited(
     name: []const u8,
     priority: Priority,
     entry: *const fn (usize) callconv(.c) void,
@@ -396,11 +403,17 @@ pub fn spawnAwaited(
 ) SpawnError!*Thread {
     const t = try create(name, priority, entry, arg, stack_size);
     t.awaited = true;
+    return t;
+}
 
+/// Make a thread runnable.
+///
+/// The point at which a thread becomes observable to the rest of the system,
+/// so everything a caller means to be true of it has to be true by now.
+pub fn publish(t: *Thread) void {
     const flags = hal.saveAndDisableInterrupts();
     defer hal.restoreInterrupts(flags);
     active.push(t, t.priority);
-    return t;
 }
 
 pub fn yield() void {
@@ -883,17 +896,8 @@ pub fn onInterruptExit(from_user: bool) void {
     if (!started) return;
     if (from_user and currentKilled()) exitWith(KILLED_STATUS);
     if (!need_resched) return;
-    // A line being rendered finishes first. `need_resched` stays set, so the
-    // switch happens at the next interrupt after the hold is released.
-    if (no_preempt) return;
     schedule();
 }
-
-/// Held while the console renders one write, so two processes' lines come out
-/// whole rather than interleaved mid-word. One core, so a flag is the whole
-/// mechanism: the holder is the running thread, and nothing else runs until
-/// it clears the flag.
-pub var no_preempt: bool = false;
 
 /// What a killed process reports to whoever waits for it.
 ///

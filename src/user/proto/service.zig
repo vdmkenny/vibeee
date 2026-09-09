@@ -6,7 +6,8 @@
 //! registers nothing and is therefore invisible there, and that is exactly the
 //! one somebody is looking for.
 
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "init";
 
@@ -134,6 +135,9 @@ pub const Error = error{ NoService, Unknown, NotKept, End, Failed, TooLong };
 
 pub const link = Endpoint(SERVICE, Req, Rep, Error);
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;
 
 /// Ask about, or act on, one service.

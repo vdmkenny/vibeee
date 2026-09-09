@@ -164,6 +164,10 @@ fn answer(message: *const sys.Message, body: *proto.Rep, granted: *?u32) proto.S
     // is nothing to say but no.
     if (!ready) return .refused;
 
+    // A tag is a byte a client chose; one this protocol does not define is
+    // unknown rather than something to switch on.
+    if (!proto.known(request.tag)) return .unknown;
+
     return switch (request.tag) {
         .power_off => powerOff(),
         .reboot => restart(),

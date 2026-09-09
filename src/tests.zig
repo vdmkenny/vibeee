@@ -38,6 +38,8 @@ test {
     // own screen and does nothing inside a terminal window.
     _ = @import("user/lib/keys.zig");
     _ = @import("user/lib/ustar.zig");
+    _ = @import("user/netd/ring.zig");
+    _ = @import("user/netd/mii.zig");
     _ = @import("user/lib/time.zig");
     _ = @import("user/lib/paths.zig");
     _ = @import("user/lib/console.zig");

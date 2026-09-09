@@ -14,6 +14,22 @@
 const std = @import("std");
 const sys = @import("sys");
 
+/// Whether a value read off the wire is one of the names this enum defines.
+///
+/// A request's tag is a byte a client chose, and nothing on the way here
+/// makes it one of the names above. Switching on a value that is not one is
+/// not a refusal: in a safe build it is a panic, and in a small one it is a
+/// jump through whatever the table holds there. Either way the process that
+/// every other process is waiting on is gone, which is a far worse answer to
+/// a malformed message than "no".
+///
+/// Asked before a request is dispatched, so an unknown tag is replied to and
+/// the switch below it can stay exhaustive: the compiler still checks that
+/// every tag that *is* defined is handled.
+pub fn known(tag: anytype) bool {
+    return @intFromEnum(tag) < @typeInfo(@TypeOf(tag)).@"enum".fields.len;
+}
+
 /// The two ends of one service.
 ///
 /// `Rep` must open with a `status` field whose type carries a `check` method,

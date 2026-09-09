@@ -11,7 +11,8 @@ const audio = @import("lib").audio;
 /// Public because a client naming a direction is naming the graph's.
 pub const graph = @import("lib").audiograph;
 const sys = @import("sys");
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "audio";
 
@@ -230,6 +231,9 @@ pub const call = link.call;
 pub const callOn = link.callOn;
 pub const callTaking = link.callTaking;
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;
 pub const answerWith = link.answerWith;
 

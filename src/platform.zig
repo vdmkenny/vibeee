@@ -8,6 +8,7 @@
 //! neither imports the other, and this file introduces them.
 
 const std = @import("std");
+const abi = @import("lib").syscalls;
 const Bounded = @import("lib").bounded.Bounded;
 const console = @import("kernel/console.zig");
 const display = @import("kernel/display.zig");
@@ -593,6 +594,13 @@ pub fn enterUserMode(path: []const u8, args: []const []const u8) noreturn {
     // someone to collect it, which is the difference between a zombie that is
     // eventually freed and one that is never freed.
     sched.setInit(t.id);
+
+    // The first process starts with everything, and it is the only one that
+    // does: every program below it is handed the intersection of what it has
+    // and what its parent chose to pass on. Granted here rather than left to a
+    // default, so that a thread which has not been told what it may do has
+    // nothing.
+    t.caps = abi.Caps.all;
 
     // From here the low half of the address space belongs to the process. The
     // thread records it too, so the scheduler restores it after any switch.

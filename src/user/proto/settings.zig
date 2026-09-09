@@ -28,7 +28,8 @@ const config = @import("ulib").config;
 const str = @import("lib").str;
 const sys = @import("sys");
 const theme = @import("eui").theme;
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "cfg";
 
@@ -213,6 +214,9 @@ pub const Error = error{ NoService, NoSuchKey, BadValue, Failed };
 
 pub const link = Endpoint(SERVICE, Req, Rep, Error);
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;
 
 /// The conversation itself failing is one of the ways a setting could not be

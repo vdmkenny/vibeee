@@ -661,7 +661,10 @@ fn collect(index: u8, into: []u8) ?usize {
     // left alone until whoever owns it clears the halt.
     if (token.status.failed()) return null;
 
-    const moved = @as(usize, watches[index].report_bytes) - @as(usize, token.bytes);
+    // Saturating, and then bounded by both sides: what the watch armed and
+    // who is asking. A count the hardware made larger than either would
+    // otherwise be a copy out of the arena and into a caller's buffer.
+    const moved = @as(usize, watches[index].report_bytes) -| @as(usize, token.bytes);
     const wanted = @min(moved, into.len);
     if (wanted != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.reports[index]));
@@ -784,8 +787,11 @@ fn awaitPayload(asked: usize) hc.Error!usize {
         return hc.Error.Timeout;
     }
     // The controller counts down what it did not carry, so a short
-    // answer shows up as bytes left over.
-    return asked - @as(usize, token.bytes);
+    // answer shows up as bytes left over. The count is the hardware's, so it
+    // is bounded rather than subtracted: one that claims more than was asked
+    // for would wrap into a length that runs off the end of `data`.
+    const left = @as(usize, token.bytes);
+    return if (left >= asked) 0 else asked - left;
 }
 
 pub const ops = hc.HcOps{
@@ -882,7 +888,7 @@ fn open(loc: pci.Location) bool {
     const capabilities: Capabilities = @bitCast(capRead(.capabilities));
     controller.wide = capabilities.addresses_64bit;
     takeFromFirmware(capabilities);
-    pci.sizeWindow(loc, 0, MMIO_BYTES, name, "controller");
+    _ = pci.sizeWindow(loc, 0, MMIO_BYTES, name, "controller");
     pci.enableMemoryAndMaster(loc);
 
     controller.arena = device.Dma(Arena).alloc(name) orelse return false;
@@ -1448,7 +1454,11 @@ fn awaitStages(stages: usize, data: []u8, reading: bool, wants_data: bool) hc.Er
     // moved is what was asked for less what is left.
     const asked = arena.stages[1].token.bytes;
     const requested: usize = data.len;
-    const moved = requested - @as(usize, asked);
+    // What moved is what was asked for less what is left, and it is a
+    // hardware count, so it is clamped to what was asked for at all: a
+    // controller that reports more than it was given must not turn into a
+    // copy off the end of either buffer.
+    const moved = requested -| @as(usize, asked);
 
     if (reading and moved != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.buffer));

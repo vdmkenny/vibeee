@@ -627,6 +627,18 @@ const Aim = struct {
     max_packet: u16 = 8,
 };
 
+/// How many descriptors a transfer of `bytes` takes on this pipe.
+///
+/// Asked before the chain is built because a transfer the chain cannot carry
+/// is worse than one that is refused: `packets` stops at the end of the
+/// arena, and a caller told "this many bytes moved" has no way to see that
+/// the rest were never queued at all.
+fn packetsFor(max_packet: u16, bytes: usize) usize {
+    if (bytes == 0) return 1;
+    const size: usize = @max(@min(max_packet, 64), 1);
+    return (bytes + size - 1) / size;
+}
+
 /// Build a chain of descriptors covering `bytes` at `offset` into the
 /// arena's buffer, one per packet, toggling as it goes. Returns how many
 /// descriptors it used.
@@ -713,8 +725,15 @@ fn control(self: *Unit, pipe: usb.Pipe, setup: usb.Setup, data: []u8) hc.Error!u
         @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.buffer)))[usb.Setup.BYTES..][0..data.len], data);
     }
 
+    // The chain is a fixed length. A control transfer it cannot hold is
+    // refused rather than queued part of: what came back would look like a
+    // short answer from the device instead of a schedule that ran out of
+    // room. Two descriptors are the setup and the status stage.
+    if (packetsFor(pipe.max_packet, data.len) + 2 > CHAIN) return hc.Error.Refused;
+
     // Setup is always DATA0, the data stage starts at DATA1 and
     // alternates, and the status stage is always DATA1.
+
     var toggle = false;
     var used = packets(self, 0, .setup, endpoint, 0, usb.Setup.BYTES, &toggle);
 
@@ -772,6 +791,10 @@ fn bulk(self: *Unit, pipe: *usb.Pipe, data: []u8) hc.Error!usize {
     if (writing and data.len != 0) {
         @memcpy(@as([*]u8, @ptrCast(@volatileCast(&arena.buffer)))[0..data.len], data);
     }
+
+    // The same for a bulk transfer: one longer than the descriptor chain
+    // can carry is refused, not sent with the tail quietly missing.
+    if (packetsFor(pipe.max_packet, data.len) > CHAIN) return hc.Error.Refused;
 
     var toggle = pipe.toggle;
     const used = packets(self, 0, if (writing) .out else .in, .{
@@ -928,7 +951,10 @@ fn collect(self: *Unit, index: u8, into: []u8) ?usize {
     if (status.active) return null;
     if (status.failed()) return null;
 
-    const moved = @min(status.bytes(), into.len);
+    // Bounded by what the watch armed as well as by who is asking: the byte
+    // count is the controller's, and one larger than the report it was given
+    // would copy past the end of the arena.
+    const moved = @min(@min(status.bytes(), @as(usize, self.watches[index].report_bytes)), into.len);
     if (moved != 0) {
         const from: [*]const u8 = @ptrCast(@volatileCast(&arena.reports[index]));
         @memcpy(into[0..moved], from[0..moved]);

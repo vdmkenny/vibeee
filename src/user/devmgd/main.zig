@@ -389,6 +389,7 @@ fn noteEnded(pid: u32) void {
 
 fn handle(message: *const sys.Message, token: u32) void {
     const req = proto.requestIn(message) orelse return refuse(token);
+    if (!proto.known(req.tag)) return refuse(token);
 
     switch (req.tag) {
         .claim => claim(req, token),

@@ -1,7 +1,8 @@
 //! What the bus service says about what is plugged in.
 
 const usb = @import("lib").usb;
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "usb";
 
@@ -124,4 +125,7 @@ pub const Error = error{ NoService, Refused, End };
 pub const link = Endpoint(SERVICE, Req, Rep, Error);
 pub const call = link.call;
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;

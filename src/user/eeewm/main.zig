@@ -1002,8 +1002,15 @@ fn serve() bool {
         const request = sys.recv(service, &message, sys.POLL) orelse break;
         handled = true;
 
-        const req: *const wire.Req = @ptrCast(@alignCast(&message.data));
-        const reply = dispatch(message.sender, req, &message);
+        // A client sends bytes, and both of these are answers a client can
+        // provoke rather than things a client can be trusted not to do. The
+        // manager is the desktop: a request it cannot understand is refused,
+        // because the alternative to refusing is the desktop ending.
+        var reply: Answer = .{ .rep = .{ .status = .bad_request, .gen = table.generation } };
+        if (message.len >= @sizeOf(wire.Req)) {
+            const req: *const wire.Req = @ptrCast(@alignCast(&message.data));
+            if (wire.known(req.tag)) reply = dispatch(message.sender, req, &message);
+        }
 
         var answer = sys.Message.init(std.mem.asBytes(&reply.rep), reply.handles);
         sys.replyMsg(service, request.token, &answer) catch {};

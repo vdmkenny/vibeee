@@ -447,6 +447,9 @@ fn drain() void {
 
 fn handle(message: *const sys.Message, token: u32) void {
     const req = proto.requestIn(message) orelse return refuse(token);
+    // A tag is a byte a client chose; one this protocol does not define is
+    // refused rather than switched on, which would end the service.
+    if (!proto.known(req.tag)) return refuse(token);
 
     switch (req.tag) {
         .node_create => nodeCreate(req, message.sender, token),

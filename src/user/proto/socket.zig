@@ -61,11 +61,23 @@ pub const CTRL_BYTES = 4096;
 
 /// How long each ring is: enough TCP for a full window, half that for the
 /// datagrams a small tool exchanges.
+///
+/// Both powers of two, and checked rather than assumed: the ring lands an
+/// index inside itself with a mask, so a length that is not one would alias
+/// two ends of the buffer onto each other and lose bytes without ever
+/// reading out of bounds.
 pub fn ringBytes(kind: Kind) u32 {
     return switch (kind) {
         .tcp => 16384,
         .udp => 8192,
     };
+}
+
+comptime {
+    for (std.enums.values(Kind)) |kind| {
+        const ring = ringBytes(kind);
+        if (ring == 0 or ring & (ring - 1) != 0) @compileError("a ring length must be a power of two");
+    }
 }
 
 pub fn shmBytes(kind: Kind) u32 {

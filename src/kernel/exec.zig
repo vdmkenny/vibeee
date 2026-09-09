@@ -118,10 +118,13 @@ fn start(
     const request = heap.allocator.create(Request) catch return error.OutOfMemory;
     request.* = .{ .entry = loaded.entry, .stack_top = loaded.stack_top, .space = loaded.space };
 
-    const child = sched.spawnAwaited(nameOf(path), .normal, childEntry, @intFromPtr(request), 16384) catch {
+    const child = sched.createAwaited(nameOf(path), .normal, childEntry, @intFromPtr(request), 16384) catch {
         heap.allocator.destroy(request);
         return error.OutOfMemory;
     };
+    // Nothing below may run before the child is published. It is on no run
+    // queue, so a tick here cannot reach it: a child that started before it
+    // was told what it may do would start with whatever a thread defaults to.
     sched.startCwd(child, in);
     child.caps = caps;
 
@@ -137,6 +140,9 @@ fn start(
 
     // The address space is the child's from here; it is freed when the child is
     // reaped, so a parent that never collects still gives the memory back.
+    //
+    // Last: the child is complete now, and this is what lets it run.
+    sched.publish(child);
     return child;
 }
 

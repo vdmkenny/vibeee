@@ -8,7 +8,8 @@
 //! manifests, and nowhere else.
 
 const sys = @import("sys");
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "devices";
 
@@ -132,6 +133,9 @@ pub const Error = error{ NoService, Refused, End };
 pub const link = Endpoint(SERVICE, Req, Rep, Error);
 pub const call = link.call;
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;
 
 /// A service's claim walk, waiting out the manager's own startup: the

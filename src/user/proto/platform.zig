@@ -8,7 +8,8 @@
 
 const lib = @import("lib");
 const sys = @import("sys");
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "platform";
 
@@ -493,6 +494,9 @@ pub const Error = error{ NoService, Refused, End };
 
 pub const link = Endpoint(SERVICE, Req, Rep, Error);
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;
 pub const answerWith = link.answerWith;
 

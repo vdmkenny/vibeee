@@ -728,6 +728,13 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) void {
         reply.status = .failed;
         return;
     };
+    // A tag is a byte a client chose; one this protocol does not define is
+    // refused, because init is what restarts everything else.
+    if (!proto.known(request.tag)) {
+        reply.status = .failed;
+        return;
+    }
+
     switch (request.tag) {
         .list => describe(request.index, reply),
         .start => reply.status = resume_(request.named()),

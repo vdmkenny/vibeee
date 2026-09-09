@@ -38,6 +38,10 @@ pub const Error = error{
 
 pub const Kind = table.Kind;
 
+/// The largest file a directory record can describe: its size field is 32
+/// bits, and this filesystem does not pretend otherwise.
+pub const MAX_FILE_BYTES: u64 = 0xFFFF_FFFF;
+
 /// BIOS Parameter Block. Field order is fixed by the on-disk format.
 const Bpb = extern struct {
     jump: [3]u8,
@@ -242,8 +246,23 @@ pub const Volume = struct {
         return @as(u64, self.cluster_count) * self.clusterSize();
     }
 
+    /// Whether a cluster number names a cluster this volume has.
+    ///
+    /// Every cluster number read off the medium is checked against this
+    /// before it is turned into a sector: a directory record's first cluster
+    /// is whatever the card says it is, and following one that lies outside
+    /// the volume reads or writes sectors belonging to the tables, the root
+    /// directory, or another file entirely.
+    fn clusterValid(self: *const Volume, cluster: u32) bool {
+        return cluster >= 2 and cluster - 2 < self.cluster_count;
+    }
+
     fn firstSectorOfCluster(self: *const Volume, cluster: u32) u32 {
-        return self.first_data_sector + (cluster - 2) * self.sectors_per_cluster;
+        // Wide, then narrowed: `(cluster - 2) * sectors_per_cluster` is done
+        // in 32 bits by every implementation of this filesystem, and a number
+        // big enough to wrap is precisely the one that must not be followed.
+        const offset = @as(u64, cluster - 2) * self.sectors_per_cluster;
+        return self.first_data_sector + @as(u32, @truncate(offset));
     }
 
     /// Follow the allocation chain one link.
@@ -550,6 +569,16 @@ pub const Iterator = struct {
     lfn: LfnBuilder = .{},
     /// Where the long-name run being gathered began.
     run_start: Place = .{},
+    /// How many clusters of this chain have been walked.
+    ///
+    /// A directory is walked until a record says there are no more, and a
+    /// corrupt card can make that never happen: a chain that points back at
+    /// a cluster it already came through is perfectly legal to follow and
+    /// never ends. `freeChain` has the same problem and bounds it the same
+    /// way; a listing that stops early is a corrupt volume reported, where
+    /// one that never stops is a machine that has hung with the volume's lock
+    /// held.
+    chain_steps: u32 = 0,
 
     /// An iterator standing at `place`, for walking forward from a record
     /// whose position was kept.
@@ -675,6 +704,15 @@ pub const Iterator = struct {
             self.done = true;
             return;
         };
+        // No chain is longer than the volume has clusters. Walking more than
+        // that means the chain comes back on itself, which is a card whose
+        // directories cannot be trusted rather than a directory to keep
+        // reading.
+        self.chain_steps += 1;
+        if (self.chain_steps > self.vol.cluster_count) {
+            self.done = true;
+            return;
+        }
         self.cluster = next_cluster;
         self.sector_in_cluster = 0;
         self.sector = self.vol.firstSectorOfCluster(next_cluster);
@@ -698,9 +736,32 @@ pub fn directoryIterator(vol: *Volume, cluster: u32) Iterator {
 /// A subdirectory's ".." entry records cluster 0 when it refers to the root,
 /// because the root has no cluster number on FAT12/16, so that case is mapped
 /// back to the root iterator rather than followed literally.
+///
+/// A record whose first cluster is not a cluster this volume has is answered
+/// with a directory that holds nothing: it is a card that disagrees with
+/// itself, and following the number anyway would read and write sectors that
+/// belong to the tables or to another file.
 pub fn iterate(vol: *Volume, entry: Entry) Iterator {
     if (entry.cluster < 2) return rootIterator(vol);
+    if (!vol.clusterValid(entry.cluster)) return emptyIterator(vol);
     return directoryIterator(vol, entry.cluster);
+}
+
+/// A directory walk that ends at once.
+///
+/// What a corrupt directory is answered with. Everything that reads a
+/// directory already handles one that is empty, and "this holds nothing" is a
+/// truer answer than any sector a lying cluster number points at.
+pub fn emptyIterator(vol: *Volume) Iterator {
+    return .{
+        .vol = vol,
+        .cluster = 0,
+        .sector_in_cluster = 0,
+        .sector = 0,
+        .sectors_left = 0,
+        .index_in_sector = 0,
+        .done = true,
+    };
 }
 
 /// The entry that stands for a volume's root, which has no record of its
@@ -797,7 +858,10 @@ pub fn readAt(vol: *Volume, entry: Entry, offset: u64, buf: []u8) Error!usize {
 
     const cluster_size = vol.clusterSize();
     var cluster = entry.cluster;
-    if (cluster < 2) return error.CorruptChain;
+    // A record's first cluster is the card's word, not ours: one that names a
+    // cluster this volume does not have would read and write sectors that
+    // belong to the tables or to another file.
+    if (!vol.clusterValid(cluster)) return error.CorruptChain;
 
     // Skip whole clusters until the one containing `offset`.
     var skip = offset / cluster_size;
@@ -844,7 +908,10 @@ pub fn readFile(vol: *Volume, entry: Entry, buf: []u8) Error!usize {
     var remaining = entry.size;
     var written: usize = 0;
     var cluster = entry.cluster;
-    if (cluster < 2) return error.CorruptChain;
+    // A record's first cluster is the card's word, not ours: one that names a
+    // cluster this volume does not have would read and write sectors that
+    // belong to the tables or to another file.
+    if (!vol.clusterValid(cluster)) return error.CorruptChain;
 
     var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
 
@@ -885,6 +952,12 @@ pub fn readFile(vol: *Volume, entry: Entry, buf: []u8) Error!usize {
 pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error!usize {
     if (entry.is_dir) return error.IsDirectory;
     if (data.len == 0) return 0;
+
+    // A FAT directory record carries its size in 32 bits, so a write past
+    // that is not a file this filesystem can describe. Refused here rather
+    // than truncated on the way into the record, which would quietly write a
+    // file whose own size says it is nearly empty.
+    if (offset + data.len > MAX_FILE_BYTES) return error.NoSpace;
 
     const cluster_size = vol.clusterSize();
 
@@ -996,6 +1069,9 @@ pub fn resize(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
 /// file cost nothing until something is written to it.
 fn clusterAt(vol: *Volume, entry: *Entry, offset: u64) Error!u32 {
     if (entry.cluster < 2) entry.cluster = try table.alloc(&vol.fat);
+    // Growing a chain from a cluster number that is not this volume's would
+    // write over whatever sector it happens to name.
+    if (!vol.clusterValid(entry.cluster)) return error.CorruptChain;
 
     var cluster = entry.cluster;
     var skip = offset / vol.clusterSize();
@@ -1042,10 +1118,13 @@ fn zeroRange(vol: *Volume, entry: *Entry, from: u64, to: u64) Error!void {
 /// Free whatever lies past the cluster holding byte `size - 1`, and end the
 /// chain there.
 fn dropTail(vol: *Volume, entry: *Entry, size: u32) Error!void {
-    if (entry.cluster < 2) return;
+    if (!vol.clusterValid(entry.cluster)) return;
 
     const per_cluster = vol.clusterSize();
-    const keep = (size + per_cluster - 1) / per_cluster;
+    // `size + per_cluster - 1` wraps for a file within one cluster of 4 GiB,
+    // which would leave `keep` naming fewer clusters than the file has and
+    // free the ones that hold its end.
+    const keep = size / per_cluster + @intFromBool(size % per_cluster != 0);
 
     var cluster = entry.cluster;
     var held: u32 = 1;

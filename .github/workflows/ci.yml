@@ -9,10 +9,20 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # What runs here is everything that does not need a machine to boot on:
 # the formatting, the module layering, the host tests for the system and
-# for the extra applications, and a build of those tests for this runner's
-# architecture as well as whatever they were written on.
+# for the extra applications, a build of those tests for this runner's
+# architecture as well as whatever they were written on, and a build of the
+# kernel and its programs for the machine they actually run on.
+#
+# Building for the target is not optional. Host tests compile the portable
+# halves for this runner, so a tree that does not build for x86-freestanding
+# would otherwise pass every check here and ship an image nobody can boot.
+# `make image` is the step that catches the rest: it links, stages and
+# installs, which is where a missing program or a bad rootfs shows up.
 #
 # The emulator is deliberately not here. `make check-all` boots the image
 # three times, which on a runner with no acceleration takes longer than a
@@ -20,7 +30,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v5
@@ -30,8 +40,24 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Install build tools
+        # qrencode is the reference the panic QR is checked against, and its
+        # absence must fail rather than skip: a skipped check reads as a pass.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qrencode nasm mtools
+
       - name: Formatting, layering and imports
         run: make fmt check
 
       - name: Host tests
         run: make test
+
+      - name: Kernel and programs for the target
+        run: make kernel
+
+      - name: ARM build
+        run: make kernel ARCH=arm
+
+      - name: Boot image
+        run: make image

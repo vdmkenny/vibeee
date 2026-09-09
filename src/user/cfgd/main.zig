@@ -92,6 +92,11 @@ fn answer(message: *const sys.Message, reply: *sys.Message) settings.Status {
     if (bytes.len < @sizeOf(settings.Req)) return .bad_value;
 
     const request: *const settings.Req = @ptrCast(@alignCast(bytes.ptr));
+    // A tag is a byte a client chose. One this protocol does not define is
+    // a bad value, not something to switch on: a cfgd that ends takes every
+    // setting on the machine with it.
+    if (!settings.known(request.tag)) return .bad_value;
+
     const asked = request.parts();
 
     return switch (request.tag) {

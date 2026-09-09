@@ -8,7 +8,20 @@
 set -e
 
 QRDUMP=${QRDUMP:-build/qrdump}
-command -v qrencode >/dev/null || { echo "qrencode not installed; skipping"; exit 0; }
+
+# Not skipped when qrencode is missing. A panic report is the only thing this
+# machine can say for itself when nothing else works, and its encoder is
+# verified against a reference or not at all: a skip here reads as a pass and
+# the one diagnostic that has to be right goes unchecked. SKIP_QR=1 is the way
+# to say you meant to leave it out.
+if ! command -v qrencode >/dev/null; then
+    if [ "${SKIP_QR:-0}" = "1" ]; then
+        echo "qrencode not installed; skipping (SKIP_QR=1)"
+        exit 0
+    fi
+    echo "qrencode not installed: install it, or set SKIP_QR=1 to skip" >&2
+    exit 1
+fi
 
 fail=0
 check() {

@@ -7,7 +7,8 @@
 const lib = @import("lib");
 const socket = @import("socket.zig");
 const sys = @import("sys");
-const Endpoint = @import("endpoint.zig").Endpoint;
+const endpoint = @import("endpoint.zig");
+const Endpoint = endpoint.Endpoint;
 
 pub const SERVICE = "net";
 
@@ -416,6 +417,9 @@ pub const call = link.call;
 pub const callOn = link.callOn;
 pub const callTaking = link.callTaking;
 pub const requestIn = link.requestIn;
+
+/// Whether a request tag is one this protocol defines. See `endpoint.known`.
+pub const known = endpoint.known;
 pub const answer = link.answer;
 
 /// The resolver's end of the same service. One question there carries a name

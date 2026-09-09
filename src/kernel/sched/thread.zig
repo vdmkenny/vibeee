@@ -75,7 +75,12 @@ pub const Thread = struct {
 
     /// What this process may do. Inherited at spawn and never widened, so the
     /// tree below a process can only ever be able to do less than it can.
-    caps: abi.Caps = abi.Caps.all,
+    ///
+    /// Nothing, until something grants it. A thread that has not been told
+    /// what it may do can do nothing, which is the answer a thread caught
+    /// half-built deserves; the alternative is a default that hands out
+    /// everything to whoever gets there first.
+    caps: abi.Caps = .{},
 
     /// Asked to end by something other than itself. Acted on at the next
     /// return to userspace, never where it was noticed: a thread killed part
