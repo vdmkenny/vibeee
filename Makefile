@@ -503,10 +503,11 @@ check:
 	$(ZIG) build check
 
 # Everything a change passes before it is done, in the order the cheap ones
-# come first. The last steps boot the development image headless twice and
-# read the serial transcript: the boot reports ready, the probe's refusals
-# all hold, no service failed, nothing panicked or tripped the watchdog, and
-# a setting written on the first boot is read back on the second.
+# come first. The last steps boot the development image headless and read the
+# serial transcript: the boot reports ready, the probe's refusals all hold, no
+# service failed, nothing panicked or tripped the watchdog, a setting written
+# on the first boot is read back on the second, and each network adapter the
+# emulator has comes up, takes a lease and answers an echo.
 #
 # The partition offsets are passed in so that the script has no copy of the
 # image layout to fall out of step with.
