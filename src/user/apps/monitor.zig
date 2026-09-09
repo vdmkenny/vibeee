@@ -420,7 +420,7 @@ fn readHome() void {
     home = null;
 
     var buf: [mounts.TEXT]u8 = undefined;
-    _ = mounted.read(info.ask("mounts", &buf));
+    _ = mounted.read(info.ask("mounts", &buf), .all);
     for (mounted.slice()) |volume| {
         if (!std.mem.eql(u8, volume.path(), HOME) or !volume.known()) continue;
         home = volume;

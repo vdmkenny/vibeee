@@ -482,7 +482,7 @@ var places: mounts.List = .{};
 /// Read what is mounted. Says whether anything changed.
 fn readPlaces() bool {
     var buf: [mounts.TEXT]u8 = undefined;
-    return places.read(info.ask("mounts", &buf));
+    return places.read(info.ask("mounts", &buf), .all);
 }
 
 /// A medium can arrive while the window is open, and nothing tells a

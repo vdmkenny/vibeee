@@ -25,6 +25,21 @@ pub const MAX = 8;
 pub const PATH = 64;
 pub const TEXT = 512;
 
+/// Where a person's own files are, and where a volume the bus finds is put.
+/// Everything else mounted is the machine's own.
+pub const HOME = "/home";
+pub const MEDIA = "/media";
+
+/// Which volumes a caller wants out of the table.
+pub const Want = enum {
+    /// Everything mounted, which is what a file manager shows.
+    all,
+    /// The ones a person keeps files on: home, and whatever is plugged in.
+    /// The root and the settings volume are the machine's own, and a window
+    /// about somebody's photographs has no business offering them.
+    personal,
+};
+
 /// One volume. How full it is is optional because a device may not say.
 pub const Volume = struct {
     at: Bounded(u8, PATH) = .{},
@@ -49,6 +64,12 @@ pub const Volume = struct {
             if (whole[at - 1] == '/') return whole[at..];
         }
         return whole;
+    }
+
+    /// Whether this is a volume a person keeps their own files on.
+    pub fn personal(self: *const Volume) bool {
+        const at = self.path();
+        return std.mem.eql(u8, at, HOME) or std.mem.startsWith(u8, at, MEDIA ++ "/");
     }
 
     /// Whether the device said how full it is.
@@ -85,7 +106,7 @@ pub const List = struct {
 
     /// Take the table apart. True when it says something different from the
     /// last one, which is the only time a caller has anything to redraw.
-    pub fn read(self: *List, text: []const u8) bool {
+    pub fn read(self: *List, text: []const u8, want: Want) bool {
         const kept = text[0..@min(text.len, self.seen.len)];
         if (kept.len == self.seen_len and std.mem.eql(u8, kept, self.seen[0..self.seen_len])) {
             return false;
@@ -97,6 +118,7 @@ pub const List = struct {
         var lines = str.lines(self.seen[0..self.seen_len]);
         while (lines.next()) |line| {
             const one = parse(str.trim(line)) orelse continue;
+            if (want == .personal and !one.personal()) continue;
             self.items.append(one) catch break;
         }
         return true;
@@ -154,7 +176,7 @@ const TABLE =
 
 test "a table reads as one volume per line" {
     var list = List{};
-    try testing.expect(list.read(TABLE));
+    try testing.expect(list.read(TABLE, .all));
     try testing.expectEqual(@as(usize, 4), list.slice().len);
 
     try testing.expectEqualStrings("/home", list.slice()[3].path());
@@ -170,11 +192,11 @@ test "a table reads as one volume per line" {
 
 test "the same table twice says nothing changed" {
     var list = List{};
-    try testing.expect(list.read(TABLE));
-    try testing.expect(!list.read(TABLE));
+    try testing.expect(list.read(TABLE, .all));
+    try testing.expect(!list.read(TABLE, .all));
 
     // A volume gone is a different table, and the list follows it.
-    try testing.expect(list.read("/ on rd0 free=1 size=2"));
+    try testing.expect(list.read("/ on rd0 free=1 size=2", .all));
     try testing.expectEqual(@as(usize, 1), list.slice().len);
 }
 
@@ -204,9 +226,24 @@ test "a line naming no volume is not one" {
     try testing.expectEqual(@as(?Volume, null), parse("free=1 size=2"));
 }
 
+test "a window about somebody's files is offered only their volumes" {
+    var list = List{};
+    try testing.expect(list.read(TABLE, .personal));
+
+    // Home and what is plugged in; not the root, and not the settings.
+    try testing.expectEqual(@as(usize, 2), list.slice().len);
+    try testing.expectEqualStrings("/media/hd0p1", list.slice()[0].path());
+    try testing.expectEqualStrings("/home", list.slice()[1].path());
+
+    // A name that merely begins the same is not one of them.
+    try testing.expect(!parse("/homework on x").?.personal());
+    try testing.expect(!parse("/mediaeval on x").?.personal());
+    try testing.expect(parse("/media/sd0 on x").?.personal());
+}
+
 test "a path is on the longest mount point it lies under" {
     var list = List{};
-    _ = list.read(TABLE);
+    _ = list.read(TABLE, .all);
 
     try testing.expectEqual(@as(?usize, 3), list.holding("/home/pictures/photo.jpg"));
     try testing.expectEqual(@as(?usize, 1), list.holding("/media/hd0p1/DCIM"));
@@ -227,6 +264,6 @@ test "a table longer than one holds is cut rather than run past" {
         built.number(n);
         built.text(" on d free=1 size=2\n");
     }
-    _ = list.read(built.done());
+    _ = list.read(built.done(), .all);
     try testing.expect(list.slice().len <= MAX);
 }
