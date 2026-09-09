@@ -685,8 +685,8 @@ pub const Player = struct {
     /// samples came out at that rate. The mixer wants the ratio of that
     /// rate to the one it is running at, which is the same division done
     /// once: no rate is worked out and rounded on the way.
-    fn stepFor(self: *const Player, period: u16) u64 {
-        if (period == 0) return 0;
+    fn stepFor(self: *const Player, period: u16) audio.Step {
+        if (period == 0) return .{};
         return audio.stepFor(PAULA_HZ, 2 * @as(u32, period) * self.rate);
     }
 
@@ -883,7 +883,8 @@ test "a note starts its instrument at the pitch the cell asked for" {
     // Middle C on the Amiga came out at about 8287 samples a second, so
     // against 48000 the source moves about a sixth of a sample a frame.
     const step = play.stepFor(428);
-    try testing.expect(step > 11000 and step < 11700);
+    try testing.expectEqual(@as(usize, 0), step.whole);
+    try testing.expect(step.fraction > 11000 and step.fraction < 11700);
 }
 
 test "a set volume command is obeyed at once" {
