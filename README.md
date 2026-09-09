@@ -23,8 +23,8 @@ make check-all             # format, checks, tests, images, and QEMU boot checks
 ```
 
 `check-all` also boots the two network adapters QEMU can emulate (e1000 and
-rtl8139) and asserts each one comes up, takes a lease and answers an echo. The
-Eee PC's own wired part and its radio have no model, so they are only ever
+rtl8139) and checks that each comes up, takes a lease and answers an echo. The
+Eee PC's own wired part and its radio have no QEMU model, so they are only
 tested on the machine.
 
 The system starts at a shell. Run `svc start eeewm` to launch the desktop.

@@ -6,21 +6,22 @@ lwIP, vendored verbatim from upstream.
   fetched:   2026-09-09
   licence:   BSD 3-Clause (COPYING)
 
-Every file here is the release's own, byte for byte, and none of it is
-edited, added to, or compiled with local patches. What is vendored is the
-subset this port uses: src/core, src/include and src/netif, which is what
-netd compiles and the headers those sources include. src/api and src/apps
-are not here because nothing builds them.
+Every file here is the release's own, byte for byte. Nothing is edited, added
+to, or patched.
 
-Adaptations live outside this tree, as they must for an update to be a
-re-fetch rather than a merge:
+Vendored: src/core, src/include and src/netif, which is what netd compiles and
+the headers those sources include. src/api and src/apps are not here because
+nothing builds them.
 
-  src/user/netd/lwipport/lwipopts.h    the configuration
+Adaptations are outside this tree, so an update is a re-fetch rather than a
+merge:
+
+  src/user/netd/lwipport/lwipopts.h    configuration
   src/user/netd/lwipport/arch/cc.h     compiler and platform hooks
   src/user/netd/lwip.zig               the Zig mirror and the C-calls-Zig
-                                       boundary, whose struct offsets are
-                                       pinned by lwipport/layout_check.c
+                                       boundary; lwipport/layout_check.c pins
+                                       the struct offsets it relies on
 
-Re-vendoring: fetch a release, replace the three directories above with the
-release's own, then build netd -- layout_check.c fails the compile if any
-struct the Zig mirror relies on has moved.
+To update: fetch a release, replace the three directories with the release's
+own, then build netd. layout_check.c fails the build if a struct the mirror
+uses has moved.

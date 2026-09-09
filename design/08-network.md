@@ -95,19 +95,19 @@ timeout: sys_timeouts_sleeptime()   (lwIP's next timer, FOREVER when it has none
 
 ### 3.2 lwIP integration
 
-Vendored at `third_party/lwip` (release tag, pinned in `COMMIT`: upstream, tag,
-commit, date; `src/core`, `src/include`, `src/netif`), compiled into netd by the
-same build pattern as uACPI. Nothing under it is edited. Configuration is
-`lwipopts.h`; adaptation is `lwip.zig` and `lwipport/arch/cc.h`. An update is a
-re-fetch, and `layout_check.c` fails the build if a struct the mirror relies on
-moves. The port surface in `NO_SYS` mode is three functions and a header:
+Vendored at `third_party/lwip` as an upstream release, pinned by `COMMIT`
+(upstream, tag, commit, date). Only `src/core`, `src/include` and `src/netif`
+are vendored, and none of it is edited. Configuration lives in `lwipopts.h` and
+adaptation in `lwip.zig` and `lwipport/arch/cc.h`, so updating is a re-fetch.
+`layout_check.c` fails the build if a struct the Zig mirror uses moves.
+The port surface in `NO_SYS` mode is three functions and a header:
 
 - `sys_now()`: milliseconds from `clockMicros() / 1000`.
 - `LWIP_RAND()`: the `random` syscall (§6.10), falling back to a counter and the
   clock when the pool is empty.
 - `LWIP_HOOK_TCP_ISN`: the initial sequence number, drawn the same way and mixed
   with the four-tuple. lwIP's own is a counter stepped by its timer ticks, which
-  is reproducible off-path.
+  an off-path host can reproduce.
 - `lwipopts.h`, the decisions that matter:
   - `NO_SYS=1`, `LWIP_NETCONN=0`, `LWIP_SOCKET=0`: raw callback API only. No OS
     emulation layer, no threads, no mailboxes.
@@ -121,13 +121,13 @@ moves. The port surface in `NO_SYS` mode is three functions and a header:
     lwIP ships it. Sized against the pools that exist; `MEMP_NUM_TCP_SEG` covers
     more than one connection, so one bulk transfer cannot take every segment.
   - `MEMP_NUM_SYS_TIMEOUT` is the internal count plus four. At the default lwIP
-    uses all of it, and the next `sys_timeout` (the ping op's) fails.
+    uses all of them and the next `sys_timeout` (the ping op's) fails.
   - `TCP_OOSEQ_MAX_PBUFS=8`, `TCP_OOSEQ_MAX_BYTES=4*TCP_MSS`. Both default to
     unlimited.
   - `TCP_LISTEN_BACKLOG=1`. Without it the backlog argument is compiled out and
-    half-open connections spend the pcb pool directly.
-  - `LWIP_NOASSERT` outside debug builds: the port's assert handler exits, so one
-    tripped invariant would end networking for the machine.
+    half-open connections use the pcb pool directly.
+  - `LWIP_NOASSERT` outside debug builds. The port's assert handler exits, so a
+    failed invariant would end networking for the whole machine.
   - All checksums in software (`CHECKSUM_GEN_*`, `CHECKSUM_CHECK_*` on): no NIC here
     offloads any of them.
   - `LWIP_NETIF_STATUS_CALLBACK=1`, `LWIP_NETIF_LINK_CALLBACK=1`: address and link
@@ -159,22 +159,22 @@ As implemented in `src/user/netd/dev.zig`: `open`, `start`, `stop`, `irq`,
 stack consumes rx via the netif glue and sees a radio as an ethernet netif
 carrying ethertype frames.
 
-Two more entries are optional. `poll` services the adapter with no interrupt
-behind it: an adapter the firmware routed nowhere, or a line that has gone quiet
-— on this board the PIRQ pins ride the falling edge, so an edge missed is one
-that never comes again. `service` runs work a driver owes between passes, which
-is where a reset belongs: `irq` holds the line while it runs.
+Two entries are optional. `poll` services an adapter with no interrupt behind
+it: one the firmware routed nowhere, or one whose line has gone quiet. On this
+board the PIRQ pins ride the falling edge, so a missed edge never repeats.
+`service` runs work a driver owes between passes, such as a reset, because
+`irq` holds the line while it runs.
 
-Drivers do not write their own interrupt loop. They supply `cause`,
-`acknowledge` and `service` to `dev.serveIrq`, which owns the bounded rounds,
-the hold across the work, and the re-read on exit that counts `stats.irq_late`
-when a cause latched during the last pass.
+Drivers do not write their own interrupt loop. They provide `cause`,
+`acknowledge` and `service` to `dev.serveIrq`, which bounds the rounds, holds
+the line during the work, and re-reads the cause on exit; a cause still latched
+is counted in `stats.irq_late`.
 
-Device memory is held as `dma.Arena(Body)`: one value carrying the pointer, the
-mapping, the physical address and the handle, acquired and released whole. Ring
-index arithmetic is `ring.Cursor` (`used`, `room`, `advance`), so the wrap is
-written once. Link state is read from the PHY by the driver and interpreted by
-`mii`, which is the part 802.3 actually defines.
+Device memory is held as `dma.Arena(Body)`: one value with the pointer, the
+mapping, the physical address and the handle, acquired and released together.
+Ring indices use `ring.Cursor` (`used`, `room`, `advance`) so the wrap
+arithmetic is written once. Link state is read from the PHY by the driver and
+interpreted by `mii`, which covers the registers 802.3 defines.
 
 A radio carries one field more: `radio`, a table of what a radio can be asked
 that a wire cannot. Tuning, what it is tuned to, the power ceiling, calibration,

@@ -92,32 +92,23 @@ orientation above all, it steps over, so `src/lib/exif.zig` reads that here.
 
 The lwIP TCP/IP stack, BSD 3-Clause. See `lwip/COPYING`. Pinned at release
 `STABLE-2_2_1_RELEASE` (2.2.1), commit
-`77dcd25a72509eb83f72b033d219b1d40cd8eb95`; `lwip/COMMIT` records the fetch.
+`77dcd25a72509eb83f72b033d219b1d40cd8eb95`. `lwip/COMMIT` records upstream,
+tag, commit and date.
 
-**Unmodified, and kept that way.** Every vendored file is the release's own
-byte for byte: no local patch, no edited line. What is vendored is the subset
-this port compiles (`src/core`, `src/include`, `src/netif`); `src/api` and
-`src/apps` are not here because nothing builds them. The stack is configured
-from outside the tree, by `src/user/netd/lwipport/lwipopts.h`, and adapted
-from outside it too -- the platform hooks, the struct mirror and the
-C-calls-Zig boundary are `src/user/netd/lwip.zig` and
-`src/user/netd/lwipport/arch/cc.h`. Nothing in `lwip/` knows this system
-exists, so an update is a re-fetch of a release rather than a merge.
+Nothing under `lwip/` is edited. Vendored: `src/core`, `src/include` and
+`src/netif`, which is what netd compiles and the headers those sources include.
+`src/api` and `src/apps` are absent because nothing builds them. Configuration
+is `src/user/netd/lwipport/lwipopts.h`; the platform hooks, the struct mirror
+and the C-calls-Zig boundary are `src/user/netd/lwip.zig` and
+`src/user/netd/lwipport/arch/cc.h`. Updating is a re-fetch of a release, not a
+merge.
 
-2.2.1 rather than the 2.2.0 this tree arrived with: the releases between them
-carry the fixes in `dhcp.c`, `dns.c` and `ip4_frag.c` that a stack parsing
-packets anybody can send wants to have.
+It is compiled into netd and only netd, in `NO_SYS` mode with the raw callback
+API: one thread, one event loop, timers driven from that loop's wait deadline.
 
-It is compiled into `netd` and only `netd`, in `NO_SYS` mode with the raw
-callback API: one thread, one event loop, and timers driven from that loop's
-own wait deadline rather than by a thread of their own.
-
-Chosen over writing a stack because a TCP is a decade of congestion and
-retransmit behaviour that a from-scratch implementation gets wrong in ways
-that only appear on somebody else's network, and because the parts this
-machine actually owns -- the drivers, the supplicant, the socket bridge and
-the wire formats it parses for itself -- are all on this side of the seam
-already.
+2.2.1 rather than the 2.2.0 this tree arrived with because the releases between
+them fix `dhcp.c`, `dns.c` and `ip4_frag.c`, which parse what anybody on the
+network can send.
 
 ## ath_hal (Atheros radio reference)
 
