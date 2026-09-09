@@ -99,7 +99,11 @@ pub fn attach(nic: *dev.NicDev) void {
         slot.nic = null;
         return;
     }
-    slot.netif.num = @intCast(count);
+    // Not numbered by us. netif_add walks the list to give every netif a
+    // number no other one holds, and the loopback already holds zero: writing
+    // our own over it puts two netifs on the same index, after which
+    // netif_get_by_index and every pcb's if_idx name whichever one they find
+    // first. "en1" on a machine with a loopback is the honest answer.
     if (count == 0) lwip.netif_set_default(&slot.netif);
     count += 1;
     refreshDefault();
@@ -566,6 +570,11 @@ var ping_pcb: ?*lwip.RawPcb = null;
 var ping_busy = false;
 var ping_ident: u16 = 0;
 var ping_sequence: u16 = 0;
+/// Who the echo went to, in the same order every address is held in: what
+/// `ipv4.source` answers with. A raw pcb is handed every ICMP packet on the
+/// interface, and the identifier is the only other thing a forger has to
+/// guess.
+var ping_source: u32 = 0;
 var ping_sent_at: u64 = 0;
 var ping_done: ?PingDone = null;
 var ping_timed_out: ?PingTimeout = null;
@@ -577,14 +586,20 @@ pub fn ping(addr: u32, timeout_ms: u32, done: PingDone, timed_out: PingTimeout) 
 
     const pcb = ping_pcb orelse blk: {
         const fresh = lwip.raw_new(lwip.PROTO_ICMP) orelse return false;
-        if (lwip.raw_bind(fresh, &.{}) != .ok) return false;
+        if (lwip.raw_bind(fresh, &.{}) != .ok) {
+            // Four of these and the op refuses for the rest of the boot, so
+            // a pcb that will not bind is one that has to go back.
+            lwip.raw_remove(fresh);
+            return false;
+        }
         lwip.raw_recv(fresh, pingReply, null);
         ping_pcb = fresh;
         break :blk fresh;
     };
 
     ping_sequence +%= 1;
-    ping_ident = @truncate(@as(u32, @intCast(sys.clockMicros())) | 1);
+    ping_ident = randomIdent() orelse return false;
+    ping_source = addr;
 
     const p = lwip.pbuf_alloc(.ip, icmp.MESSAGE, .ram) orelse return false;
     var message: [icmp.MESSAGE]u8 = undefined;
@@ -615,6 +630,16 @@ const VersionIhl = packed struct(u8) {
     version: u4,
 };
 
+/// An identifier nobody can predict. The clock is not a secret, and the
+/// identifier is the only thing standing between a raw pcb and a forged
+/// reply; a machine with no entropy to give has no business reporting a
+/// round trip it cannot attribute.
+fn randomIdent() ?u16 {
+    var bytes: [2]u8 = undefined;
+    if (!sys.random(&bytes)) return null;
+    return std.mem.readInt(u16, &bytes, .big) | 1;
+}
+
 fn pingReply(_: ?*anyopaque, _: *lwip.RawPcb, p: *lwip.Pbuf, _: *const lwip.Ip4Addr) callconv(.c) u8 {
     if (!ping_busy) return 0;
 
@@ -624,8 +649,24 @@ fn pingReply(_: ?*anyopaque, _: *lwip.RawPcb, p: *lwip.Pbuf, _: *const lwip.Ip4A
 
     const shape: VersionIhl = @bitCast(packet[0]);
     const header: usize = @as(usize, shape.ihl) * 4;
-    if (shape.version != 4 or have < header) return 0;
-    if (!icmp.isReply(packet[header..have], ping_ident, ping_sequence)) return 0;
+    if (shape.version != 4 or header < ipv4.HEADER_MIN or have < header) return 0;
+
+    // Who sent it, and whether the message itself checks out: a raw pcb sees
+    // ICMP before the stack has verified anything past the IP header, so an
+    // off-path host that guesses the identifier could otherwise answer for a
+    // host that never saw us. Both are cheap and both are worth refusing.
+    //
+    // The address is read by `ipv4`, not by hand. Reading it out of the
+    // header here is how an endianness disagreement becomes a difference
+    // between one driver and another: the bytes are the wire's order, the
+    // address being compared against is ours, and whether they agree is the
+    // one thing the address library exists to know.
+    const from = ipv4.source(packet[0..have]) orelse return 0;
+    if (from != ping_source) return 0;
+
+    const reply = packet[header..have];
+    if (!icmp.isReply(reply, ping_ident, ping_sequence)) return 0;
+    if (icmp.checksum(reply) != 0) return 0;
 
     const done = ping_done;
     finishPing();

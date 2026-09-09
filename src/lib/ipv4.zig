@@ -121,6 +121,29 @@ pub fn parse(dotted: []const u8) ?u32 {
         octets[3];
 }
 
+/// The source address of a packet, in host order.
+///
+/// The one order this library speaks: `parse` produces it, `text` prints it,
+/// and every address a caller holds is in it. A header on the wire is
+/// big-endian, so reading one is a conversion and not a copy, and a caller
+/// that skips the conversion answers "not the host we asked" for every
+/// address whose octets are not a palindrome. Kept here so there is one
+/// place that knows which way round an address on a wire is.
+pub fn source(packet: []const u8) ?u32 {
+    if (packet.len < SOURCE_END) return null;
+    return std.mem.readInt(u32, packet[SOURCE_AT..][0..4], .big);
+}
+
+/// Where the source address sits in a header, and how much of one there is
+/// before options. Twenty bytes, the fixed part: everything before them is
+/// where every header begins.
+const SOURCE_AT = 12;
+const SOURCE_END = 20;
+
+/// The shortest a header can be: no options. What a caller checks a length
+/// against before it reads one.
+pub const HEADER_MIN = SOURCE_END;
+
 /// The address and a port, "10.0.2.2:6666", for everything that names a
 /// conversation's far end. Needs no more than twenty-one bytes.
 pub fn textWithPort(addr: u32, port: u16, field: *[21]u8) []const u8 {
@@ -209,6 +232,24 @@ test "an address is one address, and nothing else is" {
     // Nothing written is not an address either. Whether one was chosen is the
     // field's question, asked as `?Address`, and not this one's.
     try std.testing.expectEqual(null, Address.parse(""));
+}
+
+test "a packet's source comes back in the order addresses are held in" {
+    // 192.168.178.1 on the wire: big-endian, the opposite of how `parse`
+    // spells the same address back.
+    var packet: [20]u8 = @splat(0);
+    packet[0] = 0x45;
+    packet[12] = 192;
+    packet[13] = 168;
+    packet[14] = 178;
+    packet[15] = 1;
+
+    const from = source(&packet) orelse return error.TestFailed;
+    try std.testing.expectEqual(parse("192.168.178.1").?, from);
+
+    // A short header is not an address, and a caller that reads one anyway
+    // is how a length becomes a number with no meaning.
+    try std.testing.expectEqual(@as(?u32, null), source(packet[0..13]));
 }
 
 test "a pair holds one or two addresses" {

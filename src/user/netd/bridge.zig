@@ -7,10 +7,17 @@
 //! socket table on each doorbell wake, which is what keeps the wait set
 //! fixed however many sockets exist.
 //!
-//! Slots own their segment for the service's lifetime and hand the same
-//! one to each successive socket, because segments cannot be unmapped:
-//! reuse makes socket churn allocation-free. One socket lives on a slot
-//! at a time; the tools are this machine's own.
+//! A socket's segment and event belong to that socket alone, and go back
+//! when it does. Reusing a slot's segment across sockets was cheaper and
+//! was also a hole: a client that closed still held the handles, and the
+//! next client granted that slot inherited a segment and an event somebody
+//! else could still write. Segments can be unmapped, so the saving was not
+//! worth the company.
+//!
+//! Who is asking, also: the kernel attests the sender on every message, and
+//! a socket belongs to the process that asked for it. Closing or accepting
+//! somebody else's socket is refused, which is the whole of the isolation
+//! between one client's streams and another's.
 //!
 //! Establishment is deferred the way ping is: the reply token waits for
 //! the handshake, the next connection, or the resolver, so a client's
@@ -30,17 +37,41 @@ const MAX_RESOLVES = 4;
 const BACKLOG = 4;
 const HOSTS_PATH = "/etc/hosts";
 
+/// How long a cached `/etc/hosts` is believed.
+const HOSTS_TTL_US = 2 * 1_000_000;
+
+/// How many sockets one process may hold at once. Half the table: every
+/// socket is a shared segment and an event, and a client that can take all
+/// eight can lock every other program on the machine out of the network by
+/// opening eight and going to sleep.
+const MAX_SOCKS_PER_CLIENT = 4;
+
+/// How many deferred actions one reap may queue for the loop.
+const MAX_DEFERRED = 4;
+
 const Kind = enum { free, tcp, listener, udp };
 
 const Sock = struct {
     kind: Kind = .free,
+    /// Who asked for this socket. Nobody else may close it, and nobody
+    /// else may accept from it.
+    owner: u32 = 0,
     tcp: ?*lwip.TcpPcb = null,
     udp: ?*lwip.UdpPcb = null,
 
-    /// The slot's permanent segment and event, made on first use.
+    /// This socket's own segment and event, made when it is granted and
+    /// given back when it ends. `base` is kept because closing a handle is
+    /// not unmapping: without it every socket costs the mapping too.
     shm: u32 = 0,
     ev_app: u32 = 0,
+    base: ?[*]u8 = null,
     view: ?socket.View = null,
+
+    /// Where the socket stands, held here as well as in the control page.
+    /// The client can write anything into shared memory, so what netd
+    /// decides by is its own copy; the page is what it tells the client.
+    state: socket.State = .opening,
+    cause: socket.Cause = .none,
 
     /// A connect or accept whose reply waits.
     pending: bool = false,
@@ -56,6 +87,12 @@ const Sock = struct {
 
     peer_addr: u32 = 0,
     peer_port: u16 = 0,
+
+    /// Whether `who` is the process this socket belongs to. The one check
+    /// standing between one client and another client's stream.
+    pub fn mine(self: *const Sock, who: u32) bool {
+        return self.owner != 0 and self.owner == who;
+    }
 };
 
 var socks: [MAX_SOCKS]Sock = @splat(.{});
@@ -81,15 +118,20 @@ pub fn init(channel: u32) ?u32 {
 
 /// One request from the channel. Everything socket-shaped lands here; the
 /// reply goes out now or when the network answers.
+///
+/// The sender rides along. The kernel attests it, so it is the one fact
+/// about a caller that cannot be forged, and a socket without one is a
+/// socket any process may close.
 pub fn handle(message: *const sys.Message, token: u32) void {
     const req = proto.requestIn(message) orelse return refuse(token);
+    const who = message.sender;
 
     switch (req.tag) {
-        .tcp_connect => tcpConnect(req, token),
-        .tcp_listen => tcpListen(req, token),
-        .tcp_accept => tcpAccept(req, token),
-        .udp_open => udpOpen(req, token),
-        .sock_close => sockClose(req, token),
+        .tcp_connect => tcpConnect(req, who, token),
+        .tcp_listen => tcpListen(req, who, token),
+        .tcp_accept => tcpAccept(req, who, token),
+        .udp_open => udpOpen(req, who, token),
+        .sock_close => sockClose(req, who, token),
         .resolve => resolve(message, token),
         else => refuse(token),
     }
@@ -114,8 +156,8 @@ pub fn drainRings() void {
 // Ops
 // ---------------------------------------------------------------------------
 
-fn tcpConnect(req: *const proto.Req, token: u32) void {
-    const s = takeSlot(.tcp) orelse return refuse(token);
+fn tcpConnect(req: *const proto.Req, who: u32, token: u32) void {
+    const s = takeSlot(.tcp, who) orelse return refuse(token);
     const pcb = lwip.tcp_new() orelse {
         s.kind = .free;
         return refuse(token);
@@ -138,8 +180,8 @@ fn tcpConnect(req: *const proto.Req, token: u32) void {
     s.pending_token = token;
 }
 
-fn tcpListen(req: *const proto.Req, token: u32) void {
-    const s = takeSlot(.listener) orelse return refuse(token);
+fn tcpListen(req: *const proto.Req, who: u32, token: u32) void {
+    const s = takeSlot(.listener, who) orelse return refuse(token);
     const fresh = lwip.tcp_new() orelse {
         s.kind = .free;
         return refuse(token);
@@ -166,29 +208,31 @@ fn tcpListen(req: *const proto.Req, token: u32) void {
     // The grant carries the readiness event: a count per connection waiting
     // in the backlog, so a listener can sit in wait_many beside a stop
     // event instead of blocking inside accept.
-    if (slotEvent(s) == null) {
-        dropPcb(s);
+    const event = sys.eventCreate() catch {
+        lwip.tcp_abort(listening);
         s.kind = .free;
         return refuse(token);
-    }
-    while (true) sys.eventWait(s.ev_app, sys.POLL) catch break;
+    };
+    s.ev_app = event;
+
+    // Drained, but bounded: the event counts, and a client holding one that
+    // has been signalled often enough could otherwise keep the service in
+    // this loop while every other socket waits.
+    for (0..MAX_DEFERRED) |_| sys.eventWait(event, sys.POLL) catch break;
 
     var reply = proto.Rep{ .body = .{ .listener = indexOf(s) } };
-    var message = sys.Message.init(std.mem.asBytes(&reply), &.{s.ev_app});
-    sys.replyMsg(service, token, &message) catch {};
+    var message = sys.Message.init(std.mem.asBytes(&reply), &.{event});
+    sys.replyMsg(service, token, &message) catch {
+        sys.close(event);
+        s.ev_app = 0;
+        lwip.tcp_abort(listening);
+        release(s);
+    };
 }
 
-/// The slot's event, made on first use and kept for the service's lifetime
-/// like the segment.
-fn slotEvent(s: *Sock) ?u32 {
-    if (s.ev_app == 0) {
-        s.ev_app = sys.eventCreate() catch return null;
-    }
-    return s.ev_app;
-}
-
-fn tcpAccept(req: *const proto.Req, token: u32) void {
+fn tcpAccept(req: *const proto.Req, who: u32, token: u32) void {
     const s = sockAt(req.index, .listener) orelse return refuse(token);
+    if (!s.mine(who)) return refuse(token);
     if (s.pending) return refuse(token);
 
     // A connection that arrived before the question is answered from the
@@ -196,7 +240,7 @@ fn tcpAccept(req: *const proto.Req, token: u32) void {
     for (&s.backlog) |*held| {
         if (held.*) |pcb| {
             held.* = null;
-            grantAccepted(pcb, token);
+            grantAccepted(pcb, who, token);
             return;
         }
     }
@@ -204,9 +248,9 @@ fn tcpAccept(req: *const proto.Req, token: u32) void {
     s.pending_token = token;
 }
 
-fn udpOpen(req: *const proto.Req, token: u32) void {
-    const s = takeSlot(.udp) orelse return refuse(token);
-    const view = slotView(s, .udp) orelse {
+fn udpOpen(req: *const proto.Req, who: u32, token: u32) void {
+    const s = takeSlot(.udp, who) orelse return refuse(token);
+    _ = openView(s, .udp) orelse {
         s.kind = .free;
         return refuse(token);
     };
@@ -237,26 +281,20 @@ fn udpOpen(req: *const proto.Req, token: u32) void {
 
     s.peer_addr = req.param;
     s.peer_port = ports.remote;
-    view.ctrl.state = .established;
+    setState(s, .established, .none);
     _ = grant(s, token, .udp);
 }
 
-fn sockClose(req: *const proto.Req, token: u32) void {
-    const index = req.index;
-    if (index >= MAX_SOCKS) return refuse(token);
-    const s = &socks[index];
+fn sockClose(req: *const proto.Req, who: u32, token: u32) void {
+    const s = sockAt(req.index, null) orelse return refuse(token);
+    if (!s.mine(who)) return refuse(token);
 
     switch (s.kind) {
         .tcp => {
             // What the client pushed before asking to finish still goes
             // out; the FIN follows the data.
             drainTcpTx(s);
-            if (s.view) |view| {
-                if (view.ctrl.state != .closed) {
-                    view.ctrl.state = .closed;
-                    view.ctrl.cause = .finished;
-                }
-            }
+            if (s.state != .closed) setState(s, .closed, .finished);
             dropHeld(s);
             if (s.tcp) |pcb| {
                 quietPcb(pcb);
@@ -291,7 +329,7 @@ fn sockClose(req: *const proto.Req, token: u32) void {
         .free => return refuse(token),
     }
 
-    s.kind = .free;
+    release(s);
     var reply = proto.Rep{};
     replyPlain(token, &reply);
 }
@@ -304,9 +342,11 @@ fn resolve(message: *const sys.Message, token: u32) void {
     if (name.len == 0) return refuse(token);
 
     // The hosts table outranks every server, which is what makes a name
-    // answerable on a machine with no network at all.
-    var table: [2048]u8 = undefined;
-    if (readHosts(&table)) |text| {
+    // answerable on a machine with no network at all. Cached: a lookup is a
+    // synchronous read of another service's files, and paying for it on
+    // every name, inside the loop that moves every packet, is a way to make
+    // the whole network as slow as the filesystem is today.
+    if (hostsTable()) |text| {
         if (hosts.lookup(text, name)) |addr| {
             var reply = proto.Rep{ .body = .{ .resolved = .{
                 .addr = addr,
@@ -342,7 +382,7 @@ fn connectedCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, err: lwip.Err) callconv(.c) 
     _ = pcb;
     _ = err;
     const s = sockOf(arg) orelse return .ok;
-    if (s.view) |view| view.ctrl.state = .established;
+    setState(s, .established, .none);
     sayPeer(s, "stream open to ");
     if (s.pending) {
         s.pending = false;
@@ -359,12 +399,17 @@ fn recvCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, p: ?*lwip.Pbuf, err: lwip.Err) ca
         if (p) |pb| _ = lwip.pbuf_free(pb);
         return .ok;
     };
-    const view = s.view orelse return .ok;
+    // A socket whose segment is gone is a socket that ended: lwIP keeps
+    // re-offering what it was given until somebody takes it, so take it.
+    if (s.view == null) {
+        if (p) |pb| _ = lwip.pbuf_free(pb);
+        return .ok;
+    }
 
     const pb = p orelse {
         // The peer finished sending; what is already in the ring stays
         // readable, and the state says why nothing more will follow.
-        if (view.ctrl.state == .established) view.ctrl.state = .peer_closed;
+        if (s.state == .established) setState(s, .peer_closed, .none);
         sys.eventSignal(s.ev_app);
         return .ok;
     };
@@ -397,21 +442,23 @@ fn errCb(arg: ?*anyopaque, err: lwip.Err) callconv(.c) void {
     s.tcp = null;
     dropHeld(s);
 
-    if (s.view) |view| {
-        const opening = view.ctrl.state == .opening;
-        view.ctrl.state = .closed;
-        view.ctrl.cause = switch (err) {
-            .rst => if (opening) socket.Cause.refused else socket.Cause.reset,
-            .abrt => .aborted,
-            else => .aborted,
-        };
-    }
-    if (s.pending) {
-        s.pending = false;
-        refuse(s.pending_token);
-        s.kind = .free;
-    }
+    const opening = s.state == .opening;
+    setState(s, .closed, switch (err) {
+        .rst => if (opening) socket.Cause.refused else socket.Cause.reset,
+        else => .aborted,
+    });
+
+    // A slot that is only given back while a connect was waiting is a slot
+    // that leaks forever: eight of those and the machine has no sockets
+    // left, however long ago the connections died. The client does not need
+    // this end to read why -- its own mapping of the segment stays readable
+    // after ours is closed -- so the whole socket goes now.
+    const waiting = s.pending;
+    const pending_token = s.pending_token;
+    s.pending = false;
+    if (waiting) refuse(pending_token);
     sys.eventSignal(s.ev_app);
+    release(s);
 }
 
 fn acceptCb(arg: ?*anyopaque, newpcb: ?*lwip.TcpPcb, err: lwip.Err) callconv(.c) lwip.Err {
@@ -421,7 +468,7 @@ fn acceptCb(arg: ?*anyopaque, newpcb: ?*lwip.TcpPcb, err: lwip.Err) callconv(.c)
 
     if (s.pending) {
         s.pending = false;
-        grantAccepted(pcb, s.pending_token);
+        grantAccepted(pcb, s.owner, s.pending_token);
         return .ok;
     }
     for (&s.backlog) |*held| {
@@ -488,7 +535,7 @@ fn dnsFoundCb(name: [*:0]const u8, addr: ?*const lwip.Ip4Addr, arg: ?*anyopaque)
 fn drainTcpTx(s: *Sock) void {
     const view = s.view orelse return;
     const pcb = s.tcp orelse return;
-    if (view.ctrl.state == .opening) return;
+    if (s.state == .opening) return;
 
     var moved = false;
     var chunk: [1024]u8 = undefined;
@@ -559,6 +606,15 @@ fn drainUdpTx(s: *Sock) void {
             filled += @truncate(got);
         }
 
+        // Whole or not at all. The ring is shared memory, so how much is in
+        // it is the client's word and can change between the look above and
+        // the copy: a record that came up short would go out carrying
+        // whatever the pool's last occupant left in the rest of it.
+        if (filled != head.len) {
+            _ = lwip.pbuf_free(p);
+            break;
+        }
+
         const sent = if (head.addr != 0) blk: {
             const to = lwip.toWire(head.addr);
             break :blk lwip.udp_sendto(pcb, p, &to, head.port);
@@ -590,49 +646,104 @@ fn pushPbuf(ring: anytype, p: *lwip.Pbuf, from: u16, len: u16) void {
 // Slots, grants and replies
 // ---------------------------------------------------------------------------
 
-fn takeSlot(kind: Kind) ?*Sock {
+/// A free slot, for the process asking. Refused once that process holds its
+/// share of them, so one program cannot take the table and leave the rest of
+/// the machine with nothing to open.
+fn takeSlot(kind: Kind, who: u32) ?*Sock {
+    var theirs: usize = 0;
+    for (&socks) |*s| {
+        if (s.kind == .free) continue;
+        if (s.owner == who) theirs += 1;
+    }
+    if (theirs >= MAX_SOCKS_PER_CLIENT) {
+        log.warn("netd", "one process has taken every socket it may have");
+        return null;
+    }
+
     for (&socks) |*s| {
         if (s.kind != .free) continue;
-        s.kind = kind;
-        s.pending = false;
-        s.held = null;
-        s.held_at = 0;
-        s.backlog = @splat(null);
-        s.tcp = null;
-        s.udp = null;
+        s.* = .{ .kind = kind, .owner = who };
         return s;
     }
     log.warn("netd", "every socket slot is spoken for");
     return null;
 }
 
-/// The slot's permanent segment, sized for the larger kind and re-dressed
-/// for this use: fresh indices, opening state.
-fn slotView(s: *Sock, kind: socket.Kind) ?socket.View {
-    if (s.view == null) {
-        const created = sys.shmCreate(socket.shmBytes(.tcp)) catch return null;
-        const base = sys.shmMap(@intCast(created), .{ .writable = true }) orelse {
-            sys.close(@intCast(created));
-            return null;
-        };
-        if (slotEvent(s) == null) return null;
-        s.shm = @intCast(created);
-        s.view = socket.View.of(base, kind);
-    } else {
-        const base: [*]u8 = @ptrCast(@volatileCast(s.view.?.ctrl));
-        s.view = socket.View.of(base, kind);
-    }
+/// This socket's own segment, made now and given back when it ends.
+///
+/// One per socket rather than one per slot: a segment shared with the
+/// previous holder leaves that holder holding a live handle on the next
+/// one's traffic, and an event shared the same way lets it keep the
+/// service's readiness signal asserted.
+fn openView(s: *Sock, kind: socket.Kind) ?socket.View {
+    const created = sys.shmCreate(socket.shmBytes(kind)) catch return null;
+    const base = sys.shmMap(@intCast(created), .{ .writable = true }) orelse {
+        sys.close(@intCast(created));
+        return null;
+    };
+    const event = sys.eventCreate() catch {
+        sys.shmUnmap(base);
+        sys.close(@intCast(created));
+        return null;
+    };
 
-    const view = s.view.?;
-    view.ctrl.* = .{};
-    return view;
+    s.shm = @intCast(created);
+    s.base = base;
+    s.ev_app = event;
+    s.view = socket.View.of(base, kind);
+    s.view.?.ctrl.* = .{};
+    return s.view;
 }
 
-fn sockAt(index: u32, kind: Kind) ?*Sock {
+/// The socket at `index`, optionally of one kind. Null for an index that
+/// names nothing, which is what a stale or invented one names.
+fn sockAt(index: u32, kind: ?Kind) ?*Sock {
     if (index >= MAX_SOCKS) return null;
     const s = &socks[index];
-    if (s.kind != kind) return null;
+    if (s.kind == .free) return null;
+    if (kind) |wanted| {
+        if (s.kind != wanted) return null;
+    }
     return s;
+}
+
+/// Move a socket and tell the client, whose own copy of the state is a read
+/// of what is written here. The state netd decides by lives on the socket,
+/// not in memory the client can write.
+fn setState(s: *Sock, state: socket.State, cause: socket.Cause) void {
+    s.state = state;
+    s.cause = cause;
+    if (s.view) |view| {
+        view.ctrl.state = state;
+        view.ctrl.cause = cause;
+    }
+}
+
+/// Everything a socket holds, given back: the pcb, the pbuf held for the
+/// client, and the segment and event it was granted with. What ends a
+/// socket's life, from whichever direction it ended.
+fn release(s: *Sock) void {
+    dropPcb(s);
+    dropHeld(s);
+    s.pending = false;
+    s.backlog = @splat(null);
+    if (s.base) |base| {
+        sys.shmUnmap(base);
+        s.base = null;
+    }
+    if (s.shm != 0) {
+        sys.close(s.shm);
+        s.shm = 0;
+    }
+    if (s.ev_app != 0) {
+        sys.close(s.ev_app);
+        s.ev_app = 0;
+    }
+    s.view = null;
+    s.state = .opening;
+    s.cause = .none;
+    s.kind = .free;
+    s.owner = 0;
 }
 
 fn sockOf(arg: ?*anyopaque) ?*Sock {
@@ -644,8 +755,8 @@ fn indexOf(s: *Sock) u32 {
 }
 
 /// An accepted connection into its own slot, granted to whoever asked.
-fn grantAccepted(pcb: *lwip.TcpPcb, token: u32) void {
-    const s = takeSlot(.tcp) orelse {
+fn grantAccepted(pcb: *lwip.TcpPcb, who: u32, token: u32) void {
+    const s = takeSlot(.tcp, who) orelse {
         lwip.tcp_abort(pcb);
         return refuse(token);
     };
@@ -670,14 +781,14 @@ fn grantAccepted(pcb: *lwip.TcpPcb, token: u32) void {
 /// still had one: the stack reads that answer and goes on using what it
 /// was told is still there.
 fn grant(s: *Sock, token: u32, kind: socket.Kind) bool {
-    const view = slotView(s, kind) orelse {
+    _ = openView(s, kind) orelse {
         log.warn("netd", "no segment for the socket");
         dropPcb(s);
-        s.kind = .free;
+        release(s);
         refuse(token);
         return false;
     };
-    view.ctrl.state = .established;
+    setState(s, .established, .none);
 
     var reply = proto.Rep{ .body = .{ .sock = .{
         .sock = indexOf(s),
@@ -689,10 +800,16 @@ fn grant(s: *Sock, token: u32, kind: socket.Kind) bool {
     var message = sys.Message.init(std.mem.asBytes(&reply), &.{ s.shm, s.ev_app, doorbell });
     if (sys.replyMsg(service, token, &message)) |_| {
         log.say("netd", .dim, "socket granted");
+        return true;
     } else |_| {
+        // Whoever asked is gone, or the answer could not be given. Nothing
+        // holds this socket's index now, so keeping it would be a slot no
+        // one can ever reclaim.
         log.warn("netd", "the grant reply was refused");
+        dropPcb(s);
+        release(s);
+        return false;
     }
-    return true;
 }
 
 fn quietPcb(pcb: *lwip.TcpPcb) void {
@@ -736,13 +853,35 @@ fn answerResolve(slot: *Resolve, addr: u32) void {
     replyPlain(token, &reply);
 }
 
-fn readHosts(buf: []u8) ?[]const u8 {
-    const file = sys.open(HOSTS_PATH, .{}) catch return null;
+/// `/etc/hosts`, read at most once every `HOSTS_TTL_US`.
+///
+/// A table this small changes when somebody edits it, not on a schedule, so
+/// the staleness a cache costs here is a name that resolves the old way for
+/// a second or two. What it buys is a name lookup that does not reach into
+/// another service while every interface is waiting.
+fn hostsTable() ?[]const u8 {
+    const now = sys.clockMicros();
+    if (hosts_read_at != 0 and now - hosts_read_at < HOSTS_TTL_US) return hosts_bytes[0..hosts_len];
+
+    const file = sys.open(HOSTS_PATH, .{}) catch return staleHosts();
     defer sys.close(file);
-    const n = sys.read(file, buf) catch return null;
-    if (n == 0) return null;
-    return buf[0..@intCast(n)];
+    const n = sys.read(file, &hosts_bytes) catch return staleHosts();
+    hosts_read_at = now;
+    if (n == 0) return staleHosts();
+    hosts_len = @intCast(n);
+    return hosts_bytes[0..hosts_len];
 }
+
+/// What a table that could not be read answers with: the last one, which is
+/// better than nothing only because a name in it is still a name.
+fn staleHosts() ?[]const u8 {
+    if (hosts_len == 0) return null;
+    return hosts_bytes[0..hosts_len];
+}
+
+var hosts_bytes: [2048]u8 = undefined;
+var hosts_len: usize = 0;
+var hosts_read_at: u64 = 0;
 
 fn refuse(token: u32) void {
     var reply = proto.Rep{ .status = .refused };

@@ -20,6 +20,7 @@ cd "$(dirname "$0")/.."
 # transcript read as this run's evidence is worse than no evidence: it says
 # the thing worked.
 rm -f "$BUILD"/check-boot*.png "$BUILD"/check-boot*.log "$BUILD"/check-boot*.log.txt
+rm -f "$BUILD"/check-net-*.png "$BUILD"/check-net-*.log "$BUILD"/check-net-*.log.txt
 
 fail() { printf 'check-all: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -42,6 +43,16 @@ boot() {
     out="$1"; shift
     QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$out" "$@" \
         -- -drive if=ide,format=raw,file="$DEV_IMAGE" >/dev/null \
+        || fail "the emulator did not run (see ${out%.png}.log)"
+}
+
+# The same boot behind an adapter the default machine does not have, which is
+# how one driver at a time is put in front of real traffic.
+bootnet() {
+    out="$1"; model="$2"; shift 2
+    QEMU_CPU="$QEMU_CPU" tools/qemu-shot.sh "$out" "$@" \
+        -- -drive if=ide,format=raw,file="$DEV_IMAGE" \
+        -netdev user,id=net0 -device "$model,netdev=net0" >/dev/null \
         || fail "the emulator did not run (see ${out%.png}.log)"
 }
 
@@ -83,6 +94,27 @@ grep -q "^5m" "$LOG2.txt" || fail "power.dim_after did not survive the reboot (s
 grep -Eq '^cfgd +stopped' "$LOG2.txt" || fail "cfgd did not stop when asked (see $LOG2)"
 ! grep -Eq "did not stop when asked|cannot be asked to stop" "$LOG2.txt" || fail "a service had to be ended rather than asked (see $LOG2)"
 echo "a setting written before a reboot is read back after it, and a service asked to stop went"
+
+step "the wire: a leased address and an echo answered, on every adapter QEMU has"
+# The two drivers the emulator can stand in for. The Attansic and the Atheros
+# have no model, so they are only ever proven on the machine that has them --
+# which is exactly why these two are exercised here on every change.
+for model in e1000 rtl8139; do
+    LOGNET=$BUILD/check-net-$model.log
+    bootnet "$BUILD/check-net-$model.png" "$model" -w 30 -d 12 -p 3 -s 10 \
+        -t "net
+ping 10.0.2.2"
+    plain "$LOGNET" > "$LOGNET.txt"
+    grep -q "boot reported done" "$LOGNET.txt" || fail "the boot never reported done (see $LOGNET)"
+    ! grep -qi "panic" "$LOGNET.txt" || fail "$model: the kernel panicked (see $LOGNET)"
+    grep -Eq "^$model +up " "$LOGNET.txt" || fail "$model: the adapter did not come up (see $LOGNET)"
+    grep -Eq "addr +10\.0\.2\.[0-9]+" "$LOGNET.txt" || fail "$model: no address was leased (see $LOGNET)"
+    grep -q "answering for" "$LOGNET.txt" || fail "$model: nothing answered its ARP (see $LOGNET)"
+    grep -Eq "[0-9]+ of [0-9]+ answered" "$LOGNET.txt" || fail "$model: no echo came back (see $LOGNET)"
+    ! grep -q "0 of" "$LOGNET.txt" || fail "$model: every echo was lost (see $LOGNET)"
+    echo "$model: up, leased, answering"
+done
+echo "both modelled adapters carry traffic end to end"
 
 step "the card through a USB reader: its volumes arrive"
 cp "$IMAGE" "$SD_COPY"
