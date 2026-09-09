@@ -325,7 +325,7 @@ export fn vb_mix_start(
     const n: usize = @intCast(count);
 
     const source: audio.Samples = switch (bits) {
-        8 => .{ .eight = from[0..n] },
+        8 => .{ .unsigned_eight = from[0..n] },
         16 => .{ .sixteen = @as([*]const i16, @ptrCast(@alignCast(from)))[0..n] },
         else => return -1,
     };
