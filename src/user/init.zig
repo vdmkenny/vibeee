@@ -434,18 +434,7 @@ fn lookup(name: []const u8) ?*State {
 /// no reduction rather than for everything.
 fn capsFrom(list: []const u8) u32 {
     if (str.trim(list).len == 0) return @bitCast(sys.Caps.all);
-
-    var granted = sys.Caps{};
-    var it = str.split(list, ',');
-    while (it.next()) |raw| {
-        const wanted = str.trim(raw);
-        inline for (@typeInfo(sys.Caps).@"struct".fields) |field| {
-            if (field.type == bool and std.mem.eql(u8, wanted, field.name)) {
-                @field(granted, field.name) = true;
-            }
-        }
-    }
-    return @bitCast(granted);
+    return @bitCast(config.flags(sys.Caps, list));
 }
 
 /// What every program on this machine is told about where it is.

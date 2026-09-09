@@ -78,12 +78,15 @@ pub const Kind = enum {
     /// The compressed root filesystem the loader carries.
     rootfs,
 
-    // Sound and moving pictures, none of which this build plays or shows.
+    // Sound and moving pictures.
     wav,
     ogg,
     flac,
     mp3,
     midi,
+    /// A tracker module: instruments and the patterns that play them.
+    /// The only sound file this build plays, through eeemod.
+    tracker,
     matroska,
     mp4,
     avi,
@@ -126,7 +129,7 @@ pub const Kind = enum {
             .text => .text,
             .program, .dos_program, .java_class => .program,
             .zip, .gzip, .bzip2, .xz, .seven_zip, .rar, .tar, .ar => .archive,
-            .wav, .ogg, .flac, .mp3, .midi => .audio,
+            .wav, .ogg, .flac, .mp3, .midi, .tracker => .audio,
             .matroska, .mp4, .avi => .video,
             .font, .opentype, .web_font => .font,
             .pdf, .hero => .document,
@@ -170,6 +173,7 @@ pub const Kind = enum {
             .flac => "flac sound",
             .mp3 => "mp3 sound",
             .midi => "midi score",
+            .tracker => "tracker module",
             .matroska => "matroska video",
             .mp4 => "mp4 video",
             .avi => "avi video",
@@ -381,6 +385,10 @@ const suffixes = [_]struct { suffix: []const u8, kind: Kind }{
     .{ .suffix = "wad", .kind = .wad },
     .{ .suffix = "bdf", .kind = .font },
     .{ .suffix = "hero", .kind = .hero },
+    // A module carries no mark near its start: the first twenty bytes are
+    // its title, and the letters that say what it is sit a kilobyte in,
+    // past what is read to identify a file. So it is known by its name.
+    .{ .suffix = "mod", .kind = .tracker },
 
     .{ .suffix = "txt", .kind = .text },
     .{ .suffix = "md", .kind = .text },
@@ -523,6 +531,10 @@ test "the name is read folded, and says nothing when it says nothing" {
     try std.testing.expectEqual(@as(?Kind, null), fromName("makefile"));
     try std.testing.expectEqual(@as(?Kind, null), fromName("archive."));
     try std.testing.expectEqual(@as(?Kind, null), fromName("photo.raw"));
+    // A module is known by its name, having no mark to be known by.
+    try std.testing.expectEqual(@as(?Kind, .tracker), fromName("space_debris.mod"));
+    try std.testing.expectEqual(@as(?Kind, .tracker), fromName("SONG.MOD"));
+    try std.testing.expectEqual(Family.audio, Kind.tracker.family());
 }
 
 test "the two doors agree wherever both can answer" {

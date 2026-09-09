@@ -1,0 +1,39 @@
+# Which programs open which kinds of file.
+#
+# One stanza per program, separated by blank lines. Keys are the field names
+# of `Declared` in src/user/proto/opening.zig, so this file and the parser
+# cannot drift.
+#
+#   name    what the settings, the shell and open.cfg call this program
+#   binary  absolute path to it
+#   opens   comma-separated families it will take, from `Opens` in
+#           src/lib/openers.zig: picture, text, audio, video, archive,
+#           document, font, program, anything
+#
+# Order matters. The first program that will take a family is the one that
+# gets it when nobody has chosen otherwise in open.cfg.
+#
+# A program declares itself here rather than being listed in the source of
+# something else, so adding one is the program and its stanza. A stanza
+# naming a program this machine does not carry fails the way any missing
+# program does, which is what lets the ones under /home be declared whether
+# or not they were built.
+
+name    = eimg
+binary  = /bin/eimg
+opens   = picture
+
+name    = pad
+binary  = /bin/pad
+opens   = text
+
+# Not system programs: these live under /home with the rest of what is
+# somebody's choice, and are there only when they were built.
+
+name    = hero
+binary  = /home/hero
+opens   = document
+
+name    = eeemod
+binary  = /home/eeemod
+opens   = audio

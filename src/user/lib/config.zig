@@ -115,6 +115,28 @@ fn forInt(comptime T: type, value: []const u8) ?T {
 
 /// Every key this schema has, as a comptime list, for a caller listing or
 /// completing them. Derived from the type so it cannot fall behind it.
+/// A packed struct of flags, from a comma-separated list of the names of
+/// the ones to set.
+///
+/// Resolved against the type's own field names, so a flag added to the
+/// type is a flag this understands with no change here. A name the type
+/// does not have is ignored rather than refused: a manifest written for a
+/// build with one more flag should still describe the flags this build
+/// does have.
+pub fn flags(comptime T: type, list: []const u8) T {
+    var set = T{};
+    var it = str.split(list, ',');
+    while (it.next()) |raw| {
+        const wanted = str.trim(raw);
+        inline for (@typeInfo(T).@"struct".fields) |field| {
+            if (field.type == bool and std.mem.eql(u8, wanted, field.name)) {
+                @field(set, field.name) = true;
+            }
+        }
+    }
+    return set;
+}
+
 pub fn keys(comptime T: type) []const []const u8 {
     comptime {
         var listed: [std.meta.fields(T).len][]const u8 = undefined;

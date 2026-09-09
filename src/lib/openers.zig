@@ -1,10 +1,15 @@
 //! Which program opens what.
 //!
-//! A program says what it is willing to open rather than being named in a
-//! table somewhere else: adding one is a row here beside the program, and
-//! nothing has to remember to teach the file manager about it. What a file
-//! is comes from `kind`, so a program registers for families rather than for
-//! a list of suffixes it would have to keep chasing.
+//! A program says what it is willing to open, in a stanza of its own that
+//! is installed with it: nothing here lists the programs a machine has, so
+//! adding one is a program and its declaration and no edit to anything
+//! else. What a file is comes from `kind`, so a program declares families
+//! rather than a list of suffixes it would have to keep chasing.
+//!
+//! What is here is the policy: given the declarations a machine carries
+//! and what its owner prefers, which program opens this file. Reading the
+//! declarations is the caller's, because a machine reads them from a disk
+//! and a test reads them from a literal.
 //!
 //! The choice is a setting, so somebody who wants pictures in something else
 //! says so once and every window that opens a picture obeys. The default is
@@ -61,28 +66,17 @@ pub const Opener = struct {
     opens: Opens,
 };
 
-/// Every program that will open something, in the order a machine with no
-/// settings should prefer them.
-pub const table = [_]Opener{
-    .{ .name = "eimg", .path = "/bin/eimg", .opens = .{ .picture = true } },
-    .{ .name = "pad", .path = "/bin/pad", .opens = .{ .text = true } },
-    // Not a system program: the character journal lives under home with the
-    // rest of what is somebody's choice, and is there only when it was built.
-    // Naming it here is what lets a .hero open from the launcher and the file
-    // manager; when it is absent the open fails as any missing program would.
-    .{ .name = "hero", .path = "/home/hero", .opens = .{ .document = true } },
-};
-
-/// Who would open this family, before anybody has chosen.
-pub fn forFamily(family: kind.Family) ?Opener {
-    for (table) |opener| {
+/// Who would open this family, before anybody has chosen: the first
+/// declaration that will take it.
+pub fn forFamily(declared: []const Opener, family: kind.Family) ?Opener {
+    for (declared) |opener| {
         if (opener.opens.takes(family)) return opener;
     }
     return null;
 }
 
-pub fn byName(name: []const u8) ?Opener {
-    for (table) |opener| {
+pub fn byName(declared: []const Opener, name: []const u8) ?Opener {
+    for (declared) |opener| {
         if (std.mem.eql(u8, opener.name, name)) return opener;
     }
     return null;
@@ -95,13 +89,13 @@ pub fn byName(name: []const u8) ?Opener {
 /// family, falls back rather than failing: a settings file written by hand,
 /// or one left behind by a build that carried a program this one does not,
 /// should leave the machine working.
-pub fn chosen(family: kind.Family, preference: []const u8) ?Opener {
+pub fn chosen(declared: []const Opener, family: kind.Family, preference: []const u8) ?Opener {
     if (preference.len > 0) {
-        if (byName(preference)) |named| {
+        if (byName(declared, preference)) |named| {
             if (named.opens.takes(family)) return named;
         }
     }
-    return forFamily(family);
+    return forFamily(declared, family);
 }
 
 /// Every family a program could be chosen for, which is what a settings pane
@@ -143,39 +137,39 @@ test "the set is a bit per family and fits its word" {
     try std.testing.expectEqual(@as(usize, 2), @sizeOf(Opens));
 }
 
-test "a picture opens in the viewer this build carries" {
-    const opener = forFamily(.picture) orelse return error.NothingOpensPictures;
-    try std.testing.expectEqualStrings("eimg", opener.name);
-}
+/// Declarations of the shape a machine's own would have, so the policy is
+/// exercised without one.
+const machine = [_]Opener{
+    .{ .name = "eimg", .path = "/bin/eimg", .opens = .{ .picture = true } },
+    .{ .name = "pad", .path = "/bin/pad", .opens = .{ .text = true } },
+    .{ .name = "notes", .path = "/home/notes", .opens = .{ .text = true } },
+};
 
-test "text opens in the editor this build carries" {
-    const opener = forFamily(.text) orelse return error.NothingOpensText;
-    try std.testing.expectEqualStrings("pad", opener.name);
-    try std.testing.expectEqualStrings("/bin/pad", opener.path);
+test "the first program that will take a family is the one that gets it" {
+    const opener = forFamily(&machine, .picture) orelse return error.NothingOpensPictures;
+    try std.testing.expectEqualStrings("eimg", opener.name);
+
+    const editor = forFamily(&machine, .text) orelse return error.NothingOpensText;
+    try std.testing.expectEqualStrings("pad", editor.name);
+    try std.testing.expectEqualStrings("/bin/pad", editor.path);
 }
 
 test "a choice is obeyed, and a choice that cannot be is not" {
-    // Named and willing.
-    const asked = chosen(.text, "pad") orelse return error.NothingOpensText;
-    try std.testing.expectEqualStrings("pad", asked.name);
+    // Named and willing, over the one that would have had it.
+    const asked = chosen(&machine, .text, "notes") orelse return error.NothingOpensText;
+    try std.testing.expectEqualStrings("notes", asked.name);
 
     // Named, gone: fall back to whoever will take it rather than refuse.
-    const missing = chosen(.text, "someone-elses-editor") orelse return error.NothingOpensText;
+    const missing = chosen(&machine, .text, "someone-elses-editor") orelse
+        return error.NothingOpensText;
     try std.testing.expectEqualStrings("pad", missing.name);
 
     // Named, present, and not willing: the same.
-    const unwilling = chosen(.text, "pad") orelse return error.NothingOpensText;
+    const unwilling = chosen(&machine, .text, "eimg") orelse return error.NothingOpensText;
     try std.testing.expectEqualStrings("pad", unwilling.name);
 
-    // Nothing at all opens a family nobody registered for.
-    try std.testing.expectEqual(@as(?Opener, null), chosen(.video, ""));
-}
-
-test "every name in the table is its own" {
-    for (table, 0..) |one, i| {
-        for (table[i + 1 ..]) |other| {
-            try std.testing.expect(!std.mem.eql(u8, one.name, other.name));
-        }
-        try std.testing.expect(one.path.len > 0);
-    }
+    // Nothing at all opens a family nobody declared for.
+    try std.testing.expectEqual(@as(?Opener, null), chosen(&machine, .video, ""));
+    // And nothing opens anything on a machine that declared nothing.
+    try std.testing.expectEqual(@as(?Opener, null), chosen(&.{}, .text, "pad"));
 }

@@ -1,24 +1,73 @@
 //! Opening a file with whatever opens its sort of thing.
 //!
 //! What a file is comes from its bytes, which anything about to open one can
-//! afford to read; which program takes that sort of thing comes from the
-//! openers table and the setting over it. Both the file manager and the
-//! launcher do this, and doing it twice is how two windows come to disagree
-//! about what happens when you press Enter on the same file.
+//! afford to read, and from its name when the bytes say nothing. Which
+//! program takes that sort of thing comes from what the programs on this
+//! machine declared in `/etc/openers` and from the setting over it. Both the
+//! file manager and the launcher do this, and doing it twice is how two
+//! windows come to disagree about what happens when you press Enter on the
+//! same file.
 
+const config = @import("ulib").config;
 const kind = @import("lib").kind;
+const limits = @import("lib").limits;
 const openers = @import("lib").openers;
 const paths = @import("ulib").paths;
 const file = @import("ulib").file;
 const settings = @import("settings.zig");
 const sys = @import("sys");
 
-/// What the file is, from its first bytes. A file that cannot be opened or
-/// read reads as shapeless, which opens in nothing.
+/// One program's stanza in the manifest. The field names are the keys, so
+/// the file and this cannot drift.
+const Declared = struct {
+    name: []const u8 = "",
+    binary: []const u8 = "",
+    opens: []const u8 = "",
+};
+
+/// The manifest, read once. The declarations borrow this, so it stays.
+var manifest: [limits.OPENERS_FILE_MAX]u8 = @splat(0);
+var declared: [limits.MAX_OPENERS]openers.Opener = undefined;
+var count: usize = 0;
+var asked = false;
+
+/// What the programs on this machine said they open.
+///
+/// Read on the first ask and kept: a file manager opens many files and the
+/// answer does not change under it, and a disk read per file would be a
+/// disk read for something already known.
+pub fn known() []const openers.Opener {
+    if (asked) return declared[0..count];
+    asked = true;
+
+    var stanzas: [limits.MAX_OPENERS]Declared = @splat(.{});
+    const found = config.loadEach("/etc/openers", &stanzas, &manifest);
+    for (stanzas[0..found]) |one| {
+        if (one.name.len == 0 or one.binary.len == 0) continue;
+        declared[count] = .{
+            .name = one.name,
+            .path = one.binary,
+            .opens = config.flags(openers.Opens, one.opens),
+        };
+        count += 1;
+    }
+    return declared[0..count];
+}
+
+/// What the file is: from its first bytes, and from its name when the
+/// bytes say nothing.
+///
+/// Not every format marks itself near its start. One whose mark is further
+/// in than a file is read to identify it, or which has none at all, would
+/// otherwise be shapeless and open in nothing however plainly it is named.
+/// The bytes come first, because a name is a claim and the bytes are the
+/// file.
 pub fn readKind(path: []const u8) kind.Reading {
     var head: [kind.ENOUGH]u8 = undefined;
     const n = file.readWhole(path, &head) orelse return .{ .kind = .data };
-    return kind.fromBytes(head[0..n]);
+    const found = kind.fromBytes(head[0..n]);
+    if (found.kind != .data) return found;
+    return .{ .kind = kind.fromName(paths.base(path)) orelse .data };
 }
 
 /// Whoever the settings name for this family, or nobody.
@@ -53,7 +102,7 @@ pub fn start(path: []const u8) Outcome {
     if (what.kind == .program) return run(path);
 
     const family = what.kind.family();
-    const opener = openers.chosen(family, preferred(family)) orelse return .nobody_opens_it;
+    const opener = openers.chosen(known(), family, preferred(family)) orelse return .nobody_opens_it;
     _ = sys.spawnDetached(opener.path, &.{ opener.name, path }) catch return .would_not_start;
     return .opened;
 }

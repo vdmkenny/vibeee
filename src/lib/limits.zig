@@ -22,6 +22,15 @@
 /// a few more without inviting a file nobody reads.
 pub const SERVICES_FILE_MAX = 8 * 1024;
 
+/// How large the openers manifest may be, and how many programs may
+/// declare themselves in it.
+///
+/// Smaller than the services file because a stanza is three short lines
+/// against that one's eight, and a machine carrying sixteen programs that
+/// open files is a machine with more programs than this one has.
+pub const OPENERS_FILE_MAX = 4 * 1024;
+pub const MAX_OPENERS = 16;
+
 /// How many services init will run. Nine ship; the rest is room for a machine
 /// that adds its own. Each costs a process, its address space and its
 /// surfaces, so this is a budget rather than a maximum anybody should reach.
