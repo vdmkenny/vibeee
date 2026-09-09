@@ -468,8 +468,13 @@ qemu-sd: $(IMAGE)
 qemu-ide: $(IMAGE)
 	$(QEMU) $(QEMU_FLAGS) -drive if=ide,format=raw,file=$(IMAGE)
 
+# The system's host tests, and the extra applications' own alongside them.
+# Their models are pure Zig and cost no emulator, so leaving them out only
+# meant a broken one could sit in the tree unnoticed. Building the apps for
+# the target is still on demand: that is the expensive half.
 test: qr-verify
 	$(ZIG) build test
+	$(ZIG) build test-hero test-echat test-eeemod
 
 # The tree is formatted, as `zig fmt` formats it. Checked rather than
 # assumed: the one file a hand-aligned table exempts is the one that drifts.

@@ -9,24 +9,29 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
-
+# What runs here is everything that does not need a machine to boot on:
+# the formatting, the module layering, the host tests for the system and
+# for the extra applications, and a build of those tests for this runner's
+# architecture as well as whatever they were written on.
+#
+# The emulator is deliberately not here. `make check-all` boots the image
+# three times, which on a runner with no acceleration takes longer than a
+# run is given, so booting is checked where there is hardware to do it on.
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install host tools
-        run: sudo apt-get update && sudo apt-get install --yes mtools nasm netcat-openbsd qemu-system-x86 qrencode imagemagick
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
 
-      - name: Run validation gate
-        run: make check-all
+      - name: Formatting, layering and imports
+        run: make fmt check
+
+      - name: Host tests
+        run: make test

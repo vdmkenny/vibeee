@@ -636,7 +636,9 @@ test "more tags than TAG_MAX sets crowded" {
     }
     out.text(" PRIVMSG #room :hello");
 
-    const line = try parse(out.done());
+    // The mutable bytes rather than the builder's read-only view of them:
+    // parsing decodes tags in place, and this test owns the buffer.
+    const line = try parse(buf[0..out.done().len]);
     try expect(line.crowded);
     try expect(line.tags.len == TAG_MAX);
     try expectEqualStrings("hello", line.text());

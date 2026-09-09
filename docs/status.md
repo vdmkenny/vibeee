@@ -192,6 +192,9 @@ beside the driver that is the only thing reading them, and its tests run from
   queues, calendar, ring buffer, battery arithmetic and its mislabeled-percent correction,
   the quirk registry's family matching, command-line flag matching, the terminal emulator
   and its key encoding, text wrapping and cursor arithmetic) plus a differential check of the QR encoder against `libqrencode`
+- The host tests cover the extra applications' models as well as the system's,
+  since those are pure Zig and cost no emulator. Building the apps for the target
+  is still on demand: that is the expensive half.
 - The host tests are compiled for a second machine as well as this one. `zig build
   test` builds for whatever it is run on, so code that compiles on one host and not
   another passes here and fails wherever the tests run next: the libc's `va_list` is
