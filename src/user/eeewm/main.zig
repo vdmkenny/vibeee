@@ -630,15 +630,26 @@ fn idle() void {
     // Only the bar is repainted for it. Setting `dirty` here redrew the
     // desktop and every window to move a five character clock, which on the
     // panel was a visible full-screen wipe once a minute.
-    _ = sys.waitMany(waiting[0..count], untilSomethingIsDue()) catch {
+    woken_by = null;
+    const which = sys.waitMany(waiting[0..count], untilSomethingIsDue()) catch {
         // A timeout means nothing happened: the clock turned, or the machine
         // has now been alone long enough for something to be done about it.
         settleIdle();
         checkPack();
         bar.refresh();
         paintBar();
+        return;
     };
+
+    // The wait takes the signal it woke for, so the source that won is asked
+    // about again a moment later and answers no. Keeping it is what makes the
+    // polls above correct: a settings change is signalled once and is the
+    // whole of the notice, so a signal lost is a change nobody takes up.
+    if (which < count) woken_by = waiting[which];
 }
+
+/// Which source the last wait woke for, until something asks about it.
+var woken_by: ?u32 = null;
 
 /// How long the one wait may last: whichever of the clock and the idle
 /// timers falls first.
@@ -1323,14 +1334,22 @@ var network_event: u32 = 0;
 /// to move one icon is the full-screen wipe this path exists to avoid.
 /// Whether `event` has been signalled since it was last asked. A poll that
 /// finds nothing refuses, which is what "not since last time" is.
+/// Whether `event` has something, counting the signal the last wait took.
+///
+/// Spent on the first ask, so one signal is one answer however many places
+/// ask about it.
 fn woke(event: u32) bool {
+    if (woken_by == event) {
+        woken_by = null;
+        return true;
+    }
     _ = sys.waitMany(&.{event}, sys.POLL) catch return false;
     return true;
 }
 
 fn networkChanged() bool {
     if (network_event == 0) return false;
-    _ = sys.waitMany(&.{network_event}, sys.POLL) catch return false;
+    if (!woke(network_event)) return false;
     bar.networkChanged();
     paintBar();
     return true;
