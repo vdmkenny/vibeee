@@ -171,6 +171,12 @@ const Tag = enum(u16) {
     date_time = 0x0132,
     exif_ifd = 0x8769,
     date_time_original = 0x9003,
+    /// Where the camera's own small copy of the picture is, and how long it
+    /// is. Written in the second table rather than the first.
+    thumbnail_at = 0x0201,
+    thumbnail_len = 0x0202,
+    /// The tables a raw file keeps its full picture and its preview in.
+    sub_ifds = 0x014A,
     _,
 };
 
@@ -274,6 +280,117 @@ fn text(
 }
 
 /// A number from the block, or zero when it is not all there.
+/// The camera's own small copy of the picture, or nothing where it wrote none.
+///
+/// It sits in the block's second table as a whole JPEG a couple of hundred
+/// pixels on a side. Decoding that costs a fraction of decoding the
+/// photograph, which on a machine like this is the difference between a
+/// contact sheet that fills in and one that is waited for. Whoever asks is
+/// expected to decode the picture itself when this answers nothing.
+/// The tables, wherever this kind of file keeps them.
+///
+/// A JPEG carries them in an APP1 block; a raw file out of a camera is itself
+/// a TIFF and carries them at its own start.
+fn tiffBlock(bytes: []const u8) ?[]const u8 {
+    if (bytes.len >= 2 and bytes[0] == 0xFF and bytes[1] == 0xD8) return exifBlock(bytes);
+    if (bytes.len >= 4 and (std.mem.startsWith(u8, bytes, "II\x2A\x00") or
+        std.mem.startsWith(u8, bytes, "MM\x00\x2A"))) return bytes;
+    return null;
+}
+
+/// One picture a file carries beside its own data.
+const Carried = struct { at: usize = 0, len: usize = 0 };
+
+/// The largest picture a file carries beside its own data, or nothing where
+/// it carries none.
+///
+/// A photograph out of a camera has a whole JPEG a few hundred pixels on a
+/// side written into its tables, and a raw file has a larger one again, meant
+/// for exactly this: looking at the picture without doing the work of
+/// developing it. Decoding that costs a fraction of decoding the photograph,
+/// which on a machine like this is the difference between a contact sheet
+/// that fills in and one that is waited for.
+///
+/// Whoever asks is expected to decode the picture itself when this answers
+/// nothing. For a raw file there is nothing else to fall back to: this system
+/// has no demosaicer, so a raw file with no preview in it cannot be shown.
+pub fn preview(bytes: []const u8) ?[]const u8 {
+    const block = tiffBlock(bytes) orelse return null;
+    if (block.len < 8) return null;
+
+    const endian: std.builtin.Endian = switch (std.mem.readInt(u16, block[0..2], .little)) {
+        0x4949 => .little,
+        0x4D4D => .big,
+        else => return null,
+    };
+    if (readInt(u16, block, 2, endian) != 42) return null;
+
+    var best = Carried{};
+    largest(block, readInt(u32, block, 4, endian), endian, 0, &best);
+    if (best.len == 0 or best.at + best.len > block.len) return null;
+
+    // The tags are sometimes written for a picture the file does not actually
+    // carry, so what they name is checked before it is handed to anything.
+    const found = block[best.at..][0..best.len];
+    if (found.len < 4 or found[0] != 0xFF or found[1] != 0xD8) return null;
+    return found;
+}
+
+/// Walk one table, the tables it points at and the one after it, keeping the
+/// largest picture any of them names.
+///
+/// The largest, because a raw file names several: a thumbnail for a listing
+/// and a preview worth looking at, and it is the second that is wanted.
+fn largest(
+    block: []const u8,
+    at: u32,
+    endian: std.builtin.Endian,
+    depth: u8,
+    best: *Carried,
+) void {
+    if (depth > 2) return;
+
+    const start: usize = at;
+    if (start + 2 > block.len) return;
+
+    const count: usize = @min(readInt(u16, block, start, endian), ENTRIES_MAX);
+    var here = Carried{};
+
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const entry = start + 2 + i * 12;
+        if (entry + 12 > block.len) return;
+
+        const kind = readInt(u16, block, entry + 2, endian);
+        const items: usize = readInt(u32, block, entry + 4, endian);
+
+        switch (@as(Tag, @enumFromInt(readInt(u16, block, entry, endian)))) {
+            .thumbnail_at => here.at = readInt(u32, block, entry + 8, endian),
+            .thumbnail_len => here.len = readInt(u32, block, entry + 8, endian),
+            .sub_ifds => {
+                if (kind != 4 or items == 0 or items > ENTRIES_MAX) continue;
+                // One offset sits in the entry; several sit where it points.
+                const from: usize = if (items == 1) entry + 8 else readInt(u32, block, entry + 8, endian);
+                var n: usize = 0;
+                while (n < items) : (n += 1) {
+                    largest(block, readInt(u32, block, from + n * 4, endian), endian, depth + 1, best);
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (here.at != 0 and here.len > best.len) best.* = here;
+
+    // The table after this one, which is where a photograph keeps its
+    // thumbnail. Only from the top, so a sub-table's tail is not followed
+    // into whatever happens to sit after it.
+    if (depth == 0) {
+        const next = readInt(u32, block, start + 2 + count * 12, endian);
+        if (next != 0) largest(block, next, endian, depth + 1, best);
+    }
+}
+
 fn readInt(comptime T: type, block: []const u8, at: usize, endian: std.builtin.Endian) T {
     const size = @sizeOf(T);
     if (at + size > block.len) return 0;
@@ -440,4 +557,132 @@ test "a turn composes with the way the camera held it" {
 
     // A mirrored picture stays mirrored however it is turned.
     try std_testing.expect(Orientation.mirror_x.turnedRight().mirrored());
+}
+
+test "the camera's own picture is found in the second table" {
+    // A JPEG whose EXIF block says which way up the picture is in its first
+    // table and where the small copy sits in its second, which is how a
+    // camera writes one.
+    var tiff: [60]u8 = @splat(0);
+    tiff[0] = 'I';
+    tiff[1] = 'I';
+    std.mem.writeInt(u16, tiff[2..4], 42, .little);
+    std.mem.writeInt(u32, tiff[4..8], 8, .little);
+
+    std.mem.writeInt(u16, tiff[8..10], 1, .little);
+    std.mem.writeInt(u16, tiff[10..12], 0x0112, .little);
+    std.mem.writeInt(u16, tiff[12..14], 3, .little);
+    std.mem.writeInt(u32, tiff[14..18], 1, .little);
+    std.mem.writeInt(u16, tiff[18..20], 1, .little);
+    std.mem.writeInt(u32, tiff[22..26], 26, .little);
+
+    std.mem.writeInt(u16, tiff[26..28], 2, .little);
+    std.mem.writeInt(u16, tiff[28..30], 0x0201, .little);
+    std.mem.writeInt(u16, tiff[30..32], 4, .little);
+    std.mem.writeInt(u32, tiff[32..36], 1, .little);
+    std.mem.writeInt(u32, tiff[36..40], 56, .little);
+    std.mem.writeInt(u16, tiff[40..42], 0x0202, .little);
+    std.mem.writeInt(u16, tiff[42..44], 4, .little);
+    std.mem.writeInt(u32, tiff[44..48], 1, .little);
+    std.mem.writeInt(u32, tiff[48..52], 4, .little);
+
+    tiff[56] = 0xFF;
+    tiff[57] = 0xD8;
+    tiff[58] = 0xFF;
+    tiff[59] = 0xD9;
+
+    var file: [72]u8 = undefined;
+    file[0] = 0xFF;
+    file[1] = 0xD8;
+    file[2] = 0xFF;
+    file[3] = 0xE1;
+    std.mem.writeInt(u16, file[4..6], 68, .big);
+    @memcpy(file[6..12], "Exif\x00\x00");
+    @memcpy(file[12..72], &tiff);
+
+    const found = preview(&file).?;
+    try testing.expectEqual(@as(usize, 4), found.len);
+    try testing.expectEqual(@as(u8, 0xFF), found[0]);
+    try testing.expectEqual(@as(u8, 0xD8), found[1]);
+
+    // The first table still reads: nothing about it moved.
+    try testing.expectEqual(Orientation.up, read(&file).orientation);
+
+    // Tags that point at something which is not a JPEG are written by more
+    // than one camera, so what they name is checked before it is handed on.
+    var lying = file;
+    lying[68] = 0x00;
+    try testing.expectEqual(@as(?[]const u8, null), preview(&lying));
+
+    // And a file with no EXIF at all has none to give.
+    const bare = [_]u8{ 0xFF, 0xD8, 0xFF, 0xD9 };
+    try testing.expectEqual(@as(?[]const u8, null), preview(&bare));
+}
+
+test "a raw file's larger preview wins over its thumbnail" {
+    // A raw file out of a camera is a TIFF in its own right: a small picture
+    // in the table after the first, and a larger one in a sub-table. What a
+    // person wants to look at is the larger, so that is what comes back.
+    //
+    // Laid out by hand here. Whether a particular camera writes its file this
+    // way is a question only a file from one can answer.
+    var raw: [128]u8 = @splat(0);
+    raw[0] = 'I';
+    raw[1] = 'I';
+    std.mem.writeInt(u16, raw[2..4], 42, .little);
+    std.mem.writeInt(u32, raw[4..8], 8, .little);
+
+    // The first table names one sub-table, and points at the table after it.
+    std.mem.writeInt(u16, raw[8..10], 1, .little);
+    std.mem.writeInt(u16, raw[10..12], 0x014A, .little);
+    std.mem.writeInt(u16, raw[12..14], 4, .little);
+    std.mem.writeInt(u32, raw[14..18], 1, .little);
+    std.mem.writeInt(u32, raw[18..22], 56, .little);
+    std.mem.writeInt(u32, raw[22..26], 26, .little);
+
+    // The table after it: six bytes at 110.
+    std.mem.writeInt(u16, raw[26..28], 2, .little);
+    std.mem.writeInt(u16, raw[28..30], 0x0201, .little);
+    std.mem.writeInt(u16, raw[30..32], 4, .little);
+    std.mem.writeInt(u32, raw[32..36], 1, .little);
+    std.mem.writeInt(u32, raw[36..40], 110, .little);
+    std.mem.writeInt(u16, raw[40..42], 0x0202, .little);
+    std.mem.writeInt(u16, raw[42..44], 4, .little);
+    std.mem.writeInt(u32, raw[44..48], 1, .little);
+    std.mem.writeInt(u32, raw[48..52], 6, .little);
+
+    // The sub-table: twelve bytes at 116.
+    std.mem.writeInt(u16, raw[56..58], 2, .little);
+    std.mem.writeInt(u16, raw[58..60], 0x0201, .little);
+    std.mem.writeInt(u16, raw[60..62], 4, .little);
+    std.mem.writeInt(u32, raw[62..66], 1, .little);
+    std.mem.writeInt(u32, raw[66..70], 116, .little);
+    std.mem.writeInt(u16, raw[70..72], 0x0202, .little);
+    std.mem.writeInt(u16, raw[72..74], 4, .little);
+    std.mem.writeInt(u32, raw[74..78], 1, .little);
+    std.mem.writeInt(u32, raw[78..82], 12, .little);
+
+    // Both open the way a JPEG opens.
+    raw[110] = 0xFF;
+    raw[111] = 0xD8;
+    raw[116] = 0xFF;
+    raw[117] = 0xD8;
+
+    const found = preview(&raw).?;
+    try testing.expectEqual(@as(usize, 12), found.len);
+    try testing.expectEqual(@as(u8, 0xFF), found[0]);
+    try testing.expectEqual(@as(u8, 0xD8), found[1]);
+
+    // With nothing pointing at the sub-table, the small one is what is left.
+    // The entry is renamed rather than removed: a table's tail sits after its
+    // entries, so dropping one moves everything after it.
+    var thin = raw;
+    std.mem.writeInt(u16, thin[10..12], 0x0100, .little);
+    try testing.expectEqual(@as(usize, 6), preview(&thin).?.len);
+
+    // A raw file carrying no picture at all cannot be shown: there is no
+    // demosaicer here to fall back to.
+    var blind = thin;
+    std.mem.writeInt(u16, blind[28..30], 0x0100, .little);
+    try testing.expectEqual(@as(?[]const u8, null), preview(&blind));
 }

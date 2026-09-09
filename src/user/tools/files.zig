@@ -3,9 +3,9 @@
 //! Small on purpose. Each is the thin layer over a syscall that a from-scratch
 //! system needs before anything else can be investigated from inside it.
 
-const std = @import("std");
 const sys = @import("sys");
 const dir = @import("ulib").dir;
+const file = @import("ulib").file;
 const out = @import("ulib").out;
 const paths = @import("ulib").paths;
 const time = @import("ulib").time;
@@ -133,10 +133,6 @@ pub fn mv(args: []const []const u8) void {
 /// The longest destination a move or a copy builds.
 const PATH_MAX = 256;
 
-/// How much is moved at once. A page, which is what the filesystem reads and
-/// writes in anyway, so a bigger buffer would buy nothing but memory.
-var block: [4096]u8 = undefined;
-
 /// Copy, which is what a move across volumes would have to be and deliberately
 /// is not: `mv` renames, and this is the different thing to ask for.
 ///
@@ -154,29 +150,14 @@ pub fn cp(args: []const []const u8) void {
 }
 
 fn copy(from: []const u8, to: []const u8) void {
-    // Onto itself would empty the file before a byte of it had been read.
-    if (std.mem.eql(u8, from, to)) return out.fault("cp", from, "is the destination");
-    if (dir.isDirectory(from)) return out.fault("cp", from, "is a directory");
-
-    const source = sys.open(from, .{}) catch return out.fault("cp", from, "cannot open");
-    defer sys.close(source);
-
-    const target = sys.open(to, .{ .write = true, .create = true, .truncate = true }) catch
-        return out.fault("cp", to, "cannot create");
-    defer sys.close(target);
-
-    while (true) {
-        const got = sys.read(source, &block) catch return out.fault("cp", from, "cannot read");
-        if (got == 0) break;
-        var put: usize = 0;
-        while (put < got) {
-            // A short write is not a failed one: what is left goes round again.
-            const wrote = sys.write(target, block[put..got]) catch
-                return out.fault("cp", to, "cannot write");
-            if (wrote == 0) return out.fault("cp", to, "no space");
-            put += wrote;
-        }
-    }
+    file.copy(from, to) catch |why| out.fault("cp", from, switch (why) {
+        error.Itself => "is the destination",
+        error.Directory => "is a directory",
+        error.NoFile => "cannot open",
+        error.CannotCreate => "cannot create the destination",
+        error.Unreadable => "cannot read",
+        error.NoSpace => "no space",
+    });
 }
 
 pub fn cat(args: []const []const u8) void {

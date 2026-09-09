@@ -7,7 +7,10 @@
 //! be made only here. `readWhole` takes as much as fits, for a head or a
 //! caller that sizes its room from the file; `readEntire` refuses a file
 //! that does not fit, for a document that is read back and written again.
+//! `copy` is the other whole-file move: the same loop the other way round.
 
+const std = @import("std");
+const dir = @import("dir.zig");
 const sys = @import("sys");
 
 /// Read the file at `path` into `into`, as much of it as fits, and say how
@@ -58,4 +61,53 @@ fn fill(handle: u32, into: []u8) Filled {
         read += n;
     }
     return .{ .read = read, .failed = false };
+}
+
+pub const CopyError = error{
+    /// The source and the destination name the same file, which would empty
+    /// it before a byte had been read.
+    Itself,
+    /// Directories are walked and created, which is a different job.
+    Directory,
+    NoFile,
+    CannotCreate,
+    Unreadable,
+    NoSpace,
+};
+
+/// How much is moved at once. A page, which is what the filesystem reads and
+/// writes in anyway, so a larger buffer would buy nothing but memory. Beside
+/// the function rather than on its frame: the user stack is thirty-two
+/// kilobytes for everything.
+var block: [4096]u8 = undefined;
+
+/// Copy the whole of one file onto another, creating it.
+///
+/// Written here rather than in whichever command wanted it first: a file
+/// manager, a copy command and a program filing its own work all want the
+/// same loop, and a short write taken for a failure is the mistake it exists
+/// to make only once.
+pub fn copy(from: []const u8, to: []const u8) CopyError!void {
+    if (std.mem.eql(u8, from, to)) return error.Itself;
+    if (dir.isDirectory(from)) return error.Directory;
+
+    const source = sys.open(from, .{}) catch return error.NoFile;
+    defer sys.close(source);
+
+    const target = sys.open(to, .{ .write = true, .create = true, .truncate = true }) catch
+        return error.CannotCreate;
+    defer sys.close(target);
+
+    while (true) {
+        const got = sys.read(source, &block) catch return error.Unreadable;
+        if (got == 0) return;
+
+        var put: usize = 0;
+        while (put < got) {
+            // A short write is not a failed one: what is left goes round again.
+            const wrote = sys.write(target, block[put..got]) catch return error.NoSpace;
+            if (wrote == 0) return error.NoSpace;
+            put += wrote;
+        }
+    }
 }
