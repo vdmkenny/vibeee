@@ -183,15 +183,36 @@ fn paint() void {
     // pixels are stale and putting them back later would paint a hole.
     cursor.invalidate();
 
+    repaintArea(.{ .x = 0, .y = 0, .w = info.width, .h = info.height });
+
+    // After the windows: a dropdown reaches over them. Nothing of the old
+    // panel survived the pass above, so there is nothing to put back.
+    panel_shown = .{};
+    paintPanel();
+
+    for (&desktop.windows) |*w| w.damage.clear();
+    cursor.show(screen, pointer_x, pointer_y);
+}
+
+/// The desktop, the bar and the windows, inside `area` and nowhere else.
+///
+/// The clip is narrowed for the pass rather than handed down, because every
+/// painter here already draws through `screen` and honours it.
+fn repaintArea(area: Rect) void {
+    if (area.isEmpty()) return;
+    const whole = screen;
+    screen = screen.clipped(area);
+    defer screen = whole;
+
     var buf: [layout.MAX_WINDOWS]usize = undefined;
     const visible = desktop.visible(&buf);
 
     // The desktop, only where it is still visible once everything else has
-    // been drawn. Filling the screen and then covering most of it again is a
+    // been drawn. Filling the area and then covering most of it again is a
     // flash of the desktop colour, every repaint, on a display with one
     // buffer. What the windows do not cover is arithmetic, so it is done
     // before anything is painted rather than paid for in pixels.
-    var bare = region.Region.of(.{ .x = 0, .y = 0, .w = info.width, .h = info.height });
+    var bare = region.Region.of(area);
     bare.subtract(bar.band(info.width, info.height));
     for (visible) |index| bare.subtract(desktop.windows[index].area);
     const wall = wallpaper();
@@ -205,14 +226,9 @@ fn paint() void {
     // holds tiles, that is the tiles' pixels written for nothing.
     for (visible, 0..) |index, order| {
         if (coveredBy(visible[order + 1 ..], desktop.windows[index].area)) continue;
+        if (desktop.windows[index].area.intersect(area).isEmpty()) continue;
         paintWindow(index, desktop.focused == index);
     }
-
-    // After the windows: a dropdown reaches over them.
-    bar.paintOverlay(screen, info.width, info.height, &desktop);
-
-    for (&desktop.windows) |*w| w.damage.clear();
-    cursor.show(screen, pointer_x, pointer_y);
 }
 
 /// Repaint only the windows that committed.
@@ -529,7 +545,7 @@ fn run() noreturn {
         if (overlay_dirty) {
             // The panel and the pointer, and nothing else on the screen.
             cursor.hide(screen);
-            bar.paintOverlay(screen, info.width, info.height, &desktop);
+            paintPanel();
             cursor.show(screen, pointer_x, pointer_y);
             overlay_dirty = false;
             moved = false;
@@ -708,12 +724,30 @@ fn paintBar() void {
     // clock menu redrawn once a second painted over the pointer where it
     // stood, and the next motion stamped the stale pixels under it back
     // into the menu.
-    const panelled = bar.menuOpen();
-    const covered = panelled or cursor.covers(bar.band(info.width, info.height));
+    const covered = bar.menuOpen() or cursor.covers(bar.band(info.width, info.height));
     if (covered) cursor.hide(screen);
     bar.paint(screen, info.width, info.height, &desktop);
-    if (panelled) bar.paintOverlay(screen, info.width, info.height, &desktop);
+    paintPanel();
     if (covered) cursor.show(screen, pointer_x, pointer_y);
+}
+
+/// Where the bar's panel was left on screen, so that a smaller one drawn in
+/// its place knows what it has to put back. Empty with no panel open.
+var panel_shown: Rect = .{};
+
+/// The bar's panel, with whatever it no longer covers put back first.
+///
+/// A panel is not a window and leaves no damage behind it, so shrinking one
+/// would otherwise keep showing what the larger one drew: the launcher
+/// narrows on every character that shortens its list.
+fn paintPanel() void {
+    const wanted = bar.panelArea(info.width, info.height, &desktop);
+    var vacated = region.Region.of(panel_shown);
+    vacated.subtract(wanted);
+    for (vacated.items()) |piece| repaintArea(piece);
+
+    bar.paintOverlay(screen, info.width, info.height, &desktop);
+    panel_shown = wanted;
 }
 
 /// Microseconds until the clock on show reads differently.
