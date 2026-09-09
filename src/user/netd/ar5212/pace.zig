@@ -17,8 +17,15 @@ const sys = @import("sys");
 const Regs = regs_mod.Regs;
 
 /// Below this a sleep is a scheduler round trip either way, so the wait
-/// spins on the clock instead.
-const SPIN_BELOW_MICROS = 1000;
+/// spins on the clock instead. Above it the wait sleeps.
+///
+/// Kept small, and this is the whole reason: spinning on the clock is a
+/// syscall per look, and a syscall that masks interrupts. A wait of
+/// milliseconds spent that way holds the machine's interrupts off for its
+/// duration, and on an interrupt path it does worse than hold this
+/// process up — every other interface the service is carrying goes quiet
+/// behind it, and their rings fill while it spins.
+const SPIN_BELOW_MICROS = 50;
 
 pub fn delay(micros: u32) void {
     if (micros < SPIN_BELOW_MICROS) {

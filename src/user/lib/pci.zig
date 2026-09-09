@@ -74,6 +74,11 @@ pub fn memoryBase(loc: Location, index: u8) ?lib.Phys {
 /// and decode and mastering switched on. Null means the failure is already
 /// narrated under `tag`, with `what` naming the part whose registers were
 /// wanted.
+///
+/// The whole window the driver asks for is taken to be registers. A driver
+/// that knows how far into its window it actually reaches calls
+/// `openApertureNeeding` instead, and is then served even by a part whose
+/// window is smaller than the driver assumed.
 pub fn openAperture(
     loc: Location,
     index: u8,
@@ -81,18 +86,48 @@ pub fn openAperture(
     tag: []const u8,
     comptime what: []const u8,
 ) ?[*]volatile u32 {
+    return openApertureNeeding(loc, index, bytes, bytes, tag, what);
+}
+
+/// The same, for a driver that can name how much of the window it needs:
+/// `registers` is one past the highest register offset it touches.
+///
+/// What is mapped is the smaller of the window the part reports and the
+/// window the driver asked for. Mapping the driver's number regardless is
+/// how a mapping comes to run off the end of one device's registers and
+/// into the next address: every read past the window's end then answers
+/// whatever else lives there, which is a driver that misbehaves in ways
+/// no amount of reading its own source explains. A window too small to
+/// hold `registers` is refused rather than mapped short, because a driver
+/// whose highest register lies outside the window cannot work at all.
+pub fn openApertureNeeding(
+    loc: Location,
+    index: u8,
+    bytes: u32,
+    registers: u32,
+    tag: []const u8,
+    comptime what: []const u8,
+) ?[*]volatile u32 {
     const base = memoryBase(loc, index) orelse {
         log.fail(tag, "the " ++ what ++ " exposes no register aperture");
         return null;
     };
-    if (base.plus(bytes - 1) == null) {
+    const real = sizeWindow(loc, index, bytes, tag, what) orelse {
+        log.fail(tag, "the " ++ what ++ " reports no register window");
+        return null;
+    };
+    if (real < registers) {
+        log.fail(tag, "the " ++ what ++ "'s window is too small for the registers its driver uses");
+        return null;
+    }
+
+    const mapped = @min(real, bytes);
+    if (base.plus(mapped - 1) == null) {
         log.fail(tag, "the " ++ what ++ " exposes no register aperture");
         return null;
     }
 
-    sizeWindow(loc, index, bytes, tag, what);
-
-    const aperture = sys.mapDevice(base, bytes) orelse {
+    const aperture = sys.mapDevice(base, mapped) orelse {
         log.fail(tag, "cannot map registers");
         return null;
     };
@@ -101,13 +136,16 @@ pub fn openAperture(
 }
 
 /// The device's own account of its window at BAR `index`, taken while
-/// decoding is off and restored before it matters. A window of another
-/// shape than the driver assumes is narrated rather than refused: the
-/// mapping serves the registers the driver touches, and the probe exists
-/// to name the device whose account disagrees. Writes the BAR and the
-/// command word, so on firmware that traps those, ownership of the device
-/// comes first.
-pub fn sizeWindow(loc: Location, index: u8, bytes: u32, tag: []const u8, comptime what: []const u8) void {
+/// decoding is off and restored before it matters: the real size, which is
+/// what the mapping is cut to. A window of another shape than the driver
+/// assumes, or smaller than it asks for, is narrated rather than refused,
+/// because a part may decode less than the family's maximum and still hold
+/// every register the driver touches; the narration names the device whose
+/// account disagrees. Null when the part reports no window at all.
+///
+/// Writes the BAR and the command word, so on firmware that traps those,
+/// ownership of the device comes first.
+pub fn sizeWindow(loc: Location, index: u8, bytes: u32, tag: []const u8, comptime what: []const u8) ?u32 {
     const register = lib.pci.BAR0_OFFSET + 4 * index;
     const raw = bar(loc, index);
     const base = @as(MemoryBar, @bitCast(raw)).base();
@@ -122,9 +160,24 @@ pub fn sizeWindow(loc: Location, index: u8, bytes: u32, tag: []const u8, comptim
     _ = read(loc, COMMAND_OFFSET);
 
     const claimed = -%mask.base();
-    if (claimed == 0 or claimed < bytes or !std.math.isPowerOfTwo(claimed) or
-        !std.mem.isAligned(base, claimed))
+    if (claimed == 0) return null;
+    if (!std.math.isPowerOfTwo(claimed) or !std.mem.isAligned(base, claimed)) {
         log.say(tag, .dim, "the " ++ what ++ "'s window is not the shape its driver assumes");
+    } else if (claimed < bytes) {
+        log.say(tag, .dim, "the " ++ what ++ "'s window is smaller than its driver assumes; mapped as far as it goes");
+    }
+    return claimed;
+}
+
+/// One past the highest offset in a register enum: the smallest window that
+/// can carry every register a driver names. Answered from the enum rather
+/// than written as a number beside it, so the two cannot drift.
+pub fn registersEnd(comptime Register: type, comptime width: u32) u32 {
+    var end: u32 = 0;
+    inline for (comptime std.meta.fields(Register)) |field| {
+        end = @max(end, @as(u32, field.value) + width);
+    }
+    return end;
 }
 
 pub fn bar(loc: Location, index: u8) u32 {

@@ -443,10 +443,15 @@ fn serve(channel: u32) noreturn {
         // The wait's deadline is the stack's own next timer: DHCP renewals,
         // TCP retransmits and ARP aging all ride this one number, and an
         // idle network parks here forever.
-        const timeout: usize = if (soonest(stack.nextDeadline(), station.nextDeadline())) |us|
-            @intCast(@min(us, std.math.maxInt(usize) - 1))
-        else
-            sys.FOREVER;
+        // Capped, even when nothing is due: the loop asks the adapters as
+        // well as listening to them, and a wait with no end is a loop that
+        // never asks. The stack's own timers are usually the sooner answer;
+        // this is the backstop that keeps a quiet machine from parking
+        // somewhere no wake will come.
+        const timeout: usize = idle: {
+            const due = soonest(stack.nextDeadline(), station.nextDeadline()) orelse break :idle IDLE_WAIT_US;
+            break :idle @as(usize, @intCast(@min(due, IDLE_WAIT_US)));
+        };
         const woke = sys.waitMany(sources.slice(), timeout);
         load.wakes +%= 1;
         // Keep the handle, not its index: dispatch can remove a source.
@@ -482,6 +487,10 @@ fn serve(channel: u32) noreturn {
         // expiring exchanges. One pass per distinct line bounds the work;
         // idle loops still block on the normal wait above.
         drainReadyIrqs(ifaces[0..count], selected, sys);
+        // And whatever the lines did not say: an adapter the firmware
+        // routed nowhere still fills its ring, and an edge-routed line
+        // that missed an edge never asserts again.
+        dev.serviceAdapters(ifaces[0..count]);
         stack.tick();
         station.tick();
 
@@ -508,7 +517,10 @@ fn drainReadyIrqs(interfaces: []dev.NicDev, selected: ?u32, comptime io: type) v
         for (interfaces) |*other| {
             if (other.irq != handle) continue;
             other.irq_count += 1;
-            if (other.ops.irq(other)) found = true;
+            if (other.ops.irq(other)) {
+                other.serviced_at = @intCast(@as(u64, @intCast(sys.clockMicros())));
+                found = true;
+            }
         }
         load.irqs +%= 1;
         if (!found) load.unclaimed +%= 1;
@@ -578,12 +590,21 @@ test "ready IRQs precede expiry even when IPC wins, with one ack per shared line
 /// Everything the platform service has queued. The wireless key is the
 /// only one this service can do anything about; the rest are somebody
 /// else's, and are left for them to read.
+/// One toggle's worth of work per wake, however many presses arrived.
+///
+/// The key is a switch: what matters is whether it was pressed an odd number
+/// of times, not each press. Turning the radio over costs a hundred
+/// milliseconds of waiting for the part to arrive plus a call to another
+/// service, and doing that once per queued press would park the loop here
+/// with every interface unserved for as long as somebody keeps pressing.
 fn drainHotkeys() void {
-    while (true) {
+    var flips: usize = 0;
+    for (0..HOTKEYS_PER_WAKE) |_| {
         var press = platform.Press{};
-        platform.nextHotkey(&press) catch return;
-        if (press.hotkey == .wireless) setWireless(!stack.isEnabled(.wifi));
+        platform.nextHotkey(&press) catch break;
+        if (press.hotkey == .wireless) flips += 1;
     }
+    if (flips % 2 == 1) setWireless(!stack.isEnabled(.wifi));
 }
 
 /// The wireless, both halves of it, in the order that keeps them agreeing.
@@ -692,6 +713,13 @@ fn wirelessPlace() ?lib.pci.Location {
 }
 
 /// The nearer of two deadlines, either of which may be none.
+/// How long the loop may sleep with nothing due: long enough to be idle,
+/// short enough that a missed interrupt costs a few frames.
+const IDLE_WAIT_US: usize = 25_000;
+
+/// How many hotkey presses one pass acts on.
+const HOTKEYS_PER_WAKE = 4;
+
 fn soonest(a: ?u64, b: ?u64) ?u64 {
     const first = a orelse return b;
     const second = b orelse return first;
@@ -849,10 +877,18 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
 
     // Fresh link state before anything uses it: what the adapter reports
     // and what its registers were told must agree.
+    //
+    // Through `deliverLink` and not by assignment, because that is the one
+    // place that knows a link change has to be told onward. Writing
+    // `iface.state` here instead is how a link that came up between two
+    // queries goes unnoticed: the next real change sees the flag already
+    // set, decides nothing moved, and the stack is never told the carrier
+    // arrived -- an interface that reads as up everywhere and carries
+    // nothing.
     if (iface.ops.sync_link) |sync| {
         sync(iface);
     } else {
-        iface.state = iface.ops.link(iface);
+        dev.deliverLink(iface, iface.ops.link(iface));
     }
 
     if (request.tag == .arp_probe) {

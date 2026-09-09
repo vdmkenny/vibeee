@@ -14,6 +14,7 @@ const dev_mod = @import("dev.zig");
 const lib = @import("lib");
 const std = @import("std");
 const dma = @import("dma.zig");
+const ring = @import("ring.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
 const sys = @import("sys");
@@ -128,7 +129,9 @@ const Causes = packed struct(u32) {
     }
 };
 
-/// RCTL. The receive policy in the manual's own bit positions.
+/// RCTL. The receive policy in the manual's own bit positions. The two
+/// promiscuous enables are named so that leaving them off where the
+/// receiver is configured reads as a choice rather than as an omission.
 const RxControl = packed struct(u32) {
     _0: u1 = 0,
     enabled: bool = false,
@@ -181,10 +184,16 @@ const UpCauses = Causes{
     .rx_timer = true,
 };
 
+/// What the receiver takes: this station's own address, as programmed into
+/// the receive-address register, and broadcasts.
+///
+/// Promiscuous is deliberately off. Unicast and multicast promiscuous take
+/// every frame on the segment, which on a switched wire is nothing and on
+/// a shared one is everybody else's traffic handed to the stack; the cost
+/// is then paid again above, in every frame lwIP has to look at and throw
+/// away. The address filter is the hardware doing what it is for.
 const UpRx = RxControl{
     .enabled = true,
-    .unicast_promisc = true,
-    .multicast_promisc = true,
     .broadcast_accept = true,
     .strip_crc = true,
 };
@@ -333,12 +342,19 @@ comptime {
 /// no runtime heap at all.
 const Device = struct {
     regs: Regs = .{ .base = undefined },
-    rings: *Rings = undefined,
-    phys: lib.Phys = .none,
-    dma_handle: ?u32 = null,
-    rx_next: u16 = 0, // next completed receive descriptor
-    tx_next: u16 = 0, // next transmit descriptor to publish
-    tx_clean: u16 = 0, // oldest transmit descriptor still owned by hardware
+    /// Descriptors and buffers, one run of device memory. Held as an arena
+    /// so that giving it back is unmapping *and* closing: a handle closed
+    /// under a live mapping frees nothing, and a driver stopped and opened
+    /// a few times then runs the machine out of contiguous memory without
+    /// ever having allocated twice.
+    arena: dma.Arena(Rings) = .{},
+    /// Where each end of a ring stands. Cursors rather than plain indices
+    /// because the arithmetic that matters — how much is outstanding, how
+    /// much room is left — is measured the way a lap is, and every lap but
+    /// the first has the writing end behind the reading one.
+    rx_next: ring.Cursor(RingSlots) = .{}, // next completed receive descriptor
+    tx_next: ring.Cursor(RingSlots) = .{}, // next transmit descriptor to publish
+    tx_clean: ring.Cursor(RingSlots) = .{}, // oldest transmit descriptor still owned by hardware
     opened: bool = false,
     started: bool = false,
 };
@@ -346,15 +362,36 @@ const Device = struct {
 var device: Device = .{};
 
 pub fn open(loc: pci.Location, dev: *NicDev) bool {
-    if (device.opened or device.dma_handle != null) {
+    if (device.opened or device.arena.at != null) {
         log.fail("e1000", "the adapter is already open");
         return false;
     }
 
-    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, "e1000", "adapter") orelse
-        return false;
+    // One past the highest register this driver touches: the smallest
+    // aperture that can serve it. A part decoding less than the family's
+    // maximum is still usable, and one decoding less than this is not.
+    const aperture = pci.openApertureNeeding(
+        loc,
+        0,
+        MMIO_BYTES,
+        pci.registersEnd(R, @sizeOf(u32)),
+        "e1000",
+        "adapter",
+    ) orelse return false;
+    // Every way out of here but the last one gives the registers back. A
+    // driver that fails to open is asked again after the next restart of
+    // the service, and an aperture left mapped each time is a hole in the
+    // address space that never comes back.
     var keep_pci_enabled = false;
-    defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
+    defer if (!keep_pci_enabled) {
+        // The arena too: an open that got as far as taking device memory
+        // and then failed has to give it back, or the next attempt at this
+        // adapter is refused for want of the run this one is still sitting
+        // on. Releasing one that was never taken does nothing.
+        device.arena.release();
+        sys.shmUnmap(@volatileCast(device.regs.base));
+        pci.disableInterruptAndMaster(loc);
+    };
     device.regs = .{ .base = @ptrCast(aperture) };
 
     if (!reset()) {
@@ -366,45 +403,51 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         return false;
     }
 
-    // One physically contiguous run for descriptors and buffers.
-    var phys: lib.Phys = .none;
-    const handle = sys.dmaAlloc(@sizeOf(Rings), &phys) catch |why| {
-        log.refused("e1000", "cannot allocate DMA rings", why);
+    // One physically contiguous run for descriptors and buffers, taken and
+    // mapped as one thing and zeroed before anything is written into it: a
+    // descriptor left holding last boot's address is a device that fetches
+    // from wherever it points.
+    device.arena = dma.Arena(Rings).acquire() catch |why| {
+        switch (why) {
+            // No contiguous run of that size left below 4 GiB. Retold in
+            // the shape `log.refused` takes rather than handed over as it
+            // arrived: the arena's refusals are its own, and this is the
+            // one of them the kernel's would have been.
+            error.NoMemory => log.refused("e1000", "cannot allocate DMA rings", error.NoMemory),
+            // Checked rather than adjusted: an adjusted physical base
+            // without the same shift on the mapping would have the CPU and
+            // the engine each working in a different arena.
+            error.Misaligned => log.fail("e1000", "DMA rings are unaligned or cross 4 GiB"),
+            error.Unmappable => log.fail("e1000", "cannot map DMA rings"),
+        }
         return false;
     };
-    const dma_handle: u32 = @intCast(handle);
-    const last_offset: u32 = @intCast(@sizeOf(Rings) - 1);
-    // A run that leaves the addresses this machine has is one the engine
-    // would walk off the end of.
-    if (phys.addr() % @alignOf(Rings) != 0 or phys.plus(last_offset) == null) {
-        sys.close(dma_handle);
-        log.fail("e1000", "DMA rings are unaligned or cross 4 GiB");
-        return false;
-    }
-    const mapped = sys.shmMap(@intCast(handle), .{ .writable = true }) orelse {
-        sys.close(dma_handle);
-        log.fail("e1000", "cannot map DMA rings");
-        return false;
-    };
-    device.rings = @ptrCast(@alignCast(mapped));
-    device.phys = phys;
-    device.dma_handle = dma_handle;
-    device.rx_next = 0;
-    device.tx_next = 0;
-    device.tx_clean = 0;
-    device.rings.* = .{};
+
+    // The two ring bases the device is written, asked of the arena rather
+    // than added to its base by hand: the run that leaves this machine's
+    // addresses is the one a driver hands a device a page it does not own.
+    // Every offset here is inside the body, so neither can be refused; the
+    // `return false` arms are the one shape a driver has for saying so,
+    // and the defer above gives the arena back if one is.
+    const rx_desc_at = device.arena.physOf(@offsetOf(Rings, "rx_desc")) orelse return false;
+    const tx_desc_at = device.arena.physOf(@offsetOf(Rings, "tx_desc")) orelse return false;
+
+    device.rx_next = .{};
+    device.tx_next = .{};
+    device.tx_clean = .{};
+    const rings = device.arena.body();
 
     // Every receive descriptor names its buffer before the ring is handed
     // over: a descriptor left at zero is an invitation to scribble the
     // frame over the real mode vector table.
-    for (&device.rings.rx_desc, 0..) |*desc, i| {
+    for (&rings.rx_desc, 0..) |*desc, i| {
         desc.* = .{
-            .addr_low = device.phys.addr() + @as(u32, @intCast(@offsetOf(Rings, "rx_buffer") + i * Slab)),
+            .addr_low = (device.arena.physOf(@offsetOf(Rings, "rx_buffer") + i * Slab) orelse return false).addr(),
         };
     }
-    for (&device.rings.tx_desc, 0..) |*desc, i| {
+    for (&rings.tx_desc, 0..) |*desc, i| {
         desc.* = .{
-            .addr_low = device.phys.addr() + @as(u32, @intCast(@offsetOf(Rings, "tx_buffer") + i * Slab)),
+            .addr_low = (device.arena.physOf(@offsetOf(Rings, "tx_buffer") + i * Slab) orelse return false).addr(),
             .status = .{ .done = true },
         };
     }
@@ -414,7 +457,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     configureLink();
 
     // Receive path: the descriptor ring and its buffers are one run.
-    device.regs.write(.rdbal, device.phys.addr() + @offsetOf(Rings, "rx_desc"));
+    device.regs.write(.rdbal, rx_desc_at.addr());
     device.regs.write(.rdbah, 0);
     device.regs.write(.rdlen, RingSlots * @sizeOf(RxDesc));
     device.regs.write(.rdh, 0);
@@ -423,7 +466,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     device.regs.write(.rdt, RingSlots - 1);
 
     // Transmit path.
-    device.regs.write(.tdbal, device.phys.addr() + @offsetOf(Rings, "tx_desc"));
+    device.regs.write(.tdbal, tx_desc_at.addr());
     device.regs.write(.tdbah, 0);
     device.regs.write(.tdlen, RingSlots * @sizeOf(TxDesc));
     device.regs.write(.tdh, 0);
@@ -431,7 +474,7 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
 
     device.opened = true;
     keep_pci_enabled = true;
-    dev.state = link(dev);
+    dev_mod.deliverLink(dev, link(dev));
     return true;
 }
 
@@ -500,7 +543,7 @@ fn readRar() ?[6]u8 {
         low.octet0,  low.octet1,  low.octet2, low.octet3,
         high.octet4, high.octet5,
     };
-    return if (validMac(mac)) mac else null;
+    return if (dev_mod.validMac(mac)) mac else null;
 }
 
 fn readEepromMac() ?[6]u8 {
@@ -509,7 +552,7 @@ fn readEepromMac() ?[6]u8 {
         const word = readEeprom(@intCast(i)) orelse return null;
         std.mem.writeInt(u16, mac[i * 2 ..][0..2], word, .little);
     }
-    return if (validMac(mac)) mac else null;
+    return if (dev_mod.validMac(mac)) mac else null;
 }
 
 fn readEeprom(address: u8) ?u16 {
@@ -521,17 +564,6 @@ fn readEeprom(address: u8) ?u16 {
         std.atomic.spinLoopHint();
     }
     return null;
-}
-
-fn validMac(mac: [6]u8) bool {
-    if (mac[0] & 1 != 0) return false;
-    var any = false;
-    var all_ff = true;
-    for (mac) |octet| {
-        any = any or octet != 0;
-        all_ff = all_ff and octet == 0xFF;
-    }
-    return any and !all_ff;
 }
 
 fn writeRar(mac: [6]u8) void {
@@ -594,34 +626,111 @@ pub fn stop(nic: *NicDev) void {
     _ = device.regs.read(.icr);
 
     pci.disableInterruptAndMaster(nic.location);
-    if (device.dma_handle) |handle| sys.close(handle);
-    device.dma_handle = null;
-    device.phys = .none;
-    device.rx_next = 0;
-    device.tx_next = 0;
-    device.tx_clean = 0;
+
+    // What is handed back is memory a bus master was writing into, unmapped
+    // as well as closed: a mapping is a reference of its own, so a handle
+    // closed under a live one frees nothing. Called only after the
+    // registers above have been cleared, and before the aperture goes,
+    // because a device left able to fetch has addresses into whatever gets
+    // this memory next.
+    device.arena.release();
+
+    // The aperture is given back too, and for the same reason: a mapping
+    // holds a window of this process's address space, and one left behind
+    // by every stop is a machine that runs out of them. Safe only now
+    // that no register names memory either side of it.
+    sys.shmUnmap(@volatileCast(device.regs.base));
+    device.regs = .{ .base = undefined };
+    device.rx_next = .{};
+    device.tx_next = .{};
+    device.tx_clean = .{};
     device.opened = false;
-    nic.state = .{};
+    dev_mod.deliverLink(nic, .{});
 }
 
-pub fn irq(dev: *NicDev) bool {
+/// One interrupt delivery.
+///
+/// The shape of the pass is `dev.serveIrq`'s: read a cause, hold the line
+/// over the work, release it, and look again. What only this driver knows
+/// is the three things below.
+pub fn irq(nic: *NicDev) bool {
     if (!device.opened or !device.started) return false;
-    const cause = @as(Causes, @bitCast(device.regs.read(.icr)));
-    if (cause.none()) return false; // a shared line, not ours
+    return dev_mod.serveIrq(@This(), nic);
+}
 
-    // Reading ICR acknowledged this snapshot. Writing it back would also
-    // clear a matching cause that arrived while this handler was working.
-    if (cause.rx_min or cause.rx_overrun or cause.rx_timer) reapRx(dev);
-    if (cause.rx_sequence or cause.rx_overrun) dev.stats.rx_dropped += 1;
-    if (cause.tx_done) reapTx(dev);
-    if (cause.link_change) dev_mod.deliverLink(dev, link(dev));
+/// What the adapter has latched, as one word: zero for nothing, which is
+/// what ends the pass, and on a shared line what says an edge was not
+/// ours.
+///
+/// ICR is read-to-clear, so this read is also the acknowledgement of
+/// everything it reported; `acknowledge` does not write it back.
+pub fn cause() u32 {
+    if (!device.started) return 0;
+    const latched: Causes = @bitCast(device.regs.read(.icr));
+    return if (latched.none()) 0 else @bitCast(latched);
+}
+
+/// Hold the line over the work, and let it go afterwards.
+///
+/// The causes themselves were acknowledged by reading ICR, which is
+/// read-to-clear; writing them back would also clear a matching cause that
+/// arrived while this pass was working, and that is work owed. So what
+/// holds the line here is the mask: IMC while the work runs, IMS after it,
+/// which on a level line is what stops the controller re-asserting
+/// mid-pass and on an edge one costs a posted write.
+pub fn acknowledge(_: u32, held: bool) void {
+    if (held) {
+        device.regs.write(.imc, AllCauses);
+    } else {
+        device.regs.write(.ims, @bitCast(UpCauses));
+    }
+    _ = device.regs.read(.status); // flush the posted mask write
+}
+
+/// One pass of the adapter's work, on the line.
+///
+/// Nothing here may wait on the part: the line is held while it runs, and
+/// on a shared line so is every neighbour's. Reaping is bounded by
+/// `RX_REAP_BUDGET` rather than by the number of rounds, because a round
+/// is a look at the cause and not a limit on what a wire can have filled.
+pub fn service(causes: u32, nic: *NicDev) void {
+    const latched: Causes = @bitCast(causes);
+    if (latched.rx_min or latched.rx_overrun or latched.rx_timer) reapRx(nic);
+    if (latched.rx_sequence or latched.rx_overrun) nic.stats.rx_dropped += 1;
+    if (latched.tx_done) reapTx(nic);
+    if (latched.link_change) dev_mod.deliverLink(nic, link(nic));
+}
+
+pub fn poll(dev: *NicDev) bool {
+    if (!device.opened or !device.started) return false;
+    // Whatever arrived with no interrupt behind it: a line the firmware
+    // routed nowhere, or an edge this service never saw. Nothing about
+    // the ring depends on being woken; the descriptors are the hardware's
+    // to fill whether an interrupt was delivered or not.
+    reapRx(dev);
+    reapTx(dev);
     return true;
 }
 
+/// How many frames one pass of the receiver takes, however many the wire
+/// has for it.
+///
+/// Each descriptor is handed straight back to the hardware as it is
+/// drained, so at line rate the ring refills underneath the loop as fast
+/// as the loop empties it and a pass that ran until the ring was quiet
+/// would never end: this service is one thread, and everything else it
+/// does — the stack's timers, the other interfaces on the line, the
+/// channel it answers requests on — stops for as long as the wire keeps
+/// talking. One lap of the ring is the most one pass takes; what is still
+/// there when it stops is the next pass's to take.
+const RX_REAP_BUDGET = RingSlots;
+
 fn reapRx(dev: *NicDev) void {
-    while (true) {
-        const slot = device.rx_next;
-        const desc = &device.rings.rx_desc[slot];
+    const rings = device.arena.body();
+    var reaped: usize = 0;
+    while (reaped < RX_REAP_BUDGET) : (reaped += 1) {
+        const slot = device.rx_next.at;
+        const desc = &rings.rx_desc[slot];
         const ownership = @as(*const volatile RxStatus, &desc.status).*;
         if (!ownership.done) break;
         dma.consume();
@@ -635,7 +744,7 @@ fn reapRx(dev: *NicDev) void {
         if (good) {
             dev_mod.deliverRx(dev, .{
                 .ok = true,
-                .frame = device.rings.rx_buffer[slot][0..length],
+                .frame = rings.rx_buffer[slot][0..length],
             });
         } else {
             // Never form a slice from a device-provided length until it has
@@ -649,22 +758,31 @@ fn reapRx(dev: *NicDev) void {
         desc.special = 0;
         desc.status = .{};
         dma.publish();
-        device.rx_next = (slot + 1) % RingSlots;
+        device.rx_next.next();
         // RDT names the last descriptor returned to hardware, not the next
-        // descriptor software expects to consume.
-        device.regs.write(.rdt, slot);
+        // descriptor software expects to consume: writing the cursor as it
+        // stands now would hand the engine a descriptor this pass has not
+        // refilled, and hardware and software would be one apart for the
+        // rest of the run.
+        device.regs.write(.rdt, @intCast(slot));
     }
 }
 
 fn reapTx(nic: *NicDev) void {
-    while (device.tx_clean != device.tx_next) {
-        const desc = &device.rings.tx_desc[device.tx_clean];
+    const rings = device.arena.body();
+    // How much is still the hardware's: from the oldest descriptor not yet
+    // reclaimed up to the one the next send will take, measured the way a
+    // lap is, because after the first the writing end is behind the
+    // reading one and a plain subtraction goes below zero.
+    var outstanding = device.tx_next.used(device.tx_clean.at);
+    while (outstanding > 0) : (outstanding -= 1) {
+        const desc = &rings.tx_desc[device.tx_clean.at];
         const ownership = @as(*const volatile TxStatus, &desc.status).*;
         if (!ownership.done) break;
         dma.consume();
         const status = @as(*const volatile TxStatus, &desc.status).*;
         if (status.failed()) nic.stats.tx_failed += 1;
-        device.tx_clean = (device.tx_clean + 1) % RingSlots;
+        device.tx_clean.next();
     }
 }
 
@@ -674,22 +792,24 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     // Completion interrupts are advisory for reclaim: checking writebacks
     // here prevents backpressure when the event is delayed or coalesced.
     reapTx(nic);
-    const slot = device.tx_next;
-    const next = (slot + 1) % RingSlots;
-    // One slot stays unused because TDH == TDT is the hardware's empty state.
-    if (next == device.tx_clean) {
+    // One slot stays unused because TDH == TDT is the hardware's empty
+    // state: what is asked for is the room the ring has, which is one
+    // short of its size for exactly that reason.
+    if (device.tx_next.room(device.tx_clean.at) == 0) {
         nic.stats.tx_failed += 1;
         return false;
     }
+    const slot = device.tx_next.at;
 
-    const desc = &device.rings.tx_desc[slot];
+    const rings = device.arena.body();
+    const desc = &rings.tx_desc[slot];
     const ownership = @as(*const volatile TxStatus, &desc.status).*;
     if (!ownership.done) {
         nic.stats.tx_failed += 1;
         return false;
     }
 
-    @memcpy(device.rings.tx_buffer[slot][0..frame.len], frame);
+    @memcpy(rings.tx_buffer[slot][0..frame.len], frame);
     const address = desc.addr_low;
     desc.* = .{
         .addr_low = address,
@@ -698,8 +818,10 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     };
 
     dma.publish();
-    device.tx_next = next;
-    device.regs.write(.tdt, next);
+    device.tx_next.next();
+    // TDT, unlike RDT, is one past the last descriptor the engine may
+    // send, which is the cursor as it now stands.
+    device.regs.write(.tdt, @intCast(device.tx_next.at));
 
     dev_mod.deliverTx(nic, frame.len);
     return true;
@@ -724,6 +846,7 @@ pub const ops: dev_mod.NicOps = .{
     .start = start,
     .stop = stop,
     .irq = irq,
+    .poll = poll,
     .transmit = transmit,
     .link = link,
 };

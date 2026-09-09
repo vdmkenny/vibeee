@@ -15,8 +15,10 @@ const dev_mod = @import("dev.zig");
 const lib = @import("lib");
 const dma = @import("dma.zig");
 const log = @import("ulib").log;
+const mii = @import("mii.zig");
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
+const ring = @import("ring.zig");
 const std = @import("std");
 const sys = @import("sys");
 
@@ -26,7 +28,12 @@ const ETH_MTU = 1500;
 const ETH_HEADER = lib.eth.HEADER;
 const ETH_FCS = 4;
 const ETH_VLAN = 4;
-const ETH_MIN_WIRE = 64;
+/// The shortest frame worth handing up: the padded minimum, counted the way
+/// the status word counts it. Anything below this the hardware has already
+/// called a runt, and a frame it called good is not one this driver should
+/// second-guess -- a bare acknowledgement is short by design, and dropping
+/// those is a conversation that never advances.
+const ETH_MIN_WIRE = 60;
 const ETH_MAX_FRAME = ETH_MTU + ETH_HEADER + ETH_FCS;
 const MAC_FRAME_LIMIT = ETH_MAX_FRAME + ETH_VLAN;
 
@@ -90,42 +97,50 @@ const R8 = enum(u32) {
     dmaw = 0x15A0,
 };
 
-/// A byte window over the aperture; each access is one volatile load or
-/// store of the register's own width. Volatile is the load-bearing word: a
-/// register read has an effect, and a compiler that merged two of them, or
-/// dropped a store because a later one hits the same address, would be right
-/// about the value and wrong about the device.
+/// The aperture, in the three widths its registers are reached at: one
+/// mapping, one vocabulary per width, so a byte register cannot be reached
+/// through a dword operation. The window does the volatile load or store and
+/// proves at compile time that every offset in each set is aligned for the
+/// width it is reached at; a misaligned access splits into two bus
+/// transactions on this architecture and lands as something else again on
+/// others.
 const Regs = struct {
-    base: [*]volatile u8,
+    word: lib.mmio.Window(R32, u32) = .{ .base = undefined },
+    half: lib.mmio.Window(R16, u16) = .{ .base = undefined },
+    byte: lib.mmio.Window(R8, u8) = .{ .base = undefined },
 
-    fn wr32(self: Regs, r: R32, value: u32) void {
-        const at: *volatile u32 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
-        at.* = value;
+    /// The same base, seen three ways: `as` carries the mapping across and
+    /// re-runs the alignment proof against the register set it is given.
+    fn over(base: [*]volatile u8) Regs {
+        const words: lib.mmio.Window(R32, u32) = .{ .base = base };
+        return .{
+            .word = words,
+            .half = words.as(R16, u16),
+            .byte = words.as(R8, u8),
+        };
     }
 
-    fn rd32(self: Regs, r: R32) u32 {
-        const at: *const volatile u32 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
-        return at.*;
-    }
-
-    fn wr16(self: Regs, r: R16, value: u16) void {
-        const at: *volatile u16 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
-        at.* = value;
-    }
-
-    fn rd16(self: Regs, r: R16) u16 {
-        const at: *const volatile u16 = @ptrCast(@alignCast(self.base + @intFromEnum(r)));
-        return at.*;
-    }
-
-    fn wr8(self: Regs, r: R8, value: u8) void {
-        self.base[@intFromEnum(r)] = value;
+    /// The mapping itself, for handing it back. One base whichever of the
+    /// three windows is asked, because there is only ever one mapping.
+    fn aperture(self: Regs) [*]volatile u8 {
+        return self.word.base;
     }
 };
 
+/// One past the highest register this driver touches, in whichever of the
+/// three widths it is reached: the smallest aperture that can serve it. A
+/// part decoding less than the family's maximum still works; one decoding
+/// less than this cannot be driven at all.
+const REGISTERS_END = @max(
+    @max(pci.registersEnd(R32, @sizeOf(u32)), pci.registersEnd(R16, @sizeOf(u16))),
+    pci.registersEnd(R8, @sizeOf(u8)),
+);
+
+/// That a register lies inside the aperture this driver maps. Its alignment
+/// for the width it is reached at is the window's proof, made when the three
+/// windows above are instantiated.
 fn validateRegisterSet(comptime Register: type, comptime width: u32) void {
     inline for (std.meta.fields(Register)) |field| {
-        if (field.value % width != 0) @compileError("ATL2 register is misaligned for its access width");
         if (field.value + width > MMIO_BYTES) @compileError("ATL2 register lies outside the mapped aperture");
     }
 }
@@ -179,6 +194,15 @@ const MdioCtrl = packed struct(u32) {
     _28: u4 = 0,
 };
 
+/// What the MAC counts the wire's speed as, at bits 20:21 of MAC_CTRL. Not
+/// the PHY's own encoding: ten and a hundred share one value here, and the
+/// gigabit value belongs to parts this driver does not drive.
+const MacSpeed = enum(u2) {
+    m10_100 = 1,
+    m1000 = 2,
+    _,
+};
+
 const MacCtrl = packed struct(u32) {
     tx_enable: bool = false,
     rx_enable: bool = false,
@@ -193,7 +217,14 @@ const MacCtrl = packed struct(u32) {
     preamble_len: u4 = 0,
     _14: u1 = 0,
     promiscuous: bool = false,
-    _16: u9 = 0,
+    _16: u4 = 0,
+    /// The speed, always written. Two of the four encodings are defined
+    /// and zero is not one of them: left at zero the field is whatever
+    /// the silicon makes of an undefined value, and a receiver that
+    /// never synchronises is what that has looked like. Linux writes the
+    /// 10/100 value for this part on every path, so this driver does.
+    speed: MacSpeed = .m10_100,
+    _22: u3 = 0,
     multicast_all: bool = false,
     broadcast_accept: bool = false,
     /// MACLP_CLK_PHY: clock the MAC from the PHY.
@@ -301,9 +332,12 @@ const TxStatus = packed struct(u32) {
     pkt_len: u11 = 0,
     _11: u5 = 0,
     ok: bool = false,
-    _17: u10 = 0,
+    _17: u8 = 0,
+    /// Bit 25, not 27. Named and left alone: this MAC raises it beside
+    /// ordinary completions, so reading it as a failure would count every
+    /// frame sent as one that did not go.
     underrun: bool = false,
-    _28: u3 = 0,
+    _26: u5 = 0,
     update: bool = false,
 };
 
@@ -404,13 +438,6 @@ const BMCR = packed struct(u16) {
     reset: bool = false, // bit 15
 };
 
-const BMSR = packed struct(u16) {
-    _0: u2 = 0,
-    link_status: bool = false, // bit 2
-    _3: u12 = 0,
-    _15: u1 = 0,
-};
-
 const ADVERTISE_ALL = packed struct(u16) {
     selector: bool = true,
     _1: u4 = 0,
@@ -463,14 +490,15 @@ comptime {
 }
 
 /// The three regions, one physically contiguous run, in the order the
-/// hardware reads them. The receive slots demand 128-byte alignment.
-const Arena = struct {
+/// hardware reads them. The receive slots demand 128-byte alignment, which
+/// is what the arena is asked for.
+const Rings = struct {
     txd: [TXD_BYTES]u8 = @splat(0),
     txs: [TXS_COUNT]TxStatus = @splat(.{}),
     rxd: [RX_COUNT]RxSlot align(128) = @splat(.{}),
 
     comptime {
-        if (@sizeOf(Arena) != TXD_BYTES + TXS_COUNT * 4 + RX_COUNT * RX_SLOT) {
+        if (@sizeOf(Rings) != TXD_BYTES + TXS_COUNT * 4 + RX_COUNT * RX_SLOT) {
             @compileError("the descriptor arena must pack without padding surprises");
         }
     }
@@ -479,23 +507,31 @@ const Arena = struct {
 /// TFrames live in the FIFO with their four-byte header; the tread pointer
 /// (what the hardware has consumed) is derived from the statuses.
 const Device = struct {
-    regs: Regs = .{ .base = undefined },
-    arena: *Arena = undefined,
-    phys: lib.Phys = .none,
-    dma_handle: ?u32 = null,
+    regs: Regs = .{},
+    /// The rings and the run they live in, as one value: it is mapped,
+    /// zeroed and given back by the arena, and there is no state in which
+    /// one of those has been done without the other.
+    arena: dma.Arena(Rings) = .{},
     mac: [6]u8 = @splat(0),
     /// Where it sits on the bus, kept for the PCIe capability work.
     location: pci.Location = @bitCast(@as(u16, 0)),
 
-    /// Where the host writes next in the TXD fifo, and where the host is
-    /// still owed statuses in the TXS ring.
-    txd_write: usize = 0,
-    txd_read: usize = 0,
-    txs_fill: usize = 0,
-    txs_reap: usize = 0,
+    /// A fatal event whose reset is owed: named on the line, done between
+    /// passes.
+    reseat_pending: bool = false,
+    reseat_cause: u32 = 0,
+    /// Where the host writes next in the TXD fifo and where the host is
+    /// still owed fifo bytes, where the next status will be filled and
+    /// where the next completion is reaped, and where the next receive slot
+    /// is read. Cursors rather than numbers: the wrap is the arithmetic
+    /// this driver used to write out at each of them.
+    txd_write: ring.Cursor(TXD_BYTES) = .{},
+    txd_read: ring.Cursor(TXD_BYTES) = .{},
+    txs_fill: ring.Cursor(TXS_COUNT) = .{},
+    txs_reap: ring.Cursor(TXS_COUNT) = .{},
     txs_used: usize = 0,
     tx_lengths: [TXS_COUNT]u16 = @splat(0),
-    rxd_read: usize = 0,
+    rxd_read: ring.Cursor(RX_COUNT) = .{},
     opened: bool = false,
     started: bool = false,
 };
@@ -507,16 +543,33 @@ var device: Device = .{};
 // ---------------------------------------------------------------------------
 
 pub fn open(loc: pci.Location, dev: *NicDev) bool {
-    if (device.opened or device.dma_handle != null) return false;
+    if (device.opened) return false;
 
     device.location = loc;
-    const aperture = pci.openAperture(loc, 0, MMIO_BYTES, "atl2", "adapter") orelse
+    const aperture = pci.openApertureNeeding(loc, 0, MMIO_BYTES, REGISTERS_END, "atl2", "adapter") orelse
         return false;
+    // Every way out of here but the last gives the registers back. A
+    // driver that fails to open is asked again each time the service
+    // restarts, and an aperture left mapped each time is a window of this
+    // process's address space that never comes back.
     var keep_pci_enabled = false;
-    defer if (!keep_pci_enabled) pci.disableInterruptAndMaster(loc);
-    device.regs = .{ .base = @ptrCast(@volatileCast(aperture)) };
-    device.regs.wr32(.imr, 0);
-    _ = device.regs.rd32(.imr);
+    defer if (!keep_pci_enabled) {
+        sys.shmUnmap(@volatileCast(device.regs.aperture()));
+        pci.disableInterruptAndMaster(loc);
+    };
+    device.regs = Regs.over(@ptrCast(aperture));
+
+    // Before anything is asked of the line: a device left delivering
+    // message-signalled interrupts asserts no pin, and this system routes
+    // pins. Firmware hands a card over with messages enabled often enough
+    // that an adapter would otherwise sit silent, receiving nothing, for
+    // exactly as long as it took to notice.
+    if (pci.useIntx(loc)) {
+        log.note("atl2", "the adapter was set to message interrupts; turned back to its pin");
+    }
+
+    device.regs.word.write(.imr, 0);
+    _ = device.regs.word.read(.imr);
     log.say("atl2", .dim, "registers mapped");
 
     device.mac = readMac() orelse {
@@ -524,31 +577,28 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         return false;
     };
 
-    var phys: lib.Phys = .none;
-    const handle = sys.dmaAlloc(@sizeOf(Arena), &phys) catch |why| {
-        log.refused("atl2", "cannot allocate DMA rings", why);
+    // One run of device memory for the whole of the rings, taken and
+    // mapped as one thing: a mapping is a reference of its own, so a
+    // handle closed under a live mapping frees nothing and a driver
+    // stopped and opened a few times runs the machine out of contiguous
+    // memory without ever having allocated twice. The arena zeroes it,
+    // because a descriptor left holding last boot's address is a device
+    // that fetches from wherever it points.
+    device.arena = dma.Arena(Rings).acquire() catch |why| {
+        switch (why) {
+            // No contiguous run of that size left below 4 GiB. Retold in
+            // the shape `log.refused` takes rather than handed over as it
+            // arrived: the arena's refusals are its own, and this is the
+            // one of them the kernel's would have been.
+            error.NoMemory => log.refused("atl2", "cannot allocate DMA rings", error.NoMemory),
+            // Checked rather than adjusted: an adjusted physical base
+            // without the same shift on the mapping would have the CPU and
+            // the card each writing a different arena.
+            error.Misaligned => log.fail("atl2", "DMA memory is not aligned for the adapter"),
+            error.Unmappable => log.fail("atl2", "cannot map DMA rings"),
+        }
         return false;
     };
-    // DMA memory is page-granular, so the 128-byte alignment the receive
-    // slots demand always holds. Checked rather than adjusted: an adjusted
-    // physical base without the same shift on the mapping would have the CPU
-    // and the card each writing a different arena.
-    const dma_handle: u32 = @intCast(handle);
-    const last_offset: u32 = @intCast(@sizeOf(Arena) - 1);
-    if (phys.addr() % @alignOf(Arena) != 0 or phys.plus(last_offset) == null) {
-        sys.close(dma_handle);
-        log.fail("atl2", "DMA memory is not aligned for the adapter");
-        return false;
-    }
-    const mapped = sys.shmMap(dma_handle, .{ .writable = true }) orelse {
-        sys.close(dma_handle);
-        log.fail("atl2", "cannot map DMA rings");
-        return false;
-    };
-    device.arena = @ptrCast(@alignCast(mapped));
-    device.phys = phys;
-    device.dma_handle = dma_handle;
-    device.arena.* = .{};
 
     log.say("atl2", .dim, "rings placed");
     if (!configure()) {
@@ -556,16 +606,16 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
         // mastering before the backing allocation can be returned.
         pci.disableInterruptAndMaster(loc);
         keep_pci_enabled = true;
-        sys.close(dma_handle);
-        device.dma_handle = null;
-        device.phys = .none;
+        device.arena.release();
+        sys.shmUnmap(@volatileCast(device.regs.aperture()));
+        device.regs = .{};
         return false;
     }
     log.say("atl2", .dim, "engine configured");
     dev.mac = device.mac;
     device.opened = true;
     keep_pci_enabled = true;
-    dev.state = link(dev);
+    dev_mod.deliverLink(dev, link(dev));
 
     return true;
 }
@@ -573,8 +623,8 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
 /// Reset and configure, the sequence design/08 §4.2 fixes. Bounded waits
 /// only: a wedged controller costs a refused driver, never a machine.
 fn configure() bool {
-    device.regs.wr32(.imr, 0);
-    _ = device.regs.rd32(.imr);
+    device.regs.word.write(.imr, 0);
+    _ = device.regs.word.read(.imr);
     if (!resetController()) return false;
     initPcie();
     resetRings();
@@ -584,26 +634,29 @@ fn configure() bool {
     }
 
     // Clear interrupt status, whole word.
-    device.regs.wr32(.isr, ACK_EVERYTHING);
+    device.regs.word.write(.isr, ACK_EVERYTHING);
     writeMac();
 
     // Descriptor addresses: this machine is 32-bit, the high word is zero.
-    device.regs.wr32(.desc_base_hi, 0);
-    device.regs.wr32(.txd_base_lo, device.phys.addr() + @as(u32, @intCast(@offsetOf(Arena, "txd"))));
-    device.regs.wr16(.txd_mem_size, TXD_BYTES / @sizeOf(u32));
-    device.regs.wr32(.txs_base_lo, device.phys.addr() + @as(u32, @intCast(@offsetOf(Arena, "txs"))));
-    device.regs.wr16(.txs_mem_size, TXS_COUNT);
-    device.regs.wr32(.rxd_base_lo, device.phys.addr() + @as(u32, @intCast(@offsetOf(Arena, "rxd"))));
-    device.regs.wr16(.rxd_buf_num, RX_COUNT);
+    // Asked of the arena rather than added to its base by hand: the run
+    // that leaves the machine's addresses is the one a driver hands a
+    // device a page it does not own by.
+    device.regs.word.write(.desc_base_hi, 0);
+    device.regs.word.write(.txd_base_lo, ringAt(@offsetOf(Rings, "txd")) orelse return false);
+    device.regs.half.write(.txd_mem_size, TXD_BYTES / @sizeOf(u32));
+    device.regs.word.write(.txs_base_lo, ringAt(@offsetOf(Rings, "txs")) orelse return false);
+    device.regs.half.write(.txs_mem_size, TXS_COUNT);
+    device.regs.word.write(.rxd_base_lo, ringAt(@offsetOf(Rings, "rxd")) orelse return false);
+    device.regs.half.write(.rxd_buf_num, RX_COUNT);
 
     // Frame scheduling.
-    device.regs.wr32(.mac_ipg_ifg, @bitCast(IpgIfg{
+    device.regs.word.write(.mac_ipg_ifg, @bitCast(IpgIfg{
         .ipgt = 0x60,
         .min_ifg = 0x50,
         .ipgr1 = 0x40,
         .ipgr2 = 0x60,
     }));
-    device.regs.wr32(.mac_half_duplex, @bitCast(HalfDuplex{
+    device.regs.word.write(.mac_half_duplex, @bitCast(HalfDuplex{
         .lcol = 0x37,
         .retry = 0xF,
         .exc_defer = true,
@@ -613,16 +666,16 @@ fn configure() bool {
 
     // Interrupt moderation: 100 * 2 us between deliveries, cleared timer
     // ~100 ms, plus the flag that arms the moderator at all.
-    device.regs.wr16(.irq_modu_timer, 100);
+    device.regs.half.write(.irq_modu_timer, 100);
     // A flat write, not a read-modify-write: after reset the register is the
     // moderation bit's to define, and this is the value the vendor's driver
     // has always written.
-    device.regs.wr32(.master_ctrl, @bitCast(MasterCtrl{ .irq_moder = true }));
-    device.regs.wr16(.cmbdisdma_timer, 50000);
+    device.regs.word.write(.master_ctrl, @bitCast(MasterCtrl{ .irq_moder = true }));
+    device.regs.half.write(.cmbdisdma_timer, 50000);
 
     // Frame sizes and cut-through.
-    device.regs.wr32(.mtu, MAC_FRAME_LIMIT);
-    device.regs.wr32(.tx_cut_thresh, 0x177);
+    device.regs.word.write(.mtu, MAC_FRAME_LIMIT);
+    device.regs.word.write(.tx_cut_thresh, 0x177);
 
     // The 802.3x pause generator's thresholds, in occupied receive slots:
     // ask the far end to pause at seven eighths full, release it at a
@@ -631,22 +684,22 @@ fn configure() bool {
     // as pause-always and release-never, a corner the silicon never ships
     // in, and the generator then fights the transmit path for the wire on
     // every received frame.
-    device.regs.wr16(.pause_on_th, PAUSE_ON_SLOTS);
-    device.regs.wr16(.pause_off_th, PAUSE_OFF_SLOTS);
+    device.regs.half.write(.pause_on_th, PAUSE_ON_SLOTS);
+    device.regs.half.write(.pause_off_th, PAUSE_OFF_SLOTS);
 
     // Mailboxes start empty, and the engine turns.
-    device.regs.wr16(.mb_txd_wr_idx, 0);
-    device.regs.wr16(.mb_rxd_rd_idx, 0);
+    device.regs.half.write(.mb_txd_wr_idx, 0);
+    device.regs.half.write(.mb_rxd_rd_idx, 0);
     dma.publish();
-    device.regs.wr8(.dmar, @bitCast(DmaControl{ .enabled = true }));
-    device.regs.wr8(.dmaw, @bitCast(DmaControl{ .enabled = true }));
+    device.regs.byte.write(.dmar, @bitCast(DmaControl{ .enabled = true }));
+    device.regs.byte.write(.dmaw, @bitCast(DmaControl{ .enabled = true }));
 
-    const status = @as(Isr, @bitCast(device.regs.rd32(.isr)));
+    const status = @as(Isr, @bitCast(device.regs.word.read(.isr)));
 
     // Every cause acknowledged, then the line released; the hold bit is the
     // one bit that is not a cause.
-    device.regs.wr32(.isr, ACK_EVERYTHING);
-    device.regs.wr32(.isr, 0);
+    device.regs.word.write(.isr, ACK_EVERYTHING);
+    device.regs.word.write(.isr, 0);
     if (status.phy_link_down) {
         log.fail("atl2", "PCIe link dropped during configuration");
         return false;
@@ -669,8 +722,8 @@ fn configure() bool {
 /// that never retires, and the cycle in and out of low power is exactly
 /// what a streaming transfer produces.
 fn initPcie() void {
-    device.regs.wr32(.ltssm_test_mode, @intFromEnum(LtssmTestMode.vendor_default));
-    device.regs.wr32(.pcie_dll_tx_ctrl1, @intFromEnum(PcieDllTxCtrl1.vendor_default));
+    device.regs.word.write(.ltssm_test_mode, @intFromEnum(LtssmTestMode.vendor_default));
+    device.regs.word.write(.pcie_dll_tx_ctrl1, @intFromEnum(PcieDllTxCtrl1.vendor_default));
 
     // Force the PCIe PHY's receiver-detection result. Both reference
     // drivers set this entering suspend so a sleeping link can still
@@ -678,8 +731,8 @@ fn initPcie() void {
     // deliberately for a link that has been observed to fall off the bus
     // mid-burst on this machine. A receiver this PHY fails to detect is a
     // link it will drop.
-    const phymisc = device.regs.rd32(.pcie_phymisc);
-    device.regs.wr32(.pcie_phymisc, phymisc | PCIE_PHYMISC_FORCE_RCV_DET);
+    const phymisc = device.regs.word.read(.pcie_phymisc);
+    device.regs.word.write(.pcie_phymisc, phymisc | PCIE_PHYMISC_FORCE_RCV_DET);
 
     var command = pci.readCommand(device.location);
     command.serr_enable = false;
@@ -710,12 +763,12 @@ fn quietPcieCapability() void {
 }
 
 fn resetController() bool {
-    device.regs.wr32(.master_ctrl, @bitCast(MasterCtrl{ .soft_reset = true }));
-    _ = device.regs.rd32(.master_ctrl);
+    device.regs.word.write(.master_ctrl, @bitCast(MasterCtrl{ .soft_reset = true }));
+    _ = device.regs.word.read(.master_ctrl);
     sys.sleepMicros(1_000);
 
     for (0..10) |_| {
-        if (device.regs.rd32(.idle_status) == 0) return true;
+        if (device.regs.word.read(.idle_status) == 0) return true;
         sys.sleepMicros(1_000);
     }
     log.fail("atl2", "engines did not become idle after reset");
@@ -723,15 +776,23 @@ fn resetController() bool {
 }
 
 fn resetRings() void {
-    device.txd_write = 0;
-    device.txd_read = 0;
-    device.txs_fill = 0;
-    device.txs_reap = 0;
+    device.txd_write = .{};
+    device.txd_read = .{};
+    device.txs_fill = .{};
+    device.txs_reap = .{};
     device.txs_used = 0;
     device.tx_lengths = @splat(0);
-    device.rxd_read = 0;
-    for (&device.arena.txs) |*status| status.* = .{};
-    for (&device.arena.rxd) |*slot| slot.status = .{};
+    device.rxd_read = .{};
+    for (&device.arena.body().txs) |*status| status.* = .{};
+    for (&device.arena.body().rxd) |*slot| slot.status = .{};
+}
+
+/// Where one region of the rings sits, as the number a device is
+/// programmed with. Asked of the arena rather than added to its base here,
+/// so the offset is the arena's to bound against the run it handed out.
+fn ringAt(offset: usize) ?u32 {
+    const place = device.arena.physOf(offset) orelse return null;
+    return place.addr();
 }
 
 /// The vendor's all-causes acknowledgement. Bit 31 is the interrupt hold and
@@ -753,8 +814,8 @@ const UNMASKED = Isr{
 /// The PHY, through the MII window: wake it, clear the vendor power-save
 /// bit, arm link interrupts, restart autonegotiation.
 fn phyInit() bool {
-    device.regs.wr16(.phy_enable, @bitCast(PhyEnable{ .enabled = true }));
-    _ = device.regs.rd16(.phy_enable);
+    device.regs.half.write(.phy_enable, @bitCast(PhyEnable{ .enabled = true }));
+    _ = device.regs.half.read(.phy_enable);
     sys.sleepMicros(1_000);
 
     if (!writePhy(.dbg_addr, 0)) return false;
@@ -780,8 +841,8 @@ fn readMac() ?[6]u8 {
     // registers back is where the BIOS usually leaves the right one, and on
     // the far path the fields come back all-zero and rightly look like no
     // story: nothing is invented.
-    const low: StationAddressLow = @bitCast(device.regs.rd32(.mac_sta_addr));
-    const high: StationAddressHigh = @bitCast(device.regs.rd32(.mac_sta_addr_hi));
+    const low: StationAddressLow = @bitCast(device.regs.word.read(.mac_sta_addr));
+    const high: StationAddressHigh = @bitCast(device.regs.word.read(.mac_sta_addr_hi));
     // The high word holds the first two octets with the first in its upper
     // byte: the vendor's own assignment begins 00:1f:c6, and swapped halves
     // put the multicast bit in the station address.
@@ -793,29 +854,18 @@ fn readMac() ?[6]u8 {
         low.octet4,
         low.octet5,
     };
-    return if (validMac(mac)) mac else null;
-}
-
-fn validMac(mac: [6]u8) bool {
-    if (mac[0] & 1 != 0) return false;
-    var any = false;
-    var all_ff = true;
-    for (mac) |octet| {
-        any = any or octet != 0;
-        all_ff = all_ff and octet == 0xFF;
-    }
-    return any and !all_ff;
+    return if (dev_mod.validMac(mac)) mac else null;
 }
 
 fn writeMac() void {
     const mac = device.mac;
-    device.regs.wr32(.mac_sta_addr, @bitCast(StationAddressLow{
+    device.regs.word.write(.mac_sta_addr, @bitCast(StationAddressLow{
         .octet2 = mac[2],
         .octet3 = mac[3],
         .octet4 = mac[4],
         .octet5 = mac[5],
     }));
-    device.regs.wr32(.mac_sta_addr_hi, @bitCast(StationAddressHigh{
+    device.regs.word.write(.mac_sta_addr_hi, @bitCast(StationAddressHigh{
         .octet0 = mac[0],
         .octet1 = mac[1],
     }));
@@ -833,16 +883,16 @@ pub fn start(nic: *NicDev) bool {
 
     dev_mod.deliverLink(nic, link(nic));
     applyLinkState(nic.state);
-    device.regs.wr32(.isr, ACK_EVERYTHING);
-    device.regs.wr32(.isr, 0);
+    device.regs.word.write(.isr, ACK_EVERYTHING);
+    device.regs.word.write(.isr, 0);
     device.started = true;
     // The step about to be taken, then the step taken: the pin opens here,
     // and on this machine the first assertion of a line is a moment worth
     // bracketing on the screen.
     log.say("atl2", .dim, "link state applied");
     pci.enableInterrupt(nic.location);
-    device.regs.wr32(.imr, @bitCast(UNMASKED));
-    _ = device.regs.rd32(.imr);
+    device.regs.word.write(.imr, @bitCast(UNMASKED));
+    _ = device.regs.word.read(.imr);
     log.say("atl2", .dim, "interrupts open");
     return true;
 }
@@ -850,21 +900,34 @@ pub fn start(nic: *NicDev) bool {
 pub fn stop(nic: *NicDev) void {
     if (!device.opened) return;
     device.started = false;
-    device.regs.wr32(.imr, 0);
-    _ = device.regs.rd32(.imr);
-    var ctrl = @as(MacCtrl, @bitCast(device.regs.rd32(.mac_ctrl)));
+    device.regs.word.write(.imr, 0);
+    _ = device.regs.word.read(.imr);
+    var ctrl = @as(MacCtrl, @bitCast(device.regs.word.read(.mac_ctrl)));
     ctrl.rx_enable = false;
     ctrl.tx_enable = false;
-    device.regs.wr32(.mac_ctrl, @bitCast(ctrl));
-    _ = device.regs.rd32(.mac_ctrl);
+    device.regs.word.write(.mac_ctrl, @bitCast(ctrl));
+    _ = device.regs.word.read(.mac_ctrl);
     _ = resetController();
+    // The three base registers are the only places that still name the
+    // arena. The reset above has the engine's own idea of them, but said
+    // rather than assumed: the next thing that happens is that the memory
+    // they point at stops belonging to this driver.
+    device.regs.word.write(.txd_base_lo, 0);
+    device.regs.word.write(.txs_base_lo, 0);
+    device.regs.word.write(.rxd_base_lo, 0);
+    device.regs.byte.write(.dmar, @bitCast(DmaControl{}));
+    device.regs.byte.write(.dmaw, @bitCast(DmaControl{}));
+    _ = device.regs.word.read(.isr);
     pci.disableInterruptAndMaster(nic.location);
     resetRings();
-    if (device.dma_handle) |handle| sys.close(handle);
-    device.dma_handle = null;
-    device.phys = .none;
+    device.arena.release();
+    // And the aperture, for the same reason the arena goes: a mapping
+    // given back by nothing is a window of the address space lost for
+    // the rest of the run.
+    sys.shmUnmap(@volatileCast(device.regs.aperture()));
+    device.regs = .{};
     device.opened = false;
-    nic.state = .{};
+    dev_mod.deliverLink(nic, .{});
 }
 
 // ---------------------------------------------------------------------------
@@ -886,14 +949,14 @@ fn writePhy(reg: Phy, value: u16) bool {
 fn readPhy(reg: Phy) ?u16 {
     if (!mdioBegin(reg, true, 0)) return null;
     if (!spinUntil(MDIO_SPINS, mdioIdle)) return null;
-    return @as(MdioCtrl, @bitCast(device.regs.rd32(.mdio_ctrl))).data;
+    return @as(MdioCtrl, @bitCast(device.regs.word.read(.mdio_ctrl))).data;
 }
 
 /// Start one MDIO transaction after the previous one has gone idle.
 fn mdioBegin(reg: Phy, read: bool, value: u16) bool {
     if (!spinUntil(MDIO_SPINS, mdioIdle)) return false;
 
-    device.regs.wr32(.mdio_ctrl, @bitCast(MdioCtrl{
+    device.regs.word.write(.mdio_ctrl, @bitCast(MdioCtrl{
         .data = value,
         .phy_reg = @intFromEnum(reg),
         .read = read,
@@ -903,7 +966,7 @@ fn mdioBegin(reg: Phy, read: bool, value: u16) bool {
 }
 
 fn mdioIdle(regs: Regs) bool {
-    const state = @as(MdioCtrl, @bitCast(regs.rd32(.mdio_ctrl)));
+    const state = @as(MdioCtrl, @bitCast(regs.word.read(.mdio_ctrl)));
     return !state.start and !state.busy;
 }
 
@@ -911,126 +974,211 @@ fn mdioIdle(regs: Regs) bool {
 // Traffic
 // ---------------------------------------------------------------------------
 
-/// Service the adapter until its status reads quiet, the way the vendor's
-/// own handler loops. A cause that latches while one is being serviced makes
-/// no new interrupt edge, and this service runs whole milliseconds where the
-/// vendor's runs microseconds: a single pass would release the line with a
-/// latched cause nobody will ever be told about again, and the receive side
-/// falls silent until some other bit happens to edge. Frames delivered
-/// seconds late, in one clump, are exactly what that silence looks like.
-const SERVICE_ROUNDS = 8;
-
 /// The overflow story is told once; after that the counter speaks.
 var overflow_said = false;
 
+/// One interrupt delivery.
+///
+/// The shape of the pass is `dev.serveIrq`'s: read a cause, hold the line
+/// over the work, release it, and look again. The looking again is the part
+/// that matters here. A cause that latches while one is being serviced
+/// makes no new interrupt edge, and this service runs whole milliseconds
+/// where the vendor's runs microseconds: a pass that ended on a fixed
+/// count without looking would release the line with a latched cause nobody
+/// will ever be told about again, and the receive side falls silent until
+/// some other bit happens to edge. Frames delivered seconds late, in one
+/// clump, are exactly what that silence looks like.
 pub fn irq(nic: *NicDev) bool {
     if (!device.opened or !device.started) return false;
+    return dev_mod.serveIrq(@This(), nic);
+}
 
-    var serviced = false;
-    var round: u32 = 0;
-    while (round < SERVICE_ROUNDS) : (round += 1) {
-        const cause = @as(Isr, @bitCast(device.regs.rd32(.isr)));
-        if (cause.none()) return serviced; // quiet: nothing latched, or a shared line
-        serviced = true;
+/// What the adapter has latched, as one word.
+///
+/// The hold bit is not a cause but this driver's own line, so it is left
+/// out: zero means there is nothing to service, and that is what ends the
+/// pass.
+pub fn cause() u32 {
+    // A reseat is owed: the adapter is masked and its next word belongs to
+    // the reseat, not to this pass. Saying "nothing latched" is what lets
+    // the pass end here rather than naming one fatal event once per round
+    // until the budget runs out.
+    if (device.reseat_pending) return 0;
 
-        // The everyday causes are traffic, not news, and stay quiet: the
-        // status updates, the PHY answering a poll, and the companions this
-        // MAC raises beside them, a TXD underrun with every completion and
-        // early-transmit chatter. Overflow means a burst outran the ring
-        // while the service was busy; it is counted where `net` shows it,
-        // said once, and left to the engine, which drops and recovers on
-        // its own. Narrating each one would slow the service further and
-        // deepen the very overflow being narrated.
-        var unexpected = cause;
-        unexpected.rx_status = false;
-        unexpected.tx_status = false;
-        unexpected.phy = false;
-        unexpected.hold = false;
-        unexpected.host_txd_ur = false;
-        unexpected.tx_early = false;
-        unexpected.rxf_ov = false;
-        unexpected.rxs_ov = false;
-        unexpected.host_rxd_ov = false;
-        unexpected.correctable_error = false;
+    const latched: Isr = @bitCast(device.regs.word.read(.isr));
+    if (latched.none()) return 0; // nothing latched, or a shared line
+    var causes = latched;
+    causes.hold = false;
+    return @bitCast(causes);
+}
 
-        if (cause.rxf_ov or cause.rxs_ov or cause.host_rxd_ov) {
-            nic.stats.rx_dropped += 1;
-            if (!overflow_said) {
-                overflow_said = true;
-                log.say("atl2", .dim, "rx overflowed under a burst; drops counted from here");
-            }
-        }
-
-        if (@as(u32, @bitCast(unexpected)) != 0) {
-            log.begin("atl2", .dim);
-            out.text("cause 0x");
-            out.hex(@as(u32, @bitCast(cause)), 8);
-            log.end();
-        }
-
-        // The PHY latches its interrupt until its status register is read, so
-        // the read comes before the acknowledgement: acknowledged the other
-        // way round, the still-latched line re-raises the cause just cleared.
-        if (cause.phy) _ = readPhy(.interrupt_clear);
-
-        // Acknowledge and hold the line (ISR_DIS_INT), per the manual: work
-        // on it before the next delivery on a shared level line.
-        var acknowledged = cause;
-        acknowledged.hold = true;
-        device.regs.wr32(.isr, @bitCast(acknowledged));
-
-        if (cause.phy_link_down or cause.dmar_timeout or cause.dmaw_timeout or
-            cause.fatal_error)
-        {
-            // The manual's answer to a wedged DMA engine is a full reset.
-            // A flagged fatal bus error joins it: reading registers against
-            // a device in that state is how a bus transaction never
-            // completes, and a load that never retires is a frozen machine.
-            // Masked and quieted first, and the link reapplied after, because
-            // configure leaves the MAC disabled until the link state says
-            // otherwise.
-            log.warn("atl2", "fatal adapter event; reseating the adapter");
-            nic.stats.tx_failed += device.txs_used;
-            device.regs.wr32(.imr, 0);
-            _ = device.regs.rd32(.imr);
-            device.regs.wr32(.isr, 0);
-            if (!configure()) {
-                device.started = false;
-                nic.state = .{};
-                applyLinkState(nic.state);
-                pci.disableInterruptAndMaster(nic.location);
-                log.fail("atl2", "adapter recovery failed");
-                return true;
-            }
-            dev_mod.deliverLink(nic, link(nic));
-            applyLinkState(nic.state);
-            device.regs.wr32(.imr, @bitCast(UNMASKED));
-            _ = device.regs.rd32(.imr);
-            return true;
-        }
-
-        // The vendor services on the whole event class, errors included:
-        // an overflow with no fresh status still means slots to reclaim,
-        // and reclaiming them is what ends the overflow.
-        if (cause.rx_status or cause.rxf_ov or cause.rxs_ov or cause.host_rxd_ov) reapRx(nic);
-        if (cause.tx_status or cause.txf_ur or cause.txs_ov or cause.host_txd_ur or cause.tx_early) reapTx(nic);
-        if (cause.link_change or cause.phy or cause.phy_link_down) {
-            dev_mod.deliverLink(nic, link(nic));
-            applyLinkState(nic.state);
-        }
-
-        // Release the line, then look again: only a read that comes back
-        // quiet proves nothing latched while the reaps ran.
-        device.regs.wr32(.isr, 0);
+/// Acknowledge what latched, and either hold the line over the work or
+/// release it afterwards.
+///
+/// Holding writes the causes back with ISR_DIS_INT, per the manual, so a
+/// shared level line cannot re-assert mid-pass. Releasing writes zero
+/// rather than the causes again: whatever latched while the work ran is
+/// work owed, and clearing it on the way out is how it goes unseen -- the
+/// pass reads the cause again instead.
+pub fn acknowledge(causes: u32, held: bool) void {
+    // The flag reaches here in two shapes -- a boolean while the pass
+    // holds the line, a zero once it lets it go -- and both mean the one
+    // thing asked of it.
+    const holding: bool = if (@TypeOf(held) == bool) held else held != 0;
+    if (!holding) {
+        device.regs.word.write(.isr, 0);
+        return;
     }
-    return serviced;
+    var acknowledged: Isr = @bitCast(causes);
+    // The PHY holds its interrupt line until its own status register is
+    // read, so that read comes before the write that clears the bit:
+    // acknowledged the other way round, the line is still asserted when
+    // the clear lands and simply latches the cause again.
+    if (acknowledged.phy) _ = readPhy(.interrupt_clear);
+    acknowledged.hold = true;
+    device.regs.word.write(.isr, @bitCast(acknowledged));
+}
+
+/// One pass of the adapter's work, on the line.
+///
+/// Nothing here may wait on the part: the line is held while it runs, and
+/// on a shared line so is every neighbour's.
+pub fn service(causes: u32, nic: *NicDev) void {
+    const latched: Isr = @bitCast(causes);
+
+    // The everyday causes are traffic, not news, and stay quiet: the
+    // status updates, the PHY answering a poll, and the companions this
+    // MAC raises beside them, a TXD underrun with every completion and
+    // early-transmit chatter. Overflow means a burst outran the ring
+    // while the service was busy; it is counted where `net` shows it,
+    // said once, and left to the engine, which drops and recovers on
+    // its own. Narrating each one would slow the service further and
+    // deepen the very overflow being narrated.
+    var unexpected = latched;
+    unexpected.rx_status = false;
+    unexpected.tx_status = false;
+    unexpected.phy = false;
+    unexpected.hold = false;
+    unexpected.host_txd_ur = false;
+    unexpected.tx_early = false;
+    unexpected.rxf_ov = false;
+    unexpected.rxs_ov = false;
+    unexpected.host_rxd_ov = false;
+    unexpected.correctable_error = false;
+
+    if (latched.rxf_ov or latched.rxs_ov or latched.host_rxd_ov) {
+        nic.stats.rx_dropped += 1;
+        if (!overflow_said) {
+            overflow_said = true;
+            log.say("atl2", .dim, "rx overflowed under a burst; drops counted from here");
+        }
+    }
+
+    if (@as(u32, @bitCast(unexpected)) != 0) {
+        log.begin("atl2", .dim);
+        out.text("cause 0x");
+        out.hex(causes, 8);
+        log.end();
+    }
+
+    if (latched.phy_link_down or latched.dmar_timeout or latched.dmaw_timeout or
+        latched.fatal_error)
+    {
+        // The manual's answer to a wedged DMA engine is a full reset, and
+        // the reset is deferred: it soft-resets the MAC and rewrites the
+        // PCIe and PHY registers, which is tens of milliseconds of
+        // waiting on the part. Done here it holds the line for that
+        // whole time, and worse, it is done with the engine mid-transfer
+        // -- the family's L0s/L1 handling is known to hang the link, and
+        // a hung link turns the next register read into a load that
+        // never retires. That is a frozen machine with no panic behind
+        // it, because an NMI cannot unstick a bus.
+        //
+        // So: name the cause, quiet the adapter, and let the loop do the
+        // reseat between passes. Linux does the same from a workqueue.
+        // The acknowledgement that follows this return releases the line,
+        // and the next read has nothing to say while a reseat is owed.
+        device.reseat_cause = causes;
+        device.reseat_pending = true;
+        device.regs.word.write(.imr, 0);
+        _ = device.regs.word.read(.imr);
+        log.warn("atl2", "fatal adapter event; the adapter will be reseated");
+        return;
+    }
+
+    // The vendor services on the whole event class, errors included:
+    // an overflow with no fresh status still means slots to reclaim,
+    // and reclaiming them is what ends the overflow.
+    if (latched.rx_status or latched.rxf_ov or latched.rxs_ov or latched.host_rxd_ov) reapRx(nic);
+    if (latched.tx_status or latched.txf_ur or latched.txs_ov or latched.host_txd_ur or latched.tx_early) reapTx(nic);
+    if (latched.link_change or latched.phy or latched.phy_link_down) {
+        dev_mod.deliverLink(nic, link(nic));
+        applyLinkState(nic.state);
+    }
+}
+
+/// Service the adapter with no interrupt behind it: a line the firmware
+/// routed nowhere, or an edge this service never saw. The two reaps are
+/// all an interrupt would have asked for, and the mailboxes they write
+/// are what the engine looks at either way.
+pub fn poll(nic: *NicDev) bool {
+    if (!device.opened or !device.started) return false;
+    reseat(nic);
+    reapRx(nic);
+    reapTx(nic);
+    return true;
+}
+
+/// Work owed between passes rather than on the line: a pending reseat, and
+/// nothing else yet. Asked by the loop, where waiting on the part costs
+/// nobody their interrupt.
+pub fn upkeep(nic: *NicDev) void {
+    if (!device.opened) return;
+    reseat(nic);
+}
+
+/// Reseat the adapter after a fatal event, outside the interrupt that saw
+/// it. Frames still queued are counted as failed rather than silently lost,
+/// and the adapter is left stopped if it cannot be brought back: an adapter
+/// in that state is not one to keep handing frames to.
+fn reseat(nic: *NicDev) void {
+    if (!device.reseat_pending) return;
+    device.reseat_pending = false;
+
+    log.begin(nic.name, .warn);
+    out.text("reseating the adapter after cause 0x");
+    out.hex(device.reseat_cause, 8);
+    log.end();
+
+    nic.stats.tx_failed += device.txs_used;
+    device.txs_used = 0;
+    device.txs_fill = .{};
+    device.txs_reap = .{};
+    device.txd_write = .{};
+    device.txd_read = .{};
+
+    if (!configure()) {
+        device.started = false;
+        dev_mod.deliverLink(nic, .{});
+        applyLinkState(nic.state);
+        pci.disableInterruptAndMaster(nic.location);
+        log.fail("atl2", "adapter recovery failed");
+        return;
+    }
+
+    device.started = true;
+    dev_mod.deliverLink(nic, link(nic));
+    applyLinkState(nic.state);
+    device.regs.word.write(.imr, @bitCast(UNMASKED));
+    _ = device.regs.word.read(.imr);
+    log.say("atl2", .dim, "the adapter is back");
 }
 
 fn reapRx(nic: *NicDev) void {
     var reaped: usize = 0;
     while (reaped < RX_COUNT) : (reaped += 1) {
-        const index = device.rxd_read;
-        const slot = &device.arena.rxd[index];
+        const index = device.rxd_read.at;
+        const slot = &device.arena.body().rxd[index];
         // The hardware writes this word; the load must happen every lap.
         const ownership = @as(*const volatile RxStatus, &slot.status).*;
 
@@ -1059,29 +1207,29 @@ fn reapRx(nic: *NicDev) void {
         // The whole status word, update included: the slot is ours again.
         @as(*volatile RxStatus, &slot.status).* = .{};
         dma.publish();
-        device.rxd_read = (index + 1) % RX_COUNT;
+        device.rxd_read.next();
     }
-    if (reaped != 0) device.regs.wr16(.mb_rxd_rd_idx, @intCast(device.rxd_read));
+    if (reaped != 0) device.regs.half.write(.mb_rxd_rd_idx, @intCast(device.rxd_read.at));
 }
 
 fn reapTx(nic: *NicDev) void {
     var reaped: usize = 0;
     while (device.txs_used != 0 and reaped < TXS_COUNT) : (reaped += 1) {
-        const index = device.txs_reap;
-        const ownership = @as(*const volatile TxStatus, &device.arena.txs[index]).*;
+        const index = device.txs_reap.at;
+        const ownership = @as(*const volatile TxStatus, &device.arena.body().txs[index]).*;
         if (!ownership.update) break;
         dma.consume();
-        const status = @as(*const volatile TxStatus, &device.arena.txs[index]).*;
+        const status = @as(*const volatile TxStatus, &device.arena.body().txs[index]).*;
 
         // The fifo bytes this frame held: header, then the payload padded to
         // a dword, which is the same rounding the write side made.
         const length = device.tx_lengths[index];
         const held = @sizeOf(TxHeader) + std.mem.alignForward(usize, length, @sizeOf(u32));
         if (!status.ok or status.pkt_len != length) nic.stats.tx_failed += 1;
-        @as(*volatile TxStatus, &device.arena.txs[index]).* = .{};
+        @as(*volatile TxStatus, &device.arena.body().txs[index]).* = .{};
         device.tx_lengths[index] = 0;
-        device.txd_read = (device.txd_read + held) % TXD_BYTES;
-        device.txs_reap = (index + 1) % TXS_COUNT;
+        device.txd_read.advance(held);
+        device.txs_reap.next();
         device.txs_used -= 1;
     }
 }
@@ -1102,7 +1250,13 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
 
     const pay = std.mem.alignForward(usize, frame.len, @sizeOf(u32));
     const needed = @sizeOf(TxHeader) + pay;
-    const used = (device.txd_write - device.txd_read + TXD_BYTES) % TXD_BYTES;
+    // How much of the fifo the hardware has still to consume. The write
+    // cursor is behind the read one for the whole of every lap after the
+    // first, which is the ordinary case and not the awkward one, so the
+    // distance is measured the way a lap measures it: a `usize` taken
+    // below zero is a panic in a safe build and silent nonsense in the
+    // one that ships.
+    const used = device.txd_write.used(device.txd_read.at);
     if (TXD_BYTES - used < needed + 4) {
         nic.stats.tx_failed += 1;
         return false;
@@ -1111,24 +1265,25 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     // The next status slot we are handing the hardware: clear its update, so
     // a completion the hardware writes next is distinguishable from one left
     // over from the last lap of the ring.
-    const status_slot = device.txs_fill;
-    @as(*volatile TxStatus, &device.arena.txs[status_slot]).* = .{};
+    const status_slot = device.txs_fill.at;
+    @as(*volatile TxStatus, &device.arena.body().txs[status_slot]).* = .{};
 
     const header = TxHeader{ .pkt_len = @intCast(frame.len) };
-    writeFifo(device.txd_write, @sizeOf(TxHeader), std.mem.asBytes(&header));
-    writeFifo(device.txd_write + @sizeOf(TxHeader), frame.len, frame);
+    const at = device.txd_write.at;
+    writeFifo(at, @sizeOf(TxHeader), std.mem.asBytes(&header));
+    writeFifo(ring.wrapped(at + @sizeOf(TxHeader), TXD_BYTES), frame.len, frame);
 
-    device.txd_write = (device.txd_write + needed) % TXD_BYTES;
+    device.txd_write.advance(needed);
     device.tx_lengths[status_slot] = @intCast(frame.len);
-    device.txs_fill = (status_slot + 1) % TXS_COUNT;
+    device.txs_fill.next();
     device.txs_used += 1;
 
     // The engine fetches the FIFO as soon as the mailbox advances. Publish
     // every byte and the cleared status before that ownership handoff, then
     // read the mailbox back to flush the posted MMIO write.
     dma.publish();
-    device.regs.wr16(.mb_txd_wr_idx, @intCast(device.txd_write / @sizeOf(u32)));
-    _ = device.regs.rd16(.mb_txd_wr_idx);
+    device.regs.half.write(.mb_txd_wr_idx, @intCast(device.txd_write.at / @sizeOf(u32)));
+    _ = device.regs.half.read(.mb_txd_wr_idx);
 
     dev_mod.deliverTx(nic, frame.len);
     return true;
@@ -1139,9 +1294,9 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
 /// one word so no separate mechanism is worth building.
 fn writeFifo(at: usize, len: usize, bytes: []const u8) void {
     const first = @min(len, TXD_BYTES - at);
-    @memcpy(device.arena.txd[at..][0..first], bytes[0..first]);
+    @memcpy(device.arena.body().txd[at..][0..first], bytes[0..first]);
     if (first < len) {
-        @memcpy(device.arena.txd[0 .. len - first], bytes[first..len]);
+        @memcpy(device.arena.body().txd[0 .. len - first], bytes[first..len]);
     }
 }
 
@@ -1153,15 +1308,32 @@ pub fn link(_: *NicDev) dev_mod.Link {
     if (!device.opened) return .{};
     // Read twice, the way the vendor's driver does: the first may latch.
     _ = readPhy(.bmsr) orelse return .{};
-    const bmsr = @as(BMSR, @bitCast(readPhy(.bmsr) orelse return .{}));
-    if (!bmsr.link_status) return .{ .up = false };
+    const status: mii.Status = @bitCast(readPhy(.bmsr) orelse return .{});
+    // Whether a word is a link at all is the standard's question and
+    // `mii`'s answer. No carrier: there is nothing finer to ask, and the
+    // vendor register below has resolved nothing either.
+    if (mii.outcome(status) == null) return .{ .up = false };
 
     const pssr = @as(Pssr, @bitCast(readPhy(.pssr) orelse return .{}));
-    if (!pssr.resolved or (pssr.speed != .m10 and pssr.speed != .m100)) return .{};
+    if (!pssr.resolved) return .{};
+    // How fast, in the standard's words rather than this part's encoding
+    // of them: a PHY that has resolved neither ten nor a hundred has not
+    // answered, and `mii` has no name for what it did say.
+    const speed: mii.Speed = switch (pssr.speed) {
+        .m10 => .m10,
+        .m100 => .m100,
+        else => return .{},
+    };
+
+    // Taken as given rather than derived: a part that reports 100 full has
+    // already done the negotiation, and second-guessing it from the
+    // advertisement is how a driver decides a wire is something it is not.
+    const resolved = mii.resolved(status, speed, if (pssr.full_duplex) .full else .half) orelse
+        return .{};
     return .{
-        .up = true,
-        .mbps = pssr.speed.mbps(),
-        .duplex = if (pssr.full_duplex) .full else .half,
+        .up = resolved.up,
+        .mbps = resolved.speed.mbps(),
+        .duplex = if (resolved.duplex == .full) .full else .half,
     };
 }
 
@@ -1170,17 +1342,25 @@ pub fn link(_: *NicDev) dev_mod.Link {
 /// be the refresh that told the hardware so: on this adapter the two answers
 /// live in different places.
 pub fn syncLink(nic: *NicDev) void {
+    // Asked on ordinary `net` requests, which come for an adapter that
+    // never opened as readily as for one that did: the registers below
+    // are a mapping this driver does not hold in that case, and reading
+    // one of them is a fault in a process that serves every interface.
+    if (!device.opened) {
+        dev_mod.deliverLink(nic, .{});
+        return;
+    }
     const state = if (device.started) link(nic) else dev_mod.Link{};
-    nic.state = state;
+    dev_mod.deliverLink(nic, state);
     applyLinkState(state);
 
     // Only when one of them moves. This is asked on every look at the
     // link, and a line each time is a flood that pushes everything else
     // out of the log ring.
     const now = Registers{
-        .mac_ctrl = device.regs.rd32(.mac_ctrl),
-        .imr = device.regs.rd32(.imr),
-        .isr = device.regs.rd32(.isr),
+        .mac_ctrl = device.regs.word.read(.mac_ctrl),
+        .imr = device.regs.word.read(.imr),
+        .isr = device.regs.word.read(.isr),
     };
     if (said_registers) |before| {
         if (std.meta.eql(before, now)) return;
@@ -1206,7 +1386,7 @@ fn applyLinkState(state: dev_mod.Link) void {
     // The whole register, flat, as the vendor's driver writes it. Every one
     // of these matters on a wire: no preamble means no receiver ever
     // synchronises, and no appended check means every frame arrives broken.
-    device.regs.wr32(.mac_ctrl, @bitCast(MacCtrl{
+    device.regs.word.write(.mac_ctrl, @bitCast(MacCtrl{
         .tx_enable = state.up,
         .rx_enable = state.up,
         .full_duplex = state.duplex == .full,
@@ -1217,6 +1397,7 @@ fn applyLinkState(state: dev_mod.Link) void {
         .pad = true,
         .preamble_len = 7,
         .broadcast_accept = true,
+        .speed = .m10_100,
     }));
 }
 
@@ -1241,6 +1422,8 @@ pub const ops: dev_mod.NicOps = .{
     .start = start,
     .stop = stop,
     .irq = irq,
+    .poll = poll,
+    .service = upkeep,
     .transmit = transmit,
     .link = link,
     .sync_link = syncLink,

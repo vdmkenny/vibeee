@@ -18,6 +18,7 @@
 //! than two. A field this file does not spell is one a caller must not
 //! invent.
 
+const ring = @import("../ring.zig");
 const std = @import("std");
 const lib = @import("lib");
 
@@ -594,32 +595,32 @@ pub fn setDuration(frame: []u8, rate: wifi.Legacy) bool {
 /// where the service's own descriptors begin and can never write over a
 /// buffer nobody has read. The count is a compile-time number because a
 /// chain whose size is not known until it runs is one whose wrap has to be
-/// checked at every step. It is a power of two so the wrap is a mask
-/// rather than a division, which is the only arithmetic on the packet
-/// path.
+/// checked at every step.
+///
+/// The wrap is `ring`'s rather than a mask of this file's own: the count
+/// is no longer required to be a power of two, because the one arithmetic
+/// on the packet path is now the same subtraction every other ring in the
+/// service uses, and checked on the host with it.
 pub fn Chain(comptime slots: usize) type {
-    if (slots < 2 or !std.math.isPowerOfTwo(slots)) {
-        @compileError("a chain holds at least two descriptors, and a power of two of them");
-    }
+    if (slots < 2) @compileError("a chain holds at least two descriptors");
 
     return struct {
         pub const count = slots;
-        const mask = slots - 1;
 
         /// The slot after this one, wrapping at the end.
         pub fn next(index: usize) usize {
-            return (index + 1) & mask;
+            return ring.wrapped(index + 1, slots);
         }
 
         /// The slot before this one, wrapping at the start.
         pub fn previous(index: usize) usize {
-            return (index -% 1) & mask;
+            return ring.wrapped(index +% (slots - 1), slots);
         }
 
         /// The physical address of one descriptor in a run of them laid
         /// end to end from `base`.
         pub fn addressOf(base: u32, index: usize) u32 {
-            return base + @as(u32, @intCast((index & mask) * DESC_BYTES));
+            return base + @as(u32, @intCast(ring.wrapped(index, slots) * DESC_BYTES));
         }
 
         /// Whether a run of this many descriptors starting at `base` fits

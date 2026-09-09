@@ -39,6 +39,10 @@ pub const Stats = struct {
     tx_failed: u64 = 0,
     /// ARP replies this interface has carried.
     rx_arp: u64 = 0,
+    /// Deliveries that ended with a cause still latched: work the pass owed
+    /// and did not finish. A line that rides the falling edge gets no
+    /// second chance at it, so this is the only place it shows.
+    irq_late: u64 = 0,
 };
 
 /// Receiving something the hardware said about it. A driver hands this to the
@@ -68,6 +72,23 @@ pub const NicOps = struct {
     /// whether anything was actually serviced, which on a shared line is what
     /// wakes the neighbours to look again.
     irq: *const fn (dev: *NicDev) bool,
+    /// Service the adapter with no interrupt behind it: reap what has
+    /// arrived, and say whether there was an adapter running to be
+    /// asked.
+    ///
+    /// A lost or unrouted interrupt is a wire that goes silent while the
+    /// ring fills, and nothing in the driver can tell that from a quiet
+    /// network: the line is simply never asserted again. The service
+    /// therefore asks every interface whose line is absent, on the passes
+    /// it would otherwise have spent waiting for one. Safe to call with
+    /// nothing pending, as often as the loop likes, and on an adapter that
+    /// has not started; every driver answers that for itself.
+    poll: ?*const fn (dev: *NicDev) bool = null,
+    /// Work a driver owes that must not happen on an interrupt: a reset, a
+    /// re-tune, anything that waits on the part. Called from the loop
+    /// between passes rather than from `irq`, where a slow or wedged
+    /// adapter would hold the line and everything behind it.
+    service: ?*const fn (dev: *NicDev) void = null,
     /// Put one frame on the wire. The bytes are the service's until this
     /// returns, copied into the ring before it does.
     transmit: *const fn (dev: *NicDev, frame: []const u8) bool,
@@ -176,6 +197,10 @@ pub const NicDev = struct {
     /// What the hardware thinks happened to the last interrupt, remembered so
     /// the service can narrate without poking registers back.
     irq_count: u64 = 0,
+    /// When this adapter was last asked about its rings, by its interrupt or
+    /// by the loop. Kept so a line that has stopped asserting is noticed
+    /// rather than waited on.
+    serviced_at: u64 = 0,
 
     /// The last ARP reply this interface carried: who answered, by hardware
     /// and by address. The traffic proof until the stack replaces the stub.
@@ -218,6 +243,26 @@ pub var radio_up: ?*const fn (dev: *NicDev) void = null;
 /// about that radio and none of it means anything now.
 pub var radio_down: ?*const fn (dev: *NicDev) void = null;
 
+/// Whether an address is one a wire can carry: not a group address, not
+/// all zeroes, not all ones.
+///
+/// Every driver reads its station address out of a part that may have none
+/// to give, and a card with no EEPROM answers zeroes rather than refusing.
+/// An interface brought up on such an address looks configured and is not:
+/// it answers for nobody, every filter built from it matches nothing, and
+/// the frames it sends are ignored. Checked once, in one place, so that
+/// the three drivers cannot come to disagree about what an address is.
+pub fn validMac(mac: [6]u8) bool {
+    if (mac[0] & 1 != 0) return false; // the group bit: multicast, not a station
+    var any = false;
+    var all_ff = true;
+    for (mac) |octet| {
+        any = any or octet != 0;
+        all_ff = all_ff and octet == 0xFF;
+    }
+    return any and !all_ff;
+}
+
 /// Say a radio has gone, for whoever was driving it.
 pub fn radioGone(dev: *NicDev) void {
     if (dev.ops.radio == null) return;
@@ -249,13 +294,32 @@ pub fn deliverTxDone(dev: *NicDev, outcome: lib.rates.Outcome) void {
     if (radio_tx_done) |done| done(dev, outcome);
 }
 
+/// The shortest frame a wire will carry: sixty octets of payload, which is
+/// sixty-four once the hardware has appended the check sequence.
+///
+/// Ethernet frames shorter than this are runts and every receiver on a real
+/// segment discards them, and an ARP request is forty-two bytes and so is
+/// under it. Padded here, once, rather than in each driver: a driver that
+/// copies what it is given verbatim sends a runt for every short frame
+/// anybody above hands it, and a driver that pads for itself is one more
+/// place the minimum has to be remembered. A radio is not padded, because
+/// 802.11 has no such minimum and a padded one is a malformed frame.
+pub const MIN_WIRE_FRAME = 60;
+
 /// Put one ordinary frame on this interface, whatever medium is under
-/// it. A wire takes it as it stands; a radio has it dressed as the cell
-/// expects first. Everything above here sends the same way to both.
+/// it. A wire takes it as it stands, padded to the minimum; a radio has it
+/// dressed as the cell expects first. Everything above here sends the same
+/// way to both.
 pub fn send(dev: *NicDev, frame: []const u8) bool {
-    if (dev.class != .wifi) return dev.ops.transmit(dev, frame);
-    const dressed = radio_tx orelse return false;
-    return dressed(dev, frame);
+    if (dev.class == .wifi) {
+        const dressed = radio_tx orelse return false;
+        return dressed(dev, frame);
+    }
+    if (frame.len >= MIN_WIRE_FRAME) return dev.ops.transmit(dev, frame);
+
+    var padded: [MIN_WIRE_FRAME]u8 = @splat(0);
+    @memcpy(padded[0..frame.len], frame);
+    return dev.ops.transmit(dev, &padded);
 }
 
 pub fn deliverRx(dev: *NicDev, report: RxReport) void {
@@ -289,6 +353,59 @@ pub fn deliverRx(dev: *NicDev, report: RxReport) void {
     }
 }
 
+/// Service one interrupt delivery, the way every driver should.
+///
+/// A driver supplies the three things only it can know -- what latched, how
+/// to acknowledge it, what to do about it -- and the shape of the pass is
+/// this function's: read a cause, hold the line while it is worked on,
+/// release it, and look again. Bounded, and re-read on the way out.
+///
+/// The re-read is the part a driver gets wrong. A cause that latches
+/// *during* the last pass's work is real work owed, and a driver that ends
+/// its loop on a fixed count without looking again has dropped it: on a
+/// line that rides the falling edge there is no second edge coming, so the
+/// adapter is silent for the rest of the run. Counted where `net` shows it
+/// rather than trusted to the driver.
+///
+/// `Driver.service` must not wait on the part, reset anything, or do
+/// anything else slow: the line is held while it runs, and on a shared line
+/// so is every neighbour's. Slow work belongs in the `service` op, which
+/// the loop calls between passes.
+pub fn serveIrq(comptime Driver: type, nic: *NicDev) bool {
+    comptime {
+        for (.{ "cause", "acknowledge", "service" }) |need| {
+            if (!@hasDecl(Driver, need)) @compileError("an interrupt driver needs a " ++ need);
+        }
+    }
+
+    var serviced = false;
+    var round: usize = 0;
+
+    while (round < IRQ_ROUNDS) : (round += 1) {
+        const cause = Driver.cause();
+        if (cause == 0) break;
+        serviced = true;
+
+        // Held for the work, released after it: on a level line that is
+        // what keeps the controller from re-asserting mid-pass, and on an
+        // edge one it costs nothing.
+        Driver.acknowledge(cause, true);
+        Driver.service(cause, nic);
+        Driver.acknowledge(cause, false);
+    }
+
+    if (Driver.cause() != 0) {
+        // Work a bounded pass could not finish. The loop asks again
+        // (`serviceAdapters`), so it is not lost -- but it is worth seeing.
+        nic.stats.irq_late += 1;
+    }
+    return serviced;
+}
+
+/// How many cause/reap rounds one delivery may take. Enough for a burst,
+/// bounded so a device that never stops latching cannot hold the loop.
+const IRQ_ROUNDS = 8;
+
 /// Say a frame went onto the wire.
 pub fn deliverTx(dev: *NicDev, bytes: usize) void {
     dev.stats.tx_pkts += 1;
@@ -302,4 +419,44 @@ pub fn deliverLink(dev: *NicDev, fresh: Link) void {
     dev.state = fresh;
     if (was == fresh.up) return;
     if (stack_link) |follow| follow(dev, fresh.up);
+}
+
+/// Whatever a pass owes the adapters besides the lines it waited on.
+///
+/// Two kinds of asking. An adapter the firmware routed nowhere is asked
+/// every pass, because there is no line and no second chance at whatever
+/// arrived while the service was busy elsewhere. An adapter that *has* a
+/// line is asked too, but only when that line has been quiet for
+/// `QUIET_US`: on this class of machine the PIRQ pins ride the falling
+/// edge, and an edge that arrives while the driver is mid-service -- or
+/// between the last status read and the return -- is gone for good. The
+/// interrupt is still the fast path; this is what keeps a lost one from
+/// being permanent.
+///
+/// Deferred work runs for every driven adapter: a reseat that may wait on
+/// the part belongs to the loop, not to the line.
+pub fn serviceAdapters(interfaces: []NicDev) void {
+    const now = clock();
+
+    for (interfaces) |*iface| {
+        if (!iface.driving) continue;
+
+        if (iface.ops.service) |work| work(iface);
+
+        const poll = iface.ops.poll orelse continue;
+        const quiet = iface.irq == 0 or now -% iface.serviced_at >= QUIET_US;
+        if (!quiet) continue;
+        if (poll(iface)) iface.serviced_at = now;
+    }
+}
+
+/// How long a line may be quiet before the loop asks as well as listens.
+///
+/// Long enough that a busy adapter is served by its interrupts and not by
+/// this, short enough that a lost one costs a few frames rather than the
+/// rest of the boot.
+const QUIET_US: u64 = 25_000;
+
+fn clock() u64 {
+    return @intCast(@import("sys").clockMicros());
 }
