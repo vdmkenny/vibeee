@@ -19,6 +19,7 @@ const wm = @import("wm.zig");
 
 const chooser = eui.chooser;
 const dir = ulib.dir;
+const env = ulib.env;
 const keys = ulib.keys;
 
 pub const Purpose = chooser.Purpose;
@@ -70,7 +71,10 @@ pub const FileDialog = struct {
         self.result = .pending;
         self.answer_len = 0;
 
-        if (self.path_len == 0) self.setPath("/");
+        // Where a person's files are, unless the dialog has been opened
+        // before and is still standing where it was left. The root is
+        // where nothing anybody keeps lives.
+        if (self.path_len == 0) self.setPath(env.get("HOME") orelse "/home");
         self.reload();
 
         self.window = try connection.createWindow(.dialog, 320, 240);

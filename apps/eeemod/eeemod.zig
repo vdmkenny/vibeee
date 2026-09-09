@@ -85,8 +85,9 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
         .wakes = waits[0..if (port == null) 0 else 1],
         .woken = woken,
         .tick = tick,
-        // Only as a fallback. The sound port is what actually wakes this,
-        // and a program with nothing playing has nothing to redraw.
+        // The sound port is what wakes this while a song plays. The tick
+        // is for the window with nothing open, which has nothing to
+        // redraw and nothing to feed.
         .tick_us = 500_000,
     });
 }
@@ -167,13 +168,31 @@ fn load(wanted: []const u8) void {
     };
     silent = false;
     port = stream;
-    waits[0] = stream.waitHandle();
+    listenTo(stream.waitHandle());
+}
+
+/// Wait on the sound port as well as the manager.
+///
+/// Said again whenever a module is opened, not only when the window is.
+/// A program started with a file already names its port before the loop
+/// begins, but one started bare and given a file afterwards opens its
+/// port after the loop has read the set: without this, nothing would
+/// wake it as the ring drains and the only thing feeding the stream
+/// would be the slow tick underneath, which is a fifth of a second of
+/// sound and then silence until the next one.
+fn listenTo(handle: u32) void {
+    waits[0] = handle;
+    proto.app.wakeOn(waits[0..1]);
 }
 
 /// Let go of whatever was open. Called before opening anything else, so
 /// a second module does not leave the first one's memory behind.
 fn forget() void {
-    if (port) |stream| stream.close();
+    if (port) |stream| {
+        stream.close();
+        // The handle is gone, so nothing waits on it until the next one.
+        proto.app.wakeOn(waits[0..0]);
+    }
     port = null;
     silent = false;
     player = null;
@@ -183,6 +202,8 @@ fn forget() void {
     shown_row = -1;
     shown_page = -1;
     shown_place = -1;
+    widest_gap_ms = 0;
+    fed_at = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,10 +248,26 @@ fn moved() bool {
 /// The room is measured once and then worked through. Asking again each
 /// time round would never come back: the service drains the ring while
 /// this runs, so there would always be more room.
+/// The longest this went without handing frames over, in milliseconds.
+///
+/// The number a stutter turns on. The service wants a period every five
+/// milliseconds or so; if the gaps are that long and it still runs dry
+/// then it is what this program produces that is short, and if they are
+/// hundreds of milliseconds then it is not being woken.
+var widest_gap_ms: u32 = 0;
+var fed_at: u64 = 0;
+
 fn feed() void {
     const stream = if (port) |*one| one else return;
     const current = playing() orelse return;
     if (!running) return;
+
+    const now = sys.clockMicros();
+    if (fed_at != 0) {
+        const gap: u32 = @intCast(@min((now - fed_at) / 1000, std.math.maxInt(u32)));
+        if (gap > widest_gap_ms) widest_gap_ms = gap;
+    }
+    fed_at = now;
 
     const shape = @import("lib").audio.Shape{};
     const per_frame = shape.bytesPerFrame();
@@ -644,7 +681,7 @@ fn drawStatus(area: Rect, current: *const play.Player) void {
     three.number(current.tempo);
     three.text(" bpm");
 
-    var state: [40]u8 = undefined;
+    var state: [80]u8 = undefined;
     var says = str.Builder{ .buf = &state };
     says.text(if (silent) "no sound service" else if (running) "playing" else "paused");
     // The service counts the times it went to the ring and found less than
@@ -656,6 +693,11 @@ fn drawStatus(area: Rect, current: *const play.Player) void {
             says.number(dry);
             says.text(" ran dry");
         }
+    }
+    if (widest_gap_ms != 0) {
+        says.text(", fed every ");
+        says.number(widest_gap_ms);
+        says.text("ms at worst");
     }
 
     eui.statusbar.run(ctx, area, &.{
