@@ -8,8 +8,8 @@
 //!
 //! What is here is the policy: given the declarations a machine carries
 //! and what its owner prefers, which program opens this file. Reading the
-//! declarations is the caller's, because a machine reads them from a disk
-//! and a test reads them from a literal.
+//! declarations is the caller's, since a machine reads them from a disk
+//! and a test passes a literal.
 //!
 //! The choice is a setting, so somebody who wants pictures in something else
 //! says so once and every window that opens a picture obeys. The default is

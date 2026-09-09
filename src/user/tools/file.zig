@@ -9,6 +9,7 @@ const dir = @import("ulib").dir;
 const file = @import("ulib").file;
 const kind = @import("lib").kind;
 const out = @import("ulib").out;
+const paths = @import("ulib").paths;
 
 /// Enough to reach every signature the recogniser knows, and enough of a
 /// text file for it to judge one by.
@@ -44,5 +45,5 @@ fn describe(path: []const u8) void {
         return;
     }
     var room: [kind.SAYS_MAX]u8 = undefined;
-    out.text(kind.fromBytes(head[0..n]).says(&room));
+    out.text(kind.of(head[0..n], paths.base(path)).says(&room));
 }

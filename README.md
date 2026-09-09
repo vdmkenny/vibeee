@@ -101,18 +101,21 @@ The launcher searches installed programs, open windows, and files under `/home`.
 Extra applications are installed into the persistent `/home` volume rather than the
 base system image.
 
-Doom, the Hero character journal, and the echat IRC client. Each is built and
-versioned on its own, separately from the system's version string.
+Doom, the Hero character journal, the echat IRC client, and eeemod, which plays
+tracker modules. Each is built and versioned on its own, separately from the
+system's version string.
 
 ```bash
 make hero                  # build the first-party Hero character journal
 make echat                 # check echat's protocol engine
-make apps                  # build Hero and every third-party app recipe
+make eeemod                # build the eeemod tracker player
+make apps                  # build the first-party ones and every recipe
 make app APP=doom          # build Doom only
 ```
 
-Third-party source is fetched into `build/apps/` and is not committed. Doom data is
-not downloaded automatically; its recipe explains where the required WAD belongs.
+Third-party source is fetched into `build/apps/` and is not committed. Neither
+Doom's wad nor a module is downloaded for you: each recipe says what it wants and
+where it belongs.
 See [apps/README.md](apps/README.md) for what is installed and how it is built.
 
 ## Real Hardware

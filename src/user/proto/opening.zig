@@ -54,20 +54,12 @@ pub fn known() []const openers.Opener {
     return declared[0..count];
 }
 
-/// What the file is: from its first bytes, and from its name when the
-/// bytes say nothing.
-///
-/// Not every format marks itself near its start. One whose mark is further
-/// in than a file is read to identify it, or which has none at all, would
-/// otherwise be shapeless and open in nothing however plainly it is named.
-/// The bytes come first, because a name is a claim and the bytes are the
-/// file.
+/// What the file is. One that cannot be opened or read is shapeless,
+/// which opens in nothing.
 pub fn readKind(path: []const u8) kind.Reading {
     var head: [kind.ENOUGH]u8 = undefined;
     const n = file.readWhole(path, &head) orelse return .{ .kind = .data };
-    const found = kind.fromBytes(head[0..n]);
-    if (found.kind != .data) return found;
-    return .{ .kind = kind.fromName(paths.base(path)) orelse .data };
+    return kind.of(head[0..n], paths.base(path));
 }
 
 /// Whoever the settings name for this family, or nobody.

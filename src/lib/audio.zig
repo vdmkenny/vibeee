@@ -396,7 +396,7 @@ pub const Samples = union(enum) {
     /// Eight bits, signed, silence at zero. What a tracker module and the
     /// hardware it was written for use.
     signed_eight: []const i8,
-    /// Sixteen bits, signed, which is what everything else here uses.
+    /// Sixteen bits, signed. What everything else here uses.
     sixteen: []const i16,
 
     pub fn count(self: Samples) usize {
@@ -422,10 +422,10 @@ pub const Samples = union(enum) {
 
 /// How loud a voice is on one side, in two hundred and fifty-sixths.
 ///
-/// Full is 255 rather than 256 so that the whole range fits a byte and
-/// silence is zero. That leaves the loudest a voice can be a two hundred
-/// and fifty-sixth under the sample it came from, which is a thirtieth of
-/// a decibel and audible to nobody.
+/// Full is 255 rather than 256 so the whole range fits a byte and silence
+/// is zero. The loudest a voice can be is then a two hundred and
+/// fifty-sixth under the sample it came from, a thirtieth of a decibel,
+/// which is inaudible.
 pub const Gain = u8;
 pub const FULL_GAIN: Gain = 255;
 
@@ -471,10 +471,10 @@ pub const Voice = struct {
     ///
     /// A source recorded at eight kilohertz and played at forty-eight is
     /// read six times for every sample it has, and taking the nearer one
-    /// each time turns a smooth wave into a staircase. The corners of
-    /// that staircase are frequencies that were never in the recording,
-    /// which is what makes it sound gritty. A straight line between the
-    /// two samples has no corners, and costs a multiply.
+    /// each time turns a smooth wave into a staircase. Its corners are
+    /// frequencies that were never in the recording, and those are the
+    /// grit. A straight line between the two samples has no corners, and
+    /// costs a multiply.
     ///
     /// A source played at its own rate lands exactly on its samples, so
     /// the second one is never reached and this costs it nothing.
@@ -526,8 +526,8 @@ pub fn position(sample: usize) u64 {
 /// How far a source advances per output frame, in the fixed point above.
 ///
 /// Worked out in sixty-four bits: a rate shifted by sixteen passes what
-/// thirty-two hold at anything above about sixty-five kilohertz, and a
-/// rate is a number somebody can configure.
+/// thirty-two hold above about sixty-five kilohertz, and a rate is
+/// configurable.
 pub fn stepFor(from: u32, to: u32) u64 {
     if (to == 0) return STEP_ONE;
     return (@as(u64, from) << STEP_BITS) / to;
@@ -543,8 +543,8 @@ fn held(sum: i32) i16 {
 /// The count is a compile-time number because it is a budget: a program
 /// decides how many sounds may be going at once, and one that decided at
 /// runtime would be one that allocates on the path a sound comes out of.
-/// Voices are addressed by slot, which is what lets a caller change or
-/// stop one it started without holding a handle to it.
+/// Voices are addressed by slot, so a caller can change or stop one it
+/// started without keeping a handle to it.
 pub fn Mixer(comptime slots: usize) type {
     return struct {
         const Self = @This();
@@ -687,7 +687,7 @@ test "an eight bit sample reads as the signed one it stands for" {
     try std.testing.expectEqual(@as(i16, 0), unsigned.at(0));
     try std.testing.expectEqual(@as(i16, 256), unsigned.at(1));
     try std.testing.expectEqual(@as(i16, -256), unsigned.at(2));
-    // Past the end is silence, not somebody else's memory.
+    // Past the end is silence, not whatever follows it in memory.
     try std.testing.expectEqual(@as(i16, 0), unsigned.at(3));
     try std.testing.expectEqual(@as(usize, 3), unsigned.count());
 
@@ -864,8 +864,8 @@ test "a sum that goes over the top and back again comes out where it belongs" {
     mixer.fill(&out);
     // Added one pair at a time the first two would have been held at full
     // scale and the third would take it down to under three thousand.
-    // Added together they are one loud sound, which is what they are, to
-    // within the sample the scaling rounds away.
+    // Added together they come to one loud sound, to within the sample
+    // the scaling rounds away.
     const one: i32 = (30000 * @as(i32, FULL_GAIN)) >> 8;
     try std.testing.expect(@abs(@as(i32, out[0]) - one) <= 2);
 }
@@ -882,7 +882,7 @@ test "a slot that is silent takes no gain, and a slot that is not is not disturb
     try std.testing.expectEqual(@as(i16, 0), out[0]);
     try std.testing.expect(out[1] > 0);
 
-    // A slot nobody has is neither played nor a crash.
+    // A slot that does not exist is ignored rather than a crash.
     mixer.start(9, .{ .samples = .{ .sixteen = &.{1000} } });
     mixer.setGain(9, 1, 1);
     mixer.stop(9);

@@ -411,6 +411,21 @@ const suffixes = [_]struct { suffix: []const u8, kind: Kind }{
 /// What the name says it is, or null when the name says nothing. The cheap
 /// door: no seek, no read, and wrong whenever somebody has misnamed a file,
 /// which is why anything that can afford to read uses `fromBytes` instead.
+/// What a file is, from its bytes and from its name.
+///
+/// A mark in the bytes settles it: a name is a claim and a signature is
+/// the file. Text and shapeless data are not signatures, though. They are
+/// what the bytes come to when nothing in them names a format, and plenty
+/// of formats have no mark near their start to name one with: a tracker
+/// module opens with its title, so its first bytes read as text. So a
+/// name that names a format beats a reading that only guessed.
+pub fn of(bytes: []const u8, name: []const u8) Reading {
+    const found = fromBytes(bytes);
+    if (found.kind != .data and found.kind != .text) return found;
+    if (fromName(name)) |named| return .{ .kind = named };
+    return found;
+}
+
 pub fn fromName(name: []const u8) ?Kind {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return null;
     const suffix = name[dot + 1 ..];
@@ -535,6 +550,21 @@ test "the name is read folded, and says nothing when it says nothing" {
     try std.testing.expectEqual(@as(?Kind, .tracker), fromName("space_debris.mod"));
     try std.testing.expectEqual(@as(?Kind, .tracker), fromName("SONG.MOD"));
     try std.testing.expectEqual(Family.audio, Kind.tracker.family());
+}
+
+test "a mark in the bytes settles it, and a name settles what a guess cannot" {
+    // A signature is taken over any name at all.
+    try std.testing.expectEqual(Kind.png, of("\x89PNG\r\n\x1a\n", "notes.txt").kind);
+
+    // Bytes that only read as text lose to a name that names a format.
+    // A module opens with its title, so this is the case that matters.
+    try std.testing.expectEqual(Kind.tracker, of("a song title", "tune.mod").kind);
+    // And keep the reading when the name says nothing.
+    try std.testing.expectEqual(Kind.text, of("a song title", "tune").kind);
+
+    // Neither saying anything is shapeless, which opens in nothing.
+    try std.testing.expectEqual(Kind.data, of("\x00\x01\x02\xff", "lump").kind);
+    try std.testing.expectEqual(Kind.tracker, of("\x00\x01\x02\xff", "lump.mod").kind);
 }
 
 test "the two doors agree wherever both can answer" {

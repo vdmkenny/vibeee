@@ -11,7 +11,7 @@ plays the ProTracker and SoundTracker ones, four channels or more.
 
 | File | What it holds |
 |---|---|
-| [`module.zig`](module.zig) | The file: instruments, patterns, and the cells inside them. Nothing is copied and nothing is allocated, so a module is a view over the bytes somebody read. |
+| [`module.zig`](module.zig) | The file: instruments, patterns, and the cells inside them. Nothing is copied and nothing is allocated, so a module is a view over the bytes the caller read. |
 | [`player.zig`](player.zig) | The song on a clock: rows, ticks, and the effects that bend a note between them. It hands voices to the system's mixer and never touches a sample. |
 | [`eeemod.zig`](eeemod.zig) | The window, and keeping the sound service fed. |
 

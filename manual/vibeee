@@ -46,7 +46,8 @@ manual configuration.
 Sound is a graph rather than a pipeline: programs and hardware are
 nodes with ports, and links decide who hears whom. `tone` makes a
 sound, `vol` sets the volume, and `patch` shows and changes the
-wiring.
+wiring. Several sounds at once are added together by the mixer in the
+library, which is what a game or a music player hands its voices to.
 
 The boot carries a line of flags, set where the image is written. The
 loader shows it and waits two seconds; press a key in that time and it

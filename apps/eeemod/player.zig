@@ -15,8 +15,8 @@ const std = @import("std");
 const audio = @import("lib").audio;
 const mod = @import("module.zig");
 
-/// The Amiga's sampler clock. Dividing it by twice a period gives the
-/// rate the samples came out at, which is what a period means.
+/// The Amiga's sampler clock. A period means the clock was divided by
+/// twice it, so that division gives the rate the samples came out at.
 const PAULA_HZ: u32 = 7093790;
 
 /// A row lasts this many ticks, and a minute this many beats, until a
@@ -177,9 +177,9 @@ const Oscillator = struct {
             // Falls from the top to the bottom across the turn.
             .ramp_down => 255 - @divTrunc(@as(i32, self.at) * 510, 63),
             .square => if (self.at < 32) @as(i32, 255) else -255,
-            // Nothing here is random; a shape nobody can predict is a
-            // shape nobody can test, and the sine is what the trackers
-            // that wrote these files fell back to.
+            // Not random. A shape that cannot be predicted cannot be
+            // tested, and the trackers that wrote these files fell back
+            // to the sine.
             .random => @divTrunc(@as(i32, audio.sine(turn)), 128),
         };
     }
@@ -507,8 +507,8 @@ pub const Player = struct {
 
     /// The commands that happen once, at the start of their row.
     ///
-    /// Switched over exhaustively: an effect added to the format is a
-    /// build that stops here rather than a note that comes out wrong.
+    /// Switched over exhaustively, so an effect added to the format
+    /// stops the build here instead of playing the wrong note.
     fn atRowStart(self: *Player, channel: *Channel, command: mod.Command) void {
         switch (command) {
             .none => {},
@@ -578,7 +578,7 @@ pub const Player = struct {
         channel.loop_left -= 1;
         if (channel.loop_left > 0 or count > 0) {
             // Jumping back is a break to a row of this same pattern,
-            // which is what the two together already say.
+            // which is a break and a jump together.
             if (channel.loop_left > 0) {
                 self.break_to = channel.loop_row;
                 self.jump_to = self.place;

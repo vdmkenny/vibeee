@@ -16,8 +16,8 @@
 # A program declares itself here rather than being listed in the source of
 # something else, so adding one is the program and its stanza. A stanza
 # naming a program this machine does not carry fails the way any missing
-# program does, which is what lets the ones under /home be declared whether
-# or not they were built.
+# program does, so the ones under /home can be declared whether or not
+# they were built.
 
 name    = eimg
 binary  = /bin/eimg

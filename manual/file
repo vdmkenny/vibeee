@@ -3,5 +3,7 @@ file - what kind of file something is
   file /bin/vsh          one
   file /bin/*            several
 
-Read from the contents rather than the name: a program is recognised by
-its header, and its architecture reported with it.
+Read from the contents first: a program is recognised by its header, and
+its architecture reported with it. The name settles what the contents
+only guessed at, because plenty of formats carry no mark near their
+start to be recognised by.

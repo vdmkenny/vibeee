@@ -2,8 +2,8 @@
 //!
 //! Everything about the file is in `module.zig`, and everything about
 //! turning a song into sound is in `player.zig`. What is here is the
-//! window: reading the file the launcher handed over, keeping the sound
-//! service fed, and drawing the pattern as it goes past.
+//! window: finding the file, keeping the sound service fed, and drawing
+//! the pattern as it goes past.
 //!
 //! The loop sleeps on the sound port. The service signals when its ring
 //! wants more, and the program does nothing at all until it does, so a
@@ -21,7 +21,6 @@ const env = ulib.env;
 const file = ulib.file;
 const heap = ulib.heap;
 const sys = @import("sys");
-const out = ulib.out;
 const sound = ulib.sound;
 const str = @import("lib").str;
 
@@ -39,9 +38,6 @@ const MAX_FILE = 2 * 1024 * 1024;
 /// Frames handed to the sound service at a time. One pass over this much
 /// is the work done between two looks at the ring.
 const BLOCK_FRAMES = 512;
-
-/// Rows of the pattern the window shows above and below the one playing.
-const CONTEXT_ROWS = 8;
 
 // ---------------------------------------------------------------------------
 // What is open
@@ -205,9 +201,9 @@ fn tick() bool {
 
 /// The song being played, by reference.
 ///
-/// Written once, because `player orelse ...` hands back a copy and taking
-/// its address gives a pointer to that copy: a render through one advances
-/// a song nobody is listening to.
+/// `player orelse ...` yields a copy, and taking its address gives a
+/// pointer to that copy. Rendering through one advances a song that is
+/// not the one playing.
 fn playing() ?*play.Player {
     return if (player) |*one| one else null;
 }
@@ -407,7 +403,7 @@ fn drawPattern(area: Rect, current: *const play.Player) void {
         const line = Rect{ .x = area.x, .y = y, .w = area.w, .h = line_height };
         if (here) surface.fill(line, t.accent);
 
-        // Every fourth row is where a beat falls, which is what makes a
+        // Every fourth row is a beat. Picking those out is what makes a
         // pattern readable at a glance.
         const ink = if (here) t.accent_text else if (@rem(row, 4) == 0) t.text else t.text_dim;
         const baseline = y + 1;
@@ -495,8 +491,8 @@ fn drawMeters(area: Rect, current: *const play.Player) void {
     var moved_any = ctx.damaged;
     for (0..song.shape.channels) |channel| {
         const level = current.meter(channel);
-        // A hundredth of the format's own sixty-four, which is what a
-        // meter counts in.
+        // The format counts volume to sixty-four; a meter counts to a
+        // hundred.
         levels[channel] = @intCast(@divTrunc(@as(u16, level.volume) * 100, 64));
         const fell = @import("lib").audio.falling(peaks[channel], levels[channel], PEAK_FALL);
         if (levels[channel] != shown_levels[channel] or fell != peaks[channel]) moved_any = true;
@@ -526,9 +522,9 @@ fn drawMeters(area: Rect, current: *const play.Player) void {
             .h = eui.meter.HEIGHT,
         };
         surface.fill(bar, t.surface_pressed);
-        // No warning colour and no limit mark: a channel at sixty-four is
-        // at its own loudest, which is what a song asks for constantly.
-        // What is worth marking is the loudest it has just been.
+        // No warning colour and no limit mark. Sixty-four is a channel's
+        // own full volume, which songs use constantly. What is worth
+        // marking is the loudest it has just been.
         surface.fill(eui.meter.fill(bar, loud), t.accent);
         if (peaks[channel] > 0) surface.fill(eui.meter.peak(bar, peaks[channel]), t.text_dim);
 
