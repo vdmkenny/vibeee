@@ -324,16 +324,19 @@ fn period(direction: dev.Direction, index: u32) []u8 {
     };
 }
 
-/// The codec's own attenuator: zero is loudest, each step one and a half
-/// decibels, bit fifteen mutes. Mapped from percent through the shared
-/// volume arithmetic.
+/// The master attenuator: sixty-three steps of one and a half decibels,
+/// zero loudest.
+const master = audio.Attenuator{ .steps = 0x3F, .quarter_db = 6 };
+
+/// Set the codec's own attenuator. Bit fifteen mutes; the rest is the
+/// step the shared volume curve asks for, counted down from loudest.
 fn setMaster(volume: audio.Volume) void {
     if (!device.opened) return;
     if (volume.muted) {
         ports.out16(device.mixer_base + @intFromEnum(Mixer.master), 0x8000);
         return;
     }
-    const attenuation: u16 = 0x3F - volume.stepOf(0x3F);
+    const attenuation: u16 = master.steps - volume.stepOf(master);
     ports.out16(
         device.mixer_base + @intFromEnum(Mixer.master),
         attenuation << 8 | attenuation,

@@ -85,6 +85,74 @@ test "a duration long enough to pass four billion frame-hertz still converts" {
     try std.testing.expectEqual(@as(u32, 90_000), shape.msOfFrames(48000 * 90));
 }
 
+/// What fraction of full scale a percentage is worth.
+///
+/// Loudness is heard on a log scale, so the fraction is cubed and the
+/// slider reads as sixty decibels spread over its travel: half way is
+/// eighteen decibels down, a quarter of the way thirty-six, a tenth sixty
+/// and at the edge of hearing.
+fn fractionOf(percent: usize) f64 {
+    const part = @as(f64, @floatFromInt(percent)) / 100.0;
+    return part * part * part;
+}
+
+/// Amplitude for every percentage below full, in `Amplitude.UNITY` fixed
+/// point. Full is the identity and is not stored.
+const amplitudes: [100]u16 = built: {
+    var table: [100]u16 = undefined;
+    for (&table, 0..) |*entry, percent| {
+        entry.* = @intFromFloat(@round(fractionOf(percent) * @as(f64, Amplitude.UNITY)));
+    }
+    break :built table;
+};
+
+/// Attenuation for every percentage below full, in quarter decibels.
+/// Percent zero is silence rather than an attenuation, and is never read.
+const attenuations: [100]u16 = built: {
+    var table: [100]u16 = undefined;
+    table[0] = std.math.maxInt(u16);
+    for (table[1..], 1..) |*entry, percent| {
+        entry.* = @intFromFloat(@round(-80.0 * @log10(fractionOf(percent))));
+    }
+    break :built table;
+};
+
+/// A volume resolved to a multiplier. Taking it once lifts the percentage
+/// out of the loop that uses it.
+pub const Amplitude = enum(u32) {
+    silent = 0,
+    unity = UNITY,
+    _,
+
+    /// Full scale. Sixteen fraction bits keeps a scaled sample inside a
+    /// thirty-two bit multiply.
+    pub const UNITY: u32 = 1 << BITS;
+    const BITS: u5 = 16;
+
+    /// One sample scaled.
+    pub fn apply(self: Amplitude, sample: i16) i16 {
+        return switch (self) {
+            .silent => 0,
+            .unity => sample,
+            _ => scaled(sample, @intCast(@intFromEnum(self))),
+        };
+    }
+};
+
+/// One sample against a factor already taken off an amplitude. A multiply
+/// and a shift, no floating point.
+inline fn scaled(sample: i16, factor: i32) i16 {
+    return @intCast((@as(i32, sample) * factor) >> Amplitude.BITS);
+}
+
+/// A codec's own attenuator, as the part reports it.
+pub const Attenuator = struct {
+    /// The loudest step. Zero is the quietest.
+    steps: u8 = 0,
+    /// What one step is worth, in quarter decibels.
+    quarter_db: u8 = 0,
+};
+
 /// Loudness as a whole number of percent, which is what a tool prints, a
 /// setting stores and a hardware step map is built against.
 pub const Volume = struct {
@@ -95,25 +163,56 @@ pub const Volume = struct {
         return .{ .percent = @intCast(@min(percent, 100)) };
     }
 
-    /// One sample scaled in software. Fixed point over a percentage, which
-    /// on this class of machine costs a multiply and a shift per sample and
-    /// keeps the mixing path free of floating point entirely.
-    pub fn apply(self: Volume, sample: i16) i16 {
-        if (self.muted or self.percent == 0) return 0;
-        if (self.percent >= 100) return sample;
-        const scaled = @divTrunc(@as(i32, sample) * @as(i32, self.percent), 100);
-        return @intCast(scaled);
+    /// The multiplier this volume asks for.
+    pub fn amplitude(self: Volume) Amplitude {
+        if (self.muted or self.percent == 0) return .silent;
+        if (self.percent >= 100) return .unity;
+        return @enumFromInt(amplitudes[self.percent]);
     }
 
-    /// Which of a codec's amplifier steps this percentage names. Codecs
-    /// differ in how many steps they have, so the map is built from the
-    /// step count the codec reports rather than from a constant.
-    pub fn stepOf(self: Volume, steps: u8) u8 {
-        if (steps == 0) return 0;
-        const scaled = (@as(u32, self.percent) * steps) / 100;
-        return @intCast(@min(scaled, steps));
+    /// Which of an attenuator's steps sits closest to the attenuation this
+    /// volume asks for. Both sides of the percentage come off the one
+    /// curve, so a hardware attenuator and a software multiplier land on
+    /// the same loudness.
+    pub fn stepOf(self: Volume, attenuator: Attenuator) u8 {
+        if (attenuator.steps == 0 or attenuator.quarter_db == 0) return 0;
+        if (self.muted or self.percent == 0) return 0;
+        if (self.percent >= 100) return attenuator.steps;
+
+        const per_step: u32 = attenuator.quarter_db;
+        const wanted = (attenuations[self.percent] + per_step / 2) / per_step;
+        return attenuator.steps - @as(u8, @intCast(@min(wanted, attenuator.steps)));
     }
 };
+
+/// Scale every sample into `out`, which is a different buffer of at least
+/// the same length.
+pub fn scale(by: Amplitude, samples: []const i16, out: []i16) void {
+    const into = out[0..samples.len];
+    switch (by) {
+        .silent => @memset(into, 0),
+        .unity => @memcpy(into, samples),
+        _ => {
+            const factor: i32 = @intCast(@intFromEnum(by));
+            for (into, samples) |*slot, sample| slot.* = scaled(sample, factor);
+        },
+    }
+}
+
+/// Add every sample, scaled, to what `out` already holds.
+pub fn blend(by: Amplitude, samples: []const i16, out: []i16) void {
+    const into = out[0..samples.len];
+    switch (by) {
+        .silent => {},
+        .unity => for (into, samples) |*slot, sample| {
+            slot.* = mix(slot.*, sample);
+        },
+        _ => {
+            const factor: i32 = @intCast(@intFromEnum(by));
+            for (into, samples) |*slot, sample| slot.* = mix(slot.*, scaled(sample, factor));
+        },
+    }
+}
 
 /// Two samples added without wrapping. Mixing that wraps turns a loud
 /// moment into a click, which is worse than the clipping this does.
@@ -144,8 +243,7 @@ pub const Tone = struct {
     pub fn next(self: *Tone) i16 {
         const value = sine(self.phase);
         self.phase +%= self.step;
-        const scaled = (@as(i32, value) * @as(i32, self.amplitude)) >> 15;
-        return @intCast(scaled);
+        return @intCast((@as(i32, value) * @as(i32, self.amplitude)) >> 15);
     }
 
     /// Fill a buffer of interleaved frames with this tone on every channel.
@@ -225,21 +323,80 @@ test "only shapes a codec can carry are valid" {
     try std.testing.expectEqual(@as(?Rate, null), Rate.of(12345));
 }
 
-test "volume scales, mutes and maps onto a codec's own steps" {
+test "a volume resolves to a multiplier on the loudness curve" {
     const full = Volume{ .percent = 100 };
-    try std.testing.expectEqual(@as(i16, 1000), full.apply(1000));
+    try std.testing.expectEqual(Amplitude.unity, full.amplitude());
+    try std.testing.expectEqual(@as(i16, 1000), full.amplitude().apply(1000));
 
-    const half = Volume{ .percent = 50 };
-    try std.testing.expectEqual(@as(i16, 500), half.apply(1000));
-    try std.testing.expectEqual(@as(i16, -500), half.apply(-1000));
+    // Half the slider is an eighth of the amplitude, eighteen decibels down.
+    const half = (Volume{ .percent = 50 }).amplitude();
+    try std.testing.expectEqual(@as(i16, 125), half.apply(1000));
+    try std.testing.expectEqual(@as(i16, -125), half.apply(-1000));
 
-    const off = Volume{ .percent = 50, .muted = true };
-    try std.testing.expectEqual(@as(i16, 0), off.apply(1000));
+    try std.testing.expectEqual(Amplitude.silent, (Volume{ .percent = 50, .muted = true }).amplitude());
+    try std.testing.expectEqual(Amplitude.silent, (Volume{ .percent = 0 }).amplitude());
+    try std.testing.expectEqual(@as(i16, 0), Amplitude.silent.apply(1000));
+}
 
-    // A codec with sixty-four steps, asked for three quarters.
-    try std.testing.expectEqual(@as(u8, 48), (Volume{ .percent = 75 }).stepOf(64));
-    try std.testing.expectEqual(@as(u8, 64), full.stepOf(64));
-    try std.testing.expectEqual(@as(u8, 0), (Volume{ .percent = 0 }).stepOf(64));
+test "the curve rises without a flat or a backward step" {
+    // One percent is a hundred and twenty decibels down, below what the
+    // fixed point holds.
+    try std.testing.expectEqual(Amplitude.silent, (Volume{ .percent = 1 }).amplitude());
+
+    var last: u32 = 0;
+    for (2..100) |percent| {
+        const here = @intFromEnum((Volume{ .percent = @intCast(percent) }).amplitude());
+        try std.testing.expect(here > last);
+        try std.testing.expect(here < Amplitude.UNITY);
+        last = here;
+    }
+}
+
+test "an attenuator lands on the same loudness the multiplier does" {
+    // The AC97 master: sixty-three steps of one and a half decibels.
+    const ac97 = Attenuator{ .steps = 0x3F, .quarter_db = 6 };
+
+    try std.testing.expectEqual(@as(u8, 0x3F), (Volume{ .percent = 100 }).stepOf(ac97));
+    try std.testing.expectEqual(@as(u8, 0), (Volume{ .percent = 0 }).stepOf(ac97));
+    try std.testing.expectEqual(@as(u8, 0), (Volume{ .percent = 80, .muted = true }).stepOf(ac97));
+
+    // Eighteen decibels down is twelve steps of one and a half.
+    try std.testing.expectEqual(@as(u8, 0x3F - 12), (Volume{ .percent = 50 }).stepOf(ac97));
+    // Sixty decibels down is forty.
+    try std.testing.expectEqual(@as(u8, 0x3F - 40), (Volume{ .percent = 10 }).stepOf(ac97));
+    // Past what the part can attenuate, so its quietest step.
+    try std.testing.expectEqual(@as(u8, 0), (Volume{ .percent = 1 }).stepOf(ac97));
+
+    // A finer part reaches the same loudness on more steps.
+    const fine = Attenuator{ .steps = 0x4B, .quarter_db = 1 };
+    try std.testing.expectEqual(@as(u8, 0x4B - 72), (Volume{ .percent = 50 }).stepOf(fine));
+
+    // A part that reports nothing is left alone.
+    try std.testing.expectEqual(@as(u8, 0), (Volume{ .percent = 50 }).stepOf(.{}));
+}
+
+test "a buffer scales and blends without consulting the percentage per sample" {
+    const source = [_]i16{ 1000, -1000, 32767, -32768 };
+    var out: [4]i16 = undefined;
+
+    scale(.unity, &source, &out);
+    try std.testing.expectEqualSlices(i16, &source, &out);
+
+    scale(.silent, &source, &out);
+    try std.testing.expectEqualSlices(i16, &[_]i16{ 0, 0, 0, 0 }, &out);
+
+    const half = (Volume{ .percent = 50 }).amplitude();
+    scale(half, &source, &out);
+    for (out, source) |got, sample| try std.testing.expectEqual(half.apply(sample), got);
+
+    // Blending adds to what is already there, and clips instead of wrapping.
+    out = .{ 100, 100, 32767, -32768 };
+    blend(.unity, &source, &out);
+    try std.testing.expectEqualSlices(i16, &[_]i16{ 1100, -900, 32767, -32768 }, &out);
+
+    out = .{ 100, 100, 100, 100 };
+    blend(.silent, &source, &out);
+    try std.testing.expectEqualSlices(i16, &[_]i16{ 100, 100, 100, 100 }, &out);
 }
 
 test "mixing clips instead of wrapping" {

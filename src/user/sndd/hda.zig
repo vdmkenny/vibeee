@@ -402,10 +402,10 @@ const Device = struct {
     play_progress: pcm.Progress = .{ .modulus = dev.PERIODS },
     record_progress: pcm.Progress = .{ .modulus = dev.PERIODS },
 
-    /// The output amplifier's step count, read from the codec rather than
-    /// assumed: parts differ, and a volume map built on a guess is wrong
-    /// on every part but one.
-    volume_steps: u8 = 0,
+    /// The output amplifier as the part reports it. Step counts and step
+    /// sizes differ between codecs, so a volume map built on a guess is
+    /// wrong on every part but one.
+    attenuator: audio.Attenuator = .{},
 };
 
 var device: Device = .{};
@@ -861,11 +861,11 @@ fn selectConnection(node: u8, index: u8) void {
     _ = command(node, .set_connection, index);
 }
 
-/// How many steps a node's amplifier has, which decides what "loud" means
-/// for it. Parts differ, so it is read rather than assumed.
-fn amplifierSteps(node: u8, which: Parameter) u8 {
-    const caps: AmplifierCaps = @bitCast(parameter(node, which) orelse return 0);
-    return caps.steps;
+/// A node's amplifier: how many steps it has and what one is worth. Both
+/// fields are reported one short of the count they name.
+fn attenuatorOf(node: u8, which: Parameter) audio.Attenuator {
+    const caps: AmplifierCaps = @bitCast(parameter(node, which) orelse return .{});
+    return .{ .steps = caps.steps, .quarter_db = @as(u8, caps.step_size) + 1 };
 }
 
 /// Open one amplifier: unmuted, at the gain asked for, or at the node's
@@ -875,14 +875,14 @@ fn openAmplifier(node: u8, direction: enum { input, output }, index: u4, gain: ?
         .input => .input_amplifier,
         .output => .output_amplifier,
     };
-    const steps = amplifierSteps(node, which);
+    const attenuator = attenuatorOf(node, which);
 
     var setting = switch (direction) {
         .input => Amplifier.input_open,
         .output => Amplifier.output_open,
     };
     setting.index = index;
-    setting.gain = @truncate(gain orelse steps);
+    setting.gain = @truncate(gain orelse attenuator.steps);
     _ = command(node, .set_amplifier, @bitCast(setting));
 }
 
@@ -907,7 +907,7 @@ fn openOutput(pin: u8, caps: PinCaps) void {
     // The converter's own amplifier is the one a volume setting moves, so
     // its step count is what the volume map is built against.
     _ = command(device.playback.converter, .set_power_state, 0);
-    device.volume_steps = amplifierSteps(device.playback.converter, .output_amplifier);
+    device.attenuator = attenuatorOf(device.playback.converter, .output_amplifier);
     openAmplifier(device.playback.converter, .output, 0, FULL);
 }
 
@@ -1085,7 +1085,7 @@ fn setMaster(volume: audio.Volume) void {
     if (volume.muted) {
         setting.mute = true;
     } else {
-        setting.gain = @truncate(volume.stepOf(device.volume_steps));
+        setting.gain = @truncate(volume.stepOf(device.attenuator));
     }
     _ = command(device.playback.converter, .set_amplifier, @bitCast(setting));
 }
@@ -1106,7 +1106,9 @@ fn sayIdentity() void {
         out.decimal(device.capture.converter);
     }
     out.text(", ");
-    out.decimal(device.volume_steps);
-    out.text(" volume steps");
+    out.decimal(device.attenuator.steps);
+    out.text(" volume steps of ");
+    out.decimal(device.attenuator.quarter_db);
+    out.text(" quarter-dB");
     log.end();
 }

@@ -374,9 +374,7 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
 
         const volume = audio.Volume{ .percent = port.volume, .muted = port.muted };
         const samples: []i16 = @alignCast(std.mem.bytesAsSlice(i16, buf[0..got]));
-        for (samples, scratch[0 .. got / 2]) |*into, sample| {
-            into.* = audio.mix(into.*, volume.apply(sample));
-        }
+        audio.blend(volume.amplitude(), scratch[0 .. got / 2], samples);
     }
 
     if (heard) {
@@ -411,7 +409,7 @@ fn pourPeriod(device: *dev.PcmDev, source: graph_mod.PortId) void {
     if (source == graph_mod.NONE) return;
 
     const source_port = graph.portAt(source) orelse return;
-    const volume = audio.Volume{ .percent = source_port.volume, .muted = source_port.muted };
+    const volume = (audio.Volume{ .percent = source_port.volume, .muted = source_port.muted }).amplitude();
 
     {
         const samples: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
@@ -421,13 +419,13 @@ fn pourPeriod(device: *dev.PcmDev, source: graph_mod.PortId) void {
     var listed: [graph_mod.MAX_LINKS]graph_mod.PortId = undefined;
     for (graph.sinksFrom(source, &listed)) |sink| {
         const ring = rings[sink].view orelse continue;
-        if (volume.percent == 100 and !volume.muted) {
+        if (volume == .unity) {
             _ = ring.frames.push(buf);
         } else {
             var scaled: [dev.PERIOD_FRAMES * 2]i16 = undefined;
-            const samples = std.mem.bytesAsSlice(i16, buf);
-            for (samples, 0..) |sample, i| scaled[i] = volume.apply(sample);
-            _ = ring.frames.push(std.mem.sliceAsBytes(&scaled));
+            const samples: []const i16 = @alignCast(std.mem.bytesAsSlice(i16, buf));
+            audio.scale(volume, samples, &scaled);
+            _ = ring.frames.push(std.mem.sliceAsBytes(scaled[0..samples.len]));
         }
         sys.eventSignal(rings[sink].ev);
     }
