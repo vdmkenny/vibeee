@@ -50,9 +50,12 @@ void DG_DrawFrame(void)
     if (vb_window_present() < 0) leave();
 }
 
+/* The engine sleeps when it is ahead of its own clock, which is the one
+ * stretch of a frame where nothing else is happening, and so where the
+ * stream is fed for nothing. */
 void DG_SleepMs(uint32_t ms)
 {
-    usleep(ms * 1000);
+    vb_mix_sleep(ms * 1000);
 }
 
 uint32_t DG_GetTicksMs(void)

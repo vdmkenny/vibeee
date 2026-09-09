@@ -186,4 +186,10 @@ int  vb_mix_free(void);
  * on a regular beat whether or not anything is playing. */
 int  vb_mix_pump(void);
 
+/* Wait, and keep the sound going while waiting. A program that makes its
+ * sound on the same beat as its picture has one stretch of each frame
+ * where nothing is happening, and that is where a stream is fed cheaply,
+ * so a loop like that wants this rather than a plain sleep. */
+void vb_mix_sleep(unsigned int micros);
+
 #endif /* _VIBEEE_H */

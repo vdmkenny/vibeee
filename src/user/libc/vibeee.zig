@@ -374,6 +374,49 @@ export fn vb_mix_free() c_int {
 /// sound starts with a click, so a program with nothing playing still
 /// pumps and still keeps the stream moving. Answers the frames written,
 /// or -1 without a stream.
+/// The longest a mixing wait goes without looking at the stream.
+///
+/// The ring holds far more than this, so a look this often keeps it as
+/// full as it needs to be while leaving the waiting mostly waiting.
+const MIX_SLICE_MICROS: c_uint = 16_000;
+
+/// The least room worth mixing into.
+///
+/// Mixing is per sample and the call around it is not, so a pass over a
+/// handful of frames is mostly the call. A program in a tight wait asks
+/// again in a moment and the ring is deep enough to be behind by this
+/// much without anybody hearing it.
+const MIX_WORTH_FRAMES: usize = 512;
+
+/// Wait, and keep the sound going while waiting.
+///
+/// A program that makes its sound on the same beat as its picture has one
+/// stretch of each frame where nothing is happening, and that is where a
+/// stream is fed for nothing. Any program with a loop like that wants
+/// this rather than a plain sleep, so the pacing lives here rather than
+/// being written again, differently, in each of them.
+///
+/// The waiting is real waiting: it sleeps rather than spinning, and it
+/// does not mix on every pass, only when enough has drained to be worth a
+/// pass. A program that asks to be left alone for a millisecond at a time
+/// is left alone.
+export fn vb_mix_sleep(micros: c_uint) void {
+    var left = micros;
+    while (true) {
+        if (roomInFrames() >= MIX_WORTH_FRAMES) _ = vb_mix_pump();
+        if (left == 0) return;
+        const slice = @min(left, MIX_SLICE_MICROS);
+        sys.sleepMicros(slice);
+        left -= slice;
+    }
+}
+
+/// How many frames the stream would take right now, or none without one.
+fn roomInFrames() usize {
+    const port = &(speaking orelse return 0);
+    return port.view.frames.writable() / (audio.Shape{}).bytesPerFrame();
+}
+
 export fn vb_mix_pump() c_int {
     const port = &(speaking orelse return -1);
     const shape = audio.Shape{};

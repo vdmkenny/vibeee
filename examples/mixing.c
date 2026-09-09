@@ -41,6 +41,11 @@ int main(void)
     printf("mixing: three notes at %u Hz, %u channels, %u bits\n",
            shape.rate, shape.channels, shape.bits);
 
+    /* Hand over what there is room for, then wait to be told there is
+     * room again. The waiting is the point: the service signals as each
+     * period drains, and a loop that polls instead takes the processor
+     * the service needs to drain it, which on one core is how a tone
+     * comes out full of holes. */
     wanted = (int) shape.rate * MS / 1000;
     while (done < wanted) {
         int n = vb_mix_pump();
@@ -49,9 +54,7 @@ int main(void)
             return 1;
         }
         done += n;
-        /* Nothing to hand over means the ring is full, which is the one
-         * moment there is anything to wait for. */
-        if (n == 0) vb_sound_wait(20000);
+        vb_sound_wait(50000);
     }
 
     /* The middle note alone, to show a slot being taken away without
@@ -62,12 +65,12 @@ int main(void)
     wanted = (int) shape.rate * 400 / 1000;
     while (done < wanted) {
         int n = vb_mix_pump();
-        if (n <= 0) vb_sound_wait(20000);
         if (n > 0) done += n;
+        vb_sound_wait(50000);
     }
 
     vb_mix_stop_all();
-    while (!vb_sound_drained()) vb_sound_wait(20000);
+    while (!vb_sound_drained()) vb_sound_wait(50000);
     vb_sound_close();
     printf("mixing: done\n");
     return 0;

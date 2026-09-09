@@ -471,6 +471,11 @@ pub fn stepFor(from: u32, to: u32) u64 {
     return (@as(u64, from) << STEP_BITS) / to;
 }
 
+/// A sum brought back to one sample, held at the ends rather than wrapped.
+fn held(sum: i32) i16 {
+    return @intCast(std.math.clamp(sum, std.math.minInt(i16), std.math.maxInt(i16)));
+}
+
 /// Several voices summed into one interleaved stereo stream.
 ///
 /// The count is a compile-time number because it is a budget: a program
@@ -527,39 +532,72 @@ pub fn Mixer(comptime slots: usize) type {
         /// finished doing it.
         ///
         /// `out` is interleaved stereo and is replaced rather than added
-        /// to, so a caller need not clear it first. Summed in a wider
-        /// number and brought back once at the end: clipping each addition
-        /// as it goes turns a pair of loud sounds into a different sound,
+        /// to, so a caller need not clear it first. A frame at a time
+        /// rather than a voice at a time: each output sample is then
+        /// written once instead of being cleared and then read back and
+        /// rewritten for every voice, and the sum is held in a wider
+        /// number until the frame is done. Clipping each addition as it
+        /// goes would turn a pair of loud sounds into a different sound,
         /// where clipping the total only flattens what was over the top.
         pub fn fill(self: *Self, out: []i16) void {
-            @memset(out, 0);
+            // The voices actually playing, gathered once. The loop below
+            // runs per output frame, and walking empty slots in it would
+            // be the whole bank's worth of work per sample.
+            var live: [slots]*Voice = undefined;
+            var on: usize = 0;
+            for (&self.voices) |*maybe| {
+                if (maybe.*) |*voice| {
+                    if (voice.samples.count() == 0) continue;
+                    live[on] = voice;
+                    on += 1;
+                }
+            }
+
+            // Silence is what a stream still wants when nothing is
+            // playing, since one that stops being fed runs dry and the
+            // next sound starts with a click. Written as silence rather
+            // than mixed from no voices: the summing loop over an empty
+            // set is still a loop over every sample.
+            if (on == 0) {
+                @memset(out, 0);
+            } else {
+                sum(live[0..on], out);
+            }
 
             for (&self.voices) |*maybe| {
-                const voice = if (maybe.*) |*v| v else continue;
-                self.render(voice, out);
-                if (voice.finished()) maybe.* = null;
+                if (maybe.*) |voice| {
+                    if (voice.finished()) maybe.* = null;
+                }
             }
         }
 
-        fn render(_: *Self, voice: *Voice, out: []i16) void {
-            const total = voice.samples.count();
-            if (total == 0) return;
-
+        /// Every voice added into `out`, a frame at a time.
+        fn sum(live: []const *Voice, out: []i16) void {
             var frame: usize = 0;
             while (frame + 1 < out.len) : (frame += 2) {
-                var index = voice.at >> STEP_BITS;
-                if (index >= total) {
-                    if (!voice.looping) return;
-                    // Back to the start, keeping the fraction: a loop that
-                    // rounded to a whole sample each turn would drift.
-                    voice.at %= @as(u64, total) << STEP_BITS;
-                    index = voice.at >> STEP_BITS;
+                var left: i32 = 0;
+                var right: i32 = 0;
+
+                for (live) |voice| {
+                    const total = voice.samples.count();
+                    var index = voice.at >> STEP_BITS;
+                    if (index >= total) {
+                        if (!voice.looping) continue;
+                        // Back to the start, keeping the fraction: a loop
+                        // that rounded to a whole sample each turn would
+                        // drift away from its own pitch.
+                        voice.at %= @as(u64, total) << STEP_BITS;
+                        index = voice.at >> STEP_BITS;
+                    }
+
+                    const sample: i32 = voice.samples.at(@intCast(index));
+                    left += (sample * voice.left) >> 8;
+                    right += (sample * voice.right) >> 8;
+                    voice.at += voice.step;
                 }
 
-                const sample: i32 = voice.samples.at(@intCast(index));
-                out[frame] = mix(out[frame], @intCast((sample * voice.left) >> 8));
-                out[frame + 1] = mix(out[frame + 1], @intCast((sample * voice.right) >> 8));
-                voice.at += voice.step;
+                out[frame] = held(left);
+                out[frame + 1] = held(right);
             }
         }
     };
@@ -646,6 +684,24 @@ test "voices are summed, and a total over the top is flattened rather than wrapp
     // Three of those is past full scale, and it comes out held there.
     try std.testing.expectEqual(@as(i16, std.math.maxInt(i16)), out[0]);
     try std.testing.expectEqual(@as(i16, std.math.maxInt(i16)), out[1]);
+}
+
+test "a sum that goes over the top and back again comes out where it belongs" {
+    var mixer = Mixer(4){};
+    const up = Samples{ .sixteen = &.{ 30000, 30000 } };
+    const down = Samples{ .sixteen = &.{ -30000, -30000 } };
+    mixer.start(0, .{ .samples = up });
+    mixer.start(1, .{ .samples = up });
+    mixer.start(2, .{ .samples = down });
+
+    var out: [2]i16 = @splat(0);
+    mixer.fill(&out);
+    // Added one pair at a time the first two would have been held at full
+    // scale and the third would take it down to under three thousand.
+    // Added together they are one loud sound, which is what they are, to
+    // within the sample the scaling rounds away.
+    const one: i32 = (30000 * @as(i32, FULL_GAIN)) >> 8;
+    try std.testing.expect(@abs(@as(i32, out[0]) - one) <= 2);
 }
 
 test "a slot that is silent takes no gain, and a slot that is not is not disturbed" {

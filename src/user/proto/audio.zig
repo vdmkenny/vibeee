@@ -169,7 +169,21 @@ pub const CTRL_BYTES = 4096;
 /// Every ring carries this many frames. One shape in version one: stereo,
 /// sixteen-bit, forty-eight kilohertz; the shape type exists so a later
 /// version can carry others without re-plumbing.
-pub const RING_FRAMES = 2048;
+///
+/// A sixth of a second at that rate. A program that makes its sound on the
+/// same beat as its picture fills the ring once a frame, so a ring shorter
+/// than one of its frames is a ring that runs dry before the next one
+/// comes: at a twelfth of a second the previous depth left a gap in every
+/// frame, and a gap in a stream is a click.
+///
+/// It is also how far ahead of itself a program that fills the ring runs,
+/// since what is buffered is what is heard late, so the depth is the whole
+/// trade: a shallower ring answers sooner and clicks on any frame longer
+/// than it, and the frames that need answering for are the slow ones. This
+/// much survives a frame of a seventh of a second, which is what a game
+/// scaling its own picture twice on this machine takes. It costs
+/// thirty-two kilobytes a port.
+pub const RING_FRAMES = 8192;
 pub const SHAPE = audio.Shape{ .rate = .hz48000, .channels = 2, .format = .s16le };
 
 pub fn ringBytes() u32 {
