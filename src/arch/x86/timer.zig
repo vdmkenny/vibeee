@@ -56,8 +56,9 @@ var pm_timer_port: u16 = 0;
 var pm_micros: u64 = 0;
 var pm_last: u32 = 0;
 /// Sub-microsecond part of the conversion, carried across samples so 100
-/// samples a second do not lose a microsecond each.
-var pm_remainder: u64 = 0;
+/// samples a second do not lose a microsecond each. In `MICROS_PER_TICK`'s
+/// fraction bits.
+var pm_fraction: u32 = 0;
 
 pub fn init() void {
     const divisor: u16 = @intCast(PIT_HZ / TICK_HZ);
@@ -139,6 +140,23 @@ pub fn tickCount() u64 {
     return @atomicLoad(u32, &ticks, .monotonic);
 }
 
+/// Whether the counter at `p` is actually running.
+///
+/// A firmware that names a port it does not drive would otherwise stop the
+/// clock dead, and every sleep and deadline with it. A live counter moves
+/// every 279 nanoseconds, so it has changed by the second read on real
+/// silicon; the bound is for the port that never will.
+pub fn pmTimerRuns(p: u16) bool {
+    const first = readPmTimer(p);
+    var looked: u32 = 0;
+    while (looked < PM_PROBE_LOOKS) : (looked += 1) {
+        if (readPmTimer(p) != first) return true;
+    }
+    return false;
+}
+
+const PM_PROBE_LOOKS = 500_000;
+
 /// Adopt the ACPI PM timer as the monotonic source.
 ///
 /// The accumulator continues from wherever the PIT had reached, so the clock
@@ -148,17 +166,41 @@ pub fn setPmTimerPort(p: u16) void {
     defer cpu.restoreInterrupts(was);
 
     pm_micros = @as(u64, @atomicLoad(u32, &ticks, .monotonic)) * TICK_US;
-    pm_remainder = 0;
+    pm_fraction = 0;
     pm_last = readPmTimer(p);
     pm_timer_port = p;
 }
 
 const PM_MASK: u32 = 0x00FF_FFFF;
 
+/// Microseconds one counter tick is worth, in thirty-two fraction bits.
+///
+/// The counter runs at 3.579545 MHz and the accumulator wants microseconds,
+/// which is a division by a constant that is not a power of two. On a 32-bit
+/// part that is a call into a software routine, and this is the clock that
+/// every deadline, every wait and every program asking the time goes through.
+/// A multiply by the reciprocal is one instruction, and carrying the fraction
+/// between samples holds the error to 8.6 microseconds a day against the
+/// crystal's own 8.6 seconds.
+const MICROS_PER_TICK: u32 = 1_199_864_032;
+
 fn readPmTimer(p: u16) u32 {
     // 24 bits on this chipset. The upper byte is not guaranteed to be zero on
     // every implementation, so it is masked rather than assumed.
     return @as(u32, @truncate(port.inl(p))) & PM_MASK;
+}
+
+/// Two words multiplied into one double word, which on this part is a single
+/// instruction rather than the three a 64-bit multiply would take.
+fn mulWide(a: u32, b: u32) u64 {
+    return @as(u64, a) * @as(u64, b);
+}
+
+/// What `delta` ticks come to, given the fraction left over from last time:
+/// whole microseconds, and the fraction to carry into the next sample.
+fn micronsOf(delta: u32, fraction: u32) struct { micros: u64, fraction: u32 } {
+    const advanced = mulWide(delta, MICROS_PER_TICK) + fraction;
+    return .{ .micros = advanced >> 32, .fraction = @truncate(advanced) };
 }
 
 /// Fold everything the counter has advanced since the last sample into the
@@ -171,12 +213,12 @@ fn samplePmTimer() u64 {
     const now = readPmTimer(pm_timer_port);
     // Unsigned wrapping subtraction, masked back to the counter width: this is
     // the whole wrap handling, and it works for any number of wraps up to one.
-    const delta: u64 = (now -% pm_last) & PM_MASK;
+    const delta: u32 = (now -% pm_last) & PM_MASK;
     pm_last = now;
 
-    const scaled = delta * 1_000_000 + pm_remainder;
-    pm_micros += scaled / PM_TIMER_HZ;
-    pm_remainder = scaled % PM_TIMER_HZ;
+    const step = micronsOf(delta, pm_fraction);
+    pm_micros += step.micros;
+    pm_fraction = step.fraction;
     return pm_micros;
 }
 
@@ -200,4 +242,39 @@ pub fn monotonicMicros() u64 {
 pub fn sourceName() []const u8 {
     if (pm_timer_port != 0) return "acpi-pm";
     return "pit";
+}
+
+const testing = @import("std").testing;
+
+test "the reciprocal converts ticks the way the division it replaces did" {
+    // Counted the exact way, with a remainder, against the fixed point that
+    // stands in for it. A whole counter's worth of ticks, at the sizes a
+    // sample actually sees, must not part company by a microsecond.
+    const steps = [_]u32{ 1, 2, 7, 35_795, 35_796, 100_000, PM_MASK / 2, PM_MASK };
+    for (steps) |delta| {
+        var fraction: u32 = 0;
+        var fast: u64 = 0;
+
+        var remainder: u64 = 0;
+        var exact: u64 = 0;
+
+        for (0..64) |_| {
+            const step = micronsOf(delta, fraction);
+            fast += step.micros;
+            fraction = step.fraction;
+
+            const scaled = @as(u64, delta) * 1_000_000 + remainder;
+            exact += scaled / PM_TIMER_HZ;
+            remainder = scaled % PM_TIMER_HZ;
+        }
+
+        const apart = if (fast > exact) fast - exact else exact - fast;
+        try testing.expect(apart <= 1);
+    }
+}
+
+test "a tick is worth what the counter's frequency says" {
+    // One second of ticks is one second of microseconds.
+    const step = micronsOf(PM_TIMER_HZ, 0);
+    try testing.expectEqual(@as(u64, 1_000_000), step.micros);
 }

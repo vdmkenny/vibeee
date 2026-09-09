@@ -37,6 +37,8 @@ pub const caps = struct {
     pub const write_combine: bool = @hasDecl(impl, "writeCombine");
     pub const port_io: bool = @hasDecl(impl, "inb");
     pub const has_ioapic: bool = @hasDecl(impl, "ioapicInit");
+    /// Whether this architecture can take its clock from a firmware counter.
+    pub const firmware_clock: bool = @hasDecl(impl, "setPmTimerPort");
 };
 
 // ---------------------------------------------------------------------------

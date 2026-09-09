@@ -149,6 +149,31 @@ pub fn readFirmwareTables(bi: *const bootinfo.BootInfo) void {
     acpi.init(bi.rsdp);
 }
 
+/// Take the monotonic clock off the tick counter and onto the firmware's own.
+///
+/// The tick counter advances a hundred times a second, so everything measured
+/// shorter than ten milliseconds rounds up to a tick: a driver asking to wait
+/// ten microseconds waits for the next one, and a reset built out of a dozen
+/// such waits costs a tenth of a second. The FADT names a counter running at
+/// 3.579545 MHz, which is the one to keep time by.
+///
+/// After the tick counter is running, because the clock is seeded from it so
+/// that it does not step backwards as the source changes. The counter is read
+/// twice before it is trusted: a firmware that names a port it does not drive
+/// would stop the clock dead, and every sleep and deadline with it.
+pub fn adoptFirmwareClock() void {
+    if (!hal.caps.firmware_clock) return;
+    const fadt = acpi.get() orelse return;
+    if (fadt.pm_timer == 0) return;
+
+    if (!hal.impl.pmTimerRuns(fadt.pm_timer)) {
+        console.warn("timer: the firmware counter at {x:0>4} does not advance; keeping the tick counter", .{fadt.pm_timer});
+        return;
+    }
+    hal.impl.setPmTimerPort(fadt.pm_timer);
+    console.info("timer", "keeping time by the firmware counter at {x:0>4}", .{fadt.pm_timer});
+}
+
 /// Kept from the handover so `publishPlatform` can pass it on. The tables are
 /// read long before anything can be published, and the address is the one
 /// thing a userspace interpreter needs that it cannot find for itself without

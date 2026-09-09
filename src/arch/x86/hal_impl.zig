@@ -200,6 +200,7 @@ pub const monotonicMicros = timer.monotonicMicros;
 pub const tickCount = timer.tickCount;
 pub const timerSourceName = timer.sourceName;
 pub const setPmTimerPort = timer.setPmTimerPort;
+pub const pmTimerRuns = timer.pmTimerRuns;
 
 pub inline fn cycleCounter() u64 {
     return cpu.readTsc();

@@ -11,6 +11,7 @@ test {
     _ = @import("kernel/ports.zig");
     _ = @import("kernel/probe.zig");
     _ = @import("arch/x86/mtrr.zig");
+    _ = @import("arch/x86/timer.zig");
     // What stands between a stray user pointer and a dead machine. Split from
     // the paging code it belongs to precisely so it can be asked here, against
     // tables built by hand, rather than only on a machine that would stop.

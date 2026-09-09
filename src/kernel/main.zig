@@ -103,6 +103,9 @@ pub fn kmain(bi: *bootinfo.BootInfo) noreturn {
     hal.initInterruptController(platform.interruptRouting());
     hal.initSyscalls();
     hal.initTimer();
+    // Off the tick counter and onto the firmware's, now that the tick
+    // counter it is seeded from is running.
+    platform.adoptFirmwareClock();
     // Everything the tick handler touches is initialised, so interrupts can be
     // taken from here on.
     hal.enableInterrupts();
