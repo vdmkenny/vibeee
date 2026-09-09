@@ -30,12 +30,16 @@ fn addManualPages(b: *std.Build, run: *std.Build.Step.Run) void {
 /// Every format costs the binary that carries it, so this is a list of what
 /// each program actually opens rather than one decoder with everything in it:
 /// a viewer opens photographs, and the desktop behind it opens a wallpaper.
-fn imageFormats(name: []const u8) ?*const [4][]const u8 {
+fn imageFormats(name: []const u8) ?[]const []const u8 {
     // The file manager previews what is under the cursor, which is as much a
     // viewer as the viewer is.
     if (std.mem.eql(u8, name, "eimg") or std.mem.eql(u8, name, "efm")) {
         return &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_BMP", "-DSTBI_ONLY_GIF" };
     }
+    // `screenshot` writes a picture and opens none. One format is named
+    // because naming none compiles every decoder in; nothing calls it, and
+    // what nothing calls is collected out again.
+    if (std.mem.eql(u8, name, "screenshot")) return &.{"-DSTBI_ONLY_PNG"};
     return null;
 }
 
@@ -438,6 +442,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "calc", .root = "src/user/apps/calc.zig" },
             .{ .name = "eimg", .root = "src/user/apps/eimg.zig" },
             .{ .name = "efm", .root = "src/user/efm/main.zig" },
+            .{ .name = "screenshot", .root = "src/user/apps/screenshot.zig" },
             .{ .name = "timed", .root = "src/user/timed/main.zig" },
         };
 

@@ -80,7 +80,21 @@ pub const ReqTag = enum(u8) {
     /// the length official, so a client cannot make the others read past the
     /// end of it.
     clipboard_put,
+    /// Copy what is on the display into a segment the client hands over. The
+    /// client's, because the manager should not be allocating on behalf of
+    /// whoever asks and the asker is what knows how long it wants it for.
+    snapshot,
     bye,
+};
+
+/// What a picture of the display covers.
+pub const Snapshot = enum(u8) {
+    /// Everything on it, the bar and the pointer included.
+    screen,
+    /// The window holding the keyboard, with its frame: what somebody showing
+    /// a program means by a picture of it.
+    focused,
+    _,
 };
 
 pub const Req = extern struct {
@@ -121,6 +135,9 @@ pub const Req = extern struct {
         },
         clip: extern struct {
             len: u16,
+        },
+        snapshot: extern struct {
+            of: Snapshot,
         },
         raw: [56]u8,
     } = .{ .raw = @splat(0) },
@@ -165,6 +182,13 @@ pub const Rep = extern struct {
             len: u16,
             /// How much it can ever hold.
             capacity: u16,
+        },
+        snapshot: extern struct {
+            /// What was actually copied, which for a window is its size and
+            /// not the screen's.
+            w: u16,
+            h: u16,
+            stride_px: u16,
         },
         raw: [8]u8,
     } = .{ .raw = @splat(0) },

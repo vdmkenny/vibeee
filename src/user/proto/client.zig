@@ -59,6 +59,14 @@ pub const Window = struct {
     }
 };
 
+/// What a snapshot came back as.
+pub const Snapshot = struct {
+    w: u16,
+    h: u16,
+    /// Pixels per scanline, which is the width the manager copied at.
+    stride_px: u16,
+};
+
 pub const Connection = struct {
     /// How the desktop looks, as last told. Kept here because it arrives in
     /// two records and every window this program has draws in the whole of
@@ -186,6 +194,22 @@ pub const Connection = struct {
     pub fn clipboardText(self: *Connection) []const u8 {
         const mapped = self.clipboard() catch return "";
         return wm.clipboardText(mapped);
+    }
+
+    /// Copy what is on the display into `into`, which the caller made and
+    /// which has to be big enough for the whole screen: a window's picture is
+    /// smaller, and what came back says how much of it was filled.
+    pub fn snapshot(self: *Connection, of: wm.Snapshot, into: u32) Error!Snapshot {
+        var req = wm.Req{ .tag = .snapshot };
+        req.body = .{ .snapshot = .{ .of = of } };
+
+        const rep = try self.request(&req, &.{into});
+        if (rep.status != .ok) return error.Refused;
+        return .{
+            .w = rep.body.snapshot.w,
+            .h = rep.body.snapshot.h,
+            .stride_px = rep.body.snapshot.stride_px,
+        };
     }
 
     /// Put `text` on the clipboard, as much of it as fits.

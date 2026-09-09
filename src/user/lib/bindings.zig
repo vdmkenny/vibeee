@@ -41,6 +41,8 @@ pub const Action = enum {
     kill_window,
     close_desktop,
     cycle_theme,
+    snapshot_screen,
+    snapshot_window,
 };
 
 /// What a binding is about, so a page listing them can group them the way
@@ -112,6 +114,8 @@ pub const all = [_]Binding{
 
     .{ .code = .space, .action = .next_keymap, .chord = "Super+Space", .says = "the next keyboard layout", .group = .machine },
     .{ .code = .grave, .action = .cycle_theme, .chord = "Super+`", .says = "the next theme", .group = .machine },
+    .{ .code = .s, .action = .snapshot_screen, .chord = "Super+S", .says = "a picture of the screen, into /home", .group = .machine },
+    .{ .code = .s, .shift = true, .action = .snapshot_window, .chord = "Super+Shift+S", .says = "a picture of this window", .group = .machine },
 };
 
 /// What the numbers do, said once rather than nine times.

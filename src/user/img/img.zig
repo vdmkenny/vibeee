@@ -175,6 +175,27 @@ pub fn encodeJpeg(picture: Picture, quality: u8, scratch: []u8, into: []u8) Refu
     return into[0..sink.len];
 }
 
+/// A picture as a PNG file, for keeping exactly. `scratch` holds three bytes
+/// a pixel in the writer's own order, and `into` takes the file; a file that
+/// does not fit is refused whole rather than cut short.
+///
+/// Lossless, which is what a picture of a screen wants: JPEG turns text into
+/// a smear at every edge, and text is most of what a screen holds.
+pub fn encodePng(picture: Picture, scratch: []u8, into: []u8) Refusal![]const u8 {
+    const count = @as(usize, picture.width) * picture.height;
+    if (scratch.len < count * 3) return error.TooLarge;
+    for (picture.pixels[0..count], 0..) |pixel, i| {
+        scratch[i * 3] = pixel.r;
+        scratch[i * 3 + 1] = pixel.g;
+        scratch[i * 3 + 2] = pixel.b;
+    }
+    var sink = Sink{ .into = into };
+    const stride: c_int = @as(c_int, picture.width) * 3;
+    if (stbi_write_png_to_func(Sink.take, &sink, picture.width, picture.height, 3, scratch.ptr, stride) == 0) return error.Unreadable;
+    if (sink.overflowed) return error.TooLarge;
+    return into[0..sink.len];
+}
+
 /// Where the writer puts its bytes: a buffer, and the truth about whether
 /// they all fitted.
 const Sink = struct {
@@ -232,6 +253,16 @@ extern fn stbi_info_from_memory(
 ) c_int;
 
 extern fn stbi_image_free(what: ?*anyopaque) void;
+
+extern fn stbi_write_png_to_func(
+    func: *const fn (?*anyopaque, ?*anyopaque, c_int) callconv(.c) void,
+    context: ?*anyopaque,
+    w: c_int,
+    h: c_int,
+    comp: c_int,
+    data: [*]const u8,
+    stride_bytes: c_int,
+) c_int;
 
 extern fn stbi_write_jpg_to_func(
     func: *const fn (?*anyopaque, ?*anyopaque, c_int) callconv(.c) void,

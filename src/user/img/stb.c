@@ -29,10 +29,10 @@
 #include "stb_image.h"
 
 /* The writer from the same collection, for a program with a picture to keep
- * small: a portrait inside a journal. The same terms as the reader: no file
- * handles, the bytes go to a callback, and no assertions, since a wrong size
- * is refused in the wrapper before the writer sees it. Only its JPEG path is
- * called; the linker drops the rest. */
+ * small: a portrait inside a journal, or a picture of the screen. The same
+ * terms as the reader: no file handles, the bytes go to a callback, and no
+ * assertions, since a wrong size is refused in the wrapper before the writer
+ * sees it. Its JPEG and PNG paths are called; the linker drops the rest. */
 #define STBI_WRITE_NO_STDIO
 #define STBIW_ASSERT(x)
 #define STB_IMAGE_WRITE_IMPLEMENTATION

@@ -1,0 +1,11 @@
+screenshot - a picture of the display
+
+  screenshot                     the whole screen, into /home
+  screenshot window              the window holding the keyboard
+  screenshot window shot.png     somewhere of your choosing
+
+Written as PNG, which keeps text sharp where JPEG would smear it. Named
+for the moment it was taken when nobody names it, so two in a row do not
+land on each other.
+
+Super+S and Super+Shift+S do the same two things from the desktop.

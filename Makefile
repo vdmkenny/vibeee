@@ -137,6 +137,7 @@ USER_MONITOR := zig-out/bin/monitor
 USER_ETERM := zig-out/bin/eterm
 USER_PAD := zig-out/bin/pad
 USER_CALC := zig-out/bin/calc
+USER_SCREENSHOT := zig-out/bin/screenshot
 USER_EIMG := zig-out/bin/eimg
 USER_EFM := zig-out/bin/efm
 USER_TIMED := zig-out/bin/timed
@@ -308,6 +309,7 @@ $(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(wildca
 	@$(MCOPY) -i $@ -o $(USER_TIMED) ::/bin/timed
 	@$(MCOPY) -i $@ -o $(USER_MONITOR) ::/bin/monitor
 	@$(MCOPY) -i $@ -o $(USER_SETTINGS) ::/bin/settings
+	@$(MCOPY) -i $@ -o $(USER_SCREENSHOT) ::/bin/screenshot
 	@$(MCOPY) -i $@ -o etc/services ::/etc/services
 	@$(MCOPY) -i $@ -o etc/input.cfg ::/etc/input.cfg
 	@$(MCOPY) -i $@ -o etc/wm.cfg ::/etc/wm.cfg

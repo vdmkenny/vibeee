@@ -834,6 +834,12 @@ fn handleKey(event: sys.KeyEvent) void {
 fn perform(action: bindings.Action) void {
     switch (action) {
         .terminal => _ = sys.spawnDetached("/bin/eterm", &.{"eterm"}) catch {},
+
+        // The command, rather than a second way of doing it: the picture is a
+        // blit here and an encoding there, and the manager is the process
+        // that must not stop to encode anything.
+        .snapshot_screen => _ = sys.spawnDetached("/bin/screenshot", &.{ "screenshot", "screen" }) catch {},
+        .snapshot_window => _ = sys.spawnDetached("/bin/screenshot", &.{ "screenshot", "window" }) catch {},
         .launcher => bar.openLauncher(&desktop),
         .focus_bar => bar.focus(&desktop),
 
@@ -1008,6 +1014,7 @@ fn dispatch(pid: u32, req: *const wire.Req, message: *const sys.Message) Answer 
         .commit => onCommit(pid, req),
         .set_title => onTitle(pid, req),
         .clipboard => onClipboard(),
+        .snapshot => onSnapshot(req, message),
         .clipboard_put => onClipboardPut(req),
         .map => onMap(pid, req),
         .unmap, .destroy_win => onDestroy(pid, req),
@@ -1044,6 +1051,52 @@ fn openClipboard() void {
     clipboard_handle = @intCast(handle);
     clipboard = @as([*]u8, @ptrCast(mapped))[0..wire.CLIPBOARD_BYTES];
     if (clipboardHead()) |head| head.* = .{};
+}
+
+/// Copy what is on the display into the segment the client handed over.
+///
+/// The pixels rather than a file: encoding a picture and writing it takes as
+/// long on this machine as a person would notice, and the manager is the one
+/// process that must not stop. What it does here is a blit, which is the
+/// thing it is already fastest at.
+fn onSnapshot(req: *const wire.Req, message: *const sys.Message) Answer {
+    const handle = if (message.handles.len > 0) message.handles[0] else return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+
+    const whole = Rect{ .x = 0, .y = 0, .w = info.width, .h = info.height };
+    const area = switch (req.body.snapshot.of) {
+        // Nothing focused is not a refusal: a desktop with no window on it is
+        // a picture of an empty desktop.
+        .focused => if (desktop.focused) |which| desktop.windows[which].area else whole,
+        else => whole,
+    };
+    if (area.isEmpty()) return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+
+    const w: usize = @intCast(area.w);
+    const h: usize = @intCast(area.h);
+    const room = sys.shmSize(handle) orelse 0;
+    if (room < w * h * @sizeOf(eui.Color)) {
+        return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+    }
+
+    const into = sys.shmMap(handle, .{ .writable = true }) orelse
+        return .{ .rep = .{ .status = .no_room, .gen = table.generation } };
+    defer sys.shmUnmap(into);
+
+    // The pointer is part of what is on the screen, so it is put down before
+    // the copy and taken up again after: a picture without it would be a
+    // picture of something nobody was looking at.
+    const shown = cursor.covers(area);
+    if (shown) cursor.hide(screen);
+
+    const target = eui.Surface.init(@ptrCast(@alignCast(into)), @intCast(w), @intCast(h), @intCast(w));
+    target.copyFrom(screen.clipped(area), -area.x, -area.y, .{ .x = 0, .y = 0, .w = area.w, .h = area.h });
+
+    if (shown) cursor.show(screen, pointer_x, pointer_y);
+
+    return .{ .rep = .{
+        .gen = table.generation,
+        .body = .{ .snapshot = .{ .w = @intCast(w), .h = @intCast(h), .stride_px = @intCast(w) } },
+    } };
 }
 
 fn onClipboard() Answer {
