@@ -108,6 +108,11 @@ CA_STORE      := $(BUILD)/ca.store
 # and does not fit in two megabytes beside everything else.
 ROOTFS_MB     ?= 3
 
+# A megabyte, as a block size `dd` will take wherever this runs. The two
+# dd's disagree about the suffix: the BSD one wants `1m` and the GNU one
+# `1M`, and both take a plain count of bytes.
+MEGABYTE      := 1048576
+
 # Whether the manual is in decides what the image holds and what the
 # programs were compiled against, and neither is a file whose timestamp
 # make can watch. The setting is written to a stamp only when it changes,
@@ -277,7 +282,7 @@ $(MANUAL_STAMP): manual-stamp
 # without this the old binary ships and the new one is never run.
 $(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(wildcard manual/*) $(wildcard etc/*) $(wildcard drivers/*) $(wildcard $(BUILD)/ctest) | $(BUILD)
 	@rm -f $@
-	@dd if=/dev/zero of=$@ bs=1m count=$(ROOTFS_MB) status=none
+	@dd if=/dev/zero of=$@ bs=$(MEGABYTE) count=$(ROOTFS_MB) status=none
 	@$(MFORMAT) -i $@ -F -T $(shell expr $(ROOTFS_MB) \* 2048) -v VIBEEEROOT ::
 	@for d in bin etc lib lib/drivers share tmp home media cfg; do $(MMD) -i $@ ::/$$d; done
 	@if [ "$(MANUAL)" = "yes" ]; then $(MMD) -i $@ ::/doc; fi
@@ -563,7 +568,7 @@ sd: $(IMAGE)
 	@printf "Type ERASE to continue: "; read ans; [ "$$ans" = "ERASE" ] || { echo aborted; exit 1; }
 	diskutil unmountDisk $(DEV) || true
 	@echo "Writing to a raw device needs root; the build itself does not."
-	sudo dd if=$(IMAGE) of=$(DEV) bs=1m status=progress
+	sudo dd if=$(IMAGE) of=$(DEV) bs=$(MEGABYTE) status=progress
 	sync
 	diskutil eject $(DEV) || true
 
