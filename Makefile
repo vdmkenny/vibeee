@@ -162,6 +162,7 @@ help:
 	@echo "  make apps             build the programs in apps/ into home/"
 	@echo "  make hero             build the Hero character journal into home/"
 	@echo "  make echat            build the echat IRC client into home/"
+	@echo "  make eeemod           build the eeemod tracker player into home/"
 	@echo "  make app APP=doom     build one of them"
 	@echo "  make test             host-side unit tests + QR verification"
 	@echo "  make check            module layering and import rules"
@@ -219,7 +220,7 @@ examples: kernel $(EXAMPLES)
 
 # Things that are not part of the system, built separately and installed
 # into `home/`. See apps/README.md.
-apps: hero echat
+apps: hero echat eeemod
 	@$(MAKE) --no-print-directory -C apps
 
 # Hero, the character journal: a first-party program that is not part of the
@@ -243,6 +244,16 @@ echat:
 	@mkdir -p home
 	@cp zig-out/bin/echat home/echat
 	@echo "  ready   home/echat, on the machine at the next image build"
+
+# The tracker player. Its format and sequencer are host-tested first: a
+# module is bytes in and notes out, and neither needs a sound card.
+.PHONY: eeemod
+eeemod:
+	@$(ZIG) build test-eeemod
+	@$(ZIG) build eeemod
+	@mkdir -p home
+	@cp zig-out/bin/eeemod home/eeemod
+	@echo "  ready   home/eeemod, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
@@ -300,6 +311,7 @@ $(ROOTFS_IMG): kernel examples $(FONT_PACK) $(CA_STORE) $(MANUAL_STAMP) $(wildca
 	@$(MCOPY) -i $@ -o etc/hosts ::/etc/hosts
 	@$(MCOPY) -i $@ -o etc/disabled ::/etc/disabled
 	@$(MCOPY) -i $@ -o etc/open.cfg ::/etc/open.cfg
+	@$(MCOPY) -i $@ -o etc/openers ::/etc/openers
 	@$(MCOPY) -i $@ -o etc/power.cfg ::/etc/power.cfg
 	@for f in drivers/*.man; do $(MCOPY) -i $@ -o $$f ::/lib/drivers/$$(basename $$f); done
 	@if [ "$(MANUAL)" = "yes" ]; then \

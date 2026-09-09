@@ -591,6 +591,28 @@ pub fn build(b: *std.Build) void {
             });
             const echat_test_step = b.step("test-echat", "Test echat's engine and model on the host");
             echat_test_step.dependOn(&b.addRunArtifact(echat_test).step);
+
+            const eeemod = user.exe("eeemod", "apps/eeemod/eeemod.zig", true);
+            const eeemod_step = b.step("eeemod", "Build the eeemod tracker player into zig-out/bin");
+            eeemod_step.dependOn(&b.addInstallArtifact(eeemod, .{}).step);
+
+            // The format and the sequencer, on the host. A module is bytes
+            // in and notes out, and a song is those notes on a clock, so
+            // neither needs a sound card to be checked.
+            const eeemod_test = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/eeemod/tests.zig"),
+                    .target = b.graph.host,
+                    .optimize = .Debug,
+                    .imports = &.{.{ .name = "lib", .module = b.createModule(.{
+                        .root_source_file = b.path("src/lib/lib.zig"),
+                        .target = b.graph.host,
+                        .optimize = .Debug,
+                    }) }},
+                }),
+            });
+            const eeemod_test_step = b.step("test-eeemod", "Test the tracker's format and sequencer on the host");
+            eeemod_test_step.dependOn(&b.addRunArtifact(eeemod_test).step);
         }
     } // !is_arm
 
