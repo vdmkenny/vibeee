@@ -35,9 +35,13 @@ const ctx = &proto.app.ctx;
 /// while it plays.
 const MAX_FILE = 2 * 1024 * 1024;
 
-/// Frames handed to the sound service at a time. One pass over this much
-/// is the work done between two looks at the ring.
-const BLOCK_FRAMES = 512;
+/// Frames handed to the sound service at a time.
+///
+/// Every handover rings the service's doorbell, which is a call into the
+/// kernel, so a small block means a ring filled from empty costs a dozen
+/// of them. This much is a quarter of the ring: four calls to fill it, and
+/// eight kilobytes to stage it in.
+const BLOCK_FRAMES = 2048;
 
 // ---------------------------------------------------------------------------
 // What is open
@@ -56,8 +60,11 @@ var running = true;
 /// Whether the module is open with nothing to play it through.
 var silent = false;
 
-/// The row last drawn, so a pass that changed nothing does not redraw.
+/// What the pattern strip last drew: the row highlighted, the page it was
+/// on, and the place in the song. A pass that would draw the same is not
+/// drawn, and one that only moved the highlight redraws two lines.
 var shown_row: i32 = -1;
+var shown_page: i32 = -1;
 var shown_place: i32 = -1;
 
 /// The handles the loop sleeps on: the sound port's, when there is one.
@@ -174,6 +181,7 @@ fn forget() void {
     bytes = &.{};
     song = .{};
     shown_row = -1;
+    shown_page = -1;
     shown_place = -1;
 }
 
@@ -257,6 +265,13 @@ const CELL_TEXT = "C-2 05 vol";
 const COLUMN_PAD: i32 = 7;
 
 fn draw() void {
+    // Around the drawing, not only between passes. Painting a window is
+    // the longest thing this program does, and on a slow machine it is
+    // longer than the stream holds: fed on either side of it, the ring is
+    // full going in and topped up coming out.
+    feed();
+    defer feed();
+
     const t = theme.current();
     const surface = ctx.surface;
     const area = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
@@ -359,67 +374,118 @@ fn sounding() usize {
 /// One pass over the rows on show, building each cell straight into the
 /// line it is drawn from: nothing is kept between passes because every
 /// row moves when the song does, so there is nothing a pass could reuse.
-fn drawPattern(area: Rect, current: *const play.Player) void {
-    if (!ctx.damaged and current.row == shown_row and current.place == shown_place) return;
-    shown_row = current.row;
-    shown_place = current.place;
+/// Where the columns of the pattern fall.
+///
+/// Measured once a pass and carried down. Measuring a string means walking
+/// it, and these are the same strings on every row of every channel: asked
+/// for where they are used, a page turn would measure the same ten
+/// characters two hundred times.
+const Columns = struct {
+    line_height: i32,
+    numbers: i32,
+    cell: i32,
 
+    fn of() Columns {
+        const t = theme.current();
+        return .{
+            .line_height = eui.Surface.textHeight() + 2,
+            .numbers = eui.Surface.textWidth("00") + t.padding * 2,
+            .cell = eui.Surface.textWidth(CELL_TEXT) + COLUMN_PAD * 2,
+        };
+    }
+};
+
+fn drawPattern(area: Rect, current: *const play.Player) void {
     const t = theme.current();
     const surface = ctx.surface;
-    surface.fill(area, t.surface);
-    ctx.addDamage(area);
 
-    const line_height = eui.Surface.textHeight() + 2;
-    const cell_width = eui.Surface.textWidth(CELL_TEXT) + COLUMN_PAD * 2;
-    const numbers = eui.Surface.textWidth("00") + t.padding * 2;
+    const columns = Columns.of();
+    const line_height = columns.line_height;
     if (line_height <= 0 or area.h < line_height) return;
-
-    // As many rows as fit, an odd number so one of them is the middle.
     const fits: i32 = @divTrunc(area.h, line_height);
-    const shown = if (@rem(fits, 2) == 0) fits - 1 else fits;
-    const around = @divTrunc(shown, 2);
-    const top = area.y + @divTrunc(area.h - shown * line_height, 2);
+    if (fits <= 0) return;
 
-    const channels: i32 = song.shape.channels;
+    // A page of rows, rather than a list that scrolls under the playing
+    // row. Scrolling moves every line whenever the row changes, so the
+    // whole of this would be redrawn eight times a second and copied to
+    // the screen as often; the machine this runs on has better uses for
+    // that. A page turns once every `fits` rows, and a row between turns
+    // repaints the two lines whose highlight moved.
+    const row: i32 = current.row;
+    const page = @divTrunc(row, fits) * fits;
+    const turned = ctx.damaged or page != shown_page or current.place != shown_place;
+    if (!turned and row == shown_row) return;
+
     const pattern = current.pattern();
+    const top = area.y + @divTrunc(area.h - fits * line_height, 2);
 
-    // The rules between the channels, drawn once rather than per row.
-    var rule = numbers;
+    if (turned) {
+        surface.fill(area, t.surface);
+        ctx.addDamage(area);
+        drawRules(area, t, columns);
+
+        var at: i32 = 0;
+        while (at < fits) : (at += 1) {
+            const which = page + at;
+            if (which >= mod.ROWS) break;
+            drawRow(area, top + at * line_height, columns, pattern, which, which == row);
+        }
+    } else {
+        // The line the highlight left, and the one it arrived on.
+        for ([_]i32{ shown_row, row }) |which| {
+            if (which < page or which >= page + fits or which >= mod.ROWS) continue;
+            const y = top + (which - page) * line_height;
+            const line = Rect{ .x = area.x, .y = y, .w = area.w, .h = line_height };
+            surface.fill(line, t.surface);
+            drawRules(line, t, columns);
+            drawRow(area, y, columns, pattern, which, which == row);
+            ctx.addDamage(line);
+        }
+    }
+
+    shown_row = row;
+    shown_page = page;
+    shown_place = current.place;
+}
+
+/// The rules between the channels, down whatever is being redrawn.
+fn drawRules(area: Rect, t: *const theme.Theme, columns: Columns) void {
+    const channels: i32 = song.shape.channels;
+    var rule = columns.numbers;
     var column: i32 = 0;
     while (column <= channels) : (column += 1) {
         const x = area.x + rule;
         if (x >= area.right()) break;
-        surface.fill(.{ .x = x, .y = area.y, .w = 1, .h = area.h }, t.line);
-        rule += cell_width;
+        ctx.surface.fill(.{ .x = x, .y = area.y, .w = 1, .h = area.h }, t.line);
+        rule += columns.cell;
+    }
+}
+
+/// One row: its number, then a cell per channel.
+fn drawRow(area: Rect, y: i32, columns: Columns, pattern: u8, row: i32, playing_now: bool) void {
+    const t = theme.current();
+    const surface = ctx.surface;
+
+    if (playing_now) {
+        surface.fill(.{ .x = area.x, .y = y, .w = area.w, .h = columns.line_height }, t.accent);
     }
 
-    var offset: i32 = -around;
-    while (offset <= around) : (offset += 1) {
-        const row = @as(i32, current.row) + offset;
-        const y = top + (offset + around) * line_height;
-        if (row < 0 or row >= mod.ROWS) continue;
+    // Every fourth row is a beat. Picking those out is what makes a
+    // pattern readable at a glance.
+    const ink = if (playing_now) t.accent_text else if (@rem(row, 4) == 0) t.text else t.text_dim;
+    const baseline = y + 1;
 
-        const here = offset == 0;
-        const line = Rect{ .x = area.x, .y = y, .w = area.w, .h = line_height };
-        if (here) surface.fill(line, t.accent);
+    var text: [8]u8 = undefined;
+    var digits = str.Builder{ .buf = &text };
+    if (row < 10) digits.byte('0');
+    digits.number(@intCast(row));
+    surface.text(area.x + t.padding, baseline, digits.done(), ink);
 
-        // Every fourth row is a beat. Picking those out is what makes a
-        // pattern readable at a glance.
-        const ink = if (here) t.accent_text else if (@rem(row, 4) == 0) t.text else t.text_dim;
-        const baseline = y + 1;
-
-        var text: [8]u8 = undefined;
-        var digits = str.Builder{ .buf = &text };
-        if (row < 10) digits.byte('0');
-        digits.number(@intCast(row));
-        surface.text(area.x + t.padding, baseline, digits.done(), ink);
-
-        var at = area.x + numbers + COLUMN_PAD;
-        for (0..song.shape.channels) |channel| {
-            if (at + cell_width > area.right()) break;
-            surface.text(at, baseline, spellCell(pattern, @intCast(row), channel), ink);
-            at += cell_width;
-        }
+    var at = area.x + columns.numbers + COLUMN_PAD;
+    for (0..song.shape.channels) |channel| {
+        if (at + columns.cell > area.right()) break;
+        surface.text(at, baseline, spellCell(pattern, @intCast(row), channel), ink);
+        at += columns.cell;
     }
 }
 
@@ -547,6 +613,13 @@ var peaks: [mod.MAX_CHANNELS]u8 = @splat(0);
 /// The levels last drawn, so a pass that would draw the same is skipped.
 var shown_levels: [mod.MAX_CHANNELS]u8 = @splat(0);
 
+/// How often the sound service found the ring short of a period, or none
+/// when there is no stream to have run dry.
+fn starvedCount() ?u32 {
+    const stream = if (port) |*one| one else return null;
+    return stream.view.ctrl.starved;
+}
+
 /// Where the song has got to, along the bottom in the bar's colours.
 fn drawStatus(area: Rect, current: *const play.Player) void {
     var place: [24]u8 = undefined;
@@ -571,8 +644,22 @@ fn drawStatus(area: Rect, current: *const play.Player) void {
     three.number(current.tempo);
     three.text(" bpm");
 
+    var state: [40]u8 = undefined;
+    var says = str.Builder{ .buf = &state };
+    says.text(if (silent) "no sound service" else if (running) "playing" else "paused");
+    // The service counts the times it went to the ring and found less than
+    // a period in it. A stutter asks whether this program is keeping up,
+    // and that is the number that answers.
+    if (starvedCount()) |dry| {
+        if (dry != 0) {
+            says.text(", ");
+            says.number(dry);
+            says.text(" ran dry");
+        }
+    }
+
     eui.statusbar.run(ctx, area, &.{
-        .{ .text = if (silent) "no sound service" else if (running) "playing" else "paused" },
+        .{ .text = says.done() },
         .{ .text = one.done(), .width = eui.Surface.textWidth("position 00/000") },
         .{ .text = two.done(), .width = eui.Surface.textWidth("pattern 000, row 00") },
         .{ .text = three.done(), .width = eui.Surface.textWidth("00 ticks, 000 bpm"), .right = true },

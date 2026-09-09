@@ -24,15 +24,20 @@ sound card to be checked.
 
 ## The window
 
-Four strips. The song at the top, the pattern scrolling with the
-playing row on the accent and every fourth row picked out, a meter per
-channel with what it is playing, and where the song has got to along
-the bottom.
+Four strips. The song at the top, a page of the pattern with the playing
+row on the accent and every fourth row picked out, a meter per channel
+with what it is playing, and where the song has got to along the bottom.
 
-Only the pattern scrolls, and each strip redraws only when what it
-shows has changed: the sound is fed fifty times a second and the rows
-go past eight times a second, so repainting the window on every pass
-would be most of the work done for none of it.
+The pattern is a page rather than a list that scrolls under the playing
+row. Scrolling moves every line whenever the row changes, which is the
+whole strip repainted and copied to the screen eight times a second; a
+page costs two lines a row and one repaint a screenful. Each strip
+redraws only when what it shows has changed, and the stream is fed on
+either side of the drawing as well as between passes, since painting a
+window is the longest thing this does.
+
+If the sound stutters, the status bar says how many times the service
+went to the ring and found it short.
 
 | Key | What it does |
 |---|---|
