@@ -349,10 +349,6 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
 
     if (sink == graph_mod.NONE) return;
     const sink_port = graph.portAt(sink) orelse return;
-    if (sink_port.muted) {
-        device.quiet_periods +|= 1;
-        return;
-    }
 
     var feeders: [graph_mod.MAX_LINKS]graph_mod.PortId = undefined;
     const feeding = graph.sourcesInto(sink, &feeders);
@@ -371,6 +367,12 @@ fn mixPeriod(device: *dev.PcmDev, sink: graph_mod.PortId) void {
         }
         heard = true;
         sys.eventSignal(rings[feeder].ev);
+
+        // A muted sink is drained and signalled like any other. Mute silences
+        // what comes out; it does not stop the stream. A feeder whose ring is
+        // not emptied fills up and blocks on it, which stops the program.
+        // Only the mixing is skipped, because the period is already silence.
+        if (sink_port.muted) continue;
 
         const volume = audio.Volume{ .percent = port.volume, .muted = port.muted };
         const samples: []i16 = @alignCast(std.mem.bytesAsSlice(i16, buf[0..got]));
