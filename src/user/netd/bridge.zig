@@ -78,17 +78,21 @@ const Sock = struct {
     pending_token: u32 = 0,
 
     /// Received bytes the ring could not yet take, chained head to tail and
-    /// consumed from `held_at` as the client makes room.
+    /// shortened from the front as the client makes room.
     ///
     /// Every delivery is taken, never refused. A refusal is not backpressure:
     /// while one is outstanding lwIP drops every further segment without
     /// acknowledging it, so the sender learns only when its retransmission
     /// timer expires and a transfer spends its life in whole-second stalls.
-    /// Backpressure is the receive window, which is already told only about
-    /// bytes the client has taken, so what may be held here is bounded by the
-    /// window and needs no bound of its own.
+    /// Backpressure is the receive window, which reopens by what reaches the
+    /// ring, so this chain holds only what is still owed and is bounded by
+    /// the window.
+    ///
+    /// Holding a chain and an offset into it instead would grow it for as
+    /// long as the client stayed behind, and a chain carries its length in
+    /// sixteen bits: a slow reader would wrap it and the socket would lose
+    /// both the bytes and the window they were holding open.
     held: ?*lwip.Pbuf = null,
-    held_at: u16 = 0,
     /// The peer has sent its last byte. Told to the client only once every
     /// byte before it has reached the ring.
     peer_done: bool = false,
@@ -437,7 +441,6 @@ fn recvCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, p: ?*lwip.Pbuf, err: lwip.Err) ca
         lwip.pbuf_cat(first, pb);
     } else {
         s.held = pb;
-        s.held_at = 0;
     }
     drainHeldRx(s);
     return .ok;
@@ -576,18 +579,20 @@ fn drainTcpTx(s: *Sock) void {
 fn drainHeldRx(s: *Sock) void {
     const view = s.view orelse return;
 
+    // One pass enters at most a ring's worth, which is well inside the
+    // width of what the window is told about.
     var entered: u16 = 0;
-    if (s.held) |pb| {
-        var chunk: [512]u8 = undefined;
-        while (s.held_at < pb.tot_len) {
-            const want: u16 = @min(chunk.len, pb.tot_len - s.held_at);
-            const got = lwip.pbuf_copy_partial(pb, &chunk, want, s.held_at);
-            if (got == 0) break;
-            const took: u16 = @truncate(view.rx.push(chunk[0..got]));
-            s.held_at += took;
-            entered += took;
-            if (took < got) break;
-        }
+    var chunk: [512]u8 = undefined;
+    while (s.held) |pb| {
+        const want: u16 = @min(chunk.len, pb.tot_len);
+        const got = lwip.pbuf_copy_partial(pb, &chunk, want, 0);
+        if (got == 0) break;
+        const took: u16 = @truncate(view.rx.push(chunk[0..got]));
+        entered += took;
+        // What reached the ring leaves the chain, so the head is always what
+        // is still owed and its length never counts a byte twice.
+        s.held = lwip.pbuf_free_header(pb, took);
+        if (took < got) break;
     }
 
     if (entered != 0) {
@@ -599,13 +604,6 @@ fn drainHeldRx(s: *Sock) void {
     // arrives to drive another pass, and the only thing that would ring the
     // doorbell is the client reading.
     if (view.rx.readable() != 0) sys.eventSignal(s.ev_app);
-    if (s.held) |pb| {
-        if (s.held_at >= pb.tot_len) {
-            _ = lwip.pbuf_free(pb);
-            s.held = null;
-            s.held_at = 0;
-        }
-    }
     tellClosed(s);
 }
 
@@ -872,7 +870,6 @@ fn dropHeld(s: *Sock) void {
     if (s.held) |pb| {
         _ = lwip.pbuf_free(pb);
         s.held = null;
-        s.held_at = 0;
     }
 }
 

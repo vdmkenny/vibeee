@@ -327,6 +327,9 @@ pub extern fn pbuf_copy_partial(p: *const Pbuf, into: *anyopaque, len: u16, offs
 /// rather than adding one: what a receiver does with a delivery it is keeping
 /// beside one it already has.
 pub extern fn pbuf_cat(head: *Pbuf, tail: *Pbuf) void;
+/// Give back the front `size` bytes of a chain, freeing every buffer they
+/// covered, and answer with what is left of it.
+pub extern fn pbuf_free_header(chain: *Pbuf, size: u16) ?*Pbuf;
 
 pub extern fn dhcp_start(netif: *Netif) Err;
 pub extern fn dhcp_release_and_stop(netif: *Netif) void;
