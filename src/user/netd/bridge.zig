@@ -77,10 +77,21 @@ const Sock = struct {
     pending: bool = false,
     pending_token: u32 = 0,
 
-    /// Received bytes the ring could not yet take: one pbuf held back,
+    /// Received bytes the ring could not yet take, chained head to tail and
     /// consumed from `held_at` as the client makes room.
+    ///
+    /// Every delivery is taken, never refused. A refusal is not backpressure:
+    /// while one is outstanding lwIP drops every further segment without
+    /// acknowledging it, so the sender learns only when its retransmission
+    /// timer expires and a transfer spends its life in whole-second stalls.
+    /// Backpressure is the receive window, which is already told only about
+    /// bytes the client has taken, so what may be held here is bounded by the
+    /// window and needs no bound of its own.
     held: ?*lwip.Pbuf = null,
     held_at: u16 = 0,
+    /// The peer has sent its last byte. Told to the client only once every
+    /// byte before it has reached the ring.
+    peer_done: bool = false,
 
     /// Connections a listener accepted before anyone asked.
     backlog: [BACKLOG]?*lwip.TcpPcb = @splat(null),
@@ -411,20 +422,23 @@ fn recvCb(arg: ?*anyopaque, pcb: *lwip.TcpPcb, p: ?*lwip.Pbuf, err: lwip.Err) ca
     }
 
     const pb = p orelse {
-        // The peer finished sending; what is already in the ring stays
-        // readable, and the state says why nothing more will follow.
-        if (s.state == .established) setState(s, .peer_closed, .none);
-        sys.eventSignal(s.ev_app);
+        // The peer finished sending. Whether the client may be told so
+        // depends on whether everything it sent has got there.
+        s.peer_done = true;
+        tellClosed(s);
         return .ok;
     };
 
-    // One delivery may be held back while the client drains; a second
-    // stays with lwIP, which re-offers it with the next segment.
-    if (s.held != null) return .mem;
-
     _ = pcb;
-    s.held = pb;
-    s.held_at = 0;
+    // Taken whether or not the last one has drained: a delivery kept beside
+    // what is already here costs a chain link, and refusing it costs every
+    // segment behind it.
+    if (s.held) |first| {
+        lwip.pbuf_cat(first, pb);
+    } else {
+        s.held = pb;
+        s.held_at = 0;
+    }
     drainHeldRx(s);
     return .ok;
 }
@@ -561,29 +575,51 @@ fn drainTcpTx(s: *Sock) void {
 /// acknowledges what enters; the window only reopens for consumed bytes.
 fn drainHeldRx(s: *Sock) void {
     const view = s.view orelse return;
-    const pb = s.held orelse return;
 
-    var chunk: [512]u8 = undefined;
     var entered: u16 = 0;
-    while (s.held_at < pb.tot_len) {
-        const want: u16 = @min(chunk.len, pb.tot_len - s.held_at);
-        const got = lwip.pbuf_copy_partial(pb, &chunk, want, s.held_at);
-        if (got == 0) break;
-        const took: u16 = @truncate(view.rx.push(chunk[0..got]));
-        s.held_at += took;
-        entered += took;
-        if (took < got) break;
+    if (s.held) |pb| {
+        var chunk: [512]u8 = undefined;
+        while (s.held_at < pb.tot_len) {
+            const want: u16 = @min(chunk.len, pb.tot_len - s.held_at);
+            const got = lwip.pbuf_copy_partial(pb, &chunk, want, s.held_at);
+            if (got == 0) break;
+            const took: u16 = @truncate(view.rx.push(chunk[0..got]));
+            s.held_at += took;
+            entered += took;
+            if (took < got) break;
+        }
     }
 
     if (entered != 0) {
         if (s.tcp) |pcb| lwip.tcp_recved(pcb, entered);
-        sys.eventSignal(s.ev_app);
     }
-    if (s.held_at >= pb.tot_len) {
-        _ = lwip.pbuf_free(pb);
-        s.held = null;
-        s.held_at = 0;
+    // Told whenever there is anything to take, and not only when this pass
+    // put it there. A client that is not waiting when the ring is filled has
+    // nothing else to learn from: the window is closed by then, so no segment
+    // arrives to drive another pass, and the only thing that would ring the
+    // doorbell is the client reading.
+    if (view.rx.readable() != 0) sys.eventSignal(s.ev_app);
+    if (s.held) |pb| {
+        if (s.held_at >= pb.tot_len) {
+            _ = lwip.pbuf_free(pb);
+            s.held = null;
+            s.held_at = 0;
+        }
     }
+    tellClosed(s);
+}
+
+/// Say the peer has finished, once everything it sent has reached the client.
+///
+/// The state is what tells a reader nothing more will come, so setting it
+/// while something still will is how the tail of a transfer goes missing: a
+/// client that sees the stream ended stops reading, and whatever was still
+/// held back goes with the socket. The wait is bounded by the client, which
+/// is reading precisely because it has not seen the end yet.
+fn tellClosed(s: *Sock) void {
+    if (!s.peer_done or s.held != null) return;
+    if (s.state == .established) setState(s, .peer_closed, .none);
+    sys.eventSignal(s.ev_app);
 }
 
 /// Ring to stack, datagram at a time: each record leaves whole, and a

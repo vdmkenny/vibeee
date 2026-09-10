@@ -323,6 +323,10 @@ pub extern fn pbuf_free(p: *Pbuf) u8;
 pub extern fn pbuf_take(p: *Pbuf, data: *const anyopaque, len: u16) Err;
 pub extern fn pbuf_take_at(p: *Pbuf, data: *const anyopaque, len: u16, offset: u16) Err;
 pub extern fn pbuf_copy_partial(p: *const Pbuf, into: *anyopaque, len: u16, offset: u16) u16;
+/// Put `tail` on the end of `head`, taking over the caller's reference to it
+/// rather than adding one: what a receiver does with a delivery it is keeping
+/// beside one it already has.
+pub extern fn pbuf_cat(head: *Pbuf, tail: *Pbuf) void;
 
 pub extern fn dhcp_start(netif: *Netif) Err;
 pub extern fn dhcp_release_and_stop(netif: *Netif) void;
