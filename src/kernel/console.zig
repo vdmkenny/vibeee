@@ -624,11 +624,22 @@ fn draw(cp: u21) void {
     }
 }
 
-pub fn putChar(c: u8) void {
-    defer {
-        backend.present();
-        backend.setCursor(col, row);
-    }
+/// Bring the screen up to date with the grid, and put the cursor where the
+/// next character goes.
+///
+/// The one place drawing happens, and it happens at the end of a write
+/// rather than inside it. Everything above only changes the grid, so a write
+/// costs one screen of drawing however long it is and however many lines it
+/// scrolled: a scroll marks every cell and `present` compares cell against
+/// cell, so painting per character means painting the whole screen once per
+/// scrolled line, which is what a program pouring text does.
+fn paint() void {
+    backend.present();
+    backend.setCursor(col, row);
+}
+
+/// One character into the grid, drawing nothing. What a write is made of.
+fn takeChar(c: u8) void {
     if (mirror) |sink| sink(&[_]u8{c});
     if (Escape.take(c)) return repaintPulse();
 
@@ -664,32 +675,52 @@ pub fn putChar(c: u8) void {
     repaintPulse();
 }
 
-pub fn writeString(s: []const u8) void {
-    // One write, one painting. Everything in between only changes the grid,
-    // so a page of text costs one screen of drawing rather than one per
-    // line: the difference between a program that can pour output and a
-    // machine that stops while it does.
-    defer {
-        backend.present();
-        backend.setCursor(col, row);
-    }
-
+/// One character, painted.
+///
+/// For the callers that write a single character and want it on screen: a
+/// newline between two things the kernel is saying, and the panic report.
+/// A frame that borrowed the console from an outer one only adds to the
+/// grid, because the frame beneath it paints when it is done.
+pub fn putChar(c: u8) void {
     switch (renderClaim()) {
         .own => {},
-        .borrow => {
-            for (s) |c| putChar(c);
+        .borrow => return takeChar(c),
+        .skip => {
+            if (mirror) |sink| sink(&[_]u8{c});
             return;
         },
-        // Pixels belong to the interrupted writer; the serial mirror has
-        // no shared state to tear and still carries the bytes.
+    }
+    render_busy = true;
+    defer {
+        render_busy = false;
+        paint();
+    }
+    takeChar(c);
+}
+
+pub fn writeString(s: []const u8) void {
+    switch (renderClaim()) {
+        .own => {},
+        // The frame beneath this one owns the pixels and paints when it is
+        // finished, so this only adds to the grid.
+        .borrow => {
+            for (s) |c| takeChar(c);
+            return;
+        },
+        // Pixels belong to the interrupted writer, which may be inside a
+        // painting of its own right now; the serial mirror has no shared
+        // state to tear and still carries the bytes.
         .skip => {
             if (mirror) |sink| sink(s);
             return;
         },
     }
     render_busy = true;
-    defer render_busy = false;
-    for (s) |c| putChar(c);
+    defer {
+        render_busy = false;
+        paint();
+    }
+    for (s) |c| takeChar(c);
 }
 
 /// Optional second destination for everything written to the console.
@@ -748,15 +779,16 @@ pub fn printf(comptime fmt: []const u8, args: anytype) void {
         .own => {},
         .borrow => {
             console_writer.print(fmt, args) catch {};
-            backend.setCursor(col, row);
             return;
         },
         .skip => return,
     }
     render_busy = true;
-    defer render_busy = false;
+    defer {
+        render_busy = false;
+        paint();
+    }
     console_writer.print(fmt, args) catch {};
-    backend.setCursor(col, row);
 }
 
 // ---------------------------------------------------------------------------
@@ -798,10 +830,14 @@ fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: an
             return;
         },
     }
+    // Held across the whole line so its parts borrow rather than each
+    // painting for itself: a line is one write, and the padding between the
+    // key and the value is a run of spaces, not a run of screens.
     const owned = !render_busy;
     render_busy = true;
     defer if (owned) {
         render_busy = false;
+        paint();
     };
 
     const saved = fg;
@@ -813,7 +849,6 @@ fn logLine(key: []const u8, role: style.Role, comptime fmt: []const u8, args: an
 
     printf(fmt, args);
     putChar('\n');
-    backend.setCursor(col, row);
 }
 
 /// The two ways a boot line reaches the screen.
