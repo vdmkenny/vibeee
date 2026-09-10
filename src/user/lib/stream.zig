@@ -135,6 +135,19 @@ pub const Stream = struct {
         }
     }
 
+    /// Write `bytes` straight out, past the buffer.
+    ///
+    /// For a caller moving bulk bytes it already holds. Gathering those into a
+    /// buffer smaller than the caller's own is a copy of every byte and a
+    /// write per line found in them, which on a file is a part of a sector
+    /// read and rewritten for each. Whatever was buffered goes first, so the
+    /// stream stays in order.
+    pub fn through(self: *Stream, bytes: []const u8) void {
+        self.beginWriting();
+        self.flush();
+        self.pour(bytes);
+    }
+
     fn endsALine(run: []const u8) bool {
         for (run) |c| {
             if (c == '\n') return true;

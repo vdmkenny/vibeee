@@ -171,11 +171,14 @@ pub fn cat(args: []const []const u8) void {
         };
         defer sys.close(handle);
 
+        // Straight out at the size it was read: a buffer between the two
+        // would copy every byte and cut the writes into pieces smaller than
+        // the medium wants.
         var buf: [4096]u8 = [_]u8{0} ** 4096;
         while (true) {
             const n = sys.read(handle, &buf) catch break;
             if (n == 0) break;
-            out.text(buf[0..@intCast(n)]);
+            out.through(buf[0..@intCast(n)]);
         }
     }
     out.flush();

@@ -308,8 +308,7 @@ fn pour(s: *const sock.Sock, datagrams: bool) bool {
     while (true) {
         const n = s.recv(&buf);
         if (n == 0) break;
-        out.text(buf[0..n]);
-        out.flush();
+        out.through(buf[0..n]);
     }
 
     switch (s.state()) {

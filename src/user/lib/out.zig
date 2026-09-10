@@ -58,6 +58,12 @@ pub fn text(s: []const u8) void {
     standard.write(s);
 }
 
+/// Bytes a caller already holds, sent straight out past the buffer. For
+/// moving a file or a stream along, where gathering is a copy for nothing.
+pub fn through(s: []const u8) void {
+    standard.through(s);
+}
+
 /// Append a single byte. Cheaper than `text` for the one-character case, which
 /// hexdump does thousands of times.
 pub fn byte(c: u8) void {
