@@ -23,7 +23,6 @@ const NicDev = dev_mod.NicDev;
 const RingSlots = 64;
 const Slab = 2048;
 const MMIO_BYTES: u32 = 128 * 1024;
-const MinimumFrame = 60;
 const AllCauses: u32 = 0xFFFF_FFFF;
 const ResetSpins = 10_000;
 const EepromSpins = 10_000;
@@ -726,12 +725,10 @@ pub fn poll(dev: *NicDev) bool {
 /// channel it answers requests on — stops for as long as the wire keeps
 /// talking. One lap of the ring is the most one pass takes; what is still
 /// there when it stops is the next pass's to take.
-const RX_REAP_BUDGET = RingSlots;
-
 fn reapRx(dev: *NicDev) void {
     const rings = device.arena.body();
     var reaped: usize = 0;
-    while (reaped < RX_REAP_BUDGET) : (reaped += 1) {
+    while (reaped < dev_mod.RX_REAP_BUDGET) : (reaped += 1) {
         const slot = device.rx_next.at;
         const desc = &rings.rx_desc[slot];
         const ownership = @as(*const volatile RxStatus, &desc.status).*;
@@ -741,8 +738,11 @@ fn reapRx(dev: *NicDev) void {
         const status = @as(*const volatile RxStatus, &desc.status).*;
         const length = @as(*const volatile u16, &desc.length).*;
         const errors = @as(*const volatile RxErrors, &desc.errors).*;
-        const good = status.end_of_packet and !errors.any() and
-            length >= MinimumFrame and length <= Slab;
+        // What this driver judges: the hardware's own verdict, and whether
+        // the length it reported is one a slice of the slab may be formed
+        // from. Whether a frame of that length is one this system carries is
+        // `dev`'s, so every adapter answers it the same way.
+        const good = status.end_of_packet and !errors.any() and length <= Slab;
 
         if (good) {
             dev_mod.deliverRx(dev, .{

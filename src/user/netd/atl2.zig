@@ -28,12 +28,6 @@ const ETH_MTU = 1500;
 const ETH_HEADER = lib.eth.HEADER;
 const ETH_FCS = 4;
 const ETH_VLAN = 4;
-/// The shortest frame worth handing up: the padded minimum, counted the way
-/// the status word counts it. Anything below this the hardware has already
-/// called a runt, and a frame it called good is not one this driver should
-/// second-guess -- a bare acknowledgement is short by design, and dropping
-/// those is a conversation that never advances.
-const ETH_MIN_WIRE = 60;
 const ETH_MAX_FRAME = ETH_MTU + ETH_HEADER + ETH_FCS;
 const MAC_FRAME_LIMIT = ETH_MAX_FRAME + ETH_VLAN;
 
@@ -1190,10 +1184,17 @@ fn reapRx(nic: *NicDev) void {
         // a slice until that value has been bounded against both the protocol
         // and the DMA slot.
         const wire_len = @as(usize, status.pkt_len);
+        // What this driver judges: the hardware's own verdict, and whether
+        // the length it reported is one a slice of the slot may be formed
+        // from with the check sequence taken off it. Whether a frame of that
+        // length is one this system carries is `dev`'s, so every adapter
+        // answers it the same way -- this one counted its floor against the
+        // wire length with the check sequence still in it, and so took frames
+        // four bytes shorter than its neighbours did.
         const good = status.ok and !status.crc_error and !status.code_error and
             !status.runt and !status.fragment and !status.truncated and
-            !status.align_error and wire_len >= ETH_MIN_WIRE and
-            wire_len <= ETH_MAX_FRAME and wire_len <= slot.packet.len;
+            !status.align_error and wire_len > ETH_FCS and
+            wire_len <= slot.packet.len;
 
         if (good) {
             dev_mod.deliverRx(nic, .{

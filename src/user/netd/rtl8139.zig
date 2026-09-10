@@ -261,10 +261,14 @@ const RxHeader = packed struct(u32) {
     multicast: bool = false,
     length: u16 = 0,
 
+    /// What this driver judges: the hardware's own verdict, and whether the
+    /// length it reported is one the copy below has room for. Whether a frame
+    /// of that length is one this system carries is `dev`'s, so every adapter
+    /// answers it the same way.
     fn good(self: RxHeader, frame_len: usize) bool {
         return self.ok and !self.frame_align and !self.crc_error and
             !self.long_frame and !self.runt_frame and !self.bad_symbol and
-            frame_len >= ETH_MIN_FRAME and frame_len <= ETH_MAX_FRAME;
+            frame_len <= ETH_MAX_FRAME;
     }
 };
 
@@ -301,7 +305,6 @@ const RX_WRAP_PAD = 2048;
 const TX_SLOTS = 4;
 const TX_BUFFER = 2048;
 const ETH_HEADER = lib.eth.HEADER;
-const ETH_MIN_FRAME = 60;
 const ETH_MAX_FRAME = 1518;
 const ETH_FCS = 4;
 const RX_UNFINISHED = 0xFFF0;
@@ -640,7 +643,8 @@ fn reapRx(nic: *NicDev) void {
     if (remaining == 0) remaining = RX_RING; // BUFE distinguished full from empty
     dma.consume();
 
-    while (remaining >= @sizeOf(RxHeader)) {
+    var reaped: usize = 0;
+    while (remaining >= @sizeOf(RxHeader) and reaped < dev_mod.RX_REAP_BUDGET) : (reaped += 1) {
         const header_at = device.rx_at.at;
         const header = readRxHeader(header_at);
         if (header.length == RX_UNFINISHED) return;
