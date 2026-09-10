@@ -282,6 +282,10 @@ pub const Join = struct {
     /// only that nothing answered; which step nothing answered at is the
     /// thing worth knowing.
     failed_in: State = .idle,
+    /// Signed key frames that did not check out, kept where the exchange's
+    /// own count cannot reach. A join that ended has erased its secrets,
+    /// and this is what is left to say why.
+    mic_failures: u32 = 0,
     /// The network being joined, once one has been heard, and the
     /// security element it advertised.
     bss: ?mlme.Bss = null,
@@ -376,7 +380,14 @@ pub const Join = struct {
     /// same place. Called on every path that ends a join, whether it
     /// ended well or badly, and on the way into a new one.
     pub fn erase(self: *Join) void {
-        if (self.handshake) |*shake| shake.erase();
+        if (self.handshake) |*shake| {
+            // Kept before the exchange holding it is destroyed. A count is
+            // not a secret, and it is the one thing that tells a secret
+            // which is not the network's from a cell that never answered:
+            // erased with the keys, every failure reads the same.
+            self.mic_failures = shake.mic_failures;
+            shake.erase();
+        }
         if (self.earned) |*earned| earned.erase();
         if (self.pending) |*staged| staged.erase();
         self.handshake = null;
@@ -390,8 +401,12 @@ pub const Join = struct {
     /// check. Nothing else says they arrived at all, and their number is
     /// the difference between a secret that is not the network's and an
     /// access point that never answered.
+    ///
+    /// Answered from the exchange while there is one and from what was kept
+    /// of it afterwards, because the moment this matters is the moment the
+    /// join has ended and its secrets have gone.
     pub fn micFailures(self: *const Join) u32 {
-        return if (self.handshake) |shake| shake.mic_failures else 0;
+        return if (self.handshake) |shake| shake.mic_failures else self.mic_failures;
     }
 
     /// Whether an unprotected key frame from the cell is still worth
@@ -2036,4 +2051,40 @@ test "an unprotected key frame is only believed for a while after this station's
     // And not for ever: one still sending key frames unprotected long
     // after this station's last frame is not one that missed it.
     try testing.expect(!join.expectsClearEapol(400 + CLEAR_EAPOL_MICROS));
+}
+
+test "a join that failed still says how many key frames did not check out" {
+    var ap = FakeAp{ .protected = true };
+    var join = station();
+    // A secret that is not the network's, which is what a mistyped
+    // passphrase is: the cell's third message is signed under a key this
+    // station does not derive, so nothing it sends after the first checks
+    // out and the exchange ends in a timeout like any other.
+    wantedWith(&join, "not the password");
+
+    var air: [512]u8 = undefined;
+    var out: [512]u8 = undefined;
+    _ = join.heard(air[0..ap.beacon(&air)], .{}, 0, &out);
+    _ = join.tick(0, &out);
+    _ = join.heard(air[0..FakeAp.authOk(&air)], .{}, 100, &out);
+    _ = join.heard(air[0..FakeAp.assocOk(7, &air)], .{}, 200, &out);
+    _ = join.heard(air[0..ap.messageOne(&air)], .{}, 300, &out);
+    _ = join.heard(air[0..ap.messageThree(join.snonce, &air)], .{}, 400, &out);
+    try testing.expect(join.micFailures() != 0);
+
+    var at: u64 = 400;
+    while (join.state != .failed) {
+        at += 1_000_000;
+        _ = join.tick(at, &out);
+    }
+
+    // The join has ended and its keys are gone, which is exactly when this
+    // number is worth having: it is the difference between a password that
+    // is not this network's and a cell that never answered at all.
+    try testing.expectEqual(@as(?wpa2.Keys, null), join.keys());
+    try testing.expect(join.micFailures() != 0);
+
+    // And a join started over counts from nothing.
+    join.stop();
+    try testing.expectEqual(@as(u32, 0), join.micFailures());
 }
