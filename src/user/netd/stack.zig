@@ -16,6 +16,7 @@ const ipv4 = @import("lib").ipv4;
 const pci = @import("lib").pci;
 const log = @import("ulib").log;
 const lwip = @import("lwip.zig");
+const route = @import("route.zig");
 const out = @import("ulib").out;
 const proto_net = @import("proto").net;
 const settings = @import("proto").settings;
@@ -440,15 +441,11 @@ fn refreshDefault() void {
     // attached in, which is the order the bus lists them and means nothing
     // to anybody: a radio at a lower place than a wired port would take
     // the route for no reason a person could see or change.
-    var best: ?*Slot = null;
-    var best_rank: u8 = std.math.maxInt(u8);
-    for (slots[0..count], rank[0..count]) |*slot, slot_rank| {
-        if (!carries(slot)) continue;
-        if (slot_rank >= best_rank) continue;
-        best_rank = slot_rank;
-        best = slot;
+    var ranks: [MAX]?u8 = @splat(null);
+    for (slots[0..count], rank[0..count], 0..) |*slot, slot_rank, i| {
+        if (carries(slot)) ranks[i] = slot_rank;
     }
-    if (best) |slot| lwip.netif_set_default(&slot.netif);
+    if (route.holder(ranks[0..count])) |which| lwip.netif_set_default(&slots[which].netif);
 }
 
 /// Which configuration slot each interface answers to, for ordering them
@@ -459,7 +456,12 @@ var rank: [MAX]u8 = @splat(std.math.maxInt(u8));
 /// something is driving it, it is up, and it has an address to send from.
 fn carries(slot: *Slot) bool {
     if (slot.nic == null) return false;
+    // All three, because all three are what the stack asks of an interface
+    // before it will route through one. An interface held the route on two
+    // of them is one every packet without a route of its own is handed to
+    // and none leaves by.
     if (!slot.netif.flags.up) return false;
+    if (!slot.netif.flags.link_up) return false;
     return slot.netif.ip_addr.addr != 0;
 }
 

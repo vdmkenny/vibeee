@@ -40,6 +40,7 @@ test {
     _ = @import("user/lib/ustar.zig");
     _ = @import("user/netd/cursor.zig");
     _ = @import("user/netd/mii.zig");
+    _ = @import("user/netd/route.zig");
     _ = @import("user/lib/time.zig");
     _ = @import("user/lib/paths.zig");
     _ = @import("user/lib/console.zig");
