@@ -34,6 +34,20 @@ pub fn configWrite32(at: lib.pci.Location, offset: u8, value: u32) void {
     pcicfg.write(selectorFor(at, offset), value);
 }
 
+/// Let a kernel driver's device address memory itself, and decode the I/O
+/// window its registers are in.
+///
+/// Read first and write the union, so whatever the firmware already enabled
+/// stays enabled. The status half of the dword is written as zero, which
+/// preserves every write-one-to-clear bit in it.
+pub fn enableIoAndMaster(at: lib.pci.Location) void {
+    const selector = selectorFor(at, lib.pci.COMMAND_OFFSET);
+    var command: lib.pci.Command = @bitCast(@as(u16, @truncate(pcicfg.read(selector))));
+    command.io_space = true;
+    command.bus_master = true;
+    pcicfg.write(selector, @as(u16, @bitCast(command)));
+}
+
 /// Stop a userspace-owned PCI function before its DMA mappings are reclaimed.
 pub fn quiesce(at: lib.pci.Location) void {
     const selector = pcicfg.Selector{

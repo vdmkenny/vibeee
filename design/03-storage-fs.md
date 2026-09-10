@@ -103,8 +103,7 @@ no request queue (§4 is unbuilt) and no page cache. DMA replaces how the bytes
 cross, not who waits for them.
 
 PIO stays. It is the rescue path of §3.8's ladder, and the only path on a
-controller with no bus-master registers or a drive that will not negotiate a
-DMA mode.
+controller with no bus-master registers or a drive not running a DMA mode.
 
 ### 3.3 Transfers are staged
 
@@ -118,11 +117,12 @@ physically adjacent. `sys_write` is the same in the other direction. The
 buffers reaching the driver are a mixture of those, block-cache lines, and
 kernel stack, and the driver cannot tell them apart.
 
-So a channel owns one staging area in memory it allocated itself, and every
-transfer goes through it. A read fills the staging area and is copied out; a
-write is copied in and then sent. The copy runs at memory speed, hundreds of
-megabytes a second, against a transfer that costs the CPU every byte at around
-one, so it is a small fraction of what it replaces.
+So a channel that bus-masters owns one staging area in memory it allocated
+itself. A read fills the staging area and is copied out; a write is copied in
+and then sent. The copy runs at memory speed against a transfer that would
+otherwise cost the CPU every byte, so it is a small fraction of what it
+replaces. PIO needs none of this and writes straight to the caller's memory:
+nothing but the CPU touches it.
 
 Staging also bounds the descriptor table. The staging area is one physically
 contiguous run at an address the driver chose, so the table has at most two
@@ -206,36 +206,38 @@ and one set of task-file registers between them.
 Direction is a value, not a pair of near-identical functions. `readSectors` and
 `writeSectors` differ in a command byte and in which port helper moves the
 data, and adding DMA to that shape would give four bodies where two differences
-matter. Two enums carry those differences instead:
+matter. A union over the direction carries the caller's memory with it, so the
+direction and what may be done to that memory cannot disagree:
 
 ```zig
 /// Which way a transfer moves.
 const Direction = enum { in, out };
 
-/// How a channel moves bytes. A channel with no bus-master block takes the
-/// second, and so does one whose drive would not negotiate a DMA mode.
+/// One command's worth of a caller's memory, and which way it moves.
+const Chunk = union(Direction) {
+    in: []u8,
+    out: []const u8,
+};
+
+/// How a channel moves bytes.
 const Path = enum { dma, pio };
 
-/// The command that starts a transfer, which is the only thing both of them
-/// decide together.
-fn commandFor(dir: Direction, path: Path) Command { ... }
+/// The command that starts a transfer, which is the one thing the direction
+/// and the path decide together.
+fn commandFor(chunk: Chunk, path: Path) Command { ... }
 ```
 
-and one core per path, each moving `n` sectors between the drive and the
-staging area:
+One place cuts a request into commands, and one core per path runs them:
 
 ```zig
-fn runDma(ch: *Channel, drive: *Drive, lba: u64, sectors: u8, dir: Direction) block.Error!void
-fn runPio(ch: *Channel, drive: *Drive, lba: u64, sectors: u8, dir: Direction) block.Error!void
+fn transfer(drive: *Drive, lba: u64, whole: Chunk) block.Error!void
+fn runDma(drive: *Drive, lba: u64, chunk: Chunk) block.Error!void
+fn runPio(drive: *Drive, lba: u64, chunk: Chunk) block.Error!void
 ```
 
-`readSectors` and `writeSectors` are then a chunking loop and a copy each, and
-which core runs is one branch on `ch.bm`.
-
-PIO stages too, which costs it one copy. That copy falls on the slow path and
-never on the fast one, and it buys a single chunking loop, one place where a
-request is cut into commands, and two cores with the same signature. The rescue
-path and the ordinary path then differ only in the core that runs.
+`readSectors` and `writeSectors` are then one line each, and which core runs is
+one branch on `ch.bus`. Staging is inside `runDma`, which is where it belongs:
+it is what the controller needs and not what a transfer needs.
 
 ### 3.5 Register map
 
@@ -282,10 +284,18 @@ const Caps = struct {
 fn modesFor(caps: Caps) []const TransferMode;
 ```
 
-Mode selection is SET FEATURES 0xEF as §2 records: UDMA4, falling back through
-UDMA2, MWDMA2 and PIO4 on an error bit, with word 88 re-read to confirm what
-was actually taken. A drive that reaches PIO4 leaves `ch.bm` null and transfers
-by PIO, which is the same path as a controller with no BAR4.
+**A mode is already running before the driver looks.** Firmware negotiates one
+to boot from the drive, so word 88 or word 63 reports a selected mode, and a
+mode both ends of the cable have agreed needs neither a command nor host timing
+to use. The emulated drive reports UDMA5 selected. `Caps.dmaReady` is therefore
+the whole of the decision: a drive that reports DMA support and a selected mode
+gets a bus-master channel, and anything else transfers by PIO.
+
+Asking for a faster mode than the firmware chose is SET FEATURES 0xEF as §2
+records: UDMA4, falling back through UDMA2, MWDMA2 and PIO4 on an error bit,
+with word 88 re-read to confirm what was taken. That is what needs the host
+timing registers below, and it is worth doing only once there is a machine to
+measure it on. It is not built.
 
 **Host timing belongs to the chipset, not to the driver.** Writing these offsets
 on the emulated PIIX3 would be writing to whatever that chipset keeps there, so
@@ -406,7 +416,10 @@ to commit.
 
 The request queue, merging and priority bands of §4. The page cache. Anything
 that makes `block.Ops` asynchronous. Zero-copy into caller buffers, which needs
-the page cache first.
+the page cache first. Asking for a faster transfer mode than the firmware
+chose, and with it the host timing registers of §3.6 and the cable-detect
+quirk: both are for the machine, and neither can be measured until there is one
+to measure on.
 
 The primary channel is still probed. §2 records that the 701 wires no ports to
 it, so probing it on that machine costs BSY timeouts, and a floating bus can

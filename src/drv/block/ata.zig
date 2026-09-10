@@ -1,4 +1,4 @@
-//! ATA/PATA driver, PIO mode.
+//! ATA/PATA driver.
 //!
 //! Both legacy channels are probed, because the machines this targets disagree
 //! about where the disk is: QEMU puts `-drive if=ide` on the primary channel,
@@ -6,11 +6,12 @@
 //! master (verified: 0x170/0x376, IRQ 15). Probing both costs four IDENTIFY
 //! commands at boot and removes a per-machine assumption.
 //!
-//! PIO rather than DMA to begin with. The design calls for UDMA/66 through the
-//! bus-master interface, and that is worth doing: 30 MB/s versus roughly 3
-//! but PIO needs no PRD tables, no bus-master registers and no interrupt
-//! plumbing, so it is the right thing to be correct first. DMA replaces the
-//! transfer path behind the same interface.
+//! A channel transfers by bus mastering where the controller has the registers
+//! for it and the drive is already running a DMA mode, and by moving every
+//! word through the CPU where it does not. Both go through the channel's own
+//! staging area, because the buffers reaching this driver are a mixture of
+//! kernel memory and a caller's own pages, and the controller can only be
+//! given an address the driver chose. `design/03-storage-fs.md` §3.
 //!
 //! Constraints of the real device, from docs/research: ATA-4, **28-bit LBA
 //! only** (no LBA48) and **no READ/WRITE MULTIPLE**. Nothing here uses either.
@@ -20,6 +21,9 @@ const bcache = @import("../../kernel/bcache.zig");
 const block = @import("../../kernel/block.zig");
 const console = @import("../../kernel/console.zig");
 const hal = @import("../../kernel/hal.zig");
+const lib = @import("lib");
+const pci = @import("../bus/pci.zig");
+const pmm = @import("../../kernel/pmm.zig");
 
 /// Register offsets from a channel's I/O base.
 const REG_DATA = 0;
@@ -32,11 +36,11 @@ const REG_DRIVE = 6;
 const REG_STATUS = 7;
 const REG_COMMAND = 7;
 
-fn readStatus(ch: Channel) Status {
+fn readStatus(ch: *const Channel) Status {
     return @bitCast(hal.inb(ch.io + REG_STATUS));
 }
 
-fn issue(ch: Channel, cmd: Command) void {
+fn issue(ch: *const Channel, cmd: Command) void {
     hal.outb(ch.io + REG_COMMAND, @intFromEnum(cmd));
 }
 
@@ -66,9 +70,57 @@ const Status = packed struct(u8) {
 const Command = enum(u8) {
     read_sectors = 0x20,
     write_sectors = 0x30,
+    read_dma = 0xC8,
+    write_dma = 0xCA,
     flush_cache = 0xE7,
     identify = 0xEC,
 };
+
+/// Which way a transfer moves.
+const Direction = enum { in, out };
+
+/// How a channel moves bytes. A channel with no bus-master block takes the
+/// second, and so does one whose drive is not running a DMA mode.
+const Path = enum { dma, pio };
+
+/// One command's worth of a caller's memory, and which way it moves.
+///
+/// A union over the direction rather than a slice beside a flag: which way it
+/// goes is what decides whether the driver may write to it, and the two facts
+/// cannot then disagree.
+const Chunk = union(Direction) {
+    in: []u8,
+    out: []const u8,
+
+    fn bytes(self: Chunk) usize {
+        return switch (self) {
+            inline else => |b| b.len,
+        };
+    }
+
+    /// The same memory from `at`, and no more than `span` of it.
+    fn part(self: Chunk, at: usize, span: usize) Chunk {
+        return switch (self) {
+            .in => |b| .{ .in = b[at..][0..span] },
+            .out => |b| .{ .out = b[at..][0..span] },
+        };
+    }
+};
+
+/// The command that starts a transfer, which is the one thing the direction
+/// and the path decide together.
+fn commandFor(chunk: Chunk, path: Path) Command {
+    return switch (path) {
+        .dma => switch (chunk) {
+            .in => .read_dma,
+            .out => .write_dma,
+        },
+        .pio => switch (chunk) {
+            .in => .read_sectors,
+            .out => .write_sectors,
+        },
+    };
+}
 
 /// Generous: a spun-down or confused drive can take seconds, and failing early
 /// on a slow device is worse than waiting.
@@ -85,15 +137,139 @@ const Channel = struct {
     io: u16,
     control: u16,
     name: []const u8,
+    /// The bus-master block, once a drive on this channel has been found that
+    /// can use it. Null while the channel moves words through the CPU: no
+    /// window in the controller's fourth BAR, no memory for the staging area,
+    /// or nothing here running a DMA mode.
+    bus: ?Bus = null,
 };
 
-const CHANNELS = [_]Channel{
+/// A channel's bus-master registers and the memory they read.
+///
+/// The two drives on a channel share one set of task-file registers and one
+/// of these, so they share the one command that may be in flight.
+const Bus = struct {
+    ports: u16,
+    area: *Dma,
+    phys: u32,
+};
+
+var channels = [_]Channel{
     .{ .io = 0x1F0, .control = 0x3F6, .name = "primary" },
     .{ .io = 0x170, .control = 0x376, .name = "secondary" },
 };
 
+/// Offsets from a channel's bus-master base.
+const BM_COMMAND = 0;
+const BM_STATUS = 2;
+const BM_TABLE = 4;
+
+const BusCommand = packed struct(u8) {
+    start: bool = false,
+    _1: u2 = 0,
+    /// Set for device to memory, clear for memory to device.
+    to_memory: bool = false,
+    _4: u4 = 0,
+};
+
+/// The bus-master status register. `failed` and `interrupt` are
+/// write-one-to-clear, so writing them back set is what clears them.
+const BusStatus = packed struct(u8) {
+    active: bool = false,
+    failed: bool = false,
+    interrupt: bool = false,
+    _3: u2 = 0,
+    drive0_capable: bool = false,
+    drive1_capable: bool = false,
+    simplex: bool = false,
+};
+
+/// One run of memory for the controller to move, as the controller reads it.
+const Prd = packed struct(u64) {
+    base: u32 = 0,
+    /// Bytes, even, and zero would mean 65536. Never zero here: a run is at
+    /// most the staging area, which is smaller than that.
+    count: u16 = 0,
+    _: u15 = 0,
+    /// The last entry of the table.
+    last: bool = false,
+};
+
+/// An entry may not reach across one of these.
+const PRD_BOUNDARY: u32 = 64 * 1024;
+
+/// How much one command carries. The layers above ask for at most one FAT
+/// cluster at a time and the largest cluster FAT presents is this, so a
+/// larger ask costs an extra command rather than being the common case. It is
+/// also what the channel pins for as long as it has a DMA-capable drive.
+const STAGING_BYTES: usize = 32 * 1024;
+
+/// The staging area is one contiguous run, so only a boundary can split it.
+const PRD_MAX = 2;
+
+/// What a channel keeps in memory the controller reads and writes.
+///
+/// One allocation, so one physical base to derive every address from. The
+/// staging area is first because the allocation is page aligned and that
+/// keeps it so, and its length is a multiple of eight so the table that
+/// follows needs no padding.
+const Dma = extern struct {
+    staging: [STAGING_BYTES]u8,
+    table: [PRD_MAX]Prd,
+};
+
+comptime {
+    if (STAGING_BYTES % @alignOf(Prd) != 0) @compileError("the descriptor table would be padded");
+    if (@offsetOf(Dma, "table") != STAGING_BYTES) @compileError("the staging area is not first");
+    if (STAGING_BYTES % block.SECTOR_SIZE != 0) @compileError("the staging area is not whole sectors");
+}
+
+/// What IDENTIFY says a drive can do.
+///
+/// Everything the driver knows about a device, so any decision taken from it
+/// can be tested without one.
+const Caps = struct {
+    /// Whether it can transfer by DMA at all.
+    dma: bool = false,
+    /// Which ultra mode it is running, if one was agreed.
+    ultra: ?u3 = null,
+    /// The same for a multiword mode.
+    multiword: ?u3 = null,
+    write_cache: bool = false,
+    flush: bool = false,
+
+    /// Whether transfers may be handed to the controller.
+    ///
+    /// A mode both ends of the cable have already agreed needs neither a
+    /// command nor host timing to use, and the firmware agrees one to boot
+    /// from the drive. Negotiating a faster mode than that is a separate
+    /// thing, and it is what would need the host timing registers.
+    fn dmaReady(self: Caps) bool {
+        return self.dma and (self.ultra != null or self.multiword != null);
+    }
+};
+
+/// The mode a transfer-mode word reports as running. Low byte is what the
+/// drive supports, high byte is what is selected, one bit each.
+fn activeMode(word: u16) ?u3 {
+    const selected: u8 = @truncate(word >> 8);
+    if (selected == 0) return null;
+    return @intCast(@ctz(selected));
+}
+
+fn capsOf(words: *const [256]u16) Caps {
+    return .{
+        .dma = words[49] & (1 << 8) != 0,
+        .ultra = activeMode(words[88]),
+        .multiword = activeMode(words[63]),
+        .write_cache = words[82] & (1 << 5) != 0,
+        .flush = words[83] & (1 << 12) != 0,
+    };
+}
+
 pub const Drive = struct {
-    channel: Channel,
+    channel: *Channel,
+    caps: Caps = .{},
     /// False for master, true for slave.
     slave: bool,
     sectors: u64,
@@ -121,11 +297,11 @@ var drive_count: usize = 0;
 /// Reading the alternate status register takes ~100 ns and has no side effects;
 /// four reads is the conventional way to wait the 400 ns the spec requires
 /// after a drive select before the status byte is meaningful.
-fn selectDelay(ch: Channel) void {
+fn selectDelay(ch: *const Channel) void {
     for (0..4) |_| _ = hal.inb(ch.control);
 }
 
-fn waitWhileBusy(ch: Channel) block.Error!Status {
+fn waitWhileBusy(ch: *const Channel) block.Error!Status {
     const deadline = hal.monotonicMicros() + TIMEOUT_US;
     while (true) {
         const status = readStatus(ch);
@@ -137,11 +313,11 @@ fn waitWhileBusy(ch: Channel) block.Error!Status {
 /// Wait for the drive to be ready to transfer, distinguishing "not yet" from
 /// "failed", a drive that sets ERR and never sets DRQ would otherwise look
 /// like a timeout.
-fn waitForData(ch: Channel) block.Error!void {
+fn waitForData(ch: *const Channel) block.Error!void {
     return waitForDataWithin(ch, TIMEOUT_US);
 }
 
-fn waitForDataWithin(ch: Channel, patience_us: u64) block.Error!void {
+fn waitForDataWithin(ch: *const Channel, patience_us: u64) block.Error!void {
     const deadline = hal.monotonicMicros() + patience_us;
     while (true) {
         const status = readStatus(ch);
@@ -153,7 +329,7 @@ fn waitForDataWithin(ch: Channel, patience_us: u64) block.Error!void {
     }
 }
 
-fn selectDrive(ch: Channel, slave: bool, lba_high_nibble: u8) void {
+fn selectDrive(ch: *const Channel, slave: bool, lba_high_nibble: u8) void {
     const value: u8 = 0xE0 | (@as(u8, @intFromBool(slave)) << 4) | (lba_high_nibble & 0x0F);
     hal.outb(ch.io + REG_DRIVE, value);
     selectDelay(ch);
@@ -177,7 +353,7 @@ fn decodeModel(words: []const u16, out: *[41]u8) usize {
     return n;
 }
 
-fn identify(ch: Channel, slave: bool) ?Drive {
+fn identify(ch: *Channel, slave: bool) ?Drive {
     selectDrive(ch, slave, 0);
 
     // Zero the addressing registers: a non-zero signature here after IDENTIFY
@@ -213,6 +389,7 @@ fn identify(ch: Channel, slave: bool) ?Drive {
 
     var drive = Drive{
         .channel = ch,
+        .caps = capsOf(&words),
         .slave = slave,
         .sectors = sectors,
         .model = undefined,
@@ -244,53 +421,147 @@ fn setupTransfer(drive: *const Drive, lba: u64, count: u8) block.Error!void {
     hal.outb(ch.io + REG_LBA_HIGH, @truncate(lba >> 16));
 }
 
+fn readBusStatus(bus: *const Bus) BusStatus {
+    return @bitCast(hal.inb(bus.ports + BM_STATUS));
+}
+
+fn writeBusStatus(bus: *const Bus, value: BusStatus) void {
+    hal.outb(bus.ports + BM_STATUS, @bitCast(value));
+}
+
+fn writeBusCommand(bus: *const Bus, value: BusCommand) void {
+    hal.outb(bus.ports + BM_COMMAND, @bitCast(value));
+}
+
+/// Describe the first `len` bytes of the staging area to the controller.
+///
+/// Split only where an entry may not reach across a boundary, which for an
+/// area this size is at most once.
+fn describe(bus: *Bus, len: u32) void {
+    var at: u32 = 0;
+    var i: usize = 0;
+    while (at < len) : (i += 1) {
+        const base = bus.phys + at;
+        const to_boundary = PRD_BOUNDARY - (base & (PRD_BOUNDARY - 1));
+        const span = @min(len - at, to_boundary);
+        bus.area.table[i] = .{
+            .base = base,
+            .count = @intCast(span),
+            .last = at + span >= len,
+        };
+        at += span;
+    }
+}
+
+/// How much of what is left one command may carry.
+///
+/// Whole sectors, because a command is counted in them, and never more than
+/// the path can hold: a staging area for the controller, and the sector count
+/// register otherwise. That register is eight bits and zero would mean 256,
+/// so the count stops at 255 rather than leaning on the encoding.
+fn chunkOf(ch: *const Channel, remaining: usize) usize {
+    const sectors = remaining / block.SECTOR_SIZE;
+    const limit = if (ch.bus != null) STAGING_BYTES / block.SECTOR_SIZE else 255;
+    return @min(sectors, limit) * block.SECTOR_SIZE;
+}
+
+/// One command's worth, by whichever path the channel has.
+fn run(drive: *Drive, lba: u64, chunk: Chunk) block.Error!void {
+    if (drive.channel.bus != null) return runDma(drive, lba, chunk);
+    return runPio(drive, lba, chunk);
+}
+
+fn runDma(drive: *Drive, lba: u64, chunk: Chunk) block.Error!void {
+    const ch = drive.channel;
+    const bus = &ch.bus.?;
+    const span = chunk.bytes();
+    const sectors: u8 = @intCast(span / block.SECTOR_SIZE);
+    const to_memory = chunk == .in;
+
+    // The controller can only be given an address this driver chose, so what
+    // is going out is copied in first and what comes in is copied out after.
+    if (chunk == .out) @memcpy(bus.area.staging[0..span], chunk.out);
+
+    describe(bus, @intCast(span));
+    hal.outl(bus.ports + BM_TABLE, bus.phys + @offsetOf(Dma, "table"));
+    // Cleared before the command that will set them, so what is read
+    // afterwards belongs to this transfer.
+    writeBusStatus(bus, .{ .failed = true, .interrupt = true });
+    writeBusCommand(bus, .{ .to_memory = to_memory });
+
+    try setupTransfer(drive, lba, sectors);
+    issue(ch, commandFor(chunk, .dma));
+    writeBusCommand(bus, .{ .to_memory = to_memory, .start = true });
+
+    const moved = awaitDma(bus, TIMEOUT_US);
+
+    // Stopped, and the drive's own interrupt taken off the line by reading its
+    // status, whatever the outcome was. A controller left running would write
+    // into the staging area behind the next command.
+    writeBusCommand(bus, .{});
+    const status = readStatus(ch);
+    writeBusStatus(bus, .{ .failed = true, .interrupt = true });
+
+    try moved;
+    if (status.failed()) return error.IoError;
+    if (chunk == .in) @memcpy(chunk.in, bus.area.staging[0..span]);
+}
+
+/// Wait for the controller to have moved everything the table described.
+///
+/// Two things have to have happened: the controller has exhausted the table,
+/// which lowers `active`, and the drive has finished with the data, which is
+/// what raises `interrupt`. Either alone is a transfer still in progress.
+fn awaitDma(bus: *const Bus, patience_us: u64) block.Error!void {
+    const deadline = hal.monotonicMicros() + patience_us;
+    while (true) {
+        const status = readBusStatus(bus);
+        if (status.failed) return error.IoError;
+        if (!status.active and status.interrupt) return;
+        if (hal.monotonicMicros() > deadline) return error.Timeout;
+    }
+}
+
+fn runPio(drive: *Drive, lba: u64, chunk: Chunk) block.Error!void {
+    const ch = drive.channel;
+    const sectors: u8 = @intCast(chunk.bytes() / block.SECTOR_SIZE);
+    try setupTransfer(drive, lba, sectors);
+    issue(ch, commandFor(chunk, .pio));
+
+    // Straight to the caller's memory: nothing but the CPU touches it, so
+    // there is nothing to stage it for.
+    var at: usize = 0;
+    for (0..sectors) |_| {
+        try waitForData(ch);
+        switch (chunk) {
+            .in => |b| hal.insw(ch.io + REG_DATA, b[at..][0..block.SECTOR_SIZE]),
+            .out => |b| hal.outsw(ch.io + REG_DATA, b[at..][0..block.SECTOR_SIZE]),
+        }
+        at += block.SECTOR_SIZE;
+    }
+}
+
+/// Cut a request into commands and run them in order.
+fn transfer(drive: *Drive, lba: u64, whole: Chunk) block.Error!void {
+    var at: usize = 0;
+    while (at < whole.bytes()) {
+        const span = chunkOf(drive.channel, whole.bytes() - at);
+        // Less than a whole sector left is a caller asking for something the
+        // medium cannot answer, not a transfer to keep trying.
+        if (span == 0) return error.IoError;
+        try run(drive, lba + at / block.SECTOR_SIZE, whole.part(at, span));
+        at += span;
+    }
+}
+
 fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
     const drive: *Drive = @ptrCast(@alignCast(ctx));
-    const ch = drive.channel;
-    var remaining = buf.len / block.SECTOR_SIZE;
-    var offset: usize = 0;
-    var current = lba;
-
-    // A sector count of 0 means 256 to the hardware, so batches cap at 255 to
-    // keep the encoding unambiguous.
-    while (remaining > 0) {
-        const batch: u8 = @intCast(@min(remaining, 255));
-        try setupTransfer(drive, current, batch);
-        issue(ch, .read_sectors);
-
-        for (0..batch) |_| {
-            try waitForData(ch);
-            hal.insw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
-            offset += block.SECTOR_SIZE;
-        }
-
-        current += batch;
-        remaining -= batch;
-    }
+    return transfer(drive, lba, .{ .in = buf });
 }
 
 fn writeSectors(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
     const drive: *Drive = @ptrCast(@alignCast(ctx));
-    const ch = drive.channel;
-    var remaining = buf.len / block.SECTOR_SIZE;
-    var offset: usize = 0;
-    var current = lba;
-
-    while (remaining > 0) {
-        const batch: u8 = @intCast(@min(remaining, 255));
-        try setupTransfer(drive, current, batch);
-        issue(ch, .write_sectors);
-
-        for (0..batch) |_| {
-            try waitForData(ch);
-            hal.outsw(ch.io + REG_DATA, buf[offset..][0..block.SECTOR_SIZE]);
-            offset += block.SECTOR_SIZE;
-        }
-
-        current += batch;
-        remaining -= batch;
-    }
-
+    try transfer(drive, lba, .{ .out = buf });
     return flushCache(ctx);
 }
 
@@ -316,14 +587,61 @@ const ops = block.Ops{
 // Bring-up
 // ---------------------------------------------------------------------------
 
-/// Probe both channels and register whatever is found.
-pub fn init() void {
-    drive_count = 0;
+/// The PCI function the task-file registers belong to. What the driver needs
+/// from it is the bus-master window in its fourth BAR, and the identity that
+/// says how its host timing is programmed.
+pub const Host = struct {
+    at: lib.pci.Location,
+    vendor: u16,
+    device: u16,
+};
 
-    for (CHANNELS) |ch| {
+/// The controller's bus-master window, or null where there is none to use.
+///
+/// Read rather than assumed: where the firmware puts it is a fact about one
+/// machine. A window that is not an I/O one, or that the firmware never
+/// placed, leaves every channel moving words through the CPU.
+fn busWindow(host: Host) ?u16 {
+    const raw = pci.configRead32(host.at, lib.pci.BAR0_OFFSET + 4 * @sizeOf(u32));
+    const bar: lib.pci.IoBar = @bitCast(raw);
+    if (!bar.io_space or bar.base() == 0) return null;
+    // Only now, when there is something to address memory for.
+    pci.enableIoAndMaster(host.at);
+    return @truncate(bar.base());
+}
+
+/// Give a channel its bus-master block, once something on it can use one.
+///
+/// The two channels' blocks are eight bytes apart in the one window. Memory
+/// is taken here rather than at probe time so a machine whose drives will
+/// only move words through the CPU pins none of it.
+fn attachBus(ch: *Channel, window: ?u16, index: usize) void {
+    if (ch.bus != null) return;
+    const base = window orelse return;
+
+    const frames = (@sizeOf(Dma) + pmm.PAGE_SIZE - 1) / pmm.PAGE_SIZE;
+    const phys = pmm.allocContiguous(frames, 0x1_0000_0000, .device) catch {
+        console.warn("ata: {s} has no memory for a transfer area, moving words instead", .{ch.name});
+        return;
+    };
+
+    ch.bus = .{
+        .ports = base + @as(u16, @intCast(index)) * 8,
+        .area = @ptrFromInt(hal.physToVirt(phys)),
+        .phys = @intCast(phys),
+    };
+}
+
+/// Probe both channels and register whatever is found.
+pub fn init(host: Host) void {
+    drive_count = 0;
+    const window = busWindow(host);
+
+    for (&channels, 0..) |*ch, index| {
         for ([_]bool{ false, true }) |slave| {
             if (drive_count >= drives.len) return;
             const found = identify(ch, slave) orelse continue;
+            if (found.caps.dmaReady()) attachBus(ch, window, index);
 
             drives[drive_count] = found;
             const d = &drives[drive_count];
@@ -336,12 +654,13 @@ pub fn init() void {
             d.name_len = 3;
             drive_count += 1;
 
-            console.info("ata", "{s}: {s} {s} {s}, {d} MiB", .{
+            console.info("ata", "{s}: {s} {s} {s}, {d} MiB, {s}", .{
                 d.nameSlice(),
                 ch.name,
                 if (slave) "slave" else "master",
                 d.modelSlice(),
                 d.sectors * block.SECTOR_SIZE / (1024 * 1024),
+                if (ch.bus != null) "bus mastering" else "moving words",
             });
 
             const raw = block.Device{

@@ -226,17 +226,18 @@ pub const table = [_]probe.Driver{
     // anything the embedded controller has not already answered.
 };
 
-/// Both ATA entries share this. The controller is addressed through the legacy
-/// port pairs rather than its BARs, so one call covers every channel however
-/// many PCI functions the chipset exposes, hence the guard against a second
-/// function attaching the same hardware twice.
+/// Both ATA entries share this. The task-file registers are the legacy port
+/// pairs, so one call covers every channel however many PCI functions the
+/// chipset exposes, hence the guard against a second function attaching the
+/// same hardware twice. The function itself is still needed: the bus-master
+/// registers are in its fourth BAR, and it is what has to be told to address
+/// memory.
 var ata_attached = false;
 
 fn attachAta(dev: Device) anyerror!void {
-    _ = dev;
     if (ata_attached) return;
     ata_attached = true;
-    ata.init();
+    ata.init(.{ .at = dev.location, .vendor = dev.vendor, .device = dev.device });
 }
 
 var display_attached = false;
