@@ -925,6 +925,8 @@ fn answer(message: *const sys.Message, reply: *proto.Rep) proto.Status {
             .rx_bytes = @truncate(iface.stats.rx_bytes),
             .tx_pkts = @truncate(iface.stats.tx_pkts),
             .tx_bytes = @truncate(iface.stats.tx_bytes),
+            .rx_dropped = @truncate(iface.stats.rx_dropped),
+            .irq_late = @truncate(iface.stats.irq_late),
             .arp_replies = @truncate(iface.stats.rx_arp),
             .enabled = @intFromBool(stack.isUp(iface)),
             .kind = if (iface.class == .wifi) .radio else .wire,

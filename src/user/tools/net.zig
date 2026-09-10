@@ -447,6 +447,18 @@ fn printInterface(iface: *const net.Iface, named: []const u8) void {
     out.decimal(iface.tx_bytes);
     out.text(" bytes\n");
 
+    // Only where something was lost. A line saying nothing was is a line
+    // every healthy interface would carry for the sake of the rare one that
+    // is not, and the point of it is to stand out.
+    if (iface.rx_dropped != 0 or iface.irq_late != 0) {
+        out.text("    lost   ");
+        out.decimal(iface.rx_dropped);
+        out.text(if (iface.rx_dropped == 1) " frame the ring could not take" else " frames the ring could not take");
+        out.text(", ");
+        out.decimal(iface.irq_late);
+        out.text(if (iface.irq_late == 1) " delivery left work owed\n" else " deliveries left work owed\n");
+    }
+
     if (iface.arp_replies != 0 and iface.peer_ip != 0) {
         var peer_field: [15]u8 = @splat(0);
         const peer = lib.ipv4.text(iface.peer_ip, &peer_field);

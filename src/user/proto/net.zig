@@ -144,6 +144,17 @@ pub const Iface = extern struct {
     tx_pkts: u32 = 0,
     tx_bytes: u32 = 0,
 
+    /// What the interface lost rather than carried.
+    ///
+    /// Frames the adapter took in and could not hand on, and deliveries that
+    /// ended with a cause still latched. Both are counted where they happen
+    /// and neither is visible anywhere else, so a machine dropping every
+    /// third frame reads exactly like a quiet network: the first question
+    /// anyone asks of a slow link is whether it is losing anything, and
+    /// without these the only way to answer it is a packet capture.
+    rx_dropped: u32 = 0,
+    irq_late: u32 = 0,
+
     /// Replies the ring has carried, and the last peer that answered: the
     /// traffic proof beneath the stack.
     arp_replies: u32 = 0,
@@ -403,7 +414,7 @@ comptime {
     }
     if (@sizeOf(Req) != 16) @compileError("a network request is sixteen bytes");
     if (@sizeOf(ResolveReq) != 64) @compileError("a resolve request fills one payload");
-    if (@sizeOf(Iface) != 60) @compileError("an interface record is 60 bytes");
+    if (@sizeOf(Iface) != 68) @compileError("an interface record is 68 bytes");
     if (@sizeOf(Network) != 48) @compileError("a network record is 48 bytes");
     if (@sizeOf(AddressInfo) != 16) @compileError("an address record is sixteen bytes");
     if (@sizeOf(SockGrant) != 12) @compileError("a socket grant is twelve bytes");

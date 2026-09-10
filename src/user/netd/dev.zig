@@ -33,15 +33,20 @@ pub const Stats = struct {
     rx_bytes: u64 = 0,
     tx_pkts: u64 = 0,
     tx_bytes: u64 = 0,
-    /// Received but dropped: exhausted buffers, bad check, undersized.
+    /// Frames the wire delivered and this machine did not keep: a bad check
+    /// or a runt the adapter threw away, a ring it had no room in, and one
+    /// the stack above had no buffer for. One number, because the question
+    /// anybody asks of a slow link is whether it is losing anything, and
+    /// which half lost it is the second question.
     rx_dropped: u64 = 0,
     /// Attempted but refused: no descriptor free.
     tx_failed: u64 = 0,
     /// ARP replies this interface has carried.
     rx_arp: u64 = 0,
     /// Deliveries that ended with a cause still latched: work the pass owed
-    /// and did not finish. A line that rides the falling edge gets no
-    /// second chance at it, so this is the only place it shows.
+    /// and did not finish. A line that rides the falling edge gets no second
+    /// chance at it, which is why the loop asks as well as listens; `net`
+    /// reports it beside the frames that were dropped.
     irq_late: u64 = 0,
 };
 
@@ -306,6 +311,26 @@ pub fn deliverTxDone(dev: *NicDev, outcome: lib.rates.Outcome) void {
 /// 802.11 has no such minimum and a padded one is a malformed frame.
 pub const MIN_WIRE_FRAME = 60;
 
+/// The longest a wire frame is once its check sequence is off, which is how
+/// every driver here hands one over.
+///
+/// The pair with `MIN_WIRE_FRAME`, and they are one place because a frame one
+/// adapter carries and another refuses is two machines with the same network
+/// behaving differently: this one accepted anything its DMA slab could hold
+/// and that one anything under the wire maximum with the check sequence
+/// counted twice. What each adapter must still judge for itself is whether a
+/// length it was handed by its own hardware is safe to form a slice from.
+pub const MAX_WIRE_FRAME = 1514;
+
+/// Whether a frame of this length is one this interface carries.
+///
+/// A radio has neither bound: 802.11 has no minimum, and what a cell may
+/// carry is the cell's business, so only a wire is measured.
+fn carriable(dev: *const NicDev, len: usize) bool {
+    if (dev.class == .wifi) return len != 0;
+    return len >= MIN_WIRE_FRAME and len <= MAX_WIRE_FRAME;
+}
+
 /// Put one ordinary frame on this interface, whatever medium is under
 /// it. A wire takes it as it stands, padded to the minimum; a radio has it
 /// dressed as the cell expects first. Everything above here sends the same
@@ -322,9 +347,18 @@ pub fn send(dev: *NicDev, frame: []const u8) bool {
     return dev.ops.transmit(dev, &padded);
 }
 
+/// A frame that reached this machine and could not be taken any further.
+///
+/// Said by whoever could not take it. The driver has handed the frame on by
+/// the time the stack runs out of buffers for it, so it is not the driver's
+/// to notice, and a loss nobody counts is a link that reads as quiet.
+pub fn deliverLost(dev: *NicDev) void {
+    dev.stats.rx_dropped += 1;
+}
+
 pub fn deliverRx(dev: *NicDev, report: RxReport) void {
-    if (!report.ok) {
-        dev.stats.rx_dropped += 1;
+    if (!report.ok or !carriable(dev, report.frame.len)) {
+        deliverLost(dev);
         return;
     }
     dev.stats.rx_pkts += 1;
@@ -405,6 +439,16 @@ pub fn serveIrq(comptime Driver: type, nic: *NicDev) bool {
 /// How many cause/reap rounds one delivery may take. Enough for a burst,
 /// bounded so a device that never stops latching cannot hold the loop.
 const IRQ_ROUNDS = 8;
+
+/// How many frames one reaping pass may take off an adapter.
+///
+/// A bound every driver needs and one number for all of them: a pass that
+/// drains whatever has arrived holds the loop for as long as the wire cares
+/// to send, and a pass that stops after four leaves latency to the next
+/// wake. What is left is not lost -- `serveIrq` looks again, and the loop
+/// polls an adapter whose line has gone quiet -- so this is how long one
+/// interface may hold the service and nothing more.
+pub const RX_REAP_BUDGET = 64;
 
 /// Say a frame went onto the wire.
 pub fn deliverTx(dev: *NicDev, bytes: usize) void {

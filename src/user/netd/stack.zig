@@ -147,20 +147,29 @@ fn linkOutput(netif: *lwip.Netif, p: *lwip.Pbuf) callconv(.c) lwip.Err {
 
 /// Up the stack: every received frame, copied into a pool pbuf. Exhaustion
 /// drops the frame; the pool refills as the stack consumes.
+///
+/// Every way of not taking a frame is counted as a loss on the interface it
+/// arrived on. A frame dropped here is invisible to the driver, which handed
+/// it over and considers it delivered, so a machine losing every third
+/// segment to an empty pool reads as a quiet network: the sender waits out a
+/// retransmission timeout for each one and nothing on this side says why.
 pub fn rx(nic: *dev.NicDev, frame: []const u8) void {
     const slot = slotOf(nic) orelse return;
-    if (frame.len > std.math.maxInt(u16)) return;
+    if (frame.len > std.math.maxInt(u16)) return dev.deliverLost(nic);
 
-    const p = lwip.pbuf_alloc(.raw, @intCast(frame.len), .pool) orelse return;
+    const p = lwip.pbuf_alloc(.raw, @intCast(frame.len), .pool) orelse return dev.deliverLost(nic);
     if (lwip.pbuf_take(p, frame.ptr, @intCast(frame.len)) != .ok) {
         _ = lwip.pbuf_free(p);
-        return;
+        return dev.deliverLost(nic);
     }
     const input = slot.netif.input orelse {
         _ = lwip.pbuf_free(p);
-        return;
+        return dev.deliverLost(nic);
     };
-    if (input(p, &slot.netif) != .ok) _ = lwip.pbuf_free(p);
+    if (input(p, &slot.netif) != .ok) {
+        _ = lwip.pbuf_free(p);
+        dev.deliverLost(nic);
+    }
 }
 
 /// The driver's link followed into the stack, which is also what makes the
