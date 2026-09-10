@@ -2,9 +2,9 @@
 
 > **Status: partially implemented.**
 >
-> Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)) and the boot ramdisk.
+> Built and working: the block layer with partition parsing ([`block.zig`](../src/kernel/block.zig)), the block cache ([`bcache.zig`](../src/kernel/bcache.zig)), FAT12/16/32 with VFAT long names ([`fat.zig`](../src/kernel/fat.zig)), the mount table and longest-prefix path resolution ([`vfs.zig`](../src/kernel/vfs.zig)), reads and writes through ATA PIO ([`drv/block/ata.zig`](../src/drv/block/ata.zig)), removable media through usbd, and the boot ramdisk.
 >
-> Not yet: writes of any kind, the page cache, swap, and mounting removable media (which needs USB first).
+> Not yet: bus-master DMA (§3, designed and not built), the page cache, and the request queue of §4. There is no swap and there will not be one.
 >
 > Where this document and [`00-vibeee.md`](00-vibeee.md) disagree, the master design
 > wins: it carries later decisions this document predates.
@@ -16,7 +16,7 @@ Status: design v1. Owner: storage subsystem. Targets kernel contracts v0.
 Storage stack, bottom to top:
 
 ```
-[in-kernel]  pata_ich6 ──┐
+[in-kernel]  ata ─────────┐
 [userspace]  usbd MSC ── ublk bridge ──┤
                                        ├── blockdev core (FIFO queue, merge, MBR scan, partitions)
                                        ├── page/buffer cache (4 KiB, reclaimable)
@@ -67,78 +67,353 @@ Design center: one soldered 4 GB PATA SSD (SM223AC: 28-bit LBA, no READ/WRITE MU
 | Mini-PCIe "Flash_con" | inserting a card disables onboard SSD, driver must tolerate empty channel | MEDIUM-HIGH |
 | ASUS precedent | ext2 RO root + unionfs overlay, noop elevator, noatime, tmpfs for logs | HIGH |
 
-## 3. In-kernel PATA driver (`pata_ich6`)
+## 3. In-kernel PATA driver (`drv/block/ata.zig`)
 
-### 3.1 Scope and non-scope
+### 3.1 What it is now
 
-Exactly one channel (secondary), exactly one device (master). We **never touch the primary channel** (0x1F0/IRQ14/0xFFA0): no SATA ports are wired (HIGH), so probing it costs 100s of ms of BSY timeouts and a floating bus can read 0x7F and fake a device. Static config: channel 1, device 0, period. The driver still handles "no device present" gracefully: the Flash_con quirk means a mini-PCIe card in the vacant slot detaches the onboard SSD.
+The driver is one file. It transfers by PIO and polls for completion. Both
+legacy channels are probed, because the emulator and the machine disagree about
+where the disk is: QEMU puts `-drive if=ide` on the primary, and the 701's
+soldered SSD is secondary master. Each drive found is wrapped in the block
+cache and registered, and its partitions scanned.
 
-### 3.2 Register map (constants)
+The transfer path is `rep insw` or `rep outsw`, 256 words per sector, with a
+status poll between sectors. Every byte crosses the CPU, which caps the
+transfer itself at the 2 to 4 MB/s §3.8 calls rescue speed. The device is
+rated for 30 MB/s sequential read and 20 MB/s write (§2), so the transfer runs
+about ten times under what the hardware can carry.
 
-```
-CMD  = 0x170  // +0 data, +1 err/feat, +2 count, +3 lba0, +4 lba1, +5 lba2, +6 dev, +7 status/cmd
-CTL  = 0x376  // read: altstatus; write: devctl (bit1 nIEN, bit2 SRST)
-BM   = 0xFFA8 // +0 BMIC (bit0 start, bit3 dir: 1=dev→mem), +2 BMIS (bit0 active, bit1 err W1C,
-              //  bit2 irq W1C), +4 BMIDTP (PRD table phys, dword-aligned)
-IRQ  = GSI 15 (ISA edge/high via IOAPIC)
-PCI cfg (via ECAM bus0 dev31 fn2): 0x42 IDETIM_SEC, 0x44 SIDETIM, 0x48 SDMA_CNT,
-  0x4A SDMA_TIM, 0x54 IDE_CONFIG
-```
+Throughput at the top of the filesystem is a separate number and is lower
+again: around 450 KB/s, measured as a four megabyte file landing over the
+network in nine seconds and the same four megabytes copied on the machine
+itself in fifteen. The difference between the two numbers is not in the
+transfer and is not addressed here. It is worth measuring once the transfer is
+no longer the limit.
 
-### 3.3 Init sequence
+The PCI match table in [`drivers.zig`](../src/drivers.zig) attaches the driver
+and passes it the matched device, which `attachAta` discards. That parameter is
+where the bus-master registers come from.
 
-1. PCI: verify VID/DID 8086:2653; set Bus Master + I/O Space in PCICMD; read BAR4, assert it reports 0xFFA0 (else use BAR4 value +8 for secondary, do not hardcode blindly).
-2. Presence probe: `outb(CMD+6, 0xA0)`; 400 ns delay (4× altstatus reads); if `inb(CMD+7)` is 0xFF or 0x7F → channel empty → register nothing, mark `ssd_absent` (boot continues from SD; log for the Flash_con case).
-3. Soft reset: devctl SRST=1, hold ≥5 µs, clear; poll BSY clear (≤30 s, but bail to `ssd_absent` after 2 s if status stays 0xFF). Check signature (count=1, lba0=1, lba1=0, lba2=0 → PATA).
-4. IDENTIFY DEVICE (0xEC): select 0xA0, wait DRDY, issue, poll DRQ, `rep insw` 256 words, nIEN=1 during probe (polled).
-   Words consumed: 49 (LBA+DMA caps), 60–61 (LBA28 sector count, expect 7,815,024), 47 (multiple: expect 0 → PIO path is single-sector), 63 (MWDMA), 88 (UDMA supported/active; expect bit 4 = UDMA4), 80/81 (ATA-4), **82 bit5** (write cache supported), **83 bit12** (FLUSH CACHE supported), 83 bit10 (LBA48, expect 0, and we never use LBA48 regardless), 85 bit5 (write cache enabled). All stored in a `Quirks` struct, this is the test seam (§10).
-5. SET FEATURES 0xEF: features=0x03, count=0x44 (UDMA4). On error bit: retry 0x42 (UDMA2) → 0x22 (MWDMA2) → 0x0C (PIO4). Re-read word 88 to confirm selection.
-6. Host timing (values verified against ata_piix behavior; devid = 2 = secondary master):
-   - `IDETIM_SEC(0x42) = 0xA307`, decode enable(15), ISP=2clk(13:12=10), RCT=3clk(9:8=11), drive0 PPE|IE|TIME (bits 2:0). DTE stays 0 (DMA uses UDMA regs).
-   - `SDMA_CNT(0x48) |= 1<<2`: UDMA enable, devid 2.
-   - `SDMA_TIM(0x4A)`: field bits 9:8 (4·devid) = CT=2 → with 66 MHz base = UDMA4.
-   - `IDE_CONFIG(0x54)`: clear (0x1001<<2), set bit 2 (66 MHz base clock devid 2). Bits 7:4 are the cable-report bits, **ignored** (soldered short trace; they read "40-wire" and are wrong; Linux needed the ich_laptop quirk for exactly this).
-7. Allocate one static PRD table: 40 entries × 8 B (max transfer 128 KiB in 4 KiB pages = 32 entries + slack), dma_alloc'd, dword-aligned, <4 GB (trivial). Enable IRQ15; devctl nIEN=0.
+### 3.2 What DMA changes, and what it does not
 
-### 3.4 PRD table format
+The `block.Ops` interface does not change. `read`, `write` and `flush` stay
+synchronous calls that return when the data has moved, because that is what
+every caller above expects and none of them can use anything else yet: there is
+no request queue (§4 is unbuilt) and no page cache. DMA replaces how the bytes
+cross, not who waits for them.
+
+PIO stays. It is the rescue path of §3.8's ladder, and the only path on a
+controller with no bus-master registers or a drive that will not negotiate a
+DMA mode.
+
+### 3.3 Transfers are staged
+
+**A caller's buffer cannot be handed to the controller.** `sys_read` validates
+the user's pointer and passes that slice down unchanged, through
+`vfs.readAt` into `fat.readAt`, which now hands whole sector runs straight to
+the device. The address is therefore a user virtual one: it is mapped in the
+current address space only, `hal.virtToPhys` does not apply to it because that
+is a subtraction over the kernel's linear window, and its pages need not be
+physically adjacent. `sys_write` is the same in the other direction. The
+buffers reaching the driver are a mixture of those, block-cache lines, and
+kernel stack, and the driver cannot tell them apart.
+
+So a channel owns one staging area in memory it allocated itself, and every
+transfer goes through it. A read fills the staging area and is copied out; a
+write is copied in and then sent. The copy runs at memory speed, hundreds of
+megabytes a second, against a transfer that costs the CPU every byte at around
+one, so it is a small fraction of what it replaces.
+
+Staging also bounds the descriptor table. The staging area is one physically
+contiguous run at an address the driver chose, so the table has at most two
+entries, and the rule that an entry may not cross a 64 KiB boundary is checked
+once at bring-up instead of per request. There is no page pinning, no walk of a
+user page table, and no way for a buffer that was valid at the check to be
+unmapped before the controller reaches it.
+
+Going zero-copy later is a change to the interface above, not to this driver: it
+needs a way for a caller to say "this buffer is already device-addressable",
+which is what a page cache would provide and what §4 would carry.
+
+### 3.4 Structure
+
+`Channel` becomes a thing with identity rather than three constants copied into
+each drive. DMA gives a channel state that its drives share, and the hardware
+enforces that they share it: one command at a time on the channel, whichever
+drive it is for.
 
 ```zig
-pub const Prd = packed struct {
-    base: u32,  // phys addr, bit0 must be 0 (word aligned)
-    count: u16, // bytes, even; 0 == 65536
-    flags: u16, // bit15 = EOT (last entry)
+const Channel = struct {
+    io: u16,
+    control: u16,
+    name: []const u8,
+    /// The bus-master block for this channel, or null while the channel
+    /// transfers by PIO: no controller BAR, or nothing on it negotiated a
+    /// DMA mode.
+    bm: ?Bus = null,
 };
-// Constraint: each entry's [base, base+count) must not cross a 64 KiB boundary.
-// We fill entries from 4 KiB-aligned cache pages → constraint holds by construction.
+
+/// A channel's bus-master registers and the memory they read.
+const Bus = struct {
+    ports: u16,
+    dma: *Dma,
+    dma_phys: u32,
+    /// One command at a time, and the caller of the second one waits.
+    lock: lock_mod.Lock = .{},
+};
 ```
 
-### 3.5 DMA hot path (read shown; write differs in BMIC dir bit and cmd 0xCA)
+Drives hold `*Channel`, so `CHANNELS` is a mutable array rather than a `const`
+one.
 
-Per-command limits: **count register is 8-bit: 1–256 sectors (0 == 256) → max 128 KiB/command**; LBA must fit 28 bits (device is 7.8M sectors, always fits).
+The memory the controller reads is declared as a layout and taken as one
+allocation, which is the shape the network drivers already use for their
+descriptor rings ([`user/netd/dma.zig`](../src/user/netd/dma.zig)). The kernel
+side is simpler because there is no handle and no mapping to hold: physically
+contiguous frames from `pmm.allocContiguous`, addressed through the linear
+window.
 
-1. Fill PRD entries from the request's page list; set EOT on last.
-2. `outl(BM+4, prd_paddr)`; `outb(BM+2, 0x06)` (clear err+irq); `outb(BM+0, 0x08)` (dir=dev→mem, not started).
-3. Select: `outb(CMD+6, 0xE0 | (lba>>24 & 0xF))`; poll BSY&DRQ clear (≤400 ms).
-4. `outb(CMD+2, n & 0xFF)`; `outb(CMD+3, lba)`; `outb(CMD+4, lba>>8)`; `outb(CMD+5, lba>>16)`.
-5. `outb(CMD+7, 0xC8)` (READ DMA), then `outb(BM+0, 0x09)` (start).
-6. Block on irqevent (timeout: read 2 s, write 10 s: FTL erase stalls can be long, flush 30 s).
-7. ISR/completion: `bmis = inb(BM+2)`; if bit2 clear → spurious, ignore. `inb(CMD+7)` (acks device IRQ), `outb(BM+0, 0x00)` (stop), `outb(BM+2, 0x06)` (W1C). If BMIS bit1 or status ERR/DF → error path.
+```zig
+/// What a channel keeps in memory the controller reads and writes.
+///
+/// One allocation, so one physical base to derive every address from. The
+/// staging area comes first because the allocation is page aligned and that
+/// keeps it so.
+const Dma = extern struct {
+    staging: [STAGING_BYTES]u8,
+    /// Two is the most the staging area can need: it is one contiguous run,
+    /// and the only thing that can split it is the boundary an entry may not
+    /// cross.
+    table: [2]Prd,
+};
 
-### 3.6 Error recovery ladder
+/// One run of memory for the controller to move, as the specification lays
+/// it out.
+const Prd = packed struct(u64) {
+    base: u32,
+    /// Bytes, even, and zero means 65536.
+    count: u16,
+    _: u15 = 0,
+    /// Last entry of the table.
+    last: bool = false,
+};
+```
 
-1. Retry the command (max 3; log LBA + error reg).
-2. Soft reset channel (SRST pulse, wait BSY≤30 s), re-issue SET FEATURES (transfer mode is not guaranteed to survive reset), reprogram BM regs; retry.
-3. Drop to polled PIO for this request: READ SECTOR(S) 0x20 / WRITE SECTOR(S) 0x30, **one sector per DRQ block** (multi 0), nIEN=1, `rep insw/outsw` 256 words, status-poll between sectors (~2–4 MB/s, rescue speed).
-4. Persistent failure → mark the device degraded read-only; notify the health service; its mounts go read-only.
+The lock is the channel's own, and does not repeat the block cache's. That one
+is per cache, which is per disk; two drives on one channel have a cache each
+and one set of task-file registers between them.
 
-Timeout hang (BSY stuck): step 2 directly; if reset can't clear BSY in 30 s → device lost (`ssd_absent`), fail all queued bios with `NoDevice`.
+Direction is a value, not a pair of near-identical functions. `readSectors` and
+`writeSectors` differ in a command byte and in which port helper moves the
+data, and adding DMA to that shape would give four bodies where two differences
+matter. Two enums carry those differences instead:
 
-### 3.7 Flush semantics on SM223AC
+```zig
+/// Which way a transfer moves.
+const Direction = enum { in, out };
 
-Runtime-probed (research: IDENTIFY details unknown, LOW):
-- Word 83 bit12 set → `flush()` issues FLUSH CACHE (0xE7) (never 0xEA, no LBA48), 30 s timeout. An ABRT response is downgraded to no-op (some CF-class firmware lies about support).
-- Not set → `flush()` = drain queue (each write already completed only when BSY clears: CF-class controllers ack after data reaches internal buffer/NAND; residual FTL risk is **not eliminable from the host**). We therefore never rely on flush alone for integrity: nothing that matters is written in place (§6, §8).
-- Paranoid mount option `wcache=off`: SET FEATURES 0x82 (disable write cache) if word 82 bit5, default off (kills write perf).
+/// How a channel moves bytes. A channel with no bus-master block takes the
+/// second, and so does one whose drive would not negotiate a DMA mode.
+const Path = enum { dma, pio };
+
+/// The command that starts a transfer, which is the only thing both of them
+/// decide together.
+fn commandFor(dir: Direction, path: Path) Command { ... }
+```
+
+and one core per path, each moving `n` sectors between the drive and the
+staging area:
+
+```zig
+fn runDma(ch: *Channel, drive: *Drive, lba: u64, sectors: u8, dir: Direction) block.Error!void
+fn runPio(ch: *Channel, drive: *Drive, lba: u64, sectors: u8, dir: Direction) block.Error!void
+```
+
+`readSectors` and `writeSectors` are then a chunking loop and a copy each, and
+which core runs is one branch on `ch.bm`.
+
+PIO stages too, which costs it one copy. That copy falls on the slow path and
+never on the fast one, and it buys a single chunking loop, one place where a
+request is cut into commands, and two cores with the same signature. The rescue
+path and the ordinary path then differ only in the core that runs.
+
+### 3.5 Register map
+
+```
+CMD  = 0x1F0 primary, 0x170 secondary   // as today
+CTL  = 0x3F6 primary, 0x376 secondary   // as today
+BM   = BAR4 + 0 primary, BAR4 + 8 secondary
+       +0 command (bit0 start, bit3 direction: set for device to memory)
+       +2 status  (bit0 active, bit1 error W1C, bit2 interrupt W1C)
+       +4 table   (physical address of the descriptor table, dword aligned)
+```
+
+BAR4 is read from the matched PCI device as an `lib.pci.IoBar`, not assumed:
+§2's 0xFFA0 is where one machine's firmware put it, and the emulated PIIX3 puts
+it somewhere else entirely. A BAR that reads as zero, or as a memory window
+rather than an I/O one, leaves the channel on PIO.
+
+Enabling bus mastering belongs in [`drv/bus/pci.zig`](../src/drv/bus/pci.zig),
+which already owns the other direction: `quiesce` clears `bus_master` for a
+function whose driver is going away. Turning it on for a kernel driver is the
+same register through the same `lib.pci.Command`, so it goes beside it rather
+than in a driver. `user/lib/pci.zig` has `enableIoAndMaster` for the userspace
+drivers; the kernel needs its own only because it reaches configuration space
+by a different route.
+
+### 3.6 Bring-up additions
+
+`identify` currently reads words 27 to 47 for the model and 60 to 61 for the
+capacity. It gains the capability words the mode negotiation needs, gathered
+into one value:
+
+```zig
+/// What IDENTIFY says the drive can do. This is everything the driver knows
+/// about a device, so any decision taken from it can be tested without one.
+const Caps = struct {
+    dma: bool,          // word 49 bit 8
+    multiword: u8,      // word 63, modes supported
+    udma: u8,           // word 88, modes supported
+    write_cache: bool,  // word 82 bit 5
+    flush: bool,        // word 83 bit 12
+};
+
+/// The fastest mode both ends can take, and the ladder down from it.
+fn modesFor(caps: Caps) []const TransferMode;
+```
+
+Mode selection is SET FEATURES 0xEF as §2 records: UDMA4, falling back through
+UDMA2, MWDMA2 and PIO4 on an error bit, with word 88 re-read to confirm what
+was actually taken. A drive that reaches PIO4 leaves `ch.bm` null and transfers
+by PIO, which is the same path as a controller with no BAR4.
+
+**Host timing belongs to the chipset, not to the driver.** Writing these offsets
+on the emulated PIIX3 would be writing to whatever that chipset keeps there, so
+they go in their own module beside the driver, chosen by the PCI identity the
+driver was attached with and doing nothing for a controller it does not
+recognise. The emulated one needs nothing: it is not timing a real cable.
+
+For ICH7, through configuration space at bus 0 device 31 function 2, with
+device id 2 meaning secondary master (values verified against `ata_piix`
+behaviour):
+
+| Offset | Name | Value | Meaning |
+|---|---|---|---|
+| 0x42 | IDETIM_SEC | `0xA307` | decode enable (15), ISP 2 clk (13:12), RCT 3 clk (9:8), drive 0 PPE, IE, TIME (2:0). DTE stays clear because DMA is timed by the UDMA registers. |
+| 0x48 | SDMA_CNT | `\|= 1 << 2` | UDMA enable for device id 2. |
+| 0x4A | SDMA_TIM | bits 9:8 = 2 | CT 2, which against a 66 MHz base is UDMA4. |
+| 0x54 | IDE_CONFIG | clear `0x1001 << 2`, set bit 2 | 66 MHz base clock for device id 2. Bits 7:4 are the cable report and are not read here. |
+
+**Cable detection belongs to the machine.** IDE_CONFIG bits 7:4 report 40-wire
+on the 701 because the trace is soldered, and the drive still has to run at
+UDMA/66. That is a fact about one laptop, which is what
+[`quirks/`](../src/quirks/) holds and what its registry matches on. Overriding
+it unconditionally in the driver would drive a real 40-wire cable at a rate it
+cannot carry. Linux carries the same override as `ich_laptop[]` against
+{0x2653, 0x1043, 0x82D8}.
+
+### 3.7 Completion
+
+Polled first. The bus-master status register says when the controller is done,
+and polling it is the same shape as the status poll the driver already does,
+with the difference that the CPU is no longer moving the bytes in between. This
+keeps the driver self-contained and, more importantly, keeps it working before
+the scheduler exists. Partitions are scanned from `probe.attachAll`, which
+`main` reaches at line 161 against `sched.start` at line 511. Interrupts are
+already on by then, enabled at line 111, so the completion interrupt would
+arrive; what is missing is a thread to block, and `Event.waitOne` has nothing
+to put on a queue.
+
+Interrupt completion is the second step and slots in behind one function. The
+kernel has what it needs: `hal.claimLegacyIrq`, as the keyboard uses, and
+`event.Event.waitOne` with a deadline. It is worth doing because it returns the
+CPU to other threads for the duration of a transfer rather than spinning, but
+it is not where the speed comes from, and it brings the pre-scheduler case with
+it. `irqevent` is not the mechanism: that exists to hand a line to a Ring 3
+driver, and this driver is in the kernel.
+
+```zig
+/// Wait for the controller to finish, however this channel waits.
+fn awaitCompletion(ch: *Channel, deadline_us: u64) block.Error!void
+```
+
+### 3.8 Error recovery ladder
+
+Each rung is tried in turn, and a failure moves to the next:
+
+1. Retry the command, at most three times, logging the LBA and the error
+   register.
+2. Soft reset the channel: pulse SRST in the device control register, hold it
+   at least 5 us, clear it, and poll for BSY to fall. Re-issue SET FEATURES,
+   because the transfer mode is not guaranteed to survive a reset, reprogram
+   the bus-master registers, and retry.
+3. Clear `ch.bm` for this drive and fall back to PIO, which is already the
+   other half of §3.4's split and needs no separate rescue path.
+4. Persistent failure marks the device read-only. `block.Device` already
+   carries `read_only` and `retired`, so there is nowhere new to put this.
+
+A controller that never lowers its active bit is the timeout case and enters at
+step 2. A reset that cannot clear BSY retires the device.
+
+### 3.9 Budgets
+
+One staging area per channel that has a DMA-capable drive, and none for a
+channel that does not: a machine whose disk will only do PIO pays nothing.
+
+`STAGING_BYTES` is 32 KiB, which is 64 sectors. The largest single call the
+layers above make is one FAT cluster, and 32 KiB is the largest cluster FAT
+presents in practice. A larger request is split into several commands by the
+chunking loop, which is needed anyway: the sector count register is eight bits
+and caps one command at 128 KiB. On the 701 the cost is 32 KiB pinned for the
+one channel that has the SSD, plus sixteen bytes of descriptor table in the
+same allocation.
+
+### 3.10 Flush semantics on SM223AC
+
+Runtime-probed, as recorded in §2 (IDENTIFY details unknown, LOW confidence):
+
+- Word 83 bit 12 set: `flush` issues FLUSH CACHE (0xE7), never the LBA48 form,
+  with a 30 s deadline. An ABRT answer is downgraded to a no-op, because
+  CF-class firmware lies about supporting it.
+- Not set: `flush` drains the queue and nothing more. Residual FTL risk is not
+  eliminable from the host, which is why nothing that matters is written in
+  place (§6, §8).
+
+`flush` follows every write call, which is what makes the block cache's
+write-through promise true. It is therefore per command and not per sector, so
+how a request is cut into commands (§3.4) decides how often the drive is asked
+to commit.
+
+### 3.11 Verification
+
+- **QEMU, every boot.** The emulated PIIX3 implements the same bus-master
+  programming model, so `make check-all` exercises the DMA path as a matter of
+  course. A `-drive if=ide` boot that mounts, reads and writes is the floor.
+- **Both paths, same results.** A build forced to PIO and a build on DMA must
+  produce byte-identical files for the same work. The transfer measurements in
+  §3.1 are the comparison, and the four megabyte fetch and local copy are the
+  two cases to repeat.
+- **Unit tests over the capability words.** `modesFor` is a pure function from
+  §3.6's `Caps` to a ladder of modes, so every rung of the fallback is testable
+  with no hardware, as is the decision to leave `ch.bm` null.
+- **Real hardware ladder.** Polled PIO IDENTIFY and a dump of the words first,
+  because it settles the flush and write cache unknowns; then a PIO read of the
+  MBR; then DMA reads with a throughput check, where roughly 30 MB/s confirms
+  UDMA4 and roughly 25 means it fell back to UDMA2; then DMA writes to a
+  scratch partition.
+
+### 3.12 Not in this change
+
+The request queue, merging and priority bands of §4. The page cache. Anything
+that makes `block.Ops` asynchronous. Zero-copy into caller buffers, which needs
+the page cache first.
+
+The primary channel is still probed. §2 records that the 701 wires no ports to
+it, so probing it on that machine costs BSY timeouts, and a floating bus can
+read 0x7F and look like a drive. It is also where the emulator's disk is, so
+skipping it unconditionally would cost every emulated boot. Skipping it on the
+701 alone is a machine fact and belongs in `quirks/`, once the timeouts are
+measured.
 
 ## 4. Block layer
 
@@ -400,7 +675,7 @@ reason FAT was chosen and a format only we can read would defeat it.
 PIIX3-IDE is register-compatible for the command block and the BMDMA hot path
 (the IRQ15/0x170 path is exercised for real). Differences to seam around:
 QEMU's device advertises LBA48 and READ MULTIPLE and ignores the ICH timing
-registers, so the driver's `Quirks` struct is populated from IDENTIFY but the
+registers, so the driver's `Caps` (§3.6) is populated from IDENTIFY but the
 SM223 profile can be **forced** (`quirk_override=sm223`: 28-bit, multi 0,
 probe-flush) and the exact production paths run under emulation. Timing-register
 writes are write-and-forget, verified only on real hardware. The ublk path is
@@ -472,7 +747,7 @@ either the old table or the new one and never a mixture.
   ordering, and by the yank torture in §10. Residual risk is documented, not
   solved.
 - **FLUSH CACHE support unknown**, so it is probed at init and falls back to
-  draining the queue (§3.7). The real-hardware IDENTIFY dump is bring-up task 1.
+  draining the queue (§3.10). The real-hardware IDENTIFY dump is bring-up task 1.
 - **FAT is not crash-safe and cannot be made so.** The bound on the damage is
   the write ordering in §6, and the bound is one file: the one being written.
   Anything that must not be lost is written under a new name and renamed over
@@ -495,7 +770,7 @@ either the old table or the new one and never a mixture.
 
 ## 14. Phasing
 
-**M1 (boot and survive):** `pata_ich6` with PIO and DMA read and write and
+**M1 (boot and survive):** `ata` with PIO and DMA read and write and
 reset-retry recovery, block core with MBR parsing, the page cache with a fixed
 16 MiB cap and a simple CLOCK, the ramdisk and the root mount, which is the
 boot-critical path, and fatfs read-only. Green under QEMU, plus the first
