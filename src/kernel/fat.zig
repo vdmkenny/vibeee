@@ -210,8 +210,26 @@ pub const Entry = struct {
     dir_sector: u32 = 0,
     dir_index: u32 = 0,
 
+    /// Where the last walk of this entry's chain stopped: `walked_cluster`
+    /// is the cluster at index `walked`. A chain is a linked list, so
+    /// counting from its front on every call costs a sequential reader or
+    /// writer the square of the file's length; a walk that resumes pays for
+    /// each cluster once.
+    ///
+    /// A cluster of zero means nothing is remembered, which is what cutting
+    /// the chain short or pointing the entry at another one leaves behind.
+    walked: u32 = 0,
+    walked_cluster: u32 = 0,
+
     pub fn nameSlice(self: *const Entry) []const u8 {
         return self.name[0..self.name_len];
+    }
+
+    /// Forget where a walk stopped. For anything that shortens this entry's
+    /// chain or points the entry at a different one.
+    pub fn forgetWalk(self: *Entry) void {
+        self.walked = 0;
+        self.walked_cluster = 0;
     }
 };
 
@@ -852,22 +870,12 @@ pub fn lookupPath(vol: *Volume, path: []const u8) Error!Entry {
 /// offset, which is acceptable while reads are sequential and files are small;
 /// a handle that remembered its last cluster would make it O(1) for the
 /// sequential case, and is the obvious change when it matters.
-pub fn readAt(vol: *Volume, entry: Entry, offset: u64, buf: []u8) Error!usize {
+pub fn readAt(vol: *Volume, entry: *Entry, offset: u64, buf: []u8) Error!usize {
     if (entry.is_dir) return error.IsDirectory;
     if (offset >= entry.size) return 0;
 
     const cluster_size = vol.clusterSize();
-    var cluster = entry.cluster;
-    // A record's first cluster is the card's word, not ours: one that names a
-    // cluster this volume does not have would read and write sectors that
-    // belong to the tables or to another file.
-    if (!vol.clusterValid(cluster)) return error.CorruptChain;
-
-    // Skip whole clusters until the one containing `offset`.
-    var skip = offset / cluster_size;
-    while (skip > 0) : (skip -= 1) {
-        cluster = try vol.nextCluster(cluster) orelse return error.CorruptChain;
-    }
+    var cluster = try walkTo(vol, entry, offset, .refuse);
 
     var within: u32 = @intCast(offset % cluster_size);
     var remaining: usize = @intCast(@min(entry.size - offset, buf.len));
@@ -881,14 +889,28 @@ pub fn readAt(vol: *Volume, entry: Entry, offset: u64, buf: []u8) Error!usize {
         var s: u32 = within / block.SECTOR_SIZE;
         var in_sector: u32 = within % block.SECTOR_SIZE;
 
-        while (s < vol.sectors_per_cluster and remaining > 0) : (s += 1) {
+        while (s < vol.sectors_per_cluster and remaining > 0) {
+            // Whole sectors lying next to each other on the medium and in the
+            // caller's buffer are one transfer. A sector at a time is one
+            // command each, and the buffer they would pass through is a copy
+            // of every byte for nothing.
+            const run = wholeSectors(vol, s, in_sector, remaining);
+            if (run > 0) {
+                const span = run * block.SECTOR_SIZE;
+                vol.dev.read(first + s, buf[written..][0..span]) catch return error.Io;
+                written += span;
+                remaining -= span;
+                s += run;
+                continue;
+            }
+
             vol.dev.read(first + s, &sector_buf) catch return error.Io;
-            const available = block.SECTOR_SIZE - in_sector;
-            const take = @min(remaining, available);
+            const take = @min(remaining, block.SECTOR_SIZE - in_sector);
             @memcpy(buf[written..][0..take], sector_buf[in_sector..][0..take]);
             written += take;
             remaining -= take;
             in_sector = 0;
+            s += 1;
         }
 
         if (remaining == 0) break;
@@ -978,23 +1000,32 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
         var s: u32 = within / block.SECTOR_SIZE;
         var in_sector: u32 = within % block.SECTOR_SIZE;
 
-        while (s < vol.sectors_per_cluster and remaining > 0) : (s += 1) {
-            const available = block.SECTOR_SIZE - in_sector;
-            const take = @min(remaining, available);
+        while (s < vol.sectors_per_cluster and remaining > 0) {
+            // As with reading: one transfer for the run. It also decides how
+            // often a write-through device is told to flush, which on a drive
+            // that caches is the larger half of what a command costs.
+            const run = wholeSectors(vol, s, in_sector, remaining);
+            if (run > 0) {
+                const span = run * block.SECTOR_SIZE;
+                vol.dev.write(first + s, data[done..][0..span]) catch return error.Io;
+                done += span;
+                remaining -= span;
+                s += run;
+                continue;
+            }
 
             // A partial sector must be read before it is written, or the bytes
             // either side of the update are replaced with whatever the buffer
             // happened to hold.
-            if (take != block.SECTOR_SIZE) {
-                vol.dev.read(first + s, &sector_buf) catch return error.Io;
-            }
-
+            vol.dev.read(first + s, &sector_buf) catch return error.Io;
+            const take = @min(remaining, block.SECTOR_SIZE - in_sector);
             @memcpy(sector_buf[in_sector..][0..take], data[done..][0..take]);
             vol.dev.write(first + s, &sector_buf) catch return error.Io;
 
             done += take;
             remaining -= take;
             in_sector = 0;
+            s += 1;
         }
 
         if (remaining == 0) break;
@@ -1053,7 +1084,10 @@ pub fn resize(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
 
     const first = entry.cluster;
     entry.size = size;
-    if (size == 0) entry.cluster = 0;
+    if (size == 0) {
+        entry.cluster = 0;
+        entry.forgetWalk();
+    }
     try commit(vol, entry.*, mtime);
 
     if (size == 0) {
@@ -1069,16 +1103,53 @@ pub fn resize(vol: *Volume, entry: *Entry, size: u32, mtime: i64) Error!void {
 /// file cost nothing until something is written to it.
 fn clusterAt(vol: *Volume, entry: *Entry, offset: u64) Error!u32 {
     if (entry.cluster < 2) entry.cluster = try table.alloc(&vol.fat);
-    // Growing a chain from a cluster number that is not this volume's would
-    // write over whatever sector it happens to name.
+    return walkTo(vol, entry, offset, .grow);
+}
+
+/// What a walk does with a chain that ends before the offset asked for: a
+/// write reaches past the end and takes another cluster, a read has found a
+/// chain shorter than the size its record claims.
+const ShortChain = enum { grow, refuse };
+
+/// The cluster holding byte `offset`, resuming this entry's last walk.
+///
+/// Where the walk stopped is kept on the entry, so the next call carries on
+/// rather than counting from the front again. Only forwards: an offset
+/// behind the mark starts over, which is what random access costs and what
+/// keeps the mark from ever naming a cluster past the one asked for.
+fn walkTo(vol: *Volume, entry: *Entry, offset: u64, short: ShortChain) Error!u32 {
+    // A chain walked from a cluster number that is not this volume's reads
+    // and writes whatever sector it happens to name.
     if (!vol.clusterValid(entry.cluster)) return error.CorruptChain;
 
+    const want: u32 = @intCast(offset / vol.clusterSize());
+    var index: u32 = 0;
     var cluster = entry.cluster;
-    var skip = offset / vol.clusterSize();
-    while (skip > 0) : (skip -= 1) {
-        cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+    if (entry.walked_cluster != 0 and entry.walked <= want) {
+        if (!vol.clusterValid(entry.walked_cluster)) return error.CorruptChain;
+        index = entry.walked;
+        cluster = entry.walked_cluster;
     }
+
+    while (index < want) : (index += 1) {
+        cluster = try vol.nextCluster(cluster) orelse switch (short) {
+            .grow => try table.append(&vol.fat, cluster),
+            .refuse => return error.CorruptChain,
+        };
+    }
+
+    entry.walked = want;
+    entry.walked_cluster = cluster;
     return cluster;
+}
+
+/// How many whole sectors starting at `s` a transfer may carry in one go:
+/// what is left of the cluster, bounded by what the caller still has, and
+/// none at all where the run would not start on a sector boundary.
+fn wholeSectors(vol: *Volume, s: u32, in_sector: u32, remaining: usize) u32 {
+    if (in_sector != 0 or remaining < block.SECTOR_SIZE) return 0;
+    const wanted = remaining / block.SECTOR_SIZE;
+    return @intCast(@min(wanted, vol.sectors_per_cluster - s));
 }
 
 /// Fill the bytes from `from` to `to` with zeros, growing the chain to
@@ -1118,6 +1189,9 @@ fn zeroRange(vol: *Volume, entry: *Entry, from: u64, to: u64) Error!void {
 /// Free whatever lies past the cluster holding byte `size - 1`, and end the
 /// chain there.
 fn dropTail(vol: *Volume, entry: *Entry, size: u32) Error!void {
+    // The clusters this is about to give away are exactly the ones a mark
+    // past the new end would name.
+    entry.forgetWalk();
     if (!vol.clusterValid(entry.cluster)) return;
 
     const per_cluster = vol.clusterSize();
@@ -1787,6 +1861,7 @@ fn relink(vol: *Volume, source: Entry, dir: Iterator, name: []const u8, mtime: i
     var moved = target;
     moved.cluster = source.cluster;
     moved.size = source.size;
+    moved.forgetWalk();
     try commit(vol, moved, mtime);
 
     // Only now is the old content unreachable, and only now safe to lose.

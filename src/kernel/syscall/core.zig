@@ -206,7 +206,7 @@ fn readConsole(buf: []u8) Result {
 }
 
 fn readFile(f: *handles.File, buf: []u8) Result {
-    const n = vfs.readAt(f.lease, f.entry, f.offset, buf) catch |err| return file_calls.errnoFor(err);
+    const n = vfs.readAt(f.lease, &f.entry, f.offset, buf) catch |err| return file_calls.errnoFor(err);
     f.offset += n;
     return @intCast(n);
 }

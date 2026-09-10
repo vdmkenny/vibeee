@@ -498,7 +498,7 @@ pub fn close(lease: Lease) void {
 }
 
 /// Read from an already-opened file.
-pub fn readAt(lease: Lease, entry: fat.Entry, offset: u64, buf: []u8) Error!usize {
+pub fn readAt(lease: Lease, entry: *fat.Entry, offset: u64, buf: []u8) Error!usize {
     const m = try lease.hold();
     defer lease.release();
     return fat.readAt(&m.volume, entry, offset, buf);
