@@ -350,15 +350,16 @@ fn sayCause(cause: @import("proto").socket.Cause) void {
     }
 }
 
+/// Who is on the other end, which is a notice and not the conversation: a
+/// piped or redirected `nc` carries only what the peer sent.
 fn sayPeer(what: []const u8, addr: u32, port: u16) void {
-    out.text(what);
     var field: [21]u8 = undefined;
-    out.text(lib.ipv4.textWithPort(addr, port, &field));
-    out.byte('\n');
-    out.flush();
+    const trouble = out.troubleStream();
+    trouble.write(what);
+    trouble.write(lib.ipv4.textWithPort(addr, port, &field));
+    trouble.writeByte('\n');
 }
 
 fn say(text: []const u8) void {
-    out.text(text);
-    out.flush();
+    out.trouble(text);
 }

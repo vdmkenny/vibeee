@@ -23,6 +23,23 @@ pub fn stream() *stream_mod.Stream {
     return &standard;
 }
 
+/// Where a program says what went wrong, which is never where it says what it
+/// was asked for. A tool whose output was redirected into a file still has
+/// somewhere to report a failure, and the report does not land in the file.
+///
+/// Unbuffered: a line about a failure is worth a syscall of its own, and
+/// there is then nothing left holding it when the program stops.
+var troubles = stream_mod.Stream.init(sys.STDERR, &.{}, .none);
+
+pub fn troubleStream() *stream_mod.Stream {
+    return &troubles;
+}
+
+/// One line about a failure, on the stream failures go to.
+pub fn trouble(message: []const u8) void {
+    troubles.write(message);
+}
+
 pub fn flush() void {
     standard.flush();
 }
@@ -65,15 +82,17 @@ pub fn glyph(cp: u21) void {
 /// One shape, because a person reading a pipeline's output should be able to
 /// tell which command spoke and what it was talking about without learning a
 /// different arrangement per command.
+/// `tool: what: why`, on the stream failures go to. `what` may be empty for
+/// a failure that is not about any one thing the tool was given.
 pub fn fault(tool: []const u8, what: []const u8, why: []const u8) void {
-    text(tool);
-    text(": ");
+    troubles.write(tool);
+    troubles.write(": ");
     if (what.len != 0) {
-        text(what);
-        text(": ");
+        troubles.write(what);
+        troubles.write(": ");
     }
-    text(why);
-    byte('\n');
+    troubles.write(why);
+    troubles.writeByte('\n');
 }
 
 pub fn pad(s: []const u8, width: usize) void {

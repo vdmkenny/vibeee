@@ -69,30 +69,31 @@ pub const Stream = struct {
     pub fn flush(self: *Stream) void {
         if (!self.writing or self.used == 0) return;
 
-        // Written until it is all written or the write stops taking any:
-        // a write answers with how much it took, and a pipe whose reader
-        // closes mid-write takes only part. Counted as done, the tail was
-        // dropped and nothing said the stream had failed.
+        self.pour(self.buffer[0..self.used]);
+        self.used = 0;
+    }
+
+    /// Written until it is all written or the write stops taking any: a write
+    /// answers with how much it took, and a pipe whose reader closes
+    /// mid-write takes only part. Counted as done, the tail was dropped and
+    /// nothing said the stream had failed.
+    fn pour(self: *Stream, bytes: []const u8) void {
         var at: usize = 0;
-        while (at < self.used) {
-            const n = sys.write(self.handle, self.buffer[at..self.used]) catch 0;
+        while (at < bytes.len) {
+            const n = sys.write(self.handle, bytes[at..]) catch 0;
             if (n == 0) {
                 self.failed = true;
-                break;
+                return;
             }
             at += n;
         }
-        self.used = 0;
     }
 
     pub fn writeByte(self: *Stream, byte: u8) void {
         self.beginWriting();
 
         if (self.buffering == .none or self.buffer.len == 0) {
-            const one = [_]u8{byte};
-            _ = sys.write(self.handle, &one) catch {
-                self.failed = true;
-            };
+            self.pour(&[_]u8{byte});
             return;
         }
 
@@ -110,9 +111,7 @@ pub const Stream = struct {
     pub fn write(self: *Stream, bytes: []const u8) void {
         if (self.buffering == .none or self.buffer.len == 0) {
             self.beginWriting();
-            _ = sys.write(self.handle, bytes) catch {
-                self.failed = true;
-            };
+            self.pour(bytes);
             return;
         }
 
