@@ -1,5 +1,10 @@
 //! Where a cursor stands in a ring a device also writes.
 //!
+//! Not `lib.ring`, which is the shared-memory ring two processes move bytes
+//! through: that one counts byte totals across a privilege boundary and
+//! assumes nothing about the counters it is handed. This is the index a
+//! driver keeps into a ring of descriptors the hardware walks beside it.
+//!
 //! Every ring here is a circle the hardware and this service walk in the
 //! same direction: the service advances a read index, the device a write
 //! one, and how much is in between is what may be reaped. The arithmetic

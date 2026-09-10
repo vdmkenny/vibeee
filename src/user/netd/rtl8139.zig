@@ -14,7 +14,7 @@ const dev_mod = @import("dev.zig");
 const lib = @import("lib");
 const dma = @import("dma.zig");
 const mii = @import("mii.zig");
-const ring = @import("ring.zig");
+const cursor = @import("cursor.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
 const ports = @import("ulib").ports;
@@ -351,11 +351,11 @@ const Device = struct {
     tx_phys: [TX_SLOTS]u32 = @splat(0),
 
     /// Where the host reads next in the receive ring, derived from CAPR.
-    rx_at: ring.Cursor(RX_RING) = .{},
+    rx_at: cursor.Cursor(RX_RING) = .{},
     /// Which descriptor is up next, and which are still out on the wire.
     /// Tracked here rather than read back from TSD: the hardware's idea of
     /// "own" at reset is its own, and this process's is the truth it acts on.
-    tx_at: ring.Cursor(TX_SLOTS) = .{},
+    tx_at: cursor.Cursor(TX_SLOTS) = .{},
     pending: [TX_SLOTS]bool = @splat(false),
     started: bool = false,
 };
@@ -635,8 +635,8 @@ fn reapRx(nic: *NicDev) void {
 
     // CBR is only the end of the snapshot, not the next packet. Consume at
     // most that finite snapshot so a busy wire cannot make one IRQ unbounded.
-    const write_at = ring.wrapped(@as(usize, device.ports.in16(.cbr)), RX_RING);
-    var remaining = ring.usedBetween(write_at, device.rx_at.at, RX_RING);
+    const write_at = cursor.wrapped(@as(usize, device.ports.in16(.cbr)), RX_RING);
+    var remaining = cursor.usedBetween(write_at, device.rx_at.at, RX_RING);
     if (remaining == 0) remaining = RX_RING; // BUFE distinguished full from empty
     dma.consume();
 

@@ -172,8 +172,10 @@ is counted in `stats.irq_late`.
 
 Device memory is held as `dma.Arena(Body)`: one value with the pointer, the
 mapping, the physical address and the handle, acquired and released together.
-Ring indices use `ring.Cursor` (`used`, `room`, `advance`) so the wrap
-arithmetic is written once. Link state is read from the PHY by the driver and
+Ring indices use `cursor.Cursor` (`used`, `room`, `advance`) so the wrap
+arithmetic is written once; it is a driver's index into a ring the hardware
+walks beside it, not `lib.ring`, which is the shared-memory ring processes
+move bytes through. Link state is read from the PHY by the driver and
 interpreted by `mii`, which covers the registers 802.3 defines.
 
 A radio carries one field more: `radio`, a table of what a radio can be asked

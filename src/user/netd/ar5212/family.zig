@@ -18,7 +18,7 @@
 //! than two. A field this file does not spell is one a caller must not
 //! invent.
 
-const ring = @import("../ring.zig");
+const cursor = @import("../cursor.zig");
 const std = @import("std");
 const lib = @import("lib");
 
@@ -609,18 +609,18 @@ pub fn Chain(comptime slots: usize) type {
 
         /// The slot after this one, wrapping at the end.
         pub fn next(index: usize) usize {
-            return ring.wrapped(index + 1, slots);
+            return cursor.wrapped(index + 1, slots);
         }
 
         /// The slot before this one, wrapping at the start.
         pub fn previous(index: usize) usize {
-            return ring.wrapped(index +% (slots - 1), slots);
+            return cursor.wrapped(index +% (slots - 1), slots);
         }
 
         /// The physical address of one descriptor in a run of them laid
         /// end to end from `base`.
         pub fn addressOf(base: u32, index: usize) u32 {
-            return base + @as(u32, @intCast(ring.wrapped(index, slots) * DESC_BYTES));
+            return base + @as(u32, @intCast(cursor.wrapped(index, slots) * DESC_BYTES));
         }
 
         /// Whether a run of this many descriptors starting at `base` fits

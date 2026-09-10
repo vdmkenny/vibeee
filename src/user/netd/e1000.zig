@@ -14,7 +14,7 @@ const dev_mod = @import("dev.zig");
 const lib = @import("lib");
 const std = @import("std");
 const dma = @import("dma.zig");
-const ring = @import("ring.zig");
+const cursor = @import("cursor.zig");
 const log = @import("ulib").log;
 const pci = @import("ulib").pci;
 const sys = @import("sys");
@@ -352,9 +352,9 @@ const Device = struct {
     /// because the arithmetic that matters — how much is outstanding, how
     /// much room is left — is measured the way a lap is, and every lap but
     /// the first has the writing end behind the reading one.
-    rx_next: ring.Cursor(RingSlots) = .{}, // next completed receive descriptor
-    tx_next: ring.Cursor(RingSlots) = .{}, // next transmit descriptor to publish
-    tx_clean: ring.Cursor(RingSlots) = .{}, // oldest transmit descriptor still owned by hardware
+    rx_next: cursor.Cursor(RingSlots) = .{}, // next completed receive descriptor
+    tx_next: cursor.Cursor(RingSlots) = .{}, // next transmit descriptor to publish
+    tx_clean: cursor.Cursor(RingSlots) = .{}, // oldest transmit descriptor still owned by hardware
     opened: bool = false,
     started: bool = false,
 };

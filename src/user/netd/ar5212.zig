@@ -28,7 +28,7 @@ const pace = @import("ar5212/pace.zig");
 const pci = @import("ulib").pci;
 const regs_mod = @import("ar5212/regs.zig");
 const reset = @import("ar5212/reset.zig");
-const ring = @import("ring.zig");
+const cursor = @import("cursor.zig");
 const std = @import("std");
 const sys = @import("sys");
 
@@ -152,7 +152,7 @@ const Device = struct {
     /// The next descriptor the service expects to find finished. A cursor
     /// rather than a number: it is a position in a ring the radio walks
     /// too, and the wrap is arithmetic this driver should not write twice.
-    rx_next: ring.Cursor(RING_SLOTS) = .{},
+    rx_next: cursor.Cursor(RING_SLOTS) = .{},
     /// Whether the descriptor before it said the frame carried on into
     /// the next one. A frame spread over several descriptors is dropped
     /// whole, and this is what remembers that the piece in hand is part
@@ -163,8 +163,8 @@ const Device = struct {
     /// is the distance from one cursor to the other, measured the way a lap
     /// measures it, and a count held beside two things that already say it
     /// is a count waiting to disagree with them after a stop that failed.
-    tx_next: ring.Cursor(RING_SLOTS) = .{},
-    tx_reap: ring.Cursor(RING_SLOTS) = .{},
+    tx_next: cursor.Cursor(RING_SLOTS) = .{},
+    tx_reap: cursor.Cursor(RING_SLOTS) = .{},
     /// One hardware-owned TX descriptor; all others are software queued.
     tx_active: ?usize = null,
     /// Whether the receive engine ran off the end of its run and is owed

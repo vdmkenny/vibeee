@@ -18,7 +18,7 @@ const log = @import("ulib").log;
 const mii = @import("mii.zig");
 const out = @import("ulib").out;
 const pci = @import("ulib").pci;
-const ring = @import("ring.zig");
+const cursor = @import("cursor.zig");
 const std = @import("std");
 const sys = @import("sys");
 
@@ -525,13 +525,13 @@ const Device = struct {
     /// where the next completion is reaped, and where the next receive slot
     /// is read. Cursors rather than numbers: the wrap is the arithmetic
     /// this driver used to write out at each of them.
-    txd_write: ring.Cursor(TXD_BYTES) = .{},
-    txd_read: ring.Cursor(TXD_BYTES) = .{},
-    txs_fill: ring.Cursor(TXS_COUNT) = .{},
-    txs_reap: ring.Cursor(TXS_COUNT) = .{},
+    txd_write: cursor.Cursor(TXD_BYTES) = .{},
+    txd_read: cursor.Cursor(TXD_BYTES) = .{},
+    txs_fill: cursor.Cursor(TXS_COUNT) = .{},
+    txs_reap: cursor.Cursor(TXS_COUNT) = .{},
     txs_used: usize = 0,
     tx_lengths: [TXS_COUNT]u16 = @splat(0),
-    rxd_read: ring.Cursor(RX_COUNT) = .{},
+    rxd_read: cursor.Cursor(RX_COUNT) = .{},
     opened: bool = false,
     started: bool = false,
 };
@@ -1271,7 +1271,7 @@ pub fn transmit(nic: *NicDev, frame: []const u8) bool {
     const header = TxHeader{ .pkt_len = @intCast(frame.len) };
     const at = device.txd_write.at;
     writeFifo(at, @sizeOf(TxHeader), std.mem.asBytes(&header));
-    writeFifo(ring.wrapped(at + @sizeOf(TxHeader), TXD_BYTES), frame.len, frame);
+    writeFifo(cursor.wrapped(at + @sizeOf(TxHeader), TXD_BYTES), frame.len, frame);
 
     device.txd_write.advance(needed);
     device.tx_lengths[status_slot] = @intCast(frame.len);
