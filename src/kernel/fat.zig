@@ -882,6 +882,7 @@ pub fn readAt(vol: *Volume, entry: *Entry, offset: u64, buf: []u8) Error!usize {
     var written: usize = 0;
 
     var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    var run: SectorRun = .{};
 
     while (remaining > 0) {
         const first = vol.firstSectorOfCluster(cluster);
@@ -890,20 +891,28 @@ pub fn readAt(vol: *Volume, entry: *Entry, offset: u64, buf: []u8) Error!usize {
         var in_sector: u32 = within % block.SECTOR_SIZE;
 
         while (s < vol.sectors_per_cluster and remaining > 0) {
-            // Whole sectors lying next to each other on the medium and in the
-            // caller's buffer are one transfer. A sector at a time is one
-            // command each, and the buffer they would pass through is a copy
-            // of every byte for nothing.
-            const run = wholeSectors(vol, s, in_sector, remaining);
-            if (run > 0) {
-                const span = run * block.SECTOR_SIZE;
-                vol.dev.read(first + s, buf[written..][0..span]) catch return error.Io;
-                written += span;
-                remaining -= span;
-                s += run;
+            // Whole sectors go into the pending run, which reaches across
+            // clusters wherever the chain put them next to each other. A
+            // sector at a time is one request each, and the buffer they
+            // would pass through is a copy of every byte for nothing.
+            const whole = wholeSectors(vol, s, in_sector, remaining);
+            if (whole > 0) {
+                if (!run.extend(first + s, written, whole)) {
+                    vol.dev.read(run.sector, buf[run.at..][0..run.span()]) catch return error.Io;
+                    _ = run.extend(first + s, written, whole);
+                }
+                written += whole * block.SECTOR_SIZE;
+                remaining -= whole * block.SECTOR_SIZE;
+                s += whole;
                 continue;
             }
 
+            // A part of a sector goes on its own, and what is already
+            // gathered goes first: the bytes in the run come before these.
+            if (run.sectors != 0) {
+                vol.dev.read(run.sector, buf[run.at..][0..run.span()]) catch return error.Io;
+                run = .{};
+            }
             vol.dev.read(first + s, &sector_buf) catch return error.Io;
             const take = @min(remaining, block.SECTOR_SIZE - in_sector);
             @memcpy(buf[written..][0..take], sector_buf[in_sector..][0..take]);
@@ -918,6 +927,9 @@ pub fn readAt(vol: *Volume, entry: *Entry, offset: u64, buf: []u8) Error!usize {
         cluster = try vol.nextCluster(cluster) orelse return error.CorruptChain;
     }
 
+    if (run.sectors != 0) {
+        vol.dev.read(run.sector, buf[run.at..][0..run.span()]) catch return error.Io;
+    }
     return written;
 }
 
@@ -993,6 +1005,7 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
     var done: usize = 0;
 
     var sector_buf: [block.SECTOR_SIZE]u8 = undefined;
+    var run: SectorRun = .{};
 
     while (remaining > 0) {
         const first = vol.firstSectorOfCluster(cluster);
@@ -1001,17 +1014,26 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
         var in_sector: u32 = within % block.SECTOR_SIZE;
 
         while (s < vol.sectors_per_cluster and remaining > 0) {
-            // As with reading: one transfer for the run. It also decides how
+            // As with reading: one request for the run. It also decides how
             // often a write-through device is told to flush, which on a drive
-            // that caches is the larger half of what a command costs.
-            const run = wholeSectors(vol, s, in_sector, remaining);
-            if (run > 0) {
-                const span = run * block.SECTOR_SIZE;
-                vol.dev.write(first + s, data[done..][0..span]) catch return error.Io;
-                done += span;
-                remaining -= span;
-                s += run;
+            // that caches is the larger half of what a request costs.
+            const whole = wholeSectors(vol, s, in_sector, remaining);
+            if (whole > 0) {
+                if (!run.extend(first + s, done, whole)) {
+                    vol.dev.write(run.sector, data[run.at..][0..run.span()]) catch return error.Io;
+                    _ = run.extend(first + s, done, whole);
+                }
+                done += whole * block.SECTOR_SIZE;
+                remaining -= whole * block.SECTOR_SIZE;
+                s += whole;
                 continue;
+            }
+
+            // What is gathered goes first, so the medium sees this file's
+            // bytes in the order the caller wrote them.
+            if (run.sectors != 0) {
+                vol.dev.write(run.sector, data[run.at..][0..run.span()]) catch return error.Io;
+                run = .{};
             }
 
             // A partial sector must be read before it is written, or the bytes
@@ -1031,6 +1053,10 @@ pub fn writeAt(vol: *Volume, entry: *Entry, offset: u64, data: []const u8) Error
         if (remaining == 0) break;
         within = 0;
         cluster = try vol.nextCluster(cluster) orelse try table.append(&vol.fat, cluster);
+    }
+
+    if (run.sectors != 0) {
+        vol.dev.write(run.sector, data[run.at..][0..run.span()]) catch return error.Io;
     }
 
     const end = offset + done;
@@ -1151,6 +1177,38 @@ fn wholeSectors(vol: *Volume, s: u32, in_sector: u32, remaining: usize) u32 {
     const wanted = remaining / block.SECTOR_SIZE;
     return @intCast(@min(wanted, vol.sectors_per_cluster - s));
 }
+
+/// Sectors that lie next to each other on the medium and next to each other
+/// in the caller's buffer.
+///
+/// A chain is usually laid down in order, so the sectors of one request are
+/// usually one run whatever the cluster size, and a volume of one-sector
+/// clusters is otherwise a request per sector. What a medium charges per
+/// request it charges once for the run.
+const SectorRun = struct {
+    /// Where it starts on the medium, and where in the caller's buffer the
+    /// bytes belong.
+    sector: u32 = 0,
+    at: usize = 0,
+    sectors: u32 = 0,
+
+    /// Take `count` sectors at `sector` if they carry on from what is here,
+    /// and say whether they did.
+    fn extend(self: *SectorRun, sector: u32, at: usize, count: u32) bool {
+        if (self.sectors == 0) {
+            self.* = .{ .sector = sector, .at = at, .sectors = count };
+            return true;
+        }
+        if (self.sector + self.sectors != sector) return false;
+        if (self.at + self.span() != at) return false;
+        self.sectors += count;
+        return true;
+    }
+
+    fn span(self: SectorRun) usize {
+        return @as(usize, self.sectors) * block.SECTOR_SIZE;
+    }
+};
 
 /// Fill the bytes from `from` to `to` with zeros, growing the chain to
 /// reach them. What a file made longer, or written past its end, gets in
