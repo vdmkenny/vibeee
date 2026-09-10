@@ -186,3 +186,35 @@ network they do not control.
 
 Updating is a re-fetch from https://curl.se/ca/cacert.pem and a re-run of the
 generator; the store is built, not committed.
+
+## lexbor
+
+An HTML5 parser and DOM, Apache 2.0. See `lexbor/LICENSE`. Pinned at
+`3.1.0`, commit `b0f7412f3f44a7978e96f1b9f014abda3a05e5ee`.
+`lexbor/COMMIT` records the commit and the version.
+
+Nothing under `lexbor/` is edited. Vendored: `source/lexbor/core`, `dom`,
+`html`, `ns` and `tag`, which is what the HTML and DOM modules reference and
+no more, plus `ports/posix` for the memory and clock hooks. `css` and
+`selectors` are absent because this reader sets a page in its own two faces,
+so a cascade decides nothing it draws. `encoding` and `unicode` are absent
+because between them they are seventeen megabytes of table, ten of which is
+the multi-byte character sets; a page in one of those is a page this cannot
+read yet, and that is the honest state rather than a megabyte spent against
+it. The platform's file reading is left out too: opening a file is this
+system's own business, and upstream's wants a `stat` field this system does
+not define.
+
+The mirror and the boundary are `apps/web/lexbor.zig`, and
+`apps/web/lexborport/layout_check.c` pins the one struct shape the mirror
+reaches into, so a header change and a mirror change each fail the build on
+their own. Which files are compiled is walked from the vendored tree rather
+than listed, so a file added upstream arrives with the next re-fetch.
+
+It is compiled into `web` and only `web`. Chosen over litehtml, which is C++
+and STL against a tree with no C++ in it, and over Modest, whose upstream
+says to use this instead. NetSurf's hubbub is a fifth of the size and was the
+other real candidate; neither ships layout, which is written here either way.
+
+`include/memory.h` exists for this: the System V name for what `string.h`
+declares, which lexbor includes and this system did not have.

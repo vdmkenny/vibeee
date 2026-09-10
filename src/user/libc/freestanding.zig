@@ -12,9 +12,14 @@ pub const stdlib = @import("stdlib.zig");
 /// allocates from. A vendored decoder asks for its own memory, and there is
 /// one heap here to give it.
 pub const mem = @import("mem.zig");
+/// What C reaches for when it converts a number. A parser turning "1.5e3"
+/// into a double wants the same routines a calculator does, and there is one
+/// set of them here.
+pub const math = @import("math.zig");
 
 comptime {
     _ = string;
     _ = stdlib;
     _ = mem;
+    _ = math;
 }

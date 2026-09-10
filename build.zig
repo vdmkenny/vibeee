@@ -108,6 +108,63 @@ const UserBuild = struct {
         self.addClibc(out);
     }
 
+    /// The HTML parser, compiled into whatever needs one.
+    ///
+    /// The modules taken are the ones `html` and `dom` reference and no
+    /// others: no CSS, no character-set tables, which between them are most
+    /// of what upstream ships. A reader sets a page in its own two faces, so
+    /// a cascade buys it nothing, and the tables it would need are a
+    /// megabyte before the first page is fetched.
+    ///
+    /// Walked rather than written out, for the reason the Doom recipe reads
+    /// its engine's own source list: a file added upstream should arrive
+    /// with the next re-fetch, not wait for somebody here to notice it.
+    fn addLexbor(self: UserBuild, out: *std.Build.Step.Compile) void {
+        const io = self.b.graph.io;
+        const root = "third_party/lexbor/source/lexbor";
+        const modules = [_][]const u8{ "core", "dom", "html", "ns", "tag" };
+
+        var files: [400][]const u8 = undefined;
+        var count: usize = 0;
+
+        for (modules) |module| {
+            const rel = self.b.fmt("{s}/{s}", .{ root, module });
+            var dir = self.b.build_root.handle.openDir(io, rel, .{ .iterate = true }) catch
+                @panic("lexbor: a module named here is not vendored");
+            defer dir.close(io);
+
+            var walker = dir.walk(self.b.allocator) catch @panic("out of memory");
+            while (walker.next(io) catch @panic("lexbor: the module would not walk")) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.basename, ".c")) continue;
+                if (count == files.len) @panic("lexbor: more sources than there is room for");
+                files[count] = self.b.fmt("{s}/{s}", .{ rel, entry.path });
+                count += 1;
+            }
+        }
+
+        // The platform layer, without the half that reads files: opening one
+        // is this system's own business, and upstream's wants a stat field
+        // this system does not define.
+        for ([_][]const u8{ "memory", "perf" }) |part| {
+            files[count] = self.b.fmt("{s}/ports/posix/lexbor/core/{s}.c", .{ root, part });
+            count += 1;
+        }
+
+        // The layout proof, which pins the struct shapes the Zig mirror
+        // relies on. No code, only assertions.
+        files[count] = "apps/web/lexborport/layout_check.c";
+        count += 1;
+
+        out.root_module.addIncludePath(self.b.path("third_party/lexbor/source"));
+        out.root_module.addIncludePath(self.b.path("include"));
+        out.root_module.addCSourceFiles(.{
+            .files = files[0..count],
+            .flags = self.cFlags(&.{"-DLEXBOR_STATIC"}),
+        });
+        self.addClibc(out);
+    }
+
     /// How C is compiled here, and whatever else this piece of it needs
     /// said. Freestanding, because there is no host underneath.
     fn cFlags(self: UserBuild, extra: []const []const u8) []const []const u8 {
@@ -575,6 +632,11 @@ pub fn build(b: *std.Build) void {
             const echat = user.exe("echat", "apps/echat/echat.zig", !named(symbols, "echat"));
             const echat_step = b.step("echat", "Build the echat IRC client into zig-out/bin");
             echat_step.dependOn(&b.addInstallArtifact(echat, .{}).step);
+
+            const web = user.exe("web", "apps/web/web.zig", !named(symbols, "web"));
+            user.addLexbor(web);
+            const web_step = b.step("web", "Build the web reader into zig-out/bin");
+            web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
 
             // The character-journal model, on the host: the whole of a
             // character is what its lines add up to, and none of it needs a
