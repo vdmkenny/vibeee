@@ -273,6 +273,14 @@ pub fn release(h: Handle) vfs.Error!void {
                     error.Gone => {},
                     else => |e| return e,
                 };
+                // Record and contents both written, so this is where the
+                // drive is told to commit what it is holding. A closed file
+                // has landed; asking after every write instead would cost a
+                // round trip to the drive for each one.
+                vfs.flush(file.lease) catch |err| switch (err) {
+                    error.Gone => {},
+                    else => |e| return e,
+                };
             }
         },
         .directory => {

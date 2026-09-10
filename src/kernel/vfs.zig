@@ -603,6 +603,19 @@ pub fn commit(lease: Lease, entry: fat.Entry, mtime: i64) Error!void {
     return fat.commit(&m.volume, entry, mtime);
 }
 
+/// Push what the volume's drive still holds through to the medium.
+///
+/// What bounds how much a power cut can take: a file whose handle has been
+/// closed has landed, whatever the drive was keeping in its own cache. The
+/// drive is only asked when something has been written to it.
+pub fn flush(lease: Lease) Error!void {
+    const m = try lease.hold();
+    defer lease.release();
+    // A drive answers about itself; above here the only thing that matters
+    // is that what was written is not known to have landed.
+    m.device.flush() catch return error.Io;
+}
+
 /// Make an open file exactly `size` bytes, record and all.
 pub fn resize(lease: Lease, entry: *fat.Entry, size: u32, mtime: i64) Error!void {
     const m = try lease.hold();

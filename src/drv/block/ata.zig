@@ -561,12 +561,15 @@ fn readSectors(ctx: *anyopaque, lba: u64, buf: []u8) block.Error!void {
 
 fn writeSectors(ctx: *anyopaque, lba: u64, buf: []const u8) block.Error!void {
     const drive: *Drive = @ptrCast(@alignCast(ctx));
-    try transfer(drive, lba, .{ .out = buf });
-    return flushCache(ctx);
+    return transfer(drive, lba, .{ .out = buf });
 }
 
-/// Without this the drive may still be holding the write in its own cache, and
-/// a power cut loses data the caller was told had landed.
+/// Push what the drive is holding in its own cache through to the medium.
+///
+/// Asked for, not done after every write: which writes have to have landed
+/// before a power cut is the block layer's to decide, and it already knows
+/// whether anything has been written since the last time it asked. A command
+/// per write costs a round trip to the drive for every one of them.
 fn flushCache(ctx: *anyopaque) block.Error!void {
     const drive: *Drive = @ptrCast(@alignCast(ctx));
     const ch = drive.channel;
