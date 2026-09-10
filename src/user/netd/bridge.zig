@@ -124,6 +124,10 @@ pub fn init(channel: u32) ?u32 {
 /// socket any process may close.
 pub fn handle(message: *const sys.Message, token: u32) void {
     const req = proto.requestIn(message) orelse return refuse(token);
+    // A tag this protocol does not define is answered, not switched on: the
+    // caller checks too, and this is the entry point rather than a step
+    // inside one.
+    if (!proto.known(req.tag)) return refuse(token);
     const who = message.sender;
 
     switch (req.tag) {

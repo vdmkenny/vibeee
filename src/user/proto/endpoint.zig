@@ -27,7 +27,22 @@ const sys = @import("sys");
 /// the switch below it can stay exhaustive: the compiler still checks that
 /// every tag that *is* defined is handled.
 pub fn known(tag: anytype) bool {
-    return @intFromEnum(tag) < @typeInfo(@TypeOf(tag)).@"enum".fields.len;
+    const Tag = @TypeOf(tag);
+    const fields = @typeInfo(Tag).@"enum".fields;
+
+    // The comparison below is only an answer while the names are numbered
+    // from zero with no gaps. Reserving a wire value with an explicit number
+    // is an ordinary thing to want, and doing it would quietly turn this
+    // into a check that lets unnamed tags through: said here, where it is
+    // a build that fails rather than a service that ends.
+    comptime {
+        for (fields, 0..) |field, i| {
+            if (field.value != i) {
+                @compileError(@typeName(Tag) ++ ": known() needs tags numbered from zero");
+            }
+        }
+    }
+    return @intFromEnum(tag) < fields.len;
 }
 
 /// The two ends of one service.

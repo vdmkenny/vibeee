@@ -518,7 +518,7 @@ fn drainReadyIrqs(interfaces: []dev.NicDev, selected: ?u32, comptime io: type) v
             if (other.irq != handle) continue;
             other.irq_count += 1;
             if (other.ops.irq(other)) {
-                other.serviced_at = @intCast(@as(u64, @intCast(sys.clockMicros())));
+                other.serviced_at = dev.clock();
                 found = true;
             }
         }
@@ -738,6 +738,18 @@ fn drain(channel: u32) void {
         const bytes = message.bytes();
         if (bytes.len >= @sizeOf(proto.Req)) {
             const asked: *const proto.Req = @ptrCast(@alignCast(bytes.ptr));
+
+            // A tag is a byte a client chose, and nothing on the way here
+            // makes it one of the names. Switching on a value that is not
+            // one is a jump through whatever the table holds there, and
+            // this service is the network for the whole machine. Refused
+            // before it is dispatched, so the switches below it stay
+            // exhaustive and a tag added later is still a compile error.
+            if (!proto.known(asked.tag)) {
+                replyWith(channel, request.token, &.{ .status = .refused });
+                continue;
+            }
+
             switch (asked.tag) {
                 .ping => {
                     startPing(channel, request.token, asked.param, asked.param2);
