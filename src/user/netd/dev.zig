@@ -457,6 +457,9 @@ pub fn serviceAdapters(interfaces: []NicDev) void {
 /// rest of the boot.
 const QUIET_US: u64 = 25_000;
 
-fn clock() u64 {
+/// Microseconds since the machine started, as this file counts them. Public
+/// so that the loop marking an adapter serviced and the loop deciding whether
+/// one has been quiet read the same clock.
+pub fn clock() u64 {
     return @intCast(@import("sys").clockMicros());
 }

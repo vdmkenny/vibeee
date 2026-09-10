@@ -98,7 +98,13 @@ pub fn Arena(comptime Body: type) type {
 
         /// The address a device is given for `offset` bytes into the body,
         /// or none where that would run off the end of what was allocated.
+        ///
+        /// Bounded by the body and not only by the four gigabytes a device
+        /// of this age addresses: an offset past the end names memory this
+        /// arena does not hold, and an address handed to a bus master is
+        /// not a number to be approximately right about.
         pub fn physOf(self: Self, offset: usize) ?lib.Phys {
+            if (offset >= @sizeOf(Body)) return null;
             const last = std.math.cast(u32, offset) orelse return null;
             return self.phys.plus(last);
         }

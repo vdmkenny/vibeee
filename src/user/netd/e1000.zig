@@ -384,13 +384,16 @@ pub fn open(loc: pci.Location, dev: *NicDev) bool {
     // address space that never comes back.
     var keep_pci_enabled = false;
     defer if (!keep_pci_enabled) {
-        // The arena too: an open that got as far as taking device memory
-        // and then failed has to give it back, or the next attempt at this
-        // adapter is refused for want of the run this one is still sitting
-        // on. Releasing one that was never taken does nothing.
+        // The bus master goes first, and then the memory it was given. An
+        // open that got as far as taking device memory and then failed has
+        // to give it back, or the next attempt at this adapter is refused
+        // for want of the run this one is still sitting on -- but a part
+        // still able to fetch holds addresses into whatever gets that
+        // memory next. Releasing an arena that was never taken does
+        // nothing.
+        pci.disableInterruptAndMaster(loc);
         device.arena.release();
         sys.shmUnmap(@volatileCast(device.regs.base));
-        pci.disableInterruptAndMaster(loc);
     };
     device.regs = .{ .base = @ptrCast(aperture) };
 

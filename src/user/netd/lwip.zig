@@ -408,15 +408,17 @@ var stale_random: c_uint = 0x85EBCA6B;
 /// a RST or inject data into a connection it cannot see. The ports are mixed
 /// in so two connections drawn in the same tick do not share one.
 export fn netd_tcp_isn(
-    _: ?*const anyopaque,
+    local_ip: ?*const Ip4Addr,
     local_port: u16,
-    _: ?*const anyopaque,
+    remote_ip: ?*const Ip4Addr,
     remote_port: u16,
 ) callconv(.c) c_uint {
     var bytes: [@sizeOf(c_uint)]u8 = undefined;
     var value: u32 = if (sys.random(&bytes)) @as(u32, @bitCast(bytes)) else withoutEntropy();
     // The four-tuple is mixed in so two connections drawn from the same
     // value, in the same tick, do not open with the same sequence number.
+    if (local_ip) |from| value +%= from.addr;
+    if (remote_ip) |to| value +%= to.addr;
     value +%= @as(u32, local_port) << 16;
     value +%= @as(u32, remote_port) << 3;
     value +%= @truncate(@as(u64, @intCast(sys.clockMicros())));
