@@ -30,7 +30,21 @@ pub const Reader = struct {
     line: [MAX]u8 = undefined,
     /// Whether the line just handed over was longer than it could hold.
     cut: bool = false,
+    /// How long that line was, which is not how much of it came back when it
+    /// ran past `MAX`. What a tool counting bytes wants is the length the
+    /// stream had, and the part that fit is a different number.
+    full: usize = 0,
+    /// Runs of anything that is not a space, over the whole line.
+    ///
+    /// Counted here rather than by whoever wants the number, because this
+    /// loop is the only thing that sees a long line in full: counting from
+    /// what comes back counts the part that fit and calls it the line.
+    words: usize = 0,
     /// The stream gave its last line; nothing more will come.
+    ///
+    /// True on the call that hands over a line means that line ended at the
+    /// end of the stream and had no newline after it, which is a byte the
+    /// file did not have.
     spent: bool = false,
 
     pub fn of(handle: u32) Reader {
@@ -46,7 +60,10 @@ pub const Reader = struct {
         if (self.spent) return null;
 
         var len: usize = 0;
+        var inside = false;
         self.cut = false;
+        self.full = 0;
+        self.words = 0;
 
         while (true) {
             if (self.at == self.held) {
@@ -63,6 +80,11 @@ pub const Reader = struct {
             const byte = self.chunk[self.at];
             self.at += 1;
             if (byte == '\n') return self.line[0..len];
+
+            self.full += 1;
+            const blank = byte == ' ' or byte == '\t' or byte == '\r';
+            if (!blank and !inside) self.words += 1;
+            inside = !blank;
 
             if (len < MAX) {
                 self.line[len] = byte;

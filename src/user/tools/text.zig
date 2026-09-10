@@ -158,28 +158,22 @@ pub fn wc(args: []const []const u8) void {
 
 fn wcOne(_: void, name: []const u8) void {
     var count: Count = .{};
-    while (reader.next()) |line| {
+    while (reader.next()) |_| {
         count.lines += 1;
-        // The newline the reader took off is a byte the file had.
-        count.bytes += line.len + 1;
-        count.words += words(line);
+        // The line's own length and its own words, not those of the part
+        // that fit: a line longer than the reader keeps is still that many
+        // bytes of the file, and counting what came back reported a
+        // thousand-byte line for every length beyond it.
+        //
+        // The newline the reader took off is a byte the file had, wherever
+        // there was one; the last line of a file that ends without one has
+        // no newline to count.
+        count.bytes += reader.full + @intFromBool(!reader.spent);
+        count.words += reader.words;
     }
     count.write(name);
     total.add(count);
     counted_files += 1;
-}
-
-/// Runs of anything that is not a space, which is what a word is to everything
-/// that counts them.
-fn words(line: []const u8) usize {
-    var seen: usize = 0;
-    var inside = false;
-    for (line) |c| {
-        const blank = c == ' ' or c == '\t' or c == '\r';
-        if (!blank and !inside) seen += 1;
-        inside = !blank;
-    }
-    return seen;
 }
 
 // ---------------------------------------------------------------------------
