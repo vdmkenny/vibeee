@@ -61,6 +61,7 @@ const http = @import("http.zig");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
 const pictures_mod = @import("pictures.zig");
+const scripts = @import("page_scripts");
 const source_mod = @import("source.zig");
 const url = @import("url.zig");
 const view_mod = @import("view.zig");
@@ -100,6 +101,13 @@ var shown: Page = .{};
 /// The page on screen as it came, kept to read it again in a window it reads
 /// differently in.
 var source: Source = .{};
+/// The page on screen as a tree, kept while it is on screen: a script works
+/// on it, and the reader reads the page from it again where one has changed
+/// it.
+var document: ?Tree = null;
+/// The script running on the page on screen, where the reader was built with
+/// one and the page carries one.
+var in_page: ?*scripts.Page = null;
 /// The window the page on screen was read for, and the one it is drawn in
 /// now, as a stylesheet asks about a window. None before there is a window.
 var read_for: ?media.Screen = null;
@@ -515,7 +523,16 @@ fn fileAddress(path: []const u8, buf: []u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 
 fn tick() bool {
-    return step();
+    const drew = step();
+    // What a script left waiting, which the page is read again for where it
+    // changed the page.
+    if (in_page) |page| {
+        if (scripts.loop(page)) {
+            readAgain();
+            return true;
+        }
+    }
+    return drew;
 }
 
 fn woken(index: usize) bool {
@@ -574,7 +591,15 @@ fn step() bool {
 /// happens.
 fn rest() void {
     sleepOn(null);
-    proto.app.retick(IDLE_US);
+    proto.app.retick(idleFor());
+}
+
+/// How long the window sleeps where there is nothing coming: until a script's
+/// next timer is due, or for good where it set none.
+fn idleFor() usize {
+    const page = in_page orelse return IDLE_US;
+    const ms = scripts.waits(page) orelse return IDLE_US;
+    return @min(@as(usize, @intCast(@min(ms, std.math.maxInt(u32)))), IDLE_US / std.time.us_per_ms) * std.time.us_per_ms;
 }
 
 /// Sleep on the settings, and on `site` while a page is coming from one.
@@ -750,17 +775,47 @@ fn sheetArrived() void {
 /// as it reads in the window, and put it on screen.
 fn finish() void {
     const r = if (reading) |*open| open else return;
+    // The tree is kept rather than closed with the reading: it is what a
+    // script works on, and what the page is read from again.
+    var tree = r.tree;
     defer {
-        r.deinit();
+        r.links.deinit(gpa);
         reading = null;
     }
     var fresh: Page = .{};
-    r.tree.read(gpa, &r.source, window, &fresh) catch |err| {
+    forget();
+    // A page's scripts run before it is read, so that what they change is
+    // what is read, which is the order a browser has them in.
+    in_page = scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT);
+    tree.read(gpa, &r.source, window, &fresh) catch |err| {
         fresh.deinit(gpa);
+        tree.close();
         r.source.deinit(gpa);
         return failed(err, if (url.parse(r.source.base.slice())) |base| base.host else "");
     };
+    document = tree;
     present(&fresh, r.source);
+}
+
+/// Let go of the tree the page on screen was read from, and of the script
+/// running on it: a page gone from the screen takes both with it, and a node
+/// a script was given is nothing once its tree has gone.
+fn forget() void {
+    if (in_page) |page| scripts.close(page);
+    in_page = null;
+    if (document) |*tree| tree.close();
+    document = null;
+}
+
+/// Read the page on screen again from its tree, at the place it was left:
+/// what a script has changed is read as the page says it now.
+fn readAgain() void {
+    const tree = &(document orelse return);
+    var fresh: Page = .{};
+    tree.read(gpa, &source, window, &fresh) catch return;
+    pending_scroll = view.scroll;
+    showPage(&fresh);
+    title_stale = true;
 }
 
 /// Let go of a page still being read, for another that is to be gone to.
@@ -877,6 +932,7 @@ fn present(fresh: *Page, from: Source) void {
 /// Put `fresh` on screen, read from `from`, which takes the place of the
 /// source of the page it replaces.
 fn replace(fresh: *Page, from: Source) void {
+    forget();
     source.deinit(gpa);
     source = from;
     read_for = window;

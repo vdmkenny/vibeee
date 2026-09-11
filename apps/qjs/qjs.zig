@@ -21,7 +21,7 @@ const env = ulib.env;
 const file = ulib.file;
 const heap = ulib.heap;
 const out = ulib.out;
-const engine_mod = @import("quickjs.zig");
+const engine = @import("js");
 
 // The routines quickjs's C calls by name.
 comptime {
@@ -39,25 +39,25 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     const script = file.readAlloc(gpa, path, SCRIPT_MAX) catch |err| fatal(path, err);
     defer gpa.free(script);
 
-    const engine = engine_mod.open() orelse {
+    const machine = engine.open() orelse {
         out.trouble("qjs: the engine would not start\n");
         sys.exit(1);
     };
-    defer engine_mod.close(engine);
+    defer engine.close(machine);
 
     // A script named as a module is read as one; any other is read as a
     // script, which is what the engine does with a file it is given.
-    const ended = engine_mod.run(engine, script, path, std.mem.endsWith(u8, path, ".mjs"));
+    const ended = engine.run(machine, script, path, std.mem.endsWith(u8, path, ".mjs"));
     if (ended) |value| {
-        defer engine_mod.giveBack(engine, value);
+        defer engine.giveBack(machine, value);
         out.text(std.mem.span(value));
         out.text("\n");
     } else {
-        engine_mod.tellError(engine);
+        engine.tellError(machine);
     }
     // What a script left waiting runs after it has been read, so a promise
     // made at the top of it is kept even where the answer was already given.
-    engine_mod.loop(engine);
+    engine.loop(machine);
     out.flush();
     sys.exit(0);
 }

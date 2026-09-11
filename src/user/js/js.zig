@@ -1,4 +1,6 @@
-//! The engine's face, as this program calls it, and the whole of it.
+//! The engine's face, as a program of this system calls it, and the whole
+//! of it. `src/user/js/port/engine.c` is what's behind these calls; `qjs`
+//! and `web` are the two programs that make them.
 //!
 //! QuickJS is reached through `quickjsport/engine.c` rather than directly:
 //! a `JSValue` is a struct sixteen bytes wide whose shape depends on how

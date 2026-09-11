@@ -111,23 +111,28 @@ const UserBuild = struct {
         self.addClibc(out);
     }
 
-    /// QuickJS, compiled into whatever runs a script.
+    /// QuickJS and the port over it, compiled into whatever runs a script.
+    /// Added once, however many parts of a program reach for them.
     ///
-    /// The five files upstream's own library is built from, less
-    /// `quickjs-libc.c`: the compiler, the regular expressions and the
-    /// Unicode tables behind them, its own conversion of a number to text,
-    /// and its little utilities. Upstream's library of helpers is not
-    /// vendored, because what it gives a script is a POSIX this system does
-    /// not have — shared objects to open, processes to wait for, a poll to
-    /// block on — and a stub for each would be a promise the machine cannot
-    /// keep. What a script gets instead is written in `quickjsport`, and is
-    /// only what is true here: the language, and a way to say something.
+    /// Five files of upstream's own library, less `quickjs-libc.c`: the
+    /// compiler, the regular expressions and the Unicode tables behind them,
+    /// its own conversion of a number to text, and its little utilities.
+    /// Upstream's library of helpers is not vendored, because what it gives a
+    /// script is a POSIX this system does not have — shared objects to open,
+    /// processes to wait for, a poll to block on — and a stub for each would
+    /// be a promise the machine cannot keep. What a script gets instead is
+    /// written in the port, and is only what is true here: the language, and
+    /// a way to say something. Nor `qjs.c`, which is upstream's shell and
+    /// whose job a program of this system does for itself; nor the test
+    /// runner, the standalone compiler, nor the Unicode generator, which is
+    /// how the tables are made rather than read.
     ///
-    /// Not `qjs.c`, which is upstream's shell and whose job a program of
-    /// this system does for itself; not the test runner, the standalone
-    /// compiler, nor the Unicode generator, which is how the tables are
-    /// made rather than read.
+    /// The Zig side of it is `src/user/js/js.zig`, which declares the port's
+    /// calls and nothing else, so a signature changed on either side fails
+    /// the build on its own.
     fn addQuickJs(self: UserBuild, out: *std.Build.Step.Compile) void {
+        if (out.root_module.import_table.contains("js")) return;
+
         out.root_module.addIncludePath(self.b.path("third_party/quickjs"));
         // The system's own C headers: a vendored C file asks for `stdlib.h`
         // and the rest by name, and what it gets is this system's idea of
@@ -140,10 +145,11 @@ const UserBuild = struct {
                 "third_party/quickjs/libregexp.c",
                 "third_party/quickjs/libunicode.c",
                 "third_party/quickjs/cutils.c",
+                "src/user/js/port/engine.c",
             },
             // Upstream is written against a GNU-flavoured C: `asm` for the
-            // pause hint its atomics spin on, and `alloca` without asking
-            // for the header. Both are given here rather than by editing a
+            // pause hint its atomics spin on, and `alloca` without asking for
+            // the header. Both are given here rather than by editing a
             // vendored file.
             .flags = self.cFlags(&.{
                 "-std=gnu11",
@@ -152,6 +158,11 @@ const UserBuild = struct {
             }),
         });
         self.addClibc(out);
+        out.root_module.addImport("js", self.b.createModule(.{
+            .root_source_file = self.b.path("src/user/js/js.zig"),
+            .target = self.target,
+            .optimize = self.optimize,
+        }));
     }
 
     /// The HTML parser and its cascade, compiled into whatever needs them.
@@ -313,6 +324,17 @@ pub fn build(b: *std.Build) void {
         "symbols",
         "User programs to build unstripped, comma separated",
     ) orelse "";
+
+    // Whether the reader carries a script engine. Off, it is the reader it
+    // was before a page could run anything: half the size, and a page that
+    // leans on a script reads as it is written rather than as the script
+    // would have made it. `web.zig` is the same either way: it asks for
+    // `scripts`, and gets either the engine or a module that does nothing.
+    const with_scripts = b.option(
+        bool,
+        "scripts",
+        "Build the web reader with QuickJS, so a page's scripts run (default: true)",
+    ) orelse true;
 
     // ---------------------------------------------------------------------
     // Target, one per architecture.
@@ -710,16 +732,36 @@ pub fn build(b: *std.Build) void {
             // is the first half of giving the reader a script to run.
             const qjs = user.exe("qjs", "apps/qjs/qjs.zig", !named(symbols, "qjs"));
             user.addQuickJs(qjs);
-            qjs.root_module.addCSourceFiles(.{
-                .files = &.{"apps/qjs/quickjsport/engine.c"},
-                .flags = user.cFlags(&.{}),
-            });
-            qjs.root_module.addIncludePath(b.path("third_party/quickjs"));
             const qjs_step = b.step("qjs", "Build the qjs script runner into zig-out/bin");
             qjs_step.dependOn(&b.addInstallArtifact(qjs, .{}).step);
 
             const web = user.exe("web", "apps/web/web.zig", !named(symbols, "web"));
             user.addLexbor(web);
+            // A page's scripts: the engine and the document built over
+            // lexbor, or a module of the same shape that does nothing. The
+            // reader itself does not know which.
+            if (with_scripts) {
+                user.addQuickJs(web);
+                web.root_module.addCSourceFiles(.{
+                    .files = &.{"apps/web/dom/dom.c"},
+                    .flags = user.cFlags(&.{}),
+                });
+                web.root_module.addIncludePath(b.path("src/user/js/port"));
+            }
+            const js_mod = b.createModule(.{
+                .root_source_file = b.path("src/user/js/js.zig"),
+                .target = user.target,
+                .optimize = optimize,
+            });
+            web.root_module.addImport("page_scripts", b.createModule(.{
+                .root_source_file = b.path(if (with_scripts)
+                    "apps/web/scripts/on.zig"
+                else
+                    "apps/web/scripts/off.zig"),
+                .target = user.target,
+                .optimize = optimize,
+                .imports = if (with_scripts) &.{.{ .name = "js", .module = js_mod }} else &.{},
+            }));
             // The formats pages use that the decoder reads.
             user.addPictures(web, &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_GIF" });
             web.root_module.addImport("blocklist_data", blocklistData(b));
