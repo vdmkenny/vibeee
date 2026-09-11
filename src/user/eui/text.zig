@@ -248,6 +248,10 @@ pub const Editor = struct {
     /// crossing a short line comes back to where it was rather than staying at
     /// its end.
     goal: ?i32 = null,
+    /// A second press took the whole of a line, and the drag the button is
+    /// still held for leaves it whole rather than cutting it down to wherever
+    /// the pointer wanders.
+    whole: bool = false,
     /// Set on any change to the text, for the caller's modified flag.
     edited: bool = false,
     /// Shown but not changed. Everything that reads still works: the cursor
@@ -360,7 +364,15 @@ pub fn shown(state: *const Editor, buffer: *const Buffer, mask: *[MASK_MAX]u8) [
     return mask[0..len];
 }
 
+/// What an editor edits: a document, which a double click does nothing
+/// special to, or a line, which a double click takes the whole of.
+const Shape = enum { area, line };
+
 pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) void {
+    editAs(ctx, area, state, buffer, .area);
+}
+
+fn editAs(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer, shape: Shape) void {
     const entry = ctx.slotFor(area) orelse return;
     const act = ctx.interact(entry, area);
     const entry_index = act.index;
@@ -393,17 +405,21 @@ pub fn edit(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) v
     }.at;
 
     if (act.over and ctx.pressedThisPass()) {
-        // Held with shift, a click extends what is selected rather than
+        // A line pressed twice is a line to replace, and the second press
+        // takes all of it. Otherwise a press puts the cursor where it lands,
+        // and held with shift it extends what is selected rather than
         // starting again, which is how a long selection is made without
         // dragging across a screen this size.
-        state.moveTo(under(state, visible, box, ctx, line_height), ctx.key_mods.shift);
+        state.whole = shape == .line and act.clicks >= 2 and state.selectAll(buffer);
+        if (!state.whole) state.moveTo(under(state, visible, box, ctx, line_height), ctx.key_mods.shift);
         state.goal = null;
         changed = true;
     }
 
     // Dragging selects. The press already put the cursor where it started,
-    // so every move after it extends from there.
-    if (act.holding and !ctx.pressedThisPass()) {
+    // so every move after it extends from there, unless the press took the
+    // whole line.
+    if (act.holding and !ctx.pressedThisPass() and !state.whole) {
         const to = under(state, visible, box, ctx, line_height);
         if (to != state.cursor) {
             state.moveTo(to, true);
@@ -668,21 +684,38 @@ fn key(
         }
     }
 
+    // A move is a change like any edit: the cursor, or what is selected, is
+    // drawn somewhere else, and a field that did not paint it would look as
+    // though the key had done nothing.
     switch (code) {
         .left => {
             const to = if (mods.control) str.wordBefore(text, state.cursor) else buffer.before(state.cursor);
             state.moveTo(to, extend);
             state.goal = null;
+            return true;
         },
         .right => {
             const to = if (mods.control) str.wordAfter(text, state.cursor) else buffer.after(state.cursor);
             state.moveTo(to, extend);
             state.goal = null;
+            return true;
         },
-        .up => vertical(state, text, width, -1, extend),
-        .down => vertical(state, text, width, 1, extend),
-        .page_up => vertical(state, text, width, -@as(i32, @intCast(rows)), extend),
-        .page_down => vertical(state, text, width, @intCast(rows), extend),
+        .up => {
+            vertical(state, text, width, -1, extend);
+            return true;
+        },
+        .down => {
+            vertical(state, text, width, 1, extend);
+            return true;
+        },
+        .page_up => {
+            vertical(state, text, width, -@as(i32, @intCast(rows)), extend);
+            return true;
+        },
+        .page_down => {
+            vertical(state, text, width, @intCast(rows), extend);
+            return true;
+        },
         // Held with the modifier the two ends are the document's, which is
         // what every editor has meant by it for thirty years.
         .home => {
@@ -693,6 +726,7 @@ fn key(
                 state.moveTo(lineAt(text, face(), width, here.line).start, extend);
             }
             state.goal = null;
+            return true;
         },
         .end => {
             if (mods.control) {
@@ -702,6 +736,7 @@ fn key(
                 state.moveTo(lineAt(text, face(), width, here.line).end, extend);
             }
             state.goal = null;
+            return true;
         },
         .enter, .kp_enter, .tab, .backspace, .delete => if (state.read_only) return false,
         else => {},
@@ -935,6 +970,66 @@ pub fn field(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer) 
         }
     }
 
-    edit(ctx, area, state, buffer);
+    editAs(ctx, area, state, buffer, .line);
     return accepted;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "a move is a change the field paints, and held with shift it selects" {
+    var storage: [16]u8 = undefined;
+    var buffer = Buffer{ .bytes = &storage };
+    buffer.clear();
+    _ = buffer.insert(0, "hello");
+    var state = Editor{ .cursor = 5 };
+
+    try testing.expect(key(&state, &buffer, .left, .{}, 200, 1, .{}));
+    try testing.expectEqual(@as(usize, 4), state.cursor);
+    try testing.expect(state.selection() == null);
+
+    try testing.expect(key(&state, &buffer, .left, .{ .shift = true }, 200, 1, .{}));
+    const span = state.selection().?;
+    try testing.expectEqual(@as(usize, 3), span.from);
+    try testing.expectEqual(@as(usize, 4), span.to);
+}
+
+test "a second press on a line takes all of it, and the drag after leaves it so" {
+    // The interface face comes from the font pack when a program starts,
+    // and a test has none, so it borrows the face built in for tests.
+    draw.ui_font = &@import("lib").font.spleen_8x16;
+    var pixels: [96 * 24]draw.Color = @splat(.{});
+    var ctx = widget.Context.init(Surface.init(&pixels, 96, 24, 96));
+    var line: Field(16) = .{};
+    line.init(.{ .initial = "hello" });
+    const area = Rect{ .x = 0, .y = 0, .w = 96, .h = 24 };
+
+    const pass = struct {
+        fn at(c: *widget.Context, l: *Field(16), a: Rect, x: i32, down: bool) void {
+            c.begin(x, 12, .{ .left = down });
+            _ = l.run(c, a);
+            c.end();
+        }
+    }.at;
+
+    // One press puts the cursor down and selects nothing.
+    ctx.postPress(10, 12, 1_000_000);
+    pass(&ctx, &line, area, 10, true);
+    pass(&ctx, &line, area, 10, false);
+    try testing.expect(line.editor.selection() == null);
+
+    // A second close behind it takes the whole line.
+    ctx.postPress(10, 12, 1_200_000);
+    pass(&ctx, &line, area, 10, true);
+    const all = line.editor.selection().?;
+    try testing.expectEqual(@as(usize, 0), all.from);
+    try testing.expectEqual(@as(usize, 5), all.to);
+
+    // The button still held, the pointer wanders, and all of it stays taken.
+    pass(&ctx, &line, area, 40, true);
+    try testing.expectEqual(@as(usize, 5), line.editor.selection().?.to);
+    try testing.expectEqual(@as(usize, 0), line.editor.selection().?.from);
 }

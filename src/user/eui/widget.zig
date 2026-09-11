@@ -42,6 +42,15 @@ pub const Modifiers = @import("lib").syscalls.Modifiers;
 /// Keys the toolkit acts on itself, matching kernel/input.zig KeyCode.
 pub const KeyCode = @import("lib").syscalls.KeyCode;
 
+/// How soon after one press of the main button the next has to come to make
+/// a double click, and how near it has to land. A thumb on a touchpad this
+/// small is slower than a hand on a mouse, so the time is generous.
+const DOUBLE_US: u64 = 500 * 1000;
+const CLICK_SLOP = 4;
+
+/// Where and when the main button last went down.
+const Press = struct { x: i32 = 0, y: i32 = 0, at_us: u64 = 0 };
+
 /// How a control looks right now. Kept per control so a pass can tell whether
 /// anything needs redrawing.
 pub const Visual = enum { idle, hot, active, checked, checked_hot };
@@ -134,6 +143,11 @@ pub const Context = struct {
     /// button comes back up, which is what lets someone press a button, drag
     /// away and release without activating it.
     pressed: ?usize = null,
+    /// Which of a run of presses of the main button the last one was: two
+    /// close together in time and place are a double click. Counted by
+    /// `postPress`, from when the frame says each press happened.
+    clicks: u8 = 0,
+    last_press: Press = .{},
     /// Whether the other button's press has been acted on already. A press
     /// that opened something must not also be the press that answers it,
     /// and what a pass opens is drawn later in the same pass: the control
@@ -288,6 +302,23 @@ pub const Context = struct {
             return;
         }
         self.pending_text = codepoint;
+    }
+
+    /// The main button went down at `x`, `y`, at `at_us` on the system's
+    /// clock. A press soon after the last that lands beside it is the next
+    /// of a run, which is how a control tells a double click from two clicks.
+    pub fn postPress(self: *Context, x: i32, y: i32, at_us: u64) void {
+        const near = @abs(x - self.last_press.x) <= CLICK_SLOP and @abs(y - self.last_press.y) <= CLICK_SLOP;
+        const soon = self.clicks > 0 and at_us -| self.last_press.at_us <= DOUBLE_US;
+        self.clicks = if (near and soon) self.clicks +| 1 else 1;
+        self.last_press = .{ .x = x, .y = y, .at_us = at_us };
+    }
+
+    /// Say which modifiers the keyboard holds now, as a key going up says as
+    /// well as one going down. What a click reads: a Shift let go of is a
+    /// click that puts the cursor down rather than one that extends.
+    pub fn postModifiers(self: *Context, mods: Modifiers) void {
+        self.key_mods = mods;
     }
 
     /// What changed this pass.
@@ -518,6 +549,10 @@ pub const Context = struct {
         /// because taking the key here would take it from a control that
         /// wanted to read it: a text area needs Enter to mean a new line.
         clicked: bool,
+        /// Which of a run of presses the press this pass is, where it landed
+        /// on this control: two for a double click, and none on a pass
+        /// without a press.
+        clicks: u8,
     };
 
     /// Make the control at `area` paint on this pass whatever it looked like
@@ -583,6 +618,7 @@ pub const Context = struct {
             .holding = self.pressed == index and self.buttons.left,
             .focused = self.focus == index,
             .clicked = over and self.pressed == index and self.releasedThisPass(),
+            .clicks = if (over and self.pressedThisPass()) self.clicks else 0,
         };
     }
 
@@ -641,6 +677,7 @@ pub const Context = struct {
                 .holding = false,
                 .focused = false,
                 .clicked = false,
+                .clicks = 0,
             };
         };
         const activated = enabled and (it.clicked or self.activatedByKey(entry));
@@ -2283,4 +2320,24 @@ test "a slot the pass did not touch is given up, and the next claim of it paints
         if (e.used and !e.seen) e.* = .{};
     }
     try testing.expect(ctx.needsPaint(ctx.slotFor(area).?, .idle));
+}
+
+test "presses close together on one spot are a run, and one late or elsewhere starts another" {
+    var pixels: [16]draw.Color = @splat(.{});
+    var ctx = forTesting(&pixels);
+
+    ctx.postPress(100, 40, 1_000_000);
+    try testing.expectEqual(@as(u8, 1), ctx.clicks);
+    ctx.postPress(101, 41, 1_200_000);
+    try testing.expectEqual(@as(u8, 2), ctx.clicks);
+    ctx.postPress(101, 41, 1_400_000);
+    try testing.expectEqual(@as(u8, 3), ctx.clicks);
+
+    // Too long after the last starts again, and so does a press elsewhere.
+    ctx.postPress(101, 41, 3_000_000);
+    try testing.expectEqual(@as(u8, 1), ctx.clicks);
+    ctx.postPress(101, 41, 3_100_000);
+    try testing.expectEqual(@as(u8, 2), ctx.clicks);
+    ctx.postPress(160, 41, 3_200_000);
+    try testing.expectEqual(@as(u8, 1), ctx.clicks);
 }

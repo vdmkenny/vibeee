@@ -105,6 +105,8 @@ What a program calls around its controls, once each way.
 | `postKey` | `fn (*widget.Context, syscalls.KeyCode, syscalls.Modifiers) void` |
 | `postScroll` | `fn (*widget.Context, i8) void` |
 | `postText` | `fn (*widget.Context, u32) void` |
+| `postPress` | `fn (*widget.Context, i32, i32, u64) void` |
+| `postModifiers` | `fn (*widget.Context, syscalls.Modifiers) void` |
 | `damageList` | `fn (*const widget.Context) []const draw.Rect` |
 | `end` | `fn (*widget.Context) void` |
 | `damage` | `fn (*widget.Context) void` |

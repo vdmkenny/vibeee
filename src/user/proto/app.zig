@@ -98,9 +98,7 @@ pub fn retick(period_us: usize) void {
 pub fn wakeOn(handles: []const u32) void {
     hooks.wakes = handles;
 }
-var buttons: eui.widget.Buttons = .{};
-var pointer_x: i32 = 0;
-var pointer_y: i32 = 0;
+var pointer: client.Pointer = .{};
 
 /// Open the connection, create the window, and run forever.
 ///
@@ -192,15 +190,8 @@ pub fn run(
 
         switch (event.tag) {
             .configure => resize(event.body.configure.w, event.body.configure.h),
-            .ptr_motion => {
-                pointer_x = event.body.motion.x;
-                pointer_y = event.body.motion.y;
-                redraw();
-            },
-            .ptr_button => {
-                pointer_x = event.body.button.x;
-                pointer_y = event.body.button.y;
-                setButton(event.body.button.btn, event.body.button.down != 0);
+            .ptr_motion, .ptr_button => {
+                pointer.take(&ctx, event);
                 redraw();
             },
             .scroll => {
@@ -208,6 +199,10 @@ pub fn run(
                 redraw();
             },
             .key => {
+                // What is held is the keyboard's state whichever way a key
+                // went, so a Shift let go of stops extending what a click
+                // selects.
+                ctx.postModifiers(event.body.key.mods);
                 if (!event.body.key.pressed) continue;
                 const code = event.body.key.code;
                 const mods = event.body.key.mods;
@@ -249,15 +244,6 @@ fn mayClose() bool {
     return may();
 }
 
-fn setButton(index: u8, down: bool) void {
-    switch (index) {
-        0 => buttons.left = down,
-        1 => buttons.right = down,
-        2 => buttons.middle = down,
-        else => {},
-    }
-}
-
 fn resize(w: u16, h: u16) void {
     connection.attach(window, w, h) catch return;
     const surface = connection.surfaceOf(window) orelse return;
@@ -284,7 +270,7 @@ fn redraw() void {
 }
 
 fn paint() void {
-    ctx.begin(pointer_x, pointer_y, buttons);
+    pointer.begin(&ctx);
     hooks.draw();
     ctx.end();
     connection.commit(window, ctx.damageList()) catch {};

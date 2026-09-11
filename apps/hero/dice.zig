@@ -148,9 +148,7 @@ pub const Window = struct {
     window: u8 = 0,
     showing: bool = false,
     ctx: eui.Context = undefined,
-    pointer_x: i32 = 0,
-    pointer_y: i32 = 0,
-    buttons: eui.widget.Buttons = .{},
+    pointer: proto.client.Pointer = .{},
 
     setup: Setup = .{},
     title_storage: [64]u8 = @splat(0),
@@ -214,22 +212,12 @@ pub const Window = struct {
                 connection.map(self.window) catch {};
                 return;
             },
-            .ptr_motion => {
-                self.pointer_x = event.body.motion.x;
-                self.pointer_y = event.body.motion.y;
-            },
-            .ptr_button => {
-                self.pointer_x = event.body.button.x;
-                self.pointer_y = event.body.button.y;
-                switch (event.body.button.btn) {
-                    0 => self.buttons.left = event.body.button.down != 0,
-                    1 => self.buttons.right = event.body.button.down != 0,
-                    2 => self.buttons.middle = event.body.button.down != 0,
-                    else => {},
-                }
-            },
+            .ptr_motion, .ptr_button => self.pointer.take(&self.ctx, event),
             .scroll => self.ctx.postScroll(event.body.scroll.dy),
             .key => {
+                // What is held, whichever way the key went: a Shift let go
+                // of stops extending what a click selects.
+                self.ctx.postModifiers(event.body.key.mods);
                 if (!event.body.key.pressed) return;
                 // Escape leaves. Enter is the strong button: the roll, and
                 // once one has landed, done. Up and down nudge the bonus.
@@ -335,7 +323,7 @@ pub const Window = struct {
         const whole = Rect{ .x = 0, .y = 0, .w = surface.width, .h = surface.height };
         const area = whole.inset(t.padding);
 
-        ctx.begin(self.pointer_x, self.pointer_y, self.buttons);
+        self.pointer.begin(ctx);
         if (ctx.damaged) surface.fill(whole, t.surface);
 
         // The title, with the window's name in the corner, and the line

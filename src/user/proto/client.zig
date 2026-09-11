@@ -67,6 +67,48 @@ pub const Snapshot = struct {
     stride_px: u16,
 };
 
+/// Where the pointer is and what it holds, as a window's events tell it.
+///
+/// Kept by every window that runs its own toolkit passes: the frame's, a
+/// dialog's, an application's second window. One place turns the events into
+/// what a pass begins with, and says when the main button went down, which is
+/// what a double click is counted from.
+pub const Pointer = struct {
+    x: i32 = 0,
+    y: i32 = 0,
+    buttons: eui.widget.Buttons = .{},
+
+    /// Take an event about the pointer; anything else is left alone.
+    pub fn take(self: *Pointer, ctx: *eui.Context, event: wm.Ev) void {
+        switch (event.tag) {
+            .ptr_motion => {
+                self.x = event.body.motion.x;
+                self.y = event.body.motion.y;
+            },
+            .ptr_button => {
+                self.x = event.body.button.x;
+                self.y = event.body.button.y;
+                const down = event.body.button.down != 0;
+                switch (event.body.button.btn) {
+                    0 => {
+                        self.buttons.left = down;
+                        if (down) ctx.postPress(self.x, self.y, sys.clockMicros());
+                    },
+                    1 => self.buttons.right = down,
+                    2 => self.buttons.middle = down,
+                    else => {},
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Begin a pass of `ctx` with the pointer as it is.
+    pub fn begin(self: *const Pointer, ctx: *eui.Context) void {
+        ctx.begin(self.x, self.y, self.buttons);
+    }
+};
+
 pub const Connection = struct {
     /// How the desktop looks, as last told. Kept here because it arrives in
     /// two records and every window this program has draws in the whole of
