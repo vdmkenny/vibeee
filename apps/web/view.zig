@@ -54,6 +54,12 @@ const LINE_MAX = 256;
 /// A line to type in, as the toolkit keeps one.
 const Line = eui.text.Field(LINE_MAX);
 
+/// What a page is drawn on, which shows through a picture's see-through
+/// parts.
+pub fn ground() eui.draw.Color {
+    return eui.theme.current().surface_hot;
+}
+
 /// What a face is on this system, measured at the size it is drawn, and the
 /// room the page's controls and pictures take.
 const Metrics = struct {
@@ -495,7 +501,7 @@ const Pass = struct {
     /// the toolkit's to paint, after this.
     fn paint(self: Pass, band: Rect) void {
         const s = self.surface.clipped(band);
-        s.fill(band, self.theme.surface_hot);
+        s.fill(band, ground());
 
         // A preformatted band reaches past its first and last lines by its
         // inset, so the lines just outside `band` may still paint inside it.

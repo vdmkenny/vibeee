@@ -523,7 +523,7 @@ fn replace(fresh: *Page) void {
     pending_scroll = 0;
     title_stale = true;
     // Its pictures from the next chance on, once its words are drawn.
-    pictures.show(gpa, &shown, widest());
+    pictures.show(gpa, &shown, widest(), view_mod.ground());
     waitFor(.none);
 }
 

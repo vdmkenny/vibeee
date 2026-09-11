@@ -80,6 +80,8 @@ pub const Pictures = struct {
     halted: bool = false,
     /// The widest a picture is drawn, which is what it is shrunk to.
     widest: u16 = 480,
+    /// What a picture is drawn on, which its see-through parts show.
+    ground: rgb.Colour = .{},
     /// What the pictures that are here hold between them, in bytes.
     held: usize = 0,
 
@@ -87,10 +89,12 @@ pub const Pictures = struct {
     /// Which picture the fetch is for, while it is for one.
     fetching: ?u16 = null,
 
-    /// Take on `page`'s pictures, letting go of the last page's.
-    pub fn show(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, widest: u16) void {
+    /// Take on `page`'s pictures, to be drawn at most `widest` across on
+    /// `ground`, letting go of the last page's.
+    pub fn show(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, widest: u16, ground: rgb.Colour) void {
         self.forget(gpa);
         self.widest = widest;
+        self.ground = ground;
         // A page with no room to follow its pictures still reads: they are
         // stood in for, as pictures that will not come are.
         self.states = gpa.alloc(State, page.pictures.items.len) catch &.{};
@@ -221,7 +225,7 @@ pub const Pictures = struct {
         const weight = count * @sizeOf(rgb.Colour);
         if (self.held + weight > HELD_MAX) return .failed;
 
-        const full = img.decode(bytes) catch return .failed;
+        const full = img.decodeOver(bytes, self.ground) catch return .failed;
         defer full.deinit();
         const pixels = gpa.alloc(rgb.Colour, count) catch return .failed;
         self.held += weight;
