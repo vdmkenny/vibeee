@@ -24,6 +24,11 @@ double tanh(double x);
 
 double sqrt(double x);
 double cbrt(double x);
+/* The inverse hyperbolics, which QuickJS wants for `Math.acosh` and the
+   rest, and which are one line each over the logarithm that defines them. */
+double acosh(double x);
+double asinh(double x);
+double atanh(double x);
 double pow(double x, double y);
 double exp(double x);
 double exp2(double x);
@@ -39,6 +44,8 @@ double floor(double x);
 double ceil(double x);
 double round(double x);
 double trunc(double x);
+/* The nearest integer to a double, in the machine's own rounding. */
+long lrint(double x);
 double fmod(double x, double y);
 double ldexp(double x, int n);
 double frexp(double x, int *exponent);

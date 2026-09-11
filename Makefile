@@ -227,7 +227,7 @@ examples: kernel $(EXAMPLES)
 
 # Things that are not part of the system, built separately and installed
 # into `home/bin/`. See apps/README.md.
-apps: hero echat eeemod roll web
+apps: hero echat eeemod roll web qjs
 	@$(MAKE) --no-print-directory -C apps
 
 # Hero, the character journal: a first-party program that is not part of the
@@ -283,6 +283,16 @@ web:
 	@mkdir -p home/bin
 	@cp zig-out/bin/web home/bin/web
 	@echo "  ready   home/bin/web, on the machine at the next image build"
+
+# The script runner: QuickJS, vendored and built into a program of this
+# system's. Not host-tested, being C that is not ours: what is tested here is
+# that it builds for the machine, and the rest is a script run on the machine.
+.PHONY: qjs
+qjs:
+	@$(ZIG) build qjs
+	@mkdir -p home/bin
+	@cp zig-out/bin/qjs home/bin/qjs
+	@echo "  ready   home/bin/qjs, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi

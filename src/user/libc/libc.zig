@@ -26,6 +26,9 @@ pub const mem = @import("mem.zig");
 pub const start = @import("start.zig");
 pub const stdio = @import("stdio.zig");
 pub const stdlib = @import("stdlib.zig");
+/// How a program ends, which `start` calls and which is here as well so the
+/// archive has it whether or not it has C's own entry point.
+pub const stop = @import("stop.zig");
 pub const string = @import("string.zig");
 pub const time = @import("time.zig");
 pub const term = @import("term.zig");
@@ -42,6 +45,7 @@ comptime {
     _ = start;
     _ = stdio;
     _ = stdlib;
+    _ = stop;
     _ = string;
     _ = time;
     _ = term;

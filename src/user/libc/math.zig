@@ -42,6 +42,25 @@ export fn atan2(y: f64, x: f64) f64 {
     return std.math.atan2(y, x);
 }
 
+export fn acosh(x: f64) f64 {
+    return std.math.acosh(x);
+}
+
+export fn asinh(x: f64) f64 {
+    return std.math.asinh(x);
+}
+
+export fn atanh(x: f64) f64 {
+    return std.math.atanh(x);
+}
+
+/// The nearest integer, halves away from nought: this machine rounds to
+/// nearest and stays there, so the rounding mode a C caller may set is not
+/// one there is anything to follow.
+export fn lrint(x: f64) c_long {
+    return @intFromFloat(@round(x));
+}
+
 export fn sinh(x: f64) f64 {
     return std.math.sinh(x);
 }

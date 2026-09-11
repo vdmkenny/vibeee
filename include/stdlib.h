@@ -10,6 +10,11 @@ void *malloc(size_t size);
 void free(void *pointer);
 void *calloc(size_t count, size_t size);
 void *realloc(void *pointer, size_t size);
+/* How much of a block is usable. This heap does not keep what was asked for,
+   so the answer is nought, which is to say there is no slack to hand out: a
+   caller that grows a block cannot be told it has room left in it. Upstream
+   asks for it and says nought is an answer where there is none to give. */
+size_t malloc_usable_size(void *pointer);
 int posix_memalign(void **out, size_t alignment, size_t size);
 
 void exit(int status) __attribute__((noreturn));

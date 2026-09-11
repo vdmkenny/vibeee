@@ -29,6 +29,15 @@ export fn realloc(pointer: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque {
     return heap.resize(pointer, size) orelse fail();
 }
 
+/// How much of a block is usable, which is nothing: this heap keeps no
+/// record of what was asked for, so a caller wanting the slack left in a
+/// block it has grown is told there is none rather than a number made up.
+/// Upstream asks for it and says nought is an answer where there is none.
+export fn malloc_usable_size(pointer: ?*anyopaque) callconv(.c) usize {
+    _ = pointer;
+    return 0;
+}
+
 /// Every block is at least sixteen-byte aligned already. Anything stricter is
 /// refused rather than quietly under-aligned, because a caller that asked for
 /// a page boundary and got sixteen bytes has no way to find out.

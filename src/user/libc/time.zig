@@ -35,6 +35,11 @@ pub const Tm = extern struct {
     tm_wday: c_int,
     tm_yday: c_int,
     tm_isdst: c_int,
+    /// Seconds east of UTC: none, since there is no local time to be
+    /// different from. A port reads it, so it is here and it is nought.
+    tm_gmtoff: c_long,
+    /// The name of the zone, such as it is.
+    tm_zone: ?[*:0]const u8,
 };
 
 export fn clock_gettime(which: c_int, out: *Timespec) callconv(.c) c_int {
@@ -81,6 +86,13 @@ var broken: Tm = undefined;
 
 /// UTC, always. `localtime` is the same function: with one clock and no
 /// timezone table there is no local time to be different.
+/// The same, written where the caller says rather than in the one place
+/// `gmtime` keeps.
+export fn localtime_r(seconds: *const c_long, out: *Tm) callconv(.c) *Tm {
+    out.* = gmtime(seconds).*;
+    return out;
+}
+
 export fn gmtime(seconds: *const c_long) callconv(.c) *Tm {
     const parts = civil.fromEpoch(seconds.*);
 
@@ -94,6 +106,8 @@ export fn gmtime(seconds: *const c_long) callconv(.c) *Tm {
         .tm_wday = @intCast(civil.weekday(seconds.*)),
         .tm_yday = 0,
         .tm_isdst = 0,
+        .tm_gmtoff = 0,
+        .tm_zone = "UTC",
     };
     return &broken;
 }

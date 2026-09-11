@@ -219,3 +219,40 @@ other real candidate; neither ships layout, which is written here either way.
 
 `include/memory.h` exists for this: the System V name for what `string.h`
 declares, which lexbor includes and this system did not have.
+
+## quickjs
+
+Fabrice Bellard's and Charlie Gordon's ECMAScript engine, MIT. See
+`quickjs/LICENSE`. Pinned at the `2026-06-04` release; `quickjs/VERSION`
+records which.
+
+Vendored: `quickjs.c`, `libregexp.c`, `libunicode.c` (with
+`libunicode-table.h`), `dtoa.c` and `cutils.c`, which is what upstream's own
+library is built from. Not `quickjs-libc.c`, the helpers it gives a script:
+what they give is a POSIX this system does not have — shared objects to open,
+processes to wait for, a poll to block on — and a stub for each would be a
+promise the machine cannot keep. What a script gets instead is written in
+`apps/qjs/quickjsport/engine.c`, and is only what is true here: the language,
+`print` and `console.log`. Nor `qjs.c`, which is upstream's shell and whose
+job `apps/qjs/qjs.zig` does for itself; nor the standalone compiler, the test
+runner, or `unicode_gen.c`, which is how the tables are made rather than read.
+
+The boundary is `apps/qjs/quickjs.zig`, which declares the four calls of
+`engine.h` and nothing else, so a signature changed on either side fails the
+build on its own. Values never cross it: a `JSValue` is a struct sixteen bytes
+wide whose shape depends on how upstream was built and whose helpers are C
+inline functions, so a script goes in as bytes and comes out as a string.
+
+Two things it asks for that this system does not otherwise have are answered
+rather than stubbed in silence: `pthread.h`, whose locks and waits are nothing
+at all to a program built single-threaded (`src/user/libc/pthread.zig`), and
+`dlfcn.h`, whose `dlopen` opens nothing and says so
+(`src/user/libc/dlfcn.zig`). `setjmp.h` and `fenv.h` are declared and nothing
+more: the vendored files that include them use nothing in them, and a future
+one that did would not link, which is the answer wanted.
+
+Chosen over quickjs-ng, the maintained fork, because pinning a dated release
+of the original is the smaller promise; over Duktape because it is ES5 with
+extensions and this is meant to run what a page sends today; and over
+JavaScriptCore or V8, which are not a program one vendor into a system this
+size.

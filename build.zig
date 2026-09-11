@@ -111,6 +111,49 @@ const UserBuild = struct {
         self.addClibc(out);
     }
 
+    /// QuickJS, compiled into whatever runs a script.
+    ///
+    /// The five files upstream's own library is built from, less
+    /// `quickjs-libc.c`: the compiler, the regular expressions and the
+    /// Unicode tables behind them, its own conversion of a number to text,
+    /// and its little utilities. Upstream's library of helpers is not
+    /// vendored, because what it gives a script is a POSIX this system does
+    /// not have — shared objects to open, processes to wait for, a poll to
+    /// block on — and a stub for each would be a promise the machine cannot
+    /// keep. What a script gets instead is written in `quickjsport`, and is
+    /// only what is true here: the language, and a way to say something.
+    ///
+    /// Not `qjs.c`, which is upstream's shell and whose job a program of
+    /// this system does for itself; not the test runner, the standalone
+    /// compiler, nor the Unicode generator, which is how the tables are
+    /// made rather than read.
+    fn addQuickJs(self: UserBuild, out: *std.Build.Step.Compile) void {
+        out.root_module.addIncludePath(self.b.path("third_party/quickjs"));
+        // The system's own C headers: a vendored C file asks for `stdlib.h`
+        // and the rest by name, and what it gets is this system's idea of
+        // them, which is the freestanding set under `include/`.
+        out.root_module.addIncludePath(self.b.path("include"));
+        out.root_module.addCSourceFiles(.{
+            .files = &.{
+                "third_party/quickjs/quickjs.c",
+                "third_party/quickjs/dtoa.c",
+                "third_party/quickjs/libregexp.c",
+                "third_party/quickjs/libunicode.c",
+                "third_party/quickjs/cutils.c",
+            },
+            // Upstream is written against a GNU-flavoured C: `asm` for the
+            // pause hint its atomics spin on, and `alloca` without asking
+            // for the header. Both are given here rather than by editing a
+            // vendored file.
+            .flags = self.cFlags(&.{
+                "-std=gnu11",
+                "-DCONFIG_VERSION=\"2026-06-04\"",
+                "-Dalloca=__builtin_alloca",
+            }),
+        });
+        self.addClibc(out);
+    }
+
     /// The HTML parser and its cascade, compiled into whatever needs them.
     ///
     /// The modules taken are the ones `html` and `dom` reference, and `css`,
@@ -662,6 +705,18 @@ pub fn build(b: *std.Build) void {
             const echat = user.exe("echat", "apps/echat/echat.zig", !named(symbols, "echat"));
             const echat_step = b.step("echat", "Build the echat IRC client into zig-out/bin");
             echat_step.dependOn(&b.addInstallArtifact(echat, .{}).step);
+
+            // The script runner: QuickJS in a program of this system's, which
+            // is the first half of giving the reader a script to run.
+            const qjs = user.exe("qjs", "apps/qjs/qjs.zig", !named(symbols, "qjs"));
+            user.addQuickJs(qjs);
+            qjs.root_module.addCSourceFiles(.{
+                .files = &.{"apps/qjs/quickjsport/engine.c"},
+                .flags = user.cFlags(&.{}),
+            });
+            qjs.root_module.addIncludePath(b.path("third_party/quickjs"));
+            const qjs_step = b.step("qjs", "Build the qjs script runner into zig-out/bin");
+            qjs_step.dependOn(&b.addInstallArtifact(qjs, .{}).step);
 
             const web = user.exe("web", "apps/web/web.zig", !named(symbols, "web"));
             user.addLexbor(web);

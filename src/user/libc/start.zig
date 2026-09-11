@@ -8,12 +8,15 @@
 //! runs, and torn down after it returns.
 
 const env = @import("env.zig");
-const sys = @import("sys");
-const stdio = @import("stdio.zig");
 
 /// Provided by the program being linked. The one symbol this library expects
 /// rather than provides.
 extern fn main(argc: c_int, argv: [*c][*c]u8, envp: [*c][*c]u8) c_int;
+
+/// Where a program goes when it is finished, in `stop.zig`: this library is
+/// linked whole for a C program, so the call resolves whether or not this
+/// file names the module.
+extern fn exit(status: c_int) callconv(.c) noreturn;
 
 /// The kernel enters every program as one C call whose argument is the
 /// argc/argv frame it built: alignment, the terminating return address and
@@ -27,39 +30,6 @@ export fn _start(stack: [*]const usize) callconv(.c) noreturn {
     env.adopt(@ptrCast(@constCast(stack + 1 + @as(usize, @intCast(argc)) + 1)));
 
     exit(main(argc, argv, env.environ));
-}
-
-/// What `atexit` remembers. Bounded because the alternative is an allocation
-/// on a path that runs before anything has asked for memory.
-const ATEXIT_MAX = 16;
-var handlers: [ATEXIT_MAX]?*const fn () callconv(.c) void = @splat(null);
-var registered: usize = 0;
-
-export fn atexit(handler: *const fn () callconv(.c) void) callconv(.c) c_int {
-    if (registered == ATEXIT_MAX) return -1;
-    handlers[registered] = handler;
-    registered += 1;
-    return 0;
-}
-
-/// Leave, running what was registered and flushing what was buffered.
-///
-/// Last registered first, which is the order C promises and the only one that
-/// makes sense: a handler registered later may depend on what an earlier one
-/// still has standing.
-export fn exit(status: c_int) callconv(.c) noreturn {
-    while (registered > 0) {
-        registered -= 1;
-        if (handlers[registered]) |handler| handler();
-    }
-    stdio.flushAll();
-    sys.exit(@intCast(@as(u8, @truncate(@as(u32, @bitCast(status))))));
-}
-
-/// Leave without any of that, for a program that has decided its own state is
-/// not to be trusted.
-export fn _exit(status: c_int) callconv(.c) noreturn {
-    sys.exit(@intCast(@as(u8, @truncate(@as(u32, @bitCast(status))))));
 }
 
 /// Registered and never called.
@@ -83,8 +53,4 @@ export fn signal(which: c_int, handler: ?*const anyopaque) callconv(.c) ?*const 
 export fn raise(which: c_int) callconv(.c) c_int {
     _ = which;
     return 0;
-}
-
-export fn abort() callconv(.c) noreturn {
-    sys.exit(134); // 128 + SIGABRT, which is what a shell reports for one.
 }
