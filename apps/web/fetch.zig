@@ -9,9 +9,9 @@
 //! window paints "connecting" before it takes the step that blocks, and
 //! stays drawn while a page arrives a piece at a time.
 //!
-//! The connection a picture's answer came on is kept where the site keeps
-//! it, and the next picture from the same site is asked for on it: reaching
-//! the site and sealing the connection is the step that blocks, and a page's
+//! The connection an answer came on is kept where the site keeps it, and the
+//! next request to the same site is sent on it: reaching the site and sealing
+//! the connection is the step that blocks, and a page's stylesheets and its
 //! pictures need it once rather than once each.
 
 const std = @import("std");
@@ -37,10 +37,15 @@ pub const PAGE_MAX = 4 * 1024 * 1024;
 /// reading beside words.
 pub const PICTURE_MAX = 1024 * 1024;
 
+/// The most one stylesheet may be. A site's whole look is a few hundred
+/// kilobytes; a bundle past a megabyte is left out rather than read.
+pub const SHEET_MAX = 1024 * 1024;
+
 /// The most an answer may be, for what was asked.
 fn limitOf(wanted: http.Wanted) usize {
     return switch (wanted) {
         .page => PAGE_MAX,
+        .style => SHEET_MAX,
         .picture => PICTURE_MAX,
     };
 }
@@ -288,13 +293,12 @@ pub const Fetch = struct {
     }
 
     /// Keep the connection the answer came on for the next request, where
-    /// the request and the answer both said it would be kept, and close it
-    /// otherwise.
+    /// the answer said it would be kept, and close it otherwise.
     fn keep(self: *Fetch) void {
         const wire = self.wire orelse return;
         self.wire = null;
         const where = url.parse(self.address()) orelse return wire.close();
-        if (!http.keeps(self.wanted) or !self.response.reusable() or wire.finished()) return wire.close();
+        if (!self.response.reusable() or wire.finished()) return wire.close();
         var kept = Kept{ .wire = wire, .scheme = where.scheme, .port = where.port };
         if (!kept.host.set(where.host)) return wire.close();
         if (self.kept) |old| old.wire.close();

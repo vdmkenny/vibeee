@@ -122,4 +122,5 @@ so an image ships with the first and a machine remembers the second.
 | `web.homepage` | an address, or empty for none | `https://frogfind.de/?lg=en-us` |
 | `web.images` | true \| false | `true` |
 | `web.mobile` | true \| false | `true` |
+| `web.styles` | true \| false | `true` |
 

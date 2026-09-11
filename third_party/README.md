@@ -194,10 +194,11 @@ An HTML5 parser and DOM, Apache 2.0. See `lexbor/LICENSE`. Pinned at
 `lexbor/COMMIT` records the commit and the version.
 
 Nothing under `lexbor/` is edited. Vendored: `source/lexbor/core`, `dom`,
-`html`, `ns` and `tag`, which is what the HTML and DOM modules reference and
-no more, plus `ports/posix` for the memory and clock hooks. `css` and
-`selectors` are absent because this reader sets a page in its own two faces,
-so a cascade decides nothing it draws. `encoding` and `unicode` are absent
+`html`, `ns` and `tag`, which is what the HTML and DOM modules reference,
+plus `ports/posix` for the memory and clock hooks, and `css`, `selectors` and
+`style`, the cascade: they read a page's stylesheets and answer, for each
+element, whether it shows and what colours it asks for, which is what the
+reader draws from them. `encoding` and `unicode` are absent
 because between them they are seventeen megabytes of table, ten of which is
 the multi-byte character sets; a page in one of those is a page this cannot
 read yet, and that is the honest state rather than a megabyte spent against

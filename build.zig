@@ -111,12 +111,12 @@ const UserBuild = struct {
         self.addClibc(out);
     }
 
-    /// The HTML parser, compiled into whatever needs one.
+    /// The HTML parser and its cascade, compiled into whatever needs them.
     ///
-    /// The modules taken are the ones `html` and `dom` reference and no
-    /// others: no CSS, no character-set tables, which between them are most
-    /// of what upstream ships. A reader sets a page in its own two faces, so
-    /// a cascade buys it nothing, and the tables it would need are a
+    /// The modules taken are the ones `html` and `dom` reference, and `css`,
+    /// `selectors` and `style`, which read a page's stylesheets and say what
+    /// each element is: whether it shows, and the colours it asks for. No
+    /// character-set tables, which are most of what upstream ships and a
     /// megabyte before the first page is fetched.
     ///
     /// Walked rather than written out, for the reason the Doom recipe reads
@@ -125,7 +125,7 @@ const UserBuild = struct {
     fn addLexbor(self: UserBuild, out: *std.Build.Step.Compile) void {
         const io = self.b.graph.io;
         const root = "third_party/lexbor/source/lexbor";
-        const modules = [_][]const u8{ "core", "dom", "html", "ns", "tag" };
+        const modules = [_][]const u8{ "core", "dom", "html", "ns", "tag", "css", "selectors", "style" };
 
         var files: [400][]const u8 = undefined;
         var count: usize = 0;

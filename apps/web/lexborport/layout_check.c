@@ -1,12 +1,13 @@
 /* The layout proof between lexbor's C and this program's Zig mirror.
  *
- * `lexbor.zig` hand-mirrors the one struct the walk reaches into, a DOM node,
- * with comptime assertions pinning its side of every offset. This file pins
- * the C side of the same offsets against the vendored headers, so a header
- * change and a mirror change each fail the build on their own.
+ * `lexbor.zig` hand-mirrors the structs the walk reaches into: a DOM node,
+ * and the cascade's answers, a document's style state, rules, declarations
+ * and colours. Comptime assertions there pin its side of every offset. This
+ * file pins the C side of the same offsets against the vendored headers, so
+ * a header change and a mirror change each fail the build on their own.
  *
- * Only the fields ahead of `type` are pinned, because only those decide where
- * `type` sits. What follows it is upstream's business.
+ * Only the fields a mirror reads, and those ahead of them, are pinned. What
+ * follows them is upstream's business.
  *
  * It contains no code: static assertions only.
  */
@@ -15,8 +16,16 @@
 #include "lexbor/dom/interfaces/node.h"
 #include "lexbor/dom/interfaces/event_target.h"
 #include "lexbor/dom/interfaces/character_data.h"
+#include "lexbor/dom/interfaces/document.h"
 #include "lexbor/tag/const.h"
 #include "lexbor/core/base.h"
+#include "lexbor/css/rule.h"
+#include "lexbor/css/stylesheet.h"
+#include "lexbor/css/value.h"
+#include "lexbor/css/property.h"
+#include "lexbor/css/property/const.h"
+#include "lexbor/css/value/const.h"
+#include "lexbor/style/dom/interfaces/document.h"
 
 #define CHECK(name, expr) _Static_assert((expr), name)
 
@@ -100,6 +109,7 @@ CHECK("em is 0x0037", LXB_TAG_EM == 0x0037);
 CHECK("fieldset is 0x0052", LXB_TAG_FIELDSET == 0x0052);
 CHECK("figcaption is 0x0053", LXB_TAG_FIGCAPTION == 0x0053);
 CHECK("figure is 0x0054", LXB_TAG_FIGURE == 0x0054);
+CHECK("font is 0x0055", LXB_TAG_FONT == 0x0055);
 CHECK("footer is 0x0056", LXB_TAG_FOOTER == 0x0056);
 CHECK("form is 0x0058", LXB_TAG_FORM == 0x0058);
 CHECK("h1 is 0x005c", LXB_TAG_H1 == 0x005c);
@@ -145,3 +155,79 @@ CHECK("tr is 0x00be", LXB_TAG_TR == 0x00be);
 CHECK("tt is 0x00c0", LXB_TAG_TT == 0x00c0);
 CHECK("ul is 0x00c2", LXB_TAG_UL == 0x00c2);
 CHECK("var is 0x00c3", LXB_TAG_VAR == 0x00c3);
+
+/* The cascade: where a document keeps it, and the shapes its answers come
+ * back in. */
+CHECK("a document keeps its cascade after its node, two kinds and fifteen pointers",
+      offsetof(lxb_dom_document_t, css)
+          == 27 * sizeof(void *) + 2 * sizeof(unsigned int));
+CHECK("the cascade's parser is its third word",
+      offsetof(lxb_dom_document_css_t, parser) == 2 * sizeof(void *));
+CHECK("a rule's head is six words", sizeof(lxb_css_rule_t) == 6 * sizeof(void *));
+CHECK("a style rule's declarations are its eighth word",
+      offsetof(lxb_css_rule_style_t, declarations) == 7 * sizeof(void *));
+CHECK("a declaration list starts after its head",
+      offsetof(lxb_css_rule_declaration_list_t, first) == 6 * sizeof(void *));
+CHECK("a declaration's property follows its head",
+      offsetof(lxb_css_rule_declaration_t, type) == 6 * sizeof(void *));
+CHECK("a declaration's value is its eighth word",
+      offsetof(lxb_css_rule_declaration_t, u) == 7 * sizeof(void *));
+CHECK("a declaration's importance follows its six offsets",
+      offsetof(lxb_css_rule_declaration_t, important) == 14 * sizeof(void *));
+CHECK("a stylesheet begins with its rules",
+      offsetof(lxb_css_stylesheet_t, root) == 0);
+CHECK("a custom declaration keeps its name and then its value",
+      offsetof(lxb_css_property__custom_t, name) == 0
+          && offsetof(lxb_css_property__custom_t, value) == sizeof(lexbor_str_t));
+CHECK("display is three keywords",
+      sizeof(lxb_css_property_display_t) == 3 * sizeof(unsigned int));
+CHECK("visibility is one keyword",
+      sizeof(lxb_css_property_visibility_t) == sizeof(unsigned int));
+CHECK("text-align is one keyword",
+      sizeof(lxb_css_property_text_align_t) == sizeof(unsigned int));
+CHECK("opacity is a number or a percentage, as a channel of rgb() is",
+      sizeof(lxb_css_property_opacity_t) == sizeof(lxb_css_value_number_percentage_t));
+CHECK("a colour's value follows its kind",
+      offsetof(lxb_css_value_color_t, u) == _Alignof(double));
+CHECK("a hex colour is four bytes and then its kind",
+      offsetof(lxb_css_value_color_hex_t, type) == 4);
+CHECK("a colour channel is a kind and a number",
+      sizeof(lxb_css_value_number_percentage_t)
+          == _Alignof(double) + sizeof(lxb_css_value_number_t));
+CHECK("rgb() keeps its channels in order",
+      offsetof(lxb_css_value_color_rgba_t, g) == sizeof(lxb_css_value_number_percentage_t)
+          && offsetof(lxb_css_value_color_rgba_t, a)
+              == 3 * sizeof(lxb_css_value_number_percentage_t));
+
+/* Every rule kind, property and keyword the mirror names. */
+CHECK("a rule list is kind 2", LXB_CSS_RULE_LIST == 2);
+CHECK("a style rule is kind 4", LXB_CSS_RULE_STYLE == 4);
+CHECK("a declaration is kind 7", LXB_CSS_RULE_DECLARATION == 7);
+CHECK("a property upstream does not read is 0x0001", LXB_CSS_PROPERTY__CUSTOM == 0x0001);
+CHECK("background-color is 0x0006", LXB_CSS_PROPERTY_BACKGROUND_COLOR == 0x0006);
+CHECK("color is 0x0015", LXB_CSS_PROPERTY_COLOR == 0x0015);
+CHECK("display is 0x0017", LXB_CSS_PROPERTY_DISPLAY == 0x0017);
+CHECK("opacity is 0x003e", LXB_CSS_PROPERTY_OPACITY == 0x003e);
+CHECK("text-align is 0x004d", LXB_CSS_PROPERTY_TEXT_ALIGN == 0x004d);
+CHECK("visibility is 0x005d", LXB_CSS_PROPERTY_VISIBILITY == 0x005d);
+CHECK("center is 0x0007", LXB_CSS_VALUE_CENTER == 0x0007);
+CHECK("a percentage is 0x0015", LXB_CSS_VALUE__PERCENTAGE == 0x0015);
+CHECK("none is 0x001f", LXB_CSS_VALUE_NONE == 0x001f);
+CHECK("hidden is 0x0020", LXB_CSS_VALUE_HIDDEN == 0x0020);
+CHECK("left is 0x002f", LXB_CSS_VALUE_LEFT == 0x002f);
+CHECK("right is 0x0030", LXB_CSS_VALUE_RIGHT == 0x0030);
+CHECK("currentcolor is 0x0031", LXB_CSS_VALUE_CURRENTCOLOR == 0x0031);
+CHECK("transparent is 0x0032", LXB_CSS_VALUE_TRANSPARENT == 0x0032);
+CHECK("a hex colour is 0x0033", LXB_CSS_VALUE_HEX == 0x0033);
+CHECK("rgb is 0x00db", LXB_CSS_VALUE_RGB == 0x00db);
+CHECK("rgba is 0x00dc", LXB_CSS_VALUE_RGBA == 0x00dc);
+CHECK("a number is 0x0108", LXB_CSS_VALUE__NUMBER == 0x0108);
+CHECK("start is 0x010d", LXB_CSS_VALUE_START == 0x010d);
+CHECK("end is 0x010e", LXB_CSS_VALUE_END == 0x010e);
+CHECK("justify is 0x014a", LXB_CSS_VALUE_JUSTIFY == 0x014a);
+CHECK("collapse is 0x0165", LXB_CSS_VALUE_COLLAPSE == 0x0165);
+/* The named colours are one run, which the mirror indexes by offset: its
+ * two ends pin it, so a name inserted anywhere moves one of them. */
+CHECK("the named colours start with aliceblue at 0x0034",
+      LXB_CSS_VALUE_ALICEBLUE == 0x0034);
+CHECK("and end with yellowgreen at 0x00c7", LXB_CSS_VALUE_YELLOWGREEN == 0x00c7);

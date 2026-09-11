@@ -11,9 +11,14 @@
 //!
 //! A page's controls are the toolkit's own: its text field, its button, its
 //! check box, run each pass where the layout put them, clipped to the view so
-//! that one half scrolled out neither paints nor answers outside it. What is
-//! typed in them and which boxes are ticked is kept here, for as long as the
-//! page is shown.
+//! that one half scrolled out neither paints nor answers outside it, and worn
+//! in the colours the page gives them. What is typed in them and which boxes
+//! are ticked is kept here, for as long as the page is shown.
+//!
+//! A page's own colours are brought onto the theme before they are drawn, and
+//! its words are made to read on whatever they are drawn on: the toolkit's
+//! `recolour` is what does both, so a page and the rest of the system agree
+//! about what readable is.
 //!
 //! A page's pictures are drawn from what `pictures` keeps, sampled to the
 //! room the layout gave them. One that has not arrived is stood in for by what
@@ -26,6 +31,9 @@ const layout_mod = @import("layout.zig");
 const page_mod = @import("page.zig");
 const pictures_mod = @import("pictures.zig");
 
+const recolour = eui.recolour;
+
+const Color = eui.draw.Color;
 const Rect = eui.Rect;
 const Surface = eui.Surface;
 const Theme = eui.Theme;
@@ -54,10 +62,11 @@ const LINE_MAX = 256;
 /// A line to type in, as the toolkit keeps one.
 const Line = eui.text.Field(LINE_MAX);
 
-/// What a page is drawn on, which shows through a picture's see-through
-/// parts.
-pub fn ground() eui.draw.Color {
-    return eui.theme.current().surface_hot;
+/// What a page is drawn on: its own ground brought onto the theme, or the
+/// theme's. It is also what shows through a picture's see-through parts.
+pub fn groundOf(page: *const Page) Color {
+    const base = eui.theme.current().surface_hot;
+    return recolour.adapted(page.colourOf(page.ground) orelse return base, base);
 }
 
 /// What a face is on this system, measured at the size it is drawn, and the
@@ -324,6 +333,7 @@ pub const View = struct {
             .pictures = pictures,
             .surface = ctx.surface,
             .theme = eui.theme.current(),
+            .ground = groundOf(page),
             .metrics = metrics,
             .spacing = spacing,
             .column = column,
@@ -392,6 +402,8 @@ pub const View = struct {
 
     fn runControl(self: *View, ctx: *eui.Context, page: *const Page, index: u16, rect: Rect) ?Action {
         const control = page.controls.items[index];
+        const before = eui.theme.wear(tintOf(page, control));
+        defer _ = eui.theme.wear(before);
         switch (control.kind) {
             .line => |line| {
                 if (line.slot >= self.lines.len) return null;
@@ -483,6 +495,16 @@ fn sent(control: Control, by: ?u16) ?Action {
     return .{ .submit = .{ .form = control.form orelse return null, .by = by } };
 }
 
+/// The colours the page gives a control, brought onto the theme, for the
+/// control to wear.
+fn tintOf(page: *const Page, control: Control) eui.theme.Tint {
+    const base = eui.theme.current().surface;
+    return .{
+        .ground = if (page.colourOf(control.colours.ground)) |colour| recolour.adapted(colour, base) else null,
+        .ink = if (page.colourOf(control.colours.ink)) |colour| recolour.adapted(colour, base) else null,
+    };
+}
+
 /// One pass's painting: what it paints on, and what every line needs to be
 /// drawn with.
 const Pass = struct {
@@ -491,6 +513,8 @@ const Pass = struct {
     pictures: *const Pictures,
     surface: Surface,
     theme: *const Theme,
+    /// What the page is drawn on.
+    ground: Color,
     metrics: Metrics,
     spacing: Spacing,
     /// The column the page is set in, and the view it scrolls in.
@@ -501,12 +525,14 @@ const Pass = struct {
     /// the toolkit's to paint, after this.
     fn paint(self: Pass, band: Rect) void {
         const s = self.surface.clipped(band);
-        s.fill(band, ground());
+        s.fill(band, self.ground);
 
         // A preformatted band reaches past its first and last lines by its
-        // inset, so the lines just outside `band` may still paint inside it.
-        const top = band.y - self.area.y + self.view.scroll - self.spacing.inset;
-        const bottom = band.bottom() - self.area.y + self.view.scroll + self.spacing.inset;
+        // inset, and a block's ground reaches up over the gap before it, so
+        // the lines just outside `band` may still paint inside it.
+        const reach = @max(self.spacing.inset, self.spacing.above_heading);
+        const top = band.y - self.area.y + self.view.scroll - reach;
+        const bottom = band.bottom() - self.area.y + self.view.scroll + reach;
         const lines = self.view.layout.lines.items;
         var i = self.view.layout.lineAt(top);
         while (i < lines.len and lines[i].y < bottom) : (i += 1) self.line(s, i);
@@ -523,6 +549,24 @@ const Pass = struct {
         const x = self.column.x + indent;
         const w = self.column.w - indent;
 
+        // What the words are on: the block's own ground, a preformatted
+        // band, or the page.
+        const own = self.adapted(block.ground);
+        const under = own orelse if (block.kind == .preformatted) t.surface else self.ground;
+        if (own) |ground| {
+            // Out past the column by an inset either side, and up over the
+            // gap to the line before where that line's block has the same.
+            var top = y;
+            if (index > 0) {
+                const before = lines[index - 1];
+                if (self.page.blocks.items[before.block].ground == block.ground) {
+                    top = self.area.y + before.y + before.height - self.view.scroll;
+                }
+            }
+            const inset = self.spacing.inset;
+            s.fill(.{ .x = self.column.x - inset, .y = top, .w = self.column.w + 2 * inset, .h = y + at.height - top }, ground);
+        }
+
         switch (block.kind) {
             .rule => {
                 s.fill(.{ .x = x, .y = y + @divTrunc(at.height, 2), .w = w, .h = 1 }, t.line);
@@ -532,7 +576,7 @@ const Pass = struct {
                 const last = index + 1 == lines.len or lines[index + 1].block != at.block;
                 const top = y - (if (at.leads) self.spacing.inset else 0);
                 const bottom = y + at.height + (if (last) self.spacing.inset else 0);
-                s.fill(.{ .x = x, .y = top, .w = w, .h = bottom - top }, t.surface);
+                s.fill(.{ .x = x, .y = top, .w = w, .h = bottom - top }, under);
                 s.fill(.{ .x = x, .y = top, .w = 2 * scale, .h = bottom - top }, t.line);
             },
             else => {},
@@ -543,7 +587,7 @@ const Pass = struct {
             s.fill(.{ .x = x - @divTrunc(self.spacing.indent, 2), .y = y, .w = 2 * scale, .h = at.height }, t.line);
         }
 
-        if (at.leads) self.marker(s, block.marker, x, y + at.baseline);
+        if (at.leads) self.marker(s, block.marker, x, y + at.baseline, recolour.legible(t.text_dim, under));
 
         for (self.view.layout.fragsOf(at)) |frag| {
             const text = switch (self.page.runs.items[frag.run]) {
@@ -556,22 +600,37 @@ const Pass = struct {
             };
             const words = frag.shape.words;
             const face = text.look.face;
-            const ink = switch (text.look.ink) {
-                .text => t.text,
-                .dim => t.text_dim,
-                .link => t.accent,
-            };
+            const ink = self.inkOf(text.look, under);
             const left = self.column.x + frag.x;
             s.textIn(Metrics.font(face), left, y + at.baseline - self.metrics.ascent(face), self.page.text.items[words.start..][0..words.len], ink);
             if (text.look.ink == .link) {
-                s.fill(.{ .x = left, .y = y + at.baseline + scale, .w = frag.width, .h = scale }, t.accent);
+                s.fill(.{ .x = left, .y = y + at.baseline + scale, .w = frag.width, .h = scale }, ink);
             }
         }
     }
 
+    /// One of the page's colours, brought onto the theme, or nothing for the
+    /// theme's own.
+    fn adapted(self: Pass, swatch: page_mod.Swatch) ?Color {
+        return recolour.adapted(self.page.colourOf(swatch) orelse return null, self.theme.surface_hot);
+    }
+
+    /// What words in `look` are inked in on `under`: the page's colour for
+    /// them brought onto the theme, or the theme's for their kind, either way
+    /// made to read on what they are on.
+    fn inkOf(self: Pass, look: page_mod.Look, under: Color) Color {
+        const t = self.theme;
+        const wanted = self.adapted(look.paint) orelse switch (look.ink) {
+            .text => t.text,
+            .dim => t.text_dim,
+            .link => t.accent,
+        };
+        return recolour.legible(wanted, under);
+    }
+
     /// A list entry's bullet or number, in the margin and ending a little
     /// short of the words it belongs to.
-    fn marker(self: Pass, s: Surface, which: page_mod.Marker, text_x: i32, baseline: i32) void {
+    fn marker(self: Pass, s: Surface, which: page_mod.Marker, text_x: i32, baseline: i32, ink: Color) void {
         var buf: [16]u8 = undefined;
         var w: std.Io.Writer = .fixed(&buf);
         which.write(&w, "\u{2022}") catch return;
@@ -579,7 +638,7 @@ const Pass = struct {
         if (shown.len == 0) return;
         const width = self.metrics.width(.body, shown);
         const gap = 6 * self.metrics.scale;
-        s.textIn(Metrics.font(.body), text_x - gap - width, baseline - self.metrics.ascent(.body), shown, self.theme.text_dim);
+        s.textIn(Metrics.font(.body), text_x - gap - width, baseline - self.metrics.ascent(.body), shown, ink);
     }
 
     /// A picture that is here, sampled to the room the layout gave it; one

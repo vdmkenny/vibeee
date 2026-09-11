@@ -183,6 +183,7 @@ pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spa
 
         p.block = @intCast(index);
         p.leads = true;
+        p.alignment = block.alignment;
         p.startLine();
 
         const inset: i32 = if (block.kind == .preformatted) spacing.inset else 0;
@@ -242,6 +243,8 @@ fn Placer(comptime Metrics: type) type {
         y: i32 = 0,
         block: u32 = 0,
         leads: bool = false,
+        /// Which way the block's lines lean.
+        alignment: page_mod.Alignment = .start,
         /// Where the block's text starts from the column edge, and how much
         /// of the column it has.
         x0: i32 = 0,
@@ -294,6 +297,7 @@ fn Placer(comptime Metrics: type) type {
                     },
                     .box => {},
                 }
+                self.lean();
             } else {
                 if (!keep_empty) return;
                 self.grow(self.face);
@@ -311,6 +315,21 @@ fn Placer(comptime Metrics: type) type {
             self.y += self.ascent + self.descent;
             self.leads = false;
             self.startLine();
+        }
+
+        /// Move what is on the line being ended along by the room it leaves,
+        /// where its block's lines lean to the middle or to the end.
+        fn lean(self: *Self) void {
+            const frags = self.out.frags.items[self.first..];
+            const last = frags[frags.len - 1];
+            const left = self.room - (last.x + last.width - self.x0);
+            const by = switch (self.alignment) {
+                .start => return,
+                .center => @divTrunc(left, 2),
+                .end => left,
+            };
+            if (by <= 0) return;
+            for (frags) |*frag| frag.x += by;
         }
 
         /// Put words on the line, joining the fragment before them where
@@ -718,7 +737,7 @@ test "a control sits among the words as a word does, and its line is as tall as 
     defer b.deinit();
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.words("Find ");
-    try builder.addControl(.{ .line = .{ .letters = 10 } }, "q", "");
+    try builder.addControl(.{ .line = .{ .letters = 10 } }, "q", "", .{});
     try builder.words(" now");
     try builder.finish();
     b.layout = try build(testing.allocator, &b.page, 600, eighteen, Fixed{});
@@ -762,6 +781,23 @@ test "a picture stands on the line as a word does, fitted to the column" {
     try testing.expectEqual(@as(i32, 600), second[0].width);
     try testing.expectEqual(Frag.Shape{ .box = 300 }, second[0].shape);
     try testing.expectEqual(@as(i32, 300), lines[1].height);
+}
+
+test "a block's lines lean where it says, by the room each leaves" {
+    var b = Built{};
+    defer b.deinit();
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    try builder.boundary(.{ .alignment = .center });
+    try builder.words("abcd");
+    try builder.boundary(.{ .alignment = .end });
+    try builder.words("ab");
+    try builder.finish();
+    b.layout = try build(testing.allocator, &b.page, 60, eighteen, Fixed{});
+
+    // Ten letters of room: four in the middle leave three either side, and
+    // two at the end leave eight before them.
+    try testing.expectEqual(@as(i32, 18), b.line(0)[0].x);
+    try testing.expectEqual(@as(i32, 48), b.line(1)[0].x);
 }
 
 test "a place in the page is found again once the page is laid out anew" {

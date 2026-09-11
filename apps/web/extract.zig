@@ -8,33 +8,39 @@
 //!
 //! Only the page's own content is walked, and only what the page itself says
 //! is for reading. A page marks its content with `main` and its navigation
-//! with `nav` or a role, and hides what it hides with an attribute. Those are
-//! the page's own words about its parts, which is why they are what decides,
-//! rather than guesses from class names that differ on every site.
+//! with `nav` or a role, and hides what it hides with an attribute or with its
+//! stylesheets. Those are the page's own words about its parts, which is why
+//! they are what decides, rather than guesses from class names that differ on
+//! every site.
+//!
+//! What a page's stylesheets say is asked of each element as the walk arrives
+//! at it: whether it shows at all, the colour of its words, what is painted
+//! under it, and which way its lines lean. Colours and alignment are handed
+//! down the way the cascade hands them down, so the walk keeps what each
+//! element changed and puts it back as it leaves the element.
 //!
 //! A form's controls are the toolkit's own on screen, so the walk keeps what
-//! each one is: its kind, its name, and what it holds to begin with. A button
-//! that does nothing until a script says what is not kept, because nothing
-//! here runs the script.
+//! each one is: its kind, its name, what it holds to begin with, and the
+//! colours the page gives it. A button that does nothing until a script says
+//! what is not kept, because nothing here runs the script.
 //!
 //! A picture is kept as where it is, what the page says it shows, and the
 //! size the page gives it. Fetching it is the window's to do, once the words
 //! are on screen.
-//!
-//! Iterative rather than recursive. A page can nest thousands deep, a stack
-//! frame per level is a stack this machine does not have to spare, and a walk
-//! that follows the tree's own links needs no stack at all.
 
 const std = @import("std");
 const Bounded = @import("lib").bounded.Bounded;
+const css = @import("css.zig");
 const lexbor = @import("lexbor.zig");
 const page_mod = @import("page.zig");
 const url = @import("url.zig");
 
 const Node = lexbor.Node;
 const Tag = lexbor.Tag;
+const Alignment = page_mod.Alignment;
 const Block = page_mod.Block;
 const Builder = page_mod.Builder;
+const Swatch = page_mod.Swatch;
 
 /// What an element does to the words inside it.
 const Role = enum {
@@ -173,6 +179,23 @@ const List = struct { ordered: bool, next: u32 };
 /// Words enough for a button's label, or a list's chosen entry.
 const Label = Bounded(u8, 64);
 
+/// What a page's stylesheets give the words the walk is among: their colour,
+/// what is painted under the blocks they are in, and which way those blocks'
+/// lines lean.
+const Style = struct {
+    ink: Swatch = .none,
+    ground: Swatch = .none,
+    alignment: Alignment = .start,
+};
+
+/// An element that changed the style, and the style it changed, put back as
+/// the walk leaves the element.
+const Frame = struct { node: *const Node, was: Style };
+
+/// How many elements changing the style the walk keeps track of at once. One
+/// nested deeper keeps the style it is in.
+const STYLE_DEPTH = 64;
+
 const Walker = struct {
     builder: *Builder,
     base: url.Url,
@@ -187,6 +210,8 @@ const Walker = struct {
     /// Where the words of the open link go. Links do not nest: the parser
     /// closes one before it opens another.
     link: ?u16 = null,
+    style: Style = .{},
+    frames: Bounded(Frame, STYLE_DEPTH) = .{},
 
     const Error = Builder.Error;
 
@@ -198,6 +223,8 @@ const Walker = struct {
             .depth = @intCast(@min(steps, std.math.maxInt(u8))),
             .quoted = self.inside.get(.quote) > 0,
             .marker = marker,
+            .ground = self.style.ground,
+            .alignment = self.style.alignment,
         };
     }
 
@@ -222,6 +249,7 @@ const Walker = struct {
             else
                 .body,
             .ink = if (b.link != null) .link else .text,
+            .paint = self.style.ink,
         };
     }
 
@@ -249,6 +277,9 @@ const Walker = struct {
         if (unread(node)) return false;
 
         const t = traits.get(role);
+        // What it holds is read in the style it sets, taken before any block
+        // it begins so that the block has it too.
+        if (t.walks) try self.take(node);
         if (t.counts) self.inside.getPtr(role).* += 1;
         switch (role) {
             .hidden, .mono, .none => {},
@@ -294,8 +325,96 @@ const Walker = struct {
             .form => self.builder.form = null,
             else => {},
         }
+        self.untake(node);
         if (t.bounds) try self.boundary(.paragraph);
         self.restyle();
+    }
+
+    /// Take the style an element sets, keeping the one it replaces for when
+    /// the walk leaves it. A link's words are in the colour it gives them, or
+    /// in the theme's for a link: never in the colour of the words around it
+    /// unless the page says so.
+    fn take(self: *Walker, node: *Node) Error!void {
+        const tag = lexbor.tagOf(node);
+        var next = self.style;
+        if (css.ink(node)) |given| {
+            next.ink = try self.swatchOf(given, self.style.ink);
+        } else if (tag == .a) {
+            next.ink = .none;
+        }
+        // What the page itself is painted on is the page's, not a block's.
+        if (tag != .body and tag != .html) {
+            if (css.ground(node)) |given| next.ground = try self.swatchOf(given, self.style.ground);
+        }
+        if (css.alignment(node)) |given| next.alignment = given;
+        if (std.meta.eql(next, self.style)) return;
+        self.frames.append(.{ .node = node, .was = self.style }) catch return;
+        self.style = next;
+    }
+
+    /// Put back the style an element replaced, as the walk leaves it.
+    fn untake(self: *Walker, node: *const Node) void {
+        const frame = self.frames.last() orelse return;
+        if (frame.node != node) return;
+        self.style = frame.was;
+        _ = self.frames.pop();
+    }
+
+    /// The swatch for a colour the page gives, where `inherited` is the one
+    /// it would have had anyway.
+    fn swatchOf(self: *Walker, given: css.Paint, inherited: Swatch) Error!Swatch {
+        return switch (given) {
+            .colour => |colour| self.builder.swatch(colour),
+            // What is under a ground that shows through shows, and words in
+            // the current colour are in the colour they were already.
+            .current, .transparent => inherited,
+        };
+    }
+
+    /// The style the walk begins in, where it begins inside the page rather
+    /// than at its top: what the elements around its start hand down.
+    fn inherit(self: *Walker, root: *Node) Error!void {
+        var ink: ?css.Paint = null;
+        var ground: ?css.Paint = null;
+        var alignment: ?Alignment = null;
+        var at = root.parent;
+        while (at) |node| : (at = node.parent) {
+            if (node.type != .element) continue;
+            if (ink == null) ink = css.ink(node);
+            if (alignment == null) alignment = css.alignment(node);
+            const tag = lexbor.tagOf(node);
+            if (ground == null and tag != .body and tag != .html) ground = css.ground(node);
+        }
+        if (ink) |given| self.style.ink = try self.swatchOf(given, .none);
+        if (ground) |given| self.style.ground = try self.swatchOf(given, .none);
+        if (alignment) |given| self.style.alignment = given;
+    }
+
+    /// What the page is painted on: its body's ground, or its root's.
+    fn pageGround(self: *Walker, top: *Node) Error!Swatch {
+        var body: ?css.Paint = null;
+        var root: ?css.Paint = null;
+        var at = lexbor.following(top, top);
+        while (at) |node| : (at = lexbor.following(node, top)) {
+            switch (lexbor.tagOf(node) orelse continue) {
+                .html => root = css.ground(node),
+                .body => {
+                    body = css.ground(node);
+                    break;
+                },
+                else => {},
+            }
+        }
+        return self.swatchOf(body orelse root orelse return .none, .none);
+    }
+
+    /// The colours an element gives itself rather than those it inherits,
+    /// which is what a form's control is drawn in.
+    fn coloursOf(self: *Walker, node: *Node) Error!page_mod.Colours {
+        return .{
+            .ink = if (css.ink(node)) |given| try self.swatchOf(given, .none) else .none,
+            .ground = if (css.ground(node)) |given| try self.swatchOf(given, .none) else .none,
+        };
     }
 
     /// The link an anchor makes, or none for one that goes nowhere this
@@ -352,32 +471,33 @@ const Walker = struct {
         const b = self.builder;
         const name = lexbor.attribute(node, "name") orelse "";
         const value = lexbor.attribute(node, "value");
+        const colours = try self.coloursOf(node);
         switch (inputs.get(lexbor.attribute(node, "type") orelse "text") orelse .line) {
             .line, .secret => |kind| try b.addControl(.{ .line = .{
                 .letters = lettersOf(node, "size", 20),
                 .secret = kind == .secret,
                 .hint = try b.keep(lexbor.attribute(node, "placeholder") orelse ""),
-            } }, name, value orelse ""),
-            .hidden => try b.addControl(.hidden, name, value orelse ""),
+            } }, name, value orelse "", colours),
+            .hidden => try b.addControl(.hidden, name, value orelse "", .{}),
             .submit => {
                 const label = value orelse "Submit";
-                try b.addControl(.{ .submit = .{ .label = try b.keep(label) } }, name, label);
+                try b.addControl(.{ .submit = .{ .label = try b.keep(label) } }, name, label, colours);
             },
             .image => {
                 // An image button says where on the picture it was pressed,
                 // which a reader without the picture cannot, so it sends
                 // nothing of its own.
                 const label = lexbor.attribute(node, "alt") orelse "Submit";
-                try b.addControl(.{ .submit = .{ .label = try b.keep(label) } }, "", label);
+                try b.addControl(.{ .submit = .{ .label = try b.keep(label) } }, "", label, colours);
             },
             .reset => {
                 const label = value orelse "Reset";
-                try b.addControl(.{ .reset = .{ .label = try b.keep(label) } }, "", label);
+                try b.addControl(.{ .reset = .{ .label = try b.keep(label) } }, "", label, colours);
             },
             .check, .radio => |kind| try b.addControl(.{ .tick = .{
                 .ticked = lexbor.hasAttribute(node, "checked"),
                 .radio = kind == .radio,
-            } }, name, value orelse "on"),
+            } }, name, value orelse "on", colours),
             // A button for a script, and a file to send, which is not
             // something this reader does.
             .inert => {},
@@ -387,13 +507,15 @@ const Walker = struct {
     fn button(self: *Walker, node: *Node) Error!void {
         const b = self.builder;
         const label = textWithin(node);
+        const colours = try self.coloursOf(node);
         switch (presses.get(lexbor.attribute(node, "type") orelse "submit") orelse .submit) {
             .submit => try b.addControl(
                 .{ .submit = .{ .label = try b.keep(label.slice()) } },
                 lexbor.attribute(node, "name") orelse "",
                 lexbor.attribute(node, "value") orelse "",
+                colours,
             ),
-            .reset => try b.addControl(.{ .reset = .{ .label = try b.keep(label.slice()) } }, "", ""),
+            .reset => try b.addControl(.{ .reset = .{ .label = try b.keep(label.slice()) } }, "", "", colours),
             .inert => {},
         }
     }
@@ -404,7 +526,7 @@ const Walker = struct {
     fn select(self: *Walker, node: *Node) Error!void {
         const chosen = chosenOption(node) orelse return;
         const label = textWithin(chosen);
-        try self.builder.addControl(.hidden, lexbor.attribute(node, "name") orelse "", lexbor.attribute(chosen, "value") orelse label.slice());
+        try self.builder.addControl(.hidden, lexbor.attribute(node, "name") orelse "", lexbor.attribute(chosen, "value") orelse label.slice(), .{});
         try self.aside(label.slice());
     }
 
@@ -413,7 +535,7 @@ const Walker = struct {
         try b.addControl(.{ .line = .{
             .letters = lettersOf(node, "cols", 30),
             .hint = try b.keep(lexbor.attribute(node, "placeholder") orelse ""),
-        } }, lexbor.attribute(node, "name") orelse "", textWithin(node).slice());
+        } }, lexbor.attribute(node, "name") orelse "", textWithin(node).slice(), try self.coloursOf(node));
     }
 };
 
@@ -432,8 +554,7 @@ const SEEN_MIN = 3;
 fn pixelsOf(node: *Node, name: []const u8) ?u16 {
     const given = std.mem.trim(u8, lexbor.attribute(node, name) orelse return null, &std.ascii.whitespace);
     if (std.mem.endsWith(u8, given, "%")) return null;
-    var digits: usize = 0;
-    while (digits < given.len and std.ascii.isDigit(given[digits])) digits += 1;
+    const digits = std.mem.indexOfNone(u8, given, "0123456789") orelse given.len;
     if (digits == 0) return null;
     return std.fmt.parseInt(u16, given[0..digits], 10) catch std.math.maxInt(u16);
 }
@@ -450,8 +571,8 @@ fn lettersOf(node: *Node, which: []const u8, default: u16) u16 {
 /// as a label holds.
 fn textWithin(node: *Node) Label {
     var label: Label = .{};
-    var at = following(node, node);
-    while (at) |here| : (at = following(here, node)) {
+    var at = lexbor.following(node, node);
+    while (at) |here| : (at = lexbor.following(here, node)) {
         if (here.type != .text) continue;
         var words = std.mem.tokenizeAny(u8, lexbor.wordsOf(here), &std.ascii.whitespace);
         while (words.next()) |word| {
@@ -468,8 +589,8 @@ fn textWithin(node: *Node) Label {
 /// first.
 fn chosenOption(select: *Node) ?*Node {
     var first: ?*Node = null;
-    var at = following(select, select);
-    while (at) |here| : (at = following(here, select)) {
+    var at = lexbor.following(select, select);
+    while (at) |here| : (at = lexbor.following(here, select)) {
         if (lexbor.tagOf(here) != .option) continue;
         if (lexbor.hasAttribute(here, "selected")) return here;
         if (first == null) first = here;
@@ -478,22 +599,13 @@ fn chosenOption(select: *Node) ?*Node {
 }
 
 /// Whether the page says an element is not for reading: navigation, or
-/// something it hides from everyone, or from anyone listening to it read.
+/// something it hides, from everyone or from anyone listening to it read,
+/// by an attribute or by its stylesheets.
 fn unread(node: *Node) bool {
     return lexbor.hasAttribute(node, "hidden") or
         lexbor.attributeIs(node, "aria-hidden", "true") or
-        lexbor.attributeIs(node, "role", "navigation");
-}
-
-/// The node after `node` in document order, going no further than `root`.
-fn following(node: *Node, root: *Node) ?*Node {
-    if (node.first_child) |child| return child;
-    var at = node;
-    while (at != root) {
-        if (at.next) |sibling| return sibling;
-        at = at.parent orelse return null;
-    }
-    return null;
+        lexbor.attributeIs(node, "role", "navigation") or
+        !css.shows(node);
 }
 
 /// Where a page's own content is: the `main` element it marks, and otherwise
@@ -501,45 +613,35 @@ fn following(node: *Node, root: *Node) ?*Node {
 /// its menus, its search, its footer, and a reader that showed all of that
 /// would open every article on the site's furniture.
 fn contentOf(root: *Node) *Node {
-    var at = following(root, root);
-    while (at) |node| : (at = following(node, root)) {
+    var at = lexbor.following(root, root);
+    while (at) |node| : (at = lexbor.following(node, root)) {
         if (node.type != .element) continue;
         const main = lexbor.tagOf(node) == .main or lexbor.attributeIs(node, "role", "main");
-        if (main and !lexbor.hasAttribute(node, "hidden")) return node;
+        if (main and !unread(node)) return node;
     }
     return root;
 }
 
-/// Keep where the page says its version for small screens is: a link in its
-/// head that is an alternate for a screen no wider than some width, or for a
-/// handheld, which is how a site with a separate mobile site names it.
-fn mobileVersion(builder: *Builder, root: *Node, base: url.Url) Builder.Error!void {
-    var at = following(root, root);
-    while (at) |node| : (at = following(node, root)) {
+/// Where the page says its version for small screens is, written into `buf`:
+/// a link in its head that is an alternate for a screen no wider than some
+/// width, or for a handheld, which is how a site with a separate mobile site
+/// names it.
+pub fn mobileVersion(document: *lexbor.Document, base: url.Url, buf: *[url.ADDRESS_MAX]u8) ?[]const u8 {
+    const root = lexbor.nodeOf(document);
+    var at = lexbor.following(root, root);
+    while (at) |node| : (at = lexbor.following(node, root)) {
         switch (lexbor.tagOf(node) orelse continue) {
             // The head is over, and with it the links a page says this in.
-            .body => return,
+            .body => return null,
             .link => {},
             else => continue,
         }
-        if (!hasToken(lexbor.attribute(node, "rel") orelse "", "alternate")) continue;
-        const media = lexbor.attribute(node, "media") orelse continue;
-        if (std.ascii.findIgnoreCase(media, "max-width") == null and std.ascii.findIgnoreCase(media, "handheld") == null) continue;
-        var buf: [url.ADDRESS_MAX]u8 = undefined;
-        const address = url.resolve(base, lexbor.attribute(node, "href") orelse "", &buf) orelse continue;
-        builder.page.mobile = try builder.keep(address);
-        return;
+        if (!lexbor.attributeHas(node, "rel", "alternate")) continue;
+        const asked = lexbor.attribute(node, "media") orelse continue;
+        if (std.ascii.findIgnoreCase(asked, "max-width") == null and std.ascii.findIgnoreCase(asked, "handheld") == null) continue;
+        return url.resolve(base, lexbor.attribute(node, "href") orelse "", buf) orelse continue;
     }
-}
-
-/// Whether a list of keywords written apart by spaces, as `rel` is, holds
-/// `word`.
-fn hasToken(list: []const u8, word: []const u8) bool {
-    var words = std.mem.tokenizeAny(u8, list, &std.ascii.whitespace);
-    while (words.next()) |each| {
-        if (std.ascii.eqlIgnoreCase(each, word)) return true;
-    }
-    return false;
+    return null;
 }
 
 /// Walk `document` into `page`. Links are resolved against `base`, which is
@@ -547,10 +649,13 @@ fn hasToken(list: []const u8, word: []const u8) bool {
 pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url, page: *page_mod.Page) Builder.Error!void {
     var builder = Builder{ .gpa = gpa, .page = page };
     if (lexbor.titleOf(document)) |title| try builder.title(title);
-    try mobileVersion(&builder, lexbor.nodeOf(document), base);
 
     var walker = Walker{ .builder = &builder, .base = base };
-    const root = contentOf(lexbor.nodeOf(document));
+    const top = lexbor.nodeOf(document);
+    page.ground = try walker.pageGround(top);
+    const root = contentOf(top);
+    try walker.inherit(root);
+    walker.restyle();
 
     var node: ?*Node = root.first_child;
     walk: while (node) |here| {

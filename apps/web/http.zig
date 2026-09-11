@@ -1,10 +1,9 @@
 //! HTTP/1.1: a request, and the response to it taken as it arrives.
 //!
-//! A page's request asks for its connection to be closed after it, because a
-//! reader asks a site for one page at a time. A picture's asks for it to be
-//! kept: a page's pictures mostly come from one site one after another, and
-//! a sealed connection reached again for each would be a handshake apiece on
-//! a processor for which that is most of the work.
+//! Every request asks for its connection to be kept. A page's stylesheets and
+//! its pictures mostly come from its own site one after another, and a sealed
+//! connection reached again for each would be a handshake apiece on a
+//! processor for which that is most of the work.
 //!
 //! The response is fed in whatever pieces the socket delivers: the head, the
 //! chunk sizes and the body are each found across the edges of reads, which
@@ -24,23 +23,16 @@ const Writer = std.Io.Writer;
 pub const USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ ")";
 
 /// What a request is for, which says what the site is told.
-pub const Wanted = enum { page, picture };
+pub const Wanted = enum { page, style, picture };
 
-/// What a request tells the site: what the reader takes, a page as markup or
-/// as words and a picture in a format its decoder reads, so that a site able
-/// to answer in several answers in one of those; and whether the connection
-/// is to be kept for the next request.
-const Ask = struct { accept: []const u8, keep: bool };
-
-const asks = std.EnumArray(Wanted, Ask).init(.{
-    .page = .{ .accept = "text/html, text/plain;q=0.8, */*;q=0.1", .keep = false },
-    .picture = .{ .accept = "image/png, image/jpeg, image/gif;q=0.8", .keep = true },
+/// What a request tells the site the reader takes: a page as markup or as
+/// words, a stylesheet, and a picture in a format its decoder reads, so that
+/// a site able to answer in several answers in one of those.
+const accepts = std.EnumArray(Wanted, []const u8).init(.{
+    .page = "text/html, text/plain;q=0.8, */*;q=0.1",
+    .style = "text/css, */*;q=0.1",
+    .picture = "image/png, image/jpeg, image/gif;q=0.8",
 });
-
-/// Whether a request for `wanted` asks for its connection to be kept.
-pub fn keeps(wanted: Wanted) bool {
-    return asks.get(wanted).keep;
-}
 
 /// What a request asks of a site: what it is for, and whether for the
 /// version made for small screens and slow connections.
@@ -64,8 +56,7 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     try url.writeTarget(w);
     try w.writeAll(" HTTP/1.1\r\nHost: ");
     try url.writeHost(w);
-    const ask = asks.get(asking.wanted);
-    try w.print("\r\nUser-Agent: " ++ USER_AGENT ++ "\r\nAccept: {s}\r\n", .{ask.accept});
+    try w.print("\r\nUser-Agent: " ++ USER_AGENT ++ "\r\nAccept: {s}\r\n", .{accepts.get(asking.wanted)});
     // Global Privacy Control, with every request: the person reading does
     // not agree to their visit being sold or shared, which some sites are
     // bound by law to honour.
@@ -74,7 +65,7 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     // Identity, because the one thing a reader must not do with a page is
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
-    try w.print("Accept-Encoding: identity\r\nConnection: {s}\r\n\r\n", .{if (ask.keep) "keep-alive" else "close"});
+    try w.writeAll("Accept-Encoding: identity\r\nConnection: keep-alive\r\n\r\n");
 }
 
 /// The media type a `Content-Type` value names, without its parameters:
@@ -408,11 +399,11 @@ fn fed(wire: []const u8, step: usize) !struct { response: *Response, body: Body 
     return .{ .response = response, .body = body };
 }
 
-test "a request asks for the page and for the connection to close" {
+test "a request asks for the page and for the connection to be kept" {
     var buf: [512]u8 = undefined;
     const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?, .{}).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET /linux/read.2.html HTTP/1.1\r\nHost: man7.org\r\n"));
-    try testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "Connection: keep-alive\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "User-Agent: vibeee-web/1.0 (vibeee; ") != null);
     try testing.expect(std.mem.indexOf(u8, req, "\r\nSec-GPC: 1\r\n") != null);
     try testing.expect(std.mem.endsWith(u8, req, "\r\n\r\n"));
@@ -433,6 +424,12 @@ test "a picture is asked for in the formats the decoder reads" {
     // signal a page's request carries.
     try testing.expect(std.mem.indexOf(u8, req, "\r\nConnection: keep-alive\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "\r\nSec-GPC: 1\r\n") != null);
+}
+
+test "a stylesheet is asked for as one" {
+    var buf: [512]u8 = undefined;
+    const req = request(&buf, url_mod.parse("https://a.org/site.css").?, .{ .wanted = .style }).?;
+    try testing.expect(std.mem.indexOf(u8, req, "\r\nAccept: text/css, */*;q=0.1\r\n") != null);
 }
 
 test "a request for the version for small screens says so, and any other says nothing" {

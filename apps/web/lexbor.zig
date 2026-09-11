@@ -75,6 +75,7 @@ pub const Tag = enum(usize) {
     fieldset = 0x0052,
     figcaption = 0x0053,
     figure = 0x0054,
+    font = 0x0055,
     footer = 0x0056,
     form = 0x0058,
     h1 = 0x005c,
@@ -158,9 +159,14 @@ pub extern fn lxb_dom_element_get_attribute(element: *Node, name: [*]const u8, n
 pub extern fn lxb_dom_element_has_attribute(element: *Node, name: [*]const u8, name_len: usize) bool;
 
 /// A string as upstream keeps one: a pointer and a length.
-const Str = extern struct {
+pub const Str = extern struct {
     data: ?[*]const u8,
     length: usize,
+
+    pub fn slice(self: Str) []const u8 {
+        const data = self.data orelse return "";
+        return data[0..self.length];
+    }
 };
 
 /// A text node: a node, and its words straight after it.
@@ -179,8 +185,7 @@ const CharacterData = extern struct {
 pub fn wordsOf(node: *const Node) []const u8 {
     std.debug.assert(node.type == .text);
     const text: *const CharacterData = @fieldParentPtr("node", node);
-    const data = text.data.data orelse return "";
-    return data[0..text.data.length];
+    return text.data.slice();
 }
 
 /// An attribute's value, or nothing where the element has none. One written
@@ -205,10 +210,35 @@ pub fn attributeIs(node: *Node, name: []const u8, value: []const u8) bool {
     return std.ascii.eqlIgnoreCase(attribute(node, name) orelse return false, value);
 }
 
+/// Whether an attribute written as words apart by spaces, as `rel` is, has
+/// `word` among them, compared without regard to case.
+pub fn attributeHas(node: *Node, name: []const u8, word: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, attribute(node, name) orelse return false, &std.ascii.whitespace);
+    while (words.next()) |each| {
+        if (std.ascii.eqlIgnoreCase(each, word)) return true;
+    }
+    return false;
+}
+
 /// Every interface begins with a node, which is what upstream's own
 /// `lxb_dom_interface_node` says by casting rather than by reaching.
 pub fn nodeOf(interface: anytype) *Node {
     return @ptrCast(@alignCast(interface));
+}
+
+/// The node after `node` in document order, going no further than `root`.
+///
+/// What every walk of a tree here steps with. A page can nest thousands
+/// deep, a stack frame per level is a stack this machine does not have to
+/// spare, and a walk that follows the tree's own links needs no stack at all.
+pub fn following(node: *Node, root: *Node) ?*Node {
+    if (node.first_child) |child| return child;
+    var at = node;
+    while (at != root) {
+        if (at.next) |sibling| return sibling;
+        at = at.parent orelse return null;
+    }
+    return null;
 }
 
 comptime {
@@ -232,4 +262,225 @@ pub fn titleOf(document: *Document) ?[]const u8 {
     var len: usize = 0;
     const text = lxb_html_document_title(document, &len) orelse return null;
     return text[0..len];
+}
+
+// ---------------------------------------------------------------------------
+// The cascade
+//
+// Upstream's `style` module applies a page's stylesheets as the tree is
+// built: every `style` attribute and `<style>` element, once its hooks are in
+// the parser. A sheet fetched from elsewhere is parsed and its rules applied
+// when it is handed over. What an element ends up with is then asked of it
+// one property at a time, cascade and all.
+// ---------------------------------------------------------------------------
+
+/// Put the cascade's hooks in the parser. Before the document is parsed.
+pub extern fn lxb_style_init(document: *Document) Status;
+/// Take them out again, and the cascade's memory with them.
+pub extern fn lxb_style_destroy(document: *Document) void;
+
+/// What the cascade gave an element for one property, or nothing where no
+/// rule said.
+pub extern fn lxb_dom_element_style_by_id(element: *const Node, property: Property) ?*const Declaration;
+/// The same, for a property upstream has no number of its own for, by name.
+pub extern fn lxb_dom_element_style_by_name(element: *const Node, name: [*]const u8, len: usize) ?*const Declaration;
+
+pub extern fn lxb_css_stylesheet_create(memory: ?*CssMemory) ?*Stylesheet;
+pub extern fn lxb_css_stylesheet_parse(sheet: *Stylesheet, parser: *CssParser, data: [*]const u8, len: usize) Status;
+/// Read declarations written out the way a `style` attribute writes them.
+pub extern fn lxb_css_declaration_list_parse(parser: *CssParser, data: [*]const u8, len: usize) ?*DeclarationList;
+/// Apply one rule to every element its selectors match.
+pub extern fn lxb_dom_document_style_attach(document: *DomDocument, rule: *StyleRule) Status;
+
+pub const CssMemory = opaque {};
+pub const CssParser = opaque {};
+pub const SelectorList = opaque {};
+
+/// The properties this reader acts on, numbered as upstream numbers them.
+pub const Property = enum(usize) {
+    /// One upstream does not read, kept by name with its value as written.
+    custom = 0x0001,
+    background_color = 0x0006,
+    color = 0x0015,
+    display = 0x0017,
+    opacity = 0x003e,
+    text_align = 0x004d,
+    visibility = 0x005d,
+    _,
+};
+
+/// The keywords and kinds of value this reader tells apart, numbered as
+/// upstream numbers them. Anything else is a value it does not act on.
+pub const Keyword = enum(c_uint) {
+    center = 0x0007,
+    percentage = 0x0015,
+    none = 0x001f,
+    hidden = 0x0020,
+    left = 0x002f,
+    right = 0x0030,
+    current_color = 0x0031,
+    transparent = 0x0032,
+    hex = 0x0033,
+    rgb = 0x00db,
+    rgba = 0x00dc,
+    number = 0x0108,
+    start = 0x010d,
+    end = 0x010e,
+    justify = 0x014a,
+    collapse = 0x0165,
+    _,
+
+    /// Upstream's named colours are keywords in a run, in alphabetical
+    /// order from `aliceblue` to `yellowgreen`.
+    pub const named_first: c_uint = 0x0034;
+    pub const named_last: c_uint = 0x00c7;
+
+    /// Which named colour this is, counted from `aliceblue`, where it is one.
+    pub fn named(self: Keyword) ?usize {
+        const value = @intFromEnum(self);
+        if (value < named_first or value > named_last) return null;
+        return value - named_first;
+    }
+};
+
+/// A document as the DOM keeps one, up to where it keeps its cascade.
+/// Mirrored as far as that and no further: nothing past it is read.
+pub const DomDocument = extern struct {
+    node: Node,
+    compat_mode: c_uint,
+    kind: c_uint,
+    doctype: ?*anyopaque,
+    element: ?*anyopaque,
+    create_interface: ?*const anyopaque,
+    clone_interface: ?*const anyopaque,
+    destroy_interface: ?*const anyopaque,
+    mutation: ?*const anyopaque,
+    attr_mutation: ?*const anyopaque,
+    mraw: ?*anyopaque,
+    text: ?*anyopaque,
+    tags: ?*anyopaque,
+    attrs: ?*anyopaque,
+    prefix: ?*anyopaque,
+    ns: ?*anyopaque,
+    parser: ?*anyopaque,
+    user: ?*anyopaque,
+    css: ?*DocumentCss,
+};
+
+/// An HTML document begins with the DOM's document, which is what
+/// upstream's own `lxb_dom_interface_document` says by casting.
+pub fn domOf(document: *Document) *DomDocument {
+    return @ptrCast(@alignCast(document));
+}
+
+/// The cascade's state on a document: the memory its rules live in and the
+/// parser that reads them. Only its head is mirrored, which is what is read.
+pub const DocumentCss = extern struct {
+    memory: *CssMemory,
+    css_selectors: ?*anyopaque,
+    parser: *CssParser,
+};
+
+pub const RuleKind = enum(c_uint) {
+    undef,
+    stylesheet,
+    list,
+    at_rule,
+    style,
+    bad_style,
+    declaration_list,
+    declaration,
+    _,
+};
+
+/// What every rule begins with: its kind, and its place among its siblings.
+pub const Rule = extern struct {
+    kind: RuleKind,
+    next: ?*Rule,
+    prev: ?*Rule,
+    parent: ?*Rule,
+    memory: ?*CssMemory,
+    ref_count: usize,
+};
+
+pub const RuleList = extern struct {
+    rule: Rule,
+    first: ?*Rule,
+    last: ?*Rule,
+};
+
+/// Selectors, and what an element they match is given.
+pub const StyleRule = extern struct {
+    rule: Rule,
+    selector: ?*SelectorList,
+    declarations: ?*DeclarationList,
+    child: ?*RuleList,
+    prelude_begin: usize,
+    prelude_end: usize,
+};
+
+pub const DeclarationList = extern struct {
+    rule: Rule,
+    first: ?*Rule,
+    last: ?*Rule,
+    count: usize,
+};
+
+/// One property and its value, which is a pointer to whatever shape the
+/// property's values take.
+pub const Declaration = extern struct {
+    rule: Rule,
+    property: Property,
+    value: ?*const anyopaque,
+    offset: [6]usize,
+    important: bool,
+};
+
+/// What a declaration of a property upstream does not read holds: its name,
+/// and its value as the sheet wrote it.
+pub const Custom = extern struct { name: Str, value: Str };
+
+pub const Stylesheet = extern struct {
+    root: ?*Rule,
+    memory: ?*CssMemory,
+    element: ?*anyopaque,
+};
+
+/// `display`, as its three keywords.
+pub const Display = extern struct { a: Keyword, b: Keyword, c: Keyword };
+
+/// `visibility` and `text-align`, each one keyword.
+pub const Single = extern struct { kind: Keyword };
+
+/// A number, and whether it was written with a point.
+pub const Number = extern struct { num: f64, is_float: bool };
+
+/// A channel of `rgb()`: a number from 0 to 255, or a percentage.
+pub const Channel = extern struct { kind: Keyword, value: Number };
+
+/// A colour as a declaration holds one: written in hex, as `rgb()`, as a
+/// name, or as one of the keywords that are not a colour of their own. Only
+/// the two shapes read are mirrored; the rest of upstream's union is left
+/// to it.
+pub const Colour = extern struct {
+    kind: Keyword,
+    u: extern union {
+        hex: extern struct { r: u8, g: u8, b: u8, a: u8, kind: c_uint },
+        rgb: extern struct { r: Channel, g: Channel, b: Channel, a: Channel, old: bool },
+    },
+};
+
+comptime {
+    // This side of the shapes `lexborport/layout_check.c` pins on the other.
+    const word = @sizeOf(usize);
+    if (@offsetOf(DomDocument, "css") != 27 * word + 2 * @sizeOf(c_uint)) @compileError("a document's cascade is not where upstream keeps it");
+    if (@offsetOf(DocumentCss, "parser") != 2 * word) @compileError("the cascade's parser is not its third word");
+    if (@sizeOf(Rule) != 6 * word) @compileError("a rule's head is not six words");
+    if (@offsetOf(StyleRule, "declarations") != 7 * word) @compileError("a style rule's declarations are not its eighth word");
+    if (@offsetOf(DeclarationList, "first") != 6 * word) @compileError("a declaration list does not start after its head");
+    if (@offsetOf(Declaration, "value") != 7 * word) @compileError("a declaration's value is not its eighth word");
+    if (@offsetOf(Declaration, "important") != 14 * word) @compileError("a declaration's importance is not after its six offsets");
+    if (@offsetOf(Custom, "value") != 2 * word) @compileError("a custom declaration's value does not follow its name");
+    if (@offsetOf(Colour, "u") != @alignOf(f64)) @compileError("a colour's value does not follow its kind");
+    if (@sizeOf(Channel) != @alignOf(f64) + @sizeOf(Number)) @compileError("a colour channel is not a kind and a number");
 }

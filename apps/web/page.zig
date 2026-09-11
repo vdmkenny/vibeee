@@ -12,6 +12,7 @@
 //! is decided here, and is not something to find out on the panel.
 
 const std = @import("std");
+const rgb = @import("lib").rgb;
 const Charset = @import("charset.zig").Charset;
 
 const Writer = std.Io.Writer;
@@ -27,10 +28,39 @@ pub const Face = enum(u2) { body, heading, mono };
 /// a link is.
 pub const Ink = enum(u2) { text, dim, link };
 
+/// One of the page's own colours, by its place in `Page.palette`. `none` is
+/// no colour of the page's, which leaves the theme's.
+pub const Swatch = enum(u8) {
+    none = 0,
+    _,
+
+    /// The swatch for the colour at `place` in the palette.
+    fn at(place: usize) Swatch {
+        return @enumFromInt(place + 1);
+    }
+
+    /// Where its colour is in the palette, or nothing for the theme's.
+    fn index(self: Swatch) ?usize {
+        return if (self == .none) null else @intFromEnum(self) - 1;
+    }
+};
+
 /// How words look. Packed, so that two looks compare as one small value.
-pub const Look = packed struct(u4) {
+pub const Look = packed struct(u12) {
     face: Face = .body,
     ink: Ink = .text,
+    /// The colour the page gives the words, where it gives one.
+    paint: Swatch = .none,
+};
+
+/// Which way a block's lines lean.
+pub const Alignment = enum(u2) { start, center, end };
+
+/// The colours a page gives something it shows: its words, and what they sit
+/// on.
+pub const Colours = packed struct(u16) {
+    ink: Swatch = .none,
+    ground: Swatch = .none,
 };
 
 /// Words in one look, going to one link or to none.
@@ -89,6 +119,9 @@ pub const Block = struct {
     /// Inside a quotation, which puts a bar down its margin.
     quoted: bool = false,
     marker: Marker = .none,
+    /// What the page paints under it, where it paints anything.
+    ground: Swatch = .none,
+    alignment: Alignment = .start,
     /// Its runs, which a block still to be opened does not have.
     first: u32 = 0,
     count: u32 = 0,
@@ -121,6 +154,8 @@ pub const Control = struct {
     /// What it sends: a line's words to begin with, a box's value when it
     /// is ticked, a button's when it is the one pressed.
     value: Span = .{},
+    /// The colours the page gives it, where it gives any.
+    colours: Colours = .{},
 };
 
 pub const ControlKind = union(enum) {
@@ -188,15 +223,16 @@ pub const Page = struct {
     forms: std.ArrayList(Form) = .empty,
     controls: std.ArrayList(Control) = .empty,
     pictures: std.ArrayList(Picture) = .empty,
+    /// The page's own colours, which swatches name.
+    palette: std.ArrayList(rgb.Colour) = .empty,
     /// How many of the controls are lines to type in, and boxes to tick.
     lines: u16 = 0,
     ticks: u16 = 0,
     /// The encoding the page arrived in, which is the one its forms answer
     /// in.
     encoding: Charset = .utf8,
-    /// Where the page says its version for small screens is, resolved, or
-    /// empty where it names none.
-    mobile: Span = .{},
+    /// What the page is painted on, where it paints anything.
+    ground: Swatch = .none,
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
         self.title.deinit(gpa);
@@ -208,6 +244,7 @@ pub const Page = struct {
         self.forms.deinit(gpa);
         self.controls.deinit(gpa);
         self.pictures.deinit(gpa);
+        self.palette.deinit(gpa);
         self.* = .{};
     }
 
@@ -221,6 +258,13 @@ pub const Page = struct {
 
     pub fn string(self: *const Page, span: Span) []const u8 {
         return self.strings.items[span.at..][0..span.len];
+    }
+
+    /// The colour a swatch stands for, or nothing for the theme's.
+    pub fn colourOf(self: *const Page, swatch: Swatch) ?rgb.Colour {
+        const index = swatch.index() orelse return null;
+        if (index >= self.palette.items.len) return null;
+        return self.palette.items[index];
     }
 
     /// Where a link goes.
@@ -336,7 +380,7 @@ pub const Builder = struct {
     /// A control of the form the walk is in. One that shows is placed among
     /// the words where the page put it, the way a word is; a hidden one is
     /// kept for its form's answers alone.
-    pub fn addControl(self: *Builder, kind: ControlKind, name: []const u8, value: []const u8) Error!void {
+    pub fn addControl(self: *Builder, kind: ControlKind, name: []const u8, value: []const u8, colours: Colours) Error!void {
         const index = std.math.cast(u16, self.page.controls.items.len) orelse return;
         var placed = kind;
         switch (placed) {
@@ -355,6 +399,7 @@ pub const Builder = struct {
             .form = self.form,
             .name = try self.keep(name),
             .value = try self.keep(value),
+            .colours = colours,
         });
         if (placed == .hidden) return;
         try self.place(.{ .control = index });
@@ -380,6 +425,18 @@ pub const Builder = struct {
         const block = self.opened();
         try self.page.runs.append(self.gpa, run);
         block.count += 1;
+    }
+
+    /// The swatch for a colour the page gives: the same one each time it
+    /// gives that colour again. Past the last a palette holds, the theme's.
+    pub fn swatch(self: *Builder, colour: rgb.Colour) Error!Swatch {
+        const palette = &self.page.palette;
+        for (palette.items, 0..) |kept, index| {
+            if (kept.eql(colour)) return .at(index);
+        }
+        if (palette.items.len == std.math.maxInt(u8)) return .none;
+        try palette.append(self.gpa, colour);
+        return .at(palette.items.len - 1);
     }
 
     /// Keep a string beside the page's words.
@@ -732,10 +789,10 @@ test "a form's controls sit among its words, and a hidden one only among its ans
     defer f.deinit();
     f.builder.form = try f.builder.addForm("https://a.org/find", .get);
     try f.builder.words("Find ");
-    try f.builder.addControl(.{ .line = .{ .letters = 8 } }, "q", "");
-    try f.builder.addControl(.hidden, "t", "848d6d9e");
+    try f.builder.addControl(.{ .line = .{ .letters = 8 } }, "q", "", .{});
+    try f.builder.addControl(.hidden, "t", "848d6d9e", .{});
     try f.builder.words(" ");
-    try f.builder.addControl(.{ .submit = .{ .label = try f.builder.keep("Go") } }, "", "Go");
+    try f.builder.addControl(.{ .submit = .{ .label = try f.builder.keep("Go") } }, "", "Go", .{});
     try f.builder.finish();
 
     const page = &f.page;
@@ -774,4 +831,17 @@ test "a picture sits among the words, and reads as what the page says it shows" 
     var text = try f.written();
     defer text.deinit();
     try testing.expectEqualStrings("Look [the machine] here\n", text.written());
+}
+
+test "a colour given twice is one swatch, and none is the theme's" {
+    var f = Fixture{};
+    f.init();
+    defer f.deinit();
+    const red = try f.builder.swatch(.hex(0xCC0000));
+    const blue = try f.builder.swatch(.hex(0x0000CC));
+    try testing.expect(red != blue and red != .none);
+    try testing.expectEqual(red, try f.builder.swatch(.hex(0xCC0000)));
+    try testing.expectEqual(@as(usize, 2), f.page.palette.items.len);
+    try testing.expectEqual(rgb.Colour.hex(0x0000CC), f.page.colourOf(blue).?);
+    try testing.expectEqual(@as(?rgb.Colour, null), f.page.colourOf(.none));
 }

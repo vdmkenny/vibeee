@@ -179,3 +179,5 @@ Settings, generated from the schema: all
       true | false
   web.mobile                true
       true | false
+  web.styles                true
+      true | false

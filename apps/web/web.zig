@@ -3,24 +3,31 @@
 //! What `design/00-vibeee.md` settled on: a reader for simple pages rather
 //! than a general browser. It asks a site for one page, reads the words out
 //! of the markup, and sets them in this system's own faces in a column the
-//! width a line reads best at. It runs nothing a page sends and follows no
-//! stylesheet; what it shows is what the page says. A page's pictures come
-//! after its words, one at a time, what the page says each one shows standing
-//! in for it until it is here.
+//! width a line reads best at. It runs nothing a page sends. Of what a page's
+//! stylesheets say, it follows what a column of text can show: what they
+//! hide, the colours of words and of what they sit on, and which way lines
+//! lean. A page's pictures come after its words, one at a time, what the page
+//! says each one shows standing in for it until it is here.
 //!
 //! The parts each have a file: `url` for where things are, `http` and
-//! `fetch` for getting them, `lexbor` and `extract` for reading markup into
-//! a `page`, `layout` for where its words go, `pictures` for what it shows
-//! among them, and `view` for the part on screen. This file is the window
-//! around them and the order they run in.
+//! `fetch` for getting them, `source` for a page as it came and what it reads
+//! as, `lexbor`, `css`, `media` and `extract` for reading markup and its
+//! stylesheets into a `page`, `layout` for where its words go, `pictures` for
+//! what it shows among them, and `view` for the part on screen. This file is
+//! the window around them and the order they run in.
+//!
+//! A page's stylesheets are fetched after its markup, on the connection it
+//! came on, and its words are read once they are here. Their media queries
+//! are asked about the window the page is drawn in, so a window that changes
+//! size reads the page again where they answer differently.
 //!
 //! `web -t <address>` prints a page's words instead of opening a window, so
 //! whatever the window can read, the shell can too.
 //!
-//! Where it starts, whether it fetches pictures and whether it asks for the
-//! versions of pages made for small screens are settings, in the `web` domain
-//! the store keeps: `cfg web` lists them, and a window that is open takes a
-//! change as it is made.
+//! Where it starts, whether it fetches pictures, whether it follows a page's
+//! stylesheets and whether it asks for the versions of pages made for small
+//! screens are settings, in the `web` domain the store keeps: `cfg web` lists
+//! them, and a window that is open takes a change as it is made.
 //!
 //! Not part of the system. It is built into `home/bin/` and versioned on its
 //! own.
@@ -41,13 +48,14 @@ const str = lib.str;
 const Bounded = lib.bounded.Bounded;
 
 const charset = @import("charset.zig");
-const extract = @import("extract.zig");
+const css = @import("css.zig");
 const fetch_mod = @import("fetch.zig");
 const form_mod = @import("form.zig");
 const http = @import("http.zig");
-const lexbor = @import("lexbor.zig");
+const media = @import("media.zig");
 const page_mod = @import("page.zig");
 const pictures_mod = @import("pictures.zig");
+const source_mod = @import("source.zig");
 const url = @import("url.zig");
 const view_mod = @import("view.zig");
 
@@ -63,6 +71,8 @@ const Rect = eui.Rect;
 const KeyCode = eui.widget.KeyCode;
 const Modifiers = eui.widget.Modifiers;
 const Page = page_mod.Page;
+const Source = source_mod.Source;
+const Tree = source_mod.Tree;
 
 /// How soon after a pass the step of a fetch that blocks runs: straight
 /// away, but after the pass that says what is about to happen has been
@@ -81,6 +91,15 @@ var address: eui.text.Field(url.ADDRESS_MAX) = .{};
 var view: view_mod.View = .{};
 /// The page on screen.
 var shown: Page = .{};
+/// The page on screen as it came, kept to read it again in a window it reads
+/// differently in.
+var source: Source = .{};
+/// The window the page on screen was read for, and the one it is drawn in
+/// now, as a stylesheet asks about a window. None before there is a window.
+var read_for: ?media.Screen = null;
+var window: ?media.Screen = null;
+/// A page whose markup has come and whose stylesheets are still coming.
+var reading: ?Reading = null;
 var fetch: fetch_mod.Fetch = .{};
 /// The pictures of the page on screen, and the fetch that brings them.
 var pictures: pictures_mod.Pictures = .{};
@@ -121,6 +140,22 @@ const Arrival = struct {
     us: ?u64 = null,
     /// What the site answered, or none for a file.
     status: ?u16 = null,
+};
+
+/// A page between its markup arriving and its words being read: what came so
+/// far, the tree its markup parsed into, and the stylesheets it links to,
+/// fetched one after another.
+const Reading = struct {
+    source: Source,
+    tree: Tree,
+    links: css.Sheets = .{},
+    /// The media the link to the stylesheet being fetched names.
+    asked: []const u8 = "",
+
+    fn deinit(self: *Reading) void {
+        self.tree.close();
+        self.links.deinit(gpa);
+    }
 };
 
 /// Where the reader is and where it has been, one entry per page gone to,
@@ -186,7 +221,7 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
         .tick = tick,
         // The frame begins with what it is handed here, so a first page
         // already on its way is handed over as one.
-        .tick_us = if (fetch.busy()) SOON_US else IDLE_US,
+        .tick_us = if (fetch.busy() or reading != null) SOON_US else IDLE_US,
         .wakes = wakes.slice(),
         .woken = woken,
     });
@@ -281,6 +316,7 @@ fn revisit() void {
 /// Fetch `target`, or read it here when it is a file, without touching the
 /// history.
 fn visit(target: []const u8) void {
+    abandon();
     address.set(target);
     const where = url.parse(target) orelse return failed(error.NotAnAddress, target);
     if (where.scheme == .file) return openFile(where);
@@ -294,6 +330,11 @@ fn visit(target: []const u8) void {
 
 fn stop() void {
     fetch.cancel(gpa);
+    if (reading != null) {
+        // What of its stylesheets came is what it is drawn with.
+        fetch.wanted = .page;
+        return finish();
+    }
     if (history.current()) |entry| address.set(entry.address.slice());
     // The page on screen stays, and so do its pictures still to come.
     waitFor(.none);
@@ -342,8 +383,15 @@ fn tick() bool {
 
 fn woken(index: usize) bool {
     if (settings_changed != null and wakes.at(index) == settings_changed) {
+        const styled = choices.styles;
         choices = proto.settings.load("web");
         apply();
+        // Stylesheets turned on or off are a different page: the one on
+        // screen is fetched again, as it is to be drawn now.
+        if (choices.styles != styled) {
+            reload();
+            return true;
+        }
         if (!choices.images) pictures.pause(gpa);
         // Pictures turned off give their room to what the page says they
         // show, and turned on come as they would have.
@@ -356,10 +404,15 @@ fn woken(index: usize) bool {
     return true;
 }
 
-/// Take the next step of whatever is on its way: the page, or once it is
-/// here, its pictures. True when there is something new to draw.
+/// Take the next step of whatever is on its way: the page, its stylesheets,
+/// or once it is on screen, its pictures. True when there is something new
+/// to draw.
 fn step() bool {
     if (fetch.busy()) return settle(fetch.advance(gpa));
+    if (reading != null) {
+        nextSheet();
+        return true;
+    }
     switch (pictures.advance(gpa, &shown, view.pictureFrom())) {
         .wait => |wait| waitFor(wait),
         .settled => {
@@ -389,19 +442,19 @@ fn sleepOn(site: ?u32) void {
     proto.app.wakeOn(wakes.slice());
 }
 
-/// Wait on what the page's fetch waits on next, and act on its end. True
-/// when there is something new to draw.
+/// Wait on what the fetch waits on next, and act on its end: a page's or a
+/// stylesheet's. True when there is something new to draw.
 fn settle(wait: fetch_mod.Wait) bool {
     waitFor(wait);
     switch (wait) {
         // The step that blocks is also what a redirect is, which the address
-        // says as it happens.
-        .none => address.set(fetch.address()),
+        // says as it happens: a page's, and not a stylesheet's.
+        .none => if (reading == null) address.set(fetch.address()),
         .site => {},
         .over => switch (fetch.state) {
             .idle => return false,
-            .done => arrive(),
-            .failed => |why| {
+            .done => if (reading != null) sheetArrived() else arrive(),
+            .failed => |why| if (reading != null) sheetArrived() else {
                 failed(why, fetch.host());
                 fetch.cancel(gpa);
             },
@@ -428,38 +481,171 @@ fn waitFor(wait: fetch_mod.Wait) void {
     }
 }
 
-/// The page is here: read it, and show it or go on to the version for small
-/// screens it names, having given back what it arrived in either way.
+/// The page is here: read it, or go on to the version for small screens it
+/// names. The connection it came on stays where its stylesheets are to come
+/// on it.
 fn arrive() void {
-    const next = read: {
-        defer fetch.cancel(gpa);
-        const final = fetch.address();
-        address.set(final);
-        if (history.current()) |entry| _ = entry.address.set(final);
+    const final = fetch.address();
+    address.set(final);
+    if (history.current()) |entry| _ = entry.address.set(final);
 
-        arrived = .{
-            .bytes = fetch.received(),
-            .us = sys.clockMicros() -| fetch.started_us,
-            .status = fetch.response.status,
-        };
-
-        const base = url.parse(final) orelse return failed(error.NotAnAddress, final);
-        const said = fetch.response.contentType();
-        break :read show(fetch.body.bytes.items, base, kindOf(said, final), charset.fromContentType(said));
+    arrived = .{
+        .bytes = fetch.received(),
+        .us = sys.clockMicros() -| fetch.started_us,
+        .status = fetch.response.status,
     };
+
+    const next = next: {
+        const base = url.parse(final) orelse {
+            failed(error.NotAnAddress, final);
+            break :next null;
+        };
+        const said = fetch.response.contentType();
+        const body = fetch.body.bytes;
+        fetch.body.bytes = .empty;
+        break :next take(body, base, kindOf(said, final), charset.fromContentType(said));
+    };
+    if (reading != null) fetch.release(gpa) else fetch.cancel(gpa);
     if (next) |mobile| goMobile(mobile.slice());
 }
 
 /// A file on this machine, read whole.
 fn openFile(where: url.Url) void {
     const path = where.file();
-    const next = read: {
-        const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
-        defer gpa.free(bytes);
-        arrived = .{ .bytes = bytes.len };
-        break :read show(bytes, where, kindOf(null, path), null);
+    const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
+    arrived = .{ .bytes = bytes.len };
+    if (take(.fromOwnedSlice(bytes), where, kindOf(null, path), null)) |next| goMobile(next.slice());
+}
+
+/// Take a page that has arrived, whose bytes it takes, from a site or from
+/// a file. Plain text is a page at once. Markup is parsed, and read into
+/// words once its stylesheets are here. What comes back is where to go on
+/// to instead, where the page names a version for small screens the
+/// settings ask for.
+fn take(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?charset.Charset) ?url.Address {
+    var bytes = body;
+    switch (kind) {
+        .other => |media_type| {
+            defer bytes.deinit(gpa);
+            failed(error.NotAPage, media_type);
+            return null;
+        },
+        .plain => {
+            defer bytes.deinit(gpa);
+            var fresh: Page = .{};
+            plainInto(bytes.items, declared, &fresh) catch |err| {
+                fresh.deinit(gpa);
+                failed(err, base.host);
+                return null;
+            };
+            present(&fresh, .{});
+            return null;
+        },
+        .markup => {},
+    }
+
+    var from = sourceOf(bytes, base, declared);
+    var tree = Tree.parse(gpa, &from) catch |err| {
+        from.deinit(gpa);
+        failed(err, base.host);
+        return null;
     };
-    if (next) |mobile| goMobile(mobile.slice());
+    if (mobileOf(&tree, base)) |next| {
+        tree.close();
+        from.deinit(gpa);
+        return next;
+    }
+    reading = .{ .source = from, .tree = tree };
+    // A page whose list of stylesheets could not be kept is read with those
+    // that were.
+    tree.sheets(gpa, base, &reading.?.links) catch {};
+    // Its stylesheets from the next chance on.
+    waitFor(.none);
+    return null;
+}
+
+/// Go on to the page's next stylesheet: read one from this machine at once,
+/// or fetch one from a site. With none left, read the page.
+fn nextSheet() void {
+    const r = if (reading) |*open| open else return;
+    while (r.links.next()) |link| {
+        const where = url.parse(link.address) orelse continue;
+        if (where.scheme == .file) {
+            const text = readSheet(where) orelse continue;
+            r.links.took(text.len);
+            r.source.keep(gpa, text, link.media);
+            continue;
+        }
+        r.asked = link.media;
+        fetch.wanted = .style;
+        fetch.begin(gpa, link.address);
+        waitFor(.none);
+        return;
+    }
+    fetch.cancel(gpa);
+    fetch.wanted = .page;
+    finish();
+}
+
+/// A stylesheet is here, or is not coming: kept where it came as one, and
+/// on to the next.
+fn sheetArrived() void {
+    const r = if (reading) |*open| open else return;
+    if (fetch.state == .done and isStyle(&fetch.response)) {
+        if (fetch.body.bytes.toOwnedSlice(gpa)) |text| {
+            r.links.took(text.len);
+            r.source.keep(gpa, text, r.asked);
+        } else |_| {}
+    }
+    fetch.release(gpa);
+    nextSheet();
+}
+
+/// Read the page being read into words, with what of its stylesheets came,
+/// as it reads in the window, and put it on screen.
+fn finish() void {
+    const r = if (reading) |*open| open else return;
+    defer {
+        r.deinit();
+        reading = null;
+    }
+    var fresh: Page = .{};
+    r.tree.read(gpa, &r.source, window, &fresh) catch |err| {
+        fresh.deinit(gpa);
+        r.source.deinit(gpa);
+        return failed(err, if (url.parse(r.source.base.slice())) |base| base.host else "");
+    };
+    present(&fresh, r.source);
+}
+
+/// Let go of a page still being read, for another that is to be gone to.
+fn abandon() void {
+    const r = if (reading) |*open| open else return;
+    r.deinit();
+    r.source.deinit(gpa);
+    reading = null;
+    fetch.wanted = .page;
+}
+
+/// A stylesheet from this machine, read whole.
+fn readSheet(where: url.Url) ?[]u8 {
+    return file.readAlloc(gpa, where.file(), fetch_mod.SHEET_MAX) catch null;
+}
+
+/// Whether an answer is a stylesheet: one that worked, of the kind a
+/// stylesheet is or of no kind said.
+fn isStyle(response: *const http.Response) bool {
+    if (response.status < 200 or response.status >= 300) return false;
+    const said = response.contentType() orelse return true;
+    return std.ascii.eqlIgnoreCase(http.mediaOf(said), "text/css");
+}
+
+/// A page's markup as it came, taking `bytes`.
+fn sourceOf(bytes: std.ArrayList(u8), base: url.Url, declared: ?charset.Charset) Source {
+    var from = Source{ .bytes = bytes, .declared = declared, .styled = choices.styles };
+    var buf: [url.ADDRESS_MAX]u8 = undefined;
+    _ = from.base.set(std.fmt.bufPrint(&buf, "{f}", .{base}) catch "");
+    return from;
 }
 
 /// What a body is, from what the site said it was, or from a file's name.
@@ -485,39 +671,18 @@ fn kindOf(content_type: ?[]const u8, name: []const u8) Kind {
         }
         return .markup;
     };
-    const media = http.mediaOf(said);
-    return media_kinds.get(media) orelse .{ .other = media };
+    const media_type = http.mediaOf(said);
+    return media_kinds.get(media_type) orelse .{ .other = media_type };
 }
 
-/// Read `bytes` into a page and put it on screen, unless it names a version
-/// for small screens to go on to, which is then what comes back instead.
-/// `declared` is the encoding the site said they are in, where it said one.
-fn show(bytes: []const u8, base: url.Url, kind: Kind, declared: ?charset.Charset) ?url.Address {
-    var fresh: Page = .{};
-    toPage(bytes, base, kind, declared, &fresh) catch |err| {
-        fresh.deinit(gpa);
-        failed(err, switch (kind) {
-            .other => |media| media,
-            .markup, .plain => base.host,
-        });
-        return null;
-    };
-    if (mobileOf(&fresh, base)) |next| {
-        fresh.deinit(gpa);
-        return next;
-    }
-    replace(&fresh);
-    focus_next = .page;
-    return null;
-}
-
-/// Where to go on to instead of `page`: the version for small screens it
-/// names, where the settings ask for those, none has been gone on to already
-/// for this place, and the page is not that version itself.
-fn mobileOf(page: *const Page, base: url.Url) ?url.Address {
+/// Where to go on to instead of the page parsed as `tree`: the version for
+/// small screens it names, where the settings ask for those, none has been
+/// gone on to already for this place, and the page is not that version
+/// itself.
+fn mobileOf(tree: *const Tree, base: url.Url) ?url.Address {
     if (!choices.mobile or followed_mobile) return null;
-    const named = page.string(page.mobile);
-    if (named.len == 0) return null;
+    var buf: [url.ADDRESS_MAX]u8 = undefined;
+    const named = tree.mobile(base, &buf) orelse return null;
     var own: [url.ADDRESS_MAX]u8 = undefined;
     const here = std.fmt.bufPrint(&own, "{f}", .{base}) catch return null;
     if (std.mem.eql(u8, here, named)) return null;
@@ -526,55 +691,63 @@ fn mobileOf(page: *const Page, base: url.Url) ?url.Address {
 }
 
 /// Why what arrived could not be read as a page.
-const ReadError = error{
-    OutOfMemory,
-    /// The parser would not take it.
-    Unparsable,
+const ReadError = source_mod.Error || error{
     /// It is something other than a page.
     NotAPage,
 };
 
-/// Read `bytes` into `page`, as markup or as plain text.
-fn toPage(bytes: []const u8, base: url.Url, kind: Kind, declared: ?charset.Charset, page: *Page) ReadError!void {
-    if (kind == .other) return error.NotAPage;
-    // The parser reads UTF-8 and nothing else, and neither does the page.
-    // The encoding is kept all the same: a form answers in it.
+/// Plain text as a page: one preformatted block in the monospaced face.
+fn plainInto(bytes: []const u8, declared: ?charset.Charset, page: *Page) ReadError!void {
+    // The page reads UTF-8 and nothing else. The encoding is kept all the
+    // same: a form answers in it.
     const encoding = charset.sniff(declared, bytes);
     const text = try charset.utf8Of(gpa, bytes, encoding);
     defer text.deinit(gpa);
-    const utf8 = text.bytes();
     page.encoding = encoding;
 
-    switch (kind) {
-        .other => unreachable,
-        .plain => {
-            var builder = page_mod.Builder{ .gpa = gpa, .page = page };
-            try builder.boundary(.{ .kind = .preformatted });
-            builder.look.face = .mono;
-            try builder.words(utf8);
-            try builder.finish();
-        },
-        .markup => {
-            const document = lexbor.lxb_html_document_create() orelse return error.OutOfMemory;
-            defer _ = lexbor.lxb_html_document_destroy(document);
-            switch (lexbor.lxb_html_document_parse(document, utf8.ptr, utf8.len)) {
-                .ok => {},
-                .no_memory => return error.OutOfMemory,
-                _ => return error.Unparsable,
-            }
-            try extract.extract(gpa, document, base, page);
-        },
-    }
+    var builder = page_mod.Builder{ .gpa = gpa, .page = page };
+    try builder.boundary(.{ .kind = .preformatted });
+    builder.look.face = .mono;
+    try builder.words(text.bytes());
+    try builder.finish();
 }
 
-fn replace(fresh: *Page) void {
+/// Put a page that has been read on screen, and give the keyboard to it.
+fn present(fresh: *Page, from: Source) void {
+    replace(fresh, from);
+    focus_next = .page;
+}
+
+/// Put `fresh` on screen, read from `from`, which takes the place of the
+/// source of the page it replaces.
+fn replace(fresh: *Page, from: Source) void {
+    source.deinit(gpa);
+    source = from;
+    read_for = window;
+    showPage(fresh);
+}
+
+/// Read the page on screen again, in the window it now reads differently
+/// in, at the place it was left.
+fn reread() void {
+    read_for = window;
+    var fresh: Page = .{};
+    source.read(gpa, window, &fresh) catch {
+        fresh.deinit(gpa);
+        return;
+    };
+    pending_scroll = view.scroll;
+    showPage(&fresh);
+}
+
+fn showPage(fresh: *Page) void {
     shown.deinit(gpa);
     shown = fresh.*;
     view.show(gpa, &shown, pending_scroll);
     pending_scroll = 0;
     title_stale = true;
     // Its pictures from the next chance on, once its words are drawn.
-    pictures.show(gpa, &shown, widest(), view_mod.ground());
+    pictures.show(gpa, &shown, widest(), view_mod.groundOf(&shown));
     waitFor(.none);
 }
 
@@ -582,6 +755,17 @@ fn replace(fresh: *Page) void {
 /// interface is drawn.
 fn widest() u16 {
     return @intCast(view_mod.MEASURE * eui.theme.textScale());
+}
+
+/// The window a page is drawn in, as a stylesheet asks about it: in the
+/// page's own pixels, which the interface draws at its own scale.
+fn windowOf(area: Rect) media.Screen {
+    const scale = eui.theme.textScale();
+    return .{
+        .width = @floatFromInt(@divTrunc(area.w, scale)),
+        .height = @floatFromInt(@divTrunc(area.h, scale)),
+        .scale = @floatFromInt(scale),
+    };
 }
 
 /// A page saying why the one asked for is not here.
@@ -598,7 +782,7 @@ fn problem(heading: []const u8, detail: []const u8) void {
         builder.finish() catch break :build;
     }
     arrived = null;
-    replace(&fresh);
+    replace(&fresh, .{});
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +923,14 @@ fn draw() void {
     // the address share one strip.
     const parts = eui.chrome.split(area, .{ .top = true, .bottom = true });
     const bar = Strip.of(parts.top);
+
+    // The window the page is drawn in, which is what its stylesheets' media
+    // queries ask about: a page read for another reads again where it would
+    // read differently, and is only laid out again where it would not.
+    window = windowOf(parts.body);
+    if (!std.meta.eql(read_for, window)) {
+        if (source.readsAlike(read_for, window)) read_for = window else reread();
+    }
 
     // Before anything is drawn, so that the control losing the keyboard and
     // the one gaining it both paint on this pass.
@@ -882,7 +1074,7 @@ fn status(area: Rect, body: Rect) void {
             left.text(fetch.host());
         },
         .receiving => {
-            left.text("Reading from ");
+            left.text(if (reading != null) "Reading its styles from " else "Reading from ");
             left.text(fetch.host());
         },
         .idle, .done, .failed => left.text(if (shown.title.items.len > 0) shown.title.items else address.slice()),
@@ -959,17 +1151,16 @@ fn key(code: KeyCode, mods: Modifiers) bool {
 
 /// `web -t`: the page's words on standard output, and nothing drawn. The
 /// same page the window would show: gone on to the version for small screens
-/// it names, where the settings ask for those.
+/// it names, where the settings ask for those. With no window to ask about,
+/// its stylesheets' rules for windows of some sizes and not others are left
+/// out.
 fn printText(target: []const u8) noreturn {
     var buf: [url.ADDRESS_MAX]u8 = undefined;
     const where_text = addressFrom(target, &buf) orelse fatal(target, error.NotAnAddress);
 
     var page: Page = .{};
-    const where = readInto(where_text, &page);
-    if (mobileOf(&page, where)) |next| {
+    if (readInto(where_text, &page)) |next| {
         followed_mobile = true;
-        page.deinit(gpa);
-        page = .{};
         _ = readInto(next.slice(), &page);
     }
 
@@ -981,36 +1172,85 @@ fn printText(target: []const u8) noreturn {
 }
 
 /// Read what is at `where_text` into `page`, from this machine or over the
-/// network, saying what went wrong and stopping where it cannot. What comes
-/// back is where the page was found, after any redirect.
-fn readInto(where_text: []const u8, page: *Page) url.Url {
+/// network, stylesheets and all, saying what went wrong and stopping where
+/// it cannot. What comes back is where to go on to instead, where the page
+/// names a version for small screens that the settings ask for, and `page`
+/// is then left as it was.
+fn readInto(where_text: []const u8, page: *Page) ?url.Address {
     const where = url.parse(where_text) orelse fatal(where_text, error.NotAnAddress);
     if (where.scheme == .file) {
         const path = where.file();
         const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| fatal(path, err);
-        defer gpa.free(bytes);
-        toPage(bytes, where, kindOf(null, path), null, page) catch |err| fatal(path, err);
-        return where;
+        return readBody(.fromOwnedSlice(bytes), where, kindOf(null, path), null, page);
     }
 
-    fetch.begin(gpa, where_text);
+    if (!fetchNow(where_text)) fatal(fetch.host(), fetch.state.failed);
+    const final = url.parse(fetch.address()) orelse fatal(fetch.address(), error.NotAnAddress);
+    const said = fetch.response.contentType();
+    const body = fetch.body.bytes;
+    fetch.body.bytes = .empty;
+    return readBody(body, final, kindOf(said, fetch.address()), charset.fromContentType(said), page);
+}
+
+/// Read a page's `body`, which it takes, into `page`, as the shell reads
+/// one: its stylesheets fetched as it waits for each.
+fn readBody(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?charset.Charset, page: *Page) ?url.Address {
+    var bytes = body;
+    switch (kind) {
+        .other => |media_type| fatal(media_type, error.NotAPage),
+        .plain => {
+            defer bytes.deinit(gpa);
+            plainInto(bytes.items, declared, page) catch |err| fatal(base.host, err);
+            return null;
+        },
+        .markup => {},
+    }
+
+    var from = sourceOf(bytes, base, declared);
+    defer from.deinit(gpa);
+    var tree = Tree.parse(gpa, &from) catch |err| fatal(base.host, err);
+    defer tree.close();
+    if (mobileOf(&tree, base)) |next| return next;
+
+    // Its stylesheets, on the connection it came on, which the page's own
+    // address goes with: from here on it names the stylesheet being asked
+    // for.
+    var links: css.Sheets = .{};
+    defer links.deinit(gpa);
+    tree.sheets(gpa, base, &links) catch {};
+    fetch.release(gpa);
+    defer fetch.cancel(gpa);
+    while (links.next()) |link| {
+        const text = sheetNow(link.address) orelse continue;
+        links.took(text.len);
+        from.keep(gpa, text, link.media);
+    }
+    tree.read(gpa, &from, null, page) catch |err| fatal(from.base.slice(), err);
+    return null;
+}
+
+/// A stylesheet's text, read from this machine or fetched as the shell
+/// waits, or nothing where it did not come as one.
+fn sheetNow(link_address: []const u8) ?[]u8 {
+    const where = url.parse(link_address) orelse return null;
+    if (where.scheme == .file) return readSheet(where);
+    fetch.wanted = .style;
+    defer fetch.wanted = .page;
+    defer fetch.release(gpa);
+    if (!fetchNow(link_address) or !isStyle(&fetch.response)) return null;
+    return fetch.body.bytes.toOwnedSlice(gpa) catch null;
+}
+
+/// Fetch `target` as a shell waits for it: blocked on the site, woken by it
+/// or once a second to notice one gone quiet. True where it arrived.
+fn fetchNow(target: []const u8) bool {
+    fetch.begin(gpa, target);
     while (true) switch (fetch.advance(gpa)) {
         .none => {},
-        // Woken by the site, or once a second to notice one that has gone
-        // quiet.
         .site => |handle| sys.eventWait(handle, WATCH_US) catch {},
         .over => break,
     };
-    switch (fetch.state) {
-        .done => {},
-        .failed => |why| fatal(fetch.host(), why),
-        .idle, .connecting, .receiving => unreachable,
-    }
-    const final = url.parse(fetch.address()) orelse fatal(fetch.address(), error.NotAnAddress);
-    const said = fetch.response.contentType();
-    toPage(fetch.body.bytes.items, final, kindOf(said, fetch.address()), charset.fromContentType(said), page) catch |err|
-        fatal(fetch.address(), err);
-    return final;
+    return fetch.state == .done;
 }
 
 /// Say what went wrong on a shell line, and stop.

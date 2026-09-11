@@ -217,6 +217,12 @@ pub const Web = struct {
     /// and goes on to the version for small screens a page names as its
     /// alternate. Off, it asks for pages without saying either.
     mobile: bool = true,
+    /// Whether a page is drawn as its stylesheets ask, as far as a column of
+    /// text can be: what they hide is left out, and its words and grounds are
+    /// in its own colours, brought onto the theme. Off, a page is its words
+    /// in the theme's colours, which is quicker, since its stylesheets are
+    /// not fetched.
+    styles: bool = true,
 };
 
 /// Which program opens what. One key per family a program can be chosen

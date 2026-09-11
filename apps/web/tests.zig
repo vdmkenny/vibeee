@@ -9,4 +9,5 @@ test {
     _ = @import("form.zig");
     _ = @import("page.zig");
     _ = @import("layout.zig");
+    _ = @import("media.zig");
 }
