@@ -10,4 +10,5 @@ test {
     _ = @import("page.zig");
     _ = @import("layout.zig");
     _ = @import("media.zig");
+    _ = @import("css.zig");
 }

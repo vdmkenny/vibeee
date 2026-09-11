@@ -175,8 +175,17 @@ fn paintOf(colour: *const lexbor.Colour) ?Paint {
         .transparent => .transparent,
         .hex => {
             const hex = colour.u.hex;
-            if (hex.a == 0) return .transparent;
-            return .{ .colour = rgb.Colour.of(hex.r, hex.g, hex.b) };
+            // Three and four digits are a digit a channel, each standing for
+            // itself twice over: `#fa0` is `#ffaa00`.
+            const short = switch (hex.length) {
+                .three, .four => true,
+                .six, .eight => false,
+                _ => return null,
+            };
+            const alpha = if (hex.length == .four) doubled(hex.a) else hex.a;
+            if (alpha == 0) return .transparent;
+            if (!short) return .{ .colour = rgb.Colour.of(hex.r, hex.g, hex.b) };
+            return .{ .colour = rgb.Colour.of(doubled(hex.r), doubled(hex.g), doubled(hex.b)) };
         },
         .rgb, .rgba => {
             const channels = colour.u.rgb;
@@ -185,6 +194,12 @@ fn paintOf(colour: *const lexbor.Colour) ?Paint {
         },
         else => .{ .colour = named[colour.kind.named() orelse return null] },
     };
+}
+
+/// A hex digit as the byte it stands for in a colour written with one digit
+/// a channel: `f` is `ff`.
+fn doubled(digit: u8) u8 {
+    return digit << 4 | digit;
 }
 
 /// One channel of `rgb()`, as a byte: a number is out of 255, and a
@@ -512,4 +527,27 @@ comptime {
     if (named.len != Keyword.named_last - Keyword.named_first + 1) {
         @compileError("the named colours and upstream's run of them are not the same length");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+fn hexOf(r: u8, g: u8, b: u8, a: u8, length: lexbor.HexLength) lexbor.Colour {
+    return .{ .kind = .hex, .u = .{ .hex = .{ .r = r, .g = g, .b = b, .a = a, .length = length } } };
+}
+
+test "a hex colour written with a digit a channel is each digit twice over" {
+    try testing.expect(std.meta.eql(paintOf(&hexOf(0xf, 0xf, 0xf, 0xff, .three)).?, Paint{ .colour = .hex(0xFFFFFF) }));
+    try testing.expect(std.meta.eql(paintOf(&hexOf(0xf, 0xa, 0x0, 0xff, .three)).?, Paint{ .colour = .hex(0xFFAA00) }));
+    try testing.expect(std.meta.eql(paintOf(&hexOf(0x12, 0x34, 0x56, 0xff, .six)).?, Paint{ .colour = .hex(0x123456) }));
+}
+
+test "the four and eight digit forms say how see-through a colour is" {
+    try testing.expect(paintOf(&hexOf(0xf, 0xf, 0xf, 0x0, .four)).? == .transparent);
+    try testing.expect(paintOf(&hexOf(0xf, 0xf, 0xf, 0x8, .four)).? == .colour);
+    try testing.expect(paintOf(&hexOf(0x12, 0x34, 0x56, 0x00, .eight)).? == .transparent);
+    try testing.expect(paintOf(&hexOf(0x12, 0x34, 0x56, 0x80, .eight)).? == .colour);
 }

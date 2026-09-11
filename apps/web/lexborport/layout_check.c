@@ -189,8 +189,12 @@ CHECK("opacity is a number or a percentage, as a channel of rgb() is",
       sizeof(lxb_css_property_opacity_t) == sizeof(lxb_css_value_number_percentage_t));
 CHECK("a colour's value follows its kind",
       offsetof(lxb_css_value_color_t, u) == _Alignof(double));
-CHECK("a hex colour is four bytes and then its kind",
+CHECK("a hex colour is four bytes and then its length",
       offsetof(lxb_css_value_color_hex_t, type) == 4);
+CHECK("which is one of four, three digits first, in an unsigned int",
+      LXB_CSS_PROPERTY_COLOR_HEX_TYPE_3 == 0 && LXB_CSS_PROPERTY_COLOR_HEX_TYPE_4 == 1
+          && LXB_CSS_PROPERTY_COLOR_HEX_TYPE_6 == 2 && LXB_CSS_PROPERTY_COLOR_HEX_TYPE_8 == 3
+          && sizeof(lxb_css_value_color_hex_type_t) == sizeof(unsigned int));
 CHECK("a colour channel is a kind and a number",
       sizeof(lxb_css_value_number_percentage_t)
           == _Alignof(double) + sizeof(lxb_css_value_number_t));

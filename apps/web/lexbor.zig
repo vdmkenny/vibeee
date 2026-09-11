@@ -465,10 +465,17 @@ pub const Channel = extern struct { kind: Keyword, value: Number };
 pub const Colour = extern struct {
     kind: Keyword,
     u: extern union {
-        hex: extern struct { r: u8, g: u8, b: u8, a: u8, kind: c_uint },
+        /// The channels as written: a digit each in the three and four digit
+        /// forms, a byte each in the six and eight. An alpha not written is a
+        /// whole byte.
+        hex: extern struct { r: u8, g: u8, b: u8, a: u8, length: HexLength },
         rgb: extern struct { r: Channel, g: Channel, b: Channel, a: Channel, old: bool },
     },
 };
+
+/// How many digits a hex colour was written with: one a channel or two, each
+/// with or without an alpha.
+pub const HexLength = enum(c_uint) { three, four, six, eight, _ };
 
 comptime {
     // This side of the shapes `lexborport/layout_check.c` pins on the other.
