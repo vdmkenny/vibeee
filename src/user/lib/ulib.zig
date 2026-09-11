@@ -26,6 +26,7 @@ pub const keys = @import("keys.zig");
 pub const log = @import("log.zig");
 pub const netconfig = @import("netconfig.zig");
 pub const tls = @import("tls.zig");
+pub const wire = @import("wire.zig");
 pub const out = @import("out.zig");
 pub const stream = @import("stream.zig");
 pub const command = @import("command.zig");

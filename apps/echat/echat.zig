@@ -62,54 +62,9 @@ const INPUT_MAX = 512;
 // State
 // ---------------------------------------------------------------------------
 
-/// What a connection is made of, sealed or not. The rest of this file asks
-/// the same four things of either.
-const Wire = union(enum) {
-    plain: sock.Sock,
-    secure: *ulib.tls.Stream,
-
-    fn send(self: Wire, bytes: []const u8) usize {
-        return switch (self) {
-            .plain => |socket| socket.send(bytes),
-            .secure => |stream| if (stream.send(bytes)) bytes.len else 0,
-        };
-    }
-
-    /// What a read came to, in the one shape the rest of this file handles.
-    const Read = ulib.tls.Stream.Read;
-
-    fn recv(self: Wire, into: []u8) Read {
-        return switch (self) {
-            .plain => |socket| plain: {
-                const n = socket.recv(into);
-                if (n != 0) break :plain .{ .got = n };
-                break :plain if (socket.state() == .closed) .{ .done = .cut } else .quiet;
-            },
-            .secure => |stream| stream.recv(into),
-        };
-    }
-
-    fn waitHandle(self: Wire) u32 {
-        return switch (self) {
-            .plain => |socket| socket.waitHandle(),
-            .secure => |stream| stream.waitHandle(),
-        };
-    }
-
-    fn finished(self: Wire) bool {
-        return switch (self) {
-            .plain => |socket| socket.state() == .closed,
-            .secure => |stream| stream.ending != null or stream.socket.state() == .closed,
-        };
-    }
-
-    fn close(self: Wire) void {
-        switch (self) {
-            .plain => |socket| socket.close(),
-            .secure => |stream| stream.close(ulib.heap.allocator),
-        }
-    }
-};
+/// What a connection is made of, sealed or not: shared with every program
+/// that reaches the network either way.
+const Wire = ulib.wire.Wire;
 
 /// One network's connection: the wire, what has arrived on it, and where the
 /// protocol has got to.
@@ -236,20 +191,9 @@ fn reachFromShell(where: []const u8) noreturn {
 
     const address = sock.addressOf(host) catch return leave("could not find that name", 1);
 
-    const when = now();
-    if (when <= 0) return leave("the clock is not set, so a certificate cannot be checked", 1);
+    if (ulib.time.now() <= 0) return leave("the clock is not set, so a certificate cannot be checked", 1);
 
-    var trusted = ulib.tls.Roots.open(ulib.heap.allocator, when) catch
-        return leave("the certificate authorities could not be read", 1);
-
-    const stream = ulib.tls.Stream.connect(
-        ulib.heap.allocator,
-        &trusted,
-        address,
-        port,
-        host,
-        when,
-    ) catch |err| {
+    const wire = ulib.wire.open(&trust, address, port, host, true) catch |err| {
         out.text(switch (err) {
             error.NoClock => "the clock is not set",
             error.Unreachable => "could not reach it",
@@ -261,7 +205,7 @@ fn reachFromShell(where: []const u8) noreturn {
         if (err == error.Refused) out.text(ulib.tls.last_failure);
         return leave("", 1);
     };
-    stream.close(ulib.heap.allocator);
+    wire.close();
     return leave("sealed", 0);
 }
 
@@ -325,24 +269,7 @@ fn connect(where: []const u8) void {
 /// Reach a network, sealed or in the clear. The reason a connection failed
 /// is said here, because this is where it is known.
 fn open(address: u32, port: u16, host: []const u8, sealed: bool) ?Wire {
-    if (!sealed) {
-        const socket = sock.Sock.connect(address, port) catch {
-            say("could not reach that network");
-            return null;
-        };
-        return .{ .plain = socket };
-    }
-
-    const when = now();
-    const trusted = authorities(when) orelse return null;
-    const stream = ulib.tls.Stream.connect(
-        ulib.heap.allocator,
-        trusted,
-        address,
-        port,
-        host,
-        when,
-    ) catch |err| {
+    return ulib.wire.open(&trust, address, port, host, sealed) catch |err| {
         say(switch (err) {
             error.NoClock => "the clock is not set, so a certificate cannot be checked",
             error.Unreachable => "could not reach that network",
@@ -353,21 +280,11 @@ fn open(address: u32, port: u16, host: []const u8, sealed: bool) ?Wire {
         });
         return null;
     };
-    return .{ .secure = stream };
 }
 
-/// The authorities, read the first time one is wanted and kept after that.
-var roots: ?ulib.tls.Roots = null;
-
-fn authorities(when: i64) ?*ulib.tls.Roots {
-    if (roots == null) {
-        roots = ulib.tls.Roots.open(ulib.heap.allocator, when) catch {
-            say("the certificate authorities could not be read");
-            return null;
-        };
-    }
-    return &roots.?;
-}
+/// The authorities, read the first time a sealed connection wants them and
+/// kept after that.
+var trust: ulib.wire.Trust = .{};
 
 /// What was written down about a network, matched on the name it is reached
 /// by. Null for one nobody has configured, which is every network the first
@@ -662,7 +579,7 @@ fn fold(link: *Link, line: *const irc.Line) void {
                     model.say(where, .{
                         .kind = .acted,
                         .room = where,
-                        .at = now(),
+                        .at = ulib.time.now(),
                         .mine = mine,
                         .highlight = !mine and names(did, me),
                     }, from, did);
@@ -671,7 +588,7 @@ fn fold(link: *Link, line: *const irc.Line) void {
                 model.say(where, .{
                     .kind = if (verb == .notice) .noticed else .said,
                     .room = where,
-                    .at = now(),
+                    .at = ulib.time.now(),
                     .mine = mine,
                     // Our own words naming us is not somebody calling us.
                     .highlight = !mine and names(text, me),
@@ -800,7 +717,7 @@ fn setTopic(room: u8, text: []const u8) void {
 
 /// Something the server said, in the room it is about.
 fn tell(room: u8, text: []const u8) void {
-    model.say(room, .{ .kind = .told, .room = room, .at = now() }, "", text);
+    model.say(room, .{ .kind = .told, .room = room, .at = ulib.time.now() }, "", text);
 }
 
 /// Something somebody did, which is the server's news rather than theirs.
@@ -812,11 +729,6 @@ fn told(room: u8, who: []const u8, what: []const u8) void {
 /// Something the window itself has to say, on the strip along the bottom.
 fn say(text: []const u8) void {
     _ = notice.set(text);
-}
-
-fn now() i64 {
-    const micros = sys.realtimeMicros() orelse return 0;
-    return @divFloor(micros, 1_000_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -1435,7 +1347,7 @@ fn saidHere(link: *Link, room: u8, kind: rooms.Kind, text: []const u8) void {
     model.say(room, .{
         .kind = kind,
         .room = room,
-        .at = now(),
+        .at = ulib.time.now(),
         .mine = true,
     }, link.session.nick.slice(), text);
 }

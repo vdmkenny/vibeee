@@ -6,10 +6,21 @@
 //! what a date looks like.
 
 const civil = @import("lib").civil;
+const sys = @import("sys");
 const str = @import("lib").str;
 const out = @import("out.zig");
 
 pub const Civil = civil.Civil;
+
+/// The wall clock, in seconds since the epoch, or zero while it is not set.
+///
+/// Zero rather than an error because every caller does the same thing with
+/// an unset clock: a certificate cannot be checked against it, and a message
+/// stamped with it says so by reading 1970.
+pub fn now() i64 {
+    const micros = sys.realtimeMicros() orelse return 0;
+    return @divFloor(micros, 1_000_000);
+}
 
 pub fn fromEpoch(seconds: i64) Civil {
     return civil.fromEpoch(seconds);
@@ -85,7 +96,7 @@ pub fn writeStamp(seconds: i64) void {
 /// by a host tool writing local time, which is most of them, carries stamps
 /// hours ahead of our UTC clock. Treating those as ancient and printing the
 /// year would be a worse answer than simply showing the time.
-pub fn writeListed(seconds: i64, now: i64) void {
+pub fn writeListed(seconds: i64, current: i64) void {
     if (seconds == 0) {
         out.text("           -");
         return;
@@ -99,8 +110,8 @@ pub fn writeListed(seconds: i64, now: i64) void {
     out.byte(' ');
 
     const six_months: i64 = 182 * 24 * 3600;
-    const distance = if (seconds > now) seconds - now else now - seconds;
-    const recent = now != 0 and distance < six_months;
+    const distance = if (seconds > current) seconds - current else current - seconds;
+    const recent = current != 0 and distance < six_months;
 
     if (recent) {
         var face: [5]u8 = undefined;

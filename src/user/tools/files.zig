@@ -25,7 +25,7 @@ pub fn ls(args: []const []const u8) void {
     // Read once, outside the loop: every row is compared against it, and a
     // listing whose rows disagreed about what "now" is would be worse than one
     // that is a few microseconds stale.
-    const now = @divFloor(sys.realtimeMicros() orelse 0, 1_000_000);
+    const now = time.now();
 
     var buf: [512]u8 = [_]u8{0} ** 512;
     var files: usize = 0;
