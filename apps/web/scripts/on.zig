@@ -20,6 +20,18 @@ const dom = @import("dom.zig");
 /// A page's tree with a script in it.
 pub const Page = js.Engine;
 
+/// The engine, started the first time a page wants one and kept: a runtime is
+/// the expensive half, and one freed while a script still has objects in it
+/// takes the reader with it. A context is made per page and given back with
+/// it, so nothing a script was ever given outlives its tree.
+var machine: ?*js.Machine = null;
+
+fn engine() ?*js.Machine {
+    if (machine) |running| return running;
+    machine = js.start();
+    return machine;
+}
+
 /// Give a page's tree to a script and run what the page carries. None where
 /// the engine would not start, which is a page that reads as though it had
 /// no scripts.
@@ -28,18 +40,18 @@ pub const Page = js.Engine;
 /// it is, is the reader's business, and this module is not to be given a
 /// second copy of the reader's own files to know.
 pub fn open(tree: *anyopaque, address: []const u8, user_agent: [*:0]const u8) ?*Page {
-    const engine = js.open() orelse return null;
+    const page = js.open(engine() orelse return null) orelse return null;
     var buf: [512]u8 = undefined;
     const where = std.fmt.bufPrintZ(&buf, "{s}", .{address}) catch {
-        js.close(engine);
+        js.close(page);
         return null;
     };
-    if (!dom.bind(engine, tree, where.ptr, user_agent)) {
-        js.close(engine);
+    if (!dom.bind(page, tree, where.ptr, user_agent)) {
+        js.close(page);
         return null;
     }
-    dom.load(engine, tree);
-    return engine;
+    dom.load(page, tree);
+    return page;
 }
 
 /// Stop, and give back everything held: a page gone from the screen takes

@@ -375,21 +375,6 @@ static void classes_set(JSContext *ctx, lxb_dom_node_t *node, JSValue from)
     js_free(ctx, text);
 }
 
-static JSValue js_class_list(JSContext *ctx, JSValueConst this_val)
-{
-    lxb_dom_node_t *node = node_of(this_val);
-    JSValue list;
-
-    if (!node)
-        return JS_UNDEFINED;
-    list = JS_NewObjectClass(ctx, list_class);
-    if (JS_IsException(list))
-        return JS_UNDEFINED;
-    JS_SetOpaque(list, node);
-    classes_of(ctx, node, list);
-    return list;
-}
-
 static JSValue js_class_add(JSContext *ctx, JSValueConst this_val,
                             int argc, JSValueConst *argv)
 {
@@ -508,6 +493,22 @@ static const JSCFunctionListEntry list_methods[] = {
     JS_CFUNC_DEF("contains", 1, js_class_has),
     JS_CFUNC_DEF("toggle", 1, js_class_toggle),
 };
+
+static JSValue js_class_list(JSContext *ctx, JSValueConst this_val)
+{
+    lxb_dom_node_t *node = node_of(this_val);
+    JSValue list;
+
+    if (!node)
+        return JS_UNDEFINED;
+    list = JS_NewObjectClass(ctx, list_class);
+    if (JS_IsException(list))
+        return JS_UNDEFINED;
+    JS_SetOpaque(list, node);
+    JS_SetPropertyFunctionList(ctx, list, list_methods, countof(list_methods));
+    classes_of(ctx, node, list);
+    return list;
+}
 
 /// `element.style`: read and written as the page's own `style` attribute,
 /// one declaration at a time.

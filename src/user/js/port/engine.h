@@ -16,9 +16,16 @@
 
 struct JSContext;
 
-/// A running engine: a runtime, and a context with every intrinsic in it and
-/// the two ways a script has of saying something out loud.
-struct JSContext *qjs_open(void);
+/// An engine, which a program starts once and keeps: the runtime everything
+/// a script does hangs off. There is no call to stop one, and that is not an
+/// oversight: this engine refuses to free a runtime with anything still in
+/// it, and a program that is ending has no need to try. A context, made for
+/// one page and given back with it, is where the giving back happens.
+struct JSRuntime *qjs_start(void);
+
+/// A context in `rt`: a script's own world, with every intrinsic in it and
+/// the two ways a script has of saying something out loud. One per page.
+struct JSContext *qjs_open(struct JSRuntime *rt);
 
 /// Run `len` bytes of `source` called `name`, as a module or as a script.
 /// Answers the value it ended in, as a string the caller gives back with
@@ -36,7 +43,8 @@ void qjs_loop(struct JSContext *ctx);
 /// Give back a string `qjs_run` answered with.
 void qjs_give_back(struct JSContext *ctx, char *text);
 
-/// Stop the engine, and give back everything it holds.
+/// Stop a context, and give back everything it holds. The runtime it was in
+/// goes on.
 void qjs_close(struct JSContext *ctx);
 
 #endif

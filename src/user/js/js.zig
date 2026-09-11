@@ -11,20 +11,33 @@
 //! `engine.h` says what each call is for; this is the pin, so a signature
 //! changed there fails the build here rather than at a call site.
 
-/// A running engine: a runtime, a context with every intrinsic in it, and the
-/// helpers that give a script `print`, `console.log` and `scriptArgs`.
+/// An engine, which a program starts once and keeps: the runtime every script
+/// it runs hangs off.
+pub const Machine = opaque {};
+
+/// A script's own world: a context in that runtime, with every intrinsic in
+/// it and the two ways a script has of saying something out loud. One per
+/// page, given back when the page goes.
 pub const Engine = opaque {};
 
-extern fn qjs_open() ?*Engine;
+extern fn qjs_start() ?*Machine;
+extern fn qjs_open(machine: *Machine) ?*Engine;
 extern fn qjs_run(engine: *Engine, source: [*]const u8, len: usize, name: [*]const u8, module: c_int) ?[*:0]u8;
 extern fn qjs_tell_error(engine: *Engine) void;
 extern fn qjs_loop(engine: *Engine) void;
 extern fn qjs_give_back(engine: *Engine, text: [*:0]u8) void;
 extern fn qjs_close(engine: *Engine) void;
 
-/// Start one.
-pub fn open() ?*Engine {
-    return qjs_open();
+/// Start an engine. Once, and kept: a runtime is the expensive half, and one
+/// that is freed while anything is still in it takes the program with it.
+pub fn start() ?*Machine {
+    return qjs_start();
+}
+
+/// There is no `stop`: see `engine.h`. A program that is ending simply ends.
+/// Open a context in `machine`, for one page.
+pub fn open(machine: *Machine) ?*Engine {
+    return qjs_open(machine);
 }
 
 /// Run `source`, called `name`, as a module where it is one and as a script

@@ -70,19 +70,20 @@ static void add_helpers(JSContext *ctx)
     JS_FreeValue(ctx, global);
 }
 
-struct JSContext *qjs_open(void)
+struct JSRuntime *qjs_start(void)
 {
-    JSRuntime *rt;
+    return JS_NewRuntime();
+}
+
+struct JSContext *qjs_open(struct JSRuntime *rt)
+{
     JSContext *ctx;
 
-    rt = JS_NewRuntime();
     if (!rt)
         return NULL;
     ctx = JS_NewContext(rt);
-    if (!ctx) {
-        JS_FreeRuntime(rt);
+    if (!ctx)
         return NULL;
-    }
     add_helpers(ctx);
     return ctx;
 }
@@ -163,8 +164,5 @@ void qjs_give_back(struct JSContext *ctx, char *text)
 
 void qjs_close(struct JSContext *ctx)
 {
-    JSRuntime *rt = JS_GetRuntime(ctx);
-
     JS_FreeContext(ctx);
-    JS_FreeRuntime(rt);
 }

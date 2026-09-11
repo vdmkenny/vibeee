@@ -50,6 +50,24 @@ fn imageFormats(name: []const u8) ?[]const []const u8 {
 /// A system program and an extra application differ in where they are
 /// installed and whether they ship, and in nothing about how they are
 /// built, which is why building one is written once.
+/// Every C file of one vendored lexbor module, walked rather than listed, so
+/// a file added upstream arrives with the next re-fetch.
+fn lexborModule(b: *std.Build, rel: []const u8) [][]const u8 {
+    const io = b.graph.io;
+    var dir = b.build_root.handle.openDir(io, rel, .{ .iterate = true }) catch
+        @panic("lexbor: a module named here is not vendored");
+    defer dir.close(io);
+
+    var files: std.ArrayList([]const u8) = .empty;
+    var walker = dir.walk(b.allocator) catch @panic("out of memory");
+    while (walker.next(io) catch @panic("lexbor: the module would not walk")) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".c")) continue;
+        files.append(b.allocator, b.fmt("{s}/{s}", .{ rel, entry.path })) catch @panic("out of memory");
+    }
+    return files.items;
+}
+
 const UserBuild = struct {
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -112,6 +130,7 @@ const UserBuild = struct {
     }
 
     /// QuickJS and the port over it, compiled into whatever runs a script.
+    ///
     /// Added once, however many parts of a program reach for them.
     ///
     /// Five files of upstream's own library, less `quickjs-libc.c`: the
@@ -177,7 +196,6 @@ const UserBuild = struct {
     /// its engine's own source list: a file added upstream should arrive
     /// with the next re-fetch, not wait for somebody here to notice it.
     fn addLexbor(self: UserBuild, out: *std.Build.Step.Compile) void {
-        const io = self.b.graph.io;
         const root = "third_party/lexbor/source/lexbor";
         const modules = [_][]const u8{ "core", "dom", "html", "ns", "tag", "css", "selectors", "style" };
 
@@ -186,16 +204,9 @@ const UserBuild = struct {
 
         for (modules) |module| {
             const rel = self.b.fmt("{s}/{s}", .{ root, module });
-            var dir = self.b.build_root.handle.openDir(io, rel, .{ .iterate = true }) catch
-                @panic("lexbor: a module named here is not vendored");
-            defer dir.close(io);
-
-            var walker = dir.walk(self.b.allocator) catch @panic("out of memory");
-            while (walker.next(io) catch @panic("lexbor: the module would not walk")) |entry| {
-                if (entry.kind != .file) continue;
-                if (!std.mem.endsWith(u8, entry.basename, ".c")) continue;
+            for (lexborModule(self.b, rel)) |found| {
                 if (count == files.len) @panic("lexbor: more sources than there is room for");
-                files[count] = self.b.fmt("{s}/{s}", .{ rel, entry.path });
+                files[count] = found;
                 count += 1;
             }
         }
@@ -788,6 +799,58 @@ pub fn build(b: *std.Build) void {
             });
             const web_test_step = b.step("test-web", "Test web's addresses, protocol, encodings, page and layout on the host");
             web_test_step.dependOn(&b.addRunArtifact(web_test).step);
+
+            // The document a script sees, on the host: QuickJS, lexbor and
+            // the reader's own DOM over them, built for this machine rather
+            // than the target, so a page can be parsed, a script run in it,
+            // and the tree read back. It is C reaching into two vendored
+            // trees, which is the part the Zig tests above cannot see, and
+            // where every mistake in it has been: a value handed to the
+            // wrong kind of call, matches gathered in a callback and lost,
+            // a title asked for before the parser had settled it.
+            const dom_test = b.addExecutable(.{
+                .name = "dom-test",
+                .root_module = b.createModule(.{
+                    .target = b.graph.host,
+                    .optimize = .Debug,
+                    .link_libc = true,
+                }),
+            });
+            const root = "third_party/lexbor/source/lexbor";
+            const modules = [_][]const u8{ "core", "dom", "html", "ns", "tag", "css", "selectors", "style" };
+            var dom_sources: std.ArrayList([]const u8) = .empty;
+
+            for (modules) |module| {
+                const rel = b.fmt("{s}/{s}", .{ root, module });
+
+                dom_sources.appendSlice(b.allocator, lexborModule(b, rel)) catch @panic("out of memory");
+            }
+            dom_sources.appendSlice(b.allocator, &.{
+                "third_party/lexbor/source/lexbor/ports/posix/lexbor/core/memory.c",
+                "third_party/lexbor/source/lexbor/ports/posix/lexbor/core/perf.c",
+                "third_party/quickjs/quickjs.c",
+                "third_party/quickjs/dtoa.c",
+                "third_party/quickjs/libregexp.c",
+                "third_party/quickjs/libunicode.c",
+                "third_party/quickjs/cutils.c",
+                "src/user/js/port/engine.c",
+                "apps/web/dom/dom.c",
+                "apps/web/domtest/main.c",
+            }) catch @panic("out of memory");
+            dom_test.root_module.addIncludePath(b.path("third_party/lexbor/source"));
+            dom_test.root_module.addIncludePath(b.path("third_party/quickjs"));
+            dom_test.root_module.addIncludePath(b.path("src/user/js/port"));
+            dom_test.root_module.addIncludePath(b.path("apps/web/dom"));
+            dom_test.root_module.addCSourceFiles(.{
+                .files = dom_sources.items,
+                .flags = &.{
+                    "-std=gnu11",
+                    "-DCONFIG_VERSION=\"2026-06-04\"",
+                    "-Dalloca=__builtin_alloca",
+                },
+            });
+            const dom_test_step = b.step("test-dom", "Test the reader's document, with QuickJS and lexbor built for this machine");
+            dom_test_step.dependOn(&b.addRunArtifact(dom_test).step);
 
             // The character-journal model, on the host: the whole of a
             // character is what its lines add up to, and none of it needs a

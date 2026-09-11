@@ -294,6 +294,15 @@ qjs:
 	@cp zig-out/bin/qjs home/bin/qjs
 	@echo "  ready   home/bin/qjs, on the machine at the next image build"
 
+# The document a script sees, checked on this machine: QuickJS, lexbor and the
+# reader's own DOM over them, built for the host rather than the target, so a
+# page can be parsed, a script run in it and the tree read back. It is C
+# reaching into two vendored trees, which is the part the reader's Zig tests
+# cannot see.
+.PHONY: dom-test
+dom-test:
+	@$(ZIG) build test-dom
+
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
 	@$(MAKE) --no-print-directory -C apps APP=$(APP) build
@@ -532,7 +541,7 @@ check:
 #
 # The partition offsets are passed in so that the script has no copy of the
 # image layout to fall out of step with.
-check-all: fmt check test dev-image image
+check-all: fmt check test dom-test dev-image image
 	@BUILD=$(BUILD) ROOTFS_IMG=$(ROOTFS_IMG) DEV_IMAGE=$(DEV_IMAGE) IMAGE=$(IMAGE) \
 		CFG_OFFSET=$(CFG_OFFSET) HOME_OFFSET=$(HOME_OFFSET) QEMU_CPU="$(QEMU_CPU)" \
 		tools/check-all.sh

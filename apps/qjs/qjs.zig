@@ -39,25 +39,29 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     const script = file.readAlloc(gpa, path, SCRIPT_MAX) catch |err| fatal(path, err);
     defer gpa.free(script);
 
-    const machine = engine.open() orelse {
+    const machine = engine.start() orelse {
         out.trouble("qjs: the engine would not start\n");
         sys.exit(1);
     };
-    defer engine.close(machine);
+    const held = engine.open(machine) orelse {
+        out.trouble("qjs: the engine would not start\n");
+        sys.exit(1);
+    };
+    defer engine.close(held);
 
     // A script named as a module is read as one; any other is read as a
     // script, which is what the engine does with a file it is given.
-    const ended = engine.run(machine, script, path, std.mem.endsWith(u8, path, ".mjs"));
+    const ended = engine.run(held, script, path, std.mem.endsWith(u8, path, ".mjs"));
     if (ended) |value| {
-        defer engine.giveBack(machine, value);
+        defer engine.giveBack(held, value);
         out.text(std.mem.span(value));
         out.text("\n");
     } else {
-        engine.tellError(machine);
+        engine.tellError(held);
     }
     // What a script left waiting runs after it has been read, so a promise
     // made at the top of it is kept even where the answer was already given.
-    engine.loop(machine);
+    engine.loop(held);
     out.flush();
     sys.exit(0);
 }

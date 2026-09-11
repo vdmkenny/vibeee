@@ -5,8 +5,6 @@
 //! A reader built this way is the one it was before scripts existed, and
 //! `web.zig` does not know the difference.
 
-
-
 /// There is no page with a script in it.
 pub const Page = opaque {};
 
