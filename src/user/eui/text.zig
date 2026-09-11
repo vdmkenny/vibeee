@@ -937,6 +937,14 @@ pub fn Field(comptime capacity: usize) type {
             self.editor.repaint = true;
         }
 
+        /// The same, but leaving the start of it showing rather than the end.
+        /// What a field that names a place wants: the end of a long address is
+        /// the part that says least about where it goes.
+        pub fn setFromStart(self: *Self, value: []const u8) void {
+            self.set(value);
+            self.editor.cursor = 0;
+        }
+
         pub fn slice(self: *const Self) []const u8 {
             return self.buffer.slice();
         }

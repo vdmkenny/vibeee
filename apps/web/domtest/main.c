@@ -32,7 +32,7 @@ static JSContext *page_of(lxb_html_document_t *page)
     JSContext *ctx = qjs_open(machine);
 
     if (ctx)
-        dom_bind(ctx, (lxb_dom_document_t *)page, "https://example.org/", "vibeee-web/1.0 test");
+        dom_bind(ctx, (lxb_dom_document_t *)page, "https://example.org/", "vibeee-web/1.0 test", NULL, NULL);
     return ctx;
 }
 

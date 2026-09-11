@@ -62,6 +62,9 @@ pub const Asking = struct {
     width: ?u16 = null,
     /// What it carries: a form's answers, sent as the body of a POST.
     sent: Sent = .nothing,
+    /// What the page's scripts have kept for this site, as a `Cookie` line
+    /// is written: `name=value` pairs, or nothing where there are none.
+    cookies: []const u8 = "",
 };
 
 /// The request for `url`, written into `out`.
@@ -85,6 +88,9 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     // bound by law to honour.
     try w.writeAll("Sec-GPC: 1\r\n");
     if (asking.mobile) try w.writeAll("Sec-CH-UA-Mobile: ?1\r\nSave-Data: on\r\n");
+    // What the page's scripts have kept for this site, which is all this
+    // reader knows of cookies: a script writes them, and they are sent back.
+    if (asking.cookies.len > 0) try w.print("Cookie: {s}\r\n", .{asking.cookies});
     // The hints a reader sends only on a sealed connection: which shade the
     // page is drawn in, and how wide a picture is drawn.
     if (url.scheme == .https) {

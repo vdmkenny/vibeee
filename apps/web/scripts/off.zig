@@ -8,7 +8,7 @@
 /// There is no page with a script in it.
 pub const Page = opaque {};
 
-pub fn open(_: *anyopaque, _: []const u8, _: [*:0]const u8) ?*Page {
+pub fn open(_: *anyopaque, _: []const u8, _: [*:0]const u8, _: *const fn ([]const u8) ?[]u8) ?*Page {
     return null;
 }
 
@@ -19,6 +19,10 @@ pub fn click(_: *Page, _: *anyopaque) bool {
 }
 
 pub fn typed(_: *Page, _: *anyopaque, _: bool) void {}
+
+pub fn cookiesFor(_: *Page, _: [*:0]const u8, _: [*:0]const u8) ?[*:0]u8 {
+    return null;
+}
 
 pub fn changed(_: *Page) bool {
     return false;

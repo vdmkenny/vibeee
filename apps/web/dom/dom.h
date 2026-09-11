@@ -23,10 +23,17 @@ struct JSContext;
 struct lxb_dom_document;
 struct lxb_dom_node;
 
+/// What the reader does when a script asks for a page of its own: the text it
+/// came to, which the reader takes rather than the engine, this system having
+/// one way in and out of the network. It is called there and then, so a fetch
+/// a script makes is made before the line after it runs.
+typedef char *(*dom_fetch_f)(void *taken, const char *address);
+
 /// Give a script the document `document`, whose page came from `address`.
 /// A script asking where it is gets `address`; it is copied.
 bool dom_bind(struct JSContext *ctx, struct lxb_dom_document *document,
-              const char *address, const char *user_agent);
+              const char *address, const char *user_agent,
+              dom_fetch_f fetch, void *fetch_taken);
 
 /// Run every script the document carries, in the order they stand, as a
 /// browser does once the document has been parsed, then tell it, and
@@ -57,5 +64,9 @@ bool dom_waits(struct JSContext *ctx, unsigned int *in_ms);
 
 /// Give back the document, and everything a script left hanging on it.
 void dom_release(struct JSContext *ctx);
+
+/// What the reader is to send as `Cookie` for a page at `host` and `path`,
+/// where a script has left any. Nothing where it has not. The caller frees.
+char *dom_cookies_for(struct JSContext *ctx, const char *host, const char *path);
 
 #endif

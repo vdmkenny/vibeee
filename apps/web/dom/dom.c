@@ -60,8 +60,27 @@ typedef struct Timer {
     struct Timer *next;
 } Timer;
 
+/// A cookie a script has written. Kept for the page's own host, and handed to
+/// the reader to send. What a site *sets* is not taken yet: the reader reads
+/// no `Set-Cookie` out of an answer, so a cookie here is one a script wrote.
+typedef struct Crumb {
+    char *name, *value, *domain, *path;
+    struct Crumb *next;
+} Crumb;
+
+/// What a page has put by with `localStorage`, which lasts as long as the
+/// page does.
+typedef struct Stored {
+    char *key, *value;
+    struct Stored *next;
+} Stored;
+
 typedef struct Document {
     lxb_dom_document_t *tree;
+    Crumb *crumbs;
+    Stored *stored;
+    dom_fetch_f fetch;
+    void *fetch_taken;
     char *address;
     lxb_css_memory_t *css_memory;
     lxb_css_parser_t *parser;
@@ -78,6 +97,8 @@ static JSClassID node_class, list_class, style_class, event_class;
 
 static JSValue node_of_tree(JSContext *ctx, lxb_dom_node_t *node);
 static JSValue style_of(JSContext *ctx, lxb_dom_node_t *node);
+
+static void tell(JSContext *ctx, lxb_dom_node_t *node, const char *type, bool climb);
 
 static Document *held(JSContext *ctx)
 {
@@ -1168,6 +1189,363 @@ static JSValue js_node_type(JSContext *ctx, JSValueConst this_val)
     return JS_NewInt32(ctx, (int)node->type);
 }
 
+/// Nothing at all, for what a page asks that cannot be: given rather than
+/// left out, since a script that finds no `getComputedStyle` stops where one
+/// that finds an empty one goes on.
+static JSValue js_nothing(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv)
+{
+    return JS_UNDEFINED;
+}
+
+/// A size and a place, as nothing: this reader sets a page in one column and
+/// keeps no geometry, so where something is, is noughts rather than a guess.
+static JSValue js_box(JSContext *ctx, JSValueConst this_val,
+                      int argc, JSValueConst *argv)
+{
+    JSValue box = JS_NewObject(ctx);
+
+    for (const char *const *at = (const char *const []){ "x", "y", "width", "height",
+                                                        "top", "left", "right", "bottom",
+                                                        NULL };
+         *at; at++) {
+        JS_SetPropertyStr(ctx, box, *at, JS_NewInt32(ctx, 0));
+    }
+    return box;
+}
+
+/* ------------------------------------------------------------------ */
+/* What a page keeps: cookies, and what it puts by for later           */
+/* ------------------------------------------------------------------ */
+
+static Crumb *crumb_of(Document *doc, const char *name)
+{
+    for (Crumb *at = doc->crumbs; at; at = at->next) {
+        if (strcmp(at->name, name) == 0)
+            return at;
+    }
+    return NULL;
+}
+
+static void crumb_set(JSContext *ctx, Document *doc, const char *name, const char *value)
+{
+    Crumb *crumb = crumb_of(doc, name);
+
+    if (!crumb) {
+        crumb = js_malloc(ctx, sizeof(*crumb));
+        if (!crumb)
+            return;
+        memset(crumb, 0, sizeof(*crumb));
+        crumb->name = strdup(name);
+        crumb->domain = strdup(doc->address);
+        crumb->path = strdup("/");
+        crumb->next = doc->crumbs;
+        doc->crumbs = crumb;
+    }
+    js_free(ctx, crumb->value);
+    crumb->value = strdup(value ? value : "");
+}
+
+static JSValue js_cookie(JSContext *ctx, JSValueConst this_val)
+{
+    Document *doc = held(ctx);
+    size_t length = 0;
+    char *text;
+    JSValue out;
+
+    if (!doc)
+        return JS_NewString(ctx, "");
+    for (Crumb *at = doc->crumbs; at; at = at->next)
+        length += strlen(at->name) + strlen(at->value) + 3;
+    text = js_malloc(ctx, length + 1);
+    if (!text)
+        return JS_NewString(ctx, "");
+    text[0] = 0;
+    for (Crumb *at = doc->crumbs; at; at = at->next) {
+        strcat(text, at->name);
+        strcat(text, "=");
+        strcat(text, at->value);
+        if (at->next)
+            strcat(text, "; ");
+    }
+    out = JS_NewString(ctx, text);
+    js_free(ctx, text);
+    return out;
+}
+
+static JSValue js_set_cookie(JSContext *ctx, JSValueConst this_val, JSValueConst value)
+{
+    Document *doc = held(ctx);
+    const char *text;
+
+    if (!doc)
+        return JS_UNDEFINED;
+    text = JS_ToCString(ctx, value);
+    if (text) {
+        /* `name=value`, and whatever the page wrote after it, which this
+           reader does not keep: no path, no domain, no day it ends. */
+        const char *equals = strchr(text, '=');
+        size_t name_length = equals ? (size_t)(equals - text) : strlen(text);
+        char *name = js_malloc(ctx, name_length + 1);
+
+        if (name) {
+            memcpy(name, text, name_length);
+            name[name_length] = 0;
+            crumb_set(ctx, doc, name, equals ? equals + 1 : "");
+            js_free(ctx, name);
+        }
+        changed(ctx);
+        JS_FreeCString(ctx, text);
+    }
+    return JS_UNDEFINED;
+}
+
+static Stored *stored_of(Document *doc, const char *key)
+{
+    for (Stored *at = doc->stored; at; at = at->next) {
+        if (strcmp(at->key, key) == 0)
+            return at;
+    }
+    return NULL;
+}
+
+static JSValue js_store_get(JSContext *ctx, JSValueConst this_val,
+                            int argc, JSValueConst *argv)
+{
+    Document *doc = held(ctx);
+    const char *key;
+    Stored *found;
+
+    if (!doc)
+        return JS_NULL;
+    key = JS_ToCString(ctx, argv[0]);
+    if (!key)
+        return JS_NULL;
+    found = stored_of(doc, key);
+    JS_FreeCString(ctx, key);
+    if (!found)
+        return JS_NULL;
+    return JS_NewString(ctx, found->value);
+}
+
+static JSValue js_store_set(JSContext *ctx, JSValueConst this_val,
+                            int argc, JSValueConst *argv)
+{
+    Document *doc = held(ctx);
+    const char *key, *value;
+    Stored *found;
+
+    if (!doc)
+        return JS_UNDEFINED;
+    key = JS_ToCString(ctx, argv[0]);
+    value = JS_ToCString(ctx, argv[1]);
+    if (!key || !value)
+        return JS_UNDEFINED;
+    found = stored_of(doc, key);
+    if (found) {
+        js_free(ctx, found->value);
+        found->value = strdup(value);
+    } else {
+        found = js_malloc(ctx, sizeof(*found));
+        if (found) {
+            found->key = strdup(key);
+            found->value = strdup(value);
+            found->next = doc->stored;
+            doc->stored = found;
+        }
+    }
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+    return JS_UNDEFINED;
+}
+
+static const JSCFunctionListEntry store_methods[] = {
+    JS_CFUNC_DEF("getItem", 1, js_store_get),
+    JS_CFUNC_DEF("setItem", 2, js_store_set),
+};
+
+/* ------------------------------------------------------------------ */
+/* Asking for a page of your own                                       */
+/* ------------------------------------------------------------------ */
+
+static const char *answer_of(JSContext *ctx, JSValueConst this_val)
+{
+    JSValue body = JS_GetPropertyStr(ctx, this_val, "__body");
+    const char *text = JS_ToCString(ctx, body);
+
+    JS_FreeValue(ctx, body);
+    return text;
+}
+
+static JSValue js_answer_text(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+{
+    const char *text = answer_of(ctx, this_val);
+    JSValue out;
+
+    if (!text)
+        return JS_NewString(ctx, "");
+    out = JS_NewString(ctx, text);
+    JS_FreeCString(ctx, text);
+    return out;
+}
+
+static JSValue js_answer_json(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+{
+    const char *text = answer_of(ctx, this_val);
+    JSValue out;
+
+    if (!text)
+        return JS_UNDEFINED;
+    out = JS_ParseJSON(ctx, text, strlen(text), "<fetch>");
+    JS_FreeCString(ctx, text);
+    return out;
+}
+
+static const JSCFunctionListEntry answer_methods[] = {
+    JS_CFUNC_DEF("text", 0, js_answer_text),
+    JS_CFUNC_DEF("json", 0, js_answer_json),
+};
+
+/// `fetch`: ask for a page, and come back with it. The asking is done there
+/// and then rather than in the background, the reader having one way in and
+/// out of the network and a script's next line often wanting the answer.
+static JSValue js_fetch(JSContext *ctx, JSValueConst this_val,
+                        int argc, JSValueConst *argv)
+{
+    Document *doc = held(ctx);
+    JSValue answer, promise, resolved;
+    JSValue resolvers[2];
+    const char *address;
+    char *body;
+
+    if (!doc || !doc->fetch)
+        return JS_UNDEFINED;
+    address = JS_ToCString(ctx, argv[0]);
+    if (!address)
+        return JS_EXCEPTION;
+    body = doc->fetch(doc->fetch_taken, address);
+    JS_FreeCString(ctx, address);
+
+    answer = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, answer, answer_methods, countof(answer_methods));
+    JS_SetPropertyStr(ctx, answer, "ok", JS_NewBool(ctx, body != NULL));
+    JS_SetPropertyStr(ctx, answer, "status", JS_NewInt32(ctx, body ? 200 : 0));
+    JS_SetPropertyStr(ctx, answer, "__body", JS_NewString(ctx, body ? body : ""));
+    free(body);
+
+    promise = JS_NewPromiseCapability(ctx, resolvers);
+    resolved = JS_Call(ctx, resolvers[0], JS_UNDEFINED, 1, &answer);
+    JS_FreeValue(ctx, resolved);
+    JS_FreeValue(ctx, resolvers[0]);
+    JS_FreeValue(ctx, resolvers[1]);
+    JS_FreeValue(ctx, answer);
+    return promise;
+}
+
+/// `XMLHttpRequest`, for a page that asks the older way: opened, then sent,
+/// and the answer is there when `send` comes back, for the reason `fetch` is.
+static JSValue js_xhr_open(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv)
+{
+    const char *address = JS_ToCString(ctx, argv[1]);
+
+    if (!address)
+        return JS_UNDEFINED;
+    JS_SetPropertyStr(ctx, this_val, "__url", JS_NewString(ctx, address));
+    JS_FreeCString(ctx, address);
+    JS_SetPropertyStr(ctx, this_val, "readyState", JS_NewInt32(ctx, 1));
+    return JS_UNDEFINED;
+}
+
+static JSValue js_xhr_send(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv)
+{
+    Document *doc = held(ctx);
+    JSValue asked = JS_GetPropertyStr(ctx, this_val, "__url");
+    const char *address = JS_ToCString(ctx, asked);
+    char *body = NULL;
+
+    JS_FreeValue(ctx, asked);
+    if (doc && doc->fetch && address)
+        body = doc->fetch(doc->fetch_taken, address);
+    JS_FreeCString(ctx, address);
+
+    JS_SetPropertyStr(ctx, this_val, "readyState", JS_NewInt32(ctx, 4));
+    JS_SetPropertyStr(ctx, this_val, "status", JS_NewInt32(ctx, body ? 200 : 0));
+    JS_SetPropertyStr(ctx, this_val, "responseText", JS_NewString(ctx, body ? body : ""));
+    free(body);
+
+    /* What the page asked to be told with, where it asked. */
+    for (const char *const *at = (const char *const []){ "onreadystatechange", "onload", NULL };
+         *at; at++) {
+        JSValue told = JS_GetPropertyStr(ctx, this_val, *at);
+
+        if (JS_IsFunction(ctx, told))
+            JS_FreeValue(ctx, JS_Call(ctx, told, this_val, 0, NULL));
+        JS_FreeValue(ctx, told);
+    }
+    return JS_UNDEFINED;
+}
+
+static const JSCFunctionListEntry xhr_methods[] = {
+    JS_CFUNC_DEF("open", 2, js_xhr_open),
+    JS_CFUNC_DEF("send", 0, js_xhr_send),
+};
+
+static JSValue js_new_xhr(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv)
+{
+    JSValue request = JS_NewObject(ctx);
+
+    JS_SetPropertyFunctionList(ctx, request, xhr_methods, countof(xhr_methods));
+    JS_SetPropertyStr(ctx, request, "readyState", JS_NewInt32(ctx, 0));
+    return request;
+}
+
+/* ------------------------------------------------------------------ */
+/* What a page asks for and this reader has nothing to say about       */
+/* ------------------------------------------------------------------ */
+
+/// The style a page has been given, read as an empty one: what the cascade
+/// made of it is not a thing a script can be told here yet.
+static JSValue js_computed(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv)
+{
+    JSValue style = JS_NewObject(ctx);
+
+    JS_SetPropertyStr(ctx, style, "getPropertyValue",
+                      JS_NewCFunction(ctx, js_style_property, "getPropertyValue", 1));
+    return style;
+}
+
+/// An observer: a page may watch for something to happen, and nothing it can
+/// watch for ever happens here, so it is given one that watches and is silent.
+static JSValue js_watcher(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv)
+{
+    JSValue watcher = JS_NewObject(ctx);
+
+    for (const char *const *at = (const char *const []){ "observe", "unobserve",
+                                                        "disconnect", "takeRecords", NULL };
+         *at; at++) {
+        JS_SetPropertyStr(ctx, watcher, *at, JS_NewCFunction(ctx, js_nothing, *at, 0));
+    }
+    return watcher;
+}
+
+/// An element clicked by a script, which is the same click as one upon it.
+static JSValue js_click(JSContext *ctx, JSValueConst this_val,
+                        int argc, JSValueConst *argv)
+{
+    lxb_dom_node_t *node = node_of(this_val);
+
+    if (node)
+        tell(ctx, node, "click", true);
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry node_methods[] = {
     JS_CFUNC_DEF("getAttribute", 1, js_get_attribute),
     JS_CFUNC_DEF("setAttribute", 2, js_set_attribute),
@@ -1184,6 +1562,11 @@ static const JSCFunctionListEntry node_methods[] = {
     JS_CFUNC_DEF("querySelectorAll", 1, js_query_all),
     JS_CFUNC_DEF("matches", 1, js_matches),
     JS_CFUNC_DEF("closest", 1, js_closest),
+    JS_CFUNC_DEF("click", 0, js_click),
+    JS_CFUNC_DEF("getBoundingClientRect", 0, js_box),
+    JS_CFUNC_DEF("scrollIntoView", 0, js_nothing),
+    JS_CFUNC_DEF("focus", 0, js_nothing),
+    JS_CFUNC_DEF("blur", 0, js_nothing),
 };
 
 static const JSCFunctionListEntry node_gets[] = {
@@ -1516,6 +1899,7 @@ static const JSCFunctionListEntry document_methods[] = {
 
 static const JSCFunctionListEntry document_gets[] = {
     JS_CGETSET_DEF("title", js_title, js_set_title),
+    JS_CGETSET_DEF("cookie", js_cookie, js_set_cookie),
     JS_CGETSET_DEF("documentElement", js_root, NULL),
     JS_CGETSET_DEF("body", js_body, NULL),
     JS_CGETSET_DEF("head", js_head, NULL),
@@ -1636,7 +2020,8 @@ static void bind_where(JSContext *ctx, JSValue into, const char *address)
 /* ------------------------------------------------------------------ */
 
 bool dom_bind(struct JSContext *ctx, struct lxb_dom_document *document,
-              const char *address, const char *user_agent)
+              const char *address, const char *user_agent,
+              dom_fetch_f fetch, void *fetch_taken)
 {
     static const JSClassDef node_kind = { .class_name = "Node", .finalizer = nothing_gone };
     static const JSClassDef list_kind = { .class_name = "ClassList", .finalizer = nothing_gone };
@@ -1661,6 +2046,8 @@ bool dom_bind(struct JSContext *ctx, struct lxb_dom_document *document,
         return false;
     memset(doc, 0, sizeof(*doc));
     doc->tree = document;
+    doc->fetch = fetch;
+    doc->fetch_taken = fetch_taken;
     taken = strlen(address) + 1;
     doc->address = js_malloc(ctx, taken);
     if (doc->address)
@@ -1703,6 +2090,30 @@ bool dom_bind(struct JSContext *ctx, struct lxb_dom_document *document,
                       JS_NewCFunction(ctx, js_clear_timer, "clearTimeout", 1));
     JS_SetPropertyStr(ctx, global, "clearInterval",
                       JS_NewCFunction(ctx, js_clear_timer, "clearInterval", 1));
+
+    JS_SetPropertyStr(ctx, global, "fetch",
+                      JS_NewCFunction(ctx, js_fetch, "fetch", 1));
+    JS_SetPropertyStr(ctx, global, "XMLHttpRequest",
+                      JS_NewCFunction(ctx, js_new_xhr, "XMLHttpRequest", 0));
+    {
+        JSValue store = JS_NewObject(ctx);
+
+        JS_SetPropertyFunctionList(ctx, store, store_methods, countof(store_methods));
+        JS_SetPropertyStr(ctx, global, "localStorage", store);
+        JS_SetPropertyStr(ctx, global, "sessionStorage", JS_DupValue(ctx, store));
+    }
+    JS_SetPropertyStr(ctx, global, "getComputedStyle",
+                      JS_NewCFunction(ctx, js_computed, "getComputedStyle", 1));
+    JS_SetPropertyStr(ctx, global, "requestAnimationFrame",
+                      JS_NewCFunction(ctx, js_set_timer, "requestAnimationFrame", 1));
+    JS_SetPropertyStr(ctx, global, "queueMicrotask",
+                      JS_NewCFunction(ctx, js_set_timer, "queueMicrotask", 1));
+    for (const char *const *at = (const char *const []){ "MutationObserver",
+                                                        "IntersectionObserver",
+                                                        "ResizeObserver", NULL };
+         *at; at++) {
+        JS_SetPropertyStr(ctx, global, *at, JS_NewCFunction(ctx, js_watcher, *at, 0));
+    }
     JS_FreeValue(ctx, global);
     return true;
 }
@@ -1727,6 +2138,24 @@ void dom_release(struct JSContext *ctx)
         doc->timers = timer->next;
         JS_FreeValue(ctx, timer->handler);
         js_free(ctx, timer);
+    }
+    while (doc->crumbs) {
+        Crumb *crumb = doc->crumbs;
+
+        doc->crumbs = crumb->next;
+        js_free(ctx, crumb->name);
+        js_free(ctx, crumb->value);
+        js_free(ctx, crumb->domain);
+        js_free(ctx, crumb->path);
+        js_free(ctx, crumb);
+    }
+    while (doc->stored) {
+        Stored *each = doc->stored;
+
+        doc->stored = each->next;
+        js_free(ctx, each->key);
+        js_free(ctx, each->value);
+        js_free(ctx, each);
     }
     if (doc->selectors)
         lxb_selectors_destroy(doc->selectors, true);
@@ -1841,6 +2270,37 @@ bool dom_loop(struct JSContext *ctx)
         js_free(ctx, timer);
     }
     return ran;
+}
+
+char *dom_cookies_for(struct JSContext *ctx, const char *host, const char *path)
+{
+    Document *doc = held(ctx);
+    size_t length = 0;
+    char *out;
+
+    (void)path;
+    if (!doc || !host)
+        return NULL;
+    for (Crumb *at = doc->crumbs; at; at = at->next) {
+        if (strstr(at->domain, host))
+            length += strlen(at->name) + strlen(at->value) + 3;
+    }
+    if (!length)
+        return NULL;
+    out = malloc(length + 1);
+    if (!out)
+        return NULL;
+    out[0] = 0;
+    for (Crumb *at = doc->crumbs; at; at = at->next) {
+        if (!strstr(at->domain, host))
+            continue;
+        strcat(out, at->name);
+        strcat(out, "=");
+        strcat(out, at->value);
+        if (at->next)
+            strcat(out, "; ");
+    }
+    return out;
 }
 
 bool dom_waits(struct JSContext *ctx, unsigned int *in_ms)

@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const js = @import("js");
+const heap = @import("ulib").heap;
 const dom = @import("dom.zig");
 
 /// A page's tree with a script in it.
@@ -25,6 +26,20 @@ pub const Page = js.Engine;
 /// takes the reader with it. A context is made per page and given back with
 /// it, so nothing a script was ever given outlives its tree.
 var machine: ?*js.Machine = null;
+
+/// What the reader does when a script asks for a page of its own: it fetches
+/// it, there and then. Handed in when a page is opened, and kept, because
+/// the network is the reader's business and not the engine's.
+var fetcher: ?*const fn ([]const u8) ?[]u8 = null;
+
+export fn qjsFetch(_: ?*anyopaque, address: [*:0]const u8) callconv(.c) ?[*:0]u8 {
+    const gpa = heap.allocator;
+    const got = (fetcher orelse return null)(std.mem.span(address)) orelse return null;
+    // NUL-terminated for C, which gives it back with `free`.
+    const out = gpa.allocSentinel(u8, got.len, 0) catch return null;
+    @memcpy(out, got);
+    return out.ptr;
+}
 
 fn engine() ?*js.Machine {
     if (machine) |running| return running;
@@ -39,14 +54,20 @@ fn engine() ?*js.Machine {
 /// The tree comes across as a pointer and nothing more: which kind of tree
 /// it is, is the reader's business, and this module is not to be given a
 /// second copy of the reader's own files to know.
-pub fn open(tree: *anyopaque, address: []const u8, user_agent: [*:0]const u8) ?*Page {
+pub fn open(
+    tree: *anyopaque,
+    address: []const u8,
+    user_agent: [*:0]const u8,
+    fetch: *const fn ([]const u8) ?[]u8,
+) ?*Page {
+    fetcher = fetch;
     const page = js.open(engine() orelse return null) orelse return null;
     var buf: [512]u8 = undefined;
     const where = std.fmt.bufPrintZ(&buf, "{s}", .{address}) catch {
         js.close(page);
         return null;
     };
-    if (!dom.bind(page, tree, where.ptr, user_agent)) {
+    if (!dom.bind(page, tree, where.ptr, user_agent, &qjsFetch, null)) {
         js.close(page);
         return null;
     }
@@ -71,6 +92,12 @@ pub fn click(page: *Page, node: *anyopaque) bool {
 /// sent with it.
 pub fn typed(page: *Page, node: *anyopaque, sent: bool) void {
     dom.typed(page, node, sent);
+}
+
+/// What to send as `Cookie` for a page at `host` and `path`: what the
+/// page's scripts have kept for that site, or nothing.
+pub fn cookiesFor(page: *Page, host: [*:0]const u8, path: [*:0]const u8) ?[*:0]u8 {
+    return dom.cookiesFor(page, host, path);
 }
 
 /// Whether a script has changed the page since the last time this was asked,

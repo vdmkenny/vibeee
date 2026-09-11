@@ -117,6 +117,10 @@ var reading: ?Reading = null;
 var fetch: fetch_mod.Fetch = .{};
 /// The pictures of the page on screen, and the fetch that brings them.
 var pictures: pictures_mod.Pictures = .{};
+/// The fetch a script asks for: kept apart from the page's own, which is
+/// mid-page, and from the pictures', which may be mid-picture. A script's
+/// question must not be asked on the connection the page is coming down.
+var script_fetch: fetch_mod.Fetch = .{ .asking = .{ .wanted = .page } };
 var history: History = .{};
 
 /// The reader's settings as the store last had them, and the event that says
@@ -326,6 +330,39 @@ fn keptFrom() ?blocklist_mod.Blocklist {
     return .{ .hashes = &blocklist_data.hashes };
 }
 
+/// The `Cookie` line for the request about to be made, written here so it
+/// lasts until the request has gone: the engine hands back a string of its
+/// own, and it is given back at once.
+var cookie_line: [1024]u8 = undefined;
+var cookie_len: usize = 0;
+
+/// What the reader sends as `Cookie` for `target`: what the page's scripts
+/// have kept for that site, or nothing where no script is running.
+fn cookiesFrom(target: []const u8) []const u8 {
+    const page = in_page orelse return blankCookies();
+    const where = url.parse(target) orelse return blankCookies();
+    var host: [url.ADDRESS_MAX:0]u8 = undefined;
+
+    if (where.host.len > url.ADDRESS_MAX) return blankCookies();
+    @memcpy(host[0..where.host.len], where.host);
+    host[where.host.len] = 0;
+    const got = scripts.cookiesFor(page, &host, "/") orelse return blankCookies();
+    // Copied: the engine's string goes back to it now, and the request is
+    // not written until the next step.
+    defer heap.release(got);
+    const line = std.mem.span(got);
+
+    if (line.len >= cookie_line.len) return blankCookies();
+    @memcpy(cookie_line[0..line.len], line);
+    cookie_len = line.len;
+    return cookie_line[0..cookie_len];
+}
+
+fn blankCookies() []const u8 {
+    cookie_len = 0;
+    return cookie_line[0..0];
+}
+
 /// The page's fetch, which brings its stylesheets too, and its pictures'.
 fn fetches() [2]*fetch_mod.Fetch {
     return .{ &fetch, &pictures.fetch };
@@ -466,6 +503,7 @@ fn visit(target: []const u8) void {
     // site answers a GET with.
     fetch.asking.sent = if (sending.forTarget(target)) |answers| .{ .form = answers } else .nothing;
 
+    fetch.asking.cookies = cookiesFrom(target);
     // The network is the page's while it comes: the pictures of the one on
     // screen wait.
     pictures.pause(gpa);
@@ -576,7 +614,7 @@ fn scriptsAgain(enabled: bool) void {
         return;
     }
     if (document) |*tree| {
-        in_page = scripts.open(tree.document, source.base.slice(), http.USER_AGENT);
+        in_page = scripts.open(tree.document, source.base.slice(), http.USER_AGENT, &fetchForScript);
         readAgain();
     }
     waitFor(.none);
@@ -806,7 +844,7 @@ fn finish() void {
     // what is read, which is the order a browser has them in. Where the
     // setting says no script runs, the page reads as it was written.
     in_page = if (choices.scripts)
-        scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT)
+        scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT, &fetchForScript)
     else
         null;
     tree.read(gpa, &r.source, window, &fresh) catch |err| {
@@ -847,6 +885,30 @@ fn abandon() void {
     r.source.deinit(gpa);
     reading = null;
     fetch.asking.wanted = .page;
+}
+
+/// Fetch a page a script asks for, there and then: the line after the one
+/// asking often wants the answer, and the reader has nowhere to keep a
+/// question open. Blocked on the site, as a stylesheet from one is.
+fn fetchForScript(asked: []const u8) ?[]u8 {
+    const where = url.parse(asked) orelse return null;
+    if (where.scheme == .file) {
+        return file.readAlloc(gpa, where.file(), fetch_mod.PAGE_MAX) catch null;
+    }
+    script_fetch.asking.wanted = .page;
+    script_fetch.asking.mobile = choices.mobile;
+    script_fetch.asking.shade = view.shade;
+    script_fetch.asking.cookies = cookiesFrom(asked);
+    script_fetch.blocklist = keptFrom();
+    defer script_fetch.release(gpa);
+    script_fetch.begin(gpa, asked);
+    while (true) switch (script_fetch.advance(gpa)) {
+        .none => {},
+        .site => |handle| sys.eventWait(handle, WATCH_US) catch {},
+        .over => break,
+    };
+    if (script_fetch.state != .done) return null;
+    return script_fetch.body.bytes.toOwnedSlice(gpa) catch null;
 }
 
 /// A stylesheet from this machine, read whole.

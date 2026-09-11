@@ -10,7 +10,8 @@ const js = @import("js");
 /// tree bound into it.
 pub const Document = js.Engine;
 
-extern fn dom_bind(document: *js.Engine, tree: *anyopaque, address: [*:0]const u8, user_agent: [*:0]const u8) bool;
+extern fn dom_bind(document: *js.Engine, tree: *anyopaque, address: [*:0]const u8, user_agent: [*:0]const u8, fetch: ?*const fn (?*anyopaque, [*:0]const u8) callconv(.c) ?[*:0]u8, taken: ?*anyopaque) bool;
+extern fn dom_cookies_for(document: *js.Engine, host: [*:0]const u8, path: [*:0]const u8) ?[*:0]u8;
 extern fn dom_load(document: *js.Engine, tree: *anyopaque) void;
 extern fn dom_click(document: *js.Engine, node: *anyopaque) bool;
 extern fn dom_changed_at(document: *js.Engine, node: *anyopaque, sent: bool) void;
@@ -20,8 +21,13 @@ extern fn dom_waits(document: *js.Engine, in_ms: *u32) bool;
 extern fn dom_release(document: *js.Engine) void;
 
 /// Give a script the tree `tree`, whose page came from `address`.
-pub fn bind(document: *js.Engine, tree: *anyopaque, address: [*:0]const u8, user_agent: [*:0]const u8) bool {
-    return dom_bind(document, tree, address, user_agent);
+pub fn bind(document: *js.Engine, tree: *anyopaque, address: [*:0]const u8, user_agent: [*:0]const u8, fetch: ?*const fn (?*anyopaque, [*:0]const u8) callconv(.c) ?[*:0]u8, taken: ?*anyopaque) bool {
+    return dom_bind(document, tree, address, user_agent, fetch, taken);
+}
+
+/// What to send as `Cookie` for a page at `host` and `path`, or nothing.
+pub fn cookiesFor(document: *js.Engine, host: [*:0]const u8, path: [*:0]const u8) ?[*:0]u8 {
+    return dom_cookies_for(document, host, path);
 }
 
 /// Run every script the document carries, then tell it that it is ready.

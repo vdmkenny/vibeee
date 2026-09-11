@@ -771,7 +771,10 @@ pub fn build(b: *std.Build) void {
                     "apps/web/scripts/off.zig"),
                 .target = user.target,
                 .optimize = optimize,
-                .imports = if (with_scripts) &.{.{ .name = "js", .module = js_mod }} else &.{},
+                .imports = if (with_scripts) &.{
+                    .{ .name = "js", .module = js_mod },
+                    .{ .name = "ulib", .module = user.ulib },
+                } else &.{},
             }));
             // The formats pages use that the decoder reads.
             user.addPictures(web, &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_GIF" });
