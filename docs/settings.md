@@ -115,3 +115,10 @@ so an image ships with the first and a machine remembers the second.
 | `open.document` | a program's name, or empty for whichever will take it | unset |
 | `open.font` | a program's name, or empty for whichever will take it | unset |
 
+## web
+
+| key | accepts | default |
+|---|---|---|
+| `web.homepage` | an address, or empty for none | `https://frogfind.de/?lg=en-us` |
+| `web.images` | true \| false | `true` |
+

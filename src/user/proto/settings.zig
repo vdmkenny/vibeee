@@ -56,6 +56,7 @@ pub const Power = schema.Power;
 pub const Idle = schema.Idle;
 pub const LowAction = schema.LowAction;
 pub const Host = schema.Host;
+pub const Web = schema.Web;
 pub const netSlot = schema.netSlot;
 pub const netMachine = schema.netMachine;
 pub const setNetSlot = schema.setNetSlot;

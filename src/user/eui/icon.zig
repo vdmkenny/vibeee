@@ -136,6 +136,9 @@ pub const Icon = enum {
     /// Fetch it again. A circle open at the top, with the end it turns
     /// towards pointed: the one shape that says "again" without words.
     reload,
+    /// The page a reader starts on: a house, which is what every reader has
+    /// drawn it as.
+    home,
 };
 
 /// A picture and the name it belongs to.
@@ -856,6 +859,23 @@ const art = [_]Picture{
             "..##.....##.",
             "...######...",
             "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .home,
+        .rows = .{
+            "............",
+            ".....##.....",
+            "....####....",
+            "...##..##...",
+            "..##....##..",
+            ".##......##.",
+            "..#......#..",
+            "..#......#..",
+            "..#..##..#..",
+            "..#..##..#..",
+            "..########..",
             "............",
         },
     },

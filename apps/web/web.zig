@@ -14,6 +14,10 @@
 //! `web -t <address>` prints a page's words instead of opening a window, so
 //! whatever the window can read, the shell can too.
 //!
+//! Where it starts and whether it fetches pictures are settings, in the `web`
+//! domain the store keeps: `cfg web` lists them, and a window that is open
+//! takes a change as it is made.
+//!
 //! Not part of the system. It is built into `home/bin/` and versioned on its
 //! own.
 
@@ -75,7 +79,14 @@ var shown: Page = .{};
 var fetch: fetch_mod.Fetch = .{};
 var history: History = .{};
 
-var wakes: [1]u32 = .{0};
+/// The reader's settings as the store last had them, and the event that says
+/// they changed, where the store is there to give one.
+var choices: proto.settings.Web = .{};
+var settings_changed: ?u32 = null;
+
+/// What the window sleeps on besides its own events: the settings changing,
+/// and the site while a page is coming from one.
+var wakes: Bounded(u32, 2) = .{};
 
 /// How much of the rule under the strip was last painted, in thousandths.
 var drawn_progress: ?u16 = null;
@@ -152,13 +163,19 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 
     address.init(.{ .hint = "an address, or a file on this machine" });
     view.show(gpa, &shown, 0);
-    if (first) |target| typed(target) else focus_next = .field;
+    choices = proto.settings.load("web");
+    settings_changed = proto.settings.watch("web") catch null;
+    if (first) |target| typed(target) else home();
+    sleepOn(null);
 
     proto.app.run("web", "web", 800, 480, .{
         .draw = draw,
         .key = key,
         .tick = tick,
-        .tick_us = IDLE_US,
+        // The frame begins with what it is handed here, so a first page
+        // already on its way is handed over as one.
+        .tick_us = if (fetch.busy()) SOON_US else IDLE_US,
+        .wakes = wakes.slice(),
         .woken = woken,
     });
 }
@@ -176,6 +193,17 @@ fn usage() noreturn {
 fn typed(text: []const u8) void {
     var buf: [url.ADDRESS_MAX]u8 = undefined;
     go(addressFrom(text, &buf) orelse return failed(error.NotAnAddress, text));
+}
+
+/// Go to the home page the settings name. With none named there is nowhere to
+/// go, and the keyboard goes to the address instead.
+fn home() void {
+    const where = choices.homepage.slice();
+    if (where.len == 0) {
+        focus_next = .field;
+        return;
+    }
+    typed(where);
 }
 
 /// Follow a link on the page on screen.
@@ -278,16 +306,29 @@ fn tick() bool {
     return settle(fetch.advance(gpa));
 }
 
-fn woken(_: usize) bool {
+fn woken(index: usize) bool {
+    if (settings_changed != null and wakes.at(index) == settings_changed) {
+        choices = proto.settings.load("web");
+        return true;
+    }
     _ = settle(fetch.advance(gpa));
     // A piece arrived, which the status line counts, whatever else it did.
     return true;
 }
 
-/// Nothing to wait on: the window sleeps until something happens.
+/// Nothing to wait on but the settings: the window sleeps until something
+/// happens.
 fn rest() void {
-    proto.app.wakeOn(&.{});
+    sleepOn(null);
     proto.app.retick(IDLE_US);
+}
+
+/// Sleep on the settings, and on `site` while a page is coming from one.
+fn sleepOn(site: ?u32) void {
+    wakes.clear();
+    if (settings_changed) |event| wakes.append(event) catch unreachable;
+    if (site) |handle| wakes.append(handle) catch unreachable;
+    proto.app.wakeOn(wakes.slice());
 }
 
 /// Wait on what the fetch waits on next, and act on its end. True when
@@ -298,12 +339,11 @@ fn settle(wait: fetch_mod.Wait) bool {
             // The step that blocks comes on the next chance, once this pass
             // has said what it is about to do. It is also what a redirect is.
             address.set(fetch.address());
-            proto.app.wakeOn(&.{});
+            sleepOn(null);
             proto.app.retick(SOON_US);
         },
         .site => |handle| {
-            wakes[0] = handle;
-            proto.app.wakeOn(&wakes);
+            sleepOn(handle);
             proto.app.retick(WATCH_US);
         },
         .over => {
@@ -648,27 +688,33 @@ fn writeQuery(w: *std.Io.Writer, sent: view_mod.Submit, action: []const u8) std.
 }
 
 /// Where the strip's parts go: the way back, the way forward, the key that
-/// fetches again or stops, and the field in what is left.
+/// fetches again or stops, the way home, and the field in what is left.
 const Strip = struct {
     back: Rect,
     forward: Rect,
     reload: Rect,
+    home: Rect,
     field: Rect,
 
     fn of(area: Rect) Strip {
         const t = eui.theme.current();
         const size = t.control_height;
         const y = area.y + @divTrunc(area.h - size, 2);
-        const back_x = area.x + t.padding;
-        const forward_x = back_x + size + 2;
-        const reload_x = forward_x + size + 2;
-        const field_x = reload_x + size + t.gap;
+        // The keys a hair apart, and the field a gap after the last.
+        const step = size + 2;
+        const left = area.x + t.padding;
+        const field_x = left + 3 * step + size + t.gap;
         return .{
-            .back = .{ .x = back_x, .y = y, .w = size, .h = size },
-            .forward = .{ .x = forward_x, .y = y, .w = size, .h = size },
-            .reload = .{ .x = reload_x, .y = y, .w = size, .h = size },
+            .back = square(left, y, size),
+            .forward = square(left + step, y, size),
+            .reload = square(left + 2 * step, y, size),
+            .home = square(left + 3 * step, y, size),
             .field = .{ .x = field_x, .y = y, .w = area.right() - t.padding - field_x, .h = size },
         };
+    }
+
+    fn square(x: i32, y: i32, side: i32) Rect {
+        return .{ .x = x, .y = y, .w = side, .h = side };
     }
 };
 
@@ -681,6 +727,7 @@ fn strip(area: Rect, at: Strip) void {
     if (ctx.tool(at.reload, if (loading) .cross else .reload, loading or !history.entries.isEmpty())) {
         if (loading) stop() else reload();
     }
+    if (ctx.tool(at.home, .home, !choices.homepage.isEmpty())) home();
     if (address.run(ctx, at.field)) typed(address.slice());
 
     rule(area);
@@ -782,6 +829,8 @@ fn key(code: KeyCode, mods: Modifiers) bool {
         back();
     } else if (mods.alt and code == .right) {
         forward();
+    } else if (mods.alt and code == .home) {
+        home();
     } else if (code == .f5 or (mods.control and code == .r)) {
         reload();
     } else if (mods.control and code == .l) {

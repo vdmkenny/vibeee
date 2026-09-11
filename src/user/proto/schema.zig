@@ -142,82 +142,76 @@ pub const Time = struct {
     every_minutes: u16 = 60,
 };
 
+/// Words a setting holds as they were written: a server's name, a program's,
+/// an address. Kept in the value rather than pointed at, because a domain is
+/// read into a value that outlives the file it came from, and bounded,
+/// because a setting travels to the store whole in one message.
+pub fn Text(comptime capacity: u8, comptime what: []const u8) type {
+    return struct {
+        bytes: [capacity]u8 = @splat(0),
+        len: u8 = 0,
+
+        const Self = @This();
+
+        /// The longest value it takes, which the store's message has to
+        /// carry beside its key.
+        pub const LONGEST = capacity;
+        pub const accepts = what;
+
+        pub fn of(comptime text: []const u8) Self {
+            if (text.len > capacity) @compileError("`" ++ text ++ "` is longer than the setting holds");
+            var out = Self{ .len = text.len };
+            @memcpy(out.bytes[0..text.len], text);
+            return out;
+        }
+
+        pub fn slice(self: *const Self) []const u8 {
+            return self.bytes[0..@min(self.len, capacity)];
+        }
+
+        pub fn isEmpty(self: Self) bool {
+            return self.len == 0;
+        }
+
+        pub fn parse(text: []const u8) ?Self {
+            const trimmed = str.trim(text);
+            if (trimmed.len > capacity) return null;
+            var out = Self{ .len = @intCast(trimmed.len) };
+            @memcpy(out.bytes[0..trimmed.len], trimmed);
+            return out;
+        }
+
+        pub fn spell(self: Self, into: *str.Builder) void {
+            into.text(self.slice());
+        }
+
+        pub fn eql(self: Self, other: Self) bool {
+            return std.mem.eql(u8, self.slice(), other.slice());
+        }
+    };
+}
+
 /// A server's name, as the file spells it.
-pub const Host = struct {
-    bytes: [48]u8 = @splat(0),
-    len: u8 = 0,
-
-    pub const accepts = "a host name, or empty for none";
-
-    pub fn of(comptime name: []const u8) Host {
-        var out = Host{ .len = name.len };
-        @memcpy(out.bytes[0..name.len], name);
-        return out;
-    }
-
-    pub fn slice(self: *const Host) []const u8 {
-        return self.bytes[0..@min(self.len, self.bytes.len)];
-    }
-
-    pub fn isEmpty(self: Host) bool {
-        return self.len == 0;
-    }
-
-    pub fn parse(text: []const u8) ?Host {
-        const trimmed = str.trim(text);
-        if (trimmed.len > 48) return null;
-        var out = Host{ .len = @intCast(trimmed.len) };
-        @memcpy(out.bytes[0..trimmed.len], trimmed);
-        return out;
-    }
-
-    pub fn spell(self: Host, into: *str.Builder) void {
-        into.text(self.slice());
-    }
-
-    pub fn eql(self: Host, other: Host) bool {
-        return std.mem.eql(u8, self.slice(), other.slice());
-    }
-};
+pub const Host = Text(48, "a host name, or empty for none");
 
 /// The name of a program, as the openers table and the shell know it.
 /// Empty means nobody has chosen, and the first program willing to take the
 /// family opens it.
-pub const Program = struct {
-    bytes: [16]u8 = @splat(0),
-    len: u8 = 0,
+pub const Program = Text(16, "a program's name, or empty for whichever will take it");
 
-    pub const accepts = "a program's name, or empty for whichever will take it";
+/// A page's address, written as it would be typed.
+pub const Address = Text(80, "an address, or empty for none");
 
-    pub fn of(comptime name: []const u8) Program {
-        var out = Program{ .len = name.len };
-        @memcpy(out.bytes[0..name.len], name);
-        return out;
-    }
-
-    pub fn slice(self: *const Program) []const u8 {
-        return self.bytes[0..@min(self.len, self.bytes.len)];
-    }
-
-    pub fn isEmpty(self: Program) bool {
-        return self.len == 0;
-    }
-
-    pub fn parse(text: []const u8) ?Program {
-        const trimmed = str.trim(text);
-        if (trimmed.len > 16) return null;
-        var out = Program{ .len = @intCast(trimmed.len) };
-        @memcpy(out.bytes[0..trimmed.len], trimmed);
-        return out;
-    }
-
-    pub fn spell(self: Program, into: *str.Builder) void {
-        into.text(self.slice());
-    }
-
-    pub fn eql(self: Program, other: Program) bool {
-        return std.mem.eql(u8, self.slice(), other.slice());
-    }
+/// The web reader's choices.
+pub const Web = struct {
+    /// The page the reader opens when it is started without an address, and
+    /// the one its home key goes to. Empty opens nothing, and the reader
+    /// waits for an address.
+    homepage: Address = Address.of("https://frogfind.de/?lg=en-us"),
+    /// Whether a page's pictures are fetched and shown in it. Off, a page is
+    /// its words, with a picture's description where the picture would be,
+    /// which is quicker over a slow connection and lighter on memory.
+    images: bool = true,
 };
 
 /// Which program opens what. One key per family a program can be chosen
@@ -425,6 +419,7 @@ pub const Domains = struct {
     power: Power = .{},
     time: Time = .{},
     open: Open = .{},
+    web: Web = .{},
 };
 
 /// The most a settings file may hold.
@@ -438,26 +433,30 @@ pub const Domains = struct {
 /// forgets the end of its own configuration.
 pub const FILE_MAX = 4096;
 
-/// The longest one setting is: the widest key any domain names, and the
-/// widest value any field accepts.
+/// The longest one setting is: of every key, the key and the longest value
+/// its own field accepts.
 ///
 /// What it is for is the store's own message, which carries a key and its
 /// value together. A message too small for this is a setting nobody can
 /// write, which on a screen reads exactly like one that did not take.
-///
-/// The key half is derived from the schema. The value half is stated: a
-/// network key written out, which is the longest thing any field here
-/// holds and the form this system tells people to prefer over a
-/// passphrase.
 pub const LONGEST_SETTING = blk: {
-    var key: usize = 0;
+    var longest: usize = 0;
     for (std.meta.fields(Domains)) |domain| {
         for (std.meta.fields(domain.type)) |field| {
-            key = @max(key, domain.name.len + 1 + field.name.len);
+            longest = @max(longest, domain.name.len + 1 + field.name.len + longestValue(field.type));
         }
     }
-    break :blk key + wifi.Psk.KEY_BYTES * 2;
+    break :blk longest;
 };
+
+/// The longest value a field of type `T` takes. A type that says states its
+/// own, as words do; every other is taken to be as long as a network key
+/// written out, which is the longest spelling any of them has and the form
+/// this system tells people to prefer over a passphrase.
+fn longestValue(comptime T: type) usize {
+    if (@typeInfo(T) == .@"struct" and @hasDecl(T, "LONGEST")) return T.LONGEST;
+    return wifi.Psk.KEY_BYTES * 2;
+}
 
 /// Every domain's name, in declaration order. Derived rather than listed,
 /// so a domain added above is one this knows about.

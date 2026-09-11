@@ -227,7 +227,7 @@ examples: kernel $(EXAMPLES)
 
 # Things that are not part of the system, built separately and installed
 # into `home/bin/`. See apps/README.md.
-apps: hero echat eeemod roll
+apps: hero echat eeemod roll web
 	@$(MAKE) --no-print-directory -C apps
 
 # Hero, the character journal: a first-party program that is not part of the
@@ -272,6 +272,17 @@ roll:
 	@mkdir -p home/bin
 	@cp zig-out/bin/roll home/bin/roll
 	@echo "  ready   home/bin/roll, on the machine at the next image build"
+
+# The page reader. Its host side is tested first: addresses, the protocol,
+# encodings, a page and where its words go are arithmetic over text, and
+# none of it needs a network or a screen to be checked.
+.PHONY: web
+web:
+	@$(ZIG) build test-web
+	@$(ZIG) build web
+	@mkdir -p home/bin
+	@cp zig-out/bin/web home/bin/web
+	@echo "  ready   home/bin/web, on the machine at the next image build"
 
 app:
 	@if [ -z "$(APP)" ]; then echo "usage: make app APP=<name>"; exit 1; fi
