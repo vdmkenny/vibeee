@@ -64,6 +64,7 @@ with it this pass.
 | call | signature |
 |---|---|
 | `button` | `fn (*widget.Context, draw.Rect, []const u8) bool` |
+| `tool` | `fn (*widget.Context, draw.Rect, icon.Icon, bool) bool` |
 | `buttonAs` | `fn (*widget.Context, draw.Rect, []const u8, widget.Emphasis) bool` |
 | `choice` | `fn (*widget.Context, draw.Rect, anytype) anytype` |
 | `choiceOf` | `fn (*widget.Context, draw.Rect, anytype, []const []const u8) anytype` |
@@ -154,6 +155,7 @@ another control.
 | `fillAround` | `fn (draw.Surface, draw.Rect, draw.Rect, rgb.Colour) void` |
 | `fill` | `fn (draw.Surface, draw.Rect, rgb.Colour) void` |
 | `copyFrom` | `fn (draw.Surface, draw.Surface, i32, i32, draw.Rect) void` |
+| `shift` | `fn (draw.Surface, draw.Rect, i32) void` |
 | `frame` | `fn (draw.Surface, draw.Rect, rgb.Colour) void` |
 | `borderInset` | `fn (draw.Surface, draw.Rect, i32, rgb.Colour) void` |
 | `glyph` | `fn (draw.Surface, i32, i32, u21, rgb.Colour) void` |
@@ -1075,6 +1077,48 @@ lock
       ####  ####  ####    
       ####  ####  ####    
       ################    
+                          
+                          
+
+back
+                          
+                          
+          ####            
+        ####              
+      ####                
+    ####################  
+    ####################  
+      ####                
+        ####              
+          ####            
+                          
+                          
+
+forward
+                          
+                          
+              ####        
+                ####      
+                  ####    
+    ####################  
+    ####################  
+                  ####    
+                ####      
+              ####        
+                          
+                          
+
+reload
+                          
+        ########  ##      
+      ####      ######    
+    ####        ########  
+    ##                    
+    ##                    
+    ##                  ##
+    ####              ####
+      ####          ####  
+        ############      
                           
                           
 

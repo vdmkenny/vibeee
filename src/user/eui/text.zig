@@ -288,6 +288,15 @@ pub const Editor = struct {
         self.edited = true;
         return true;
     }
+
+    /// Select the whole text, so that what is typed next replaces it.
+    fn selectAll(self: *Editor, buffer: *const Buffer) bool {
+        if (buffer.len == 0) return false;
+        self.anchor = 0;
+        self.cursor = buffer.len;
+        self.goal = null;
+        return true;
+    }
 };
 
 /// The face text is edited in. The interface face, not the terminal's: a
@@ -522,13 +531,7 @@ pub fn run(state: *Editor, buffer: *Buffer, what: Command, clip: widget.Clipboar
             state.edited = true;
             return true;
         },
-        .select_all => {
-            if (buffer.len == 0) return false;
-            state.anchor = 0;
-            state.cursor = buffer.len;
-            state.goal = null;
-            return true;
-        },
+        .select_all => return state.selectAll(buffer),
     }
 }
 
@@ -896,6 +899,12 @@ pub fn Field(comptime capacity: usize) type {
 
         pub fn clear(self: *Self) void {
             self.set("");
+        }
+
+        /// Select all it holds, so that what is typed next replaces it:
+        /// what moving the keyboard into an address or a search wants.
+        pub fn selectAll(self: *Self) void {
+            if (self.editor.selectAll(&self.buffer)) self.editor.repaint = true;
         }
 
         /// Draw it and take what is typed. True on the pass Enter was

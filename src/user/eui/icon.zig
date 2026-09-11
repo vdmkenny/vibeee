@@ -128,6 +128,14 @@ pub const Icon = enum {
     /// A closed padlock: a connection nobody in between can read. Shown
     /// beside what it protects rather than as a state to change.
     lock,
+    /// Where a reader has been, and the way back to it and forward again.
+    /// Arrows with shafts rather than chevrons: a chevron at this size is
+    /// the same shape as the triangle that opens a menu.
+    back,
+    forward,
+    /// Fetch it again. A circle open at the top, with the end it turns
+    /// towards pointed: the one shape that says "again" without words.
+    reload,
 };
 
 /// A picture and the name it belongs to.
@@ -796,6 +804,57 @@ const art = [_]Picture{
             "..##.##.##..",
             "..##.##.##..",
             "..########..",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .back,
+        .rows = .{
+            "............",
+            "............",
+            "....##......",
+            "...##.......",
+            "..##........",
+            ".##########.",
+            ".##########.",
+            "..##........",
+            "...##.......",
+            "....##......",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .forward,
+        .rows = .{
+            "............",
+            "............",
+            "......##....",
+            ".......##...",
+            "........##..",
+            ".##########.",
+            ".##########.",
+            "........##..",
+            ".......##...",
+            "......##....",
+            "............",
+            "............",
+        },
+    },
+    .{
+        .icon = .reload,
+        .rows = .{
+            "............",
+            "...####.#...",
+            "..##...###..",
+            ".##....####.",
+            ".#..........",
+            ".#..........",
+            ".#.........#",
+            ".##.......##",
+            "..##.....##.",
+            "...######...",
             "............",
             "............",
         },

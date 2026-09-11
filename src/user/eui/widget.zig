@@ -594,6 +594,44 @@ pub const Context = struct {
         return self.buttonAs(area, text, .plain);
     }
 
+    /// A picture to press, flat on the strip it sits in until the pointer
+    /// comes to it: the back and forward keys of a reader, the tools along
+    /// a strip. A row of framed buttons reads as a row of separate
+    /// decisions, and a strip of tools is one thing.
+    ///
+    /// True on the pass where it is released, having been pressed on
+    /// itself. One that is not `enabled` is drawn in the dim ink a menu
+    /// gives an item that cannot be chosen, and neither answers nor takes
+    /// the keyboard.
+    pub fn tool(self: *Context, area: Rect, which: icons.Icon, enabled: bool) bool {
+        const entry = self.slotFor(area) orelse return false;
+        const it: Interaction = if (enabled) self.interact(entry, area) else inert: {
+            entry.seen = true;
+            entry.focusable = false;
+            break :inert .{
+                .index = self.indexOf(entry),
+                .over = false,
+                .holding = false,
+                .focused = false,
+                .clicked = false,
+            };
+        };
+        const activated = enabled and (it.clicked or self.activatedByKey(entry));
+
+        const visual: Visual = if (it.holding) .active else hotOr(it.over, .hot, .idle);
+        // The picture and whether it answers are how it looks as much as the
+        // pointer is, so a key going dim or a reload turning into a stop is
+        // a repaint like any other.
+        const look: i32 = @as(i32, @intFromEnum(which)) * 2 + @intFromBool(enabled);
+        if (self.needsPaint(entry, visual) or entry.detail != look) {
+            entry.visual = visual;
+            entry.detail = look;
+            paintTool(self.surface, area, which, visual, it.focused, enabled);
+            self.addDamage(area);
+        }
+        return activated;
+    }
+
     /// A button whose ground says what kind of thing it is.
     ///
     /// A keypad is the case that needs it: the digits are the ordinary
@@ -1555,6 +1593,26 @@ fn paintButtonAs(
     surface.textCentred(area, text, ink);
 
     if (focused) paintFocusRing(surface, area.inset(2), if (on) t.accent_text else t.text_dim);
+}
+
+/// A tool: the strip's own ground until the pointer is over it, then the
+/// lighter step and an edge, as a menu bar's items answer.
+fn paintTool(surface: Surface, area: Rect, which: icons.Icon, visual: Visual, focused: bool, enabled: bool) void {
+    const t = theme.current();
+    const face = switch (visual) {
+        .active => t.surface_pressed,
+        .hot => t.surface_hot,
+        else => t.surface,
+    };
+    surface.fillRounded(area, t.corner_radius, .all, face);
+    if (visual == .hot or visual == .active) {
+        surface.frameRounded(area, t.corner_radius, .all, t.line);
+    }
+    const size = Surface.iconSize();
+    const x = area.x + @divTrunc(area.w - size, 2);
+    const y = area.y + @divTrunc(area.h - size, 2);
+    surface.icon(x, y, which, if (enabled) t.text else t.text_dim);
+    if (focused) paintFocusRing(surface, area.inset(2), t.text_dim);
 }
 
 /// A dotted rectangle marking keyboard focus. Dotted rather than solid so it

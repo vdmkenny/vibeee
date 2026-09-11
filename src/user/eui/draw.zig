@@ -423,6 +423,36 @@ pub const Surface = struct {
         }
     }
 
+    /// Move the pixels of `area` up by `dy` rows, or down where `dy` is
+    /// negative. The band uncovered keeps what it held, for the caller to
+    /// paint.
+    ///
+    /// What a scrolling view does instead of drawing every row again: the
+    /// rows staying on screen are drawn already, and moving one is a single
+    /// run where drawing its text is a glyph at a time. Rows go in the order
+    /// that reads each before anything lands on it, so the source is never
+    /// overwritten first; a row is never its own neighbour's memory, so each
+    /// one is a plain copy.
+    pub fn shift(self: Surface, area: Rect, dy: i32) void {
+        const target = area.intersect(self.clip);
+        if (target.isEmpty() or dy == 0 or @abs(dy) >= target.h) return;
+
+        const width: usize = @intCast(target.w);
+        if (dy > 0) {
+            var y = target.y;
+            while (y < target.bottom() - dy) : (y += 1) self.moveRow(target.x, y + dy, y, width);
+        } else {
+            var y = target.bottom() - 1;
+            while (y >= target.y - dy) : (y -= 1) self.moveRow(target.x, y + dy, y, width);
+        }
+    }
+
+    fn moveRow(self: Surface, x: i32, from_y: i32, to_y: i32, width: usize) void {
+        const from = self.pixels + @as(usize, @intCast(from_y * self.stride + x));
+        const to = self.pixels + @as(usize, @intCast(to_y * self.stride + x));
+        copyRun(to, from, width);
+    }
+
     /// Where a copy actually lands: the placement clipped by the limit, this
     /// surface's clip, and what the source actually has. Null when nothing
     /// survives. Settling every bound here is what leaves the loops above
@@ -888,4 +918,37 @@ test "no corners means the plain rectangle, whatever the radius" {
     a.fillRounded(whole, 3, Corners.square, Color.hex(0x999999));
     b.fill(whole, Color.hex(0x999999));
     try testing.expectEqualSlices(Color, &plain, &rounded);
+}
+
+test "a shift moves the rows that stay and leaves the uncovered band alone" {
+    var pixels: [4 * 6]Color = undefined;
+    for (&pixels, 0..) |*p, i| p.* = @bitCast(@as(u32, @intCast(i / 4)));
+    const surface = Surface.init(&pixels, 4, 6, 4);
+    const area = Rect{ .x = 0, .y = 1, .w = 4, .h = 4 };
+
+    surface.shift(area, 2);
+    // Rows 1 and 2 now hold what rows 3 and 4 did; rows 3 and 4 are the
+    // band the caller paints, and still hold what they had.
+    const rowOf = struct {
+        fn at(s: Surface, y: i32) u32 {
+            return @bitCast(s.get(0, y));
+        }
+    }.at;
+    try std.testing.expectEqual(@as(u32, 0), rowOf(surface, 0));
+    try std.testing.expectEqual(@as(u32, 3), rowOf(surface, 1));
+    try std.testing.expectEqual(@as(u32, 4), rowOf(surface, 2));
+    try std.testing.expectEqual(@as(u32, 5), rowOf(surface, 5));
+
+    surface.shift(area, -1);
+    // Down one: each row takes the one above it, bottom first.
+    try std.testing.expectEqual(@as(u32, 3), rowOf(surface, 2));
+    try std.testing.expectEqual(@as(u32, 4), rowOf(surface, 3));
+    try std.testing.expectEqual(@as(u32, 0), rowOf(surface, 0));
+}
+
+test "a shift as tall as the area is nothing to move" {
+    var pixels: [2 * 2]Color = @splat(@bitCast(@as(u32, 7)));
+    const surface = Surface.init(&pixels, 2, 2, 2);
+    surface.shift(.{ .x = 0, .y = 0, .w = 2, .h = 2 }, 2);
+    try std.testing.expectEqual(@as(u32, 7), @as(u32, @bitCast(surface.get(1, 1))));
 }
