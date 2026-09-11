@@ -66,6 +66,10 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     try url.writeHost(w);
     const ask = asks.get(asking.wanted);
     try w.print("\r\nUser-Agent: " ++ USER_AGENT ++ "\r\nAccept: {s}\r\n", .{ask.accept});
+    // Global Privacy Control, with every request: the person reading does
+    // not agree to their visit being sold or shared, which some sites are
+    // bound by law to honour.
+    try w.writeAll("Sec-GPC: 1\r\n");
     if (asking.mobile) try w.writeAll("Sec-CH-UA-Mobile: ?1\r\nSave-Data: on\r\n");
     // Identity, because the one thing a reader must not do with a page is
     // fail to decompress it, and the saving on a small page is not worth a
@@ -410,6 +414,7 @@ test "a request asks for the page and for the connection to close" {
     try testing.expect(std.mem.startsWith(u8, req, "GET /linux/read.2.html HTTP/1.1\r\nHost: man7.org\r\n"));
     try testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "User-Agent: vibeee-web/1.0 (vibeee; ") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "\r\nSec-GPC: 1\r\n") != null);
     try testing.expect(std.mem.endsWith(u8, req, "\r\n\r\n"));
 }
 
@@ -424,8 +429,10 @@ test "a picture is asked for in the formats the decoder reads" {
     const req = request(&buf, url_mod.parse("http://a.org/eee.jpg").?, .{ .wanted = .picture }).?;
     try testing.expect(std.mem.indexOf(u8, req, "\r\nAccept: image/png, image/jpeg, image/gif;q=0.8\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "text/html") == null);
-    // And on a connection kept for the next one.
+    // And on a connection kept for the next one, with the same privacy
+    // signal a page's request carries.
     try testing.expect(std.mem.indexOf(u8, req, "\r\nConnection: keep-alive\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "\r\nSec-GPC: 1\r\n") != null);
 }
 
 test "a request for the version for small screens says so, and any other says nothing" {
