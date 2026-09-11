@@ -4,14 +4,15 @@
 //! The parser builds a tree of every element and attribute a page had, which
 //! is far more than a reader draws and, on a large page, several times the
 //! page's own size. So the tree is walked once into this and let go: one
-//! buffer of text, runs over it, blocks over the runs, and the strings the
-//! runs refer to beside them. Nothing here points into the tree, so the tree
-//! can go the moment the walk ends.
+//! buffer of text, runs over it, blocks over the runs, and the strings, links,
+//! forms and controls the runs refer to beside them. Nothing here points into
+//! the tree, so the tree can go the moment the walk ends.
 //!
 //! Pure and host-tested. Whether a space landed inside a link or outside it
 //! is decided here, and is not something to find out on the panel.
 
 const std = @import("std");
+const Charset = @import("charset.zig").Charset;
 
 const Writer = std.Io.Writer;
 
@@ -45,6 +46,8 @@ pub const Text = struct {
 /// A piece of a block.
 pub const Run = union(enum) {
     text: Text,
+    /// One of the page's controls, where the page put it among the words.
+    control: u16,
     /// The line ends here: a `<br>`, or a line end in preformatted text.
     line_break,
 };
@@ -89,8 +92,71 @@ pub const Block = struct {
     count: u32 = 0,
 };
 
-/// Where a string is among the page's strings.
-const Span = struct { at: u32, len: u32 };
+/// Where a string is among the page's strings. Empty is the empty string.
+pub const Span = struct { at: u32 = 0, len: u32 = 0 };
+
+/// Where a form's answers go, and how.
+pub const Form = struct {
+    /// Already resolved against the page's own address.
+    action: Span,
+    method: Method,
+
+    pub const Method = enum {
+        /// In the address, as a query: what a search is.
+        get,
+        /// In the body of a request: what logging in and ordering are.
+        post,
+    };
+};
+
+/// A control a page asks a person to fill in or to press.
+pub const Control = struct {
+    kind: ControlKind,
+    /// The form its answer is part of, where it is inside one.
+    form: ?u16 = null,
+    /// The name its answer goes under. One without a name sends nothing.
+    name: Span = .{},
+    /// What it sends: a line's words to begin with, a box's value when it
+    /// is ticked, a button's when it is the one pressed.
+    value: Span = .{},
+};
+
+pub const ControlKind = union(enum) {
+    /// A line to type in.
+    line: Line,
+    /// Sent with its form and never shown.
+    hidden,
+    /// Sends its form, with its own answer among the rest.
+    submit: Press,
+    /// Puts its form back the way it arrived.
+    reset: Press,
+    /// A box that is ticked or not.
+    tick: Tick,
+
+    pub const Line = struct {
+        /// About how many letters wide it is drawn.
+        letters: u16 = 20,
+        /// Shown as stars.
+        secret: bool = false,
+        /// What it says, dimly, while it is empty.
+        hint: Span = .{},
+        /// Which of the page's lines it is, for whoever keeps what is typed.
+        slot: u16 = 0,
+    };
+
+    pub const Press = struct {
+        /// What the button says.
+        label: Span = .{},
+    };
+
+    pub const Tick = struct {
+        ticked: bool = false,
+        /// One of a group sharing its name, of which only one is ticked.
+        radio: bool = false,
+        /// Which of the page's boxes it is.
+        slot: u16 = 0,
+    };
+};
 
 pub const Page = struct {
     title: std.ArrayList(u8) = .empty,
@@ -101,10 +167,24 @@ pub const Page = struct {
     strings: std.ArrayList(u8) = .empty,
     /// Where each link goes, in `strings`.
     links: std.ArrayList(Span) = .empty,
+    forms: std.ArrayList(Form) = .empty,
+    controls: std.ArrayList(Control) = .empty,
+    /// How many of the controls are lines to type in, and boxes to tick.
+    lines: u16 = 0,
+    ticks: u16 = 0,
+    /// The encoding the page arrived in, which is the one its forms answer
+    /// in.
+    encoding: Charset = .utf8,
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
-        // Every field is a list the page owns.
-        inline for (std.meta.fields(Page)) |field| @field(self, field.name).deinit(gpa);
+        self.title.deinit(gpa);
+        self.text.deinit(gpa);
+        self.runs.deinit(gpa);
+        self.blocks.deinit(gpa);
+        self.strings.deinit(gpa);
+        self.links.deinit(gpa);
+        self.forms.deinit(gpa);
+        self.controls.deinit(gpa);
         self.* = .{};
     }
 
@@ -116,11 +196,14 @@ pub const Page = struct {
         return self.text.items[text.start..][0..text.len];
     }
 
+    pub fn string(self: *const Page, span: Span) []const u8 {
+        return self.strings.items[span.at..][0..span.len];
+    }
+
     /// Where a link goes.
     pub fn address(self: *const Page, link: u16) ?[]const u8 {
         if (link >= self.links.items.len) return null;
-        const span = self.links.items[link];
-        return self.strings.items[span.at..][0..span.len];
+        return self.string(self.links.items[link]);
     }
 };
 
@@ -133,6 +216,8 @@ pub const Builder = struct {
     /// How the next words look, and where they go.
     look: Look = .{},
     link: ?u16 = null,
+    /// The form the walk is inside, where it is inside one.
+    form: ?u16 = null,
 
     next: Block = .{},
     /// The block being filled. Opened by the first thing put in it, so a
@@ -178,7 +263,7 @@ pub const Builder = struct {
         var i: usize = 0;
         while (i < bytes.len) {
             if (std.ascii.isWhitespace(bytes[i])) {
-                if (self.lastText() != null) self.space = true;
+                if (self.midLine()) self.space = true;
                 i += 1;
                 continue;
             }
@@ -218,8 +303,46 @@ pub const Builder = struct {
         return index;
     }
 
+    /// A form, and which one it is.
+    pub fn addForm(self: *Builder, action: []const u8, method: Form.Method) Error!?u16 {
+        const index = std.math.cast(u16, self.page.forms.items.len) orelse return null;
+        try self.page.forms.append(self.gpa, .{ .action = try self.keep(action), .method = method });
+        return index;
+    }
+
+    /// A control of the form the walk is in. One that shows is placed among
+    /// the words where the page put it, the way a word is; a hidden one is
+    /// kept for its form's answers alone.
+    pub fn addControl(self: *Builder, kind: ControlKind, name: []const u8, value: []const u8) Error!void {
+        const index = std.math.cast(u16, self.page.controls.items.len) orelse return;
+        var placed = kind;
+        switch (placed) {
+            .line => |*line| {
+                line.slot = self.page.lines;
+                self.page.lines += 1;
+            },
+            .tick => |*tick| {
+                tick.slot = self.page.ticks;
+                self.page.ticks += 1;
+            },
+            .hidden, .submit, .reset => {},
+        }
+        try self.page.controls.append(self.gpa, .{
+            .kind = placed,
+            .form = self.form,
+            .name = try self.keep(name),
+            .value = try self.keep(value),
+        });
+        if (placed == .hidden) return;
+
+        try self.settleSpace();
+        const block = self.opened();
+        try self.page.runs.append(self.gpa, .{ .control = index });
+        block.count += 1;
+    }
+
     /// Keep a string beside the page's words.
-    fn keep(self: *Builder, bytes: []const u8) Error!Span {
+    pub fn keep(self: *Builder, bytes: []const u8) Error!Span {
         const at: u32 = @intCast(self.page.strings.items.len);
         try self.page.strings.appendSlice(self.gpa, bytes);
         return .{ .at = at, .len = @intCast(bytes.len) };
@@ -234,15 +357,22 @@ pub const Builder = struct {
         self.column = 0;
     }
 
-    /// The words the open block ends in, where it ends in words rather than
-    /// at a break or before anything was put in it. A space is owed only
-    /// between words, never at the start of a line a break has just begun.
+    /// Whether the open block's current line has anything on it yet: words,
+    /// or a control. A space is owed only between things on a line, never at
+    /// the start of one a break has just begun.
+    fn midLine(self: *const Builder) bool {
+        const block = self.open orelse return false;
+        if (block.count == 0) return false;
+        return self.page.runs.items[self.page.runs.items.len - 1] != .line_break;
+    }
+
+    /// The words the open block ends in, where it ends in words.
     fn lastText(self: *Builder) ?*Text {
         const block = self.open orelse return null;
         if (block.count == 0) return null;
         return switch (self.page.runs.items[self.page.runs.items.len - 1]) {
             .text => |*last| last,
-            .line_break => null,
+            .control, .line_break => null,
         };
     }
 
@@ -281,16 +411,29 @@ pub const Builder = struct {
         block.count += 1;
     }
 
-    /// Write an owed space before the next word: in that word's look, unless
-    /// the word starts a link, which would underline a space ahead of it. It
-    /// goes on the end of what came before instead.
+    /// Write an owed space before the next thing on the line: in that
+    /// thing's look, unless it starts a link, which would underline a space
+    /// ahead of it. That space goes on the end of the words before instead,
+    /// or plainly after a control.
     fn settleSpace(self: *Builder) Error!void {
         if (!self.space) return;
         self.space = false;
-        const last = self.lastText() orelse return;
+        if (!self.midLine()) return;
         if (self.link == null) return self.put(" ");
-        try self.page.text.append(self.gpa, ' ');
-        last.len += 1;
+        if (self.lastText()) |last| {
+            try self.page.text.append(self.gpa, ' ');
+            last.len += 1;
+            return;
+        }
+        const look = self.look;
+        const link = self.link;
+        defer {
+            self.look = look;
+            self.link = link;
+        }
+        self.look.ink = .text;
+        self.link = null;
+        try self.put(" ");
     }
 
     fn verbatim(self: *Builder, bytes: []const u8) Error!void {
@@ -324,8 +467,9 @@ const TAB = 8;
 
 /// The page as plain text, for a terminal: blocks apart by a blank line, a
 /// list's entries under one another with their markers, preformatted text as
-/// it was. What `web -t` prints, so the words a window shows and the words a
-/// pipe gets are the same words.
+/// it was, and a control as the bracketed thing a terminal can show. What
+/// `web -t` prints, so the words a window shows and the words a pipe gets are
+/// the same words.
 pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
     var previous: ?Kind = null;
     for (page.blocks.items) |block| {
@@ -348,6 +492,7 @@ pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
         const runs = page.runsOf(block);
         for (runs, 0..) |run, i| switch (run) {
             .text => |text| try w.writeAll(page.textOf(text)),
+            .control => |index| try writeControl(w, page, page.controls.items[index]),
             // A break the block ends on is the block's own end already.
             .line_break => if (i + 1 < runs.len) {
                 try w.writeByte('\n');
@@ -356,6 +501,23 @@ pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
         };
     }
     if (previous != null) try w.writeByte('\n');
+}
+
+/// A control as a terminal shows one: a line as what is in it, a button as
+/// its label, a box as ticked or not, each in brackets.
+fn writeControl(w: *Writer, page: *const Page, control: Control) Writer.Error!void {
+    switch (control.kind) {
+        .line => |line| {
+            const value = page.string(control.value);
+            if (value.len > 0) return w.print("[{s}]", .{value});
+            try w.writeByte('[');
+            try w.splatByteAll('_', @min(line.letters, 16));
+            try w.writeByte(']');
+        },
+        .submit, .reset => |press| try w.print("[{s}]", .{page.string(press.label)}),
+        .tick => |tick| try w.writeAll(if (tick.ticked) "[x]" else "[ ]"),
+        .hidden => {},
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -513,4 +675,31 @@ test "a title has its spaces made single" {
     defer f.deinit();
     try f.builder.title("\n  Storage on\tthe  701 \n");
     try testing.expectEqualStrings("Storage on the 701", f.page.title.items);
+}
+
+test "a form's controls sit among its words, and a hidden one only among its answers" {
+    var f = Fixture{};
+    f.init();
+    defer f.deinit();
+    f.builder.form = try f.builder.addForm("https://a.org/find", .get);
+    try f.builder.words("Find ");
+    try f.builder.addControl(.{ .line = .{ .letters = 8 } }, "q", "");
+    try f.builder.addControl(.hidden, "t", "848d6d9e");
+    try f.builder.words(" ");
+    try f.builder.addControl(.{ .submit = .{ .label = try f.builder.keep("Go") } }, "", "Go");
+    try f.builder.finish();
+
+    const page = &f.page;
+    try testing.expectEqual(@as(usize, 3), page.controls.items.len);
+    try testing.expectEqual(@as(u16, 1), page.lines);
+    try testing.expectEqual(@as(?u16, 0), page.controls.items[1].form);
+    try testing.expectEqualStrings("848d6d9e", page.string(page.controls.items[1].value));
+    // The words, the line, the space between, and the button: the hidden one
+    // has no place among them.
+    try testing.expectEqual(@as(usize, 4), page.runs.items.len);
+    try testing.expect(page.runs.items[1] == .control and page.runs.items[3] == .control);
+
+    var text = try f.written();
+    defer text.deinit();
+    try testing.expectEqualStrings("Find [________] [Go]\n", text.written());
 }

@@ -154,6 +154,7 @@ pub extern fn lxb_html_document_parse(document: *Document, html: [*]const u8, si
 pub extern fn lxb_html_document_title(document: *Document, len: *usize) ?[*]const u8;
 
 pub extern fn lxb_dom_element_get_attribute(element: *Node, name: [*]const u8, name_len: usize, value_len: *usize) ?[*]const u8;
+pub extern fn lxb_dom_element_has_attribute(element: *Node, name: [*]const u8, name_len: usize) bool;
 
 /// A string as upstream keeps one: a pointer and a length.
 const Str = extern struct {
@@ -181,17 +182,20 @@ pub fn wordsOf(node: *const Node) []const u8 {
     return data[0..text.data.length];
 }
 
-/// An attribute's value, or nothing where the element has none.
+/// An attribute's value, or nothing where the element has none. One written
+/// without a value, as `checked` and `hidden` are, has the empty one: the
+/// parser keeps no value for it at all, which reads as absent unless asked
+/// about separately.
 pub fn attribute(node: *Node, name: []const u8) ?[]const u8 {
     std.debug.assert(node.type == .element);
     var len: usize = 0;
-    const value = lxb_dom_element_get_attribute(node, name.ptr, name.len, &len) orelse return null;
-    return value[0..len];
+    if (lxb_dom_element_get_attribute(node, name.ptr, name.len, &len)) |value| return value[0..len];
+    return if (hasAttribute(node, name)) "" else null;
 }
 
 /// Whether an element has an attribute at all, whatever its value.
 pub fn hasAttribute(node: *Node, name: []const u8) bool {
-    return attribute(node, name) != null;
+    return lxb_dom_element_has_attribute(node, name.ptr, name.len);
 }
 
 /// Whether an element's attribute is `value`, compared as HTML compares a

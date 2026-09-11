@@ -646,8 +646,8 @@ pub fn build(b: *std.Build) void {
                 .optimize = .Debug,
             });
 
-            // Its host side: addresses, the protocol, the page and its
-            // layout, which are all arithmetic over text.
+            // Its host side: addresses, the protocol, encodings, the page
+            // and its layout, which are all arithmetic over text.
             const web_test = b.addTest(.{
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/web/tests.zig"),
@@ -656,7 +656,7 @@ pub fn build(b: *std.Build) void {
                     .imports = &.{.{ .name = "lib", .module = app_lib }},
                 }),
             });
-            const web_test_step = b.step("test-web", "Test web's addresses, protocol, page and layout on the host");
+            const web_test_step = b.step("test-web", "Test web's addresses, protocol, encodings, page and layout on the host");
             web_test_step.dependOn(&b.addRunArtifact(web_test).step);
 
             // The character-journal model, on the host: the whole of a

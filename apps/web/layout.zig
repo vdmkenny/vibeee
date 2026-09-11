@@ -21,6 +21,9 @@ const Text = page_mod.Text;
 
 pub const Error = std.mem.Allocator.Error;
 
+/// How much room a control takes on a line.
+pub const Size = struct { w: i32, h: i32 };
+
 /// Words from one run, together on one line.
 pub const Frag = struct {
     /// From the column's left edge.
@@ -111,7 +114,8 @@ pub const Layout = struct {
 ///
 /// `metrics` answers four questions of a face: `width(face, bytes)`,
 /// `height(face)`, `ascent(face)`, and `fit(face, bytes, room)`, how many of
-/// the bytes fit in that many pixels, at a letter's edge.
+/// the bytes fit in that many pixels, at a letter's edge. It answers one of a
+/// control too: `control(page, control)`, the room it takes.
 pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spacing, metrics: anytype) Error!Layout {
     var out = Layout{ .width = width };
     errdefer out.deinit(gpa);
@@ -275,11 +279,33 @@ fn Placer(comptime Metrics: type) type {
             });
         }
 
+        /// A control, placed as a word is: on this line if it fits and on the
+        /// next if it does not, never wider than the column. Its bottom sits
+        /// where the words' descent ends, so its own label lines up near
+        /// their baseline.
+        fn control(self: *Self, run: u32, index: u16) Error!void {
+            const size = self.metrics.control(self.page, self.page.controls.items[index]);
+            const width = @min(size.w, self.room);
+            if (self.pen > 0 and self.pen + width > self.room) try self.endLine(false);
+            const descent = self.metrics.height(.body) - self.metrics.ascent(.body);
+            self.ascent = @max(self.ascent, size.h - descent);
+            self.descent = @max(self.descent, descent);
+            self.pen += width;
+            try self.out.frags.append(self.gpa, .{
+                .x = self.x0 + self.pen - width,
+                .width = width,
+                .start = 0,
+                .len = 0,
+                .run = run,
+            });
+        }
+
         /// A preformatted block: its words placed a letter at a time wherever
         /// the line runs out, and its line ends where the page put them.
         fn verbatim(self: *Self, block: Block) Error!void {
             for (self.page.runsOf(block), @as(usize, block.first)..) |run, index| switch (run) {
                 .text => |text| try self.cut(@intCast(index), text.look.face, text.start, self.page.textOf(text)),
+                .control => |which| try self.control(@intCast(index), which),
                 .line_break => try self.endLine(true),
             };
         }
@@ -293,6 +319,11 @@ fn Placer(comptime Metrics: type) type {
             while (here.run < last) {
                 const text = switch (self.page.runs.items[here.run]) {
                     .text => |text| text,
+                    .control => |which| {
+                        try self.control(here.run, which);
+                        here = .{ .run = here.run + 1, .at = 0 };
+                        continue;
+                    },
                     .line_break => {
                         try self.endLine(true);
                         here = .{ .run = here.run + 1, .at = 0 };
@@ -425,6 +456,14 @@ const Fixed = struct {
     }
     pub fn fit(_: Fixed, _: Face, bytes: []const u8, room: i32) usize {
         return @min(bytes.len, @as(usize, @intCast(@max(room, 0))) / 6);
+    }
+    pub fn control(_: Fixed, _: *const Page, which: page_mod.Control) Size {
+        return switch (which.kind) {
+            .line => |line| .{ .w = @as(i32, line.letters) * 6, .h = 24 },
+            .submit, .reset => .{ .w = 30, .h = 24 },
+            .tick => .{ .w = 24, .h = 24 },
+            .hidden => .{ .w = 0, .h = 0 },
+        };
     }
 };
 
@@ -595,6 +634,29 @@ test "a line breaks at a space, never where a link meets the text after it" {
     try testing.expectEqualStrings("cccc", b.fragText(second[0]));
     try testing.expectEqualStrings("; dd", b.fragText(second[1]));
     try testing.expectEqual(@as(i32, 24), second[1].x);
+}
+
+test "a control sits among the words as a word does, and its line is as tall as it is" {
+    var b = Built{};
+    defer b.deinit();
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    try builder.words("Find ");
+    try builder.addControl(.{ .line = .{ .letters = 10 } }, "q", "");
+    try builder.words(" now");
+    try builder.finish();
+    b.layout = try build(testing.allocator, &b.page, 600, eighteen, Fixed{});
+
+    try testing.expectEqual(@as(usize, 1), b.layout.lines.items.len);
+    // A body line's descent is four, so a control twenty-four tall reaches
+    // twenty above the baseline.
+    const line = b.layout.lines.items[0];
+    try testing.expectEqual(@as(i32, 20), line.baseline);
+    try testing.expectEqual(@as(i32, 24), line.height);
+    const frags = b.line(0);
+    try testing.expectEqual(@as(usize, 3), frags.len);
+    try testing.expectEqual(@as(i32, 30), frags[1].x);
+    try testing.expectEqual(@as(i32, 60), frags[1].width);
+    try testing.expectEqualStrings(" now", b.fragText(frags[2]));
 }
 
 test "a link's words are their own fragment beside the text around them" {

@@ -32,8 +32,10 @@ const paths = ulib.paths;
 const str = lib.str;
 const Bounded = lib.bounded.Bounded;
 
+const charset = @import("charset.zig");
 const extract = @import("extract.zig");
 const fetch_mod = @import("fetch.zig");
+const form_mod = @import("form.zig");
 const http = @import("http.zig");
 const lexbor = @import("lexbor.zig");
 const page_mod = @import("page.zig");
@@ -334,7 +336,8 @@ fn arrive() void {
     };
 
     const base = url.parse(final) orelse return failed(error.NotAnAddress, final);
-    show(fetch.body.bytes.items, base, kindOf(fetch.response.contentType(), final));
+    const said = fetch.response.contentType();
+    show(fetch.body.bytes.items, base, kindOf(said, final), charset.fromContentType(said));
 }
 
 /// A file on this machine, read whole.
@@ -343,7 +346,7 @@ fn openFile(where: url.Url) void {
     const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
     defer gpa.free(bytes);
     arrived = .{ .bytes = bytes.len };
-    show(bytes, where, kindOf(null, path));
+    show(bytes, where, kindOf(null, path), null);
 }
 
 /// What a body is, from what the site said it was, or from a file's name.
@@ -373,10 +376,11 @@ fn kindOf(content_type: ?[]const u8, name: []const u8) Kind {
     return media_kinds.get(media) orelse .{ .other = media };
 }
 
-/// Read `bytes` into a page and put it on screen.
-fn show(bytes: []const u8, base: url.Url, kind: Kind) void {
+/// Read `bytes` into a page and put it on screen. `declared` is the encoding
+/// the site said they are in, where it said one.
+fn show(bytes: []const u8, base: url.Url, kind: Kind, declared: ?charset.Charset) void {
     var fresh: Page = .{};
-    toPage(bytes, base, kind, &fresh) catch |err| {
+    toPage(bytes, base, kind, declared, &fresh) catch |err| {
         fresh.deinit(gpa);
         return failed(err, switch (kind) {
             .other => |media| media,
@@ -397,20 +401,29 @@ const ReadError = error{
 };
 
 /// Read `bytes` into `page`, as markup or as plain text.
-fn toPage(bytes: []const u8, base: url.Url, kind: Kind, page: *Page) ReadError!void {
+fn toPage(bytes: []const u8, base: url.Url, kind: Kind, declared: ?charset.Charset, page: *Page) ReadError!void {
+    if (kind == .other) return error.NotAPage;
+    // The parser reads UTF-8 and nothing else, and neither does the page.
+    // The encoding is kept all the same: a form answers in it.
+    const encoding = charset.sniff(declared, bytes);
+    const text = try charset.utf8Of(gpa, bytes, encoding);
+    defer text.deinit(gpa);
+    const utf8 = text.bytes();
+    page.encoding = encoding;
+
     switch (kind) {
-        .other => return error.NotAPage,
+        .other => unreachable,
         .plain => {
             var builder = page_mod.Builder{ .gpa = gpa, .page = page };
             try builder.boundary(.{ .kind = .preformatted });
             builder.look.face = .mono;
-            try builder.words(bytes);
+            try builder.words(utf8);
             try builder.finish();
         },
         .markup => {
             const document = lexbor.lxb_html_document_create() orelse return error.OutOfMemory;
             defer _ = lexbor.lxb_html_document_destroy(document);
-            switch (lexbor.lxb_html_document_parse(document, bytes.ptr, bytes.len)) {
+            switch (lexbor.lxb_html_document_parse(document, utf8.ptr, utf8.len)) {
                 .ok => {},
                 .no_memory => return error.OutOfMemory,
                 _ => return error.Unparsable,
@@ -450,7 +463,11 @@ fn problem(heading: []const u8, detail: []const u8) void {
 // ---------------------------------------------------------------------------
 
 /// Every way the reader can fail to show what was asked for.
-const Failure = fetch_mod.Failure || file.AllocError || ReadError || error{NotAnAddress};
+const Failure = fetch_mod.Failure || file.AllocError || ReadError || error{
+    NotAnAddress,
+    /// A form that posts its answers, which this reader does not send.
+    PostedForm,
+};
 
 /// What a failure is called: a heading and a sentence for the page that says
 /// so, and the few words a shell line has room for. One table, so that the
@@ -539,6 +556,11 @@ fn told(why: Failure, subject: []const u8, buf: []u8) Told {
             .word = "the parser would not take it",
         },
         error.NotAPage => .{ .heading = "This is not a page", .detail = subject, .word = "not a page" },
+        error.PostedForm => .{
+            .heading = "This form cannot be sent from here",
+            .detail = "It posts its answers, which is how logging in and ordering are done. This reader sends a form's answers in the address, the way a search does, and no other way.",
+            .word = "the form posts its answers",
+        },
     };
 }
 
@@ -589,8 +611,40 @@ fn draw() void {
     }
 
     strip(parts.top, bar);
-    if (view.run(gpa, ctx, parts.body)) |link| follow(link);
+    if (view.run(gpa, ctx, parts.body)) |act| switch (act) {
+        .follow => |link| follow(link),
+        .submit => |by| submit(by),
+    };
     status(parts.bottom, parts.body);
+}
+
+/// Send a form's answers where it says, the way a search sends them: in the
+/// address, as its query.
+fn submit(sent: view_mod.Submit) void {
+    const form = shown.forms.items[sent.form];
+    const action = shown.string(form.action);
+    if (form.method == .post) return failed(error.PostedForm, action);
+
+    var buf: [url.ADDRESS_MAX]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    writeQuery(&w, sent, action) catch return failed(error.BadAddress, action);
+    go(w.buffered());
+}
+
+/// The form's address with its answers as the query, in place of any query
+/// the address had.
+fn writeQuery(w: *std.Io.Writer, sent: view_mod.Submit, action: []const u8) std.Io.Writer.Error!void {
+    try w.writeAll(action[0 .. std.mem.indexOfScalar(u8, action, '?') orelse action.len]);
+    try w.writeByte('?');
+    var first = true;
+    for (shown.controls.items, 0..) |control, index| {
+        if (control.form != sent.form) continue;
+        const name = shown.string(control.name);
+        if (name.len == 0) continue;
+        const value = view.answer(&shown, @intCast(index), sent.by) orelse continue;
+        try form_mod.writeAnswer(w, first, name, value, shown.encoding);
+        first = false;
+    }
 }
 
 /// Where the strip's parts go: the way back, the way forward, the key that
@@ -752,7 +806,7 @@ fn printText(target: []const u8) noreturn {
     if (where.scheme == .file) {
         const path = where.file();
         const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| fatal(path, err);
-        toPage(bytes, where, kindOf(null, path), &page) catch |err| fatal(path, err);
+        toPage(bytes, where, kindOf(null, path), null, &page) catch |err| fatal(path, err);
     } else {
         fetch.begin(gpa, where_text);
         while (true) switch (fetch.advance(gpa)) {
@@ -768,7 +822,8 @@ fn printText(target: []const u8) noreturn {
             .idle, .connecting, .receiving => unreachable,
         }
         const final = url.parse(fetch.address()) orelse fatal(fetch.address(), error.NotAnAddress);
-        toPage(fetch.body.bytes.items, final, kindOf(fetch.response.contentType(), fetch.address()), &page) catch |err|
+        const said = fetch.response.contentType();
+        toPage(fetch.body.bytes.items, final, kindOf(said, fetch.address()), charset.fromContentType(said), &page) catch |err|
             fatal(fetch.address(), err);
     }
 
