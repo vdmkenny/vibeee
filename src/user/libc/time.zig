@@ -10,6 +10,7 @@ const std = @import("std");
 const civil = @import("lib").civil;
 const errno = @import("errno.zig");
 const sys = @import("sys");
+const ulib = @import("ulib");
 
 pub const CLOCK_REALTIME = 0;
 pub const CLOCK_MONOTONIC = 1;
@@ -58,7 +59,7 @@ export fn gettimeofday(out: *Timeval, timezone: ?*anyopaque) callconv(.c) c_int 
 }
 
 export fn time(out: ?*c_long) callconv(.c) c_long {
-    const seconds: c_long = @intCast(@divFloor(sys.realtimeMicros() orelse 0, 1_000_000));
+    const seconds: c_long = @intCast(ulib.time.now());
     if (out) |slot| slot.* = seconds;
     return seconds;
 }

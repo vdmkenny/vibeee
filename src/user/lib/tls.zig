@@ -82,17 +82,14 @@ pub const Roots = struct {
     /// Read the store and index it. `now` is seconds since the epoch, which
     /// decides which authorities have expired.
     pub fn open(gpa: std.mem.Allocator, now: i64) Error!Roots {
-        var record: [512]u8 = undefined;
-        const told = sys.stat(STORE, &record) catch return error.NoAuthorities;
-        const entry = sys.Dirent.decode(&record, told) orelse return error.NoAuthorities;
-        if (entry.size == 0 or entry.size > STORE_MAX) return error.NoAuthorities;
-
-        const bytes = gpa.alloc(u8, entry.size) catch return error.OutOfMemory;
+        const bytes = file.readAlloc(gpa, STORE, STORE_MAX) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.NoFile, error.TooBig, error.Unreadable => error.NoAuthorities,
+        };
         defer gpa.free(bytes);
-        const read = file.readWhole(STORE, bytes) orelse return error.NoAuthorities;
-        if (read != entry.size) return error.NoAuthorities;
+        if (bytes.len == 0) return error.NoAuthorities;
 
-        const store = castore.read(bytes[0..read]) catch return error.NoAuthorities;
+        const store = castore.read(bytes) catch return error.NoAuthorities;
 
         var roots: Roots = .{};
         errdefer roots.deinit(gpa);

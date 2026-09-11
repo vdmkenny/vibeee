@@ -58,6 +58,21 @@ pub fn factsOf(path: []const u8) ?Facts {
     return .{ .size = entry.size, .mtime = entry.mtime };
 }
 
+pub const AllocError = EntireError || error{OutOfMemory};
+
+/// The whole of the file at `path`, in memory from `gpa` that the caller
+/// gives back. How large it is is asked first, so a file larger than `limit`
+/// is refused for the room it would take before any is taken, and one that
+/// changed size while it was read is not the file that was asked about.
+pub fn readAlloc(gpa: std.mem.Allocator, path: []const u8, limit: usize) AllocError![]u8 {
+    const facts = factsOf(path) orelse return error.NoFile;
+    if (facts.size > limit) return error.TooBig;
+    const bytes = try gpa.alloc(u8, facts.size);
+    errdefer gpa.free(bytes);
+    if (try readEntire(path, bytes) != bytes.len) return error.Unreadable;
+    return bytes;
+}
+
 pub const EntireError = error{ NoFile, TooBig, Unreadable };
 
 /// Read the file at `path` into `into` entire, and say how long it is. A

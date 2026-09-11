@@ -343,16 +343,13 @@ fn loadMarks(path: []const u8) void {
     var buf: [paths.MAX]u8 = undefined;
     const at = paths.joined(path, MARKS, &buf) orelse return;
 
-    // Asked about before any room is taken for it: most folders have none,
-    // and one that does says how much to ask for.
-    const facts = file.factsOf(at) orelse return;
-    if (facts.size == 0 or facts.size > MARKS_MAX) return;
-
-    const room = heap.allocator.alloc(u8, facts.size) catch return;
+    // Most folders have none, and one that does says how much room to take
+    // before any is taken.
+    const room = file.readAlloc(heap.allocator, at, MARKS_MAX) catch return;
     defer heap.allocator.free(room);
+    if (room.len == 0) return;
 
-    const read = file.readWhole(at, room) orelse return;
-    ours = sheet.readMarks(room[0..read]) == .taken;
+    ours = sheet.readMarks(room) == .taken;
     if (!ours) said = "What was decided here was written by a later roll.";
 }
 

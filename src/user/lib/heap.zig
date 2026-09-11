@@ -56,12 +56,11 @@ pub fn zeroed(count: usize, size: usize) ?*anyopaque {
     return block;
 }
 
+/// The block at `pointer`, holding `size` bytes: where it is when it can grow
+/// there, and otherwise moved with what it held. What a size of nothing does
+/// is C's rule, and `realloc` answers it.
 pub fn resize(pointer: ?*anyopaque, size: usize) ?*anyopaque {
     const given = pointer orelse return alloc(size);
-    if (size == 0) {
-        release(given);
-        return null;
-    }
     return @ptrCast(state.realloc(@ptrCast(given), size) orelse return null);
 }
 

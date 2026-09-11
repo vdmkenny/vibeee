@@ -126,28 +126,17 @@ fn load(wanted: []const u8) void {
 
     // How big it is before reading it, so a file too large to hold is
     // refused for the room it would have taken rather than after taking it.
-    var record: [512]u8 = undefined;
-    const told = sys.stat(path(), &record) catch 0;
-    const entry = sys.Dirent.decode(&record, told) orelse {
-        trouble = "there is no such file";
+    bytes = file.readAlloc(heap.allocator, path(), MAX_FILE) catch |why| {
+        trouble = switch (why) {
+            error.NoFile => "there is no such file",
+            error.TooBig => "that file is too large to be a module",
+            error.OutOfMemory => "there is not enough memory for it",
+            error.Unreadable => "it could not be read",
+        };
         return;
-    };
-    if (entry.size == 0 or entry.size > MAX_FILE) {
-        trouble = "that file is too large to be a module";
-        return;
-    }
-
-    const room = heap.alloc(entry.size) orelse {
-        trouble = "there is not enough memory for it";
-        return;
-    };
-    bytes = @as([*]u8, @ptrCast(room))[0..entry.size];
-    const read = file.readWhole(path(), bytes) orelse {
-        trouble = "it could not be read";
-        return forget();
     };
 
-    song = mod.Module.read(bytes[0..read]) catch |why| {
+    song = mod.Module.read(bytes) catch |why| {
         trouble = switch (why) {
             error.TooShort => "it stops before the end of a module",
             error.Malformed => "it is not shaped like a module",
@@ -196,7 +185,7 @@ fn forget() void {
     port = null;
     silent = false;
     player = null;
-    if (bytes.len != 0) heap.release(bytes.ptr);
+    heap.allocator.free(bytes);
     bytes = &.{};
     song = .{};
     shown_row = -1;
