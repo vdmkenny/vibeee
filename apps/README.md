@@ -23,6 +23,7 @@ somebody's files.
 | Doom | [`doom/`](doom/) | The portable engine, fetched. What is kept here is its platform half: the calls it asks a system for, answered with this system's screen, key stream, clock and mixer. It runs in a window and saves into `/home`. Its effects play; its music does not, a wad's music being a score rather than a recording. The WAD is not fetched for you; the recipe says which one and where to get it. |
 | Hero | [`hero/`](hero/) | A character journal for Dungeons and Dragons on the 2024 rules, written here and built by the main `build.zig`. It opens a `.hero` file from the launcher or its own File menu, and handles rolls, damage, rests, spells, gold and notes. |
 | eeemod | [`eeemod/`](eeemod/) | A tracker module player: ProTracker and SoundTracker songs, four channels or more, through the system's own mixer. The format and the sequencer are host-tested, since a module is bytes in and notes out. No module ships; drop one in `home/` and open it from the launcher. |
+| web | [`web/`](web/) | A reader for pages. It fetches a page over HTTP or HTTPS, sets its words in a column in the system's own faces, and follows its links. A form that asks by GET is filled in with the toolkit's own controls and sent. A page's pictures follow its words one at a time, what the page says each one shows standing in until it arrives. It runs nothing a page sends. `web -t <address>` prints a page's words in the shell, and its settings are the `web` domain: `cfg web`. |
 | echat | [`echat/`](echat/) | An IRC client: networks and their channels down a rail, the transcript grouped by who is speaking, who is here, and a line to type into. `make echat` checks its engine and model against the reference vectors first. It reaches a network on 6667. Sealed connections are written and blocked in the standard library, not here: see the known gaps in [docs/status.md](../docs/status.md). |
 
 Each is built and versioned on its own, separately from the system's version
@@ -54,6 +55,7 @@ builds and stages it, and `make apps` does so along with the rest.
     make hero                 build Hero alone
     make echat                check echat's protocol engine
     make eeemod               build the tracker player
+    make web                  check the reader's host side and build it
 
 An app builds into `home/bin/`, and the image seeds `/home` from there. So
 anything in `home/` is on the machine at the next boot, and rebuilding

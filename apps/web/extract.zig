@@ -17,6 +17,10 @@
 //! that does nothing until a script says what is not kept, because nothing
 //! here runs the script.
 //!
+//! A picture is kept as where it is, what the page says it shows, and the
+//! size the page gives it. Fetching it is the window's to do, once the words
+//! are on screen.
+//!
 //! Iterative rather than recursive. A page can nest thousands deep, a stack
 //! frame per level is a stack this machine does not have to spare, and a walk
 //! that follows the tree's own links needs no stack at all.
@@ -264,10 +268,7 @@ const Walker = struct {
             },
             .line_break => try self.builder.lineBreak(),
             .link => self.link = try self.linkFor(node),
-            // A reader without pictures reads the description instead, and a
-            // picture that gave none is one the page did not think worth
-            // describing.
-            .image => try self.aside(std.mem.trim(u8, lexbor.attribute(node, "alt") orelse "", &std.ascii.whitespace)),
+            .image => try self.picture(node),
             .form => {
                 try self.boundary(.paragraph);
                 self.builder.form = try self.formFor(node);
@@ -306,8 +307,23 @@ const Walker = struct {
         return self.builder.addLink(resolved);
     }
 
-    /// Words the page gives about something the reader does not show, set
-    /// dim in brackets: a picture's description, a list's chosen entry.
+    /// A picture: where it is, what the page says it shows, and the size the
+    /// page gives it. One the page makes too small to see is a counter or a
+    /// spacer, and is not kept; one with nowhere this reader can fetch it
+    /// from is kept all the same, for what the page says it shows.
+    fn picture(self: *Walker, node: *Node) Error!void {
+        const width = pixelsOf(node, "width");
+        const height = pixelsOf(node, "height");
+        if (@min(width orelse SEEN_MIN, height orelse SEEN_MIN) < SEEN_MIN) return;
+
+        const alt = std.mem.trim(u8, lexbor.attribute(node, "alt") orelse "", &std.ascii.whitespace);
+        var buf: [url.ADDRESS_MAX]u8 = undefined;
+        const source = url.resolve(self.base, lexbor.attribute(node, "src") orelse "", &buf) orelse "";
+        try self.builder.addPicture(source, alt, width, height);
+    }
+
+    /// Words the page gives about something the reader does not show as it
+    /// is, set dim in brackets: a list's chosen entry.
     fn aside(self: *Walker, text: []const u8) Error!void {
         if (text.len == 0) return;
         const look = self.builder.look;
@@ -405,6 +421,21 @@ const Walker = struct {
 fn startOf(node: *Node) u32 {
     const start = lexbor.attribute(node, "start") orelse return 1;
     return std.fmt.parseInt(u32, std.mem.trim(u8, start, &std.ascii.whitespace), 10) catch 1;
+}
+
+/// Smaller than this a side, a picture is a counter or a spacer rather than
+/// something to look at.
+const SEEN_MIN = 3;
+
+/// A size a page gives in pixels: the number an attribute starts with, or
+/// nothing where it gives none, or gives a share of the column instead.
+fn pixelsOf(node: *Node, name: []const u8) ?u16 {
+    const given = std.mem.trim(u8, lexbor.attribute(node, name) orelse return null, &std.ascii.whitespace);
+    if (std.mem.endsWith(u8, given, "%")) return null;
+    var digits: usize = 0;
+    while (digits < given.len and std.ascii.isDigit(given[digits])) digits += 1;
+    if (digits == 0) return null;
+    return std.fmt.parseInt(u16, given[0..digits], 10) catch std.math.maxInt(u16);
 }
 
 /// How many letters wide a control asks to be, by the attribute that says,

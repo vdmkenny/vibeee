@@ -84,6 +84,9 @@ const UserBuild = struct {
     /// this binary. Not the archive, whose start code would collide with the
     /// program's own.
     fn addClibc(self: UserBuild, out: *std.Build.Step.Compile) void {
+        // Once, however many parts of a program call the libc by name: a
+        // parser and a picture decoder in one program share one import.
+        if (out.root_module.import_table.contains("clibc")) return;
         out.root_module.addImport("clibc", self.b.createModule(.{
             .root_source_file = self.b.path("src/user/libc/freestanding.zig"),
             .target = self.target,
@@ -635,6 +638,8 @@ pub fn build(b: *std.Build) void {
 
             const web = user.exe("web", "apps/web/web.zig", !named(symbols, "web"));
             user.addLexbor(web);
+            // The formats pages use that the decoder reads.
+            user.addPictures(web, &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_GIF" });
             const web_step = b.step("web", "Build the web reader into zig-out/bin");
             web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
 

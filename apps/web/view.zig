@@ -1,22 +1,30 @@
 //! The page on screen: the lines of its layout that fall inside the window,
-//! its controls, and what a click, a key or the wheel does to it.
+//! its controls and pictures, and what a click, a key or the wheel does to
+//! it.
 //!
 //! Painted only where something changed. A page that has not moved paints
 //! nothing on a pass. One that scrolled moves the rows that stay on screen
 //! with `Surface.shift` and paints only the band it uncovered, because
 //! moving a row is one copy and drawing its text is a glyph at a time. Only
-//! a new page, a new width or the window being uncovered paints all of it.
+//! a new page, a new width, a picture arriving or the window being uncovered
+//! paints all of it.
 //!
 //! A page's controls are the toolkit's own: its text field, its button, its
 //! check box, run each pass where the layout put them, clipped to the view so
 //! that one half scrolled out neither paints nor answers outside it. What is
 //! typed in them and which boxes are ticked is kept here, for as long as the
 //! page is shown.
+//!
+//! A page's pictures are drawn from what `pictures` keeps, sampled to the
+//! room the layout gave them. One that has not arrived is stood in for by what
+//! the page says it shows, in a frame the size the page gives it where it
+//! gives one, so the words around it are already where they will stay.
 
 const std = @import("std");
 const eui = @import("eui");
 const layout_mod = @import("layout.zig");
 const page_mod = @import("page.zig");
+const pictures_mod = @import("pictures.zig");
 
 const Rect = eui.Rect;
 const Surface = eui.Surface;
@@ -25,7 +33,9 @@ const Control = page_mod.Control;
 const Face = page_mod.Face;
 const Page = page_mod.Page;
 const Layout = layout_mod.Layout;
+const Size = layout_mod.Size;
 const Spacing = layout_mod.Spacing;
+const Pictures = pictures_mod.Pictures;
 
 /// The widest a column of text is set, in the interface's own pixels: about
 /// seventy-five letters of the body face, past which the eye loses its way
@@ -44,9 +54,11 @@ const LINE_MAX = 256;
 /// A line to type in, as the toolkit keeps one.
 const Line = eui.text.Field(LINE_MAX);
 
-/// What a face is on this system, measured at the size it is drawn.
+/// What a face is on this system, measured at the size it is drawn, and the
+/// room the page's controls and pictures take.
 const Metrics = struct {
     scale: i32,
+    pictures: *const Pictures,
 
     fn font(face: Face) *const eui.draw.Font {
         return switch (face) {
@@ -75,7 +87,7 @@ const Metrics = struct {
 
     /// The room a control takes: the toolkit's own height, and a width from
     /// what it holds.
-    pub fn control(self: Metrics, page: *const Page, which: Control) layout_mod.Size {
+    pub fn control(self: Metrics, page: *const Page, which: Control) Size {
         const t = eui.theme.current();
         return switch (which.kind) {
             .line => |line| .{ .w = @as(i32, line.letters) * self.width(.body, "n") + 2 * t.padding, .h = t.control_height },
@@ -84,7 +96,71 @@ const Metrics = struct {
             .hidden => .{ .w = 0, .h = 0 },
         };
     }
+
+    /// The room a picture takes in a column `room` wide: the size it is drawn
+    /// at once it is here, and until then the size the page gives it where it
+    /// gives both sides, never wider than the column and keeping its shape.
+    /// Where neither is known, or it will not come, what stands in for it
+    /// takes the room instead.
+    pub fn picture(self: Metrics, page: *const Page, index: u16, room: i32) Size {
+        const which = page.pictures.items[index];
+        const state = self.pictures.stateOf(index);
+        const coming = switch (state) {
+            .waiting, .coming => self.pictures.expected(),
+            .here, .failed => false,
+        };
+        const drawn: ?Size = switch (state) {
+            .here => |kept| drawnSize(which, kept.own),
+            .waiting, .coming, .failed => if (coming) givenSize(which) else null,
+        };
+        if (drawn) |size| return fitted(size, self.scale, room);
+        return self.standIn(page, which, coming, room);
+    }
+
+    /// The room what stands in for a picture takes: what the page says it
+    /// shows, on one line in a frame, or while it is coming and the page says
+    /// nothing, a frame with the picture sign in it. One that will not come
+    /// and of which the page says nothing takes no room.
+    fn standIn(self: Metrics, page: *const Page, which: page_mod.Picture, coming: bool, room: i32) Size {
+        const t = eui.theme.current();
+        const alt = page.string(which.alt);
+        if (alt.len > 0) return .{ .w = @min(self.width(.body, alt) + 2 * t.padding, room), .h = t.control_height };
+        if (coming) return .{ .w = t.control_height, .h = t.control_height };
+        return .{ .w = 0, .h = 0 };
+    }
 };
+
+/// The size a picture is drawn at, in the page's pixels: what the page gives,
+/// with a side it leaves out taken from the picture's own shape, and the
+/// picture's own size where the page gives neither.
+fn drawnSize(which: page_mod.Picture, own: pictures_mod.Size) Size {
+    const w: i32 = own.w;
+    const h: i32 = own.h;
+    if (which.width) |given| {
+        const given_w: i32 = given;
+        return .{ .w = given_w, .h = if (which.height) |given_h| given_h else @divTrunc(given_w * h, @max(w, 1)) };
+    }
+    if (which.height) |given| {
+        const given_h: i32 = given;
+        return .{ .w = @divTrunc(given_h * w, @max(h, 1)), .h = given_h };
+    }
+    return .{ .w = w, .h = h };
+}
+
+/// The size the page gives a picture, where it gives both sides: room that
+/// can be kept for it before it arrives.
+fn givenSize(which: page_mod.Picture) ?Size {
+    return .{ .w = which.width orelse return null, .h = which.height orelse return null };
+}
+
+/// A size in the page's pixels as the interface draws it: never wider than
+/// `room`, and keeping its shape where it has to be narrower.
+fn fitted(size: Size, scale: i32, room: i32) Size {
+    const w = size.w * scale;
+    const h = size.h * scale;
+    if (w <= room) return .{ .w = w, .h = h };
+    return .{ .w = room, .h = @max(@divTrunc(h * room, @max(w, 1)), 1) };
+}
 
 /// What a pass of the page was asked to do.
 pub const Action = union(enum) {
@@ -104,6 +180,9 @@ pub const Submit = struct {
 pub const View = struct {
     page: ?*const Page = null,
     layout: Layout = .{},
+    /// The page is to be laid out again on the next pass: a picture arrived
+    /// or gave up, and the room it takes changed with it.
+    stale: bool = false,
     scroll: i32 = 0,
     /// Where the page was last painted, and at what scroll: what a pass
     /// compares against to know how little it can paint.
@@ -139,11 +218,32 @@ pub const View = struct {
         self.* = .{};
     }
 
+    /// Lay the page out again on the next pass.
+    pub fn relayout(self: *View) void {
+        self.stale = true;
+    }
+
     /// How far down the page the view is, as a percentage.
     pub fn position(self: *const View, area: Rect) u8 {
         const reach = self.layout.height - area.h;
         if (reach <= 0) return 100;
         return @intCast(@divTrunc(@min(self.scroll, reach) * 100, reach));
+    }
+
+    /// The first of the page's pictures at or below the top of the view,
+    /// which is where fetching them goes on from: what is being looked at
+    /// comes first.
+    pub fn pictureFrom(self: *const View) u16 {
+        const page = self.page orelse return 0;
+        const lines = self.layout.lines.items;
+        var i = self.layout.lineAt(self.scroll);
+        while (i < lines.len) : (i += 1) {
+            for (self.layout.fragsOf(lines[i])) |frag| switch (page.runs.items[frag.run]) {
+                .picture => |index| return index,
+                .text, .control, .line_break => {},
+            };
+        }
+        return 0;
     }
 
     /// What a control sends with its form, if it sends anything: a line what
@@ -162,17 +262,24 @@ pub const View = struct {
 
     /// Draw the page into `area` and take what the pointer and the keyboard
     /// did to it and to its controls.
-    pub fn run(self: *View, gpa: std.mem.Allocator, ctx: *eui.Context, area: Rect) ?Action {
+    pub fn run(self: *View, gpa: std.mem.Allocator, ctx: *eui.Context, area: Rect, pictures: *const Pictures) ?Action {
         const page = self.page orelse return null;
-        const metrics = Metrics{ .scale = eui.theme.textScale() };
+        const metrics = Metrics{ .scale = eui.theme.textScale(), .pictures = pictures };
         const column = columnOf(area, metrics.scale);
         const spacing = Spacing.forLine(metrics.height(.body));
 
-        // Laid out again only when the column's width changed: a pass that
-        // is only a scroll or a pointer moving reuses every line.
-        if (self.layout.width != column.w) {
+        // Laid out again only when the column's width changed or a picture
+        // changed the room it takes: a pass that is only a scroll or a
+        // pointer moving reuses every line. The words at the top of the view
+        // stay there, whatever moved above them.
+        if (self.stale or self.layout.width != column.w) {
+            const mark = self.layout.markAt(self.scroll);
             self.layout.deinit(gpa);
             self.layout = layout_mod.build(gpa, page, column.w, spacing, metrics) catch .{ .width = column.w };
+            if (mark) |kept| {
+                if (self.layout.lineOf(kept.place)) |y| self.scroll = @max(y + (self.scroll - kept.y), 0);
+            }
+            self.stale = false;
             self.painted = null;
         }
 
@@ -208,6 +315,7 @@ pub const View = struct {
         const pass = Pass{
             .view = self,
             .page = page,
+            .pictures = pictures,
             .surface = ctx.surface,
             .theme = eui.theme.current(),
             .metrics = metrics,
@@ -217,8 +325,9 @@ pub const View = struct {
         };
 
         // What is painted this pass: all of it, the band a scroll uncovered,
-        // or nothing.
-        const moved = if (before) |was| was.scroll != scroll else false;
+        // or nothing. A page painted afresh counts as moved, because laid
+        // out again its controls may stand somewhere new.
+        const moved = if (before) |was| was.scroll != scroll else true;
         const repainted: ?Rect = if (before == null or ctx.damaged or !std.meta.eql(before.?.area, area))
             area
         else if (!moved)
@@ -260,9 +369,9 @@ pub const View = struct {
             for (self.layout.fragsOf(lines[i])) |frag| {
                 const index = switch (pass.page.runs.items[frag.run]) {
                     .control => |which| which,
-                    .text, .line_break => continue,
+                    .text, .picture, .line_break => continue,
                 };
-                const rect = pass.controlRect(lines[i], frag, pass.page.controls.items[index]);
+                const rect = pass.boxRect(lines[i], frag);
                 if (repainted) |band| {
                     if (!band.intersect(rect).isEmpty()) ctx.repaintAt(rect);
                 }
@@ -342,7 +451,8 @@ pub const View = struct {
         }
     }
 
-    /// The link at a point in the window, if there is one there.
+    /// The link at a point in the window, if there is one there: words that
+    /// go somewhere, or a picture inside a link.
     fn linkAt(self: *const View, page: *const Page, column: Rect, area: Rect, x: i32, y: i32) ?u16 {
         const doc_y = y - area.y + self.scroll;
         const index = self.layout.lineAt(doc_y);
@@ -354,6 +464,7 @@ pub const View = struct {
             if (x < left or x >= left + frag.width) continue;
             return switch (page.runs.items[frag.run]) {
                 .text => |text| text.link,
+                .picture => |which| page.pictures.items[which].link,
                 .control, .line_break => null,
             };
         }
@@ -371,6 +482,7 @@ fn sent(control: Control, by: ?u16) ?Action {
 const Pass = struct {
     view: *const View,
     page: *const Page,
+    pictures: *const Pictures,
     surface: Surface,
     theme: *const Theme,
     metrics: Metrics,
@@ -430,8 +542,13 @@ const Pass = struct {
         for (self.view.layout.fragsOf(at)) |frag| {
             const text = switch (self.page.runs.items[frag.run]) {
                 .text => |text| text,
+                .picture => |which| {
+                    self.picture(s, at, frag, which);
+                    continue;
+                },
                 .control, .line_break => continue,
             };
+            const words = frag.shape.words;
             const face = text.look.face;
             const ink = switch (text.look.ink) {
                 .text => t.text,
@@ -439,7 +556,7 @@ const Pass = struct {
                 .link => t.accent,
             };
             const left = self.column.x + frag.x;
-            s.textIn(Metrics.font(face), left, y + at.baseline - self.metrics.ascent(face), self.page.text.items[frag.start..][0..frag.len], ink);
+            s.textIn(Metrics.font(face), left, y + at.baseline - self.metrics.ascent(face), self.page.text.items[words.start..][0..words.len], ink);
             if (text.look.ink == .link) {
                 s.fill(.{ .x = left, .y = y + at.baseline + scale, .w = frag.width, .h = scale }, t.accent);
             }
@@ -459,13 +576,38 @@ const Pass = struct {
         s.textIn(Metrics.font(.body), text_x - gap - width, baseline - self.metrics.ascent(.body), shown, self.theme.text_dim);
     }
 
-    /// Where a control is drawn: as wide as the layout made it and as tall
-    /// as it is, with its bottom where the words' descent ends.
-    fn controlRect(self: Pass, at: layout_mod.Line, frag: layout_mod.Frag, control: Control) Rect {
-        const size = self.metrics.control(self.page, control);
+    /// A picture that is here, sampled to the room the layout gave it; one
+    /// that is not, stood in for by a frame holding what the page says it
+    /// shows, or the picture sign where it says nothing.
+    fn picture(self: Pass, s: Surface, at: layout_mod.Line, frag: layout_mod.Frag, index: u16) void {
+        const rect = self.boxRect(at, frag);
+        if (rect.isEmpty()) return;
+        switch (self.pictures.stateOf(index)) {
+            .here => |kept| return eui.thumb.paint(s, rect, .{
+                .pixels = kept.picture.pixels,
+                .width = kept.picture.width,
+                .height = kept.picture.height,
+            }, .up),
+            .waiting, .coming, .failed => {},
+        }
+
+        const t = self.theme;
+        s.frame(rect, t.line);
+        const alt = self.page.string(self.page.pictures.items[index].alt);
+        if (alt.len == 0) return s.iconCentred(rect, .picture, t.text_dim);
+        // Inside the frame and in from its sides, on the first line of it.
+        const inside = Rect{ .x = rect.x + t.padding, .y = rect.y + 1, .w = rect.w - 2 * t.padding, .h = rect.h - 2 };
+        const top = rect.y + @divTrunc(@min(rect.h, t.control_height) - self.metrics.height(.body), 2);
+        s.clipped(inside).textIn(Metrics.font(.body), inside.x, top, alt, t.text_dim);
+    }
+
+    /// Where a control or a picture is drawn: as wide as the layout made it
+    /// and as tall as it said, with its bottom where the words' descent ends.
+    fn boxRect(self: Pass, at: layout_mod.Line, frag: layout_mod.Frag) Rect {
         const descent = self.metrics.height(.body) - self.metrics.ascent(.body);
         const bottom = self.area.y + at.y - self.view.scroll + at.baseline + descent;
-        return .{ .x = self.column.x + frag.x, .y = bottom - size.h, .w = frag.width, .h = size.h };
+        const h = frag.shape.box;
+        return .{ .x = self.column.x + frag.x, .y = bottom - h, .w = frag.width, .h = h };
     }
 };
 

@@ -5,8 +5,8 @@
 //! is far more than a reader draws and, on a large page, several times the
 //! page's own size. So the tree is walked once into this and let go: one
 //! buffer of text, runs over it, blocks over the runs, and the strings, links,
-//! forms and controls the runs refer to beside them. Nothing here points into
-//! the tree, so the tree can go the moment the walk ends.
+//! forms, controls and pictures the runs refer to beside them. Nothing here
+//! points into the tree, so the tree can go the moment the walk ends.
 //!
 //! Pure and host-tested. Whether a space landed inside a link or outside it
 //! is decided here, and is not something to find out on the panel.
@@ -48,6 +48,8 @@ pub const Run = union(enum) {
     text: Text,
     /// One of the page's controls, where the page put it among the words.
     control: u16,
+    /// One of the page's pictures, where the page put it among the words.
+    picture: u16,
     /// The line ends here: a `<br>`, or a line end in preformatted text.
     line_break,
 };
@@ -158,6 +160,22 @@ pub const ControlKind = union(enum) {
     };
 };
 
+/// A picture the page shows among its words.
+pub const Picture = struct {
+    /// Where it is, resolved against the page's own address, or empty where
+    /// the page gave nowhere this reader can fetch it from.
+    source: Span,
+    /// What the page says it shows. It stands in for the picture until the
+    /// picture arrives, and wherever it cannot.
+    alt: Span,
+    /// The size the page gives it, in the page's own pixels, where it gives
+    /// one.
+    width: ?u16 = null,
+    height: ?u16 = null,
+    /// Where it goes when it is clicked, where it sits inside a link.
+    link: ?u16 = null,
+};
+
 pub const Page = struct {
     title: std.ArrayList(u8) = .empty,
     text: std.ArrayList(u8) = .empty,
@@ -169,6 +187,7 @@ pub const Page = struct {
     links: std.ArrayList(Span) = .empty,
     forms: std.ArrayList(Form) = .empty,
     controls: std.ArrayList(Control) = .empty,
+    pictures: std.ArrayList(Picture) = .empty,
     /// How many of the controls are lines to type in, and boxes to tick.
     lines: u16 = 0,
     ticks: u16 = 0,
@@ -185,6 +204,7 @@ pub const Page = struct {
         self.links.deinit(gpa);
         self.forms.deinit(gpa);
         self.controls.deinit(gpa);
+        self.pictures.deinit(gpa);
         self.* = .{};
     }
 
@@ -334,10 +354,28 @@ pub const Builder = struct {
             .value = try self.keep(value),
         });
         if (placed == .hidden) return;
+        try self.place(.{ .control = index });
+    }
 
+    /// A picture, placed among the words where the page put it, the way a
+    /// control is.
+    pub fn addPicture(self: *Builder, source: []const u8, alt: []const u8, width: ?u16, height: ?u16) Error!void {
+        const index = std.math.cast(u16, self.page.pictures.items.len) orelse return;
+        try self.page.pictures.append(self.gpa, .{
+            .source = try self.keep(source),
+            .alt = try self.keep(alt),
+            .width = width,
+            .height = height,
+            .link = self.link,
+        });
+        try self.place(.{ .picture = index });
+    }
+
+    /// Put something that is not words among them: a control or a picture.
+    fn place(self: *Builder, run: Run) Error!void {
         try self.settleSpace();
         const block = self.opened();
-        try self.page.runs.append(self.gpa, .{ .control = index });
+        try self.page.runs.append(self.gpa, run);
         block.count += 1;
     }
 
@@ -372,7 +410,7 @@ pub const Builder = struct {
         if (block.count == 0) return null;
         return switch (self.page.runs.items[self.page.runs.items.len - 1]) {
             .text => |*last| last,
-            .control, .line_break => null,
+            .control, .picture, .line_break => null,
         };
     }
 
@@ -467,9 +505,9 @@ const TAB = 8;
 
 /// The page as plain text, for a terminal: blocks apart by a blank line, a
 /// list's entries under one another with their markers, preformatted text as
-/// it was, and a control as the bracketed thing a terminal can show. What
-/// `web -t` prints, so the words a window shows and the words a pipe gets are
-/// the same words.
+/// it was, and a control or a picture as the bracketed thing a terminal can
+/// show. What `web -t` prints, so the words a window shows and the words a
+/// pipe gets are the same words.
 pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
     var previous: ?Kind = null;
     for (page.blocks.items) |block| {
@@ -493,6 +531,7 @@ pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
         for (runs, 0..) |run, i| switch (run) {
             .text => |text| try w.writeAll(page.textOf(text)),
             .control => |index| try writeControl(w, page, page.controls.items[index]),
+            .picture => |index| try writePicture(w, page, page.pictures.items[index]),
             // A break the block ends on is the block's own end already.
             .line_break => if (i + 1 < runs.len) {
                 try w.writeByte('\n');
@@ -518,6 +557,13 @@ fn writeControl(w: *Writer, page: *const Page, control: Control) Writer.Error!vo
         .tick => |tick| try w.writeAll(if (tick.ticked) "[x]" else "[ ]"),
         .hidden => {},
     }
+}
+
+/// A picture as a terminal shows one: what the page says it shows, in
+/// brackets, or nothing where the page says nothing.
+fn writePicture(w: *Writer, page: *const Page, picture: Picture) Writer.Error!void {
+    const alt = page.string(picture.alt);
+    if (alt.len > 0) try w.print("[{s}]", .{alt});
 }
 
 // ---------------------------------------------------------------------------
@@ -702,4 +748,27 @@ test "a form's controls sit among its words, and a hidden one only among its ans
     var text = try f.written();
     defer text.deinit();
     try testing.expectEqualStrings("Find [________] [Go]\n", text.written());
+}
+
+test "a picture sits among the words, and reads as what the page says it shows" {
+    var f = Fixture{};
+    f.init();
+    defer f.deinit();
+    try f.builder.words("Look ");
+    try f.builder.addPicture("https://a.org/eee.jpg", "the machine", 400, null);
+    try f.builder.words(" here");
+    try f.builder.addPicture("", "", null, null);
+    try f.builder.finish();
+
+    const page = &f.page;
+    try testing.expectEqual(@as(usize, 2), page.pictures.items.len);
+    try testing.expectEqualStrings("https://a.org/eee.jpg", page.string(page.pictures.items[0].source));
+    try testing.expectEqual(@as(?u16, 400), page.pictures.items[0].width);
+    try testing.expectEqual(@as(?u16, null), page.pictures.items[0].height);
+    try testing.expect(page.runs.items[1] == .picture);
+
+    // One that says nothing of what it shows is nothing to a terminal.
+    var text = try f.written();
+    defer text.deinit();
+    try testing.expectEqualStrings("Look [the machine] here\n", text.written());
 }

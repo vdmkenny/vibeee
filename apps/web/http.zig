@@ -1,8 +1,10 @@
-//! HTTP/1.1, one request and one response to a connection.
+//! HTTP/1.1: a request, and the response to it taken as it arrives.
 //!
-//! The request asks for the connection to be closed after it. A reader asks
-//! for one page at a time, so a connection kept open for a second is state to
-//! get wrong for no gain on a machine that reads that slowly.
+//! A page's request asks for its connection to be closed after it, because a
+//! reader asks a site for one page at a time. A picture's asks for it to be
+//! kept: a page's pictures mostly come from one site one after another, and
+//! a sealed connection reached again for each would be a handshake apiece on
+//! a processor for which that is most of the work.
 //!
 //! The response is fed in whatever pieces the socket delivers: the head, the
 //! chunk sizes and the body are each found across the edges of reads, which
@@ -21,27 +23,43 @@ const Writer = std.Io.Writer;
 /// system it runs on, and the kind of machine that is.
 pub const USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ ")";
 
+/// What a request is for, which says what the site is told.
+pub const Wanted = enum { page, picture };
+
+/// What a request tells the site: what the reader takes, a page as markup or
+/// as words and a picture in a format its decoder reads, so that a site able
+/// to answer in several answers in one of those; and whether the connection
+/// is to be kept for the next request.
+const Ask = struct { accept: []const u8, keep: bool };
+
+const asks = std.EnumArray(Wanted, Ask).init(.{
+    .page = .{ .accept = "text/html, text/plain;q=0.8, */*;q=0.1", .keep = false },
+    .picture = .{ .accept = "image/png, image/jpeg, image/gif;q=0.8", .keep = true },
+});
+
+/// Whether a request for `wanted` asks for its connection to be kept.
+pub fn keeps(wanted: Wanted) bool {
+    return asks.get(wanted).keep;
+}
+
 /// The request for `url`, written into `out`.
-pub fn request(out: []u8, url: Url) ?[]const u8 {
+pub fn request(out: []u8, url: Url, wanted: Wanted) ?[]const u8 {
     var w: Writer = .fixed(out);
-    writeRequest(&w, url) catch return null;
+    writeRequest(&w, url, wanted) catch return null;
     return w.buffered();
 }
 
-fn writeRequest(w: *Writer, url: Url) Writer.Error!void {
+fn writeRequest(w: *Writer, url: Url, wanted: Wanted) Writer.Error!void {
     try w.writeAll("GET ");
     try url.writeTarget(w);
     try w.writeAll(" HTTP/1.1\r\nHost: ");
     try url.writeHost(w);
+    const ask = asks.get(wanted);
+    try w.print("\r\nUser-Agent: " ++ USER_AGENT ++ "\r\nAccept: {s}\r\n", .{ask.accept});
     // Identity, because the one thing a reader must not do with a page is
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
-    try w.writeAll("\r\n" ++
-        "User-Agent: " ++ USER_AGENT ++ "\r\n" ++
-        "Accept: text/html, text/plain;q=0.8, */*;q=0.1\r\n" ++
-        "Accept-Encoding: identity\r\n" ++
-        "Connection: close\r\n" ++
-        "\r\n");
+    try w.print("Accept-Encoding: identity\r\nConnection: {s}\r\n\r\n", .{if (ask.keep) "keep-alive" else "close"});
 }
 
 /// The media type a `Content-Type` value names, without its parameters:
@@ -132,13 +150,14 @@ const Span = struct {
 };
 
 /// The headers a reader acts on. Every other one is passed over.
-const Header = enum { content_length, transfer_encoding, location, content_type };
+const Header = enum { content_length, transfer_encoding, location, content_type, connection };
 
 const headers = std.StaticStringMapWithEql(Header, std.static_string_map.eqlAsciiIgnoreCase).initComptime(.{
     .{ "content-length", .content_length },
     .{ "transfer-encoding", .transfer_encoding },
     .{ "location", .location },
     .{ "content-type", .content_type },
+    .{ "connection", .connection },
 });
 
 pub const Response = struct {
@@ -150,6 +169,10 @@ pub const Response = struct {
     total: ?u64 = null,
     location_at: Span = .{},
     content_type_at: Span = .{},
+    /// Whether the site keeps the connection once the body is done: HTTP/1.1
+    /// that does not say it closes, or 1.0 that says it keeps, with a body
+    /// that ends at its length rather than where the connection does.
+    keeps: bool = false,
 
     pub const Phase = union(enum) {
         head,
@@ -189,6 +212,11 @@ pub const Response = struct {
 
     pub fn contentType(self: *const Response) ?[]const u8 {
         return self.content_type_at.of(self.head.slice());
+    }
+
+    /// Whether the connection can carry another request now.
+    pub fn reusable(self: *const Response) bool {
+        return self.phase == .done and self.keeps;
     }
 
     /// Whether the status is a redirect with somewhere to go.
@@ -244,6 +272,9 @@ pub const Response = struct {
 
         var length: ?u64 = null;
         var chunked = false;
+        // A 1.1 site keeps a connection unless it says it closes it, and a
+        // 1.0 site closes one unless it says it keeps it.
+        var stays = std.mem.startsWith(u8, status_line, "HTTP/1.1");
         while (lines.next()) |line| {
             if (line.len == 0) break;
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
@@ -253,17 +284,20 @@ pub const Response = struct {
                 .transfer_encoding => chunked = std.ascii.findIgnoreCase(value, "chunked") != null,
                 .location => self.location_at = .within(head, value),
                 .content_type => self.content_type_at = .within(head, value),
+                .connection => {
+                    if (std.ascii.findIgnoreCase(value, "keep-alive") != null) stays = true;
+                    if (std.ascii.findIgnoreCase(value, "close") != null) stays = false;
+                },
             }
         }
 
         // Chunking outranks a length, as the specification has it: a head
         // carrying both was put together by something that added one.
-        if (chunked) return .{ .chunked = .{} };
-        if (length) |n| {
-            self.total = n;
-            return .{ .length = n };
-        }
-        return .close;
+        const framing: Framing = if (chunked) .{ .chunked = .{} } else if (length) |n| .{ .length = n } else .close;
+        if (framing == .length) self.total = length;
+        // A body the end of the connection frames leaves no connection to keep.
+        self.keeps = stays and framing != .close;
+        return framing;
     }
 
     fn takeBody(self: *Response, gpa: std.mem.Allocator, framing: *Framing, bytes: []const u8, body: *Body) Error![]const u8 {
@@ -361,7 +395,7 @@ fn fed(wire: []const u8, step: usize) !struct { response: *Response, body: Body 
 
 test "a request asks for the page and for the connection to close" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?).?;
+    const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?, .page).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET /linux/read.2.html HTTP/1.1\r\nHost: man7.org\r\n"));
     try testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "User-Agent: vibeee-web/1.0 (vibeee; ") != null);
@@ -370,8 +404,35 @@ test "a request asks for the page and for the connection to close" {
 
 test "a request names a port that is not the scheme's own, and an empty path is the root" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, url_mod.parse("http://10.0.2.2:8099").?).?;
+    const req = request(&buf, url_mod.parse("http://10.0.2.2:8099").?, .page).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET / HTTP/1.1\r\nHost: 10.0.2.2:8099\r\n"));
+}
+
+test "a picture is asked for in the formats the decoder reads" {
+    var buf: [512]u8 = undefined;
+    const req = request(&buf, url_mod.parse("http://a.org/eee.jpg").?, .picture).?;
+    try testing.expect(std.mem.indexOf(u8, req, "\r\nAccept: image/png, image/jpeg, image/gif;q=0.8\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "text/html") == null);
+    // And on a connection kept for the next one.
+    try testing.expect(std.mem.indexOf(u8, req, "\r\nConnection: keep-alive\r\n") != null);
+}
+
+test "a response says whether its connection carries another request" {
+    const cases = [_]struct { wire: []const u8, reusable: bool }{
+        .{ .wire = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi", .reusable = true },
+        .{ .wire = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nhi", .reusable = false },
+        .{ .wire = "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nhi", .reusable = false },
+        .{ .wire = "HTTP/1.0 200 OK\r\nConnection: Keep-Alive\r\nContent-Length: 2\r\n\r\nhi", .reusable = true },
+        .{ .wire = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\n", .reusable = true },
+        // Framed by the end of the connection, which leaves none to keep.
+        .{ .wire = "HTTP/1.1 200 OK\r\n\r\nhi", .reusable = false },
+    };
+    for (cases) |case| {
+        var got = try fed(case.wire, 64);
+        defer testing.allocator.destroy(got.response);
+        defer got.body.deinit(testing.allocator);
+        try testing.expectEqual(case.reusable, got.response.reusable());
+    }
 }
 
 test "a content type's media type is what comes before its parameters" {

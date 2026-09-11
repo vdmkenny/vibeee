@@ -1,5 +1,5 @@
-//! Where every word of a page goes, in a column a given number of pixels
-//! wide.
+//! Where every word of a page goes, and every control and picture among
+//! them, in a column a given number of pixels wide.
 //!
 //! Done once for a page and a width, not once a frame. The lines are what a
 //! view draws from, and scrolling is only which of them are on screen. A word
@@ -21,20 +21,44 @@ const Text = page_mod.Text;
 
 pub const Error = std.mem.Allocator.Error;
 
-/// How much room a control takes on a line.
+/// How much room a control or a picture takes on a line.
 pub const Size = struct { w: i32, h: i32 };
 
-/// Words from one run, together on one line.
+/// One thing on a line: words from one run, or a control or a picture.
 pub const Frag = struct {
     /// From the column's left edge.
     x: i32,
     width: i32,
-    /// Into the page's text.
-    start: u32,
-    len: u32,
-    /// The run it belongs to, which says its look and where it goes.
+    /// The run it belongs to, which says what it is: words, how they look
+    /// and where they go, or which control or picture.
     run: u32,
+    shape: Shape,
+
+    pub const Shape = union(enum) {
+        /// Words, by where they are in the page's text.
+        words: Words,
+        /// A control or a picture, and how tall it is drawn.
+        box: i32,
+    };
+
+    pub const Words = struct { start: u32, len: u32 };
+
+    /// Whether the place `at` in the page's text is on this fragment. A box
+    /// is the whole of its run.
+    fn holds(self: Frag, at: u32) bool {
+        return switch (self.shape) {
+            .words => |words| at >= words.start and at < words.start + @max(words.len, 1),
+            .box => true,
+        };
+    }
 };
+
+/// A place in a page that outlasts its layout: a run, and how far into the
+/// page's text, which for a box is nowhere in particular.
+pub const Place = struct { run: u32, at: u32 };
+
+/// A place, and the top of the line it begins.
+pub const Mark = struct { place: Place, y: i32 };
 
 pub const Line = struct {
     /// From the top of the page.
@@ -108,14 +132,44 @@ pub const Layout = struct {
     fn endsAbove(y: i32, line: Line) bool {
         return line.y + line.height <= y;
     }
+
+    /// What begins the first line reaching below `y` that has anything on
+    /// it: what a view keeps its place by when the page is laid out again
+    /// under it.
+    pub fn markAt(self: *const Layout, y: i32) ?Mark {
+        const lines = self.lines.items;
+        var i = self.lineAt(y);
+        while (i < lines.len) : (i += 1) {
+            const frags = self.fragsOf(lines[i]);
+            if (frags.len == 0) continue;
+            const at: u32 = switch (frags[0].shape) {
+                .words => |words| words.start,
+                .box => 0,
+            };
+            return .{ .place = .{ .run = frags[0].run, .at = at }, .y = lines[i].y };
+        }
+        return null;
+    }
+
+    /// Where the line holding `place` is, from the top of the page.
+    pub fn lineOf(self: *const Layout, place: Place) ?i32 {
+        for (self.lines.items) |line| {
+            for (self.fragsOf(line)) |frag| {
+                if (frag.run == place.run and frag.holds(place.at)) return line.y;
+            }
+        }
+        return null;
+    }
 };
 
 /// Lay `page` out `width` pixels wide.
 ///
 /// `metrics` answers four questions of a face: `width(face, bytes)`,
 /// `height(face)`, `ascent(face)`, and `fit(face, bytes, room)`, how many of
-/// the bytes fit in that many pixels, at a letter's edge. It answers one of a
-/// control too: `control(page, control)`, the room it takes.
+/// the bytes fit in that many pixels, at a letter's edge. It answers two more
+/// of what is not words: `control(page, control)`, the room a control takes,
+/// and `picture(page, index, room)`, the room a picture takes in a column
+/// `room` wide.
 pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spacing, metrics: anytype) Error!Layout {
     var out = Layout{ .width = width };
     errdefer out.deinit(gpa);
@@ -233,9 +287,12 @@ fn Placer(comptime Metrics: type) type {
                 // word is in the text, and would only lengthen what a link's
                 // underline runs under.
                 const last = &self.out.frags.items[self.out.frags.items.len - 1];
-                if (last.len > 0 and self.page.text.items[last.start + last.len - 1] == ' ') {
-                    last.len -= 1;
-                    last.width -= self.metrics.width(self.textAt(last.run).look.face, " ");
+                switch (last.shape) {
+                    .words => |*words| if (words.len > 0 and self.page.text.items[words.start + words.len - 1] == ' ') {
+                        words.len -= 1;
+                        last.width -= self.metrics.width(self.textAt(last.run).look.face, " ");
+                    },
+                    .box => {},
                 }
             } else {
                 if (!keep_empty) return;
@@ -264,27 +321,37 @@ fn Placer(comptime Metrics: type) type {
             self.pen += width;
             if (self.occupied()) {
                 const last = &self.out.frags.items[self.out.frags.items.len - 1];
-                if (last.run == run and last.start + last.len == start) {
-                    last.len += len;
-                    last.width += width;
-                    return;
+                if (last.run == run) {
+                    switch (last.shape) {
+                        .words => |*words| if (words.start + words.len == start) {
+                            words.len += len;
+                            last.width += width;
+                            return;
+                        },
+                        .box => {},
+                    }
                 }
             }
             try self.out.frags.append(self.gpa, .{
                 .x = self.x0 + self.pen - width,
                 .width = width,
-                .start = start,
-                .len = len,
                 .run = run,
+                .shape = .{ .words = .{ .start = start, .len = len } },
             });
         }
 
-        /// A control, placed as a word is: on this line if it fits and on the
-        /// next if it does not, never wider than the column. Its bottom sits
-        /// where the words' descent ends, so its own label lines up near
-        /// their baseline.
-        fn control(self: *Self, run: u32, index: u16) Error!void {
-            const size = self.metrics.control(self.page, self.page.controls.items[index]);
+        /// A control or a picture, placed as a word is: on this line if it
+        /// fits and on the next if it does not, never wider than the column.
+        /// Its bottom sits where the words' descent ends, so a control's own
+        /// label lines up near their baseline and a picture stands on the
+        /// line. A control too wide is cut to the column; a picture comes
+        /// already fitted to it, keeping its shape.
+        fn box(self: *Self, index: u32, run: page_mod.Run) Error!void {
+            const size: Size = switch (run) {
+                .control => |which| self.metrics.control(self.page, self.page.controls.items[which]),
+                .picture => |which| self.metrics.picture(self.page, which, self.room),
+                .text, .line_break => unreachable,
+            };
             const width = @min(size.w, self.room);
             if (self.pen > 0 and self.pen + width > self.room) try self.endLine(false);
             const descent = self.metrics.height(.body) - self.metrics.ascent(.body);
@@ -294,9 +361,8 @@ fn Placer(comptime Metrics: type) type {
             try self.out.frags.append(self.gpa, .{
                 .x = self.x0 + self.pen - width,
                 .width = width,
-                .start = 0,
-                .len = 0,
-                .run = run,
+                .run = index,
+                .shape = .{ .box = size.h },
             });
         }
 
@@ -305,7 +371,7 @@ fn Placer(comptime Metrics: type) type {
         fn verbatim(self: *Self, block: Block) Error!void {
             for (self.page.runsOf(block), @as(usize, block.first)..) |run, index| switch (run) {
                 .text => |text| try self.cut(@intCast(index), text.look.face, text.start, self.page.textOf(text)),
-                .control => |which| try self.control(@intCast(index), which),
+                .control, .picture => try self.box(@intCast(index), run),
                 .line_break => try self.endLine(true),
             };
         }
@@ -317,10 +383,11 @@ fn Placer(comptime Metrics: type) type {
         fn flow(self: *Self, first: u32, last: u32) Error!void {
             var here = Spot{ .run = first, .at = 0 };
             while (here.run < last) {
-                const text = switch (self.page.runs.items[here.run]) {
+                const run = self.page.runs.items[here.run];
+                const text = switch (run) {
                     .text => |text| text,
-                    .control => |which| {
-                        try self.control(here.run, which);
+                    .control, .picture => {
+                        try self.box(here.run, run);
                         here = .{ .run = here.run + 1, .at = 0 };
                         continue;
                     },
@@ -465,6 +532,15 @@ const Fixed = struct {
             .hidden => .{ .w = 0, .h = 0 },
         };
     }
+    /// The size the page gives, or thirty by twenty, fitted to the room and
+    /// keeping its shape.
+    pub fn picture(_: Fixed, page: *const Page, index: u16, room: i32) Size {
+        const which = page.pictures.items[index];
+        const w: i32 = which.width orelse 30;
+        const h: i32 = which.height orelse 20;
+        if (w <= room) return .{ .w = w, .h = h };
+        return .{ .w = room, .h = @divTrunc(h * room, w) };
+    }
 };
 
 const eighteen = Spacing.forLine(18);
@@ -479,7 +555,8 @@ const Built = struct {
     }
 
     fn fragText(self: *const Built, frag: Frag) []const u8 {
-        return self.page.text.items[frag.start..][0..frag.len];
+        const words = frag.shape.words;
+        return self.page.text.items[words.start..][0..words.len];
     }
 
     fn line(self: *const Built, index: usize) []const Frag {
@@ -657,6 +734,47 @@ test "a control sits among the words as a word does, and its line is as tall as 
     try testing.expectEqual(@as(i32, 30), frags[1].x);
     try testing.expectEqual(@as(i32, 60), frags[1].width);
     try testing.expectEqualStrings(" now", b.fragText(frags[2]));
+}
+
+test "a picture stands on the line as a word does, fitted to the column" {
+    var b = Built{};
+    defer b.deinit();
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    try builder.words("see ");
+    try builder.addPicture("https://a.org/a.png", "", 60, 40);
+    try builder.words(" wide");
+    try builder.addPicture("https://a.org/b.png", "", 1200, 600);
+    try builder.finish();
+    b.layout = try build(testing.allocator, &b.page, 600, eighteen, Fixed{});
+
+    const lines = b.layout.lines.items;
+    try testing.expectEqual(@as(usize, 2), lines.len);
+    // The small one after the first word, standing where the words' descent
+    // ends: the line is as tall as it and that descent.
+    const first = b.line(0);
+    try testing.expectEqual(@as(i32, 24), first[1].x);
+    try testing.expectEqual(@as(i32, 60), first[1].width);
+    try testing.expectEqual(Frag.Shape{ .box = 40 }, first[1].shape);
+    try testing.expectEqual(@as(i32, 40), lines[0].height);
+    // The wide one on a line of its own, as wide as the column and as tall as
+    // its shape then makes it.
+    const second = b.line(1);
+    try testing.expectEqual(@as(i32, 600), second[0].width);
+    try testing.expectEqual(Frag.Shape{ .box = 300 }, second[0].shape);
+    try testing.expectEqual(@as(i32, 300), lines[1].height);
+}
+
+test "a place in the page is found again once the page is laid out anew" {
+    var b = try paragraph("aaaa bbbb cccc dddd eeee ffff", 30);
+    defer b.deinit();
+    // One word a line: the fourth begins with the fourth word.
+    const mark = b.layout.markAt(3 * 18 + 5).?;
+    try testing.expectEqual(@as(i32, 3 * 18), mark.y);
+
+    // Twice as wide, two words a line: the fourth word ends the second.
+    b.layout.deinit(testing.allocator);
+    b.layout = try build(testing.allocator, &b.page, 60, eighteen, Fixed{});
+    try testing.expectEqual(@as(?i32, 18), b.layout.lineOf(mark.place));
 }
 
 test "a link's words are their own fragment beside the text around them" {

@@ -1,5 +1,5 @@
-//! One page coming over the network: reaching the site, asking for the page,
-//! and taking the answer as it arrives.
+//! One page, or one picture on a page, coming over the network: reaching the
+//! site, asking for it, and taking the answer as it arrives.
 //!
 //! Driven from outside rather than running on its own: `advance` takes the
 //! next step and says what to wait on before the one after, and a window and
@@ -8,10 +8,16 @@
 //! back to; every step after it takes what has arrived and returns. So a
 //! window paints "connecting" before it takes the step that blocks, and
 //! stays drawn while a page arrives a piece at a time.
+//!
+//! The connection a picture's answer came on is kept where the site keeps
+//! it, and the next picture from the same site is asked for on it: reaching
+//! the site and sealing the connection is the step that blocks, and a page's
+//! pictures need it once rather than once each.
 
 const std = @import("std");
 const sys = @import("sys");
 const ulib = @import("ulib");
+const Bounded = @import("lib").bounded.Bounded;
 
 const http = @import("http.zig");
 const url = @import("url.zig");
@@ -25,6 +31,35 @@ const Wire = ulib.wire.Wire;
 /// page is refused rather than cut: half a document parses into a tree that
 /// is wrong in ways nothing downstream can see.
 pub const PAGE_MAX = 4 * 1024 * 1024;
+
+/// The most a picture's file may be. A picture made for a page is a few
+/// hundred kilobytes; one past this was made for printing rather than for
+/// reading beside words.
+pub const PICTURE_MAX = 1024 * 1024;
+
+/// The most an answer may be, for what was asked.
+fn limitOf(wanted: http.Wanted) usize {
+    return switch (wanted) {
+        .page => PAGE_MAX,
+        .picture => PICTURE_MAX,
+    };
+}
+
+/// A connection kept after an answer, and where it goes.
+const Kept = struct {
+    wire: Wire,
+    scheme: url.Scheme,
+    host: Bounded(u8, HOST_MAX) = .{},
+    port: u16,
+
+    fn goesTo(self: *const Kept, where: url.Url) bool {
+        return self.scheme == where.scheme and self.port == where.port and
+            std.ascii.eqlIgnoreCase(self.host.slice(), where.host);
+    }
+};
+
+/// The longest a host's name can be.
+const HOST_MAX = 255;
 
 /// How many times one request may be sent on to somewhere else.
 const REDIRECTS_MAX = 5;
@@ -65,12 +100,19 @@ pub const Wait = union(enum) {
 };
 
 pub const Fetch = struct {
+    /// A page, or a picture on one: what the site is told the reader takes,
+    /// and how large its answer may be.
+    wanted: http.Wanted = .page,
     state: State = .idle,
     /// Where the page is: the address asked for, or after a redirect the one
     /// it was sent on to.
     target: url.Address = .{},
 
     wire: ?Wire = null,
+    /// A connection an earlier answer came on, kept for the next request to
+    /// the same site, and whether the connection in use is that one.
+    kept: ?Kept = null,
+    reused: bool = false,
     response: http.Response = .{},
     body: http.Body = .{ .limit = PAGE_MAX },
     redirects: u8 = 0,
@@ -118,10 +160,19 @@ pub const Fetch = struct {
         };
     }
 
-    /// Stop, and give back everything held.
-    pub fn cancel(self: *Fetch, gpa: std.mem.Allocator) void {
+    /// Let go of the answer and of the connection it came on, but not of a
+    /// connection kept for the next request: what is done with a fetch that
+    /// another is to follow.
+    pub fn release(self: *Fetch, gpa: std.mem.Allocator) void {
         self.reset(gpa);
         self.state = .idle;
+    }
+
+    /// Stop, and give back everything held.
+    pub fn cancel(self: *Fetch, gpa: std.mem.Allocator) void {
+        self.release(gpa);
+        if (self.kept) |kept| kept.wire.close();
+        self.kept = null;
     }
 
     /// How much of the body has arrived, and how much there will be where
@@ -144,12 +195,12 @@ pub const Fetch = struct {
     fn reset(self: *Fetch, gpa: std.mem.Allocator) void {
         self.closeWire();
         self.body.deinit(gpa);
-        self.body = .{ .limit = PAGE_MAX };
+        self.body = .{ .limit = limitOf(self.wanted) };
         self.response = .{};
     }
 
     /// Reach the site and ask for the page. Blocks for as long as reaching
-    /// it takes.
+    /// it takes, which on a connection kept from the last answer is no time.
     fn connect(self: *Fetch) void {
         const where = url.parse(self.address()) orelse return self.fail(error.BadAddress);
         const kind: ulib.wire.Kind = switch (where.scheme) {
@@ -157,15 +208,29 @@ pub const Fetch = struct {
             .https => .secure,
             .file => return self.fail(error.BadAddress),
         };
-        const wire = ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
+        self.reused = false;
+        const wire = if (self.takeKept(where)) |kept| kept else ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
         self.wire = wire;
 
         var buf: [url.ADDRESS_MAX + 512]u8 = undefined;
-        const request = http.request(&buf, where) orelse return self.fail(error.BadAddress);
-        if (wire.send(request) != request.len) return self.fail(error.Unreachable);
+        const request = http.request(&buf, where, self.wanted) orelse return self.fail(error.BadAddress);
+        if (wire.send(request) != request.len) return self.failOrRetry(error.Unreachable);
 
         self.state = .receiving;
         self.heard_us = sys.clockMicros();
+    }
+
+    /// The connection kept from the last answer, where it goes to `where`
+    /// and the site has not closed it since. One that does not is closed.
+    fn takeKept(self: *Fetch, where: url.Url) ?Wire {
+        const kept = self.kept orelse return null;
+        self.kept = null;
+        if (!kept.goesTo(where) or kept.wire.finished()) {
+            kept.wire.close();
+            return null;
+        }
+        self.reused = true;
+        return kept.wire;
     }
 
     /// Take whatever has arrived.
@@ -181,7 +246,7 @@ pub const Fetch = struct {
                 },
                 .quiet => return,
                 .done => {
-                    self.response.finish() catch |err| return self.fail(err);
+                    self.response.finish() catch |err| return self.failOrRetry(err);
                     self.arrived(gpa);
                 },
             }
@@ -196,7 +261,7 @@ pub const Fetch = struct {
     /// The answer is complete: the page, or somewhere else to ask.
     fn arrived(self: *Fetch, gpa: std.mem.Allocator) void {
         if (!self.response.redirects()) {
-            self.closeWire();
+            self.keep();
             self.state = .done;
             return;
         }
@@ -207,6 +272,30 @@ pub const Fetch = struct {
         const target = url.resolve(base, self.response.location().?, &next) orelse return self.fail(error.BadAddress);
         self.redirects += 1;
         self.aim(gpa, target);
+    }
+
+    /// A kept connection the site closed while it waited fails before any of
+    /// the answer comes back. The request is sent again on a new connection,
+    /// once; anything else is the fetch failing.
+    fn failOrRetry(self: *Fetch, why: Failure) void {
+        if (!self.reused or !self.response.head.isEmpty()) return self.fail(why);
+        self.closeWire();
+        self.reused = false;
+        self.state = .connecting;
+    }
+
+    /// Keep the connection the answer came on for the next request, where
+    /// the request and the answer both said it would be kept, and close it
+    /// otherwise.
+    fn keep(self: *Fetch) void {
+        const wire = self.wire orelse return;
+        self.wire = null;
+        const where = url.parse(self.address()) orelse return wire.close();
+        if (!http.keeps(self.wanted) or !self.response.reusable() or wire.finished()) return wire.close();
+        var kept = Kept{ .wire = wire, .scheme = where.scheme, .port = where.port };
+        if (!kept.host.set(where.host)) return wire.close();
+        if (self.kept) |old| old.wire.close();
+        self.kept = kept;
     }
 
     fn fail(self: *Fetch, why: Failure) void {

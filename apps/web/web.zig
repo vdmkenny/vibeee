@@ -3,13 +3,16 @@
 //! What `design/00-vibeee.md` settled on: a reader for simple pages rather
 //! than a general browser. It asks a site for one page, reads the words out
 //! of the markup, and sets them in this system's own faces in a column the
-//! width a line reads best at. It runs nothing a page sends, draws no
-//! pictures and follows no stylesheet; what it shows is what the page says.
+//! width a line reads best at. It runs nothing a page sends and follows no
+//! stylesheet; what it shows is what the page says. A page's pictures come
+//! after its words, one at a time, what the page says each one shows standing
+//! in for it until it is here.
 //!
 //! The parts each have a file: `url` for where things are, `http` and
 //! `fetch` for getting them, `lexbor` and `extract` for reading markup into
-//! a `page`, `layout` for where its words go, and `view` for the part on
-//! screen. This file is the window around them and the order they run in.
+//! a `page`, `layout` for where its words go, `pictures` for what it shows
+//! among them, and `view` for the part on screen. This file is the window
+//! around them and the order they run in.
 //!
 //! `web -t <address>` prints a page's words instead of opening a window, so
 //! whatever the window can read, the shell can too.
@@ -43,6 +46,7 @@ const form_mod = @import("form.zig");
 const http = @import("http.zig");
 const lexbor = @import("lexbor.zig");
 const page_mod = @import("page.zig");
+const pictures_mod = @import("pictures.zig");
 const url = @import("url.zig");
 const view_mod = @import("view.zig");
 
@@ -77,6 +81,8 @@ var view: view_mod.View = .{};
 /// The page on screen.
 var shown: Page = .{};
 var fetch: fetch_mod.Fetch = .{};
+/// The pictures of the page on screen, and the fetch that brings them.
+var pictures: pictures_mod.Pictures = .{};
 var history: History = .{};
 
 /// The reader's settings as the store last had them, and the event that says
@@ -165,6 +171,7 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     view.show(gpa, &shown, 0);
     choices = proto.settings.load("web");
     settings_changed = proto.settings.watch("web") catch null;
+    pictures.enabled = choices.images;
     if (first) |target| typed(target) else home();
     sleepOn(null);
 
@@ -255,14 +262,18 @@ fn visit(target: []const u8) void {
     const where = url.parse(target) orelse return failed(error.NotAnAddress, target);
     if (where.scheme == .file) return openFile(where);
 
+    // The network is the page's while it comes: the pictures of the one on
+    // screen wait.
+    pictures.pause(gpa);
     fetch.begin(gpa, target);
     _ = settle(.none);
 }
 
 fn stop() void {
     fetch.cancel(gpa);
-    rest();
     if (history.current()) |entry| address.set(entry.address.slice());
+    // The page on screen stays, and so do its pictures still to come.
+    waitFor(.none);
 }
 
 /// An address from what was typed: one written out whole, as it is; a file
@@ -303,16 +314,40 @@ fn fileAddress(path: []const u8, buf: []u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 
 fn tick() bool {
-    return settle(fetch.advance(gpa));
+    return step();
 }
 
 fn woken(index: usize) bool {
     if (settings_changed != null and wakes.at(index) == settings_changed) {
         choices = proto.settings.load("web");
+        pictures.enabled = choices.images;
+        if (!choices.images) pictures.pause(gpa);
+        // Pictures turned off give their room to what the page says they
+        // show, and turned on come as they would have.
+        view.relayout();
+        waitFor(.none);
         return true;
     }
-    _ = settle(fetch.advance(gpa));
+    _ = step();
     // A piece arrived, which the status line counts, whatever else it did.
+    return true;
+}
+
+/// Take the next step of whatever is on its way: the page, or once it is
+/// here, its pictures. True when there is something new to draw.
+fn step() bool {
+    if (fetch.busy()) return settle(fetch.advance(gpa));
+    switch (pictures.advance(gpa, &shown, view.pictureFrom())) {
+        .wait => |wait| waitFor(wait),
+        .settled => {
+            view.relayout();
+            waitFor(.none);
+        },
+        .idle => {
+            rest();
+            return false;
+        },
+    }
     return true;
 }
 
@@ -331,14 +366,34 @@ fn sleepOn(site: ?u32) void {
     proto.app.wakeOn(wakes.slice());
 }
 
-/// Wait on what the fetch waits on next, and act on its end. True when
-/// there is something new to draw.
+/// Wait on what the page's fetch waits on next, and act on its end. True
+/// when there is something new to draw.
 fn settle(wait: fetch_mod.Wait) bool {
+    waitFor(wait);
+    switch (wait) {
+        // The step that blocks is also what a redirect is, which the address
+        // says as it happens.
+        .none => address.set(fetch.address()),
+        .site => {},
+        .over => switch (fetch.state) {
+            .idle => return false,
+            .done => arrive(),
+            .failed => |why| {
+                failed(why, fetch.host());
+                fetch.cancel(gpa);
+            },
+            .connecting, .receiving => unreachable,
+        },
+    }
+    return true;
+}
+
+/// Wait on what a fetch waits on next: for the step that blocks, the next
+/// chance, once this pass has said what it is about to do; for the site, its
+/// news, with a look every so often for one gone quiet; for nothing, nothing.
+fn waitFor(wait: fetch_mod.Wait) void {
     switch (wait) {
         .none => {
-            // The step that blocks comes on the next chance, once this pass
-            // has said what it is about to do. It is also what a redirect is.
-            address.set(fetch.address());
             sleepOn(null);
             proto.app.retick(SOON_US);
         },
@@ -346,20 +401,8 @@ fn settle(wait: fetch_mod.Wait) bool {
             sleepOn(handle);
             proto.app.retick(WATCH_US);
         },
-        .over => {
-            rest();
-            switch (fetch.state) {
-                .idle => return false,
-                .done => arrive(),
-                .failed => |why| {
-                    failed(why, fetch.host());
-                    fetch.cancel(gpa);
-                },
-                .connecting, .receiving => unreachable,
-            }
-        },
+        .over => rest(),
     }
-    return true;
 }
 
 /// The page is here: read it, show it, and give back what it arrived in.
@@ -479,6 +522,15 @@ fn replace(fresh: *Page) void {
     view.show(gpa, &shown, pending_scroll);
     pending_scroll = 0;
     title_stale = true;
+    // Its pictures from the next chance on, once its words are drawn.
+    pictures.show(gpa, &shown, widest());
+    waitFor(.none);
+}
+
+/// The widest a picture is drawn: the widest the column is, at the size the
+/// interface is drawn.
+fn widest() u16 {
+    return @intCast(view_mod.MEASURE * eui.theme.textScale());
 }
 
 /// A page saying why the one asked for is not here.
@@ -651,7 +703,7 @@ fn draw() void {
     }
 
     strip(parts.top, bar);
-    if (view.run(gpa, ctx, parts.body)) |act| switch (act) {
+    if (view.run(gpa, ctx, parts.body, &pictures)) |act| switch (act) {
         .follow => |link| follow(link),
         .submit => |by| submit(by),
     };
@@ -701,14 +753,14 @@ const Strip = struct {
         const size = t.control_height;
         const y = area.y + @divTrunc(area.h - size, 2);
         // The keys a hair apart, and the field a gap after the last.
-        const step = size + 2;
+        const pitch = size + 2;
         const left = area.x + t.padding;
-        const field_x = left + 3 * step + size + t.gap;
+        const field_x = left + 3 * pitch + size + t.gap;
         return .{
             .back = square(left, y, size),
-            .forward = square(left + step, y, size),
-            .reload = square(left + 2 * step, y, size),
-            .home = square(left + 3 * step, y, size),
+            .forward = square(left + pitch, y, size),
+            .reload = square(left + 2 * pitch, y, size),
+            .home = square(left + 3 * pitch, y, size),
             .field = .{ .x = field_x, .y = y, .w = area.right() - t.padding - field_x, .h = size },
         };
     }
@@ -794,7 +846,10 @@ fn status(area: Rect, body: Rect) void {
             } else right.text(" so far");
         },
         .connecting => {},
-        .idle, .done, .failed => arrivedText(&right, body),
+        .idle, .done, .failed => if (pictures.fetching != null) {
+            const tally = pictures.tally();
+            right.print("picture {d} of {d}", .{ tally.settled + 1, tally.total });
+        } else arrivedText(&right, body),
     }
 
     eui.statusbar.run(ctx, area, &.{
@@ -837,6 +892,12 @@ fn key(code: KeyCode, mods: Modifiers) bool {
         focus_next = .field;
     } else if (code == .escape and fetch.busy()) {
         stop();
+    } else if (code == .escape and pictures.busy()) {
+        // Stopping with the page already here stops its pictures, which give
+        // their room to what the page says they show.
+        pictures.halt(gpa);
+        view.relayout();
+        rest();
     } else return false;
     return true;
 }
