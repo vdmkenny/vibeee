@@ -121,40 +121,98 @@ fn pack(bytes: [*]u8, into: []rgb.Colour) void {
 }
 
 /// A square of `side` pixels cut from the middle of a picture and shrunk to
-/// fit: the shape a headshot takes. Each pixel of the square is the mean of
-/// the block it stands for, so a photo shrunk eight times is smooth rather
-/// than a scatter of single pixels. The square lives in `into`, which the
+/// fit: the shape a headshot takes. The square lives in `into`, which the
 /// caller lends and keeps.
 pub fn squareOf(picture: Picture, side: u16, into: []rgb.Colour) Picture {
-    const count = @as(usize, side) * side;
-    std.debug.assert(into.len >= count);
     const cut: usize = @min(picture.width, picture.height);
-    const left = (picture.width - cut) / 2;
-    const top = (picture.height - cut) / 2;
-    for (0..side) |y| {
-        const y0 = top + y * cut / side;
-        const y1 = @max(top + (y + 1) * cut / side, y0 + 1);
-        for (0..side) |x| {
-            const x0 = left + x * cut / side;
-            const x1 = @max(left + (x + 1) * cut / side, x0 + 1);
-            var r: u32 = 0;
-            var g: u32 = 0;
-            var b: u32 = 0;
-            var n: u32 = 0;
-            for (y0..y1) |sy| {
-                for (x0..x1) |sx| {
-                    const pixel = picture.pixels[sy * picture.width + sx];
-                    r += pixel.r;
-                    g += pixel.g;
-                    b += pixel.b;
-                    n += 1;
-                }
-            }
-            into[y * side + x] = .{ .r = @intCast(r / n), .g = @intCast(g / n), .b = @intCast(b / n) };
+    return meanOf(picture, .{
+        .x = (picture.width - cut) / 2,
+        .y = (picture.height - cut) / 2,
+        .w = cut,
+        .h = cut,
+    }, side, side, into);
+}
+
+/// A picture at `width` by `height`: the size a page shows it at, or the
+/// widest a column is ever drawn. The pixels live in `into`, which the caller
+/// lends and keeps.
+pub fn shrunk(picture: Picture, width: u16, height: u16, into: []rgb.Colour) Picture {
+    return meanOf(picture, .{ .x = 0, .y = 0, .w = picture.width, .h = picture.height }, width, height, into);
+}
+
+/// Part of a picture, in its own pixels.
+const Region = struct { x: usize, y: usize, w: usize, h: usize };
+
+/// `region` of `picture` at `width` by `height`. Each pixel is the mean of the
+/// block of the original it stands for, so a photograph shrunk eight times is
+/// smooth rather than a scatter of single pixels; where the original has
+/// fewer pixels than are asked for, a block is the one pixel under it.
+fn meanOf(picture: Picture, region: Region, width: u16, height: u16, into: []rgb.Colour) Picture {
+    const count = @as(usize, width) * height;
+    std.debug.assert(into.len >= count);
+    if (count == 0) return .{ .pixels = into[0..0], .width = 0, .height = 0, .owned = false };
+
+    var down = Shares.of(region.h, height);
+    var top: usize = 0;
+    for (0..height) |y| {
+        const bottom = down.next();
+        var across = Shares.of(region.w, width);
+        var left: usize = 0;
+        for (0..width) |x| {
+            const right = across.next();
+            into[y * width + x] = mean(picture, .{
+                .x = region.x + left,
+                .y = region.y + top,
+                .w = @max(right - left, 1),
+                .h = @max(bottom - top, 1),
+            });
+            left = right;
+        }
+        top = bottom;
+    }
+    return .{ .pixels = into[0..count], .width = width, .height = height, .owned = false };
+}
+
+/// The mean colour of a block of a picture.
+fn mean(picture: Picture, block: Region) rgb.Colour {
+    var r: u32 = 0;
+    var g: u32 = 0;
+    var b: u32 = 0;
+    for (block.y..block.y + block.h) |row| {
+        for (picture.pixels[row * picture.width + block.x ..][0..block.w]) |pixel| {
+            r += pixel.r;
+            g += pixel.g;
+            b += pixel.b;
         }
     }
-    return .{ .pixels = into[0..count], .width = side, .height = side, .owned = false };
+    const n: u32 = @intCast(block.w * block.h);
+    return .{ .r = @intCast(r / n), .g = @intCast(g / n), .b = @intCast(b / n) };
 }
+
+/// Where each of `parts` equal shares of `whole` ends, one after another, in
+/// whole numbers. Walked by carrying what is left over rather than by
+/// dividing at every step, which on this processor is the dearer of the two.
+const Shares = struct {
+    each: usize,
+    over: usize,
+    parts: usize,
+    end: usize = 0,
+    carried: usize = 0,
+
+    fn of(whole: usize, parts: usize) Shares {
+        return .{ .each = whole / parts, .over = whole % parts, .parts = parts };
+    }
+
+    fn next(self: *Shares) usize {
+        self.end += self.each;
+        self.carried += self.over;
+        if (self.carried >= self.parts) {
+            self.carried -= self.parts;
+            self.end += 1;
+        }
+        return self.end;
+    }
+};
 
 /// A picture as a JPEG file, for keeping small. `quality` runs from one to
 /// a hundred. `scratch` holds three bytes a pixel in the writer's own order,
@@ -328,6 +386,34 @@ test "a square is cut from the middle and shrunk by the mean" {
     );
     var one: [1]rgb.Colour = undefined;
     try testing.expectEqual(rgb.Colour.hex(0x7F7F7F), squareOf(wide, 1, &one).pixels[0]);
+}
+
+test "shares of a whole end where dividing would put them" {
+    var shares = Shares.of(10, 4);
+    for ([_]usize{ 2, 5, 7, 10 }) |end| try testing.expectEqual(end, shares.next());
+}
+
+test "a picture shrunk is the mean of each block it stands for" {
+    // Four by two: a block of red and green on the left, and of blue and
+    // white on the right.
+    var pixels = [_]rgb.Colour{
+        .hex(0xFF0000), .hex(0x00FF00), .hex(0x0000FF), .hex(0xFFFFFF),
+        .hex(0xFF0000), .hex(0x00FF00), .hex(0x0000FF), .hex(0xFFFFFF),
+    };
+    const wide = Picture{ .pixels = &pixels, .width = 4, .height = 2, .owned = false };
+    var two: [2]rgb.Colour = undefined;
+    const small = shrunk(wide, 2, 1, &two);
+    try testing.expectEqual(@as(u16, 2), small.width);
+    try testing.expectEqual(@as(u16, 1), small.height);
+    try testing.expectEqual(rgb.Colour.hex(0x7F7F00), small.pixels[0]);
+    try testing.expectEqual(rgb.Colour.hex(0x7F7FFF), small.pixels[1]);
+
+    // Asked for more than there is, each pixel is the one under it.
+    var eight: [8 * 2]rgb.Colour = undefined;
+    const grown = shrunk(wide, 8, 2, &eight);
+    try testing.expectEqual(rgb.Colour.hex(0xFF0000), grown.pixels[0]);
+    try testing.expectEqual(rgb.Colour.hex(0xFF0000), grown.pixels[1]);
+    try testing.expectEqual(rgb.Colour.hex(0xFFFFFF), grown.pixels[7]);
 }
 
 test "a picture written as JPEG reads back as the picture" {
