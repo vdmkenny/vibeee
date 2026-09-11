@@ -116,6 +116,7 @@ pub const Tag = enum(usize) {
     template = 0x00b6,
     textarea = 0x00b7,
     th = 0x00ba,
+    thead = 0x00bb,
     title = 0x00bd,
     tr = 0x00be,
     tt = 0x00c0,

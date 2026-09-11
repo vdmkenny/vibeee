@@ -150,6 +150,7 @@ CHECK("td is 0x00b5", LXB_TAG_TD == 0x00b5);
 CHECK("template is 0x00b6", LXB_TAG_TEMPLATE == 0x00b6);
 CHECK("textarea is 0x00b7", LXB_TAG_TEXTAREA == 0x00b7);
 CHECK("th is 0x00ba", LXB_TAG_TH == 0x00ba);
+CHECK("thead is 0x00bb", LXB_TAG_THEAD == 0x00bb);
 CHECK("title is 0x00bd", LXB_TAG_TITLE == 0x00bd);
 CHECK("tr is 0x00be", LXB_TAG_TR == 0x00be);
 CHECK("tt is 0x00c0", LXB_TAG_TT == 0x00c0);

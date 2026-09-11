@@ -20,6 +20,10 @@
 //! `recolour` is what does both, so a page and the rest of the system agree
 //! about what readable is.
 //!
+//! A table set as a grid is painted as its cells' grounds, with the rule
+//! colour it is filled with showing between them, and its cells' words over
+//! those.
+//!
 //! A page's pictures are drawn from what `pictures` keeps, sampled to the
 //! room the layout gave them. One that has not arrived is stood in for by what
 //! the page says it shows, in a frame the size the page gives it where it
@@ -403,7 +407,7 @@ pub const View = struct {
     fn runControl(self: *View, ctx: *eui.Context, page: *const Page, index: u16, rect: Rect) ?Action {
         const control = page.controls.items[index];
         const before = eui.theme.wear(tintOf(page, control));
-        defer _ = eui.theme.wear(before);
+        defer eui.theme.unwear(before);
         switch (control.kind) {
             .line => |line| {
                 if (line.slot >= self.lines.len) return null;
@@ -473,18 +477,22 @@ pub const View = struct {
     /// go somewhere, or a picture inside a link.
     fn linkAt(self: *const View, page: *const Page, column: Rect, area: Rect, x: i32, y: i32) ?u16 {
         const doc_y = y - area.y + self.scroll;
-        const index = self.layout.lineAt(doc_y);
-        if (index >= self.layout.lines.items.len) return null;
-        const line = self.layout.lines.items[index];
-        if (doc_y < line.y) return null;
-        for (self.layout.fragsOf(line)) |frag| {
-            const left = column.x + frag.x;
-            if (x < left or x >= left + frag.width) continue;
-            return switch (page.runs.items[frag.run]) {
-                .text => |text| text.link,
-                .picture => |which| page.pictures.items[which].link,
-                .control, .line_break => null,
-            };
+        const lines = self.layout.lines.items;
+        // Lines side by side, as a table's cells' are, share the height they
+        // stand at: each one there is looked in.
+        var i = self.layout.lineAt(doc_y);
+        while (i < lines.len and lines[i].y <= doc_y) : (i += 1) {
+            const line = lines[i];
+            if (doc_y >= line.y + line.height) continue;
+            for (self.layout.fragsOf(line)) |frag| {
+                const left = column.x + frag.x;
+                if (x < left or x >= left + frag.width) continue;
+                return switch (page.runs.items[frag.run]) {
+                    .text => |text| text.link,
+                    .picture => |which| page.pictures.items[which].link,
+                    .control, .line_break => null,
+                };
+            }
         }
         return null;
     }
@@ -533,9 +541,31 @@ const Pass = struct {
         const reach = @max(self.spacing.inset, self.spacing.above_heading);
         const top = band.y - self.area.y + self.view.scroll - reach;
         const bottom = band.bottom() - self.area.y + self.view.scroll + reach;
+        for (self.view.layout.tables.items) |grid| self.table(s, grid);
         const lines = self.view.layout.lines.items;
         var i = self.view.layout.lineAt(top);
         while (i < lines.len and lines[i].y < bottom) : (i += 1) self.line(s, i);
+    }
+
+    /// A table set as a grid: the rule colour it is filled with, showing
+    /// between its cells, and each cell's own ground.
+    fn table(self: Pass, s: Surface, grid: layout_mod.Table) void {
+        const area = self.onScreen(grid.area);
+        if (area.intersect(s.clip).isEmpty()) return;
+        s.fill(area, self.theme.line);
+        for (self.view.layout.boxesOf(grid)) |box| s.fill(self.onScreen(box.area), self.cellGround(box.cell));
+    }
+
+    /// Where a box on the page is on screen.
+    fn onScreen(self: Pass, area: layout_mod.Area) Rect {
+        return .{ .x = self.column.x + area.x, .y = self.area.y + area.y - self.view.scroll, .w = area.w, .h = area.h };
+    }
+
+    /// What a table's cell is painted with: its own ground, a header's, or
+    /// the page's.
+    fn cellGround(self: Pass, index: u32) Color {
+        const cell = self.page.cells.items[index];
+        return self.adapted(cell.ground) orelse if (cell.header) self.theme.surface else self.ground;
     }
 
     fn line(self: Pass, s: Surface, index: usize) void {
@@ -548,6 +578,9 @@ const Pass = struct {
         const indent = @as(i32, block.depth) * self.spacing.indent;
         const x = self.column.x + indent;
         const w = self.column.w - indent;
+
+        // A cell's words are on the cell, which its table has painted.
+        if (at.cell) |cell| return self.words(s, at, y, self.cellGround(cell));
 
         // What the words are on: the block's own ground, a preformatted
         // band, or the page.
@@ -588,7 +621,13 @@ const Pass = struct {
         }
 
         if (at.leads) self.marker(s, block.marker, x, y + at.baseline, recolour.legible(t.text_dim, under));
+        self.words(s, at, y, under);
+    }
 
+    /// A line's words and the pictures among them, `y` being its top on
+    /// screen, in inks that read on `under`.
+    fn words(self: Pass, s: Surface, at: layout_mod.Line, y: i32, under: Color) void {
+        const scale = self.metrics.scale;
         for (self.view.layout.fragsOf(at)) |frag| {
             const text = switch (self.page.runs.items[frag.run]) {
                 .text => |text| text,
@@ -598,11 +637,11 @@ const Pass = struct {
                 },
                 .control, .line_break => continue,
             };
-            const words = frag.shape.words;
+            const span = frag.shape.words;
             const face = text.look.face;
             const ink = self.inkOf(text.look, under);
             const left = self.column.x + frag.x;
-            s.textIn(Metrics.font(face), left, y + at.baseline - self.metrics.ascent(face), self.page.text.items[words.start..][0..words.len], ink);
+            s.textIn(Metrics.font(face), left, y + at.baseline - self.metrics.ascent(face), self.page.text.items[span.start..][0..span.len], ink);
             if (text.look.ink == .link) {
                 s.fill(.{ .x = left, .y = y + at.baseline + scale, .w = frag.width, .h = scale }, ink);
             }

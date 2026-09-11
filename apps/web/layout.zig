@@ -7,6 +7,12 @@
 //! on one line are one fragment drawn with one call, because the space
 //! between them is in the text already.
 //!
+//! A table set as a grid has columns as wide as its cells need where they fit
+//! the column, and its cells' words are set in them as a block's are in the
+//! page's. Its cells' lines stand side by side, so lines are kept in the
+//! order of their tops, each with how far down the page it or any before it
+//! reaches, which is what finding the first line on screen halves over.
+//!
 //! Pure arithmetic over a page and something that measures, host-tested with
 //! a measure of a fixed width a byte.
 
@@ -23,6 +29,16 @@ pub const Error = std.mem.Allocator.Error;
 
 /// How much room a control or a picture takes on a line.
 pub const Size = struct { w: i32, h: i32 };
+
+/// A box on the page, from the column's left edge and the page's top.
+pub const Area = struct { x: i32, y: i32, w: i32, h: i32 };
+
+/// A table set as a grid: where it is, and its cells' boxes among the
+/// layout's.
+pub const Table = struct { area: Area, first: u32, count: u32 };
+
+/// Where one cell of a grid is, and which of the page's cells it is.
+pub const Box = struct { area: Area, cell: u32 };
 
 /// One thing on a line: words from one run, or a control or a picture.
 pub const Frag = struct {
@@ -73,6 +89,10 @@ pub const Line = struct {
     /// The first line of its block: where a list marker goes, and where a
     /// preformatted band begins.
     leads: bool,
+    /// The table cell it is in, among the page's, where it is in one.
+    cell: ?u32 = null,
+    /// How far down the page this line or any before it reaches.
+    reach: i32 = 0,
 };
 
 /// The room between and around blocks, from the height of a line of body
@@ -89,6 +109,10 @@ pub const Spacing = struct {
     inset: i32,
     /// A rule's height; the line is in the middle of it.
     rule: i32,
+    /// Between a table cell's words and its edges.
+    cell: i32,
+    /// The rule between a table's cells.
+    hairline: i32,
 
     pub fn forLine(height: i32) Spacing {
         return .{
@@ -99,6 +123,8 @@ pub const Spacing = struct {
             .indent = height + 4,
             .inset = @divTrunc(height, 2),
             .rule = height,
+            .cell = @divTrunc(height, 4),
+            .hairline = @max(@divTrunc(height, 18), 1),
         };
     }
 };
@@ -106,6 +132,9 @@ pub const Spacing = struct {
 pub const Layout = struct {
     lines: std.ArrayList(Line) = .empty,
     frags: std.ArrayList(Frag) = .empty,
+    /// The tables set as grids, and where each of their cells is.
+    tables: std.ArrayList(Table) = .empty,
+    boxes: std.ArrayList(Box) = .empty,
     /// How tall the whole page is.
     height: i32 = 0,
     /// The column it was laid out for, which is what says it needs doing
@@ -115,6 +144,8 @@ pub const Layout = struct {
     pub fn deinit(self: *Layout, gpa: std.mem.Allocator) void {
         self.lines.deinit(gpa);
         self.frags.deinit(gpa);
+        self.tables.deinit(gpa);
+        self.boxes.deinit(gpa);
         self.* = .{};
     }
 
@@ -122,15 +153,20 @@ pub const Layout = struct {
         return self.frags.items[line.first..][0..line.count];
     }
 
-    /// The first line reaching below `y`, which is where drawing a view that
-    /// starts at `y` begins. Found by halving: a long page has thousands of
-    /// lines, and a scroll asks this every pass.
-    pub fn lineAt(self: *const Layout, y: i32) usize {
-        return std.sort.partitionPoint(Line, self.lines.items, y, endsAbove);
+    pub fn boxesOf(self: *const Layout, table: Table) []const Box {
+        return self.boxes.items[table.first..][0..table.count];
     }
 
-    fn endsAbove(y: i32, line: Line) bool {
-        return line.y + line.height <= y;
+    /// The first line that it or a line before it reaches below `y`, which is
+    /// where drawing a view that starts at `y` begins. Found by halving over
+    /// how far down the lines reach, which only grows: a long page has
+    /// thousands of lines, and a scroll asks this every pass.
+    pub fn lineAt(self: *const Layout, y: i32) usize {
+        return std.sort.partitionPoint(Line, self.lines.items, y, reachesAbove);
+    }
+
+    fn reachesAbove(y: i32, line: Line) bool {
+        return line.reach <= y;
     }
 
     /// What begins the first line reaching below `y` that has anything on
@@ -174,7 +210,7 @@ pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spa
     var out = Layout{ .width = width };
     errdefer out.deinit(gpa);
 
-    var p = Placer(@TypeOf(metrics)){ .gpa = gpa, .page = page, .out = &out, .metrics = metrics };
+    var p = Placer(@TypeOf(metrics)){ .gpa = gpa, .page = page, .out = &out, .metrics = metrics, .spacing = spacing };
 
     var previous: ?Block = null;
     for (page.blocks.items, 0..) |block, index| {
@@ -192,18 +228,25 @@ pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spa
         // edge still has to put its words somewhere.
         p.room = @max(width - p.x0 - inset, spacing.indent * 2);
 
-        if (block.kind == .rule) {
-            try out.lines.append(gpa, .{
-                .y = p.y,
-                .height = spacing.rule,
-                .baseline = 0,
-                .first = @intCast(out.frags.items.len),
-                .count = 0,
-                .block = @intCast(index),
-                .leads = true,
-            });
-            p.y += spacing.rule;
-            continue;
+        switch (block.kind) {
+            .rule => {
+                try out.lines.append(gpa, .{
+                    .y = p.y,
+                    .height = spacing.rule,
+                    .baseline = 0,
+                    .first = @intCast(out.frags.items.len),
+                    .count = 0,
+                    .block = @intCast(index),
+                    .leads = true,
+                });
+                p.y += spacing.rule;
+                continue;
+            },
+            .table => |grid| {
+                try p.table(grid);
+                continue;
+            },
+            else => {},
         }
 
         p.y += inset;
@@ -216,6 +259,13 @@ pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spa
         p.y += inset;
     }
 
+    // A table's cells' lines stand side by side, and one may reach below the
+    // next, so how far down any has reached is carried along.
+    var reach: i32 = 0;
+    for (out.lines.items) |*line| {
+        reach = @max(reach, line.y + line.height);
+        line.reach = reach;
+    }
     out.height = p.y;
     return out;
 }
@@ -239,12 +289,15 @@ fn Placer(comptime Metrics: type) type {
         page: *const Page,
         out: *Layout,
         metrics: Metrics,
+        spacing: Spacing,
 
         y: i32 = 0,
         block: u32 = 0,
         leads: bool = false,
         /// Which way the block's lines lean.
         alignment: page_mod.Alignment = .start,
+        /// The table cell being set, among the page's, while one is.
+        cell: ?u32 = null,
         /// Where the block's text starts from the column edge, and how much
         /// of the column it has.
         x0: i32 = 0,
@@ -311,6 +364,7 @@ fn Placer(comptime Metrics: type) type {
                 .count = @intCast(self.out.frags.items.len - self.first),
                 .block = self.block,
                 .leads = self.leads,
+                .cell = self.cell,
             });
             self.y += self.ascent + self.descent;
             self.leads = false;
@@ -366,11 +420,7 @@ fn Placer(comptime Metrics: type) type {
         /// line. A control too wide is cut to the column; a picture comes
         /// already fitted to it, keeping its shape.
         fn box(self: *Self, index: u32, run: page_mod.Run) Error!void {
-            const size: Size = switch (run) {
-                .control => |which| self.metrics.control(self.page, self.page.controls.items[which]),
-                .picture => |which| self.metrics.picture(self.page, which, self.room),
-                .text, .line_break => unreachable,
-            };
+            const size = self.sizeOf(run);
             const width = @min(size.w, self.room);
             if (self.pen > 0 and self.pen + width > self.room) try self.endLine(false);
             const descent = self.metrics.height(.body) - self.metrics.ascent(.body);
@@ -519,7 +569,221 @@ fn Placer(comptime Metrics: type) type {
                 if (rest.len > 0) try self.endLine(false);
             }
         }
+
+        /// The room a control or a picture takes, a picture fitted to the room
+        /// there is.
+        fn sizeOf(self: *const Self, run: page_mod.Run) Size {
+            return switch (run) {
+                .control => |which| self.metrics.control(self.page, self.page.controls.items[which]),
+                .picture => |which| self.metrics.picture(self.page, which, self.room),
+                .text, .line_break => unreachable,
+            };
+        }
+
+        /// What a cell's words need at the least, which is their widest word
+        /// or box, and would take at the most, which is their longest line
+        /// with nothing but their own line ends to break it.
+        fn extent(self: *const Self, cell: page_mod.Cell) Extent {
+            var out: Extent = .{};
+            var line: i32 = 0;
+            for (self.page.cellRuns(cell)) |run| switch (run) {
+                .text => |text| {
+                    const face = text.look.face;
+                    const words = self.page.textOf(text);
+                    line += self.metrics.width(face, words);
+                    var each = std.mem.tokenizeScalar(u8, words, ' ');
+                    while (each.next()) |word| out.least = @max(out.least, self.metrics.width(face, word));
+                },
+                .control, .picture => {
+                    const size = self.sizeOf(run);
+                    out.least = @max(out.least, size.w);
+                    line += size.w;
+                },
+                .line_break => {
+                    out.most = @max(out.most, line);
+                    line = 0;
+                },
+            };
+            out.most = @max(out.most, line);
+            return out;
+        }
+
+        /// A table set as a grid where what its cells need at the least fits
+        /// the room, and its cells one after another where it does not.
+        ///
+        /// Each column is as wide as its widest cell would be on one line,
+        /// where every column fits so; otherwise each has what it needs and a
+        /// share of the rest by how much more it would take. A cell's words
+        /// are set in its column as a block's are in the page's. A row is as
+        /// tall as its tallest cell, and a cell spanning rows stretches the
+        /// last of them where it needs more.
+        fn table(self: *Self, grid: page_mod.Grid) Error!void {
+            const cells = self.page.cellsOf(grid);
+            const columns: usize = grid.columns;
+            const pad = self.spacing.cell;
+            const hairline = self.spacing.hairline;
+
+            // Cells a column wide first, then those across several, which
+            // widen their columns only by what the columns lack.
+            var least: [page_mod.COLUMNS_MAX]i32 = @splat(0);
+            var most: [page_mod.COLUMNS_MAX]i32 = @splat(0);
+            for (cells) |cell| {
+                const at = spanOf(cell, columns);
+                if (at.end - at.start != 1) continue;
+                const need = self.extent(cell);
+                least[at.start] = @max(least[at.start], need.least);
+                most[at.start] = @max(most[at.start], need.most);
+            }
+            for (cells) |cell| {
+                const at = spanOf(cell, columns);
+                if (at.end - at.start == 1) continue;
+                const need = self.extent(cell);
+                const between = @as(i32, @intCast(at.end - at.start - 1)) * (2 * pad + hairline);
+                spread(least[at.start..at.end], need.least - between);
+                spread(most[at.start..at.end], need.most - between);
+            }
+
+            // What the columns' words have once each cell's padding and the
+            // rules around and between them are off.
+            const room = self.room - @as(i32, @intCast(columns)) * (2 * pad + hairline) - hairline;
+            const least_sum = sum(least[0..columns]);
+            if (least_sum > room) return self.linear(cells);
+            const most_sum = sum(most[0..columns]);
+
+            // Where each column's box starts; the last is where the table's
+            // last rule ends.
+            var edges: [page_mod.COLUMNS_MAX + 1]i32 = undefined;
+            edges[0] = self.x0 + hairline;
+            for (0..columns) |c| {
+                const width = if (most_sum <= room)
+                    most[c]
+                else
+                    least[c] + @divTrunc((room - least_sum) * (most[c] - least[c]), most_sum - least_sum);
+                edges[c + 1] = edges[c] + width + 2 * pad + hairline;
+            }
+
+            const rows: usize = grid.rows;
+            const tops = try self.gpa.alloc(i32, rows);
+            defer self.gpa.free(tops);
+            const bottoms = try self.gpa.alloc(i32, rows);
+            defer self.gpa.free(bottoms);
+            // How far down each row must reach for cells spanning into it.
+            const needs = try self.gpa.alloc(i32, rows);
+            defer self.gpa.free(needs);
+            @memset(needs, 0);
+
+            const top = self.y;
+            const first_line = self.out.lines.items.len;
+            var y = top + hairline;
+            var next: usize = 0;
+            for (0..rows) |r| {
+                tops[r] = y;
+                var bottom = y;
+                while (next < cells.len and cells[next].row == r) : (next += 1) {
+                    const cell = cells[next];
+                    const at = spanOf(cell, columns);
+                    const left = edges[at.start] + pad;
+                    const width = edges[at.end] - hairline - pad - left;
+                    const end = try self.setCell(grid.first + @as(u32, @intCast(next)), cell, left, width, y + pad) + pad;
+                    const last = @min(r + cell.down - 1, rows - 1);
+                    if (last == r) bottom = @max(bottom, end) else needs[last] = @max(needs[last], end);
+                }
+                bottoms[r] = @max(bottom, needs[r]);
+                y = bottoms[r] + hairline;
+            }
+
+            const first_box: u32 = @intCast(self.out.boxes.items.len);
+            for (cells, grid.first..) |cell, index| {
+                const at = spanOf(cell, columns);
+                const last = @min(@as(usize, cell.row) + cell.down - 1, rows - 1);
+                try self.out.boxes.append(self.gpa, .{
+                    .area = .{
+                        .x = edges[at.start],
+                        .y = tops[cell.row],
+                        .w = edges[at.end] - hairline - edges[at.start],
+                        .h = bottoms[last] - tops[cell.row],
+                    },
+                    .cell = @intCast(index),
+                });
+            }
+            try self.out.tables.append(self.gpa, .{
+                .area = .{ .x = self.x0, .y = top, .w = edges[columns] - self.x0, .h = y - top },
+                .first = first_box,
+                .count = @intCast(cells.len),
+            });
+
+            // Lines side by side are kept in the order of their tops.
+            std.sort.block(Line, self.out.lines.items[first_line..], {}, topAbove);
+            self.y = y;
+        }
+
+        /// Set a cell's words `width` wide from `x`, its first line's top at
+        /// `top`, and say where they end.
+        fn setCell(self: *Self, index: u32, cell: page_mod.Cell, x: i32, width: i32, top: i32) Error!i32 {
+            const x0 = self.x0;
+            const room = self.room;
+            defer {
+                self.x0 = x0;
+                self.room = room;
+                self.cell = null;
+            }
+            self.x0 = x;
+            self.room = @max(width, 1);
+            self.alignment = cell.alignment;
+            self.cell = index;
+            self.y = top;
+            self.leads = true;
+            self.startLine();
+            try self.flow(cell.first, cell.first + cell.count);
+            try self.endLine(false);
+            return self.y;
+        }
+
+        /// A table too wide to set as a grid: its cells one after another, a
+        /// row's close together and the rows apart.
+        fn linear(self: *Self, cells: []const page_mod.Cell) Error!void {
+            for (cells, 0..) |cell, i| {
+                if (i > 0) self.y += if (cell.row != cells[i - 1].row) self.spacing.paragraph else self.spacing.item;
+                self.leads = true;
+                self.alignment = cell.alignment;
+                self.startLine();
+                try self.flow(cell.first, cell.first + cell.count);
+                try self.endLine(false);
+            }
+        }
     };
+}
+
+/// What a cell's words need at the least and would take at the most.
+const Extent = struct { least: i32 = 0, most: i32 = 0 };
+
+/// The columns a cell spans, from the first to past the last, kept inside
+/// the table's.
+const Span = struct { start: usize, end: usize };
+
+fn spanOf(cell: page_mod.Cell, columns: usize) Span {
+    const start = @min(@as(usize, cell.column), columns - 1);
+    return .{ .start = start, .end = @max(@min(@as(usize, cell.column) + cell.across, columns), start + 1) };
+}
+
+/// Widen `columns`, which a cell spans, by what the cell needs past their
+/// sum: shared evenly, the last taking what does not divide.
+fn spread(columns: []i32, needs: i32) void {
+    const short = needs - sum(columns);
+    if (short <= 0) return;
+    const count: i32 = @intCast(columns.len);
+    for (columns) |*width| width.* += @divTrunc(short, count);
+    columns[columns.len - 1] += @rem(short, count);
+}
+
+fn sum(values: []const i32) i32 {
+    var total: i32 = 0;
+    for (values) |value| total += value;
+    return total;
+}
+
+fn topAbove(_: void, a: Line, b: Line) bool {
+    return a.y < b.y;
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +1062,63 @@ test "a block's lines lean where it says, by the room each leaves" {
     // two at the end leave eight before them.
     try testing.expectEqual(@as(i32, 18), b.line(0)[0].x);
     try testing.expectEqual(@as(i32, 48), b.line(1)[0].x);
+}
+
+/// A table of words, a row a slice, set as a grid.
+fn tableOf(b: *Built, rows: []const []const []const u8) !void {
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    try builder.beginTable();
+    for (rows) |row| {
+        builder.beginRow();
+        for (row) |words| {
+            try builder.beginCell(.{});
+            try builder.words(words);
+        }
+    }
+    try builder.endTable();
+    try builder.finish();
+}
+
+test "a table's columns are as wide as their widest cells where they fit" {
+    var b = Built{};
+    defer b.deinit();
+    try tableOf(&b, &.{ &.{ "ab", "abcdef" }, &.{ "a", "b" } });
+    b.layout = try build(testing.allocator, &b.page, 600, eighteen, Fixed{});
+
+    // Four between each cell's words and its edges, and a rule of one
+    // between the cells and around them: 1 + 4 + 12 + 4 + 1 + 4 + 36 + 4 + 1.
+    try testing.expectEqual(@as(i32, 67), b.layout.tables.items[0].area.w);
+    // The first row's cells stand side by side, and the second's below them.
+    const lines = b.layout.lines.items;
+    try testing.expectEqual(@as(usize, 4), lines.len);
+    try testing.expectEqual(lines[0].y, lines[1].y);
+    try testing.expectEqual(@as(i32, 5), b.line(0)[0].x);
+    try testing.expectEqual(@as(i32, 26), b.line(1)[0].x);
+    try testing.expect(lines[2].y > lines[0].y);
+    // A point in the first row finds its lines.
+    try testing.expectEqual(@as(usize, 0), b.layout.lineAt(lines[0].y + 1));
+}
+
+test "a table narrower than its words shares the room, and one too narrow reads a cell at a time" {
+    var b = Built{};
+    defer b.deinit();
+    try tableOf(&b, &.{&.{ "aa bb", "cc dd ee" }});
+    // Fifty-four for the words: twenty-four they need, thirty more shared by
+    // how much more each would take, eighteen to thirty-six.
+    b.layout = try build(testing.allocator, &b.page, 73, eighteen, Fixed{});
+    const boxes = b.layout.boxes.items;
+    try testing.expectEqual(@as(i32, 22 + 8), boxes[0].area.w);
+    try testing.expectEqual(@as(i32, 32 + 8), boxes[1].area.w);
+
+    // Words longer than a block's least room is wide, rules and padding and
+    // all, read a cell at a time.
+    var narrow = Built{};
+    defer narrow.deinit();
+    try tableOf(&narrow, &.{&.{ "aaaaaaa", "bbbbbbb" }});
+    narrow.layout = try build(testing.allocator, &narrow.page, 30, eighteen, Fixed{});
+    try testing.expectEqual(@as(usize, 0), narrow.layout.tables.items.len);
+    const lines = narrow.layout.lines.items;
+    try testing.expect(lines.len >= 2 and lines[1].y > lines[0].y);
 }
 
 test "a place in the page is found again once the page is laid out anew" {

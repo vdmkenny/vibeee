@@ -84,7 +84,7 @@ pub const Run = union(enum) {
     line_break,
 };
 
-pub const Kind = enum(u3) {
+pub const Kind = union(enum) {
     paragraph,
     heading,
     /// A list entry, with its marker in the margin.
@@ -93,7 +93,51 @@ pub const Kind = enum(u3) {
     preformatted,
     /// A horizontal rule: no runs, only the line.
     rule,
+    /// A table set as a grid. Its runs are its cells', one cell after
+    /// another.
+    table: Grid,
 };
+
+/// A table's cells, among the page's, and the columns and rows they make.
+pub const Grid = struct {
+    first: u32 = 0,
+    count: u32 = 0,
+    columns: u16 = 0,
+    rows: u16 = 0,
+};
+
+/// One cell of a table set as a grid.
+pub const Cell = struct {
+    /// Its runs, among the page's.
+    first: u32,
+    count: u32 = 0,
+    /// Where it sits in its table, and how many columns and rows it spans.
+    row: u16,
+    column: u16,
+    across: u16 = 1,
+    down: u16 = 1,
+    /// A header's, which says what the cells in its row or column hold.
+    header: bool = false,
+    ground: Swatch = .none,
+    alignment: Alignment = .start,
+};
+
+/// What a cell is, as the page gives it.
+pub const CellSpec = struct {
+    header: bool = false,
+    across: u16 = 1,
+    down: u16 = 1,
+    /// Across every column the table comes to have, as a caption is.
+    whole_row: bool = false,
+    ground: Swatch = .none,
+    alignment: Alignment = .start,
+};
+
+/// The most columns a table is set in. A cell past them is left out, words
+/// and all.
+pub const COLUMNS_MAX = 32;
+/// The most rows one cell spans.
+pub const SPAN_MAX = 64;
 
 pub const Marker = union(enum) {
     none,
@@ -225,6 +269,8 @@ pub const Page = struct {
     pictures: std.ArrayList(Picture) = .empty,
     /// The page's own colours, which swatches name.
     palette: std.ArrayList(rgb.Colour) = .empty,
+    /// The cells of its tables set as grids.
+    cells: std.ArrayList(Cell) = .empty,
     /// How many of the controls are lines to type in, and boxes to tick.
     lines: u16 = 0,
     ticks: u16 = 0,
@@ -245,11 +291,20 @@ pub const Page = struct {
         self.controls.deinit(gpa);
         self.pictures.deinit(gpa);
         self.palette.deinit(gpa);
+        self.cells.deinit(gpa);
         self.* = .{};
     }
 
     pub fn runsOf(self: *const Page, block: Block) []const Run {
         return self.runs.items[block.first..][0..block.count];
+    }
+
+    pub fn cellsOf(self: *const Page, grid: Grid) []const Cell {
+        return self.cells.items[grid.first..][0..grid.count];
+    }
+
+    pub fn cellRuns(self: *const Page, cell: Cell) []const Run {
+        return self.runs.items[cell.first..][0..cell.count];
     }
 
     pub fn textOf(self: *const Page, text: Text) []const u8 {
@@ -295,18 +350,152 @@ pub const Builder = struct {
     space: bool = false,
     /// Characters since the last line end in preformatted text, for tabs.
     column: usize = 0,
+    /// The table being filled, while one is.
+    filling: ?Filling = null,
 
     pub const Error = std.mem.Allocator.Error;
 
+    /// A table as its cells arrive: the rows begun and the widest any has
+    /// been, where the row's next cell goes at the earliest, which columns
+    /// cells from rows above still cover, and the cell being filled.
+    const Filling = struct {
+        rows: u16 = 0,
+        columns: u16 = 0,
+        column: u16 = 0,
+        in_row: bool = false,
+        /// The columns a cell from a row above covers in the row being
+        /// filled, and for each column how many rows after this one such a
+        /// cell still covers.
+        covered: std.StaticBitSet(COLUMNS_MAX) = .initEmpty(),
+        below: [COLUMNS_MAX]u16 = @splat(0),
+        /// Among the page's cells.
+        cell: ?u32 = null,
+    };
+
     /// End the block being filled, if anything was put in it, and say what
-    /// the next one will be.
+    /// the next one will be. Inside a table a block is a line of its cell
+    /// rather than a block of the page's.
     pub fn boundary(self: *Builder, next: Block) Error!void {
+        if (self.filling != null) return self.cellBreak();
         try self.close();
         self.next = next;
     }
 
     pub fn finish(self: *Builder) Error!void {
+        if (self.filling != null) try self.endTable();
         try self.close();
+    }
+
+    /// Begin a table set as a grid, as a block of its own.
+    pub fn beginTable(self: *Builder) Error!void {
+        try self.close();
+        var block = self.next;
+        block.kind = .{ .table = .{ .first = @intCast(self.page.cells.items.len) } };
+        block.marker = .none;
+        block.first = @intCast(self.page.runs.items.len);
+        block.count = 0;
+        self.open = block;
+        self.filling = .{};
+    }
+
+    /// Begin a row of the table being filled.
+    pub fn beginRow(self: *Builder) void {
+        self.endCell();
+        const fill = if (self.filling) |*table| table else return;
+        fill.in_row = true;
+        fill.rows +|= 1;
+        fill.column = 0;
+        // A cell from a row above covers the rows it still reaches into.
+        fill.covered = .initEmpty();
+        for (&fill.below, 0..) |*left, column| {
+            if (left.* == 0) continue;
+            fill.covered.set(column);
+            left.* -= 1;
+        }
+    }
+
+    /// Begin a cell of the row being filled, in the first column from where
+    /// the row has got to that no cell from above covers.
+    pub fn beginCell(self: *Builder, spec: CellSpec) Error!void {
+        if (self.filling == null) return;
+        if (self.filling.?.in_row) self.endCell() else self.beginRow();
+        const fill = &self.filling.?;
+        var column = if (spec.whole_row) 0 else fill.column;
+        while (column < COLUMNS_MAX and fill.covered.isSet(column)) column += 1;
+        if (column == COLUMNS_MAX) return;
+        const across: u16 = if (spec.whole_row) 0 else @min(@max(spec.across, 1), COLUMNS_MAX - column);
+        const down: u16 = @min(@max(spec.down, 1), SPAN_MAX);
+        for (fill.below[column..][0..@max(across, 1)]) |*left| left.* = @max(left.*, down - 1);
+        fill.column = column + @max(across, 1);
+        if (!spec.whole_row) fill.columns = @max(fill.columns, fill.column);
+        try self.page.cells.append(self.gpa, .{
+            .first = @intCast(self.page.runs.items.len),
+            .row = fill.rows - 1,
+            .column = column,
+            .across = across,
+            .down = down,
+            .header = spec.header,
+            .ground = spec.ground,
+            .alignment = spec.alignment,
+        });
+        fill.cell = @intCast(self.page.cells.items.len - 1);
+        self.space = false;
+        self.column = 0;
+    }
+
+    /// End the cell being filled.
+    pub fn endCell(self: *Builder) void {
+        const fill = if (self.filling) |*table| table else return;
+        const index = fill.cell orelse return;
+        const cell = &self.page.cells.items[index];
+        cell.count = @as(u32, @intCast(self.page.runs.items.len)) - cell.first;
+        fill.cell = null;
+        self.space = false;
+    }
+
+    /// End the row being filled.
+    pub fn endRow(self: *Builder) void {
+        self.endCell();
+        if (self.filling) |*fill| fill.in_row = false;
+    }
+
+    /// End the table being filled, which ends its block.
+    pub fn endTable(self: *Builder) Error!void {
+        self.endRow();
+        const fill = self.filling orelse return;
+        self.filling = null;
+        if (self.open) |*block| {
+            const grid = &block.kind.table;
+            grid.count = @as(u32, @intCast(self.page.cells.items.len)) - grid.first;
+            grid.columns = @max(fill.columns, 1);
+            for (self.page.cells.items[grid.first..]) |*cell| {
+                // A cell across the whole of a row is across every column.
+                if (cell.across == 0) cell.across = grid.columns;
+                grid.rows = @max(grid.rows, cell.row +| cell.down);
+            }
+        }
+        try self.close();
+    }
+
+    /// Inside a table, a line ends where a block would, where the cell has
+    /// anything on the line so far.
+    fn cellBreak(self: *Builder) Error!void {
+        if (self.midLine()) try self.lineBreak();
+    }
+
+    /// Whether words and what sits among them have somewhere to go: anywhere
+    /// but between the cells of a table.
+    fn placing(self: *const Builder) bool {
+        const fill = self.filling orelse return true;
+        return fill.cell != null;
+    }
+
+    /// Whether the cell being filled has nothing in it yet, or there is none
+    /// to fill.
+    fn cellEmpty(self: *const Builder) bool {
+        const fill = self.filling orelse return false;
+        const index = fill.cell orelse return true;
+        return self.page.runs.items.len == self.page.cells.items[index].first;
     }
 
     /// The page's title, with its spaces made single.
@@ -344,6 +533,7 @@ pub const Builder = struct {
     /// End the line here. A break with nothing before it on its line is a
     /// line of its own, which is what two breaks in a row are for.
     pub fn lineBreak(self: *Builder) Error!void {
+        if (!self.placing()) return;
         self.space = false;
         self.column = 0;
         const block = self.opened();
@@ -351,8 +541,10 @@ pub const Builder = struct {
         block.count += 1;
     }
 
-    /// A horizontal rule, which is a block of its own.
+    /// A horizontal rule, which is a block of its own, and inside a table
+    /// the end of a line of its cell.
     pub fn rule(self: *Builder) Error!void {
+        if (self.filling != null) return self.cellBreak();
         try self.close();
         try self.page.blocks.append(self.gpa, .{
             .kind = .rule,
@@ -421,6 +613,7 @@ pub const Builder = struct {
 
     /// Put something that is not words among them: a control or a picture.
     fn place(self: *Builder, run: Run) Error!void {
+        if (!self.placing()) return;
         try self.settleSpace();
         const block = self.opened();
         try self.page.runs.append(self.gpa, run);
@@ -460,14 +653,15 @@ pub const Builder = struct {
     /// the start of one a break has just begun.
     fn midLine(self: *const Builder) bool {
         const block = self.open orelse return false;
-        if (block.count == 0) return false;
+        if (block.count == 0 or self.cellEmpty()) return false;
         return self.page.runs.items[self.page.runs.items.len - 1] != .line_break;
     }
 
-    /// The words the open block ends in, where it ends in words.
+    /// The words the open block ends in, where it ends in words, and in a
+    /// table where the cell being filled does.
     fn lastText(self: *Builder) ?*Text {
         const block = self.open orelse return null;
-        if (block.count == 0) return null;
+        if (block.count == 0 or self.cellEmpty()) return null;
         return switch (self.page.runs.items[self.page.runs.items.len - 1]) {
             .text => |*last| last,
             .control, .picture, .line_break => null,
@@ -490,7 +684,7 @@ pub const Builder = struct {
     /// Put `bytes` in the open block in the current look, lengthening the
     /// last run when it looks the same and goes to the same place.
     fn put(self: *Builder, bytes: []const u8) Error!void {
-        if (bytes.len == 0) return;
+        if (bytes.len == 0 or !self.placing()) return;
         const block = self.opened();
         const start: u32 = @intCast(self.page.text.items.len);
         try self.page.text.appendSlice(self.gpa, bytes);
@@ -582,9 +776,16 @@ pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
         try w.splatByteAll(' ', indent);
         try block.marker.write(w, "-");
         if (block.marker != .none) try w.writeByte(' ');
-        if (block.kind == .rule) {
-            try w.writeAll("----");
-            continue;
+        switch (block.kind) {
+            .rule => {
+                try w.writeAll("----");
+                continue;
+            },
+            .table => |grid| {
+                try writeTable(w, page, grid, indent);
+                continue;
+            },
+            else => {},
         }
 
         const runs = page.runsOf(block);
@@ -600,6 +801,29 @@ pub fn writeText(page: *const Page, w: *Writer) Writer.Error!void {
         };
     }
     if (previous != null) try w.writeByte('\n');
+}
+
+/// A table as a terminal shows one: a row a line, its cells apart by bars,
+/// and a line end inside a cell a space.
+fn writeTable(w: *Writer, page: *const Page, grid: Grid, indent: usize) Writer.Error!void {
+    var row: ?u16 = null;
+    for (page.cellsOf(grid)) |cell| {
+        if (row) |at| {
+            if (at == cell.row) {
+                try w.writeAll(" | ");
+            } else {
+                try w.writeByte('\n');
+                try w.splatByteAll(' ', indent);
+            }
+        }
+        row = cell.row;
+        for (page.cellRuns(cell)) |run| switch (run) {
+            .text => |text| try w.writeAll(page.textOf(text)),
+            .control => |index| try writeControl(w, page, page.controls.items[index]),
+            .picture => |index| try writePicture(w, page, page.pictures.items[index]),
+            .line_break => try w.writeByte(' '),
+        };
+    }
 }
 
 /// A control as a terminal shows one: a line as what is in it, a button as
@@ -831,6 +1055,73 @@ test "a picture sits among the words, and reads as what the page says it shows" 
     var text = try f.written();
     defer text.deinit();
     try testing.expectEqualStrings("Look [the machine] here\n", text.written());
+}
+
+test "a table's cells sit in the columns their rows leave free" {
+    var f = Fixture{};
+    f.init();
+    defer f.deinit();
+    const b = &f.builder;
+    try b.beginTable();
+    b.beginRow();
+    try b.beginCell(.{ .header = true, .down = 2 });
+    try b.words("Name");
+    try b.beginCell(.{ .across = 2 });
+    try b.words("Spans two");
+    b.beginRow();
+    try b.beginCell(.{});
+    try b.words("b");
+    try b.beginCell(.{});
+    try b.words("c");
+    try b.endTable();
+    try b.finish();
+
+    const grid = f.page.blocks.items[0].kind.table;
+    try testing.expectEqual(@as(u16, 3), grid.columns);
+    try testing.expectEqual(@as(u16, 2), grid.rows);
+    // The second row starts past the column the header above reaches down
+    // into.
+    const cells = f.page.cellsOf(grid);
+    try testing.expectEqual(@as(u16, 1), cells[2].column);
+    try testing.expectEqual(@as(u16, 2), cells[3].column);
+
+    var text = try f.written();
+    defer text.deinit();
+    try testing.expectEqualStrings("Name | Spans two\nb | c\n", text.written());
+}
+
+test "inside a table a block is a line of its cell, and nothing sits between cells" {
+    var f = Fixture{};
+    f.init();
+    defer f.deinit();
+    const b = &f.builder;
+    try b.beginTable();
+    b.beginRow();
+    try b.words("stray");
+    try b.beginCell(.{ .whole_row = true });
+    try b.words("Caption");
+    b.beginRow();
+    try b.beginCell(.{});
+    try b.boundary(.{});
+    try b.words("one");
+    try b.boundary(.{});
+    try b.boundary(.{});
+    try b.words("two");
+    try b.beginCell(.{});
+    try b.words("three");
+    try b.endTable();
+    try b.finish();
+
+    const grid = f.page.blocks.items[0].kind.table;
+    const cells = f.page.cellsOf(grid);
+    // The caption comes to be across both columns.
+    try testing.expectEqual(@as(u16, 2), cells[0].across);
+    // A block begun at a cell's start ends no line, and two in a row end one.
+    try testing.expectEqual(@as(usize, 3), f.page.cellRuns(cells[1]).len);
+
+    var text = try f.written();
+    defer text.deinit();
+    try testing.expectEqualStrings("Caption\none two | three\n", text.written());
 }
 
 test "a colour given twice is one swatch, and none is the theme's" {

@@ -59,6 +59,13 @@ const Role = enum {
     preformatted,
     rule,
     line_break,
+    /// A table: set as a grid where it holds data, and read a cell at a time
+    /// where it lays a page out.
+    table,
+    /// A table's row, one of its cells, and its caption.
+    row,
+    cell,
+    caption,
     link,
     /// Code, keys, output: the monospaced face.
     mono,
@@ -80,7 +87,11 @@ const Role = enum {
 fn roleOf(tag: Tag) Role {
     return switch (tag) {
         .script, .style, .head, .template, .svg, .math, .iframe, .title, .base, .nav, .option => .hidden,
-        .p, .div, .section, .article, .header, .footer, .main, .aside, .figure, .figcaption, .address, .center, .fieldset, .details, .summary, .dl, .dt, .dd, .table, .caption, .tr, .td, .th => .block,
+        .p, .div, .section, .article, .header, .footer, .main, .aside, .figure, .figcaption, .address, .center, .fieldset, .details, .summary, .dl, .dt, .dd => .block,
+        .table => .table,
+        .tr => .row,
+        .td, .th => .cell,
+        .caption => .caption,
         .h1, .h2, .h3, .h4, .h5, .h6 => .heading,
         .ul => .list,
         .ol => .ordered,
@@ -125,6 +136,10 @@ const traits = std.EnumArray(Role, Traits).init(.{
     .preformatted = .{ .bounds = true, .counts = true },
     .rule = .{ .walks = false },
     .line_break = .{ .walks = false },
+    .table = .{ .bounds = true },
+    .row = .{ .bounds = true },
+    .cell = .{ .bounds = true },
+    .caption = .{ .bounds = true },
     .link = .{ .counts = true },
     .mono = .{ .counts = true },
     .image = .{ .walks = false },
@@ -197,6 +212,13 @@ const Frame = struct { node: *const Node, was: Style };
 /// nested deeper keeps the style it is in.
 const STYLE_DEPTH = 64;
 
+/// How a table the walk is inside is read: as a grid, or a cell at a time.
+const Table = enum { grid, cells };
+
+/// How many tables inside tables the walk keeps track of. One deeper is read
+/// a cell at a time.
+const TABLES_MAX = 16;
+
 const Walker = struct {
     builder: *Builder,
     base: url.Url,
@@ -213,8 +235,32 @@ const Walker = struct {
     link: ?u16 = null,
     style: Style = .{},
     frames: Bounded(Frame, STYLE_DEPTH) = .{},
+    /// The tables the walk is inside, innermost last, and how many more are
+    /// open past the bound.
+    tables: Bounded(Table, TABLES_MAX) = .{},
+    tables_past: u16 = 0,
 
     const Error = Builder.Error;
+
+    /// Whether the innermost table the walk is inside is set as a grid.
+    fn inGrid(self: *const Walker) bool {
+        const open = self.tables.slice();
+        return self.tables_past == 0 and open.len > 0 and open[open.len - 1] == .grid;
+    }
+
+    /// What a table's cell is, as the page gives it: a header or not, how
+    /// many columns and rows it spans, its ground, and the side its lines
+    /// lean to, which for a header is the middle unless the page says.
+    fn cellOf(self: *const Walker, node: *Node) page_mod.CellSpec {
+        const header = lexbor.tagOf(node) == .th;
+        return .{
+            .header = header,
+            .across = spanOf(node, "colspan"),
+            .down = spanOf(node, "rowspan"),
+            .ground = self.style.ground,
+            .alignment = if (header) css.alignment(node) orelse .center else self.style.alignment,
+        };
+    }
 
     /// What the next block is, given everything the walk is inside.
     fn context(self: *const Walker, kind: page_mod.Kind, marker: page_mod.Marker) Block {
@@ -299,6 +345,24 @@ const Walker = struct {
                 try self.builder.boundary(self.context(.paragraph, .none));
             },
             .line_break => try self.builder.lineBreak(),
+            .table => {
+                self.tables.append(if (dataTable(node)) .grid else .cells) catch {
+                    self.tables_past += 1;
+                };
+                if (self.inGrid()) try self.builder.beginTable() else try self.boundary(.paragraph);
+            },
+            .row => if (self.inGrid()) self.builder.beginRow() else try self.boundary(.paragraph),
+            .cell => if (self.inGrid()) try self.builder.beginCell(self.cellOf(node)) else try self.boundary(.paragraph),
+            .caption => if (self.inGrid()) {
+                // A caption is a row of its own, across the whole table.
+                self.builder.beginRow();
+                try self.builder.beginCell(.{
+                    .header = true,
+                    .whole_row = true,
+                    .ground = self.style.ground,
+                    .alignment = css.alignment(node) orelse .center,
+                });
+            } else try self.boundary(.paragraph),
             .link => self.link = try self.linkFor(node),
             .image => try self.picture(node),
             .form => {
@@ -324,6 +388,13 @@ const Walker = struct {
                 if (self.lists_past > 0) self.lists_past -= 1 else _ = self.lists.pop();
             },
             .form => self.builder.form = null,
+            .table => {
+                const grid = self.inGrid();
+                if (self.tables_past > 0) self.tables_past -= 1 else _ = self.tables.pop();
+                if (grid) try self.builder.endTable();
+            },
+            .row => if (self.inGrid()) self.builder.endRow(),
+            .cell, .caption => if (self.inGrid()) self.builder.endCell(),
             else => {},
         }
         self.untake(node);
@@ -539,6 +610,35 @@ const Walker = struct {
         } }, lexbor.attribute(node, "name") orelse "", textWithin(node).slice(), try self.coloursOf(node));
     }
 };
+
+/// Whether a table holds data, to be set as a grid, rather than laying a page
+/// out, to be read a cell at a time: it says it is a table or a grid, draws a
+/// border, or has a caption, a head or a header cell; and it holds no table
+/// of its own, which a table of data does not.
+fn dataTable(table: *Node) bool {
+    if (lexbor.attributeIs(table, "role", "presentation") or lexbor.attributeIs(table, "role", "none")) return false;
+    var data = lexbor.attributeIs(table, "role", "table") or lexbor.attributeIs(table, "role", "grid");
+    if (lexbor.attribute(table, "border")) |border| {
+        if (!std.mem.eql(u8, std.mem.trim(u8, border, &std.ascii.whitespace), "0")) data = true;
+    }
+    var at = lexbor.following(table, table);
+    while (at) |node| : (at = lexbor.following(node, table)) {
+        switch (lexbor.tagOf(node) orelse continue) {
+            .table => return false,
+            .th, .caption, .thead => data = true,
+            else => {},
+        }
+    }
+    return data;
+}
+
+/// How many columns or rows a cell spans, by the attribute that says, and
+/// one where it says nothing a table can use.
+fn spanOf(node: *Node, which: []const u8) u16 {
+    const given = lexbor.attribute(node, which) orelse return 1;
+    const span = std.fmt.parseInt(u16, std.mem.trim(u8, given, &std.ascii.whitespace), 10) catch return 1;
+    return @max(span, 1);
+}
 
 /// Where an ordered list starts counting: its `start`, or one.
 fn startOf(node: *Node) u32 {
