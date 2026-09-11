@@ -891,6 +891,9 @@ pub fn Field(comptime capacity: usize) type {
             _ = self.buffer.insert(0, value[0..@min(value.len, capacity)]);
             self.editor.cursor = self.buffer.len;
             self.editor.anchor = null;
+            // Set from outside, after whatever pass painted it last, so the
+            // next pass shows it without the window being painted over.
+            self.editor.repaint = true;
         }
 
         pub fn slice(self: *const Self) []const u8 {

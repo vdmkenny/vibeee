@@ -538,7 +538,11 @@ pub const Context = struct {
             self.focus = index;
             self.focus_moved = true;
         }
-        const over = area.contains(self.pointer_x, self.pointer_y);
+        // Under the pointer only where it can be seen: a control a pane has
+        // scrolled half out of view does not answer for the half the pane
+        // hides, which is over whatever is drawn there instead.
+        const over = area.contains(self.pointer_x, self.pointer_y) and
+            self.surface.clip.contains(self.pointer_x, self.pointer_y);
 
         if (over and self.pressedThisPass()) {
             self.pressed = index;
@@ -1608,10 +1612,7 @@ fn paintTool(surface: Surface, area: Rect, which: icons.Icon, visual: Visual, fo
     if (visual == .hot or visual == .active) {
         surface.frameRounded(area, t.corner_radius, .all, t.line);
     }
-    const size = Surface.iconSize();
-    const x = area.x + @divTrunc(area.w - size, 2);
-    const y = area.y + @divTrunc(area.h - size, 2);
-    surface.icon(x, y, which, if (enabled) t.text else t.text_dim);
+    surface.iconCentred(area, which, if (enabled) t.text else t.text_dim);
     if (focused) paintFocusRing(surface, area.inset(2), t.text_dim);
 }
 

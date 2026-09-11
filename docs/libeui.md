@@ -162,6 +162,7 @@ another control.
 | `glyphIn` | `fn (draw.Surface, *const font.Font, i32, i32, u21, rgb.Colour) void` |
 | `picture` | `fn (draw.Surface, i32, i32, *const [24]u8, rgb.Colour) void` |
 | `icon` | `fn (draw.Surface, i32, i32, icon.Icon, rgb.Colour) void` |
+| `iconCentred` | `fn (draw.Surface, draw.Rect, icon.Icon, rgb.Colour) void` |
 | `iconLarge` | `fn (draw.Surface, i32, i32, icon.Icon, rgb.Colour, i32) void` |
 | `iconLargeSize` | `fn (i32) i32` |
 | `iconTopFor` | `fn (i32) i32` |

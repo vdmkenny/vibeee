@@ -1212,12 +1212,7 @@ fn paintLaunch(surface: Surface, height: i32) void {
 
     const open = showing == .launcher;
     if (open) surface.fill(area, t.accent);
-    surface.icon(
-        area.x + @divTrunc(area.w - Surface.iconSize(), 2),
-        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-        .logo,
-        if (open) t.accent_text else t.bar_text,
-    );
+    surface.iconCentred(area, .logo, if (open) t.accent_text else t.bar_text);
     surface.fill(.{ .x = area.right() - 1, .y = area.y + 2, .w = 1, .h = area.h - 4 }, t.bar_line);
 }
 
@@ -1550,12 +1545,7 @@ fn paintNetwork(surface: Surface, area: Rect) void {
     else if (face.live) t.bar_text else t.text_dim;
 
     if (open) surface.fill(area, t.accent);
-    surface.icon(
-        area.x + @divTrunc(area.w - Surface.iconSize(), 2),
-        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-        face.icon,
-        ink,
-    );
+    surface.iconCentred(area, face.icon, ink);
 }
 
 fn paintNetMenu(surface: Surface, width: i32, height: i32) void {
@@ -1635,12 +1625,7 @@ fn paintBattery(surface: Surface, area: Rect) void {
     // than drawing an empty battery on a machine that has none.
     const p = pack orelse {
         if (lamp == null) return;
-        surface.icon(
-            area.x + @divTrunc(area.w - Surface.iconSize(), 2),
-            area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-            .display,
-            if (open) t.accent_text else t.bar_text,
-        );
+        surface.iconCentred(area, .display, if (open) t.accent_text else t.bar_text);
         return;
     };
 
@@ -1957,12 +1942,7 @@ fn paintSound(surface: Surface, area: Rect) void {
     const inside = showing.reading() == .sound;
 
     if (inside) surface.fill(area, t.accent);
-    surface.icon(
-        area.x + @divTrunc(area.w - Surface.iconSize(), 2),
-        area.y + @divTrunc(area.h - Surface.iconSize(), 2),
-        which,
-        if (inside) t.accent_text else t.bar_text,
-    );
+    surface.iconCentred(area, which, if (inside) t.accent_text else t.bar_text);
 }
 
 fn paintSoundMenu(surface: Surface, width: i32, height: i32) void {

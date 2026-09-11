@@ -504,6 +504,13 @@ pub const Surface = struct {
         self.bitmapAt(x, y, icons.rows(which), icons.WIDTH, icons.HEIGHT, icons.ROW_BYTES, color, theme.textScale());
     }
 
+    /// A named picture in the middle of `area`: a key, a button, a place on
+    /// a bar.
+    pub fn iconCentred(self: Surface, area: Rect, which: icons.Icon, color: Color) void {
+        const size = iconSize();
+        self.icon(area.x + @divTrunc(area.w - size, 2), area.y + @divTrunc(area.h - size, 2), which, color);
+    }
+
     /// The same picture, drawn `times` larger. For a mark that stands for the
     /// machine rather than sitting beside a word.
     pub fn iconLarge(self: Surface, x: i32, y: i32, which: icons.Icon, color: Color, times: i32) void {
