@@ -638,6 +638,14 @@ pub fn build(b: *std.Build) void {
             const web_step = b.step("web", "Build the web reader into zig-out/bin");
             web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
 
+            // The portable library built for the host, which the apps' host
+            // tests import as the apps themselves do.
+            const app_lib = b.createModule(.{
+                .root_source_file = b.path("src/lib/lib.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            });
+
             // Its host side: addresses, the protocol, the page and its
             // layout, which are all arithmetic over text.
             const web_test = b.addTest(.{
@@ -645,6 +653,7 @@ pub fn build(b: *std.Build) void {
                     .root_source_file = b.path("apps/web/tests.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
+                    .imports = &.{.{ .name = "lib", .module = app_lib }},
                 }),
             });
             const web_test_step = b.step("test-web", "Test web's addresses, protocol, page and layout on the host");
@@ -670,23 +679,18 @@ pub fn build(b: *std.Build) void {
 
             // echat's host side: the protocol engine, tested against the
             // shared parser vectors, and the state the window draws.
-            const echat_lib = b.createModule(.{
-                .root_source_file = b.path("src/lib/lib.zig"),
-                .target = b.graph.host,
-                .optimize = .Debug,
-            });
             const echat_test = b.addTest(.{
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/echat/tests.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
                     .imports = &.{
-                        .{ .name = "lib", .module = echat_lib },
+                        .{ .name = "lib", .module = app_lib },
                         .{ .name = "eui", .module = b.createModule(.{
                             .root_source_file = b.path("src/user/eui/eui.zig"),
                             .target = b.graph.host,
                             .optimize = .Debug,
-                            .imports = &.{.{ .name = "lib", .module = echat_lib }},
+                            .imports = &.{.{ .name = "lib", .module = app_lib }},
                         }) },
                     },
                 }),

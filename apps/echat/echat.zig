@@ -189,12 +189,9 @@ fn reachFromShell(where: []const u8) noreturn {
         PORT;
     if (host.len == 0) return leave("echat: name a network to reach", 1);
 
-    const address = sock.addressOf(host) catch return leave("could not find that name", 1);
-
-    if (ulib.time.now() <= 0) return leave("the clock is not set, so a certificate cannot be checked", 1);
-
-    const wire = ulib.wire.open(&trust, address, port, host, true) catch |err| {
+    const wire = ulib.wire.open(host, port, .secure) catch |err| {
         out.text(switch (err) {
+            error.NoName => "could not find that name",
             error.NoClock => "the clock is not set",
             error.Unreachable => "could not reach it",
             error.Refused => "the handshake failed: ",
@@ -202,7 +199,7 @@ fn reachFromShell(where: []const u8) noreturn {
             error.NoRandomness => "the machine has no randomness to seal with",
             error.OutOfMemory => "not enough memory",
         });
-        if (err == error.Refused) out.text(ulib.tls.last_failure);
+        if (err == error.Refused) out.text(ulib.wire.refusal());
         return leave("", 1);
     };
     wire.close();
@@ -226,23 +223,21 @@ fn leave(what: []const u8, code: u8) noreturn {
 fn connect(where: []const u8) void {
     const colon = std.mem.lastIndexOfScalar(u8, where, ':');
     const host = if (colon) |at| where[0..at] else where;
-    var sealed = true;
+    var kind: ulib.wire.Kind = .secure;
     var port = PORT;
     if (colon) |at| {
         const given = where[at + 1 ..];
-        sealed = given.len != 0 and given[0] == '+';
-        port = portOf(if (sealed) given[1..] else given) orelse
-            if (sealed) PORT else PLAIN_PORT;
+        kind = if (given.len != 0 and given[0] == '+') .secure else .plain;
+        port = switch (kind) {
+            .secure => portOf(given[1..]) orelse PORT,
+            .plain => portOf(given) orelse PLAIN_PORT,
+        };
     }
     if (host.len == 0) return say("that is not a network to connect to");
 
     const slot = freeLink() orelse return say("no room for another network");
 
-    const address = sock.addressOf(host) catch {
-        say("could not find that network");
-        return;
-    };
-    const opened = open(address, port, host, sealed) orelse return;
+    const opened = open(host, port, kind) orelse return;
     const network = model.addNetwork(host) orelse {
         opened.close();
         return say("no room for another network");
@@ -268,9 +263,10 @@ fn connect(where: []const u8) void {
 
 /// Reach a network, sealed or in the clear. The reason a connection failed
 /// is said here, because this is where it is known.
-fn open(address: u32, port: u16, host: []const u8, sealed: bool) ?Wire {
-    return ulib.wire.open(&trust, address, port, host, sealed) catch |err| {
+fn open(host: []const u8, port: u16, kind: ulib.wire.Kind) ?Wire {
+    return ulib.wire.open(host, port, kind) catch |err| {
         say(switch (err) {
+            error.NoName => "could not find that network",
             error.NoClock => "the clock is not set, so a certificate cannot be checked",
             error.Unreachable => "could not reach that network",
             error.Refused => "the network's certificate was not accepted",
@@ -281,10 +277,6 @@ fn open(address: u32, port: u16, host: []const u8, sealed: bool) ?Wire {
         return null;
     };
 }
-
-/// The authorities, read the first time a sealed connection wants them and
-/// kept after that.
-var trust: ulib.wire.Trust = .{};
 
 /// What was written down about a network, matched on the name it is reached
 /// by. Null for one nobody has configured, which is every network the first

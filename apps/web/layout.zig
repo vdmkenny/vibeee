@@ -11,11 +11,13 @@
 //! a measure of a fixed width a byte.
 
 const std = @import("std");
+const text_lib = @import("lib").text;
 const page_mod = @import("page.zig");
 
 const Page = page_mod.Page;
 const Block = page_mod.Block;
 const Face = page_mod.Face;
+const Text = page_mod.Text;
 
 pub const Error = std.mem.Allocator.Error;
 
@@ -27,7 +29,7 @@ pub const Frag = struct {
     /// Into the page's text.
     start: u32,
     len: u32,
-    /// The run it belongs to, which says its face, its ink and where it goes.
+    /// The run it belongs to, which says its look and where it goes.
     run: u32,
 };
 
@@ -94,17 +96,14 @@ pub const Layout = struct {
     }
 
     /// The first line reaching below `y`, which is where drawing a view that
-    /// starts at `y` begins. Halving rather than walking: a long page has
-    /// thousands of lines and a scroll asks this every pass.
+    /// starts at `y` begins. Found by halving: a long page has thousands of
+    /// lines, and a scroll asks this every pass.
     pub fn lineAt(self: *const Layout, y: i32) usize {
-        var lo: usize = 0;
-        var hi = self.lines.items.len;
-        while (lo < hi) {
-            const mid = lo + (hi - lo) / 2;
-            const line = self.lines.items[mid];
-            if (line.y + line.height <= y) lo = mid + 1 else hi = mid;
-        }
-        return lo;
+        return std.sort.partitionPoint(Line, self.lines.items, y, endsAbove);
+    }
+
+    fn endsAbove(y: i32, line: Line) bool {
+        return line.y + line.height <= y;
     }
 };
 
@@ -150,14 +149,11 @@ pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spa
 
         p.y += inset;
         if (block.kind == .preformatted) {
-            for (page.runsOf(block), 0..) |run, k| {
-                try p.cut(block.first + @as(u32, @intCast(k)), run.start, page.textOf(run));
-                if (run.breaks) try p.endLine(run.face, true);
-            }
+            try p.verbatim(block);
         } else {
             try p.flow(block.first, block.first + block.count);
         }
-        try p.endLine(.body, false);
+        try p.endLine(false);
         p.y += inset;
     }
 
@@ -173,7 +169,7 @@ fn gap(spacing: Spacing, before: Block, block: Block) i32 {
     return spacing.paragraph;
 }
 
-/// A place in a block's text: a run, and a byte of its text.
+/// A place in a block's text: a run, and a byte of its words.
 const Spot = struct { run: u32, at: usize };
 
 fn Placer(comptime Metrics: type) type {
@@ -199,6 +195,9 @@ fn Placer(comptime Metrics: type) type {
         first: u32 = 0,
         ascent: i32 = 0,
         descent: i32 = 0,
+        /// The face of the words placed last, which is how tall a line a
+        /// break leaves empty is.
+        face: Face = .body,
 
         fn startLine(self: *Self) void {
             self.pen = 0;
@@ -217,9 +216,14 @@ fn Placer(comptime Metrics: type) type {
             self.descent = @max(self.descent, self.metrics.height(face) - ascent);
         }
 
+        /// The words of the run at `index`, which is known to be words.
+        fn textAt(self: *const Self, index: u32) Text {
+            return self.page.runs.items[index].text;
+        }
+
         /// Close the line being filled. One with nothing on it is kept only
-        /// when a break asked for it, as tall as `face`.
-        fn endLine(self: *Self, face: Face, keep_empty: bool) Error!void {
+        /// when a break asked for it, as tall as the words before it.
+        fn endLine(self: *Self, keep_empty: bool) Error!void {
             if (self.occupied()) {
                 // A line ends where its last word does. The space after that
                 // word is in the text, and would only lengthen what a link's
@@ -227,11 +231,11 @@ fn Placer(comptime Metrics: type) type {
                 const last = &self.out.frags.items[self.out.frags.items.len - 1];
                 if (last.len > 0 and self.page.text.items[last.start + last.len - 1] == ' ') {
                     last.len -= 1;
-                    last.width -= self.metrics.width(self.page.runs.items[last.run].face, " ");
+                    last.width -= self.metrics.width(self.textAt(last.run).look.face, " ");
                 }
             } else {
                 if (!keep_empty) return;
-                self.grow(face);
+                self.grow(self.face);
             }
 
             try self.out.lines.append(self.gpa, .{
@@ -248,10 +252,11 @@ fn Placer(comptime Metrics: type) type {
             self.startLine();
         }
 
-        /// Put text on the line, joining the fragment before it where that
-        /// is the same run and the text follows on.
-        fn add(self: *Self, run: u32, start: u32, len: u32, width: i32) Error!void {
-            self.grow(self.page.runs.items[run].face);
+        /// Put words on the line, joining the fragment before them where
+        /// that is the same run and they follow on.
+        fn add(self: *Self, run: u32, face: Face, start: u32, len: u32, width: i32) Error!void {
+            self.grow(face);
+            self.face = face;
             self.pen += width;
             if (self.occupied()) {
                 const last = &self.out.frags.items[self.out.frags.items.len - 1];
@@ -270,6 +275,15 @@ fn Placer(comptime Metrics: type) type {
             });
         }
 
+        /// A preformatted block: its words placed a letter at a time wherever
+        /// the line runs out, and its line ends where the page put them.
+        fn verbatim(self: *Self, block: Block) Error!void {
+            for (self.page.runsOf(block), @as(usize, block.first)..) |run, index| switch (run) {
+                .text => |text| try self.cut(@intCast(index), text.look.face, text.start, self.page.textOf(text)),
+                .line_break => try self.endLine(true),
+            };
+        }
+
         /// The words of runs `first` up to `last`, broken onto lines at their
         /// spaces. A word runs on from one run into the next where a link or
         /// a change of face falls inside it, so a line never breaks where two
@@ -277,39 +291,49 @@ fn Placer(comptime Metrics: type) type {
         fn flow(self: *Self, first: u32, last: u32) Error!void {
             var here = Spot{ .run = first, .at = 0 };
             while (here.run < last) {
-                const run = self.page.runs.items[here.run];
-                const text = self.page.textOf(run);
-                if (here.at == text.len) {
-                    if (run.breaks) try self.endLine(run.face, true);
+                const text = switch (self.page.runs.items[here.run]) {
+                    .text => |text| text,
+                    .line_break => {
+                        try self.endLine(true);
+                        here = .{ .run = here.run + 1, .at = 0 };
+                        continue;
+                    },
+                };
+                const words = self.page.textOf(text);
+                if (here.at == words.len) {
                     here = .{ .run = here.run + 1, .at = 0 };
                     continue;
                 }
-                if (text[here.at] == ' ') {
+                if (words[here.at] == ' ') {
                     // The space goes with the word before it. A line that
                     // ends here hands it back; one at the start of a line
                     // follows nothing and is not placed.
-                    if (self.occupied()) try self.add(here.run, run.start + @as(u32, @intCast(here.at)), 1, self.metrics.width(run.face, " "));
+                    if (self.occupied()) {
+                        const space = self.metrics.width(text.look.face, " ");
+                        try self.add(here.run, text.look.face, text.start + @as(u32, @intCast(here.at)), 1, space);
+                    }
                     here.at += 1;
                     continue;
                 }
                 const end = self.wordEnd(here, last);
                 const width = self.widthBetween(here, end);
-                if (self.pen > 0 and self.pen + width > self.room) try self.endLine(run.face, false);
+                if (self.pen > 0 and self.pen + width > self.room) try self.endLine(false);
                 try self.place(here, end, width);
                 here = end;
             }
         }
 
         /// Where the word starting at `from` ends: at the next space, or at
-        /// the end of a run that ends the line or is the last.
+        /// the end of a run followed by something that is not words, or by
+        /// nothing.
         fn wordEnd(self: *const Self, from: Spot, last: u32) Spot {
             var spot = from;
             while (true) {
-                const run = self.page.runs.items[spot.run];
-                const text = self.page.textOf(run);
-                if (std.mem.indexOfScalarPos(u8, text, spot.at, ' ')) |space| return .{ .run = spot.run, .at = space };
-                if (run.breaks or spot.run + 1 == last) return .{ .run = spot.run, .at = text.len };
-                spot = .{ .run = spot.run + 1, .at = 0 };
+                const words = self.page.textOf(self.textAt(spot.run));
+                if (std.mem.indexOfScalarPos(u8, words, spot.at, ' ')) |space| return .{ .run = spot.run, .at = space };
+                const next = spot.run + 1;
+                if (next == last or self.page.runs.items[next] != .text) return .{ .run = spot.run, .at = words.len };
+                spot = .{ .run = next, .at = 0 };
             }
         }
 
@@ -318,7 +342,7 @@ fn Placer(comptime Metrics: type) type {
             var index = from.run;
             while (index <= to.run) : (index += 1) {
                 const piece = self.pieceOf(index, from, to);
-                total += self.metrics.width(self.page.runs.items[index].face, piece.text);
+                total += self.metrics.width(self.textAt(index).look.face, piece.words);
             }
             return total;
         }
@@ -331,52 +355,51 @@ fn Placer(comptime Metrics: type) type {
             var index = from.run;
             while (index <= to.run) : (index += 1) {
                 const piece = self.pieceOf(index, from, to);
-                if (piece.text.len == 0) continue;
+                if (piece.words.len == 0) continue;
+                const face = self.textAt(index).look.face;
                 if (long) {
-                    try self.cut(index, piece.start, piece.text);
+                    try self.cut(index, face, piece.start, piece.words);
                 } else {
                     // A word inside one run, which is nearly every word, was
                     // measured whole already.
-                    const face = self.page.runs.items[index].face;
-                    const wide = if (from.run == to.run) width else self.metrics.width(face, piece.text);
-                    try self.add(index, piece.start, @intCast(piece.text.len), wide);
+                    const wide = if (from.run == to.run) width else self.metrics.width(face, piece.words);
+                    try self.add(index, face, piece.start, @intCast(piece.words.len), wide);
                 }
             }
         }
 
-        const Piece = struct { start: u32, text: []const u8 };
+        const Piece = struct { start: u32, words: []const u8 };
 
-        /// What of run `index`'s text lies between `from` and `to`.
+        /// What of run `index`'s words lies between `from` and `to`.
         fn pieceOf(self: *const Self, index: u32, from: Spot, to: Spot) Piece {
-            const run = self.page.runs.items[index];
-            const text = self.page.textOf(run);
+            const text = self.textAt(index);
+            const words = self.page.textOf(text);
             const begin: usize = if (index == from.run) from.at else 0;
-            const end: usize = if (index == to.run) to.at else text.len;
-            return .{ .start = run.start + @as(u32, @intCast(begin)), .text = text[begin..end] };
+            const end: usize = if (index == to.run) to.at else words.len;
+            return .{ .start = text.start + @as(u32, @intCast(begin)), .words = words[begin..end] };
         }
 
-        /// Text placed a letter at a time wherever the line runs out: a word
+        /// Words placed a letter at a time wherever the line runs out: a word
         /// longer than the line, or preformatted text, whose spaces are not
         /// places to break but part of what it says.
-        fn cut(self: *Self, index: u32, start: u32, text: []const u8) Error!void {
-            const face = self.page.runs.items[index].face;
-            var rest = text;
+        fn cut(self: *Self, index: u32, face: Face, start: u32, words: []const u8) Error!void {
+            var rest = words;
             var at = start;
             while (rest.len > 0) {
                 var n = self.metrics.fit(face, rest, self.room - self.pen);
                 if (n == 0) {
                     if (self.occupied()) {
-                        try self.endLine(face, false);
+                        try self.endLine(false);
                         continue;
                     }
                     // Not even one letter fits an empty line. It goes on
                     // anyway, or nothing ever would.
-                    n = @min(rest.len, std.unicode.utf8ByteSequenceLength(rest[0]) catch 1);
+                    n = text_lib.charWidth(rest, 0);
                 }
-                try self.add(index, at, @intCast(n), self.metrics.width(face, rest[0..n]));
+                try self.add(index, face, at, @intCast(n), self.metrics.width(face, rest[0..n]));
                 rest = rest[n..];
                 at += @intCast(n);
-                if (rest.len > 0) try self.endLine(face, false);
+                if (rest.len > 0) try self.endLine(false);
             }
         }
     };
@@ -486,9 +509,9 @@ test "blocks stack with their gaps, and a heading is as tall as its face" {
     defer b.deinit();
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.boundary(.{ .kind = .heading });
-    builder.face = .heading;
+    builder.look.face = .heading;
     try builder.words("Title");
-    builder.face = .body;
+    builder.look.face = .body;
     try builder.boundary(.{});
     try builder.words("First.");
     try builder.boundary(.{});
@@ -556,10 +579,10 @@ test "a line breaks at a space, never where a link meets the text after it" {
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.words("aaaa bbbb ");
     builder.link = try builder.addLink("https://a.org/");
-    builder.ink = .link;
+    builder.look.ink = .link;
     try builder.words("cccc");
-    builder.link = page_mod.NO_LINK;
-    builder.ink = .text;
+    builder.link = null;
+    builder.look.ink = .text;
     try builder.words("; dd");
     try builder.finish();
     // Fourteen letters a line: "aaaa bbbb cccc" fits exactly, and the
@@ -580,10 +603,10 @@ test "a link's words are their own fragment beside the text around them" {
     var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
     try builder.words("see ");
     builder.link = try builder.addLink("https://a.org/");
-    builder.ink = .link;
+    builder.look.ink = .link;
     try builder.words("here");
-    builder.link = page_mod.NO_LINK;
-    builder.ink = .text;
+    builder.link = null;
+    builder.look.ink = .text;
     try builder.words(" now");
     try builder.finish();
     b.layout = try build(testing.allocator, &b.page, 600, eighteen, Fixed{});

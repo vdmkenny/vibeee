@@ -1,16 +1,18 @@
-//! A connection, sealed or in the clear, asked the same questions either way.
+//! A connection to a named host, sealed or in the clear, asked the same
+//! questions either way.
 //!
-//! Two programs reach the network with TLS on top or without it: a chat
-//! client whose networks say which, and a reader whose addresses do. Both ask
-//! a connection the same five things, so the answers live here once, with
-//! the reaching that makes one: the authorities are read the first time a
-//! sealed connection wants them, and kept.
+//! What a program that talks over the network holds. It names a host, a port,
+//! and whether what goes over the wire is sealed. Finding the host's address,
+//! the handshake, and the authorities a sealed connection is checked against
+//! all happen here, so a program never touches a socket, a certificate or a
+//! name server of its own.
 //!
 //! What a failure is called stays with each program. The error says what
 //! happened; a chat client says it could not reach a network, and a reader
 //! that it could not reach a site, and both are right for the person reading
 //! them.
 
+const std = @import("std");
 const heap = @import("heap.zig");
 const sock = @import("sock.zig");
 const time = @import("time.zig");
@@ -23,7 +25,13 @@ const tls = @import("tls.zig");
 pub const Read = tls.Stream.Read;
 
 /// Why a connection could not be made.
-pub const Error = tls.Error;
+pub const Error = tls.Error || error{
+    /// Nothing answers to the host's name.
+    NoName,
+};
+
+/// Where the authorities a sealed connection is checked against are kept.
+pub const AUTHORITIES = tls.STORE;
 
 pub const Wire = union(enum) {
     plain: sock.Sock,
@@ -72,31 +80,38 @@ pub const Wire = union(enum) {
     }
 };
 
-/// The authorities a sealed connection is checked against, read the first
-/// time one is wanted. Parsing them is real work on this machine and the
-/// answer is the same every time, so a program holds one of these for its
-/// whole life.
-pub const Trust = struct {
-    roots: ?tls.Roots = null,
+/// Which of the two a connection is, which is what reaching one asks.
+pub const Kind = std.meta.Tag(Wire);
 
-    fn get(self: *Trust, when: i64) Error!*tls.Roots {
-        if (self.roots == null) self.roots = try tls.Roots.open(heap.allocator, when);
-        return &self.roots.?;
+/// Reach `host` on `port`, in the clear or sealed. A sealed connection keeps
+/// the name, because a certificate is issued for the name that was asked for
+/// rather than for the address it resolved to.
+pub fn open(host: []const u8, port: u16, kind: Kind) Error!Wire {
+    const address = sock.addressOf(host) catch return error.NoName;
+    switch (kind) {
+        .plain => return .{ .plain = sock.Sock.connect(address, port) catch return error.Unreachable },
+        .secure => {
+            // A clock that is not set reads as zero, and a certificate's
+            // dates checked against nothing say nothing.
+            const when = time.now();
+            if (when <= 0) return error.NoClock;
+            return .{ .secure = try tls.Stream.connect(heap.allocator, try authorities(when), address, port, host, when) };
+        },
     }
-};
+}
 
-/// Reach `address` on `port`, sealed or not. `host` is the name that was
-/// asked for rather than the address it resolved to, because that is what a
-/// certificate is issued for.
-pub fn open(trust: *Trust, address: u32, port: u16, host: []const u8, sealed: bool) Error!Wire {
-    if (!sealed) {
-        const socket = sock.Sock.connect(address, port) catch return error.Unreachable;
-        return .{ .plain = socket };
-    }
+/// What the protocol called the last sealed connection it refused, for
+/// saying why.
+pub fn refusal() []const u8 {
+    return tls.last_failure;
+}
 
-    // A clock that is not set reads as zero, which a sealed connection
-    // refuses rather than checking a certificate's dates against nothing.
-    const when = time.now();
-    const roots = try trust.get(when);
-    return .{ .secure = try tls.Stream.connect(heap.allocator, roots, address, port, host, when) };
+/// The authorities, read the first time a sealed connection wants them and
+/// kept for the life of the program: parsing them is real work on this
+/// machine, and the answer is the same every time.
+var roots: ?tls.Roots = null;
+
+fn authorities(when: i64) Error!*tls.Roots {
+    if (roots == null) roots = try tls.Roots.open(heap.allocator, when);
+    return &roots.?;
 }

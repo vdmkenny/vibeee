@@ -17,7 +17,8 @@ const Surface = eui.Surface;
 const Theme = eui.Theme;
 const Face = page_mod.Face;
 const Page = page_mod.Page;
-const NO_LINK = page_mod.NO_LINK;
+const Layout = layout_mod.Layout;
+const Spacing = layout_mod.Spacing;
 
 /// The widest a column of text is set, in the interface's own pixels: about
 /// seventy-five letters of the body face, past which the eye loses its way
@@ -62,13 +63,13 @@ const Metrics = struct {
 
 pub const View = struct {
     page: ?*const Page = null,
-    layout: layout_mod.Layout = .{},
+    layout: Layout = .{},
     scroll: i32 = 0,
     /// Where the page was last painted, and at what scroll: what a pass
     /// compares against to know how little it can paint.
     painted: ?Painted = null,
     /// The link under the pointer, for the status line to say where it goes.
-    hover: u16 = NO_LINK,
+    hover: ?u16 = null,
 
     const Painted = struct { area: Rect, scroll: i32 };
 
@@ -79,7 +80,7 @@ pub const View = struct {
         self.page = page;
         self.scroll = @max(scroll, 0);
         self.painted = null;
-        self.hover = NO_LINK;
+        self.hover = null;
     }
 
     pub fn deinit(self: *View, gpa: std.mem.Allocator) void {
@@ -98,10 +99,9 @@ pub const View = struct {
     /// did to it. Returns the link clicked this pass, if one was.
     pub fn run(self: *View, gpa: std.mem.Allocator, ctx: *eui.Context, area: Rect) ?u16 {
         const page = self.page orelse return null;
-        const t = eui.theme.current();
         const metrics = Metrics{ .scale = eui.theme.textScale() };
         const column = columnOf(area, metrics.scale);
-        const spacing = layout_mod.Spacing.forLine(metrics.height(.body));
+        const spacing = Spacing.forLine(metrics.height(.body));
 
         // Laid out again only when the column's width changed: a pass that
         // is only a scroll or a pointer moving reuses every line.
@@ -134,125 +134,149 @@ pub const View = struct {
         const reach = @max(self.layout.height + line - area.h, 0);
         scroll = std.math.clamp(scroll, 0, reach);
 
-        self.hover = if (it.over) self.linkAt(page, column, area, ctx.pointer_x, ctx.pointer_y) else NO_LINK;
-        const clicked: ?u16 = if (it.clicked and self.hover != NO_LINK) self.hover else null;
+        self.hover = if (it.over) self.linkAt(page, column, area, ctx.pointer_x, ctx.pointer_y) else null;
+        const clicked = if (it.clicked) self.hover else null;
 
         const before = self.painted;
         self.scroll = scroll;
         self.painted = .{ .area = area, .scroll = scroll };
 
-        const whole = ctx.damaged or before == null or !sameRect(before.?.area, area);
-        if (whole) {
-            self.paint(ctx.surface, page, column, area, area, t, metrics, spacing);
+        const pass = Pass{
+            .view = self,
+            .page = page,
+            .surface = ctx.surface,
+            .theme = eui.theme.current(),
+            .metrics = metrics,
+            .spacing = spacing,
+            .column = column,
+            .area = area,
+        };
+        const was = before orelse {
+            pass.paint(area);
             ctx.addDamage(area);
-        } else if (scroll != before.?.scroll) {
-            const dy = scroll - before.?.scroll;
+            return clicked;
+        };
+        if (ctx.damaged or !std.meta.eql(was.area, area)) {
+            pass.paint(area);
+            ctx.addDamage(area);
+        } else if (scroll != was.scroll) {
+            const dy = scroll - was.scroll;
             if (@abs(dy) >= area.h) {
-                self.paint(ctx.surface, page, column, area, area, t, metrics, spacing);
+                pass.paint(area);
             } else {
                 ctx.surface.shift(area, dy);
-                const band: Rect = if (dy > 0)
+                pass.paint(if (dy > 0)
                     .{ .x = area.x, .y = area.bottom() - dy, .w = area.w, .h = dy }
                 else
-                    .{ .x = area.x, .y = area.y, .w = area.w, .h = -dy };
-                self.paint(ctx.surface, page, column, area, band, t, metrics, spacing);
+                    .{ .x = area.x, .y = area.y, .w = area.w, .h = -dy });
             }
             ctx.addDamage(area);
         }
         return clicked;
     }
 
-    /// Paint the lines that fall in `band`, a part of `area`.
-    fn paint(self: *const View, surface: Surface, page: *const Page, column: Rect, area: Rect, band: Rect, t: *const Theme, metrics: Metrics, spacing: layout_mod.Spacing) void {
-        const s = surface.clipped(band);
-        s.fill(band, t.surface_hot);
+    /// The link at a point in the window, if there is one there.
+    fn linkAt(self: *const View, page: *const Page, column: Rect, area: Rect, x: i32, y: i32) ?u16 {
+        const doc_y = y - area.y + self.scroll;
+        const index = self.layout.lineAt(doc_y);
+        if (index >= self.layout.lines.items.len) return null;
+        const line = self.layout.lines.items[index];
+        if (doc_y < line.y) return null;
+        for (self.layout.fragsOf(line)) |frag| {
+            const left = column.x + frag.x;
+            if (x >= left and x < left + frag.width) return page.runs.items[frag.run].text.link;
+        }
+        return null;
+    }
+};
+
+/// One pass's painting: what it paints on, and what every line needs to be
+/// drawn with.
+const Pass = struct {
+    view: *const View,
+    page: *const Page,
+    surface: Surface,
+    theme: *const Theme,
+    metrics: Metrics,
+    spacing: Spacing,
+    /// The column the page is set in, and the view it scrolls in.
+    column: Rect,
+    area: Rect,
+
+    /// Paint the lines that fall in `band`, a part of the view.
+    fn paint(self: Pass, band: Rect) void {
+        const s = self.surface.clipped(band);
+        s.fill(band, self.theme.surface_hot);
 
         // A preformatted band reaches past its first and last lines by its
         // inset, so the lines just outside `band` may still paint inside it.
-        const top = band.y - area.y + self.scroll - spacing.inset;
-        const bottom = band.bottom() - area.y + self.scroll + spacing.inset;
-        const lines = self.layout.lines.items;
-        var i = self.layout.lineAt(top);
-        while (i < lines.len and lines[i].y < bottom) : (i += 1) {
-            self.drawLine(s, page, column, area, i, t, metrics, spacing);
-        }
+        const top = band.y - self.area.y + self.view.scroll - self.spacing.inset;
+        const bottom = band.bottom() - self.area.y + self.view.scroll + self.spacing.inset;
+        const lines = self.view.layout.lines.items;
+        var i = self.view.layout.lineAt(top);
+        while (i < lines.len and lines[i].y < bottom) : (i += 1) self.line(s, i);
     }
 
-    fn drawLine(self: *const View, s: Surface, page: *const Page, column: Rect, area: Rect, index: usize, t: *const Theme, metrics: Metrics, spacing: layout_mod.Spacing) void {
-        const lines = self.layout.lines.items;
-        const line = lines[index];
-        const block = page.blocks.items[line.block];
-        const y = area.y + line.y - self.scroll;
-        const indent = @as(i32, block.depth) * spacing.indent;
-        const x = column.x + indent;
-        const w = column.w - indent;
+    fn line(self: Pass, s: Surface, index: usize) void {
+        const lines = self.view.layout.lines.items;
+        const at = lines[index];
+        const block = self.page.blocks.items[at.block];
+        const t = self.theme;
+        const scale = self.metrics.scale;
+        const y = self.area.y + at.y - self.view.scroll;
+        const indent = @as(i32, block.depth) * self.spacing.indent;
+        const x = self.column.x + indent;
+        const w = self.column.w - indent;
 
         switch (block.kind) {
             .rule => {
-                s.fill(.{ .x = x, .y = y + @divTrunc(line.height, 2), .w = w, .h = 1 }, t.line);
+                s.fill(.{ .x = x, .y = y + @divTrunc(at.height, 2), .w = w, .h = 1 }, t.line);
                 return;
             },
             .preformatted => {
-                const last = index + 1 == lines.len or lines[index + 1].block != line.block;
-                const top = y - (if (line.leads) spacing.inset else 0);
-                const bottom = y + line.height + (if (last) spacing.inset else 0);
+                const last = index + 1 == lines.len or lines[index + 1].block != at.block;
+                const top = y - (if (at.leads) self.spacing.inset else 0);
+                const bottom = y + at.height + (if (last) self.spacing.inset else 0);
                 s.fill(.{ .x = x, .y = top, .w = w, .h = bottom - top }, t.surface);
-                s.fill(.{ .x = x, .y = top, .w = 2 * metrics.scale, .h = bottom - top }, t.line);
+                s.fill(.{ .x = x, .y = top, .w = 2 * scale, .h = bottom - top }, t.line);
             },
             else => {},
         }
 
         if (block.quoted) {
             // A bar down a quotation's margin, half a step outside its text.
-            const bar_x = x - @divTrunc(spacing.indent, 2);
-            s.fill(.{ .x = bar_x, .y = y, .w = 2 * metrics.scale, .h = line.height }, t.line);
+            s.fill(.{ .x = x - @divTrunc(self.spacing.indent, 2), .y = y, .w = 2 * scale, .h = at.height }, t.line);
         }
 
-        if (line.leads) self.drawMarker(s, block, x, y + line.baseline, t, metrics);
+        if (at.leads) self.marker(s, block.marker, x, y + at.baseline);
 
-        for (self.layout.fragsOf(line)) |frag| {
-            const source = page.runs.items[frag.run];
-            const text = page.text.items[frag.start..][0..frag.len];
-            const ink = switch (source.ink) {
+        for (self.view.layout.fragsOf(at)) |frag| {
+            const text = self.page.runs.items[frag.run].text;
+            const face = text.look.face;
+            const ink = switch (text.look.ink) {
                 .text => t.text,
                 .dim => t.text_dim,
                 .link => t.accent,
             };
-            const left = column.x + frag.x;
-            s.textIn(Metrics.font(source.face), left, y + line.baseline - metrics.ascent(source.face), text, ink);
-            if (source.ink == .link) {
-                s.fill(.{ .x = left, .y = y + line.baseline + metrics.scale, .w = frag.width, .h = metrics.scale }, t.accent);
+            const left = self.column.x + frag.x;
+            s.textIn(Metrics.font(face), left, y + at.baseline - self.metrics.ascent(face), self.page.text.items[frag.start..][0..frag.len], ink);
+            if (text.look.ink == .link) {
+                s.fill(.{ .x = left, .y = y + at.baseline + scale, .w = frag.width, .h = scale }, t.accent);
             }
         }
     }
 
-    /// A list entry's bullet or number, set in the margin and ending a little
-    /// short of the text it belongs to.
-    fn drawMarker(self: *const View, s: Surface, block: page_mod.Block, text_x: i32, baseline: i32, t: *const Theme, metrics: Metrics) void {
-        _ = self;
-        var digits: [12]u8 = undefined;
-        const marker: []const u8 = switch (block.marker) {
-            .none => return,
-            .bullet => "\u{2022}",
-            .number => |n| std.fmt.bufPrint(&digits, "{d}.", .{n}) catch return,
-        };
-        const width = metrics.width(.body, marker);
-        const gap = 6 * metrics.scale;
-        s.textIn(Metrics.font(.body), text_x - gap - width, baseline - metrics.ascent(.body), marker, t.text_dim);
-    }
-
-    /// The link at a point in the window, or none.
-    fn linkAt(self: *const View, page: *const Page, column: Rect, area: Rect, x: i32, y: i32) u16 {
-        const doc_y = y - area.y + self.scroll;
-        const index = self.layout.lineAt(doc_y);
-        if (index >= self.layout.lines.items.len) return NO_LINK;
-        const line = self.layout.lines.items[index];
-        if (doc_y < line.y) return NO_LINK;
-        for (self.layout.fragsOf(line)) |frag| {
-            const left = column.x + frag.x;
-            if (x >= left and x < left + frag.width) return page.runs.items[frag.run].link;
-        }
-        return NO_LINK;
+    /// A list entry's bullet or number, in the margin and ending a little
+    /// short of the words it belongs to.
+    fn marker(self: Pass, s: Surface, which: page_mod.Marker, text_x: i32, baseline: i32) void {
+        var buf: [16]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        which.write(&w, "\u{2022}") catch return;
+        const shown = w.buffered();
+        if (shown.len == 0) return;
+        const width = self.metrics.width(.body, shown);
+        const gap = 6 * self.metrics.scale;
+        s.textIn(Metrics.font(.body), text_x - gap - width, baseline - self.metrics.ascent(.body), shown, self.theme.text_dim);
     }
 };
 
@@ -261,8 +285,4 @@ pub const View = struct {
 fn columnOf(area: Rect, scale: i32) Rect {
     const width = @max(@min(MEASURE * scale, area.w - 2 * MARGIN * scale), 1);
     return .{ .x = area.x + @divTrunc(area.w - width, 2), .y = area.y, .w = width, .h = area.h };
-}
-
-fn sameRect(a: Rect, b: Rect) bool {
-    return a.x == b.x and a.y == b.y and a.w == b.w and a.h == b.h;
 }

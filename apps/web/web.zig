@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const eui = @import("eui");
+const lib = @import("lib");
 const proto = @import("proto");
 const sys = @import("sys");
 const ulib = @import("ulib");
@@ -28,9 +29,12 @@ const file = ulib.file;
 const heap = ulib.heap;
 const out = ulib.out;
 const paths = ulib.paths;
+const str = lib.str;
+const Bounded = lib.bounded.Bounded;
 
 const extract = @import("extract.zig");
 const fetch_mod = @import("fetch.zig");
+const http = @import("http.zig");
 const lexbor = @import("lexbor.zig");
 const page_mod = @import("page.zig");
 const url = @import("url.zig");
@@ -48,9 +52,8 @@ const Rect = eui.Rect;
 const KeyCode = eui.widget.KeyCode;
 const Modifiers = eui.widget.Modifiers;
 const Page = page_mod.Page;
-const NO_LINK = page_mod.NO_LINK;
 
-/// How soon after a pass the part of a fetch that blocks runs: straight
+/// How soon after a pass the step of a fetch that blocks runs: straight
 /// away, but after the pass that says what is about to happen has been
 /// drawn.
 const SOON_US: usize = 1;
@@ -68,7 +71,6 @@ var view: view_mod.View = .{};
 /// The page on screen.
 var shown: Page = .{};
 var fetch: fetch_mod.Fetch = .{};
-var trust: ulib.wire.Trust = .{};
 var history: History = .{};
 
 var wakes: [1]u32 = .{0};
@@ -104,42 +106,27 @@ const History = struct {
     const MAX = 32;
 
     const Entry = struct {
-        buf: [url.ADDRESS_MAX]u8 = undefined,
-        len: usize = 0,
+        address: url.Address = .{},
         scroll: i32 = 0,
-
-        fn address(self: *const Entry) []const u8 {
-            return self.buf[0..self.len];
-        }
-
-        fn set(self: *Entry, text: []const u8) void {
-            const n = @min(text.len, self.buf.len);
-            @memcpy(self.buf[0..n], text[0..n]);
-            self.len = n;
-        }
     };
 
-    entries: [MAX]Entry = undefined,
-    count: usize = 0,
+    entries: Bounded(Entry, MAX) = .{},
     at: usize = 0,
 
     fn current(self: *History) ?*Entry {
-        return if (self.count == 0) null else &self.entries[self.at];
+        return if (self.entries.isEmpty()) null else &self.entries.mutable()[self.at];
     }
 
     /// A new page. Whatever was ahead of the current one is forgotten, as it
     /// is whenever somewhere new is gone to from a page gone back to; the
     /// oldest goes when the list is full.
-    fn push(self: *History, text: []const u8) void {
-        if (self.count > 0) self.count = self.at + 1;
-        if (self.count == MAX) {
-            for (0..MAX - 1) |i| self.entries[i] = self.entries[i + 1];
-            self.count -= 1;
-        }
-        self.entries[self.count] = .{};
-        self.entries[self.count].set(text);
-        self.at = self.count;
-        self.count += 1;
+    fn push(self: *History, where: []const u8) void {
+        if (!self.entries.isEmpty()) self.entries.truncate(self.at + 1);
+        if (self.entries.isFull()) self.entries.remove(0);
+        var entry: Entry = .{};
+        _ = entry.address.set(where);
+        self.entries.append(entry) catch unreachable;
+        self.at = self.entries.len - 1;
     }
 
     fn canBack(self: *const History) bool {
@@ -147,7 +134,7 @@ const History = struct {
     }
 
     fn canForward(self: *const History) bool {
-        return self.at + 1 < self.count;
+        return self.at + 1 < self.entries.len;
     }
 };
 
@@ -186,31 +173,22 @@ fn usage() noreturn {
 /// Go to what a person typed.
 fn typed(text: []const u8) void {
     var buf: [url.ADDRESS_MAX]u8 = undefined;
-    const target = addressFrom(text, &buf) orelse return problem(
-        "That is not an address",
-        "An address is a site's name, like example.org, a whole address beginning with http:// or https://, or a file on this machine.",
-    );
-    go(target);
+    go(addressFrom(text, &buf) orelse return failed(error.NotAnAddress, text));
 }
 
 /// Follow a link on the page on screen.
 fn follow(link: u16) void {
-    const target = shown.address(link) orelse return;
-    go(target);
+    go(shown.address(link) orelse return);
 }
 
 /// Go somewhere new, which the history remembers.
 fn go(where: []const u8) void {
-    // Copied first: `where` may be an address on the page on screen, and
-    // the page on screen is replaced by going.
-    var buf: [url.ADDRESS_MAX]u8 = undefined;
-    const target = buf[0..@min(where.len, buf.len)];
-    @memcpy(target, where[0..target.len]);
-
     if (history.current()) |entry| entry.scroll = view.scroll;
-    history.push(target);
+    // Kept before anything else happens: `where` may be an address on the
+    // page on screen, which going replaces.
+    history.push(where);
     pending_scroll = 0;
-    visit(target);
+    visit(history.current().?.address.slice());
 }
 
 fn back() void {
@@ -237,47 +215,45 @@ fn reload() void {
 fn revisit() void {
     const entry = history.current() orelse return;
     pending_scroll = entry.scroll;
-    visit(entry.address());
+    visit(entry.address.slice());
 }
 
 /// Fetch `target`, or read it here when it is a file, without touching the
 /// history.
 fn visit(target: []const u8) void {
     address.set(target);
-    ctx.damage();
-
-    const where = url.parse(target) orelse return problem("That is not an address", target);
+    const where = url.parse(target) orelse return failed(error.NotAnAddress, target);
     if (where.scheme == .file) return openFile(where);
 
     fetch.begin(gpa, target);
-    proto.app.wakeOn(&.{});
-    proto.app.retick(SOON_US);
+    _ = settle(.none);
 }
 
 fn stop() void {
     fetch.cancel(gpa);
-    proto.app.wakeOn(&.{});
-    proto.app.retick(IDLE_US);
-    if (history.current()) |entry| address.set(entry.address());
-    ctx.damage();
+    rest();
+    if (history.current()) |entry| address.set(entry.address.slice());
 }
 
 /// An address from what was typed: one written out whole, as it is; a file
 /// on this machine, by its path; and a site's bare name, sealed. A site that
 /// speaks only in the clear has to be asked for with `http://` in front.
 fn addressFrom(typed_text: []const u8, buf: []u8) ?[]const u8 {
-    const text = std.mem.trim(u8, typed_text, " \t");
+    const text = std.mem.trim(u8, typed_text, &std.ascii.whitespace);
     if (text.len == 0) return null;
-    if (url.parse(text)) |whole| return url.format(whole, buf);
+    if (url.parse(text)) |whole| return std.fmt.bufPrint(buf, "{f}", .{whole}) catch null;
 
     // A name that is a file here is that file, which is what `web page.html`
-    // means and what a person typing a path means.
-    if (file.factsOf(text) != null) return fileAddress(text, buf);
+    // means, and something written as a path is a file whether it is there
+    // or not, so that a missing one is said to be missing.
+    const path_shaped = text[0] == '/' or std.mem.startsWith(u8, text, "./") or std.mem.startsWith(u8, text, "../");
+    if (path_shaped or file.factsOf(text) != null) return fileAddress(text, buf);
 
-    if (std.mem.indexOfAny(u8, text, " \t") != null or std.mem.indexOfScalar(u8, text, '.') == null) return null;
-    var joined: [url.ADDRESS_MAX]u8 = undefined;
-    const sealed = std.fmt.bufPrint(&joined, "https://{s}", .{text}) catch return null;
-    return url.format(url.parse(sealed) orelse return null, buf);
+    // A site's bare name: one word, with a dot in it.
+    if (std.mem.indexOfAny(u8, text, &std.ascii.whitespace) != null or std.mem.indexOfScalar(u8, text, '.') == null) return null;
+    var sealed: [url.ADDRESS_MAX]u8 = undefined;
+    const whole = url.parse(std.fmt.bufPrint(&sealed, "https://{s}", .{text}) catch return null) orelse return null;
+    return std.fmt.bufPrint(buf, "{f}", .{whole}) catch null;
 }
 
 /// `file://` and the whole path, from one that may be relative to where the
@@ -297,55 +273,50 @@ fn fileAddress(path: []const u8, buf: []u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 
 fn tick() bool {
-    switch (fetch.phase) {
-        .connecting => {
-            fetch.connect(&trust);
-            return settle();
-        },
-        .receiving => return fetch.stall(sys.clockMicros()) and settle(),
-        .idle, .done, .failed => {
-            proto.app.retick(IDLE_US);
-            return false;
-        },
-    }
+    return settle(fetch.advance(gpa));
 }
 
 fn woken(_: usize) bool {
-    fetch.pump(gpa);
-    _ = settle();
+    _ = settle(fetch.advance(gpa));
     // A piece arrived, which the status line counts, whatever else it did.
     return true;
 }
 
-/// Act on where the fetch has got to. True when there is something new to
-/// draw.
-fn settle() bool {
-    switch (fetch.phase) {
-        .idle => return false,
-        .connecting => {
-            // Sent on somewhere else: reached again on the next chance.
+/// Nothing to wait on: the window sleeps until something happens.
+fn rest() void {
+    proto.app.wakeOn(&.{});
+    proto.app.retick(IDLE_US);
+}
+
+/// Wait on what the fetch waits on next, and act on its end. True when
+/// there is something new to draw.
+fn settle(wait: fetch_mod.Wait) bool {
+    switch (wait) {
+        .none => {
+            // The step that blocks comes on the next chance, once this pass
+            // has said what it is about to do. It is also what a redirect is.
             address.set(fetch.address());
             proto.app.wakeOn(&.{});
             proto.app.retick(SOON_US);
         },
-        .receiving => {
-            wakes[0] = fetch.waitHandle() orelse return false;
+        .site => |handle| {
+            wakes[0] = handle;
             proto.app.wakeOn(&wakes);
             proto.app.retick(WATCH_US);
         },
-        .done => {
-            proto.app.wakeOn(&.{});
-            proto.app.retick(IDLE_US);
-            arrive();
-        },
-        .failed => {
-            proto.app.wakeOn(&.{});
-            proto.app.retick(IDLE_US);
-            failed(fetch.failure);
-            fetch.cancel(gpa);
+        .over => {
+            rest();
+            switch (fetch.state) {
+                .idle => return false,
+                .done => arrive(),
+                .failed => |why| {
+                    failed(why, fetch.host());
+                    fetch.cancel(gpa);
+                },
+                .connecting, .receiving => unreachable,
+            }
         },
     }
-    ctx.damage();
     return true;
 }
 
@@ -354,7 +325,7 @@ fn arrive() void {
     defer fetch.cancel(gpa);
     const final = fetch.address();
     address.set(final);
-    if (history.current()) |entry| entry.set(final);
+    if (history.current()) |entry| _ = entry.address.set(final);
 
     arrived = .{
         .bytes = fetch.received(),
@@ -362,45 +333,44 @@ fn arrive() void {
         .status = fetch.response.status,
     };
 
-    const base = url.parse(final) orelse return problem("That is not an address", final);
+    const base = url.parse(final) orelse return failed(error.NotAnAddress, final);
     show(fetch.body.bytes.items, base, kindOf(fetch.response.contentType(), final));
 }
 
 /// A file on this machine, read whole.
 fn openFile(where: url.Url) void {
     const path = where.file();
-    const facts = file.factsOf(path) orelse return problem("There is no such file", path);
-    if (facts.size > fetch_mod.PAGE_MAX) return problem("This file is too large", "It is over 4 MB, which is more than this reader reads.");
-
-    const bytes = gpa.alloc(u8, facts.size) catch return problem("Not enough memory", "This file needs more memory than the machine has free.");
+    const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
     defer gpa.free(bytes);
-    const got = file.readWhole(path, bytes) orelse return problem("This file could not be read", path);
-
-    arrived = .{ .bytes = got };
-    show(bytes[0..got], where, kindOf(null, path));
+    arrived = .{ .bytes = bytes.len };
+    show(bytes, where, kindOf(null, path));
 }
 
 /// What a body is, from what the site said it was, or from a file's name.
 const Kind = union(enum) {
     markup,
     plain,
+    /// Something else, which says what.
     other: []const u8,
 };
+
+const media_kinds = std.StaticStringMapWithEql(Kind, std.static_string_map.eqlAsciiIgnoreCase).initComptime(.{
+    .{ "text/html", Kind.markup },
+    .{ "application/xhtml+xml", Kind.markup },
+    .{ "text/plain", Kind.plain },
+});
 
 fn kindOf(content_type: ?[]const u8, name: []const u8) Kind {
     const said = content_type orelse {
         // Nothing said: a file's own name, and otherwise markup, which is
         // what a page that says nothing about itself almost always is.
-        for ([_][]const u8{ ".txt", ".md", ".log" }) |plain| {
+        inline for (.{ ".txt", ".md", ".log" }) |plain| {
             if (std.ascii.endsWithIgnoreCase(name, plain)) return .plain;
         }
         return .markup;
     };
-    const end = std.mem.indexOfScalar(u8, said, ';') orelse said.len;
-    const media = std.mem.trim(u8, said[0..end], " \t");
-    if (std.ascii.eqlIgnoreCase(media, "text/html") or std.ascii.eqlIgnoreCase(media, "application/xhtml+xml")) return .markup;
-    if (std.ascii.eqlIgnoreCase(media, "text/plain")) return .plain;
-    return .{ .other = media };
+    const media = http.mediaOf(said);
+    return media_kinds.get(media) orelse .{ .other = media };
 }
 
 /// Read `bytes` into a page and put it on screen.
@@ -408,20 +378,23 @@ fn show(bytes: []const u8, base: url.Url, kind: Kind) void {
     var fresh: Page = .{};
     toPage(bytes, base, kind, &fresh) catch |err| {
         fresh.deinit(gpa);
-        return switch (err) {
-            error.OutOfMemory => problem("Not enough memory", "This page needs more memory than the machine has free."),
-            error.Unreadable => problem("This page could not be read", "The parser would not take it."),
-            error.NotAPage => problem("This is not a page", switch (kind) {
-                .other => |media| media,
-                else => "",
-            }),
-        };
+        return failed(err, switch (kind) {
+            .other => |media| media,
+            .markup, .plain => base.host,
+        });
     };
     replace(&fresh);
     focus_next = .page;
 }
 
-const ReadError = error{ OutOfMemory, Unreadable, NotAPage };
+/// Why what arrived could not be read as a page.
+const ReadError = error{
+    OutOfMemory,
+    /// The parser would not take it.
+    Unparsable,
+    /// It is something other than a page.
+    NotAPage,
+};
 
 /// Read `bytes` into `page`, as markup or as plain text.
 fn toPage(bytes: []const u8, base: url.Url, kind: Kind, page: *Page) ReadError!void {
@@ -430,7 +403,7 @@ fn toPage(bytes: []const u8, base: url.Url, kind: Kind, page: *Page) ReadError!v
         .plain => {
             var builder = page_mod.Builder{ .gpa = gpa, .page = page };
             try builder.boundary(.{ .kind = .preformatted });
-            builder.face = .mono;
+            builder.look.face = .mono;
             try builder.words(bytes);
             try builder.finish();
         },
@@ -440,7 +413,7 @@ fn toPage(bytes: []const u8, base: url.Url, kind: Kind, page: *Page) ReadError!v
             switch (lexbor.lxb_html_document_parse(document, bytes.ptr, bytes.len)) {
                 .ok => {},
                 .no_memory => return error.OutOfMemory,
-                _ => return error.Unreadable,
+                _ => return error.Unparsable,
             }
             try extract.extract(gpa, document, base, page);
         },
@@ -461,9 +434,9 @@ fn problem(heading: []const u8, detail: []const u8) void {
     var builder = page_mod.Builder{ .gpa = gpa, .page = &fresh };
     build: {
         builder.boundary(.{ .kind = .heading }) catch break :build;
-        builder.face = .heading;
+        builder.look.face = .heading;
         builder.words(heading) catch break :build;
-        builder.face = .body;
+        builder.look.face = .body;
         builder.boundary(.{}) catch break :build;
         builder.words(detail) catch break :build;
         builder.finish() catch break :build;
@@ -472,25 +445,114 @@ fn problem(heading: []const u8, detail: []const u8) void {
     replace(&fresh);
 }
 
-fn failed(why: fetch_mod.Failure) void {
-    var detail: [512]u8 = undefined;
-    const site = fetch.host();
-    const said = switch (why) {
-        .no_name => .{ "Nothing answers to that name", std.fmt.bufPrint(&detail, "{s} is not a name the network knows. It may be misspelt, or this machine may not be connected.", .{site}) catch site },
-        .cannot_reach => .{ "The site could not be reached", std.fmt.bufPrint(&detail, "{s} did not answer. It may be down, or not listening where it was asked.", .{site}) catch site },
-        .refused => .{ "No shared way to encrypt this", std.fmt.bufPrint(&detail, "{s} and this reader could not agree on a sealed connection ({s}), so nothing was sent.", .{ site, ulib.tls.last_failure }) catch site },
-        .no_clock => .{ "The clock is not set", "A sealed page cannot be read until it is: a certificate's dates mean nothing without it." },
-        .no_authorities => .{ "The certificate authorities could not be read", "They are kept in /share/ca.store, and a sealed page cannot be checked without them." },
-        .no_randomness => .{ "Not enough randomness yet", "The machine has not gathered enough to seal a connection with. Try again in a moment." },
-        .malformed => .{ "That was not a page", std.fmt.bufPrint(&detail, "{s} answered with something that is not HTTP.", .{site}) catch site },
-        .too_large => .{ "This page is too large", "It is over 4 MB, which is more than this reader reads." },
-        .truncated => .{ "The page was cut short", "The connection ended before all of it arrived." },
-        .unanswered => .{ "The site did not answer", std.fmt.bufPrint(&detail, "{s} closed the connection without sending anything back.", .{site}) catch site },
-        .redirect_loop => .{ "Sent round in circles", std.fmt.bufPrint(&detail, "{s} kept sending the request on somewhere else.", .{site}) catch site },
-        .stalled => .{ "The site stopped answering", "Nothing arrived for thirty seconds, so the reader gave up waiting." },
-        .out_of_memory => .{ "Not enough memory", "This page needs more memory than the machine has free." },
+// ---------------------------------------------------------------------------
+// What went wrong
+// ---------------------------------------------------------------------------
+
+/// Every way the reader can fail to show what was asked for.
+const Failure = fetch_mod.Failure || file.AllocError || ReadError || error{NotAnAddress};
+
+/// What a failure is called: a heading and a sentence for the page that says
+/// so, and the few words a shell line has room for. One table, so that the
+/// window and the shell never say two different things about one failure.
+const Told = struct { heading: []const u8, detail: []const u8, word: []const u8 };
+
+/// `subject` is what the failure is about: the site, the file, or what was
+/// typed. The sentences that name it are written into `buf`.
+fn told(why: Failure, subject: []const u8, buf: []u8) Told {
+    return switch (why) {
+        error.NotAnAddress, error.BadAddress => .{
+            .heading = "That is not an address",
+            .detail = "An address is a site's name, like example.org, a whole address beginning with http:// or https://, or a file on this machine.",
+            .word = "not an address",
+        },
+        error.NoName => .{
+            .heading = "Nothing answers to that name",
+            .detail = sentence(buf, "{s} is not a name the network knows. It may be misspelt, or this machine may not be connected.", .{subject}),
+            .word = "no such name",
+        },
+        error.Unreachable => .{
+            .heading = "The site could not be reached",
+            .detail = sentence(buf, "{s} did not answer. It may be down, or not listening where it was asked.", .{subject}),
+            .word = "could not reach it",
+        },
+        error.Refused => .{
+            .heading = "No shared way to encrypt this",
+            .detail = sentence(buf, "{s} and this reader could not agree on a sealed connection ({s}), so nothing was sent.", .{ subject, ulib.wire.refusal() }),
+            .word = "the sealed connection was refused",
+        },
+        error.NoClock => .{
+            .heading = "The clock is not set",
+            .detail = "A sealed page cannot be read until it is: a certificate's dates mean nothing without it.",
+            .word = "the clock is not set",
+        },
+        error.NoAuthorities => .{
+            .heading = "The certificate authorities could not be read",
+            .detail = "They are kept in " ++ ulib.wire.AUTHORITIES ++ ", and a sealed page cannot be checked without them.",
+            .word = "the certificate authorities could not be read",
+        },
+        error.NoRandomness => .{
+            .heading = "Not enough randomness yet",
+            .detail = "The machine has not gathered enough to seal a connection with. Try again in a moment.",
+            .word = "not enough randomness to seal with",
+        },
+        error.HeadTooLong, error.Malformed => .{
+            .heading = "That was not a page",
+            .detail = sentence(buf, "{s} answered with something that is not HTTP.", .{subject}),
+            .word = "not HTTP",
+        },
+        error.TooLarge, error.TooBig => .{
+            .heading = "This is too large",
+            .detail = std.fmt.comptimePrint("It is over {d} MB, which is more than this reader reads.", .{fetch_mod.PAGE_MAX / (1024 * 1024)}),
+            .word = "larger than this reads",
+        },
+        error.Truncated => .{
+            .heading = "The page was cut short",
+            .detail = "The connection ended before all of it arrived.",
+            .word = "cut short",
+        },
+        error.Unanswered => .{
+            .heading = "The site did not answer",
+            .detail = sentence(buf, "{s} closed the connection without sending anything back.", .{subject}),
+            .word = "closed without answering",
+        },
+        error.RedirectLoop => .{
+            .heading = "Sent round in circles",
+            .detail = sentence(buf, "{s} kept sending the request on somewhere else.", .{subject}),
+            .word = "sent round in circles",
+        },
+        error.Stalled => .{
+            .heading = "The site stopped answering",
+            .detail = std.fmt.comptimePrint("Nothing arrived for {d} seconds, so the reader gave up waiting.", .{fetch_mod.STALL_US / std.time.us_per_s}),
+            .word = "stopped answering",
+        },
+        error.OutOfMemory => .{
+            .heading = "Not enough memory",
+            .detail = "This needs more memory than the machine has free.",
+            .word = "not enough memory",
+        },
+        error.NoFile => .{ .heading = "There is no such file", .detail = subject, .word = "no such file" },
+        error.Unreadable => .{ .heading = "This file could not be read", .detail = subject, .word = "cannot read it" },
+        error.Unparsable => .{
+            .heading = "This page could not be read",
+            .detail = "The parser would not take it.",
+            .word = "the parser would not take it",
+        },
+        error.NotAPage => .{ .heading = "This is not a page", .detail = subject, .word = "not a page" },
     };
-    problem(said[0], said[1]);
+}
+
+/// A sentence naming a subject, in `buf`; the subject alone where the
+/// sentence would not fit.
+fn sentence(buf: []u8, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.bufPrint(buf, fmt, args) catch args[0];
+}
+
+/// A page saying why the one asked for is not here.
+fn failed(why: Failure, subject: []const u8) void {
+    var buf: [url.ADDRESS_MAX + 256]u8 = undefined;
+    const said = told(why, subject, &buf);
+    problem(said.heading, said.detail);
 }
 
 // ---------------------------------------------------------------------------
@@ -561,8 +623,8 @@ fn strip(area: Rect, at: Strip) void {
     if (ctx.tool(at.forward, .forward, history.canForward())) forward();
     // One key, two jobs: while a page is coming it stops it, and otherwise
     // it fetches the page again.
-    const loading = fetch.phase == .connecting or fetch.phase == .receiving;
-    if (ctx.tool(at.reload, if (loading) .cross else .reload, loading or history.count > 0)) {
+    const loading = fetch.busy();
+    if (ctx.tool(at.reload, if (loading) .cross else .reload, loading or !history.entries.isEmpty())) {
         if (loading) stop() else reload();
     }
     if (address.run(ctx, at.field)) typed(address.slice());
@@ -592,82 +654,88 @@ fn rule(area: Rect) void {
 /// being reached, the share of the body where the site said how long it
 /// would be, and the same sliver where it did not.
 fn progress() u16 {
-    return switch (fetch.phase) {
+    return switch (fetch.state) {
         .connecting => 30,
         .receiving => if (fetch.expected()) |total|
             @intCast(@max(30, @min(1000, fetch.received() * 1000 / @max(total, 1))))
         else
             30,
-        else => 0,
+        .idle, .done, .failed => 0,
     };
 }
 
 fn status(area: Rect, body: Rect) void {
     var left_buf: [url.ADDRESS_MAX + 32]u8 = undefined;
     var right_buf: [48]u8 = undefined;
+    var left = str.Builder{ .buf = &left_buf };
+    var right = str.Builder{ .buf = &right_buf };
 
-    const left: []const u8 = if (view.hover != NO_LINK)
-        shown.address(view.hover) orelse ""
-    else switch (fetch.phase) {
-        .connecting => std.fmt.bufPrint(&left_buf, "Reaching {s}", .{fetch.host()}) catch "",
-        .receiving => std.fmt.bufPrint(&left_buf, "Reading from {s}", .{fetch.host()}) catch "",
-        else => if (shown.title.items.len > 0) shown.title.items else address.slice(),
-    };
+    if (view.hover) |link| {
+        left.text(shown.address(link) orelse "");
+    } else switch (fetch.state) {
+        .connecting => {
+            left.text("Reaching ");
+            left.text(fetch.host());
+        },
+        .receiving => {
+            left.text("Reading from ");
+            left.text(fetch.host());
+        },
+        .idle, .done, .failed => left.text(if (shown.title.items.len > 0) shown.title.items else address.slice()),
+    }
 
-    const right: []const u8 = switch (fetch.phase) {
-        .receiving => if (fetch.expected()) |total|
-            std.fmt.bufPrint(&right_buf, "{d} KB of {d} KB", .{ kb(fetch.received()), kb(total) }) catch ""
-        else
-            std.fmt.bufPrint(&right_buf, "{d} KB so far", .{kb(fetch.received())}) catch "",
-        .connecting => "",
-        else => arrivedText(&right_buf, body),
-    };
+    switch (fetch.state) {
+        .receiving => {
+            right.bytes(fetch.received());
+            if (fetch.expected()) |total| {
+                right.text(" of ");
+                right.bytes(std.math.cast(usize, total) orelse std.math.maxInt(usize));
+            } else right.text(" so far");
+        },
+        .connecting => {},
+        .idle, .done, .failed => arrivedText(&right, body),
+    }
 
     eui.statusbar.run(ctx, area, &.{
-        .{ .text = left },
-        .{ .text = right, .width = 150 },
+        .{ .text = left.done() },
+        .{ .text = right.done(), .width = 150 },
     });
 }
 
 /// What the page on screen cost to fetch, or how far down it the view is
 /// once that is no longer news.
-fn arrivedText(buf: []u8, body: Rect) []const u8 {
-    const got = arrived orelse return "";
+fn arrivedText(b: *str.Builder, body: Rect) void {
+    const got = arrived orelse return;
     if (got.status) |code| {
-        if (code >= 400) return std.fmt.bufPrint(buf, "the site said {d}", .{code}) catch "";
+        if (code >= 400) {
+            b.text("the site said ");
+            b.number(code);
+            return;
+        }
     }
-    if (view.scroll > 0) return std.fmt.bufPrint(buf, "{d}%", .{view.position(body)}) catch "";
-    const us = got.us orelse return std.fmt.bufPrint(buf, "{d} KB", .{kb(got.bytes)}) catch "";
-    const tenths = us / 100_000;
-    return std.fmt.bufPrint(buf, "{d} KB in {d}.{d} s", .{ kb(got.bytes), tenths / 10, tenths % 10 }) catch "";
-}
-
-fn kb(bytes: u64) u64 {
-    return (bytes + 1023) / 1024;
+    if (view.scroll > 0) {
+        b.number(view.position(body));
+        b.byte('%');
+        return;
+    }
+    b.bytes(got.bytes);
+    const us = got.us orelse return;
+    b.print(" in {d}.{d} s", .{ us / std.time.us_per_s, us / 100_000 % 10 });
 }
 
 fn key(code: KeyCode, mods: Modifiers) bool {
     if (mods.alt and code == .left) {
         back();
-        return true;
-    }
-    if (mods.alt and code == .right) {
+    } else if (mods.alt and code == .right) {
         forward();
-        return true;
-    }
-    if (code == .f5 or (mods.control and code == .r)) {
+    } else if (code == .f5 or (mods.control and code == .r)) {
         reload();
-        return true;
-    }
-    if (mods.control and code == .l) {
+    } else if (mods.control and code == .l) {
         focus_next = .field;
-        return true;
-    }
-    if (code == .escape and fetch.phase != .idle and fetch.phase != .done and fetch.phase != .failed) {
+    } else if (code == .escape and fetch.busy()) {
         stop();
-        return true;
-    }
-    return false;
+    } else return false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -677,85 +745,43 @@ fn key(code: KeyCode, mods: Modifiers) bool {
 /// `web -t`: the page's words on standard output, and nothing drawn.
 fn printText(target: []const u8) noreturn {
     var buf: [url.ADDRESS_MAX]u8 = undefined;
-    const where_text = addressFrom(target, &buf) orelse {
-        out.fault("web", target, "not an address");
-        sys.exit(2);
-    };
-    const where = url.parse(where_text) orelse {
-        out.fault("web", target, "not an address");
-        sys.exit(2);
-    };
+    const where_text = addressFrom(target, &buf) orelse fatal(target, error.NotAnAddress);
+    const where = url.parse(where_text) orelse fatal(target, error.NotAnAddress);
 
     var page: Page = .{};
     if (where.scheme == .file) {
         const path = where.file();
-        const facts = file.factsOf(path) orelse fatal(path, "cannot open");
-        if (facts.size > fetch_mod.PAGE_MAX) fatal(path, "larger than this reads");
-        const bytes = gpa.alloc(u8, facts.size) catch fatal(path, "no room to read it");
-        const got = file.readWhole(path, bytes) orelse fatal(path, "cannot read");
-        toPage(bytes[0..got], where, kindOf(null, path), &page) catch |err| fatal(path, readWord(err));
+        const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| fatal(path, err);
+        toPage(bytes, where, kindOf(null, path), &page) catch |err| fatal(path, err);
     } else {
         fetch.begin(gpa, where_text);
-        while (true) {
-            switch (fetch.phase) {
-                .connecting => fetch.connect(&trust),
-                .receiving => {
-                    // Woken by the site, or once a second to notice one
-                    // that has gone quiet.
-                    sys.eventWait(fetch.waitHandle().?, WATCH_US) catch {};
-                    fetch.pump(gpa);
-                    _ = fetch.stall(sys.clockMicros());
-                },
-                .done => break,
-                .failed => fatal(fetch.host(), failureWord(fetch.failure)),
-                .idle => unreachable,
-            }
+        while (true) switch (fetch.advance(gpa)) {
+            .none => {},
+            // Woken by the site, or once a second to notice one that has
+            // gone quiet.
+            .site => |handle| sys.eventWait(handle, WATCH_US) catch {},
+            .over => break,
+        };
+        switch (fetch.state) {
+            .done => {},
+            .failed => |why| fatal(fetch.host(), why),
+            .idle, .connecting, .receiving => unreachable,
         }
-        const final = url.parse(fetch.address()) orelse fatal(fetch.address(), "not an address");
+        const final = url.parse(fetch.address()) orelse fatal(fetch.address(), error.NotAnAddress);
         toPage(fetch.body.bytes.items, final, kindOf(fetch.response.contentType(), fetch.address()), &page) catch |err|
-            fatal(fetch.address(), readWord(err));
+            fatal(fetch.address(), err);
     }
 
-    page_mod.writeText(&page, Terminal{});
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    page_mod.writeText(&page, &text.writer) catch fatal(where_text, error.OutOfMemory);
+    out.through(text.written());
     out.flush();
     sys.exit(0);
 }
 
-const Terminal = struct {
-    pub fn text(_: Terminal, bytes: []const u8) void {
-        out.text(bytes);
-    }
-};
-
-fn fatal(what: []const u8, why: []const u8) noreturn {
-    out.fault("web", what, why);
-    sys.exit(1);
-}
-
-/// Why a page that arrived could not be read, in a shell line's few words.
-fn readWord(err: ReadError) []const u8 {
-    return switch (err) {
-        error.OutOfMemory => "not enough memory to read it",
-        error.Unreadable => "the parser would not take it",
-        error.NotAPage => "not a page",
-    };
-}
-
-/// The same failures, in the few words a shell line has room for.
-fn failureWord(why: fetch_mod.Failure) []const u8 {
-    return switch (why) {
-        .no_name => "no such name",
-        .cannot_reach => "could not reach it",
-        .refused => "the sealed connection was refused",
-        .no_clock => "the clock is not set",
-        .no_authorities => "the certificate authorities could not be read",
-        .no_randomness => "not enough randomness to seal with",
-        .malformed => "not HTTP",
-        .too_large => "larger than this reads",
-        .truncated => "cut short",
-        .unanswered => "closed without answering",
-        .redirect_loop => "sent round in circles",
-        .stalled => "stopped answering",
-        .out_of_memory => "not enough memory",
-    };
+/// Say what went wrong on a shell line, and stop.
+fn fatal(subject: []const u8, why: Failure) noreturn {
+    var buf: [url.ADDRESS_MAX + 256]u8 = undefined;
+    out.fault("web", subject, told(why, subject, &buf).word);
+    sys.exit(if (why == error.NotAnAddress) 2 else 1);
 }

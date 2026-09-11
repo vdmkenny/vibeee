@@ -8,12 +8,19 @@
 //! address in brackets is not one this can reach and is refused as one.
 
 const std = @import("std");
+const Bounded = @import("lib").bounded.Bounded;
+
+const Writer = std.Io.Writer;
 
 /// The longest address this reader keeps. Longer ones exist, almost all of
 /// them tracking parameters on a link, and a page reached by one is still
 /// reached by what fits here more often than not; past it a link is simply
 /// not followed rather than followed somewhere cut short.
 pub const ADDRESS_MAX = 2048;
+
+/// An address kept rather than borrowed: where a fetch is aimed, and each
+/// place the history remembers.
+pub const Address = Bounded(u8, ADDRESS_MAX);
 
 pub const Scheme = enum {
     http,
@@ -27,11 +34,6 @@ pub const Scheme = enum {
             .https => 443,
             .file => 0,
         };
-    }
-
-    /// Whether what goes over the wire is sealed.
-    pub fn sealed(self: Scheme) bool {
-        return self == .https;
     }
 
     fn named(text: []const u8) ?Scheme {
@@ -49,9 +51,8 @@ pub const Url = struct {
     host: []const u8 = "",
     port: u16 = 0,
     /// The path and the query, which is what a request asks for. Empty, or
-    /// beginning with a slash or a question mark; a request puts a slash in
-    /// front of the last two. The fragment is not here: it names a place in
-    /// the page and never leaves the machine.
+    /// beginning with a slash or a question mark. The fragment is not here:
+    /// it names a place in the page and never leaves the machine.
     path: []const u8 = "",
 
     /// The path without its query, for a file on disk and for working out
@@ -59,6 +60,33 @@ pub const Url = struct {
     pub fn file(self: Url) []const u8 {
         const end = std.mem.indexOfScalar(u8, self.path, '?') orelse self.path.len;
         return self.path[0..end];
+    }
+
+    /// The whole address, which is what `{f}` prints: for the address field
+    /// and for keeping.
+    pub fn format(self: Url, w: *Writer) Writer.Error!void {
+        try self.writeOrigin(w);
+        try self.writeTarget(w);
+    }
+
+    /// The host, and the port where it is not the scheme's own: what a
+    /// request's `Host` line says.
+    pub fn writeHost(self: Url, w: *Writer) Writer.Error!void {
+        try w.writeAll(self.host);
+        if (self.scheme != .file and self.port != self.scheme.defaultPort()) try w.print(":{d}", .{self.port});
+    }
+
+    /// What a request asks for: the path and the query, with a slash in
+    /// front of an empty path or a bare query.
+    pub fn writeTarget(self: Url, w: *Writer) Writer.Error!void {
+        if (self.path.len == 0 or self.path[0] == '?') try w.writeByte('/');
+        try w.writeAll(self.path);
+    }
+
+    /// Where every address on the site starts: the scheme and the host.
+    fn writeOrigin(self: Url, w: *Writer) Writer.Error!void {
+        try w.print("{s}://", .{@tagName(self.scheme)});
+        try self.writeHost(w);
     }
 };
 
@@ -96,20 +124,11 @@ pub fn parse(text: []const u8) ?Url {
     return .{ .scheme = scheme, .host = host, .port = port, .path = rest[authority_end..] };
 }
 
-/// Write `url` out whole, for the address field and for keeping.
-pub fn format(url: Url, out: []u8) ?[]const u8 {
-    var w = Writer{ .buf = out };
-    w.origin(url);
-    w.text(if (url.path.len == 0 or url.path[0] == '?') "/" else "");
-    w.text(url.path);
-    return w.done();
-}
-
 /// Where `reference`, found on the page at `base`, points, written into
 /// `out`. Null for a link this reader does not follow: another scheme, a
 /// jump within the page, an address too long to hold.
 pub fn resolve(base: Url, reference: []const u8, out: []u8) ?[]const u8 {
-    const ref = withoutFragment(std.mem.trim(u8, reference, " \t\r\n\x0c"));
+    const ref = withoutFragment(std.mem.trim(u8, reference, &c0_or_space));
     // A link that is only a fragment names a place on this page.
     if (ref.len == 0) return null;
 
@@ -117,55 +136,70 @@ pub fn resolve(base: Url, reference: []const u8, out: []u8) ?[]const u8 {
         // A scheme this reader knows is an address in its own right; any
         // other, `mailto:` or `javascript:`, is not a page to go to.
         _ = Scheme.named(named) orelse return null;
-        const url = parse(ref) orelse return null;
-        return format(url, out);
+        return std.fmt.bufPrint(out, "{f}", .{parse(ref) orelse return null}) catch null;
     }
-
-    var w = Writer{ .buf = out };
 
     if (std.mem.startsWith(u8, ref, "//")) {
-        // The same scheme, a new host.
-        w.text(@tagName(base.scheme));
-        w.text(":");
-        w.text(ref);
-        const joined = w.done() orelse return null;
-        // Parsed again, so a host with a port in it is checked like any
-        // other, and written back out so the path is normalised.
-        var scratch: [4096]u8 = undefined;
-        if (joined.len > scratch.len) return null;
-        @memcpy(scratch[0..joined.len], joined);
-        const url = parse(scratch[0..joined.len]) orelse return null;
-        return format(url, out);
+        // The same scheme and another host, read whole so that a host with
+        // a port in it is checked like any other.
+        var whole: [ADDRESS_MAX]u8 = undefined;
+        const joined = std.fmt.bufPrint(&whole, "{s}:{s}", .{ @tagName(base.scheme), ref }) catch return null;
+        return std.fmt.bufPrint(out, "{f}", .{parse(joined) orelse return null}) catch null;
     }
 
-    w.origin(base);
+    var w: Writer = .fixed(out);
+    writeRelative(&w, base, ref) catch return null;
+    return w.buffered();
+}
 
+/// A reference with neither a scheme nor a host, written out against `base`.
+fn writeRelative(w: *Writer, base: Url, ref: []const u8) Writer.Error!void {
+    try base.writeOrigin(w);
     if (ref[0] == '?') {
-        w.text(base.file());
-        if (base.file().len == 0) w.text("/");
-        w.text(ref);
-        return w.done();
+        // A new query on the same path.
+        const path = base.file();
+        try w.writeAll(if (path.len == 0) "/" else path);
+        return w.writeAll(ref);
     }
-
+    const query_at = std.mem.indexOfScalar(u8, ref, '?') orelse ref.len;
+    const path = ref[0..query_at];
     // An absolute path stands alone; a relative one starts in the directory
-    // the base page is in, which is its path up to and including the last
-    // slash.
-    var joined: [4096]u8 = undefined;
-    var j = Writer{ .buf = &joined };
-    if (ref[0] != '/') {
-        const dir = base.file();
-        const cut = if (std.mem.lastIndexOfScalar(u8, dir, '/')) |slash| slash + 1 else 0;
-        j.text(if (cut == 0) "/" else dir[0..cut]);
-    }
-    j.text(ref);
-    const path = j.done() orelse return null;
+    // the base page is in.
+    try writeNormalised(w, if (path[0] == '/') "" else directoryOf(base.file()), path);
+    try w.writeAll(ref[query_at..]);
+}
 
-    const query_at = std.mem.indexOfScalar(u8, path, '?') orelse path.len;
-    var normal: [4096]u8 = undefined;
-    const clean = normalise(path[0..query_at], &normal) orelse return null;
-    w.text(clean);
-    w.text(path[query_at..]);
-    return w.done();
+/// `dir` followed by `path`, as one absolute path with its `.` and `..`
+/// segments taken out. A path climbing above the root stays at the root,
+/// which is what every browser does and what a link written for a site at
+/// the top of its host expects.
+fn writeNormalised(w: *Writer, dir: []const u8, path: []const u8) Writer.Error!void {
+    const root = w.end;
+    // Whether the path ends on a directory, which keeps its trailing slash.
+    var ends_dir = false;
+    for ([_][]const u8{ dir, path }) |part| {
+        var segments = std.mem.splitScalar(u8, part, '/');
+        while (segments.next()) |segment| {
+            if (std.mem.eql(u8, segment, "..")) {
+                const written = w.buffered()[root..];
+                w.undo(written.len - (std.mem.lastIndexOfScalar(u8, written, '/') orelse 0));
+                ends_dir = true;
+            } else if (segment.len == 0 or std.mem.eql(u8, segment, ".")) {
+                ends_dir = true;
+            } else {
+                try w.print("/{s}", .{segment});
+                ends_dir = false;
+            }
+        }
+    }
+    if (ends_dir or w.end == root) try w.writeByte('/');
+}
+
+/// The directory a path is in: up to and including its last slash, or the
+/// root where it has none.
+fn directoryOf(path: []const u8) []const u8 {
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return "/";
+    return path[0 .. slash + 1];
 }
 
 /// The scheme a reference begins with, if it begins with one: letters,
@@ -188,73 +222,12 @@ fn withoutFragment(text: []const u8) []const u8 {
     return text[0..end];
 }
 
-/// Take the `.` and `..` segments out of an absolute path. A path climbing
-/// above the root stays at the root, which is what every browser does and
-/// what a link written for a site at the top of its host expects.
-fn normalise(path: []const u8, out: []u8) ?[]const u8 {
-    std.debug.assert(path.len > 0 and path[0] == '/');
-    var len: usize = 0;
-    // Whether the path ends on a directory, which keeps its trailing slash.
-    var ends_dir = false;
-
-    var segments = std.mem.splitScalar(u8, path[1..], '/');
-    while (segments.next()) |segment| {
-        ends_dir = false;
-        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) {
-            ends_dir = true;
-            continue;
-        }
-        if (std.mem.eql(u8, segment, "..")) {
-            len = std.mem.lastIndexOfScalar(u8, out[0..len], '/') orelse 0;
-            ends_dir = true;
-            continue;
-        }
-        if (len + 1 + segment.len > out.len) return null;
-        out[len] = '/';
-        @memcpy(out[len + 1 ..][0..segment.len], segment);
-        len += 1 + segment.len;
-    }
-
-    if (len == 0 or ends_dir) {
-        if (len + 1 > out.len) return null;
-        out[len] = '/';
-        len += 1;
-    }
-    return out[0..len];
-}
-
-/// Text into a fixed buffer, remembering whether it ever ran out rather than
-/// failing at every step.
-const Writer = struct {
-    buf: []u8,
-    len: usize = 0,
-    over: bool = false,
-
-    fn text(self: *Writer, bytes: []const u8) void {
-        if (self.over) return;
-        if (self.len + bytes.len > self.buf.len) {
-            self.over = true;
-            return;
-        }
-        @memcpy(self.buf[self.len..][0..bytes.len], bytes);
-        self.len += bytes.len;
-    }
-
-    fn origin(self: *Writer, url: Url) void {
-        self.text(@tagName(url.scheme));
-        self.text("://");
-        self.text(url.host);
-        if (url.scheme != .file and url.port != url.scheme.defaultPort()) {
-            var digits: [5]u8 = undefined;
-            const port = std.fmt.bufPrint(&digits, "{d}", .{url.port}) catch unreachable;
-            self.text(":");
-            self.text(port);
-        }
-    }
-
-    fn done(self: *const Writer) ?[]const u8 {
-        return if (self.over) null else self.buf[0..self.len];
-    }
+/// What the URL standard strips from both ends of an address: the C0
+/// controls and the space.
+const c0_or_space: [0x21]u8 = table: {
+    var bytes: [0x21]u8 = undefined;
+    for (&bytes, 0..) |*byte, value| byte.* = @intCast(value);
+    break :table bytes;
 };
 
 // ---------------------------------------------------------------------------
@@ -286,6 +259,13 @@ test "an address says its scheme, host, port and path" {
 test "a missing port is the scheme's own" {
     try testing.expectEqual(@as(u16, 80), parse("http://example.org").?.port);
     try testing.expectEqual(@as(u16, 443), parse("https://example.org/").?.port);
+}
+
+test "an address writes itself out whole, with the slash a request needs" {
+    try testing.expectFmt("https://a.org/", "{f}", .{parse("https://a.org").?});
+    try testing.expectFmt("http://a.org:8080/x?q=1", "{f}", .{parse("http://a.org:8080/x?q=1#top").?});
+    try testing.expectFmt("https://a.org/?q=1", "{f}", .{parse("https://a.org?q=1").?});
+    try testing.expectFmt("file:///home/page.html", "{f}", .{parse("file:///home/page.html").?});
 }
 
 test "what is not a fetchable address does not parse" {
@@ -331,9 +311,10 @@ test "an absolute link stands alone, and other schemes are not followed" {
     try expectResolved("https://a.org/", "javascript:void(0)", null);
 }
 
-test "a fragment names a place on the page, and whitespace around a link is not part of it" {
+test "a fragment names a place on the page, and what is around a link is not part of it" {
     try expectResolved("https://a.org/x", "#top", null);
     try expectResolved("https://a.org/x", "  page.html#part \n", "https://a.org/page.html");
+    try expectResolved("https://a.org/x", "\x00\tpage.html\x1f", "https://a.org/page.html");
 }
 
 test "a colon in the first segment makes a scheme, and a leading dot makes a path" {

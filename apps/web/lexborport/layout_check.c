@@ -63,6 +63,10 @@ CHECK("the node kind follows the user pointer",
 CHECK("the head of a node is eleven words",
       offsetof(lxb_dom_node_t, type) == 11 * sizeof(void *));
 
+/* `type` is the last field, which is what lets the mirror be the whole
+ * struct and a text node's words sit straight after it. */
+CHECK("a node is twelve words", sizeof(lxb_dom_node_t) == 12 * sizeof(void *));
+
 /* A text node's words, read in place by `wordsOf`: a string straight after
  * the node's head, which is a pointer and then a length. */
 CHECK("a text node's words follow its head",

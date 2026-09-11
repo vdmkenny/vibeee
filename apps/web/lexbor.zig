@@ -42,7 +42,6 @@ pub const NodeType = enum(c_int) {
 };
 
 pub const Document = opaque {};
-pub const Element = opaque {};
 
 /// The elements this reader has a rule for, numbered as upstream numbers
 /// them: an element's `local_name` is its number. Every value is pinned
@@ -123,12 +122,11 @@ pub const Tag = enum(usize) {
     _,
 };
 
-/// A node, as far as this program reaches into one.
+/// A node, field for field in upstream's order.
 ///
-/// Only the fields ahead of `type` are named, and they are named in
-/// upstream's order because that is what fixes where `type` sits. Reaching
-/// past it would mean mirroring the rest of the struct, and the rest of the
-/// struct is not this program's business.
+/// `type` is its last field, so this is the whole of upstream's struct and a
+/// text node's words sit straight after it. Both sides pin that: the sizes
+/// and offsets below, and `lexborport/layout_check.c` against the headers.
 pub const Node = extern struct {
     /// The event target upstream puts first: one pointer this side never
     /// follows.
@@ -155,7 +153,6 @@ pub extern fn lxb_html_document_destroy(document: *Document) ?*Document;
 pub extern fn lxb_html_document_parse(document: *Document, html: [*]const u8, size: usize) Status;
 pub extern fn lxb_html_document_title(document: *Document, len: *usize) ?[*]const u8;
 
-pub extern fn lxb_dom_node_text_content(node: *Node, len: *usize) ?[*]const u8;
 pub extern fn lxb_dom_element_get_attribute(element: *Node, name: [*]const u8, name_len: usize, value_len: *usize) ?[*]const u8;
 
 /// A string as upstream keeps one: a pointer and a length.
@@ -164,21 +161,24 @@ const Str = extern struct {
     length: usize,
 };
 
-/// Where a text node's words sit: straight after the node's head, which is
-/// twelve words long. Pinned on the C side with the rest of the head.
-const TEXT_AT = 12 * @sizeOf(usize);
+/// A text node: a node, and its words straight after it.
+const CharacterData = extern struct {
+    node: Node,
+    data: Str,
+};
 
 /// The words a text node holds, read where the parser keeps them.
 ///
-/// Read in place rather than through `lxb_dom_node_text_content`, which makes
-/// a copy of every text node it is asked about and keeps each until the
-/// document goes: a page's worth of words held twice for the length of the
-/// walk, on a machine where that is the difference that matters.
+/// Read in place rather than through upstream's call for a node's text,
+/// which makes a copy of every text node it is asked about and keeps each
+/// until the document goes: a page's worth of words held twice for the
+/// length of the walk, on a machine where that is the difference that
+/// matters.
 pub fn wordsOf(node: *const Node) []const u8 {
     std.debug.assert(node.type == .text);
-    const str: *const Str = @ptrFromInt(@intFromPtr(node) + TEXT_AT);
-    const data = str.data orelse return "";
-    return data[0..str.length];
+    const text: *const CharacterData = @fieldParentPtr("node", node);
+    const data = text.data.data orelse return "";
+    return data[0..text.data.length];
 }
 
 /// An attribute's value, or nothing where the element has none.
@@ -187,6 +187,17 @@ pub fn attribute(node: *Node, name: []const u8) ?[]const u8 {
     var len: usize = 0;
     const value = lxb_dom_element_get_attribute(node, name.ptr, name.len, &len) orelse return null;
     return value[0..len];
+}
+
+/// Whether an element has an attribute at all, whatever its value.
+pub fn hasAttribute(node: *Node, name: []const u8) bool {
+    return attribute(node, name) != null;
+}
+
+/// Whether an element's attribute is `value`, compared as HTML compares a
+/// keyword: without regard to case.
+pub fn attributeIs(node: *Node, name: []const u8, value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(attribute(node, name) orelse return false, value);
 }
 
 /// Every interface begins with a node, which is what upstream's own
@@ -201,16 +212,8 @@ comptime {
     if (@offsetOf(Node, "local_name") != word) @compileError("a node does not begin with one pointer");
     if (@offsetOf(Node, "owner_document") != 4 * word) @compileError("the names are not three words");
     if (@offsetOf(Node, "type") != 11 * word) @compileError("the head of a node is not eleven words");
-}
-
-/// The text under `node`, or nothing where there is none.
-///
-/// Owned by the document and gone when it is destroyed, so a caller that
-/// wants it afterwards copies it.
-pub fn textOf(node: *Node) ?[]const u8 {
-    var len: usize = 0;
-    const text = lxb_dom_node_text_content(node, &len) orelse return null;
-    return text[0..len];
+    if (@sizeOf(Node) != 12 * word) @compileError("a node is not twelve words");
+    if (@offsetOf(CharacterData, "data") != 12 * word) @compileError("a text node's words do not follow its node");
 }
 
 /// What element this node is, or nothing where it is not one.

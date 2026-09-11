@@ -1,13 +1,13 @@
 //! One page coming over the network: reaching the site, asking for the page,
 //! and taking the answer as it arrives.
 //!
-//! Driven from outside rather than running on its own. The caller says when
-//! the moment has come to reach the site, and when the connection has
-//! something. Reaching one blocks, because a TLS handshake is several round
-//! trips and there is no half of one to come back to; everything after it
-//! takes what has arrived and returns. So a window paints "connecting"
-//! before it asks for the part that blocks, and stays drawn while a page
-//! arrives a piece at a time.
+//! Driven from outside rather than running on its own: `advance` takes the
+//! next step and says what to wait on before the one after, and a window and
+//! a shell each wait in their own way. Reaching a site blocks, because a TLS
+//! handshake is several round trips and there is no half of one to come
+//! back to; every step after it takes what has arrived and returns. So a
+//! window paints "connecting" before it takes the step that blocks, and
+//! stays drawn while a page arrives a piece at a time.
 
 const std = @import("std");
 const sys = @import("sys");
@@ -32,50 +32,43 @@ const REDIRECTS_MAX = 5;
 /// How long a site may say nothing before the fetch gives up on it.
 pub const STALL_US: u64 = 30 * std.time.us_per_s;
 
-pub const Phase = enum {
+/// Every way a page can fail to arrive: the connection's own, the
+/// protocol's, and these.
+pub const Failure = ulib.wire.Error || http.Error || error{
+    /// Not an address this reader can ask a site for.
+    BadAddress,
+    /// Sent on somewhere else more times than a page should need.
+    RedirectLoop,
+    /// The site said nothing for too long.
+    Stalled,
+};
+
+pub const State = union(enum) {
     idle,
-    /// The site is to be reached at the next chance, which blocks.
+    /// The site is to be reached at the next step, which blocks.
     connecting,
     /// Asked, and taking what arrives.
     receiving,
     done,
-    failed,
+    failed: Failure,
 };
 
-/// Why a page did not arrive.
-pub const Failure = enum {
-    /// Nothing answers to the name.
-    no_name,
-    /// The site could not be reached at all.
-    cannot_reach,
-    /// Reached, and the TLS handshake failed. `ulib.tls.last_failure` has
-    /// the protocol's own word for why.
-    refused,
-    no_clock,
-    no_authorities,
-    no_randomness,
-    /// What came back was not HTTP.
-    malformed,
-    too_large,
-    /// The connection ended before the page did.
-    truncated,
-    /// The site closed the connection without answering.
-    unanswered,
-    /// Sent on somewhere else more times than a page should need.
-    redirect_loop,
-    /// The site said nothing for too long.
-    stalled,
-    out_of_memory,
+/// What a fetch waits on before its next step.
+pub const Wait = union(enum) {
+    /// Nothing: the next step can be taken now, and it is the one that
+    /// blocks.
+    none,
+    /// The site, by this handle: a piece arriving, or the connection ending.
+    site: u32,
+    /// Nothing ever again: the fetch is over, done or failed.
+    over,
 };
 
 pub const Fetch = struct {
-    phase: Phase = .idle,
-    failure: Failure = .malformed,
-
+    state: State = .idle,
     /// Where the page is: the address asked for, or after a redirect the one
     /// it was sent on to.
-    address_buf: [url.ADDRESS_MAX]u8 = undefined,
-    address_len: usize = 0,
+    target: url.Address = .{},
 
     wire: ?Wire = null,
     response: http.Response = .{},
@@ -87,7 +80,7 @@ pub const Fetch = struct {
     heard_us: u64 = 0,
 
     pub fn address(self: *const Fetch) []const u8 {
-        return self.address_buf[0..self.address_len];
+        return self.target.slice();
     }
 
     /// The host being reached, for saying so.
@@ -96,99 +89,43 @@ pub const Fetch = struct {
         return where.host;
     }
 
-    /// Begin fetching `target`. Nothing is sent until `connect`.
+    /// Whether a page is on its way.
+    pub fn busy(self: *const Fetch) bool {
+        return self.state == .connecting or self.state == .receiving;
+    }
+
+    /// Begin fetching `target`. Nothing is sent until the first step.
     pub fn begin(self: *Fetch, gpa: std.mem.Allocator, target: []const u8) void {
-        self.cancel(gpa);
         self.redirects = 0;
         self.started_us = sys.clockMicros();
         self.aim(gpa, target);
     }
 
-    /// Point at `target`, keeping the count of redirects that led here.
-    fn aim(self: *Fetch, gpa: std.mem.Allocator, target: []const u8) void {
-        self.closeWire();
-        self.body.deinit(gpa);
-        self.body = .{ .limit = PAGE_MAX };
-        self.response = .{};
-        const len = @min(target.len, self.address_buf.len);
-        @memcpy(self.address_buf[0..len], target[0..len]);
-        self.address_len = len;
-        self.phase = .connecting;
-    }
-
-    /// Reach the site and ask for the page. Blocks for as long as reaching
-    /// it takes.
-    pub fn connect(self: *Fetch, trust: *ulib.wire.Trust) void {
-        if (self.phase != .connecting) return;
-        const where = url.parse(self.address()) orelse return self.fail(.malformed);
-
-        const addr = ulib.sock.addressOf(where.host) catch return self.fail(.no_name);
-        const wire = ulib.wire.open(trust, addr, where.port, where.host, where.scheme.sealed()) catch |err|
-            return self.fail(switch (err) {
-                error.Unreachable => .cannot_reach,
-                error.Refused => .refused,
-                error.NoClock => .no_clock,
-                error.NoAuthorities => .no_authorities,
-                error.NoRandomness => .no_randomness,
-                error.OutOfMemory => .out_of_memory,
-            });
-        self.wire = wire;
-
-        var buf: [url.ADDRESS_MAX + 512]u8 = undefined;
-        const request = http.request(&buf, where.host, where.port, where.scheme.defaultPort(), where.path) orelse
-            return self.fail(.malformed);
-        if (wire.send(request) != request.len) return self.fail(.cannot_reach);
-
-        self.phase = .receiving;
-        self.heard_us = sys.clockMicros();
-    }
-
-    /// Take whatever has arrived.
-    pub fn pump(self: *Fetch, gpa: std.mem.Allocator) void {
-        if (self.phase != .receiving) return;
-        const wire = self.wire orelse return;
-
-        var chunk: [4096]u8 = undefined;
-        while (self.phase == .receiving) {
-            switch (wire.recv(&chunk)) {
-                .got => |n| {
-                    self.heard_us = sys.clockMicros();
-                    self.response.feed(gpa, chunk[0..n], &self.body) catch |err| return self.fail(failureOf(err));
-                    if (self.response.phase == .done) self.arrived(gpa);
-                },
-                .quiet => return,
-                .done => {
-                    self.response.finish() catch |err| return self.fail(failureOf(err));
-                    self.arrived(gpa);
-                },
-            }
+    /// Take the next step, and say what to wait on before the one after.
+    pub fn advance(self: *Fetch, gpa: std.mem.Allocator) Wait {
+        switch (self.state) {
+            .connecting => self.connect(),
+            .receiving => {
+                self.pump(gpa);
+                self.stall(sys.clockMicros());
+            },
+            .idle, .done, .failed => {},
         }
-    }
-
-    /// Give up on a site that has gone quiet. True when this is what ended
-    /// the fetch.
-    pub fn stall(self: *Fetch, now_us: u64) bool {
-        if (self.phase != .receiving or now_us -| self.heard_us < STALL_US) return false;
-        self.fail(.stalled);
-        return true;
+        return switch (self.state) {
+            .connecting => .none,
+            .receiving => .{ .site = self.wire.?.waitHandle() },
+            .idle, .done, .failed => .over,
+        };
     }
 
     /// Stop, and give back everything held.
     pub fn cancel(self: *Fetch, gpa: std.mem.Allocator) void {
-        self.closeWire();
-        self.body.deinit(gpa);
-        self.body = .{ .limit = PAGE_MAX };
-        self.response = .{};
-        self.phase = .idle;
+        self.reset(gpa);
+        self.state = .idle;
     }
 
-    pub fn waitHandle(self: *const Fetch) ?u32 {
-        const wire = self.wire orelse return null;
-        return wire.waitHandle();
-    }
-
-    /// How much of the body has arrived, and how much there will be when the
-    /// site said.
+    /// How much of the body has arrived, and how much there will be where
+    /// the site said.
     pub fn received(self: *const Fetch) usize {
         return self.body.bytes.items.len;
     }
@@ -197,25 +134,84 @@ pub const Fetch = struct {
         return self.response.total;
     }
 
-    fn arrived(self: *Fetch, gpa: std.mem.Allocator) void {
+    /// Point at `target`, keeping the count of redirects that led here.
+    fn aim(self: *Fetch, gpa: std.mem.Allocator, target: []const u8) void {
+        self.reset(gpa);
+        self.state = if (self.target.set(target)) .connecting else .{ .failed = error.BadAddress };
+    }
+
+    /// Let go of the connection and of whatever arrived on it.
+    fn reset(self: *Fetch, gpa: std.mem.Allocator) void {
         self.closeWire();
+        self.body.deinit(gpa);
+        self.body = .{ .limit = PAGE_MAX };
+        self.response = .{};
+    }
+
+    /// Reach the site and ask for the page. Blocks for as long as reaching
+    /// it takes.
+    fn connect(self: *Fetch) void {
+        const where = url.parse(self.address()) orelse return self.fail(error.BadAddress);
+        const kind: ulib.wire.Kind = switch (where.scheme) {
+            .http => .plain,
+            .https => .secure,
+            .file => return self.fail(error.BadAddress),
+        };
+        const wire = ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
+        self.wire = wire;
+
+        var buf: [url.ADDRESS_MAX + 512]u8 = undefined;
+        const request = http.request(&buf, where) orelse return self.fail(error.BadAddress);
+        if (wire.send(request) != request.len) return self.fail(error.Unreachable);
+
+        self.state = .receiving;
+        self.heard_us = sys.clockMicros();
+    }
+
+    /// Take whatever has arrived.
+    fn pump(self: *Fetch, gpa: std.mem.Allocator) void {
+        const wire = self.wire orelse return;
+        var chunk: [4096]u8 = undefined;
+        while (self.state == .receiving) {
+            switch (wire.recv(&chunk)) {
+                .got => |n| {
+                    self.heard_us = sys.clockMicros();
+                    self.response.feed(gpa, chunk[0..n], &self.body) catch |err| return self.fail(err);
+                    if (self.response.phase == .done) self.arrived(gpa);
+                },
+                .quiet => return,
+                .done => {
+                    self.response.finish() catch |err| return self.fail(err);
+                    self.arrived(gpa);
+                },
+            }
+        }
+    }
+
+    /// Give up on a site that has gone quiet.
+    fn stall(self: *Fetch, now_us: u64) void {
+        if (self.state == .receiving and now_us -| self.heard_us >= STALL_US) self.fail(error.Stalled);
+    }
+
+    /// The answer is complete: the page, or somewhere else to ask.
+    fn arrived(self: *Fetch, gpa: std.mem.Allocator) void {
         if (!self.response.redirects()) {
-            self.phase = .done;
+            self.closeWire();
+            self.state = .done;
             return;
         }
-        if (self.redirects == REDIRECTS_MAX) return self.fail(.redirect_loop);
+        if (self.redirects == REDIRECTS_MAX) return self.fail(error.RedirectLoop);
 
-        const base = url.parse(self.address()) orelse return self.fail(.malformed);
+        const base = url.parse(self.address()) orelse return self.fail(error.BadAddress);
         var next: [url.ADDRESS_MAX]u8 = undefined;
-        const target = url.resolve(base, self.response.location().?, &next) orelse return self.fail(.malformed);
+        const target = url.resolve(base, self.response.location().?, &next) orelse return self.fail(error.BadAddress);
         self.redirects += 1;
         self.aim(gpa, target);
     }
 
     fn fail(self: *Fetch, why: Failure) void {
         self.closeWire();
-        self.failure = why;
-        self.phase = .failed;
+        self.state = .{ .failed = why };
     }
 
     fn closeWire(self: *Fetch) void {
@@ -223,13 +219,3 @@ pub const Fetch = struct {
         self.wire = null;
     }
 };
-
-fn failureOf(err: http.Error) Failure {
-    return switch (err) {
-        error.HeadTooLong, error.Malformed => .malformed,
-        error.TooLarge => .too_large,
-        error.Truncated => .truncated,
-        error.Unanswered => .unanswered,
-        error.OutOfMemory => .out_of_memory,
-    };
-}

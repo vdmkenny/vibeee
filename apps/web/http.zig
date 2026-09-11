@@ -10,31 +10,41 @@
 //! for the body, which goes to a sink the caller bounds.
 
 const std = @import("std");
+const Bounded = @import("lib").bounded.Bounded;
+const url_mod = @import("url.zig");
 
-/// The request for `target` on `host`, written into `out`.
-pub fn request(out: []u8, host: []const u8, port: u16, default_port: u16, target: []const u8) ?[]const u8 {
-    var w = std.Io.Writer.fixed(out);
-    const path = if (target.len == 0 or target[0] == '?') "/" else "";
-    w.print("GET {s}{s} HTTP/1.1\r\n", .{ path, target }) catch return null;
-    if (port == default_port) {
-        w.print("Host: {s}\r\n", .{host}) catch return null;
-    } else {
-        w.print("Host: {s}:{d}\r\n", .{ host, port }) catch return null;
-    }
-    // Identity, because the one thing a reader must not do with a page is
-    // fail to decompress it, and the saving on a small page is not worth a
-    // second decoder in the image.
-    w.writeAll("User-Agent: web/1 (vibeee)\r\n" ++
-        "Accept: text/html, text/plain;q=0.8, */*;q=0.1\r\n" ++
-        "Accept-Encoding: identity\r\n" ++
-        "Connection: close\r\n" ++
-        "\r\n") catch return null;
+const Url = url_mod.Url;
+const Writer = std.Io.Writer;
+
+/// The request for `url`, written into `out`.
+pub fn request(out: []u8, url: Url) ?[]const u8 {
+    var w: Writer = .fixed(out);
+    writeRequest(&w, url) catch return null;
     return w.buffered();
 }
 
-/// Where the body ends: at a length, at a zero-sized chunk, or where the
-/// server closes the connection.
-pub const Framing = enum { length, chunked, close };
+fn writeRequest(w: *Writer, url: Url) Writer.Error!void {
+    try w.writeAll("GET ");
+    try url.writeTarget(w);
+    try w.writeAll(" HTTP/1.1\r\nHost: ");
+    try url.writeHost(w);
+    // Identity, because the one thing a reader must not do with a page is
+    // fail to decompress it, and the saving on a small page is not worth a
+    // second decoder in the image.
+    try w.writeAll("\r\n" ++
+        "User-Agent: web/1 (vibeee)\r\n" ++
+        "Accept: text/html, text/plain;q=0.8, */*;q=0.1\r\n" ++
+        "Accept-Encoding: identity\r\n" ++
+        "Connection: close\r\n" ++
+        "\r\n");
+}
+
+/// The media type a `Content-Type` value names, without its parameters:
+/// `text/html` from `text/html; charset=utf-8`.
+pub fn mediaOf(content_type: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, content_type, ';') orelse content_type.len;
+    return std.mem.trim(u8, content_type[0..end], &std.ascii.whitespace);
+}
 
 /// The most a response's head may come to. Past it the server is saying
 /// something other than a page.
@@ -42,7 +52,7 @@ pub const HEAD_MAX = 16 * 1024;
 
 /// Where the body goes, and the most of it there may be.
 pub const Body = struct {
-    bytes: std.ArrayListUnmanaged(u8) = .empty,
+    bytes: std.ArrayList(u8) = .empty,
     limit: usize,
 
     pub fn append(self: *Body, gpa: std.mem.Allocator, more: []const u8) Error!void {
@@ -69,40 +79,25 @@ pub const Error = error{
     OutOfMemory,
 };
 
-/// Where in the head a header's value sits, rather than a slice into it, so
-/// a response can be copied without its values pointing at the old copy.
-const Span = struct {
-    at: u16 = 0,
-    len: u16 = 0,
-
-    fn of(self: Span, head: []const u8) ?[]const u8 {
-        return if (self.len == 0) null else head[self.at..][0..self.len];
-    }
+/// Where a body ends, and how much of it is still owed.
+pub const Framing = union(enum) {
+    /// At a length, of which this much is still to come.
+    length: u64,
+    /// At a chunk of size zero.
+    chunked: Chunked,
+    /// Where the server closes the connection.
+    close,
 };
 
-pub const Response = struct {
-    phase: Phase = .head,
-
-    head: [HEAD_MAX]u8 = undefined,
-    head_len: usize = 0,
-
-    status: u16 = 0,
-    framing: Framing = .close,
-    /// Bytes still owed: of the whole body for `.length`, of the current
-    /// chunk for `.chunked`.
+/// How far through a chunked body the reading is.
+pub const Chunked = struct {
+    at: Part = .size,
+    /// What is still owed of the chunk being read, or its size as that is
+    /// read.
     remaining: u64 = 0,
-    /// The body's whole length when the head gave one, for saying how far
-    /// along a fetch is.
-    total: ?u64 = null,
-    chunk: Chunk = .size,
 
-    location_at: Span = .{},
-    content_type_at: Span = .{},
-
-    pub const Phase = enum { head, body, done };
-
-    const Chunk = enum {
-        /// Reading the hexadecimal size, up to the end of its line.
+    const Part = enum {
+        /// The hexadecimal size, up to the end of its line.
         size,
         /// Past a `;`: an extension, which says nothing a reader needs.
         extension,
@@ -113,15 +108,58 @@ pub const Response = struct {
         trailer_start,
         trailer,
     };
+};
+
+/// Where in the head a header's value sits, rather than a slice into it, so
+/// a response can be copied without its values pointing at the old copy.
+const Span = struct {
+    at: u16 = 0,
+    len: u16 = 0,
+
+    /// Where `value`, a slice of `head`, is in it.
+    fn within(head: []const u8, value: []const u8) Span {
+        return .{ .at = @intCast(@intFromPtr(value.ptr) - @intFromPtr(head.ptr)), .len = @intCast(value.len) };
+    }
+
+    fn of(self: Span, head: []const u8) ?[]const u8 {
+        return if (self.len == 0) null else head[self.at..][0..self.len];
+    }
+};
+
+/// The headers a reader acts on. Every other one is passed over.
+const Header = enum { content_length, transfer_encoding, location, content_type };
+
+const headers = std.StaticStringMapWithEql(Header, std.static_string_map.eqlAsciiIgnoreCase).initComptime(.{
+    .{ "content-length", .content_length },
+    .{ "transfer-encoding", .transfer_encoding },
+    .{ "location", .location },
+    .{ "content-type", .content_type },
+});
+
+pub const Response = struct {
+    phase: Phase = .head,
+    head: Bounded(u8, HEAD_MAX) = .{},
+    status: u16 = 0,
+    /// The body's whole length when the head gave one, for saying how far
+    /// along a fetch is.
+    total: ?u64 = null,
+    location_at: Span = .{},
+    content_type_at: Span = .{},
+
+    pub const Phase = union(enum) {
+        head,
+        body: Framing,
+        done,
+    };
 
     /// Take what arrived, putting any of the body in it into `body`.
     pub fn feed(self: *Response, gpa: std.mem.Allocator, bytes: []const u8, body: *Body) Error!void {
         var rest = bytes;
-        while (rest.len > 0 and self.phase != .done) {
+        while (rest.len > 0) {
             rest = switch (self.phase) {
                 .head => try self.takeHead(rest),
-                .body => try self.takeBody(gpa, rest, body),
-                .done => unreachable,
+                .body => |*framing| try self.takeBody(gpa, framing, rest, body),
+                .done => return,
             };
         }
     }
@@ -132,8 +170,8 @@ pub const Response = struct {
     pub fn finish(self: *Response) Error!void {
         switch (self.phase) {
             .done => {},
-            .head => return if (self.head_len == 0) error.Unanswered else error.Truncated,
-            .body => switch (self.framing) {
+            .head => return if (self.head.isEmpty()) error.Unanswered else error.Truncated,
+            .body => |framing| switch (framing) {
                 .close => self.phase = .done,
                 .length, .chunked => return error.Truncated,
             },
@@ -141,11 +179,11 @@ pub const Response = struct {
     }
 
     pub fn location(self: *const Response) ?[]const u8 {
-        return self.location_at.of(&self.head);
+        return self.location_at.of(self.head.slice());
     }
 
     pub fn contentType(self: *const Response) ?[]const u8 {
-        return self.content_type_at.of(&self.head);
+        return self.content_type_at.of(self.head.slice());
     }
 
     /// Whether the status is a redirect with somewhere to go.
@@ -157,47 +195,40 @@ pub const Response = struct {
     }
 
     fn takeHead(self: *Response, bytes: []const u8) Error![]const u8 {
+        const before = self.head.len;
+        _ = self.head.extend(bytes);
+        const took = self.head.len - before;
         // Where the blank line could start: three bytes back, in case the
         // last read ended partway through it.
-        const from = self.head_len -| 3;
-        const room = self.head.len - self.head_len;
-        const take = @min(room, bytes.len);
-        @memcpy(self.head[self.head_len..][0..take], bytes[0..take]);
-        self.head_len += take;
-
-        const end = std.mem.indexOfPos(u8, self.head[0..self.head_len], from, "\r\n\r\n") orelse {
-            if (self.head_len == self.head.len) return error.HeadTooLong;
-            return bytes[take..];
+        const end = std.mem.indexOfPos(u8, self.head.slice(), before -| 3, "\r\n\r\n") orelse {
+            if (self.head.isFull()) return error.HeadTooLong;
+            return bytes[took..];
         };
         const head_end = end + 4;
         // What came after the blank line in this read belongs to the body.
-        const surplus = self.head_len - head_end;
-        const after = bytes[take - surplus ..];
+        const after = bytes[took - (self.head.len - head_end) ..];
+        self.head.truncate(head_end);
 
-        try self.parseHead(self.head[0..head_end]);
-
+        const framing = try self.parseHead();
         // An interim response, the hints a server sends ahead of the real
         // one, is a head with no body and another head behind it.
         if (self.status >= 100 and self.status < 200) {
-            self.head_len = 0;
-            self.status = 0;
-            self.location_at = .{};
-            self.content_type_at = .{};
+            self.* = .{};
             return after;
         }
-
-        self.head_len = head_end;
-        self.phase = .body;
         // A response that cannot have a body has none, whatever it says.
-        if (self.status == 204 or self.status == 304 or
-            (self.framing == .length and self.remaining == 0))
-        {
-            self.phase = .done;
-        }
+        const empty = self.status == 204 or self.status == 304 or switch (framing) {
+            .length => |n| n == 0,
+            else => false,
+        };
+        self.phase = if (empty) .done else .{ .body = framing };
         return after;
     }
 
-    fn parseHead(self: *Response, head: []const u8) Error!void {
+    /// Read the status and the headers a reader acts on, and say how the
+    /// body is framed.
+    fn parseHead(self: *Response) Error!Framing {
+        const head = self.head.slice();
         var lines = std.mem.splitSequence(u8, head, "\r\n");
         const status_line = lines.next() orelse return error.Malformed;
         if (!std.mem.startsWith(u8, status_line, "HTTP/1.")) return error.Malformed;
@@ -211,99 +242,91 @@ pub const Response = struct {
         while (lines.next()) |line| {
             if (line.len == 0) break;
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-            const name = line[0..colon];
             const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-            const value_at: u16 = @intCast(@intFromPtr(value.ptr) - @intFromPtr(head.ptr));
-            const span = Span{ .at = value_at, .len = @intCast(value.len) };
-
-            if (std.ascii.eqlIgnoreCase(name, "content-length")) {
-                length = std.fmt.parseInt(u64, value, 10) catch return error.Malformed;
-            } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
-                chunked = std.ascii.indexOfIgnoreCase(value, "chunked") != null;
-            } else if (std.ascii.eqlIgnoreCase(name, "location")) {
-                self.location_at = span;
-            } else if (std.ascii.eqlIgnoreCase(name, "content-type")) {
-                self.content_type_at = span;
+            switch (headers.get(line[0..colon]) orelse continue) {
+                .content_length => length = std.fmt.parseInt(u64, value, 10) catch return error.Malformed,
+                .transfer_encoding => chunked = std.ascii.findIgnoreCase(value, "chunked") != null,
+                .location => self.location_at = .within(head, value),
+                .content_type => self.content_type_at = .within(head, value),
             }
         }
 
         // Chunking outranks a length, as the specification has it: a head
         // carrying both was put together by something that added one.
-        if (chunked) {
-            self.framing = .chunked;
-            self.chunk = .size;
-            self.remaining = 0;
-        } else if (length) |n| {
-            self.framing = .length;
-            self.remaining = n;
+        if (chunked) return .{ .chunked = .{} };
+        if (length) |n| {
             self.total = n;
-        } else {
-            self.framing = .close;
+            return .{ .length = n };
         }
+        return .close;
     }
 
-    fn takeBody(self: *Response, gpa: std.mem.Allocator, bytes: []const u8, body: *Body) Error![]const u8 {
-        switch (self.framing) {
+    fn takeBody(self: *Response, gpa: std.mem.Allocator, framing: *Framing, bytes: []const u8, body: *Body) Error![]const u8 {
+        switch (framing.*) {
             .close => {
                 try body.append(gpa, bytes);
                 return bytes[bytes.len..];
             },
-            .length => {
-                const take: usize = @intCast(@min(self.remaining, bytes.len));
+            .length => |*remaining| {
+                const take: usize = @intCast(@min(remaining.*, bytes.len));
                 try body.append(gpa, bytes[0..take]);
-                self.remaining -= take;
-                if (self.remaining == 0) self.phase = .done;
+                remaining.* -= take;
+                if (remaining.* == 0) self.phase = .done;
                 return bytes[take..];
             },
-            .chunked => return self.takeChunked(gpa, bytes, body),
+            .chunked => |*chunked| return self.takeChunked(gpa, chunked, bytes, body),
         }
     }
 
-    fn takeChunked(self: *Response, gpa: std.mem.Allocator, bytes: []const u8, body: *Body) Error![]const u8 {
+    fn takeChunked(self: *Response, gpa: std.mem.Allocator, chunked: *Chunked, bytes: []const u8, body: *Body) Error![]const u8 {
         var i: usize = 0;
-        while (i < bytes.len and self.phase != .done) {
+        while (i < bytes.len) {
             const c = bytes[i];
-            switch (self.chunk) {
+            switch (chunked.at) {
                 .size => {
                     i += 1;
                     switch (c) {
                         '0'...'9', 'a'...'f', 'A'...'F' => {
-                            const digit = std.fmt.charToDigit(c, 16) catch unreachable;
-                            if (self.remaining > std.math.maxInt(u64) / 16) return error.Malformed;
-                            self.remaining = self.remaining * 16 + digit;
+                            // A multiple of sixteen that did not overflow
+                            // has room for one more digit.
+                            const shifted = std.math.mul(u64, chunked.remaining, 16) catch return error.Malformed;
+                            chunked.remaining = shifted + (std.fmt.charToDigit(c, 16) catch unreachable);
                         },
-                        ';', ' ', '\t' => self.chunk = .extension,
+                        ';', ' ', '\t' => chunked.at = .extension,
                         '\r' => {},
-                        '\n' => self.chunk = if (self.remaining == 0) .trailer_start else .data,
+                        '\n' => chunked.at = if (chunked.remaining == 0) .trailer_start else .data,
                         else => return error.Malformed,
                     }
                 },
                 .extension => {
                     i += 1;
-                    if (c == '\n') self.chunk = if (self.remaining == 0) .trailer_start else .data;
+                    if (c == '\n') chunked.at = if (chunked.remaining == 0) .trailer_start else .data;
                 },
                 .data => {
-                    const take: usize = @intCast(@min(self.remaining, bytes.len - i));
+                    const take: usize = @intCast(@min(chunked.remaining, bytes.len - i));
                     try body.append(gpa, bytes[i..][0..take]);
                     i += take;
-                    self.remaining -= take;
-                    if (self.remaining == 0) self.chunk = .data_end;
+                    chunked.remaining -= take;
+                    if (chunked.remaining == 0) chunked.at = .data_end;
                 },
                 .data_end => {
                     i += 1;
-                    if (c == '\n') self.chunk = .size;
+                    if (c == '\n') chunked.at = .size;
                 },
                 .trailer_start => {
                     i += 1;
                     switch (c) {
                         '\r' => {},
-                        '\n' => self.phase = .done,
-                        else => self.chunk = .trailer,
+                        '\n' => {
+                            self.phase = .done;
+                            return bytes[i..];
+                        },
+                        else => chunked.at = .trailer,
                     }
                 },
                 .trailer => {
                     i += 1;
-                    if (c == '\n') self.chunk = .trailer_start;
+                    if (c == '\n') chunked.at = .trailer_start;
                 },
             }
         }
@@ -333,7 +356,7 @@ fn fed(wire: []const u8, step: usize) !struct { response: *Response, body: Body 
 
 test "a request asks for the page and for the connection to close" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, "man7.org", 443, 443, "/linux/read.2.html").?;
+    const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET /linux/read.2.html HTTP/1.1\r\nHost: man7.org\r\n"));
     try testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
     try testing.expect(std.mem.endsWith(u8, req, "\r\n\r\n"));
@@ -341,20 +364,26 @@ test "a request asks for the page and for the connection to close" {
 
 test "a request names a port that is not the scheme's own, and an empty path is the root" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, "10.0.2.2", 8099, 80, "").?;
+    const req = request(&buf, url_mod.parse("http://10.0.2.2:8099").?).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET / HTTP/1.1\r\nHost: 10.0.2.2:8099\r\n"));
 }
 
+test "a content type's media type is what comes before its parameters" {
+    try testing.expectEqualStrings("text/html", mediaOf(" text/html ; charset=utf-8"));
+    try testing.expectEqualStrings("text/plain", mediaOf("text/plain"));
+}
+
 test "a body with a length ends at it, in any size of piece" {
-    const wire = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 11\r\n\r\nhello world";
+    const wire = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCONTENT-LENGTH: 11\r\n\r\nhello world";
     for ([_]usize{ 1, 2, 3, 7, 64 }) |step| {
         var got = try fed(wire, step);
         defer testing.allocator.destroy(got.response);
         defer got.body.deinit(testing.allocator);
-        try testing.expectEqual(Response.Phase.done, got.response.phase);
+        try testing.expect(got.response.phase == .done);
         try testing.expectEqual(@as(u16, 200), got.response.status);
         try testing.expectEqualStrings("hello world", got.body.bytes.items);
         try testing.expectEqualStrings("text/html", got.response.contentType().?);
+        try testing.expectEqual(@as(?u64, 11), got.response.total);
     }
 }
 
@@ -365,7 +394,7 @@ test "a chunked body is joined across chunk and read edges" {
         var got = try fed(wire, step);
         defer testing.allocator.destroy(got.response);
         defer got.body.deinit(testing.allocator);
-        try testing.expectEqual(Response.Phase.done, got.response.phase);
+        try testing.expect(got.response.phase == .done);
         try testing.expectEqualStrings("hello world", got.body.bytes.items);
     }
 }
@@ -375,9 +404,9 @@ test "a body framed by the connection ends when it does" {
     var got = try fed(wire, 4);
     defer testing.allocator.destroy(got.response);
     defer got.body.deinit(testing.allocator);
-    try testing.expectEqual(Response.Phase.body, got.response.phase);
+    try testing.expect(got.response.phase == .body);
     try got.response.finish();
-    try testing.expectEqual(Response.Phase.done, got.response.phase);
+    try testing.expect(got.response.phase == .done);
     try testing.expectEqualStrings("all of it", got.body.bytes.items);
 }
 
@@ -410,7 +439,7 @@ test "a redirect says where to" {
     defer got.body.deinit(testing.allocator);
     try testing.expect(got.response.redirects());
     try testing.expectEqualStrings("https://a.org/new", got.response.location().?);
-    try testing.expectEqual(Response.Phase.done, got.response.phase);
+    try testing.expect(got.response.phase == .done);
 }
 
 test "hints sent ahead of the response are passed over" {
