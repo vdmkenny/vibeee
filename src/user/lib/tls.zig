@@ -71,6 +71,9 @@ pub const Error = error{
 /// work on this machine, and it is the same answer every time.
 pub const Roots = struct {
     bundle: Certificate.Bundle = .empty,
+    /// Held while a handshake checks a server against the bundle. The
+    /// protocol takes it on every connection, so it has to be a real lock.
+    lock: std.Io.RwLock = .init,
     /// Authorities the store held that this build could not make sense of.
     /// Worth knowing: a host refused for want of a root is otherwise
     /// indistinguishable from one refused on its own merits.
@@ -204,10 +207,14 @@ pub const Stream = struct {
 
         self.client = tls.Client.init(&self.from_socket.interface, &self.to_socket.interface, .{
             .host = .{ .explicit = host },
+            // The lock only asks `io` for anything when another thread holds
+            // it, and nothing else in the program does. `failing` is the Io
+            // that offers nothing, so a wait that cannot happen is still
+            // defined.
             .ca = .{ .bundle = .{
                 .gpa = gpa,
-                .io = undefined,
-                .lock = undefined,
+                .io = std.Io.failing,
+                .lock = &roots.lock,
                 .bundle = &roots.bundle,
             } },
             .read_buffer = &self.plain_in,
@@ -297,15 +304,20 @@ pub const Stream = struct {
     /// All of `bytes`, or none: a record half sent is a connection ended.
     pub fn send(self: *Stream, bytes: []const u8) bool {
         if (self.ending != null) return false;
-        self.client.writer.writeAll(bytes) catch {
-            _ = self.finish(.cut);
-            return false;
-        };
-        self.client.writer.flush() catch {
+        self.put(bytes) catch {
             _ = self.finish(.cut);
             return false;
         };
         return true;
+    }
+
+    /// Seal `bytes` into records and send them. Two flushes, because there
+    /// are two buffers: the protocol's flush seals what it holds into the
+    /// socket writer's buffer, and only that writer's own flush sends it.
+    fn put(self: *Stream, bytes: []const u8) Writer.Error!void {
+        try self.client.writer.writeAll(bytes);
+        try self.client.writer.flush();
+        try self.to_socket.interface.flush();
     }
 
     fn finish(self: *Stream, why: Ending) Ending {
@@ -319,7 +331,10 @@ pub const Stream = struct {
     }
 
     pub fn close(self: *Stream, gpa: std.mem.Allocator) void {
+        // The goodbye the protocol asks for. Sealing it leaves it in the
+        // socket writer, as `put` explains, so that is flushed after.
         self.client.end() catch {};
+        self.to_socket.interface.flush() catch {};
         self.socket.close();
         gpa.destroy(self);
     }
