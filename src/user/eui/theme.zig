@@ -272,16 +272,27 @@ pub fn current() *const Theme {
     return drawn;
 }
 
-/// Draw in `tint` from here on, and say what was worn before, to be put back
-/// once the controls it was for are drawn:
+/// Draw in `tint` from here on, over any tint already worn: what it does not
+/// give stays as it was. What was worn before comes back, to be put back
+/// with `unwear` once the controls it was for are drawn:
 ///
 ///     const before = eui.theme.wear(.{ .ground = paper });
-///     defer _ = eui.theme.wear(before);
+///     defer eui.theme.unwear(before);
 pub fn wear(tint: Tint) Tint {
     const before = worn;
-    worn = tint;
+    worn = .{
+        .ground = tint.ground orelse before.ground,
+        .ink = tint.ink orelse before.ink,
+        .accent = tint.accent orelse before.accent,
+    };
     retint();
     return before;
+}
+
+/// Put back what `wear` answered with.
+pub fn unwear(before: Tint) void {
+    worn = before;
+    retint();
 }
 
 /// The tint worn now, which a control remembers it was painted in.
@@ -424,13 +435,23 @@ test "a tint is worn until what was worn before is put back" {
     try testing.expect(current() == &active);
     const before = wear(.{ .ground = Color.hex(0x202020) });
     try testing.expect(current().surface.eql(.hex(0x202020)));
-    _ = wear(before);
+    unwear(before);
     try testing.expect(current() == &active);
+}
+
+test "a tint worn inside another keeps what it does not give from it" {
+    const outer = wear(.{ .ground = Color.hex(0x202020) });
+    defer unwear(outer);
+    const inner = wear(.{ .ink = Color.hex(0xE0E0E0) });
+    try testing.expect(current().surface.eql(.hex(0x202020)));
+    try testing.expect(current().text.eql(.hex(0xE0E0E0)));
+    unwear(inner);
+    try testing.expect(wearing().ink == null);
 }
 
 test "words stay readable on a tinted ground, and its steps are taken from it" {
     const before = wear(.{ .ground = Color.hex(0x202020), .ink = Color.hex(0x303030) });
-    defer _ = wear(before);
+    defer unwear(before);
     const t = current();
     const apart = @as(i32, t.text.lightness()) - @as(i32, t.surface.lightness());
     try testing.expect(@abs(apart) >= recolour.CONTRAST);

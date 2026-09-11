@@ -2373,7 +2373,7 @@ test "a control worn in other colours paints again, and only the once" {
     try testing.expect(!ctx.needsPaint(entry, .idle));
 
     const before = theme.wear(.{ .ground = theme.Color.hex(0xFFFFCC) });
-    defer _ = theme.wear(before);
+    defer theme.unwear(before);
     _ = ctx.interact(entry, area);
     try testing.expect(ctx.needsPaint(entry, .idle));
     entry.visual = .idle;

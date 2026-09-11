@@ -383,11 +383,13 @@ fn themeTable(gpa: std.mem.Allocator, w: *std.ArrayList(u8)) !void {
         \\
         \\A program that draws in colours it did not choose, a page's button or a
         \\name in the colour its owner gave it, puts them on with `theme.wear`,
-        \\which answers with what was worn before, to be put back once those
-        \\controls are drawn. Every control drawn in between wears them: the
-        \\steps it answers the pointer with are taken from the ground it was
-        \\given, and its words are kept readable on that ground. `eui.recolour`
-        \\is the arithmetic, for a program that paints such colours itself.
+        \\which answers with what was worn before, for `theme.unwear` to put
+        \\back once those controls are drawn. A tint worn inside another keeps
+        \\what it does not give from the one around it. Every control drawn in
+        \\between wears them: the steps it answers the pointer with are taken
+        \\from the ground it was given, and its words are kept readable on that
+        \\ground. `eui.recolour` is the arithmetic, for a program that paints
+        \\such colours itself.
         \\
         \\
     );
