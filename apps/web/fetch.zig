@@ -103,6 +103,9 @@ pub const Fetch = struct {
     /// A page, or a picture on one: what the site is told the reader takes,
     /// and how large its answer may be.
     wanted: http.Wanted = .page,
+    /// Whether to ask for the version made for small screens and slow
+    /// connections.
+    mobile: bool = false,
     state: State = .idle,
     /// Where the page is: the address asked for, or after a redirect the one
     /// it was sent on to.
@@ -213,7 +216,7 @@ pub const Fetch = struct {
         self.wire = wire;
 
         var buf: [url.ADDRESS_MAX + 512]u8 = undefined;
-        const request = http.request(&buf, where, self.wanted) orelse return self.fail(error.BadAddress);
+        const request = http.request(&buf, where, .{ .wanted = self.wanted, .mobile = self.mobile }) orelse return self.fail(error.BadAddress);
         if (wire.send(request) != request.len) return self.failOrRetry(error.Unreachable);
 
         self.state = .receiving;

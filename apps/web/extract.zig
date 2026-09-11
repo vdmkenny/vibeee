@@ -510,11 +510,44 @@ fn contentOf(root: *Node) *Node {
     return root;
 }
 
+/// Keep where the page says its version for small screens is: a link in its
+/// head that is an alternate for a screen no wider than some width, or for a
+/// handheld, which is how a site with a separate mobile site names it.
+fn mobileVersion(builder: *Builder, root: *Node, base: url.Url) Builder.Error!void {
+    var at = following(root, root);
+    while (at) |node| : (at = following(node, root)) {
+        switch (lexbor.tagOf(node) orelse continue) {
+            // The head is over, and with it the links a page says this in.
+            .body => return,
+            .link => {},
+            else => continue,
+        }
+        if (!hasToken(lexbor.attribute(node, "rel") orelse "", "alternate")) continue;
+        const media = lexbor.attribute(node, "media") orelse continue;
+        if (std.ascii.findIgnoreCase(media, "max-width") == null and std.ascii.findIgnoreCase(media, "handheld") == null) continue;
+        var buf: [url.ADDRESS_MAX]u8 = undefined;
+        const address = url.resolve(base, lexbor.attribute(node, "href") orelse "", &buf) orelse continue;
+        builder.page.mobile = try builder.keep(address);
+        return;
+    }
+}
+
+/// Whether a list of keywords written apart by spaces, as `rel` is, holds
+/// `word`.
+fn hasToken(list: []const u8, word: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, list, &std.ascii.whitespace);
+    while (words.next()) |each| {
+        if (std.ascii.eqlIgnoreCase(each, word)) return true;
+    }
+    return false;
+}
+
 /// Walk `document` into `page`. Links are resolved against `base`, which is
 /// the address the page came from.
 pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url, page: *page_mod.Page) Builder.Error!void {
     var builder = Builder{ .gpa = gpa, .page = page };
     if (lexbor.titleOf(document)) |title| try builder.title(title);
+    try mobileVersion(&builder, lexbor.nodeOf(document), base);
 
     var walker = Walker{ .builder = &builder, .base = base };
     const root = contentOf(lexbor.nodeOf(document));

@@ -42,20 +42,31 @@ pub fn keeps(wanted: Wanted) bool {
     return asks.get(wanted).keep;
 }
 
+/// What a request asks of a site: what it is for, and whether for the
+/// version made for small screens and slow connections.
+pub const Asking = struct {
+    wanted: Wanted = .page,
+    /// Says the screen is small and the connection dear, with the client
+    /// hints' mobile hint and `Save-Data`, which is what a site with a
+    /// lighter version for either reads.
+    mobile: bool = false,
+};
+
 /// The request for `url`, written into `out`.
-pub fn request(out: []u8, url: Url, wanted: Wanted) ?[]const u8 {
+pub fn request(out: []u8, url: Url, asking: Asking) ?[]const u8 {
     var w: Writer = .fixed(out);
-    writeRequest(&w, url, wanted) catch return null;
+    writeRequest(&w, url, asking) catch return null;
     return w.buffered();
 }
 
-fn writeRequest(w: *Writer, url: Url, wanted: Wanted) Writer.Error!void {
+fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     try w.writeAll("GET ");
     try url.writeTarget(w);
     try w.writeAll(" HTTP/1.1\r\nHost: ");
     try url.writeHost(w);
-    const ask = asks.get(wanted);
+    const ask = asks.get(asking.wanted);
     try w.print("\r\nUser-Agent: " ++ USER_AGENT ++ "\r\nAccept: {s}\r\n", .{ask.accept});
+    if (asking.mobile) try w.writeAll("Sec-CH-UA-Mobile: ?1\r\nSave-Data: on\r\n");
     // Identity, because the one thing a reader must not do with a page is
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
@@ -395,7 +406,7 @@ fn fed(wire: []const u8, step: usize) !struct { response: *Response, body: Body 
 
 test "a request asks for the page and for the connection to close" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?, .page).?;
+    const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?, .{}).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET /linux/read.2.html HTTP/1.1\r\nHost: man7.org\r\n"));
     try testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "User-Agent: vibeee-web/1.0 (vibeee; ") != null);
@@ -404,17 +415,30 @@ test "a request asks for the page and for the connection to close" {
 
 test "a request names a port that is not the scheme's own, and an empty path is the root" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, url_mod.parse("http://10.0.2.2:8099").?, .page).?;
+    const req = request(&buf, url_mod.parse("http://10.0.2.2:8099").?, .{}).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET / HTTP/1.1\r\nHost: 10.0.2.2:8099\r\n"));
 }
 
 test "a picture is asked for in the formats the decoder reads" {
     var buf: [512]u8 = undefined;
-    const req = request(&buf, url_mod.parse("http://a.org/eee.jpg").?, .picture).?;
+    const req = request(&buf, url_mod.parse("http://a.org/eee.jpg").?, .{ .wanted = .picture }).?;
     try testing.expect(std.mem.indexOf(u8, req, "\r\nAccept: image/png, image/jpeg, image/gif;q=0.8\r\n") != null);
     try testing.expect(std.mem.indexOf(u8, req, "text/html") == null);
     // And on a connection kept for the next one.
     try testing.expect(std.mem.indexOf(u8, req, "\r\nConnection: keep-alive\r\n") != null);
+}
+
+test "a request for the version for small screens says so, and any other says nothing" {
+    const where = url_mod.parse("https://a.org/").?;
+    var small_buf: [512]u8 = undefined;
+    const small = request(&small_buf, where, .{ .mobile = true }).?;
+    try testing.expect(std.mem.indexOf(u8, small, "\r\nSec-CH-UA-Mobile: ?1\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, small, "\r\nSave-Data: on\r\n") != null);
+
+    var plain_buf: [512]u8 = undefined;
+    const plain = request(&plain_buf, where, .{}).?;
+    try testing.expect(std.mem.indexOf(u8, plain, "Sec-CH-UA-Mobile") == null);
+    try testing.expect(std.mem.indexOf(u8, plain, "Save-Data") == null);
 }
 
 test "a response says whether its connection carries another request" {

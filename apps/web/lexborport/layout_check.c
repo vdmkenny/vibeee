@@ -116,6 +116,7 @@ CHECK("i is 0x0067", LXB_TAG_I == 0x0067);
 CHECK("iframe is 0x0068", LXB_TAG_IFRAME == 0x0068);
 CHECK("img is 0x006a", LXB_TAG_IMG == 0x006a);
 CHECK("input is 0x006b", LXB_TAG_INPUT == 0x006b);
+CHECK("link is 0x0074", LXB_TAG_LINK == 0x0074);
 CHECK("kbd is 0x006e", LXB_TAG_KBD == 0x006e);
 CHECK("li is 0x0072", LXB_TAG_LI == 0x0072);
 CHECK("main is 0x0076", LXB_TAG_MAIN == 0x0076);

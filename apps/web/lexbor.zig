@@ -93,6 +93,7 @@ pub const Tag = enum(usize) {
     input = 0x006b,
     kbd = 0x006e,
     li = 0x0072,
+    link = 0x0074,
     main = 0x0076,
     math = 0x007b,
     nav = 0x0087,

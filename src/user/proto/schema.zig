@@ -212,6 +212,11 @@ pub const Web = struct {
     /// its words, with a picture's description where the picture would be,
     /// which is quicker over a slow connection and lighter on memory.
     images: bool = true,
+    /// Whether the reader asks sites for the version of a page made for
+    /// small screens and slow connections. It says so with every request,
+    /// and goes on to the version for small screens a page names as its
+    /// alternate. Off, it asks for pages without saying either.
+    mobile: bool = true,
 };
 
 /// Which program opens what. One key per family a program can be chosen

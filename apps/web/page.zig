@@ -194,6 +194,9 @@ pub const Page = struct {
     /// The encoding the page arrived in, which is the one its forms answer
     /// in.
     encoding: Charset = .utf8,
+    /// Where the page says its version for small screens is, resolved, or
+    /// empty where it names none.
+    mobile: Span = .{},
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
         self.title.deinit(gpa);

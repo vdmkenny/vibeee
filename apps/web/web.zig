@@ -17,9 +17,10 @@
 //! `web -t <address>` prints a page's words instead of opening a window, so
 //! whatever the window can read, the shell can too.
 //!
-//! Where it starts and whether it fetches pictures are settings, in the `web`
-//! domain the store keeps: `cfg web` lists them, and a window that is open
-//! takes a change as it is made.
+//! Where it starts, whether it fetches pictures and whether it asks for the
+//! versions of pages made for small screens are settings, in the `web` domain
+//! the store keeps: `cfg web` lists them, and a window that is open takes a
+//! change as it is made.
 //!
 //! Not part of the system. It is built into `home/bin/` and versioned on its
 //! own.
@@ -102,6 +103,9 @@ var pending_scroll: i32 = 0;
 /// Where the keyboard goes on the next pass: to the field when the reader
 /// opens with nowhere to go, and to the page once one has arrived.
 var focus_next: ?enum { field, page } = null;
+/// The page being visited was followed to the version for small screens it
+/// names, and is followed no further: once for each place gone to.
+var followed_mobile = false;
 /// The tab still names the page before this one. Said on the next pass
 /// rather than when the page changes, because the first page can arrive
 /// before there is a window to say it on.
@@ -162,6 +166,9 @@ const History = struct {
 // ---------------------------------------------------------------------------
 
 export fn _start(frame: [*]usize) callconv(.c) noreturn {
+    // Read before anything is asked of a site, by the window or the shell.
+    choices = proto.settings.load("web");
+    apply();
     const first = env.arg(frame, 1);
     if (first) |flag| {
         if (std.mem.eql(u8, flag, "-t")) printText(env.arg(frame, 2) orelse usage());
@@ -169,9 +176,7 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
 
     address.init(.{ .hint = "an address, or a file on this machine" });
     view.show(gpa, &shown, 0);
-    choices = proto.settings.load("web");
     settings_changed = proto.settings.watch("web") catch null;
-    pictures.enabled = choices.images;
     if (first) |target| typed(target) else home();
     sleepOn(null);
 
@@ -213,6 +218,22 @@ fn home() void {
     typed(where);
 }
 
+/// Put the settings into effect: what sites are asked for, and whether
+/// pictures are fetched.
+fn apply() void {
+    fetch.mobile = choices.mobile;
+    pictures.fetch.mobile = choices.mobile;
+    pictures.enabled = choices.images;
+}
+
+/// Go on to the version of the page made for small screens, as a redirect
+/// would: the history keeps one entry, and it names where the reader went.
+fn goMobile(where: []const u8) void {
+    followed_mobile = true;
+    if (history.current()) |entry| _ = entry.address.set(where);
+    visit(where);
+}
+
 /// Follow a link on the page on screen.
 fn follow(link: u16) void {
     go(shown.address(link) orelse return);
@@ -220,6 +241,7 @@ fn follow(link: u16) void {
 
 /// Go somewhere new, which the history remembers.
 fn go(where: []const u8) void {
+    followed_mobile = false;
     if (history.current()) |entry| entry.scroll = view.scroll;
     // Kept before anything else happens: `where` may be an address on the
     // page on screen, which going replaces.
@@ -251,6 +273,7 @@ fn reload() void {
 /// Go to the history's current entry again, at the place it was left.
 fn revisit() void {
     const entry = history.current() orelse return;
+    followed_mobile = false;
     pending_scroll = entry.scroll;
     visit(entry.address.slice());
 }
@@ -320,7 +343,7 @@ fn tick() bool {
 fn woken(index: usize) bool {
     if (settings_changed != null and wakes.at(index) == settings_changed) {
         choices = proto.settings.load("web");
-        pictures.enabled = choices.images;
+        apply();
         if (!choices.images) pictures.pause(gpa);
         // Pictures turned off give their room to what the page says they
         // show, and turned on come as they would have.
@@ -405,31 +428,38 @@ fn waitFor(wait: fetch_mod.Wait) void {
     }
 }
 
-/// The page is here: read it, show it, and give back what it arrived in.
+/// The page is here: read it, and show it or go on to the version for small
+/// screens it names, having given back what it arrived in either way.
 fn arrive() void {
-    defer fetch.cancel(gpa);
-    const final = fetch.address();
-    address.set(final);
-    if (history.current()) |entry| _ = entry.address.set(final);
+    const next = read: {
+        defer fetch.cancel(gpa);
+        const final = fetch.address();
+        address.set(final);
+        if (history.current()) |entry| _ = entry.address.set(final);
 
-    arrived = .{
-        .bytes = fetch.received(),
-        .us = sys.clockMicros() -| fetch.started_us,
-        .status = fetch.response.status,
+        arrived = .{
+            .bytes = fetch.received(),
+            .us = sys.clockMicros() -| fetch.started_us,
+            .status = fetch.response.status,
+        };
+
+        const base = url.parse(final) orelse return failed(error.NotAnAddress, final);
+        const said = fetch.response.contentType();
+        break :read show(fetch.body.bytes.items, base, kindOf(said, final), charset.fromContentType(said));
     };
-
-    const base = url.parse(final) orelse return failed(error.NotAnAddress, final);
-    const said = fetch.response.contentType();
-    show(fetch.body.bytes.items, base, kindOf(said, final), charset.fromContentType(said));
+    if (next) |mobile| goMobile(mobile.slice());
 }
 
 /// A file on this machine, read whole.
 fn openFile(where: url.Url) void {
     const path = where.file();
-    const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
-    defer gpa.free(bytes);
-    arrived = .{ .bytes = bytes.len };
-    show(bytes, where, kindOf(null, path), null);
+    const next = read: {
+        const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
+        defer gpa.free(bytes);
+        arrived = .{ .bytes = bytes.len };
+        break :read show(bytes, where, kindOf(null, path), null);
+    };
+    if (next) |mobile| goMobile(mobile.slice());
 }
 
 /// What a body is, from what the site said it was, or from a file's name.
@@ -459,19 +489,40 @@ fn kindOf(content_type: ?[]const u8, name: []const u8) Kind {
     return media_kinds.get(media) orelse .{ .other = media };
 }
 
-/// Read `bytes` into a page and put it on screen. `declared` is the encoding
-/// the site said they are in, where it said one.
-fn show(bytes: []const u8, base: url.Url, kind: Kind, declared: ?charset.Charset) void {
+/// Read `bytes` into a page and put it on screen, unless it names a version
+/// for small screens to go on to, which is then what comes back instead.
+/// `declared` is the encoding the site said they are in, where it said one.
+fn show(bytes: []const u8, base: url.Url, kind: Kind, declared: ?charset.Charset) ?url.Address {
     var fresh: Page = .{};
     toPage(bytes, base, kind, declared, &fresh) catch |err| {
         fresh.deinit(gpa);
-        return failed(err, switch (kind) {
+        failed(err, switch (kind) {
             .other => |media| media,
             .markup, .plain => base.host,
         });
+        return null;
     };
+    if (mobileOf(&fresh, base)) |next| {
+        fresh.deinit(gpa);
+        return next;
+    }
     replace(&fresh);
     focus_next = .page;
+    return null;
+}
+
+/// Where to go on to instead of `page`: the version for small screens it
+/// names, where the settings ask for those, none has been gone on to already
+/// for this place, and the page is not that version itself.
+fn mobileOf(page: *const Page, base: url.Url) ?url.Address {
+    if (!choices.mobile or followed_mobile) return null;
+    const named = page.string(page.mobile);
+    if (named.len == 0) return null;
+    var own: [url.ADDRESS_MAX]u8 = undefined;
+    const here = std.fmt.bufPrint(&own, "{f}", .{base}) catch return null;
+    if (std.mem.eql(u8, here, named)) return null;
+    var next: url.Address = .{};
+    return if (next.set(named)) next else null;
 }
 
 /// Why what arrived could not be read as a page.
@@ -906,35 +957,20 @@ fn key(code: KeyCode, mods: Modifiers) bool {
 // From the shell
 // ---------------------------------------------------------------------------
 
-/// `web -t`: the page's words on standard output, and nothing drawn.
+/// `web -t`: the page's words on standard output, and nothing drawn. The
+/// same page the window would show: gone on to the version for small screens
+/// it names, where the settings ask for those.
 fn printText(target: []const u8) noreturn {
     var buf: [url.ADDRESS_MAX]u8 = undefined;
     const where_text = addressFrom(target, &buf) orelse fatal(target, error.NotAnAddress);
-    const where = url.parse(where_text) orelse fatal(target, error.NotAnAddress);
 
     var page: Page = .{};
-    if (where.scheme == .file) {
-        const path = where.file();
-        const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| fatal(path, err);
-        toPage(bytes, where, kindOf(null, path), null, &page) catch |err| fatal(path, err);
-    } else {
-        fetch.begin(gpa, where_text);
-        while (true) switch (fetch.advance(gpa)) {
-            .none => {},
-            // Woken by the site, or once a second to notice one that has
-            // gone quiet.
-            .site => |handle| sys.eventWait(handle, WATCH_US) catch {},
-            .over => break,
-        };
-        switch (fetch.state) {
-            .done => {},
-            .failed => |why| fatal(fetch.host(), why),
-            .idle, .connecting, .receiving => unreachable,
-        }
-        const final = url.parse(fetch.address()) orelse fatal(fetch.address(), error.NotAnAddress);
-        const said = fetch.response.contentType();
-        toPage(fetch.body.bytes.items, final, kindOf(said, fetch.address()), charset.fromContentType(said), &page) catch |err|
-            fatal(fetch.address(), err);
+    const where = readInto(where_text, &page);
+    if (mobileOf(&page, where)) |next| {
+        followed_mobile = true;
+        page.deinit(gpa);
+        page = .{};
+        _ = readInto(next.slice(), &page);
     }
 
     var text: std.Io.Writer.Allocating = .init(gpa);
@@ -942,6 +978,39 @@ fn printText(target: []const u8) noreturn {
     out.through(text.written());
     out.flush();
     sys.exit(0);
+}
+
+/// Read what is at `where_text` into `page`, from this machine or over the
+/// network, saying what went wrong and stopping where it cannot. What comes
+/// back is where the page was found, after any redirect.
+fn readInto(where_text: []const u8, page: *Page) url.Url {
+    const where = url.parse(where_text) orelse fatal(where_text, error.NotAnAddress);
+    if (where.scheme == .file) {
+        const path = where.file();
+        const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| fatal(path, err);
+        defer gpa.free(bytes);
+        toPage(bytes, where, kindOf(null, path), null, page) catch |err| fatal(path, err);
+        return where;
+    }
+
+    fetch.begin(gpa, where_text);
+    while (true) switch (fetch.advance(gpa)) {
+        .none => {},
+        // Woken by the site, or once a second to notice one that has gone
+        // quiet.
+        .site => |handle| sys.eventWait(handle, WATCH_US) catch {},
+        .over => break,
+    };
+    switch (fetch.state) {
+        .done => {},
+        .failed => |why| fatal(fetch.host(), why),
+        .idle, .connecting, .receiving => unreachable,
+    }
+    const final = url.parse(fetch.address()) orelse fatal(fetch.address(), error.NotAnAddress);
+    const said = fetch.response.contentType();
+    toPage(fetch.body.bytes.items, final, kindOf(said, fetch.address()), charset.fromContentType(said), page) catch |err|
+        fatal(fetch.address(), err);
+    return final;
 }
 
 /// Say what went wrong on a shell line, and stop.

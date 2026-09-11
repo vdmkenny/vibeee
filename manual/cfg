@@ -177,3 +177,5 @@ Settings, generated from the schema: all
       an address, or empty for none
   web.images                true
       true | false
+  web.mobile                true
+      true | false
