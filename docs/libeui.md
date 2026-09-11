@@ -139,6 +139,7 @@ that means it has to be painted again.
 | `interact` | `fn (*widget.Context, *widget.Entry, draw.Rect) Context.Interaction` |
 | `activatedByKey` | `fn (*widget.Context, *const widget.Entry) bool` |
 | `needsPaint` | `fn (*const widget.Context, *const widget.Entry, widget.Visual) bool` |
+| `recoloured` | `fn (*widget.Entry) bool` |
 
 ### What a control paints with
 
@@ -476,6 +477,17 @@ Numbers it owns:
 - `INDENT` = 10
 - `WIDTH` = 124
 - `ROW_HEIGHT` = 26
+
+### `eui.recolour`
+
+Colours chosen elsewhere, kept readable here.
+
+| call | signature |
+|---|---|
+| `legible` | `fn (rgb.Colour, rgb.Colour) rgb.Colour` |
+| `adapted` | `fn (rgb.Colour, rgb.Colour) rgb.Colour` |
+| `lighter` | `fn (rgb.Colour, u8) rgb.Colour` |
+| `darker` | `fn (rgb.Colour, u8) rgb.Colour` |
 
 ### `eui.region`
 
@@ -1149,6 +1161,15 @@ One value holds every colour and every measurement, so a control that
 reads the theme is a control that follows the interface's size without
 knowing that it does. Metrics are given at a hundred per cent; the
 interface scale multiplies them.
+
+A program that draws in colours it did not choose, a page's button or a
+name in the colour its owner gave it, puts them on with `theme.wear`,
+which answers with what was worn before, to be put back once those
+controls are drawn. Every control drawn in between wears them: the
+steps it answers the pointer with are taken from the ground it was
+given, and its words are kept readable on that ground. `eui.recolour`
+is the arithmetic, for a program that paints such colours itself.
+
 | element | slate | classic | paper | dusk |
 |---|---|---|---|---|
 | `desktop` | `#2B3138` | `#5C6670` | `#707070` | `#1B1F24` |

@@ -303,7 +303,8 @@ fn titleClicked(
     var mark = widget.Fingerprint{};
     mark.flag(mnemonic != null);
     const signature = mark.done();
-    if (!ctx.needsPaint(entry, visual) and entry.detail == signature) return over and ctx.pressedThisPass();
+    const recoloured = widget.Context.recoloured(entry);
+    if (!recoloured and !ctx.needsPaint(entry, visual) and entry.detail == signature) return over and ctx.pressedThisPass();
     entry.visual = visual;
     entry.detail = signature;
 

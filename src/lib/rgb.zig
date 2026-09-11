@@ -56,6 +56,13 @@ pub const Colour = packed struct(u32) {
         return @intCast(weighted / 8);
     }
 
+    /// This colour with `share` 255ths of `other` in it: itself at nought and
+    /// `other` at 255. What a see-through pixel over a ground comes to, and
+    /// what moving a colour toward white or black is.
+    pub fn mix(self: Colour, other: Colour, share: u8) Colour {
+        return of(mixed(self.r, other.r, share), mixed(self.g, other.g, share), mixed(self.b, other.b, share));
+    }
+
     /// Anything that is not six hex digits is refused rather than repaired: a
     /// wall quietly painted a colour nobody asked for is worse than a setting
     /// that did not take.
@@ -77,6 +84,11 @@ pub const Colour = packed struct(u32) {
         into.print("#{x:0>2}{x:0>2}{x:0>2}", .{ self.r, self.g, self.b });
     }
 };
+
+/// One channel of a mix, rounded to the nearest.
+fn mixed(own: u8, other: u8, share: u8) u8 {
+    return @intCast((@as(u16, other) * share + @as(u16, own) * (255 - share) + 127) / 255);
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -124,4 +136,12 @@ test "lightness weighs green heaviest, as the eye does" {
 
     try testing.expectEqual(@as(u8, 0), Colour.hex(0x000000).lightness());
     try testing.expectEqual(@as(u8, 255), Colour.hex(0xFFFFFF).lightness());
+}
+
+test "a mix runs from the colour to the other, rounding to the nearest" {
+    const red = Colour.hex(0xFF0000);
+    const blue = Colour.hex(0x0000FF);
+    try testing.expect(red.mix(blue, 0).eql(red));
+    try testing.expect(red.mix(blue, 255).eql(blue));
+    try testing.expect(red.mix(blue, 128).eql(Colour.hex(0x7F0080)));
 }

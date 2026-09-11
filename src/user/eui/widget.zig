@@ -90,6 +90,9 @@ pub const Entry = struct {
     seen: bool = false,
     /// Can take keyboard focus. A label cannot; a button can.
     focusable: bool = false,
+    /// The tint it was last painted in. One worn in other colours than last
+    /// time paints again, whatever state it is in.
+    tint: theme.Tint = .{},
 };
 
 const MAX_WIDGETS = 64;
@@ -586,6 +589,7 @@ pub const Context = struct {
     pub fn interact(self: *Context, entry: *Entry, area: Rect) Interaction {
         entry.seen = true;
         entry.focusable = true;
+        if (recoloured(entry)) entry.visual = null;
 
         const index = self.indexOf(entry);
 
@@ -643,6 +647,17 @@ pub const Context = struct {
         return visual != entry.visual or self.damaged or self.focus_moved;
     }
 
+    /// Whether `entry` was last painted in another tint than the one worn
+    /// now, noting that it is about to be painted in this one. Asked by
+    /// `interact` for every control that answers; a control that is only a
+    /// picture of something asks it beside whether that something changed.
+    pub fn recoloured(entry: *Entry) bool {
+        const worn = theme.wearing();
+        if (std.meta.eql(entry.tint, worn)) return false;
+        entry.tint = worn;
+        return true;
+    }
+
     fn hotOr(over: bool, comptime on: Visual, comptime off: Visual) Visual {
         return if (over) on else off;
     }
@@ -671,6 +686,7 @@ pub const Context = struct {
         const it: Interaction = if (enabled) self.interact(entry, area) else inert: {
             entry.seen = true;
             entry.focusable = false;
+            if (recoloured(entry)) entry.visual = null;
             break :inert .{
                 .index = self.indexOf(entry),
                 .over = false,
@@ -1280,10 +1296,14 @@ pub const Context = struct {
         const entry = self.slotFor(area) orelse return;
         entry.seen = true;
 
-        // Repainted when it has been drawn over, and when what it says has
-        // changed: a label showing a count is still a label.
-        const signature = fingerprint(text);
-        if (self.damaged or entry.detail != signature) {
+        // Repainted when it has been drawn over, when what it says or the ink
+        // it says it in has changed, and when it is worn in other colours: a
+        // label showing a count is still a label.
+        var print = Fingerprint{};
+        print.text(text);
+        print.number(ink.word());
+        const signature = print.done();
+        if (recoloured(entry) or self.damaged or entry.detail != signature) {
             entry.detail = signature;
             const t = theme.current();
             self.surface.fill(area, t.surface);
@@ -1351,7 +1371,7 @@ pub const Context = struct {
         // the value moves, or when the pass repaints everything.
         const entry = self.slotFor(part.value) orelse return next;
         entry.seen = true;
-        if (self.damaged or entry.detail != next) {
+        if (recoloured(entry) or self.damaged or entry.detail != next) {
             entry.detail = next;
             paintNumber(self.surface, part.value, next);
             self.addDamage(part.value);
@@ -1377,7 +1397,7 @@ pub const Context = struct {
         const filled = filledWidth(area, fraction);
         const shown: i32 = filled ^ @as(i32, @bitCast(colour));
 
-        if (self.damaged or entry.detail != shown) {
+        if (recoloured(entry) or self.damaged or entry.detail != shown) {
             entry.detail = shown;
             paintBar(self.surface, area, fraction, colour);
             self.addDamage(area);
@@ -2340,4 +2360,23 @@ test "presses close together on one spot are a run, and one late or elsewhere st
     try testing.expectEqual(@as(u8, 2), ctx.clicks);
     ctx.postPress(160, 41, 3_200_000);
     try testing.expectEqual(@as(u8, 1), ctx.clicks);
+}
+
+test "a control worn in other colours paints again, and only the once" {
+    var pixels: [16]draw.Color = @splat(.{});
+    var ctx = forTesting(&pixels);
+    const area = Rect{ .x = 4, .y = 40, .w = 60, .h = 24 };
+
+    const entry = ctx.slotFor(area).?;
+    _ = ctx.interact(entry, area);
+    entry.visual = .idle;
+    try testing.expect(!ctx.needsPaint(entry, .idle));
+
+    const before = theme.wear(.{ .ground = theme.Color.hex(0xFFFFCC) });
+    defer _ = theme.wear(before);
+    _ = ctx.interact(entry, area);
+    try testing.expect(ctx.needsPaint(entry, .idle));
+    entry.visual = .idle;
+    _ = ctx.interact(entry, area);
+    try testing.expect(!ctx.needsPaint(entry, .idle));
 }

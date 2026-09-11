@@ -130,11 +130,7 @@ fn pack(bytes: [*]u8, into: []rgb.Colour, ground: ?rgb.Colour) void {
     if (ground) |under| {
         for (into, 0..) |*pixel, i| {
             const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
-            pixel.* = .{
-                .r = blend(sample.r, under.r, sample.a),
-                .g = blend(sample.g, under.g, sample.a),
-                .b = blend(sample.b, under.b, sample.a),
-            };
+            pixel.* = under.mix(.of(sample.r, sample.g, sample.b), sample.a);
         }
         return;
     }
@@ -142,12 +138,6 @@ fn pack(bytes: [*]u8, into: []rgb.Colour, ground: ?rgb.Colour) void {
         const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
         pixel.* = .{ .r = sample.r, .g = sample.g, .b = sample.b };
     }
-}
-
-/// One channel of a sample laid over the same channel of what is under it,
-/// by how opaque the sample is, rounded to the nearest.
-fn blend(top: u8, under: u8, alpha: u8) u8 {
-    return @intCast((@as(u16, top) * alpha + @as(u16, under) * (255 - alpha) + 127) / 255);
 }
 
 /// A square of `side` pixels cut from the middle of a picture and shrunk to

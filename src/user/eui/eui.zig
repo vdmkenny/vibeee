@@ -41,6 +41,7 @@ pub const places = @import("places.zig");
 pub const popover = @import("popover.zig");
 pub const prompt = @import("prompt.zig");
 pub const rail = @import("rail.zig");
+pub const recolour = @import("recolour.zig");
 pub const region = @import("region.zig");
 pub const row = @import("row.zig");
 pub const slider = @import("slider.zig");

@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const rgb = @import("lib").rgb;
+const recolour = @import("recolour.zig");
 
 /// A colour is the shape the panel takes it in: three channels in one word,
 /// which is also a surface's pixel. So a theme's colour and what is written
@@ -235,8 +236,85 @@ pub const SCALE_DOUBLES: u16 = 150;
 /// the metrics stretch and the letters do not.
 pub const SCALE_STEPS = [_]i32{ 100, 125, 150, 175, 200 };
 
+/// Colours a program asks the controls it draws next to wear instead of the
+/// theme's own: a page's button in the page's colours, a name in the colour
+/// its owner gave it. What it does not give stays the theme's.
+///
+/// Words stay readable whatever is asked. The ink, the dim ink and the ink on
+/// the accent are each moved as far as they have to be to read on the ground
+/// they land on, and the lighter and darker steps a control answers the
+/// pointer with are taken from the ground it was given.
+pub const Tint = struct {
+    /// What the controls are filled with, and what they sit on.
+    ground: ?Color = null,
+    /// What their words are written in.
+    ink: ?Color = null,
+    /// What marks the chosen, and where the keyboard is.
+    accent: ?Color = null,
+};
+
+/// The tint worn now, and the theme as it is drawn in it.
+var worn: Tint = .{};
+var tinted: Theme = slate;
+var drawn: *const Theme = &active;
+
+/// How far a tinted control's lighter and darker steps stand from its
+/// ground.
+const STEP = 14;
+
+/// How much of the ink the dim ink and the hairlines on a given ground are,
+/// in 255ths: the dim ink most of the way from the ground to the ink, and a
+/// hairline a fifth of it.
+const DIM_SHARE = 160;
+const LINE_SHARE = 48;
+
 pub fn current() *const Theme {
-    return &active;
+    return drawn;
+}
+
+/// Draw in `tint` from here on, and say what was worn before, to be put back
+/// once the controls it was for are drawn:
+///
+///     const before = eui.theme.wear(.{ .ground = paper });
+///     defer _ = eui.theme.wear(before);
+pub fn wear(tint: Tint) Tint {
+    const before = worn;
+    worn = tint;
+    retint();
+    return before;
+}
+
+/// The tint worn now, which a control remembers it was painted in.
+pub fn wearing() Tint {
+    return worn;
+}
+
+/// The theme drawn with: the active one, or the active one in the tint worn.
+fn retint() void {
+    if (std.meta.eql(worn, Tint{})) {
+        drawn = &active;
+        return;
+    }
+    tinted = active;
+    const t = &tinted;
+    if (worn.ground) |ground| {
+        t.surface = ground;
+        t.surface_hot = recolour.lighter(ground, STEP);
+        t.surface_pressed = recolour.darker(ground, STEP);
+    }
+    if (worn.ink) |ink| t.text = ink;
+    if (worn.accent) |accent| {
+        t.accent = accent;
+        t.border_focused = accent;
+    }
+    if (worn.ground != null or worn.ink != null) {
+        t.text = recolour.legible(t.text, t.surface);
+        t.text_dim = recolour.legible(t.surface.mix(t.text, DIM_SHARE), t.surface);
+        t.line = t.surface.mix(t.text, LINE_SHARE);
+        t.border = t.line;
+    }
+    t.accent_text = recolour.legible(t.accent_text, t.accent);
+    drawn = t;
 }
 
 pub fn use(theme: *const Theme) void {
@@ -289,6 +367,7 @@ fn rebuild() void {
     active.menu_row_height = enlarge(active.menu_row_height);
     active.menu_padding = enlarge(active.menu_padding);
     active.gap = enlarge(active.gap);
+    retint();
 }
 
 /// A number chosen for a hundred per cent, measured for the size the
@@ -333,4 +412,28 @@ pub fn byName(name: []const u8) ?*const Theme {
         if (std.mem.eql(u8, candidate.name, name)) return candidate;
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "a tint is worn until what was worn before is put back" {
+    try testing.expect(current() == &active);
+    const before = wear(.{ .ground = Color.hex(0x202020) });
+    try testing.expect(current().surface.eql(.hex(0x202020)));
+    _ = wear(before);
+    try testing.expect(current() == &active);
+}
+
+test "words stay readable on a tinted ground, and its steps are taken from it" {
+    const before = wear(.{ .ground = Color.hex(0x202020), .ink = Color.hex(0x303030) });
+    defer _ = wear(before);
+    const t = current();
+    const apart = @as(i32, t.text.lightness()) - @as(i32, t.surface.lightness());
+    try testing.expect(@abs(apart) >= recolour.CONTRAST);
+    try testing.expect(t.surface_hot.lightness() > t.surface.lightness());
+    try testing.expect(t.surface_pressed.lightness() < t.surface.lightness());
 }

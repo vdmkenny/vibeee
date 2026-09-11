@@ -111,7 +111,7 @@ pub fn vertical(
     // a panel this size that is a flush of the whole column for nothing.
     if (ctx.slotFor(area)) |entry| {
         const visual: widget.Visual = if (hot) .hot else .idle;
-        if (ctx.needsPaint(entry, visual) or entry.detail != shown.y) {
+        if (widget.Context.recoloured(entry) or ctx.needsPaint(entry, visual) or entry.detail != shown.y) {
             entry.visual = visual;
             entry.detail = shown.y;
             paint(ctx, area, shown, hot);
