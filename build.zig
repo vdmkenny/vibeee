@@ -638,6 +638,18 @@ pub fn build(b: *std.Build) void {
             const web_step = b.step("web", "Build the web reader into zig-out/bin");
             web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
 
+            // Its host side: addresses, the protocol, the page and its
+            // layout, which are all arithmetic over text.
+            const web_test = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/web/tests.zig"),
+                    .target = b.graph.host,
+                    .optimize = .Debug,
+                }),
+            });
+            const web_test_step = b.step("test-web", "Test web's addresses, protocol, page and layout on the host");
+            web_test_step.dependOn(&b.addRunArtifact(web_test).step);
+
             // The character-journal model, on the host: the whole of a
             // character is what its lines add up to, and none of it needs a
             // screen to be checked.
