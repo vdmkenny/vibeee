@@ -679,6 +679,12 @@ const Pass = struct {
 /// The column a page is set in: the measure, or less where the window is
 /// narrower, centred in what there is.
 fn columnOf(area: Rect, scale: i32) Rect {
-    const width = @max(@min(MEASURE * scale, area.w - 2 * MARGIN * scale), 1);
+    const width = measureIn(@divTrunc(area.w, scale)) * scale;
     return .{ .x = area.x + @divTrunc(area.w - width, 2), .y = area.y, .w = width, .h = area.h };
+}
+
+/// How wide the column a page is set in is, in the page's own pixels, in a
+/// view that many of them wide.
+pub fn measureIn(width: i32) i32 {
+    return @max(@min(MEASURE, width - 2 * MARGIN), 1);
 }

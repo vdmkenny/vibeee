@@ -214,8 +214,11 @@ pub const Web = struct {
     images: bool = true,
     /// Whether the reader asks sites for the version of a page made for
     /// small screens and slow connections. It says so with every request,
-    /// and goes on to the version for small screens a page names as its
-    /// alternate. Off, it asks for pages without saying either.
+    /// and goes on to the version a page names as its alternate for a window
+    /// as wide as the column it sets words in, which is how a page names its
+    /// version for small screens. A site whose version sends the reader on to
+    /// another site is not gone on to again while the reader runs. Off, it
+    /// asks for pages without saying either.
     mobile: bool = true,
     /// Whether a page is drawn as its stylesheets ask, as far as a column of
     /// text can be: what they hide is left out, and its words and grounds are

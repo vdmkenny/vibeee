@@ -125,6 +125,19 @@ var focus_next: ?enum { field, page } = null;
 /// The page being visited was followed to the version for small screens it
 /// names, and is followed no further: once for each place gone to.
 var followed_mobile = false;
+/// The site that named the version for small screens being gone on to, and
+/// the site that version is on, until it has come.
+var detour: ?Detour = null;
+/// Sites whose version for small screens sent the reader straight on to
+/// another site, as a site that tells phones from other readers by what a
+/// reader calls itself does. Not gone on to again while the reader runs.
+var refused: Bounded(Host, REFUSED_MAX) = .{};
+const REFUSED_MAX = 16;
+
+/// A site's name, as long as one may be.
+const Host = Bounded(u8, 255);
+
+const Detour = struct { from: Host = .{}, to: Host = .{} };
 /// The tab still names the page before this one. Said on the next pass
 /// rather than when the page changes, because the first page can arrive
 /// before there is a window to say it on.
@@ -261,12 +274,39 @@ fn apply() void {
     pictures.enabled = choices.images;
 }
 
-/// Go on to the version of the page made for small screens, as a redirect
-/// would: the history keeps one entry, and it names where the reader went.
-fn goMobile(where: []const u8) void {
+/// Go on to the version of the page made for small screens, which the page
+/// on site `from` named, as a redirect would: the history keeps one entry,
+/// and it names where the reader went.
+fn goMobile(where: []const u8, from: []const u8) void {
     followed_mobile = true;
+    var next: Detour = .{};
+    _ = next.from.set(from);
+    if (url.parse(where)) |to| _ = next.to.set(to.host);
+    detour = next;
     if (history.current()) |entry| _ = entry.address.set(where);
     visit(where);
+}
+
+/// Whether the version for small screens a page on `host` names has sent
+/// the reader on elsewhere.
+fn refusedBy(host: []const u8) bool {
+    for (refused.slice()) |site| {
+        if (std.ascii.eqlIgnoreCase(site.slice(), host)) return true;
+    }
+    return false;
+}
+
+/// A page has come at `final`. Where it came after a detour to a version for
+/// small screens and is on another site than that version, the version sent
+/// the reader on, and the site that named it is remembered as one whose
+/// version is not gone on to again. The oldest remembered goes when there is
+/// no more room.
+fn landed(final: url.Url) void {
+    const went = detour orelse return;
+    detour = null;
+    if (std.ascii.eqlIgnoreCase(final.host, went.to.slice()) or refusedBy(went.from.slice())) return;
+    if (refused.isFull()) refused.remove(0);
+    refused.append(went.from) catch unreachable;
 }
 
 /// Follow a link on the page on screen.
@@ -277,6 +317,7 @@ fn follow(link: u16) void {
 /// Go somewhere new, which the history remembers.
 fn go(where: []const u8) void {
     followed_mobile = false;
+    detour = null;
     if (history.current()) |entry| entry.scroll = view.scroll;
     // Kept before anything else happens: `where` may be an address on the
     // page on screen, which going replaces.
@@ -309,6 +350,7 @@ fn reload() void {
 fn revisit() void {
     const entry = history.current() orelse return;
     followed_mobile = false;
+    detour = null;
     pending_scroll = entry.scroll;
     visit(entry.address.slice());
 }
@@ -455,6 +497,7 @@ fn settle(wait: fetch_mod.Wait) bool {
             .idle => return false,
             .done => if (reading != null) sheetArrived() else arrive(),
             .failed => |why| if (reading != null) sheetArrived() else {
+                detour = null;
                 failed(why, fetch.host());
                 fetch.cancel(gpa);
             },
@@ -495,18 +538,19 @@ fn arrive() void {
         .status = fetch.response.status,
     };
 
-    const next = next: {
-        const base = url.parse(final) orelse {
-            failed(error.NotAnAddress, final);
-            break :next null;
-        };
-        const said = fetch.response.contentType();
-        const body = fetch.body.bytes;
-        fetch.body.bytes = .empty;
-        break :next take(body, base, kindOf(said, final), charset.fromContentType(said));
+    const base = url.parse(final) orelse {
+        failed(error.NotAnAddress, final);
+        return fetch.cancel(gpa);
     };
+    landed(base);
+    const said = fetch.response.contentType();
+    const body = fetch.body.bytes;
+    fetch.body.bytes = .empty;
+    const next = take(body, base, kindOf(said, final), charset.fromContentType(said));
     if (reading != null) fetch.release(gpa) else fetch.cancel(gpa);
-    if (next) |mobile| goMobile(mobile.slice());
+    // The address the page came from is still the fetch's own until the
+    // next is begun, which going on copies it before doing.
+    if (next) |mobile| goMobile(mobile.slice(), base.host);
 }
 
 /// A file on this machine, read whole.
@@ -514,7 +558,7 @@ fn openFile(where: url.Url) void {
     const path = where.file();
     const bytes = file.readAlloc(gpa, path, fetch_mod.PAGE_MAX) catch |err| return failed(err, path);
     arrived = .{ .bytes = bytes.len };
-    if (take(.fromOwnedSlice(bytes), where, kindOf(null, path), null)) |next| goMobile(next.slice());
+    if (take(.fromOwnedSlice(bytes), where, kindOf(null, path), null)) |next| goMobile(next.slice(), where.host);
 }
 
 /// Take a page that has arrived, whose bytes it takes, from a site or from
@@ -550,7 +594,7 @@ fn take(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?charset.C
         failed(err, base.host);
         return null;
     };
-    if (mobileOf(&tree, base)) |next| {
+    if (mobileOf(&tree, base, versionWindow())) |next| {
         tree.close();
         from.deinit(gpa);
         return next;
@@ -675,14 +719,25 @@ fn kindOf(content_type: ?[]const u8, name: []const u8) Kind {
     return media_kinds.get(media_type) orelse .{ .other = media_type };
 }
 
-/// Where to go on to instead of the page parsed as `tree`: the version for
-/// small screens it names, where the settings ask for those, none has been
-/// gone on to already for this place, and the page is not that version
-/// itself.
-fn mobileOf(tree: *const Tree, base: url.Url) ?url.Address {
-    if (!choices.mobile or followed_mobile) return null;
+/// The window a page's versions are chosen for: as wide as the column the
+/// page is set in, which is what its words have however wide the window is,
+/// and as tall as the window. With no window, as the shell has none, a
+/// column the measure wide and as tall.
+fn versionWindow() media.Screen {
+    const measure: f32 = @floatFromInt(view_mod.MEASURE);
+    const in = window orelse return .{ .width = measure, .height = measure };
+    return .{ .width = @floatFromInt(view_mod.measureIn(@intFromFloat(in.width))), .height = in.height, .scale = in.scale };
+}
+
+/// Where to go on to instead of the page parsed as `tree`: the version it
+/// names for a window like `screen`, where the settings ask for versions for
+/// small screens, none has been gone on to already for this place, the site
+/// has not sent the reader back from its version before, and the page is not
+/// that version itself.
+fn mobileOf(tree: *const Tree, base: url.Url, screen: media.Screen) ?url.Address {
+    if (!choices.mobile or followed_mobile or refusedBy(base.host)) return null;
     var buf: [url.ADDRESS_MAX]u8 = undefined;
-    const named = tree.mobile(base, &buf) orelse return null;
+    const named = tree.versionFor(base, screen, &buf) orelse return null;
     var own: [url.ADDRESS_MAX]u8 = undefined;
     const here = std.fmt.bufPrint(&own, "{f}", .{base}) catch return null;
     if (std.mem.eql(u8, here, named)) return null;
@@ -1210,7 +1265,7 @@ fn readBody(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?chars
     defer from.deinit(gpa);
     var tree = Tree.parse(gpa, &from) catch |err| fatal(base.host, err);
     defer tree.close();
-    if (mobileOf(&tree, base)) |next| return next;
+    if (mobileOf(&tree, base, versionWindow())) |next| return next;
 
     // Its stylesheets, on the connection it came on, which the page's own
     // address goes with: from here on it names the stylesheet being asked

@@ -32,6 +32,7 @@ const std = @import("std");
 const Bounded = @import("lib").bounded.Bounded;
 const css = @import("css.zig");
 const lexbor = @import("lexbor.zig");
+const media = @import("media.zig");
 const page_mod = @import("page.zig");
 const url = @import("url.zig");
 
@@ -622,11 +623,12 @@ fn contentOf(root: *Node) *Node {
     return root;
 }
 
-/// Where the page says its version for small screens is, written into `buf`:
-/// a link in its head that is an alternate for a screen no wider than some
-/// width, or for a handheld, which is how a site with a separate mobile site
-/// names it.
-pub fn mobileVersion(document: *lexbor.Document, base: url.Url, buf: *[url.ADDRESS_MAX]u8) ?[]const u8 {
+/// Where the page says its version for a window like `screen` is, written
+/// into `buf`: a link in its head that is an alternate for media the window
+/// is, which is how a site with a separate site for small screens names it.
+/// With no window to ask about, a version for windows of some size is not
+/// one for it.
+pub fn versionFor(document: *lexbor.Document, base: url.Url, screen: ?media.Screen, buf: *[url.ADDRESS_MAX]u8) ?[]const u8 {
     const root = lexbor.nodeOf(document);
     var at = lexbor.following(root, root);
     while (at) |node| : (at = lexbor.following(node, root)) {
@@ -637,8 +639,8 @@ pub fn mobileVersion(document: *lexbor.Document, base: url.Url, buf: *[url.ADDRE
             else => continue,
         }
         if (!lexbor.attributeHas(node, "rel", "alternate")) continue;
-        const asked = lexbor.attribute(node, "media") orelse continue;
-        if (std.ascii.findIgnoreCase(asked, "max-width") == null and std.ascii.findIgnoreCase(asked, "handheld") == null) continue;
+        const asked = std.mem.trim(u8, lexbor.attribute(node, "media") orelse continue, &std.ascii.whitespace);
+        if (asked.len == 0 or !media.matches(asked, screen)) continue;
         return url.resolve(base, lexbor.attribute(node, "href") orelse "", buf) orelse continue;
     }
     return null;

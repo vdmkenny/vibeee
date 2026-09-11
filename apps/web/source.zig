@@ -123,10 +123,10 @@ pub const Tree = struct {
         if (self.styled) try css.sheetsOf(gpa, self.document, base, into);
     }
 
-    /// Where it names a version of itself for small screens, written into
-    /// `buf`.
-    pub fn mobile(self: *const Tree, base: url.Url, buf: *[url.ADDRESS_MAX]u8) ?[]const u8 {
-        return extract.mobileVersion(self.document, base, buf);
+    /// Where it names a version of itself for windows like `screen`, written
+    /// into `buf`.
+    pub fn versionFor(self: *const Tree, base: url.Url, screen: ?media.Screen, buf: *[url.ADDRESS_MAX]u8) ?[]const u8 {
+        return extract.versionFor(self.document, base, screen, buf);
     }
 
     /// Its words, read into `page` with `source`'s stylesheets applied as
