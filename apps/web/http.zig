@@ -10,11 +10,16 @@
 //! for the body, which goes to a sink the caller bounds.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Bounded = @import("lib").bounded.Bounded;
 const url_mod = @import("url.zig");
 
 const Url = url_mod.Url;
 const Writer = std.Io.Writer;
+
+/// What the reader calls itself to a site: the program and its version, the
+/// system it runs on, and the kind of machine that is.
+pub const USER_AGENT = "vibeee-web/1.0 (vibeee; " ++ @tagName(builtin.cpu.arch) ++ ")";
 
 /// The request for `url`, written into `out`.
 pub fn request(out: []u8, url: Url) ?[]const u8 {
@@ -32,7 +37,7 @@ fn writeRequest(w: *Writer, url: Url) Writer.Error!void {
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
     try w.writeAll("\r\n" ++
-        "User-Agent: web/1 (vibeee)\r\n" ++
+        "User-Agent: " ++ USER_AGENT ++ "\r\n" ++
         "Accept: text/html, text/plain;q=0.8, */*;q=0.1\r\n" ++
         "Accept-Encoding: identity\r\n" ++
         "Connection: close\r\n" ++
@@ -359,6 +364,7 @@ test "a request asks for the page and for the connection to close" {
     const req = request(&buf, url_mod.parse("https://man7.org/linux/read.2.html").?).?;
     try testing.expect(std.mem.startsWith(u8, req, "GET /linux/read.2.html HTTP/1.1\r\nHost: man7.org\r\n"));
     try testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, req, "User-Agent: vibeee-web/1.0 (vibeee; ") != null);
     try testing.expect(std.mem.endsWith(u8, req, "\r\n\r\n"));
 }
 
