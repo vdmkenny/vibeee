@@ -92,6 +92,23 @@ pub fn Bounded(comptime T: type, comptime capacity: usize) type {
             self.len -= 1;
             self.items[index] = self.items[self.len];
         }
+
+        /// Take the last one off, for a list kept as a stack.
+        pub fn pop(self: *Self) ?T {
+            if (self.len == 0) return null;
+            self.len -= 1;
+            return self.items[self.len];
+        }
+
+        /// The last one, where it is, for a stack whose top changes in place.
+        pub fn last(self: *Self) ?*T {
+            return if (self.len == 0) null else &self.items[self.len - 1];
+        }
+
+        /// Keep the first `count` and let the rest go.
+        pub fn truncate(self: *Self, count: usize) void {
+            self.len = @min(self.len, count);
+        }
     };
 }
 
@@ -156,6 +173,26 @@ test "removing keeps the order, or fills the gap with the last" {
     // Past the end is nothing to take out.
     list.remove(5);
     try std.testing.expectEqual(@as(usize, 2), list.slice().len);
+}
+
+test "a stack takes on its top, changes it in place, and gives it back" {
+    var stack = Bounded(u32, 4){};
+    try stack.append(1);
+    try stack.append(2);
+    stack.last().?.* += 40;
+    try testing.expectEqual(@as(?u32, 42), stack.pop());
+    try testing.expectEqual(@as(?u32, 1), stack.pop());
+    try testing.expectEqual(@as(?u32, null), stack.pop());
+    try testing.expect(stack.last() == null);
+}
+
+test "truncating keeps the front, and never lengthens" {
+    var list = Bounded(u8, 4){};
+    try testing.expect(list.set("abcd"));
+    list.truncate(2);
+    try testing.expectEqualSlices(u8, "ab", list.slice());
+    list.truncate(3);
+    try testing.expectEqualSlices(u8, "ab", list.slice());
 }
 
 test "indexing past the end answers null rather than reading past it" {
