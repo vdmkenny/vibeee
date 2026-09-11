@@ -131,6 +131,8 @@ that means it has to be painted again.
 | `slotFor` | `fn (*widget.Context, draw.Rect) ?*widget.Entry` |
 | `indexOf` | `fn (*const widget.Context, *const widget.Entry) usize` |
 | `takeKeyFor` | `fn (*widget.Context, *const widget.Entry) ?syscalls.KeyCode` |
+| `repaintAt` | `fn (*widget.Context, draw.Rect) void` |
+| `focusedAt` | `fn (*widget.Context, draw.Rect) bool` |
 | `focusAt` | `fn (*widget.Context, draw.Rect) void` |
 | `interact` | `fn (*widget.Context, *widget.Entry, draw.Rect) Context.Interaction` |
 | `activatedByKey` | `fn (*widget.Context, *const widget.Entry) bool` |

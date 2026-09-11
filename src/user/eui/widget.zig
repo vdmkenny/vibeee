@@ -165,6 +165,9 @@ pub const Context = struct {
     focus_moved: bool = false,
     /// The next control drawn should take the keyboard, if nothing has it.
     focus_wanted: bool = false,
+    /// A Tab moved the keyboard on this pass. The same press arrives as a
+    /// character too, and a key that moved the keyboard typed nothing.
+    tabbed: bool = false,
     /// Whether the pointer is somewhere else than it was last pass. What
     /// follows the pointer follows it when it moves and leaves the keyboard
     /// alone when it rests, which is the difference between a highlight that
@@ -235,6 +238,7 @@ pub const Context = struct {
         self.damage_count = 0;
         self.damage_overflowed = false;
         self.focus_moved = false;
+        self.tabbed = false;
 
         for (&self.entries) |*e| e.seen = false;
 
@@ -265,6 +269,7 @@ pub const Context = struct {
     pub fn postKey(self: *Context, code: KeyCode, mods: Modifiers) void {
         if (code == .tab) {
             self.moveFocus(if (mods.shift) .backward else .forward);
+            self.tabbed = true;
             return;
         }
         self.pending_key = code;
@@ -278,6 +283,10 @@ pub const Context = struct {
 
     /// Offer a typed character to this pass.
     pub fn postText(self: *Context, codepoint: u32) void {
+        if (self.tabbed and codepoint == '\t') {
+            self.tabbed = false;
+            return;
+        }
         self.pending_text = codepoint;
     }
 
@@ -510,6 +519,20 @@ pub const Context = struct {
         /// wanted to read it: a text area needs Enter to mean a new line.
         clicked: bool,
     };
+
+    /// Make the control at `area` paint on this pass whatever it looked like
+    /// on the last: what a pane asks of the controls in it when it has
+    /// painted its own ground over where they were.
+    pub fn repaintAt(self: *Context, area: Rect) void {
+        const entry = self.slotFor(area) orelse return;
+        entry.visual = null;
+    }
+
+    /// Whether the control at `area` has the keyboard.
+    pub fn focusedAt(self: *Context, area: Rect) bool {
+        const entry = self.slotFor(area) orelse return false;
+        return self.focus == self.indexOf(entry);
+    }
 
     /// Give the keyboard to whatever control occupies `area`.
     ///
