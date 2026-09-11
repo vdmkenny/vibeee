@@ -199,6 +199,33 @@ fn demand(step: *std.Build.Step, compiled: *std.Build.Step.Compile) void {
     step.dependOn(&compiled.step);
 }
 
+/// The sites the web reader keeps away from, as the reader carries them:
+/// fetched at every build of it, read into a table of hashes, and handed to
+/// the program as a module of its own. The last list fetched is kept under
+/// `build/`, so a build that cannot reach the network keeps the one it has;
+/// the `blocklist` step fetches it again on its own.
+fn blocklistData(b: *std.Build) *std.Build.Module {
+    const run = b.addRunArtifact(b.addExecutable(.{
+        .name = "gen-blocklist",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/web/gen_blocklist.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    }));
+    // A list of the sites that serve ads and of those that count and follow
+    // people, brushed by hand and kept small: 35,000 names, and one that
+    // should not stand in the way of a page anybody wants.
+    run.addArg("https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/light.txt");
+    run.addArg("build/blocklist.txt");
+    const out = run.addOutputFileArg("blocklist_data.zig");
+    // It reaches off the machine, so it is done when it is asked for and
+    // not cached as if the network were a file that had not changed.
+    run.has_side_effects = true;
+    b.step("blocklist", "Fetch the web reader's blocklist again").dependOn(&run.step);
+    return b.createModule(.{ .root_source_file = out });
+}
+
 pub fn build(b: *std.Build) void {
     const optimize = b.option(
         std.builtin.OptimizeMode,
@@ -640,6 +667,7 @@ pub fn build(b: *std.Build) void {
             user.addLexbor(web);
             // The formats pages use that the decoder reads.
             user.addPictures(web, &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_GIF" });
+            web.root_module.addImport("blocklist_data", blocklistData(b));
             const web_step = b.step("web", "Build the web reader into zig-out/bin");
             web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
 

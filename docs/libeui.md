@@ -68,6 +68,7 @@ with it this pass.
 | `buttonAs` | `fn (*widget.Context, draw.Rect, []const u8, widget.Emphasis) bool` |
 | `choice` | `fn (*widget.Context, draw.Rect, anytype) anytype` |
 | `choiceOf` | `fn (*widget.Context, draw.Rect, anytype, []const []const u8) anytype` |
+| `toggles` | `fn (*widget.Context, draw.Rect, []const []const u8, usize) ?usize` |
 | `choiceAmong` | `fn (*widget.Context, draw.Rect, anytype, anytype, []const []const u8) anytype` |
 | `slider` | `fn (*widget.Context, draw.Rect, slider.Range, i32, Context.SliderStyle) i32` |
 | `toggle` | `fn (*widget.Context, draw.Rect, []const u8, bool) bool` |
@@ -201,17 +202,17 @@ Choosing a file: the panel, not the window.
 
 ### `eui.context_menu`
 
-The menu the other mouse button opens.
+The menu a control opens.
 
 | call | signature |
 |---|---|
 | `isOpen` | `fn () bool` |
 | `openedBy` | `fn (usize) bool` |
-| `open` | `fn (*widget.Context, usize, []const widget.MenuItem) void` |
-| `openAt` | `fn (i32, i32, usize, []const widget.MenuItem) void` |
+| `open` | `fn (*widget.Context, usize, []const context_menu.Row) void` |
+| `openAt` | `fn (i32, i32, usize, []const context_menu.Row) void` |
 | `close` | `fn () void` |
 | `area` | `fn (draw.Surface) draw.Rect` |
-| `run` | `fn (*widget.Context) ?usize` |
+| `run` | `fn (*widget.Context) ?context_menu.Chosen` |
 
 ### `eui.menubar`
 
@@ -485,7 +486,7 @@ Colours chosen elsewhere, kept readable here.
 | call | signature |
 |---|---|
 | `legible` | `fn (rgb.Colour, rgb.Colour) rgb.Colour` |
-| `adapted` | `fn (rgb.Colour, rgb.Colour) rgb.Colour` |
+| `adapted` | `fn (rgb.Colour, rgb.Shade, rgb.Colour) rgb.Colour` |
 | `lighter` | `fn (rgb.Colour, u8) rgb.Colour` |
 | `darker` | `fn (rgb.Colour, u8) rgb.Colour` |
 
@@ -1153,6 +1154,20 @@ home
       ################    
                           
 
+menu
+                          
+    ####################  
+    ####################  
+                          
+                          
+    ####################  
+    ####################  
+                          
+                          
+    ####################  
+    ####################  
+                          
+
 ```
 
 ## Themes
@@ -1170,7 +1185,9 @@ what it does not give from the one around it. Every control drawn in
 between wears them: the steps it answers the pointer with are taken
 from the ground it was given, and its words are kept readable on that
 ground. `eui.recolour` is the arithmetic, for a program that paints
-such colours itself.
+such colours itself. A program that draws in one shade whatever the
+interface is drawn in wears `theme.tintFor` that shade, which is no
+tint at all where the interface is that shade already.
 
 | element | slate | classic | paper | dusk |
 |---|---|---|---|---|

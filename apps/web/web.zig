@@ -25,9 +25,11 @@
 //! whatever the window can read, the shell can too.
 //!
 //! Where it starts, whether it fetches pictures, whether it follows a page's
-//! stylesheets and whether it asks for the versions of pages made for small
-//! screens are settings, in the `web` domain the store keeps: `cfg web` lists
-//! them, and a window that is open takes a change as it is made.
+//! stylesheets, whether it asks for the versions of pages made for small
+//! screens and whether pages are drawn light or dark are settings, in the
+//! `web` domain the store keeps: `cfg web` lists them, the menu at the end of
+//! the strip changes them and makes the page on screen the home page, and a
+//! window that is open takes a change as it is made.
 //!
 //! Not part of the system. It is built into `home/bin/` and versioned on its
 //! own.
@@ -47,6 +49,10 @@ const paths = ulib.paths;
 const str = lib.str;
 const Bounded = lib.bounded.Bounded;
 
+const blocklist_mod = @import("blocklist.zig");
+/// The names on the list, as the build wrote them out. Fetched and written
+/// by `gen_blocklist.zig`, which `build.zig` runs for every reader it builds.
+const blocklist_data = @import("blocklist_data");
 const charset = @import("charset.zig");
 const css = @import("css.zig");
 const fetch_mod = @import("fetch.zig");
@@ -136,6 +142,32 @@ const REFUSED_MAX = 16;
 
 /// A site's name, as long as one may be.
 const Host = Bounded(u8, 255);
+
+/// The answers the form last sent had, and where they were sent. Kept so that
+/// the page those answers made can be fetched again — which fetching a page
+/// again, or going back to one and on again, asks for — by sending them
+/// again, rather than by asking for the empty form the site answers a GET
+/// with. One form's answers, the last sent, being all a reader with one page
+/// on screen needs.
+var sending: Sending = .{};
+
+const Sending = struct {
+    /// Where they were sent: empty where no form has been sent yet.
+    at: url.Address = .{},
+    answers: [ANSWERS_MAX]u8 = undefined,
+    len: usize = 0,
+
+    /// The answers, where they were sent to `target`.
+    fn forTarget(self: *const Sending, target: []const u8) ?[]const u8 {
+        if (self.at.isEmpty() or !std.mem.eql(u8, self.at.slice(), target)) return null;
+        return self.answers[0..self.len];
+    }
+};
+
+/// The most a form's answers may come to, written as a query. A search is a
+/// dozen words; this leaves room for a form with a page of them, and none for
+/// one that sends a file.
+const ANSWERS_MAX = 8 * 1024;
 
 const Detour = struct { from: Host = .{}, to: Host = .{} };
 /// The tab still names the page before this one. Said on the next pass
@@ -266,12 +298,52 @@ fn home() void {
     typed(where);
 }
 
-/// Put the settings into effect: what sites are asked for, and whether
-/// pictures are fetched.
+/// Put the settings into effect: what sites are asked for, whether pictures
+/// are fetched, the sites kept away from, and the shade pages are drawn in.
 fn apply() void {
-    fetch.mobile = choices.mobile;
-    pictures.fetch.mobile = choices.mobile;
+    const kept = keptFrom();
+    for (fetches()) |one| {
+        one.asking.mobile = choices.mobile;
+        one.blocklist = kept;
+    }
     pictures.enabled = choices.images;
+    inShade(pageShade());
+}
+
+/// The sites the reader keeps away from, while ad protection is on: those
+/// that serve ads, and those that count and follow the people reading. None
+/// where it is off, which is how it is turned off.
+fn keptFrom() ?blocklist_mod.Blocklist {
+    if (!choices.ad_protection) return null;
+    return .{ .hashes = &blocklist_data.hashes };
+}
+
+/// The page's fetch, which brings its stylesheets too, and its pictures'.
+fn fetches() [2]*fetch_mod.Fetch {
+    return .{ &fetch, &pictures.fetch };
+}
+
+/// The shade pages are drawn in: the one the settings name, or where they
+/// leave it to the interface, the interface's.
+fn pageShade() lib.rgb.Shade {
+    return switch (choices.theme) {
+        .auto => eui.theme.shade(),
+        .light => .light,
+        .dark => .dark,
+    };
+}
+
+/// Draw pages in `shade`, and tell sites and stylesheets so. Where the
+/// settings leave the shade to the interface it follows the interface's,
+/// which can change under a window that is open, so every pass puts it into
+/// effect as well. A page's pictures are laid over its ground, so those that
+/// showed the last one through them are let go of and asked for again.
+fn inShade(shade: lib.rgb.Shade) void {
+    const was = view.shade;
+    view.shade = shade;
+    for (fetches()) |one| one.asking.shade = shade;
+    if (shade == was) return;
+    if (pictures.reground(gpa, view.ground())) view.relayout();
 }
 
 /// Go on to the version of the page made for small screens, which the page
@@ -315,7 +387,22 @@ fn follow(link: u16) void {
 }
 
 /// Go somewhere new, which the history remembers.
+/// Go somewhere new, which the history remembers. What a form last sent is
+/// forgotten: a page gone to by its address is the form itself, and not the
+/// page the answers made last time.
 fn go(where: []const u8) void {
+    sending = .{};
+    visitNew(where);
+}
+
+/// Send the answers in `sending` to `where`, and go to the page that comes
+/// back, which the history remembers.
+fn send(where: []const u8) void {
+    visitNew(where);
+}
+
+/// Go somewhere for the first time, which the history remembers.
+fn visitNew(where: []const u8) void {
     followed_mobile = false;
     detour = null;
     if (history.current()) |entry| entry.scroll = view.scroll;
@@ -362,6 +449,14 @@ fn visit(target: []const u8) void {
     address.set(target);
     const where = url.parse(target) orelse return failed(error.NotAnAddress, target);
     if (where.scheme == .file) return openFile(where);
+    // A page on one of the sites the reader keeps away from is not gone to:
+    // the page itself is what a tracker writes, no less than a picture from
+    // one is.
+    if (fetch.refuses(where)) return failed(error.Blocked, where.host);
+    // What a form last sent, where it was sent here: the page is fetched by
+    // sending the answers again, rather than by asking for the empty form the
+    // site answers a GET with.
+    fetch.asking.sent = if (sending.forTarget(target)) |answers| .{ .form = answers } else .nothing;
 
     // The network is the page's while it comes: the pictures of the one on
     // screen wait.
@@ -374,7 +469,7 @@ fn stop() void {
     fetch.cancel(gpa);
     if (reading != null) {
         // What of its stylesheets came is what it is drawn with.
-        fetch.wanted = .page;
+        fetch.asking.wanted = .page;
         return finish();
     }
     if (history.current()) |entry| address.set(entry.address.slice());
@@ -425,25 +520,31 @@ fn tick() bool {
 
 fn woken(index: usize) bool {
     if (settings_changed != null and wakes.at(index) == settings_changed) {
-        const styled = choices.styles;
-        choices = proto.settings.load("web");
-        apply();
-        // Stylesheets turned on or off are a different page: the one on
-        // screen is fetched again, as it is to be drawn now.
-        if (choices.styles != styled) {
-            reload();
-            return true;
-        }
-        if (!choices.images) pictures.pause(gpa);
-        // Pictures turned off give their room to what the page says they
-        // show, and turned on come as they would have.
-        view.relayout();
-        waitFor(.none);
+        adopt(proto.settings.load("web"));
         return true;
     }
     _ = step();
     // A piece arrived, which the status line counts, whatever else it did.
     return true;
+}
+
+/// Take `next` as the reader's settings, from the store or from the menu,
+/// and do what changing each asks. Asking for versions for small screens or
+/// not, following stylesheets or not and keeping away from the blocklist or
+/// not make the page on screen another page, which is fetched again.
+/// Pictures turned off give their room to what the page says they show, and
+/// turned on come as they would have. Another shade is drawn on the next
+/// pass.
+fn adopt(next: proto.settings.Web) void {
+    const was = choices;
+    choices = next;
+    apply();
+    if (next.mobile != was.mobile or next.styles != was.styles or next.ad_protection != was.ad_protection) return reload();
+    if (next.images != was.images) {
+        if (!next.images) pictures.pause(gpa);
+        view.relayout();
+    }
+    waitFor(.none);
 }
 
 /// Take the next step of whatever is on its way: the page, its stylesheets,
@@ -621,13 +722,13 @@ fn nextSheet() void {
             continue;
         }
         r.asked = link.media;
-        fetch.wanted = .style;
+        fetch.asking.wanted = .style;
         fetch.begin(gpa, link.address);
         waitFor(.none);
         return;
     }
     fetch.cancel(gpa);
-    fetch.wanted = .page;
+    fetch.asking.wanted = .page;
     finish();
 }
 
@@ -668,7 +769,7 @@ fn abandon() void {
     r.deinit();
     r.source.deinit(gpa);
     reading = null;
-    fetch.wanted = .page;
+    fetch.asking.wanted = .page;
 }
 
 /// A stylesheet from this machine, read whole.
@@ -802,7 +903,11 @@ fn showPage(fresh: *Page) void {
     pending_scroll = 0;
     title_stale = true;
     // Its pictures from the next chance on, once its words are drawn.
-    pictures.show(gpa, &shown, widest(), view_mod.groundOf(&shown));
+    pictures.show(gpa, &shown, .{
+        .widest = widest(),
+        .scale = @intCast(eui.theme.textScale()),
+        .ground = view.ground(),
+    });
     waitFor(.none);
 }
 
@@ -813,13 +918,15 @@ fn widest() u16 {
 }
 
 /// The window a page is drawn in, as a stylesheet asks about it: in the
-/// page's own pixels, which the interface draws at its own scale.
+/// page's own pixels, which the interface draws at its own scale, and in the
+/// shade pages are drawn in, which a stylesheet for either reads.
 fn windowOf(area: Rect) media.Screen {
     const scale = eui.theme.textScale();
     return .{
         .width = @floatFromInt(@divTrunc(area.w, scale)),
         .height = @floatFromInt(@divTrunc(area.h, scale)),
         .scale = @floatFromInt(scale),
+        .shade = view.shade,
     };
 }
 
@@ -847,8 +954,8 @@ fn problem(heading: []const u8, detail: []const u8) void {
 /// Every way the reader can fail to show what was asked for.
 const Failure = fetch_mod.Failure || file.AllocError || ReadError || error{
     NotAnAddress,
-    /// A form that posts its answers, which this reader does not send.
-    PostedForm,
+    /// A form whose answers come to more than this reader sends.
+    LongForm,
 };
 
 /// What a failure is called: a heading and a sentence for the page that says
@@ -915,6 +1022,11 @@ fn told(why: Failure, subject: []const u8, buf: []u8) Told {
             .detail = sentence(buf, "{s} closed the connection without sending anything back.", .{subject}),
             .word = "closed without answering",
         },
+        error.Blocked => .{
+            .heading = "This site is kept from",
+            .detail = sentence(buf, "{s} is on the reader's blocklist: the sites that serve ads, and those that count and follow the people reading. Ad protection, in the menu at the end of the strip, turns the list off.", .{subject}),
+            .word = "on the blocklist",
+        },
         error.RedirectLoop => .{
             .heading = "Sent round in circles",
             .detail = sentence(buf, "{s} kept sending the request on somewhere else.", .{subject}),
@@ -938,10 +1050,10 @@ fn told(why: Failure, subject: []const u8, buf: []u8) Told {
             .word = "the parser would not take it",
         },
         error.NotAPage => .{ .heading = "This is not a page", .detail = subject, .word = "not a page" },
-        error.PostedForm => .{
-            .heading = "This form cannot be sent from here",
-            .detail = "It posts its answers, which is how logging in and ordering are done. This reader sends a form's answers in the address, the way a search does, and no other way.",
-            .word = "the form posts its answers",
+        error.LongForm => .{
+            .heading = "This form sends too much",
+            .detail = std.fmt.comptimePrint("Its answers come to more than {d} KB, which is more than this reader sends. One that sends a file, or pages of words, is such a form.", .{ANSWERS_MAX / 1024}),
+            .word = "the form sends too much",
         },
     };
 }
@@ -982,6 +1094,10 @@ fn draw() void {
     // The window the page is drawn in, which is what its stylesheets' media
     // queries ask about: a page read for another reads again where it would
     // read differently, and is only laid out again where it would not.
+    // The shade is put into effect first, being one of the things a page is
+    // read for: where it is the interface's, the interface can have changed
+    // under a window that is open.
+    inShade(pageShade());
     window = windowOf(parts.body);
     if (!std.meta.eql(read_for, window)) {
         if (source.readsAlike(read_for, window)) read_for = window else reread();
@@ -1006,19 +1122,37 @@ fn draw() void {
         .submit => |by| submit(by),
     };
     status(parts.bottom, parts.body);
+    // Last, so that it stands over the page it hangs over.
+    runMenu(bar.menu);
 }
 
-/// Send a form's answers where it says, the way a search sends them: in the
-/// address, as its query.
+/// Send a form's answers where it says: in the address, as its query, for a
+/// form that asks by GET, as a search does, and in the body of a POST for one
+/// that asks by POST, as logging in and ordering are done.
 fn submit(sent: view_mod.Submit) void {
     const form = shown.forms.items[sent.form];
     const action = shown.string(form.action);
-    if (form.method == .post) return failed(error.PostedForm, action);
-
-    var buf: [url.ADDRESS_MAX]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    writeQuery(&w, sent, action) catch return failed(error.BadAddress, action);
-    go(w.buffered());
+    switch (form.method) {
+        // In the address, as its query, which is how a search sends them.
+        .get => {
+            var buf: [url.ADDRESS_MAX]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            writeQuery(&w, sent, action) catch return failed(error.BadAddress, action);
+            go(w.buffered());
+        },
+        // In the body of a request, which is how logging in and ordering are
+        // done. Written where they are kept, since a POST sends them on the
+        // step after this one, and keeps them besides, so that the page they
+        // make can be fetched again by sending them again.
+        .post => {
+            sending = .{};
+            if (!sending.at.set(action)) return failed(error.BadAddress, action);
+            var w: std.Io.Writer = .fixed(&sending.answers);
+            writeAnswers(&w, sent) catch return failed(error.LongForm, action);
+            sending.len = w.buffered().len;
+            send(action);
+        },
+    }
 }
 
 /// The form's address with its answers as the query, in place of any query
@@ -1026,6 +1160,13 @@ fn submit(sent: view_mod.Submit) void {
 fn writeQuery(w: *std.Io.Writer, sent: view_mod.Submit, action: []const u8) std.Io.Writer.Error!void {
     try w.writeAll(action[0 .. std.mem.indexOfScalar(u8, action, '?') orelse action.len]);
     try w.writeByte('?');
+    try writeAnswers(w, sent);
+}
+
+/// A form's answers, as a query: `name=value` for each control of it that has
+/// a name and an answer, joined with `&`. Sent in the address by a form that
+/// asks by GET, and in the body of a request by one that asks by POST.
+fn writeAnswers(w: *std.Io.Writer, sent: view_mod.Submit) std.Io.Writer.Error!void {
     var first = true;
     for (shown.controls.items, 0..) |control, index| {
         if (control.form != sent.form) continue;
@@ -1038,28 +1179,33 @@ fn writeQuery(w: *std.Io.Writer, sent: view_mod.Submit, action: []const u8) std.
 }
 
 /// Where the strip's parts go: the way back, the way forward, the key that
-/// fetches again or stops, the way home, and the field in what is left.
+/// fetches again or stops, the way home, the key that opens the menu at the
+/// far end, and the field in what is left between them.
 const Strip = struct {
     back: Rect,
     forward: Rect,
     reload: Rect,
     home: Rect,
     field: Rect,
+    menu: Rect,
 
     fn of(area: Rect) Strip {
         const t = eui.theme.current();
         const size = t.control_height;
         const y = area.y + @divTrunc(area.h - size, 2);
-        // The keys a hair apart, and the field a gap after the last.
+        // The keys a hair apart, and the field a gap after the last of them
+        // and a gap before the menu's.
         const pitch = size + 2;
         const left = area.x + t.padding;
         const field_x = left + 3 * pitch + size + t.gap;
+        const menu_x = area.right() - t.padding - size;
         return .{
             .back = square(left, y, size),
             .forward = square(left + pitch, y, size),
             .reload = square(left + 2 * pitch, y, size),
             .home = square(left + 3 * pitch, y, size),
-            .field = .{ .x = field_x, .y = y, .w = area.right() - t.padding - field_x, .h = size },
+            .field = .{ .x = field_x, .y = y, .w = menu_x - t.gap - field_x, .h = size },
+            .menu = square(menu_x, y, size),
         };
     }
 
@@ -1079,8 +1225,136 @@ fn strip(area: Rect, at: Strip) void {
     }
     if (ctx.tool(at.home, .home, !choices.homepage.isEmpty())) home();
     if (address.run(ctx, at.field)) typed(address.slice());
+    if (ctx.tool(at.menu, .menu, true)) openMenu(at.menu);
 
     rule(area);
+}
+
+// ---------------------------------------------------------------------------
+// The menu
+// ---------------------------------------------------------------------------
+
+/// What the menu at the end of the strip holds, a row each: the settings a
+/// person changes while reading, each of which `cfg` changes as well, and
+/// making the page on screen the home page.
+const Row = enum { mobile, pictures, styles, theme, ads, rule, home };
+
+comptime {
+    std.debug.assert(std.enums.values(Row).len <= eui.context_menu.MAX_ITEMS);
+}
+
+/// Open the menu under its key, at `at`.
+fn openMenu(at: Rect) void {
+    const entry = ctx.slotFor(at) orelse return;
+    var rows: [std.enums.values(Row).len]eui.context_menu.Row = undefined;
+    for (&rows, std.enums.values(Row)) |*row, which| row.* = rowOf(which);
+    eui.context_menu.openAt(at.x, at.bottom(), ctx.indexOf(entry), &rows);
+}
+
+/// The menu, where its key at `at` opened it, and what it was asked to do.
+/// Run last, so it stands over the page it hangs over.
+fn runMenu(at: Rect) void {
+    const entry = ctx.slotFor(at) orelse return;
+    if (!eui.context_menu.openedBy(ctx.indexOf(entry))) return;
+    switch (eui.context_menu.run(ctx) orelse return) {
+        // A command: making the page on screen the home page.
+        .row => |index| choose(@enumFromInt(index)),
+        // A setting's value, picked out on the row that holds it.
+        .value => |picked| set(@enumFromInt(picked.row), picked.at),
+    }
+}
+
+/// A row of the menu as it reads now. A setting carries the values it may be,
+/// which the menu draws as the toggle the rest of the system changes a
+/// setting with; the one row that is not a setting is a command.
+fn rowOf(row: Row) eui.context_menu.Row {
+    return switch (row) {
+        .mobile => .{ .setting = .{ .label = "Mobile pages", .values = ON_OFF, .at = atOf(choices.mobile) } },
+        .pictures => .{ .setting = .{ .label = "Pictures", .values = ON_OFF, .at = atOf(choices.images) } },
+        .styles => .{ .setting = .{ .label = "Page styles", .values = ON_OFF, .at = atOf(choices.styles) } },
+        .theme => .{ .setting = .{ .label = "Page theme", .values = &SHADES, .at = @intFromEnum(choices.theme) } },
+        .ads => .{ .setting = .{ .label = "Ad protection", .values = ON_OFF, .at = atOf(choices.ad_protection) } },
+        .rule => .rule,
+        .home => .{ .command = homeRow() },
+    };
+}
+
+/// The two values a setting that is either on or off has: what the menu
+/// draws, off first.
+const ON_OFF: []const []const u8 = &.{ "off", "on" };
+
+/// The shades pages may be drawn in, as the menu names them: the type's own
+/// tags, which are also the words a person reads, so one added to the type
+/// turns up here without being written twice.
+const SHADES = shades: {
+    var named: [std.enums.values(proto.settings.Shade).len][]const u8 = undefined;
+    for (std.enums.values(proto.settings.Shade), &named) |shade, *name| name.* = @tagName(shade);
+    break :shades named;
+};
+
+/// Which of the two a setting that is either on or off is at.
+fn atOf(on: bool) usize {
+    return @intFromBool(on);
+}
+
+/// Making the page on screen the home page: not to be chosen where there is
+/// no page, where it is the home page already, or where its address is
+/// longer than the setting holds.
+fn homeRow() eui.widget.MenuItem {
+    const label = "Set as home page";
+    const mark: eui.icon.Icon = .home;
+    const here = onScreen() orelse return .{ .label = label, .kind = .disabled, .mark = mark };
+    if (isHome(here)) return .{ .label = "This is the home page", .kind = .disabled, .mark = mark };
+    if (proto.settings.Address.parse(here) == null) {
+        return .{ .label = label, .kind = .disabled, .mark = mark, .detail = "too long" };
+    }
+    return .{ .label = label, .mark = mark };
+}
+
+/// Where the page on screen came from: none for a page the reader wrote
+/// itself to say why another is not here.
+fn onScreen() ?[]const u8 {
+    if (arrived == null) return null;
+    return (history.current() orelse return null).address.slice();
+}
+
+/// Whether `here` is where the home key goes.
+fn isHome(here: []const u8) bool {
+    var buf: [url.ADDRESS_MAX]u8 = undefined;
+    const home_address = addressFrom(choices.homepage.slice(), &buf) orelse return false;
+    return std.mem.eql(u8, home_address, here);
+}
+
+/// Do what a command of the menu says. The store keeps it and tells every
+/// reader that is open; it is taken here at once all the same, so the menu
+/// works where there is no store to keep it.
+fn choose(row: Row) void {
+    var next = switch (row) {
+        .home => choices,
+        else => return,
+    };
+    next.homepage = proto.settings.Address.parse(onScreen() orelse return) orelse return;
+    proto.settings.save("web", next) catch {};
+    adopt(next);
+}
+
+/// Put the setting on row `row` at the value `at`, of the values it may be.
+/// The store keeps it and tells every reader that is open; it is taken here at
+/// once all the same, so the menu works where there is no store to keep it.
+fn set(row: Row, at: usize) void {
+    var next = choices;
+    switch (row) {
+        .mobile => next.mobile = at != 0,
+        .pictures => next.images = at != 0,
+        .styles => next.styles = at != 0,
+        .ads => next.ad_protection = at != 0,
+        // The menu offers them in the order the type declares them, so the
+        // one chosen is the one at that place.
+        .theme => next.theme = std.enums.values(proto.settings.Shade)[@min(at, std.enums.values(proto.settings.Shade).len - 1)],
+        .rule, .home => return,
+    }
+    proto.settings.save("web", next) catch {};
+    adopt(next);
 }
 
 /// The rule under the strip, which is also how far a fetch has got. A page
@@ -1289,8 +1563,8 @@ fn readBody(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?chars
 fn sheetNow(link_address: []const u8) ?[]u8 {
     const where = url.parse(link_address) orelse return null;
     if (where.scheme == .file) return readSheet(where);
-    fetch.wanted = .style;
-    defer fetch.wanted = .page;
+    fetch.asking.wanted = .style;
+    defer fetch.asking.wanted = .page;
     defer fetch.release(gpa);
     if (!fetchNow(link_address) or !isStyle(&fetch.response)) return null;
     return fetch.body.bytes.toOwnedSlice(gpa) catch null;

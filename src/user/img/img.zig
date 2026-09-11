@@ -29,6 +29,9 @@ pub const Picture = struct {
     /// Whether the pixels are the decoder's to free, or a buffer the caller
     /// lent, as a picture cut from another is.
     owned: bool = true,
+    /// Whether any of it was see-through, where it was laid over a ground.
+    /// Those parts are that ground now, so over another it is decoded again.
+    see_through: bool = false,
 
     /// Give it back. A picture is the largest thing most of these programs
     /// hold, so it is freed rather than left to the end of the process.
@@ -101,9 +104,9 @@ fn decodeOn(bytes: []const u8, ground: ?rgb.Colour) Refusal!Picture {
 
     const count = @as(usize, shape.width) * @as(usize, shape.height);
     const pixels = @as([*]rgb.Colour, @ptrCast(@alignCast(decoded)))[0..count];
-    pack(decoded, pixels, ground);
+    const see_through = pack(decoded, pixels, ground);
 
-    return .{ .pixels = pixels, .width = shape.width, .height = shape.height };
+    return .{ .pixels = pixels, .width = shape.width, .height = shape.height, .see_through = see_through };
 }
 
 /// Why the decoder gave nothing back.
@@ -119,25 +122,29 @@ fn refusalFor() Refusal {
 
 /// Four bytes a pixel become one word a pixel, in the buffer they arrived in,
 /// laid over `ground` by how see-through each is where a ground is given.
+/// Answers whether any of them was see-through, over a ground.
 ///
 /// Forwards, because a word is written where its own four bytes were and
 /// nothing later is read before it has been written. A second buffer would
 /// double the largest allocation in the program for the sake of a copy.
-fn pack(bytes: [*]u8, into: []rgb.Colour, ground: ?rgb.Colour) void {
+fn pack(bytes: [*]u8, into: []rgb.Colour, ground: ?rgb.Colour) bool {
     // What the decoder writes: red first, which is the order a file holds
     // and the reverse of what the panel takes, and how opaque it is last.
     const Sample = packed struct(u32) { r: u8, g: u8, b: u8, a: u8 };
     if (ground) |under| {
+        var see_through = false;
         for (into, 0..) |*pixel, i| {
             const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
+            if (sample.a != 255) see_through = true;
             pixel.* = under.mix(.of(sample.r, sample.g, sample.b), sample.a);
         }
-        return;
+        return see_through;
     }
     for (into, 0..) |*pixel, i| {
         const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
         pixel.* = .{ .r = sample.r, .g = sample.g, .b = sample.b };
     }
+    return false;
 }
 
 /// A square of `side` pixels cut from the middle of a picture and shrunk to
@@ -493,7 +500,7 @@ test "packing is done in the buffer the bytes arrived in" {
         0x78, 0x9A, 0xBC, 0xFF,
     };
     var pixels: [2]rgb.Colour = undefined;
-    pack(&bytes, &pixels, null);
+    try testing.expect(!pack(&bytes, &pixels, null));
 
     try testing.expectEqual(rgb.Colour.hex(0x123456), pixels[0]);
     try testing.expectEqual(rgb.Colour.hex(0x789ABC), pixels[1]);
@@ -506,7 +513,9 @@ test "a see-through picture is laid over the ground it is drawn on" {
         0x00, 0x00, 0xFF, 0x80, // blue half seen
     };
     var pixels: [3]rgb.Colour = undefined;
-    pack(&bytes, &pixels, .hex(0x204060));
+    // Two of the three are see-through, so the picture is one that has to be
+    // decoded again over another ground.
+    try testing.expect(pack(&bytes, &pixels, .hex(0x204060)));
 
     try testing.expectEqual(rgb.Colour.hex(0xFF0000), pixels[0]);
     try testing.expectEqual(rgb.Colour.hex(0x204060), pixels[1]);

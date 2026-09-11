@@ -32,6 +32,7 @@ const rails = @import("rail.zig");
 const theme = @import("theme.zig");
 const scroll_mod = @import("scroll.zig");
 const tbl = @import("table.zig");
+const context_menu = @import("context_menu.zig");
 
 const Rect = draw.Rect;
 const Surface = draw.Surface;
@@ -164,6 +165,10 @@ pub const Context = struct {
     /// word for no key, which is what an unconsumed pass has.
     pending_key: KeyCode = .none,
     key_mods: Modifiers = .{},
+    /// A key pressed while the context menu is open, which is the menu's. The
+    /// keyboard is where the menu is then, as the pointer is: no control
+    /// behind it sees the key, or what the key typed.
+    menu_key: KeyCode = .none,
 
     /// Wheel notches this pass, negative for away from the user. Consumed by
     /// whichever control the pointer is over, since that is what a wheel means.
@@ -282,8 +287,14 @@ pub const Context = struct {
     }
 
     /// Offer a key to this pass. Tab and Shift+Tab move focus; anything else
-    /// is left for the focused control to act on.
+    /// is left for the focused control to act on, or while the context menu
+    /// is open, for the menu.
     pub fn postKey(self: *Context, code: KeyCode, mods: Modifiers) void {
+        if (context_menu.isOpen()) {
+            self.menu_key = code;
+            self.key_mods = mods;
+            return;
+        }
         if (code == .tab) {
             self.moveFocus(if (mods.shift) .backward else .forward);
             self.tabbed = true;
@@ -298,8 +309,10 @@ pub const Context = struct {
         self.pending_wheel +|= dy;
     }
 
-    /// Offer a typed character to this pass.
+    /// Offer a typed character to this pass. None reaches a control behind
+    /// the context menu while it is open.
     pub fn postText(self: *Context, codepoint: u32) void {
+        if (context_menu.isOpen()) return;
         if (self.tabbed and codepoint == '\t') {
             self.tabbed = false;
             return;
@@ -379,8 +392,13 @@ pub const Context = struct {
 
     /// Finish a pass, releasing state for controls that were not drawn.
     pub fn end(self: *Context) void {
-        for (&self.entries) |*e| {
-            if (e.used and !e.seen) e.* = .{};
+        for (&self.entries, 0..) |*e, i| {
+            if (!e.used or e.seen) continue;
+            e.* = .{};
+            // The context menu goes with the control that opened it, rather
+            // than staying open where nothing draws it with the keyboard
+            // still its.
+            if (context_menu.openedBy(i)) context_menu.close();
         }
 
         // A window with nothing focused gives the keyboard to whatever comes
@@ -763,19 +781,44 @@ pub const Context = struct {
     pub fn choiceOf(self: *Context, area: Rect, chosen: anytype, labels: []const []const u8) @TypeOf(chosen) {
         const T = @TypeOf(chosen);
         const fields = @typeInfo(T).@"enum".fields;
-        const gap = theme.current().padding;
 
         var picked = chosen;
         var x = area.x;
 
         inline for (fields, 0..) |field, i| {
             const text = if (i < labels.len) labels[i] else field.name;
-            const width = Surface.textWidth(text) + gap * 3;
+            const width = segmentWidth(text);
             const value: T = @enumFromInt(field.value);
             const seat = Seat.of(i, fields.len);
             if (self.segment(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value, seat)) {
                 picked = value;
             }
+            x = seat.nextX(x, width);
+        }
+        return picked;
+    }
+
+    /// The same, over words a program has of its own rather than over the
+    /// tags of a type: what a menu row carries, where the values a setting
+    /// may be are drawn from a table somewhere else.
+    ///
+    /// Returns which of them was chosen, if one was.
+    ///
+    /// Each is drawn again on every pass, rather than only when what it shows
+    /// has changed, because what these stand on is a row the menu paints
+    /// under them on every pass: a toggle that kept its looks is a toggle
+    /// painted over. A row of them is two or three small buttons, so drawing
+    /// them again costs less than the bookkeeping to know better.
+    pub fn toggles(self: *Context, area: Rect, labels: []const []const u8, at: usize) ?usize {
+        var picked: ?usize = null;
+        var x = area.x;
+
+        for (labels, 0..) |text, i| {
+            const width = segmentWidth(text);
+            const seat = Seat.of(i, labels.len);
+            const where = Rect{ .x = x, .y = area.y, .w = width, .h = area.h };
+            self.repaintAt(where);
+            if (self.segment(where, text, i == at, seat)) picked = i;
             x = seat.nextX(x, width);
         }
         return picked;
@@ -794,14 +837,12 @@ pub const Context = struct {
         values: []const @TypeOf(chosen),
         labels: []const []const u8,
     ) @TypeOf(chosen) {
-        const gap = theme.current().padding;
-
         var picked = chosen;
         var x = area.x;
 
         for (values, 0..) |value, i| {
             const text = if (i < labels.len) labels[i] else @tagName(value);
-            const width = Surface.textWidth(text) + gap * 3;
+            const width = segmentWidth(text);
             const seat = Seat.of(i, values.len);
             if (self.segment(.{ .x = x, .y = area.y, .w = width, .h = area.h }, text, chosen == value, seat)) {
                 picked = value;
@@ -1599,6 +1640,21 @@ pub fn paintBar(surface: Surface, area: Rect, fraction: u8, colour: draw.Color) 
 /// outside is rounded, the corners between neighbours stay square, and each
 /// one overlaps the last by the width of a line so the two share an edge
 /// instead of drawing one each.
+/// How wide a row of toggles naming `labels` is, so a caller can place one
+/// before it draws it: the arithmetic `toggles` uses, kept in one place so
+/// the two cannot disagree about where a row of them ends.
+pub fn togglesWidth(labels: []const []const u8) i32 {
+    var wide: i32 = 0;
+    for (labels, 0..) |text, i| wide = Seat.of(i, labels.len).nextX(wide, segmentWidth(text));
+    return wide;
+}
+
+/// How wide one toggle named `text` is: its word, and the air a control
+/// needs either side of one.
+fn segmentWidth(text: []const u8) i32 {
+    return Surface.textWidth(text) + theme.current().padding * 3;
+}
+
 pub const Seat = enum {
     /// Joined to nothing on either side, which is what an ordinary control
     /// is: both ends are its own and both are rounded.
@@ -1979,8 +2035,9 @@ pub fn heightOf(item: MenuItem) i32 {
 pub const MenuItem = struct {
     label: []const u8 = "",
     kind: Kind = .item,
-    /// Drawn right-aligned and dim: the chord that does the same thing. A menu
-    /// is where people find out a command has a shortcut.
+    /// Drawn right-aligned and dim: the chord that does the same thing, or
+    /// what the setting a row changes is now. A menu is where people find out
+    /// a command has a shortcut.
     detail: []const u8 = "",
     /// A picture before the label: what the row is, or a tick saying it is
     /// the one in use. The column exists for the whole menu or for none of

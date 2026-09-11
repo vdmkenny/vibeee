@@ -9,13 +9,13 @@
 //! what the specification makes of a feature it does not know, and with no
 //! window at all, a question about its size is one it cannot answer.
 //!
-//! A page is always told its colours are to be light. A dark theme turns the
-//! page's own colours over itself, and a page that had done so as well would
-//! be turned back.
+//! A page is told whether it is drawn light or dark, as its site is told with
+//! each request. Where no window is known, it is told neither.
 //!
 //! Pure and host-tested.
 
 const std = @import("std");
+const rgb = @import("lib").rgb;
 
 const Writer = std.Io.Writer;
 
@@ -26,6 +26,8 @@ pub const Screen = struct {
     height: f32,
     /// How many of the screen's pixels one of the page's is drawn as.
     scale: f32 = 1,
+    /// Whether the page is drawn light or dark.
+    shade: rgb.Shade = .light,
 };
 
 /// Whether the queries written as `prelude` are for `screen`: any one of them
@@ -584,7 +586,7 @@ const Word = enum {
                 const window = screen orelse return null;
                 return if (window.width >= window.height) "landscape" else "portrait";
             },
-            .prefers_color_scheme => "light",
+            .prefers_color_scheme => @tagName((screen orelse return null).shade),
             .prefers_reduced_motion => "reduce",
             .prefers_contrast => "no-preference",
             .hover => "hover",
@@ -950,6 +952,15 @@ test "the window is lit in daylight colours, hovers and runs no scripts" {
     try expectFor("(monochrome)", false);
     try expectFor("(-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi)", false);
     try expectFor("(min-resolution: 1dppx)", true);
+}
+
+test "a window drawn dark says so, and no window says neither" {
+    const night = Screen{ .width = 800, .height = 480, .shade = .dark };
+    try testing.expect(matches("(prefers-color-scheme: dark)", night));
+    try testing.expect(!matches("screen and (prefers-color-scheme: light)", night));
+    // A stylesheet for either is worth fetching before the window is known.
+    try testing.expect(couldMatch("(prefers-color-scheme: dark)"));
+    try testing.expect(!matches("(prefers-color-scheme: light)", null));
 }
 
 test "conditions nest, and what is not known is not this window" {

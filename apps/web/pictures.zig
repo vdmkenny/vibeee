@@ -10,12 +10,21 @@
 //!
 //! The first asked for is the first at or below the top of the view, so
 //! what somebody is looking at arrives first; the rest follow in the page's
-//! order.
+//! order. Each is asked for as wide as it is drawn at most, which a site
+//! with several sizes of it reads to send the one that is enough.
 //!
 //! Kept small. A picture is shrunk as it is decoded to the widest a column
 //! is drawn, and its file and its full-sized pixels are let go at once. What
 //! a page's pictures hold between them is bounded, and a picture past the
 //! bound, like one too large to decode, keeps what stands in for it.
+//!
+//! Kept laid over the ground the page is drawn on, which shows through where
+//! a picture is see-through. Where that ground changes, as it does when the
+//! page is drawn in the other shade, a picture that shows it is asked for
+//! again, to be laid over the new one.
+//!
+//! A picture from a site on the blocklist is not asked for, and nothing
+//! stands in for it.
 
 const std = @import("std");
 const img = @import("img");
@@ -51,6 +60,9 @@ pub const State = union(enum) {
     /// Not to be had: nowhere to fetch it from, not found, not a picture this
     /// reader decodes, or more than it holds.
     failed,
+    /// From a site on the blocklist: not asked for, and nothing stands in
+    /// for it.
+    blocked,
 };
 
 /// A picture as it is kept.
@@ -59,6 +71,8 @@ pub const Kept = struct {
     picture: img.Picture,
     /// Its own size, which a page that gives none lays it out at.
     own: Size,
+    /// Whether any of it shows the ground it was laid over.
+    see_through: bool,
 };
 
 /// What a step came to.
@@ -71,6 +85,15 @@ pub const Step = union(enum) {
     idle,
 };
 
+/// How a page's pictures are drawn, which is how they are kept and asked for:
+/// at most `widest` of the screen's pixels across, `scale` of them to each of
+/// the page's, and laid over `ground`.
+pub const Drawn = struct {
+    widest: u16 = 480,
+    scale: u16 = 1,
+    ground: rgb.Colour = .{},
+};
+
 pub const Pictures = struct {
     /// One for each of the page's pictures.
     states: []State = &.{},
@@ -78,42 +101,44 @@ pub const Pictures = struct {
     enabled: bool = true,
     /// Stopped by hand: nothing more is asked for until the next page.
     halted: bool = false,
-    /// The widest a picture is drawn, which is what it is shrunk to.
-    widest: u16 = 480,
-    /// What a picture is drawn on, which its see-through parts show.
-    ground: rgb.Colour = .{},
+    drawn: Drawn = .{},
     /// What the pictures that are here hold between them, in bytes.
     held: usize = 0,
 
-    fetch: fetch_mod.Fetch = .{ .wanted = .picture },
+    fetch: fetch_mod.Fetch = .{ .asking = .{ .wanted = .picture } },
     /// Which picture the fetch is for, while it is for one.
     fetching: ?u16 = null,
 
-    /// Take on `page`'s pictures, to be drawn at most `widest` across on
-    /// `ground`, letting go of the last page's.
-    pub fn show(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, widest: u16, ground: rgb.Colour) void {
+    /// Take on `page`'s pictures, drawn as `drawn` says, letting go of the
+    /// last page's.
+    pub fn show(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, drawn: Drawn) void {
         self.forget(gpa);
-        self.widest = widest;
-        self.ground = ground;
+        self.drawn = drawn;
         // A page with no room to follow its pictures still reads: they are
         // stood in for, as pictures that will not come are.
         self.states = gpa.alloc(State, page.pictures.items.len) catch &.{};
         for (self.states, page.pictures.items) |*state, picture| {
-            state.* = if (picture.source.len == 0) .failed else .waiting;
+            const source = page.string(picture.source);
+            state.* = if (source.len == 0) .failed else if (self.refuses(source)) .blocked else .waiting;
         }
     }
 
-    /// Let go of every picture, and of the one on its way.
+    /// Let go of every picture, and of the one on its way. Whether they are
+    /// fetched, how they are drawn and what is asked of sites for them stay,
+    /// being settings.
     pub fn forget(self: *Pictures, gpa: std.mem.Allocator) void {
         self.fetch.cancel(gpa);
         for (self.states) |state| switch (state) {
             .here => |kept| gpa.free(kept.picture.pixels),
-            .waiting, .coming, .failed => {},
+            .waiting, .coming, .failed, .blocked => {},
         };
         gpa.free(self.states);
-        const enabled = self.enabled;
-        const widest = self.widest;
-        self.* = .{ .enabled = enabled, .widest = widest };
+        const settings: Pictures = .{
+            .enabled = self.enabled,
+            .drawn = self.drawn,
+            .fetch = .{ .asking = self.fetch.asking, .blocklist = self.fetch.blocklist },
+        };
+        self.* = settings;
     }
 
     /// Put the picture on its way back, to be asked for again later: the
@@ -129,6 +154,24 @@ pub const Pictures = struct {
     pub fn halt(self: *Pictures, gpa: std.mem.Allocator) void {
         self.pause(gpa);
         self.halted = true;
+    }
+
+    /// Lay the pictures over `ground` from here on. Those here that show the
+    /// ground they were laid over are let go of, to be asked for again and
+    /// laid over this one; true where any were.
+    pub fn reground(self: *Pictures, gpa: std.mem.Allocator, ground: rgb.Colour) bool {
+        self.drawn.ground = ground;
+        var any = false;
+        for (self.states) |*state| switch (state.*) {
+            .here => |kept| if (kept.see_through) {
+                self.held -= kept.picture.pixels.len * @sizeOf(rgb.Colour);
+                gpa.free(kept.picture.pixels);
+                state.* = .waiting;
+                any = true;
+            },
+            .waiting, .coming, .failed, .blocked => {},
+        };
+        return any;
     }
 
     /// Whether the pictures still to come are being asked for.
@@ -149,7 +192,7 @@ pub const Pictures = struct {
     pub fn tally(self: *const Pictures) struct { settled: usize, total: usize } {
         var settled: usize = 0;
         for (self.states) |state| switch (state) {
-            .here, .failed => settled += 1,
+            .here, .failed, .blocked => settled += 1,
             .waiting, .coming => {},
         };
         return .{ .settled = settled, .total = self.states.len };
@@ -180,8 +223,14 @@ pub const Pictures = struct {
         return null;
     }
 
+    /// Whether a picture at `source` is from a site on the blocklist.
+    fn refuses(self: *const Pictures, source: []const u8) bool {
+        return self.fetch.refuses(url.parse(source) orelse return false);
+    }
+
     fn begin(self: *Pictures, gpa: std.mem.Allocator, page: *const Page, index: u16) Step {
-        const source = page.string(page.pictures.items[index].source);
+        const which = page.pictures.items[index];
+        const source = page.string(which.source);
         const where = url.parse(source) orelse {
             self.states[index] = .failed;
             return .{ .settled = index };
@@ -199,10 +248,19 @@ pub const Pictures = struct {
         }
         self.states[index] = .coming;
         self.fetching = index;
+        self.fetch.asking.width = self.widthOf(which);
         self.fetch.begin(gpa, source);
         // Reaching the site blocks, so it waits for the next chance, once the
         // pass that says a picture is coming has been drawn.
         return .{ .wait = .none };
+    }
+
+    /// How wide a picture is drawn at most, in the screen's own pixels: as
+    /// wide as the page gives it, or as the column where it gives no width
+    /// or a wider one.
+    fn widthOf(self: *const Pictures, which: page_mod.Picture) u16 {
+        const given = which.width orelse return self.drawn.widest;
+        return @intCast(@min(@as(u32, given) * self.drawn.scale, self.drawn.widest));
     }
 
     /// The fetch is over: the picture, or the end of trying for it.
@@ -220,16 +278,20 @@ pub const Pictures = struct {
         const shape = img.shapeOf(bytes) catch return .failed;
         if (@as(usize, shape.width) * shape.height > DECODED_MAX) return .failed;
         const own = Size{ .w = shape.width, .h = shape.height };
-        const kept = keptSize(own, self.widest);
+        const kept = keptSize(own, self.drawn.widest);
         const count = @as(usize, kept.w) * kept.h;
         const weight = count * @sizeOf(rgb.Colour);
         if (self.held + weight > HELD_MAX) return .failed;
 
-        const full = img.decodeOver(bytes, self.ground) catch return .failed;
+        const full = img.decodeOver(bytes, self.drawn.ground) catch return .failed;
         defer full.deinit();
         const pixels = gpa.alloc(rgb.Colour, count) catch return .failed;
         self.held += weight;
-        return .{ .here = .{ .picture = img.shrunk(full, kept.w, kept.h, pixels), .own = own } };
+        return .{ .here = .{
+            .picture = img.shrunk(full, kept.w, kept.h, pixels),
+            .own = own,
+            .see_through = full.see_through,
+        } };
     }
 };
 

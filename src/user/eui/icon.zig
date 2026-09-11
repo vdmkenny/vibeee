@@ -139,6 +139,9 @@ pub const Icon = enum {
     /// The page a reader starts on: a house, which is what every reader has
     /// drawn it as.
     home,
+    /// Three bars: the rest of what a window can be told, behind one key at
+    /// the end of a strip that has no room for a menu bar.
+    menu,
 };
 
 /// A picture and the name it belongs to.
@@ -876,6 +879,23 @@ const art = [_]Picture{
             "..#..##..#..",
             "..#..##..#..",
             "..########..",
+            "............",
+        },
+    },
+    .{
+        .icon = .menu,
+        .rows = .{
+            "............",
+            ".##########.",
+            ".##########.",
+            "............",
+            "............",
+            ".##########.",
+            ".##########.",
+            "............",
+            "............",
+            ".##########.",
+            ".##########.",
             "............",
         },
     },

@@ -389,7 +389,9 @@ fn themeTable(gpa: std.mem.Allocator, w: *std.ArrayList(u8)) !void {
         \\between wears them: the steps it answers the pointer with are taken
         \\from the ground it was given, and its words are kept readable on that
         \\ground. `eui.recolour` is the arithmetic, for a program that paints
-        \\such colours itself.
+        \\such colours itself. A program that draws in one shade whatever the
+        \\interface is drawn in wears `theme.tintFor` that shade, which is no
+        \\tint at all where the interface is that shade already.
         \\
         \\
     );

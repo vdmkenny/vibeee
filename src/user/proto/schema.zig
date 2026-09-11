@@ -207,7 +207,7 @@ pub const Web = struct {
     /// The page the reader opens when it is started without an address, and
     /// the one its home key goes to. Empty opens nothing, and the reader
     /// waits for an address.
-    homepage: Address = Address.of("https://frogfind.de/?lg=en-us"),
+    homepage: Address = Address.of("https://lite.duckduckgo.com/lite/"),
     /// Whether a page's pictures are fetched and shown in it. Off, a page is
     /// its words, with a picture's description where the picture would be,
     /// which is quicker over a slow connection and lighter on memory.
@@ -226,7 +226,21 @@ pub const Web = struct {
     /// in the theme's colours, which is quicker, since its stylesheets are
     /// not fetched.
     styles: bool = true,
+    /// Whether pages are drawn light or dark: as the interface is, or light
+    /// or dark whatever it is. Sites are told which, and so are a page's
+    /// stylesheets, and a page that comes in the other shade all the same
+    /// has its own colours turned over to sit in this one.
+    theme: Shade = .auto,
+    /// Whether the reader keeps away from the sites on its blocklist: those
+    /// that serve ads, and those that count and follow the people reading.
+    /// On, a page's pictures and stylesheets from them are not fetched, and
+    /// a page on one is not gone to. The list is fetched when the reader is
+    /// built.
+    ad_protection: bool = true,
 };
+
+/// Light or dark, or as the interface is.
+pub const Shade = enum { auto, light, dark };
 
 /// Which program opens what. One key per family a program can be chosen
 /// for; unset means the first that will take it, which is what a machine

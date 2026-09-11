@@ -119,8 +119,10 @@ so an image ships with the first and a machine remembers the second.
 
 | key | accepts | default |
 |---|---|---|
-| `web.homepage` | an address, or empty for none | `https://frogfind.de/?lg=en-us` |
+| `web.homepage` | an address, or empty for none | `https://lite.duckduckgo.com/lite/` |
 | `web.images` | true \| false | `true` |
 | `web.mobile` | true \| false | `true` |
 | `web.styles` | true \| false | `true` |
+| `web.theme` | auto \| light \| dark | `auto` |
+| `web.ad_protection` | true \| false | `true` |
 

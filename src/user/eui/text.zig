@@ -487,7 +487,13 @@ fn editAs(ctx: *widget.Context, area: Rect, state: *Editor, buffer: *Buffer, sha
 
     // Last, so it stands over the text it belongs to.
     if (eui_context_menu.openedBy(entry_index)) {
-        if (eui_context_menu.run(ctx)) |row| {
+        if (eui_context_menu.run(ctx)) |chosen| {
+            // What can be done to the text is a command each, so a setting
+            // chosen on a menu of none is a thing that cannot happen.
+            const row = switch (chosen) {
+                .row => |row| row,
+                .value => return,
+            };
             if (commandOf(row)) |command| {
                 if (run(state, buffer, command, ctx.clipboard)) {
                     state.repaint = true;
@@ -589,12 +595,12 @@ pub const CHORDS = [_]struct { chord: []const u8, says: []const u8 }{
 
 /// The rows the other mouse button opens, in the order every system puts
 /// them, each with the chord that does the same thing.
-const MENU_ROWS = [_]widget.MenuItem{
-    .{ .label = "Cut", .mark = .cut, .detail = "Ctrl+X" },
-    .{ .label = "Copy", .mark = .copy, .detail = "Ctrl+C" },
-    .{ .label = "Paste", .mark = .paste, .detail = "Ctrl+V" },
-    .{ .kind = .separator },
-    .{ .label = "Select all", .mark = .select_all, .detail = "Ctrl+A" },
+const MENU_ROWS = [_]eui_context_menu.Row{
+    .{ .command = .{ .label = "Cut", .mark = .cut, .detail = "Ctrl+X" } },
+    .{ .command = .{ .label = "Copy", .mark = .copy, .detail = "Ctrl+C" } },
+    .{ .command = .{ .label = "Paste", .mark = .paste, .detail = "Ctrl+V" } },
+    .rule,
+    .{ .command = .{ .label = "Select all", .mark = .select_all, .detail = "Ctrl+A" } },
 };
 
 fn commandOf(row: usize) ?Command {

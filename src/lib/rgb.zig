@@ -15,6 +15,9 @@
 const std = @import("std");
 const str = @import("str.zig");
 
+/// Light or dark: which end of lightness a colour is nearer.
+pub const Shade = enum { light, dark };
+
 pub const Colour = packed struct(u32) {
     b: u8 = 0,
     g: u8 = 0,
@@ -54,6 +57,12 @@ pub const Colour = packed struct(u32) {
     pub fn lightness(self: Colour) u8 {
         const weighted = @as(u32, self.r) * 2 + @as(u32, self.g) * 5 + self.b;
         return @intCast(weighted / 8);
+    }
+
+    /// Which end of lightness it is nearer: whether words go dark or light
+    /// on it, and what makes a theme or a page a light or a dark one.
+    pub fn shade(self: Colour) Shade {
+        return if (self.lightness() >= 128) .light else .dark;
     }
 
     /// This colour with `share` 255ths of `other` in it: itself at nought and
@@ -136,6 +145,13 @@ test "lightness weighs green heaviest, as the eye does" {
 
     try testing.expectEqual(@as(u8, 0), Colour.hex(0x000000).lightness());
     try testing.expectEqual(@as(u8, 255), Colour.hex(0xFFFFFF).lightness());
+}
+
+test "a colour is light or dark by the end of lightness it is nearer" {
+    try std.testing.expectEqual(Shade.light, Colour.hex(0xFFFFFF).shade());
+    try std.testing.expectEqual(Shade.light, Colour.hex(0xE9EAEC).shade());
+    try std.testing.expectEqual(Shade.dark, Colour.hex(0x2A2E35).shade());
+    try std.testing.expectEqual(Shade.dark, Colour.hex(0x000000).shade());
 }
 
 test "a mix runs from the colour to the other, rounding to the nearest" {

@@ -13,12 +13,17 @@
 //! next request to the same site is sent on it: reaching the site and sealing
 //! the connection is the step that blocks, and a page's stylesheets and its
 //! pictures need it once rather than once each.
+//!
+//! A site on the blocklist a fetch is given is not reached at all: the
+//! request to one, a redirect to one included, fails before anything is
+//! sent.
 
 const std = @import("std");
 const sys = @import("sys");
 const ulib = @import("ulib");
 const Bounded = @import("lib").bounded.Bounded;
 
+const blocklist_mod = @import("blocklist.zig");
 const http = @import("http.zig");
 const url = @import("url.zig");
 
@@ -81,6 +86,8 @@ pub const Failure = ulib.wire.Error || http.Error || error{
     RedirectLoop,
     /// The site said nothing for too long.
     Stalled,
+    /// The site is on the blocklist, and so was not reached.
+    Blocked,
 };
 
 pub const State = union(enum) {
@@ -105,12 +112,12 @@ pub const Wait = union(enum) {
 };
 
 pub const Fetch = struct {
-    /// A page, or a picture on one: what the site is told the reader takes,
-    /// and how large its answer may be.
-    wanted: http.Wanted = .page,
-    /// Whether to ask for the version made for small screens and slow
-    /// connections.
-    mobile: bool = false,
+    /// What is asked of the site: a page, a stylesheet or a picture, which
+    /// says what the site is told the reader takes and how large its answer
+    /// may be, and what the request says of the reader besides.
+    asking: http.Asking = .{},
+    /// The sites not to be reached, where there are any.
+    blocklist: ?blocklist_mod.Blocklist = null,
     state: State = .idle,
     /// Where the page is: the address asked for, or after a redirect the one
     /// it was sent on to.
@@ -144,6 +151,12 @@ pub const Fetch = struct {
         return self.state == .connecting or self.state == .receiving;
     }
 
+    /// Whether the site at `where` is on the blocklist.
+    pub fn refuses(self: *const Fetch, where: url.Url) bool {
+        const list = self.blocklist orelse return false;
+        return list.blocks(where.host);
+    }
+
     /// Begin fetching `target`. Nothing is sent until the first step.
     pub fn begin(self: *Fetch, gpa: std.mem.Allocator, target: []const u8) void {
         self.redirects = 0;
@@ -154,7 +167,7 @@ pub const Fetch = struct {
     /// Take the next step, and say what to wait on before the one after.
     pub fn advance(self: *Fetch, gpa: std.mem.Allocator) Wait {
         switch (self.state) {
-            .connecting => self.connect(),
+            .connecting => self.connect(gpa),
             .receiving => {
                 self.pump(gpa);
                 self.stall(sys.clockMicros());
@@ -203,26 +216,38 @@ pub const Fetch = struct {
     fn reset(self: *Fetch, gpa: std.mem.Allocator) void {
         self.closeWire();
         self.body.deinit(gpa);
-        self.body = .{ .limit = limitOf(self.wanted) };
+        self.body = .{ .limit = limitOf(self.asking.wanted) };
         self.response = .{};
     }
 
     /// Reach the site and ask for the page. Blocks for as long as reaching
     /// it takes, which on a connection kept from the last answer is no time.
-    fn connect(self: *Fetch) void {
+    fn connect(self: *Fetch, gpa: std.mem.Allocator) void {
         const where = url.parse(self.address()) orelse return self.fail(error.BadAddress);
         const kind: ulib.wire.Kind = switch (where.scheme) {
             .http => .plain,
             .https => .secure,
             .file => return self.fail(error.BadAddress),
         };
+        if (self.refuses(where)) return self.fail(error.Blocked);
         self.reused = false;
         const wire = if (self.takeKept(where)) |kept| kept else ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
         self.wire = wire;
 
-        var buf: [url.ADDRESS_MAX + 512]u8 = undefined;
-        const request = http.request(&buf, where, .{ .wanted = self.wanted, .mobile = self.mobile }) orelse return self.fail(error.BadAddress);
+        var stack: [url.ADDRESS_MAX + 512]u8 = undefined;
+        // A POST carries its answers behind its head, which is more than a
+        // request has room for here, so one that sends any is put together
+        // in the heap and let go as soon as it is on the wire.
+        const heap = switch (self.asking.sent) {
+            .nothing => null,
+            .form => |answers| gpa.alloc(u8, stack.len + answers.len) catch return self.fail(error.OutOfMemory),
+        };
+        defer if (heap) |room| gpa.free(room);
+        const request = http.request(heap orelse &stack, where, self.asking) orelse return self.fail(error.BadAddress);
         if (wire.send(request) != request.len) return self.failOrRetry(error.Unreachable);
+        // The answers are the caller's until they have gone. A fetch asked
+        // for again without being given them again asks by GET.
+        self.asking.sent = .nothing;
 
         self.state = .receiving;
         self.heard_us = sys.clockMicros();

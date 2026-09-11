@@ -300,6 +300,23 @@ pub fn wearing() Tint {
     return worn;
 }
 
+/// Whether the interface is drawn light or dark, by its surfaces.
+pub fn shade() rgb.Shade {
+    return active.surface.shade();
+}
+
+/// The tint that draws in `wanted` whatever shade the interface is: none
+/// where it is that shade already, and otherwise the ground and ink of the
+/// first theme that is. The interface's own accent stays, being one colour
+/// for the whole system.
+pub fn tintFor(wanted: rgb.Shade) Tint {
+    if (shade() == wanted) return .{};
+    for (all) |candidate| {
+        if (candidate.surface.shade() == wanted) return .{ .ground = candidate.surface, .ink = candidate.text };
+    }
+    return .{};
+}
+
 /// The theme drawn with: the active one, or the active one in the tint worn.
 fn retint() void {
     if (std.meta.eql(worn, Tint{})) {
@@ -457,4 +474,13 @@ test "words stay readable on a tinted ground, and its steps are taken from it" {
     try testing.expect(@abs(apart) >= recolour.CONTRAST);
     try testing.expect(t.surface_hot.lightness() > t.surface.lightness());
     try testing.expect(t.surface_pressed.lightness() < t.surface.lightness());
+}
+
+test "the tint for a shade is none on a theme of it, and the first theme of it on another" {
+    try testing.expectEqual(rgb.Shade.light, shade());
+    try testing.expect(std.meta.eql(tintFor(.light), Tint{}));
+    const dark = tintFor(.dark);
+    try testing.expect(dark.ground.?.eql(dusk.surface));
+    try testing.expect(dark.ink.?.eql(dusk.text));
+    try testing.expect(dark.accent == null);
 }

@@ -41,6 +41,7 @@ const Color = eui.draw.Color;
 const Rect = eui.Rect;
 const Surface = eui.Surface;
 const Theme = eui.Theme;
+const Shade = @import("lib").rgb.Shade;
 const Control = page_mod.Control;
 const Face = page_mod.Face;
 const Page = page_mod.Page;
@@ -68,9 +69,22 @@ const Line = eui.text.Field(LINE_MAX);
 
 /// What a page is drawn on: its own ground brought onto the theme, or the
 /// theme's. It is also what shows through a picture's see-through parts.
-pub fn groundOf(page: *const Page) Color {
+fn groundOf(page: *const Page) Color {
     const base = eui.theme.current().surface_hot;
-    return recolour.adapted(page.colourOf(page.ground) orelse return base, base);
+    return broughtOnto(page, page.ground, base) orelse base;
+}
+
+/// The shade a page's own colours were chosen for: its ground's, or light
+/// where it leaves its ground to the reader, since a page's colours are
+/// chosen against white.
+fn shadeOf(page: *const Page) Shade {
+    return (page.colourOf(page.ground) orelse return .light).shade();
+}
+
+/// One of the page's colours as it belongs on `onto`: brought over where the
+/// two are of different shades, and itself where the page gives no colour.
+fn broughtOnto(page: *const Page, swatch: page_mod.Swatch, onto: Color) ?Color {
+    return recolour.adapted(page.colourOf(swatch) orelse return null, shadeOf(page), onto);
 }
 
 /// What a face is on this system, measured at the size it is drawn, and the
@@ -126,11 +140,14 @@ const Metrics = struct {
         const state = self.pictures.stateOf(index);
         const coming = switch (state) {
             .waiting, .coming => self.pictures.expected(),
-            .here, .failed => false,
+            .here, .failed, .blocked => false,
         };
         const drawn: ?Size = switch (state) {
             .here => |kept| drawnSize(which, kept.own),
             .waiting, .coming, .failed => if (coming) givenSize(which) else null,
+            // One from a site the reader keeps away from is not drawn, and
+            // nothing stands in for it, so it takes no room at all.
+            .blocked => return .{ .w = 0, .h = 0 },
         };
         if (drawn) |size| return fitted(size, self.scale, room);
         return self.standIn(page, which, coming, room);
@@ -203,8 +220,8 @@ pub const View = struct {
     /// or gave up, and the room it takes changed with it.
     stale: bool = false,
     scroll: i32 = 0,
-    /// Where the page was last painted, and at what scroll: what a pass
-    /// compares against to know how little it can paint.
+    /// Where the page was last painted, at what scroll and in what tint: what
+    /// a pass compares against to know how little it can paint.
     painted: ?Painted = null,
     /// The link under the pointer, for the status line to say where it goes.
     hover: ?u16 = null,
@@ -214,8 +231,10 @@ pub const View = struct {
     /// The control the keyboard is in, which it stays in when a scroll moves
     /// the control.
     focused: ?u16 = null,
+    /// Whether pages are drawn light or dark, whatever the interface is.
+    shade: Shade = .light,
 
-    const Painted = struct { area: Rect, scroll: i32 };
+    const Painted = struct { area: Rect, scroll: i32, tint: eui.theme.Tint };
 
     /// Show `page`, starting `scroll` pixels down. Laid out on the next pass,
     /// at the width the window has then.
@@ -234,7 +253,17 @@ pub const View = struct {
         self.layout.deinit(gpa);
         gpa.free(self.lines);
         gpa.free(self.ticks);
-        self.* = .{};
+        // The shade pages are drawn in is a setting, and outlasts the page.
+        const shade = self.shade;
+        self.* = .{ .shade = shade };
+    }
+
+    /// What the page on screen is drawn on, which a picture's see-through
+    /// parts show.
+    pub fn ground(self: *const View) Color {
+        const outside = eui.theme.wear(eui.theme.tintFor(self.shade));
+        defer eui.theme.unwear(outside);
+        return groundOf(self.page orelse return eui.theme.current().surface_hot);
     }
 
     /// Lay the page out again on the next pass.
@@ -283,6 +312,11 @@ pub const View = struct {
     /// did to it and to its controls.
     pub fn run(self: *View, gpa: std.mem.Allocator, ctx: *eui.Context, area: Rect, pictures: *const Pictures) ?Action {
         const page = self.page orelse return null;
+        // The page and every control on it in the shade pages are drawn in,
+        // whatever the interface's is.
+        const tint = eui.theme.tintFor(self.shade);
+        const outside = eui.theme.wear(tint);
+        defer eui.theme.unwear(outside);
         const metrics = Metrics{ .scale = eui.theme.textScale(), .pictures = pictures };
         const column = columnOf(area, metrics.scale);
         const spacing = Spacing.forLine(metrics.height(.body));
@@ -329,7 +363,7 @@ pub const View = struct {
 
         const before = self.painted;
         self.scroll = scroll;
-        self.painted = .{ .area = area, .scroll = scroll };
+        self.painted = .{ .area = area, .scroll = scroll, .tint = tint };
 
         const pass = Pass{
             .view = self,
@@ -338,6 +372,7 @@ pub const View = struct {
             .surface = ctx.surface,
             .theme = eui.theme.current(),
             .ground = groundOf(page),
+            .from = shadeOf(page),
             .metrics = metrics,
             .spacing = spacing,
             .column = column,
@@ -345,10 +380,12 @@ pub const View = struct {
         };
 
         // What is painted this pass: all of it, the band a scroll uncovered,
-        // or nothing. A page painted afresh counts as moved, because laid
-        // out again its controls may stand somewhere new.
+        // or nothing. All of it where the page is new, the window was
+        // uncovered, or the page is somewhere else or in another tint than
+        // it was. A page painted afresh counts as moved, because laid out
+        // again its controls may stand somewhere new.
         const moved = if (before) |was| was.scroll != scroll else true;
-        const repainted: ?Rect = if (before == null or ctx.damaged or !std.meta.eql(before.?.area, area))
+        const repainted: ?Rect = if (before == null or ctx.damaged or !std.meta.eql(before.?.area, area) or !std.meta.eql(before.?.tint, tint))
             area
         else if (!moved)
             null
@@ -508,8 +545,8 @@ fn sent(control: Control, by: ?u16) ?Action {
 fn tintOf(page: *const Page, control: Control) eui.theme.Tint {
     const base = eui.theme.current().surface;
     return .{
-        .ground = if (page.colourOf(control.colours.ground)) |colour| recolour.adapted(colour, base) else null,
-        .ink = if (page.colourOf(control.colours.ink)) |colour| recolour.adapted(colour, base) else null,
+        .ground = broughtOnto(page, control.colours.ground, base),
+        .ink = broughtOnto(page, control.colours.ink, base),
     };
 }
 
@@ -523,6 +560,9 @@ const Pass = struct {
     theme: *const Theme,
     /// What the page is drawn on.
     ground: Color,
+    /// The shade the page's own colours were chosen for, which they are
+    /// brought over from where the theme is of the other one.
+    from: Shade,
     metrics: Metrics,
     spacing: Spacing,
     /// The column the page is set in, and the view it scrolls in.
@@ -651,7 +691,7 @@ const Pass = struct {
     /// One of the page's colours, brought onto the theme, or nothing for the
     /// theme's own.
     fn adapted(self: Pass, swatch: page_mod.Swatch) ?Color {
-        return recolour.adapted(self.page.colourOf(swatch) orelse return null, self.theme.surface_hot);
+        return broughtOnto(self.page, swatch, self.theme.surface_hot);
     }
 
     /// What words in `look` are inked in on `under`: the page's colour for
@@ -692,7 +732,7 @@ const Pass = struct {
                 .width = kept.picture.width,
                 .height = kept.picture.height,
             }, .up),
-            .waiting, .coming, .failed => {},
+            .waiting, .coming, .failed, .blocked => {},
         }
 
         const t = self.theme;

@@ -13,6 +13,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Bounded = @import("lib").bounded.Bounded;
+const rgb = @import("lib").rgb;
 const url_mod = @import("url.zig");
 
 const Url = url_mod.Url;
@@ -34,14 +35,33 @@ const accepts = std.EnumArray(Wanted, []const u8).init(.{
     .picture = "image/png, image/jpeg, image/gif;q=0.8",
 });
 
-/// What a request asks of a site: what it is for, and whether for the
-/// version made for small screens and slow connections.
+/// What a request carries to a site, and how: nothing, which is what a GET
+/// asks with, or a form's answers as the body of a POST.
+pub const Sent = union(enum) {
+    nothing,
+    /// A form's answers, as `application/x-www-form-urlencoded`, which is how
+    /// a form that sends no files sends them.
+    form: []const u8,
+};
+
+/// What a request asks of a site: what it is for, whether for the version
+/// made for small screens and slow connections, how what it sends is drawn,
+/// and what it carries.
 pub const Asking = struct {
     wanted: Wanted = .page,
     /// Says the screen is small and the connection dear, with the client
     /// hints' mobile hint and `Save-Data`, which is what a site with a
     /// lighter version for either reads.
     mobile: bool = false,
+    /// Whether the page is drawn light or dark, which a site with a version
+    /// in each reads from the client hint for the colours a person prefers.
+    shade: rgb.Shade = .light,
+    /// How wide a picture is drawn at most, in the screen's own pixels, where
+    /// that is known: what a site with several sizes of one reads to send the
+    /// size that is enough.
+    width: ?u16 = null,
+    /// What it carries: a form's answers, sent as the body of a POST.
+    sent: Sent = .nothing,
 };
 
 /// The request for `url`, written into `out`.
@@ -52,7 +72,10 @@ pub fn request(out: []u8, url: Url, asking: Asking) ?[]const u8 {
 }
 
 fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
-    try w.writeAll("GET ");
+    switch (asking.sent) {
+        .nothing => try w.writeAll("GET "),
+        .form => try w.writeAll("POST "),
+    }
     try url.writeTarget(w);
     try w.writeAll(" HTTP/1.1\r\nHost: ");
     try url.writeHost(w);
@@ -62,10 +85,29 @@ fn writeRequest(w: *Writer, url: Url, asking: Asking) Writer.Error!void {
     // bound by law to honour.
     try w.writeAll("Sec-GPC: 1\r\n");
     if (asking.mobile) try w.writeAll("Sec-CH-UA-Mobile: ?1\r\nSave-Data: on\r\n");
+    // The hints a reader sends only on a sealed connection: which shade the
+    // page is drawn in, and how wide a picture is drawn.
+    if (url.scheme == .https) {
+        try w.print("Sec-CH-Prefers-Color-Scheme: \"{t}\"\r\n", .{asking.shade});
+        if (asking.wanted == .picture) {
+            if (asking.width) |width| try w.print("Sec-CH-Width: {d}\r\n", .{width});
+        }
+    }
     // Identity, because the one thing a reader must not do with a page is
     // fail to decompress it, and the saving on a small page is not worth a
     // second decoder in the image.
-    try w.writeAll("Accept-Encoding: identity\r\nConnection: keep-alive\r\n\r\n");
+    try w.writeAll("Accept-Encoding: identity\r\nConnection: keep-alive\r\n");
+    switch (asking.sent) {
+        .nothing => try w.writeAll("\r\n"),
+        // The answers go after the head, in the one encoding a form on a page
+        // that sends no files is written in. Their length is sent as well,
+        // which is how the site knows where they end.
+        .form => |answers| {
+            try w.writeAll("Content-Type: application/x-www-form-urlencoded\r\n");
+            try w.print("Content-Length: {d}\r\n\r\n", .{answers.len});
+            try w.writeAll(answers);
+        },
+    }
 }
 
 /// The media type a `Content-Type` value names, without its parameters:
@@ -443,6 +485,46 @@ test "a request for the version for small screens says so, and any other says no
     const plain = request(&plain_buf, where, .{}).?;
     try testing.expect(std.mem.indexOf(u8, plain, "Sec-CH-UA-Mobile") == null);
     try testing.expect(std.mem.indexOf(u8, plain, "Save-Data") == null);
+}
+
+test "a sealed request says the shade the page is drawn in, and a picture's how wide it is drawn" {
+    var page_buf: [512]u8 = undefined;
+    const page = request(&page_buf, url_mod.parse("https://a.org/").?, .{ .shade = .dark, .width = 480 }).?;
+    try testing.expect(std.mem.indexOf(u8, page, "\r\nSec-CH-Prefers-Color-Scheme: \"dark\"\r\n") != null);
+    // A page is not a picture, whatever width it is given.
+    try testing.expect(std.mem.indexOf(u8, page, "Sec-CH-Width") == null);
+
+    var picture_buf: [512]u8 = undefined;
+    const picture = request(&picture_buf, url_mod.parse("https://a.org/eee.jpg").?, .{ .wanted = .picture, .width = 480 }).?;
+    try testing.expect(std.mem.indexOf(u8, picture, "\r\nSec-CH-Prefers-Color-Scheme: \"light\"\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, picture, "\r\nSec-CH-Width: 480\r\n") != null);
+}
+
+test "a form's answers go as the body of a POST, with what they are and how long" {
+    var buf: [512]u8 = undefined;
+    const sent = request(&buf, url_mod.parse("https://a.org/lite/").?, .{ .sent = .{ .form = "q=eee&lang=en" } }).?;
+
+    try testing.expect(std.mem.startsWith(u8, sent, "POST /lite/ HTTP/1.1\r\n"));
+    try testing.expect(std.mem.indexOf(u8, sent, "Content-Type: application/x-www-form-urlencoded\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, sent, "Content-Length: 13\r\n") != null);
+    // Behind the head's own empty line, which is where a body goes.
+    try testing.expect(std.mem.endsWith(u8, sent, "\r\n\r\nq=eee&lang=en"));
+}
+
+test "a request that carries nothing is a GET with no body" {
+    var buf: [512]u8 = undefined;
+    const sent = request(&buf, url_mod.parse("https://a.org/lite/").?, .{}).?;
+
+    try testing.expect(std.mem.startsWith(u8, sent, "GET /lite/ HTTP/1.1\r\n"));
+    try testing.expect(std.mem.indexOf(u8, sent, "Content-Length") == null);
+    try testing.expect(std.mem.endsWith(u8, sent, "\r\n\r\n"));
+}
+
+test "a request in the clear says neither" {
+    var buf: [512]u8 = undefined;
+    const req = request(&buf, url_mod.parse("http://a.org/eee.jpg").?, .{ .wanted = .picture, .width = 480, .shade = .dark }).?;
+    try testing.expect(std.mem.indexOf(u8, req, "Sec-CH-Prefers-Color-Scheme") == null);
+    try testing.expect(std.mem.indexOf(u8, req, "Sec-CH-Width") == null);
 }
 
 test "a response says whether its connection carries another request" {

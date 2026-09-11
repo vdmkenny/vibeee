@@ -173,11 +173,15 @@ Settings, generated from the schema: all
       a program's name, or empty for whichever will take it
 
   [web]
-  web.homepage              https://frogfind.de/?lg=en-us
+  web.homepage              https://lite.duckduckgo.com/lite/
       an address, or empty for none
   web.images                true
       true | false
   web.mobile                true
       true | false
   web.styles                true
+      true | false
+  web.theme                 auto
+      auto | light | dark
+  web.ad_protection         true
       true | false

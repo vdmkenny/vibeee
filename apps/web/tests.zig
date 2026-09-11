@@ -11,4 +11,5 @@ test {
     _ = @import("layout.zig");
     _ = @import("media.zig");
     _ = @import("css.zig");
+    _ = @import("blocklist.zig");
 }
