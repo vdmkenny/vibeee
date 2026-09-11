@@ -71,6 +71,18 @@ pub fn shapeOf(bytes: []const u8) Refusal!Shape {
 ///
 /// The caller owns what comes back and gives it back with `deinit`.
 pub fn decode(bytes: []const u8) Refusal!Picture {
+    return decodeOn(bytes, null);
+}
+
+/// The same, with whatever the picture leaves see-through laid over
+/// `ground`: what a picture drawn on a page wants, where the page shows
+/// through it rather than whatever colour the file keeps under the
+/// see-through parts.
+pub fn decodeOver(bytes: []const u8, ground: rgb.Colour) Refusal!Picture {
+    return decodeOn(bytes, ground);
+}
+
+fn decodeOn(bytes: []const u8, ground: ?rgb.Colour) Refusal!Picture {
     // Asked about before it is decoded, so a picture too large to hold is
     // refused for the space it would have taken rather than after taking it.
     const shape = try shapeOf(bytes);
@@ -89,7 +101,7 @@ pub fn decode(bytes: []const u8) Refusal!Picture {
 
     const count = @as(usize, shape.width) * @as(usize, shape.height);
     const pixels = @as([*]rgb.Colour, @ptrCast(@alignCast(decoded)))[0..count];
-    pack(decoded, pixels);
+    pack(decoded, pixels, ground);
 
     return .{ .pixels = pixels, .width = shape.width, .height = shape.height };
 }
@@ -105,19 +117,37 @@ fn refusalFor() Refusal {
     return if (std.mem.startsWith(u8, said, "outofmem")) error.NoRoom else error.Unreadable;
 }
 
-/// Four bytes a pixel become one word a pixel, in the buffer they arrived in.
+/// Four bytes a pixel become one word a pixel, in the buffer they arrived in,
+/// laid over `ground` by how see-through each is where a ground is given.
 ///
 /// Forwards, because a word is written where its own four bytes were and
 /// nothing later is read before it has been written. A second buffer would
 /// double the largest allocation in the program for the sake of a copy.
-fn pack(bytes: [*]u8, into: []rgb.Colour) void {
+fn pack(bytes: [*]u8, into: []rgb.Colour, ground: ?rgb.Colour) void {
     // What the decoder writes: red first, which is the order a file holds
-    // and the reverse of what the panel takes.
-    const Sample = packed struct(u32) { r: u8, g: u8, b: u8, x: u8 };
+    // and the reverse of what the panel takes, and how opaque it is last.
+    const Sample = packed struct(u32) { r: u8, g: u8, b: u8, a: u8 };
+    if (ground) |under| {
+        for (into, 0..) |*pixel, i| {
+            const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
+            pixel.* = .{
+                .r = blend(sample.r, under.r, sample.a),
+                .g = blend(sample.g, under.g, sample.a),
+                .b = blend(sample.b, under.b, sample.a),
+            };
+        }
+        return;
+    }
     for (into, 0..) |*pixel, i| {
         const sample: Sample = @bitCast(bytes[i * 4 ..][0..4].*);
         pixel.* = .{ .r = sample.r, .g = sample.g, .b = sample.b };
     }
+}
+
+/// One channel of a sample laid over the same channel of what is under it,
+/// by how opaque the sample is, rounded to the nearest.
+fn blend(top: u8, under: u8, alpha: u8) u8 {
+    return @intCast((@as(u16, top) * alpha + @as(u16, under) * (255 - alpha) + 127) / 255);
 }
 
 /// A square of `side` pixels cut from the middle of a picture and shrunk to
@@ -473,8 +503,22 @@ test "packing is done in the buffer the bytes arrived in" {
         0x78, 0x9A, 0xBC, 0xFF,
     };
     var pixels: [2]rgb.Colour = undefined;
-    pack(&bytes, &pixels);
+    pack(&bytes, &pixels, null);
 
     try testing.expectEqual(rgb.Colour.hex(0x123456), pixels[0]);
     try testing.expectEqual(rgb.Colour.hex(0x789ABC), pixels[1]);
+}
+
+test "a see-through picture is laid over the ground it is drawn on" {
+    var bytes = [_]u8{
+        0xFF, 0x00, 0x00, 0xFF, // opaque red
+        0xFF, 0xFF, 0xFF, 0x00, // white nobody sees
+        0x00, 0x00, 0xFF, 0x80, // blue half seen
+    };
+    var pixels: [3]rgb.Colour = undefined;
+    pack(&bytes, &pixels, .hex(0x204060));
+
+    try testing.expectEqual(rgb.Colour.hex(0xFF0000), pixels[0]);
+    try testing.expectEqual(rgb.Colour.hex(0x204060), pixels[1]);
+    try testing.expectEqual(rgb.Colour.hex(0x1020B0), pixels[2]);
 }
