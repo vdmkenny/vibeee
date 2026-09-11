@@ -125,4 +125,5 @@ so an image ships with the first and a machine remembers the second.
 | `web.styles` | true \| false | `true` |
 | `web.theme` | auto \| light \| dark | `auto` |
 | `web.ad_protection` | true \| false | `true` |
+| `web.scripts` | true \| false | `true` |
 

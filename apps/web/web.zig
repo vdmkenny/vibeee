@@ -557,9 +557,27 @@ fn adopt(next: proto.settings.Web) void {
     choices = next;
     apply();
     if (next.mobile != was.mobile or next.styles != was.styles or next.ad_protection != was.ad_protection) return reload();
+    if (next.scripts != was.scripts) return scriptsAgain(next.scripts);
     if (next.images != was.images) {
         if (!next.images) pictures.pause(gpa);
         view.relayout();
+    }
+    waitFor(.none);
+}
+
+/// Scripts turned off: what is on screen stays, and nothing runs on it any
+/// more. Scripts turned on: the page's scripts run on the tree it was read
+/// from, and it is read again, so what they make of it is what is drawn.
+fn scriptsAgain(enabled: bool) void {
+    if (!enabled) {
+        if (in_page) |page| scripts.close(page);
+        in_page = null;
+        waitFor(.none);
+        return;
+    }
+    if (document) |*tree| {
+        in_page = scripts.open(tree.document, source.base.slice(), http.USER_AGENT);
+        readAgain();
     }
     waitFor(.none);
 }
@@ -785,8 +803,12 @@ fn finish() void {
     var fresh: Page = .{};
     forget();
     // A page's scripts run before it is read, so that what they change is
-    // what is read, which is the order a browser has them in.
-    in_page = scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT);
+    // what is read, which is the order a browser has them in. Where the
+    // setting says no script runs, the page reads as it was written.
+    in_page = if (choices.scripts)
+        scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT)
+    else
+        null;
     tree.read(gpa, &r.source, window, &fresh) catch |err| {
         fresh.deinit(gpa);
         tree.close();

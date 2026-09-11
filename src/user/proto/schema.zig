@@ -237,6 +237,12 @@ pub const Web = struct {
     /// a page on one is not gone to. The list is fetched when the reader is
     /// built.
     ad_protection: bool = true,
+    /// Whether a page's scripts are run. Off, a page reads as it was
+    /// written, which is what a site that can do without them — a search
+    /// engine among them — sends for a reader that does not run any. On,
+    /// what the script would have made of it is what is drawn, where the
+    /// script asks for nothing this reader cannot give it yet.
+    scripts: bool = true,
 };
 
 /// Light or dark, or as the interface is.

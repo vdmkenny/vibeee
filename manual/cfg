@@ -185,3 +185,5 @@ Settings, generated from the schema: all
       auto | light | dark
   web.ad_protection         true
       true | false
+  web.scripts               true
+      true | false
