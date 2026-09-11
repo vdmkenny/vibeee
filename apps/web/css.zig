@@ -57,6 +57,56 @@ pub fn shows(node: *const Node) bool {
     return true;
 }
 
+/// Whether an element's words belong to the block they stand in rather than
+/// to one of their own: a page that says `display: inline`, `inline-block`
+/// or `contents` says as much, whatever the element is called. A page that
+/// dresses a row of links, or of words, in elements of their own means them
+/// read as one line, and a block a piece would be the reader's shape and not
+/// the page's.
+pub fn flows(node: *const Node) bool {
+    const display = valueOf(lexbor.Display, node, .display) orelse return false;
+    return switch (display.a) {
+        .@"inline", .inline_block, .contents => true,
+        else => false,
+    };
+}
+
+/// Whether the page keeps an element's spaces and line ends as written:
+/// `white-space: pre` or `pre-wrap`, which is how a page asks for words to
+/// stand where they were typed, a table of them, or a line of a program.
+pub fn keepsSpaces(node: *const Node) bool {
+    const spacing = valueOf(lexbor.Single, node, .white_space) orelse return false;
+    return switch (spacing.kind) {
+        .pre, .pre_wrap => true,
+        else => false,
+    };
+}
+
+/// Whether a list's entries carry no marker: `list-style-type: none`, or
+/// `list-style: none`, which is how a page says a list is its furniture
+/// rather than a list of things. A bullet on each of a row of links is the
+/// reader's noise, not the page's.
+pub fn markerless(node: *const Node) bool {
+    if (cascadeOf(node) == null) return false;
+    for (&[_][]const u8{ "list-style-type", "list-style" }) |name| {
+        const declaration = lexbor.lxb_dom_element_style_by_name(node, name.ptr, name.len) orelse continue;
+        const custom = customOf(declaration) orelse continue;
+        if (saysNone(custom.value.slice())) return true;
+    }
+    return false;
+}
+
+/// Whether the words of a property upstream keeps as they were written say
+/// none somewhere in them. The shorthand carries a picture and a place
+/// beside its type, in any order, so the whole value is looked through.
+fn saysNone(value: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, value, &std.ascii.whitespace);
+    while (words.next()) |word| {
+        if (std.ascii.eqlIgnoreCase(word, "none")) return true;
+    }
+    return false;
+}
+
 /// The colour of an element's words, where the page gives one: in a
 /// stylesheet, or as the `color` of a `<font>` or the `text` of a body.
 pub fn ink(node: *Node) ?Paint {
@@ -360,10 +410,13 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .visibility, .opacity, .color, .background_color, .text_align => return true,
+            .display, .visibility, .opacity, .color, .background_color, .text_align, .white_space => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
-                if (std.ascii.eqlIgnoreCase(custom.name.slice(), "background")) return true;
+                const name = custom.name.slice();
+                if (std.ascii.eqlIgnoreCase(name, "background") or
+                    std.ascii.eqlIgnoreCase(name, "list-style-type") or
+                    std.ascii.eqlIgnoreCase(name, "list-style")) return true;
             },
             else => {},
         }

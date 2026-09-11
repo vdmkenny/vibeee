@@ -307,6 +307,7 @@ pub const Property = enum(usize) {
     opacity = 0x003e,
     text_align = 0x004d,
     visibility = 0x005d,
+    white_space = 0x005e,
     _,
 };
 
@@ -324,11 +325,16 @@ pub const Keyword = enum(c_uint) {
     hex = 0x0033,
     rgb = 0x00db,
     rgba = 0x00dc,
+    @"inline" = 0x00e8,
+    contents = 0x00fd,
+    inline_block = 0x00fe,
     number = 0x0108,
     start = 0x010d,
     end = 0x010e,
     justify = 0x014a,
     collapse = 0x0165,
+    pre = 0x0166,
+    pre_wrap = 0x0167,
     _,
 
     /// Upstream's named colours are keywords in a run, in alphabetical

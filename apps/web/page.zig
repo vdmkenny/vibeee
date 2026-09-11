@@ -507,6 +507,13 @@ pub const Builder = struct {
         }
     }
 
+    /// A space is owed before whatever comes next, where it is not the start
+    /// of a block: what two cells of a row read as one line have between
+    /// them, the column between them being nothing this reader draws.
+    pub fn oweSpace(self: *Builder) void {
+        self.space = true;
+    }
+
     /// Words from the page.
     ///
     /// Spaces and line ends collapse to one space between words and none at
@@ -518,16 +525,43 @@ pub const Builder = struct {
 
         var i: usize = 0;
         while (i < bytes.len) {
-            if (std.ascii.isWhitespace(bytes[i])) {
+            if (spaceAt(bytes, i)) |taken| {
                 if (self.midLine()) self.space = true;
-                i += 1;
+                i += taken;
                 continue;
             }
-            const end = std.mem.indexOfAnyPos(u8, bytes, i, &std.ascii.whitespace) orelse bytes.len;
             try self.settleSpace();
+            const end = wordEnd(bytes, i);
             try self.put(bytes[i..end]);
             i = end;
         }
+    }
+
+    /// The spaces a page may write that are not ASCII: `&nbsp;`, the figure
+    /// and narrow no-break spaces, and the ideographic one, as the bytes they
+    /// arrive in. A page writes them to keep a line from breaking there, and
+    /// this reader breaks a line where it must, so they are read as the
+    /// spaces they are rather than as words of their own.
+    const wide_spaces = [_][]const u8{ "\u{a0}", "\u{2007}", "\u{202f}", "\u{3000}" };
+
+    /// How many bytes the space at `at` takes, or none where there is no
+    /// space.
+    fn spaceAt(bytes: []const u8, at: usize) ?usize {
+        if (std.ascii.isWhitespace(bytes[at])) return 1;
+        for (wide_spaces) |wide| {
+            if (std.mem.startsWith(u8, bytes[at..], wide)) return wide.len;
+        }
+        return null;
+    }
+
+    /// Where the word beginning at `at` ends: at the next space of any kind,
+    /// or at the end of the text.
+    fn wordEnd(bytes: []const u8, at: usize) usize {
+        var i = at;
+        while (i < bytes.len) : (i += 1) {
+            if (spaceAt(bytes, i) != null) return i;
+        }
+        return bytes.len;
     }
 
     /// End the line here. A break with nothing before it on its line is a

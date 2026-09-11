@@ -190,7 +190,13 @@ const LIST_MAX = 16;
 /// than the column it sits in.
 const LETTERS_MAX = 60;
 
-const List = struct { ordered: bool, next: u32 };
+const List = struct {
+    ordered: bool,
+    next: u32,
+    /// Whether the page says its entries carry no marker: `list-style: none`,
+    /// which is how a list of links, or of a page's own furniture, is written.
+    markerless: bool = false,
+};
 
 /// Words enough for a button's label, or a list's chosen entry.
 const Label = Bounded(u8, 64);
@@ -304,6 +310,7 @@ const Walker = struct {
     fn nextMarker(self: *Walker) page_mod.Marker {
         if (self.lists_past > 0) return .bullet;
         const list = self.lists.last() orelse return .bullet;
+        if (list.markerless) return .none;
         if (!list.ordered) return .bullet;
         defer list.next +%= 1;
         return .{ .number = list.next };
@@ -328,13 +335,25 @@ const Walker = struct {
         // it begins so that the block has it too.
         if (t.walks) try self.take(node);
         if (t.counts) self.inside.getPtr(role).* += 1;
+        // A page that keeps an element's spaces and line ends as written
+        // asks for it read as it was typed, whatever the element is called.
+        if (css.keepsSpaces(node)) self.inside.getPtr(.preformatted).* += 1;
         switch (role) {
             .hidden, .mono, .none => {},
-            .block, .quote => try self.boundary(.paragraph),
+            // A page that says an element is inline, or is no more than its
+            // contents, means its words read where they stand, in the block
+            // around them: `display` says as much whatever the element is
+            // called, and a block a piece would be the reader's shape and
+            // not the page's.
+            .block, .quote => if (!css.flows(node)) try self.boundary(.paragraph),
             .heading => try self.boundary(.heading),
             .list, .ordered => {
                 try self.boundary(.paragraph);
-                self.lists.append(.{ .ordered = role == .ordered, .next = startOf(node) }) catch {
+                self.lists.append(.{
+                    .ordered = role == .ordered,
+                    .next = startOf(node),
+                    .markerless = css.markerless(node),
+                }) catch {
                     self.lists_past += 1;
                 };
             },
@@ -352,7 +371,15 @@ const Walker = struct {
                 if (self.inGrid()) try self.builder.beginTable() else try self.boundary(.paragraph);
             },
             .row => if (self.inGrid()) self.builder.beginRow() else try self.boundary(.paragraph),
-            .cell => if (self.inGrid()) try self.builder.beginCell(self.cellOf(node)) else try self.boundary(.paragraph),
+            // A row that is not set as a grid is read a row at a time: each
+            // of its cells is a stretch of the row's line, beside the one
+            // before it, unless what it holds is blocks of its own.
+            .cell => if (self.inGrid())
+                try self.builder.beginCell(self.cellOf(node))
+            else if (blockish(node))
+                try self.boundary(.paragraph)
+            else
+                self.builder.oweSpace(),
             .caption => if (self.inGrid()) {
                 // A caption is a row of its own, across the whole table.
                 self.builder.beginRow();
@@ -383,6 +410,7 @@ const Walker = struct {
         const role = roleOf(lexbor.tagOf(node) orelse return);
         const t = traits.get(role);
         if (t.counts) self.inside.getPtr(role).* -|= 1;
+        if (css.keepsSpaces(node)) self.inside.getPtr(.preformatted).* -|= 1;
         switch (role) {
             .list, .ordered => {
                 if (self.lists_past > 0) self.lists_past -= 1 else _ = self.lists.pop();
@@ -394,11 +422,19 @@ const Walker = struct {
                 if (grid) try self.builder.endTable();
             },
             .row => if (self.inGrid()) self.builder.endRow(),
-            .cell, .caption => if (self.inGrid()) self.builder.endCell(),
+            .cell => if (self.inGrid())
+                self.builder.endCell()
+            else if (blockish(node))
+                try self.boundary(.paragraph),
+            .caption => if (self.inGrid()) self.builder.endCell(),
             else => {},
         }
         self.untake(node);
-        if (t.bounds) try self.boundary(.paragraph);
+        // A cell that is a stretch of its row's line does not end that line:
+        // the words of the cell after it belong on it too.
+        const ends = t.bounds and !css.flows(node) and
+            !(role == .cell and !self.inGrid() and !blockish(node));
+        if (ends) try self.boundary(.paragraph);
         self.restyle();
     }
 
@@ -621,15 +657,40 @@ fn dataTable(table: *Node) bool {
     if (lexbor.attribute(table, "border")) |border| {
         if (!std.mem.eql(u8, std.mem.trim(u8, border, &std.ascii.whitespace), "0")) data = true;
     }
+    var rows: usize = 0;
+    var blocky = false;
     var at = lexbor.following(table, table);
     while (at) |node| : (at = lexbor.following(node, table)) {
         switch (lexbor.tagOf(node) orelse continue) {
             .table => return false,
             .th, .caption, .thead => data = true,
+            .tr => rows += 1,
+            .td => blocky = blocky or blockish(node),
             else => {},
         }
     }
-    return data;
+    // A table whose cells hold no blocks is a table of records whenever it
+    // has rows to speak of: a list of results, a glossary, a timetable, the
+    // like. A table that lays a page out puts a column of the page in a cell,
+    // and that cell holds blocks, so it is read a row at a time instead. A
+    // grid is what a browser makes of a table, and this reader has one.
+    return data or (rows >= 2 and !blocky);
+}
+
+/// Whether a cell holds blocks of its own. A table that lays a page out puts
+/// a column of the page in a cell, and such a cell reads as the blocks it
+/// holds; a cell that holds no more than words, links and the like is a line
+/// of the row it is in, which is how a table of results, of a glossary, or of
+/// anything else set in rows reads.
+fn blockish(cell: *Node) bool {
+    var at = lexbor.following(cell, cell);
+    while (at) |node| : (at = lexbor.following(node, cell)) {
+        switch (roleOf(lexbor.tagOf(node) orelse continue)) {
+            .block, .heading, .list, .ordered, .item, .quote, .preformatted, .table, .form, .rule => return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 /// How many columns or rows a cell spans, by the attribute that says, and
