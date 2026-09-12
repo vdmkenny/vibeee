@@ -99,7 +99,16 @@ static void add_helpers(JSContext *ctx)
 
 struct JSRuntime *qjs_start(void)
 {
-    return JS_NewRuntime();
+    JSRuntime *rt = JS_NewRuntime();
+
+    if (!rt)
+        return NULL;
+    /* Pages are untrusted input. Keep their engine below the application's
+       resource envelope: QuickJS reports allocation/recursion failure to the
+       script instead of letting one page take the reader down with it. */
+    JS_SetMemoryLimit(rt, 8 * 1024 * 1024);
+    JS_SetMaxStackSize(rt, 512 * 1024);
+    return rt;
 }
 
 struct JSContext *qjs_open(struct JSRuntime *rt)

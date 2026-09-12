@@ -368,20 +368,39 @@ pub const SelectorList = opaque {};
 pub const Property = enum(usize) {
     /// One upstream does not read, kept by name with its value as written.
     custom = 0x0001,
+    align_items = 0x0003,
     background_color = 0x0006,
+    bottom = 0x0012,
     color = 0x0015,
     display = 0x0017,
+    flex_direction = 0x001b,
+    height = 0x002a,
+    justify_content = 0x0030,
+    left = 0x0031,
+    max_height = 0x003a,
+    max_width = 0x003b,
+    min_height = 0x003c,
+    min_width = 0x003d,
     opacity = 0x003e,
+    position = 0x004a,
+    right = 0x004b,
     text_align = 0x004d,
+    top = 0x005a,
     visibility = 0x005d,
     white_space = 0x005e,
+    width = 0x005f,
     _,
 };
 
 /// The keywords and kinds of value this reader tells apart, numbered as
 /// upstream numbers them. Anything else is a value it does not act on.
 pub const Keyword = enum(c_uint) {
+    auto = 0x000c,
+    length = 0x0014,
+    flex_start = 0x0005,
+    flex_end = 0x0006,
     center = 0x0007,
+    space_between = 0x0008,
     percentage = 0x0015,
     none = 0x001f,
     hidden = 0x0020,
@@ -392,16 +411,26 @@ pub const Keyword = enum(c_uint) {
     hex = 0x0033,
     rgb = 0x00db,
     rgba = 0x00dc,
+    block = 0x00e7,
     @"inline" = 0x00e8,
+    flex = 0x00ed,
     contents = 0x00fd,
     inline_block = 0x00fe,
+    inline_flex = 0x0100,
     number = 0x0108,
+    row = 0x0104,
+    row_reverse = 0x0105,
+    column = 0x0106,
+    column_reverse = 0x0107,
     start = 0x010d,
     end = 0x010e,
     justify = 0x014a,
     collapse = 0x0165,
     pre = 0x0166,
     pre_wrap = 0x0167,
+    static = 0x0145,
+    absolute = 0x0147,
+    fixed = 0x0149,
     _,
 
     /// Upstream's named colours are keywords in a run, in alphabetical
@@ -526,8 +555,31 @@ pub const Display = extern struct { a: Keyword, b: Keyword, c: Keyword };
 /// `visibility` and `text-align`, each one keyword.
 pub const Single = extern struct { kind: Keyword };
 
+/// `position`, one keyword.
+pub const Position = extern struct { kind: Keyword };
+
 /// A number, and whether it was written with a point.
 pub const Number = extern struct { num: f64, is_float: bool };
+
+/// A CSS dimension, retaining only the unit kinds a box layout understands.
+pub const Length = extern struct { num: f64, is_float: bool, unit: Unit };
+
+/// A length, a percentage, or a keyword such as `auto`.
+pub const LengthPercentage = extern struct {
+    kind: Keyword,
+    value: extern union {
+        length: Length,
+        percentage: Number,
+    },
+};
+
+pub const Unit = enum(c_uint) {
+    undef = 0,
+    px = 0x0007,
+    vh = 0x0011,
+    vw = 0x0015,
+    _,
+};
 
 /// A channel of `rgb()`: a number from 0 to 255, or a percentage.
 pub const Channel = extern struct { kind: Keyword, value: Number };
@@ -564,4 +616,7 @@ comptime {
     if (@offsetOf(Custom, "value") != 2 * word) @compileError("a custom declaration's value does not follow its name");
     if (@offsetOf(Colour, "u") != @alignOf(f64)) @compileError("a colour's value does not follow its kind");
     if (@sizeOf(Channel) != @alignOf(f64) + @sizeOf(Number)) @compileError("a colour channel is not a kind and a number");
+    if (@sizeOf(Position) != @sizeOf(c_uint)) @compileError("a position is not one keyword");
+    if (@offsetOf(LengthPercentage, "value") != @alignOf(f64)) @compileError("a length value does not follow its kind");
+    if (@sizeOf(LengthPercentage) != @alignOf(f64) + @sizeOf(Length)) @compileError("a length value is not one kind and one union");
 }

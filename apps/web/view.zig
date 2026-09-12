@@ -328,7 +328,9 @@ pub const View = struct {
         if (self.stale or self.layout.width != column.w) {
             const mark = self.layout.markAt(self.scroll);
             self.layout.deinit(gpa);
-            self.layout = layout_mod.build(gpa, page, column.w, spacing, metrics) catch .{ .width = column.w };
+            // Laid out for the window it is read in, which is what a length
+            // written as a share of the window is a share of.
+            self.layout = layout_mod.buildIn(gpa, page, .{ .w = column.w, .h = area.h }, spacing, metrics) catch .{ .width = column.w };
             if (mark) |kept| {
                 if (self.layout.lineOf(kept.place)) |y| self.scroll = @max(y + (self.scroll - kept.y), 0);
             }

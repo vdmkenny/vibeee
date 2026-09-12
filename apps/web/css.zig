@@ -1,17 +1,17 @@
 //! A page's cascade as the reader reads it: whether an element shows, the
-//! colours it asks for, and which way its lines lean.
+//! colours it asks for, which way its lines lean, and its retained geometry.
 //!
 //! Upstream works out what every element is given, from stylesheets and
 //! `style` attributes, by specificity and by order. This turns its answer for
-//! one element into the few things this reader draws; everything else a
-//! stylesheet says is left where it is.
+//! one element into the few things this reader draws or will lay out;
+//! everything else a stylesheet says is left where it is.
 //!
 //! A page's `<style>` elements and `style` attributes are upstream's to apply
 //! while the page is parsed. The stylesheets it links to are fetched by the
 //! window, and each is handed to `apply` for the window the page is read for.
 //! `apply` gives upstream only the rules that say something this reader
-//! draws: matching a rule is a walk of the whole tree, and most of a site's
-//! rules are about sizes and places a column of text has no use for.
+//! draws or retains for future box layout: matching a rule is a walk of the
+//! whole tree, and most of a site's rules remain of no use here.
 //!
 //! What an older page says with attributes rather than a stylesheet is read
 //! here too, below anything a stylesheet says, as a browser reads it: a colour
@@ -69,6 +69,146 @@ pub fn flows(node: *const Node) bool {
         .@"inline", .inline_block, .contents => true,
         else => false,
     };
+}
+
+/// The geometry upstream resolved for `node`, limited to the units the first
+/// box-layout pass will understand. Unsupported CSS values remain `auto`.
+pub fn boxStyle(node: *const Node, fallback: page_mod.BoxStyle.Display) page_mod.BoxStyle {
+    return .{
+        .display = displayOf(node) orelse fallback,
+        .position = positionOf(node),
+        .direction = directionOf(node),
+        .gap = gapOf(node),
+        .justify = justifyOf(node),
+        .items = itemsOf(node),
+        .edges = .{
+            .top = lengthOf(node, .top),
+            .right = lengthOf(node, .right),
+            .bottom = lengthOf(node, .bottom),
+            .left = lengthOf(node, .left),
+        },
+        .width = lengthOf(node, .width),
+        .height = lengthOf(node, .height),
+        .min_width = lengthOf(node, .min_width),
+        .min_height = lengthOf(node, .min_height),
+        .max_width = lengthOf(node, .max_width),
+        .max_height = lengthOf(node, .max_height),
+    };
+}
+
+fn displayOf(node: *const Node) ?page_mod.BoxStyle.Display {
+    const display = valueOf(lexbor.Display, node, .display) orelse return null;
+    for ([_]Keyword{ display.a, display.b, display.c }) |part| switch (part) {
+        .flex, .inline_flex => return .flex,
+        .block => return .block,
+        .@"inline", .inline_block, .contents => return .@"inline",
+        else => {},
+    };
+    return null;
+}
+
+fn positionOf(node: *const Node) page_mod.BoxStyle.Position {
+    const position = valueOf(lexbor.Position, node, .position) orelse return .static;
+    return switch (position.kind) {
+        .absolute => .absolute,
+        .fixed => .fixed,
+        else => .static,
+    };
+}
+
+fn lengthOf(node: *const Node, property: lexbor.Property) page_mod.Unit {
+    const length = valueOf(lexbor.LengthPercentage, node, property) orelse return .auto;
+    return unitOf(length);
+}
+
+fn unitOf(length: *const lexbor.LengthPercentage) page_mod.Unit {
+    return switch (length.kind) {
+        .auto => .auto,
+        .percentage => .{ .percent = length.value.percentage.num },
+        .length => switch (length.value.length.unit) {
+            .undef, .px => .{ .px = length.value.length.num },
+            .vw => .{ .vw = length.value.length.num },
+            .vh => .{ .vh = length.value.length.num },
+            else => .auto,
+        },
+        else => .auto,
+    };
+}
+
+/// Which way a flex container's items run: `flex-direction: column`, or
+/// across it reversed, which this reader reads as across it.
+fn directionOf(node: *const Node) page_mod.BoxStyle.Direction {
+    const direction = valueOf(lexbor.Single, node, .flex_direction) orelse return .row;
+    return switch (direction.kind) {
+        .column, .column_reverse => .column,
+        else => .row,
+    };
+}
+
+/// Where a flex container's items go along its main axis, as
+/// `justify-content` says: `space-between` puts the room it has left between
+/// them, and anything else this reader does not spread leaves them at its
+/// start.
+fn justifyOf(node: *const Node) page_mod.BoxStyle.Justify {
+    const justify = valueOf(lexbor.Single, node, .justify_content) orelse return .start;
+    return switch (justify.kind) {
+        .center => .center,
+        .end, .flex_end, .right => .end,
+        .space_between => .between,
+        else => .start,
+    };
+}
+
+/// Where they go across it, as `align-items` says.
+fn itemsOf(node: *const Node) page_mod.BoxStyle.Items {
+    const items = valueOf(lexbor.Single, node, .align_items) orelse return .start;
+    return switch (items.kind) {
+        .center => .center,
+        .end, .flex_end => .end,
+        else => .start,
+    };
+}
+
+/// The room a flex container leaves between its items, from `gap`, or from
+/// `row-gap` or `column-gap` alone where only one of them is written.
+/// Upstream reads none of the three, so the value is kept as it was written
+/// and read back as the length of a `width`.
+fn gapOf(node: *const Node) page_mod.Unit {
+    if (cascadeOf(node) == null) return .auto;
+    for ([_][]const u8{ "gap", "row-gap", "column-gap" }) |name| {
+        const declaration = lexbor.lxb_dom_element_style_by_name(node, name.ptr, name.len) orelse continue;
+        const custom = customOf(declaration) orelse continue;
+        return lengthIn(cascadeOf(node).?.parser, "width", firstOf(custom.value.slice()));
+    }
+    return .auto;
+}
+
+/// Whether a property upstream keeps by name is one of the three a gap may
+/// be written in.
+fn isGap(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "gap") or
+        std.ascii.eqlIgnoreCase(name, "row-gap") or
+        std.ascii.eqlIgnoreCase(name, "column-gap");
+}
+
+/// The first of the words a value is written in, which for a `gap` of one
+/// length is the whole of it.
+fn firstOf(value: []const u8) []const u8 {
+    var words = std.mem.tokenizeAny(u8, value, &std.ascii.whitespace);
+    return words.next() orelse "";
+}
+
+/// `value` read by upstream as the value of `property`, where it is a length.
+fn lengthIn(parser: *lexbor.CssParser, comptime property: []const u8, value: []const u8) page_mod.Unit {
+    if (value.len == 0) return .auto;
+    var buf: [96]u8 = undefined;
+    const written = std.fmt.bufPrint(&buf, property ++ ":{s}", .{value}) catch return .auto;
+    const list = lexbor.lxb_css_declaration_list_parse(parser, written.ptr, written.len) orelse return .auto;
+    const first = list.first orelse return .auto;
+    if (first.kind != .declaration) return .auto;
+    const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", first);
+    if (declaration.property != .width) return .auto;
+    return unitOf(@ptrCast(@alignCast(declaration.value orelse return .auto)));
 }
 
 /// Whether the page keeps an element's spaces and line ends as written:
@@ -375,7 +515,7 @@ pub fn sheetsOf(gpa: Allocator, document: *lexbor.Document, base: url.Url, into:
 
 /// Apply a stylesheet to `document` as it reads on `screen`: its rules for
 /// the window, and of those only the ones that say something this reader
-/// draws.
+/// draws or retains for box layout.
 pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, screen: ?media.Screen) void {
     const dom = lexbor.domOf(document);
     const cascade = dom.css orelse return;
@@ -402,7 +542,7 @@ pub fn apply(gpa: Allocator, document: *lexbor.Document, text: []const u8, scree
     }
 }
 
-/// Whether a rule says anything this reader draws.
+/// Whether a rule says anything this reader draws or retains for box layout.
 fn honoured(style: *const lexbor.StyleRule) bool {
     const list = style.declarations orelse return false;
     var at = list.first;
@@ -410,13 +550,14 @@ fn honoured(style: *const lexbor.StyleRule) bool {
         if (rule.kind != .declaration) continue;
         const declaration: *const lexbor.Declaration = @fieldParentPtr("rule", rule);
         switch (declaration.property) {
-            .display, .visibility, .opacity, .color, .background_color, .text_align, .white_space => return true,
+            .display, .position, .top, .right, .bottom, .left, .width, .height, .min_width, .min_height, .max_width, .max_height, .flex_direction, .justify_content, .align_items, .visibility, .opacity, .color, .background_color, .text_align, .white_space => return true,
             .custom => {
                 const custom = customOf(declaration) orelse continue;
                 const name = custom.name.slice();
                 if (std.ascii.eqlIgnoreCase(name, "background") or
                     std.ascii.eqlIgnoreCase(name, "list-style-type") or
-                    std.ascii.eqlIgnoreCase(name, "list-style")) return true;
+                    std.ascii.eqlIgnoreCase(name, "list-style") or
+                    isGap(name)) return true;
             },
             else => {},
         }

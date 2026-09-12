@@ -37,6 +37,18 @@ pub const Area = struct { x: i32, y: i32, w: i32, h: i32 };
 /// layout's.
 pub const Table = struct { area: Area, first: u32, count: u32 };
 
+/// The window a page is read in, which is what a length written `vw` or `vh`
+/// is a share of.
+pub const Viewport = struct { w: i32, h: i32 };
+
+/// One item of a flex container: where it landed, and which of the page's
+/// boxes it is. Words of the container's own, which no element of the page
+/// holds, are one with no box.
+pub const Placed = struct {
+    area: Area,
+    container: ?u32 = null,
+};
+
 /// Where one cell of a grid is, and which of the page's cells it is.
 pub const Box = struct { area: Area, cell: u32 };
 
@@ -135,6 +147,8 @@ pub const Layout = struct {
     /// The tables set as grids, and where each of their cells is.
     tables: std.ArrayList(Table) = .empty,
     boxes: std.ArrayList(Box) = .empty,
+    /// Where each item of the page's flex containers was put.
+    placed: std.ArrayList(Placed) = .empty,
     /// How tall the whole page is.
     height: i32 = 0,
     /// The column it was laid out for, which is what says it needs doing
@@ -146,6 +160,7 @@ pub const Layout = struct {
         self.frags.deinit(gpa);
         self.tables.deinit(gpa);
         self.boxes.deinit(gpa);
+        self.placed.deinit(gpa);
         self.* = .{};
     }
 
@@ -207,57 +222,19 @@ pub const Layout = struct {
 /// and `picture(page, index, room)`, the room a picture takes in a column
 /// `room` wide.
 pub fn build(gpa: std.mem.Allocator, page: *const Page, width: i32, spacing: Spacing, metrics: anytype) Error!Layout {
-    var out = Layout{ .width = width };
+    // A page laid out for a column alone reads shares of the window as
+    // shares of a window as wide as it is tall.
+    return buildIn(gpa, page, .{ .w = width, .h = width }, spacing, metrics);
+}
+
+/// As `build`, for the window `viewport`: what `vw` and `vh` are shares of,
+/// and how wide the column is.
+pub fn buildIn(gpa: std.mem.Allocator, page: *const Page, viewport: Viewport, spacing: Spacing, metrics: anytype) Error!Layout {
+    var out = Layout{ .width = viewport.w };
     errdefer out.deinit(gpa);
 
-    var p = Placer(@TypeOf(metrics)){ .gpa = gpa, .page = page, .out = &out, .metrics = metrics, .spacing = spacing };
-
-    var previous: ?Block = null;
-    for (page.blocks.items, 0..) |block, index| {
-        if (previous) |before| p.y += gap(spacing, before, block);
-        previous = block;
-
-        p.block = @intCast(index);
-        p.leads = true;
-        p.alignment = block.alignment;
-        p.startLine();
-
-        const inset: i32 = if (block.kind == .preformatted) spacing.inset else 0;
-        p.x0 = @as(i32, block.depth) * spacing.indent + inset;
-        // Never narrower than a few letters: a list nested past the column's
-        // edge still has to put its words somewhere.
-        p.room = @max(width - p.x0 - inset, spacing.indent * 2);
-
-        switch (block.kind) {
-            .rule => {
-                try out.lines.append(gpa, .{
-                    .y = p.y,
-                    .height = spacing.rule,
-                    .baseline = 0,
-                    .first = @intCast(out.frags.items.len),
-                    .count = 0,
-                    .block = @intCast(index),
-                    .leads = true,
-                });
-                p.y += spacing.rule;
-                continue;
-            },
-            .table => |grid| {
-                try p.table(grid);
-                continue;
-            },
-            else => {},
-        }
-
-        p.y += inset;
-        if (block.kind == .preformatted) {
-            try p.verbatim(block);
-        } else {
-            try p.flow(block.first, block.first + block.count);
-        }
-        try p.endLine(false);
-        p.y += inset;
-    }
+    var p = Placer(@TypeOf(metrics)){ .gpa = gpa, .page = page, .out = &out, .metrics = metrics, .spacing = spacing, .viewport = viewport };
+    try p.whole();
 
     // A table's cells' lines stand side by side, and one may reach below the
     // next, so how far down any has reached is carried along.
@@ -290,10 +267,24 @@ fn Placer(comptime Metrics: type) type {
         out: *Layout,
         metrics: Metrics,
         spacing: Spacing,
+        /// The window `vw` and `vh` are shares of, and the column's width.
+        viewport: Viewport,
 
         y: i32 = 0,
         block: u32 = 0,
         leads: bool = false,
+        /// The block set last, which is what the room above the next one is
+        /// read from. Each flex item's first block follows nothing.
+        previous: ?Block = null,
+        /// Where the box being set starts from the column's edge, and where
+        /// it ends. Every block is set between them, stepped in by its depth.
+        left: i32 = 0,
+        right: i32 = 0,
+        /// Which of the page's blocks each of its boxes holds, where the page
+        /// kept any and one of them asks for box layout. Empty where none do.
+        spans: []Owns = &.{},
+        /// For each of the page's boxes, the box holding it.
+        parents: []u32 = &.{},
         /// Which way the block's lines lean.
         alignment: page_mod.Alignment = .start,
         /// The table cell being set, among the page's, while one is.
@@ -328,6 +319,118 @@ fn Placer(comptime Metrics: type) type {
             const ascent = self.metrics.ascent(face);
             self.ascent = @max(self.ascent, ascent);
             self.descent = @max(self.descent, self.metrics.height(face) - ascent);
+        }
+
+        /// Lay the whole page out. A page that kept boxes, one of which asks
+        /// for box layout, is set box by box; any other page is a column of
+        /// blocks, as it has always been.
+        fn whole(self: *Self) Error!void {
+            self.right = self.viewport.w;
+            if (!self.cover()) return self.blocks(0, self.page.blocks.items.len);
+            defer {
+                self.gpa.free(self.spans);
+                self.gpa.free(self.parents);
+                self.spans = &.{};
+                self.parents = &.{};
+            }
+            try self.container(0, 0, @max(self.viewport.w, 0));
+        }
+
+        /// The blocks `first` up to `last`, one after another down the page.
+        fn blocks(self: *Self, first: usize, last: usize) Error!void {
+            for (first..last) |index| try self.layBlock(index);
+        }
+
+        /// One of the page's blocks, set between `left` and `right` and
+        /// stepped in by its depth, below whatever came before it.
+        fn layBlock(self: *Self, index: usize) Error!void {
+            const block = self.page.blocks.items[index];
+            if (self.previous) |before| self.y += gap(self.spacing, before, block);
+            self.previous = block;
+
+            self.block = @intCast(index);
+            self.leads = true;
+            self.alignment = block.alignment;
+            self.startLine();
+
+            const inset: i32 = if (block.kind == .preformatted) self.spacing.inset else 0;
+            self.x0 = self.left + @as(i32, block.depth) * self.spacing.indent + inset;
+            // Never narrower than a few letters: a list nested past the
+            // column's edge still has to put its words somewhere.
+            self.room = @max(self.right - self.x0 - inset, self.spacing.indent * 2);
+
+            switch (block.kind) {
+                .rule => {
+                    try self.out.lines.append(self.gpa, .{
+                        .y = self.y,
+                        .height = self.spacing.rule,
+                        .baseline = 0,
+                        .first = @intCast(self.out.frags.items.len),
+                        .count = 0,
+                        .block = self.block,
+                        .leads = true,
+                    });
+                    self.y += self.spacing.rule;
+                    return;
+                },
+                .table => |grid| return self.table(grid),
+                else => {},
+            }
+
+            self.y += inset;
+            if (block.kind == .preformatted) {
+                try self.verbatim(block);
+            } else {
+                try self.flow(block.first, block.first + block.count);
+            }
+            try self.endLine(false);
+            self.y += inset;
+        }
+
+        /// What the box `index` holds, set in a box `room` wide from `x`:
+        /// its own blocks, and the boxes it holds among them, in the order
+        /// they come.
+        fn container(self: *Self, index: u32, x: i32, room: i32) Error!void {
+            const span = self.owns(index);
+            if (span.first >= span.end) return;
+            const keep_left = self.left;
+            const keep_right = self.right;
+            defer {
+                self.left = keep_left;
+                self.right = keep_right;
+            }
+            self.left = x;
+            self.right = x + room;
+            if (self.page.containers.items[index].style.display == .flex) return self.flex(index, x, room);
+
+            var at = span.first;
+            var kid: usize = 0;
+            const children = self.page.childrenOf(self.page.containers.items[index]);
+            while (at < span.end) {
+                if (kid < children.len) {
+                    const there = self.owns(children[kid]);
+                    if (there.end <= at) {
+                        kid += 1;
+                        continue;
+                    }
+                    if (there.first <= at) {
+                        const next = children[kid];
+                        kid += 1;
+                        try self.container(next, x, room);
+                        at = @max(at, self.owns(next).end);
+                        continue;
+                    }
+                }
+                try self.layBlock(at);
+                at += 1;
+            }
+        }
+
+        /// Which of the page's blocks the box `index` holds, where the page
+        /// kept it: nothing for a box it did not keep.
+        fn owns(self: *const Self, index: u32) Owns {
+            if (index >= self.spans.len) return .{};
+            return self.spans[index];
         }
 
         /// The words of the run at `index`, which is known to be words.
@@ -739,6 +842,287 @@ fn Placer(comptime Metrics: type) type {
             return self.y;
         }
 
+        /// A flex container: the boxes it holds, and any words of its own
+        /// between them, set one after another along its main axis with the
+        /// room its `gap` says between them, and moved along that axis and
+        /// across it as its `justify-content` and `align-items` say.
+        ///
+        /// An item is as long as it says it is, in pixels or as a share of
+        /// the room or of the window, held between the least and most it
+        /// says; one that says nothing is as long as its words come to, set
+        /// in a share of what the others leave, which is all the room there
+        /// is for it however much more its words would take.
+        fn flex(self: *Self, index: u32, x: i32, room: i32) Error!void {
+            const style = self.page.containers.items[index].style;
+            const down = style.direction == .column;
+            // The room its items share is what it is given, where it says.
+            const wide = @max(self.sized(style.width, style.min_width, style.max_width, room) orelse room, 0);
+            var items = try self.gather(index);
+            defer items.deinit(self.gpa);
+            if (items.items.len == 0) return;
+
+            const between = self.resolved(style.gap, wide) orelse 0;
+            const top = self.y;
+            const keep = self.previous;
+            defer self.previous = keep;
+            const first_line = self.out.lines.items.len;
+
+            // What each item is given along the main axis and across it,
+            // where it says: the rest is what its words come to.
+            var taken: i32 = 0;
+            var asking: i32 = 0;
+            for (items.items) |*item| {
+                item.main = if (down)
+                    self.sized(item.style.height, item.style.min_height, item.style.max_height, wide)
+                else
+                    self.sized(item.style.width, item.style.min_width, item.style.max_width, wide);
+                item.cross = if (down)
+                    self.sized(item.style.width, item.style.min_width, item.style.max_width, wide)
+                else
+                    self.sized(item.style.height, item.style.min_height, item.style.max_height, wide);
+                if (item.main) |main| taken += main else asking += 1;
+            }
+            const gaps = between * @as(i32, @intCast(items.items.len - 1));
+            const share = if (down or asking == 0)
+                0
+            else
+                @max(@divTrunc(@max(wide - taken - gaps, 0), asking), 1);
+
+            // Each item's words are set where it would go, then measured,
+            // and moved to where it does go once every one of them is known.
+            for (items.items) |*item| {
+                const along = item.main orelse share;
+                self.y = if (down) self.y else top;
+                item.x = x;
+                item.y = self.y;
+                item.first = self.out.lines.items.len;
+                self.previous = null;
+                try self.setItem(item, x, @max(if (down) (item.cross orelse wide) else along, 1));
+                item.lines = self.out.lines.items.len - item.first;
+                for (self.out.lines.items[item.first..][0..item.lines]) |line| {
+                    for (self.out.fragsOf(line)) |frag| item.wide = @max(item.wide, frag.x + frag.width - x);
+                    item.tall = @max(item.tall, line.y + line.height - item.y);
+                }
+                if (item.main == null) {
+                    item.main = self.held(
+                        if (down) item.tall else item.wide,
+                        if (down) item.style.min_height else item.style.min_width,
+                        if (down) item.style.max_height else item.style.max_width,
+                        wide,
+                    );
+                }
+            }
+
+            // More than the room there is: every item is held to a share of
+            // it, in proportion to what it asked for, the last taking what
+            // does not divide. Nothing of a page is set outside the column.
+            var main_total: i32 = gaps;
+            for (items.items) |item| main_total += item.main.?;
+            if (main_total > wide) {
+                var all: i32 = 0;
+                for (items.items) |item| all += item.main.?;
+                const left = @max(wide - gaps, 0);
+                var done: i32 = 0;
+                for (items.items, 0..) |*item, each| {
+                    item.main = if (each + 1 == items.items.len or all <= 0)
+                        @max(left - done, 0)
+                    else
+                        @divTrunc(left * item.main.?, all);
+                    done += item.main.?;
+                }
+                main_total = gaps;
+                for (items.items) |item| main_total += item.main.?;
+            }
+
+            // Across the axis an item is as wide or as tall as it says, or
+            // as its words came out; down a column it stretches.
+            var across_room: i32 = if (down) wide else 0;
+            for (items.items) |*item| {
+                item.cross = item.cross orelse if (down) wide else item.tall;
+                if (!down) across_room = @max(across_room, item.cross.?);
+            }
+
+            var along: i32 = switch (style.justify) {
+                .start, .between => 0,
+                .center => @max(@divTrunc(wide - main_total, 2), 0),
+                .end => @max(wide - main_total, 0),
+            };
+            const between_extra: i32 = if (style.justify == .between and items.items.len > 1)
+                @divTrunc(@max(wide - main_total, 0), @as(i32, @intCast(items.items.len - 1)))
+            else
+                0;
+
+            for (items.items) |item| {
+                const offset: i32 = switch (style.items) {
+                    .start => 0,
+                    .center => @divTrunc(across_room - item.cross.?, 2),
+                    .end => across_room - item.cross.?,
+                };
+                const area: Area = if (down)
+                    .{ .x = x + offset, .y = top + along, .w = item.cross.?, .h = item.main.? }
+                else
+                    .{ .x = x + along, .y = top + offset, .w = item.main.?, .h = item.cross.? };
+                try self.out.placed.append(self.gpa, .{ .area = area, .container = item.container });
+                self.shift(item, area.x - item.x, area.y - item.y);
+                along += item.main.? + between + between_extra;
+            }
+
+            // The container is as long as its items come to, or as it says.
+            var tall = if (down) main_total else across_room;
+            for ([_]page_mod.Unit{ style.min_height, style.height }) |unit| {
+                if (self.resolved(unit, self.viewport.h)) |least| tall = @max(tall, least);
+            }
+            if (self.resolved(style.max_height, self.viewport.h)) |most| tall = @min(tall, most);
+            self.y = top + tall;
+            // Lines side by side are kept in the order of their tops.
+            std.sort.block(Line, self.out.lines.items[first_line..], {}, topAbove);
+        }
+
+        /// What a flex container holds, in the order it comes: each box
+        /// among its blocks, and each block of its own between them. Words
+        /// of its own that no element holds are an item of their own, as a
+        /// browser makes one.
+        fn gather(self: *Self, index: u32) Error!std.ArrayList(Item) {
+            var items: std.ArrayList(Item) = .empty;
+            errdefer items.deinit(self.gpa);
+            const span = self.owns(index);
+            const children = self.page.childrenOf(self.page.containers.items[index]);
+            var at = span.first;
+            var kid: usize = 0;
+            while (at < span.end) {
+                var which: ?u32 = null;
+                while (kid < children.len) {
+                    const next = children[kid];
+                    if (next >= self.page.containers.items.len) {
+                        kid += 1;
+                        continue;
+                    }
+                    const there = self.owns(next);
+                    if (there.end <= at) {
+                        kid += 1;
+                        continue;
+                    }
+                    if (there.first > at) break;
+                    which = next;
+                    kid += 1;
+                    break;
+                }
+                if (which) |next| {
+                    try items.append(self.gpa, .{ .container = next, .style = self.page.containers.items[next].style });
+                    at = @max(at, self.owns(next).end);
+                    continue;
+                }
+                try items.append(self.gpa, .{ .block = at });
+                at += 1;
+            }
+            return items;
+        }
+
+        /// Set what one flex item holds, in a box `width` wide from `x`.
+        fn setItem(self: *Self, item: *const Item, x: i32, width: i32) Error!void {
+            if (item.container) |which| return self.container(which, x, width);
+            if (item.block) |which| {
+                const keep_left = self.left;
+                const keep_right = self.right;
+                defer {
+                    self.left = keep_left;
+                    self.right = keep_right;
+                }
+                self.left = x;
+                self.right = x + width;
+                return self.layBlock(which);
+            }
+        }
+
+        /// Move the lines of one item, and the words on them, to where the
+        /// item goes.
+        fn shift(self: *Self, item: Item, by_x: i32, by_y: i32) void {
+            for (self.out.lines.items[item.first..][0..item.lines]) |*line| {
+                line.y += by_y;
+                for (self.out.frags.items[line.first..][0..line.count]) |*frag| frag.x += by_x;
+            }
+        }
+
+        /// What a length says in pixels, where it says: nothing where a page
+        /// says `auto`, or a unit this reader does not read.
+        fn resolved(self: *const Self, unit: page_mod.Unit, base: i32) ?i32 {
+            const value: f64 = switch (unit) {
+                .auto => return null,
+                .px => unit.px,
+                .percent => unit.percent / 100 * @as(f64, @floatFromInt(base)),
+                .vw => unit.vw / 100 * @as(f64, @floatFromInt(self.viewport.w)),
+                .vh => unit.vh / 100 * @as(f64, @floatFromInt(self.viewport.h)),
+            };
+            return @intFromFloat(@round(value));
+        }
+
+        /// `size` held between the least and most a box says, where it says.
+        fn held(self: *const Self, size: i32, least: page_mod.Unit, most: page_mod.Unit, base: i32) i32 {
+            var value = size;
+            if (self.resolved(least, base)) |low| value = @max(value, low);
+            if (self.resolved(most, base)) |high| value = @min(value, high);
+            return value;
+        }
+
+        /// What a box is given on one axis: the length it says, held between
+        /// the least and most it says. Nothing where it says nothing.
+        fn sized(self: *const Self, unit: page_mod.Unit, least: page_mod.Unit, most: page_mod.Unit, base: i32) ?i32 {
+            const size = self.resolved(unit, base) orelse return self.resolved(least, base);
+            return self.held(size, least, most, base);
+        }
+
+        /// Say which of the page's blocks each of the boxes it kept holds,
+        /// and whether together they hold the whole of it: only then is the
+        /// page set box by box. A page that kept none, or none that ask for
+        /// box layout, keeps the column of blocks it has always had.
+        fn cover(self: *Self) bool {
+            const boxes = self.page.containers.items;
+            if (boxes.len == 0) return false;
+            var asked = false;
+            for (boxes) |each| {
+                if (each.style.display == .flex) asked = true;
+            }
+            if (!asked) return false;
+
+            const spans = self.gpa.alloc(Owns, boxes.len) catch return false;
+            const parents = self.gpa.alloc(u32, boxes.len) catch {
+                self.gpa.free(spans);
+                return false;
+            };
+            @memset(spans, .{ .first = std.math.maxInt(u32), .end = 0 });
+            @memset(parents, 0);
+            self.foster(parents, 0);
+            // Every block is held by the box it was opened in and by every
+            // box that holds that one.
+            for (self.page.blocks.items, 0..) |block, index| {
+                var at = block.owner;
+                for (0..spans.len + 1) |_| {
+                    if (at >= spans.len) break;
+                    const at_index: u32 = @intCast(index);
+                    spans[at].first = @min(spans[at].first, at_index);
+                    spans[at].end = @max(spans[at].end, at_index + 1);
+                    if (at == 0) break;
+                    at = parents[at];
+                }
+            }
+            for (spans) |*span| {
+                if (span.first > span.end) span.* = .{};
+            }
+            self.spans = spans;
+            self.parents = parents;
+            return spans[0].first == 0 and spans[0].end == self.page.blocks.items.len;
+        }
+
+        /// Note the box holding each of the page's boxes, down from the one
+        /// at `index`.
+        fn foster(self: *Self, parents: []u32, index: u32) void {
+            for (self.page.childrenOf(self.page.containers.items[index])) |kid| {
+                if (kid == 0 or kid >= parents.len) continue;
+                parents[kid] = index;
+                self.foster(parents, kid);
+            }
+        }
+
         /// A table too wide to set as a grid: its cells one after another, a
         /// row's close together and the rows apart.
         fn linear(self: *Self, cells: []const page_mod.Cell) Error!void {
@@ -756,6 +1140,29 @@ fn Placer(comptime Metrics: type) type {
 
 /// What a cell's words need at the least and would take at the most.
 const Extent = struct { least: i32 = 0, most: i32 = 0 };
+
+/// Which of the page's blocks one of the boxes it kept holds: those from
+/// `first` up to `end`, which is past the last of them.
+const Owns = struct { first: u32 = 0, end: u32 = 0 };
+
+/// One item of a flex container, before it is put where it goes: the box it
+/// is, or the one block of the container's own words it is; what it is given
+/// along the container's main axis, `main`, and across it, `cross`, where it
+/// is given anything; and what its words came to, `wide` and `tall`, set
+/// from `x` and `y`, before they were moved to where it goes.
+const Item = struct {
+    container: ?u32 = null,
+    block: ?u32 = null,
+    style: page_mod.BoxStyle = .{},
+    main: ?i32 = null,
+    cross: ?i32 = null,
+    wide: i32 = 0,
+    tall: i32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+    first: usize = 0,
+    lines: usize = 0,
+};
 
 /// The columns a cell spans, from the first to past the last, kept inside
 /// the table's.
@@ -1132,6 +1539,191 @@ test "a place in the page is found again once the page is laid out anew" {
     b.layout.deinit(testing.allocator);
     b.layout = try build(testing.allocator, &b.page, 60, eighteen, Fixed{});
     try testing.expectEqual(@as(?i32, 18), b.layout.lineOf(mark.place));
+}
+
+/// One thing a flex container holds in a page built for a test: words of its
+/// own, or a box of the page's with words in it and a style of its own.
+const Held = struct {
+    words: []const u8,
+    style: page_mod.BoxStyle = .{},
+    /// Words no element holds, which are held by the container itself.
+    own: bool = false,
+};
+
+/// A page of paragraphs, each in the box the page keeps for it, and all of
+/// them in one container at the page's root, `wide` pixels wide.
+fn flexed(wide: i32, container: page_mod.BoxStyle, held: []const Held) !Built {
+    var b = Built{};
+    var builder = page_mod.Builder{ .gpa = testing.allocator, .page = &b.page };
+    try b.page.containers.append(testing.allocator, .{ .style = container });
+    for (held) |item| {
+        if (item.own) continue;
+        try b.page.containers.append(testing.allocator, .{ .style = item.style });
+    }
+    for (held, 1..) |item, index| {
+        if (!item.own) try b.page.container_children.append(testing.allocator, @intCast(index));
+    }
+    b.page.containers.items[0].children = .{ .first = 0, .count = @intCast(b.page.container_children.items.len) };
+    var box: u32 = 1;
+    for (held) |item| {
+        builder.owner = if (item.own) 0 else box;
+        if (!item.own) box += 1;
+        try builder.boundary(.{});
+        try builder.words(item.words);
+    }
+    try builder.finish();
+    b.layout = try build(testing.allocator, &b.page, wide, eighteen, Fixed{});
+    return b;
+}
+
+const flex = page_mod.BoxStyle{ .display = .flex };
+
+test "a flex container sets its boxes in a row, with the gap it says between them" {
+    // Two letters a box: twelve pixels, and ten between them.
+    var b = try flexed(200, .{ .display = .flex, .gap = .{ .px = 10 } }, &.{
+        .{ .words = "aa" }, .{ .words = "bb" }, .{ .words = "cc" },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(usize, 3), placed.len);
+    for (placed, [_]i32{ 0, 22, 44 }) |item, x| {
+        try testing.expectEqual(x, item.area.x);
+        try testing.expectEqual(@as(i32, 12), item.area.w);
+        try testing.expectEqual(@as(i32, 0), item.area.y);
+        try testing.expectEqual(@as(i32, 18), item.area.h);
+    }
+    // Every word stands beside the one before it, on the same line.
+    try testing.expectEqual(@as(usize, 3), b.layout.lines.items.len);
+    for (b.layout.lines.items) |line| try testing.expectEqual(@as(i32, 0), line.y);
+    try testing.expectEqual(@as(i32, 0), b.line(0)[0].x);
+    try testing.expectEqual(@as(i32, 22), b.line(1)[0].x);
+    try testing.expectEqual(@as(i32, 18), b.layout.height);
+}
+
+test "a column stacks its items down the page" {
+    var b = try flexed(200, .{ .display = .flex, .direction = .column, .gap = .{ .px = 4 } }, &.{
+        .{ .words = "aa" }, .{ .words = "bb" },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 0), placed[0].area.y);
+    try testing.expectEqual(@as(i32, 22), placed[1].area.y);
+    try testing.expectEqual(@as(i32, 18), placed[0].area.h);
+    try testing.expectEqual(@as(i32, 40), b.layout.height);
+    // Each is as wide as the room, and its words start at its left.
+    try testing.expectEqual(@as(i32, 200), placed[0].area.w);
+}
+
+test "what an item is given: pixels, a share, or a share of the window, held as it says" {
+    var b = try flexed(200, flex, &.{
+        .{ .words = "aa", .style = .{ .width = .{ .px = 50 } } },
+        .{ .words = "bb", .style = .{ .width = .{ .percent = 25 } } },
+        .{ .words = "cc", .style = .{ .width = .{ .vw = 10 } } },
+        .{ .words = "dd", .style = .{ .min_width = .{ .px = 40 } } },
+        .{ .words = "ee", .style = .{ .width = .{ .px = 60 }, .max_width = .{ .px = 30 } } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(usize, 5), placed.len);
+    for (placed, [_]i32{ 0, 50, 100, 120, 160 }) |item, x| try testing.expectEqual(x, item.area.x);
+    for (placed, [_]i32{ 50, 50, 20, 40, 30 }) |item, w| try testing.expectEqual(w, item.area.w);
+}
+
+test "a flex container is as tall as it says, in a share of the window's height" {
+    // Fifty per cent of a window as tall as the column is wide: a hundred.
+    var b = try flexed(200, .{ .display = .flex, .min_height = .{ .vh = 50 } }, &.{.{ .words = "aa" }});
+    defer b.deinit();
+    try testing.expectEqual(@as(i32, 100), b.layout.height);
+    try testing.expectEqual(@as(i32, 18), b.layout.placed.items[0].area.h);
+}
+
+test "an item's words are set in the width it is given" {
+    var b = try flexed(200, flex, &.{.{ .words = "aaaa bbbb", .style = .{ .width = .{ .px = 30 } } }});
+    defer b.deinit();
+    // Four letters a line at six pixels a letter, so two lines of eighteen.
+    try testing.expectEqual(@as(usize, 2), b.layout.lines.items.len);
+    try testing.expectEqualStrings("aaaa", b.fragText(b.line(0)[0]));
+    const area = b.layout.placed.items[0].area;
+    try testing.expectEqual(@as(i32, 30), area.w);
+    try testing.expectEqual(@as(i32, 36), area.h);
+    try testing.expectEqual(@as(i32, 24), b.line(0)[0].width);
+}
+
+test "items are moved along the row as the container says" {
+    // Two boxes of twelve: a hundred and seventy-six left over.
+    const words = [_]Held{ .{ .words = "aa" }, .{ .words = "bb" } };
+    var middle = try flexed(200, .{ .display = .flex, .justify = .center }, &words);
+    defer middle.deinit();
+    try testing.expectEqual(@as(i32, 88), middle.layout.placed.items[0].area.x);
+
+    var ending = try flexed(200, .{ .display = .flex, .justify = .end }, &words);
+    defer ending.deinit();
+    try testing.expectEqual(@as(i32, 176), ending.layout.placed.items[0].area.x);
+
+    var apart = try flexed(200, .{ .display = .flex, .justify = .between }, &words);
+    defer apart.deinit();
+    try testing.expectEqual(@as(i32, 0), apart.layout.placed.items[0].area.x);
+    try testing.expectEqual(@as(i32, 188), apart.layout.placed.items[1].area.x);
+    // And the words go with them.
+    try testing.expectEqual(@as(i32, 188), apart.line(1)[0].x);
+}
+
+test "items are moved across the row as the container says" {
+    // One line of eighteen beside two of thirty-six.
+    var b = try flexed(200, .{ .display = .flex, .items = .center }, &.{
+        .{ .words = "aa" },
+        .{ .words = "aaaa bbbb", .style = .{ .width = .{ .px = 30 } } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 9), placed[0].area.y);
+    try testing.expectEqual(@as(i32, 0), placed[1].area.y);
+    try testing.expectEqual(@as(i32, 36), b.layout.height);
+
+    var footed = try flexed(200, .{ .display = .flex, .items = .end }, &.{ .{ .words = "aa" }, .{ .words = "aaaa bbbb", .style = .{ .width = .{ .px = 30 } } } });
+    defer footed.deinit();
+    try testing.expectEqual(@as(i32, 18), footed.layout.placed.items[0].area.y);
+}
+
+test "words of a flex container's own are an item of their own" {
+    var b = try flexed(200, .{ .display = .flex, .gap = .{ .px = 10 } }, &.{
+        .{ .words = "aa" }, .{ .words = "bb", .own = true }, .{ .words = "cc" },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(usize, 3), placed.len);
+    try testing.expectEqual(@as(?u32, 1), placed[0].container);
+    try testing.expectEqual(@as(?u32, null), placed[1].container);
+    for (placed, [_]i32{ 0, 22, 44 }) |item, x| try testing.expectEqual(x, item.area.x);
+}
+
+test "items asking for more than the room there is are held to a share of it" {
+    // Forty and thirty ask for seventy of the sixty there is: each keeps
+    // what it asked for of sixty, and the last takes what does not divide.
+    var b = try flexed(60, flex, &.{
+        .{ .words = "aa", .style = .{ .width = .{ .px = 40 } } },
+        .{ .words = "bb", .style = .{ .width = .{ .px = 30 } } },
+    });
+    defer b.deinit();
+    const placed = b.layout.placed.items;
+    try testing.expectEqual(@as(i32, 0), placed[0].area.x);
+    try testing.expectEqual(@as(i32, 34), placed[0].area.w);
+    try testing.expectEqual(@as(i32, 34), placed[1].area.x);
+    try testing.expectEqual(@as(i32, 26), placed[1].area.w);
+}
+
+test "a page whose boxes ask for no box layout keeps the column it had" {
+    var held = try flexed(60, .{ .display = .block }, &.{.{ .words = "aaaa bbbb cccc" }});
+    defer held.deinit();
+    var plain = try paragraph("aaaa bbbb cccc", 60);
+    defer plain.deinit();
+    try testing.expectEqual(plain.layout.lines.items.len, held.layout.lines.items.len);
+    for (plain.layout.lines.items, held.layout.lines.items) |want, got| {
+        try testing.expectEqual(want.y, got.y);
+        try testing.expectEqual(want.height, got.height);
+    }
+    try testing.expectEqual(@as(i32, 0), held.line(0)[0].x);
+    try testing.expectEqual(@as(usize, 0), held.layout.placed.items.len);
 }
 
 test "a link's words are their own fragment beside the text around them" {

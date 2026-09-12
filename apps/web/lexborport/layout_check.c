@@ -25,6 +25,7 @@
 #include "lexbor/css/property.h"
 #include "lexbor/css/property/const.h"
 #include "lexbor/css/value/const.h"
+#include "lexbor/css/unit/const.h"
 #include "lexbor/style/dom/interfaces/document.h"
 
 #define CHECK(name, expr) _Static_assert((expr), name)
@@ -188,6 +189,12 @@ CHECK("text-align is one keyword",
       sizeof(lxb_css_property_text_align_t) == sizeof(unsigned int));
 CHECK("opacity is a number or a percentage, as a channel of rgb() is",
       sizeof(lxb_css_property_opacity_t) == sizeof(lxb_css_value_number_percentage_t));
+CHECK("position is one keyword",
+       sizeof(lxb_css_property_position_t) == sizeof(unsigned int));
+CHECK("a length percentage keeps one kind and one aligned union",
+       offsetof(lxb_css_value_length_percentage_t, u) == _Alignof(double)
+           && sizeof(lxb_css_value_length_percentage_t)
+               == _Alignof(double) + sizeof(lxb_css_value_length_t));
 CHECK("a colour's value follows its kind",
       offsetof(lxb_css_value_color_t, u) == _Alignof(double));
 CHECK("a hex colour is four bytes and then its length",
@@ -212,11 +219,33 @@ CHECK("a property upstream does not read is 0x0001", LXB_CSS_PROPERTY__CUSTOM ==
 CHECK("background-color is 0x0006", LXB_CSS_PROPERTY_BACKGROUND_COLOR == 0x0006);
 CHECK("color is 0x0015", LXB_CSS_PROPERTY_COLOR == 0x0015);
 CHECK("display is 0x0017", LXB_CSS_PROPERTY_DISPLAY == 0x0017);
+CHECK("the flex properties keep their generated identifiers",
+      LXB_CSS_PROPERTY_ALIGN_ITEMS == 0x0003 && LXB_CSS_PROPERTY_FLEX_DIRECTION == 0x001b
+          && LXB_CSS_PROPERTY_JUSTIFY_CONTENT == 0x0030);
+CHECK("geometry properties keep their generated identifiers",
+       LXB_CSS_PROPERTY_BOTTOM == 0x0012 && LXB_CSS_PROPERTY_HEIGHT == 0x002a
+           && LXB_CSS_PROPERTY_LEFT == 0x0031 && LXB_CSS_PROPERTY_MAX_HEIGHT == 0x003a
+           && LXB_CSS_PROPERTY_MAX_WIDTH == 0x003b && LXB_CSS_PROPERTY_MIN_HEIGHT == 0x003c
+           && LXB_CSS_PROPERTY_MIN_WIDTH == 0x003d && LXB_CSS_PROPERTY_POSITION == 0x004a
+           && LXB_CSS_PROPERTY_RIGHT == 0x004b && LXB_CSS_PROPERTY_TOP == 0x005a
+           && LXB_CSS_PROPERTY_WIDTH == 0x005f);
 CHECK("opacity is 0x003e", LXB_CSS_PROPERTY_OPACITY == 0x003e);
 CHECK("text-align is 0x004d", LXB_CSS_PROPERTY_TEXT_ALIGN == 0x004d);
 CHECK("visibility is 0x005d", LXB_CSS_PROPERTY_VISIBILITY == 0x005d);
 CHECK("center is 0x0007", LXB_CSS_VALUE_CENTER == 0x0007);
 CHECK("a percentage is 0x0015", LXB_CSS_VALUE__PERCENTAGE == 0x0015);
+CHECK("the retained box keywords have their generated values",
+       LXB_CSS_VALUE_AUTO == 0x000c && LXB_CSS_VALUE__LENGTH == 0x0014
+           && LXB_CSS_VALUE_BLOCK == 0x00e7 && LXB_CSS_VALUE_FLEX == 0x00ed
+           && LXB_CSS_VALUE_STATIC == 0x0145 && LXB_CSS_VALUE_ABSOLUTE == 0x0147
+           && LXB_CSS_VALUE_FIXED == 0x0149);
+CHECK("the retained flex keywords have their generated values",
+       LXB_CSS_VALUE_FLEX_START == 0x0005 && LXB_CSS_VALUE_FLEX_END == 0x0006
+           && LXB_CSS_VALUE_SPACE_BETWEEN == 0x0008 && LXB_CSS_VALUE_ROW == 0x0104
+           && LXB_CSS_VALUE_ROW_REVERSE == 0x0105 && LXB_CSS_VALUE_COLUMN == 0x0106
+           && LXB_CSS_VALUE_COLUMN_REVERSE == 0x0107);
+CHECK("the retained viewport units have their generated values",
+       LXB_CSS_UNIT_PX == 0x0007 && LXB_CSS_UNIT_VH == 0x0011 && LXB_CSS_UNIT_VW == 0x0015);
 CHECK("none is 0x001f", LXB_CSS_VALUE_NONE == 0x001f);
 CHECK("hidden is 0x0020", LXB_CSS_VALUE_HIDDEN == 0x0020);
 CHECK("left is 0x002f", LXB_CSS_VALUE_LEFT == 0x002f);

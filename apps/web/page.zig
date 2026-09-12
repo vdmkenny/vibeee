@@ -4,9 +4,10 @@
 //! The parser builds a tree of every element and attribute a page had, which
 //! is far more than a reader draws and, on a large page, several times the
 //! page's own size. So the tree is walked once into this and let go: one
-//! buffer of text, runs over it, blocks over the runs, and the strings, links,
-//! forms, controls and pictures the runs refer to beside them. Nothing here
-//! points into the tree, so the tree can go the moment the walk ends.
+//! buffer of text, runs over it, blocks over the runs, the strings, links,
+//! forms, controls and pictures the runs refer to beside them, and a compact
+//! tree of CSS boxes for a later geometry pass. Nothing here points into the
+//! parsed tree, so it can go the moment the walk ends.
 //!
 //! Pure and host-tested. Whether a space landed inside a link or outside it
 //! is decided here, and is not something to find out on the panel.
@@ -61,6 +62,70 @@ pub const Alignment = enum(u2) { start, center, end };
 pub const Colours = packed struct(u16) {
     ink: Swatch = .none,
     ground: Swatch = .none,
+};
+
+/// A CSS length the reader can retain for a future box layout pass. Values
+/// stay in CSS pixels or viewport shares rather than being resolved while the
+/// page is extracted.
+pub const Unit = union(enum) {
+    auto,
+    px: f64,
+    percent: f64,
+    vw: f64,
+    vh: f64,
+};
+
+/// The four physical edges of a box.
+pub const Edges = struct {
+    top: Unit = .auto,
+    right: Unit = .auto,
+    bottom: Unit = .auto,
+    left: Unit = .auto,
+};
+
+/// The CSS geometry needed before this reader can lay boxes out. It is kept
+/// separately from the text-block model until box layout replaces that pass.
+pub const BoxStyle = struct {
+    display: Display = .@"inline",
+    position: Position = .static,
+    /// Which way a flex container's items run along its main axis.
+    direction: Direction = .row,
+    /// The room a flex container leaves between its items.
+    gap: Unit = .auto,
+    /// Where a flex container's items go along its main axis.
+    justify: Justify = .start,
+    /// Where they go across it.
+    items: Items = .start,
+    edges: Edges = .{},
+    width: Unit = .auto,
+    height: Unit = .auto,
+    min_width: Unit = .auto,
+    min_height: Unit = .auto,
+    max_width: Unit = .auto,
+    max_height: Unit = .auto,
+
+    pub const Display = enum { block, @"inline", flex };
+    pub const Position = enum { static, absolute, fixed };
+    pub const Direction = enum { row, column };
+    /// `space-between`: the room left over goes between the items, none of it
+    /// outside them.
+    pub const Justify = enum { start, center, end, between };
+    /// `stretch` is what a box without a size across the axis does anyway
+    /// here, since its words fill the room they are set in.
+    pub const Items = enum { start, center, end };
+};
+
+/// A contiguous range in `Page.container_children`, not in `Page.containers`:
+/// descendants sit between siblings in the latter's preorder sequence.
+pub const ContainerRange = struct { first: u32 = 0, count: u32 = 0 };
+
+/// One retained CSS box. Its child range contains indexes into
+/// `Page.containers`, in document order, for direct children only. Which of
+/// the page's blocks it holds is not kept here: every block names the box
+/// that held it when it was opened, in `Block.owner`.
+pub const Container = struct {
+    style: BoxStyle,
+    children: ContainerRange = .{},
 };
 
 /// Words in one look, going to one link or to none.
@@ -169,6 +234,9 @@ pub const Block = struct {
     /// Its runs, which a block still to be opened does not have.
     first: u32 = 0,
     count: u32 = 0,
+    /// Which of the page's boxes holds it: the innermost one open when its
+    /// first word was put in it, which is the box a later pass sets it in.
+    owner: u32 = 0,
 };
 
 /// Where a string is among the page's strings. Empty is the empty string.
@@ -271,6 +339,10 @@ pub const Page = struct {
     palette: std.ArrayList(rgb.Colour) = .empty,
     /// The cells of its tables set as grids.
     cells: std.ArrayList(Cell) = .empty,
+    /// CSS boxes retained independently of the legacy text-block stream.
+    containers: std.ArrayList(Container) = .empty,
+    /// Direct-child indexes for `containers`; each box owns one range here.
+    container_children: std.ArrayList(u32) = .empty,
     /// How many of the controls are lines to type in, and boxes to tick.
     lines: u16 = 0,
     ticks: u16 = 0,
@@ -292,6 +364,8 @@ pub const Page = struct {
         self.pictures.deinit(gpa);
         self.palette.deinit(gpa);
         self.cells.deinit(gpa);
+        self.containers.deinit(gpa);
+        self.container_children.deinit(gpa);
         self.* = .{};
     }
 
@@ -305,6 +379,10 @@ pub const Page = struct {
 
     pub fn cellRuns(self: *const Page, cell: Cell) []const Run {
         return self.runs.items[cell.first..][0..cell.count];
+    }
+
+    pub fn childrenOf(self: *const Page, container: Container) []const u32 {
+        return self.container_children.items[container.children.first..][0..container.children.count];
     }
 
     pub fn textOf(self: *const Page, text: Text) []const u8 {
@@ -345,6 +423,11 @@ pub const Builder = struct {
     /// The block being filled. Opened by the first thing put in it, so a
     /// boundary with nothing after it before the next leaves no empty block.
     open: ?Block = null,
+    /// Which of the page's boxes what is put in next belongs to, among
+    /// `page.containers`. The walk sets it as it arrives at a box and as it
+    /// leaves it; the block then keeps it, which is how a later pass knows
+    /// what each box holds.
+    owner: u32 = 0,
     /// A space is owed between what came last and whatever comes next. Owed
     /// rather than written, so none lands at the end of a block.
     space: bool = false,
@@ -394,6 +477,7 @@ pub const Builder = struct {
         block.marker = .none;
         block.first = @intCast(self.page.runs.items.len);
         block.count = 0;
+        block.owner = self.owner;
         self.open = block;
         self.filling = .{};
     }
@@ -707,6 +791,7 @@ pub const Builder = struct {
             var block = self.next;
             block.first = @intCast(self.page.runs.items.len);
             block.count = 0;
+            block.owner = self.owner;
             self.open = block;
             // The marker belongs to an entry's first block, not to every
             // block the entry happens to hold.

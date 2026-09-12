@@ -15,9 +15,9 @@
 //!
 //! What a page's stylesheets say is asked of each element as the walk arrives
 //! at it: whether it shows at all, the colour of its words, what is painted
-//! under it, and which way its lines lean. Colours and alignment are handed
-//! down the way the cascade hands them down, so the walk keeps what each
-//! element changed and puts it back as it leaves the element.
+//! under it, which way its lines lean, and its box geometry. Colours and
+//! alignment are handed down the way the cascade hands them down, so the walk
+//! keeps what each element changed and puts it back as it leaves the element.
 //!
 //! A form's controls are the toolkit's own on screen, so the walk keeps what
 //! each one is: its kind, its name, what it holds to begin with, and the
@@ -245,8 +245,29 @@ const Walker = struct {
     /// open past the bound.
     tables: Bounded(Table, TABLES_MAX) = .{},
     tables_past: u16 = 0,
+    /// The open retained boxes, root first. A box is linked to its parent as
+    /// it closes, after all of its descendants have filled their own ranges.
+    containers: std.ArrayList(u32) = .empty,
 
     const Error = Builder.Error;
+
+    fn beginContainer(self: *Walker, node: *const Node, display: page_mod.BoxStyle.Display) Error!void {
+        const index = std.math.cast(u32, self.builder.page.containers.items.len) orelse return;
+        try self.builder.page.containers.append(self.builder.gpa, .{ .style = css.boxStyle(node, display) });
+        try self.containers.append(self.builder.gpa, index);
+        // What is read inside it, until it closes, is its to be set in.
+        self.builder.owner = index;
+    }
+
+    fn endContainer(self: *Walker) Error!void {
+        const child = self.containers.pop() orelse return;
+        const parent = self.containers.getLastOrNull() orelse return;
+        self.builder.owner = parent;
+        const box = &self.builder.page.containers.items[parent];
+        if (box.children.count == 0) box.children.first = @intCast(self.builder.page.container_children.items.len);
+        try self.builder.page.container_children.append(self.builder.gpa, child);
+        box.children.count +|= 1;
+    }
 
     /// Whether the innermost table the walk is inside is set as a grid.
     fn inGrid(self: *const Walker) bool {
@@ -330,6 +351,8 @@ const Walker = struct {
         const role = roleOf(lexbor.tagOf(node) orelse return false);
         if (unread(node)) return false;
 
+        if (role != .hidden) try self.beginContainer(node, displayFor(role));
+
         const t = traits.get(role);
         // What it holds is read in the style it sets, taken before any block
         // it begins so that the block has it too.
@@ -401,7 +424,10 @@ const Walker = struct {
             .select => try self.select(node),
             .textarea => try self.textarea(node),
         }
-        if (!t.walks) return false;
+        if (!t.walks) {
+            if (role != .hidden) try self.endContainer();
+            return false;
+        }
         self.restyle();
         return true;
     }
@@ -430,6 +456,7 @@ const Walker = struct {
             else => {},
         }
         self.untake(node);
+        if (role != .hidden) try self.endContainer();
         // A cell that is a stretch of its row's line does not end that line:
         // the words of the cell after it belong on it too.
         const ends = t.bounds and !css.flows(node) and
@@ -647,6 +674,15 @@ const Walker = struct {
     }
 };
 
+/// The outside display a tag has without a stylesheet. The retained model
+/// only distinguishes the modes its first box-layout pass will support.
+fn displayFor(role: Role) page_mod.BoxStyle.Display {
+    return switch (role) {
+        .block, .heading, .list, .ordered, .item, .quote, .preformatted, .rule, .table, .row, .cell, .caption, .form => .block,
+        else => .@"inline",
+    };
+}
+
 /// Whether a table holds data, to be set as a grid, rather than laying a page
 /// out, to be read a cell at a time: it says it is a table or a grid, draws a
 /// border, or has a caption, a head or a header cell; and it holds no table
@@ -814,11 +850,13 @@ pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url
     if (lexbor.titleOf(document)) |title| try builder.title(title);
 
     var walker = Walker{ .builder = &builder, .base = base };
+    defer walker.containers.deinit(gpa);
     const top = lexbor.nodeOf(document);
     page.ground = try walker.pageGround(top);
     const root = contentOf(top);
     try walker.inherit(root);
     walker.restyle();
+    try walker.beginContainer(root, .block);
 
     var node: ?*Node = root.first_child;
     walk: while (node) |here| {
@@ -843,5 +881,8 @@ pub fn extract(gpa: std.mem.Allocator, document: *lexbor.Document, base: url.Url
             at = up;
         }
     }
+    // The last block is closed before the box holding it is, so that the
+    // page's boxes hold the whole of it between them.
     try builder.finish();
+    try walker.endContainer();
 }

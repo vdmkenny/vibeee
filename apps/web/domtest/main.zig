@@ -13,6 +13,7 @@
 const std = @import("std");
 const js = @import("js");
 const dom = @import("dom");
+const css = @import("../css.zig");
 const extract = @import("../extract.zig");
 const lexbor = @import("lexbor");
 const rgb = @import("lib").rgb;
@@ -433,4 +434,83 @@ test "a setProperty colour set by script is used when the page is read again" {
     var page = try rereads("document.getElementById('one').style.setProperty('color', '#123456'); 'changed';");
     defer page.deinit(heap);
     try std.testing.expect(std.mem.findScalar(rgb.Colour, page.palette.items, .hex(0x123456)) != null);
+}
+
+test "CSS geometry is retained as direct-child boxes without changing text blocks" {
+    const markup =
+        \\<!DOCTYPE html><html><body><main><section><span>one</span></section><div>two</div></main></body></html>
+    ;
+    const it = opened(markup) orelse return error.NoPage;
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\main { display: flex; width: 80vw; min-height: 12vh; }
+        \\section { position: absolute; top: 4px; right: 25%; width: 30%; max-width: 400px; }
+        \\span { display: inline; left: auto; }
+        \\div { position: fixed; bottom: 5vh; height: 20px; min-width: 10vw; max-height: 90%; }
+    , null);
+
+    const base = url.parse("http://example.test/one") orelse return error.NoBase;
+    var page: page_mod.Page = .{};
+    defer page.deinit(heap);
+    try extract.extract(heap, it.tree, base, &page);
+
+    try std.testing.expectEqualStrings("onetwo", page.text.items);
+    try std.testing.expectEqual(@as(usize, 2), page.blocks.items.len);
+    try std.testing.expectEqual(@as(usize, 4), page.containers.items.len);
+    try std.testing.expectEqualSlices(u32, &.{ 1, 3 }, page.childrenOf(page.containers.items[0]));
+    try std.testing.expectEqualSlices(u32, &.{2}, page.childrenOf(page.containers.items[1]));
+
+    try std.testing.expectEqual(page_mod.BoxStyle.Display.flex, page.containers.items[0].style.display);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .vw = 80 }, page.containers.items[0].style.width);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .vh = 12 }, page.containers.items[0].style.min_height);
+
+    const section = page.containers.items[1].style;
+    try std.testing.expectEqual(page_mod.BoxStyle.Display.block, section.display);
+    try std.testing.expectEqual(page_mod.BoxStyle.Position.absolute, section.position);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .px = 4 }, section.edges.top);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .percent = 25 }, section.edges.right);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .percent = 30 }, section.width);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .px = 400 }, section.max_width);
+
+    const span = page.containers.items[2].style;
+    try std.testing.expectEqual(page_mod.BoxStyle.Display.@"inline", span.display);
+    try std.testing.expectEqual(page_mod.BoxStyle.Position.static, span.position);
+    try std.testing.expectEqualDeep(page_mod.Unit.auto, span.edges.left);
+
+    const div = page.containers.items[3].style;
+    try std.testing.expectEqual(page_mod.BoxStyle.Position.fixed, div.position);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .vh = 5 }, div.edges.bottom);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .px = 20 }, div.height);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .vw = 10 }, div.min_width);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .percent = 90 }, div.max_height);
+}
+
+test "a flex container's direction, gap and alignment are retained" {
+    const markup =
+        \\<!DOCTYPE html><html><body><main><p>one</p><p>two</p></main></body></html>
+    ;
+    const it = opened(markup) orelse return error.NoPage;
+    defer it.end();
+    css.apply(heap, it.tree,
+        \\main { display: flex; flex-direction: column; gap: 8px;
+        \\        justify-content: space-between; align-items: center; }
+        \\p { flex: none; width: 50%; }
+    , null);
+
+    const base = url.parse("http://example.test/one") orelse return error.NoBase;
+    var page: page_mod.Page = .{};
+    defer page.deinit(heap);
+    try extract.extract(heap, it.tree, base, &page);
+
+    try std.testing.expectEqual(@as(usize, 3), page.containers.items.len);
+    const main = page.containers.items[0].style;
+    try std.testing.expectEqual(page_mod.BoxStyle.Display.flex, main.display);
+    try std.testing.expectEqual(page_mod.BoxStyle.Direction.column, main.direction);
+    try std.testing.expectEqualDeep(page_mod.Unit{ .px = 8 }, main.gap);
+    try std.testing.expectEqual(page_mod.BoxStyle.Justify.between, main.justify);
+    try std.testing.expectEqual(page_mod.BoxStyle.Items.center, main.items);
+
+    // Each paragraph is held by the container, and owns the block it made.
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2 }, page.childrenOf(page.containers.items[0]));
+    for (page.blocks.items, 1..) |block, index| try std.testing.expectEqual(@as(u32, @intCast(index)), block.owner);
 }
