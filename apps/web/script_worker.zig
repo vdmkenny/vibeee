@@ -1,12 +1,11 @@
-//! script_worker: the process a page's scripts will run in.
+//! script_worker: the process a page's scripts run in.
 //!
-//! Built behind `-Dscript-worker`, which is off, so the reader still runs a
-//! page's scripts in its own address space as it has until now. With it on,
-//! the reader spawns this program for each committed navigation, sends it
+//! The reader spawns this program for each committed navigation, sends it
 //! the page as a `start`, and reads what it says back — see
-//! `apps/web/script_host.zig`, which is the other end of that. What this
-//! program does with a page is still nothing at all: it holds the channel
-//! and goes, and the reader reads that as its scripts having stopped.
+//! `apps/web/script_host.zig`, which is the other end of that. It is the
+//! only place a page's scripts run: what this program does with a page is
+//! still nothing at all, though — it holds the channel and goes, and the
+//! reader reads that as its scripts having stopped.
 //!
 //! The shape it is being built towards is design/13-script-worker.md. Today
 //! the reader holds the network, the page, the layout and the window, and

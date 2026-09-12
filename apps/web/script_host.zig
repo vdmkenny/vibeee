@@ -1,26 +1,15 @@
 //! script_host: where a page's scripts run, and what the reader does when
 //! they stop.
 //!
-//! The reader has always run a page's scripts in its own address space: the
-//! engine, the document built over lexbor and the C under both are compiled
-//! into it, and a fault in any of the three reaches the kernel as a fault in
-//! the reader. design/13-script-worker.md moves them into a process of their
-//! own. This is the seam they move across: one type the reader speaks to,
-//! whichever side of the boundary the scripts happen to be on.
-//!
-//! Two hosts of one shape:
-//!
-//!   - `in_process`, the default: no process, no channel, nothing here that
-//!     can fail. Every call does nothing, and the reader is exactly the
-//!     reader it was before this file existed.
-//!
-//!   - `worker`: a program of the reader's own, started for a committed
-//!     navigation and killed on the next (§6), spoken to in `worker_proto`
-//!     frames over a channel. What it owns is what a page can corrupt, so
-//!     what a page can kill is the worker and not the reader.
-//!
-//! `-Dscript-worker` chooses between them at build time, and nothing else in
-//! the reader changes: that is what keeps the move reversible (§9).
+//! A page's scripts run in a process of the reader's own: the engine, the
+//! document built over lexbor and the C under both belong to the worker of
+//! design/13-script-worker.md, and a fault in any of the three reaches the
+//! kernel as a fault in the worker. This is the reader's end of that seam:
+//! one worker per committed navigation, killed on the next (§6), spoken to
+//! in `worker_proto` frames over a channel. What the worker owns is what a
+//! page can corrupt, so what a page can kill is the worker and not the
+//! reader. There is no other path: the reader has no engine of its own to
+//! run a page's scripts in, and so it never runs them in two places at once.
 //!
 //! What is *not* here yet: a `page` is not serialized (§11), so a page a
 //! worker sends back is not read into the page on screen, and today's worker
@@ -42,18 +31,10 @@ const worker_proto = @import("worker_proto");
 // The machine underneath
 // ---------------------------------------------------------------------------
 
-/// Which side of the boundary a page's scripts are on.
-pub const Kind = enum {
-    /// In the reader, where they have always run.
-    in_process,
-    /// In a process of the reader's own.
-    worker,
-};
-
 /// What the reader says of a page's scripts while the page is on screen.
 pub const Status = enum {
-    /// Nothing is running elsewhere for this page, and nothing has stopped:
-    /// the reader runs a page's scripts itself, or runs none.
+    /// No worker is up for this page, and none has stopped: a page read
+    /// with scripts off, or one whose worker was let go.
     none,
     /// A worker is up and has the page's scripts.
     running,
@@ -155,7 +136,6 @@ const GRACE_US: usize = 20_000;
 const STALL_LIMIT: usize = 64;
 
 pub const Host = struct {
-    kind: Kind = .in_process,
     platform: Platform = .{},
 
     /// Where the two buffers came from, and where they go back to.
@@ -183,25 +163,13 @@ pub const Host = struct {
     why: Reason = .asked,
 
     // -------------------------------------------------------------------
-    // Which host this is
+    // Lifecycle
     // -------------------------------------------------------------------
 
-    /// A host that runs a page's scripts where the reader has always run
-    /// them: in it. Nothing is ever asked of the machine.
-    pub fn inProcess() Host {
-        return .{ .kind = .in_process };
-    }
-
-    /// A host that runs them in a process of the reader's own.
+    /// A host over a worker of the reader's own, and the machine it is run
+    /// on: start a program, end it, move bytes.
     pub fn forWorker(platform: Platform, gpa: std.mem.Allocator) Host {
-        return .{ .kind = .worker, .platform = platform, .gpa = gpa };
-    }
-
-    /// Whether the host, rather than the reader, has a page's scripts. The
-    /// reader asks before opening them itself, so they are never run in both
-    /// places at once.
-    pub fn owns(self: *const Host) bool {
-        return self.kind == .worker;
+        return .{ .platform = platform, .gpa = gpa };
     }
 
     /// What the reader may sleep on beside its own business: the worker's end
@@ -211,18 +179,13 @@ pub const Host = struct {
     }
 
     pub fn status(self: *const Host) Status {
-        if (!self.owns()) return .none;
         if (self.child != null) return .running;
         return if (self.finished and self.why == .fault) .stopped else .none;
     }
 
-    // -------------------------------------------------------------------
-    // Lifecycle
-    // -------------------------------------------------------------------
-
     pub const BeginError = SpawnError || SendError;
 
-    /// Give a worker the page: one per committed navigation, the one before
+    /// Give the worker the page: one per committed navigation, the one before
     /// it killed as this one starts (§6).
     ///
     /// A page whose scripts will not start is a page whose scripts have
@@ -230,7 +193,6 @@ pub const Host = struct {
     /// dies on start is not started in a loop (§7). The next navigation is
     /// the retry.
     pub fn begin(self: *Host, start: worker_proto.Start) BeginError!void {
-        if (!self.owns()) return;
         self.stop(.asked);
 
         if (self.out.len == 0) {
@@ -263,7 +225,6 @@ pub const Host = struct {
     /// itself; `.fault` is the one it says to a person, and says that the
     /// asking has already been overtaken.
     pub fn stop(self: *Host, why: Reason) void {
-        if (!self.owns()) return;
         if (why != .fault and self.child != null) {
             self.send(.{ .stop = {} }) catch {};
             self.flush();
@@ -326,11 +287,9 @@ pub const Host = struct {
         TooLarge,
     };
 
-    /// Say something to the worker. Nothing is sent when the reader runs a
-    /// page's scripts itself, and nothing is waited for: what the channel
+    /// Say something to the worker. Nothing is waited for: what the channel
     /// will not take yet stays owed and goes with the next `take`.
     pub fn send(self: *Host, message: worker_proto.Message) SendError!void {
-        if (!self.owns()) return;
         if (self.child == null) return error.Gone;
 
         // Room behind what is still owed, for one frame of any size: the
@@ -351,7 +310,7 @@ pub const Host = struct {
     /// more. Moves what is owed towards it first, so a host that is only
     /// pumped by `take` still gets its messages out.
     pub fn take(self: *Host) ?worker_proto.Message {
-        if (!self.owns() or self.child == null) return null;
+        if (self.child == null) return null;
         self.flush();
         if (self.child == null) return null;
         self.fill();
@@ -578,22 +537,6 @@ fn said(into: []u8) []const u8 {
     at += (worker_proto.encode(.{ .page = .{ .bytes = "one" } }, into[at..]) catch unreachable).len;
     at += (worker_proto.encode(.{ .missing = .{ .text = "localStorage" } }, into[at..]) catch unreachable).len;
     return into[0..at];
-}
-
-test "a host that runs scripts itself runs nothing and asks for nothing" {
-    const fake: Fake = .{};
-    var host = Host.inProcess();
-    defer host.deinit();
-
-    try testing.expect(!host.owns());
-    try host.begin(aPage());
-    try host.send(.{ .tick = {} });
-    try testing.expectEqual(@as(?worker_proto.Message, null), host.take());
-    host.stop(.asked);
-    try testing.expectEqual(Status.none, host.status());
-    try testing.expectEqual(@as(?u32, null), host.handle());
-    try testing.expectEqual(@as(usize, 0), fake.spawned);
-    try testing.expectEqual(@as(usize, 0), fake.killed);
 }
 
 test "a page's worker is started and told what the page is" {

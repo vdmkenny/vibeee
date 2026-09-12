@@ -1,19 +1,21 @@
 # vibeee Script Worker (design/13-script-worker.md)
 
-> **Status: the seam is in, behind `-Dscript-worker` (default off). The worker is still a stub.**
+> **Status: the seam is in and is the only path. The worker is still a stub.**
 >
 > Context: the reader's scripts run QuickJS, Lexbor, the DOM bridge and a small amount of C glue in the `web` process. A fault in any of them reaches the kernel's page-fault path and takes the browser down; `hln.be` reproduced that. QuickJS memory and stack limits (already set) bound managed allocation and interpreter recursion only. They do not contain native faults.
 >
 > This document designs the containment boundary.
 >
 > What is built so far is the seam and nothing past it: `apps/web/script_host.zig`
-> is one type with two kinds, in-process (the default, and exactly the reader
-> there was) and worker-backed; the worker is spawned per committed navigation
-> and killed on the next; frames of §5 go both ways over two pipes; and a
-> worker that dies costs the page its scripts and nothing else — the page on
-> screen is kept and the status line says "scripts stopped". What is not built
-> is everything that would make the worker useful: it parses nothing, runs
-> nothing, and a `page` is not serialized yet (§11). So with the flag on, a
+> is one type, worker-backed, and it is the only way a page's scripts run. A
+> worker is spawned per committed navigation and killed on the next; frames of
+> §5 go both ways over two pipes; and a worker that dies costs the page its
+> scripts and nothing else — the page on screen is kept and the status line says
+> "scripts stopped". There is no in-process path to fall back to: the reader has
+> no engine of its own, and a page is never run in two places at once.
+>
+> What is not built is everything that would make the worker useful: it parses
+> nothing, runs nothing, and a `page` is not serialized yet (§11). So today a
 > page reads as one with no scripts in it, which is the honest state of the
 > work rather than a half of it done twice.
 
@@ -155,24 +157,22 @@ This is the point of the design.
 
 ## 9. Migration
 
-Keep the change small and reversible:
+Keep the change small, and keep the worker the only way a page's scripts run:
 
-1. ~~Add `script_worker.zig` with the same public entry points `dom.bind/load/click/typed/loop/waits/release`.~~ The program exists and builds (`zig build script-worker -Dscript-worker=true`); it is still a stub.
+1. ~~Add `script_worker.zig` with the same public entry points `dom.bind/load/click/typed/loop/waits/release`.~~ The program exists and builds (`zig build script-worker`); it is still a stub.
 2. Move `apps/web/scripts/dom.zig` and `src/user/js` behind the worker boundary. **Not started.**
-3. Serialize `page_mod.Page` between worker and web. **Not started** — which is why a page read with the flag on is a page read without its scripts.
+3. Serialize `page_mod.Page` between worker and web. **Not started** — which is why a page read today is a page read without its scripts.
 4. Replace direct calls in `web` with channel sends. **Half done:** the calls in `web` are there and the frames cross, but the only messages it acts on today are the worker's errors, the APIs it could not give a script, and its going.
-5. Keep the current in-process path behind a build flag (`-Dscript-worker=false`) until the worker path is proven by tests and by the same target traces used today (`web -t`) and manual VNC runs. **Done:** `-Dscript-worker` is off by default, and `web` with it off is byte for byte the reader it was.
+5. ~~Keep the current in-process path behind a build flag (`-Dscript-worker=false`) until the worker path is proven by tests and by the same target traces used today (`web -t`) and manual VNC runs.~~ **Gone:** the flag and the in-process kind of the host with it. The worker is the only path, so there is one behaviour to prove rather than two to keep in step.
 
 The current `scripts` setting (on/off) still works: with scripts off, `web` never spawns a worker.
 
 ### What the seam is
 
-`apps/web/script_host.zig` is one type, `Host`, with two kinds. `in_process`
-does nothing at all — no process, no channel, no state — and is what every
-reader built so far gets. `worker` holds the worker's pid, the two ends of the
-channel, a frame being sent and a frame being read, and what became of the
-last one. `web` asks `owns()` before it opens a page's scripts itself, so they
-are never run in both places at once.
+`apps/web/script_host.zig` is one type, `Host`, over a worker. It holds the
+worker's pid, the two ends of the channel, a frame being sent and a frame being
+read, and what became of the last one. `web` never opens a page's scripts
+itself, so they are never run in both places at once.
 
 The machine is handed in, as a `Platform`: start a program, end it, move
 bytes, ask whether it has ended. `apps/web/script_host_sys.zig` is the one
@@ -184,8 +184,8 @@ lifecycle and the fault handling be tested on this machine (§10).
 - Host tests: message encode/decode round-trips, bounded sizes. **Done** (`worker_proto.zig`).
 - Host tests: worker start/stop lifecycle and restart-on-navigation. **Done** (`script_host.zig`).
 - Fault-injection tests: kill the worker mid-page; assert `web` keeps the last page and remains responsive. **Done**, as host tests of the host: end of file with nothing said, a worker that will not start, one that takes nothing in, and a frame that cannot be one all end the same way — scripts stopped, the page untouched, and no second worker started for that page.
-- Target traces through `web -t`: confirm script errors and missing-API telemetry survive the boundary. **Not started:** text mode runs a page's scripts in the reader whatever the build is, having no window loop to pump a worker with.
-- Manual: the sites that crashed or misbehaved (hln.be, standaard.be, Google consent) navigated in VNC with the worker enabled. **Not started.**
+- Target traces through `web -t`: confirm script errors and missing-API telemetry survive the boundary. **Not started:** text mode runs a page's scripts in the reader rather than in a worker, having no window loop to pump one with.
+- Manual: the sites that crashed or misbehaved (hln.be, standaard.be, Google consent) navigated in VNC. **Not started.**
 
 Fault injection is the load-bearing test: it is the only test that proves the guarantee "a page cannot crash the browser".
 

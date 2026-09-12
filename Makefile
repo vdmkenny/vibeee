@@ -284,14 +284,13 @@ web:
 	@cp zig-out/bin/web home/bin/web
 	@echo "  ready   home/bin/web, on the machine at the next image build"
 
-# The process the reader hands a page's scripts to, for a reader built to do
-# that: `-Dscript-worker`, off by default, and this is the program it builds.
-# Built beside the reader in home/bin because it is the reader's and not the
-# system's; a reader built without it runs a page's scripts itself and never
-# looks for one. design/13-script-worker.md.
+# The process the reader hands a page's scripts to. Built beside the reader
+# in home/bin because it is the reader's and not the system's; the reader
+# spawns one for every page it commits to, so a machine running the reader
+# needs this program in the image with it. design/13-script-worker.md.
 .PHONY: script-worker
 script-worker:
-	@$(ZIG) build script-worker -Dscript-worker=true
+	@$(ZIG) build script-worker
 	@mkdir -p home/bin
 	@cp zig-out/bin/script_worker home/bin/script_worker
 	@echo "  ready   home/bin/script_worker, on the machine at the next image build"

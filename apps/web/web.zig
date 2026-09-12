@@ -68,21 +68,16 @@ const url = @import("url");
 const view_mod = @import("view.zig");
 /// What the reader and its script worker say to each other, §5 of
 /// design/13-script-worker.md. Both sides import this one module, so both
-/// spell the protocol the same way; spoken only where the reader was built
-/// to hand a page's scripts to a worker, and not at all otherwise.
+/// spell the protocol the same way.
 const worker_proto = @import("worker_proto");
-/// Where a page's scripts run: in this reader, as they always have, or in a
-/// worker of its own, which is design/13-script-worker.md. One type either
-/// way, so that this file says the same thing to both.
+/// Where a page's scripts run: in a worker of its own, which is
+/// design/13-script-worker.md. The reader holds the page, the network, the
+/// cookies and the window; the worker holds what a page can corrupt.
 const script_host = @import("script_host");
-/// The machine under a host with a worker in it: two pipes and a program
-/// between them. Compiled in either way; a host without a worker never
-/// reaches it.
+/// The machine under the host: two pipes and a program between them. The
+/// only part of this that makes syscalls, and the only part of it that
+/// cannot be tested on this machine.
 const script_host_sys = @import("script_host_sys");
-/// Whether this reader was built to hand a page's scripts to a worker. The
-/// build's word and not a setting's: the other program has to have been
-/// built, and be in the image, for it to be possible at all.
-const worker_cfg = @import("worker_cfg");
 
 // The routines lexbor's C calls by name.
 comptime {
@@ -134,14 +129,13 @@ var source: Source = .{};
 /// on it, and the reader reads the page from it again where one has changed
 /// it.
 var document: ?Tree = null;
-/// The script running on the page on screen, where the reader was built with
-/// one and the page carries one.
+/// The script running on the page on screen, where the reader runs one
+/// itself. A page in a window is the worker's, so this is nothing: the
+/// reader opens no engine of its own over a page it has given away.
 var in_page: ?*scripts.Page = null;
-/// Where the page on screen's scripts run, for a reader built to hand them
-/// to a worker: the worker's process, the channel to it, and what the reader
-/// says of them when the worker goes. In the reader by default, in which
-/// case it is nothing at all and every call below does nothing.
-var scripts_host: script_host.Host = .inProcess();
+/// Where the page on screen's scripts run: the worker's process, the channel
+/// to it, and what the reader says of them when the worker goes.
+var scripts_host: script_host.Host = .{};
 /// The window the page on screen was read for, and the one it is drawn in
 /// now, as a stylesheet asks about a window. None before there is a window.
 var read_for: ?media.Screen = null;
@@ -304,10 +298,11 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     // Read before anything is asked of a site, by the window or the shell.
     choices = proto.settings.load("web");
     apply();
-    // Where this reader runs a page's scripts: in a worker of its own, which
-    // is what `-Dscript-worker` builds this program as, or in here, which is
-    // what it has always been. Nothing else in this file knows which.
-    scripts_host = if (worker_cfg.enabled) .forWorker(script_host_sys.platform, gpa) else .inProcess();
+    // Where this reader runs a page's scripts: in a worker of its own,
+    // started for a page and let go on the next. The reader keeps the page,
+    // the network, the cookies and the window, and the worker keeps what a
+    // page can corrupt (design/13-script-worker.md).
+    scripts_host = .forWorker(script_host_sys.platform, gpa);
     const first = env.arg(frame, 1);
     if (first) |flag| {
         if (std.mem.eql(u8, flag, "-t")) printText(env.arg(frame, 2) orelse usage());
@@ -725,14 +720,10 @@ fn scriptsAgain(enabled: bool) void {
         waitFor(.none);
         return;
     }
-    if (document) |*tree| {
-        in_page = if (!scripts_host.owns())
-            scripts.open(tree.document, source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie)
-        else
-            null;
-        if (choices.scripts and in_page == null and !scripts_host.owns()) {
-            problem("This page's scripts did not run", "The engine could not be opened for it, so the page reads as it was written. What the engine said is on the console.");
-        }
+    if (document != null) {
+        // A page's scripts are the worker's to run: the reader opens none
+        // of its own over the tree, so they are never run in both places at
+        // once.
         startHost(&source);
         readAgain();
     }
@@ -965,22 +956,12 @@ fn finish() void {
     // A page's scripts run before it is read, so that what they change is
     // what is read, which is the order a browser has them in. Where the
     // setting says no script runs, the page reads as it was written.
-    // Where a page's scripts are the worker's, it is given the page and left
-    // to run them: the reader keeps the page, the network, the cookies and
-    // the window, and the worker keeps what a page can corrupt. Where they
-    // are not — which is every reader built so far — the reader opens them
-    // itself, over the tree it is about to read.
-    in_page = if (choices.scripts and !scripts_host.owns())
-        scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie)
-    else
-        null;
+    // Otherwise they are the worker's, and it is given the page and left to
+    // run them: the reader keeps the page, the network, the cookies and the
+    // window, and the worker keeps what a page can corrupt. The reader
+    // opens no scripts of its own over the tree it is about to read.
     tree.read(gpa, &r.source, window, &fresh) catch |err| {
         fresh.deinit(gpa);
-        // Scripts were opened over this tree before it was read. If reading
-        // fails, let them go before the tree does: a context holding nodes in
-        // a tree already destroyed is worse than a page that could not read.
-        if (in_page) |page| scripts.close(page);
-        in_page = null;
         tree.close();
         r.source.deinit(gpa);
         return failed(err, if (url.parse(r.source.base.slice())) |base| base.host else "");
@@ -1002,15 +983,13 @@ fn finish() void {
     focus_next = .page;
 }
 
-/// Give the page on screen to the host, where the host is one with a worker
-/// in it, and do nothing at all where it is not.
+/// Give the page on screen to the host's worker.
 ///
 /// A page the worker cannot be given is a page whose scripts will not run,
 /// and is marked as one rather than tried again: a worker that dies on start
 /// is not started in a loop (§7). The page on screen is left exactly as the
 /// reader read it, which is the whole point.
 fn startHost(from: *const Source) void {
-    if (!scripts_host.owns()) return;
     var sheets: worker_proto.Sheets = .{};
     for (from.sheets.items) |sheet| sheets.add(sheet.text) catch break;
     scripts_host.begin(.{
@@ -1775,13 +1754,7 @@ fn status(area: Rect, body: Rect) void {
             std.fmt.bufPrint(&said, "scripts {d}, {d} threw", .{ ran, threw }) catch "scripts"
         else
             std.fmt.bufPrint(&said, "scripts {d}", .{ran}) catch "scripts";
-    } else if (scripts_host.status() == .running)
-        // A worker has the page's scripts and the reader has none of its own,
-        // so what there is to say of them is what comes back over the
-        // channel (§5): nothing yet, while a page is not yet a message.
-        "scripts: in a worker"
-    else if (choices.scripts) said: {
-        if (scripts_host.owns()) break :said "scripts: its worker has not started";
+    } else if (choices.scripts) said: {
         const because = scripts.whyNot();
         break :said if (because.len == 0) "scripts: none ran" else because;
     } else "scripts off";
