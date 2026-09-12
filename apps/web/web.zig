@@ -54,6 +54,7 @@ const blocklist_mod = @import("blocklist.zig");
 /// by `gen_blocklist.zig`, which `build.zig` runs for every reader it builds.
 const blocklist_data = @import("blocklist_data");
 const charset = @import("charset.zig");
+const cookie_mod = @import("cookie.zig");
 const css = @import("css.zig");
 const fetch_mod = @import("fetch.zig");
 const form_mod = @import("form.zig");
@@ -63,7 +64,7 @@ const page_mod = @import("page.zig");
 const pictures_mod = @import("pictures.zig");
 const scripts = @import("page_scripts");
 const source_mod = @import("source.zig");
-const url = @import("url.zig");
+const url = @import("url");
 const view_mod = @import("view.zig");
 
 // The routines lexbor's C calls by name.
@@ -115,6 +116,15 @@ var window: ?media.Screen = null;
 /// A page whose markup has come and whose stylesheets are still coming.
 var reading: ?Reading = null;
 var fetch: fetch_mod.Fetch = .{};
+/// Cookies are the browser's session state, rather than a document's: they
+/// cross redirects and pages while this reader remains open.
+var cookie_jar: cookie_mod.Jar = .{};
+/// The address a text-mode script asked to be taken to. Text mode has no
+/// window loop to own navigation, so it records the request and `readBody`
+/// hands it back to `printText`'s existing redirect loop.
+var text_redirect: ?url.Address = null;
+var text_base: url.Address = .{};
+var text_trace = false;
 /// The pictures of the page on screen, and the fetch that brings them.
 var pictures: pictures_mod.Pictures = .{};
 /// The fetch a script asks for: kept apart from the page's own, which is
@@ -333,34 +343,49 @@ fn keptFrom() ?blocklist_mod.Blocklist {
 /// The `Cookie` line for the request about to be made, written here so it
 /// lasts until the request has gone: the engine hands back a string of its
 /// own, and it is given back at once.
-var cookie_line: [1024]u8 = undefined;
+var cookie_line: [8 * 1024]u8 = undefined;
 var cookie_len: usize = 0;
 
-/// What the reader sends as `Cookie` for `target`: what the page's scripts
-/// have kept for that site, or nothing where no script is running.
+/// What the reader sends as `Cookie` for `target`, from the session jar.
 fn cookiesFrom(target: []const u8) []const u8 {
-    const page = in_page orelse return blankCookies();
     const where = url.parse(target) orelse return blankCookies();
-    var host: [url.ADDRESS_MAX:0]u8 = undefined;
-
-    if (where.host.len > url.ADDRESS_MAX) return blankCookies();
-    @memcpy(host[0..where.host.len], where.host);
-    host[where.host.len] = 0;
-    const got = scripts.cookiesFor(page, &host, "/") orelse return blankCookies();
-    // Copied: the engine's string goes back to it now, and the request is
-    // not written until the next step.
-    defer heap.release(got);
-    const line = std.mem.span(got);
-
-    if (line.len >= cookie_line.len) return blankCookies();
-    @memcpy(cookie_line[0..line.len], line);
+    const line = cookie_jar.write(where, true, &cookie_line);
+    if (text_trace and line.len > 0) traceCookies("->", where.host, cookie_jar.count());
     cookie_len = line.len;
-    return cookie_line[0..cookie_len];
+    return line;
 }
 
 fn blankCookies() []const u8 {
     cookie_len = 0;
     return cookie_line[0..0];
+}
+
+/// The text a page is allowed to see through `document.cookie`: the session
+/// jar, without cookies a server marked HttpOnly.
+fn cookiesForScript(address_: []const u8, into: []u8) usize {
+    const where = url.parse(address_) orelse return 0;
+    return cookie_jar.write(where, false, into).len;
+}
+
+/// A `document.cookie` assignment, kept past this document and sent to the
+/// next page or redirect on the matching site.
+fn setScriptCookie(address_: []const u8, assignment: []const u8) void {
+    const where = url.parse(address_) orelse return;
+    cookie_jar.take(gpa, where, assignment, false);
+}
+
+/// Every Set-Cookie field in one response. Fetch calls this before it follows
+/// a Location, so redirect cookies are present on the request that follows.
+fn takeResponseCookies(address_: []const u8, response: *const http.Response) void {
+    const where = url.parse(address_) orelse return;
+    const before = cookie_jar.count();
+    cookie_jar.takeHead(gpa, where, response.head.slice());
+    if (text_trace and cookie_jar.count() > before) traceCookies("<-", where.host, cookie_jar.count() - before);
+}
+
+fn traceCookies(direction: []const u8, host: []const u8, count: usize) void {
+    var line: [128]u8 = undefined;
+    out.text(std.fmt.bufPrint(&line, "cookies {s} {s}: {d}\n", .{ direction, host, count }) catch return);
 }
 
 /// The page's fetch, which brings its stylesheets too, and its pictures'.
@@ -437,6 +462,16 @@ fn follow(link: u16) void {
 /// page the answers made last time.
 fn go(where: []const u8) void {
     sending = .{};
+    // A script normally says `/next`, `next`, or `?page=2`, not the whole
+    // address it is already on. Links are resolved while the page is read,
+    // but a script is handed straight here, so give its relative destination
+    // the same base before it is made a new history entry.
+    if (url.parse(where) == null) {
+        if (url.parse(source.base.slice())) |base| {
+            var resolved: [url.ADDRESS_MAX]u8 = undefined;
+            if (url.resolve(base, where, &resolved)) |whole| return visitNew(whole);
+        }
+    }
     visitNew(where);
 }
 
@@ -491,7 +526,7 @@ fn revisit() void {
 /// history.
 fn visit(target: []const u8) void {
     abandon();
-    address.set(target);
+    address.setFromStart(target);
     const where = url.parse(target) orelse return failed(error.NotAnAddress, target);
     if (where.scheme == .file) return openFile(where);
     // A page on one of the sites the reader keeps away from is not gone to:
@@ -504,6 +539,8 @@ fn visit(target: []const u8) void {
     fetch.asking.sent = if (sending.forTarget(target)) |answers| .{ .form = answers } else .nothing;
 
     fetch.asking.cookies = cookiesFrom(target);
+    fetch.response_hook = &takeResponseCookies;
+    fetch.cookies_for = &cookiesFrom;
     // The network is the page's while it comes: the pictures of the one on
     // screen wait.
     pictures.pause(gpa);
@@ -518,7 +555,7 @@ fn stop() void {
         fetch.asking.wanted = .page;
         return finish();
     }
-    if (history.current()) |entry| address.set(entry.address.slice());
+    if (history.current()) |entry| address.setFromStart(entry.address.slice());
     // The page on screen stays, and so do its pictures still to come.
     waitFor(.none);
 }
@@ -614,7 +651,10 @@ fn scriptsAgain(enabled: bool) void {
         return;
     }
     if (document) |*tree| {
-        in_page = scripts.open(tree.document, source.base.slice(), http.USER_AGENT, &fetchForScript);
+        in_page = scripts.open(tree.document, source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie);
+        if (choices.scripts and in_page == null) {
+            problem("This page's scripts did not run", "The engine could not be opened for it, so the page reads as it was written. What the engine said is on the console.");
+        }
         readAgain();
     }
     waitFor(.none);
@@ -673,7 +713,7 @@ fn settle(wait: fetch_mod.Wait) bool {
     switch (wait) {
         // The step that blocks is also what a redirect is, which the address
         // says as it happens: a page's, and not a stylesheet's.
-        .none => if (reading == null) address.set(fetch.address()),
+        .none => if (reading == null) address.setFromStart(fetch.address()),
         .site => {},
         .over => switch (fetch.state) {
             .idle => return false,
@@ -711,7 +751,7 @@ fn waitFor(wait: fetch_mod.Wait) void {
 /// on it.
 fn arrive() void {
     const final = fetch.address();
-    address.set(final);
+    address.setFromStart(final);
     if (history.current()) |entry| _ = entry.address.set(final);
 
     arrived = .{
@@ -844,17 +884,31 @@ fn finish() void {
     // what is read, which is the order a browser has them in. Where the
     // setting says no script runs, the page reads as it was written.
     in_page = if (choices.scripts)
-        scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT, &fetchForScript)
+        scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie)
     else
         null;
     tree.read(gpa, &r.source, window, &fresh) catch |err| {
         fresh.deinit(gpa);
+        // Scripts were opened over this tree before it was read. If reading
+        // fails, let them go before the tree does: a context holding nodes in
+        // a tree already destroyed is worse than a page that could not read.
+        if (in_page) |page| scripts.close(page);
+        in_page = null;
         tree.close();
         r.source.deinit(gpa);
         return failed(err, if (url.parse(r.source.base.slice())) |base| base.host else "");
     };
     document = tree;
-    present(&fresh, r.source);
+    // `forget` above let go of the page this one replaces. `present` would
+    // call it again through `replace`, immediately closing the context just
+    // opened over `tree`; that made scripts run once and then disappear before
+    // a timer, a redirect, or a script-sent form could happen. Keep this tree
+    // and its context together while the page stays on screen.
+    source.deinit(gpa);
+    source = r.source;
+    read_for = window;
+    showPage(&fresh);
+    focus_next = .page;
 }
 
 /// Let go of the tree the page on screen was read from, and of the script
@@ -891,17 +945,28 @@ fn abandon() void {
 /// asking often wants the answer, and the reader has nowhere to keep a
 /// question open. Blocked on the site, as a stylesheet from one is.
 fn fetchForScript(asked: []const u8) ?[]u8 {
-    const where = url.parse(asked) orelse return null;
+    // `src="/site.js"` and `fetch("next.json")` are relative to the page,
+    // as a link is. Scripts used to be the one request path that gave those
+    // words to the URL parser raw and consequently fetched neither.
+    var resolved: [url.ADDRESS_MAX]u8 = undefined;
+    const target = if (url.parse(asked) != null) asked else base: {
+        const current = if (source.base.slice().len > 0) source.base.slice() else text_base.slice();
+        const page = url.parse(current) orelse return null;
+        break :base url.resolve(page, asked, &resolved) orelse return null;
+    };
+    const where = url.parse(target) orelse return null;
     if (where.scheme == .file) {
         return file.readAlloc(gpa, where.file(), fetch_mod.PAGE_MAX) catch null;
     }
     script_fetch.asking.wanted = .page;
     script_fetch.asking.mobile = choices.mobile;
     script_fetch.asking.shade = view.shade;
-    script_fetch.asking.cookies = cookiesFrom(asked);
+    script_fetch.asking.cookies = cookiesFrom(target);
+    script_fetch.response_hook = &takeResponseCookies;
+    script_fetch.cookies_for = &cookiesFrom;
     script_fetch.blocklist = keptFrom();
     defer script_fetch.release(gpa);
-    script_fetch.begin(gpa, asked);
+    script_fetch.begin(gpa, target);
     while (true) switch (script_fetch.advance(gpa)) {
         .none => {},
         .site => |handle| sys.eventWait(handle, WATCH_US) catch {},
@@ -1377,7 +1442,7 @@ fn strip(area: Rect, at: Strip) void {
 /// What the menu at the end of the strip holds, a row each: the settings a
 /// person changes while reading, each of which `cfg` changes as well, and
 /// making the page on screen the home page.
-const Row = enum { mobile, pictures, styles, theme, ads, rule, home };
+const Row = enum { mobile, pictures, styles, scripts, theme, ads, rule, home };
 
 comptime {
     std.debug.assert(std.enums.values(Row).len <= eui.context_menu.MAX_ITEMS);
@@ -1412,6 +1477,7 @@ fn rowOf(row: Row) eui.context_menu.Row {
         .mobile => .{ .setting = .{ .label = "Mobile pages", .values = ON_OFF, .at = atOf(choices.mobile) } },
         .pictures => .{ .setting = .{ .label = "Pictures", .values = ON_OFF, .at = atOf(choices.images) } },
         .styles => .{ .setting = .{ .label = "Page styles", .values = ON_OFF, .at = atOf(choices.styles) } },
+        .scripts => .{ .setting = .{ .label = "Page scripts", .values = ON_OFF, .at = atOf(choices.scripts) } },
         .theme => .{ .setting = .{ .label = "Page theme", .values = &SHADES, .at = @intFromEnum(choices.theme) } },
         .ads => .{ .setting = .{ .label = "Ad protection", .values = ON_OFF, .at = atOf(choices.ad_protection) } },
         .rule => .rule,
@@ -1487,6 +1553,7 @@ fn set(row: Row, at: usize) void {
         .mobile => next.mobile = at != 0,
         .pictures => next.images = at != 0,
         .styles => next.styles = at != 0,
+        .scripts => next.scripts = at != 0,
         .ads => next.ad_protection = at != 0,
         // The menu offers them in the order the type declares them, so the
         // one chosen is the one at that place.
@@ -1564,8 +1631,34 @@ fn status(area: Rect, body: Rect) void {
         } else arrivedText(&right, body),
     }
 
+    // How many of the page's scripts ran, which is the only way to tell a
+    // reader that ran none from a page that had none: a site that sends its
+    // no-scripts page to a reader with scripts looks exactly like one that
+    // sends it to a reader without.
+    var said: [96]u8 = undefined;
+    const scripts_said: []const u8 = if (in_page) |page| blk: {
+        const ran = scripts.scriptsRan(page);
+        const threw = scripts.scriptsThrew(page);
+        break :blk if (scripts.errorLast(page)) |error_text|
+            std.fmt.bufPrint(&said, "scripts {d}: {s}", .{ ran, error_text[0..@min(error_text.len, 72)] }) catch "scripts threw"
+        else if (scripts.askedCount(page) > 0)
+            std.fmt.bufPrint(&said, "scripts {d}, no {s} (+{d})", .{
+                ran,
+                scripts.askedLast(page) orelse "?",
+                scripts.askedCount(page) - 1,
+            }) catch "scripts"
+        else if (threw > 0)
+            std.fmt.bufPrint(&said, "scripts {d}, {d} threw", .{ ran, threw }) catch "scripts"
+        else
+            std.fmt.bufPrint(&said, "scripts {d}", .{ran}) catch "scripts";
+    } else if (choices.scripts) said: {
+        const because = scripts.whyNot();
+        break :said if (because.len == 0) "scripts: none ran" else because;
+    } else "scripts off";
+
     eui.statusbar.run(ctx, area, &.{
         .{ .text = left.done() },
+        .{ .text = scripts_said, .width = 320 },
         .{ .text = right.done(), .width = 150 },
     });
 }
@@ -1624,6 +1717,7 @@ fn key(code: KeyCode, mods: Modifiers) bool {
 /// its stylesheets' rules for windows of some sizes and not others are left
 /// out.
 fn printText(target: []const u8) noreturn {
+    text_trace = true;
     var buf: [url.ADDRESS_MAX]u8 = undefined;
     const where_text = addressFrom(target, &buf) orelse fatal(target, error.NotAnAddress);
 
@@ -1694,8 +1788,31 @@ fn readBody(body: std.ArrayList(u8), base: url.Url, kind: Kind, declared: ?chars
         links.took(text.len);
         from.keep(gpa, text, link.media);
     }
+    // Text mode is the same browser without a window: scripts run over the
+    // same tree, their errors go to the terminal, and a location change is a
+    // redirect the caller can follow.
+    text_base = from.base;
+    text_redirect = null;
+    if (scripts.open(tree.document, from.base.slice(), http.USER_AGENT, &fetchForScript, &textGo, &cookiesForScript, &setScriptCookie)) |script| {
+        defer scripts.close(script);
+        _ = scripts.loop(script);
+        if (scripts.errorLast(script)) |error_text| out.fault("script", scripts.errorSource(script), error_text);
+        if (text_redirect) |next| return next;
+    }
     tree.read(gpa, &from, null, page) catch |err| fatal(from.base.slice(), err);
     return null;
+}
+
+/// A text-mode `location` change, resolved like one in a window but retained
+/// for `readBody` rather than beginning a second, invisible fetch here.
+fn textGo(where: []const u8) void {
+    var resolved: [url.ADDRESS_MAX]u8 = undefined;
+    const target = if (url.parse(where) != null) where else base: {
+        const from = url.parse(text_base.slice()) orelse return;
+        break :base url.resolve(from, where, &resolved) orelse return;
+    };
+    var next: url.Address = .{};
+    if (next.set(target)) text_redirect = next;
 }
 
 /// A stylesheet's text, read from this machine or fetched as the shell
@@ -1713,6 +1830,9 @@ fn sheetNow(link_address: []const u8) ?[]u8 {
 /// Fetch `target` as a shell waits for it: blocked on the site, woken by it
 /// or once a second to notice one gone quiet. True where it arrived.
 fn fetchNow(target: []const u8) bool {
+    fetch.response_hook = &takeResponseCookies;
+    fetch.redirect_hook = &traceRedirect;
+    fetch.cookies_for = &cookiesFrom;
     fetch.begin(gpa, target);
     while (true) switch (fetch.advance(gpa)) {
         .none => {},
@@ -1720,6 +1840,16 @@ fn fetchNow(target: []const u8) bool {
         .over => break,
     };
     return fetch.state == .done;
+}
+
+/// A target-side trace for `web -t`: redirects are otherwise invisible until
+/// the final loop limit, when the one useful fact is the chain that led there.
+fn traceRedirect(from: []const u8, to: []const u8) void {
+    out.text("redirect ");
+    out.text(from);
+    out.text(" -> ");
+    out.text(to);
+    out.text("\n");
 }
 
 /// Say what went wrong on a shell line, and stop.

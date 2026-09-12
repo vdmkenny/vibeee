@@ -13,10 +13,10 @@ const std = @import("std");
 const charset = @import("charset.zig");
 const css = @import("css.zig");
 const extract = @import("extract.zig");
-const lexbor = @import("lexbor.zig");
+const lexbor = @import("lexbor");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
-const url = @import("url.zig");
+const url = @import("url");
 
 const Allocator = std.mem.Allocator;
 const Page = page_mod.Page;

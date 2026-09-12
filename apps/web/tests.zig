@@ -3,9 +3,10 @@
 //! so none of it needs the machine, the parser or a window to be tested.
 
 test {
-    _ = @import("url.zig");
+    _ = @import("url");
     _ = @import("http.zig");
     _ = @import("charset.zig");
+    _ = @import("cookie.zig");
     _ = @import("form.zig");
     _ = @import("page.zig");
     _ = @import("layout.zig");

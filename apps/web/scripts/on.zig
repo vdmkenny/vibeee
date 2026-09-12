@@ -16,7 +16,10 @@
 const std = @import("std");
 const js = @import("js");
 const heap = @import("ulib").heap;
+const lexbor = @import("lexbor");
+const sys = @import("sys");
 const dom = @import("dom.zig");
+const url = @import("url");
 
 /// A page's tree with a script in it.
 pub const Page = js.Engine;
@@ -31,18 +34,60 @@ var machine: ?*js.Machine = null;
 /// it, there and then. Handed in when a page is opened, and kept, because
 /// the network is the reader's business and not the engine's.
 var fetcher: ?*const fn ([]const u8) ?[]u8 = null;
+var going: ?*const fn ([]const u8) void = null;
+var cookie_reader: ?*const fn ([]const u8, []u8) usize = null;
+var cookie_writer: ?*const fn ([]const u8, []const u8) void = null;
+/// Why the last page was read without its scripts, which the reader shows:
+/// stdout is not a thing a person reading a page is looking at.
+var why: []const u8 = "no page has been asked for scripts yet";
+
+/// The reader's clock, in thousandths of a second, for a script's timers.
+export fn qjsClock() callconv(.c) u32 {
+    return @truncate(sys.clockMicros() / std.time.us_per_ms);
+}
+
+/// What a script says out loud, and what the engine says it could not give a
+/// page, go to the system log: stdout is not somewhere a person reading a
+/// page is looking, and a reader that cannot say what it could not do is a
+/// reader nobody can find the gaps in.
+extern fn qjs_set_say(say: ?*const fn ([*:0]const u8) callconv(.c) void) void;
+
+export fn qjsSay(text: [*:0]const u8) callconv(.c) void {
+    @import("ulib").log.note("scripts", std.mem.span(text));
+}
+
+/// Where a script has asked to be taken: the reader goes there.
+export fn qjsGo(taken: ?*anyopaque, where: [*:0]const u8) callconv(.c) void {
+    _ = taken;
+    if (going) |call| call(std.mem.span(where));
+}
 
 export fn qjsFetch(_: ?*anyopaque, address: [*:0]const u8) callconv(.c) ?[*:0]u8 {
     const gpa = heap.allocator;
     const got = (fetcher orelse return null)(std.mem.span(address)) orelse return null;
+    defer gpa.free(got);
     // NUL-terminated for C, which gives it back with `free`.
     const out = gpa.allocSentinel(u8, got.len, 0) catch return null;
     @memcpy(out, got);
     return out.ptr;
 }
 
+/// The cookies the browser holds for a page, copied into the document's
+/// caller-owned space. The jar is the reader's and survives this context.
+export fn qjsCookies(_: ?*anyopaque, address: [*:0]const u8, into: [*]u8, cap: usize) callconv(.c) usize {
+    const read = cookie_reader orelse return 0;
+    return read(std.mem.span(address), into[0..cap]);
+}
+
+/// A `document.cookie` assignment, kept by the browser rather than this
+/// one context so its next page can send it too.
+export fn qjsCookie(_: ?*anyopaque, address: [*:0]const u8, assignment: [*:0]const u8) callconv(.c) void {
+    const write = cookie_writer orelse return;
+    write(std.mem.span(address), std.mem.span(assignment));
+}
+
 fn engine() ?*js.Machine {
-    if (machine) |running| return running;
+    if (machine) |kept| return kept;
     machine = js.start();
     return machine;
 }
@@ -55,31 +100,91 @@ fn engine() ?*js.Machine {
 /// it is, is the reader's business, and this module is not to be given a
 /// second copy of the reader's own files to know.
 pub fn open(
-    tree: *anyopaque,
+    tree: *lexbor.Document,
     address: []const u8,
     user_agent: [*:0]const u8,
     fetch: *const fn ([]const u8) ?[]u8,
+    go: *const fn ([]const u8) void,
+    cookies: *const fn ([]const u8, []u8) usize,
+    set_cookie: *const fn ([]const u8, []const u8) void,
 ) ?*Page {
     fetcher = fetch;
-    const page = js.open(engine() orelse return null) orelse return null;
-    var buf: [512]u8 = undefined;
-    const where = std.fmt.bufPrintZ(&buf, "{s}", .{address}) catch {
-        js.close(page);
+    going = go;
+    cookie_reader = cookies;
+    cookie_writer = set_cookie;
+    qjs_set_say(&qjsSay);
+    // Each way this can fail says which it was: a page read without its
+    // scripts looks exactly like one a site sent to a reader with none, and
+    // nothing else tells those two apart.
+    const machine_at = engine() orelse {
+        why = "a runtime would not start";
+        js.note(@ptrCast(why.ptr));
         return null;
     };
-    if (!dom.bind(page, tree, where.ptr, user_agent, &qjsFetch, null)) {
-        js.close(page);
+    const at = js.open(machine_at) orelse {
+        why = "a context would not open";
+        js.note(@ptrCast(why.ptr));
+        return null;
+    };
+    // The reader can keep an address of this size. A script bridge with a
+    // smaller, private buffer made a redirect fail long before the URL layer
+    // had a chance to accept it.
+    var buf: [url.ADDRESS_MAX + 1]u8 = undefined;
+    const where = std.fmt.bufPrintZ(&buf, "{s}", .{address}) catch {
+        why = "the address is too long";
+        js.note(@ptrCast(why.ptr));
+        js.close(at);
+        return null;
+    };
+    if (!dom.bind(at, tree, where.ptr, user_agent, &qjsFetch, null, &qjsClock, &qjsGo, &qjsCookies, &qjsCookie)) {
+        why = "the document would not bind";
+        js.note(@ptrCast(why.ptr));
+        js.close(at);
         return null;
     }
-    dom.load(page, tree);
-    return page;
+    dom.load(at, tree);
+    why = "";
+    return at;
 }
 
-/// Stop, and give back everything held: a page gone from the screen takes
-/// its tree and its script with it.
+/// What the page on screen reached for and this reader had no answer to, and
+/// how much of that there was.
+pub fn askedLast(page: *Page) ?[]const u8 {
+    return dom.askedLast(page);
+}
+
+pub fn askedCount(page: *Page) u32 {
+    return dom.askedCount(page);
+}
+
+/// The last exception a page threw, where one did.
+pub fn errorLast(page: *Page) ?[]const u8 {
+    return dom.errorLast(page);
+}
+
+pub fn errorSource(page: *Page) []const u8 {
+    return dom.errorSource(page);
+}
+
+/// Why the page on screen was read without its scripts, or nothing where it
+/// was not.
+pub fn whyNot() []const u8 {
+    return why;
+}
+
+/// How many of the page's scripts have run, and how many of those threw.
+pub fn scriptsRan(page: *Page) u32 {
+    return dom.scriptsRan(page);
+}
+
+pub fn scriptsThrew(page: *Page) u32 {
+    return dom.scriptsThrew(page);
+}
+
 pub fn close(page: *Page) void {
     dom.release(page);
     js.close(page);
+    why = "scripts ran, and were let go with the page";
 }
 
 /// A click on the element at `node`. True where a script asked for the click

@@ -25,7 +25,7 @@ const Bounded = @import("lib").bounded.Bounded;
 
 const blocklist_mod = @import("blocklist.zig");
 const http = @import("http.zig");
-const url = @import("url.zig");
+const url = @import("url");
 
 const Wire = ulib.wire.Wire;
 
@@ -111,6 +111,13 @@ pub const Wait = union(enum) {
     over,
 };
 
+/// A complete response, before a redirect turns this fetch to the next one.
+/// The browser uses it for state that belongs to responses rather than their
+/// bodies, notably Set-Cookie fields.
+pub const ResponseHook = *const fn ([]const u8, *const http.Response) void;
+pub const RedirectHook = *const fn ([]const u8, []const u8) void;
+pub const CookieHook = *const fn ([]const u8) []const u8;
+
 pub const Fetch = struct {
     /// What is asked of the site: a page, a stylesheet or a picture, which
     /// says what the site is told the reader takes and how large its answer
@@ -131,6 +138,9 @@ pub const Fetch = struct {
     response: http.Response = .{},
     body: http.Body = .{ .limit = PAGE_MAX },
     redirects: u8 = 0,
+    response_hook: ?ResponseHook = null,
+    redirect_hook: ?RedirectHook = null,
+    cookies_for: ?CookieHook = null,
 
     /// When the fetch began, and when the site last said anything.
     started_us: u64 = 0,
@@ -234,7 +244,7 @@ pub const Fetch = struct {
         const wire = if (self.takeKept(where)) |kept| kept else ulib.wire.open(where.host, where.port, kind) catch |err| return self.fail(err);
         self.wire = wire;
 
-        var stack: [url.ADDRESS_MAX + 512]u8 = undefined;
+        var stack: [http.REQUEST_MAX]u8 = undefined;
         // A POST carries its answers behind its head, which is more than a
         // request has room for here, so one that sends any is put together
         // in the heap and let go as soon as it is on the wire.
@@ -293,6 +303,7 @@ pub const Fetch = struct {
 
     /// The answer is complete: the page, or somewhere else to ask.
     fn arrived(self: *Fetch, gpa: std.mem.Allocator) void {
+        if (self.response_hook) |heard| heard(self.address(), &self.response);
         if (!self.response.redirects()) {
             self.keep();
             self.state = .done;
@@ -303,6 +314,11 @@ pub const Fetch = struct {
         const base = url.parse(self.address()) orelse return self.fail(error.BadAddress);
         var next: [url.ADDRESS_MAX]u8 = undefined;
         const target = url.resolve(base, self.response.location().?, &next) orelse return self.fail(error.BadAddress);
+        if (self.redirect_hook) |reported| reported(self.address(), target);
+        // A redirect can cross hosts, paths, or both. The first request's
+        // Cookie line is not the next request's: response cookies were just
+        // taken above and the destination chooses which of them belongs.
+        if (self.cookies_for) |cookies| self.asking.cookies = cookies(target);
         self.redirects += 1;
         self.aim(gpa, target);
     }

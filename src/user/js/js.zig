@@ -11,14 +11,15 @@
 //! `engine.h` says what each call is for; this is the pin, so a signature
 //! changed there fails the build here rather than at a call site.
 
+const qjs = @import("quickjs");
 /// An engine, which a program starts once and keeps: the runtime every script
 /// it runs hangs off.
-pub const Machine = opaque {};
+pub const Machine = qjs.Runtime;
 
 /// A script's own world: a context in that runtime, with every intrinsic in
 /// it and the two ways a script has of saying something out loud. One per
 /// page, given back when the page goes.
-pub const Engine = opaque {};
+pub const Engine = qjs.Context;
 
 extern fn qjs_start() ?*Machine;
 extern fn qjs_open(machine: *Machine) ?*Engine;
@@ -27,6 +28,7 @@ extern fn qjs_tell_error(engine: *Engine) void;
 extern fn qjs_loop(engine: *Engine) void;
 extern fn qjs_give_back(engine: *Engine, text: [*:0]u8) void;
 extern fn qjs_close(engine: *Engine) void;
+extern fn qjs_note(what: [*:0]const u8) void;
 
 /// Start an engine. Once, and kept: a runtime is the expensive half, and one
 /// that is freed while anything is still in it takes the program with it.
@@ -63,6 +65,12 @@ pub fn loop(engine: *Engine) void {
 /// Give back a string `run` answered with.
 pub fn giveBack(engine: *Engine, text: [*:0]u8) void {
     qjs_give_back(engine, text);
+}
+
+/// Say that a script reached for something this reader has no answer for, so
+/// that a page which stops is a page that has said why.
+pub fn note(what: [*:0]const u8) void {
+    qjs_note(what);
 }
 
 /// Stop one, and give back everything it holds.

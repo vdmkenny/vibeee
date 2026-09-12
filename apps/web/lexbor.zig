@@ -41,7 +41,16 @@ pub const NodeType = enum(c_int) {
     _,
 };
 
+/// The document a page parses into.
 pub const Document = opaque {};
+/// An element in it, which is what most of these calls are made on.
+pub const Element = opaque {};
+/// What a search of the tree turned up.
+pub const Collection = opaque {};
+/// A length of markup, serialised.
+pub const Text = extern struct { data: ?[*]const u8, length: usize };
+/// Lexbor's own selectors engine.
+pub const Selectors = opaque {};
 
 /// The elements this reader has a rule for, numbered as upstream numbers
 /// them: an element's `local_name` is its number. Every value is pinned
@@ -183,6 +192,64 @@ const CharacterData = extern struct {
 /// until the document goes: a page's worth of words held twice for the
 /// length of the walk, on a machine where that is the difference that
 /// matters.
+pub extern fn lxb_html_document_body_element_noi(document: *Document) ?*Element;
+pub extern fn lxb_html_document_head_element_noi(document: *Document) ?*Element;
+pub extern fn lexbor_first_child(node: *Node) ?*Node;
+pub extern fn lexbor_next(node: *Node) ?*Node;
+pub extern fn lexbor_prev(node: *Node) ?*Node;
+pub extern fn lexbor_parent(node: *Node) ?*Node;
+pub extern fn lexbor_collection_length(collection: *Collection) usize;
+pub extern fn lexbor_collection_element(collection: *Collection, at: usize) ?*Element;
+pub extern fn lexbor_destroy_text(document: *Document, text: [*]u8) ?*anyopaque;
+pub extern fn lxb_html_serialize_tree_str(node: *Node, out: *Text) c_int;
+
+/// A selector list, parsed: what `lxb_selectors_find` is given.
+pub const CssSelectorList = opaque {};
+/// The CSS parser's tokenizer, which a parser may be given its own of.
+pub const CssTokenizer = opaque {};
+
+/// Lexbor's DOM operation result. `ok` means the specification-level tree
+/// operation was valid and applied; anything else leaves the tree alone.
+pub const DomException = enum(c_int) { ok = 0, _ };
+
+pub extern fn lxb_dom_node_text_content(node: *Node, len: *usize) ?[*]const u8;
+pub extern fn lxb_dom_node_text_content_set(node: *Node, text: [*]const u8, len: usize) Status;
+pub extern fn lxb_dom_node_append_child(parent: *Node, child: *Node) DomException;
+pub extern fn lxb_dom_node_insert_before(into: *Node, node: *Node) void;
+pub extern fn lxb_dom_node_insert_before_spec(parent: *Node, node: *Node, before: *Node) DomException;
+pub extern fn lxb_dom_node_remove(node: *Node) void;
+pub extern fn lxb_dom_node_remove_child(parent: *Node, child: *Node) DomException;
+pub extern fn lxb_dom_node_replace_child(parent: *Node, node: *Node, child: *Node) DomException;
+pub extern fn lxb_dom_node_clone(node: *Node, deep: bool) ?*Node;
+pub extern fn lxb_dom_element_set_attribute(element: *Node, name: [*]const u8, name_len: usize, value: [*]const u8, value_len: usize) Status;
+pub extern fn lxb_dom_element_remove_attribute(element: *Node, name: [*]const u8, name_len: usize) Status;
+pub extern fn lxb_dom_element_tag_name(element: *Node, len: *usize) ?[*:0]const u8;
+pub extern fn lxb_dom_document_root(document: *Document) ?*Node;
+pub extern fn lxb_dom_document_create_element(document: *Document, name: [*]const u8, name_len: usize, reserved: ?*anyopaque) ?*Element;
+pub extern fn lxb_dom_document_create_text_node(document: *Document, text: [*]const u8, len: usize) ?*Node;
+pub extern fn lxb_html_document_parse_fragment(document: *Document, element: *Node, html: [*]const u8, size: usize) ?*Node;
+pub extern fn lxb_html_serialize_deep_str(node: *Node, out: *Text) c_int;
+pub extern fn lxb_dom_collection_create(document: *Document) ?*Collection;
+pub extern fn lxb_dom_collection_init(collection: *Collection, start: usize) Status;
+pub extern fn lxb_dom_collection_destroy(collection: *Collection, itself: bool) ?*Collection;
+pub extern fn lxb_dom_elements_by_tag_name(root: *Node, collection: *Collection, name: [*]const u8, len: usize) Status;
+pub extern fn lxb_dom_elements_by_class_name(root: *Node, collection: *Collection, name: [*]const u8, len: usize) Status;
+pub extern fn lxb_dom_elements_by_attr(root: *Node, collection: *Collection, name: [*]const u8, name_len: usize, value: [*]const u8, value_len: usize, regardless: bool) Status;
+pub extern fn lxb_selectors_create() ?*Selectors;
+pub extern fn lxb_selectors_init(engine: *Selectors) Status;
+pub extern fn lxb_selectors_find(engine: *Selectors, root: *Node, list: *const CssSelectorList, found: *const fn (*Node, u32, ?*anyopaque) callconv(.c) Status, taken: ?*anyopaque) Status;
+pub extern fn lxb_selectors_match_node(engine: *Selectors, node: *Node, list: *const CssSelectorList, found: *const fn (*Node, u32, ?*anyopaque) callconv(.c) Status, taken: ?*anyopaque) Status;
+pub extern fn lxb_selectors_destroy(engine: *Selectors, itself: bool) ?*Selectors;
+pub extern fn lxb_css_memory_create() ?*CssMemory;
+pub extern fn lxb_css_memory_destroy(memory: *CssMemory, itself: bool) ?*CssMemory;
+pub extern fn lxb_css_parser_create() ?*CssParser;
+pub extern fn lxb_css_parser_init(parser: *CssParser, tokenizer: ?*CssTokenizer) Status;
+pub extern fn lxb_css_parser_selectors_init(parser: *CssParser) Status;
+pub extern fn lxb_css_parser_selectors_destroy(parser: *CssParser) void;
+pub extern fn lxb_css_parser_destroy(parser: *CssParser, itself: bool) ?*CssParser;
+pub extern fn lxb_css_selectors_parse(parser: *CssParser, data: [*]const u8, length: usize) ?*CssSelectorList;
+pub extern fn lxb_css_selector_list_destroy(list: *CssSelectorList) void;
+
 pub fn wordsOf(node: *const Node) []const u8 {
     std.debug.assert(node.type == .text);
     const text: *const CharacterData = @fieldParentPtr("node", node);

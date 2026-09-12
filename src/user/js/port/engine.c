@@ -19,6 +19,25 @@
 
 #include "engine.h"
 
+/// Where what a script says goes. A reader's stdout is not a console a person
+/// is looking at, so the reader gives the engine somewhere better when it
+/// starts: the system log, which is where everything else says what it is
+/// doing. Left alone, what a script says goes to stdout as it always did.
+static void (*say_to)(const char *text) = NULL;
+
+void qjs_set_say(void (*say)(const char *text))
+{
+    say_to = say;
+}
+
+static void say_text(const char *text)
+{
+    if (say_to)
+        say_to(text);
+    else
+        fputs(text, stdout);
+}
+
 /// A value, as words. What `print` and `console.log` say, and what a script
 /// is told its script ended in.
 static void say(JSContext *ctx, JSValueConst value, const char *after)
@@ -26,11 +45,11 @@ static void say(JSContext *ctx, JSValueConst value, const char *after)
     const char *text = JS_ToCString(ctx, value);
 
     if (text) {
-        fputs(text, stdout);
+        say_text(text);
         JS_FreeCString(ctx, text);
     }
     if (after)
-        fputs(after, stdout);
+        say_text(after);
 }
 
 /// The same for each of a list of arguments, with a space between them, as
@@ -66,6 +85,14 @@ static void add_helpers(JSContext *ctx)
     console = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, console, "log",
                       JS_NewCFunction(ctx, js_say, "log", 1));
+    JS_SetPropertyStr(ctx, console, "info",
+                      JS_NewCFunction(ctx, js_say, "info", 1));
+    JS_SetPropertyStr(ctx, console, "warn",
+                      JS_NewCFunction(ctx, js_say, "warn", 1));
+    JS_SetPropertyStr(ctx, console, "error",
+                      JS_NewCFunction(ctx, js_say, "error", 1));
+    JS_SetPropertyStr(ctx, console, "debug",
+                      JS_NewCFunction(ctx, js_say, "debug", 1));
     JS_SetPropertyStr(ctx, global, "console", console);
     JS_FreeValue(ctx, global);
 }
@@ -160,6 +187,16 @@ void qjs_loop(struct JSContext *ctx)
 void qjs_give_back(struct JSContext *ctx, char *text)
 {
     js_free(ctx, text);
+}
+
+/// Note that a script reached for something this reader has no answer for:
+/// `scripts: no getComputedStyle`. A page that stops where it found nothing
+/// says nothing about why; this is the half of that a reader can give.
+void qjs_note(const char *what)
+{
+    say_text("scripts: no ");
+    say_text(what);
+    say_text("\n");
 }
 
 void qjs_close(struct JSContext *ctx)

@@ -31,10 +31,10 @@
 const std = @import("std");
 const Bounded = @import("lib").bounded.Bounded;
 const css = @import("css.zig");
-const lexbor = @import("lexbor.zig");
+const lexbor = @import("lexbor");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
-const url = @import("url.zig");
+const url = @import("url");
 
 const Node = lexbor.Node;
 const Tag = lexbor.Tag;

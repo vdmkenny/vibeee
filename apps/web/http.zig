@@ -14,7 +14,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Bounded = @import("lib").bounded.Bounded;
 const rgb = @import("lib").rgb;
-const url_mod = @import("url.zig");
+const url_mod = @import("url");
+
+/// The largest request the reader puts together. Modern consent and sign-in
+/// flows legitimately carry several kilobytes of cookies; a one-kilobyte
+/// header turns a received session into no session on the very next redirect.
+pub const REQUEST_MAX = url_mod.ADDRESS_MAX + 10 * 1024;
 
 const Url = url_mod.Url;
 const Writer = std.Io.Writer;

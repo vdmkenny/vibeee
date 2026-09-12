@@ -165,6 +165,8 @@ const UserBuild = struct {
                 "third_party/quickjs/libunicode.c",
                 "third_party/quickjs/cutils.c",
                 "src/user/js/port/engine.c",
+                "src/user/js/port/inlines.c",
+                "src/user/js/port/pin.c",
             },
             // Upstream is written against a GNU-flavoured C: `asm` for the
             // pause hint its atomics spin on, and `alloca` without asking for
@@ -177,10 +179,19 @@ const UserBuild = struct {
             }),
         });
         self.addClibc(out);
+        // The engine's own face, which `js` is written over: a mirror of
+        // QuickJS's C rather than the C itself, so an app that has scripts
+        // in it gets the mirror too and not a second spelling of the header.
+        const quickjs = self.b.createModule(.{
+            .root_source_file = self.b.path("src/user/js/quickjs.zig"),
+            .target = self.target,
+            .optimize = self.optimize,
+        });
         out.root_module.addImport("js", self.b.createModule(.{
             .root_source_file = self.b.path("src/user/js/js.zig"),
             .target = self.target,
             .optimize = self.optimize,
+            .imports = &.{.{ .name = "quickjs", .module = quickjs }},
         }));
     }
 
@@ -222,6 +233,8 @@ const UserBuild = struct {
         // The layout proof, which pins the struct shapes the Zig mirror
         // relies on. No code, only assertions.
         files[count] = "apps/web/lexborport/layout_check.c";
+        count += 1;
+        files[count] = "apps/web/lexborport/inlines.c";
         count += 1;
 
         out.root_module.addIncludePath(self.b.path("third_party/lexbor/source"));
@@ -754,15 +767,39 @@ pub fn build(b: *std.Build) void {
             if (with_scripts) {
                 user.addQuickJs(web);
                 web.root_module.addCSourceFiles(.{
-                    .files = &.{"apps/web/dom/dom.c"},
+                    .files = &.{},
                     .flags = user.cFlags(&.{}),
                 });
                 web.root_module.addIncludePath(b.path("src/user/js/port"));
             }
+            // One lexbor for the reader and its scripts both: imported by
+            // name rather than by path, so there is only ever one of it, and a
+            // node handed from one to the other is the same type on either
+            // side.
+            const lexbor_mod = b.createModule(.{
+                .root_source_file = b.path("apps/web/lexbor.zig"),
+                .target = user.target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "lib", .module = user.lib }},
+            });
+            web.root_module.addImport("lexbor", lexbor_mod);
+            const url_mod = b.createModule(.{
+                .root_source_file = b.path("apps/web/url.zig"),
+                .target = user.target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "lib", .module = user.lib }},
+            });
+            web.root_module.addImport("url", url_mod);
+            const quickjs_mod = b.createModule(.{
+                .root_source_file = b.path("src/user/js/quickjs.zig"),
+                .target = user.target,
+                .optimize = optimize,
+            });
             const js_mod = b.createModule(.{
                 .root_source_file = b.path("src/user/js/js.zig"),
                 .target = user.target,
                 .optimize = optimize,
+                .imports = &.{.{ .name = "quickjs", .module = quickjs_mod }},
             });
             web.root_module.addImport("page_scripts", b.createModule(.{
                 .root_source_file = b.path(if (with_scripts)
@@ -773,8 +810,14 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = if (with_scripts) &.{
                     .{ .name = "js", .module = js_mod },
+                    .{ .name = "quickjs", .module = quickjs_mod },
+                    .{ .name = "lexbor", .module = lexbor_mod },
+                    .{ .name = "url", .module = url_mod },
                     .{ .name = "ulib", .module = user.ulib },
-                } else &.{},
+                    .{ .name = "sys", .module = user.sys },
+                } else &.{
+                    .{ .name = "lexbor", .module = lexbor_mod },
+                },
             }));
             // The formats pages use that the decoder reads.
             user.addPictures(web, &.{ "-DSTBI_ONLY_PNG", "-DSTBI_ONLY_JPEG", "-DSTBI_ONLY_GIF" });
@@ -792,12 +835,32 @@ pub fn build(b: *std.Build) void {
 
             // Its host side: addresses, the protocol, encodings, the page
             // and its layout, which are all arithmetic over text.
+            // A lexbor for this machine: the same file the reader builds for
+            // its target, built for the host so the parts of web that walk a
+            // tree can be tested here.
+            const lexbor_host = b.createModule(.{
+                .root_source_file = b.path("apps/web/lexbor.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .imports = &.{.{ .name = "lib", .module = app_lib }},
+            });
+            const url_host = b.createModule(.{
+                .root_source_file = b.path("apps/web/url.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .imports = &.{.{ .name = "lib", .module = app_lib }},
+            });
+
             const web_test = b.addTest(.{
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/web/tests.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
-                    .imports = &.{.{ .name = "lib", .module = app_lib }},
+                    .imports = &.{
+                        .{ .name = "lib", .module = app_lib },
+                        .{ .name = "lexbor", .module = lexbor_host },
+                        .{ .name = "url", .module = url_host },
+                    },
                 }),
             });
             const web_test_step = b.step("test-web", "Test web's addresses, protocol, encodings, page and layout on the host");
@@ -811,14 +874,57 @@ pub fn build(b: *std.Build) void {
             // where every mistake in it has been: a value handed to the
             // wrong kind of call, matches gathered in a callback and lost,
             // a title asked for before the parser had settled it.
-            const dom_test = b.addExecutable(.{
-                .name = "dom-test",
+            // The document a script sees, on the host: QuickJS, lexbor and the
+            // reader's own document over them, built for this machine rather
+            // than the target, so a page can be parsed, a script run in it,
+            // and the tree read back. It is where Zig meets two vendored
+            // trees, and the part the reader's other tests cannot see: a value
+            // handed to the wrong kind of call, matches gathered in a callback
+            // and lost, a title asked for before the parser had settled it.
+
+            // The host's own mirror of the engine: the same files, built for
+            // this machine, since a document tested on the host cannot be
+            // handed a model built for the target.
+            const quickjs_host = b.createModule(.{
+                .root_source_file = b.path("src/user/js/quickjs.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            });
+            const js_host = b.createModule(.{
+                .root_source_file = b.path("src/user/js/js.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .imports = &.{.{ .name = "quickjs", .module = quickjs_host }},
+            });
+            const dom_host = b.createModule(.{
+                .root_source_file = b.path("apps/web/scripts/dom.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .imports = &.{
+                    .{ .name = "js", .module = js_host },
+                    .{ .name = "quickjs", .module = quickjs_host },
+                    .{ .name = "lexbor", .module = lexbor_host },
+                    .{ .name = "url", .module = url_host },
+                },
+            });
+
+            const dom_test = b.addTest(.{
                 .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/web/domtest.zig"),
                     .target = b.graph.host,
                     .optimize = .Debug,
                     .link_libc = true,
+                    .imports = &.{
+                        .{ .name = "lib", .module = app_lib },
+                        .{ .name = "js", .module = js_host },
+                        .{ .name = "quickjs", .module = quickjs_host },
+                        .{ .name = "lexbor", .module = lexbor_host },
+                        .{ .name = "dom", .module = dom_host },
+                        .{ .name = "url", .module = url_host },
+                    },
                 }),
             });
+
             const root = "third_party/lexbor/source/lexbor";
             const modules = [_][]const u8{ "core", "dom", "html", "ns", "tag", "css", "selectors", "style" };
             var dom_sources: std.ArrayList([]const u8) = .empty;
@@ -837,13 +943,13 @@ pub fn build(b: *std.Build) void {
                 "third_party/quickjs/libunicode.c",
                 "third_party/quickjs/cutils.c",
                 "src/user/js/port/engine.c",
-                "apps/web/dom/dom.c",
-                "apps/web/domtest/main.c",
+                "src/user/js/port/inlines.c",
+                "src/user/js/port/pin.c",
+                "apps/web/lexborport/inlines.c",
             }) catch @panic("out of memory");
             dom_test.root_module.addIncludePath(b.path("third_party/lexbor/source"));
             dom_test.root_module.addIncludePath(b.path("third_party/quickjs"));
             dom_test.root_module.addIncludePath(b.path("src/user/js/port"));
-            dom_test.root_module.addIncludePath(b.path("apps/web/dom"));
             dom_test.root_module.addCSourceFiles(.{
                 .files = dom_sources.items,
                 .flags = &.{

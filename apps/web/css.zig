@@ -20,10 +20,10 @@
 
 const std = @import("std");
 const lib = @import("lib");
-const lexbor = @import("lexbor.zig");
+const lexbor = @import("lexbor");
 const media = @import("media.zig");
 const page_mod = @import("page.zig");
-const url = @import("url.zig");
+const url = @import("url");
 
 const rgb = lib.rgb;
 const Allocator = std.mem.Allocator;
