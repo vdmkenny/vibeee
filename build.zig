@@ -360,6 +360,22 @@ pub fn build(b: *std.Build) void {
         "Build the web reader with QuickJS, so a page's scripts run (default: true)",
     ) orelse true;
 
+    // Whether the reader's scripts get a process of their own. Off, they run
+    // where they run today, in the reader's address space, and a fault in the
+    // engine, the bridge or the parser is a fault in the reader. On, a second
+    // program is built for them and the reader keeps only what a page must
+    // not be able to lose; see design/13-script-worker.md.
+    //
+    // Default off, because the program is a stub: `web.zig` does not spawn it
+    // yet, so building it changes nothing about how a page is read. It is
+    // here so the binary, its root module and its step exist and keep
+    // building while the work of §9 arrives behind them.
+    const with_script_worker = b.option(
+        bool,
+        "script-worker",
+        "Build the reader's script worker, so a page's scripts run in a process of their own (default: false)",
+    ) orelse false;
+
     // ---------------------------------------------------------------------
     // Target, one per architecture.
     //
@@ -759,8 +775,49 @@ pub fn build(b: *std.Build) void {
             const qjs_step = b.step("qjs", "Build the qjs script runner into zig-out/bin");
             qjs_step.dependOn(&b.addInstallArtifact(qjs, .{}).step);
 
+            // The words the reader and the worker say to each other, as one
+            // module both import: a protocol written twice is a protocol the
+            // two halves of it disagree about. design/13-script-worker.md §5.
+            // Wire only, so it is built of nothing but this one file.
+            const worker_proto_mod = b.createModule(.{
+                .root_source_file = b.path("apps/web/worker_proto.zig"),
+                .target = user.target,
+                .optimize = optimize,
+            });
+
+            // Where a page's scripts run, and what the reader does when
+            // they stop: the seam of design/13-script-worker.md, which is
+            // one type whichever side of the boundary the scripts are on.
+            const script_host_mod = b.createModule(.{
+                .root_source_file = b.path("apps/web/script_host.zig"),
+                .target = user.target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "worker_proto", .module = worker_proto_mod }},
+            });
+
             const web = user.exe("web", "apps/web/web.zig", !named(symbols, "web"));
             user.addLexbor(web);
+            web.root_module.addImport("worker_proto", worker_proto_mod);
+            web.root_module.addImport("script_host", script_host_mod);
+            // The host's machine: two pipes and a program to put between
+            // them. Compiled into every reader, because the host is one type
+            // and does not know which kind it is until it is asked; a reader
+            // built to run scripts itself never reaches this.
+            web.root_module.addImport("script_host_sys", b.createModule(.{
+                .root_source_file = b.path("apps/web/script_host_sys.zig"),
+                .target = user.target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "script_host", .module = script_host_mod },
+                    .{ .name = "sys", .module = user.sys },
+                },
+            }));
+            // Whether that reader is one with a worker. The build's word
+            // rather than a setting's: the other program has to have been
+            // built, and to be in the image, for it to be possible at all.
+            const worker_cfg = b.addOptions();
+            worker_cfg.addOption(bool, "enabled", with_script_worker);
+            web.root_module.addOptions("worker_cfg", worker_cfg);
             // A page's scripts: the engine and the document built over
             // lexbor, or a module of the same shape that does nothing. The
             // reader itself does not know which.
@@ -825,6 +882,29 @@ pub fn build(b: *std.Build) void {
             const web_step = b.step("web", "Build the web reader into zig-out/bin");
             web_step.dependOn(&b.addInstallArtifact(web, .{}).step);
 
+            // The process a page's scripts are to run in: a program of the
+            // reader's own, built the way the reader is, holding the engine,
+            // the bridge and the parse that a page can turn against them.
+            // Built only when asked for, and wired to nothing yet — the
+            // reader does not spawn it, and nothing changes about how a page
+            // is read until design/13-script-worker.md §9 says so.
+            if (with_script_worker) {
+                const worker = user.exe(
+                    "script_worker",
+                    "apps/web/script_worker.zig",
+                    !named(symbols, "script_worker"),
+                );
+                // The protocol, the same module the reader imports: one
+                // spelling of what the two of them say to each other, and
+                // the first thing that crosses the boundary.
+                worker.root_module.addImport("worker_proto", worker_proto_mod);
+                // TODO(13): `user.addLexbor(worker)` and `user.addQuickJs(worker)`,
+                // with the `lexbor`, `url`, `js` and `dom` imports the reader
+                // hands across, when §9 step 2 moves them behind the boundary.
+                const worker_step = b.step("script-worker", "Build the reader's script worker into zig-out/bin");
+                worker_step.dependOn(&b.addInstallArtifact(worker, .{}).step);
+            }
+
             // The portable library built for the host, which the apps' host
             // tests import as the apps themselves do.
             const app_lib = b.createModule(.{
@@ -851,6 +931,23 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{.{ .name = "lib", .module = app_lib }},
             });
 
+            // What the reader and the worker say to each other, and where a
+            // page's scripts run: both arithmetic over bytes and buffers, so
+            // both are tested here. The host is tested with a channel made
+            // of two arrays rather than two pipes, which is the point of it
+            // asking for the machine instead of reaching for it.
+            const worker_proto_host = b.createModule(.{
+                .root_source_file = b.path("apps/web/worker_proto.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            });
+            const script_host_host = b.createModule(.{
+                .root_source_file = b.path("apps/web/script_host.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .imports = &.{.{ .name = "worker_proto", .module = worker_proto_host }},
+            });
+
             const web_test = b.addTest(.{
                 .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/web/tests.zig"),
@@ -860,6 +957,8 @@ pub fn build(b: *std.Build) void {
                         .{ .name = "lib", .module = app_lib },
                         .{ .name = "lexbor", .module = lexbor_host },
                         .{ .name = "url", .module = url_host },
+                        .{ .name = "worker_proto", .module = worker_proto_host },
+                        .{ .name = "script_host", .module = script_host_host },
                     },
                 }),
             });

@@ -66,10 +66,38 @@ const scripts = @import("page_scripts");
 const source_mod = @import("source.zig");
 const url = @import("url");
 const view_mod = @import("view.zig");
+/// What the reader and its script worker say to each other, §5 of
+/// design/13-script-worker.md. Both sides import this one module, so both
+/// spell the protocol the same way; spoken only where the reader was built
+/// to hand a page's scripts to a worker, and not at all otherwise.
+const worker_proto = @import("worker_proto");
+/// Where a page's scripts run: in this reader, as they always have, or in a
+/// worker of its own, which is design/13-script-worker.md. One type either
+/// way, so that this file says the same thing to both.
+const script_host = @import("script_host");
+/// The machine under a host with a worker in it: two pipes and a program
+/// between them. Compiled in either way; a host without a worker never
+/// reaches it.
+const script_host_sys = @import("script_host_sys");
+/// Whether this reader was built to hand a page's scripts to a worker. The
+/// build's word and not a setting's: the other program has to have been
+/// built, and be in the image, for it to be possible at all.
+const worker_cfg = @import("worker_cfg");
 
 // The routines lexbor's C calls by name.
 comptime {
     _ = @import("clibc");
+}
+
+// The protocol the reader will send its worker, written and read here in the
+// compiler so that a change to it is a change this build fails on, and not
+// something found at runtime on a machine with no debugger.
+comptime {
+    var into: [worker_proto.HEADER_LEN + 1]u8 = undefined;
+    const frame = worker_proto.encode(.{ .stop = {} }, &into) catch unreachable;
+    const stopped = worker_proto.decode(frame) catch unreachable;
+    std.debug.assert(stopped.tag() == .stop);
+    std.debug.assert(stopped.direction() == .to_worker);
 }
 
 const ctx = &proto.app.ctx;
@@ -109,6 +137,11 @@ var document: ?Tree = null;
 /// The script running on the page on screen, where the reader was built with
 /// one and the page carries one.
 var in_page: ?*scripts.Page = null;
+/// Where the page on screen's scripts run, for a reader built to hand them
+/// to a worker: the worker's process, the channel to it, and what the reader
+/// says of them when the worker goes. In the reader by default, in which
+/// case it is nothing at all and every call below does nothing.
+var scripts_host: script_host.Host = .inProcess();
 /// The window the page on screen was read for, and the one it is drawn in
 /// now, as a stylesheet asks about a window. None before there is a window.
 var read_for: ?media.Screen = null;
@@ -140,7 +173,7 @@ var settings_changed: ?u32 = null;
 
 /// What the window sleeps on besides its own events: the settings changing,
 /// and the site while a page is coming from one.
-var wakes: Bounded(u32, 2) = .{};
+var wakes: Bounded(u32, 3) = .{};
 
 /// How much of the rule under the strip was last painted, in thousandths.
 var drawn_progress: ?u16 = null;
@@ -271,6 +304,10 @@ export fn _start(frame: [*]usize) callconv(.c) noreturn {
     // Read before anything is asked of a site, by the window or the shell.
     choices = proto.settings.load("web");
     apply();
+    // Where this reader runs a page's scripts: in a worker of its own, which
+    // is what `-Dscript-worker` builds this program as, or in here, which is
+    // what it has always been. Nothing else in this file knows which.
+    scripts_host = if (worker_cfg.enabled) .forWorker(script_host_sys.platform, gpa) else .inProcess();
     const first = env.arg(frame, 1);
     if (first) |flag| {
         if (std.mem.eql(u8, flag, "-t")) printText(env.arg(frame, 2) orelse usage());
@@ -598,6 +635,7 @@ fn fileAddress(path: []const u8, buf: []u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 
 fn tick() bool {
+    const said = pumpHost();
     const drew = step();
     // What a script left waiting, which the page is read again for where it
     // changed the page.
@@ -607,7 +645,39 @@ fn tick() bool {
             return true;
         }
     }
-    return drew;
+    return drew or said;
+}
+
+/// What the worker has said, where this reader has one: read until it has
+/// nothing more to say, and say what is worth saying of it.
+///
+/// A `page` from it will be the page on screen (§5). Until a page can be
+/// serialized that is not a message this reader can act on, so what comes
+/// across today is what a script could not have and the worker's own going,
+/// and the page on screen stays as the reader read it.
+fn pumpHost() bool {
+    var said = false;
+    while (scripts_host.take()) |message| {
+        said = true;
+        switch (message) {
+            // TODO(13): the page as the worker has it. This is the one
+            // message that carries a whole page, and its shape is still
+            // open (§11); what is on screen is what the reader read.
+            .page => {},
+            .script_error => |it| ulib.log.note("script", it.text),
+            .missing => |it| {
+                var line: [worker_proto.NAME_MAX + 16]u8 = undefined;
+                ulib.log.note("scripts", std.fmt.bufPrint(&line, "no {s}", .{it.text}) catch "no API");
+            },
+            // Where a page wants to go, what it wants fetched, and what its
+            // cookies say: the reader's to do, and not done yet (§4). A
+            // worker that has gone has been marked by the host already.
+            .navigate, .fetch_request, .cookie_value, .stopped => {},
+            // Nothing else comes this way: the rest are the reader's words.
+            else => {},
+        }
+    }
+    return said;
 }
 
 fn woken(index: usize) bool {
@@ -615,6 +685,8 @@ fn woken(index: usize) bool {
         adopt(proto.settings.load("web"));
         return true;
     }
+    // It may have been the worker that woke the reader.
+    _ = pumpHost();
     _ = step();
     // A piece arrived, which the status line counts, whatever else it did.
     return true;
@@ -647,14 +719,21 @@ fn scriptsAgain(enabled: bool) void {
     if (!enabled) {
         if (in_page) |page| scripts.close(page);
         in_page = null;
+        // Where a worker had them, it is let go: with scripts off, no worker
+        // is started for a page at all (§9).
+        scripts_host.stop(.scripts_off);
         waitFor(.none);
         return;
     }
     if (document) |*tree| {
-        in_page = scripts.open(tree.document, source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie);
-        if (choices.scripts and in_page == null) {
+        in_page = if (!scripts_host.owns())
+            scripts.open(tree.document, source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie)
+        else
+            null;
+        if (choices.scripts and in_page == null and !scripts_host.owns()) {
             problem("This page's scripts did not run", "The engine could not be opened for it, so the page reads as it was written. What the engine said is on the console.");
         }
+        startHost(&source);
         readAgain();
     }
     waitFor(.none);
@@ -703,6 +782,9 @@ fn sleepOn(site: ?u32) void {
     wakes.clear();
     if (settings_changed) |event| wakes.append(event) catch unreachable;
     if (site) |handle| wakes.append(handle) catch unreachable;
+    // The worker's end of the channel, so that what it says wakes the
+    // reader instead of waiting to be looked for.
+    if (scripts_host.handle()) |handle| wakes.append(handle) catch unreachable;
     proto.app.wakeOn(wakes.slice());
 }
 
@@ -883,7 +965,12 @@ fn finish() void {
     // A page's scripts run before it is read, so that what they change is
     // what is read, which is the order a browser has them in. Where the
     // setting says no script runs, the page reads as it was written.
-    in_page = if (choices.scripts)
+    // Where a page's scripts are the worker's, it is given the page and left
+    // to run them: the reader keeps the page, the network, the cookies and
+    // the window, and the worker keeps what a page can corrupt. Where they
+    // are not — which is every reader built so far — the reader opens them
+    // itself, over the tree it is about to read.
+    in_page = if (choices.scripts and !scripts_host.owns())
         scripts.open(tree.document, r.source.base.slice(), http.USER_AGENT, &fetchForScript, &go, &cookiesForScript, &setScriptCookie)
     else
         null;
@@ -906,9 +993,41 @@ fn finish() void {
     // and its context together while the page stays on screen.
     source.deinit(gpa);
     source = r.source;
+    // The page is on screen and its source is the reader's: now it can be
+    // given away. One worker per committed navigation, the one before it
+    // killed as this one starts (§6).
+    if (choices.scripts) startHost(&source);
     read_for = window;
     showPage(&fresh);
     focus_next = .page;
+}
+
+/// Give the page on screen to the host, where the host is one with a worker
+/// in it, and do nothing at all where it is not.
+///
+/// A page the worker cannot be given is a page whose scripts will not run,
+/// and is marked as one rather than tried again: a worker that dies on start
+/// is not started in a loop (§7). The page on screen is left exactly as the
+/// reader read it, which is the whole point.
+fn startHost(from: *const Source) void {
+    if (!scripts_host.owns()) return;
+    var sheets: worker_proto.Sheets = .{};
+    for (from.sheets.items) |sheet| sheets.add(sheet.text) catch break;
+    scripts_host.begin(.{
+        .address = from.base.slice(),
+        .agent = http.USER_AGENT,
+        .markup = from.bytes.items,
+        .charset = if (from.declared) |it| @tagName(it) else "",
+        .sheets = sheets,
+    }) catch |err| {
+        // What the host could not do is worth having said somewhere a person
+        // can look; the status line says the rest of it.
+        ulib.log.note("worker", switch (err) {
+            error.Refused => "its worker would not start",
+            error.Gone => "its worker went as it was being given the page",
+            error.TooLarge => "the page is too long to give its worker",
+        });
+    };
 }
 
 /// Let go of the tree the page on screen was read from, and of the script
@@ -1636,7 +1755,12 @@ fn status(area: Rect, body: Rect) void {
     // no-scripts page to a reader with scripts looks exactly like one that
     // sends it to a reader without.
     var said: [96]u8 = undefined;
-    const scripts_said: []const u8 = if (in_page) |page| blk: {
+    const scripts_said: []const u8 = if (scripts_host.status() == .stopped)
+        // §7: a worker that died took a page's scripts with it and nothing
+        // else. What is on screen is the page as it was last read, and stays
+        // readable, scrollable and followable.
+        "scripts stopped"
+    else if (in_page) |page| blk: {
         const ran = scripts.scriptsRan(page);
         const threw = scripts.scriptsThrew(page);
         break :blk if (scripts.errorLast(page)) |error_text|
@@ -1651,7 +1775,13 @@ fn status(area: Rect, body: Rect) void {
             std.fmt.bufPrint(&said, "scripts {d}, {d} threw", .{ ran, threw }) catch "scripts"
         else
             std.fmt.bufPrint(&said, "scripts {d}", .{ran}) catch "scripts";
-    } else if (choices.scripts) said: {
+    } else if (scripts_host.status() == .running)
+        // A worker has the page's scripts and the reader has none of its own,
+        // so what there is to say of them is what comes back over the
+        // channel (§5): nothing yet, while a page is not yet a message.
+        "scripts: in a worker"
+    else if (choices.scripts) said: {
+        if (scripts_host.owns()) break :said "scripts: its worker has not started";
         const because = scripts.whyNot();
         break :said if (because.len == 0) "scripts: none ran" else because;
     } else "scripts off";

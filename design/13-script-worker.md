@@ -1,12 +1,23 @@
 # vibeee Script Worker (design/13-script-worker.md)
 
-> **Status: proposed, not implemented.**
+> **Status: the seam is in, behind `-Dscript-worker` (default off). The worker is still a stub.**
 >
 > Context: the reader's scripts run QuickJS, Lexbor, the DOM bridge and a small amount of C glue in the `web` process. A fault in any of them reaches the kernel's page-fault path and takes the browser down; `hln.be` reproduced that. QuickJS memory and stack limits (already set) bound managed allocation and interpreter recursion only. They do not contain native faults.
 >
-> This document designs the containment boundary. Until it is built, a page can still crash the reader.
+> This document designs the containment boundary.
+>
+> What is built so far is the seam and nothing past it: `apps/web/script_host.zig`
+> is one type with two kinds, in-process (the default, and exactly the reader
+> there was) and worker-backed; the worker is spawned per committed navigation
+> and killed on the next; frames of §5 go both ways over two pipes; and a
+> worker that dies costs the page its scripts and nothing else — the page on
+> screen is kept and the status line says "scripts stopped". What is not built
+> is everything that would make the worker useful: it parses nothing, runs
+> nothing, and a `page` is not serialized yet (§11). So with the flag on, a
+> page reads as one with no scripts in it, which is the honest state of the
+> work rather than a half of it done twice.
 
-Subsystem: `apps/web/script_worker.zig` (new), `apps/web/web.zig`, `apps/web/scripts/dom.zig`, `src/user/js`.
+Subsystem: `apps/web/script_worker.zig` (new), `apps/web/script_host.zig` (new), `apps/web/script_host_sys.zig` (new), `apps/web/web.zig`, `apps/web/scripts/dom.zig`, `src/user/js`.
 
 ## 1. Problem
 
@@ -81,6 +92,15 @@ Script-visible storage that must outlive the page (cookies) is **not** owned by 
 
 Bounded, length-prefixed messages over an existing channel/ring with a hard cap (e.g. 64 KiB inline; larger payloads via shared memory). Each message is a tagged union.
 
+The channel is **two pipes**, one each way, made by `web` and handed to the
+worker as its stdin and stdout (`apps/web/script_host_sys.zig`). Neither end
+is ever read or written without being asked first with a poll: a pipe blocks
+while it is full and until something arrives, and a reader blocked on a worker
+is a reader that has stopped being one. What does not fit stays queued in the
+host and goes on a later pass. Pipes are what this system has; the shared
+memory of the previous paragraph is still to come, and until it does, a page's
+markup crosses a 4 KiB pipe a kilobyte at a time.
+
 ### web -> worker
 
 | message | payload |
@@ -137,21 +157,35 @@ This is the point of the design.
 
 Keep the change small and reversible:
 
-1. Add `script_worker.zig` with the same public entry points `dom.bind/load/click/typed/loop/waits/release`.
-2. Move `apps/web/scripts/dom.zig` and `src/user/js` behind the worker boundary.
-3. Serialize `page_mod.Page` between worker and web.
-4. Replace direct calls in `web` with channel sends.
-5. Keep the current in-process path behind a build flag (`-Dscript-worker=false`) until the worker path is proven by tests and by the same target traces used today (`web -t`) and manual VNC runs.
+1. ~~Add `script_worker.zig` with the same public entry points `dom.bind/load/click/typed/loop/waits/release`.~~ The program exists and builds (`zig build script-worker -Dscript-worker=true`); it is still a stub.
+2. Move `apps/web/scripts/dom.zig` and `src/user/js` behind the worker boundary. **Not started.**
+3. Serialize `page_mod.Page` between worker and web. **Not started** — which is why a page read with the flag on is a page read without its scripts.
+4. Replace direct calls in `web` with channel sends. **Half done:** the calls in `web` are there and the frames cross, but the only messages it acts on today are the worker's errors, the APIs it could not give a script, and its going.
+5. Keep the current in-process path behind a build flag (`-Dscript-worker=false`) until the worker path is proven by tests and by the same target traces used today (`web -t`) and manual VNC runs. **Done:** `-Dscript-worker` is off by default, and `web` with it off is byte for byte the reader it was.
 
 The current `scripts` setting (on/off) still works: with scripts off, `web` never spawns a worker.
 
+### What the seam is
+
+`apps/web/script_host.zig` is one type, `Host`, with two kinds. `in_process`
+does nothing at all — no process, no channel, no state — and is what every
+reader built so far gets. `worker` holds the worker's pid, the two ends of the
+channel, a frame being sent and a frame being read, and what became of the
+last one. `web` asks `owns()` before it opens a page's scripts itself, so they
+are never run in both places at once.
+
+The machine is handed in, as a `Platform`: start a program, end it, move
+bytes, ask whether it has ended. `apps/web/script_host_sys.zig` is the one
+that makes syscalls; nothing in `script_host.zig` does, which is what lets the
+lifecycle and the fault handling be tested on this machine (§10).
+
 ## 10. Testing
 
-- Host tests: message encode/decode round-trips, bounded sizes.
-- Host tests: worker start/stop lifecycle and restart-on-navigation.
-- Fault-injection tests: kill the worker mid-page; assert `web` keeps the last page and remains responsive.
-- Target traces through `web -t`: confirm script errors and missing-API telemetry survive the boundary.
-- Manual: the sites that crashed or misbehaved (hln.be, standaard.be, Google consent) navigated in VNC with the worker enabled.
+- Host tests: message encode/decode round-trips, bounded sizes. **Done** (`worker_proto.zig`).
+- Host tests: worker start/stop lifecycle and restart-on-navigation. **Done** (`script_host.zig`).
+- Fault-injection tests: kill the worker mid-page; assert `web` keeps the last page and remains responsive. **Done**, as host tests of the host: end of file with nothing said, a worker that will not start, one that takes nothing in, and a frame that cannot be one all end the same way — scripts stopped, the page untouched, and no second worker started for that page.
+- Target traces through `web -t`: confirm script errors and missing-API telemetry survive the boundary. **Not started:** text mode runs a page's scripts in the reader whatever the build is, having no window loop to pump a worker with.
+- Manual: the sites that crashed or misbehaved (hln.be, standaard.be, Google consent) navigated in VNC with the worker enabled. **Not started.**
 
 Fault injection is the load-bearing test: it is the only test that proves the guarantee "a page cannot crash the browser".
 
@@ -160,3 +194,9 @@ Fault injection is the load-bearing test: it is the only test that proves the gu
 - Whether the worker parses, or `web` parses and ships a serializable tree. Parsing in the worker keeps the risky code in the disposable process; shipping a parsed tree across a channel is more work. Recommendation: worker parses; `web` only ships markup + stylesheets.
 - Whether one worker per navigation is too costly at 630 MHz. Measure; consider reuse for same-document (hash/timer-only) updates, which do not need a new tree.
 - Exact serialization format for `page_mod.Page`: a stable, versioned, length-prefixed layout, not a host-memory dump.
+- Whether a pipe is enough. It is what the seam is built on, and it is not
+  quite: a write bigger than the pipe blocks until the far end takes it, so a
+  worker that is alive but never reads could still stop the reader. The host
+  bounds what it puts in at once and gives up on a queue that has not moved
+  at all in many passes, which makes that a dead worker rather than a stuck
+  reader — but the shared memory of §5 is the real answer for `start`.

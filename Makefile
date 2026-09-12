@@ -284,6 +284,18 @@ web:
 	@cp zig-out/bin/web home/bin/web
 	@echo "  ready   home/bin/web, on the machine at the next image build"
 
+# The process the reader hands a page's scripts to, for a reader built to do
+# that: `-Dscript-worker`, off by default, and this is the program it builds.
+# Built beside the reader in home/bin because it is the reader's and not the
+# system's; a reader built without it runs a page's scripts itself and never
+# looks for one. design/13-script-worker.md.
+.PHONY: script-worker
+script-worker:
+	@$(ZIG) build script-worker -Dscript-worker=true
+	@mkdir -p home/bin
+	@cp zig-out/bin/script_worker home/bin/script_worker
+	@echo "  ready   home/bin/script_worker, on the machine at the next image build"
+
 # The script runner: QuickJS, vendored and built into a program of this
 # system's. Not host-tested, being C that is not ours: what is tested here is
 # that it builds for the machine, and the rest is a script run on the machine.
